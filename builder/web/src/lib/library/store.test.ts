@@ -112,7 +112,7 @@ describe('library store', () => {
         await library.close(); await fresh.close();
     });
 
-    it('opens a database of version 1 with its routes and rides, adds the store of the photos and deletes the store of the versions', async () => {
+    it('opens a database of version 1 with its routes and rides, adds the store of the photos, and deletes the versions and the field `open`', async () => {
         const factory = new IDBFactory(), key = '20260801T070000Z';
         await new Promise<void>((resolve, reject) => {
             const request = factory.open('obc-library', 1);
@@ -125,7 +125,7 @@ describe('library store', () => {
             };
             request.onsuccess = () => {
                 const db = request.result, tx = db.transaction(['routes', 'rides', 'ride-files'], 'readwrite');
-                tx.objectStore('routes').put(route('a'));
+                tx.objectStore('routes').put({ ...route('a'), open: 'v1' });
                 tx.objectStore('rides').put(ride(key));
                 tx.objectStore('ride-files').put(new Blob(['ride']), key);
                 tx.oncomplete = () => { db.close(); resolve(); };
@@ -133,7 +133,7 @@ describe('library store', () => {
             request.onerror = () => reject(request.error);
         });
         const library = new Library(factory);
-        expect((await library.routes()).map(r => r.id)).toEqual(['a']);
+        expect(await library.routes()).toEqual([route('a')]);
         expect((await library.rides()).map(r => r.key)).toEqual([key]);
         expect(await (await library.rideFile(key))!.text()).toBe('ride');
         expect(await library.addPhoto(photo('p1', key))).toBe(true);

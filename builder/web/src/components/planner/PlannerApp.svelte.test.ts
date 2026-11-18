@@ -539,18 +539,23 @@ describe('planner app transitions', () => {
         expect(dayButton(1)).toBeDefined();
     });
 
-    it('compares two saved routes and opens one in the planner', async () => {
-        others = [{ ...newPlan({ ...testTrip(), days: 4 }, 'Coast'), id: 'coast', revision: 1 }];
+    it('compares two saved routes with a start and a finish, and opens one in the planner', async () => {
+        const start = { ...testTrip(), points: testTrip().points.filter(point => point.kind === 'start') };
+        others = [{ ...newPlan({ ...testTrip(), days: 4 }, 'Coast'), id: 'coast', revision: 1 },
+            { ...newPlan(start, 'Only a start'), id: 'start', revision: 1, updatedAt: Date.now() + 60_000 }];
         await startApp();
         await vi.waitFor(() => expect(savedPlan).toBeDefined());
         button('Compare routes').click();
         await vi.waitFor(() => expect(document.querySelectorAll('.compare .head .totals')).toHaveLength(2));
+        expect([...document.querySelectorAll('.compare .head .name strong')].map(name => name.textContent)).not.toContain('Only a start');
+        expect(document.querySelector('.compare .head .name strong')?.textContent).not.toBe('Coast');
         expect(document.querySelector('.trip-bar')).toBeNull();
         expect(document.activeElement?.textContent).toBe('Planner');
         button('Open in planner').click();
         await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Plan opened'));
         expect(document.querySelector('.compare')).toBeNull();
         expect(document.querySelector('.trip-bar h1')?.textContent).toBe('Coast');
+        expect(document.activeElement).toBe(document.querySelector('.trip-bar .compare-routes'));
     });
 
     it('prevents adding an overnight past the riding-day limit', async () => {

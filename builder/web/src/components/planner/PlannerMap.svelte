@@ -34,7 +34,7 @@
         /** A previewed route option and its letter. It draws in ink over the plan, which draws as a dotted line without day
          * colours; a letter marks each line where they part. */
         compare?: { line: Coordinate[]; letter: string } | null;
-        /** Lines that take no edits, such as the days of two saved versions, each in its colour and width; a later line
+        /** Lines that take no edits, such as the days of two saved routes, each in its colour and width; a later line
          * draws on top. A transfer draws dashed. */
         lines?: { coordinates: Coordinate[]; color: string; width: number; transfer: boolean }[];
         /**

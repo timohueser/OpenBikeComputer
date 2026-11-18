@@ -1073,8 +1073,8 @@
 
 <div class="planner-shell" style:--side-width={`${Math.min(sideWidth, maxSide)}px`}>
     {#if comparing}
-    <CompareScreen routes={session.plans} first={session.plan.revision ? session.plan.id : undefined} changed={!!session.saveError}
-        lines={session.foundLines} {theme} onBack={endCompare} onOpen={async id => { await endCompare(); await openPlan(id); }}
+    <CompareScreen routes={session.plans.filter(plan => endpointsChosen(plan.trip))} first={session.plan.revision ? session.plan.id : undefined} changed={!!session.saveError}
+        lines={session.foundLines} {theme} onBack={endCompare} onOpen={async id => { comparing = false; await openPlan(id); await endCompare(); }}
         onFindLines={(trips, retry) => session.findLines(trips, retry)} />
     {:else}
     {#key planId}

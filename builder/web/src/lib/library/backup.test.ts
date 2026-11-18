@@ -46,7 +46,10 @@ describe('library backup', () => {
         // A reader ignores the saved versions of an older file.
         const versions = await edited(backup, json => ({ ...json, routes: [{ ...route, open: 'v1' }],
             versions: { r1: [{ id: 'v1', at: '2026-08-01T07:00:00.000Z', trip: route.trip }] } }));
-        expect(await loadBackup(new Library(new IDBFactory()), versions)).toMatchObject({ routes: 1, rides: 2, photos: 0 });
+        const merged = new Library(new IDBFactory());
+        expect(await loadBackup(merged, versions)).toMatchObject({ routes: 1, rides: 2, photos: 0 });
+        expect(await merged.routes()).toEqual([route]);
+        expect(JSON.parse(await (await unzip(await saveBackup(merged, {}))).get('library.json')!.text()).routes[0]).not.toHaveProperty('open');
         // A reader ignores a field of the envelope and an entry that it does not know.
         const later = await zip([...(await unzip(await edited(backup, json => ({ ...json, later: [1] }))))].map(([name, data]) => ({ name, data }))
             .concat({ name: 'later/a.bin', data: new Blob(['later']) }));

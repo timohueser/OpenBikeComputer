@@ -23,7 +23,7 @@
         routes: Plan[];
         /** The open route, when it is saved. */
         first: string | undefined;
-        /** The open route has changes that are not saved. */
+        /** The last save of the open route failed, so its saved state is older than the planner shows. */
         changed: boolean;
         /** The lines of the routes by routing key, or the message of a failed calculation. */
         lines: Record<string, RoutingLine | string>;
@@ -181,7 +181,7 @@
     {#if pair.length < 2}
         <p class="empty">Save two routes to compare them.</p>
     {:else}
-    {#if changed && open}<p class="note">‘{title(open)}’ shows its saved state. Save to compare your changes.</p>{/if}
+    {#if changed && open}<p class="note">‘{title(open)}’ shows its saved state. Your latest changes could not be saved.</p>{/if}
     <div class="body">
         <aside class="days" aria-label="Both routes by day">
             <div class="grid heads">
@@ -191,8 +191,8 @@
                     <div class="head" class:focused={focus?.side === i} class:dim={focus && focus.side !== i} {...pointer(i)}>
                         <div class="name">
                             <span class="dot" style:background={tones[i]}></span><strong>{side.title}</strong>
-                            {#if side.open}<span class="open">open</span>{:else}<button type="button" class="planner-action" onclick={() => onOpen(side.id)}>Open in planner</button>{/if}
                         </div>
+                        {#if side.open}<span class="open">Open now</span>{:else}<button type="button" class="planner-action open-route" onclick={() => onOpen(side.id)}>Open in planner</button>{/if}
                         {#if s}
                             <p>{compareSummary(s.days)}</p>
                             <p class="totals">{km(distanceIn(s.view.summary.distance * 1000))} {settings.units}{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(heightIn(s.view.summary.ascent))} ${heightUnit()}` : ''} · {duration(s.view.summary.hours)} riding</p>
@@ -248,7 +248,7 @@
                     {#each sides as side, i (side.id)}
                         <button type="button" class="chip" class:focused={focus?.side === i} aria-pressed={kept?.side === i && kept.day === null} {...pointer(i)} onclick={() => keep(i)}>
                             <span class="dot" style:background={tone(i)}></span><strong>{side.title}</strong>
-                            {#if shown[i]}<small>{shown[i].days.length} days</small>{/if}
+                            {#if shown[i]}<small>{shown[i].days.length} {shown[i].days.length === 1 ? 'day' : 'days'}</small>{/if}
                         </button>
                     {/each}
                     <p>{focus ? `${sides[focus.side].title} in its day colours, ${sides[1 - focus.side].title} in grey.` : 'Point at a route to see its days. Click it to keep it.'}</p>
@@ -306,8 +306,8 @@
     .head p { margin: 0; font-size: 13px; line-height: 1.45; color: var(--ink-soft); }
     .head .totals { font-weight: 600; color: var(--ink); }
     .name { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 16px var(--sans); }
-    .name .planner-action { min-height: 26px; padding: 0 8px; font-size: 12px; white-space: nowrap; }
+    .name strong { min-width: 0; overflow-wrap: anywhere; font: 700 16px var(--sans); }
+    .open-route { align-self: flex-start; min-height: 26px; padding: 0 8px; font-size: 12px; white-space: nowrap; }
     .open { font-size: 12px; color: var(--ink-soft); }
     .dot { width: 12px; height: 12px; flex: none; border-radius: 50%; }
     .dim { opacity: .45; }

@@ -52,11 +52,3 @@ export function downloadPlan(plan: Plan): void {
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-
-/** When a route was saved: "Today 14:05", "Yesterday 09:30" or "12 Oct 18:00". */
-export function savedWhen(iso: string, now = Date.now()): string {
-    const at = new Date(iso);
-    const days = Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(iso).setHours(0, 0, 0, 0)) / 86400000);
-    const day = days === 0 ? 'Today' : days === 1 ? 'Yesterday' : at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-    return `${day} ${at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
-}

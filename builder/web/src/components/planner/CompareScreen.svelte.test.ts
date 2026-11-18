@@ -54,7 +54,7 @@ describe('compare screen', () => {
         expect(document.querySelector('.empty')?.textContent).toBe('Save two routes to compare them.');
         await unmount(screen!);
         open(undefined, { changed: true });
-        expect(document.querySelector('.note')?.textContent).toBe('‘Slow’ shows its saved state. Save to compare your changes.');
+        expect(document.querySelector('.note')?.textContent).toBe('‘Slow’ shows its saved state. Your latest changes could not be saved.');
     });
 
     it('gives each calendar day one row, and the shorter route "Finished" after its last day', () => {

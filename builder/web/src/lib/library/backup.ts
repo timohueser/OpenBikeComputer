@@ -1,6 +1,6 @@
 /** Saves the library and the settings as one backup file, and adds the records of a backup file to the library. */
 import { smallPicture } from './photos';
-import { isPhotoEntry, isRideRecord, isRouteRecord, stateChecks, type LibraryState, type PhotoEntry, type RideRecord } from './records';
+import { isPhotoEntry, isRideRecord, isRouteRecord, stateChecks, type LibraryState, type PhotoEntry, type RideRecord, type RouteRecord } from './records';
 import type { Contents, Library } from './store';
 import { unzip, zip, type Entry } from './zip';
 
@@ -54,7 +54,9 @@ async function readBackup(file: Blob): Promise<{ contents: Contents; photos: { r
     }
     const copies = photos.map(record => ({ record, image: entries.get(photoPath(record)) }));
     if (!copies.every((copy): copy is { record: PhotoEntry; image: Blob } => !!copy.image)) throw damaged;
-    return { contents: { routes, rides, files, state: state as Partial<LibraryState> }, photos: copies, settings };
+    // A route of an older file has the field `open`, the id of a version.
+    const kept = routes.map(route => { const { open: _, ...rest } = route as RouteRecord & { open?: unknown }; return rest; });
+    return { contents: { routes: kept, rides, files, state: state as Partial<LibraryState> }, photos: copies, settings };
 }
 
 /** Adds the new records of a backup file. The routes and the rides come all or none: a route is new when its id is not
