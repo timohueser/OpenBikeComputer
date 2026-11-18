@@ -110,3 +110,27 @@ For a new planner release, do steps 1 and 4: only the routes whose line changed 
   at a time, the points first. After a 429 of the host it waits one minute, at most 5 times for a file.
 - `upload` and `switch` call `obc data r2`, which needs `OBC_R2_*`. `switch` checks the covers in
   the bucket, because the public host keeps a deleted file in its cache for a year.
+
+# Phone measurement
+
+| Step | From `builder/web` |
+| --- | --- |
+| What | `phone.mjs` measures the page on a phone over the local Wi-Fi. One HTTPS origin on the LAN address serves the page, the data of a local release, `phone-measure.js` and a collector. The phone needs only the Wi-Fi. |
+| 1. Data | `obc data serve local` (port 8710), or another origin with `--data` |
+| 2. Build | `node tests/browser/trailview/phone.mjs build --origin https://IP:8770` |
+| 3. Timing cells (optional) | The `requests` command of the ground plan debug tool (`host/obc-ground-plan/README.md`); give its folder with `--requests` |
+| 4. Serve | `node tests/browser/trailview/phone.mjs serve --host IP [--requests DIR] [--results DIR]`. The first start makes a self-signed certificate for `IP` in `--cert`. |
+| 5. Phone | Open `https://IP:8770/phone/` and tap Start. The session takes about 8 minutes. |
+| 6. Result | `node tests/browser/trailview/phone.mjs summarize RESULTS/SESSION.json` |
+
+| Item | Value |
+| --- | --- |
+| Runs | Each scene of `phone-measure.js` with the variants `today`, `new` (`ground=plan`) and `new-low` (`ground=plan&scale=0.5&pool=0.5`). Each run is a new page load. At the end, the timing page builds the `--requests` cells. |
+| Cache | Every answer is `no-store`, and the script deletes the Cache Storage before each run: each run loads cold. |
+| First proper render | The first frame after `nearReady()` in which no road mesh, feature tile, record block or piece mesh is on its way (`meshesLoading` false) |
+| Flight | 20 s. The pose follows the clock, so a slow device flies the same path. |
+| Frame interval | The time between the animation frames in which the engine draws. Over 17.5 ms and 34.2 ms: one and two display periods of 60 Hz, with 0.8 ms of clock jitter. |
+| GPU time | The pass times when the device has `timestamp-query`; on every 10th frame the time from the last submit to `onSubmittedWorkDone` |
+| Results | `--results/SESSION.json`. The script posts after each stage, so a killed tab leaves its data. A run whose tab the system reloads is recorded as such. |
+| Secure context | WebGPU needs one. On iOS, accept the certificate warning, or install `https://IP:8770/phone/cert.cer` as a profile and trust it under Certificate Trust Settings. |
+| Network | The server binds to the LAN address only. A router with client isolation blocks the phone. |
