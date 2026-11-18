@@ -33,6 +33,9 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
   // The shortest first; the long route is no row, and the cycle route is not for hiking.
   await expect(list.getByText('2 signed routes in this map view')).toBeVisible();
   await expect(list.locator('.row')).toHaveText([/Schlossberg loop.*1\.2\skm · 150\sm up · T2/, /Westweg 2.*2\.5\skm · 80\sm up · T1/]);
+  // The set of route pictures holds a cover of the first route only; the other row shows its line on a plain ground.
+  await expect(list.locator('.row').nth(0).locator('canvas')).toBeVisible();
+  await expect(list.locator('.row').nth(1).locator('svg')).toBeVisible();
   await page.getByRole('button', { name: 'TrailView' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'TrailView' })).toHaveText('TrailView has no view of this area.');
 

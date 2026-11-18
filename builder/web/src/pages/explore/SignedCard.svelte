@@ -19,7 +19,13 @@
     import RouteCard from '../routes/RouteCard.svelte';
     import SignedPicture from './SignedPicture.svelte';
 
-    let { item, onplan, onclose }: { item: SignedItem; onplan: () => void; onclose: () => void } = $props();
+    let { item, oncover, onplan, onclose }: {
+        item: SignedItem;
+        /** As `oncover` of the picture: it is too small for its credits, so the page shows them with the map. */
+        oncover?: (credits: string[] | undefined) => void;
+        onplan: () => void;
+        onclose: () => void;
+    } = $props();
 
     const LEVELS = ['', 'Local', 'Regional', 'National', 'International'];
     const KINDS: Record<CatalogRecord['kind'], string> = { hiking: 'hiking route', foot: 'hiking route', bicycle: 'cycling route', mtb: 'mountain bike route' };
@@ -36,7 +42,7 @@
 
 <RouteCard name={item.name} meta={[record.loop ? 'Loop' : 'One way', ...stage, kind]} numbers={signedNumbers(record)} profile={item.profile}
     more={about ? more : undefined} {onclose}>
-    {#snippet picture()}<SignedPicture {item} />{/snippet}
+    {#snippet picture()}<SignedPicture {item} {oncover} />{/snippet}
     {#snippet mark()}<span class="mark"><TrailMarker symbol={record.symbol} ref={record.ref} /></span>{/snippet}
     {#snippet buttons()}<button type="button" class="button primary" onclick={onplan}>Plan this route</button>{/snippet}
 </RouteCard>

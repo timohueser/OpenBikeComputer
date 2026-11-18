@@ -15,7 +15,7 @@
         fit: number;
         place?: { lon: number; lat: number; box?: Box };
         look: 'route' | 'ride' | 'signed';
-        /** The credits that the map shows after its own: of the picture of the open card, of the sources of its routes. */
+        /** The credits that the map shows after its own: of the pictures that the page shows, of the sources of its routes. */
         credits: string[];
         /** The lines that a click on one line selects, for the map. Without it, a line stands alone. */
         together?: (id: string) => string[];
