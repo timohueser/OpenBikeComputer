@@ -271,7 +271,7 @@
     {#snippet readout()}
         {distanceIn(((hover ?? 0) - origin) * total * 1000).toFixed(1)} {settings.units}{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(heightIn(hoverHeight))} ${heightUnit()}`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}
     {/snippet}
-    <div class="lanes">
+    <div class="plot-rows">
         <Lanes label="Profile" rows={[{ label: '', draw: profile, grow: true }]} {ticks} axis={lanesAxis} pointer={hover === null ? undefined : share(hover)}
             chip={readout} onpointer={point} part={part && [share(part[0]), share(part[1])]} onpart={onPart && select} onclick={() => select(null)} />
     </div>
@@ -340,7 +340,7 @@
     .unavailable { margin: 4px 0 8px 48px; color: var(--ink-soft); font-size: 12px; }
     .selected { margin-left: auto; }
     @container (max-width: 560px) { .distance { display: none; } }
-    .lanes {
+    .plot-rows {
         display: flex;
         flex: 1;
         flex-direction: column;
