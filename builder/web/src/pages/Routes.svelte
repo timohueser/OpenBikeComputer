@@ -118,7 +118,7 @@
     onMount(() => {
         void load();
         // The planner modules wait for the map catalogue, so the list shows before the titles of plans with no name.
-        Promise.all([import('../lib/planner/library'), import('../lib/planner/versions')])
+        Promise.all([import('../lib/planner/library'), import('../lib/planner/editor')])
             .then(([{ isPlan }, { planTitle }]) => { naming = { isPlan, planTitle }; },
                 reason => { failure = reason instanceof Error ? reason.message : String(reason); });
         let timer: ReturnType<typeof setTimeout> | undefined;
