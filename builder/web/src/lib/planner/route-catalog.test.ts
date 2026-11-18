@@ -75,6 +75,10 @@ describe('route catalog', () => {
         expect(boxCells(box, 7)).toEqual(['7-66-45', '7-67-45']);
         // Trail 2 is in a far file of the box, but not in the box.
         expect(await new RouteCatalog().trailsInBox(box)).toEqual([entry(1, [west, east])]);
+        // A segment of trail 3 cuts the south-west corner of the box, with no vertex in it.
+        const corner = [8200000, 46050000, 120000, -100000];
+        files['7-66-45'].push(entry(3, [corner]));
+        expect((await new RouteCatalog().trailsInBox([8.25, 46, 9.5, 46.9]))?.map(trail => trail.id)).toEqual([1, 3]);
         asked.length = 0;
         expect(await new RouteCatalog().trailsInBox([5, 43, 20, 47])).toBeNull();
         delete config.trails;

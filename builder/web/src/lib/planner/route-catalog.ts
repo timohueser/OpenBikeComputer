@@ -49,18 +49,44 @@ function inBox(udeg: number[], [west, south, east, north]: Box): boolean {
     return false;
 }
 
-/** A file that loads once; a failed one loads again on the next call. */
-function cached<K, V>(files: Map<K, Promise<V>>, key: K, load: (key: K) => Promise<V>): Promise<V> {
-    let file = files.get(key);
-    if (!file) {
-        file = load(key);
-        file.catch(() => files.delete(key));
-        files.set(key, file);
+/** True when a segment of `udeg`, the deltas of a line in microdegrees, meets the box, edges included. */
+function segmentInBox(udeg: number[], [west, south, east, north]: Box): boolean {
+    for (let i = 2, lon = udeg[0], lat = udeg[1]; i < udeg.length; i += 2) {
+        const x = lon / 1e6, y = lat / 1e6, dx = udeg[i] / 1e6, dy = udeg[i + 1] / 1e6;
+        lon += udeg[i];
+        lat += udeg[i + 1];
+        // Liang-Barsky: the share of the segment from t0 to t1 is inside each edge.
+        let t0 = 0, t1 = 1;
+        for (const [p, q] of [[-dx, x - west], [dx, east - x], [-dy, y - south], [dy, north - y]]) {
+            if (p === 0) t0 = q < 0 ? 2 : t0;
+            else if (p < 0) t0 = Math.max(t0, q / p);
+            else t1 = Math.min(t1, q / p);
+        }
+        if (t0 <= t1) return true;
     }
+    return false;
+}
+
+/** The most far files that the catalog keeps: those of the last two views. A far file holds up to 400 kB. */
+const FAR_FILES = 2 * MAX_CELLS;
+
+/** A file that loads once; a failed one loads again on the next call. Above `limit` files, the least recently asked goes. */
+function cached<K, V>(files: Map<K, Promise<V>>, key: K, load: (key: K) => Promise<V>, limit = Infinity): Promise<V> {
+    let file = files.get(key);
+    if (file) files.delete(key);
+    else {
+        const loading = file = load(key);
+        loading.catch(() => files.get(key) === loading && files.delete(key));
+    }
+    files.set(key, file);
+    while (files.size > limit) files.delete(files.keys().next().value!);
     return file;
 }
 
-/** The cell files, far files and trail record files of the route catalog. The cache has no limit: a session holds some tens of files. */
+/**
+ * The cell files, far files and trail record files of the route catalog. Cell files and trail record files have no limit:
+ * a session holds some tens of them; far files are larger and keep `FAR_FILES`.
+ */
 export class RouteCatalog {
     private readonly cells = new Map<string, Promise<CatalogRecord[] | null>>();
     private readonly farCells = new Map<string, Promise<TrailEntry[] | null>>();
@@ -107,22 +133,22 @@ export class RouteCatalog {
     }
 
     /**
-     * The trails with a vertex of their far line in `box`, edges included, in ascending `id` order: each one once, with the
+     * The trails with a segment of their far line in `box`, edges included, in ascending `id` order: each one once, with the
      * pieces of all far files of the box. Null, with no load, when the box meets more than `MAX_CELLS` zoom 7 cells or the
      * release has no trail files.
      */
     async trailsInBox(box: Box): Promise<TrailEntry[] | null> {
         if (!config.trails || trailsTooWide(box)) return null;
-        const files = await Promise.all(boxCells(box, 7).map(id => cached(this.farCells, id, loadTrailCell)));
+        const files = await Promise.all(boxCells(box, 7).map(id => cached(this.farCells, id, loadTrailCell, FAR_FILES)));
         const found = new Map<number, TrailEntry>();
         for (const entry of files.flatMap(file => file ?? [])) {
             const seen = found.get(entry.id);
             found.set(entry.id, seen ? { ...seen, far_udeg: [...seen.far_udeg, ...entry.far_udeg] } : entry);
         }
-        return [...found.values()].filter(entry => entry.far_udeg.some(piece => inBox(piece, box))).sort((a, b) => a.id - b.id);
+        return [...found.values()].filter(entry => entry.far_udeg.some(piece => segmentInBox(piece, box))).sort((a, b) => a.id - b.id);
     }
 
-    /** The whole record of the trail `id`, with `parts` and `trail_profile_m`, or null for a release with no trail files. */
+    /** The whole record of the trail `id`, with `parts` and `trail_profile_m`, or null for a grid release with no trail files. */
     trail(id: number): Promise<CatalogRecord | null> {
         return cached(this.trails, id, loadTrailRecord);
     }
