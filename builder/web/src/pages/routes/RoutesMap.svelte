@@ -22,7 +22,8 @@
         look?: 'route' | 'ride' | 'signed';
         /** The height in pixels of the bottom of the map that the selected card covers. */
         covered?: number;
-        /** The credits of the picture of the selected card, which shows none of its own. */
+        /** The credits after the map's own: of the picture of the selected card, which shows none of its own, and of the
+         * sources of the routes. */
         credits?: string[];
         /** The lines that a click on one line selects: the rides of its row, or the line alone. */
         together?: (id: string) => string[];
@@ -48,7 +49,7 @@
     let styled: typeof theme, styledLook: typeof look, fitted = 0, relief: Relief;
     /** The lines that have the feature state `hover`: those that a click at the pointer selects. */
     let hovered: string[] = [];
-    /** The credits of the terrain and of the picture, which open with the credit of the map. */
+    /** The credits of the terrain and `credits`, which open with the credit of the map. */
     let moreCredits: HTMLElement;
     const more = $derived([...new Set([styleConfig.terrain_attribution, ...credits])]);
 
@@ -265,8 +266,8 @@
 </script>
 
 <div class="routes-map" data-loaded={loaded} bind:this={container}></div>
-<!-- The map takes this box as a control, after its own credit. The credits of the terrain and of the picture of the
-     selected card open with the credit of the map, at its button. -->
+<!-- The map takes this box as a control, after its own credit. The credits of the terrain and `credits` open with the
+     credit of the map, at its button. -->
 <div class="maplibregl-ctrl more-credits" bind:this={moreCredits}>
     <p>{@html more.join(' | ')}</p>
 </div>

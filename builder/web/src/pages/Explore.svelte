@@ -6,10 +6,11 @@
     import type { Bike } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { config } from '../lib/planner/map-data';
+    import { escapeMarkup } from '../lib/core/gpx';
     import { decodeCoordinates } from '../lib/planner/route-answer';
     import { routeColor } from '../lib/planner/route-colors';
     import { catalog, tooWide, trailsTooWide, type Box } from '../lib/planner/route-catalog';
-    import { gradeName, kinds, routePlan, type CatalogRecord, type RouteRecord, type TrailEntry } from '../lib/planner/signed-routes';
+    import { gradeName, kinds, recordCredits, routePlan, type CatalogRecord, type RouteRecord, type TrailEntry } from '../lib/planner/signed-routes';
     import { hasTrailView, loadTrailView } from '../lib/planner/trailview';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
@@ -81,6 +82,9 @@
     const trailRoute = $derived(trail?.record?.line_udeg ? once(trail.record, () => signedItem(trail!.record!, bike)) as SignedItem : undefined);
     /** The lines that the map marks: the selected route, or the selected trail and its parts. */
     const marked = $derived(trail ? [trail.id, ...trail.record?.parts?.map(part => part.id) ?? trail.record?.stages ?? []].map(String) : chosen ? [chosen.id] : []);
+    // The map credits are HTML, and a record credit is plain text. A far file has no credits: the selected trail brings its own.
+    const credits = $derived(recordCredits([...inView.flatMap(item => item.kind === 'signed' ? [item.record] : []), ...trail?.record ? [trail.record] : []])
+        .map(escapeMarkup));
     /** The value of each item that the other chips keep, for the bars of the slider of `key`. */
     const values = (key: 'length' | 'climb') => results(inView, { ...chips, [key]: undefined }, '')
         .map(({ summary }) => key === 'length' ? distanceIn(summary!.lengthM) : heightIn(summary!.climbM));
@@ -226,7 +230,7 @@
             for (let tries = 0; tries < 2; tries++) {
                 const listed = trailViewItems();
                 const routes = listed.map(({ id, record }): TrailViewRoute => ({
-                    id, line: decodeCoordinates(record.line_udeg ?? []), colour: routeColor(id),
+                    id, line: decodeCoordinates(record.line_udeg ?? []), colour: routeColor(id), credit: record.credit,
                     ...record.profile_m ? { profile: { step: PROFILE_STEP_M, heights: record.profile_m, length: record.length_m } } : {},
                 }));
                 // The size of the window: the rule of its CSS.
@@ -262,7 +266,7 @@
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) select(undefined); }} />
 
 <!-- TrailView shows the routes of a near view only. -->
-<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={[]} selected={marked}
+<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" {credits} selected={marked}
     onselect={select} onview={next => setView(wrapped(next))} card={trail ? trailCard : chosen ? card : undefined}
     mapButtons={hasTrailView(config) && shown.length && !far ? mapButtons : undefined}>
     {#snippet list()}
