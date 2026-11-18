@@ -151,7 +151,11 @@
         created.dragRotate.disable();
         created.touchZoomRotate.disableRotation();
         created.on('style.load', addLine);
-        created.on('mousemove', event => { point(event); hoverPlace(placeAt(event.point, HOVER_PX)); });
+        created.on('mousemove', event => {
+            point(event);
+            // No dot under a pin or the popup takes the pointer.
+            hoverPlace(event.originalEvent.target === created.getCanvas() ? placeAt(event.point, HOVER_PX) : undefined);
+        });
         created.on('mouseout', () => { onpoint?.(null); hoverPlace(undefined); });
         created.on('click', event => {
             if (event.originalEvent.target === created.getCanvas()) openPlaceId = placeAt(event.point, CLICK_PX) ?? null;

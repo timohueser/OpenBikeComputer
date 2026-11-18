@@ -54,9 +54,8 @@
         openPlaceId?: string | null;
     } = $props();
 
-    /** Places load for at most PLACES_KM of the shown stretch. A place icon is ICON_PX wide and a
-     * count after it about COUNT_CHAR_PX for each figure; icons that would touch join into one, whose list shows at most
-     * LIST_NAMES names. */
+    /** Places load for at most PLACES_KM of the shown stretch. A place icon is ICON_PX wide and a count after it about
+     * COUNT_CHAR_PX for each figure; icons that would touch join into one, whose list shows at most LIST_NAMES names. */
     const PLACES_KM = 300, ICON_PX = 24, COUNT_CHAR_PX = 7, LIST_NAMES = 30, PANEL_PX = 260;
     /** The elevation row is ELEVATION_PX high in a window at least WIDE_PX wide and TALL_PX high. The disc of a night keeps
      * NIGHT_PX from the middle of a waypoint pin. */
@@ -136,7 +135,6 @@
 
     /** The places of the chosen category, joined where their icons with the count would touch. */
     const groups = $derived.by(() => {
-        // On the shown slice, so that a place on a loop does not land on another day.
         const found = routePlaces.map(place => ({ place, at: x(place.alongM / totalM) })).sort((a, b) => a.at - b.at);
         const joined: { at: number; places: RoutePlace[] }[] = [];
         const drawn = (count: number) => ICON_PX + (count > 1 ? 2 + String(count).length * COUNT_CHAR_PX : 0);
@@ -167,6 +165,7 @@
         let live = true;
         corridorPlaces(config.places, along, wanted).then(found => {
             if (!live) return;
+            // On the shown slice, so that a place on a loop does not land on another day.
             routePlaces = found.map(item => ({ ...item, alongM: (from + nearestProgress(along, item.place.coordinate) * span) * totalM }));
             placesState = 'loaded';
         }, () => { if (live) placesState = 'failed'; });
@@ -502,17 +501,17 @@
         min-width: 180px;
         padding: 4px;
     }
+    /* The name over where the place is, so that the list keeps the width of a panel. */
     .list button {
         display: flex;
-        justify-content: space-between;
-        gap: 16px;
+        flex-direction: column;
+        gap: 1px;
         padding: 6px 8px;
         border: 0;
         border-radius: 5px;
         background: none;
         color: var(--ink);
         text-align: left;
-        white-space: nowrap;
     }
     .list button:hover {
         background: var(--parchment-2);
