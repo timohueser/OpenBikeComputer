@@ -106,6 +106,9 @@ the dropped relations by reason and the shaping points. The builder leaves out c
 `gravel`, `mtb/technical` and `hiking/alpine` profiles. A route in France has no route mark. The
 builder checks the profiles before the import.
 
+The step also writes the [trail files](../../specs/route-catalog.md#trail-files) into `routes/trails/`
+and `routes/long/`; the metric `trail_files` gives their sizes.
+
 ## Terrain
 
 The import samples the terrain while it puts the roads into their final order (`layout::Buckets`).

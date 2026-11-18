@@ -7,7 +7,7 @@ relation with a member outside the extract leaves the catalog.
 - Version: `format` `1`. A new field does not change the format. A reader ignores a field that it
   does not know.
 - Writers: the region prepare step, `planner/router-build` (`src/catalog/mod.rs`,
-  `src/catalog/connector.rs`).
+  `src/catalog/connector.rs`, `src/catalog/trails.rs`, `src/grid.rs`).
 - Readers: the planner search, online and offline: the web planner
   (`builder/web/src/lib/planner/route-catalog.ts`) and its Explore page
   (`builder/web/src/pages/Explore.svelte`), the companion app (`OBCPlanner/SignedRoutes.swift`).
@@ -21,15 +21,19 @@ relation with a member outside the extract leaves the catalog.
 | --- | --- | --- |
 | Regional | `routes/REGION.json` | Every record of the region |
 | Grid | `routes/tiles/9-X-Y.json` | One file for each grid cell |
+| Grid | `routes/tiles/trails/7-X-Y.json` | Far file: the trails of one zoom 7 cell (see [Trail files](#trail-files)) |
+| Grid | `routes/tiles/long/ID.json` | Trail record file: the whole record of one trail (see [Trail files](#trail-files)) |
 
-A file is UTF-8 JSON: `{"format": 1, "routes": [...]}`. The records are in ascending `id` order. A
-grid release has no region file.
+A region file, a cell file and a trail record file are UTF-8 JSON: `{"format": 1, "routes": [...]}`.
+The records are in ascending `id` order. A far file has its own form (see [Trail files](#trail-files)). A
+grid release has no region file. A regional release has no trail files: its region file holds
+every record whole.
 
 A grid cell is a Web Mercator tile at zoom 9 whose box overlaps the release bounds with a positive
 area. Each grid cell has a file. A cell with no routes has an empty `routes` list. Equal files share
 one object in the pool. A record is in the file of each grid cell in its `cells`, with all of its
-fields; a long route is there without `parts` and `trail_profile_m`, which only the region file and
-the routing package hold.
+fields; a long route is there without `parts` and `trail_profile_m`, which only the region file, the
+trail record files and the routing package hold.
 
 The tile API serves a cell file at `/releases/ID/routes/tiles/9-X-Y.json`. An offline selection
 holds the files of its `offline.cells`. A client reads only the files of covered cells: the grid
@@ -349,6 +353,41 @@ segment, edges included. `cells` can name a cell outside the grid; that cell has
 route lies wholly inside the download when each of its `cells` is the `id` of a cell in
 `offline.cells`.
 
+### Trail files
+
+A trail is a record with no `trail` field that has a `stage_count` of 2 or more, or that takes more
+than 12 hours of moving time. The moving time of a route record is the time of its plan route at
+the default pace of its plan profile; that of a long route is the sum over its parts in the
+catalog. So a long route inside another one can be a trail, and a cut stage is none.
+
+A trail record file is `{"format": 1, "routes": [record]}` with the whole record of one trail, as
+in the region file, `parts` and `trail_profile_m` included. So a reader of cell files reads it too.
+`ID` is the `id` of the trail.
+
+A far file is one for each zoom 7 cell whose box overlaps the release bounds with a positive area:
+`{"format": 1, "tolerance_m": T, "trails": [...]}`. `trails` holds the trails whose far line
+touches the cell, in ascending `id` order. A cell with no trails has an empty list. An entry:
+
+| Field | Value |
+| --- | --- |
+| `id`, `kind`, `name`, `ref`, `symbol`, `rank`, `loop`, `length_m`, `ascent_m`, `hardest` | As in the record |
+| `stage_count` | As in the record, when it is positive; absent for a route record |
+| `far_udeg` | A list of pieces of the far line in this cell, each encoded as `line_udeg` |
+
+The far line of a trail is the `line_udeg` of each part in the catalog, in order and in the trail
+direction (a part that runs backwards reversed), or the `line_udeg` of the route itself. It breaks
+at a part not in the catalog, and where a part starts more than 100 m from the end of the part
+before it.
+
+The pieces of a far line in a cell are its runs of segments that touch the cell, by the rule of
+[Coverage](#coverage) at zoom 7. So the segment that crosses a cell edge is the last segment of a
+piece in one cell and the first segment of a piece in the other. The builder simplifies each
+piece, with its first and its last segment fixed, within `tolerance_m`: 100 m, doubled while the
+file is larger than 400,000 bytes. When the file is larger with each piece reduced to these
+segments, the build fails. So no far file is larger than 400,000 bytes, and a far line is within
+`tolerance_m` + 10 m of the plan route. A reader draws each piece as a line of its own; the pieces
+of one `id` meet on their shared segments.
+
 ### Map view
 
 A map view is a box of longitude and latitude. Its cells are the zoom 9 cells whose box intersects
@@ -358,6 +397,9 @@ more cells, the client loads none and shows no routes. A route record is in the 
 route is never in the view, but its stages can be. Each record is in the view once, also when
 several of its cells are loaded. A cell outside the covered set adds no record. Test vectors:
 [`vectors/route-boxes.json`](vectors/route-boxes.json).
+
+A far view is a view with more than 12 zoom 9 cells and at most 12 zoom 7 cells. It reads the far
+files of its zoom 7 cells, and a trail record file when the rider selects a trail.
 
 ## Examples
 
