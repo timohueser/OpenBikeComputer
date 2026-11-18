@@ -446,6 +446,39 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.day h2')?.textContent).toContain(tilePlace.label);
     });
 
+    it('Escape closes the map selection before the selected part and the part before the open day, and a new line clears the part', async () => {
+        await startApp();
+        await vi.waitFor(() => dayButton(1).click()); await tick();
+        const part = () => document.querySelector('.elevation .part');
+        const select = async () => {
+            const slider = document.querySelector<HTMLElement>('[role="slider"][aria-label="Profile"]')!;
+            for (let i = 0; i < 3; i++) { slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true, bubbles: true })); await tick(); }
+        };
+        const escape = async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await tick(); };
+        const dayOpen = () => !!document.querySelector('[aria-label="Selected day"]');
+        await select();
+        expect(part()).not.toBeNull();
+        button('Map point: Basel').click(); await tick();
+        expect(document.querySelector('.callout')).not.toBeNull();
+
+        await escape();
+        expect(document.querySelector('.callout')).toBeNull();
+        expect(part()).not.toBeNull();
+        await escape();
+        expect(part()).toBeNull();
+        expect(dayOpen()).toBe(true);
+        await escape();
+        expect(dayOpen()).toBe(false);
+
+        const measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
+        vi.mocked(routing.calculateLine).mockImplementation(async (...args) => ({ ...await measured(...args) }));
+        await select();
+        expect(part()).not.toBeNull();
+        button('Activity').click(); await tick();
+        button('Gravel bike').click();
+        await vi.waitFor(() => expect(part()).toBeNull());
+    });
+
     it('rejects a malformed cached draft without crashing the planner', async () => {
         stored.set('trip', JSON.stringify({ points: [], days: 3, limit: 50 }));
         await startApp();

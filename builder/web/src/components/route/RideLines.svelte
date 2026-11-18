@@ -1,6 +1,6 @@
 <script lang="ts">
     import Card from '../../lib/ui/Card.svelte';
-    import Lanes from './Lanes.svelte';
+    import Lanes from '../../lib/ui/Lanes.svelte';
     import Plot from './Plot.svelte';
     import RideLarge from './RideLarge.svelte';
     import { distanceTicks, fitTicks } from './ticks';
