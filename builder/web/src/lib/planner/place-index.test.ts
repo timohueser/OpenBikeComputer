@@ -10,6 +10,7 @@ describe('place identities', () => {
         const kinds = Object.values(membership).flat();
         expect(new Set(kinds).size).toBe(kinds.length);
         expect(Object.keys(presentation.categories).sort()).toEqual(Object.keys(membership).sort());
+        for (const kind of presentation.on) expect(Object.keys(membership)).toContain(kind);
         expect(Object.keys(presentation.labels).sort()).toEqual(kinds.sort());
         for (const [category, values] of Object.entries(membership)) {
             for (const kind of values) expect(poiPlace('n1', kind, undefined, [8, 48])).toMatchObject({ category,
@@ -35,6 +36,13 @@ describe('hosted corridor places', () => {
         const { corridorPlaces } = await import('./place-index');
         expect(await corridorPlaces('https://tiles.example/places.json', [[7.589, 47.557]], .5)).toEqual([]);
         expect(fetch.mock.calls.map(call => call[0])).toEqual(['https://tiles.example/places.json', 'https://tiles.example/places/11/1067/715.mvt']);
+    });
+
+    it('gives the keys of the place tiles that a view touches', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ maxzoom: 11, tiles: ['https://tiles.example/places/{z}/{x}/{y}.mvt'] }))));
+        const { placeTileKeys } = await import('./place-index');
+        // Lucerne, across the border of two columns at 8.4375° E and of two rows at 47.04° N.
+        expect(await placeTileKeys('https://tiles.example/places.json', [8.3, 47.0, 8.5, 47.1])).toEqual(['11/1071/719', '11/1071/720', '11/1072/719', '11/1072/720']);
     });
 });
 

@@ -10,10 +10,10 @@ import { profileEntry, profileHeight } from '../../lib/trailview/route/profile';
 export type { Box };
 
 /** A route, a ride, a signed route of the catalog or a trail of its far files as the list, the map and the card show
- * it. A route with no summary has no line, and each chip leaves it out. `at` is the time in ms of the last change of a
- * route, or of the start of a ride. */
+ * it. A route with no summary has no line, and each chip leaves it out. `plan` marks a route that the planner can read.
+ * `at` is the time in ms of the last change of a route, or of the start of a ride. */
 export type Item = { id: string; name: string; at: number }
-    & ({ kind: 'route'; summary: RouteSummary | null } | { kind: 'ride'; summary: RideSummary }
+    & ({ kind: 'route'; summary: RouteSummary | null; plan?: true } | { kind: 'ride'; summary: RideSummary }
         | { kind: 'signed'; summary: RouteSummary; record: CatalogRecord; profile?: Pick<Summary, 'line' | 'heights'> }
         | { kind: 'trail'; summary: RouteSummary; entry: TrailEntry; pieces: Coordinate[][] });
 export type RideItem = Extract<Item, { kind: 'ride' }>;
@@ -67,12 +67,12 @@ export interface Naming {
 }
 
 /** A plan with no name has the title of its plan. A route that is not a plan has no line. Without `naming`, a route with
- * no name has the names of its start and its finish. */
+ * no name has the names of its start and its finish, and no route is known as a plan. */
 export function routeItem(route: RouteRecord, naming?: Naming): Item {
     const { id, name, summary, updatedAt: at } = route;
     if (!naming) return { kind: 'route', id, name: name || endNames(route.trip), summary, at };
     if (!naming.isPlan(route)) return { kind: 'route', id, name: name || 'Route that cannot be read', summary: null, at };
-    return { kind: 'route', id, name: name || naming.planTitle(route.trip as never), summary, at };
+    return { kind: 'route', id, name: name || naming.planTitle(route.trip as never), summary, at, plan: true };
 }
 
 export const rideItem = (ride: RideRecord): RideItem =>

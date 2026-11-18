@@ -118,7 +118,7 @@
     .cards {
         display: grid;
         flex: 1;
-        grid-template-columns: 380px 1fr;
+        grid-template-columns: clamp(380px, 100vw / 3, 480px) 1fr;
         grid-template-rows: minmax(0, 1fr);
         gap: 14px;
         min-height: 0;
@@ -130,9 +130,11 @@
         height: 100%;
         min-height: 0;
     }
+    /* A size container, so the height limit of the card over it follows its height. */
     .map {
         position: relative;
         overflow: hidden;
+        container-type: size;
         border: 1px solid var(--line);
         border-radius: 10px;
         background: var(--parchment);
@@ -158,12 +160,14 @@
         outline-offset: -2px;
         box-shadow: none;
     }
+    /* The whole card with its close button stays in the map: its long text scrolls inside it. */
     .selected {
         position: absolute;
         z-index: 2;
         right: 12px;
         bottom: 12px;
         left: 12px;
+        --card-height: calc(100cqh - 24px);
     }
     @media (max-width: 760px) {
         .routes-page {
@@ -176,6 +180,9 @@
         }
         .map {
             height: 70vh;
+            /* Some browsers give a size container layout containment, which makes the map the containing block of the
+               fixed card. */
+            container-type: normal;
         }
         /* The map is under the list, so a card over the map is below the screen after a tap on a row. */
         .selected {

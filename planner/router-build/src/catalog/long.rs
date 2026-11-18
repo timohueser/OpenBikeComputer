@@ -81,7 +81,8 @@ pub(super) struct Part<'a> {
     pub line: Option<(f64, P, P)>,
 }
 
-/// The first and last point of a part, and whether it is a loop.
+/// The first and last point of a part, and whether it is a loop. The main line of a failed part is a
+/// loop when its ends are at most `MEET_M` apart: its plan did not close it.
 #[derive(Clone, Copy)]
 struct Ends {
     start: P,
@@ -93,7 +94,9 @@ impl Part<'_> {
     fn ends(&self) -> Option<Ends> {
         match self.kept {
             Some(kept) => Some(Ends { start: kept.start, finish: kept.finish, closed: kept.record["loop"] == true }),
-            None => self.line.map(|(_, start, finish)| Ends { start, finish, closed: false }),
+            None => {
+                self.line.map(|(_, start, finish)| Ends { start, finish, closed: distance(start, finish) <= MEET_M })
+            }
         }
     }
 
@@ -105,28 +108,28 @@ impl Part<'_> {
     }
 }
 
-/// Whether the parts of a long relation are separate routes, not one line: at least two parts
-/// count against one line, and more than meet. A loop counts against one line: it comes back to its
-/// start and takes the line no further, so it meets no part. A pair of neighbouring parts with ends,
-/// neither a loop, meets or counts against one line. A part with no ends counts for nothing. One
-/// count is a hole in the map data, not a set of routes.
+/// Whether the parts of a long relation are separate routes, not one line, in any member order. Two
+/// open parts join when an end of one is within `MEET_M` of an end of the other. A loop joins no
+/// part: it comes back to its start and takes the line no further. The parts are separate routes
+/// when at least two parts have ends, loops included, and the largest group of open parts that join
+/// holds fewer than a third of all parts with ends. With no loop, a line with one or two holes in
+/// the map data keeps a piece of at least a third; loop parts lower the share of that piece. A part
+/// with no ends counts for nothing.
 pub(super) fn apart(parts: &[Part]) -> bool {
-    let flags = order(parts);
-    let ends: Vec<Option<Ends>> = parts.iter().map(Part::ends).collect();
-    let (mut against, mut meets) = (ends.iter().flatten().filter(|e| e.closed).count(), 0);
-    for i in 1..parts.len() {
-        let (Some(before), Some(part)) = (ends[i - 1], ends[i]) else { continue };
-        if before.closed || part.closed {
-            continue;
-        }
-        let end = if flags[i - 1].0 { before.start } else { before.finish };
-        if gap(part, end) <= MEET_M {
-            meets += 1;
-        } else {
-            against += 1;
+    let ends: Vec<Ends> = parts.iter().filter_map(Part::ends).collect();
+    let open: Vec<Ends> = ends.iter().copied().filter(|e| !e.closed).collect();
+    let joins = |a: Ends, b: Ends| gap(a, b.start).min(gap(a, b.finish)) <= MEET_M;
+    let mut group: Vec<usize> = (0..open.len()).collect();
+    for i in 0..open.len() {
+        for j in 0..i {
+            let (from, to) = (group[i], group[j]);
+            if from != to && joins(open[i], open[j]) {
+                group.iter_mut().filter(|g| **g == from).for_each(|g| *g = to);
+            }
         }
     }
-    against >= 2 && against > meets
+    let largest = (0..open.len()).map(|g| group.iter().filter(|&&x| x == g).count()).max().unwrap_or(0);
+    ends.len() >= 2 && 3 * largest < ends.len()
 }
 
 /// The record of a long relation from its parts, and the plan points of its kept parts joined.

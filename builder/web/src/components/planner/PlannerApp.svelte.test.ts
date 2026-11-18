@@ -3,7 +3,6 @@ import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { emptyTrip, maxRidingDays, type Place } from '../../lib/planner/editor';
 import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
-import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
 import { Library } from '../../lib/library/store';
 import * as routing from '../../lib/planner/routing';
@@ -14,7 +13,6 @@ import { routeService } from '../../../test-support/planner/route-service';
 import { testTrip } from '../../../test-support/planner/trip';
 import { testConfig } from '../../../test-support/planner/config';
 vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
-vi.mock('../../lib/planner/place-index', async original => ({ ...await original<object>(), corridorPlaces: vi.fn() }));
 
 let app: ReturnType<typeof mount> | undefined;
 const stored = new Map<string, string>();
@@ -62,7 +60,6 @@ beforeEach(() => {
             position:{along:distance.at(-1)! * .25,distance:.1}}]})};
     }));
     vi.stubGlobal('localStorage', { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) });
-    vi.mocked(corridorPlaces).mockResolvedValue([tilePlace]);
 });
 
 afterEach(async () => {
@@ -444,6 +441,39 @@ describe('planner app transitions', () => {
         await vi.waitFor(() => expect(document.querySelector('.route-status')).toBeNull());
         expect(document.querySelector('.elevation')).toBe(profile);
         expect(document.querySelector('.day h2')?.textContent).toContain(tilePlace.label);
+    });
+
+    it('Escape closes the map selection before the selected part and the part before the open day, and a new line clears the part', async () => {
+        await startApp();
+        await vi.waitFor(() => dayButton(1).click()); await tick();
+        const part = () => document.querySelector('.elevation .part');
+        const select = async () => {
+            const slider = document.querySelector<HTMLElement>('[role="slider"][aria-label="Profile"]')!;
+            for (let i = 0; i < 3; i++) { slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true, bubbles: true })); await tick(); }
+        };
+        const escape = async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await tick(); };
+        const dayOpen = () => !!document.querySelector('[aria-label="Selected day"]');
+        await select();
+        expect(part()).not.toBeNull();
+        button('Map point: Basel').click(); await tick();
+        expect(document.querySelector('.callout')).not.toBeNull();
+
+        await escape();
+        expect(document.querySelector('.callout')).toBeNull();
+        expect(part()).not.toBeNull();
+        await escape();
+        expect(part()).toBeNull();
+        expect(dayOpen()).toBe(true);
+        await escape();
+        expect(dayOpen()).toBe(false);
+
+        const measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
+        vi.mocked(routing.calculateLine).mockImplementation(async (...args) => ({ ...await measured(...args) }));
+        await select();
+        expect(part()).not.toBeNull();
+        button('Activity').click(); await tick();
+        button('Gravel bike').click();
+        await vi.waitFor(() => expect(part()).toBeNull());
     });
 
     it('rejects a malformed cached draft without crashing the planner', async () => {

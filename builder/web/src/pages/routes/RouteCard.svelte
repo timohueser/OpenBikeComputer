@@ -1,15 +1,18 @@
-<!-- The card of a route over the map: its picture, its name, its numbers, its profile and its buttons. The name is the one
-     link of the card. It has one width and one layout for its width in each place that shows it. -->
+<!-- The card of a route over the map: its picture, its name, its numbers, its profile and its buttons. The link of the
+     name covers the card under the buttons. The card has one width and one layout for its width in each place that
+     shows it. -->
 <script lang="ts">
     import type { Snippet } from 'svelte';
     import type { Summary } from '../../lib/library/records';
     import Icon from '../../lib/ui/Icon.svelte';
     import MiniProfile from './MiniProfile.svelte';
 
-    let { name, href, meta, numbers, profile, state, failure, picture, mark, more, buttons, onclose }: {
+    let { name, href, icon, meta, numbers, profile, state, failure, picture, mark, more, buttons, onclose }: {
         name: string;
         /** With it, the name is the link that covers the card; without it, the name is a plain heading. */
         href?: string;
+        /** The name of an icon of `Icon.svelte`, before the line under the name. */
+        icon?: string;
         /** The parts of the line under the name, a part with `onclick` as a quiet button. An empty list writes no line, as
          * does an empty `numbers`. */
         meta: (string | false | { text: string; onclick: () => void })[];
@@ -22,8 +25,7 @@
         mark?: Snippet;
         /** A second line over the full width of the card. */
         more?: Snippet;
-        /** Buttons with the class `button`: `button primary` for the one action of a card, and a second one with
-         * `button quiet` is plain text. */
+        /** Buttons with the class `button`: `button primary` is filled, and `button quiet` is plain text. */
         buttons?: Snippet;
         /** With it, the card has a button that closes it. */
         onclose?: () => void;
@@ -37,7 +39,7 @@
         <div class="picture">{@render picture()}</div>
         <div class="text">
             <h2>{@render mark?.()}{#if href}<a class="open" {href}>{name}</a>{:else}{name}{/if}</h2>
-            {#if metaParts.length}<p class="meta">{#each metaParts as part, i (i)}{i ? ' ' : ''}<span>{#if typeof part === 'string'}{part}{:else}<button type="button" class="link" onclick={part.onclick}>{part.text}</button>{/if}{i < metaParts.length - 1 ? ' ·' : ''}</span>{/each}</p>{/if}
+            {#if metaParts.length}<p class="meta">{#if icon}<span class="icon"><Icon name={icon} size={15} /></span>{/if}{#each metaParts as part, i (i)}{i ? ' ' : ''}<span>{#if typeof part === 'string'}{part}{:else}<button type="button" class="link" onclick={part.onclick}>{part.text}</button>{/if}{i < metaParts.length - 1 ? ' ·' : ''}</span>{/each}</p>{/if}
             {#if numbers.length}<p class="numbers">{#each numbers as number, i (i)}<span>{number}</span>{/each}</p>{/if}
             {#if state}<p class="state">{state}</p>{/if}
             {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
@@ -73,29 +75,41 @@
             }
         }
     }
+    /* The profile is a strip under the text and the buttons, as high as the room that they leave beside the picture. A
+       place limits the height of the card with `--card-height`: the rows of the picture keep their height, and the row
+       of `more` after them takes the rest and scrolls. */
     .card {
         position: relative;
         display: grid;
-        /* The profile takes the room that the text leaves, and keeps a fair width beside a long name. */
-        grid-template-columns: 220px minmax(0, max-content) minmax(clamp(140px, 22%, 200px), 1fr) auto;
-        /* A place that fixes the card to the screen limits its height with `--card-height`. The rows of the card keep
-           their height; the row of `more` comes after them, takes the rest and scrolls. */
-        grid-template-rows: auto;
-        grid-auto-rows: minmax(0, 1fr);
+        grid-template-columns: 300px minmax(0, 1fr) auto;
+        grid-template-rows: auto minmax(auto, 1fr);
+        grid-template-areas: "picture text buttons" "picture profile profile";
+        grid-auto-rows: minmax(0, auto);
         max-height: var(--card-height, none);
-        align-items: center;
-        gap: 20px;
+        align-items: start;
+        gap: 10px 20px;
         padding: 10px;
         border: 1px solid var(--line);
         border-radius: 10px;
         background: var(--panel);
         box-shadow: 0 6px 20px rgb(28 27 20 / 0.18);
     }
+    /* A low limit of the card's height makes the picture lower, so the card holds it: less the padding and the borders,
+       and with `more` also its gap and about three lines. */
     .picture {
         position: relative;
-        height: 130px;
+        grid-area: picture;
+        height: 200px;
+        max-height: calc(var(--card-height) - 22px);
         overflow: hidden;
         border-radius: 6px;
+    }
+    .card:has(.more) .picture {
+        max-height: calc(var(--card-height) - 88px);
+    }
+    .text {
+        grid-area: text;
+        padding-top: 6px;
     }
     /* A long name has two lines; the page of the route has all of it. */
     h2 {
@@ -134,6 +148,12 @@
     .link:hover {
         color: var(--ink);
     }
+    .meta .icon {
+        display: inline-flex;
+        margin-right: 5px;
+        color: var(--ink);
+        vertical-align: -3px;
+    }
     .numbers {
         display: flex;
         flex-wrap: wrap;
@@ -148,14 +168,18 @@
     .failure {
         color: var(--coral);
     }
+    /* The profile draws to any box, so its content gives the track no size. */
     .profile {
-        height: 84px;
+        grid-area: profile;
+        align-self: stretch;
+        min-height: 40px;
+        contain: size;
     }
     .open {
         color: inherit;
         text-decoration: none;
     }
-    /* The name is the one link of the card: it covers the whole card, under the buttons. */
+    /* The link of the name covers the whole card, under the buttons. */
     .open::after {
         position: absolute;
         inset: 0;
@@ -169,19 +193,25 @@
         outline: 2px solid var(--forest);
         outline-offset: 2px;
     }
+    @media (hover: hover) {
+        .open:hover {
+            text-decoration: underline;
+        }
+        .card:has(.open:hover) {
+            border-color: var(--line-strong);
+        }
+    }
     .buttons, .more {
         position: relative;
         z-index: 1;
     }
-    /* The last column, also on a card with no profile. */
+    /* The buttons keep the room of the close button free, also when there are none. */
     .buttons {
         display: flex;
+        grid-area: buttons;
         flex-direction: column;
-        grid-column: 4;
         gap: 6px;
-    }
-    .buttons:empty {
-        display: none;
+        padding: 6px 26px 0 0;
     }
     .buttons :global(.button) {
         padding: 6px 12px;
@@ -198,21 +228,26 @@
     .buttons :global(.button:not(:disabled):active) {
         transform: scale(0.97);
     }
+    /* As strong as the rule of the pointer above, so the pointer keeps the fill. */
     .buttons :global(.primary), .buttons :global(.primary:not(:disabled):hover) {
         border-color: var(--rust);
         background: var(--rust);
         color: var(--cream);
+        text-align: center;
+        text-decoration: none;
     }
     .buttons :global(.primary:not(:disabled):hover) {
         filter: brightness(0.93);
     }
-    /* The second button is plain text, so the card has one framed button. */
+    /* A quiet button is plain text, so the card has one framed button. */
     .buttons :global(.quiet) {
         border-color: transparent;
         color: var(--ink-soft);
         font-size: 13px;
     }
+    /* Its own row, also when the card has no profile. */
     .more {
+        grid-row: 3;
         grid-column: 1 / -1;
         align-self: stretch;
         min-height: 0;
@@ -245,26 +280,65 @@
             content: '';
         }
     }
-    /* Under this width the card has too little room for four columns. */
+    /* Under this width the card has too little room beside the picture, so the strip goes under the card. */
     @container (max-width: 740px) {
         .card {
-            grid-template-columns: 120px minmax(0, 1fr);
-            grid-template-rows: auto auto;
-            gap: 12px 16px;
+            grid-template-columns: clamp(120px, 35%, 240px) minmax(0, 1fr);
+            grid-template-rows: auto auto auto;
+            grid-template-areas: "picture text" "picture buttons" "profile profile";
+            grid-auto-rows: minmax(0, 1fr);
+            gap: 10px 16px;
+        }
+        .picture {
+            height: auto;
+            aspect-ratio: 3 / 2;
         }
         /* The room of the close button. */
         .text {
-            padding-right: 22px;
-        }
-        .picture {
-            height: 80px;
-        }
-        .profile {
-            display: none;
+            padding: 0 22px 0 0;
         }
         .buttons {
             flex-direction: row;
-            grid-column: 1 / -1;
+            flex-wrap: wrap;
+            align-self: end;
+            padding: 0;
+        }
+        .buttons:empty {
+            display: none;
+        }
+        .profile {
+            height: 56px;
+        }
+        .more {
+            grid-row: 4;
+        }
+        /* A low window leaves too little room for the strip and three lines of `more` in each place that shows the
+           card: the text keeps the room. */
+        @media (max-height: 480px) {
+            .card:has(.more) .profile {
+                display: none;
+            }
+            /* The text takes the row of the strip, so no empty row and gap stay. */
+            .card:has(.more) {
+                grid-template-rows: auto auto minmax(0, 1fr);
+            }
+            .more {
+                grid-row: 3;
+            }
+        }
+    }
+    @container (max-width: 480px) {
+        .card {
+            grid-template-columns: 120px minmax(0, 1fr);
+            grid-template-areas: "picture text" "buttons buttons" "profile profile";
+            gap: 12px 16px;
+        }
+        .picture {
+            height: 80px;
+            aspect-ratio: auto;
+        }
+        .buttons {
+            align-self: start;
             justify-self: start;
         }
     }

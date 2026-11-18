@@ -131,8 +131,8 @@ describe('the plan', () => {
         expect(FakeWorker.all.length).toBe(0);
         plan.debug = true;
         plan.update(eye, undefined, true);
-        for (let i = 0; i < 20 && !plan.vocabulary; i++) await settle();
-        await settle();
+        // The worker answers `start` in a microtask: when the wait sees it, it is ready.
+        await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
         return plan;
     };
     afterEach(() => vi.unstubAllGlobals());
