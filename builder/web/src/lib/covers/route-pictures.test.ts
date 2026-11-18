@@ -30,7 +30,7 @@ beforeEach(() => {
         if (typeof body === 'number') return new Response(null, { status: body });
         return body === undefined ? new Response(null, { status: 404 }) : new Response(typeof body === 'string' ? body : JSON.stringify(body));
     });
-    vi.stubGlobal('createImageBitmap', async () => ({ close() {} }));
+    vi.stubGlobal('createImageBitmap', async () => ({ closed: false, close() { this.closed = true; } }));
 });
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -96,14 +96,14 @@ describe('coverOf', () => {
 });
 
 describe('holdCover', () => {
-    it('loads once for two holders, and the last release stops a load that has not ended', async () => {
+    it('loads once for two holders, and the release of one leaves the other its picture with an open bitmap', async () => {
         const { holdCover } = await import('./route-pictures');
         const route = record(1, LINE);
         const [a, b] = [holdCover(route), holdCover(route)];
         expect(a.cover).toBe(b.cover);
         a.release();
-        b.release();
-        expect(await b.cover).toBeUndefined();
-        expect(asked.some(path => path.startsWith('/covers/'))).toBe(false);
+        const cover = await b.cover;
+        expect(cover).toBeDefined();
+        expect((cover!.bitmap as unknown as { closed: boolean }).closed).toBe(false);
     });
 });
