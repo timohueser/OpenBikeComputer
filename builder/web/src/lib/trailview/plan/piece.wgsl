@@ -1,7 +1,7 @@
 // The ground plan's mesh of a cell (pieces.ts), drawn before the terrain with the corridors' fragment stage
 // (PIECE): its triangles at the corners' heights from corners.wgsl, and its step slots, two triangles each
-// on the slot's four corners; and the meshes of its storeys over and under the ground, their slots concrete but a
-// bore's dark seams. A terrain vertex of the strip is the terrain's own
+// on the slot's four corners; and the meshes of its storeys over and under the ground, their slots concrete, a
+// bore's seams in its daylight. A terrain vertex of the strip is the terrain's own
 // vertex at its level-18 grid point, made by the same code, so the strip meets the terrain without a crack.
 // #include ../roads/corridor.wgsl
 // #include cells.wgsl
@@ -24,10 +24,14 @@ struct Piece {
     piers: u32,
     caps: u32,
     cap_count: u32,
+    lights: u32,
+    light_count: u32,
     // The first step slot of the end faces on a portal line (the last end faces); a storey mesh's first triangle of its
-    // bores' parts and of their fronts, and its first slot of the bores' seams and of their sills.
+    // bores' parts (their floors), of their roofs and of their fronts, and its first slot of the bores' seams and of their
+    // sills.
     walls: u32,
     bores: u32,
+    roofs: u32,
     fronts: u32,
     seams: u32,
     sills: u32,
@@ -50,6 +54,18 @@ struct PieceVertex {
     u: vec2f,
     s: vec2f,
     h: f32,
+}
+
+// A bore's inside takes the sky's light that comes in at its openings (INSIDE of roads/corridor.wgsl): on a portal line all
+// that a face out of the sun takes, less along the bore, down to DIM_LIGHT of it, the tunnel's own light, DAYLIGHT_M in. The
+// share falls as its square: fast past the opening, slowly deeper in. A closed end lets none in.
+const DAYLIGHT_M: f32 = 15.0;
+const DIM_LIGHT: f32 = 0.35;
+
+// The light of bore corner k, from its metres to daylight (corners.wgsl's daylight_metres), as its normal's length.
+fn daylight(k: u32) -> f32 {
+    let share = 1.0 - min(bitcast<f32>(piece[params.out + 4u * k + 3u]) / DAYLIGHT_M, 1.0);
+    return mix(DIM_LIGHT, 1.0, share * share);
 }
 
 // A corner's place and height: a terrain vertex as the terrain's vertex_main makes it, any other at its stored height.
@@ -206,7 +222,7 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // step whose upper side is water falls as water (its look foams on the upright slot). A step beside a wall class's
     // road surface that stands as high as a wall is a wall, of concrete beside a bridge's ground stretch; a lower one
     // beside a sidewalk is its kerb; any other is a bank of the ground, as on a path or a track. A storey's slots are
-    // all end faces; a bore's seams are its dark inside.
+    // all end faces; a bore's seams are its inside, in its daylight.
     let upper = select(vec2u(piece[w + 2u], piece[w + 3u]), vec2u(piece[w], piece[w + 1u]), rise > 0.0);
     let wall = (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M;
     var mat = select(MAT_GROUND, select(MAT_WALL, MAT_CAP, on_bridge(piece[w]) || on_bridge(piece[w + 3u])), wall);
@@ -225,12 +241,12 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // A wall whose road stands on its higher side holds the road up, and the face that it continues lies below it; else
     // that face lies above it (wall_rock of roads/corridor.wgsl).
     let fill = select(on_road(piece[w + 3u]), on_road(piece[w]), rise > 0.0);
-    let dark = select(0u, CULVERT_DARK, slot >= params.seams && slot < params.sills);
-    let word = mat | dark | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill);
+    let inside = slot >= params.seams && slot < params.sills;
+    let word = mat | select(0u, INSIDE, inside) | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill);
     if (mat == MAT_WALL || mat == MAT_CAP) {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }
-    return piece_out(v, word, place, normal);
+    return piece_out(v, word, place, select(normal, normal * daylight(piece[w + at]), inside));
 }
 
 // A culvert's mouth (the mesh's mouths, 4 words each: its corner on the water and its corner in the zone, the zone
@@ -336,7 +352,8 @@ fn culvert_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
 // normals, or planks; its shell (underside, edges, parapets, railings, posts, piers) is flat, of its deck's build
 // (DECK_SHIFT of plan/corners.wgsl, its first corner's): the slab and its edge feature of concrete, dark timber or
 // steel, a railing of wood on timber and else of steel, the piers concrete. A bore's floor, roof and walls are its
-// inside, flat dark as a culvert's; the fronts over its openings are concrete.
+// inside, in its daylight: the floor takes its corners' looks, the roof and the walls are concrete. The fronts over its
+// openings are concrete in the sun.
 @vertex
 fn storey_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let i = index / 3u;
@@ -361,8 +378,14 @@ fn storey_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
         let n = normalize(cross(vec3f(b.s - a.s, b.h - a.h), vec3f(c.s - a.s, c.h - a.h)) + vec3f(0.0, 0.0, 1e-9));
         var mat = select(build, select(MAT_STEEL, MAT_WOOD, build == MAT_TIMBER), i >= params.railings);
         mat = select(mat, MAT_CAP, i >= params.piers);
-        let word = mat | select(0u, CULVERT_DARK, i >= params.bores && i < params.fronts) | (480u << HALF_SHIFT);
-        out = piece_out(v, word, CornerPlace(vec2f(v.h, half_of(word)), v.s.x + v.s.y), n);
+        var word = mat | (480u << HALF_SHIFT);
+        var place = CornerPlace(vec2f(v.h, half_of(word)), v.s.x + v.s.y);
+        if (i >= params.bores && i < params.roofs) {
+            word = piece[params.out + 4u * k + 1u] & ~(7u << DECK_SHIFT);
+            place = place_at(k);
+        }
+        let inside = i >= params.bores && i < params.fronts;
+        out = piece_out(v, word | select(0u, INSIDE, inside), place, select(n, n * daylight(k), inside));
     }
     // A storey stands on no terrain vertex: a triangle with a corner of no height yet draws nothing.
     if (!known(a.h) || !known(b.h) || !known(c.h)) {

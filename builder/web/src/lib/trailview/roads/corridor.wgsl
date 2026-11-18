@@ -52,6 +52,12 @@ const CULVERT_DARK: u32 = 256u;
 // In a piece's word, the fine offset's top bit, which no corner of a cell's mesh sets: a storey's top
 // (plan/piece.wgsl), whose way paints its details at any distance (DETAIL_EVERYWHERE).
 const STOREY_TOP: u32 = 2147483648u;
+// Both top bits, which no other word holds together (a storey's top holds the first, a cover's corner the second): a
+// bore's inside (plan/piece.wgsl), lit by inside_lit.
+const INSIDE: u32 = 3221225472u;
+// The share of an inside face's light by its direction, x + y times its normal's z: the floor all, a wall 0.75, the roof
+// half, so that their shapes read where the light is dim.
+const INSIDE_FACE: vec2f = vec2f(0.75, 0.25);
 const CULVERT_INSIDE: vec3f = vec3f(0.018, 0.02, 0.018);
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
@@ -348,6 +354,28 @@ fn wall_rock(in: CorridorOut, su: vec2f) -> WallRock {
     return out;
 }
 
+// A bore's inside (INSIDE): no sun reaches it, and it reads no shadow map. Its floor keeps its way's look, and what of that
+// look would show the ground is concrete, as the walls and the roof are. A face takes the sky's light that comes in at the
+// openings, as long as its normal is (plan/piece.wgsl's daylight), times INSIDE_FACE by its direction.
+fn inside_lit(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
+    let light = length(in.normal);
+    let up = in.normal.z / max(light, 1e-6);
+    let pw = max(length(d[0]), length(d[1])) * look.screen.z;
+    let cw = max(length(vec2f(dpdx(in.road.x), dpdy(in.road.x))), 1e-4);
+    let aw = max(length(vec2f(dpdx(in.along), dpdy(in.along))), 1e-4);
+    let way = WayPixel(look.place.xy + in.relative.xy, in.road.x, in.road.y, in.along, pw, cw, aw, 0.0);
+    let mat = in.word & MAT_BITS;
+    var l = WayLook(vec3f(0.0), vec2f(0.0), 1.0, 0.0, 0.0);
+    if (mat != MAT_CAP && mat != MAT_GROUND) {
+        l = way_look(mat, (in.word >> CODE_SHIFT) & 15u, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, up, in.altitude, true);
+    }
+    var albedo = l.albedo;
+    if (l.ground > 0.0) {
+        albedo = mix(albedo, detail_look(MAT_CAP, su, way, in.altitude).albedo, min(l.ground, 1.0));
+    }
+    return atmosphere(albedo * look.ambient.rgb * light * (INSIDE_FACE.x + INSIDE_FACE.y * up), in.relative, in.altitude);
+}
+
 @fragment
 fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     var in = raw;
@@ -381,6 +409,9 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     // The crack view: a piece in grey, as the terrain.
     if (PIECE && frame.debug == 3u) {
         return vec4f(vec3f(0.25 + 0.5 * (max(dot(render_normal(select(normalize(in.normal), drawn_normal(su), (in.word & MAT_BITS) == MAT_GROUND)), frame.sun.xyz), 0.0) * frame.sun.w + 0.3) / 1.3), 1.0);
+    }
+    if (PIECE && (in.word & INSIDE) == INSIDE) {
+        return vec4f(inside_lit(in, su, d), 1.0);
     }
     if (PIECE && (in.word & (MAT_BITS | CULVERT_DARK)) == (MAT_CAP | CULVERT_DARK)) {
         return vec4f(atmosphere(CULVERT_INSIDE, in.relative, in.altitude), 1.0);

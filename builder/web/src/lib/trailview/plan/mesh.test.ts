@@ -12,9 +12,9 @@ const EMPTY_CELL = new Uint8Array(new Uint32Array([0x4f424d05, 1, 2, ...new Arra
 
 /**
  * A storey mesh's bytes as `StoreyMesh::to_bytes` of mesh/shell.rs lays them out, one run per part and per slot kind: the decks'
- * layout, or with `caps` the bores' (its parts and slot kinds after the decks', then the caps).
+ * layout, or with `caps` the bores' (its parts and slot kinds after the decks', then the caps and the lights).
  */
-function storeyBytes(corners: number[][], parts: number[][][], kinds: number[][][], caps?: number[][]): Uint8Array {
+function storeyBytes(corners: number[][], parts: number[][][], kinds: number[][][], caps?: number[][], lights: number[][] = []): Uint8Array {
     const runs = (items: number[][][]) => items.filter(p => p.length).flatMap(p => [p.length, 0]);
     const packed = (items: number[][][]) => {
         const flat = items.flat(2), out = new Uint16Array(2 * Math.ceil(flat.length / 2));
@@ -22,9 +22,9 @@ function storeyBytes(corners: number[][], parts: number[][][], kinds: number[][]
         return [...new Uint32Array(out.buffer)];
     };
     const [tris, slots] = [parts.flat().length, kinds.flat().length];
-    const head = [caps ? 0x4f425302 : 0x4f425301, 3, 4, corners.length, tris, runs(parts).length / 2, slots, runs(kinds).length / 2, kinds[0].length, ...parts.map(p => p.length)];
-    if (caps) head.push(...kinds.slice(1).map(k => k.length), caps.length);
-    return new Uint8Array(new Uint32Array([...head, ...corners.flat(), ...runs(parts), ...packed(parts), ...runs(kinds), ...packed(kinds), ...(caps ?? []).flat()]).buffer);
+    const head = [caps ? 0x4f425303 : 0x4f425301, 3, 4, corners.length, tris, runs(parts).length / 2, slots, runs(kinds).length / 2, kinds[0].length, ...parts.map(p => p.length)];
+    if (caps) head.push(...kinds.slice(1).map(k => k.length), caps.length, lights.length);
+    return new Uint8Array(new Uint32Array([...head, ...corners.flat(), ...runs(parts), ...packed(parts), ...runs(kinds), ...packed(kinds), ...(caps ?? []).flat(), ...lights.flat()]).buffer);
 }
 
 describe('the mesh reader', () => {
@@ -59,19 +59,20 @@ describe('the mesh reader', () => {
         }
     });
 
-    it('reads a storey mesh with the bores: the bores in parts and slot kinds of their own after the decks, and the caps', () => {
+    it('reads a storey mesh with the bores: the bores in parts and slot kinds of their own after the decks, the caps and the lights', () => {
         const corners = [0, 1, 2, 3, 4, 5].map(k => [k, k, 0]), tri = (k: number) => [k % 6, (k + 1) % 6, (k + 2) % 6];
         // top, underside, edge, parapet, railing, post, pier, then floor, roof, wall, front.
         const parts = [[tri(0)], [tri(1)], [], [], [], [], [], [tri(2), tri(3)], [tri(4)], [], [tri(5)]];
         // The tops' slots, the risers, then the floors' seams, the roofs' seams and the sills.
         const kinds = [[[0, 1, 2, 3]], [], [[1, 2, 3, 4]], [], [[2, 3, 4, 5]]];
-        const caps = [[1, 7, 0xbe99999a], [1, 33554431, 0]];
-        const s = cellMesh(meshBytes(EMPTY_CELL, storeyBytes(corners, parts, kinds, caps)).slice(0)).storeys!;
+        const caps = [[1, 7, 0xbe99999a], [1, 33554431, 0]], lights = [[4, 0x42c80000, 0], [4, 0x42f00000, 0x41a00000]];
+        const s = cellMesh(meshBytes(EMPTY_CELL, storeyBytes(corners, parts, kinds, caps, lights)).slice(0)).storeys!;
         expect([...s.triangles]).toEqual(parts.flat(2));
-        expect([s.top, s.railings, s.piers, s.bores, s.fronts]).toEqual([1, 2, 2, 2, 5]);
+        expect([s.top, s.railings, s.piers, s.bores, s.roofs, s.fronts]).toEqual([1, 2, 2, 2, 4, 5]);
         expect([...s.slots]).toEqual(kinds.flat(2));
         expect([s.seams, s.sills]).toEqual([1, 2]);
         expect([...s.caps]).toEqual(caps.flat());
+        expect([...s.lights]).toEqual(lights.flat());
     });
 
     it('reads a storey mesh of decks alike in both layouts: no bore and no cap', () => {
@@ -80,7 +81,7 @@ describe('the mesh reader', () => {
         const read = (bytes: Uint8Array) => cellMesh(meshBytes(EMPTY_CELL, bytes).slice(0)).storeys!;
         const decks = read(storeyBytes(corners, parts, kinds)), bores = read(storeyBytes(corners, [...parts, [], [], [], []], [...kinds, [], [], []], []));
         expect(bores).toEqual(decks);
-        expect([decks.bores, decks.fronts, decks.seams, decks.sills, decks.caps.length]).toEqual([3, 3, 2, 2, 0]);
+        expect([decks.bores, decks.roofs, decks.fronts, decks.seams, decks.sills, decks.caps.length, decks.lights.length]).toEqual([3, 3, 3, 2, 2, 0, 0]);
     });
 
     it('reads the storeys after a cell mesh: every index names a storey corner, the top comes first, then the shell and the bores in their parts', () => {
@@ -103,7 +104,7 @@ describe('the mesh reader', () => {
                 expect(mesh.headwalls).toBeLessThanOrEqual(mesh.endFaces);
                 // The decks have a top. A bore has its inside and a front over each opening, and its roof's caps name its corners in order.
                 const caps = Array.from({ length: storeys.caps.length / 3 }, (_, c) => storeys.caps[3 * c]);
-                if (bored) expect([storeys.bores < storeys.fronts, storeys.fronts < storeys.triangles.length / 3, caps.length > 0]).toEqual([true, true, true]);
+                if (bored) expect([storeys.bores < storeys.roofs, storeys.roofs < storeys.fronts, storeys.fronts < storeys.triangles.length / 3, caps.length > 0, storeys.lights.length > 0]).toEqual([true, true, true, true, true]);
                 else expect([storeys.top > 0, storeys.top < storeys.bores]).toEqual([true, true]);
                 expect(caps.every((c, k) => c < corners && (k === 0 || caps[k - 1] <= c))).toBe(true);
             } finally {

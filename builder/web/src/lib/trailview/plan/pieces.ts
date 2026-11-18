@@ -35,7 +35,7 @@ const TERRAIN_BIT = 0x80000000;
 const CAPS_BIT = 0x40000000;
 /** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
 const FADE_MARGIN_M = 10;
-/** Bytes of a piece's parameters, as Piece of piece.wgsl (corners.wgsl reads the first 64). */
+/** Bytes of a piece's parameters, as Piece of piece.wgsl (corners.wgsl reads the first 72). */
 const PARAMS_BYTES = 96;
 /** The vertices of a culvert mouth's model: MOUTH_QUADS of plan/piece.wgsl, six each. */
 const CULVERT_VERTICES = 6 * 48;
@@ -71,8 +71,9 @@ interface Piece {
 }
 
 /**
- * A cell's storeys on the device: their buffer (as a piece's, with the triangles, the offsets and the caps after the slots), parameters,
- * draw and cast groups, and the compute group of the last stamps; with caps, the parameters and the compute group of the caps pass.
+ * A cell's storeys on the device: their buffer (as a piece's, with the triangles, the offsets, the caps and the bores' lights after the
+ * slots), parameters, draw and cast groups, and the compute group of the last stamps; with caps, the parameters and the compute group of
+ * the caps pass.
  */
 interface StoreysGpu { data: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; cast?: GPUBindGroup; compute?: GPUBindGroup; computed: boolean; capParams?: GPUBuffer; capCompute?: GPUBindGroup }
 
@@ -345,17 +346,18 @@ export class Pieces {
         piece.done = 0;
     }
 
-    /** A cell's storeys: their corners, out words, slots, triangles, offsets and caps in one buffer, as their parameters name them. */
+    /** A cell's storeys: their corners, out words, slots, triangles, offsets, caps and lights in one buffer, as their parameters name them. */
     private uploadStoreys(r: Resources, storeys: StoreyMesh): StoreysGpu {
-        const { device } = r.gpu, { corners, slots, triangles, offsets, caps } = storeys, n = offsets.length;
+        const { device } = r.gpu, { corners, slots, triangles, offsets, caps, lights } = storeys, n = offsets.length;
         // Each cap's height after the caps: one word each.
-        const data = r.gpu.buffer('plan', 4 * Math.max(4, 7 * n + slots.length + triangles.length + (4 * caps.length) / 3), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        const data = r.gpu.buffer('plan', 4 * Math.max(4, 7 * n + slots.length + triangles.length + (4 * caps.length) / 3 + lights.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(data, 0, corners);
         device.queue.writeBuffer(data, 4 * 6 * n, slots);
         device.queue.writeBuffer(data, 4 * (6 * n + slots.length), triangles);
         device.queue.writeBuffer(data, 4 * (6 * n + slots.length + triangles.length), offsets);
         if (caps.length) device.queue.writeBuffer(data, 4 * (7 * n + slots.length + triangles.length), caps);
+        if (lights.length) device.queue.writeBuffer(data, 4 * (7 * n + slots.length + triangles.length + (4 * caps.length) / 3), lights);
         const capParams = caps.length ? r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST) : undefined;
         return { data, params, draw: this.drawGroup(r, data, params, r.frame), computed: false, capParams };
     }
@@ -423,7 +425,7 @@ export class Pieces {
         ints.set([piece.node.x * s, piece.node.y * s]);
         words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4 - piece.mesh.endFaces, piece.block, (first | (make === 'terrain' ? TERRAIN_BIT : 0)) >>> 0, 6 * n + piece.mesh.steps.length], 2);
         // The draw's words after the corners pass's: the first end face on a portal line; a cell's mesh has no bore part.
-        words[16] = piece.mesh.steps.length / 4 - piece.mesh.headwalls;
+        words[18] = piece.mesh.steps.length / 4 - piece.mesh.headwalls;
         r.gpu.device.queue.writeBuffer(gpu.params, 0, params);
         if (first === 0 || gpu.bound !== make) this.bindStamps(r, piece, make === 'terrain');
         gpu.bound = make;
@@ -432,11 +434,11 @@ export class Pieces {
         // The storeys' corners carry labels only, and are few: all of them with the first dispatch of an `all` pass.
         const storeys = gpu.storeys, mesh = piece.mesh.storeys;
         if (make !== 'all' || first !== 0 || !storeys?.compute || !mesh) return;
-        const m = mesh.offsets.length, slots = mesh.slots.length, tris = 6 * m + slots, caps = mesh.caps.length / 3;
-        // The storeys' slots are all concrete: their end faces start at 0, and none lies on a portal line. A bore's parts
-        // and seams draw dark.
+        const m = mesh.offsets.length, slots = mesh.slots.length, tris = 6 * m + slots, caps = mesh.caps.length / 3, lights = tris + mesh.triangles.length + m + 4 * caps;
+        // The storeys' slots are all concrete: their end faces start at 0, and none lies on a portal line. A bore's inside
+        // draws in its daylight.
         words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers, caps ? tris + mesh.triangles.length + m : 0, caps,
-            slots / 4, mesh.bores, mesh.fronts, mesh.seams, mesh.sills], 2);
+            lights, mesh.lights.length / 3, slots / 4, mesh.bores, mesh.roofs, mesh.fronts, mesh.seams, mesh.sills], 2);
         // The caps' heights first, with their own parameters: a dispatch reads the parameters of the queue's last write.
         if (caps && storeys.capParams && storeys.capCompute) {
             words[7] = CAPS_BIT;
@@ -544,7 +546,7 @@ export class Pieces {
 
     /**
      * Draws the decks of the cells that draw into the shadow map as casters, with the sun's frame (`castWith`). A bore casts
-     * no shadow: its inside is dark, and its roof lies just under the ground.
+     * no shadow: no sun reaches its inside, and its roof lies just under the ground.
      */
     cast(pass: GPURenderPassEncoder, surface: GPUBindGroup, empty: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources;
@@ -589,7 +591,7 @@ export class Pieces {
     }
 
     get stats(): PiecesStats {
-        const storeyBytes = ({ storeys: s }: CellMesh) => (s ? 4 * (7 * s.offsets.length + s.slots.length + s.triangles.length + (4 * s.caps.length) / 3) : 0);
+        const storeyBytes = ({ storeys: s }: CellMesh) => (s ? 4 * (7 * s.offsets.length + s.slots.length + s.triangles.length + (4 * s.caps.length) / 3 + s.lights.length) : 0);
         const bytes = [...this.pieces.values()].reduce((sum, { mesh }) => sum + 4 * (3 * mesh.corners.length + mesh.steps.length + mesh.culverts.length) + 2 * mesh.triangles.length + storeyBytes(mesh), 0);
         return {
             cells: this.pieces.size, drawn: this.drawn.length, inView: this.inView.length,

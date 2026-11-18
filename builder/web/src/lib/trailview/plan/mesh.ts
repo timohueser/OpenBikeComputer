@@ -8,10 +8,10 @@ const BORED_MAGIC = 0x4f424d06;
 const HEAD = 12;
 /** A storey mesh of the decks, and one with the bores (`MAGIC` of `mesh/shell.rs`). */
 const STOREY_MAGIC = 0x4f425301;
-const BORES_MAGIC = 0x4f425302;
+const BORES_MAGIC = 0x4f425303;
 /**
  * The storey mesh's head: its magic, cell, counts and top slots, then the triangles of each part (`PARTS`); with the bores, then
- * the slots of each kind after the tops' (`SLOT_KINDS`) and the count of the caps.
+ * the slots of each kind after the tops' (`SLOT_KINDS`), the count of the caps and the count of the lights.
  */
 const STOREY_HEAD = 9;
 const DECK_PARTS = 7;
@@ -52,18 +52,20 @@ export interface CellMesh {
 /**
  * The storeys' meshes of a cell: the sheets and the shells about them, and the bores. A corner's height is that of its label plus
  * its offset, or where it has caps, the least of that and each cap's; the top's triangles come first, then the shell's
- * (underside, edges, parapets, railings, posts, piers), then the bores' (floor, roof, walls, fronts).
+ * (underside, edges, parapets, railings, posts, piers), then the bores' (floor, roof, walls, fronts), and where daylight comes
+ * into the bores.
  */
 export interface StoreyMesh {
     /** Two words per corner, as the cell mesh's (never a terrain vertex), and each corner's offset in metres (f32 bits). */
     corners: Uint32Array<ArrayBuffer>;
     offsets: Uint32Array<ArrayBuffer>;
-    /** Three whole corner indices per triangle; the count of the top's, and the first of the railings', the piers', the bores' and their fronts'. */
+    /** Three whole corner indices per triangle; the count of the top's, and the first of the railings', the piers', the bores' (their floors), their roofs' and their fronts'. */
     triangles: Uint32Array<ArrayBuffer>;
     top: number;
     railings: number;
     piers: number;
     bores: number;
+    roofs: number;
     fronts: number;
     /** Four whole corner indices per slot (a_p, a_q, b_q, b_p): the tops' steps between two labels, the undersides' risers, then the bores' seams and sills; the first of the seams and of the sills. */
     slots: Uint32Array<ArrayBuffer>;
@@ -71,6 +73,8 @@ export interface StoreyMesh {
     sills: number;
     /** Three words per cap, sorted by corner: the corner, the cap's label (NO_LABEL: the plain terrain) and its offset (f32 bits). */
     caps: Uint32Array<ArrayBuffer>;
+    /** Three words where daylight comes into a bore way: the way (its records line's first word), its metres along there and the metres to the nearest portal (f32 bits). */
+    lights: Uint32Array<ArrayBuffer>;
 }
 
 /** The bytes that `cellMesh` reads: a cell's mesh, then its storeys' mesh where it has a storey corner. */
@@ -121,7 +125,7 @@ function storeyMesh(bytes: ArrayBuffer, start: number): StoreyMesh {
     const bored = magic === BORES_MAGIC, nParts = DECK_PARTS + (bored ? BORE_PARTS : 0);
     let at = STOREY_HEAD;
     const take = (n: number) => words.subarray(at, (at += n));
-    const parts = take(nParts), kinds = bored ? take(BORE_SLOT_KINDS) : undefined, caps = bored ? take(1)[0] : 0;
+    const parts = take(nParts), kinds = bored ? take(BORE_SLOT_KINDS) : undefined, [caps, lights] = bored ? take(2) : [0, 0];
     const corner = take(3 * corners), packed = new Uint32Array(2 * corners), offsets = new Uint32Array(corners);
     for (let k = 0; k < corners; k++) {
         packed[2 * k] = corner[3 * k];
@@ -132,14 +136,14 @@ function storeyMesh(bytes: ArrayBuffer, start: number): StoreyMesh {
         const table = take(2 * runs), short = new Uint16Array(bytes.slice(4 * (start + at), 4 * (start + (at += Math.ceil((size * count) / 2))))).subarray(0, size * count);
         return { short, runs: Array.from({ length: runs }, (_, r) => ({ count: table[2 * r], base: table[2 * r + 1] })) };
     };
-    const triangle = items(triangles, triangleRuns, 3), slot = items(slots, slotRuns, 4), cap = take(3 * caps).slice();
-    if (at > words.length || cap.length !== 3 * caps) throw new Error('a storey mesh ends early');
+    const triangle = items(triangles, triangleRuns, 3), slot = items(slots, slotRuns, 4), cap = take(3 * caps).slice(), light = take(3 * lights).slice();
+    if (at > words.length || cap.length !== 3 * caps || light.length !== 3 * lights) throw new Error('a storey mesh ends early');
     // The parts' triangles: top, underside, edge, parapet, railing, post, pier; with the bores floor, roof, wall, front. The slots: the
     // tops', the risers; with the bores the floors' and the roofs' seams, the sills.
     const first = (k: number) => parts.subarray(0, k).reduce((sum, n) => sum + n, 0), seams = kinds ? topSlots + kinds[0] : slots;
     return {
-        corners: packed, offsets, triangles: whole(triangle, 3), top: parts[0], railings: first(4), piers: first(6), bores: first(DECK_PARTS), fronts: first(bored ? nParts - 1 : nParts),
-        slots: whole(slot, 4), seams, sills: kinds ? seams + kinds[1] + kinds[2] : slots, caps: cap,
+        corners: packed, offsets, triangles: whole(triangle, 3), top: parts[0], railings: first(4), piers: first(6), bores: first(DECK_PARTS),
+        roofs: first(bored ? DECK_PARTS + 1 : nParts), fronts: first(bored ? nParts - 1 : nParts), slots: whole(slot, 4), seams, sills: kinds ? seams + kinds[1] + kinds[2] : slots, caps: cap, lights: light,
     };
 }
 
