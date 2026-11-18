@@ -38,6 +38,11 @@
         if (open && !root.contains(event.target as Node)) open = false;
     }
 
+    // A focus that moves to another control closes the panel, so only one panel of the controls is open.
+    function leave(event: FocusEvent) {
+        if (open && event.relatedTarget && !root.contains(event.relatedTarget as Node)) open = false;
+    }
+
     function key(event: KeyboardEvent) {
         if (event.key !== 'Escape' || !open) return;
         event.stopPropagation();
@@ -49,7 +54,7 @@
 <svelte:window onpointerdown={outside} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="map-settings" bind:this={root} onkeydown={key}>
+<div class="map-settings" bind:this={root} onkeydown={key} onfocusout={leave}>
     <button type="button" class="toggle" class:chosen={open} aria-label="Map settings" aria-expanded={open} aria-haspopup="dialog" onclick={() => open = !open}><Icon name="layers" /></button>
     {#if open}
         <div class="panel" role="dialog" aria-label="Map settings" tabindex="-1">

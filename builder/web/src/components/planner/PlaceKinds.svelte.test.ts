@@ -13,19 +13,15 @@ const button = (label: string) => document.querySelector<HTMLButtonElement>(`but
 const pressed = (label: string) => button(label)?.getAttribute('aria-pressed');
 const checkbox = (name: string) => [...document.querySelectorAll('label')].find(label => label.textContent?.trim() === name)!.querySelector('input')!;
 
-it('hides all places with one click, and a kind or a highlight shows them again with one highlighted kind', () => {
+it('opens the kinds, and a highlight and a checkbox change the pressed states with one highlighted kind', () => {
     vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
     shown = mount(PlaceKinds, { target: document.body });
-    button('Hide places')!.click();
-    flushSync();
-    expect(pressed('Show places')).toBe('false');
     button('Kinds of places')!.click();
     flushSync();
     expect(button('Kinds of places')!.getAttribute('aria-expanded')).toBe('true');
 
     button('Highlight Water')!.click();
     flushSync();
-    expect(pressed('Hide places')).toBe('true');
     expect(pressed('Highlight Water')).toBe('true');
     button('Highlight Lodging')!.click();
     flushSync();
