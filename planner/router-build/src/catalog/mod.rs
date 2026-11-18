@@ -362,8 +362,8 @@ pub struct Report {
     pub stages: usize,
     pub via: Vec<usize>,
     pub long_points: Vec<(i64, usize)>,
-    /// The moving time of each trail, in hours.
-    pub trail_hours: BTreeMap<i64, f64>,
+    /// The trails that are trails by their moving time only.
+    pub trails_by_hours: usize,
     /// The routes that skip main member ways that the import does not hold, with their count. A
     /// route can still leave the catalog later.
     pub skipped_ways: BTreeMap<i64, usize>,
@@ -426,7 +426,7 @@ impl Report {
                 "wall_seconds": self.search_seconds,
             },
             "long_routes_over_64_points": self.long_points.iter().filter(|(_, n)| *n > 64).count(),
-            "trail_hours": self.trail_hours.iter().map(|(id, h)| (id.to_string(), (h * 10.0).round() / 10.0)).collect::<BTreeMap<_, _>>(),
+            "trails_by_hours": self.trails_by_hours,
             "seconds": self.seconds,
         })
     }
@@ -453,10 +453,8 @@ pub fn write(directory: &Path, osm: Data) -> Result<(Vec<(Value, Value)>, Report
     let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
     let (records, hours, mut report) = catalog(&routing, osm, workers, SECTION_M)?;
     let trails = trails::trails(&records, &hours);
-    report.trail_hours = trails
-        .iter()
-        .map(|(_, record)| (record["id"].as_i64().unwrap(), trails::moving_hours(record, &hours)))
-        .collect();
+    report.trails_by_hours =
+        trails.iter().filter(|(_, record)| record["stage_count"].as_u64().is_none_or(|count| count < 2)).count();
     let bytes =
         serde_json::to_vec(&crate::sort_keys(json!({"format": 1, "routes": records}))).map_err(|e| e.to_string())?;
     std::fs::write(directory.join(FILE), bytes).map_err(|e| e.to_string())?;

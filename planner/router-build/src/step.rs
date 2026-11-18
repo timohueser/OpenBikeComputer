@@ -236,7 +236,7 @@ pub fn step(request: &Request) -> Result<(), String> {
     files(&routes, grid::route_tiles(&catalog, &ids)?.into_iter().collect())?;
     let far_cells = grid::cells_at(bounds, grid::TRAIL_ZOOM);
     let far_ids: Vec<&str> = far_cells.iter().map(|(id, _)| id.as_str()).collect();
-    let entries: Vec<Value> = trails.iter().map(|(entry, _)| entry.clone()).collect();
+    let entries: Vec<&Value> = trails.iter().map(|(entry, _)| entry).collect();
     let far = grid::trail_tiles(&entries, &far_ids, catalog::trails::TRAIL_FILE_BYTES)?;
     let tolerances: BTreeMap<String, Value> =
         far.iter().map(|(cell, file)| (cell.clone(), file["tolerance_m"].clone())).collect();

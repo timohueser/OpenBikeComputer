@@ -41,7 +41,7 @@ fn kept(record: &Value) -> Option<impl Iterator<Item = &Value>> {
 
 /// The moving time of a record in hours: a route record by its plan route, a long record by its
 /// parts in the catalog.
-pub fn moving_hours(record: &Value, hours: &HashMap<i64, f64>) -> f64 {
+fn moving_hours(record: &Value, hours: &HashMap<i64, f64>) -> f64 {
     let time = |id| hours.get(&id).copied().unwrap_or(0.0);
     match kept(record) {
         Some(parts) => parts.map(|part| time(id(part))).sum(),

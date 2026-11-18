@@ -24,15 +24,16 @@ relation with a member outside the extract leaves the catalog.
 | Grid | `routes/tiles/trails/7-X-Y.json` | Far file: the trails of one zoom 7 cell (see [Trail files](#trail-files)) |
 | Grid | `routes/tiles/long/ID.json` | Trail record file: the whole record of one trail (see [Trail files](#trail-files)) |
 
-A file is UTF-8 JSON: `{"format": 1, "routes": [...]}`. The records are in ascending `id` order. A
+A region file, a cell file and a trail record file are UTF-8 JSON: `{"format": 1, "routes": [...]}`.
+The records are in ascending `id` order. A far file has its own form (see [Trail files](#trail-files)). A
 grid release has no region file. A regional release has no trail files: its region file holds
 every record whole.
 
 A grid cell is a Web Mercator tile at zoom 9 whose box overlaps the release bounds with a positive
 area. Each grid cell has a file. A cell with no routes has an empty `routes` list. Equal files share
 one object in the pool. A record is in the file of each grid cell in its `cells`, with all of its
-fields; a long route is there without `parts` and `trail_profile_m`, which only the region file and
-the routing package hold.
+fields; a long route is there without `parts` and `trail_profile_m`, which only the region file, the
+trail record files and the routing package hold.
 
 The tile API serves a cell file at `/releases/ID/routes/tiles/9-X-Y.json`. An offline selection
 holds the files of its `offline.cells`. A client reads only the files of covered cells: the grid

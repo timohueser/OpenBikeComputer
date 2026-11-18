@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
 use planner_router::shape::{self, P};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::catalog::{decode, encode};
 
@@ -88,42 +88,60 @@ fn pieces(line: &[P], zoom: u32) -> BTreeMap<String, Vec<Vec<P>>> {
 /// doubled each time, with which the file has at most `max_bytes`. A piece keeps its first and its
 /// last segment, which it shares with the pieces of the neighbouring cells. A cell whose file is
 /// larger with each piece reduced to these segments is an error.
-pub fn trail_tiles(trails: &[Value], cells: &[&str], max_bytes: usize) -> Result<BTreeMap<String, Value>, String> {
-    let mut tiles: BTreeMap<&str, Vec<(&Value, Vec<P>)>> = cells.iter().map(|&cell| (cell, Vec::new())).collect();
-    let mut trails: Vec<&Value> = trails.iter().collect();
+pub fn trail_tiles(trails: &[&Value], cells: &[&str], max_bytes: usize) -> Result<BTreeMap<String, Value>, String> {
+    let mut trails = trails.to_vec();
     trails.sort_by_key(|entry| entry["id"].as_i64());
-    for entry in trails {
-        for line in entry["far_udeg"].as_array().into_iter().flatten().map(decode) {
+    // Each entry without its far line, and the pieces of each cell by the index of their entry.
+    let mut heads = Vec::with_capacity(trails.len());
+    let mut tiles: BTreeMap<&str, Vec<(usize, Vec<P>)>> = cells.iter().map(|&cell| (cell, Vec::new())).collect();
+    for (i, entry) in trails.into_iter().enumerate() {
+        let mut head = entry.as_object().cloned().unwrap_or_default();
+        let line = head.remove("far_udeg").unwrap_or_default();
+        heads.push(head);
+        for line in line.as_array().into_iter().flatten().map(decode) {
             for (cell, pieces) in pieces(&line, TRAIL_ZOOM) {
                 if let Some(tile) = tiles.get_mut(cell.as_str()) {
-                    tile.extend(pieces.into_iter().map(|piece| (entry, piece)));
+                    tile.extend(pieces.into_iter().map(|piece| (i, piece)));
                 }
             }
         }
     }
-    tiles.into_iter().map(|(cell, pieces)| Ok((cell.to_string(), far_file(cell, &pieces, max_bytes)?))).collect()
+    tiles
+        .into_iter()
+        .map(|(cell, pieces)| Ok((cell.to_string(), far_file(cell, &heads, &pieces, max_bytes)?)))
+        .collect()
 }
 
-fn far_file(cell: &str, pieces: &[(&Value, Vec<P>)], max_bytes: usize) -> Result<Value, String> {
+fn far_file(
+    cell: &str,
+    heads: &[Map<String, Value>],
+    pieces: &[(usize, Vec<P>)],
+    max_bytes: usize,
+) -> Result<Value, String> {
     let mut tolerance = crate::catalog::trails::FAR_TOLERANCE_M;
     loop {
         let mut reduced = true;
-        let mut entries: Vec<Value> = Vec::new();
-        for (entry, piece) in pieces {
+        let mut entries: Vec<(usize, Vec<Value>)> = Vec::new();
+        for (i, piece) in pieces {
             let n = piece.len();
             let mut keep = vec![0, 1, n - 2, n - 1];
             keep.sort_unstable();
             keep.dedup();
             let simple = shape::simplify(piece, &keep, tolerance).0;
             reduced &= simple.len() == keep.len();
-            if entries.last().is_none_or(|last| last["id"] != entry["id"]) {
-                let mut far = (*entry).clone();
-                far["far_udeg"] = json!([]);
-                entries.push(far);
+            if entries.last().is_none_or(|last| last.0 != *i) {
+                entries.push((*i, Vec::new()));
             }
-            let last = entries.last_mut().expect("an entry");
-            last["far_udeg"].as_array_mut().expect("a list").push(json!(encode(&simple)));
+            entries.last_mut().expect("an entry").1.push(json!(encode(&simple)));
         }
+        let entries: Vec<Value> = entries
+            .into_iter()
+            .map(|(i, far)| {
+                let mut entry = heads[i].clone();
+                entry.insert("far_udeg".into(), Value::Array(far));
+                Value::Object(entry)
+            })
+            .collect();
         let document = json!({"format": 1, "tolerance_m": tolerance as u64, "trails": entries});
         if file_bytes(&document).len() <= max_bytes {
             return Ok(document);
@@ -206,7 +224,8 @@ mod tests {
                 [((b[2] - 0.195 + 0.01 * k as f64) * 1e6).round() as i32, ((lat + north) * 1e6).round() as i32]
             })
             .collect();
-        let trails = [json!({"id": 1, "kind": "hiking", "far_udeg": [encode(&line)]})];
+        let trail = json!({"id": 1, "kind": "hiking", "far_udeg": [encode(&line)]});
+        let trails = [&trail];
         let cells = ["7-66-45", "7-66-46", "7-67-45"];
         let tiles = trail_tiles(&trails, &cells, usize::MAX).unwrap();
         let piece = |tiles: &BTreeMap<String, Value>, cell: &str| decode(&tiles[cell]["trails"][0]["far_udeg"][0]);
