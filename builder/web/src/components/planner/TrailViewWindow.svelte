@@ -2,8 +2,8 @@
     import type { Coordinate } from '../../lib/planner/geo';
     import type { Profile } from '../../lib/trailview/route/profile';
 
-    /** A route of the routes mode, with the heights along it. */
-    export type TrailViewRoute = { id: string; line: Coordinate[]; profile?: Profile; colour: string };
+    /** A route of the routes mode, with the heights along it and the credit of its source. */
+    export type TrailViewRoute = { id: string; line: Coordinate[]; profile?: Profile; colour: string; credit?: string };
 </script>
 
 <script lang="ts">
@@ -49,7 +49,6 @@
     let canvas: HTMLCanvasElement;
     let failure = $state('');
     let ground = $state(false);
-    let credits = $state(creditsWith([]));
     // A look-around drag that ends over the margin clicks the dialog too: only a press on the backdrop closes it.
     let pressedBackdrop = false;
     let engine: TrailView | undefined;
@@ -57,6 +56,8 @@
     let width = $state(0), height = $state(0);
     // The window keeps what it opens with: route number i + 1 of the engine is routes[i].
     const opened = untrack(() => ({ ...props })), { near, routes } = opened;
+    const routeCredits = routes?.flatMap(route => route.credit ?? []) ?? [];
+    let credits = $state(creditsWith(routeCredits));
     // The plan's route draws on the terrain in the colours of its days, its grade or its surface, with a pin at
     // each night and a marker at the point of the profile under the pointer, until the rider hides it.
     const hasRoute = !!near && near.route.length > 1;
@@ -135,7 +136,7 @@
             drawRoute();
             view = started.view;
             started.onView = (next) => view = next;
-            credits = creditsWith(started.attribution);
+            credits = creditsWith([...started.attribution, ...routeCredits]);
             if (await chunk.viewSettled(started, abort.signal)) ground = true;
             else if (!abort.signal.aborted) failure = 'TrailView could not load this place. Close the window and try again.';
         })().catch((error: unknown) => {

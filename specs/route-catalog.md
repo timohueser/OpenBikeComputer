@@ -11,6 +11,8 @@ relation with a member outside the extract leaves the catalog.
 - Readers: the planner search, online and offline: the web planner
   (`builder/web/src/lib/planner/route-catalog.ts`) and its Explore page
   (`builder/web/src/pages/Explore.svelte`), the companion app (`OBCPlanner/SignedRoutes.swift`).
+  A reader that draws or lists a record with `credit` shows the credit with it: on its card, and
+  among the credits of a map, a 3D view or a list that shows it.
 - Test vectors: [`vectors/signed-routes.json`](vectors/signed-routes.json).
 - Related: [route API](route-api.md), [planner release](planner-release.md), [offline
   bundle](planner-offline.md).
@@ -109,6 +111,7 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 | `parts` | Long route only: each of its parts, in order (see [Long routes](#long-routes)) |
 | `stage_count` | Long route only: the number of different stage numbers in `parts` |
 | `trail_profile_m` | Long route only: 201 heights of the whole trail (see [Long routes](#long-routes)) |
+| `credit` | The `attribution` in `data/sources.toml` of the second route source of the record's line; on a long route, the distinct credits of its own line and of its parts, joined by `; `; absent otherwise |
 
 Each record has a `name` or a `ref`, or both. The builder cuts a longer `description` at a word
 boundary. `symbol` is absent when a vertex of the route's full planned line, before the

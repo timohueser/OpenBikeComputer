@@ -9,7 +9,7 @@
     import { decodeCoordinates } from '../lib/planner/route-answer';
     import { routeColor } from '../lib/planner/route-colors';
     import { catalog, tooWide, type Box } from '../lib/planner/route-catalog';
-    import { gradeName, routePlan, type CatalogRecord, type RouteRecord } from '../lib/planner/signed-routes';
+    import { gradeName, recordCredits, routePlan, type CatalogRecord, type RouteRecord } from '../lib/planner/signed-routes';
     import { hasTrailView, loadTrailView } from '../lib/planner/trailview';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
@@ -61,6 +61,7 @@
     // Each item is for `bike`, and each item of an answer for this view is in the view.
     const inView = $derived(stale ? results(items, {}, '', view) : items);
     const shown = $derived(results(inView, chips, '', undefined, 'shortest') as SignedItem[]);
+    const credits = $derived(recordCredits((inView as SignedItem[]).map(item => item.record)));
     const wide = $derived(!!view && tooWide(view));
     const chosen = $derived(shown.find(item => item.id === selected));
     /** The value of each item that the other chips keep, for the bars of the slider of `key`. */
@@ -185,7 +186,7 @@
             for (let tries = 0; tries < 2; tries++) {
                 const listed = trailViewItems();
                 const routes = listed.map(({ id, record }): TrailViewRoute => ({
-                    id, line: decodeCoordinates(record.line_udeg ?? []), colour: routeColor(id),
+                    id, line: decodeCoordinates(record.line_udeg ?? []), colour: routeColor(id), credit: record.credit,
                     ...record.profile_m ? { profile: { step: PROFILE_STEP_M, heights: record.profile_m, length: record.length_m } } : {},
                 }));
                 // The size of the window: the rule of its CSS.
@@ -220,7 +221,7 @@
 <!-- Escape in an open window closes only the window. -->
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
-<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={[]} selected={chosen ? [chosen.id] : []}
+<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" {credits} selected={chosen ? [chosen.id] : []}
     onselect={id => selected = id} onview={next => setView(wrapped(next))} card={chosen ? card : undefined}
     mapButtons={hasTrailView(config) && shown.length ? mapButtons : undefined}>
     {#snippet list()}
