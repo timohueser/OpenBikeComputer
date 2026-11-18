@@ -58,11 +58,11 @@ function across(fr: Frame, a: Corner, b: Corner, mid: number, sign: number): V3 
  * A head wall at `so` (its frame ring; its front stands RECESS out of it): a wall from `bottom` to `top(t)` across from
  * -right to left with a hole of the opening and FRAME round it, a reveal, a lighter frame ring, its top with a coping.
  */
-function headWall(b: MeshBuilder, fr: Frame, so: number, floor: number, w: number, h: number, round: boolean, top: (t: number) => number, left: number, right: number, look: Look, back = true): void {
+function headWall(b: MeshBuilder, fr: Frame, so: number, floor: number, w: number, h: number, round: boolean, top: (t: number) => number, left: number, right: number, look: Look, back = true, foot = floor - SINK): void {
     const sf = so - RECESS, sb = sf + FACE, F = fr.at(sf), B = fr.at(sb), O = fr.at(so), Fc = fr.at(sf - COPE), Bc = fr.at(sb + COPE);
     const hole = opening(w + FRAME, h + FRAME, round, SPRING * h).map(([t, u]): Corner => [t, floor + u]);
     const inner = opening(w, h, round).map(([t, u]): Corner => [t, floor + u]);
-    const bottom = floor - SINK, edge = w + FRAME;
+    const bottom = foot, edge = w + FRAME;
     // The columns: the right wing, the opening's corners over the top, the left wing.
     const cols: [number, number][] = [];
     const wing = (t0: number, t1: number) => {
@@ -100,22 +100,23 @@ function headWall(b: MeshBuilder, fr: Frame, so: number, floor: number, w: numbe
 }
 
 /** The outer shell of a tube from s0 to s1 (floors f0, f1): its walls from under the floor, its vault or roof. */
-function shell(b: MeshBuilder, fr: Frame, s0: number, s1: number, f0: number, f1: number, w: number, h: number, round: boolean, colour: number): void {
+function shell(b: MeshBuilder, fr: Frame, s0: number, s1: number, f0: number, f1: number, w: number, h: number, round: boolean, colour: number, sink = -SINK): void {
     const corners = opening(w + T, h + T, round, SPRING * h);
-    corners[0] = [-(w + T), -SINK];
-    corners[corners.length - 1] = [w + T, -SINK];
+    corners[0] = [-(w + T), sink];
+    corners[corners.length - 1] = [w + T, sink];
     const A = { ...fr.at(s0), z: f0 }, Bs = { ...fr.at(s1), z: f1 };
     for (let k = 0; k + 1 < corners.length; k++) quad(b, [[A, corners[k]], [A, corners[k + 1]], [Bs, corners[k + 1]], [Bs, corners[k]]], colour, across(fr, corners[k], corners[k + 1], SPRING * h, 1));
 }
 
 /** Walls of a cutting along samples [s, left top, right top, floor], their inner faces `wt` from the axis; an end face at the first sample. */
-function cuttingWalls(b: MeshBuilder, fr: Frame, rows: [number, number, number, number][], wt: number, look: Look, floorStrip: number): void {
+type Row = [number, number, number, number, number, number];
+function cuttingWalls(b: MeshBuilder, fr: Frame, rows: Row[], wt: number, look: Look, floorStrip: number): void {
     for (const side of [1, -1]) {
-        const ti = side * wt, to = side * (wt + WALL), pick = (r: [number, number, number, number]): [number, number, number] => [r[0], side > 0 ? r[1] : r[2], r[3]];
+        const ti = side * wt, to = side * (wt + WALL), pick = (r: Row): [number, number, number, number] => [r[0], side > 0 ? r[1] : r[2], r[3], side > 0 ? r[4] : r[5]];
         for (let k = 0; k + 1 < rows.length; k++) {
-            const [[s0, h0, f0], [s1, h1, f1]] = [pick(rows[k]), pick(rows[k + 1])], A = fr.at(s0), B = fr.at(s1);
+            const [[s0, h0, f0, g0], [s1, h1, f1, g1]] = [pick(rows[k]), pick(rows[k + 1])], A = fr.at(s0), B = fr.at(s1);
             quad(b, [[A, [ti, f0 - 1]], [B, [ti, f1 - 1]], [B, [ti, h1 - 0.3]], [A, [ti, h0 - 0.3]]], look.wall, scale(fr.left, -side));
-            quad(b, [[A, [to, f0 - SINK]], [B, [to, f1 - SINK]], [B, [to, h1 - 0.3]], [A, [to, h0 - 0.3]]], look.wall, scale(fr.left, side));
+            quad(b, [[A, [to, g0]], [B, [to, g1]], [B, [to, h1 - 0.3]], [A, [to, h0 - 0.3]]], look.wall, scale(fr.left, side));
             // The coping: proud on both faces, and its top.
             const ci = ti - side * COPE, co = to + side * COPE;
             quad(b, [[A, [ci, h0 - 0.3]], [B, [ci, h1 - 0.3]], [B, [ci, h1]], [A, [ci, h0]]], look.coping, scale(fr.left, -side));
@@ -125,8 +126,8 @@ function cuttingWalls(b: MeshBuilder, fr: Frame, rows: [number, number, number, 
             // The floor between the way's edge and the wall.
             if (floorStrip > 0) quad(b, [[A, [side * floorStrip, f0 + 0.04]], [B, [side * floorStrip, f1 + 0.04]], [B, [ti, f1 + 0.04]], [A, [ti, f0 + 0.04]]], GUTTER, [0, 0, 1]);
         }
-        const [s0, h0, f0] = pick(rows[0]), A = fr.at(s0), away = rows.length > 1 && rows[1][0] > s0 ? fr.out : fr.into;
-        quad(b, [[A, [ti - side * COPE, f0 - SINK]], [A, [to + side * COPE, f0 - SINK]], [A, [to + side * COPE, h0]], [A, [ti - side * COPE, h0]]], look.coping, away);
+        const [s0, h0, f0, g0] = pick(rows[0]), A = fr.at(s0), away = rows.length > 1 && rows[1][0] > s0 ? fr.out : fr.into;
+        quad(b, [[A, [ti - side * COPE, Math.min(g0, f0 - 1)]], [A, [to + side * COPE, Math.min(g0, f0 - 1)]], [A, [to + side * COPE, h0]], [A, [ti - side * COPE, h0]]], look.coping, away);
     }
 }
 
@@ -174,15 +175,15 @@ export function buildPart(b: MeshBuilder, line: Line, end: 0 | 1): boolean {
             const k = Math.max(-16, Math.min(16, t)) + 16, i = Math.min(31, Math.floor(k)), row = f.tops[i] + (f.tops[i + 1] - f.tops[i]) * (k - i);
             return Math.min(f.head, Math.max(row, f.head - Math.max(0, Math.abs(t) - edge) * 1.5));
         };
-        headWall(b, fr, so, floor, w, h, p.round, top, edge + f.wl, edge + f.wr, look);
-        shell(b, fr, so - RECESS + FACE, so + Math.max(1, f.collar) + 1, fl(so - RECESS + FACE), fl(so + Math.max(1, f.collar) + 1), w, h, p.round, look.shell);
+        headWall(b, fr, so, floor, w, h, p.round, top, edge + f.wl, edge + f.wr, look, true, f.foot);
+        shell(b, fr, so - RECESS + FACE, so + Math.max(1, f.collar) + 1, fl(so - RECESS + FACE), fl(so + Math.max(1, f.collar) + 1), w, h, p.round, look.shell, f.cfoot);
         if (so > 0.5) {
             // The cutting: walls back to the OSM end, the floor in the open.
             const wt = w + FRAME + 0.3, ss: number[] = [];
             for (let k = 0; k < so - RECESS - 0.2; k++) ss.push(k);
             ss.push(so - RECESS);
             const pickRow = (row: number[], s: number) => row[Math.min(row.length - 1, Math.round(s))];
-            cuttingWalls(b, fr, ss.map(s => [s, pickRow(f.L, s), pickRow(f.R, s), fl(s)]), wt, look, 0);
+            cuttingWalls(b, fr, ss.map(s => [s, pickRow(f.L, s), pickRow(f.R, s), fl(s), pickRow(f.LB, s), pickRow(f.RB, s)]), wt, look, 0);
             openFloor(b, fr, line, 0, so - RECESS, fl(0), fl(so - RECESS), w);
             for (const side of [1, -1]) quad(b, [[fr.at(0, fl(0)), [side * w, 0.04]], [fr.at(so - RECESS, fl(so - RECESS)), [side * w, 0.04]], [fr.at(so - RECESS, fl(so - RECESS)), [side * wt, 0.04]], [fr.at(0, fl(0)), [side * wt, 0.04]]], GUTTER, [0, 0, 1]);
         }
@@ -220,8 +221,9 @@ function freeEnd(b: MeshBuilder, fr: Frame, line: Line, p: Placement, fl: (s: nu
         quad(b, [at(start(a[1]), a), at(start(c[1]), c), at(start(C[1]), C), at(start(A[1]), A)], look.coping, add(fr.out, [0, 0, 0.8]));
     }
     // The shell's walls down into the ground, and the floor in the open part.
-    for (const side of [1, -1]) quad(b, [at(0, [side * (w + T), -SINK]), at(len, [side * (w + T), -SINK]), at(len, [side * (w + T), 0]), at(0, [side * (w + T), 0])], look.shell, scale(fr.left, side));
-    quad(b, [at(0, [-(w + T), -SINK]), at(0, [w + T, -SINK]), at(0, [w + T, 0]), at(0, [-(w + T), 0])], look.coping, fr.out);
+    const foot = Math.min(-SINK, p.free!.foot);
+    for (const side of [1, -1]) quad(b, [at(0, [side * (w + T), foot]), at(len, [side * (w + T), foot]), at(len, [side * (w + T), 0]), at(0, [side * (w + T), 0])], look.shell, scale(fr.left, side));
+    quad(b, [at(0, [-(w + T), foot]), at(0, [w + T, foot]), at(0, [w + T, 0]), at(0, [-(w + T), 0])], look.coping, fr.out);
     openFloor(b, fr, line, 0, cut, fl(0), fl(cut), w);
     for (const side of [1, -1]) quad(b, [at(0, [side * w, 0]), at(0, [side * (w + T), 0]), at(cut, [side * (w + T), 0]), at(cut, [side * w, 0])], look.coping, [0, 0, 1]);
     voidFan(b, fr, cut, fl(cut), w, h, p.round);
@@ -244,16 +246,17 @@ function underpass(b: MeshBuilder, line: Line, p: Placement, look: Look): void {
     quad(b, [[S, [-w, hb]], [E, [-w, hb]], [E, [w, hb]], [S, [w, hb]]], LINING, [0, 0, -1]);
     posts(S, E, length, (q, r) => b.quad([b.at(q, [-0.15, hb - 0.05], LIGHT), b.at(q, [0.15, hb - 0.05], LIGHT), b.at(r, [0.15, hb - 0.05], LIGHT), b.at(r, [-0.15, hb - 0.05], LIGHT)], [0, 0, -1]), 1.2, 6);
     // Outside: walls, slab.
-    for (const side of [1, -1]) quad(b, [[S, [side * (w + T), -SINK]], [E, [side * (w + T), -SINK]], [E, [side * (w + T), hb + SLAB]], [S, [side * (w + T), hb + SLAB]]], look.shell, scale(fr.left, side));
+    const sink = Math.min(-SINK, A.sfoot ?? -SINK);
+    for (const side of [1, -1]) quad(b, [[S, [side * (w + T), sink]], [E, [side * (w + T), sink]], [E, [side * (w + T), hb + SLAB]], [S, [side * (w + T), hb + SLAB]]], look.shell, scale(fr.left, side));
     quad(b, [[S, [-(w + T), hb + SLAB]], [E, [-(w + T), hb + SLAB]], [E, [w + T, hb + SLAB]], [S, [w + T, hb + SLAB]]], look.shell, [0, 0, 1]);
     // Each end: a head wall that spans to its wing walls' outer faces, and the wing walls out along the approach.
     const wt = w + FRAME + 0.3;
     for (const e of [A, B] as BoxEnd[]) {
         const away = e === A ? 1 : -1, ef = frameOf(e.x, e.y, (away * dx) / length, (away * dy) / length);
-        headWall(b, ef, 0, e.floor, w, hb, false, () => e.head, wt + WALL, wt + WALL, look, false);
+        headWall(b, ef, 0, e.floor, w, hb, false, () => e.head, wt + WALL, wt + WALL, look, false, e.foot ?? e.floor - SINK);
         if (e.len >= 1) {
-            const rows: [number, number, number, number][] = [];
-            for (let k = Math.round(e.len); k >= 0; k--) rows.push([-k - (k === 0 ? RECESS : 0), e.L[k], e.R[k], e.F[k]]);
+            const rows: Row[] = [];
+            for (let k = Math.round(e.len); k >= 0; k--) rows.push([-k - (k === 0 ? RECESS : 0), e.L[k], e.R[k], e.F[k], e.LB[k], e.RB[k]]);
             cuttingWalls(b, ef, rows, wt, look, h);
         }
     }

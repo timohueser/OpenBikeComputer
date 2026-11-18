@@ -2,14 +2,14 @@
 // OSM end of a tunnel way. No imports: bins.ts and the structures read it.
 
 export interface Fit {
-    open: number; collar: number; head: number; wl: number; wr: number; tops: number[]; L: number[]; R: number[]; floor: number; F: number[]; grade: number;
+    open: number; collar: number; head: number; wl: number; wr: number; tops: number[]; L: number[]; R: number[]; floor: number; F: number[]; grade: number; foot: number; cfoot: number; LB: number[]; RB: number[];
 }
-export interface BoxEnd { node: number; x: number; y: number; ux: number; uy: number; floor: number; head: number; len: number; L: number[]; R: number[]; F: number[] }
+export interface BoxEnd { node: number; x: number; y: number; ux: number; uy: number; floor: number; head: number; len: number; L: number[]; R: number[]; F: number[]; LB: number[]; RB: number[]; foot?: number; sfoot?: number }
 export interface Placement {
     node: number; x: number; y: number; ux: number; uy: number; g: string; look: string; w: number; h: number; round: boolean;
     floor0: number; shift: number; kind: string; rung: string;
     v1?: Fit; v2?: Fit; twin?: { node: number; side: number; gap: number; stagger: number } | null;
-    free?: { len: number }; hb?: number; ends?: BoxEnd[]; drawer?: number;
+    free?: { len: number; foot: number }; hb?: number; ends?: BoxEnd[]; drawer?: number;
 }
 const byNode = new Map<number, Placement>();
 /** The placement that draws a skipped end's part: a wider way in the same tube. */
