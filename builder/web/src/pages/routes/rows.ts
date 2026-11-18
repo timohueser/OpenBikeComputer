@@ -1,4 +1,5 @@
 /** The rows of the ridden view: one for each trip, each group of rides on one road, and each other ride. */
+import type { Bike } from '../../lib/library/records';
 import { tripDays, type Trip } from '../../lib/library/trips';
 import { rideItem, type RideItem } from './filter';
 
@@ -37,6 +38,12 @@ export function rideRows(shown: RideItem[], trips: Trip[], groups: Map<string, s
         else rows.set(`group:${id}`, { kind: 'group', id, name: routeNames.get(id) ?? rides[0].name, rides, at: rides[0].at });
     }
     return [...rows.values()].sort((a, b) => b.at - a.at);
+}
+
+/** The activity of the rides of a row, when all have the same one. */
+export function rowBike(row: Row): Bike | undefined {
+    const bike = row.rides[0].summary.bike;
+    return row.rides.every(ride => ride.summary.bike === bike) ? bike : undefined;
 }
 
 /** "24 Oct 2026". */

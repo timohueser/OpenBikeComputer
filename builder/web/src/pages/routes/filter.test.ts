@@ -146,13 +146,14 @@ describe('distanceToBox', () => {
 describe('routeItem', () => {
     const route = { id: 'r', revision: 1, name: '', updatedAt: 5, summary: item('r').summary as RouteSummary, trip: { points: [] } };
     it('names a plan with no name by its title, and a route that is not a plan', () => {
-        expect(routeItem(route, { isPlan: () => true, planTitle: () => 'Loop from Bern' }).name).toBe('Loop from Bern');
+        expect(routeItem(route, { isPlan: () => true, planTitle: () => 'Loop from Bern' })).toMatchObject({ name: 'Loop from Bern', plan: true });
         expect(routeItem(route, { isPlan: () => false, planTitle: () => '' })).toEqual({ kind: 'route', id: 'r', name: 'Route that cannot be read', summary: null, at: 5 });
     });
 
     it('without the planner functions, names a route by the start and the finish of its trip', () => {
         expect(routeItem({ ...route, trip: { points: [{ kind: 'finish', label: 'Chur' }, { kind: 'start', label: 'Bern' }] } }).name).toBe('Bern → Chur');
-        expect(routeItem(route).name).toBe('Route');
+        expect(routeItem(route)).toMatchObject({ name: 'Route' });
+        expect(routeItem(route)).not.toHaveProperty('plan');
     });
 });
 

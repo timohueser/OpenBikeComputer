@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RideRecord } from '../../lib/library/records';
 import type { Trip } from '../../lib/library/trips';
 import { rideItem } from './filter';
-import { rideRows } from './rows';
+import { rideRows, rowBike } from './rows';
 
 const ride = (key: string, start: number) => ({ key, name: `Ride ${key}`, summary: { start, lengthM: 1000 } }) as RideRecord;
 
@@ -24,5 +24,15 @@ describe('rideRows', () => {
 
     it('shows a group with one shown ride as that ride', () => {
         expect(rideRows([c, e].map(rideItem), [trip], groups, names).map(row => [row.kind, row.id])).toEqual([['ride', 'e'], ['ride', 'c']]);
+    });
+});
+
+describe('rowBike', () => {
+    const bike = (key: string, kind: string) => rideItem({ key, name: key, summary: { start: 0, bike: kind } } as RideRecord);
+    const row = (...rides: ReturnType<typeof bike>[]) => ({ kind: 'trip' as const, id: 't', name: 't', rides, at: 0 });
+
+    it('gives the activity that all rides share, and none for two activities', () => {
+        expect(rowBike(row(bike('a', 'gravel'), bike('b', 'gravel')))).toBe('gravel');
+        expect(rowBike(row(bike('a', 'gravel'), bike('b', 'road')))).toBeUndefined();
     });
 });

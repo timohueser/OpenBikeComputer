@@ -4,15 +4,8 @@ import { CORS_PREFLIGHT, respond } from './stubs.js';
 // A town around the routes of the catalog in `stubs.js`.
 const FREIBURG = { name: 'Freiburg', kind: 'city', lon: 7.85, lat: 47.99, west: 7.8, south: 47.96, east: 7.92, north: 48.02, region: 'Testland' };
 
-test('the Explore page lists the signed routes of the map view, filters them, plans one and comes back to the same view', async ({ page }) => {
-  const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
-  // A GPU without an adapter, so the page offers TrailView in a headless browser.
-  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'gpu', {
-    configurable: true,
-    get: () => ({ requestAdapter: async () => null, getPreferredCanvasFormat: () => 'bgra8unorm' }),
-  }));
-  await page.route(url => url.hostname !== '127.0.0.1', route => {
+function stub(page) {
+  return page.route(url => url.hostname !== '127.0.0.1', route => {
     const request = route.request();
     if (request.method() === 'OPTIONS') return route.fulfill(CORS_PREFLIGHT);
     if (request.url().endsWith('/query')) return route.fulfill({ ...CORS_PREFLIGHT, status: 200, json: { type: 'places', request: { type: 'place' }, results: [FREIBURG] } });
@@ -21,6 +14,17 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
     const response = respond(request);
     return response ? route.fulfill(response) : route.abort();
   });
+}
+
+test('the Explore page lists the signed routes of the map view, filters them, plans one and comes back to the same view', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  // A GPU without an adapter, so the page offers TrailView in a headless browser.
+  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'gpu', {
+    configurable: true,
+    get: () => ({ requestAdapter: async () => null, getPreferredCanvasFormat: () => 'bgra8unorm' }),
+  }));
+  await stub(page);
 
   // The whole area of the test build needs more catalog files than one view may load.
   await page.goto('/planner.html#/explore');
@@ -67,4 +71,18 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
   expect(back.chips).toEqual(kept.chips);
   for (const [i, value] of kept.view.entries()) expect(back.view[i]).toBeCloseTo(value, 4);
   expect(errors).toEqual([]);
+});
+
+test('on a phone, the card of a route with a long text and no profile stays on the screen, and its text scrolls', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await stub(page);
+  await page.goto('/planner.html#/explore');
+  await page.getByRole('searchbox', { name: 'Find a place' }).fill('Freiburg');
+  await page.getByRole('button', { name: /^Freiburg/ }).click();
+  await page.locator('.list').getByRole('button', { name: /Westweg 2/ }).click();
+  // The card is never higher than the screen less 96 px.
+  await expect.poll(() => page.getByRole('region', { name: 'Westweg 2' }).evaluate(node => {
+    const more = node.querySelector('.more');
+    return [!node.querySelector('.profile'), node.getBoundingClientRect().height <= innerHeight - 96, more.scrollHeight > more.clientHeight];
+  })).toEqual([true, true, true]);
 });
