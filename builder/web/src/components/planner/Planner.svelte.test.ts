@@ -9,13 +9,11 @@ import { proposal, type Stop } from '../../lib/planner/stops';
 import Itinerary from './Itinerary.svelte';
 import Profile from './PlannerProfile.svelte';
 import MapCallout from './MapCallout.svelte';
-import VersionsMenu from './VersionsMenu.svelte';
 import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
 import RouteStats from './RouteStats.svelte';
 import TripBar from './TripBar.svelte';
 import type { RoutingLine } from '../../lib/planner/routing';
-import { newVersion } from '../../lib/planner/versions';
 import { settings } from '../../lib/settings/settings.svelte';
 
 const places: Place[] = [{id:'test-camp',kind:'place',label:'Test camp',category:'camp',description:'',coordinate:[7.5,47.5]}];
@@ -276,9 +274,8 @@ describe('trip pace', () => {
         const props = itineraryProps(null);
         let trip = $state.raw<Trip>(props.trip);
         const onChange = vi.fn((change: Partial<Trip>) => { trip = { ...trip, ...change }; });
-        mounted.push(mount(TripBar, { target: document.body, props: { get trip() { return trip; }, line: props.line, name: '', versions: [], ready: true,
-            canUndo: false, canRedo: false, draftSavedAt: null, draftError: '', onChange, onUndo: vi.fn(), onRedo: vi.fn(),
-            onOpen: vi.fn(), onSaveNew: vi.fn(), onVersions: vi.fn(), onCompare: vi.fn(), onNew: vi.fn(), onLibrary: vi.fn() } }));
+        mounted.push(mount(TripBar, { target: document.body, props: { get trip() { return trip; }, name: '', ready: true,
+            canUndo: false, canRedo: false, onChange, onUndo: vi.fn(), onRedo: vi.fn(), onCompare: vi.fn(), onNew: vi.fn(), onLibrary: vi.fn() } }));
         mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get trip() { return trip; },
             get itinerary() { return planView(trip, props.line).itinerary; }, get days() { return planView(trip, props.line).days; } } }));
         await tick();
@@ -468,59 +465,5 @@ describe('planner recovery', () => {
         button('Close').click();
         expect(onClose).toHaveBeenCalledOnce();
         expect(document.activeElement).toBe(opener);
-    });
-
-    it('names the open version, opens another, and compares only two or more', async () => {
-        const onOpen = vi.fn(), onCompare = vi.fn(), onChange = vi.fn().mockResolvedValue(undefined);
-        const coast = newVersion(testTrip(), undefined, 'Coast'), hills = newVersion(testTrip(), undefined, 'Hills');
-        let versions = $state.raw([coast]), openId = $state<string | undefined>(coast.id);
-        mounted.push(mount(VersionsMenu, { target: document.body, props: { trip: testTrip(), get versions() { return versions; }, get openId() { return openId; },
-            draftSavedAt: null, draftError: '', onOpen, onSaveNew: vi.fn(), onChange, onCompare } }));
-        await tick();
-        button('Version Coast').click();
-        await tick();
-        expect(button('Compare versions').disabled).toBe(true);
-        versions = [hills, coast];
-        await tick();
-        expect(document.querySelector('[aria-current="true"]')?.textContent).toContain('Coast');
-        button('Compare versions').click();
-        expect(onCompare).toHaveBeenCalledOnce();
-        button('Version Coast').click();
-        await tick();
-        document.querySelector<HTMLButtonElement>('[aria-current="false"]')!.click();
-        expect(onOpen).toHaveBeenCalledWith(hills.id, 'Hills');
-        button('Version Coast').click();
-        await tick();
-        button('Rename this version…').click();
-        await tick();
-        const input = document.querySelector('input')!;
-        input.value = 'Coast road';
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        expect(onChange).toHaveBeenCalledWith([hills, { ...coast, name: 'Coast road' }]);
-        openId = undefined;
-        await tick();
-        expect(button('Save version')).toBeDefined();
-    });
-
-    it('keeps a failed version save editable and lets the rider retry', async () => {
-        const onSaveNew = vi.fn().mockRejectedValueOnce(new Error('Storage full')).mockResolvedValue(undefined);
-        mounted.push(mount(VersionsMenu, {
-            target: document.body,
-            props: { trip: testTrip(), versions: [], draftSavedAt: null, draftError: '', onOpen: vi.fn(), onSaveNew, onChange: vi.fn(), onCompare: vi.fn() },
-        }));
-        await tick();
-        button('Save version').click();
-        await tick();
-        document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        await tick();
-        expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not save');
-        expect(document.querySelector('input')).not.toBeNull();
-        expect(onSaveNew).toHaveBeenCalledTimes(1);
-
-        document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        await tick();
-        expect(onSaveNew).toHaveBeenCalledTimes(2);
-        expect(document.querySelector('[role="alert"]')).toBeNull();
     });
 });

@@ -15,12 +15,11 @@
     import type { Library } from '../lib/library/store';
     import { lineCoordinates } from '../lib/library/summary';
     import { hasEndpoints, planTitle, planView } from '../lib/planner/editor';
-    import { downloadPlan, isPlan, isVersion, newPlan } from '../lib/planner/library';
+    import { downloadPlan, isPlan, newPlan } from '../lib/planner/library';
     import type { RoutePlace } from '../lib/planner/place-index';
     import { routeFacts, routePins, type Climb } from '../lib/planner/route-facts';
     import { LegCache } from '../lib/planner/route-legs';
     import { calculateLine, routingKey, type RoutingLine } from '../lib/planner/routing';
-    import type { Version } from '../lib/planner/versions';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import { deviceState, stateText, waitingWith } from './routes/state';
@@ -101,13 +100,9 @@
 
     const send = (on: boolean) => act(() => library.changeState('waiting', waitingWith(id, on)));
 
-    async function versions(): Promise<Version[]> {
-        return (await library.versions(id)).filter((v): v is Version => isVersion(v) && typeof v.summary === 'string');
-    }
-
     function duplicate() {
         return act(async () => {
-            const copy = await library.saveRoute({ ...newPlan(plan!.trip, `${name} (copy)`), summary }, await versions());
+            const copy = await library.saveRoute({ ...newPlan(plan!.trip, `${name} (copy)`), summary });
             location.hash = `${ROUTES.route}/${copy.id}`;
         });
     }
@@ -137,7 +132,7 @@
         { label: 'GPX', disabled: !facts, run: () => download(writeGpx(course()), 'application/gpx+xml', name, 'gpx') },
         // The stored time is at the pace of the route.
         { label: 'FIT', disabled: !facts, run: () => download(writeFitCourse({ ...course(), elapsedS: summary?.seconds ?? 0 }) as Uint8Array<ArrayBuffer>, 'application/vnd.ant.fit', name, 'fit') },
-        { label: 'Plan file', run: () => void act(async () => downloadPlan(plan!, await versions())) },
+        { label: 'Plan file', run: () => downloadPlan(plan!) },
     ]);
     const more = $derived<{ label: string; disabled?: boolean; rule?: boolean; danger?: boolean; run: () => void }[]>([
         { label: 'Share', disabled: !summary, run: () => { sharing = true; } },
@@ -183,7 +178,7 @@
     {#if sharing && summary}<Share {library} {id} {name} {summary} onClose={() => sharing = false} />{/if}
     {#if deleting}
         <Window title="Delete this route?" onClose={() => deleting = false}>
-            <p>“{name}” and its saved versions go. You cannot undo this.</p>
+            <p>“{name}” goes. You cannot undo this.</p>
             <div class="window-buttons">
                 <button type="button" class="button" onclick={() => deleting = false}>Cancel</button>
                 <button type="button" class="button danger" onclick={remove}>Delete</button>

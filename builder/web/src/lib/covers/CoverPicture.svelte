@@ -8,12 +8,14 @@
     import Icon from '../ui/Icon.svelte';
     import PhotoMarks from '../../components/route/PhotoMarks.svelte';
 
-    let { shown, summary, look = 'route', colour, mark, part, line = true, pins = [], photos = [], onphoto, onpoint }: {
+    let { shown, summary, breaks = [], look = 'route', colour, mark, part, line = true, pins = [], photos = [], onphoto, onpoint }: {
         /** The image, the points of its line, and the summary that the points belong to. With no summary, the image
          * shows no mark, no part and no pins. */
         shown?: { bitmap: ImageBitmap; points: CoverPoints; summary?: Summary };
         /** The line on a plain ground when there is no image. */
         summary?: Pick<Summary, 'line'>;
+        /** The indices of the points of `summary` where a new piece of the line starts, after a gap. */
+        breaks?: number[];
         look?: 'route' | 'ride';
         /** The colour of the line on the image, in place of the colours of `look`. */
         colour?: string;
@@ -82,10 +84,11 @@
     /** The line on a plain ground, in a box of 100 by the shape of the line, with the north up. */
     const fallback = $derived.by(() => {
         if (!summary?.line.length) return undefined;
-        const { points, width, height } = fromAbove(lineCoordinates(summary)), pad = 8;
+        const { points, width, height } = fromAbove(lineCoordinates(summary)), pad = 8, ends = [0, ...breaks, points.length];
+        const text = points.map(([x, y]) => `${(x * 100).toFixed(2)},${(y * 100).toFixed(2)}`);
         return {
             box: `${-pad} ${-pad} ${width * 100 + 2 * pad} ${height * 100 + 2 * pad}`,
-            points: points.map(([x, y]) => `${(x * 100).toFixed(2)},${(y * 100).toFixed(2)}`).join(' '),
+            pieces: ends.slice(1).map((end, i) => text.slice(ends[i], end).join(' ')),
         };
     });
 </script>
@@ -108,7 +111,7 @@
         <PhotoMarks photos={shownPhotos} onopen={onphoto} />
     {:else if fallback && line}
         <svg class={look} viewBox={fallback.box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-            <polyline points={fallback.points} />
+            {#each fallback.pieces as points, i (i)}<polyline {points} />{/each}
         </svg>
     {/if}
 </div>

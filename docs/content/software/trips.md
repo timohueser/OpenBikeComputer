@@ -93,12 +93,12 @@ On the phone, "Edit" on the trip page opens the phone's planner, where "End day 
 Save offers "Save changes", which writes the plan into the trip, and "Save as copy…", which makes a
 new trip.
 
-### Saved versions
+### Compare routes
 
-The Version menu in the top bar switches between the saved versions. A switch first writes the open
-plan back into its version, so no work is lost. "Compare versions" shows both routes on one map,
-the days of both versions side by side with their riding time, and both elevation profiles on one
-scale. The compare screen has no share button, because the planner keeps plans only in the browser.
+"Compare routes" in the top bar shows two saved routes on one map, their days side by side with
+their riding time, and both elevation profiles on one scale. The rider picks the two routes from the
+saved routes. The compare screen has no share button, because the planner keeps plans only in the
+browser.
 
 ### Transfers
 

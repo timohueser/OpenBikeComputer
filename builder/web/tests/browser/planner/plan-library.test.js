@@ -10,7 +10,7 @@ const trip = {
   ],
 };
 
-const planFile = name => ({ format: 'openbikecomputer-plan', version: 1, name, trip, versions: [] });
+const planFile = name => ({ format: 'openbikecomputer-plan', version: 1, name, trip });
 
 async function start(page) {
   await page.route(url => url.hostname !== '127.0.0.1', route => {
@@ -29,7 +29,7 @@ async function importFile(page, file) {
 const library = page => page.getByRole('region', { name: 'My plans', exact: true });
 const row = (page, name) => library(page).locator('li').filter({ has: page.locator('strong').filter({ hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }) });
 
-test('plans survive new, switch and reload; checkpoints and files stay with their plan', async ({ page }, testInfo) => {
+test('plans survive new, switch and reload, and a downloaded file opens again', async ({ page }, testInfo) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await start(page);
@@ -38,11 +38,6 @@ test('plans survive new, switch and reload; checkpoints and files stay with thei
   await importFile(page, planFile('Weekend tour'));
   await expect(row(page, 'Weekend tour')).toBeVisible();
   await library(page).getByRole('button', { name: 'Close My plans' }).click();
-  await page.getByRole('button', { name: 'Save version', exact: true }).click();
-  await page.getByRole('textbox', { name: 'Version name' }).fill('Valley option');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.locator('.versions li')).toContainText('Valley option');
-  await page.getByRole('button', { name: 'Version Valley option', exact: true }).click();
   await page.getByRole('button', { name: 'New route', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'New plan', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
@@ -58,15 +53,13 @@ test('plans survive new, switch and reload; checkpoints and files stay with thei
   await expect(page.getByRole('heading', { name: 'Weekend tour', exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Weekend tour', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Version Valley option', exact: true }).click();
-  await expect(page.locator('.versions li')).toContainText('Valley option');
-  await page.getByRole('button', { name: 'Version Valley option', exact: true }).click();
   await page.getByRole('button', { name: 'My plans', exact: true }).click();
   const downloadEvent = page.waitForEvent('download');
   await row(page, 'Weekend tour').getByRole('button', { name: 'Download', exact: true }).click();
   const download = await downloadEvent;
   const backup = JSON.parse(await readFile(await download.path(), 'utf8'));
-  expect(backup).toMatchObject({ format: 'openbikecomputer-plan', name: 'Weekend tour', trip: { points: trip.points }, versions: [{ name: 'Valley option' }] });
+  expect(backup).toMatchObject({ format: 'openbikecomputer-plan', name: 'Weekend tour', trip: { points: trip.points } });
+  expect(backup).not.toHaveProperty('versions');
   await row(page, 'Weekend tour').getByRole('button', { name: 'Duplicate', exact: true }).click();
   await expect(library(page).locator('li')).toHaveCount(3);
   await expect(page.getByRole('heading', { name: 'Weekend tour (copy)', exact: true })).toBeVisible();
@@ -81,9 +74,7 @@ test('plans survive new, switch and reload; checkpoints and files stay with thei
   await expect(page.getByRole('heading', { name: 'New plan', exact: true })).toBeVisible();
   await importFile(page, backup);
   await expect(library(page).locator('li')).toHaveCount(3);
-  await library(page).getByRole('button', { name: 'Close My plans' }).click();
-  await page.getByRole('button', { name: 'Version Valley option', exact: true }).click();
-  await expect(page.locator('.versions li')).toContainText('Valley option');
+  await expect(page.getByRole('heading', { name: 'Weekend tour', exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
 

@@ -3,20 +3,22 @@ import type { Bike, RideRecord, RideSummary, RouteRecord, RouteSummary, Summary 
 import { kilometres, type Coordinate } from '../../lib/planner/geo';
 import { decodeCoordinates } from '../../lib/planner/route-answer';
 import type { Box } from '../../lib/planner/route-catalog';
-import type { CatalogRecord } from '../../lib/planner/signed-routes';
+import type { CatalogRecord, TrailEntry } from '../../lib/planner/signed-routes';
 import { distanceIn, heightIn } from '../../lib/settings/format';
 import { profileEntry, profileHeight } from '../../lib/trailview/route/profile';
 
 export type { Box };
 
-/** A route, a ride or a signed route of the catalog as the list, the map and the card show it. A route with no summary
- * has no line, and each chip leaves it out. `plan` marks a route that the planner can read. `at` is the time in ms of
- * the last change of a route, or of the start of a ride. */
+/** A route, a ride, a signed route of the catalog or a trail of its far files as the list, the map and the card show
+ * it. A route with no summary has no line, and each chip leaves it out. `plan` marks a route that the planner can read.
+ * `at` is the time in ms of the last change of a route, or of the start of a ride. */
 export type Item = { id: string; name: string; at: number }
     & ({ kind: 'route'; summary: RouteSummary | null; plan?: true } | { kind: 'ride'; summary: RideSummary }
-        | { kind: 'signed'; summary: RouteSummary; record: CatalogRecord; profile?: Pick<Summary, 'line' | 'heights'> });
+        | { kind: 'signed'; summary: RouteSummary; record: CatalogRecord; profile?: Pick<Summary, 'line' | 'heights'> }
+        | { kind: 'trail'; summary: RouteSummary; entry: TrailEntry; pieces: Coordinate[][] });
 export type RideItem = Extract<Item, { kind: 'ride' }>;
 export type SignedItem = Extract<Item, { kind: 'signed' }>;
+export type TrailItem = Extract<Item, { kind: 'trail' }>;
 
 /** From `min` to below `max`, in the units of `settings.units`: km or mi for a length, m or ft for a climb. */
 export type Range = [min: number, max: number];
@@ -117,6 +119,22 @@ export function signedItem(record: CatalogRecord, bike: Bike): SignedItem {
     };
 }
 
+/** A trail of the far files, with the pieces of its far line. Its summary line is the pieces joined, with no heights. */
+export function trailItem(entry: TrailEntry, bike: Bike): TrailItem {
+    const pieces = entry.far_udeg.map(decodeCoordinates), line = pieces.flat().flatMap(([lon, lat]) => [round5(lon), round5(lat)]);
+    const lons = line.filter((_, i) => i % 2 === 0), lats = line.filter((_, i) => i % 2 === 1);
+    return {
+        kind: 'trail', id: String(entry.id), name: entry.name ?? entry.ref ?? '', at: 0, entry, pieces,
+        summary: {
+            line, heights: lons.map(() => null), bounds: [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)],
+            lengthM: entry.length_m, climbM: entry.ascent_m, highestM: null, seconds: 0, bike, days: 1,
+        },
+    };
+}
+
+/** The order of the far list: the highest network level first, then the longest, then the lowest relation id. */
+export const farOrder = (a: TrailItem, b: TrailItem) => b.entry.rank - a.entry.rank || b.entry.length_m - a.entry.length_m || a.entry.id - b.entry.id;
+
 /** "Start → Finish" from the points of a trip that no check read yet, else "Route". */
 function endNames(trip: unknown): string {
     const points = (trip as { points?: unknown } | null)?.points;
@@ -141,7 +159,7 @@ export function results(items: Item[], chips: Chips, text: string, view?: Box, o
     const kept: { item: Item; near: number }[] = [];
     for (const item of items) {
         if (words && !fold(item.name).includes(words)) continue;
-        const summary = item.summary;
+        const summary = item.summary, signed = item.kind === 'signed' ? item.record : item.kind === 'trail' ? item.entry : undefined;
         if (!summary) {
             if (!set && !view) kept.push({ item, near: 0 });
             continue;
@@ -151,8 +169,8 @@ export function results(items: Item[], chips: Chips, text: string, view?: Box, o
             || (chips.climb && !within(heightIn(summary.climbM), chips.climb))
             || (chips.days && !within('days' in summary ? summary.days : 1, chips.days))
             || (chips.year && new Date(item.at).getFullYear() !== chips.year)
-            || (item.kind === 'signed' && chips.grade !== undefined && (item.record.hardest ?? 0) > chips.grade)
-            || (item.kind === 'signed' && chips.shape && item.record.loop !== (chips.shape === 'loop'))
+            || (signed && chips.grade !== undefined && (signed.hardest ?? 0) > chips.grade)
+            || (signed && chips.shape && signed.loop !== (chips.shape === 'loop'))
             || (view && !inBox(summary.line, view))) continue;
         const near = chips.place ? distanceToBox(summary.line, chips.place.box) : 0;
         if (chips.place && near > (NEAR_M[chips.place.kind] ?? OTHER_NEAR_M)) continue;

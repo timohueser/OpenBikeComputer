@@ -39,7 +39,6 @@
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { router } from '../../lib/router.svelte';
     import { ROUTES } from '../../lib/routes';
-    import { isTrip } from '../../lib/planner/trip-validation';
     import {
         addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, routeToTrip, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
@@ -62,7 +61,6 @@
     import { asPlace, category, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
-    import type { Version } from '../../lib/planner/versions';
     import { appearance } from '../../lib/theme.svelte';
     import { routingKey, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
     import { importedTrip, readTracks } from '../../lib/planner/gpx-import';
@@ -112,7 +110,7 @@
         ? `${distance(currentRoute.unknownSurfaceKm)} unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${distance(currentRoute.pushingKm)} pushing` : ''}${currentRoute.unroutedKm ? ` · ${distance(currentRoute.unroutedKm)} manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
     let list = $state<'plan' | 'ways'>('plan');
-    // The compare screen of saved versions replaces the trip bar and the planner below it.
+    // The compare screen of saved routes replaces the trip bar and the planner below it.
     let comparing = $state(false);
     const options = $derived(session.routeOptions);
     // The first route of a plan asks for its options once, so the Route options link can say what they offer.
@@ -194,8 +192,6 @@
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
     let message = $state(`Plan a ride in ${config.name}`);
-    // The status line offers Undo after a version opens or is deleted, until the next change.
-    let statusUndo = $state<(() => void) | null>(null);
     let visibleRange = $state<[number, number] | null>(null);
     let hoverProgress = $state<number | null>(null);
     // The part of the route the profile selects, as route progress. Another line ends it; the map fits each part.
@@ -456,7 +452,6 @@
     /** Resets the view after another plan replaced the trip. */
     function opened(plan: Plan) {
         exploreBack = undefined;
-        statusUndo = null;
         clearSelection();
         exitSearch();
         pointing = undefined;
@@ -516,7 +511,7 @@
     }
 
     function deletePlan(plan: Plan) {
-        if (window.confirm(`Delete “${plan.name || planTitle(plan.trip)}” and its saved versions? Download it first if you need a backup.`)) void session.remove(plan);
+        if (window.confirm(`Delete “${plan.name || planTitle(plan.trip)}”? Download it first if you need a backup.`)) void session.remove(plan);
     }
 
     async function importFiles(files: File[]) {
@@ -548,14 +543,6 @@
         if (files.length) void importFiles(files);
     }
 
-    async function changeVersions(versions: Version[]) {
-        const before = session.versions;
-        await session.saveVersions(versions);
-        const deleted = versions.length < before.length;
-        message = deleted ? 'Version deleted' : 'Versions saved';
-        statusUndo = deleted ? () => void changeVersions(before).then(() => { message = 'Delete undone'; }, () => {}) : null;
-    }
-
     function commit(next: Trip, description: string) {
         session.commit(next);
         afterEdit(description);
@@ -566,7 +553,6 @@
         list = 'plan';
         if (!hasEndpoints) { expandedDay = null; hoverProgress = null; }
         message = description;
-        statusUndo = null;
     }
 
     function edit(change: Partial<Trip>, description: string) {
@@ -597,7 +583,6 @@
         clearSelection();
         clampNight();
         message = description;
-        statusUndo = null;
         nameVisits(trip);
     }
 
@@ -1023,31 +1008,21 @@
         edit({ restNames: names }, 'Rest day named');
     }
 
-    async function openVersion(id: string, name: string) {
-        if (id === session.openId) return;
-        if (!await session.openVersion(id)) {
-            message = `‘${name}’ could not be opened. Try again.`;
+    async function compare() {
+        if (!await session.listPlans()) {
+            message = session.libraryError;
             return;
         }
-        afterEdit(`Opened ‘${name}’`);
-        exploreBack = undefined;
-        statusUndo = undo;
-        clearSelection();
-        clampNight();
-    }
-
-    function compare() {
         clearSelection();
         exitSearch();
         comparing = true;
     }
 
-    /** Back in the planner, the Version menu that opened the compare screen takes the focus. The trip bar is inert while a
-     * version opens, so an opening version waits for it. */
+    /** Back in the planner, the button that opened the compare screen takes the focus. */
     async function endCompare() {
         comparing = false;
         await tick();
-        document.querySelector<HTMLElement>('.versions .toggle')?.focus();
+        document.querySelector<HTMLElement>('.trip-bar .compare-routes')?.focus();
     }
 
     function keyboard(event: KeyboardEvent) {
@@ -1055,7 +1030,7 @@
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
             event.preventDefault();
             if (event.shiftKey) redo();
-            else (statusUndo ?? undo)();
+            else undo();
         }
         if (event.key === 'Escape') {
             session.previewOption(null);
@@ -1094,16 +1069,14 @@
 
 <div class="planner-shell" style:--side-width={`${Math.min(sideWidth, maxSide)}px`}>
     {#if comparing}
-    <CompareScreen name={session.plan.name || planTitle(trip)} {trip} line={session.line} routeError={session.routeError} openId={session.openId}
-        versions={session.versions.filter(version => isTrip(version.trip))} versionLines={session.versionLines} {theme} onBack={endCompare}
-        onOpen={async (id, name) => { comparing = false; await openVersion(id, name); await endCompare(); }}
-        onFindLines={retry => { session.findVersionLines(retry); if (retry && session.routeError) session.retry(); }} />
+    <CompareScreen routes={session.plans.filter(plan => endpointsChosen(plan.trip))} first={session.plan.revision ? session.plan.id : undefined} changed={!!session.saveError}
+        lines={session.foundLines} {theme} onBack={endCompare} onOpen={async id => { comparing = false; await openPlan(id); await endCompare(); }}
+        onFindLines={(trips, retry) => session.findLines(trips, retry)} />
     {:else}
     {#key planId}
     <TripBar
-        {trip} line={session.line} name={session.plan.name} versions={session.versions} openId={session.openId} ready={session.ready && !session.busy} canUndo={session.canUndo} canRedo={session.canRedo} draftSavedAt={session.savedAt} draftError={session.saveError}
-        onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onOpen={openVersion}
-        onSaveNew={name => session.saveNewVersion(name)} onVersions={changeVersions} onCompare={compare} onLibrary={openLibrary}
+        {trip} name={session.plan.name} ready={session.ready && !session.busy} canUndo={session.canUndo} canRedo={session.canRedo}
+        onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onCompare={compare} onLibrary={openLibrary}
     />
     {/key}
     <main aria-busy={!session.ready}>
@@ -1299,7 +1272,6 @@
             <div class="status-line" role="status">
                 <span class:save-error={!!session.saveError}>{session.saveError || `${message} · ${routingMessage}`}</span>
                 {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button><button type="button" class="planner-action" onclick={() => { session.save().catch(() => {}); }}>Retry save</button>{/if}
-                {#if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>{/if}
                 <span class="lab-note">Regional map, search and routing</span>
             </div>
         </section>
