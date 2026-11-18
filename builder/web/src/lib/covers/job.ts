@@ -81,7 +81,9 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
     }
     // `rows` holds the waiting ids that only rows asked for, the oldest first. Only such an id leaves the queue unasked.
     const queue: string[] = [], cards = new Set<string>(), rows = new Set<string>();
-    // A parked id keeps whether it was a row ask.
+    // A parked id keeps whether it was a row ask. `working` is the id in work when not only rows asked for it. A row ask
+    // for an id that waits, works or is parked for another ask leaves it outside the limit of rows.
+    let working: string | undefined;
     const parked = new Map<string, boolean>(), settling = new Map<string, ReturnType<typeof setTimeout>>(), stops: (() => void)[] = [];
     // A phone gets no covers, as a browser with no WebGPU: its cards show the map picture.
     let engine: Promise<Renderer | undefined> | undefined, off = !('gpu' in navigator) || matchMedia('(pointer: coarse)').matches, busy = false, stopped = false;
@@ -101,7 +103,7 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         if (place === 'row' && off) return;
         if (place === 'card') cards.add(id);
         if (place !== 'row') rows.delete(id);
-        else if (rows.delete(id) || !queue.includes(id)) rows.add(id);
+        else if (rows.delete(id) || !(queue.includes(id) || id === working || parked.get(id) === false)) rows.add(id);
         if (queue.includes(id)) queue.splice(queue.indexOf(id), 1);
         queue.unshift(id);
         trim();
@@ -144,7 +146,9 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
             while (queue.length && !waits()) {
                 // An ask during the work puts the id in the queue again, for the line that it has then.
                 const id = queue.shift()!, row = rows.delete(id);
+                working = row ? undefined : id;
                 const outcome = await navigator.locks.request(LOCK, { ifAvailable: true }, lock => lock && work(id));
+                working = undefined;
                 if (outcome === 'park') parked.set(id, row);
                 else if (outcome === 'next') { if (!queue.includes(id)) cards.delete(id); }
                 else requeue(id, row, true);
