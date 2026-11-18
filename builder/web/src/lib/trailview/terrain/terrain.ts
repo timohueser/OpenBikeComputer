@@ -61,9 +61,11 @@ const CHECKS = 64;
 /** The probe reads the eye and four points this many metres east, west, north and south of it, for the slope. */
 const PROBE_STEP = 1;
 /**
- * The probe runs again when the eye's height above the ground moves more than this many metres. That height
- * enters the drawn height under the eye only in its rounding, and the probe's answer sets that height again: a
- * probe at each change of it can swing between two answers one rounding step apart, and a still view never settles.
+ * The probe runs again when the eye's height above the ground moves more than this many metres from that of the
+ * last probe. The probe's answer sets that height, and the height moves the answer through the morph of `lod`
+ * (drawn-height.wgsl) by D / (MORPH · above · ln 2) per metre for a gap D between two levels, far below 1, so
+ * repeated probes converge; float rounding then leaves a last swing of one step. The band ends it: 1 cm is 20
+ * times the float32 step of a ground height below 8,192 m (at most 0.5 mm), and no change that a view shows.
  */
 const PROBE_ABOVE_M = 0.01;
 const READBACKS = 3;
@@ -505,7 +507,7 @@ export class Terrain {
     update(view: View, reads: Node[] = []): void {
         const r = this.resources;
         const anchor = anchorAt(...view.lonLat), eye = { anchor, above: view.above };
-        const rule = this.rule(eye, view.pixels);
+        const quality = this.quality, rule = this.rule(eye, view.pixels, quality);
         const forward = renderMap(this.frame, anchor);
         const start = performance.now();
         const { nodes, wanted } = select(rule, this.bounds, node => this.visible(node, eye, forward, view));
@@ -561,7 +563,8 @@ export class Terrain {
         ({ quality: this.quality, calm: this.calm, held: this.held } = stepQuality({ quality: this.quality, calm: this.calm, held: this.held }, short, this.pages.missing === 0, moving,
             () => this.quality < qualitySteps(view.pixels) && lowers(coarse(this.quality), coarse(this.quality + 1), capacity),
             () => fits(coarse(this.quality - 1), capacity)));
-        const probeReads = this.probeKey(rule, anchor);
+        // The level that the probe reads splits by the height of the last probe, as `encode` decides the next probe by it.
+        const above = this.heldAbove(view.above), probeReads = this.probeKey(above === view.above ? rule : this.rule({ anchor, above }, view.pixels, quality), anchor);
         if (probeReads !== this.probeReads) {
             this.probeReads = probeReads;
             this.changes++;
@@ -657,7 +660,7 @@ export class Terrain {
         // After the pages: the meshes' corners read the stored pages and the records.
         if (this.anchor) this.pieces?.encode(encoder, r.surfaceGroup, { anchor: this.anchor, above: this.above }, () => time('pieces'));
         const state = `${this.anchor?.whole}/${this.anchor?.part}/${this.quality}/${this.changes}`;
-        const due = state !== this.probed || !(Math.abs(this.above - this.probedAbove) <= PROBE_ABOVE_M);
+        const due = state !== this.probed || this.heldAbove(this.above) !== this.probedAbove;
         const readback = due ? r.readbacks.pop() : undefined;
         if (!readback) return () => {};
         this.probed = state;
@@ -933,6 +936,11 @@ export class Terrain {
         const x = cubic(seen.forward, sx, sy, 0), y = cubic(seen.forward, sx, sy, 10), h = z - seen.z - CURVATURE * (x * x + y * y), m = seen.viewProj;
         const clip = [0, 1, 3].map(i => m[i] * x + m[4 + i] * y + m[8 + i] * h + m[12 + i]);
         return clip[2] > 0 && Math.abs(clip[0]) < 0.98 * clip[2] && Math.abs(clip[1]) < 0.98 * clip[2];
+    }
+
+    /** The height of the last probe above the ground while `above` stays within PROBE_ABOVE_M of it, else `above`. */
+    private heldAbove(above: number): number {
+        return Math.abs(above - this.probedAbove) <= PROBE_ABOVE_M ? this.probedAbove : above;
     }
 
     /** The rule at a quality: each step makes the range a quarter step smaller, down to the least. No step lowers the finest level. */
