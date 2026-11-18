@@ -127,7 +127,7 @@ pub struct Storeys {
     pub portals: Vec<Portal>,
     /// The floors in front of the portal lines: faces of storey-0 labels under a way on top (`records::Under`).
     pub wedges: Option<super::FacePlan>,
-    /// Where daylight comes into the bores of the plans (`daylight::daylight`): way, metres along, metres to a portal.
+    /// Where daylight comes into the bores of the plans (`daylight::daylight`): way, metres along, metres to an opening.
     pub lights: Vec<(u32, f64, f64)>,
 }
 

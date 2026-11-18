@@ -28,7 +28,7 @@
 //! | triangle runs, triangles | as the cell mesh's: 2 words a run (count, base corner), 3 u16 a triangle less its run's base; each part in runs of its own |
 //! | slot runs, slots | 2 words a run, 4 u16 a slot (`a_p, a_q, b_q, b_p`), each kind of `SLOT_KINDS` in runs of its own |
 //! | caps | with the bores: 3 words each, sorted: a corner, a cap's label (`NO_LABEL`: the plain terrain) and offset (f32) |
-//! | lights | with the bores: 3 words each, sorted: where daylight comes into the bores (`faces::Storeys::lights`): the way (its records line's word 0), its metres along there (f32, as its samples') and the metres from there to the nearest portal (f32) |
+//! | lights | with the bores: 3 words each, sorted: where daylight comes into the bores (`faces::Storeys::lights`): the way (its records line's word 0), its metres along there (f32, as its samples') and the metres from there to the nearest opening (f32; under 0 on a floor in front of a portal line) |
 
 use std::collections::BTreeMap;
 

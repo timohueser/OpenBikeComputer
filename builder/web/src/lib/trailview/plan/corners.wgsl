@@ -139,9 +139,9 @@ fn first_cap(k: u32) -> u32 {
 }
 
 // A bore corner's metres to daylight, in the place of its normal (piece.wgsl's storey_vertex): the least over its way's
-// lights of the metres along between the two plus the light's metres, M_FAR for none. Its metres along are those at its
-// foot on its label's line, `line` (the bore's, or in front of a portal line the ground way's), as the crate's shell reads
-// them (`Lines::foot`): a bore is short.
+// lights of the metres along between the two plus the light's metres, M_FAR for none; under 0 in front of a portal line.
+// Its metres along are those at its foot on its label's line, `line` (the bore's, or in front of a portal line the ground
+// way's), as the crate's shell reads them (`Lines::foot`): a bore is short.
 fn daylight_metres(q: vec2i, line: u32) -> f32 {
     if (line == M_NONE) {
         return M_FAR;

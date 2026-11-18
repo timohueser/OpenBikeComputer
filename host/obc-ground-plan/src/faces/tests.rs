@@ -1261,7 +1261,9 @@ fn a_street_over_a_bore_keeps_its_paved_surface_over_the_floor() {
 /// Daylight comes into the bores at their portals and passes a junction by the shortest way through the bores, never a
 /// closed end: a bore of 60 m open at both ends, with a side bore from its middle whose portal lies 20 m from the
 /// junction, gives entries of 0 m at the three portals and of 20 m (not 30 m) at the junction; a body that ends closed
-/// gives its portal's entry alone.
+/// gives its portal's entry alone. Light comes in only where the shell leaves a bore's end open (`Decks::open`): a
+/// tunnel that ends straight on a bridge gets 0 m at that end too, and a footway on a node in the middle of a tunnel
+/// gives no 0 m there unless the bore ends open on it.
 #[cfg(feature = "bores")]
 #[test]
 fn daylight_comes_in_at_the_portals_and_passes_a_junction() {
@@ -1269,8 +1271,25 @@ fn daylight_comes_in_at_the_portals_and_passes_a_junction() {
     let lights = |ways: &[Line]| {
         let mut input = input_of(cell(), ways);
         input.terrain = plane(cell(), &|_, _| 507.0);
-        crate::cell::build_input(&input, Rules::embedded()).storeys.lights
+        let b = crate::cell::build_input(&input, Rules::embedded());
+        let decks = crate::faces::deck::Decks::of(&b.graph, &input);
+        // Each 0 m entry lies at an end of its bore way that the shell leaves open.
+        for &(w, along, m) in b.storeys.lights.iter().filter(|x| x.2 == 0.0) {
+            let r = &b.graph.ways[w as usize].samples;
+            let s = &b.graph.samples[r.start as usize..r.end as usize];
+            let at = |k: usize, end: usize| (along - s[k].along_m).abs() < 0.01 && decks.open[w as usize][end];
+            assert!(at(0, 0) || at(s.len() - 1, 1), "way {w} at {along} m: {m} m, not at an open end");
+        }
+        b.storeys.lights
     };
+    let bridge = [("highway", "residential"), ("bridge", "yes"), ("deck", "1")];
+    let onto = line("tunnel", &tags("O 30 P B"), &[[-100.0, 0.0], [0.0, 0.0]]);
+    let deck = line("road", &bridge, &[[0.0, 0.0], [60.0, 0.0]]);
+    let l = lights(&[onto, deck]);
+    assert_eq!(l.iter().filter(|x| x.2 == 0.0).count(), 2, "{l:?}");
+    let through = line("tunnel", &tags("O 70 P B 130 P O"), &[[-100.0, 0.0], [0.0, 0.0], [100.0, 0.0]]);
+    let path = line("path", &[("highway", "footway")], &[[0.0, 0.0], [0.0, 60.0]]);
+    lights(&[through, path]);
     let main = line("tunnel", &tags("O 70 P B 130 P O"), &[[-100.0, 0.0], [0.0, 0.0], [100.0, 0.0]]);
     let side = line("tunnel", &tags("B 20 P O"), &[[0.0, 0.0], [0.0, 60.0]]);
     let l = lights(&[main, side]);

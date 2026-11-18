@@ -1,33 +1,30 @@
-//! Where daylight comes into the bores and how far it has come: the shortest way from each point of a bore way to a
-//! portal, through the bore ways alone.
+//! Where daylight comes into the bores and how far it has come: the shortest way from each point of a bore way to an
+//! opening, through the bore ways alone.
 
+use super::deck::Decks;
 use super::in_bore;
-use crate::graph::{Arm, Family, Level, WayGraph};
+use crate::graph::{Arm, WayGraph};
 
 /// The points of the ways `ways` where daylight comes into the bores, as (way, its metres along there, the metres from
-/// there to the nearest portal through the bore ways), sorted: each node of the graph (a joint or a junction) on a bore way
-/// that a portal reaches. A node where a bore way meets a ground way that is no water is a portal (0 m), also on that
-/// ground way: a floor in front of the portal line under a way on top is the ground way's. A node where bore ways meet
-/// passes the light on. The light at a point of a way is the least over its way's entries of the metres along between the
-/// two plus the entry's metres: so it comes round a bend and through a junction, and never through the rock to another
-/// bore. A point that no portal reaches (behind the body's end, between two closed ends) has none.
-pub(crate) fn daylight(g: &WayGraph, ways: &[u32]) -> Vec<(u32, f64, f64)> {
+/// there to the nearest opening through the bore ways), sorted. A node (a joint or a junction) where a bore way ends
+/// open, as the shell leaves it (`Decks::open`: a way there goes on at another storey, on the ground or on a deck), is an
+/// opening (0 m); a node that a bore way runs through names no end of it (`WayGraph::at_end`). A node where bore ways
+/// meet passes the light on. The light at a point of a way is the least over its way's entries of the metres along
+/// between the two plus the entry's metres: so it comes round a bend and through a junction, and never through the rock
+/// to another bore. A point that no opening reaches (behind the body's end, between two closed ends) has none. A way of
+/// `ways` that is no bore lies in front of a portal line (a floor under a way on top, `Storeys::wedges`): its one entry
+/// holds the negative of its length, so all of it lies in daylight, and the bore's floor fades from the line in.
+pub(crate) fn daylight(g: &WayGraph, decks: &Decks, ways: &[u32]) -> Vec<(u32, f64, f64)> {
     let nodes: Vec<([i32; 2], &[Arm])> = (g.joints.iter().map(|j| (j.pos, &j.arms[..])))
         .chain(g.junctions.iter().map(|j| (j.pos, &j.arms[..])))
         .collect();
-    // Each bore arm of a node, and each ground arm of a portal: its way, its metres along at the node, its node.
-    let ground = |a: &Arm| {
-        let w = &g.ways[a.way as usize];
-        w.level == Level::Ground && w.family != Family::Water
-    };
+    // Each bore arm of a node: its way, its metres along at the node, its node.
     let mut points: Vec<(u32, f64, usize)> = Vec::new();
     let mut open = vec![false; nodes.len()];
     for (k, &(pos, arms)) in nodes.iter().enumerate() {
-        if !arms.iter().any(|a| in_bore(g, a.way)) {
-            continue;
-        }
-        open[k] = arms.iter().any(ground);
-        points.extend(arms.iter().filter(|a| in_bore(g, a.way) || ground(a)).map(|a| (a.way, along(g, a.way, pos), k)));
+        let bores = arms.iter().filter(|a| in_bore(g, a.way));
+        open[k] = bores.clone().any(|a| g.at_end(a) && decks.open[a.way as usize][usize::from(a.dir < 0)]);
+        points.extend(bores.map(|a| (a.way, along(g, a.way, pos), k)));
     }
     points.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     let mut d: Vec<f64> = points.iter().map(|p| if open[p.2] { 0.0 } else { f64::INFINITY }).collect();
@@ -62,6 +59,15 @@ pub(crate) fn daylight(g: &WayGraph, ways: &[u32]) -> Vec<(u32, f64, f64)> {
         .filter(|(p, v)| v.is_finite() && ways.contains(&p.0))
         .map(|(p, &v)| (p.0, p.1, v))
         .collect();
+    for &w in ways.iter().filter(|&&w| !in_bore(g, w)) {
+        let r = &g.ways[w as usize].samples;
+        let along = g.samples[r.start as usize..r.end as usize].iter().map(|s| s.along_m);
+        let (lo, hi) = along.fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), m| (l.min(m), h.max(m)));
+        if lo <= hi {
+            out.push((w, lo, lo - hi));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     out.dedup();
     out
 }

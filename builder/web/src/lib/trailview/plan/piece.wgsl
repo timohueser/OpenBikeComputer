@@ -61,9 +61,10 @@ struct PieceVertex {
 // the opening, slowly deeper in. A closed end lets none in.
 const DAYLIGHT_M: f32 = 15.0;
 
-// The light of bore corner k, from its metres to daylight (corners.wgsl's daylight_metres), as its normal's length.
+// The light of bore corner k, from its metres to daylight (corners.wgsl's daylight_metres), as its normal's length. Less
+// than 0 m lies in front of a portal line: daylight.
 fn daylight(k: u32) -> f32 {
-    let share = 1.0 - min(bitcast<f32>(piece[params.out + 4u * k + 3u]) / DAYLIGHT_M, 1.0);
+    let share = 1.0 - clamp(bitcast<f32>(piece[params.out + 4u * k + 3u]) / DAYLIGHT_M, 0.0, 1.0);
     return mix(INSIDE_DIM, INSIDE_OPEN, share * share);
 }
 
