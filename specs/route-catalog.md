@@ -250,9 +250,11 @@ A relation that comes twice counts once, at its first place. The stage number of
 position in this list, from `1`, parts not in the catalog included. The sections of a cut part take
 its place in `parts`, each with its stage number (see [Sections](#sections)). A long route inside another one
 is also a long route of its own. A child route with no `name` and no `ref` that is a part gets a
-route record with the `name` and the `ref` of the long route that has it as a child relation; of
-two, the one with the lower relation ID. A long route is in the catalog when at least one of its
-parts is.
+route record with the `name` and the `ref` of the long route that has it as a child relation and
+is in the catalog; of two, the one with the lower relation ID. When no such long route has it as a
+child relation, it takes the `name` and the `ref` of its `trail`, and with no `trail` it is not in
+the catalog, as any route with no `name` and no `ref`. A long route is in the catalog when at least
+one of its parts is, unless its parts are separate routes (see below).
 
 The ends of a part in the catalog are the first and the last vertex of its `line_udeg`. A part that
 left the catalog has the first and the last point of its main line as its ends, when the builder
@@ -271,6 +273,17 @@ trail end of the part right before it, when that part has ends.
 
 So a run is a stretch of parts that join each other, such as the stages of a trail inside the region,
 or one of several trails that one relation lists one after another.
+
+A long route whose parts are separate routes, such as day loops from one village, is not in the
+catalog, and no part has it as `trail` or `parent`. Its parts are separate routes when there are at
+least two counts against one line, and more counts against one line than pairs of parts that meet. A
+loop part counts against one line: it comes back to its start and takes the line no further, so it
+meets no part. Two neighbouring parts with ends, neither a loop, meet when the second part is at
+most 60 m from the trail end of the first part; else they count against one line. 60 m leaves room
+for the slack of two stage ends at one place. A part with no ends counts for nothing. One count
+against one line is not enough: it can be a hole in the map data. Each long route is judged on its
+own parts, so a long route inside another one can leave while the outer one keeps the same parts as
+its stages.
 
 A long route is complete when each part is in the catalog, and no part is cut, runs backwards or has
 a jump.

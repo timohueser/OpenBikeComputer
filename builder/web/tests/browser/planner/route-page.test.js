@@ -51,7 +51,7 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   await page.getByRole('button', { name: 'Do not send' }).click();
   await expect(page.getByText('Waits for the device')).toHaveCount(0);
 
-  await page.getByRole('link', { name: 'Open in the planner' }).click();
+  await page.getByRole('link', { name: 'Open in planner' }).click();
   await expect(page.getByRole('heading', { name: 'Lake loop', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/#\/planner$/);
   await page.goBack();

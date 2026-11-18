@@ -8,10 +8,11 @@
     import { initCore } from '../lib/core/bridge';
     import { keepInHistory } from '../lib/keep-in-history.svelte';
     import { groups } from '../lib/library/groups';
-    import type { LibraryState, RideRecord, RouteRecord } from '../lib/library/records';
+    import type { Bike, LibraryState, RideRecord, RouteRecord } from '../lib/library/records';
     import { yearTotals } from '../lib/library/statistics';
     import type { Library } from '../lib/library/store';
     import { trips } from '../lib/library/trips';
+    import { ridingProfiles } from '../lib/planner/riding-profiles';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import { distanceIn, formatDistance, formatHeight, heightIn } from '../lib/settings/format';
@@ -19,7 +20,7 @@
     import ListAndMap from './routes/ListAndMap.svelte';
     import RouteRow from './routes/RouteRow.svelte';
     import { readSearch, results, rideItem, routeItem, type Box, type Chips as ChipValues, type Item, type Naming, type RideItem } from './routes/filter';
-    import { dayText, rideRows, tripDates, type Row } from './routes/rows';
+    import { dayText, rideRows, rowBike, tripDates, type Row } from './routes/rows';
     import SelectedCard from './routes/SelectedCard.svelte';
     import Statistics from './routes/Statistics.svelte';
     import { deviceState, type DeviceState } from './routes/state';
@@ -168,6 +169,8 @@
         return { lead: dayText(first.at), parts: [formatDistance(first.summary.lengthM), `${formatHeight(first.summary.climbM)} up`] };
     }
 
+    const icon = (bike: Bike | undefined) => bike && ridingProfiles[bike].icon;
+
     const addFiles = () => initCore().then(() => import('./AddFiles.svelte')).then(module => module.default);
 </script>
 
@@ -219,7 +222,7 @@
                         {@const first = row.rides[0]}
                         {@const key = `${row.kind}:${row.id}`}
                         <li data-id={key}>
-                            <RouteRow name={row.name} current={key === selected} onclick={() => selected = key} {...rideLine(row)}>
+                            <RouteRow name={row.name} icon={icon(rowBike(row))} current={key === selected} onclick={() => selected = key} {...rideLine(row)}>
                                 {#snippet picture()}<Cover {library} id={first.id} />{/snippet}
                             </RouteRow>
                             {#if row.kind === 'group'}
@@ -234,7 +237,7 @@
                         {@const state = states.get(item.id)}
                         {@const summary = item.kind === 'route' && item.summary}
                         <li>
-                            <RouteRow name={item.name} current={item.id === selected} onclick={() => selected = item.id}
+                            <RouteRow name={item.name} icon={icon(item.summary?.bike)} current={item.id === selected} onclick={() => selected = item.id}
                                 parts={summary ? [summary.days > 1 && `${summary.days} days`, formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`] : undefined}
                                 badge={state && { text: BADGES[state], kind: state }}>
                                 {#snippet picture()}{#if item.summary}<Cover {library} id={item.id} />{/if}{/snippet}
@@ -342,15 +345,14 @@
     /* The button that opens a group lies on its row, over a column of the row with the same text, padding and font size. */
     .open {
         position: absolute;
-        top: 50%;
-        right: 6px;
+        top: 13px;
+        right: 7px;
         padding: 2px 4px;
         border: 0;
         border-radius: 4px;
         background: none;
         color: var(--ink-soft);
         font-size: 12.5px;
-        transform: translateY(-50%);
         white-space: nowrap;
     }
     .open:hover, .back:hover {

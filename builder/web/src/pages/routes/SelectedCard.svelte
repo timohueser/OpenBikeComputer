@@ -9,7 +9,7 @@
     import { formatDistance, formatHeight } from '../../lib/settings/format';
     import type { Item } from './filter';
     import RouteCard from './RouteCard.svelte';
-    import { dayText, tripDates, type Row } from './rows';
+    import { dayText, rowBike, tripDates, type Row } from './rows';
     import { stateText, waitingWith, type DeviceState } from './state';
 
     let { library, item, row, device, route, runs = 0, inGroup = false, credits = $bindable([]), onclose }: {
@@ -36,11 +36,11 @@
     // A trip shows the profile and the numbers of all its days.
     const summary = $derived(trip ? { ...item.summary!, line: row!.rides.flatMap(r => r.summary.line), heights: row!.rides.flatMap(r => r.summary.heights),
         lengthM: sum('lengthM'), climbM: sum('climbM'), movingS: sum('movingS') } : item.summary);
-    const meta = $derived(row?.kind === 'trip' ? [tripDates(row), `${row.days} days`]
+    const bike = $derived(row ? rowBike(row) : item.summary?.bike), activity = $derived(bike && ridingProfiles[bike]);
+    const meta: (string | false)[] = $derived([activity ? activity.label : false, ...row?.kind === 'trip' ? [tripDates(row), `${row.days} days`]
         : row?.kind === 'group' ? [`${row.rides.length} rides`, `last on ${dayText(item.at)}`]
         : item.kind === 'ride' ? [dayText(item.at)]
-        : item.summary ? [ridingProfiles[item.summary.bike].label, item.summary.days > 1 && `${item.summary.days} days`,
-            runs > 0 && (runs === 1 ? 'ridden once' : `ridden ${runs} times`)] : []);
+        : item.summary ? [item.summary.days > 1 && `${item.summary.days} days`, runs > 0 && (runs === 1 ? 'ridden once' : `ridden ${runs} times`)] : []]);
     const numbers = $derived(summary ? [formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`,
         ...'movingS' in summary ? [duration(summary.movingS / 3600)] : []] : []);
 
@@ -57,14 +57,17 @@
     const takeOut = () => act(() => library.changeState('apart', apart => [...apart ?? [], item.id]));
 </script>
 
-<RouteCard name={row?.name ?? item.name} href={`${item.kind === 'ride' ? ROUTES.ride : ROUTES.route}/${item.id}`} {meta} {numbers}
+<RouteCard name={row?.name ?? item.name} href={`${item.kind === 'ride' ? ROUTES.ride : ROUTES.route}/${item.id}`} icon={activity?.icon} {meta} {numbers}
     profile={summary ?? undefined} state={device && stateText[device]} {failure} {onclose}>
     {#snippet picture()}<Cover {library} id={item.id} place="card" bind:credits />{/snippet}
     {#snippet buttons()}
-        {#if item.kind === 'route' && summary}
-            <button type="button" class="button" disabled={device === 'sent'} onclick={() => send(device !== 'waiting')}>
-                {device === 'waiting' ? 'Do not send' : 'Send to device'}
-            </button>
+        {#if item.kind === 'route'}
+            {#if item.plan}<a class="button primary" href={`${ROUTES.planner}/${item.id}`}>Open in planner</a>{/if}
+            {#if summary}
+                <button type="button" class="button quiet" disabled={device === 'sent'} onclick={() => send(device !== 'waiting')}>
+                    {device === 'waiting' ? 'Do not send' : 'Send to device'}
+                </button>
+            {/if}
         {:else if item.kind === 'ride' && !trip}
             <button type="button" class="button" onclick={again}>Ride it again</button>
             {#if row?.kind === 'group' || inGroup}<button type="button" class="button quiet" onclick={takeOut}>Take out of the group</button>{/if}

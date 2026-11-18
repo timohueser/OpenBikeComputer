@@ -4,15 +4,8 @@ import { CORS_PREFLIGHT, respond } from './stubs.js';
 // A town around the routes of the catalog in `stubs.js`.
 const FREIBURG = { name: 'Freiburg', kind: 'city', lon: 7.85, lat: 47.99, west: 7.8, south: 47.96, east: 7.92, north: 48.02, region: 'Testland' };
 
-test('the Explore page lists the signed routes of the map view, filters them, plans one and comes back to the same view', async ({ page }) => {
-  const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
-  // A GPU without an adapter, so the page offers TrailView in a headless browser.
-  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'gpu', {
-    configurable: true,
-    get: () => ({ requestAdapter: async () => null, getPreferredCanvasFormat: () => 'bgra8unorm' }),
-  }));
-  await page.route(url => url.hostname !== '127.0.0.1', route => {
+function stub(page) {
+  return page.route(url => url.hostname !== '127.0.0.1', route => {
     const request = route.request();
     if (request.method() === 'OPTIONS') return route.fulfill(CORS_PREFLIGHT);
     if (request.url().endsWith('/query')) return route.fulfill({ ...CORS_PREFLIGHT, status: 200, json: { type: 'places', request: { type: 'place' }, results: [FREIBURG] } });
@@ -21,6 +14,17 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
     const response = respond(request);
     return response ? route.fulfill(response) : route.abort();
   });
+}
+
+test('the Explore page lists the signed routes of the map view, filters them, plans one and comes back to the same view', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  // A GPU without an adapter, so the page offers TrailView in a headless browser.
+  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'gpu', {
+    configurable: true,
+    get: () => ({ requestAdapter: async () => null, getPreferredCanvasFormat: () => 'bgra8unorm' }),
+  }));
+  await stub(page);
 
   // The whole area of the test build needs more catalog files than one view may load.
   await page.goto('/planner.html#/explore');
@@ -67,4 +71,57 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
   expect(back.chips).toEqual(kept.chips);
   for (const [i, value] of kept.view.entries()) expect(back.view[i]).toBeCloseTo(value, 4);
   expect(errors).toEqual([]);
+});
+
+/** Shows the card of the signed route `name` in a window of `width` × `height` px. */
+async function openCard(page, name, width, height) {
+  await page.setViewportSize({ width, height });
+  await stub(page);
+  await page.goto('/planner.html#/explore');
+  await page.getByRole('searchbox', { name: 'Find a place' }).fill('Freiburg');
+  await page.getByRole('button', { name: /^Freiburg/ }).click();
+  await page.locator('.list').getByRole('button', { name: new RegExp(name) }).click();
+  return page.getByRole('region', { name });
+}
+
+/** The text of the card shows at least `lines` lines on the screen, and the wheel over it scrolls it. */
+async function textScrolls(page, card, lines) {
+  const more = card.locator('.more');
+  await expect.poll(() => more.evaluate((node, lines) => {
+    const box = node.getBoundingClientRect(), line = parseFloat(getComputedStyle(node.firstElementChild).lineHeight);
+    return Math.min(box.bottom, innerHeight) - Math.max(box.top, 0) >= lines * line;
+  }, lines)).toBe(true);
+  const box = await more.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, 100);
+  await expect.poll(() => more.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+}
+
+test('on a phone, the card of a route with a long text and no profile stays on the screen, and its text scrolls', async ({ page }) => {
+  const card = await openCard(page, 'Westweg 2', 390, 844);
+  // The card is never higher than the screen less 96 px.
+  await expect.poll(() => card.evaluate(node => [!node.querySelector('.profile'), node.getBoundingClientRect().height <= innerHeight - 96]))
+    .toEqual([true, true]);
+  await textScrolls(page, card, 1);
+});
+
+// 844 px wide has the layout of a computer, and 667 px wide that of a phone.
+for (const [width, height] of [[844, 390], [667, 375]]) {
+  test(`in a window of ${width} × ${height} px, the card of a route with a profile shows no strip, and two lines of its text that scroll`, async ({ page }) => {
+    const card = await openCard(page, 'Schlossberg loop', width, height);
+    await expect(card.locator('.profile')).toBeHidden();
+    await textScrolls(page, card, 2);
+  });
+}
+
+test('in a wide and low window, the card is in the map with its close button, and a lower picture leaves three lines of its text', async ({ page }) => {
+  const card = await openCard(page, 'Westweg 2', 1440, 420);
+  await textScrolls(page, card, 3);
+  const close = card.getByRole('button', { name: 'Close' });
+  await expect.poll(async () => {
+    const [map, button] = await Promise.all([page.locator('.map').boundingBox(), close.boundingBox()]);
+    return button.y >= map.y && button.y + button.height <= map.y + map.height;
+  }).toBe(true);
+  await close.click();
+  await expect(card).toHaveCount(0);
 });

@@ -198,6 +198,13 @@
     let statusUndo = $state<(() => void) | null>(null);
     let visibleRange = $state<[number, number] | null>(null);
     let hoverProgress = $state<number | null>(null);
+    // The part of the route the profile selects, as route progress. Another line ends it; the map fits each part.
+    let part = $state<[number, number] | null>(null);
+    $effect(() => { void visualRoute; part = null; });
+    $effect(() => {
+        const fit = part;
+        untrack(() => { if (fit) map?.fitCoordinates(routeSlice(coordinates, fit[0], fit[1]), true); });
+    });
     let sideWidth = $state(360);
     let profileHeight = $state(260);
     let profileOpen = $state(true);
@@ -458,6 +465,7 @@
         expandedDay = null;
         visibleRange = null;
         hoverProgress = null;
+        part = null;
         fitPlan = true;
         list = 'plan';
         firstOptions = false;
@@ -1056,7 +1064,9 @@
         }
         if (event.key === 'Escape') {
             session.previewOption(null);
-            if (!selectedId && !mapMode && focusedDay) showAllDays();
+            // A map selection or mode closes before the part, which `Lanes` clears unless the default is prevented.
+            if (selectedId || mapMode) event.preventDefault();
+            else if (!part && focusedDay) showAllDays();
             clearSelection();
         }
     }
@@ -1193,7 +1203,7 @@
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`} ondragover={dragOver} ondrop={drop}
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
-                    bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
+                    bind:this={map} {part} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
                     {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking || mapMode?.kind === 'transfer'} routingPackage={currentRoute?.package}
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
@@ -1283,6 +1293,7 @@
                 activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {trip} {rests} onTrip={changePlan}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
+                {part} onPart={next => { if (active) part = next; }}
             >
                 {#snippet strip(from, to, rests, onHover)}
                     {#if dataLayer?.strip}<LayerStrip layer={dataLayer} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {rests} {onHover} />{/if}

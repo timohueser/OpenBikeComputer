@@ -153,6 +153,6 @@ test('the text, the cards, the search and each button open what they name', asyn
   await fill(page, { active: 'lake' });
   await page.goto('/planner.html#/');
   await expect(page.getByText('Continue where you stopped')).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Open in the planner' })).toHaveAttribute('href', '#/planner/lake');
+  await expect(page.getByRole('link', { name: 'Open in planner' })).toHaveAttribute('href', '#/planner/lake');
   await expect(page.getByRole('link', { name: 'Plan a new route' })).toHaveAttribute('href', '#/planner/new');
 });

@@ -19,7 +19,7 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="place-list" role="dialog" aria-label="Places here" tabindex="-1"
-    onkeydown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }}>
+    onkeydown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose(); } }}>
     <div class="head"><strong>Places here</strong><button type="button" class="close" aria-label="Close" onclick={onClose}><Icon name="close" size={15} /></button></div>
     <ul bind:this={list}>
         {#each rows as place (place.id)}
