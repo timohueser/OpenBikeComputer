@@ -9,7 +9,7 @@ pub fn decode(body: &[u8]) -> Result<Vec<u8>, image_webp::DecodingError> {
     if decoder.has_alpha() {
         return Ok(pixels);
     }
-    Ok(pixels.chunks_exact(3).flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255]).collect())
+    Ok(pixels.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect())
 }
 
 #[cfg(target_arch = "wasm32")]
