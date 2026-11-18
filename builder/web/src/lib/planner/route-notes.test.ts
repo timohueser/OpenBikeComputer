@@ -9,10 +9,10 @@ describe('route notes', () => {
         const notes = routeNotes(
             [{ point, coordinates: [[0.02, 0], [0.02, 0.002]], km: 0.22, at: 9 }],
             [{ closures: [{ kind: 'limited', condition: 'customers' }], coordinates: [], km: 0.3, at: 5 }],
-            [{ coordinates: [], km: 2, at: 1 }, { coordinates: [], km: 1, at: 7 }],
+            [{ coordinates: [], km: 2, at: 1, grade: 4 }, { coordinates: [], km: 1, at: 7, grade: 5 }],
         );
         expect(notes.map(note => [note.icon, note.km, note.length])).toEqual([['mountain', 1, 2], ['lock', 5, 0.3], ['mountain', 7, 1], ['flag', 9, undefined]]);
-        expect(notes[1].label).toBe('Customers only');
+        expect(notes.map(note => note.label)).toEqual(['Alpine path (T4)', 'Customers only', 'Alpine path (T5)', 'Ends 220 m before your point']);
     });
 
     it('joins a stretch to the last note of its icon and label that ends less than 2 km before it', () => {
@@ -24,7 +24,7 @@ describe('route notes', () => {
         const notes = routeNotes(
             [gap(20), gap(20.5)],
             [closed('seasonal', 10, 1, first), closed('permit', 11.2, 0.3), closed('seasonal', 12.9, 0.5, second), closed('seasonal', 15.5, 0.4)],
-            [{ coordinates: [], km: 0.2, at: 11.5 }],
+            [{ coordinates: [], km: 0.2, at: 11.5, grade: 4 }],
         );
         expect(notes.map(note => [note.icon, note.km, note.end !== undefined])).toEqual([
             ['lock', 10, true], ['lock', 11.2, false], ['mountain', 11.5, false], ['lock', 15.5, false], ['flag', 20, false], ['flag', 20.5, false],
