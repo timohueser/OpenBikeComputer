@@ -104,13 +104,12 @@ impl Part<'_> {
 
 /// The record of a long relation from its parts, and the plan points of its kept parts joined.
 /// `None` when no part is kept. A relation that opens a connector leg is never complete: the leg
-/// leaves a gap between its parts.
+/// leaves a gap between its parts. It has no `symbol` when a kept part is in France.
 pub(super) fn record(
     relation: &Relation,
     kind: &str,
     parts: &[Part],
     connector: bool,
-    france: bool,
 ) -> Option<(Map<String, Value>, usize)> {
     let kept: Vec<&Kept> = parts.iter().filter_map(|part| part.kept).collect();
     if kept.is_empty() {
@@ -119,7 +118,7 @@ pub(super) fn record(
     let flags = order(parts);
     // The first and last point of each part in the direction of the trail.
     let way = |i: usize| parts[i].ends().map(|e| if flags[i].0 { (e.finish, e.start) } else { (e.start, e.finish) });
-    let mut record = header(relation, kind, france);
+    let mut record = header(relation, kind, kept.iter().any(|k| k.french));
     let sum = |field: &str| kept.iter().map(|k| k.record[field].as_u64().unwrap()).sum::<u64>();
     for field in ["length_m", "ascent_m", "descent_m"] {
         record.insert(field.into(), json!(sum(field)));

@@ -36,6 +36,11 @@ type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<(Id, &'a str)>);
 /// source objects. The way from node 0 to node 1 is T3, the way from node 25 to node 26 is a T5 path;
 /// there is no street from node 15 to node 25.
 fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
+    grid_at([ORIGIN, ORIGIN], routes)
+}
+
+/// The grid with node 0 at `origin`, in microdegrees of longitude and latitude.
+fn grid_at(origin: [i32; 2], routes: Vec<Route>) -> (Package<Memory>, Data) {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
     let (mut ways, mut relations) = (Builder::<Ways>::default(), Builder::<Relations>::default());
@@ -43,8 +48,8 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
         for column in 0..7 {
             let id = 10 * row + column;
             let point = Point {
-                lat: ORIGIN + row as i32 * 4_000,
-                lon: ORIGIN + column as i32 * 4_000,
+                lat: origin[1] + row as i32 * 4_000,
+                lon: origin[0] + column as i32 * 4_000,
                 elevation: ((row * 3 + column * 7) % 5) as f32 * 20.0,
             };
             index.insert(id, graph.points.len() as u32);
@@ -100,12 +105,20 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     graph.link_ways();
     let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| PROFILES.contains(&p.name.as_str())).collect();
     let mut objects = HashMap::new();
-    let manifest =
-        crate::prepare(&graph, "test".into(), [-1.0, -1.0, 1.0, 1.0], &profiles, vec![], "test".into(), |bytes| {
+    let [lon, lat] = origin.map(|udeg| udeg as f64 * 1e-6);
+    let manifest = crate::prepare(
+        &graph,
+        "test".into(),
+        [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0],
+        &profiles,
+        vec![],
+        "test".into(),
+        |bytes| {
             objects.insert(digest(bytes), bytes.to_vec());
             Ok(digest(bytes))
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
     (Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap(), graph.osm)
 }
 
@@ -209,7 +222,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         route(36, &[("route", "hiking"), ("name", "Etappe 6")], path(&[20, 30, 40, 50])),
     ]);
     let selection = Selection::whole(package.fork());
-    let (records, report) = catalog(&selection, osm, false, 2, SECTION_M)?;
+    let (records, report) = catalog(&selection, osm, 2, SECTION_M)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
     assert_eq!(
@@ -347,7 +360,7 @@ fn catalog_cuts_a_long_line_whose_plan_fails_into_sections() -> Result<(), Strin
     ]);
     // The test grid is 2.7 km wide.
     let section_m = 2_000.0;
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, false, 2, section_m)?;
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, 2, section_m)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: BTreeSet<i64> = report.dropped.values().flatten().copied().collect();
     assert_eq!(dropped, BTreeSet::from([-4003, 45]), "{:?}", report.dropped);
@@ -386,10 +399,35 @@ fn catalog_cuts_a_long_line_whose_plan_fails_into_sections() -> Result<(), Strin
 }
 
 #[test]
+fn catalog_leaves_out_the_mark_of_a_route_in_france() -> Result<(), String> {
+    let marked = |name| vec![("route", "hiking"), ("name", name), ("osmc:symbol", "red:white:red_bar")];
+    let long = |id, children: &[i64]| -> Route {
+        (id, [vec![("type", "superroute")], marked("Long")].concat(), members(children, Id::Relation))
+    };
+    // Near Geneva: from node 2 on, the south row is in France; the two north rows are in Switzerland.
+    let (package, osm) = grid_at(
+        [6_180_000, 46_178_000],
+        vec![
+            route(1, &marked("Into France"), path(&[0, 1, 2, 3, 4, 5, 6])),
+            route(2, &marked("Swiss"), path(&[60, 61, 62, 63, 64, 65, 66])),
+            route(3, &[("route", "hiking"), ("name", "Plain")], path(&[50, 51, 52, 53, 54, 55, 56])),
+            long(4, &[1, 2]),
+            long(5, &[2, 3]),
+        ],
+    );
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, 2, SECTION_M)?;
+    assert!(report.dropped.is_empty(), "{:?}", report.dropped);
+    let symbols: Vec<_> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r.get("symbol").cloned())).collect();
+    let mark = Some(json!("red:white:red_bar"));
+    assert_eq!(symbols, [(1, None), (2, mark.clone()), (3, None), (4, None), (5, mark)]);
+    Ok(())
+}
+
+#[test]
 fn catalog_keeps_a_hiking_route_over_a_t5_way() -> Result<(), String> {
     let (package, osm) =
         grid(vec![route(13, &[("route", "hiking"), ("name", "Ridge")], path(&[23, 24, 25, 26, 36, 46]))]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, false, 2, SECTION_M)?;
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, 2, SECTION_M)?;
     assert!(report.dropped.is_empty(), "{:?}", report.dropped);
     assert_eq!((&records[0]["id"], &records[0]["hardest"]), (&json!(13), &json!(4)));
     Ok(())

@@ -2,6 +2,7 @@
 //! come from the OSM-derived boundaries of the JOSM project, embedded in `country-boundaries`.
 use country_boundaries::{CountryBoundaries, LatLon, BOUNDARIES_ODBL_360X180};
 use planner_router::model::{Point, BIKE, FOOT, PUSH};
+use planner_router::shape::P;
 use std::sync::LazyLock;
 
 const ALL: u8 = BIKE | FOOT | PUSH;
@@ -51,6 +52,11 @@ const RIGHT_HAND: &[&str] = &["GI", "IO"];
 
 static BOUNDARIES: LazyLock<CountryBoundaries> =
     LazyLock::new(|| CountryBoundaries::from_reader(BOUNDARIES_ODBL_360X180).expect("embedded country boundaries"));
+
+/// Whether a point, in microdegrees of longitude and latitude, is in France.
+pub fn in_france(point: P) -> bool {
+    LatLon::new(point[1] as f64 * 1e-6, point[0] as f64 * 1e-6).is_ok_and(|at| BOUNDARIES.is_in(at, "FR"))
+}
 
 /// The rules of the country at a point: the row of its entry in `DEFAULTS`, and its side of the
 /// road. Outside every country, the worldwide rules apply.
@@ -136,5 +142,7 @@ mod tests {
         assert!(of("GB").left_hand() && !of("DE").left_hand() && !Country::default().left_hand());
         // Jersey drives on the left like the United Kingdom; Gibraltar drives on the right.
         assert!(at(49.21, -2.13).left_hand() && !at(36.14, -5.35).left_hand());
+        // Annemasse is in France, Geneva next to it in Switzerland.
+        assert!(in_france([6_236_000, 46_193_000]) && !in_france([6_143_000, 46_204_000]));
     }
 }
