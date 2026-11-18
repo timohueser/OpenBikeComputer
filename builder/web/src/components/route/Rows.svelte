@@ -7,7 +7,7 @@
     import Icon from '../../lib/ui/Icon.svelte';
     import ElevationRow from './ElevationRow.svelte';
     import Menu from './Menu.svelte';
-    import Lanes from './Lanes.svelte';
+    import Lanes from '../../lib/ui/Lanes.svelte';
     import { distanceTicks, fitTicks } from './ticks';
     import type { RouteSummary } from '../../lib/library/records';
     import { lineCoordinates } from '../../lib/library/summary';
