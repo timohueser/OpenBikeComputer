@@ -280,9 +280,8 @@ least two counts against one line, and more counts against one line than pairs o
 loop part counts against one line: it comes back to its start and takes the line no further, so it
 meets no part. Two neighbouring parts with ends, neither a loop, meet when the second part is at
 most 60 m from the trail end of the first part; else they count against one line. 60 m leaves room
-for the slack of two stage ends at one place, and it is far under the distance between the separate
-routes of one area. A part with no ends counts for nothing. One count is a hole in the map data, so
-a trail with one jump stays in the catalog. Each long route is judged on its own parts, so a long
+for the slack of two stage ends at one place. A part with no ends counts for nothing. One count is
+a hole in the map data, so a trail with one jump stays in the catalog. Each long route is judged on its own parts, so a long
 route inside another one can leave while the outer one keeps the same parts as its stages.
 
 A long route is complete when each part is in the catalog, and no part is cut, runs backwards or has

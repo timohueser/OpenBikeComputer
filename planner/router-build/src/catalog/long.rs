@@ -14,8 +14,7 @@ const MAX_DEPTH: usize = 4;
 /// The entries of `trail_profile_m`.
 const TRAIL_PROFILE: usize = 201;
 /// Two parts meet when one has an end this near the other's end. It leaves room for the slack of two
-/// stage ends at one place, such as a plan route that starts on the road next to the line, and it is
-/// far under the distance between the separate routes of one area.
+/// stage ends at one place, such as a plan route that starts on the road next to the line.
 const MEET_M: f64 = 60.0;
 
 /// A part of a long relation: a route relation, or a relation that the data does not hold, with the
