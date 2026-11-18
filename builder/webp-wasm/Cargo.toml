@@ -1,0 +1,16 @@
+[package]
+name = "obc-webp-bridge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "WebP tiles as stored, in the browser: TrailView's ground worker where the browser decodes images premultiplied"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+image-webp = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }

@@ -1,5 +1,6 @@
 // Decodes the ground, colour and snow tiles of a ground tile and builds its pages, off the main thread.
 import { colourTexels, groundPages, type GroundDate, type Raster } from './ground-pages';
+import initWebp, { decode_webp } from './webp/obc_webp_bridge.js';
 
 /** A tile body of a layer of specs/trailview-tiles.md. */
 export interface Body { key: string; z: number; x: number; y: number; body: ArrayBuffer; layer: 'ground' | 'colour' | 'snow' }
@@ -20,11 +21,13 @@ let held = 0;
 
 let gl: WebGL2RenderingContext | null | undefined;
 
+type Pixels = { size: number; data: Uint8Array };
+
 /**
  * The RGBA bytes of an image as stored. A 2D canvas premultiplies alpha, which loses the bytes under
  * an alpha below 255, as the region of a ground tile, so the pixels go through a WebGL texture.
  */
-async function straightPixels(body: ArrayBuffer): Promise<{ size: number; data: Uint8Array }> {
+async function webglPixels(body: ArrayBuffer): Promise<Pixels> {
     if (!gl || gl.isContextLost()) gl = new OffscreenCanvas(1, 1).getContext('webgl2');
     if (!gl) throw new Error('The ground decodes through WebGL 2, which this worker does not have.');
     const bitmap = await createImageBitmap(new Blob([body]), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
@@ -52,16 +55,36 @@ async function straightPixels(body: ArrayBuffer): Promise<{ size: number; data: 
  * of at most 61, so a decode that premultiplies scales every byte of the ground.
  */
 const PROBE = 'UklGRioAAABXRUJQVlA4TB4AAAAvAUAAEB8wZIM8MgKSJP9vDuIBYJANUKYKs4j+xw4=';
-let probed: Promise<void> | undefined;
 
-/** Fails where this worker does not decode the RGB under a low alpha exactly. */
-function probe(): Promise<void> {
-    probed ??= straightPixels(Uint8Array.from(atob(PROBE), c => c.charCodeAt(0)).buffer).then(({ data }) => {
-        const exact = [0, 1, 2, 255].every((alpha, i) => [200, 100, 50, alpha].every((byte, c) => data[4 * i + c] === byte));
-        if (!exact) throw new Error('This browser does not decode the RGB under a low alpha exactly, which the ground needs.');
-    });
-    return probed;
+/** The bytes of a WebP image in WASM: slower than the browser's decode, and exact where that premultiplies (WebKit). */
+async function wasmPixels(body: ArrayBuffer): Promise<Pixels> {
+    const data = decode_webp(new Uint8Array(body));
+    return { size: Math.sqrt(data.length / 4), data };
 }
+
+/** Whether a decode gives the probe's bytes: the RGB under a low alpha exactly. */
+async function exact(decode: (body: ArrayBuffer) => Promise<Pixels>): Promise<boolean> {
+    const { data } = await decode(Uint8Array.from(atob(PROBE), c => c.charCodeAt(0)).buffer);
+    return [0, 1, 2, 255].every((alpha, i) => [200, 100, 50, alpha].every((byte, c) => data[4 * i + c] === byte));
+}
+
+let straight: Promise<(body: ArrayBuffer) => Promise<Pixels>> | undefined;
+
+/** The exact decode of this worker: the browser's through WebGL where it is exact, else WASM. */
+function straightDecode(): Promise<(body: ArrayBuffer) => Promise<Pixels>> {
+    straight ??= exact(webglPixels).catch(() => false).then(async browser => {
+        if (browser) return webglPixels;
+        await initWebp();
+        if (!(await exact(wasmPixels))) throw new Error('This browser does not decode the RGB under a low alpha exactly, which the ground needs.');
+        return wasmPixels;
+    });
+    return straight;
+}
+
+const straightPixels = async (body: ArrayBuffer): Promise<Pixels> => (await straightDecode())(body);
+
+/** Fails where this worker has no exact decode. */
+const probe = (): Promise<unknown> => straightDecode();
 
 /** The bytes of a tile as `groundPages` reads them. */
 async function decode({ body, layer }: Body): Promise<{ size: number; channels: number; data: Uint8Array }> {
