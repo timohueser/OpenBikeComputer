@@ -34,8 +34,9 @@
         selected?: string;
         /** The id of the route under a click, or undefined after a click where no route is. */
         onselect?: (id: string | undefined) => void;
-        /** Shows at the bottom of the window, over the view or its notice. */
-        card?: Snippet;
+        /** Shows at the bottom of the window, over the view or its notice. It gets a function that moves the focus to
+         * the view: a card that closes itself calls it first, because its close button goes with it. */
+        card?: Snippet<[() => void]>;
     };
     // The window has two modes: a drop at `at` with the plan's data `near`, or `routes` from the first `view`.
     let props: {
@@ -190,7 +191,7 @@
             {/if}
         {/if}
     {/if}
-    {#if props.card}<div class="card">{@render props.card()}</div>{/if}
+    {#if props.card}<div class="card">{@render props.card(() => canvas.focus())}</div>{/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>
     <Credits {credits} />
 </dialog>

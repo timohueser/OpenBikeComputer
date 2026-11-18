@@ -19,6 +19,7 @@
     import type { TrailViewRoute } from '../components/planner/TrailViewWindow.svelte';
     import SignedCard, { signedNumbers } from './explore/SignedCard.svelte';
     import SignedPicture from './explore/SignedPicture.svelte';
+    import { firstRows, ROWS } from './explore/rows';
     import Chips from './routes/Chips.svelte';
     import { PROFILE_STEP_M, results, signedItem, type Chips as ChipValues, type SignedItem } from './routes/filter';
     import ListAndMap from './routes/ListAndMap.svelte';
@@ -32,7 +33,8 @@
     // The page reads the route catalog only.
     let {}: { library: Library; active: boolean } = $props();
 
-    const WAIT_MS = 300;
+    /** The map gives its view when it is still for 100 ms; the page loads the files of a view this much later. */
+    const WAIT_MS = 200;
     const kept = history.state?.explore as Kept | undefined;
 
     let chips = $state<ChipValues>(kept?.chips ?? { bike: 'hiking' });
@@ -90,8 +92,16 @@
             if (id === loads) failed = true;
         }
     }
+    /** A view with the numbers of the last one, as after a resize to the same size, is no new view: a new view starts
+     * the list again. */
+    function setView(next: Box) {
+        // A caller can be inside an effect of the map: this read must not make that effect depend on the view.
+        const now = untrack(() => view);
+        if (!now || next.some((value, i) => value !== now[i])) view = next;
+    }
+
     // A view whose cell files the catalog holds gets its answer before the page draws the view, so the list shows no
-    // load. Another view loads its files when the map has stopped for `WAIT_MS`.
+    // load. Another view loads its files `WAIT_MS` later.
     $effect.pre(() => {
         const box = view, kind = bike;
         if (!box) return;
@@ -107,17 +117,25 @@
     });
 
     // The list draws its first rows, and more when the rider scrolls near their end, so a new view makes few rows.
-    const ROWS = 60;
     let rows = $state<HTMLElement>(), rowLimit = $state(ROWS);
     const drawn = $derived(shown.length > rowLimit ? shown.slice(0, rowLimit) : shown);
+    const chosenAt = $derived(chosen ? shown.indexOf(chosen) : -1);
     function drawMore() {
         if (rows && rowLimit < shown.length && rows.scrollTop + rows.clientHeight > rows.scrollHeight - 600) rowLimit += ROWS;
     }
-    // A route selected on the map or in TrailView shows its row. Only the list scrolls, not the page.
+    // A new list, from an answer or from the chips, starts at its top with its first rows.
+    $effect.pre(() => {
+        void [answer, chips];
+        rowLimit = firstRows(untrack(() => chosenAt));
+        if (rows) rows.scrollTop = 0;
+    });
+    // The selected route has its row and shows it: after a selection on the map or in TrailView, and in a new list,
+    // which can move the route. Only the list scrolls, not the page.
     $effect(() => {
-        const item = chosen;
-        if (!item) return;
-        untrack(() => { rowLimit = Math.max(rowLimit, shown.indexOf(item) + 1); });
+        void [answer, chips];
+        const at = chosenAt;
+        if (at < 0) return;
+        untrack(() => { rowLimit = Math.max(rowLimit, at + 1); });
         void tick().then(() => {
             const row = rows?.querySelector('[aria-current="true"]');
             if (!row) return;
@@ -203,7 +221,7 @@
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
 <ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={[]} selected={chosen ? [chosen.id] : []}
-    onselect={id => selected = id} onview={next => view = wrapped(next)} card={chosen ? card : undefined}
+    onselect={id => selected = id} onview={next => setView(wrapped(next))} card={chosen ? card : undefined}
     mapButtons={hasTrailView(config) && shown.length ? mapButtons : undefined}>
     {#snippet list()}
         <!-- The search field finds places only; a chosen place moves the map. -->
@@ -234,8 +252,8 @@
     {/snippet}
 </ListAndMap>
 
-{#snippet card()}
-    <SignedCard item={chosen!} onplan={() => plan(chosen!)} onclose={() => selected = undefined} />
+{#snippet card(refocus: () => void)}
+    <SignedCard item={chosen!} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
 {/snippet}
 
 {#snippet mapButtons()}
@@ -310,7 +328,7 @@
         .spinner { animation-duration: 3s; }
     }
     .trailview-notice {
-        max-width: 220px;
+        max-width: min(220px, 45vw);
         margin: 0;
         padding: 6px 10px;
         border-radius: 6px;

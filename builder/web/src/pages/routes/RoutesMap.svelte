@@ -27,6 +27,7 @@
         together?: (id: string) => string[];
         /** Undefined after a click on the map where no route is. */
         onselect: (id: string | undefined) => void;
+        /** The first view, and then each view in which the map is still for `STILL_MS`. */
         onview: (view: Box) => void;
         /** A change fits the map to the shown items. */
         fit: number;
@@ -35,6 +36,9 @@
     } = $props();
 
     const LINE_ZOOM = 8;
+    /** A zoom in steps ends a move after each step. The page gets the view of a still map, so that such a gesture gives
+     * one view, at its end. */
+    const STILL_MS = 100;
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>(), ready = $state(false), loaded = $state(false);
     const theme = $derived(appearance.dark ? 'dark' : 'light');
@@ -160,7 +164,12 @@
         // The page gets its first view with the style: the load of the map waits for each tile of the view.
         created.once('style.load', () => onview(view()));
         created.on('load', () => { loaded = true; });
-        created.on('moveend', () => onview(view()));
+        let still: ReturnType<typeof setTimeout> | undefined;
+        created.on('movestart', () => clearTimeout(still));
+        created.on('moveend', () => {
+            clearTimeout(still);
+            still = setTimeout(() => onview(view()), STILL_MS);
+        });
         created.on('click', 'routes-hit', event => { const id = event.features?.[0]?.properties.id; if (id) onselect(id); });
         created.on('click', 'bubbles', event => void zoomIn(event));
         created.on('click', event => {
@@ -194,7 +203,7 @@
         map = created;
         const resize = new ResizeObserver(() => created.resize());
         resize.observe(container);
-        return () => { resize.disconnect(); created.remove(); lease.release(); };
+        return () => { clearTimeout(still); resize.disconnect(); created.remove(); lease.release(); };
     });
 
     $effect(() => {
@@ -256,9 +265,10 @@
         height: 100%;
         background: var(--parchment);
     }
-    /* The credits wrap before they reach the zoom buttons at the top right. */
+    /* The credits wrap before they reach the zoom buttons at the top right, and the buttons that the page puts beside
+       them (`--map-buttons`). */
     .routes-map :global(.maplibregl-ctrl-top-left) {
-        right: 52px;
+        right: calc(52px + var(--map-buttons, 0px));
     }
     /* The credit in the letters and the colours of the page, as on the map of a route. */
     .routes-map :global(.maplibregl-ctrl-attrib), .more-credits {

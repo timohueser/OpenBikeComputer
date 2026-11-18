@@ -29,12 +29,26 @@
         list: Snippet;
         /** At the top right of the map, left of its zoom buttons. */
         mapButtons?: Snippet;
-        /** The card of the selected item. The page gives it only while an item is selected. */
-        card?: Snippet;
+        /** The card of the selected item. The page gives it only while an item is selected. It gets a function that
+         * moves the focus to the current row of the list: a card that closes itself calls it first, because its close
+         * button goes with it. */
+        card?: Snippet<[() => void]>;
     } = $props();
 
     /** The height of the selected card, which covers the bottom of the map. */
     let cardHeight = $state(0);
+    /** The width of the buttons of the page on the map: the credits of the map end before them. */
+    let buttonsWidth = $state(0);
+    let listBox = $state<HTMLElement>();
+    const toRow = () => listBox?.querySelector<HTMLElement>('[aria-current="true"]')?.focus();
+
+    // A card that is fixed at the bottom of the screen covers the end of the document: the document gets its height
+    // as room there. The rule of the phone layout reads it.
+    $effect(() => {
+        if (!card || !cardHeight) return;
+        document.body.style.setProperty('--card-room', `${cardHeight + 24}px`);
+        return () => { document.body.style.removeProperty('--card-room'); };
+    });
 </script>
 
 <div class="routes-page">
@@ -48,19 +62,19 @@
     {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
 
     <div class="cards">
-        <div class="list">
+        <div class="list" bind:this={listBox}>
             <Card>{@render list()}</Card>
         </div>
-        <div class="map">
+        <div class="map" style:--map-buttons={mapButtons ? `${buttonsWidth + 10}px` : null}>
             {#await import('./RoutesMap.svelte') then { default: RoutesMap }}
                 <RoutesMap {items} {shown} {selected} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} credits={card ? credits : []}
                     {look} {together} {onselect} {onview} />
             {:catch error}
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>
             {/await}
-            {#if mapButtons}<div class="map-buttons">{@render mapButtons()}</div>{/if}
+            {#if mapButtons}<div class="map-buttons" bind:clientWidth={buttonsWidth}>{@render mapButtons()}</div>{/if}
             {#if card}
-                <div class="selected" bind:offsetHeight={cardHeight}>{@render card()}</div>
+                <div class="selected" bind:offsetHeight={cardHeight}>{@render card(toRow)}</div>
             {/if}
         </div>
     </div>
@@ -136,9 +150,9 @@
         align-items: flex-end;
         gap: 6px;
     }
-    /* The buttons of the map are light in both themes, so their focus ring is the one of the light theme. */
+    /* The buttons of the map are light in both themes: `--rust` is dark on them in both, `--forest` is not. */
     .map :global(.maplibregl-ctrl button:focus-visible) {
-        outline: 2px solid #a4501e;
+        outline: 2px solid var(--rust);
         outline-offset: -2px;
         box-shadow: none;
     }
@@ -166,6 +180,9 @@
             position: fixed;
             z-index: 20;
             bottom: max(12px, env(safe-area-inset-bottom));
+        }
+        :global(body) {
+            padding-bottom: var(--card-room, 0);
         }
     }
 </style>
