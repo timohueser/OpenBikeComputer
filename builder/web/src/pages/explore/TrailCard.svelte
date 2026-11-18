@@ -30,11 +30,13 @@
         onclose: () => void;
     } = $props();
 
+    // The count waits for the parts: before them it cannot say how many stages the catalog holds.
+    const count = $derived(!!record?.parts && stageCount(trail.stage_count, record.parts));
     // The entries of `trail_profile_m` are at equal shares of the trail: on a line of equal steps, MiniProfile places them so.
     const profile = $derived(record?.trail_profile_m && { line: record.trail_profile_m.flatMap((_, i) => [i / 1000, 0]), heights: record.trail_profile_m });
 </script>
 
-<RouteCard name={trail.name ?? trail.ref ?? ''} meta={[trail.loop ? 'Loop' : 'One way', stageCount(trail.stage_count, record?.parts), kindName(trail)]} numbers={signedNumbers(trail)}
+<RouteCard name={trail.name ?? trail.ref ?? ''} meta={[trail.loop ? 'Loop' : 'One way', count, kindName(trail)]} numbers={signedNumbers(trail)}
     {profile} failure={failed ? 'The trail could not load.' : undefined} more={record?.parts || record?.credit ? more : undefined} {onclose}>
     {#snippet picture()}{#if item}<SignedPicture {item} />{/if}{/snippet}
     {#snippet mark()}<span class="mark"><TrailMarker symbol={trail.symbol} ref={trail.ref} /></span>{/snippet}
