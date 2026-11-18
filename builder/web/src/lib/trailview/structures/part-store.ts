@@ -9,8 +9,11 @@ export interface Placement {
     node: number; x: number; y: number; ux: number; uy: number; g: string; look: string; w: number; h: number; round: boolean;
     floor0: number; shift: number; kind: string; rung: string;
     v1?: Fit; v2?: Fit; twin?: { node: number; side: number; gap: number; stagger: number } | null;
-    free?: { len: number }; hb?: number; ends?: BoxEnd[];
+    free?: { len: number }; hb?: number; ends?: BoxEnd[]; drawer?: number;
 }
+const byNode = new Map<number, Placement>();
+/** The placement that draws a skipped end's part: a wider way in the same tube. */
+export const drawerOf = (p: Placement): Placement => (p.kind === 'skip' && p.drawer !== undefined ? byNode.get(p.drawer) ?? p : p);
 
 let variant: 'v1' | 'v2' = 'v1';
 const cells = new Map<string, Placement[]>();
@@ -21,6 +24,7 @@ export function setParts(which: string, list: Placement[]): void {
     variant = which === 'v2' ? 'v2' : 'v1';
     partsOn = true;
     for (const p of list) {
+        byNode.set(p.node, p);
         const key = `${Math.floor(p.x / CELL)},${Math.floor(p.y / CELL)}`;
         (cells.get(key) ?? cells.set(key, []).get(key)!).push(p);
     }
@@ -58,7 +62,7 @@ export const fitOf = (p: Placement): Fit | undefined => p[variant] ?? p.v1;
  * underpass takes its whole line; an end that a twin or the other end draws takes as much as the drawing part.
  */
 export function partReach(x: number, y: number): number {
-    const p = partAt(x, y);
+    const found = partAt(x, y), p = found && drawerOf(found);
     if (!p || p.kind === 'none') return 0;
     if (p.kind === 'box') return 1e4;
     if (p.kind === 'skip') return p.rung.startsWith('underpass') ? 1e4 : 0;

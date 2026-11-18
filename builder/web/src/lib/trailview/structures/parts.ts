@@ -3,8 +3,8 @@
 // shell stands out of the hill, the walls of a short cutting (V2), an underpass box with its wing walls, and the free
 // tube end with a slanted cut. Plus the boxes in which the terrain and the ground plan draw nothing.
 import { metresPerUnit, type Line } from '../terrain/bins';
-import { BORE, LAMP, mix, MeshBuilder, PAINT, paintOf, posts, rgb, VOID, type Corner, type Station } from './mesh';
-import { fitOf, partAt, type BoxEnd, type Placement } from './part-store';
+import { BORE, LAMP, MeshBuilder, PAINT, paintOf, posts, rgb, VOID, type Corner, type Station } from './mesh';
+import { drawerOf, fitOf, partAt, type BoxEnd, type Placement } from './part-store';
 
 const T = 0.5, FACE = 0.8, FRAME = 0.45, RECESS = 0.25, SINK = 2, ARCH = 8, SPRING = 0.6, WALL = 0.5, SLAB = 0.5, COPE = 0.08;
 type Look = { face: number; frame: number; coping: number; wall: number; shell: number };
@@ -154,7 +154,7 @@ function floorAlong(line: Line, from: number, to: number, s: number): number {
 
 /** The metres from an end of a line that its part takes from the bore: the bore draws past them. */
 export function boreCut(line: Line, end: 0 | 1): number {
-    const n = line.z.length, v = end ? n - 1 : 0, p = partAt(line.xy[2 * v], line.xy[2 * v + 1]);
+    const n = line.z.length, v = end ? n - 1 : 0, found = partAt(line.xy[2 * v], line.xy[2 * v + 1]), p = found && drawerOf(found);
     if (!p) return 0;
     if (p.kind === 'box' || (p.kind === 'skip' && p.rung.startsWith('underpass'))) return 1e9;
     if (p.kind === 'free') return 0.8 * (p.h + T) + 1;
@@ -270,7 +270,7 @@ export function partBoxes(p: Placement): number[] {
     const fr = frameOf(p.x, p.y, p.ux, p.uy, p.shift), out: number[] = [];
     if (p.kind === 'arch' || p.kind === 'twin') {
         const f = fitOf(p)!, so = f.open, sf = so - RECESS, floor = f.floor;
-        out.push(...box(fr, sf, Math.max(12, FACE + f.collar + 2), p.w + T, floor + p.h + T + 0.1, floor + 0.03, f.grade ?? 0, p.ux, p.uy));
+        out.push(...box(fr, sf, Math.max(12, FACE + f.collar + 2), p.w + FRAME, floor + p.h + T + 0.1, floor + 0.03, f.grade ?? 0, p.ux, p.uy));
         if (so > 0.5) {
             const top = Math.max(...f.L, ...f.R) + 5, f0 = f.F[0];
             out.push(...box(fr, 0, sf, p.w + FRAME + 0.3 + 0.25, top, f0 + 0.25, (floor - f0) / Math.max(sf, 0.1), p.ux, p.uy));
