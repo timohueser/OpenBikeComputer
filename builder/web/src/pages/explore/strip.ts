@@ -25,9 +25,11 @@ export function stripCells(parts: TrailPart[], numbered: boolean): StripCell[] {
     }));
 }
 
-/** "N stages", or "K of N stages" when the catalog holds K of the N stages of `parts`; nothing under two stages. */
+/** "N stages", or "K of N stages" when the catalog holds K of the N stages of `parts`, or "N stages, none listed" when it
+ * holds none; nothing under two stages. */
 export function stageCount(count: number | undefined, parts?: TrailPart[]): string | false {
     if (count === undefined || count < 2) return false;
     const held = parts && new Set(parts.filter(part => !part.missing && part.stage !== undefined).map(part => part.stage)).size;
+    if (held === 0) return `${count} stages, none listed`;
     return held !== undefined && held < count ? `${held} of ${count} stages` : `${count} stages`;
 }

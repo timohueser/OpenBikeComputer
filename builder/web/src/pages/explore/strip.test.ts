@@ -15,7 +15,8 @@ describe('stripCells', () => {
             { id: 3, share: 0.1, number: 3, missing: false, jump: false }, { id: 4, share: 0.3, number: 4, missing: false, jump: false },
             { id: 5, share: 0.2, number: 5, missing: true, jump: false },
         ]);
-        expect([stageCount(5, parts), stageCount(2, parts.slice(2, 4)), stageCount(5), stageCount(1)]).toEqual(['2 of 5 stages', '2 stages', '5 stages', false]);
+        expect([stageCount(5, parts), stageCount(2, parts.slice(2, 4)), stageCount(3, parts.slice(0, 2)), stageCount(5), stageCount(1)])
+            .toEqual(['2 of 5 stages', '2 stages', '3 stages, none listed', '5 stages', false]);
     });
 
     it('numbers no part of a trail with fewer than two stages, and marks a jump', () => {
