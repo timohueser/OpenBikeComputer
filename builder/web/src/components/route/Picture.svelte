@@ -91,7 +91,8 @@
             {#if !side && !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
         </div>
         <!-- The map has the credit of the base map behind its own button; this button has the rest, such as the terrain. -->
-        <Credits {credits} side="left" />
+        <!-- On a phone it can stand over a link of the popup of a place. -->
+        {#if !openPlaceId}<Credits {credits} side="left" />{/if}
     </div>
 </div>
 

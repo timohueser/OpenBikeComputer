@@ -200,12 +200,12 @@
         onpoint(at === null ? null : shown.from + at * span);
     }
 
-    /** One Escape closes one thing: an open dialog or menu first, which close themselves, then a panel or the list, then
-     * the popup of a place, then the part, which `Lanes` clears. The focus goes back to the place. The popup closes
-     * itself at an Escape from inside it. */
+    /** One Escape closes one thing: an open dialog or menu first, and a field, a pin of the map or the popup that has the
+     * focus, which close themselves; then a panel or the list, then the popup of a place, then the part, which `Lanes`
+     * clears. The focus goes back to the place. */
     function closeOnEscape(event: KeyboardEvent) {
         if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector('dialog:modal, menu')) return;
-        if ((event.target as Element).closest?.('.map-callout') || (open === undefined && listed === undefined && !openPlaceId)) return;
+        if ((event.target as Element).closest?.('input, .route-pin, .map-callout') || (open === undefined && listed === undefined && !openPlaceId)) return;
         event.preventDefault();
         if (listed !== undefined) focusGroup();
         if (open === undefined && listed === undefined) openPlaceId = null;

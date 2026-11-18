@@ -288,6 +288,18 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await page.keyboard.press('Escape');
   await expect(popup).toHaveCount(0);
   await expect(part).toHaveCount(1);
+  // A focused pin of the map and the name field take their own Escape; the popup stays.
+  await places.first().click();
+  await mapPins.locator('button').first().focus();
+  await expect(mapPins.locator('.route-pin-label')).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(mapPins.locator('.route-pin-label')).toHaveCount(0);
+  await expect(popup).toHaveCount(1);
+  await page.getByRole('button', { name: 'Rename' }).click();
+  await page.getByRole('textbox', { name: 'Route name' }).focus();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('textbox', { name: 'Route name' })).toHaveCount(0);
+  await expect(popup).toHaveCount(1);
 
   await page.evaluate(() => new Promise(resolve => {
     const open = indexedDB.open('obc-library');

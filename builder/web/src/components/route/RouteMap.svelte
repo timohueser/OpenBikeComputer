@@ -265,7 +265,9 @@
 </div>
 
 <style>
+    /* The popup draws over the discs, the pins and the photos, and under what the page puts over the map. */
     .route-map {
+        isolation: isolate;
         width: 100%;
         height: 100%;
         background: var(--parchment);
@@ -285,6 +287,9 @@
     }
     .popup-storage {
         display: none;
+    }
+    .route-map :global(.map-callout) {
+        z-index: 3;
     }
     /* The credit in the letters and the colours of the page, as on the map of the planner. */
     .route-map :global(.maplibregl-ctrl-attrib) {
