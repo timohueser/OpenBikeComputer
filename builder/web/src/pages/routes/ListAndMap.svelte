@@ -5,13 +5,14 @@
     import Card from '../../lib/ui/Card.svelte';
     import type { Box, Item } from './filter';
 
-    let { title, failure, items, shown, selected, fit, place, look, credits, together, onselect, onview, tabs, actions, list, mapButtons, card }: {
+    let { title, failure, items, shown, selected, marked, fit, place, look, credits, together, onselect, onview, tabs, actions, list, mapButtons, card }: {
         title: string;
         failure?: string;
         /** The props of the map. */
         items: Item[];
         shown: Item[];
         selected: string[];
+        marked?: string[];
         fit: number;
         place?: { lon: number; lat: number; box?: Box };
         look: 'route' | 'ride' | 'signed';
@@ -68,7 +69,7 @@
         </div>
         <div class="map" style:--map-buttons={mapButtons ? `${buttonsWidth + 10}px` : null}>
             {#await import('./RoutesMap.svelte') then { default: RoutesMap }}
-                <RoutesMap {items} {shown} {selected} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} {credits}
+                <RoutesMap {items} {shown} {selected} {marked} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} {credits}
                     {look} {together} {onselect} {onview} />
             {:catch error}
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>

@@ -41,9 +41,11 @@
     const longId = $derived(record.trail ?? record.parent), long = $derived(longId === undefined ? undefined : catalog.record(longId));
     const number = $derived(record.stage ?? record.trail_stage), of = $derived(long?.stages?.length ?? long?.stage_count);
     const part = $derived(record.section !== undefined ? `Section ${record.section}` : number === undefined ? false : of ? `Stage ${number} of ${of}` : `Stage ${number}`);
-    // A cut stage is no trail: its sections open the trail that the stage is in.
+    // A cut stage is no trail: its sections open the trail that the stage is in. A cut route of fewer than two stages has
+    // a trail record file only when it takes more than 12 hours, which no reader knows: its name is no button.
     const longName = $derived((part && (long?.name ?? long?.ref)) || false);
-    const trailName = $derived(longName && ontrail ? { text: longName, onclick: () => ontrail(long!.trail ?? long!.id) } : longName);
+    const opens = $derived(!!ontrail && !!long && (long.trail !== undefined || (long.stage_count ?? 0) >= 2));
+    const trailName = $derived(longName && opens ? { text: longName, onclick: () => ontrail!(long!.trail ?? long!.id) } : longName);
     const website = $derived(routeWebsite(record.website));
     const about = $derived(!!(record.description || record.operator || website || record.credit));
 </script>

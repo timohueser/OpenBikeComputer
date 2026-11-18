@@ -101,6 +101,9 @@ function cached<K, V>(files: Map<K, Promise<V>>, key: K, load: (key: K) => Promi
 export class RouteCatalog {
     private readonly cells = new Map<string, Promise<CatalogRecord[] | null>>();
     private readonly farCells = new Map<string, Promise<TrailEntry[] | null>>();
+    /** The far files of `farCells` that have loaded. */
+    private readonly farLoaded = new Map<string, TrailEntry[] | null>();
+    private readonly joined = new WeakMap<TrailEntry, { from: TrailEntry[]; entry: TrailEntry }>();
     private readonly trails = new Map<number, Promise<CatalogRecord | null>>();
     private readonly loaded = new Map<string, CatalogRecord[] | null>();
     private readonly records = new Map<number, CatalogRecord>();
@@ -150,13 +153,34 @@ export class RouteCatalog {
      */
     async trailsInBox(box: Box): Promise<TrailEntry[] | null> {
         if (!config.trails || trailsTooWide(box)) return null;
-        const files = await Promise.all(boxCells(box, 7).map(id => cached(this.farCells, id, loadTrailCell, FAR_FILES)));
-        const found = new Map<number, TrailEntry>();
-        for (const entry of files.flatMap(file => file ?? [])) {
-            const seen = found.get(entry.id);
-            found.set(entry.id, seen ? { ...seen, far_udeg: [...seen.far_udeg, ...entry.far_udeg] } : entry);
-        }
-        return [...found.values()].filter(entry => entry.far_udeg.some(piece => segmentInBox(piece, box))).sort((a, b) => a.id - b.id);
+        const files = await Promise.all(boxCells(box, 7).map(id => cached(this.farCells, id, id => loadTrailCell(id).then(entries => {
+            if (this.farCells.has(id)) this.farLoaded.set(id, entries);
+            return entries;
+        }), FAR_FILES)));
+        for (const id of this.farLoaded.keys()) if (!this.farCells.has(id)) this.farLoaded.delete(id);
+        return this.trailsOf(files, box);
+    }
+
+    /** The answer of `trailsInBox` with no wait, or undefined while a far file of the box is not loaded. */
+    trailsInBoxNow(box: Box): TrailEntry[] | null | undefined {
+        if (!config.trails || trailsTooWide(box)) return null;
+        const files = boxCells(box, 7).map(id => this.farLoaded.get(id));
+        return files.every(file => file !== undefined) ? this.trailsOf(files as (TrailEntry[] | null)[], box) : undefined;
+    }
+
+    /** The trails of `files` in `box`. A trail in several files keeps one joined object while those files stay loaded, so
+     * a new answer keeps its row. */
+    private trailsOf(files: (TrailEntry[] | null)[], box: Box): TrailEntry[] {
+        const found = new Map<number, TrailEntry[]>();
+        for (const entry of files.flatMap(file => file ?? [])) found.set(entry.id, [...found.get(entry.id) ?? [], entry]);
+        return [...found.values()].map(from => {
+            if (from.length === 1) return from[0];
+            const kept = this.joined.get(from[0]);
+            if (kept?.from.length === from.length && kept.from.every((entry, i) => entry === from[i])) return kept.entry;
+            const entry = { ...from[0], far_udeg: from.flatMap(entry => entry.far_udeg) };
+            this.joined.set(from[0], { from, entry });
+            return entry;
+        }).filter(entry => entry.far_udeg.some(piece => segmentInBox(piece, box))).sort((a, b) => a.id - b.id);
     }
 
     /** The whole record of the trail `id`, with `parts` and `trail_profile_m`, or null for a grid release with no trail files. */

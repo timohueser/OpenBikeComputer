@@ -10,7 +10,7 @@
     const breaks = $derived.by(() => {
         if (item.kind !== 'trail') return undefined;
         let at = 0;
-        return item.entry.far_udeg.slice(0, -1).map(piece => at += piece.length / 2);
+        return item.pieces.slice(0, -1).map(piece => at += piece.length);
     });
 </script>
 

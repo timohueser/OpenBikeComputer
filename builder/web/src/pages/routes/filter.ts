@@ -15,7 +15,7 @@ export type { Box };
 export type Item = { id: string; name: string; at: number }
     & ({ kind: 'route'; summary: RouteSummary | null } | { kind: 'ride'; summary: RideSummary }
         | { kind: 'signed'; summary: RouteSummary; record: CatalogRecord; profile?: Pick<Summary, 'line' | 'heights'> }
-        | { kind: 'trail'; summary: RouteSummary; entry: TrailEntry });
+        | { kind: 'trail'; summary: RouteSummary; entry: TrailEntry; pieces: Coordinate[][] });
 export type RideItem = Extract<Item, { kind: 'ride' }>;
 export type SignedItem = Extract<Item, { kind: 'signed' }>;
 export type TrailItem = Extract<Item, { kind: 'trail' }>;
@@ -119,12 +119,12 @@ export function signedItem(record: CatalogRecord, bike: Bike): SignedItem {
     };
 }
 
-/** A trail of the far files. Its summary line is its far line with the pieces joined, with no heights. */
+/** A trail of the far files, with the pieces of its far line. Its summary line is the pieces joined, with no heights. */
 export function trailItem(entry: TrailEntry, bike: Bike): TrailItem {
-    const line = entry.far_udeg.flatMap(piece => decodeCoordinates(piece).flatMap(([lon, lat]) => [round5(lon), round5(lat)]));
+    const pieces = entry.far_udeg.map(decodeCoordinates), line = pieces.flat().flatMap(([lon, lat]) => [round5(lon), round5(lat)]);
     const lons = line.filter((_, i) => i % 2 === 0), lats = line.filter((_, i) => i % 2 === 1);
     return {
-        kind: 'trail', id: String(entry.id), name: entry.name ?? entry.ref ?? '', at: 0, entry,
+        kind: 'trail', id: String(entry.id), name: entry.name ?? entry.ref ?? '', at: 0, entry, pieces,
         summary: {
             line, heights: lons.map(() => null), bounds: [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)],
             lengthM: entry.length_m, climbM: entry.ascent_m, highestM: null, seconds: 0, bike, days: 1,

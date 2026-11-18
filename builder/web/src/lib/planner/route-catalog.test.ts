@@ -74,7 +74,12 @@ describe('route catalog', () => {
         const box: Box = [7.5, 46, 9.5, 46.9];
         expect(boxCells(box, 7)).toEqual(['7-66-45', '7-67-45']);
         // Trail 2 is in a far file of the box, but not in the box.
-        expect(await new RouteCatalog().trailsInBox(box)).toEqual([entry(1, [west, east])]);
+        const catalog = new RouteCatalog();
+        expect(catalog.trailsInBoxNow(box)).toBeUndefined();
+        const found = await catalog.trailsInBox(box);
+        expect(found).toEqual([entry(1, [west, east])]);
+        // With its files loaded, a box has its answer with no wait, and the joined trail keeps its object.
+        expect(catalog.trailsInBoxNow(box)![0]).toBe(found![0]);
         // A segment of trail 3 cuts the south-west corner of the box, with no vertex in it.
         const corner = [8200000, 46050000, 120000, -100000];
         files['7-66-45'].push(entry(3, [corner]));

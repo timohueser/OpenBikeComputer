@@ -8,16 +8,17 @@
     import { basemapStyle, type Relief } from '../../lib/planner/map-style';
     import { ClosedAttribution, styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
     import { terrainRetry } from '../../lib/planner/map-terrain';
-    import { decodeCoordinates } from '../../lib/planner/route-answer';
     import { onRouteColor, routeColor, SIGNED_GROUND } from '../../lib/planner/route-colors';
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
 
-    let { items, shown, selected, look = 'route', covered = 0, credits = [], together = id => [id], onselect, onview, fit, place }: {
+    let { items, shown, selected, marked = [], look = 'route', covered = 0, credits = [], together = id => [id], onselect, onview, fit, place }: {
         items: Item[];
         /** The items of the list. The map draws only these, and the bubbles count only these. */
         shown: Item[];
         selected: string[];
+        /** Lines drawn as selected that the map never moves to: a trail and its parts. */
+        marked?: string[];
         /** `signed`: signed routes of the catalog, each in its own colour. */
         look?: 'route' | 'ride' | 'signed';
         /** The height in pixels of the bottom of the map that the selected card covers. */
@@ -59,7 +60,7 @@
     // A trail is one feature with a line for each piece of its far line.
     const lines = $derived<FeatureCollection<LineString | MultiLineString>>({ type: 'FeatureCollection', features: items.flatMap(item =>
         item.summary ? [{ type: 'Feature', properties: { id: item.id, color: colorOf(item) }, geometry: item.kind === 'trail'
-            ? { type: 'MultiLineString', coordinates: item.entry.far_udeg.map(decodeCoordinates) }
+            ? { type: 'MultiLineString', coordinates: item.pieces }
             : { type: 'LineString', coordinates: pairs(item.summary.line) } }] : []) });
     /** Trails: their lines show at each zoom. */
     const far = $derived(items.some(item => item.kind === 'trail'));
@@ -71,7 +72,7 @@
         return [{ type: 'Feature', properties: { id, color, text: color && onRouteColor(color) }, geometry: { type: 'Point', coordinates: [summary.line[i], summary.line[i + 1]] } }];
     }) });
     const shownFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', shown.map(item => item.id)]]);
-    const selectedFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', selected]]);
+    const selectedFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', [...selected, ...marked]]]);
     // A feature state changes the paint at once, with no transition and no new data.
     const bolder = (rest: number, under: number): maplibregl.ExpressionSpecification => ['case', ['boolean', ['feature-state', 'hover'], false], under, rest];
     /** The width of a signed line: thin where a wide view shows many routes, wider where the rider follows one. `edge`
@@ -85,7 +86,7 @@
         if (!map) return;
         const style = getComputedStyle(container), color = (name: string) => style.getPropertyValue(name).trim();
         const round = { 'line-join': 'round', 'line-cap': 'round' } as const, ride = untrack(() => look) === 'ride';
-        const signed = untrack(() => look) === 'signed', dim = untrack(() => selected.length) > 0, minzoom = untrack(() => far) ? 0 : LINE_ZOOM;
+        const signed = untrack(() => look) === 'signed', dim = untrack(() => selected.length + marked.length) > 0, minzoom = untrack(() => far) ? 0 : LINE_ZOOM;
         const line: maplibregl.ExpressionSpecification | string = signed ? ['get', 'color'] : color(ride ? '--ride' : '--route');
         // The set of route colours is too dark for the dark map, so a signed line or bubble there has a light edge.
         const edge = signed && untrack(() => theme) === 'dark' ? SIGNED_GROUND : color('--panel');
@@ -240,7 +241,7 @@
         if (!ready) return;
         for (const layer of ['selected-casing', 'selected']) if (map!.getLayer(layer)) map!.setFilter(layer, selectedFilter);
         if (look !== 'signed') return;
-        for (const layer of ['signed-casing', 'routes']) if (map!.getLayer(layer)) map!.setPaintProperty(layer, 'line-opacity', signedOpacity(selected.length > 0));
+        for (const layer of ['signed-casing', 'routes']) if (map!.getLayer(layer)) map!.setPaintProperty(layer, 'line-opacity', signedOpacity(selected.length + marked.length > 0));
     });
     // A new selection or a new card height moves the map; a reload of the same selection does not.
     let revealed = '';

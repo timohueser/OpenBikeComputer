@@ -128,7 +128,7 @@ describe('trailItem', () => {
 
     it('joins the pieces of the far line in its summary, with the bounds of all pieces and no heights', () => {
         const item = trailItem(entry(), 'hiking');
-        expect(item).toMatchObject({ kind: 'trail', id: '9', name: 'Via Alpina', at: 0 });
+        expect(item).toMatchObject({ kind: 'trail', id: '9', name: 'Via Alpina', at: 0, pieces: [[[8, 46], [8, 46.01]], [[8, 46.1], [8, 46.11]]] });
         expect(item.summary).toEqual({ line: [8, 46, 8, 46.01, 8, 46.1, 8, 46.11], heights: [null, null, null, null], bounds: [8, 46, 8, 46.11],
             lengthM: 150_000, climbM: 9000, highestM: null, seconds: 0, bike: 'hiking', days: 1 });
         // A section of a cut line has a negative id.

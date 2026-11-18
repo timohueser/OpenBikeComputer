@@ -29,7 +29,7 @@
     import RouteRow from './routes/RouteRow.svelte';
 
     /** What the page keeps in `history.state.explore`, so that Back and "Find another route" find it again. */
-    interface Kept { chips: ChipValues; view?: Box; selected?: string }
+    interface Kept { chips: ChipValues; view?: Box; selected?: string; trail?: number }
     type Place = { lon: number; lat: number; box?: Box };
 
     // The page reads the route catalog only.
@@ -80,8 +80,8 @@
     const current = $derived(shown.find(item => item.id === currentId));
     /** A trail that is a route record has the card of a route. */
     const trailRoute = $derived(trail?.record?.line_udeg ? once(trail.record, () => signedItem(trail!.record!, bike)) as SignedItem : undefined);
-    /** The lines that the map marks: the selected route, or the selected trail and its parts. */
-    const marked = $derived(trail ? [trail.id, ...trail.record?.parts?.map(part => part.id) ?? trail.record?.stages ?? []].map(String) : chosen ? [chosen.id] : []);
+    /** The selected trail and its parts. The map marks them and does not move to them: a trail runs out of most views. */
+    const marked = $derived(trail ? [trail.id, ...trail.record?.parts?.map(part => part.id) ?? trail.record?.stages ?? []].map(String) : []);
     // The map credits are HTML, and a record credit is plain text. A far file has no credits: the selected trail brings its own.
     const credits = $derived(recordCredits([...inView.flatMap(item => item.kind === 'signed' ? [item.record] : []), ...trail?.record ? [trail.record] : []])
         .map(escapeMarkup));
@@ -122,16 +122,16 @@
         if (!now || next.some((value, i) => value !== now[i])) view = next;
     }
 
-    // A view whose cell files the catalog holds gets its answer before the page draws the view, so the list shows no
+    // A view whose cell files or far files the catalog holds gets its answer before the page draws the view, so the list shows no
     // load. Another view loads its files `WAIT_MS` later.
     $effect.pre(() => {
         const box = view, kind = bike;
         if (!box) return;
-        const held = tooWide(box) ? undefined : catalog.inBoxNow(box, kind);
+        const far = tooWide(box), held = far ? catalog.trailsInBoxNow(box) : catalog.inBoxNow(box, kind);
         if (held !== undefined) {
             loads++;
             failed = false;
-            answer = { bike: kind, view: box, far: false, found: held };
+            answer = { bike: kind, view: box, far, found: held };
             return;
         }
         const timer = setTimeout(() => void load(box, kind), WAIT_MS);
@@ -188,12 +188,18 @@
         const next = trail = { id, entry, record: catalog.record(id) };
         try {
             // A trail opened from a stage has no far line yet: the far files of the view have it.
-            const [record, entries] = await Promise.all([catalog.trail(id), entry || !view ? undefined : catalog.trailsInBox(view)]);
+            const [record, entries] = await Promise.all([catalog.trail(id), entry || !view ? undefined : catalog.trailsInBox(view).catch(() => null)]);
             if (trail === next) trail = { ...next, entry: entry ?? entries?.find(other => other.id === id), record: record ?? next.record, failed: !record };
         } catch (error) {
             console.error('Trail:', error);
             if (trail === next) trail = { ...next, failed: true };
         }
+    }
+
+    /** The button that opens the trail card goes with the stage card: the focus moves to the new card. */
+    function trailOfCard(id: number) {
+        void openTrail(id);
+        void tick().then(() => document.querySelector<HTMLElement>('.selected .close')?.focus());
     }
 
     /** A new bike has other grades, so it clears the grade chip. */
@@ -203,7 +209,8 @@
     }
 
     // Back from another page brings the view, the chips and the selection again.
-    const keep = keepInHistory('explore', (): Kept => ({ chips, view, selected }));
+    const keep = keepInHistory('explore', (): Kept => ({ chips, view, selected, trail: trail?.id }));
+    if (kept?.trail !== undefined) void openTrail(kept.trail);
 
     // TrailView shows the first routes of the list from a view above them all.
     const TRAILVIEW_ROUTES = 100;
@@ -258,7 +265,7 @@
     function plan(item: SignedItem) {
         keep();
         const route = item.record as RouteRecord;
-        router.go(`${ROUTES.planner}/new`, { signed: { route, plan: routePlan(route), back: $state.snapshot({ chips, view, selected }) } });
+        router.go(`${ROUTES.planner}/new`, { signed: { route, plan: routePlan(route), back: $state.snapshot({ chips, view, selected, trail: trail?.id }) } });
     }
 </script>
 
@@ -266,7 +273,7 @@
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) select(undefined); }} />
 
 <!-- TrailView shows the routes of a near view only. -->
-<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" {credits} selected={marked}
+<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" {credits} selected={chosen ? [chosen.id] : []} {marked}
     onselect={select} onview={next => setView(wrapped(next))} card={trail ? trailCard : chosen ? card : undefined}
     mapButtons={hasTrailView(config) && shown.length && !far ? mapButtons : undefined}>
     {#snippet list()}
@@ -300,7 +307,7 @@
 </ListAndMap>
 
 {#snippet card(refocus: () => void)}
-    <SignedCard item={chosen!} onplan={() => plan(chosen!)} ontrail={config.trails ? openTrail : undefined} onclose={() => { refocus(); selected = undefined; }} />
+    <SignedCard item={chosen!} onplan={() => plan(chosen!)} ontrail={config.trails ? trailOfCard : undefined} onclose={() => { refocus(); selected = undefined; }} />
 {/snippet}
 
 {#snippet trailCard(refocus: () => void)}
