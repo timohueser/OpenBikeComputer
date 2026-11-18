@@ -5,7 +5,8 @@
 //   node phone.mjs serve --host IP [--port 8770] [--data http://127.0.0.1:8710] [--results DIR] [--cert DIR] [--requests DIR]
 //   node phone.mjs summarize RESULT.json
 //
-// The phone opens https://IP:PORT/phone/. --data is the origin of `obc data serve` (or a stand-in), whose catalogue
+// The phone opens https://IP:PORT/phone/ to measure, or https://IP:PORT/phone/diagnose for the fault check of
+// phone-diagnose.js, whose pictures and page bytes land in RESULTS/<session>/. --data is the origin of `obc data serve` (or a stand-in), whose catalogue
 // names its own origin: the proxy writes the phone's origin in its place. --requests is a folder of the ground plan's
 // `requests` tool: the session then ends with the timing page on those cells. Every answer is `no-store`, so each run
 // loads cold over the network.
@@ -64,8 +65,11 @@ function serve() {
     createServer(tls, (request, response) => {
         const path = normalize(decodeURIComponent(new URL(request.url, origin).pathname));
         if (request.method === 'POST' && path === '/result') return collect(request, response);
-        if (path === '/phone/' || path === '/phone') return send(response, 200, 'text/html', page());
+        if (request.method === 'POST' && path === '/blob') return keep(request, response);
+        if (path === '/phone/' || path === '/phone') return send(response, 200, 'text/html', page('measure'));
+        if (path === '/phone/diagnose') return send(response, 200, 'text/html', page('diagnose'));
         if (path === '/phone/measure.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-measure.js')));
+        if (path === '/phone/diagnose.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-diagnose.js')));
         if (path === '/phone/cert.cer') return send(response, 200, 'application/x-x509-ca-cert', tls.cert);
         if (path === '/phone/timing.json') return send(response, 200, 'application/json', JSON.stringify({ url: requests ? `/plan-timing.html?requests=/@fs${requests}/&runs=3` : null }));
         // The timing page reads the requests and their fixture files by absolute path, as Vite's /@fs/ does.
@@ -76,8 +80,9 @@ function serve() {
         const local = join(DIST, path);
         if (local.startsWith(DIST) && extname(local) && existsSync(local)) {
             const body = readFileSync(local), type = TYPES[extname(local)] ?? 'application/octet-stream';
-            // The measuring script runs before the page's module, so it sees the WebGPU device as the page asks for it.
-            return send(response, 200, type, type === 'text/html' ? body.toString().replace('<head>', '<head><script src="/phone/measure.js"></script>') : body);
+            // The scripts run before the page's module, so they see the WebGPU device as the page asks for it. Each acts only
+            // while a session of its own runs in the tab.
+            return send(response, 200, type, type === 'text/html' ? body.toString().replace('<head>', '<head><script src="/phone/measure.js"></script><script src="/phone/diagnose.js"></script>') : body);
         }
         proxy(request, response);
     }).listen(+a.port, a.host, () => console.log(`${origin}/phone/ · data ${a.data} · results ${a.results}`));
@@ -123,9 +128,21 @@ function collect(request, response) {
     });
 }
 
-/** The start and end page: the measuring script draws it. */
-const page = () => `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TrailView phone test</title><script src="/phone/measure.js"></script></head><body></body></html>`;
+/** A POST of bytes to /blob?session=S&name=N: they replace RESULTS/S/N. */
+function keep(request, response) {
+    const query = new URL(request.url, 'https://phone').searchParams, session = query.get('session'), name = query.get('name');
+    if (!/^[\w-]{1,64}$/.test(session ?? '') || !/^[\w.-]{1,160}$/.test(name ?? '')) return response.writeHead(400).end('bad session or name');
+    const parts = [];
+    request.on('data', part => parts.push(part)).on('end', () => {
+        mkdirSync(join(a.results, session), { recursive: true });
+        writeFileSync(join(a.results, session, name), Buffer.concat(parts));
+        response.writeHead(204).end();
+    });
+}
+
+/** The start and end page: the script of the mode draws it. */
+const page = mode => `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TrailView phone test</title><script src="/phone/${mode}.js"></script></head><body></body></html>`;
 
 /** One table of a session file: per run its load marks, its flight and its memory. */
 function summarize(record) {

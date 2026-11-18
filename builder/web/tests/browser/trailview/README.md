@@ -134,3 +134,4 @@ For a new planner release, do steps 1 and 4: only the routes whose line changed 
 | Results | `--results/SESSION.json`. The script posts after each stage, so a killed tab leaves its data. A run whose tab the system reloads is recorded as such. |
 | Secure context | WebGPU needs one. On iOS, accept the certificate warning, or install `https://IP:8770/phone/cert.cer` as a profile and trust it under Certificate Trust Settings. |
 | Network | The server binds to the LAN address only. A router with client isolation blocks the phone. |
+| Fault check | `https://IP:8770/phone/diagnose`, about 3 minutes: `phone-diagnose.js` loads the walk view with today's app, then with `ground=plan`. It posts the WebGPU errors per shader module and pipeline, JPEG captures of the view and of its debug views, and the terrain heights from the decode worker, the page texture and drawnHeight. Pictures, tile bodies and page bytes go to `RESULTS/SESSION/`. |
