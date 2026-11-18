@@ -77,7 +77,7 @@ export class LegCache {
      * after the other. Each chunk is pinned to the leg before it, and the last chunk of a gap to the cached leg after it, so
      * each join keeps its direction. Each chunk is kept as it arrives, so a failed or aborted run asks only for the rest.
      * When a pinned chunk finds no path, it goes out again with one more leg on each side, so that a neighbour point can
-     * pass the other way. When that finds no path too, the whole run follows. */
+     * pass the other way. When that finds no path too, a run with cached legs goes out whole; a run without fails. */
     async route(points: Coordinate[], turnarounds: number[], profile: string, signal: AbortSignal, whole = false): Promise<EngineRoute> {
         const turn = (index: number) => turnarounds.includes(index);
         // A turnaround joins legs in either direction.
@@ -85,7 +85,9 @@ export class LegCache {
         const keys = legKeys(points, turnarounds, profile);
         const legs = keys.map(key => whole ? undefined : this.legs.get(key));
         for (let k = 1; k < legs.length; k++) if (!joins(legs[k - 1], legs[k], k)) legs[k] = undefined;
-        let widened = false;
+        const cached = legs.some(Boolean);
+        // The first leg of the chunk that went out again with one more leg on each side.
+        let widened: number | undefined;
         for (let first = legs.findIndex(leg => !leg); first >= 0; first = legs.findIndex(leg => !leg)) {
             let last = first;
             while (last + 1 < legs.length && !legs[last + 1]) last++;
@@ -111,9 +113,12 @@ export class LegCache {
             } catch (error) {
                 // Only a missing path under a pin can change with a wider request; a busy service must not get a larger one.
                 const [from, to] = span;
-                if (!(legs[from - 1] || (to === last && after)) || (error as { code?: string }).code !== 'no_path' || (widened && whole)) throw error;
-                if (widened) return this.route(points, turnarounds, profile, signal, true);
-                widened = true;
+                if (!(legs[from - 1] || (to === last && after)) || (error as { code?: string }).code !== 'no_path') throw error;
+                if (widened !== undefined && from <= widened && widened <= to) {
+                    if (!cached) throw error;
+                    return this.route(points, turnarounds, profile, signal, true);
+                }
+                widened = from;
                 legs.fill(undefined, Math.max(from - 1, 0), to + 2);
             }
         }

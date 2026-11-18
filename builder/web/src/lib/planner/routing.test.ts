@@ -311,6 +311,15 @@ describe('runs longer than one request', () => {
         expect(fetch).toHaveBeenCalledTimes(3);
     });
 
+    it('fails a run without cached legs after the widened request, not after the whole run again', async () => {
+        const points = run(230);
+        const fetch = vi.fn(async (url: string, init: RequestInit) => JSON.parse(init.body as string).points.some(([lon]: Coordinate) => lon === points[150][0])
+            ? failing('no_path', 'No legal route.')() : routeService('one')(url, init));
+        vi.stubGlobal('fetch', fetch);
+        await expect(new LegCache().route(points, [], 'touring', signal)).rejects.toThrow('No legal route.');
+        expect(bodies(fetch).map(body => body.points[0][0])).toEqual([points[0][0], points[63][0], points[126][0], points[125][0]]);
+    });
+
     it('keeps consecutive turnarounds inside the request of an edit', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
         vi.stubGlobal('fetch', fetch);
