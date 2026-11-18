@@ -77,6 +77,11 @@
         display: grid;
         /* The profile takes the room that the text leaves, and keeps a fair width beside a long name. */
         grid-template-columns: 220px minmax(0, max-content) minmax(clamp(140px, 22%, 200px), 1fr) auto;
+        /* A place that fixes the card to the screen limits its height with `--card-height`. The rows of the card keep
+           their height; the row of `more` comes after them, takes the rest and scrolls. */
+        grid-template-rows: auto;
+        grid-auto-rows: minmax(0, 1fr);
+        max-height: var(--card-height, none);
         align-items: center;
         gap: 20px;
         padding: 10px;
@@ -193,6 +198,9 @@
     }
     .more {
         grid-column: 1 / -1;
+        align-self: stretch;
+        min-height: 0;
+        overflow-y: auto;
     }
     .close {
         position: absolute;
@@ -225,6 +233,7 @@
     @container (max-width: 740px) {
         .card {
             grid-template-columns: 120px minmax(0, 1fr);
+            grid-template-rows: auto auto;
             gap: 12px 16px;
         }
         /* The room of the close button. */
