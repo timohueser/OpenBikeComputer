@@ -94,4 +94,16 @@ test('a mark opens the popup of its place, or a list of its places, under the pi
   await expect(list.getByRole('listitem')).toHaveCount(2);
   await list.getByRole('button', { name: /^Pizzeria/ }).click();
   await expect(popup).toContainText('Pizzeria');
+
+  // The control of the kinds chooses the marks of the map.
+  await page.getByRole('button', { name: 'Kinds of places' }).click();
+  const kinds = page.getByRole('dialog', { name: 'Kinds of places' });
+  await kinds.getByRole('checkbox', { name: 'Eating' }).uncheck();
+  await expect(restaurants).toHaveCount(0);
+  await kinds.getByRole('checkbox', { name: 'Eating' }).check();
+  await expect(restaurants).toBeVisible();
+  await expect(marks.locator('.disc')).toHaveCount(0);
+  await kinds.getByRole('button', { name: 'Highlight Water' }).click();
+  await expect(marks.locator('.disc')).not.toHaveCount(0);
+  await expect(fountain).toHaveClass(/disc/);
 });

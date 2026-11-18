@@ -17,6 +17,7 @@
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import MapSettings from './MapSettings.svelte';
+    import PlaceKinds from './PlaceKinds.svelte';
     import LayerLegend from './LayerLegend.svelte';
     import LayerDateBar from './LayerDateBar.svelte';
     import LayerInspect from './LayerInspect.svelte';
@@ -47,7 +48,7 @@
         type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
     import { coordinateAt, cumulative, nearestOnLine, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
-    import { categoryIds, defaultKinds, type PlaceCategory } from '../../lib/planner/poi-kinds';
+    import { placeChoice } from '../../lib/planner/place-choice.svelte';
     import { config } from '../../lib/planner/map-data';
     import { beforeReload } from '../../lib/planner/release';
     import { coordinateName, townName } from '../../lib/planner/point-names';
@@ -167,8 +168,6 @@
     let spot = $state<{ coordinate: Coordinate; legEndId?: string } | null>(null);
     // The selected place when it is not a fixture: a basemap place.
     let mapPlace = $state<Place | null>(null);
-    let hiddenCategories = $state<PlaceCategory[]>(categoryIds.filter(category => !defaultKinds.includes(category)));
-    let highlightedCategories = $state<PlaceCategory[]>([]);
     const theme = $derived<'light' | 'dark'>(appearance.dark ? 'dark' : 'light');
     let hoveredId = $state<string | null>(null);
     let hillshade = $state(true);
@@ -1207,7 +1206,7 @@
                     {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking || mapMode?.kind === 'transfer'} routingPackage={currentRoute?.package}
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
-                    placeKinds={categoryIds.filter(category => !hiddenCategories.includes(category))} highlightedKind={highlightedCategories[0] ?? null}
+                    placeKinds={placeChoice.kinds} highlightedKind={placeChoice.highlight}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
                     onVisibleRange={(range) => visibleRange = range}
@@ -1249,7 +1248,8 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
+                    <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:hillshade bind:contours />
+                    <PlaceKinds />
                     {#if hasTrailView(config)}
                         <div class="control-group">
                             <TrailViewControl bind:this={trailViewControl} active={mapMode?.kind === 'look'} onActivate={binoculars}
