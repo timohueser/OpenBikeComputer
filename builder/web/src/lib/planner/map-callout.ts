@@ -1,11 +1,12 @@
 import * as maplibregl from 'maplibre-gl';
-import { placeCallout, type Box } from './callout-placement';
+import { placeCallout, TIP, type Box } from './callout-placement';
 import type { Coordinate } from './map-types';
 
 export type MapCallout = { show(at: Coordinate | null): void; refit(pan: boolean): void; remove(): void };
 
 /**
- * A popup with `content` on `map`, anchored where it fits inside `free()`, the free box of the map. A move of the map
+ * A popup with `content` on `map`, anchored where it fits inside `free()`, the free box of the map. The content gets
+ * the room of that box, less the offset and the tip, as `--callout-width` and `--callout-room`. A move of the map
  * anchors it again; a change of the size of the content, and the end of the move that `show` starts, also pan the map
  * the least distance when it fits nowhere. A pan never starts from a move, so one pan does not start another.
  */
@@ -14,8 +15,10 @@ export function mapCallout(map: maplibregl.Map, content: HTMLElement, { free, of
 
     function refit(pan: boolean) {
         if (!popup || !at) return;
-        const { x, y } = map.project(at);
-        const placed = placeCallout([x, y], [content.offsetWidth, content.offsetHeight], free(), offset);
+        const box = free(), { x, y } = map.project(at);
+        content.style.setProperty('--callout-width', `${box.right - box.left}px`);
+        content.style.setProperty('--callout-room', `${box.bottom - box.top - offset - TIP}px`);
+        const placed = placeCallout([x, y], [content.offsetWidth, content.offsetHeight], box, offset);
         if (popup.options.anchor !== placed.anchor) {
             popup.options.anchor = placed.anchor;
             popup.setOffset(offset);

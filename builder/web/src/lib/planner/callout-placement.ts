@@ -5,7 +5,7 @@ export interface Box { left: number; top: number; right: number; bottom: number 
 // Above the point first, then below, then beside it.
 const ANCHORS: Anchor[] = ['bottom', 'top', 'bottom-left', 'bottom-right', 'top-left', 'top-right', 'left', 'right'];
 /** The tip of a MapLibre popup: 10 px deep. */
-const TIP = 10;
+export const TIP = 10;
 
 /** The box MapLibre draws for `anchor`, with a number `offset` as MapLibre spreads it over the anchors. */
 export function calloutBox(anchor: Anchor, [x, y]: [number, number], [width, height]: [number, number], offset: number): Box {

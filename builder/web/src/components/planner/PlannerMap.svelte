@@ -759,9 +759,7 @@
 <svelte:window onmouseup={(event) => { if (event.target !== map?.getCanvas()) cancelGesture(); }}
     onblur={cancelGesture} onkeydown={(event) => { if (event.key === 'Escape') { cancelGesture(); if (overlaySelection || placeList) event.preventDefault(); overlaySelection = null; if (placeList) closeList(); } }} />
 
-<!-- The callout always fits the free map area: inside the margins, clear of the controls and the bottom strip, less its offset and tip. -->
-<div class="map-frame" data-map-theme={theme} bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}
-    style:--callout-width={`${frameWidth - 16 - controlsWidth}px`} style:--callout-room={`${frameHeight - 16 - bottomClear - calloutOffset - 10}px`}>
+<div class="map-frame" data-map-theme={theme} bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}>
     <div class="map-canvas" bind:this={container} aria-label="Route map" aria-busy={loading && !failure}></div>
     {#if map}
         <PlaceMarks {map} {ready} {theme} url={config.places} kinds={placeKinds} highlight={highlightedKind} still={!!drawing || !!onPick} onOpen={openMark} />

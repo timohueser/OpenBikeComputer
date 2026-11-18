@@ -234,10 +234,26 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await lanes.locator('.list button').first().click();
   await expect(lanes.locator('.list')).toHaveCount(0);
   await expect(popup).toContainText('Stube 1');
+  // The name lit its place, and went with the list: no disc stays after the popup, and the focus goes back to the group.
+  await expect(popup.locator('.callout')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(popup).toHaveCount(0);
+  await expect(discs).toHaveCount(0);
+  await expect(places.last()).toBeFocused();
+  // The same with the keys.
+  await page.mouse.move(0, 0);
+  await page.keyboard.press('Enter');
+  await lanes.locator('.list button').nth(1).focus();
+  await page.keyboard.press('Enter');
+  await expect(popup).toContainText('Stube 2');
+  await expect(popup.locator('.callout')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(places.last()).toBeFocused();
 
   // With the focus in the row, Escape closes the list, then the popup, then the part. With the focus in the popup,
   // Escape closes only the popup.
   await drag(0.4, 0.6);
+  await places.first().click();
   await places.last().click();
   await expect(lanes.locator('.list')).toBeVisible();
   await page.keyboard.press('Escape');
@@ -256,6 +272,23 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await expect(part).toHaveCount(1);
   await expect(places.first()).toBeFocused();
 
+  // An open menu or window takes Escape before the popup: one press closes one thing.
+  await places.first().click();
+  await page.getByRole('button', { name: 'Places ▾' }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('menu')).toHaveCount(0);
+  await expect(popup).toHaveCount(1);
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await page.getByRole('button', { name: 'Delete' }).click();
+  const deleting = page.getByRole('dialog', { name: 'Delete this route?' });
+  await expect(deleting).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(deleting).toHaveCount(0);
+  await expect(popup).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(popup).toHaveCount(0);
+  await expect(part).toHaveCount(1);
+
   await page.evaluate(() => new Promise(resolve => {
     const open = indexedDB.open('obc-library');
     open.onsuccess = () => {
@@ -268,8 +301,8 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await expect(page.getByText('Changed since it was sent')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Send to device' })).toBeEnabled();
 
-  // With a cover in a narrow window, the map is small and shows no places. A click on a place makes the map large and
-  // opens the popup inside it; a click on the small cover closes the popup.
+  // With a cover on a phone, the map is small and shows no places. A click on a place makes the map large and opens the
+  // popup inside it; a click on the small cover closes the popup.
   const testdata = new URL('../../../src/lib/covers/testdata/', import.meta.url);
   const image = [...await readFile(new URL('cover.webp', testdata))];
   const { points } = JSON.parse(await readFile(new URL('cover.json', testdata), 'utf8'));
@@ -280,20 +313,21 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
     await library.saveCover({ id: 'two', lineKey: lineKey(await library.item('two')), state: 'done', tries: 0, image: new Blob([new Uint8Array(image)], { type: 'image/webp' }),
       points: { x: Float32Array.from(points.x), y: Float32Array.from(points.y), eye: Uint8Array.from(points.eye) } });
   }, { image, points });
-  await page.setViewportSize({ width: 900, height: 1100 });
+  await page.setViewportSize({ width: 390, height: 900 });
   await page.goto('/planner.html#/route/two');
   await expect(page.getByRole('button', { name: 'Show the map large' })).toBeVisible();
   await page.getByRole('button', { name: 'Places ▾' }).click();
   await page.getByRole('button', { name: 'Food', exact: true }).click();
   await lanes.locator('.places').scrollIntoViewIfNeeded();
-  await places.first().click();
+  await places.last().click();
+  await lanes.locator('.list button').first().click();
   await expect(page.getByRole('button', { name: 'Show the picture large' })).toBeVisible();
-  await expect(popup).toContainText('Linde');
-  // Once the map stops, the popup is inside it and clear of the small cover.
+  await expect(popup).toContainText('Stube 1');
+  // Once the map stops, the popup is inside it and clear of the small cover, beside it at the full height of the map.
   await expect.poll(async () => {
     const [map, box, cover] = await Promise.all(['.slot.map', '.route-map .map-callout', '.slot.cover'].map(selector => page.locator(selector).boundingBox()));
     const inside = box.x >= map.x && box.y >= map.y && box.x + box.width <= map.x + map.width && box.y + box.height <= map.y + map.height;
-    return inside && (box.y + box.height <= cover.y || box.x + box.width <= cover.x);
+    return inside && (box.y + box.height <= cover.y || box.x + box.width <= cover.x) && box.height > map.height * .7;
   }).toBe(true);
   await page.getByRole('button', { name: 'Show the picture large' }).click();
   await expect(popup).toHaveCount(0);

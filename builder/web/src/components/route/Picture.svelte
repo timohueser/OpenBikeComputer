@@ -51,9 +51,9 @@
     const coverWidth = $derived(Math.round((coverHeight - 2) * WIDTH / HEIGHT) + 2);
     const side = $derived(covered && width - coverWidth - GAP_PX >= MAP_PX);
     const mapShown = $derived(side || mapLarge);
-    // The small cover over the corner of the large map: the popup of a place keeps clear of it.
-    let smallHeight = $state(0);
-    const coverClear = $derived(covered && !side && mapLarge ? smallHeight + 12 : 0);
+    // The small cover over the corner of the large map, with its inset: the popup of a place keeps clear of it.
+    let small = $state<[number, number]>([0, 0]);
+    const corner = $derived<[number, number]>(covered && !side && mapLarge ? [small[0] + 12, small[1] + 12] : [0, 0]);
 
     $effect(() => { if (openPlaceId && !mapShown) swapped = true; });
 
@@ -78,7 +78,7 @@
     style:--cover-width={`${coverWidth}px`} style:--map-left={`${coverWidth + GAP_PX}px`} style:--cover-height={`${coverHeight}px`}>
     <div class="cards">
         {#if covered}
-            <div class="slot cover" bind:offsetHeight={smallHeight}>
+            <div class="slot cover" bind:offsetWidth={small[0]} bind:offsetHeight={small[1]}>
                 <Cover {library} {id} place="page" pins={side || !mapLarge ? pins : []} photos={side || !mapLarge ? photos : []} {onphoto} mark={mark === undefined ? undefined : mark * summary.lengthM}
                     part={lit ? [lit[0] * summary.lengthM, lit[1] * summary.lengthM] : undefined}
                     onpoint={metres => onpoint(metres === null || !summary.lengthM ? null : metres / summary.lengthM)} />
@@ -87,7 +87,7 @@
         {/if}
         <div class="slot map">
             <RouteMap {summary} {ride} pins={mapShown ? pins : []} photos={mapShown ? photos : []} {onphoto} {mark} {onpoint} fitTo={part} {lit}
-                routePlaces={mapShown ? routePlaces : []} bind:litPlaces bind:openPlaceId bottomClear={coverClear} />
+                routePlaces={mapShown ? routePlaces : []} bind:litPlaces bind:openPlaceId {corner} />
             {#if !side && !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
         </div>
         <!-- The map has the credit of the base map behind its own button; this button has the rest, such as the terrain. -->

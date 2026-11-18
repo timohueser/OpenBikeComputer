@@ -47,6 +47,12 @@
         font: 400 13px var(--sans);
         outline: none;
     }
+    /* Nothing follows the opening hours at the end, so they have no rule and no room under them. */
+    .callout > :global(.hours:last-child) {
+        margin-bottom: 0;
+        padding-bottom: 0;
+        border-bottom: 0;
+    }
     .close {
         position: absolute;
         top: 10px;

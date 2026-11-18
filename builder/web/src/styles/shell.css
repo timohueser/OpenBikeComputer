@@ -81,7 +81,11 @@ summary:focus-visible {
 }
 
 /* The popup of a map (`mapCallout`). It draws over each mark and pin of the map. MapLibre puts it inside the map
-   container, which can pass on its user-select: none. */
+   container, which can pass on its user-select: none. The container keeps that order inside, so a status or a note
+   over the map still draws over the popup. */
+.maplibregl-map {
+    isolation: isolate;
+}
 .maplibregl-popup.map-callout {
     z-index: 3;
     user-select: text;

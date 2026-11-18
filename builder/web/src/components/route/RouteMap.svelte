@@ -19,7 +19,7 @@
 
     /** A map that the rider can move, with the summary line of a route or a ride and the mark. A share is 0 to 1 along the line. */
     let { summary, ride = false, mark, pins = [], photos = [], onphoto, onpoint, fitTo, lit,
-        routePlaces = [], litPlaces = $bindable([]), openPlaceId = $bindable(null), bottomClear = 0 }: {
+        routePlaces = [], litPlaces = $bindable([]), openPlaceId = $bindable(null), corner = [0, 0] }: {
         summary: Summary;
         /** The line is a ride, in `--ride`. */
         ride?: boolean;
@@ -39,8 +39,8 @@
         routePlaces?: RoutePlace[];
         litPlaces?: string[];
         openPlaceId?: string | null;
-        /** Pixels at the bottom of the map that the popup keeps clear of. */
-        bottomClear?: number;
+        /** The width and the height of a box in the bottom right corner of the map that the popup keeps clear of. */
+        corner?: [number, number];
     } = $props();
 
     /** The pointer marks the line within NEAR_PX of it. A dot takes the pointer within HOVER_PX, so that its disc does not
@@ -55,7 +55,6 @@
     let shownPins = $state.raw<{ share: number; label: string; number?: number; x: number; y: number; index: number; left: boolean }[]>([]);
     let shownPhotos = $state.raw<{ id: string; url: string; x: number; y: number }[]>([]);
     let shownDiscs = $state.raw<{ id: string; icon: string; x: number; y: number }[]>([]);
-    let width = $state(0), height = $state(0);
     let popupContent: HTMLDivElement, callout: MapCallout;
     /** The pointer on a dot lit the places, so the map may clear them. */
     let litHere = false;
@@ -114,6 +113,16 @@
             'circle-stroke-color': panel, 'circle-stroke-width': 1, 'circle-stroke-opacity': quiet } });
     }
 
+    /** The free box of the popup: the map less the margin, and over or beside the corner box, whichever is larger. */
+    function free() {
+        const { clientWidth: width, clientHeight: height } = container, [cornerWidth, cornerHeight] = corner;
+        const whole = { left: MARGIN_PX, top: MARGIN_PX, right: width - MARGIN_PX, bottom: height - MARGIN_PX };
+        if (!cornerWidth) return whole;
+        const over = { ...whole, bottom: height - cornerHeight - MARGIN_PX }, beside = { ...whole, right: width - cornerWidth - MARGIN_PX };
+        const area = (box: typeof whole) => (box.right - box.left) * (box.bottom - box.top);
+        return area(over) >= area(beside) ? over : beside;
+    }
+
     /** The id of the dot nearest to `point` within `reach` pixels. */
     function placeAt(point: maplibregl.Point, reach: number): string | undefined {
         if (!map?.getLayer('places')) return undefined;
@@ -162,8 +171,7 @@
         });
         const terrainError = terrainRetry(created);
         created.on('error', event => console.warn(terrainError(event) ? 'Route map terrain:' : 'Route map:', event.error));
-        callout = mapCallout(created, popupContent, { offset: OFFSET_PX,
-            free: () => ({ left: MARGIN_PX, top: MARGIN_PX, right: container.clientWidth - MARGIN_PX, bottom: container.clientHeight - MARGIN_PX - bottomClear }) });
+        callout = mapCallout(created, popupContent, { offset: OFFSET_PX, free });
         map = created;
         // A swap of the large and the small place changes the size of the box. The open popup pans into view after the fit.
         const resize = new ResizeObserver(() => { created.resize(); fit(); callout.refit(true); });
@@ -233,8 +241,7 @@
 
 <svelte:document onpointerdown={event => { if (!(event.target as Element).closest('.route-pin')) opened = undefined; }} />
 
-<div class="route-map" bind:this={container} bind:clientWidth={width} bind:clientHeight={height}
-    style:--callout-width={`${width - 2 * MARGIN_PX}px`} style:--callout-room={`${height - 2 * MARGIN_PX - bottomClear - OFFSET_PX - 10}px`}>
+<div class="route-map" bind:this={container}>
     <!-- Under the pins and the photos; the popup draws over all of them. -->
     <div class="pins">
         {#each shownDiscs as disc (disc.id)}

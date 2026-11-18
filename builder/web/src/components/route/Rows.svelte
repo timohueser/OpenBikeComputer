@@ -200,20 +200,25 @@
         onpoint(at === null ? null : shown.from + at * span);
     }
 
-    /** Escape closes an open panel or list, else the popup of a place, before the part, which `Lanes` clears; the focus
-     * goes back to the place. The popup closes itself at an Escape from inside it. */
+    /** One Escape closes one thing: an open dialog or menu first, which close themselves, then a panel or the list, then
+     * the popup of a place, then the part, which `Lanes` clears. The focus goes back to the place. The popup closes
+     * itself at an Escape from inside it. */
     function closeOnEscape(event: KeyboardEvent) {
-        if (event.key !== 'Escape' || (event.target as Element).closest?.('.map-callout')) return;
-        if (open === undefined && listed === undefined && !openPlaceId) return;
+        if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector('dialog:modal, menu')) return;
+        if ((event.target as Element).closest?.('.map-callout') || (open === undefined && listed === undefined && !openPlaceId)) return;
         event.preventDefault();
-        if (listed !== undefined) placeLane?.querySelector<HTMLElement>('.place.open > button')?.focus();
+        if (listed !== undefined) focusGroup();
         if (open === undefined && listed === undefined) openPlaceId = null;
         [open, listed] = [undefined, undefined];
     }
 
+    const focusGroup = () => placeLane?.querySelector<HTMLElement>('.place.open > button')?.focus();
+
+    /** The popup takes the group button as its opener: the name in the list goes with the list. That name takes no
+     * `pointerleave`, so the lit places clear here. */
     function openPlace(id: string) {
-        openPlaceId = id;
-        listed = undefined;
+        if (listed !== undefined) focusGroup();
+        [openPlaceId, listed, litPlaces] = [id, undefined, []];
     }
 </script>
 
