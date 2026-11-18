@@ -27,6 +27,8 @@ public struct CatalogRecord: Decodable, Equatable, Sendable {
     public let stage: Int?
     public let stages: [Int]?
     public let start_udeg: [Int]?
+    /// The credit of a second route source, which each view that shows the record shows.
+    public let credit: String?
 
     /// The decoded line of a route record; empty for a long route or a line with an unpaired value.
     public var line: [Coordinate] { decodeCoordinates(line_udeg ?? []) ?? [] }

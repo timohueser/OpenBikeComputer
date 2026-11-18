@@ -37,6 +37,8 @@ export interface CatalogRecord {
     trail_stage?: number;
     /** Section of a cut line only: its number in `trail`. */
     section?: number;
+    /** The credit of a second route source, which each view that shows the record shows. */
+    credit?: string;
 }
 
 /** A part of a long record, in trail order. */
@@ -69,6 +71,10 @@ export type RouteRecord = CatalogRecord & Required<Pick<CatalogRecord, 'line_ude
 export const kinds: Record<BikeType, CatalogRecord['kind'][]> = {
     hiking: ['hiking', 'foot'], mtb: ['mtb'], road: ['bicycle'], gravel: ['bicycle'], touring: ['bicycle'],
 };
+
+/** The distinct credits of `records`, in their order. A long route joins the credits of its parts with `; `. */
+export const recordCredits = (records: { credit?: string }[]) =>
+    [...new Set(records.flatMap(record => record.credit?.split('; ').filter(Boolean) ?? []))];
 
 /** The name of grade `index` of `grades_m`: T1 to T6 for hiking and foot, S0 to S5 for mountain bike. */
 export const gradeName = (kind: 'hiking' | 'foot' | 'mtb', index: number) => kind === 'mtb' ? `S${index}` : `T${index + 1}`;
