@@ -1,32 +1,33 @@
-// The diagnosis script of phone.mjs: /phone/diagnose draws its start page; in the TrailView page it runs one
-// session of two loads (today's app, then ground=plan), each at the walk view of flights.json. It reports which
-// graphics program fails and why, pictures of the view and its debug views from the walk and from above, and the
-// terrain's heights at three stages: the decode worker's pages (CPU), the page texture (GPU) and drawnHeight (probe
-// and instance shader). Each finding posts at once, so a tab that the system kills leaves its data. A classic
-// script, injected before the page's module: it wraps the WebGPU calls first.
+// The fault check of phone.mjs: /phone/diagnose draws its start page; in the TrailView page it runs one session
+// of two loads, today's app and then ground=plan, from the walk view of flights.json. Today's app flies the walk
+// flight with a picture every 2 s, then back with debug=normals, and reads the drawn pages after it. Every load
+// reports the WebGPU errors per shader module, pipeline and allocation, the console's warnings and the workers'
+// errors. For each pipeline that the browser refuses, it finds the function that the compiler rejects: it stubs
+// functions of the shader and compiles again. Each finding posts at once, so a tab that the system kills leaves its
+// data. A classic script, injected before the page's module: it wraps the WebGPU calls first.
 (() => {
     const KEY = 'obc-diagnose';
     const TAIL = '&date=2026-08-15&time=15:00&weather=sunny';
     const WALK = { lat: 46.8205, lon: 8.403, heading: 160, pitch: 0, eye: 1.6 };
     const WALK_URL = `/trailview.html?lat=${WALK.lat}&lon=${WALK.lon}&heading=${WALK.heading}&pitch=${WALK.pitch}&eye=${WALK.eye}${TAIL}`;
     const STEPS = [{ id: 'today', url: WALK_URL }, { id: 'plan', url: `${WALK_URL}&ground=plan` }];
-    // In the order of their worth, for a session that runs out of time.
-    const DEBUG = ['surface', 'normals', 'lod', 'material'];
-    /** Decoded terrain tiles whose bodies post, and whose summaries post. */
-    const BODIES = 6, SUMMARIES = 40;
+    // The walk flight of phone-measure.js: 20 s from the walk view to here.
+    const WALK_END = { lat: 46.817, lon: 8.405, heading: 200, pitch: 5 };
+    /** Seconds that the refused pipelines may take to bisect, per load. */
+    const BISECT_S = 150;
 
     const load = () => { try { return JSON.parse(sessionStorage.getItem(KEY)) ?? undefined; } catch { return undefined; } };
     const save = () => { try { sessionStorage.setItem(KEY, JSON.stringify(state)); } catch { /* the next load starts again */ } };
     let state = load();
     // A start page with ?budget=S gives the session S seconds in place of 170, and its waits grow alike (a software GPU).
     const slow = Math.max(1, (state?.budget ?? 170) / 170);
-    const START_MS = 60_000 * slow, IDLE_MS = 20_000 * slow, CAPTURE_MS = 15_000 * slow;
+    const START_MS = 60_000 * slow, IDLE_MS = 10_000 * slow;
     const post = (key, value) => {
         const body = JSON.stringify({ session: state.session, key, value });
         return fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body, keepalive: body.length < 60_000 }).catch(() => {});
     };
     let events = 0;
-    const event = (kind, value) => events++ < 400 && post('event', { step: STEPS[state.index]?.id, kind, ...value });
+    const event = (kind, value) => events++ < 600 && post('event', { step: STEPS[state.index]?.id, kind, ...value });
     const blob = (name, body, type = 'application/octet-stream') =>
         fetch(`/blob?session=${state.session}&name=${encodeURIComponent(name)}`, { method: 'POST', headers: { 'content-type': type }, body }).catch(() => {});
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -58,8 +59,15 @@
     function hook() {
         addEventListener('error', e => event('page error', { message: e.message, at: `${e.filename}:${e.lineno}:${e.colno}` }));
         addEventListener('unhandledrejection', e => event('unhandled rejection', { message: String(e.reason?.message ?? e.reason), type: e.reason?.constructor?.name }));
+        let said = 0;
+        for (const level of ['warn', 'error']) {
+            const original = console[level];
+            console[level] = (...args) => { if (said++ < 60) event('console', { level, text: args.map(String).join(' ').slice(0, 600) }); original.apply(console, args); };
+        }
+        tapWorkers();
         if (!navigator.gpu) return event('no navigator.gpu', {});
         const D = GPUDevice.prototype;
+        Object.assign(original, { createShaderModule: D.createShaderModule, compute: D.createComputePipelineAsync, render: D.createRenderPipelineAsync });
         const requestDevice = GPUAdapter.prototype.requestDevice;
         GPUAdapter.prototype.requestDevice = async function (...args) {
             const device = await requestDevice.apply(this, args);
@@ -111,105 +119,128 @@
                     // The same descriptor made at once under scopes: its error may carry the text that the rejection lacks.
                     const [, errors] = scoped(this, ['validation', 'internal'], () => sync.call(this, descriptor));
                     errors.then(found => event(`${kind.toLowerCase()} pipeline retried`, { ...what, errors: found }));
-                    const source = descriptor[kind === 'Compute' ? 'compute' : 'vertex']?.module;
-                    const info = source && modules.get(source);
+                    // Safari names the stage whose library failed; a compute pipeline has one.
+                    const stage = kind === 'Compute' ? 'compute' : /fragment/i.test(error?.message) ? 'fragment' : 'vertex';
+                    const info = modules.get(descriptor[stage]?.module);
                     if (info) blob(`shader-${info.name.replace(/[^\w.-]+/g, '_')}.wgsl`, info.code, 'text/plain');
+                    if (info) enqueue({ device: this, descriptor, stage, module: descriptor[stage].module, code: info.code, entry: descriptor[stage].entryPoint, key: `${info.name} ${stage}:${descriptor[stage].entryPoint}`, label: what.label, async });
                     throw error;
                 });
             };
         }
-        // Each of the first calls under one validation scope: where a later draw fails, these name the object.
-        for (const name of ['createBindGroup', 'createBindGroupLayout', 'createTexture', 'createSampler']) {
-            const original = D[name];
+        // Every buffer and texture under an out-of-memory scope, and the first calls of each kind under a validation scope:
+        // an error names the object, its size and its usage.
+        for (const name of ['createBuffer', 'createTexture', 'createBindGroup', 'createBindGroupLayout', 'createSampler']) {
+            const made = D[name], memory = name === 'createBuffer' || name === 'createTexture';
             let calls = 0;
             D[name] = function (descriptor) {
-                if (calls++ > 300) return original.call(this, descriptor);
-                this.pushErrorScope('validation');
-                let made;
-                try { made = original.call(this, descriptor); } finally {
-                    this.popErrorScope().then(error => error && event(`${name} error`, { label: descriptor?.label ?? '', message: error.message, format: descriptor?.format, usage: descriptor?.usage }));
-                }
-                return made;
+                const filters = [...(calls++ < 300 ? ['validation'] : []), ...(memory ? ['out-of-memory'] : [])];
+                if (!filters.length) return made.call(this, descriptor);
+                const [object, errors] = scoped(this, filters, () => made.call(this, descriptor));
+                errors.then(found => found.length && event(`${name} error`, { label: descriptor?.label ?? '', size: descriptor?.size, format: descriptor?.format, usage: descriptor?.usage, errors: found }));
+                return object;
             };
         }
-        tapDecodes();
     }
     const hooks = { pipelines: 0, popFirst: undefined };
+    const original = {};
 
-    // --- 3a. The decode worker's pages (CPU) -----------------------------------------------------------------------
-    const decodes = [];
-    function tapDecodes() {
+    // --- The workers: their errors, and the ground worker's jobs and failures ------------------------------------
+    function tapWorkers() {
         const Base = window.Worker;
+        let jobs = 0, replies = 0, failures = 0;
         window.Worker = class extends Base {
             constructor(url, options) {
                 super(url, options);
-                if (!String(url).includes('decode-worker')) return;
-                const bodies = new Map(), post = this.postMessage.bind(this);
+                const name = String(url).split('/').pop().split('?')[0];
+                this.addEventListener('error', e => event('worker error', { worker: name, message: e.message, at: `${e.filename}:${e.lineno}` }));
+                this.addEventListener('messageerror', () => event('worker message error', { worker: name }));
+                if (!name.includes('ground-worker')) return;
+                const post = this.postMessage.bind(this);
                 this.postMessage = (data, ...rest) => {
-                    if (data?.body instanceof ArrayBuffer) bodies.set(data.id, data.body.slice(0));
+                    // The bodies of the first job, to decode them on a desktop the same way.
+                    if (jobs++ === 0) for (const body of [data?.ground, ...(data?.quarters ?? []), data?.snow]) if (body?.body) blob(`ground-${body.layer}-${body.z}-${body.x}-${body.y}.bin`, body.body.slice(0));
                     return post(data, ...rest);
                 };
                 this.addEventListener('message', ({ data }) => {
-                    const body = bodies.get(data?.id);
-                    bodies.delete(data?.id);
-                    if (!body) return;
-                    if (data.error) return event('decode failed', { message: data.error });
-                    const bytes = new Uint8Array(body), hash = fnv(bytes);
-                    const pages = data.pages.map(p => p && { offset: p.offset, scale: p.scale, min: p.min, max: p.max, complete: p.complete, texels: fnv(u8(p.texels)), samples: [0, 257 * 64, 257 * 128, 257 * 192, 65535].map(i => p.texels[i]) });
-                    decodes.push({ hash, body, pages: data.pages });
-                    if (decodes.length <= SUMMARIES) event('decoded tile', { body: hash, bytes: bytes.length, pages });
-                    if (decodes.length <= BODIES) blob(`tile-${hash}.webp`, body, 'image/webp');
+                    replies++;
+                    if (data?.error && failures++ < 10) event('ground worker failed', { message: String(data.error).slice(0, 400) });
+                    hooks.ground = { jobs, replies, failures };
                 });
             }
         };
     }
 
-    // The first decoded body again on the main thread, three ways: the engine's options, the defaults, and an image element.
-    async function decodeVariants() {
-        const first = decodes.find(d => d.pages[0]);
-        if (!first) return post('decodeVariants', { error: 'no decoded tile with a north-west page' });
-        const reference = first.pages[0];
-        const toRgba = async bitmap => {
-            const canvas = Object.assign(document.createElement('canvas'), { width: bitmap.width, height: bitmap.height });
-            const context = canvas.getContext('2d', { willReadFrequently: true });
-            context.drawImage(bitmap, 0, 0);
-            return context.getImageData(0, 0, bitmap.width, bitmap.height);
-        };
-        const variants = {
-            'bitmap-engine-options': async () => toRgba(await createImageBitmap(new Blob([first.body]), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' })),
-            'bitmap-defaults': async () => toRgba(await createImageBitmap(new Blob([first.body]))),
-            'image-element': async () => {
-                const image = new Image(), url = URL.createObjectURL(new Blob([first.body], { type: 'image/webp' }));
-                image.src = url;
-                await image.decode();
-                URL.revokeObjectURL(url);
-                return toRgba(image);
-            },
-        };
-        const out = { body: first.hash, worker: { offset: reference.offset, scale: reference.scale } };
-        for (const [name, run] of Object.entries(variants)) {
-            try {
-                const rgba = await run(), d = rgba.data, size = rgba.width;
-                let opaque = 0, largest = 0, differ = 0, unknownDiffer = 0;
-                for (let j = 0; j < 256; j++) for (let i = 0; i < 256; i++) {
-                    const p = 4 * (j * size + i), known = d[p + 3] === 255, h = d[p] * 256 + d[p + 1] + d[p + 2] / 256 - 32768;
-                    if (known) opaque++;
-                    const code = reference.texels[j * 256 + i];
-                    if ((code === 0xffff) !== !known) { unknownDiffer++; continue; }
-                    if (!known) continue;
-                    const e = Math.abs(reference.offset + code * reference.scale - h);
-                    if (e > largest) largest = e;
-                    if (e > 0.5) differ++;
-                }
-                out[name] = { size: [rgba.width, rgba.height], rgba: fnv(d), opaque, largestMetres: largest, over05m: differ, unknownDiffer, centre: Array.from(d.slice(4 * (128 * size + 128), 4 * (128 * size + 128) + 4)) };
-            } catch (e) {
-                out[name] = { error: e.message };
-            }
+    // --- Bisect: the function of a refused shader that the compiler rejects -----------------------------------------
+    /** The functions of composed WGSL (no comments): body range, return type without attributes, and callees. */
+    function parse(code) {
+        const fns = new Map(), re = /\bfn\s+([A-Za-z_]\w*)\s*\(/g;
+        for (let m; (m = re.exec(code));) {
+            let i = re.lastIndex, depth = 1;
+            while (depth) depth += { '(': 1, ')': -1 }[code[i++]] ?? 0;
+            const open = code.indexOf('{', i);
+            let j = open + 1;
+            depth = 1;
+            while (depth) depth += { '{': 1, '}': -1 }[code[j++]] ?? 0;
+            fns.set(m[1], { start: m.index, open, close: j, ret: code.slice(i, open).replace(/^\s*->/, '').replace(/@\w+(\([^)]*\))?/g, '').trim() });
+            re.lastIndex = j;
         }
-        await post('decodeVariants', out);
+        for (const [name, f] of fns) f.calls = new Set([...code.slice(f.open, f.close).matchAll(/\b([A-Za-z_]\w*)\s*\(/g)].map(m => m[1]).filter(n => n !== name && fns.has(n)));
+        return fns;
+    }
+    /** The code with these functions' bodies replaced by a return of the zero value. */
+    const stub = (code, fns, names) => [...names].map(n => fns.get(n)).sort((a, b) => b.open - a.open)
+        .reduce((out, f) => out.slice(0, f.open) + (f.ret ? `{ return ${f.ret}(); }` : '{ }') + out.slice(f.close), code);
+    let queue = Promise.resolve(), bisectUntil = 0;
+    const queued = new Set();
+    function enqueue(target) {
+        if (queued.has(target.key)) return;
+        queued.add(target.key);
+        hooks.bisects = queue = queue.then(() => bisect(target)).catch(e => event('bisect failed', { key: target.key, message: e.message }));
+    }
+    async function bisect(t) {
+        if (!bisectUntil) bisectUntil = performance.now() + BISECT_S * 1000 * slow;
+        const fns = parse(t.code), seen = new Set(), leavesFirst = [];
+        const visit = n => { if (seen.has(n)) return; seen.add(n); for (const c of fns.get(n).calls) visit(c); leavesFirst.push(n); };
+        if (!fns.has(t.entry)) return event('bisect', { key: t.key, error: 'entry point not found' });
+        visit(t.entry);
+        const tests = [];
+        const compiles = async names => {
+            const t0 = performance.now(), code = stub(t.code, fns, names);
+            const module = original.createShaderModule.call(t.device, { label: 'bisect', code });
+            let result;
+            if ((await module.getCompilationInfo()).messages.some(m => m.type === 'error')) result = 'invalid';
+            else {
+                const d = { ...t.descriptor };
+                for (const s of ['compute', 'vertex', 'fragment']) if (d[s]?.module === t.module) d[s] = { ...d[s], module };
+                result = await t.async.call(t.device, d).then(() => 'ok', () => 'refused');
+            }
+            tests.push({ stubbed: names.length <= 4 ? names : [`${names.length}: …`, ...names.slice(-2)], result, ms: Math.round(performance.now() - t0) });
+            return result === 'ok';
+        };
+        const report = extra => event('bisect', { key: t.key, label: t.label, functions: leavesFirst.length, ...extra, tests });
+        if (await compiles([])) return report({ verdict: 'compiles when made again' });
+        if (!(await compiles([t.entry]))) return report({ verdict: 'refused with the entry point stubbed: a declaration outside the functions' });
+        // The shortest prefix of the functions, leaves first, whose stubs let it compile ends at a rejected function:
+        // every caller of a function comes after it, so no prefix without it cuts all paths to it.
+        const found = [];
+        while (found.length < 3 && performance.now() < bisectUntil) {
+            if (found.length && (await compiles(found))) break;
+            let lo = 0, hi = leavesFirst.length;
+            while (hi - lo > 1 && performance.now() < bisectUntil) {
+                const mid = (lo + hi) >> 1;
+                if (await compiles([...found, ...leavesFirst.slice(0, mid)])) hi = mid;
+                else lo = mid;
+            }
+            if (hi - lo > 1) break;
+            found.push(leavesFirst[hi - 1]);
+            if (leavesFirst[hi - 1] === t.entry) break;
+        }
+        const source = found.map(n => t.code.slice(fns.get(n).start, fns.get(n).close).slice(0, 5000));
+        report({ verdict: performance.now() < bisectUntil ? 'found' : 'out of time', found, source });
     }
 
-    // --- 3b. The page texture (GPU) -------------------------------------------------------------------------------
+    // --- The page texture (GPU) ----------------------------------------------------------------------------------
     const UNITS = 2 ** 30;
     const worldUnits = (lon, lat) => [((lon + 180) / 360) * UNITS, ((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * UNITS];
     /** Per drawn page: hashes and the size of its spikes, the 4-neighbour Laplacian in metres; the pages under the eye post raw. */
@@ -269,46 +300,37 @@
     }
     const round = v => (Number.isFinite(v) ? Math.round(v * 1000) / 1000 : v);
 
-    // --- 3c. drawnHeight: the probe (compute) and an instance shader (vertex), on a grid about the eye ---------------
-    async function heightsReport(tv, tag, eye) {
-        const points = [];
-        const dLat = 160 / 111_320, dLon = 160 / (111_320 * Math.cos((eye.lat * Math.PI) / 180));
-        for (let j = 0; j < 8; j++) for (let i = 0; i < 8; i++) points.push([eye.lon + ((i - 3.5) / 3.5) * dLon, eye.lat + ((j - 3.5) / 3.5) * dLat]);
-        const { probe, instance } = await within(tv.check(points), 10_000 * slow, 'check');
-        const differ = probe.map((p, i) => round(instance[i] - p));
-        await post(`heights.${tag}`, { points, probe: probe.map(round), instance: instance.map(round), largestDifference: Math.max(...differ.map(Math.abs).filter(Number.isFinite)) });
-        return probe;
-    }
-
-    // --- 2. What the phone draws -------------------------------------------------------------------------------
+    // --- What the phone draws in flight -------------------------------------------------------------------------
     async function idle(tv) {
         try { await within(tv.waitForIdle(), IDLE_MS, 'waitForIdle'); return true; } catch (e) { event('not idle', { message: e.message }); return false; }
     }
-    async function shot(tv, name) {
-        const idleAt = performance.now(), wasIdle = await idle(tv), waited = Math.round(performance.now() - idleAt);
-        const jpeg = canvas => new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85));
-        try {
-            // capture() waits until the jittered frames converge; a view that never settles never gives one.
-            const { colour } = await within(tv.capture(), CAPTURE_MS, 'capture');
-            let sum = 0;
-            for (let i = 0; i < colour.data.length; i += 4 * 97) sum += colour.data[i] + colour.data[i + 1] + colour.data[i + 2];
-            if (sum === 0) throw new Error('capture: the copy is black');
-            const canvas = Object.assign(document.createElement('canvas'), { width: colour.width, height: colour.height });
-            canvas.getContext('2d').putImageData(colour, 0, 0);
-            await blob(`${name}.jpg`, await jpeg(canvas), 'image/jpeg');
-            event('shot', { name, idle: wasIdle, waitedMs: waited, how: 'capture', size: [colour.width, colour.height], view: tv.view });
-        } catch (e) {
-            // The canvas as the page shows it, without waiting for the jitter to converge.
-            try {
-                const source = document.querySelector('canvas'), canvas = Object.assign(document.createElement('canvas'), { width: source.width, height: source.height });
-                canvas.getContext('2d').drawImage(source, 0, 0);
-                await blob(`${name}.jpg`, await jpeg(canvas), 'image/jpeg');
-                event('shot', { name, idle: wasIdle, waitedMs: waited, how: 'canvas', captureFailed: e.message, size: [canvas.width, canvas.height], view: tv.view });
-            } catch (f) {
-                event('shot failed', { name, message: `${e.message}; canvas: ${f.message}` });
-            }
+    /** The canvas as the page shows it after the frame that just drew, as a JPEG; no wait for the jitter to converge. */
+    function grab(tv, name) {
+        const source = document.querySelector('canvas'), canvas = Object.assign(document.createElement('canvas'), { width: source.width, height: source.height });
+        const context = canvas.getContext('2d');
+        context.drawImage(source, 0, 0);
+        const row = context.getImageData(0, canvas.height >> 1, canvas.width, 1).data;
+        let sum = 0;
+        for (let i = 0; i < row.length; i += 4) sum += row[i] + row[i + 1] + row[i + 2];
+        const s = tv.stats();
+        event('grab', { name, blank: sum === 0, view: tv.view, drawn: s.drawn, resident: s.resident, quality: s.terrain.quality, pools: Math.round([...s.pools.values()].reduce((a, b) => a + b, 0) / 2 ** 20) });
+        canvas.toBlob(jpeg => jpeg && blob(`${name}.jpg`, jpeg, 'image/jpeg'), 'image/jpeg', 0.8);
+    }
+    /** A flight whose pose follows the clock, as phone-measure.js flies, with a picture every `every` seconds. */
+    async function fly(tv, name, from, to, seconds, every) {
+        tv.view = from;
+        await idle(tv);
+        const t0 = performance.now();
+        for (let shot = 0; ;) {
+            const t = Math.min(1, (performance.now() - t0) / (seconds * 1000)), mix = (a, b) => a + (b - a) * t;
+            tv.view = { ...from, lat: mix(from.lat, to.lat), lon: mix(from.lon, to.lon), heading: mix(from.heading, to.heading), pitch: mix(from.pitch, to.pitch) };
+            await Promise.race([tv.nextFrame(), sleep(5000)]);
+            if (performance.now() - t0 >= shot * every * 1000) grab(tv, `${name}-${String(shot++).padStart(2, '0')}`);
+            if (t >= 1) break;
         }
     }
+    const statsOf = tv => JSON.parse(JSON.stringify(tv.stats(), (_, v) => (v instanceof Map ? Object.fromEntries(v) : v)));
+
     const say = text => {
         let banner = document.getElementById('obc-diagnose');
         if (!banner) {
@@ -323,40 +345,32 @@
 
     async function today(tv) {
         const step = (n, text) => (say(`Step ${n} of 4: ${text}`), post('stage', { step: 'today', at: n, text, elapsed: Date.now() - state.started }));
-        step(1, 'the walk view');
-        await shot(tv, 'today-walk');
+        step(1, 'a walk');
+        const from = { ...tv.view, debug: 'off' }, to = { ...from, ...WALK_END };
+        await fly(tv, 'walk', from, to, 20, 2);
         hooks.popFirst?.();
-        step(2, 'reading the heights');
-        const tasks = [['pages', () => pagesReport(tv, 'walk', WALK)], ['heights', () => heightsReport(tv, 'walk', WALK)], ['decode', decodeVariants], ['audit', async () => post('audit.walk', await within(tv.audit(), 30_000 * slow, 'audit'))]];
-        for (const [name, run] of tasks) {
-            try { await run(); } catch (e) { event('report failed', { name, message: e.message }); }
-        }
-        step(3, 'debug views from the walk');
-        const walk = { ...tv.view };
-        for (const debug of DEBUG) {
-            if (left() < 60_000 * slow) { event('skipped', { name: `today-walk-${debug}`, reason: 'time' }); continue; }
-            tv.view = { ...walk, debug };
-            await shot(tv, `today-walk-${debug}`);
-        }
-        step(4, 'the views from above');
-        let ground = WALK.eye;
-        try { ground = (await within(tv.check([[WALK.lon, WALK.lat]]), 10_000 * slow, 'check')).probe[0]; } catch (e) { event('ground probe failed', { message: e.message }); }
-        const above = { ...walk, mode: 'fly', height: (Number.isFinite(ground) ? ground : 600) + 300, pitch: -60, debug: 'off' };
-        tv.view = above;
-        await shot(tv, 'today-above');
-        try { await pagesReport(tv, 'above', WALK); } catch (e) { event('report failed', { name: 'pages above', message: e.message }); }
-        for (const debug of DEBUG) {
-            if (left() < 30_000 * slow) { event('skipped', { name: `today-above-${debug}`, reason: 'time' }); continue; }
-            tv.view = { ...above, debug };
-            await shot(tv, `today-above-${debug}`);
-        }
+        post('stats.walk', statsOf(tv));
+        step(2, 'the walk back with test colours');
+        await fly(tv, 'normals', { ...to, debug: 'normals' }, { ...from, debug: 'normals' }, 12, 2);
+        tv.view = { ...to, debug: 'off' };
+        step(3, 'reading the heights');
+        await idle(tv);
+        // drawImage reads the canvas only after a frame that draws.
+        await Promise.race([tv.nextFrame(), sleep(5000)]);
+        grab(tv, 'walk-end-idle');
+        try { await pagesReport(tv, 'walk-end', WALK_END); } catch (e) { event('report failed', { name: 'pages', message: e.message }); }
+        post('stats.end', statsOf(tv));
+        post('ground', hooks.ground ?? { jobs: 0 });
+        step(4, 'testing graphics programs');
+        try { await within(tv.audit(), 30_000 * slow, 'audit'); } catch (e) { event('audit', { message: e.message }); }
+        await within(hooks.bisects ?? Promise.resolve(), (BISECT_S + 10) * 1000 * slow, 'bisects').catch(e => event('bisects', { message: e.message }));
     }
 
-    async function plan(tv) {
-        say('Last step: the new roads');
-        await post('stage', { step: 'plan', text: 'the new roads', elapsed: Date.now() - state.started });
-        await shot(tv, 'plan-walk');
-        hooks.popFirst?.();
+    async function plan() {
+        say('Last step: testing the graphics programs of the new roads (up to 3 minutes)');
+        await post('stage', { step: 'plan', text: 'bisects', elapsed: Date.now() - state.started });
+        await sleep(2000);
+        await within(hooks.bisects ?? Promise.resolve(), (BISECT_S + 10) * 1000 * slow, 'bisects').catch(e => event('bisects', { message: e.message }));
     }
 
     async function run() {
@@ -377,11 +391,11 @@
             // The page's own notice has no canvas to capture: its text and the errors above are the record.
             await post(`steps.${step.id}`, { ...record, notice: notice() ?? null, failure: notice() ? 'the page shows a notice' : `no viewer in ${START_MS / 1000} s` });
             hooks.popFirst?.();
-            await sleep(3000);
+            await plan();
             return next();
         }
         await post(`steps.${step.id}`, { ...record, adapter: tv.stats().adapter, canvas: [document.querySelector('canvas')?.width, document.querySelector('canvas')?.height] });
-        await (step.id === 'today' ? today(tv) : plan(tv));
+        await (step.id === 'today' ? today(tv) : plan());
         await post(`steps.${step.id}`, { ...record, done: true, stats: (() => { try { const s = tv.stats(); return { recoveries: s.recoveries, failed: s.failed, quality: s.terrain.quality, pools: Object.fromEntries(s.pools) }; } catch (e) { return { error: e.message }; } })() });
         await sleep(1500);
         next();
@@ -404,7 +418,7 @@
         }
         const button = Object.assign(document.createElement('button'), { textContent: 'Start' });
         button.style.cssText = 'display:block;width:100%;padding:32px;font:700 32px system-ui;border-radius:16px;border:0;background:#1a7f37;color:#fff';
-        document.body.replaceChildren(big('TrailView fault check on this phone. It takes about 3 minutes.'), big('Tap Start, put the phone down and do not touch it until it says "Done".'), button);
+        document.body.replaceChildren(big('TrailView fault check on this phone. It takes about 5 minutes.'), big('Tap Start, put the phone down and do not touch it until it says "Done".'), button);
         button.onclick = async () => {
             button.disabled = true;
             const budget = +(new URLSearchParams(location.search).get('budget') ?? 170);
