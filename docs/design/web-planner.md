@@ -104,7 +104,7 @@ The name of the axis beside the ticks, "Distance" or "Time", is the switch of th
 
 With a part selected, the menu "More" has the switch "Only the selected part" over its exports. With it on, the FIT file, the GPX track and the table come from the samples of the part (`slice`, whose first sample starts a segment), and the name of the file ends with "part".
 
-The frame of a detail page ([`Detail.svelte`](../../builder/web/src/components/route/Detail.svelte)) does not scroll as a whole on a computer: the cards take the height that the bottom card leaves, down to 160 px, the rows of the lines get lower in a low window, and the left card scrolls inside. No bottom card is a scroll box, so its panels are never cut. A menu ([`Menu.svelte`](../../builder/web/src/components/route/Menu.svelte)) opens in the top layer and stays inside the window.
+The frame of a detail page ([`Detail.svelte`](../../builder/web/src/components/route/Detail.svelte)) does not scroll as a whole on a computer: the cards take the height that the bottom card leaves, down to 160 px, the rows of the lines get lower in a low window, and the left card scrolls inside. No bottom card is a scroll box, so its panels are never cut. A menu is the one of [web-foundations](web-foundations.md) ([`Menu.svelte`](../../builder/web/src/lib/ui/Menu.svelte)).
 
 The line of a ride is a teal: a lighter teal with a glow on the cover, and `--ride` on the map and on the plain ground. Export gives the stored file for its own format, else a file written from the samples, and a CSV table in SI units. "Ride it again" opens the route of the ride's line. Its id is the id that "Add files" gives the same line (`lineId`), so a second click opens the same route. After Delete, the page goes to `#/routes/ridden`.
 

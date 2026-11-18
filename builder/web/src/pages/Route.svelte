@@ -3,7 +3,7 @@
     import Card from '../lib/ui/Card.svelte';
     import Window from '../lib/ui/Window.svelte';
     import Detail from '../components/route/Detail.svelte';
-    import Menu from '../components/route/Menu.svelte';
+    import Menu from '../lib/ui/Menu.svelte';
     import Facts from '../components/route/Facts.svelte';
     import Picture from '../components/route/Picture.svelte';
     import Rows from '../components/route/Rows.svelte';
