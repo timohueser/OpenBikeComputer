@@ -18,7 +18,10 @@ files of a set of covers, the key of a cover, and how a reader finds the cover o
 ## Conventions
 
 - Each clock time is the wall clock of Europe/Zurich, which is the clock of TrailView, as `HH:MM`.
-- A route record is a record of the route catalog with `line_udeg`. A long route has no cover.
+- A route record is a record of the route catalog with `line_udeg`, also a section of a cut line.
+  A long route has no cover.
+- `<id>` is the `id` of a route record in decimal. A section has a negative `id`, as in
+  `covers/-345678902/`.
 - A hash is the start of a SHA-256 as 16 lowercase hexadecimal digits.
 
 ## 1. Keys
@@ -31,7 +34,7 @@ blocks a query string.
 | `route-pictures/manifest.json` | The [manifest](#2-manifest) of the live set | `public, max-age=60, must-revalidate` |
 | `route-pictures/sets/<set>/manifest.json` | The manifest of the set `<set>` | `public, max-age=31536000, immutable` |
 | `route-pictures/sets/<set>/cells/9-X-Y.json` | The [cell file](#3-cell-file) of the grid cell `9-X-Y` | `public, max-age=31536000, immutable` |
-| `route-pictures/covers/<id>/<key>-<light>.webp` | The [image](#4-cover) of the cover `<key>` of the relation `<id>` in the light `<light>` of a month in [`months`](#2-manifest) | `public, max-age=31536000, immutable` |
+| `route-pictures/covers/<id>/<key>-<light>.webp` | The [image](#4-cover) of the cover `<key>` of the route record `<id>` in the light `<light>` of a month in [`months`](#2-manifest) | `public, max-age=31536000, immutable` |
 | `route-pictures/covers/<id>/<key>.json` | The [points](#4-cover) of that cover, for each month | `public, max-age=31536000, immutable` |
 
 The writer never replaces a key other than the live manifest. It puts the manifest of a set there
@@ -61,8 +64,8 @@ A UTF-8 JSON object.
 
 ## 3. Cell file
 
-A UTF-8 JSON object `{"format": 1, "routes": {"<id>": "<key>"}}`. It maps the relation ID of each
-route record that has a cover and that names this cell in its `cells` to the key of its cover. This
+A UTF-8 JSON object `{"format": 1, "routes": {"<id>": "<key>"}}`. It maps the `id` of each route
+record that has a cover and that names this cell in its `cells` to the key of its cover. This
 holds for a grid release and for a regional release. A cell with no cover has no file.
 
 ## 4. Cover
