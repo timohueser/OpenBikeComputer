@@ -194,6 +194,40 @@ header `#262624`, and `obc data open` tunnels to the SSH host of its name.
 | `colour` | string | `#rrggbb`: the header of the page of the machine. White text on it has a contrast of at least 4.5:1, and it is not `#6e6c66`, the header of a page that loads |
 | `ssh` | string | Optional: the SSH host or alias that `obc data open` tunnels to |
 
+### `data/routes/<id>.toml`
+
+The description of a route source: which layers and fields of its files make a route and its
+stages. `<id>` is a source of `data/sources.toml` with `used_by` `planner` and `keep = "archive"`.
+[Route sources](#route-sources) reads it. An unknown key is refused, and so are an `origin` that
+another file has, empty `countries`, a `keep` or `drop` value that is no list, and a `rank` level
+outside 0 to 4 (`tools/check_data_sources.py`).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `origin` | integer, 1 to 9006 | The number of the source in the `id` of its records. Unique over `data/routes/`; a number is never used again |
+| `countries` | array of strings | The ISO 3166-1 alpha-2 codes of the countries whose routes the source holds, such as `CH`. A region reads the source only when its `countries` name one of them and its bounds meet the `extent` of the row |
+| `kind` | string, or table | `hiking`, `bicycle` or `mtb` for every route; or `{ field, values }`: the value of `field` maps to a kind, and a feature with another value is left out |
+| `route` | table | How the routes are read, see below |
+| `stage` | table | Optional: how the stages of a route are read |
+
+Keys of `route` and `stage`:
+
+| Key | In | Meaning |
+| --- | --- | --- |
+| `layer` | both | The layer of the file |
+| `file` | both | Optional: the path of the file in a zip, for a source with more than one |
+| `key` | `route` | The field, or a list of fields, that gives the route of a feature. The features with one key are one route; a feature with a value in two fields of the list is a member of both routes. A value whose text is a decimal integer from 0 to 10^10 − 1 with no leading zero is the key as it is; another text, such as `007` or `-5`, has as key its SHA-256, read as an integer, modulo 10^10 |
+| `of` | `stage` | The field that holds the key of the stage's route |
+| `number` | `stage` | The field of the stage number |
+| `ref`, `name`, `description`, `operator`, `website` | both | A template of field values, such as `"{NameR}"`. `{key}` is the text of the key field that gives the route; in a stage, `{route}` is the name of its route |
+| `rank` | `route` | `{ field, values }`: the value maps to a level 0 to 4 as the catalog's `rank`; another value or none: 0 |
+| `ascent` | both | The field of the source's own climb in metres. Only the catalog report reads it |
+| `keep` | both | `{ FIELD = [values] }`: a feature is read only when each field has one of its values |
+| `drop` | both | `{ FIELD = [values] }`: a feature with one of these values is left out |
+
+A value is compared as its text. A whole number reads as an integer, also in an integer field
+that holds a null, which the file gives as a real number.
+
 ## State of a source
 
 A fetch is a source id with its sorted `NAME=VALUE`s. `obc data sources` gives, for each target
@@ -1202,7 +1236,7 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/routing-source` | `planner/osm/bounds` | `bounds` | `source/`: the ways with their node references, tags and facts, the relations, the present node members, the turn rules of the relations, the closure sets, `source.json` (the counts of the import, the SHA-256 of the PBF from `layer_files`) and `layout.json`. The columns are stored columns of `planner/router-build/src/column.rs`: little-endian values of one type each, which `layout.json` names with their count. The import applies the country access defaults |
 | `planner/routing-roads` | `planner/routing-source`, the GLO-30 tiles of the bounds of the region, and `planner/reference` when there is one. The heights of the roads are those of `planner/terrain` without the OSM corrections | `bounds`; `terrain_attribution`: the credit of GLO-30 | `roads/`: the junctions, the roads in package order with their heights, the forbidden turns, the closure sets, the road topology, `roads.json` (the warnings of the manifest, the identities of the PBF and the terrain) and `layout.json` |
 | `planner/routing-costs` | `planner/routing-source`, `planner/routing-roads` | `bounds`, `profiles` | `costs/`: the cost dictionary and, for each profile `<i>` in order, `<i>.bases`, `<i>.totals`, `<i>.turns` and `<i>.snap`; `costs.json` (the profile IDs) and `layout.json` |
-| `planner/routing` | `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | `region` (the last part of the region id), `bounds` and `countries`; `attribution`: the credit of OSM. The step list checks the profiles and the countries when it is built | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
+| `planner/routing` | `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | `region` (the last part of the region id) and `bounds`; `attribution`: the credit of OSM. The step list checks the profiles when it is built | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline; `routes/trails/<cell>.json` and `routes/long/<id>.json`: the far files and the trail record files of [the route catalog](route-catalog.md#trail-files) |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
 | `planner/model` | `query-model` | None | `model/`: `model.int8.onnx`, `tokenizer.json` and `tokenizer_config.json` of the archive, and `labels.json`, the labels of the query schema |
@@ -1254,7 +1288,7 @@ All producers are intermediate layers. Grid steps select their `objects/` and th
 
 | Layer | Reads | Files |
 | --- | --- | --- |
-| `planner/routing/grid` | `planner/routing` | Packed `routing/blocks.json`, `routing/packs/<sha256>/pages.bin` and `pages.idx`, `offline/routing-cells/<cell>.json`, and `routes/tiles/<cell>.json`. It does not build the routing blocks again. Its index records the source graph and cell descriptors |
+| `planner/routing/grid` | `planner/routing` | Packed `routing/blocks.json`, `routing/packs/<sha256>/pages.bin` and `pages.idx`, `offline/routing-cells/<cell>.json`, `routes/tiles/<cell>.json`, `routes/tiles/trails/<cell>.json` and `routes/tiles/long/<id>.json`. It does not build the routing blocks again. Its index records the source graph and cell descriptors |
 | `planner/search/pois/grid`, `planner/search/addresses/grid` | The database of its search component | `search/tiles/<component>/<cell>.sqlite`, packed. A cell retains intersecting places, addresses, their streets and contexts. The index records regional metadata and clipped cell bounds |
 | `planner/assets/grid`, `planner/model/grid`, `planner/trailview-rules/grid` | `planner/assets`, `planner/model` or `rules.json` of `planner/trailview-rules` | The input files, packed as `maps/assets/`, `search/model/` or `trailview/`. The index maps logical paths to file and transport identities |
 | `planner/fonts/grid` | `planner/basemap/grid`, `planner/places/grid`, `planner/overlays/grid` and `planner/assets/grid`: client files only. The route references are the `ref` of the overlay tiles | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
@@ -1276,6 +1310,45 @@ A Python step runs `env PYTHONHASHSEED=0 uv run --locked --offline --no-default-
 --no-python-downloads --group <group> python <entry> --step` in the repository root.
 `uv sync --all-groups` prepares the packages on a machine. The fixed hash seed keeps the order
 of a set out of the bytes. A credit that it writes comes in its options.
+
+##### Route sources
+
+`python -m tools.planner_route_sources --step` (group `route-sources`) reads the files of each route source by
+its [description](#dataroutesidtoml). Its options are `bounds` and `sources`: a list of `{id,
+credit, description}`, where `credit` is the `attribution` of the row and `description` the text
+of its file in `data/routes/`. It reads the snapshot of each source, in the order of `sources`, and
+writes `route-sources.json`: UTF-8 JSON, the keys of each object in byte order, written whole.
+
+```json
+{"format":1,"sources":[{"credit":"Bundesamt für Strassen, Kanton, Stiftung SchweizMobil","id":"schweizmobil-hiking","origin":1,
+ "routes":[
+  {"key":3,"kind":"hiking","name":"Alpenpanorama-Weg","rank":3,"ref":"3","stages":[
+    {"members":[],"name":"Alpenpanorama-Weg, Rorschach – Trogen","stage":1},
+    {"ascent_m":444,"members":[[8309770,47051860,8309910,47051950]],"name":"Alpenpanorama-Weg, Luzern – Malters","stage":11}]},
+  {"ascent_m":620,"key":561,"kind":"hiking","members":[[8461200,47052310,8461350,47052400]],"name":"Rigi Panoramaweg","rank":1,"ref":"561"}]}]}
+```
+
+- `sources`: one entry for each source of the options, in their order; `id` and `credit` from the
+  options, `origin` from the description.
+- A route: `key`; `kind`; `rank` (0 when the description maps none); `ref`, `name`,
+  `description`, `operator`, `website`: the filled template, with outer spaces removed, absent
+  when empty; `ascent_m`: an integer, absent when the description maps no field or the value is
+  empty.
+- `members`: each line of each feature of the route, in the order of the feature ids and then of
+  the parts of a multi-line: a flat list of integer microdegrees, longitude then latitude, in WGS
+  84, each line simplified within 1 m (Douglas–Peucker, so its ends stay) and with repeated points
+  removed. A line with fewer than two points is left out.
+- A route with two or more stages has `stages` and no `members`: `stage` (the number), `name`,
+  the other filled templates, `ascent_m`, `members`. A route with one stage or none takes its
+  `members` from the route layer.
+- A route is in the file when a point of one of its members is inside `bounds` (edges included).
+  A route with stages is in the file when a point of one of its stages is inside; it then lists
+  all its stages, and a stage with no point inside has `"members": []`. A stage row whose route has
+  no row is not read.
+- The routes are in the order of `key`, the stages in the order of `stage`.
+- The program fails, with the source and the feature, when: a layer or a field of the description
+  is not in the file; two routes of one source have one key from two texts; a stage number is not
+  an integer from 1 to 99, or comes twice in one route.
 
 ### Service runtimes
 

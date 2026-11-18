@@ -1,5 +1,7 @@
-/** The two hosts the planner build is pointed at (see `config.json`). */
-export const HOSTS = { tiles: 'tiles.test', api: 'api.test' };
+import { createHash } from 'node:crypto';
+
+/** The two hosts the planner build is pointed at (see `config.json`), and the host of its planner catalogue. */
+export const HOSTS = { tiles: 'tiles.test', api: 'api.test', catalog: 'maps.openbikecomputer.com' };
 
 /** The tile Worker serves these, and Cloudflare bills them; the VPS serves `api`. */
 export const CLOUDFLARE = ['basemap', 'places', 'overlays', 'terrain', 'glyphs', 'sprites'];
@@ -33,6 +35,7 @@ export function classify(url) {
     if (pathname.endsWith('/v1/region')) return 'region';
     return pathname.endsWith('/reverse') ? 'reverse' : 'query';
   }
+  if (hostname === HOSTS.catalog && pathname.startsWith('/route-pictures/')) return 'pictures';
   return `other:${hostname}`;
 }
 
@@ -87,7 +90,18 @@ const CATALOG = [
     line_udeg: udeg([[7.83, 47.99], [7.87, 47.99]]), via: [] },
 ];
 
-/** The response for a request to one of the two hosts, or null when the path has no stub. */
+/** The live set of route pictures (`specs/route-pictures.md`) holds a cover of the first route of `CATALOG` only. */
+const LOOK = '1|0715-1000|960|640';
+const SET = '0123456789abcdef';
+const COVERED = CATALOG[0];
+const COVER = createHash('sha256').update(`${LOOK}|${COVERED.line_udeg.join(',')}`).digest('hex').slice(0, 16);
+const PICTURES = {
+  'manifest.json': { format: 1, set: SET, look: LOOK, months: { '07': '0715-1000' }, default_month: '07', credits: ['© Test terrain'] },
+  [`sets/${SET}/cells/${ROUTE_CELL}.json`]: { format: 1, routes: { [COVERED.id]: COVER } },
+  [`covers/${COVERED.id}/${COVER}.json`]: { x: [100, 860, 480, 100], y: [100, 300, 540, 100], eye: [140, 140, 140, 140] },
+};
+
+/** The response for a request to one of the hosts, or null when the path has no stub. */
 export function respond(request) {
   const url = new URL(request.url());
   const kind = classify(url);
@@ -105,6 +119,11 @@ export function respond(request) {
       return { headers: CORS, contentType: 'application/x-protobuf', body: Buffer.alloc(0) };
     case 'sprites':
       return url.pathname.endsWith('.png') ? { headers: CORS, contentType: 'image/png', body: PIXEL } : json({});
+    case 'pictures': {
+      const path = url.pathname.slice('/route-pictures/'.length);
+      if ([`covers/${COVERED.id}/${COVER}-0715-1000.webp`, `covers/${COVERED.id}/${COVER}-0715-1000-small.webp`].includes(path)) return { headers: CORS, contentType: 'image/png', body: PIXEL };
+      return PICTURES[path] ? json(PICTURES[path]) : { headers: CORS, status: 404 };
+    }
     case 'routes':
       return json({ format: 1, routes: url.pathname.endsWith(`/${ROUTE_CELL}.json`) ? CATALOG : [] });
     case 'route': {

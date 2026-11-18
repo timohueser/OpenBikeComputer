@@ -44,7 +44,7 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   await list.getByRole('button', { name: 'Route that cannot be read' }).click();
   const card = page.getByRole('region', { name: 'Route that cannot be read' });
   await expect(card.getByRole('link', { name: 'Route that cannot be read' })).toHaveAttribute('href', '#/route/broken');
-  await expect(card.getByRole('button')).toHaveCount(0);
+  await expect(card.locator('.buttons button')).toHaveCount(0);
   await expect(card.getByRole('link', { name: 'Open in planner' })).toHaveCount(0);
 
   await list.getByRole('button', { name: /Start → Finish/ }).click();
@@ -57,7 +57,7 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   await plan.getByRole('button', { name: 'Do not send' }).click();
   await expect(plan).toContainText('Changed since it was sent');
 
-  // A click anywhere on the card opens the route; a click on the empty map and Escape close the card.
+  // A click anywhere on the card opens the route; a click on the empty map, Escape and the button of the card close it.
   // The name is the link that covers the card: a click on the card text lands on it, as a click of the rider does.
   await plan.getByText('Touring bike · 3 days').click({ force: true });
   await expect(page).toHaveURL(/#\/route\/long$/);
@@ -78,6 +78,10 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   await row.click();
   await page.keyboard.press('Escape');
   await expect(plan).toHaveCount(0);
+  await row.click();
+  await plan.getByRole('button', { name: 'Close' }).click();
+  await expect(plan).toHaveCount(0);
+  await expect(page).toHaveURL(/#\/routes$/);
 
   // The lengths 22 and 150 km give the slider the step 10 km: the upper handle at 100 km keeps the short route.
   await page.getByText('+ Length').click();
@@ -101,17 +105,18 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
 });
 
 // The boxes of the parts of the page with a selected route, as x, y, width and height in page pixels. A screenshot
-// cannot hold them: the text antialiasing differs between two systems. With save-data on, the cover job makes no
+// cannot hold them: the text antialiasing differs between two systems. At the width of a phone the card is fixed at
+// the bottom of the screen, which is 844 px high. With save-data on, the cover job makes no
 // picture, so the card shows the line on a plain ground.
 const PARTS = { header: '.routes-page > header', chips: '.chips', rows: '.list .row', card: '.selected .card',
   picture: '.selected .picture', text: '.selected .text', profile: '.selected .profile', buttons: '.selected .buttons' };
 const LAYOUT = {
   1440: { header: [20, 62, 1400, 36], chips: [31, 173, 458, 24], rows: [[31, 205, 458, 114], [31, 319, 458, 114], [31, 433, 458, 114]],
-    card: [527, 819, 880, 222], picture: [538, 830, 300, 200], text: [858, 830, 393, 75], profile: [858, 917, 538, 112], buttons: [1271, 830, 125, 78] },
+    card: [527, 819, 880, 222], picture: [538, 830, 300, 200], text: [858, 830, 367, 75], profile: [858, 917, 538, 112], buttons: [1245, 830, 151, 78] },
   1024: { header: [20, 62, 984, 36], chips: [31, 173, 358, 24], rows: [[31, 205, 358, 114], [31, 319, 358, 114], [31, 433, 358, 114]],
     card: [427, 826, 564, 214], picture: [438, 837, 190, 126], text: [644, 837, 336, 69], profile: [438, 974, 542, 56], buttons: [644, 930, 336, 34] },
   390: { header: [16, 60, 358, 80], chips: [27, 214, 336, 24], rows: [[27, 246, 336, 94], [27, 340, 336, 94], [27, 434, 336, 94]],
-    card: [29, 973, 332, 216], picture: [40, 984, 120, 80], text: [176, 984, 174, 69], profile: [40, 1121, 310, 56], buttons: [40, 1076, 242, 34] },
+    card: [12, 616, 366, 216], picture: [23, 627, 120, 80], text: [159, 627, 208, 69], profile: [23, 765, 344, 56], buttons: [23, 719, 242, 34] },
 };
 const layout = page => page.evaluate(parts => {
   const box = node => { const r = node.getBoundingClientRect(); return r.width ? [r.x, r.y + scrollY, r.width, r.height] : null; };

@@ -67,7 +67,7 @@ key of a cover. Run the commands from `builder/web/tests/browser`.
 
 ## Steps
 
-The first runs, from `builder/web/tests/browser`:
+The first run:
 
 1. Build the still page for production: `npm run build:trailview --prefix ../..`. `npm run
    test:trailview` builds it for the fixture, so build it again after each test run. `render`
@@ -76,23 +76,25 @@ The first runs, from `builder/web/tests/browser`:
    `npm run test:trailview -- --trace off route-pictures.test.js` with `OBC_TRAILVIEW_GPU=1`. It
    passes with no test skipped. Then build the page again (step 1).
 3. Measure a sample: `node trailview/route-pictures.mjs render --gpu --sample 30`. It prints the
-   seconds and the bytes of each cover, and the time, the size and the count of files of all routes.
+   time and the size of each cover and of all routes.
 4. Render all routes in `.artifacts/route-pictures/`: `node trailview/route-pictures.mjs render --gpu`.
-   It writes `covers/<id>/<key>-0715-1000.webp` and `<key>.json`, or `<key>.none` for a route with no view, and at
-   the end the set under `sets/<set>/`. Then upload: `node trailview/route-pictures.mjs upload`. It
-   prints the set id. Approve the set id, then make the set live:
+   It writes the covers, their small images and the set. Then upload:
+   `node trailview/route-pictures.mjs upload`. It prints the set id. Approve the set id, then make the set live:
    `node trailview/route-pictures.mjs switch SET`.
    `curl -sI https://maps.openbikecomputer.com/route-pictures/manifest.json` answers 200.
    `switch` with the id of the previous set goes back.
 
 For a new planner release, do steps 1 and 4: only the routes whose line changed render.
 
+`node trailview/route-pictures.mjs small [--out DIR]` makes each missing or older small
+image, with no render or network. A broken image gives exit code 1.
+
 ## Options of render
 
 | Option | Effect |
 | --- | --- |
 | `--sample N` | Only N routes, spread over the catalog |
-| `--only ID,ID` | Only these relation IDs |
+| `--only=ID,ID` | Only these record IDs; a section has a negative ID, which needs the `=` form |
 | `--out DIR` | Another folder than `.artifacts/route-pictures` |
 | `--gpu` | The GPU of the machine. Without it, SwiftShader draws for minutes. |
 | `--fixture` | The routes of `fixture/routes.json` and the tiles of the test fixture, for the test: build the page with `npm run pretest:trailview` |
@@ -106,7 +108,7 @@ For a new planner release, do steps 1 and 4: only the routes whose line changed 
 - `render` skips a route whose cover or `.none` mark exists for its key. A change of the size, the
   camera rule or its light in the script changes `look` and so each key: all routes render again.
 - `upload` takes the routes of the active production release, and refuses while one of them has no
-  cover and no `.none` mark. It lists the bucket once and sends only the missing cover files, 16
-  at a time, the points first. After a 429 of the host it waits one minute, at most 5 times for a file.
+  cover and no `.none` mark, or a cover has no small image. It sends only the files that are not in
+  the bucket. After a 429 of the host it waits one minute, at most 5 times for a file.
 - `upload` and `switch` call `obc data r2`, which needs `OBC_R2_*`. `switch` checks the covers in
   the bucket, because the public host keeps a deleted file in its cache for a year.

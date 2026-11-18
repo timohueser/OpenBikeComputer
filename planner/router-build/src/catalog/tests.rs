@@ -29,12 +29,18 @@ fn way(a: i64, b: i64) -> i64 {
 /// Inside one zoom 9 cell.
 const ORIGIN: i32 = 100_000;
 
-/// A relation: ID, tags and members with the empty role.
-type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<Id>);
+/// A relation: ID, tags and members with their roles.
+type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<(Id, &'a str)>);
 
 /// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`, and its
-/// source objects. The way from node 0 to node 1 is T3, the way from node 25 to node 26 is a T5 path.
+/// source objects. The way from node 0 to node 1 is T3, the way from node 25 to node 26 is a T5 path;
+/// there is no street from node 15 to node 25.
 fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
+    grid_at([ORIGIN, ORIGIN], routes)
+}
+
+/// The grid with node 0 at `origin`, in microdegrees of longitude and latitude.
+fn grid_at(origin: [i32; 2], routes: Vec<Route>) -> (Package<Memory>, Data) {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
     let (mut ways, mut relations) = (Builder::<Ways>::default(), Builder::<Relations>::default());
@@ -42,8 +48,8 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
         for column in 0..7 {
             let id = 10 * row + column;
             let point = Point {
-                lat: ORIGIN + row as i32 * 4_000,
-                lon: ORIGIN + column as i32 * 4_000,
+                lat: origin[1] + row as i32 * 4_000,
+                lon: origin[0] + column as i32 * 4_000,
                 elevation: ((row * 3 + column * 7) % 5) as f32 * 20.0,
             };
             index.insert(id, graph.points.len() as u32);
@@ -55,7 +61,7 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     for row in 0..7 {
         for column in 0..7 {
             let a = 10 * row + column;
-            for b in [a + 1, a + 10].into_iter().filter(|b| b % 10 < 7 && b / 10 < 7) {
+            for b in [a + 1, a + 10].into_iter().filter(|b| b % 10 < 7 && b / 10 < 7 && way(a, *b) != way(15, 25)) {
                 let id = way(a, b);
                 ways.push(id, &[a, b], &tags(&[("highway", "residential")]));
                 for (from, to) in [(index[&a], index[&b]), (index[&b], index[&a])] {
@@ -88,7 +94,7 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
         }
     }
     for (id, pairs, members) in routes {
-        relations.push(id, &tags(&pairs), members.into_iter().map(|member| (member, "")));
+        relations.push(id, &tags(&pairs), members);
     }
     let mut ways = ways.finish().0;
     let point = |id: i64| graph.points.values()[index[&id] as usize];
@@ -99,17 +105,30 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     graph.link_ways();
     let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| PROFILES.contains(&p.name.as_str())).collect();
     let mut objects = HashMap::new();
-    let manifest =
-        crate::prepare(&graph, "test".into(), [-1.0, -1.0, 1.0, 1.0], &profiles, vec![], "test".into(), |bytes| {
+    let [lon, lat] = origin.map(|udeg| udeg as f64 * 1e-6);
+    let manifest = crate::prepare(
+        &graph,
+        "test".into(),
+        [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0],
+        &profiles,
+        vec![],
+        "test".into(),
+        |bytes| {
             objects.insert(digest(bytes), bytes.to_vec());
             Ok(digest(bytes))
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
     (Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap(), graph.osm)
 }
 
 fn route<'a>(id: i64, pairs: &[(&'a str, &'a str)], ways: impl IntoIterator<Item = i64>) -> Route<'a> {
-    (id, [&[("type", "route")], pairs].concat(), ways.into_iter().map(Id::Way).collect())
+    (id, [&[("type", "route")], pairs].concat(), ways.into_iter().map(|way| (Id::Way(way), "")).collect())
+}
+
+/// Relation members with the empty role.
+fn members(ids: &[i64], member: fn(i64) -> Id) -> Vec<(Id, &'static str)> {
+    ids.iter().map(|&id| (member(id), "")).collect()
 }
 
 fn path(nodes: &[i64]) -> Vec<i64> {
@@ -127,7 +146,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     ];
     let long = |id, children: &[i64]| -> Route {
         let tags = vec![("type", "superroute"), ("route", "hiking"), ("name", "Long"), ("network", "rwn")];
-        (id, tags, children.iter().copied().map(Id::Relation).collect())
+        (id, tags, members(children, Id::Relation))
     };
     let mut corner = path(&[0, 1, 2, 3, 4, 14, 24, 34, 44]);
     corner.remove(5);
@@ -140,15 +159,23 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         // Two parts 1.3 km apart.
         route(3, &trail, [path(&[0, 10, 20, 30]), path(&[5, 6, 16])].concat()),
         route(4, &[("route", "mtb"), ("name", "Planned"), ("state", "proposed")], path(&[0, 1, 2, 3, 4, 5, 6])),
+        // A way that the import does not hold: at the end it can be the edge of the region; between
+        // held ways the line joins across two of them.
         route(7, &trail, [path(&[0, 1, 2, 3, 4, 5]), vec![999]].concat()),
+        route(19, &trail, [path(&[50, 51, 52]), vec![990, 991], path(&[53, 54, 55])].concat()),
+        // The patch from node 15 to node 25 goes around a block: three times the gap. It leaves the
+        // route for more than 500 m, unless the route itself comes back along the block.
+        route(20, &trail, [path(&[12, 13, 14, 15]), path(&[25, 35, 45])].concat()),
+        route(21, &trail, [path(&[12, 13, 14, 15]), path(&[25, 24, 34, 44])].concat()),
         // A lollipop: out on one street, around a block and back.
         route(8, &trail, path(&[60, 61, 62, 52, 51, 61, 60])),
         // The member order jumps, and the way from node 21 to node 22 is missing.
         route(9, &trail, [path(&[22, 23, 33, 43, 53]), path(&[20, 21])].concat()),
-        long(5, &[1, 2]),
-        long(6, &[5]),
-        // A signed piece between two signposts, which leaves also as the stage of a long route, and
-        // a named walk of 1.3 km.
+        // A long relation inside another one with a lower relation ID.
+        long(22, &[1, 2]),
+        long(6, &[22]),
+        // A signed piece between two signposts, which is no part of a long route either, a named walk
+        // of 1.3 km, and an unnamed stage with its own mark that starts where the walk ends.
         route(
             10,
             &[
@@ -160,40 +187,53 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
             path(&[40, 41, 42]),
         ),
         route(11, &[("route", "hiking"), ("name", "Rundweg")], path(&[30, 31, 32, 33])),
-        long(12, &[10, 11]),
+        long(12, &[10, 11, 35]),
+        route(35, &[("route", "hiking"), ("osmc:symbol", "red")], path(&[33, 34, 35, 36])),
         // A trail of an unnamed piece, its own ways and a connector leg, and a long route with it as
         // its stage; a trail with an absent child; a connector made of a piece.
         (
             13,
             vec![("type", "route"), ("route", "hiking"), ("name", "Joined"), ("network", "rwn")],
-            [vec![Id::Relation(14)], path(&[16, 26, 36]).into_iter().map(Id::Way).collect(), vec![Id::Relation(15)]]
+            [members(&[14], Id::Relation), members(&path(&[16, 26, 36]), Id::Way), members(&[15], Id::Relation)]
                 .concat(),
         ),
         route(14, &[("route", "hiking")], path(&[6, 16])),
         route(15, &[("route", "hiking"), ("name", "C - D")], path(&[36, 46])),
         long(18, &[13]),
-        (16, vec![("type", "route"), ("route", "hiking"), ("name", "Half")], vec![Id::Relation(14), Id::Relation(998)]),
+        (16, vec![("type", "route"), ("route", "hiking"), ("name", "Half")], members(&[14, 998], Id::Relation)),
         (
             17,
             [&trail[..1], &[("type", "route"), ("name", "A - B"), ("osmc:symbol", "yellow::yellow_diamond")]].concat(),
-            vec![Id::Relation(15)],
+            members(&[15], Id::Relation),
         ),
+        // A trail: a first stage and a stage with the role `part`, both drawn against the trail, a
+        // stage that fails with a main line (two pieces 890 m apart), an absent stage, a stage after
+        // it, and a stage 1.4 km away from the end of that one.
+        (
+            30,
+            vec![("type", "superroute"), ("route", "hiking"), ("name", "Höhenweg"), ("network", "nwn")],
+            [members(&[31], Id::Relation), vec![(Id::Relation(32), "part")], members(&[33, 997, 34, 36], Id::Relation)]
+                .concat(),
+        ),
+        route(31, &[("route", "hiking"), ("name", "Etappe 1")], path(&[3, 2, 1, 0])),
+        route(32, &[("route", "hiking"), ("name", "Etappe 2")], path(&[6, 5, 4, 3])),
+        route(33, &[("route", "hiking"), ("name", "Etappe 3")], [path(&[6, 16, 26]), path(&[46, 56])].concat()),
+        route(34, &[("route", "hiking"), ("name", "Etappe 5")], path(&[66, 65, 64, 63])),
+        route(36, &[("route", "hiking"), ("name", "Etappe 6")], path(&[20, 30, 40, 50])),
     ]);
     let selection = Selection::whole(package.fork());
-    let (records, report) = catalog(&selection, osm, false, 2)?;
+    let (records, _, report) = catalog(&selection, osm, 2, SECTION_M)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
     assert_eq!(
         dropped,
-        [
-            ("Connector", vec![10, 15, 17]),
-            ("ExtractEdge", vec![7, 16]),
-            ("Gap", vec![3]),
-            ("MissingStage", vec![12]),
-            ("NestedLongRoute", vec![6])
-        ]
+        [("Connector", vec![10, 15, 17]), ("ExtractEdge", vec![7]), ("Gap", vec![3, 20, 33]), ("NoStages", vec![16])]
     );
-    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11, 13, 18]));
+    assert_eq!(
+        by_id.keys().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from([1, 2, 6, 8, 9, 11, 12, 13, 18, 19, 21, 22, 30, 31, 32, 34, 35, 36])
+    );
+    assert_eq!((&by_id[&19]["length_m"], &report.skipped_ways), (&json!(5 * 445), &BTreeMap::from([(19, 2)])));
     let joined = by_id[&13];
     assert_eq!(joined["length_m"], 4 * 445);
     assert_eq!(&joined["line_udeg"].as_array().unwrap()[..2], [json!(ORIGIN + 6 * 4_000), json!(ORIGIN)]);
@@ -203,7 +243,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     let trail = by_id[&1];
     assert_eq!((&trail["loop"], &trail["length_m"]), (&json!(false), &json!(8 * 445)));
     assert_eq!((&trail["grades_m"][2], &trail["hardest"]), (&json!(445), &json!(2)));
-    assert_eq!((&trail["parent"], &trail["stage"]), (&json!(5), &json!(1)));
+    assert_eq!((&trail["parent"], &trail["stage"]), (&json!(22), &json!(1)), "the innermost complete trail");
     assert_eq!((&trail["symbol"], &trail["website"]), (&json!("red"), &json!("https://t.example")));
     assert_eq!(trail["cells"], json!(["9-256-255"]));
     let via = trail["via"].as_array().unwrap().len();
@@ -256,13 +296,130 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     assert_eq!(jumping["length_m"], 6 * 445);
     assert_eq!(&jumping["line_udeg"].as_array().unwrap()[..2], [json!(ORIGIN), json!(ORIGIN + 2 * 4_000)]);
 
-    let whole = by_id[&5];
+    let whole = by_id[&22];
     assert_eq!((&whole["stages"], &whole["length_m"]), (&json!([1, 2]), &json!(16 * 445)));
     assert_eq!(whole["start_udeg"], json!([ORIGIN, ORIGIN]));
     assert!(whole.get("line_udeg").is_none() && whole.get("profile_m").is_none());
+    // A long relation inside another opens in its place, and its stages keep the inner one.
+    assert_eq!((&by_id[&6]["stages"], &by_id[&1]["trail"]), (&json!([1, 2]), &json!(22)));
+    // A connector leg is no part, and its trail is not complete; an unnamed stage takes the name of
+    // its trail.
+    assert!(by_id[&12].get("stages").is_none() && by_id[&35].get("parent").is_none());
+    assert_eq!(
+        (&by_id[&35]["name"], &by_id[&35]["trail"], &by_id[&35]["trail_stage"]),
+        (&json!("Long"), &json!(12), &json!(2))
+    );
+
+    let trail = by_id[&30];
+    assert!(trail.get("stages").is_none() && trail.get("start_udeg").is_none());
+    let parts = trail["parts"].as_array().unwrap();
+    let flags: Vec<Vec<&str>> = parts
+        .iter()
+        .map(|p| ["missing", "backwards", "jump"].into_iter().filter(|f| p.get(*f).is_some()).collect())
+        .collect();
+    assert_eq!(
+        flags,
+        [vec!["backwards"], vec!["backwards"], vec!["missing"], vec!["missing"], vec!["jump"], vec!["jump"]]
+    );
+    assert_eq!((&parts[2]["start_udeg"], &parts[3].get("length_m")), (&json!([ORIGIN + 6 * 4_000, ORIGIN]), &None));
+    for (id, number) in [(31, 1), (32, 2), (34, 5), (36, 6)] {
+        assert_eq!((&by_id[&id]["trail"], &by_id[&id]["trail_stage"]), (&json!(30), &json!(number)));
+        assert!(by_id[&id].get("parent").is_none());
+    }
+    let heights = trail["trail_profile_m"].as_array().unwrap();
+    assert_eq!(heights.len(), 201);
+    assert_eq!(heights[0], *by_id[&31]["profile_m"].as_array().unwrap().last().unwrap(), "the trail starts at its end");
+    assert_eq!(heights[80], by_id[&32]["profile_m"][0], "the stage against the trail ends at its own start");
+    assert!(heights[81..120].iter().all(Value::is_null), "the failed stage has no heights");
+    assert!(!heights[121].is_null() && !heights[200].is_null());
     // The trail ends where the ring starts, so that point counts once.
     let points = via + 2 + ring["via"].as_array().unwrap().len() + 2 - 1;
-    assert_eq!(report.long_points[0], (5, points));
+    assert!(report.long_points.contains(&(22, points)));
+    Ok(())
+}
+
+/// The start of a `line_udeg` and its last vertex.
+fn line_ends(record: &Value) -> [[i64; 2]; 2] {
+    let line: Vec<i64> = record["line_udeg"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+    let sum = |axis: usize| line.iter().skip(axis).step_by(2).sum::<i64>();
+    [[line[0], line[1]], [sum(0), sum(1)]]
+}
+
+#[test]
+fn catalog_cuts_a_long_line_whose_plan_fails_into_sections() -> Result<(), String> {
+    let bike = |name| vec![("route", "bicycle"), ("name", name), ("network", "rcn")];
+    let (package, osm) = grid(vec![
+        // 4 km whose end takes the T5 path, which no bike profile follows: the plan fails.
+        route(40, &bike("Long line"), path(&[10, 11, 12, 13, 14, 15, 16, 26, 25, 24])),
+        (41, [vec![("type", "superroute")], bike("Trail")].concat(), members(&[42, 40], Id::Relation)),
+        route(42, &bike("Etappe 1"), path(&[50, 40, 30, 20, 10])),
+        route(44, &bike("Plain"), path(&[60, 61, 62, 63, 64, 65, 66])),
+        // 3.6 km with the T3 way in its first half and the T5 path in its second: no section passes.
+        route(45, &bike("Two faults"), path(&[0, 1, 2, 3, 4, 14, 24, 25, 26])),
+        (46, [vec![("type", "superroute")], bike("Faults")].concat(), members(&[44, 45], Id::Relation)),
+    ]);
+    // The test grid is 2.7 km wide.
+    let section_m = 2_000.0;
+    let (records, _, report) = catalog(&Selection::whole(package.fork()), osm, 2, section_m)?;
+    let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
+    let dropped: BTreeSet<i64> = report.dropped.values().flatten().copied().collect();
+    assert_eq!(dropped, BTreeSet::from([-4003, 45]), "{:?}", report.dropped);
+    // A line longer than a section whose plan passes stays one route.
+    assert!(by_id[&44].get("section").is_none() && by_id[&44]["length_m"].as_u64() > Some(section_m as u64));
+    // A line with no section that passes leaves as a whole, and its trail lists it as one missing part.
+    let part = &by_id[&46]["parts"][1];
+    assert_eq!((&part["id"], &part["missing"], part.get("cut")), (&json!(45), &json!(true), None));
+    assert!(part["length_m"].as_u64() > Some(section_m as u64), "the length of the whole main line");
+
+    // Three sections of 1.3 km, cut at the grid nodes nearest to each third.
+    let (first, second) = (by_id[&-4001], by_id[&-4002]);
+    assert_eq!((&first["section"], &first["trail"], &first["name"]), (&json!(1), &json!(40), &json!("Long line")));
+    assert!(first.get("trail_stage").is_none() && first.get("parent").is_none());
+    assert_eq!(line_ends(first)[0], [ORIGIN as i64, ORIGIN as i64 + 4_000]);
+    assert_eq!(line_ends(first)[1], line_ends(second)[0], "the sections meet");
+    assert_eq!([&first["length_m"], &second["length_m"]], [&json!(3 * 445), &json!(3 * 445)]);
+
+    let line = by_id[&40];
+    assert!(line.get("line_udeg").is_none() && line.get("stages").is_none());
+    let parts = line["parts"].as_array().unwrap();
+    let ids: Vec<_> = parts.iter().map(|p| (&p["id"], p.get("stage"), p.get("cut"), p.get("missing"))).collect();
+    let yes = Some(&json!(true));
+    assert_eq!(
+        ids,
+        [(&json!(-4001), None, yes, None), (&json!(-4002), None, yes, None), (&json!(-4003), None, None, yes)]
+    );
+    assert_eq!((&line["stage_count"], &line["trail"], &line["trail_stage"]), (&json!(0), &json!(41), &json!(2)));
+    // In the trail, the sections of its cut stage take the place of the stage.
+    let parts = by_id[&41]["parts"].as_array().unwrap();
+    let stages: Vec<_> = parts.iter().map(|p| (p["id"].as_i64().unwrap(), &p["stage"])).collect();
+    assert_eq!(stages, [(42, &json!(1)), (-4001, &json!(2)), (-4002, &json!(2)), (-4003, &json!(2))]);
+    assert!(by_id[&41].get("stages").is_none() && by_id[&42].get("parent").is_none());
+    assert_eq!((&by_id[&41]["stage_count"], report.cut_long_routes), (&json!(2), 2));
+    Ok(())
+}
+
+#[test]
+fn catalog_leaves_out_the_mark_of_a_route_in_france() -> Result<(), String> {
+    let marked = |name| vec![("route", "hiking"), ("name", name), ("osmc:symbol", "red:white:red_bar")];
+    let long = |id, children: &[i64]| -> Route {
+        (id, [vec![("type", "superroute")], marked("Long")].concat(), members(children, Id::Relation))
+    };
+    // Near Geneva: from node 2 on, the south row is in France; the two north rows are in Switzerland.
+    let (package, osm) = grid_at(
+        [6_180_000, 46_178_000],
+        vec![
+            route(1, &marked("Into France"), path(&[0, 1, 2, 3, 4, 5, 6])),
+            route(2, &marked("Swiss"), path(&[60, 61, 62, 63, 64, 65, 66])),
+            route(3, &[("route", "hiking"), ("name", "Plain")], path(&[50, 51, 52, 53, 54, 55, 56])),
+            long(4, &[1, 2]),
+            long(5, &[2, 3]),
+        ],
+    );
+    let (records, _, report) = catalog(&Selection::whole(package.fork()), osm, 2, SECTION_M)?;
+    assert!(report.dropped.is_empty(), "{:?}", report.dropped);
+    let symbols: Vec<_> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r.get("symbol").cloned())).collect();
+    let mark = Some(json!("red:white:red_bar"));
+    assert_eq!(symbols, [(1, None), (2, mark.clone()), (3, None), (4, None), (5, mark)]);
     Ok(())
 }
 
@@ -270,7 +427,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
 fn catalog_keeps_a_hiking_route_over_a_t5_way() -> Result<(), String> {
     let (package, osm) =
         grid(vec![route(13, &[("route", "hiking"), ("name", "Ridge")], path(&[23, 24, 25, 26, 36, 46]))]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, false, 2)?;
+    let (records, _, report) = catalog(&Selection::whole(package.fork()), osm, 2, SECTION_M)?;
     assert!(report.dropped.is_empty(), "{:?}", report.dropped);
     assert_eq!((&records[0]["id"], &records[0]["hardest"]), (&json!(13), &json!(4)));
     Ok(())
@@ -299,4 +456,65 @@ fn profile_gives_the_height_at_each_100_m_and_at_the_end() {
     let ends = line(&[(0.0, Some(5.0)), (100.0, None), (250.0, Some(20.0))]);
     assert_eq!(profile(&ends, 250.0), Some(vec![Some(5), None, None, Some(20)]));
     assert_eq!(profile(&line(&[(0.0, None), (400.0, None)]), 400.0), None);
+}
+
+#[test]
+fn trails_are_long_records_of_two_stages_or_records_of_more_than_12_hours() {
+    let at = |lat: i32| [0, lat];
+    let route = |id: i64, trail: Option<i64>, line: &[P]| {
+        let mut record = json!({"id": id, "kind": "hiking", "name": "R", "rank": 2, "loop": false, "length_m": 1});
+        record["line_udeg"] = json!(encode(line));
+        if let Some(trail) = trail {
+            record["trail"] = json!(trail);
+        }
+        record
+    };
+    let long = |id: i64, stage_count: usize, parts: Value| json!({"id": id, "kind": "hiking", "stage_count": stage_count, "parts": parts});
+    let mut records = vec![
+        route(1, None, &[at(0), at(1_000)]),
+        route(2, None, &[at(0), at(1_000)]),
+        // Part 32 runs backwards from the end of part 31; part 35 starts 445 m from the end of part 34.
+        long(
+            3,
+            3,
+            json!([{"id": 31}, {"id": 32, "backwards": true}, {"id": 33, "missing": true}, {"id": 34}, {"id": 35}]),
+        ),
+        route(31, Some(3), &[at(0), at(1_000)]),
+        route(32, Some(3), &[at(2_000), at(1_000)]),
+        route(34, Some(3), &[at(5_000), at(6_000)]),
+        route(35, Some(3), &[at(10_000), at(11_000)]),
+        // Cut lines: a short one, a long one, and a cut stage.
+        long(4, 0, json!([{"id": -401, "cut": true}, {"id": -402}])),
+        long(5, 0, json!([{"id": -501, "cut": true}, {"id": -502}])),
+        long(6, 0, json!([{"id": -601}])),
+        // A long record inside trail 3.
+        long(7, 2, json!([{"id": 31}, {"id": 32, "backwards": true}])),
+    ];
+    for (id, trail) in [(-401, 4), (-402, 4), (-501, 5), (-502, 5), (-601, 6)] {
+        records.push(route(id, Some(trail), &[at(0), at(1_000)]));
+    }
+    records[9]["trail"] = json!(3);
+    let hours = HashMap::from([
+        (1, 13.0),
+        (2, 11.0),
+        (31, 1.0),
+        (32, 1.0),
+        (34, 1.0),
+        (35, 1.0),
+        (-401, 5.0),
+        (-402, 5.0),
+        (-501, 7.0),
+        (-502, 6.0),
+        (-601, 13.0),
+    ]);
+    let trails = trails::trails(&records, &hours);
+    let ids: Vec<i64> = trails.iter().map(|(entry, _)| entry["id"].as_i64().unwrap()).collect();
+    assert_eq!(ids, [1, 3, 5, 7]);
+    let (entry, record) = &trails[1];
+    assert_eq!(record, &records[2], "the record file holds the whole record with its parts");
+    let pieces: Vec<Vec<P>> = entry["far_udeg"].as_array().unwrap().iter().map(decode).collect();
+    assert_eq!(pieces, [vec![at(0), at(1_000), at(2_000)], vec![at(5_000), at(6_000)], vec![at(10_000), at(11_000)]]);
+    assert_eq!((&entry["stage_count"], &entry["rank"]), (&json!(3), &Value::Null));
+    assert!(trails[0].0.get("stage_count").is_none() && trails[2].0.get("stage_count").is_none());
+    assert_eq!(trails[0].0["far_udeg"], json!([records[0]["line_udeg"]]));
 }

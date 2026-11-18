@@ -28,7 +28,41 @@ export interface CatalogRecord {
     stage?: number;
     stages?: number[];
     start_udeg?: [number, number];
+    /** Long record, region file only. */
+    parts?: TrailPart[];
+    /** Long record, region file only. */
+    trail_profile_m?: (number | null)[];
+    stage_count?: number;
+    trail?: number;
+    trail_stage?: number;
+    /** Section of a cut line only: its number in `trail`. */
+    section?: number;
+    /** The credit of a second route source, which each view that shows the record shows. */
+    credit?: string;
 }
+
+/** A part of a long record, in trail order. */
+export interface TrailPart {
+    id: number;
+    stage?: number;
+    name?: string;
+    length_m?: number;
+    ascent_m?: number;
+    end_m: number;
+    cells?: string[];
+    missing?: true;
+    cut?: true;
+    start_udeg?: [number, number];
+    end_udeg?: [number, number];
+    backwards?: true;
+    jump?: true;
+}
+
+/** A trail of a far file (`specs/route-catalog.md`, "Trail files"). */
+export type TrailEntry = Pick<CatalogRecord, 'id' | 'kind' | 'name' | 'ref' | 'symbol' | 'rank' | 'loop' | 'length_m' | 'ascent_m' | 'hardest' | 'stage_count'> & {
+    /** Pieces of the far line, each encoded as `line_udeg`. */
+    far_udeg: number[][];
+};
 
 /** A record with a line, not a long route. */
 export type RouteRecord = CatalogRecord & Required<Pick<CatalogRecord, 'line_udeg' | 'via'>>;
@@ -37,6 +71,10 @@ export type RouteRecord = CatalogRecord & Required<Pick<CatalogRecord, 'line_ude
 export const kinds: Record<BikeType, CatalogRecord['kind'][]> = {
     hiking: ['hiking', 'foot'], mtb: ['mtb'], road: ['bicycle'], gravel: ['bicycle'], touring: ['bicycle'],
 };
+
+/** The distinct credits of `records`, in their order. A long route joins the credits of its parts with `; `. */
+export const recordCredits = (records: { credit?: string }[]) =>
+    [...new Set(records.flatMap(record => record.credit?.split('; ').filter(Boolean) ?? []))];
 
 /** The name of grade `index` of `grades_m`: T1 to T6 for hiking and foot, S0 to S5 for mountain bike. */
 export const gradeName = (kind: 'hiking' | 'foot' | 'mtb', index: number) => kind === 'mtb' ? `S${index}` : `T${index + 1}`;

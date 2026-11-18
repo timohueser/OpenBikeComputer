@@ -8,9 +8,10 @@ const FOOT = 0.3048;
 const SPACE = '\u00a0';
 /** A value that is not a number shows as a dash. */
 const NONE = '–';
+// One format for each count of digits: a list of routes formats hundreds of numbers, and a new format for each is slow.
+const formats = [0, 1].map(digits => new Intl.NumberFormat('en', { minimumFractionDigits: digits, maximumFractionDigits: digits }));
 // Rounds before it formats, so that "-0" does not show and the digits follow the rounded value.
-const number = (value: number, digits: number) =>
-    (Math.round(value * 10 ** digits) / 10 ** digits + 0).toLocaleString('en', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const number = (value: number, digits: 0 | 1) => formats[digits].format(Math.round(value * 10 ** digits) / 10 ** digits + 0);
 /** One decimal under 100, whole numbers from 100. */
 const tenths = (value: number) => Math.abs(Math.round(value * 10)) >= 1000 ? number(value, 0) : number(value, 1);
 

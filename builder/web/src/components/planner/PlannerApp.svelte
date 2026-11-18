@@ -25,6 +25,7 @@
     import TrailViewWindow from './TrailViewWindow.svelte';
     import type { Near } from '../../lib/planner/trailview-first';
     import { routeColours } from '../../lib/planner/trailview-route';
+    import { hasTrailView } from '../../lib/planner/trailview';
     import { dataLayers } from '../../lib/planner/layers/registry';
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
@@ -1100,7 +1101,6 @@
 
     // TrailView opens at a point where the rider drops the binoculars or picks on the map, and grows from that point of the viewport.
     // The map keeps its view inside the release bounds, so every point on it is in the TrailView area.
-    const hasTrailView = 'gpu' in navigator && !!config.trailview_rules;
     let trailView = $state.raw<{ at: Coordinate; origin: [number, number]; near: Near } | null>(null);
     let trailViewControl = $state<TrailViewControl>();
 
@@ -1278,7 +1278,7 @@
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
                     <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
-                    {#if hasTrailView}
+                    {#if hasTrailView(config)}
                         <div class="control-group">
                             <TrailViewControl bind:this={trailViewControl} active={mapMode?.kind === 'look'} onActivate={binoculars}
                                 onDrop={(x, y) => { const at = map?.coordinateAtScreen(x, y); if (at) openTrailView(at, [x, y]); return !!at; }} />
@@ -1365,13 +1365,10 @@
         background: none;
         color: inherit;
     }
-    /* Links are rust in light and tan in dark, so amber stays the one action colour in both. */
     .planner-shell {
         --query-place: #3b654c;
         --query-area: #365f84;
         --query-time: #965125;
-        --planner-shadow: 0 6px 18px rgba(28, 27, 20, .12);
-        --link: var(--forest);
         display: flex;
         flex-direction: column;
         height: 100%;
@@ -1382,8 +1379,6 @@
         --query-place: #aed0b5;
         --query-area: #a9cce9;
         --query-time: #edb58b;
-        --planner-shadow: 0 6px 18px rgba(0, 0, 0, .4);
-        --link: var(--wood);
     }
     .planner-shell :global(.planner-action) {
         display: inline-flex;

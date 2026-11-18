@@ -1,12 +1,13 @@
 <!-- The card of a route over the map: its picture, its name, its numbers, its profile and its buttons. The link of the
-     name covers the card under the buttons. -->
+     name covers the card under the buttons. The card has one width and one layout for its width in each place that
+     shows it. -->
 <script lang="ts">
     import type { Snippet } from 'svelte';
     import type { Summary } from '../../lib/library/records';
     import Icon from '../../lib/ui/Icon.svelte';
     import MiniProfile from './MiniProfile.svelte';
 
-    let { name, href, icon, meta, numbers, profile, state, failure, picture, mark, more, buttons }: {
+    let { name, href, icon, meta, numbers, profile, state, failure, picture, mark, more, buttons, onclose }: {
         name: string;
         /** With it, the name is the link that covers the card; without it, the name is a plain heading. */
         href?: string;
@@ -25,26 +26,54 @@
         more?: Snippet;
         /** Buttons with the class `button`: `button primary` is filled, and `button quiet` is plain text. */
         buttons?: Snippet;
+        /** With it, the card has a button that closes it. */
+        onclose?: () => void;
     } = $props();
 
-    const metaText = $derived(meta.filter(Boolean).join(' · '));
+    const metaParts = $derived(meta.filter(Boolean));
 </script>
 
-<section class="card" aria-label={name}>
-    <div class="picture">{@render picture()}</div>
-    <div class="text">
-        <h2>{@render mark?.()}{#if href}<a class="open" {href}>{name}</a>{:else}{name}{/if}</h2>
-        {#if metaText}<p class="meta">{#if icon}<span class="icon"><Icon name={icon} size={15} /></span>{/if}{metaText}</p>{/if}
-        {#if numbers.length}<p class="numbers">{#each numbers as number, i (i)}<span>{number}</span>{/each}</p>{/if}
-        {#if state}<p class="state">{state}</p>{/if}
-        {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
-    </div>
-    {#if profile}<div class="profile"><MiniProfile summary={profile} /></div>{/if}
-    <div class="buttons">{@render buttons?.()}</div>
-    {#if more}<div class="more">{@render more()}</div>{/if}
-</section>
+<div class="frame">
+    <section class="card" aria-label={name}>
+        <div class="picture">{@render picture()}</div>
+        <div class="text">
+            <h2>{@render mark?.()}{#if href}<a class="open" {href}>{name}</a>{:else}{name}{/if}</h2>
+            {#if metaParts.length}<p class="meta">{#if icon}<span class="icon"><Icon name={icon} size={15} /></span>{/if}{#each metaParts as part, i (i)}{i ? ' ' : ''}<span>{part}{i < metaParts.length - 1 ? ' ·' : ''}</span>{/each}</p>{/if}
+            {#if numbers.length}<p class="numbers">{#each numbers as number, i (i)}<span>{number}</span>{/each}</p>{/if}
+            {#if state}<p class="state">{state}</p>{/if}
+            {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
+        </div>
+        {#if profile}<div class="profile"><MiniProfile summary={profile} /></div>{/if}
+        <div class="buttons">{@render buttons?.()}</div>
+        {#if more}<div class="more">{@render more()}</div>{/if}
+        {#if onclose}<button type="button" class="close" aria-label="Close" onclick={onclose}><Icon name="close" size={16} /></button>{/if}
+    </section>
+</div>
 
 <style>
+    /* The card changes its layout by its own width, so the same width gives the same card on the map and in a window. */
+    .frame {
+        max-width: 980px;
+        margin: 0 auto;
+        container-type: inline-size;
+        transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1), transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    @starting-style {
+        .frame {
+            opacity: 0;
+            transform: translateY(6px);
+        }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .frame {
+            transition-property: opacity;
+        }
+        @starting-style {
+            .frame {
+                transform: none;
+            }
+        }
+    }
     /* The profile is a strip under the text and the buttons, as high as the room that they leave beside the picture. */
     .card {
         position: relative;
@@ -52,6 +81,7 @@
         grid-template-columns: 300px minmax(0, 1fr) auto;
         grid-template-rows: auto minmax(40px, 1fr);
         grid-template-areas: "picture text buttons" "picture profile profile";
+        max-height: var(--card-height, none);
         align-items: start;
         gap: 10px 20px;
         padding: 10px;
@@ -77,6 +107,7 @@
         margin: 0;
         overflow: hidden;
         font: 700 18px/1.25 var(--sans);
+        text-wrap: balance;
         -webkit-box-orient: vertical;
         -webkit-line-clamp: 2;
         line-clamp: 2;
@@ -88,7 +119,11 @@
         color: var(--ink-soft);
         font-size: 13px;
     }
-    .icon {
+    /* The line wraps between two parts, and inside a part only when the part is longer than the line. */
+    .meta span {
+        display: inline-block;
+    }
+    .meta .icon {
         display: inline-flex;
         margin-right: 5px;
         color: var(--ink);
@@ -144,15 +179,13 @@
         position: relative;
         z-index: 1;
     }
+    /* The buttons keep the room of the close button free, also when there are none. */
     .buttons {
         display: flex;
         grid-area: buttons;
         flex-direction: column;
         gap: 6px;
-        padding-top: 6px;
-    }
-    .buttons:empty {
-        display: none;
+        padding: 6px 26px 0 0;
     }
     .buttons :global(.button) {
         padding: 6px 12px;
@@ -161,17 +194,24 @@
         background: var(--panel);
         color: var(--ink);
         white-space: nowrap;
+        transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
     }
     .buttons :global(.button:not(:disabled):hover) {
         background: var(--parchment-2);
     }
-    /* As strong as the rule above, so the pointer keeps the fill. */
+    .buttons :global(.button:not(:disabled):active) {
+        transform: scale(0.97);
+    }
+    /* As strong as the rule of the pointer above, so the pointer keeps the fill. */
     .buttons :global(.primary), .buttons :global(.primary:not(:disabled):hover) {
         border-color: var(--rust);
         background: var(--rust);
         color: var(--cream);
         text-align: center;
         text-decoration: none;
+    }
+    .buttons :global(.primary:not(:disabled):hover) {
+        filter: brightness(0.93);
     }
     /* A quiet button is plain text, so the card has one framed button. */
     .buttons :global(.quiet) {
@@ -181,37 +221,73 @@
     }
     .more {
         grid-column: 1 / -1;
+        align-self: stretch;
+        min-height: 0;
+        overflow-y: auto;
     }
-    /* Under this width the map leaves the card too little room beside the picture, so the strip goes under the card. */
-    @media (max-width: 1200px) {
+    .close {
+        position: absolute;
+        z-index: 2;
+        top: 4px;
+        right: 4px;
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: none;
+        color: var(--ink-soft);
+    }
+    .close:hover {
+        background: var(--parchment-2);
+        color: var(--ink);
+    }
+    /* A finger needs a larger area than the cross. */
+    @media (pointer: coarse) {
+        .close::before {
+            position: absolute;
+            inset: -8px;
+            content: '';
+        }
+    }
+    /* Under this width the card has too little room beside the picture, so the strip goes under the card. A place that
+       fixes the card to the screen limits its height with `--card-height`: the rows of the card keep their height, and
+       the row of `more`, the one flexible row, takes the rest and scrolls. */
+    @container (max-width: 740px) {
         .card {
             grid-template-columns: clamp(120px, 35%, 240px) minmax(0, 1fr);
-            grid-template-rows: auto 1fr;
-            grid-template-areas: "picture text" "picture buttons";
+            grid-template-rows: auto auto auto;
+            grid-template-areas: "picture text" "picture buttons" "profile profile";
+            grid-auto-rows: minmax(0, 1fr);
             gap: 10px 16px;
         }
         .picture {
             height: auto;
             aspect-ratio: 3 / 2;
         }
-        .text, .buttons {
-            padding-top: 0;
+        /* The room of the close button. */
+        .text {
+            padding: 0 22px 0 0;
         }
         .buttons {
             flex-direction: row;
             flex-wrap: wrap;
             align-self: end;
+            padding: 0;
+        }
+        .buttons:empty {
+            display: none;
         }
         .profile {
-            grid-area: auto;
-            grid-column: 1 / -1;
             height: 56px;
         }
     }
-    @media (max-width: 760px) {
+    @container (max-width: 480px) {
         .card {
             grid-template-columns: 120px minmax(0, 1fr);
-            grid-template-areas: "picture text" "buttons buttons";
+            grid-template-areas: "picture text" "buttons buttons" "profile profile";
             gap: 12px 16px;
         }
         .picture {

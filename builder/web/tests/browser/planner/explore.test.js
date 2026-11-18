@@ -7,10 +7,17 @@ const FREIBURG = { name: 'Freiburg', kind: 'city', lon: 7.85, lat: 47.99, west: 
 test('the Explore page lists the signed routes of the map view, filters them, plans one and comes back to the same view', async ({ page }) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
+  // A GPU without an adapter, so the page offers TrailView in a headless browser.
+  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'gpu', {
+    configurable: true,
+    get: () => ({ requestAdapter: async () => null, getPreferredCanvasFormat: () => 'bgra8unorm' }),
+  }));
   await page.route(url => url.hostname !== '127.0.0.1', route => {
     const request = route.request();
     if (request.method() === 'OPTIONS') return route.fulfill(CORS_PREFLIGHT);
     if (request.url().endsWith('/query')) return route.fulfill({ ...CORS_PREFLIGHT, status: 200, json: { type: 'places', request: { type: 'place' }, results: [FREIBURG] } });
+    // No terrain tile: the cover view has no heights, so it finds no camera for the routes.
+    if (new URL(request.url()).pathname.startsWith('/terrain/')) return route.fulfill({ ...CORS_PREFLIGHT, status: 204 });
     const response = respond(request);
     return response ? route.fulfill(response) : route.abort();
   });
@@ -26,6 +33,11 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
   // The shortest first; the long route is no row, and the cycle route is not for hiking.
   await expect(list.getByText('2 signed routes in this map view')).toBeVisible();
   await expect(list.locator('.row')).toHaveText([/Schlossberg loop.*1\.2\skm · 150\sm up · T2/, /Westweg 2.*2\.5\skm · 80\sm up · T1/]);
+  // The set of route pictures holds a cover of the first route only; the other row shows its line on a plain ground.
+  await expect(list.locator('.row').nth(0).locator('canvas')).toBeVisible();
+  await expect(list.locator('.row').nth(1).locator('svg')).toBeVisible();
+  await page.getByRole('button', { name: 'TrailView' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'TrailView' })).toHaveText('TrailView has no view of this area.');
 
   await page.getByText('+ Shape').click();
   await page.getByRole('button', { name: 'One way' }).click();
@@ -33,6 +45,11 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
   await list.getByRole('button', { name: /Westweg 2/ }).click();
   const card = page.getByRole('region', { name: 'Westweg 2' });
   await expect(card).toContainText('One way · Stage 2 of 2 · Westweg · National hiking route');
+  // The button of the card closes it and clears the selection.
+  await card.getByRole('button', { name: 'Close' }).click();
+  await expect(card).toHaveCount(0);
+  await expect(list.locator('.row[aria-current="true"]')).toHaveCount(0);
+  await list.getByRole('button', { name: /Westweg 2/ }).click();
   const kept = await page.evaluate(() => new Promise(done => setTimeout(() => done(history.state.explore), 500)));
 
   await card.getByRole('button', { name: 'Plan this route' }).click();

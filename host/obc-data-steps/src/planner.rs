@@ -53,7 +53,7 @@ pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
 pub static PLANNER_ROUTING_COSTS: Layer = Layer { revision: 2, ..work(step::COSTS) };
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
-    revision: 7,
+    revision: 18,
     ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
 };
 /// The search databases and the query model. Its format is the search schema of
@@ -87,7 +87,7 @@ pub static PLANNER_TRAILVIEW_CANOPY: Layer = whole("planner/trailview-canopy", 1
 /// which the downloads and search services check: a change of either file format changes it, and
 /// `INDEX_FORMAT` of `tools/planner_runtime.py` and `GRID` of `planner/search/installation.mjs`.
 pub static PLANNER_INDEX: Layer =
-    Layer { revision: 2, ..whole("planner/index", 4, &[&WEB_PLANNER, &IOS, &SEARCH_SERVICE, &DOWNLOADS_SERVICE]) };
+    Layer { revision: 3, ..whole("planner/index", 4, &[&WEB_PLANNER, &IOS, &SEARCH_SERVICE, &DOWNLOADS_SERVICE]) };
 
 const WORLDCOVER_GRID: &str = "esa-worldcover-grid";
 
@@ -322,9 +322,7 @@ impl Planner {
             countries => countries.to_vec(),
         };
         if countries.is_empty() {
-            return Err(invalid(format!(
-                "the Geofabrik areas of region `{id}` name no country, which the route catalog needs"
-            )));
+            return Err(invalid(format!("the Geofabrik areas of region `{id}` name no country, which search needs")));
         }
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
         let requested = obc_bake::coverage::Coverage::union(&selection.outlines.iter().collect::<Vec<_>>())
@@ -422,11 +420,11 @@ impl Planner {
         };
         // The last part of the id: the old planner names its files after it.
         let name = region.id.rsplit('/').next();
-        // A bad profile or country of the routing fails before any bake.
+        // A bad profile of the routing fails before any bake.
         if on("routing") {
             let profiles: Vec<&str> = config.routing.profiles.iter().map(String::as_str).collect();
             planner_router_build::profiles(&profiles)
-                .and_then(|profiles| planner_router_build::catalog::check(&countries, &profiles))
+                .and_then(|profiles| planner_router_build::catalog::check(&profiles))
                 .map_err(|reason| invalid(format!("the routing of region `{id}`: {reason}")))?;
         }
         let work = |layer: &'static Layer, inputs: Vec<Input>, options, run| Step {
@@ -466,7 +464,6 @@ impl Planner {
             options: json!({
                 "region": name,
                 "bounds": bounds,
-                "countries": countries,
                 "attribution": attribution("osm-planet"),
             }),
             outputs: vec!["routing".into(), "blocks".into(), "routes".into()],
@@ -1416,7 +1413,6 @@ mod tests {
             region("no-countries", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ntime_zone = \"Europe/Berlin\"\n"),
             region("no-time-zone", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\n"),
             region("boxed", "kind = \"box\"\nbox = [7.79, 47.99, 7.82, 48.02]\ncountries = [\"DE\"]\n"),
-            region("border", "kind = \"box\"\nbox = [7.79, 47.99, 7.82, 48.02]\ncountries = [\"DE\", \"FR\"]\n"),
         ])
         .unwrap()
     }
@@ -1646,17 +1642,6 @@ mod tests {
     }
 
     #[test]
-    fn only_a_plan_with_routing_checks_the_countries_of_the_route_catalog() {
-        let temp = temp("planner-border");
-        let store = store(&temp, &["2026-10-01"]);
-        let mut inputs = inputs("border", &[]);
-        let result = Planner.steps(&root(), &inputs, &regions(), &store);
-        assert!(matches!(result, Err(Unplanned::Invalid(reason)) if reason.contains("routing of region `border`")));
-        inputs.settings.layers = vec!["map".into()];
-        assert!(Planner.steps(&root(), &inputs, &regions(), &store).is_ok(), "France and Germany have a map");
-    }
-
-    #[test]
     fn the_profiles_are_an_option_of_the_costs_step_alone() {
         let temp = temp("planner-routing-steps");
         let store = store(&temp, &["2026-10-01"]);
@@ -1679,7 +1664,7 @@ mod tests {
         assert_eq!(options(step::SOURCE), ["bounds"]);
         assert_eq!(options(step::ROADS), ["bounds", "terrain_attribution"]);
         assert_eq!(options(step::COSTS), ["bounds", "profiles"]);
-        assert_eq!(options("planner/routing"), ["attribution", "bounds", "countries", "region"]);
+        assert_eq!(options("planner/routing"), ["attribution", "bounds", "region"]);
         assert_eq!(reads(step::SOURCE), ["planner/osm/bounds"]);
         assert_eq!(reads(step::ROADS), [step::SOURCE]);
         assert_eq!(reads(step::COSTS), [step::SOURCE, step::ROADS]);
@@ -1860,7 +1845,7 @@ mod tests {
         }
         assert_eq!(tiles(&get("planner/routing-roads").inputs[1]), ["N47_00_E007", "N48_00_E007"]);
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.82, 48.02]));
-        assert_eq!((&routing.options["region"], &routing.options["countries"]), (&json!("test"), &json!(["DE"])));
+        assert_eq!(routing.options["region"], json!("test"));
         assert_eq!(
             (&pois.options["bounds"], &pois.options["time_zone"]),
             (&routing.options["bounds"], &json!("Europe/Berlin"))
@@ -1891,8 +1876,8 @@ mod tests {
             "geometry":{"type":"Polygon","coordinates":[[[7.79,47.99],[7.82,47.99],[7.82,48.02],[7.79,48.02],[7.79,47.99]]]}}]});
         fetched(&store, crate::device::catalog::INDEX, "2", &[], &[("index-v1.json".into(), index.to_string())]);
         let steps = Planner.steps(&root(), &inputs("no-countries", &[]), &regions(), &store).unwrap().steps;
-        let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
-        assert_eq!(routing.options["countries"], json!(["DE"]));
+        let dump = steps.iter().find(|step| step.name == "planner/search/dump").unwrap();
+        assert_eq!(dump.options["country"], json!("de"));
         let steps = Planner.steps(&root(), &inputs("no-time-zone", &[]), &regions(), &store).unwrap().steps;
         let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
         assert_eq!(pois.options["time_zone"], "UTC");
