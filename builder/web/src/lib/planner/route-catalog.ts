@@ -1,4 +1,4 @@
-import { config, loadRouteCell, loadTrailCell, loadTrailRecord } from './map-data';
+import { config, coversCell, loadRouteCell, loadTrailCell, loadTrailRecord } from './map-data';
 import { tileColumn, tileRow } from './place-index';
 import type { BikeType } from './riding-profiles';
 import { kinds, type CatalogRecord, type TrailEntry } from './signed-routes';
@@ -164,7 +164,8 @@ export class RouteCatalog {
     /** The answer of `trailsInBox` with no wait, or undefined while a far file of the box is not loaded. */
     trailsInBoxNow(box: Box): TrailEntry[] | null | undefined {
         if (!config.trails || trailsTooWide(box)) return null;
-        const files = boxCells(box, 7).map(id => this.farLoaded.get(id));
+        // A cell outside the release has no far file to wait for.
+        const files = boxCells(box, 7).map(id => coversCell(config.bounds, id) ? this.farLoaded.get(id) : null);
         return files.every(file => file !== undefined) ? this.trailsOf(files as (TrailEntry[] | null)[], box) : undefined;
     }
 

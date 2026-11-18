@@ -65,6 +65,8 @@ describe('route catalog', () => {
 
     it('joins the pieces of a trail from the far files of a box, and loads none for a box of more than the most cells', async () => {
         config.trails = 'https://tiles.test/routes/tiles/trails/{cell}.json';
+        const bounds = config.bounds;
+        config.bounds = [5, 45, 10, 48];
         asked.length = 0;
         const entry = (id: number, far_udeg: number[][]): TrailEntry => ({ id, kind: 'hiking', rank: 2, loop: false, length_m: 9e4, ascent_m: 900, far_udeg });
         // 8.4375° E is the edge between the zoom 7 columns 66 and 67.
@@ -87,6 +89,7 @@ describe('route catalog', () => {
         asked.length = 0;
         expect(await new RouteCatalog().trailsInBox([5, 43, 20, 47])).toBeNull();
         delete config.trails;
+        config.bounds = bounds;
         expect(await new RouteCatalog().trailsInBox(box)).toBeNull();
         expect(asked).toEqual([]);
     });
