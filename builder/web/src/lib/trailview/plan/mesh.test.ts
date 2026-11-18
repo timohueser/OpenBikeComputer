@@ -8,13 +8,13 @@ import { build, CellRequest, feature_tiles, initSync } from './pkg/obc_ground_pl
 const GRID = 1024;
 
 /** An empty cell mesh (`CellMesh::to_bytes`): the head and the region's words. */
-const EMPTY_CELL = new Uint8Array(new Uint32Array([0x4f424d05, 1, 2, ...new Array(9).fill(0), ...new Array(Math.ceil((130 * 130) / 32)).fill(0)]).buffer);
+const EMPTY_CELL = new Uint8Array(new Uint32Array([0x4f424d06, 1, 2, ...new Array(10).fill(0), ...new Array(Math.ceil((130 * 130) / 32)).fill(0)]).buffer);
 
 /**
- * A storey mesh's bytes as `StoreyMesh::to_bytes` of mesh/shell.rs lays them out, one run per part and per slot kind: the decks'
- * layout, or with `caps` the bores' (its parts and slot kinds after the decks', then the caps and the lights).
+ * A storey mesh's bytes as `StoreyMesh::to_bytes` of mesh/shell.rs lays them out, one run per part and per slot kind, then the
+ * caps and the lights.
  */
-function storeyBytes(corners: number[][], parts: number[][][], kinds: number[][][], caps?: number[][], lights: number[][] = []): Uint8Array {
+function storeyBytes(corners: number[][], parts: number[][][], kinds: number[][][], caps: number[][], lights: number[][]): Uint8Array {
     const runs = (items: number[][][]) => items.filter(p => p.length).flatMap(p => [p.length, 0]);
     const packed = (items: number[][][]) => {
         const flat = items.flat(2), out = new Uint16Array(2 * Math.ceil(flat.length / 2));
@@ -22,9 +22,9 @@ function storeyBytes(corners: number[][], parts: number[][][], kinds: number[][]
         return [...new Uint32Array(out.buffer)];
     };
     const [tris, slots] = [parts.flat().length, kinds.flat().length];
-    const head = [caps ? 0x4f425303 : 0x4f425301, 3, 4, corners.length, tris, runs(parts).length / 2, slots, runs(kinds).length / 2, kinds[0].length, ...parts.map(p => p.length)];
-    if (caps) head.push(...kinds.slice(1).map(k => k.length), caps.length, lights.length);
-    return new Uint8Array(new Uint32Array([...head, ...corners.flat(), ...runs(parts), ...packed(parts), ...runs(kinds), ...packed(kinds), ...(caps ?? []).flat(), ...lights.flat()]).buffer);
+    const head = [0x4f425303, 3, 4, corners.length, tris, runs(parts).length / 2, slots, runs(kinds).length / 2, kinds[0].length, ...parts.map(p => p.length)];
+    head.push(...kinds.slice(1).map(k => k.length), caps.length, lights.length);
+    return new Uint8Array(new Uint32Array([...head, ...corners.flat(), ...runs(parts), ...packed(parts), ...runs(kinds), ...packed(kinds), ...caps.flat(), ...lights.flat()]).buffer);
 }
 
 describe('the mesh reader', () => {
@@ -73,15 +73,6 @@ describe('the mesh reader', () => {
         expect([s.seams, s.sills]).toEqual([1, 2]);
         expect([...s.caps]).toEqual(caps.flat());
         expect([...s.lights]).toEqual(lights.flat());
-    });
-
-    it('reads a storey mesh of decks alike in both layouts: no bore and no cap', () => {
-        const corners = [0, 1, 2, 3].map(k => [k, k, 0x3f800000]), parts = [[[0, 1, 2]], [[0, 2, 1]], [[1, 2, 3]], [], [], [], []];
-        const kinds = [[[0, 1, 2, 3]], [[3, 2, 1, 0]]];
-        const read = (bytes: Uint8Array) => cellMesh(meshBytes(EMPTY_CELL, bytes).slice(0)).storeys!;
-        const decks = read(storeyBytes(corners, parts, kinds)), bores = read(storeyBytes(corners, [...parts, [], [], [], []], [...kinds, [], [], []], []));
-        expect(bores).toEqual(decks);
-        expect([decks.bores, decks.roofs, decks.fronts, decks.seams, decks.sills, decks.caps.length, decks.lights.length]).toEqual([3, 3, 3, 2, 2, 0, 0]);
     });
 
     it('reads the storeys after a cell mesh: every index names a storey corner, the top comes first, then the shell and the bores in their parts', () => {

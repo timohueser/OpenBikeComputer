@@ -2,21 +2,19 @@
 // obc-ground-plan), then the meshes of its storeys over the ground (`StoreyMesh::to_bytes` of `mesh/shell.rs`)
 // where it has any: the one reader of those bytes, in the form that pieces.ts uploads.
 
-/** A cell mesh, and one with the bores, whose head goes on with the count of the end faces on a portal line (`MAGIC` of `mesh/mod.rs`). */
-const MAGIC = 0x4f424d05;
-const BORED_MAGIC = 0x4f424d06;
-const HEAD = 12;
-/** A storey mesh of the decks, and one with the bores (`MAGIC` of `mesh/shell.rs`). */
-const STOREY_MAGIC = 0x4f425301;
-const BORES_MAGIC = 0x4f425303;
+/** A cell mesh (`MAGIC` of `mesh/mod.rs`): its head ends with the count of the end faces on a portal line. */
+const MAGIC = 0x4f424d06;
+const HEAD = 13;
+/** A storey mesh (`MAGIC` of `mesh/shell.rs`). */
+const STOREY_MAGIC = 0x4f425303;
 /**
- * The storey mesh's head: its magic, cell, counts and top slots, then the triangles of each part (`PARTS`); with the bores, then
- * the slots of each kind after the tops' (`SLOT_KINDS`), the count of the caps and the count of the lights.
+ * The storey mesh's head: its magic, cell, counts and top slots, then the triangles of each part (`PARTS`), the slots of each
+ * kind after the tops' (`SLOT_KINDS`), the count of the caps and the count of the lights.
  */
 const STOREY_HEAD = 9;
 const DECK_PARTS = 7;
-const BORE_PARTS = 4;
-const BORE_SLOT_KINDS = 4;
+const PARTS = DECK_PARTS + 4;
+const SLOT_KINDS = 4;
 /** Region cells (2 × 2 grid cells) along a side of a cell, as `params::CELLS`, and the words of R on the cell and one ring. */
 const CELLS = 128;
 const REGION_WORDS = Math.ceil(((CELLS + 2) * (CELLS + 2)) / 32);
@@ -91,11 +89,10 @@ export function meshBytes(mesh: Uint8Array, storeys?: Uint8Array): ArrayBuffer {
 
 export function cellMesh(bytes: ArrayBuffer): CellMesh {
     const words = new Uint32Array(bytes);
-    const [magic, x, y, corners, triangles, , triangleRuns, steps, stepRuns, level18Runs, endFaces, mouths] = words.subarray(0, HEAD);
-    if (magic !== MAGIC && magic !== BORED_MAGIC) throw new Error(`not a ground plan mesh: ${magic.toString(16)}`);
+    const [magic, x, y, corners, triangles, , triangleRuns, steps, stepRuns, level18Runs, endFaces, mouths, headwalls] = words.subarray(0, HEAD);
+    if (magic !== MAGIC) throw new Error(`not a ground plan mesh: ${magic.toString(16)}`);
     let at = HEAD;
     const take = (n: number) => words.subarray(at, (at += n));
-    const headwalls = magic === BORED_MAGIC ? take(1)[0] : 0;
     const corner = words.slice(at, (at += 2 * corners));
     /** Items of `size` corners in runs of (count, base), their 16-bit indices less the base. */
     const items = (count: number, runs: number, size: number) => {
@@ -121,11 +118,10 @@ function whole({ short, runs }: { short: Uint16Array; runs: { count: number; bas
 function storeyMesh(bytes: ArrayBuffer, start: number): StoreyMesh {
     const words = new Uint32Array(bytes, 4 * start);
     const [magic, , , corners, triangles, triangleRuns, slots, slotRuns, topSlots] = words.subarray(0, STOREY_HEAD);
-    if (magic !== STOREY_MAGIC && magic !== BORES_MAGIC) throw new Error(`not a storey mesh: ${magic.toString(16)}`);
-    const bored = magic === BORES_MAGIC, nParts = DECK_PARTS + (bored ? BORE_PARTS : 0);
+    if (magic !== STOREY_MAGIC) throw new Error(`not a storey mesh: ${magic.toString(16)}`);
     let at = STOREY_HEAD;
     const take = (n: number) => words.subarray(at, (at += n));
-    const parts = take(nParts), kinds = bored ? take(BORE_SLOT_KINDS) : undefined, [caps, lights] = bored ? take(2) : [0, 0];
+    const parts = take(PARTS), kinds = take(SLOT_KINDS), [caps, lights] = take(2);
     const corner = take(3 * corners), packed = new Uint32Array(2 * corners), offsets = new Uint32Array(corners);
     for (let k = 0; k < corners; k++) {
         packed[2 * k] = corner[3 * k];
@@ -138,12 +134,12 @@ function storeyMesh(bytes: ArrayBuffer, start: number): StoreyMesh {
     };
     const triangle = items(triangles, triangleRuns, 3), slot = items(slots, slotRuns, 4), cap = take(3 * caps).slice(), light = take(3 * lights).slice();
     if (at > words.length || cap.length !== 3 * caps || light.length !== 3 * lights) throw new Error('a storey mesh ends early');
-    // The parts' triangles: top, underside, edge, parapet, railing, post, pier; with the bores floor, roof, wall, front. The slots: the
-    // tops', the risers; with the bores the floors' and the roofs' seams, the sills.
-    const first = (k: number) => parts.subarray(0, k).reduce((sum, n) => sum + n, 0), seams = kinds ? topSlots + kinds[0] : slots;
+    // The parts' triangles: top, underside, edge, parapet, railing, post, pier, then the bores' floor, roof, wall, front. The slots:
+    // the tops', the risers, the floors' and the roofs' seams, the sills.
+    const first = (k: number) => parts.subarray(0, k).reduce((sum, n) => sum + n, 0), seams = topSlots + kinds[0];
     return {
         corners: packed, offsets, triangles: whole(triangle, 3), top: parts[0], railings: first(4), piers: first(6), bores: first(DECK_PARTS),
-        roofs: first(bored ? DECK_PARTS + 1 : nParts), fronts: first(bored ? nParts - 1 : nParts), slots: whole(slot, 4), seams, sills: kinds ? seams + kinds[1] + kinds[2] : slots, caps: cap, lights: light,
+        roofs: first(DECK_PARTS + 1), fronts: first(PARTS - 1), slots: whole(slot, 4), seams, sills: seams + kinds[1] + kinds[2], caps: cap, lights: light,
     };
 }
 

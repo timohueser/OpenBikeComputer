@@ -137,16 +137,24 @@ fn detail_look(mat: u32, su: vec2f, w: WayPixel, altitude: f32) -> WayLook {
             out.albedo = PLANK * mix(1.0, tone * (1.0 - 0.6 * gap), shown) * (0.9 + 0.2 * noise(p / 0.5));
         }
         default: {
-            // The local rock's brightness and a hint of its hue.
-            let cell = cell_at(su, u32(ceil(lod(su))));
-            let rock = clamp(rule(cell.b, slot_lithologies() + i32(cell.g)).rgb / vec3f(0.3101, 0.3189, 0.2929), vec3f(0.6), vec3f(1.4));
-            let tint = mix(vec3f(dot(rock, vec3f(0.333))), rock, 0.35);
             if (mat == MAT_WALL) {
-                out.albedo = tint * rubble(w.along, altitude, w.aw, max(length(vec2f(dpdx(altitude), dpdy(altitude))), 1e-4));
+                out.albedo = rock_tint(su) * rubble(w.along, altitude, w.aw, max(length(vec2f(dpdx(altitude), dpdy(altitude))), 1e-4));
             } else {
-                out.albedo = tint * vec3f(0.5, 0.49, 0.46) * (0.9 + 0.1 * noise(p / 0.3));
+                out.albedo = cap_albedo(su, p);
             }
         }
     }
     return out;
+}
+
+// The local rock's brightness and a hint of its hue.
+fn rock_tint(su: vec2f) -> vec3f {
+    let cell = cell_at(su, u32(ceil(lod(su))));
+    let rock = clamp(rule(cell.b, slot_lithologies() + i32(cell.g)).rgb / vec3f(0.3101, 0.3189, 0.2929), vec3f(0.6), vec3f(1.4));
+    return mix(vec3f(dot(rock, vec3f(0.333))), rock, 0.35);
+}
+
+// The concrete of a cap (MAT_CAP) at the world point `p`.
+fn cap_albedo(su: vec2f, p: vec2f) -> vec3f {
+    return rock_tint(su) * vec3f(0.5, 0.49, 0.46) * (0.9 + 0.1 * noise(p / 0.3));
 }

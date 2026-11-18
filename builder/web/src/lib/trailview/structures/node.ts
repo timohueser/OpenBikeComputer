@@ -87,8 +87,9 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node, plan = 
     // The ground plan's storeys draw the bridges and the tunnels where its meshes draw.
     far.mesh.bridge(() => {
         bridges(far.mesh, list, tile, lines, owns);
-        tunnels(far.mesh, lines, owns);
+        if (plan) tunnels(far.mesh, lines, owns);
     });
+    if (!plan) tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
     rails(far.mesh, far.anchored, list, tile, lines, owns, [x0, y0, x0 + side, y0 + side]);
     const points: Point[] = [];

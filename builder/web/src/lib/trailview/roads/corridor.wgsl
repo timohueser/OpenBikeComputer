@@ -362,25 +362,16 @@ fn wall_rock(in: CorridorOut, su: vec2f) -> WallRock {
     return out;
 }
 
-// A bore's inside (INSIDE): no sun reaches it, and it reads no shadow map. Its floor keeps its way's look, and what of that
-// look would show the ground is concrete, as the walls and the roof are. A face's light is as long as its normal
+// A bore's inside (INSIDE): no sun reaches it, and it reads no shadow map. Its floor keeps its way's look `l`, and what
+// of that look would show the ground is concrete, as the walls and the roof are. A face's light is as long as its normal
 // (plan/piece.wgsl's daylight): INSIDE_DIM of it grey, the rest the sky's light that comes in at the openings; times
 // INSIDE_FACE by its direction and INSIDE_FAR by its distance.
-fn inside_lit(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
+fn inside_lit(in: CorridorOut, l: WayLook, su: vec2f, p: vec2f) -> vec3f {
     let light = length(in.normal);
     let up = in.normal.z / max(light, 1e-6);
-    let pw = max(length(d[0]), length(d[1])) * look.screen.z;
-    let cw = max(length(vec2f(dpdx(in.road.x), dpdy(in.road.x))), 1e-4);
-    let aw = max(length(vec2f(dpdx(in.along), dpdy(in.along))), 1e-4);
-    let way = WayPixel(look.place.xy + in.relative.xy, in.road.x, in.road.y, in.along, pw, cw, aw, 0.0);
-    let mat = in.word & MAT_BITS;
-    var l = WayLook(vec3f(0.0), vec2f(0.0), 1.0, 0.0, 0.0);
-    if (mat != MAT_CAP && mat != MAT_GROUND) {
-        l = way_look(mat, (in.word >> CODE_SHIFT) & 15u, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, up, in.altitude, true);
-    }
     var albedo = l.albedo;
     if (l.ground > 0.0) {
-        albedo = mix(albedo, detail_look(MAT_CAP, su, way, in.altitude).albedo, min(l.ground, 1.0));
+        albedo = mix(albedo, cap_albedo(su, p), min(l.ground, 1.0));
     }
     let sky = look.ambient.rgb;
     let lit = INSIDE_DIM * vec3f(luma(sky)) + (light - INSIDE_DIM) * sky;
@@ -408,7 +399,8 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
         }
     }
     let mat = in.word & MAT_BITS;
-    DETAIL_EVERYWHERE = PIECE && (in.word & STOREY_TOP) != 0u;
+    let bore = PIECE && (in.word & INSIDE) == INSIDE;
+    DETAIL_EVERYWHERE = PIECE && (in.word & INSIDE) == STOREY_TOP;
     if (!PIECE && mat >= LOOK_TREAD && mat <= LOOK_LOG && dither(in.clip.xy + DETAIL_DITHER) < detail_fade(length(in.relative.xy))) {
         discard;
     }
@@ -422,25 +414,22 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     if (PIECE && frame.debug == 3u) {
         return vec4f(vec3f(0.25 + 0.5 * (max(dot(render_normal(select(normalize(in.normal), drawn_normal(su), (in.word & MAT_BITS) == MAT_GROUND)), frame.sun.xyz), 0.0) * frame.sun.w + 0.3) / 1.3), 1.0);
     }
-    if (PIECE && (in.word & INSIDE) == INSIDE) {
-        return vec4f(inside_lit(in, su, d), 1.0);
-    }
-    if (PIECE && (in.word & (MAT_BITS | CULVERT_DARK)) == (MAT_CAP | CULVERT_DARK)) {
+    if (PIECE && !bore && (in.word & (MAT_BITS | CULVERT_DARK)) == (MAT_CAP | CULVERT_DARK)) {
         return vec4f(atmosphere(CULVERT_INSIDE, in.relative, in.altitude), 1.0);
     }
-    if (mat == MAT_GROUND) {
+    if (mat == MAT_GROUND && !bore) {
         return vec4f(corridor_ground(in, su, d), 1.0);
     }
     // The fall of a piece's water is the slope of its surface, which is level across its line: a step's
     // slot stands upright, so it foams.
-    if (PIECE && mat == MAT_WATER) {
+    if (PIECE && !bore && mat == MAT_WATER) {
         let wn = normalize(in.normal);
         let fall = length(wn.xy) / max(wn.z, 1e-3);
         return vec4f(atmosphere(water_look(in.relative, su, fall, false, frame.pixel, frame.curvature), in.relative, in.altitude), 1.0);
     }
     // A piece's wall in a cliff is a rock cut (wall_rock).
     var rock = WallRock(0.0, vec3f(0.0, 0.0, 1.0));
-    if (PIECE && mat == MAT_WALL) {
+    if (PIECE && !bore && mat == MAT_WALL) {
         rock = wall_rock(in, su);
         if (rock.share >= 1.0) {
             return vec4f(piece_ground(in, su, d, vec4f(rock.face, 0.0), 1.0), 1.0);
@@ -457,19 +446,24 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     let aw = max(length(vec2f(dpdx(in.along), dpdy(in.along))), 1e-4);
     // A piece's carriageway keeps its pixels within the half-width (PIECE_INSIDE of plan/corners.wgsl). A pixel past
     // it lies where the face goes on past its frame's edge, as in a junction's mouth: that edge opens there.
-    let past = PIECE && ((in.word >> PRIO_SHIFT) & 1u) == 1u && abs(in.road.x) > in.road.y;
+    let past = PIECE && !bore && ((in.word >> PRIO_SHIFT) & 1u) == 1u && abs(in.road.x) > in.road.y;
     let across = select(in.road.x, clamp(in.road.x, -in.road.y, in.road.y), past);
     // A face edge between two paved faces, as a way's toward a junction's mouth, lies inside the paved area: a piece
     // draws its edge only where the frame's edge is the paved outline's, which the far look draws too (the paint).
     var open = 0.0;
     let inside = in.road.y - abs(in.road.x);
-    if (PIECE && inside < EDGE_LOOK_M) {
+    if (PIECE && !bore && inside < EDGE_LOOK_M) {
         open = smoothstep(OPEN_FROM_M, OPEN_TO_M, -paved_edge(su, u32(ceil(lod(su)))) - inside);
     }
     let way = WayPixel(p, across, in.road.y, in.along, pw, cw, aw, open);
     let code = (in.word >> CODE_SHIFT) & 15u;
     let flags = ((in.word >> FLAGS_SHIFT) & FLAGS_BITS) | select(0u, CF_NO_LEFT_LINE | CF_NO_RIGHT_LINE, past);
-    let l = way_look(mat, code, region_at(su), su, way, flags, n.z, in.altitude, PIECE);
+    // A bore's floor of the ground, and its cap, read as concrete (inside_lit).
+    let slope = select(n.z, in.normal.z / max(length(in.normal), 1e-6), bore);
+    let l = way_look(select(mat, MAT_CAP, bore && mat == MAT_GROUND), code, region_at(su), su, way, flags, slope, in.altitude, PIECE);
+    if (bore) {
+        return vec4f(inside_lit(in, l, su, p), 1.0);
+    }
     if (PIECE && l.ground >= 1.0) {
         return vec4f(corridor_ground(in, su, d), 1.0);
     }
