@@ -1313,7 +1313,7 @@ of a set out of the bytes. A credit that it writes comes in its options.
 
 ##### Route sources
 
-`tools/planner_route_sources.py` (group `route-sources`) reads the files of each route source by
+`python -m tools.planner_route_sources --step` (group `route-sources`) reads the files of each route source by
 its [description](#dataroutesidtoml). Its options are `bounds` and `sources`: a list of `{id,
 credit, description}`, where `credit` is the `attribution` of the row and `description` the text
 of its file in `data/routes/`. It reads the snapshot of each source, in the order of `sources`, and

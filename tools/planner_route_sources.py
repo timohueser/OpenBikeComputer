@@ -52,10 +52,21 @@ def parse(text):
                                                for level in values_of(description["route"]["rank"]) or [None]):
         raise ValueError("`rank` is a table of `field` and `values` that map to the levels 0 to 4")
     for name, table in tables.items():
+        names = {key: table.get(key) for key in ("layer", "file", "of", "number", "ascent", *TEMPLATES)}
+        names |= {"key": table.get("key"), "rank.field": (table.get("rank") or {}).get("field")}
+        for key, value in names.items():
+            if value is not None and not (texts(value) if key == "key" else texts([value])):
+                raise ValueError(f"`{name}.{key}` is a {'text or a list of texts' if key == 'key' else 'text'}")
         for key in ("keep", "drop"):
             if key in table and not (isinstance(table[key], dict) and all(isinstance(v, list) for v in table[key].values())):
                 raise ValueError(f"`{name}.{key}` maps each field to a list of values")
     return description
+
+
+def texts(value):
+    """Whether `value` is a non-empty text, or a non-empty list of them."""
+    value = value if isinstance(value, list) else [value]
+    return bool(value) and all(isinstance(item, str) and item for item in value)
 
 
 def values_of(table):

@@ -70,6 +70,7 @@ class RouteGuardTests(unittest.TestCase):
             text + 'rank = { field = "T", values = { national = 5 } }\n': "`rank` is a table",
             text + 'rank = { values = { national = 3 } }\n': "`rank` is a table",
             text.replace('kind = "hiking"', "kind = 5"): "`kind` is one of",
+            text.replace('key = "Nr"', "key = 7"): "`route.key` is a text or a list of texts",
         }
         for description, problem in cases.items():
             [got] = guard.route_problems(registry, {"a": description})
