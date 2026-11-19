@@ -203,22 +203,25 @@ function tripsOf(card: Card): Promise<Map<string, { key: string; days: string[] 
  * The entry of route `id` on the card, with no key while the steps change it, and the objects that it may not take: those
  * of the other entries on the card, and the routes that a foreign trip object lists. An object that the card does not hold
  * is gone, and a route that a foreign trip object lists is not this library's to change: both read as no object. An entry
- * of another card counts as no entry. A trip object is foreign when no entry on the card names it or its trip key, such as
- * a trip of the phone, which takes routes into its trips by their content. An entry with no trip object takes the one
- * with the trip key that it stored before the put of its trip object, so a lost answer leaves no second trip.
+ * of another card counts as no entry. A trip object is this library's when an entry on the card names it, or when its trip
+ * key is one that an entry stores (on any card) or `current`, the key of the route now; else it is foreign, such as a
+ * trip of the phone, which takes routes into its trips by their content. An entry with no trip object takes the trip
+ * object with `current` or with the key that the entry stored on this card, so neither a lost answer nor a send to another
+ * card in between leaves a second trip.
  */
-async function entryOn(card: Card, id: string): Promise<{ copy: SentRoute; taken: Set<string | null> }> {
+async function entryOn(card: Card, id: string, current?: string): Promise<{ copy: SentRoute; taken: Set<string | null> }> {
     const sent = await card.library.state('sent') ?? {}, stored = sent[id], trips = await tripsOf(card);
-    const ours = Object.values(sent).filter(them => them.card === card.id);
-    const ids = new Set(ours.map(them => them.trip)), keys = new Set(ours.map(them => them.tripKey));
+    const ids = new Set(Object.values(sent).flatMap(them => them.card === card.id ? [them.trip] : []));
+    const keys = new Set([...Object.values(sent).map(them => them.tripKey), current]);
     const foreign = new Set([...trips].flatMap(([trip, { key, days }]) => ids.has(trip) || keys.has(key) ? [] : days));
     const held = (object: string | null) => object && card.objects.has(object) && !foreign.has(object) ? object : '';
     const copy: SentRoute = stored?.card === card.id
         ? { key: '', card: card.id, days: stored.days.map(held), trip: held(stored.trip) || null, tripKey: stored.tripKey }
         : { key: '', card: card.id, days: [], trip: null, tripKey: null };
     const taken = new Set([...Object.entries(sent).flatMap(([other, them]) => other === id || them.card !== card.id ? [] : [them.trip, ...them.days]), ...foreign]);
-    if (!copy.trip && copy.tripKey) {
-        copy.trip = [...trips].find(([trip, { key }]) => key === copy.tripKey && card.objects.has(trip) && !taken.has(trip))?.[0] ?? null;
+    if (!copy.trip) {
+        const wanted = [current, copy.tripKey];
+        copy.trip = [...trips].find(([trip, { key }]) => wanted.includes(key) && card.objects.has(trip) && !taken.has(trip))?.[0] ?? null;
     }
     return { copy, taken };
 }
@@ -277,7 +280,7 @@ async function sendRoute(card: Card, id: string, legs: LegCache): Promise<{ trip
         return;
     }
     const files = routes.map(day => payload(ObjectKind.Route, displayName(day.name, 'Route'), day.bytes)), days = files.length;
-    const tripId = tripKey(id, route.trip), { copy, taken } = await entryOn(card, id);
+    const tripId = tripKey(id, route.trip), { copy, taken } = await entryOn(card, id, `${tripId}`);
 
     // A lost answer of an earlier put left a copy on the card. An object of another entry on this card is not one.
     const unnamed = (entry: CatalogEntry) => !taken.has(key(entry)) && copy.trip !== key(entry) && !copy.days.includes(key(entry));

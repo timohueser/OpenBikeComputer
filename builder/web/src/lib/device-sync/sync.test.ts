@@ -439,6 +439,23 @@ describe('syncDevice', () => {
         await rig.close();
     });
 
+    it('takes its own trip back on a card that its entry no longer names', async () => {
+        const { rig, library, sync, send } = setup(), other = setup(OTHER_CARD);
+        rememberCard(SERIAL, CARD);
+        const phone = seedPhoneTrip(rig), alps = longTrip(10);
+        await send(alps);
+        await sync();
+        const before = mine(rig, phone).map(entry => entry.objectId);
+        // The plan goes to another bike computer, and then again to the first one.
+        await send(alps);
+        await syncDevice(other.rig.client, SERIAL, library, new AbortController().signal);
+        await send(alps);
+        expect(await sync()).toMatchObject({ trips: 1, problem: null });
+        expect(mine(rig, phone).map(entry => entry.objectId)).toEqual(before);
+        expectUntouched(rig, phone);
+        await Promise.all([rig.close(), other.rig.close()]);
+    });
+
     it('makes room before it makes a day again when the menu of the device is full', async () => {
         // A card with room for more objects than the menu shows.
         const { rig, library, sync, routes, send } = setup(CARD, 256);
