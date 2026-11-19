@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSettings, updateSettings } from '../../lib/settings/settings.svelte';
 import type { RouteSummary } from '../../lib/library/records';
 import { longTrailId, type CatalogRecord, type TrailEntry } from '../../lib/planner/signed-routes';
-import { distanceToBox, farOrder, farTrailId, nearTrails, readSearch, results, rideItem, routeItem, scale, signedItem, splitDay, trailItem, type Item } from './filter';
+import { distanceToBox, farOrder, farTrailId, nearTrails, readSearch, results, rideItem, routeItem, scale, showAt, signedItem, splitDay, trailItem, type Item } from './filter';
 
 vi.mock('../../lib/planner/search/types', () => ({
     searchPlaces: async () => ({ type: 'places', request: {}, results: [
@@ -180,6 +180,14 @@ describe('the split of a near view into day routes and long trails', () => {
     it('lists each trail of the view once, and the trail of a moved record whose far line misses the view', () => {
         const near = nearTrails([trails.get(100)!, trail(700)], trails, [stage, partial, section], recordOf);
         expect(near.map(entry => entry.id)).toEqual([100, 700, 300]);
+    });
+
+    it('shows a day route on its tab, a stage with its trail, and a trail that is a route record alone', () => {
+        expect(showAt(day, trails, recordOf)).toEqual({ tab: 'day', selected: '5' });
+        expect(showAt(stage, trails, recordOf)).toEqual({ tab: 'long', trail: 100, stage: '1' });
+        // The long route of this stage is no trail of the far files.
+        expect(showAt(notTrail, trails, recordOf)).toEqual({ tab: 'day', selected: '3' });
+        expect(showAt(single, trails, recordOf)).toEqual({ tab: 'long', trail: 600 });
     });
 });
 

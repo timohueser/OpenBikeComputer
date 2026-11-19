@@ -31,11 +31,13 @@
     /** The bottom card of the Route page: the waypoints, the heights, the surface and the places along the route or one
      * day of it, on one axis. Shares are 0 to 1 of the route. Without the calculated line, the rows that the summary
      * holds show. A drag selects a part; with no part, a click on a climb in the elevation row selects the climb. */
-    let { summary, trip, line, facts, pins, mark, onpoint, part, onpart, onhover, onday,
+    let { summary, trip, line, failed = false, facts, pins, mark, onpoint, part, onpart, onhover, onday,
         routePlaces = $bindable([]), litPlaces = $bindable([]), openPlaceId = $bindable(null) }: {
         summary: RouteSummary;
         trip: Trip;
         line?: RoutingLine;
+        /** The line will not come, such as after a routing error: the surface lane no longer waits. */
+        failed?: boolean;
         facts?: RouteFacts;
         pins: Pin[];
         mark?: number;
@@ -285,7 +287,7 @@
     <div class="bar">
         {#each runs as run, i (i)}<span class:dim={litSurface && run.surface !== litSurface} style:left={`${x(run.from) * 100}%`} style:width={`${(run.to - run.from) / span * 100}%`} style:background={surfaceBarColors[run.surface]}></span>{/each}
     </div>
-    <SurfaceLegend shares={surfaceShares(runs)} bind:lit={litSurface} />
+    {#if line}<SurfaceLegend shares={surfaceShares(runs)} bind:lit={litSurface} />{:else}<div class="legend-space"></div>{/if}
 {/snippet}
 
 {#snippet placeRow()}
@@ -350,7 +352,8 @@
             rows={[
                 { label: 'Waypoints', draw: waypoints, height: 24 },
                 { label: 'Elevation', draw: elevation, height: elevationHeight },
-                ...runs.length ? [{ label: 'Surface', draw: surface }] : [],
+                // The lane waits for the calculated line, so the answer moves nothing.
+                ...runs.length || (!line && !failed) ? [{ label: 'Surface', draw: surface }] : [],
                 ...category ? [{ label: placeCategories[category].label, draw: placeRow, height: 28 }] : [],
             ]} />
     </Card>
@@ -447,6 +450,10 @@
         position: absolute;
         top: 0;
         bottom: 0;
+    }
+    /* One line of the legend. */
+    .legend-space {
+        height: 16px;
     }
     .bar .dim {
         opacity: .2;

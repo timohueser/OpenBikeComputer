@@ -8,9 +8,9 @@
     import Picture from '../components/route/Picture.svelte';
     import Rows from '../components/route/Rows.svelte';
     import Share from '../components/route/Share.svelte';
-    import { download } from '../components/route/download';
+    import { download, routeCourse } from '../components/route/download';
     import { writeFitCourse } from '../lib/core/fit';
-    import { writeGpx, type GpxImport } from '../lib/core/gpx';
+    import { writeGpx } from '../lib/core/gpx';
     import type { RouteRecord, SentRoute } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { lineCoordinates } from '../lib/library/summary';
@@ -117,18 +117,7 @@
         });
     }
 
-    /** The calculated line with its waypoints, in the microdegrees of `lib/core`. */
-    function course(): GpxImport {
-        const micro = (value: number) => Math.round(value * 1e6);
-        return {
-            name,
-            points: line!.coordinates.map(([lon, lat], i) => {
-                const ele = line!.elevation[i];
-                return ele === null ? { lat: micro(lat), lon: micro(lon) } : { lat: micro(lat), lon: micro(lon), ele };
-            }),
-            waypoints: facts!.stops.map(({ point }) => ({ lat: micro(point.coordinate[1]), lon: micro(point.coordinate[0]), name: point.label, note: point.note })),
-        };
-    }
+    const course = () => routeCourse(name, line!, facts!.stops);
 
     const exports = $derived([
         { label: 'GPX', disabled: !facts, run: () => download(writeGpx(course()), 'application/gpx+xml', name, 'gpx') },
@@ -174,7 +163,7 @@
             part={focus} lit={hover ?? focus} {routePlaces} bind:litPlaces bind:openPlaceId />{/if}
     {/snippet}
     {#if plan && summary}
-        {#key id}<Rows {summary} trip={plan.trip} {line} {facts} {pins} mark={share} onpoint={next => share = next ?? undefined}
+        {#key id}<Rows {summary} trip={plan.trip} {line} failed={!!error} {facts} {pins} mark={share} onpoint={next => share = next ?? undefined}
             {part} onpart={next => part = next} onhover={next => hover = next} onday={next => day = next}
             bind:routePlaces bind:litPlaces bind:openPlaceId />{/key}
     {/if}

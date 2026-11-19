@@ -23,14 +23,16 @@
     import SignedPicture from './explore/SignedPicture.svelte';
     import TrailCard, { trailParts } from './explore/TrailCard.svelte';
     import { firstRows, ROWS } from './explore/rows';
+    import { signedHref } from './explore/signed-page';
     import Chips from './routes/Chips.svelte';
-    import { farOrder, farTrailId, nearTrails, PROFILE_STEP_M, results, signedItem, splitDay, trailItem, type Chips as ChipValues, type Item, type SignedItem, type TrailItem } from './routes/filter';
+    import { farOrder, farTrailId, nearTrails, PROFILE_STEP_M, results, showAt, signedItem, splitDay, trailItem, type Chips as ChipValues, type Item, type SignedItem, type TrailItem } from './routes/filter';
     import ListAndMap from './routes/ListAndMap.svelte';
     import PlaceSearch from './routes/PlaceSearch.svelte';
     import RouteRow from './routes/RouteRow.svelte';
 
-    /** What the page keeps in `history.state.explore`, so that Back and "Find another route" find it again. */
-    interface Kept { chips: ChipValues; view?: Box; tab?: Tab; selected?: string; trail?: number; stage?: string }
+    /** What the page keeps in `history.state.explore`, so that Back and "Find another route" find it again. The page of a
+     * signed route gives only `show`, the id of the record to show: the first answer decides its tab and its card. */
+    interface Kept { chips: ChipValues; view?: Box; tab?: Tab; selected?: string; trail?: number; stage?: string; show?: number }
     type Place = { lon: number; lat: number; box?: Box };
     type Tab = 'day' | 'long';
     /** The files of a view: the records and the trails of a near view, or the trails of a far view. `trails` is null when
@@ -276,6 +278,24 @@
         chips = next;
     }
 
+    // The record of the page of a signed route: in the day routes, else a trail of the far files or a stage of one.
+    let show = kept?.show;
+    $effect(() => {
+        if (show === undefined || !answer) return;
+        const id = show, record = answer.records?.find(one => one.id === id);
+        show = undefined;
+        // By id: each cell file holds its own copy of a record.
+        const at = record ? showAt(record, answer.all, recordOf)
+            : answer.all.has(id) ? { tab: 'long' as const, trail: id } : undefined;
+        if (!at) return;
+        tab = at.tab;
+        if (at.tab === 'day') selected = at.selected;
+        else void openTrail(at.trail).then(() => { if (trail?.id === at.trail) stage = at.stage; });
+    });
+
+    /** The page of a signed route. In the TrailView window the name is no link: Back from the page would start TrailView again. */
+    const linkOf = (record: CatalogRecord) => trailView ? undefined : signedHref(record, config.bounds);
+
     // Back from another page brings the view, the chips and the selection again.
     const keep = keepInHistory('explore', (): Kept => ({ chips, view, tab, selected, trail: trail?.id, stage }));
     if (kept?.trail !== undefined) void openTrail(kept.trail).then(() => { if (trail?.id === kept.trail) stage = kept.stage; });
@@ -378,7 +398,7 @@
 </ListAndMap>
 
 {#snippet card(refocus: () => void)}
-    <SignedCard item={chosen!} {oncover} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
+    <SignedCard item={chosen!} href={linkOf(chosen!.record)} {oncover} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
 {/snippet}
 
 {#snippet dayOrLong()}
@@ -387,12 +407,12 @@
 {/snippet}
 
 {#snippet stageCard(refocus: () => void)}
-    <SignedCard item={staged!} {oncover} onplan={() => plan(staged!)} ontrail={trailOfCard} onclose={() => { refocus(); select(undefined); }} />
+    <SignedCard item={staged!} href={linkOf(staged!.record)} {oncover} onplan={() => plan(staged!)} ontrail={trailOfCard} onclose={() => { refocus(); select(undefined); }} />
 {/snippet}
 
 {#snippet trailCard(refocus: () => void)}
     {#if trailRoute}
-        <SignedCard item={trailRoute} {oncover} onplan={() => plan(trailRoute)} onclose={() => { refocus(); trail = undefined; }} />
+        <SignedCard item={trailRoute} href={linkOf(trailRoute.record)} {oncover} onplan={() => plan(trailRoute)} onclose={() => { refocus(); trail = undefined; }} />
     {:else if trailAbout}
         <TrailCard about={trailAbout} item={trail!.entry && trailOf(trail!.entry)} record={trail!.record} failed={!!trail!.failed} onclose={() => { refocus(); trail = undefined; }} />
     {/if}

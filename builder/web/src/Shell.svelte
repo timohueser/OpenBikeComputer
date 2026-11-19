@@ -9,6 +9,8 @@
     interface Page {
         /** The text of its link in the top bar; a page with no label has no link. */
         label?: string;
+        /** The page is a part of the page of this top bar link, which shows as current. */
+        section?: Route;
         /** The page stays mounted, hidden, while another page shows. */
         keep?: boolean;
         load: () => Promise<{ default: Component<PageProps> }>;
@@ -25,6 +27,8 @@
         routes: { label: 'Routes', load: () => import('./pages/Routes.svelte') },
         // The page waits for the release, which names the route catalog.
         explore: { label: 'Explore', load: () => import('./pages/Explore.svelte') },
+        // The page loads the core only for an export.
+        signed: { section: 'explore', load: () => import('./pages/Signed.svelte') },
         // The page writes GPX and FIT.
         route: { load: () => initCore().then(() => import('./pages/Route.svelte')) },
         // The page reads and writes GPX and FIT.
@@ -62,7 +66,7 @@
         sync: deviceSync.running || deviceSync.map ? 'running' as const : rememberedReady() && deviceSync.problem ? 'problem' as const : null,
     });
     const links = $derived(Object.entries(PAGES).flatMap(([route, page]) =>
-        page.label ? [{ href: ROUTES[route as Route], label: page.label, current: route === current || ROUTES[current].startsWith(`${ROUTES[route as Route]}/`) }] : []));
+        page.label ? [{ href: ROUTES[route as Route], label: page.label, current: route === current || PAGES[current]?.section === route || ROUTES[current].startsWith(`${ROUTES[route as Route]}/`) }] : []));
 
     $effect(() => {
         const route = current;
