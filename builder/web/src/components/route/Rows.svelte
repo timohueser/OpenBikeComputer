@@ -285,7 +285,7 @@
     <div class="bar">
         {#each runs as run, i (i)}<span class:dim={litSurface && run.surface !== litSurface} style:left={`${x(run.from) * 100}%`} style:width={`${(run.to - run.from) / span * 100}%`} style:background={surfaceBarColors[run.surface]}></span>{/each}
     </div>
-    <SurfaceLegend shares={surfaceShares(runs)} bind:lit={litSurface} />
+    {#if line}<SurfaceLegend shares={surfaceShares(runs)} bind:lit={litSurface} />{:else}<div class="legend-space"></div>{/if}
 {/snippet}
 
 {#snippet placeRow()}
@@ -350,7 +350,8 @@
             rows={[
                 { label: 'Waypoints', draw: waypoints, height: 24 },
                 { label: 'Elevation', draw: elevation, height: elevationHeight },
-                ...runs.length ? [{ label: 'Surface', draw: surface }] : [],
+                // The lane waits for the calculated line, so the answer moves nothing.
+                ...runs.length || !line ? [{ label: 'Surface', draw: surface }] : [],
                 ...category ? [{ label: placeCategories[category].label, draw: placeRow, height: 28 }] : [],
             ]} />
     </Card>
@@ -447,6 +448,10 @@
         position: absolute;
         top: 0;
         bottom: 0;
+    }
+    /* One line of the legend. */
+    .legend-space {
+        height: 16px;
     }
     .bar .dim {
         opacity: .2;
