@@ -17,4 +17,13 @@ status: draft
 
 # Data engine
 
-The body of this document is not written yet.
+The body of this document is not written yet. Only the PMTiles reader is described.
+
+## The PMTiles reader
+
+Rust steps of other products read tiles of PMTiles v3 archives that earlier steps wrote: the
+TrailView features read the terrain grid, and the route facts read the canopy archive.
+[`pmtiles.rs`](../../host/obc-data/src/pmtiles.rs) is their one reader. It reads the root
+directory when it opens a file, and a leaf directory and a tile only when a caller asks for the
+tile. It is in this crate because every product crate already depends on it. The writer stays
+with the TrailView features, its only user.

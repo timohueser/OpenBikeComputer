@@ -13,6 +13,7 @@ pub mod fetch;
 pub mod ground;
 pub mod lock;
 pub mod machines;
+pub mod pmtiles;
 pub mod prepared;
 pub mod product;
 pub mod r2;
