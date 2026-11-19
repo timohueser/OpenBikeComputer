@@ -450,7 +450,7 @@ export class PlanSession {
         const record = await this.library!.item(id).catch(() => null);
         if (this.closed || this.plan.id !== id || record === null) return;
         if (!record) this.install(newPlan(emptyTrip(this.trip.mode)), false);
-        else if ('updatedAt' in record && record.name !== this.plan.name) this.plan = { ...this.plan, name: record.name, updatedAt: record.updatedAt };
+        else if (record.name !== this.plan.name) this.plan = { ...this.plan, name: record.name };
     }
 
     private openNew(plan: Plan): Promise<boolean> {
@@ -481,7 +481,7 @@ export class PlanSession {
 
     private async storeNow(route: Plan, stored: (saved: Plan) => void): Promise<boolean> {
         const at = this.at;
-        this.history = this.history.map(({ clean, before: _, ...step }, i) => i === at ? { ...step, clean: true } : clean ? { ...step, before: true } : step);
+        this.history = this.history.map(({ clean, before: _, ...step }, i) => i === at ? { ...step, clean: true, ...clean && { before: true } } : clean ? { ...step, before: true } : step);
         try {
             const saved = await this.write(async library => {
                 const saved = await library.saveRoute(route);
@@ -503,9 +503,9 @@ export class PlanSession {
         } catch {
             // The transaction deleted no draft.
             this.history = this.history.map(({ clean: _, before, ...step }) => before ? { ...step, clean: true } : step);
-            // An Undo to the step of the save can have deleted the draft since. The error of the save stays: a draft
-            // write is no save.
-            if (ownDraft() !== this.plan.id) this.keepDraft(false);
+            // An Undo or a Redo during the save wrote or deleted the draft by the flags of then. The error of the save
+            // stays: a draft write is no save.
+            this.keepDraft(false);
             return false;
         }
     }
@@ -620,9 +620,9 @@ export class PlanSession {
     }
 
     private writeSummary(summary: RouteSummary): void {
-        const { id, updatedAt } = this.plan;
+        const { id, trip } = this.plan;
         this.plan = { ...this.plan, summary };
-        void this.write(library => library.setSummary(id, summary, updatedAt)).catch(() => {});
+        void this.write(library => library.setSummary(id, summary, trip)).catch(() => {});
     }
 
     /** Ends the drag preview and the option preview. */

@@ -391,6 +391,8 @@ describe('save and draft', () => {
         session.undo();
         await settled(session);
         expect([session.changed, await library.draft(id), sessionStorage.getItem('obc-draft')]).toEqual([false, undefined, null]);
+        vi.spyOn(library, 'saveRoute').mockRejectedValueOnce(new Error('Full'));
+        expect([await session.save('Empty'), session.changed]).toEqual([false, false]);
         session.close();
     });
 
@@ -423,6 +425,20 @@ describe('save and draft', () => {
         session.close();
     });
 
+    it('writes the summary of an import after a rename to the same name before its line arrives', async () => {
+        const routes = service();
+        const { session, library } = await open();
+        routes.hold();
+        await session.importFiles([new File([JSON.stringify({ format: 'openbikecomputer-plan', version: 1, name: 'Import', trip: plan })], 'import.obcplan')]);
+        const id = session.plan.id;
+        await session.rename(session.plan, 'Import');
+        // The page follows the rename after its write.
+        await new Promise(resolve => setTimeout(resolve, 20));
+        routes.release();
+        await vi.waitFor(async () => expect((await library.route(id))?.summary).not.toBeNull());
+        session.close();
+    });
+
     it('makes the route changed at Undo across a save, and gives the flags of before back when a save fails', async () => {
         service();
         const { session, library } = await open();
@@ -441,6 +457,8 @@ describe('save and draft', () => {
         const full = Object.assign(new Error('Full'), { name: 'QuotaExceededError' });
         vi.spyOn(library, 'saveRoute').mockRejectedValueOnce(full).mockRejectedValueOnce(Object.assign(new Error('Old'), { name: 'OutdatedError' }));
         session.commit(moved(plan, 8.3));
+        // A line that arrives later writes the draft, and a write that succeeds ends the error.
+        await vi.waitFor(() => expect(session.line).toBeDefined());
         expect(await session.save()).toBe(false);
         expect([session.changed, session.saveError]).toEqual([true, 'Browser storage is full. Delete routes you do not need, then save again.']);
         expect([(await library.route(id))!.trip, await draftTrip(library, id)]).toEqual([moved(plan, 8.2), moved(plan, 8.3)]);
@@ -677,6 +695,27 @@ describe('save and draft', () => {
         expect([session.changed, session.canSave, (await library.route(session.plan.id))!.trip]).toEqual([true, true, moved(plan, 8.2)]);
         session.undo();
         expect(session.changed).toBe(true);
+        session.close();
+    });
+
+    it('deletes the draft when a save fails after an Undo back to the stored step', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const id = session.plan.id;
+        session.commit(moved(plan, 8.2));
+        let fail!: (error: Error) => void;
+        vi.spyOn(library, 'saveRoute').mockImplementationOnce(() => new Promise((_, reject) => fail = reject));
+        const saving = session.save();
+        session.undo();
+        await settled(session);
+        await vi.waitFor(() => expect(fail).toBeDefined());
+        fail(Object.assign(new Error('Full'), { name: 'QuotaExceededError' }));
+        expect(await saving).toBe(false);
+        await settled(session);
+        expect([session.changed, await library.draft(id), sessionStorage.getItem('obc-draft'), session.saveError])
+            .toEqual([false, undefined, null, 'Browser storage is full. Delete routes you do not need, then save again.']);
         session.close();
     });
 

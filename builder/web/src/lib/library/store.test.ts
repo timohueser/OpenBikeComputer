@@ -60,11 +60,11 @@ describe('library store', () => {
 
         library.onChange((store, key) => heard.push(`${store}:${key}`));
         const summary = summarize<RouteSummary>([[8, 47, 400], [8.01, 47, 420]], { lengthM: 760, climbM: 20, seconds: 300, days: 1, bike: 'gravel' });
-        // A summary made for an earlier record of the route is not written.
-        await library.setSummary('new-1', summary, 0);
+        // A summary made for another trip of the route is not written.
+        await library.setSummary('new-1', summary, { points: ['other'] });
         expect((await library.route('new-1'))!.summary).toBeNull();
-        await library.setSummary('new-1', summary, 1);
-        await library.setSummary('gone', summary, 1);
+        await library.setSummary('new-1', summary, { points: [] });
+        await library.setSummary('gone', summary, { points: [] });
         expect(await library.route('new-1')).toEqual({ ...route('new-1'), summary });
         expect([heard, await library.route('gone')]).toEqual([['routes:new-1'], undefined]);
         await library.close();
