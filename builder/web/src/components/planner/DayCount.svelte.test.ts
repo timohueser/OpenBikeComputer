@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Trip } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
@@ -12,7 +12,7 @@ const button = (label: string) => document.querySelector<HTMLButtonElement>(`but
 const count = () => document.querySelector('.count span')!;
 
 describe('day count', () => {
-    it('makes a route a trip with a dashed guess, steps it, and makes it a route again at its lowest count', () => {
+    it('makes a route a trip with a dashed guess, steps it, and makes it a route again at its lowest count', async () => {
         const base = testTrip();
         let trip = $state.raw<Trip>({ ...base, mode: 'route', daysSet: undefined });
         let said = '';
@@ -32,7 +32,10 @@ describe('day count', () => {
         expect(trip).toMatchObject({ days: 3, daysSet: true });
         expect(count().classList.contains('guess')).toBe(false);
         button('One day fewer').click(); flushSync();
+        button('One day fewer').focus();
         button('One day fewer').click(); flushSync();
+        await tick();
+        expect(document.activeElement).toBe(button('One day more'));
         expect(trip).toMatchObject({ mode: 'route', days: 2 });
         expect(said).toBe('One-day route · + brings back the days');
         expect(count().textContent).toBe('1 riding day');

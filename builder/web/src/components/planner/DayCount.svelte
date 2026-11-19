@@ -1,5 +1,6 @@
 <!-- The number of riding days, and the only control that sets the type: 1 day is a route, 2 or more a multi-day trip. -->
 <script lang="ts">
+    import { tick } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
     import { fewerDays, maxRidingDays, multiDay, routeToTrip, setDays, type Trip } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
@@ -8,23 +9,33 @@
 
     const days = $derived(multiDay(trip) ? trip.days : 1);
     const text = (days: number) => `${days} riding ${days === 1 ? 'day' : 'days'}`;
+    let fewerButton: HTMLButtonElement, moreButton: HTMLButtonElement;
+
+    // A focused button that becomes disabled drops the focus to the body.
+    async function keepFocus(pressed: HTMLButtonElement, other: HTMLButtonElement) {
+        const focused = document.activeElement === pressed;
+        await tick();
+        if (focused && pressed.disabled) other.focus();
+    }
 
     function more() {
+        void keepFocus(moreButton, fewerButton);
         if (days > 1) return onChange(setDays(trip, days + 1), text(days + 1));
         const next = routeToTrip(trip, line);
         onChange(next, `Multi-day trip, ${text(next.days)}`);
     }
 
     function fewer() {
+        void keepFocus(fewerButton, moreButton);
         const next = fewerDays(trip);
         onChange(next, multiDay(next) ? text(next.days) : 'One-day route · + brings back the days');
     }
 </script>
 
 <div class="days" role="group" aria-label="Number of riding days">
-    <button type="button" aria-label="One day fewer" disabled={days === 1} onclick={fewer}><Icon path="M5 12h14" size={15} /></button>
+    <button type="button" aria-label="One day fewer" bind:this={fewerButton} disabled={days === 1} onclick={fewer}><Icon path="M5 12h14" size={15} /></button>
     <span class="count"><span class:guess={days > 1 && !trip.daysSet}>{text(days)}</span></span>
-    <button type="button" aria-label="One day more" disabled={days >= maxRidingDays} onclick={more}><Icon name="plus" size={15} /></button>
+    <button type="button" aria-label="One day more" bind:this={moreButton} disabled={days >= maxRidingDays} onclick={more}><Icon name="plus" size={15} /></button>
 </div>
 
 <style>
