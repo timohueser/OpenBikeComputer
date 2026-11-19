@@ -274,8 +274,9 @@ shopping share **resupply**; there is no separate food category.
 - The decimator retains elevation changes, reversals, surface transitions, and validity
   boundaries. Coordinate deltas are split before they exceed `int16`. A line written from
   planned points keeps each point whose height differs by the elevation dead-band or more
-  from the dead-band reference of the kept points, so the stored ascent and descent equal
-  those of all points.
+  from the stored dead-band reference. The stored ascent and descent then equal a dead-band
+  over all input points, except where a densified vertex moves the reference or a kept point
+  books nothing because its segment crosses no integer distance boundary.
 - Geometry uses at most 256 points per chunk and 256 chunks. Over-cap routes fail. The GPX
   importer collects at most 32 waypoints. When waypoints exist, a separate track pass selects
   their nearest raw vertices; the emit pass retains these anchors and records their distance

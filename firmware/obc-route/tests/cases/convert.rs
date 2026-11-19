@@ -310,15 +310,15 @@ fn authored_points_use_the_gpx_emitter_and_reject_unsupported_capacity() {
 fn planned_points_keep_the_climb_of_all_points() {
     use obc_elevation::DeadBand;
     use obc_route::{convert::points_to_obcr, BikeType};
-    // Each step moves at least 1 m. The bend at the second point is kept, and the 3 m rise after
-    // it counts only against the dead-band reference, not against the bend.
+    // Each step moves at least 1 m. The line bends only at the second point, which is kept; the
+    // 3 m rise after it counts against the dead-band reference, not against the bend.
     let heights = [100, 101, 103, 100, 101, 102, 104, 106, 105, 103, 102, 100];
     let points: Vec<_> = heights
         .into_iter()
         .enumerate()
         .map(|(k, ele)| RoutePoint {
             lon: 7_800_000 + k as i32 * 500,
-            lat: 48_000_000 + if k == 1 { 300 } else { 0 },
+            lat: 48_000_000 + if k == 0 { 300 } else { 0 },
             ele,
             surface: 0,
             elevation_incomplete: false,
