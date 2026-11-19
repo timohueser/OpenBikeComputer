@@ -172,6 +172,7 @@ pub(crate) struct Placed {
     pub tags: HashMap<u32, Tags>,
     pub metrics: Value,
     /// Per opening its way's id and its decision.
+    #[cfg(test)]
     pub ends: Vec<(u32, ladder::End)>,
 }
 
@@ -672,8 +673,13 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         let part = Part { outer: false, points: vec![o.p], z: Some(vec![o.floor]), plan: None };
         features.push(("tunnel-end", t, part));
     }
-    let ends = openings.iter().map(|o| o.way_id).zip(decided.ends.iter().cloned()).collect();
-    Placed { features, tags, metrics: decided.metrics.clone(), ends }
+    Placed {
+        features,
+        tags,
+        metrics: decided.metrics.clone(),
+        #[cfg(test)]
+        ends: openings.iter().map(|o| o.way_id).zip(decided.ends.iter().cloned()).collect(),
+    }
 }
 
 /// The open ends of the openings: each moved opening on its way, for the ground plan's `graph::build_open`.
