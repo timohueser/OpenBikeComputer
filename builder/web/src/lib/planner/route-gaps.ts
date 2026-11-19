@@ -18,8 +18,8 @@ export function routeGaps(stops: { point: RoutePoint; distance: number }[], coor
     const total = cumulative(coordinates).at(-1) ?? 0;
     if (!total) return [];
     return stops.flatMap(({ point, distance }, i) => {
-        // A manual leg from the point already joins the route to it.
-        if ((stops[i + 1]?.point.leg ?? 'routed') !== 'routed') return [];
+        // A manual leg from the point already joins the route to it; after a detour, it starts at the anchor.
+        if (point.kind !== 'detour' && (stops[i + 1]?.point.leg ?? 'routed') !== 'routed') return [];
         const attached = coordinateAt(coordinates, distance / total);
         const km = kilometres(attached, point.coordinate);
         return km > shortestKm ? [{ point, coordinates: [attached, point.coordinate], km }] : [];

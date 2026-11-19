@@ -334,7 +334,11 @@ describe('runs longer than one request', () => {
         fetch.mockImplementationOnce(failing('no_path', 'No legal route.', { leg: 0 })).mockImplementationOnce(failing('no_path', 'No legal route.', { leg: 1 }));
         expect((await calculateLine(plan(moved(48.02)), signal, cache)).gapLegs).toEqual(['p2']);
         expect(bodies(fetch).slice(5).map(body => [body.points, body.start_position, body.end_position])).toEqual([[moved(48.02).slice(2, 4), undefined, `one:${coordinates[3]}`]]);
-        expect(fetch).toHaveBeenCalledTimes(6);
+        // An older service names no leg: the request goes out wider at each pinned end.
+        fetch.mockImplementationOnce(failing('no_path', 'No legal route.'));
+        expect((await calculateLine(plan(moved(48.03)), signal, cache)).gapLegs).toEqual([]);
+        expect(bodies(fetch).slice(6).map(body => [body.points, body.start_position, body.end_position])).toEqual([
+            [moved(48.03).slice(1, 4), `one:${coordinates[1]}`, `one:${coordinates[3]}`], [moved(48.03), undefined, undefined]]);
     });
 
     it('keeps consecutive turnarounds inside the request of an edit', async () => {
@@ -389,21 +393,38 @@ describe('runs longer than one request', () => {
             return point < 0 ? routeService('one')(url, init) : failing('no_snap', 'No accessible road.', { point })();
         });
         vi.stubGlobal('fetch', fetch);
-        const coordinates: Coordinate[] = [[8, 48], [8.05, 48.02], [8.1, 48], [8.2, 48]];
+        // The far point is the fourth point of the second request, which starts at point 63.
+        const coordinates = run(70).map((point, i): Coordinate => i === 66 ? [point[0], 48.02] : point);
         const shaped = plan(coordinates);
         const line = await calculateLine(shaped, signal, new LegCache());
-        expect([line.leftOut, line.gapLegs, line.primary]).toEqual([['p1'], [], undefined]);
-        expect(bodies(fetch).at(-1).points).toEqual([coordinates[0], coordinates[2], coordinates[3]]);
-        const view = planView(shaped, line), [, second, last] = cumulative([coordinates[0], coordinates[2], coordinates[3]]);
+        expect([line.gapLegs, bodies(fetch).at(-1).points]).toEqual([[], [...coordinates.slice(63, 66), ...coordinates.slice(67)]]);
+        const view = planView(shaped, line);
         // The left-out point stops where the line passes nearest to it.
-        expect(view.stops.map(stop => stop.distance)).toEqual([0, second / 2, second, last].map(km => expect.closeTo(km, 4)));
+        expect(view.stops[66].distance).toBeCloseTo(cumulative([coordinates[0], [coordinates[66][0], 48]])[1], 4);
         expect(gapNote(routeGaps(view.stops, view.coordinates))).toBe('Route passes 2.2 km from the selected point — no accessible path');
-        const visit = await calculateLine(plan([[8, 48], [8.05, 48.02], [8.1, 48]], { 1: { kind: 'detour', anchor: [8.05, 48] } }), signal, new LegCache());
-        expect([visit.leftOut, bodies(fetch).at(-1)]).toEqual([['p1'], expect.objectContaining({ points: [[8, 48], [8.1, 48]], turnarounds: [] })]);
+        await calculateLine(plan([[8, 48], [8.05, 48.02], [8.1, 48]], { 1: { kind: 'detour', anchor: [8.05, 48] } }), signal, new LegCache());
+        expect(bodies(fetch).at(-1)).toEqual(expect.objectContaining({ points: [[8, 48], [8.1, 48]], turnarounds: [] }));
         const requests = fetch.mock.calls.length;
         const drawn = await calculateLine(plan([[8, 48], [8.05, 48.02], [8.1, 48.02]], { 2: { leg: 'drawn' } }), signal, new LegCache());
-        expect([drawn.leftOut, drawn.gapLegs, drawn.coordinates, fetch.mock.calls.length - requests]).toEqual([[], ['p1'], [[8, 48], [8.05, 48.02], [8.1, 48.02]], 1]);
+        expect([drawn.gapLegs, drawn.coordinates, fetch.mock.calls.length - requests]).toEqual([['p1'], [[8, 48], [8.05, 48.02], [8.1, 48.02]], 1]);
         expect(drawn.unroutedKm).toBeCloseTo(cumulative([[8.05, 48.02], [8.1, 48.02]])[1]);
+    });
+
+    it('passes by a visit at the end of a run whose place has no road near it, and keeps the join of the manual leg after it', async () => {
+        // The place at 48.02 has no road within 1 km; from the place at 48.005 no legal path leads back to the anchor.
+        const fetch = vi.fn(async (url: string, init: RequestInit) => {
+            const points = JSON.parse(init.body as string).points as Coordinate[];
+            const point = points.findIndex(([, lat]) => lat > 48.01), leg = points.findIndex(([, lat], k) => lat === 48.005 && points[k + 1]?.[1] === 48);
+            return point >= 0 ? failing('no_snap', 'No accessible road.', { point })() : leg >= 0 ? failing('no_path', 'No legal route.', { leg })() : routeService('one')(url, init);
+        });
+        vi.stubGlobal('fetch', fetch);
+        const visit = (lat: number) => plan([[8, 48], [8.05, lat], [8.1, 48], [8.2, 48]], { 1: { kind: 'detour', anchor: [8.05, 48] }, 2: { leg: 'straight' } });
+        const far = visit(48.02), line = await calculateLine(far, signal, new LegCache());
+        expect([line.gapLegs, bodies(fetch).at(-2).points]).toEqual([[], [[8, 48], [8.05, 48]]]);
+        expect(line.unroutedKm).toBeCloseTo(cumulative([[8.05, 48], [8.1, 48]])[1]);
+        const view = planView(far, line);
+        expect(gapNote(routeGaps(view.stops, view.coordinates))).toBe('Route passes 2.2 km from the selected point — no accessible path');
+        expect((await calculateLine(visit(48.005), signal, new LegCache())).gapLegs).toEqual(['p1']);
     });
 
     it('offers route options only for a plan that fits one request', async () => {

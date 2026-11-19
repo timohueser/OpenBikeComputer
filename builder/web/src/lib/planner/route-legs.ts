@@ -95,7 +95,8 @@ export class LegCache {
      * cached leg after it, so each such join keeps its direction; a gap pins nothing. Each answer is kept as it arrives, so
      * a failed or aborted route asks only for the rest. Then each leg that does not join the leg before it goes out again,
      * pinned to both neighbours. A leg with no path under a pin goes out once more one leg wider on that side, so that its
-     * point can pass the other way. An error names its point or leg by its index in `points`. */
+     * point can pass the other way; with no leg in the error, on each pinned side. An error names its point or leg by its
+     * index in `points`. */
     async route(points: Coordinate[], turnarounds: number[], profile: string, signal: AbortSignal, restarted = false): Promise<EngineRoute> {
         const turn = (index: number) => turnarounds.includes(index);
         // A turnaround joins legs in either direction, and a gap joins any leg.
@@ -151,15 +152,16 @@ export class LegCache {
             if (!failures.length) continue;
             const { error, from, to, pins } = failures[0];
             const { code, point, leg } = error as RouteFailure;
-            const at = leg === undefined ? -1 : from + leg;
+            // A service that names no leg can mean either end.
+            const failed = leg === undefined ? [from, to] : [from + leg];
             // Only a missing path under a pin can change with a wider request; a busy service must not get a larger one.
-            const wider = code !== 'no_path' || [...widened].some(k => from <= k && k <= to) ? undefined
-                : at === from && pins.start_position ? from - 1 : at === to && pins.end_position ? to + 1 : undefined;
-            if (wider === undefined) {
-                throw Object.assign(error as object, point === undefined ? {} : { point: from + point }, leg === undefined ? {} : { leg: at });
+            const wider = code !== 'no_path' || [...widened].some(k => from <= k && k <= to) ? []
+                : [failed.includes(from) && pins.start_position ? from - 1 : -1, failed.includes(to) && pins.end_position ? to + 1 : -1].filter(k => k >= 0);
+            if (!wider.length) {
+                throw Object.assign(error as object, point === undefined ? {} : { point: from + point }, leg === undefined ? {} : { leg: from + leg });
             }
-            widened.add(at);
-            legs[wider] = undefined;
+            failed.forEach(k => widened.add(k));
+            wider.forEach(k => legs[k] = undefined);
         }
         this.keep(keys, legs as Leg[]);
         return stitch(legs as Leg[], profile);
