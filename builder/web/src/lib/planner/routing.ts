@@ -1,6 +1,6 @@
 import { paceFactor, planPreset, presetProfile, ridingProfiles } from './riding-profiles';
-import { orderedRoutePoints, type DrawnCoordinate, type Trip } from './editor';
-import { cumulative, firstIndex, type Coordinate } from './geo';
+import { orderedRoutePoints, type DrawnCoordinate, type RoutePoint, type Trip } from './editor';
+import { cumulative, firstIndex, nearestOnLine, type Coordinate } from './geo';
 import { config } from './map-data';
 import { releaseFetch } from './release';
 import { decodeRoutes } from './route-answer';
@@ -29,6 +29,8 @@ export interface RouteLeg {
     start: string;
     end: string;
     totals: RouteTotals;
+    /** The planner's straight line for a leg with no legal path; never in an answer. */
+    gap?: boolean;
 }
 /** Why the rider may have no access to an edge that the route uses; `specs/route-api.md` lists the kinds. */
 export interface RouteClosure {
@@ -90,6 +92,9 @@ export interface RoutingLine {
     unroutedKm: number;
     /** Ridden kilometres whose ascent is unknown; a transfer is not ridden, so it never counts. */
     unknownElevationKm: number;
+    /** The plan points at which a leg with no legal path ends, as `legEndId`. Such a leg is a straight line with no time and no
+     * climb, and it counts in no unknown or unrouted figure. */
+    gapLegs: string[];
     /** Routing package of the routed legs. */
     package?: string;
 }
@@ -97,10 +102,17 @@ export interface RoutingLine {
 /** Longer than the deadlines of the route service, so its own error arrives first. A hung call frees its caller. */
 const timeoutMs = { '/v1/route': 20_000, '/v1/shape': 40_000 };
 
-/** The answer, or an error with a message for the rider and the service's error `code`. A caller's abort passes through. */
+/** The fields of a routing error: the service's `code`, and the index of the point or the leg that it names. */
+export interface RouteFailure {
+    code?: string;
+    point?: number;
+    leg?: number;
+}
+
+/** The answer, or an error with a message for the rider and the fields of the service's error. A caller's abort passes through. */
 async function post(path: keyof typeof timeoutMs, body: unknown, signal?: AbortSignal): Promise<unknown> {
     const timeout = AbortSignal.timeout(timeoutMs[path]);
-    let response: Response | undefined, data: { code?: string; message?: string } | undefined;
+    let response: Response | undefined, data: RouteFailure & { message?: string } | undefined;
     try {
         response = await releaseFetch(`${config.routing}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
             signal: signal ? AbortSignal.any([signal, timeout]) : timeout, body: JSON.stringify(body) });
@@ -112,7 +124,7 @@ async function post(path: keyof typeof timeoutMs, body: unknown, signal?: AbortS
             : !response ? 'The routing service is unreachable. Check your connection and retry.'
             : response.ok ? 'The routing service returned an invalid response.' : 'Routing is unavailable. Retry shortly.');
     }
-    if (!response.ok) throw Object.assign(new Error(data?.message ?? 'Routing is unavailable. Retry shortly.'), { code: data?.code });
+    if (!response.ok) throw Object.assign(new Error(data?.message ?? 'Routing is unavailable. Retry shortly.'), { code: data?.code, point: data?.point, leg: data?.leg });
     return data;
 }
 
@@ -178,11 +190,41 @@ export function routingKey(trip: Trip): string {
     return key;
 }
 
-/** Consecutive routed legs form one run, so a shaping point keeps its road direction. */
+/** The request points of a run of routed plan points after `origin`, without the points of `leftOut`: a detour goes to its
+ * place and back to its anchor. A left-out detour at the end of the run keeps its anchor, where the manual leg after it
+ * starts. `ends` maps each leg that ends at a plan point to the point's id, and `owners` gives the plan point of each
+ * request point after the origin. */
+function expand(origin: Coordinate, run: RoutePoint[], leftOut: Set<string>) {
+    const coordinates: Coordinate[] = [origin], turnarounds: number[] = [], ends = new Map<number, string>();
+    const owners: (RoutePoint | undefined)[] = [undefined];
+    run.forEach((point, n) => {
+        if (leftOut.has(point.id)) {
+            if (n < run.length - 1) return;
+            coordinates.push(point.anchor!);
+            owners.push(point);
+            ends.set(coordinates.length - 2, point.id);
+        } else if (point.kind === 'detour') {
+            if (!point.anchor) throw new Error('Choose a return point on the route for this visit.');
+            coordinates.push(point.anchor, point.coordinate, point.anchor);
+            owners.push(point, point, point);
+            turnarounds.push(coordinates.length - 2);
+            ends.set(coordinates.length - 3, point.id);
+        } else {
+            coordinates.push(point.coordinate);
+            owners.push(point);
+            ends.set(coordinates.length - 2, point.id);
+            if (point.turnaround && n < run.length - 1) turnarounds.push(coordinates.length - 1);
+        }
+    });
+    return { coordinates, turnarounds, ends, owners };
+}
+
+/** Consecutive routed legs form one run, so a shaping point keeps its road direction. A point with no road near it is left
+ * out, and a leg with no legal path is a gap, so that one bad point or leg never hides the line. */
 export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCache): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
-    const result: RoutingLine = { coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0, profile: profileId(trip), unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
+    const result: RoutingLine = { coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0, profile: profileId(trip), unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [] };
     // Seconds per kilometre on a manual leg or connector.
     const pace = 3600 / ridingProfiles[trip.bike ?? 'touring'].engineKmh;
     let distance = 0;
@@ -239,26 +281,30 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         }
         let until = i;
         while (until + 1 < points.length && (points[until + 1].leg ?? 'routed') === 'routed') until++;
-        const expanded: Coordinate[] = [origin];
-        const turnarounds: number[] = [];
-        const ends = new Map<number, string>();
-        for (let p = i; p <= until; p++) {
-            const point = points[p];
-            if (point.kind === 'detour') {
-                if (!point.anchor) throw new Error('Choose a return point on the route for this visit.');
-                expanded.push(point.anchor, point.coordinate, point.anchor);
-                turnarounds.push(expanded.length - 2);
-                ends.set(expanded.length - 3, point.id);
-            } else {
-                expanded.push(point.coordinate);
-                ends.set(expanded.length - 2, point.id);
-                if (point.turnaround && p < until) turnarounds.push(expanded.length - 1);
+        const run = points.slice(i, until + 1), leftOut = new Set<string>();
+        let request = expand(origin, run, leftOut), route: EngineRoute;
+        for (;;) {
+            try {
+                route = await legs.route(request.coordinates, request.turnarounds, result.profile, signal);
+                break;
+            } catch (error) {
+                const { code, point, leg } = error as RouteFailure, last = request.coordinates.length - 1;
+                const gap = (k: number) => legs.gap(request.coordinates, request.turnarounds, result.profile, k);
+                // An index outside the request would send the same request again without end.
+                if (code === 'no_path' && Number.isInteger(leg) && leg! >= 0 && leg! < last) gap(leg!);
+                else if (code !== 'no_snap' || !Number.isInteger(point) || point! < 0 || point! > last) throw error;
+                // The first and the last request point, a start, a finish or a point beside a manual leg, stay, so that the
+                // manual leg keeps its join: the leg at the point becomes a gap.
+                else if (point === 0 || point === last) gap(point === 0 ? 0 : last - 1);
+                // A detour is left out with its anchors.
+                else leftOut.add(request.owners[point!]!.id);
+                request = expand(origin, run, leftOut);
             }
         }
         // The alternatives come from one request through all points.
-        const canOfferAlternatives = i === 1 && until === points.length - 1 && !turnarounds.length && expanded.length <= MAX_REQUEST_POINTS;
-        const route = await legs.route(expanded, turnarounds, result.profile, signal);
-        result.package = route.package;
+        const canOfferAlternatives = i === 1 && until === points.length - 1 && !request.turnarounds.length && request.coordinates.length <= MAX_REQUEST_POINTS
+            && !leftOut.size && !route.legs.some(leg => leg.gap);
+        if (route.package) result.package = route.package;
         if (canOfferAlternatives) result.primary = route;
         const start = append(route.geometry, route.elevation, route.elapsed, route.edges);
         const lengths = cumulative(route.geometry);
@@ -266,10 +312,25 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         result.unpavedKm += unpavedMetres(route.totals) / 1000;
         result.pushingKm += route.totals.pushing_m / 1000;
         result.unknownElevationKm += route.totals.unknown_elevation_m / 1000;
-        for (let leg = 0; leg < route.legs.length; leg++) {
-            const id = ends.get(leg);
-            if (id) result.stops.push({ id, distance: start + lengths[route.legs[leg].to_index] });
-        }
+        const stopAt = new Map([...request.ends].map(([leg, id]) => [id, route.legs[leg].to_index]));
+        // A gap belongs to the stop after it. The way back from a detour at the end of the run has none: it belongs to the detour.
+        const ends = [...request.ends];
+        route.legs.forEach((leg, k) => {
+            const id = leg.gap && (ends.find(([end]) => end >= k) ?? ends.at(-1)!)[1];
+            if (id && !result.gapLegs.includes(id)) result.gapLegs.push(id);
+        });
+        // A point left out stops where the line passes nearest to it, between the points around it.
+        let from = 0;
+        run.forEach((point, n) => {
+            let index = stopAt.get(point.id), share = 0;
+            if (index === undefined) {
+                const to = run.slice(n + 1).map(next => stopAt.get(next.id)).find(at => at !== undefined) ?? route.geometry.length - 1;
+                ({ index, t: share } = nearestOnLine(route.geometry.slice(from, to + 1), point.coordinate));
+                index += from;
+            }
+            from = index;
+            result.stops.push({ id: point.id, distance: start + lengths[index] + (share && (lengths[index + 1] - lengths[index]) * share) });
+        });
         i = until + 1;
     }
     return result;
