@@ -117,6 +117,37 @@ test('the name of a card opens the page of the route, and Back and "‹ Explore"
   expect(errors).toEqual([]);
 });
 
+test('the trail name on a stage page opens the page of the trail, whose rows open the pages of its stages', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await stub(page);
+  await page.goto('/planner.html#/signed/9-267-177/202');
+  await page.locator('.title').getByRole('link', { name: 'Westweg', exact: true }).click();
+  await expect(page).toHaveURL(/#\/trail\/300$/);
+  await expect(page.getByRole('heading', { name: 'Westweg', exact: true })).toBeVisible();
+  await expect(page.locator('.title')).toContainText('1 of 3 stages');
+  // Stage 1 is a gap; stage 3 is outside the release and has no row.
+  const rows = page.locator('.facts li');
+  await expect(rows).toHaveText([/^Stage 1.*Not in the map data/, /^Stage 2/]);
+  await expect(rows.nth(0)).toHaveClass(/\bgap\b/);
+  await expect(rows.nth(0).getByRole('link')).toHaveCount(0);
+
+  await rows.nth(1).getByRole('link').click();
+  await expect(page).toHaveURL(/#\/signed\/9-267-177\/202$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/trail\/300$/);
+  await expect(rows).toHaveCount(2);
+  // After a reload no page is before this one: "‹ Explore" opens Explore on the trail.
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Westweg', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: '‹ Explore' }).click();
+  await expect(page).toHaveURL(/#\/explore$/);
+
+  await page.goto('/planner.html#/trail/1');
+  await expect(page.getByText('This trail is no longer in the map data.')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 /** Shows the card of the signed route `name` in a window of `width` × `height` px. */
 async function openCard(page, name, width, height) {
   await page.setViewportSize({ width, height });
