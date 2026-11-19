@@ -15,6 +15,7 @@
     import type { Library } from '../lib/library/store';
     import { lineCoordinates } from '../lib/library/summary';
     import { emptyTrip, planView } from '../lib/planner/editor';
+    import { planSummary } from '../lib/planner/library';
     import { config, coversCell } from '../lib/planner/map-data';
     import type { RoutePlace } from '../lib/planner/place-index';
     import { catalog } from '../lib/planner/route-catalog';
@@ -61,8 +62,10 @@
     const trip = $derived(record && planTrip(routeBase(record, emptyTrip()), routePlan(record), record.loop));
     const line = $derived(routed?.record === record ? routed?.line : undefined);
     const error = $derived(routed?.record === record ? routed?.error : undefined);
-    // The numbers are those of the card: the catalog's length, climb and highest point. The answer adds only the time.
-    const summary = $derived(item && (line ? { ...item.summary, seconds: Math.round(planView(trip!, line).summary.hours * 3600) } : item.summary));
+    // The line, its heights, the time and the highest point come from the answer, so the map and the rows measure along one
+    // line; the length and the climb stay those of the card. Before the answer, the record's line with no highest point.
+    const summary = $derived(item && (line ? { ...planSummary(trip!, line), lengthM: item.summary.lengthM, climbM: item.summary.climbM }
+        : { ...item.summary, highestM: null }));
     const facts = $derived(trip && line ? routeFacts(trip, line) : undefined);
     const pins = $derived(trip && summary ? routePins(trip, lineCoordinates(summary), line) : []);
     const focus = $derived(part ?? day);
@@ -203,7 +206,7 @@
             {/if}
         {/snippet}
         {#if trip && summary}
-            {#key record}<Rows {summary} {trip} {line} {facts} {pins} mark={share} onpoint={next => share = next ?? undefined}
+            {#key record}<Rows {summary} {trip} {line} failed={!!error} {facts} {pins} mark={share} onpoint={next => share = next ?? undefined}
                 {part} onpart={next => part = next} onhover={next => hover = next} onday={next => day = next}
                 bind:routePlaces bind:litPlaces bind:openPlaceId />{/key}
         {/if}
