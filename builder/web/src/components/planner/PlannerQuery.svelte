@@ -20,6 +20,12 @@
     const movedView = $derived(usesView && !!searchState.answer && viewRevision !== searchedView);
     let limit = 6;
     let activeFilter = $state<string | null>(null);
+    // Before the rider types, the search area chip shows only while the focus is in the search. A press elsewhere takes
+    // the focus at the press: the chip leaves after the release, so the content below does not move under the click.
+    let focused = $state(false);
+    let root = $state<HTMLDivElement>();
+    let pressing = false, leaving = false;
+    function leave() { leaving = false; focused = false; activeFilter = null; }
     const days = $derived(context.plan.days.filter(d => !d.rest).map(d => d.number));
     const fields = $derived(Object.entries(request ?? {}).filter(([key]) => !['type','ignored','via_source'].includes(key)));
     const required = $derived(request?.type === 'places' ? ['what'] : request?.type === 'place' ? ['name'] : request?.type === 'route' ? ['to'] : request?.type === 'end_day' ? ['day','at'] : ['add_point','remove_point'].includes(request?.type ?? '') ? ['point'] : request?.type === 'split' ? ['days','per_day'] : request?.type === 'join' ? ['day'] : request?.type === 'stretches' ? ['what'] : []);
@@ -85,7 +91,9 @@
     });
     onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 </script>
-<div class="planner-query">
+<svelte:window onpointerdown={() => pressing = true} onpointerup={() => { pressing = false; if (leaving) setTimeout(leave); }} onpointercancel={() => { pressing = false; if (leaving) leave(); }} />
+<div class="planner-query" bind:this={root} onfocusin={() => { focused = true; leaving = false; }}
+    onfocusout={(event) => { if (!root?.contains(event.relatedTarget as Node | null)) { if (pressing) leaving = true; else leave(); } }}>
     <form onsubmit={event => { event.preventDefault(); run(20, request, { reparse: !edited }); }}>
         <div class="query-input" class:edited>
             <PlannerIcon name="search" size={17} />
@@ -108,7 +116,7 @@
             {#if request.ignored?.length}<p class="note" role="status">Not understood: {request.ignored.map(word => `“${word}”`).join(', ')}. These words are ignored.</p>{/if}
         {/if}
     {/if}
-    {#if !text.trim()}
+    {#if !text.trim() && focused}
         <div class="meaning"><QueryChip bind:active={activeFilter} field="where" value={context.pointing ?? { scope: 'view' }} {days} {selection} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
     {/if}
 </div>

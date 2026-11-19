@@ -39,11 +39,11 @@ const records = (page, store) => page.evaluate(store => new Promise((resolve, re
 
 const saveButton = page => page.locator('.trip-bar .save > button');
 const dialog = page => page.getByRole('dialog');
-const dayCount = page => page.getByRole('group', { name: 'Number of riding days' });
+const dayCount = page => page.getByRole('group', { name: 'Number of days' });
 /** A change of the open route that needs no map: a one-day route becomes a multi-day trip. */
 const toTrip = page => dayCount(page).getByRole('button', { name: 'One day more' }).click();
 async function toRoute(page) {
-  while ((await dayCount(page).textContent()).trim() !== '1 riding day') await dayCount(page).getByRole('button', { name: 'One day fewer' }).click();
+  while ((await dayCount(page).textContent()).trim() !== '1 day') await dayCount(page).getByRole('button', { name: 'One day fewer' }).click();
 }
 async function more(page, item) {
   await page.getByRole('button', { name: 'More ▾', exact: true }).click();
@@ -147,7 +147,7 @@ test('invalid imports and failed writes preserve the open plan and offer a downl
   await expect(page.getByRole('button', { name: 'Download plan file', exact: true })).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Keep me', exact: true })).toBeVisible();
-  await expect(page.getByRole('group', { name: 'Number of riding days' })).toContainText('riding days');
+  await expect(page.getByRole('group', { name: 'Number of days' })).toContainText('days');
 });
 
 test('a new route is stored only at Save, with the name of the window, and a reload continues its changes', async ({ page }) => {
@@ -185,7 +185,7 @@ test('a new route is stored only at Save, with the name of the window, and a rel
   await expect(saveButton(page)).toHaveText('Save');
   await expect.poll(async () => (await records(page, 'drafts')).map(draft => draft.trip.mode)).toEqual(['trip']);
   await page.reload();
-  await expect(page.getByRole('group', { name: 'Number of riding days' })).toContainText('riding days');
+  await expect(page.getByRole('group', { name: 'Number of days' })).toContainText('days');
   await expect(saveButton(page)).toHaveText('Save');
   expect((await records(page, 'routes'))[0].trip.mode).toBe('route');
   await page.getByRole('button', { name: 'Undo', exact: true }).click();
@@ -249,11 +249,11 @@ test('"Save a copy…" stores the changes as a new route, and "Discard changes" 
 
   await toRoute(page);
   await more(page, 'Discard changes');
-  await expect(page.getByRole('group', { name: 'Number of riding days' })).toContainText('riding days');
+  await expect(page.getByRole('group', { name: 'Number of days' })).toContainText('days');
   await expect(saveButton(page)).toHaveText('Saved');
   await expect(page.locator('.status-line')).toContainText('Changes discarded');
   await page.locator('.status-line').getByRole('button', { name: 'Undo', exact: true }).click();
-  await expect(page.getByRole('group', { name: 'Number of riding days' })).toHaveText('1 riding day');
+  await expect(page.getByRole('group', { name: 'Number of days' })).toHaveText('1 day');
   await expect(saveButton(page)).toHaveText('Save');
 });
 
@@ -269,12 +269,12 @@ test('a new page shows the stored route with a reminder of the changes of anothe
   const next = await context.newPage();
   await start(next);
   await expect(next.getByRole('heading', { name: 'First', exact: true })).toBeVisible();
-  await expect(next.getByRole('group', { name: 'Number of riding days' })).toHaveText('1 riding day');
+  await expect(next.getByRole('group', { name: 'Number of days' })).toHaveText('1 day');
   await expect(saveButton(next)).toHaveText('Saved');
   const status = next.locator('.status-line');
   await expect(status).toContainText(/Unsaved changes from Today \d/);
   await status.getByRole('button', { name: 'Restore', exact: true }).click();
-  await expect(next.getByRole('group', { name: 'Number of riding days' })).toContainText('riding days');
+  await expect(next.getByRole('group', { name: 'Number of days' })).toContainText('days');
   await expect(saveButton(next)).toHaveText('Save');
   await expect(status.getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
 
@@ -285,7 +285,7 @@ test('a new page shows the stored route with a reminder of the changes of anothe
   await expect(line).toContainText('Earlier unsaved changes discarded');
   await expect.poll(() => records(third, 'drafts')).toEqual([]);
   await line.getByRole('button', { name: 'Undo', exact: true }).click();
-  await expect(third.getByRole('group', { name: 'Number of riding days' })).toContainText('riding days');
+  await expect(third.getByRole('group', { name: 'Number of days' })).toContainText('days');
   await expect(line).not.toContainText('Earlier unsaved changes discarded');
 });
 

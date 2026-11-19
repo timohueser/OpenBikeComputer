@@ -56,6 +56,9 @@ describe('planner query requests',()=>{
         expect(target.querySelector('.meaning')?.textContent).not.toContain('campsite');
         await type('third sentence');await type('');
         pending[2](reply({type:'places',what:['campsite']}));await vi.advanceTimersByTimeAsync(0);await tick();
+        // An empty search shows the search area only while it has the focus.
+        expect(target.querySelectorAll('.chip')).toHaveLength(0);
+        target.querySelector('input')!.focus();await tick();
         expect([...target.querySelectorAll('.chip')].map(chip=>chip.textContent)).toEqual(['In this map view']);
     });
     it('asks for the position of the rider once and searches again when the context has it',async()=>{

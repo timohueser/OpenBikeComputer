@@ -19,13 +19,13 @@ describe('day count', () => {
         row = mount(DayCount, { target: document.body, props: { get trip() { return trip; }, line: testLine(base),
             onChange: (next: Trip, description: string) => { trip = next; said = description; } } });
         flushSync();
-        expect(count().textContent).toBe('1 riding day');
+        expect(count().textContent).toBe('1 day');
         expect(button('One day fewer').disabled).toBe(true);
 
         button('One day more').click(); flushSync();
         expect(trip).toMatchObject({ mode: 'trip', days: 2 });
-        expect(said).toBe('Multi-day trip, 2 riding days');
-        expect(count().textContent).toBe('2 riding days');
+        expect(said).toBe('Multi-day trip, 2 days');
+        expect(count().textContent).toBe('2 days');
         expect(count().classList.contains('guess')).toBe(true);
 
         button('One day more').click(); flushSync();
@@ -38,7 +38,7 @@ describe('day count', () => {
         expect(document.activeElement).toBe(button('One day more'));
         expect(trip).toMatchObject({ mode: 'route', days: 2 });
         expect(said).toBe('One-day route · + brings back the days');
-        expect(count().textContent).toBe('1 riding day');
+        expect(count().textContent).toBe('1 day');
         expect(button('One day fewer').disabled).toBe(true);
     });
 });
