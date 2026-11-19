@@ -181,13 +181,13 @@ export class Library {
         return isDraftRecord(draft) ? draft : undefined;
     }
 
-    /** The newest draft of a route that is not stored, other than the draft of `except`. */
-    async newestUnstoredDraft(except?: string): Promise<DraftRecord | undefined> {
+    /** The newest draft of a route that is not stored whose trip is `usable`, other than the draft of `except`. */
+    async newestUnstoredDraft(usable: (trip: unknown) => boolean, except?: string): Promise<DraftRecord | undefined> {
         await this.pending;
         return this.run(['routes', 'drafts'], 'readonly', tx => {
             const routes = tx.objectStore('routes').getAllKeys(), drafts = tx.objectStore('drafts').getAll();
             return () => (drafts.result as unknown[]).filter(isDraftRecord)
-                .filter(draft => draft.id !== except && !(routes.result as IDBValidKey[]).includes(draft.id))
+                .filter(draft => draft.id !== except && !(routes.result as IDBValidKey[]).includes(draft.id) && usable(draft.trip))
                 .sort((a, b) => b.updatedAt - a.updatedAt)[0];
         });
     }

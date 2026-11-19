@@ -849,6 +849,7 @@ describe('save and draft', () => {
         for (const [id, updatedAt] of [['a', 1], ['b', 2], ['c', 3]] as const) await library.saveDraft({ id, updatedAt, trip: moved(plan, 8 + updatedAt / 10) });
         await library.saveRoute({ ...newPlan(plan, 'Stored'), id: 'stored' });
         await library.saveDraft({ id: 'stored', updatedAt: 4, trip: moved(plan, 8.4) });
+        await library.saveDraft({ id: 'unreadable', updatedAt: 5, trip: {} });
         const session = new PlanSession();
         await session.start(library);
         const shown = () => [session.stored, session.trip.points, session.offer?.id];

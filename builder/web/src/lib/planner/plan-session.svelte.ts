@@ -506,7 +506,7 @@ export class PlanSession {
     /** The draft of route `id`, or with no `id` the newest draft of a route that is not stored, other than the draft of
      * the open route, which the rider leaves. */
     private async offered(library: Library, id?: string): Promise<Offer | null> {
-        const draft = id ? await library.draft(id) : await library.newestUnstoredDraft(this.plan.id);
+        const draft = id ? await library.draft(id) : await library.newestUnstoredDraft(isTrip, this.plan.id);
         return draft && isTrip(draft.trip) ? draft as Offer : null;
     }
 
