@@ -474,10 +474,12 @@ function addLines(lines: Line[], bridges: Shapes['bridges'], feature: number, { 
     // In a town, where a building is near a piece of it: a road has a sidewalk on that side, and a footway is paved.
     const sidewalk = type === ROAD && kind !== 'gallery' ? sidewalkOf(tags, surface) : 0;
     const paving = type === PATH && kind !== 'gallery' && surfaceOf(tags, true) !== surface;
-    // A deck as the ground plan draws it: its class's carriageway and paved shoulder (the OSM width where wider), its
-    // widest widening and the band past its edge.
-    const rule = (CLASS_RULES as Record<string, { half_m: number; shoulder_m: number; shoulder_paved: boolean }>)[classOf(tags)];
-    const deckHalf = Math.max(h, rule ? rule.half_m + (rule.shoulder_paved ? rule.shoulder_m : 0) : 0) + PLAN_RULES.structures.edge_band_m;
+    // A deck as the ground plan draws it: the larger of the OSM half-width and its class's carriageway, its paved
+    // shoulder, its widest widening and the band past its edge. A class that the table lacks takes the row of the crate's
+    // fallback: `path` for a path, else `road`.
+    const rules = CLASS_RULES as Record<string, { half_m: number; shoulder_m: number; shoulder_paved: boolean }>;
+    const rule = rules[classOf(tags)] ?? rules[kind === 'path' ? 'path' : 'road'];
+    const deckHalf = Math.max(h, rule.half_m) + (rule.shoulder_paved ? rule.shoulder_m : 0) + PLAN_RULES.structures.edge_band_m;
     for (const part of parts) {
         const curve = drawn(part, kind, tags), { xy, z } = curve, sideWaysOf = sidesAlong(part, world);
         if (bridge) {

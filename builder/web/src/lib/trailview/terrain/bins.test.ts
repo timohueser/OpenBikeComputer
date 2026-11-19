@@ -234,16 +234,17 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         expect(Array.from(corner)).toEqual([0]);
     });
 
-    it('takes the ground under a bridge deck with the plan only, out to its band and round its bends', () => {
+    it('takes the ground under a bridge deck with the plan only, out to its band, round its bends and at its OSM width', () => {
         // A residential bridge, 5 m up, across a level-18 node with a bend of 60° in its middle. Its deck reaches its
         // carriageway (2.5 m) and the band (0.5 m) past it. With `plan` a point under the deck's edge band on the
         // outside of the bend is taken, and a point 10 m off the deck is not; without `plan` the node holds no area.
         const tile = { level: 13, x: 4287, y: 2889 }, node = { level: 18, x: tile.x * 32 + 10, y: tile.y * 32 + 10 }, shift = 22 - node.level, cell = CELL * 2 ** shift;
         const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, mid = [x0 + (GRID / 2) * cell, y0 + (GRID / 2) * cell], m = 1 / metresPerUnit(mid[1]);
         const leg = 12 * cell, turn = Math.PI / 3, world = [mid[0] - leg, mid[1], mid[0], mid[1], mid[0] + leg * Math.cos(turn), mid[1] + leg * Math.sin(turn)];
-        const bridge = { kind: 'road', tags: { highway: 'residential', bridge: 'yes' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(world, (v, i) => v / 8 - (i % 2 ? tile.y : tile.x) * EXTENT), z: Float32Array.of(1005, 1005, 1005) }] };
-        const taken = (plan: boolean, p: number[]) => {
-            const { data } = nodeStamps([bridge], tile, node, plan);
+        const bridgeOf = (tags: Record<string, string>, xy: number[]) => ({ kind: 'road', tags: { ...tags, bridge: 'yes' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(xy, (v, i) => v / 8 - (i % 2 ? tile.y : tile.x) * EXTENT), z: Float32Array.from(xy.filter((_, i) => i % 2 === 0), () => 1005) }] });
+        const bridge = bridgeOf({ highway: 'residential' }, world);
+        const taken = (plan: boolean, p: number[], feature = bridge) => {
+            const { data } = nodeStamps([feature], tile, node, plan);
             const records = 2 + GRID * GRID + 1 + data![1], word = (r: number, i: number) => data![records + RECORD * r + i] | 0;
             const c = Math.floor((p[1] - y0) / cell) * GRID + Math.floor((p[0] - x0) / cell), { entries, origin } = cellOf(data!, node, c);
             let crossed = false, inside = false;
@@ -258,7 +259,11 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         // The outside of the bend lies against the bisector of the turn: 2.9 m out along it from the vertex.
         const out = [Math.sin(turn / 2), -Math.cos(turn / 2)], bend = [mid[0] + 2.9 * m * out[0], mid[1] + 2.9 * m * out[1]];
         const off = [mid[0] - 6 * cell, mid[1] + 10 * m];
-        expect([taken(true, bend), taken(true, off), taken(false, bend)]).toEqual([true, false, false]);
+        // A straight motorway bridge 16 m wide by its OSM tag, wider than its class (6 m): its deck reaches the half of the
+        // tag, the paved shoulder (0.6 m) and the band (0.5 m), so a point 8.9 m off its middle is taken.
+        const wide = bridgeOf({ highway: 'motorway', width: '16' }, [mid[0] - leg, mid[1], mid[0] + leg, mid[1]]);
+        const edge = [mid[0], mid[1] + 8.9 * m];
+        expect([taken(true, bend), taken(true, off), taken(false, bend), taken(true, edge, wide)]).toEqual([true, false, false, true]);
     });
 
     it('takes the points inside the buildings and the river areas, from each cell origin and the edges that the cell lists', () => {
