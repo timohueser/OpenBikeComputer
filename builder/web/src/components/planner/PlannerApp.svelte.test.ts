@@ -52,6 +52,8 @@ const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', cat
 beforeEach(() => {
     stored.clear();
     sessionStorage.clear();
+    // happy-dom has no popover API, which the menu "More" uses.
+    HTMLElement.prototype.showPopover ??= () => {};
     savedPlan = undefined;
     others = [];
     vi.stubGlobal('confirm', vi.fn(() => true));
