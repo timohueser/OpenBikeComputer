@@ -7,7 +7,8 @@ relation with a member outside the extract leaves the catalog.
 - Version: `format` `1`. A new field does not change the format. A reader ignores a field that it
   does not know.
 - Writers: the region prepare step, `planner/router-build` (`src/catalog/mod.rs`,
-  `src/catalog/connector.rs`, `src/catalog/trails.rs`, `src/grid.rs`).
+  `src/catalog/connector.rs`, `src/catalog/trails.rs`, `src/grid.rs`; the facts files
+  `src/facts/`).
 - Readers: the planner search, online and offline: the web planner
   (`builder/web/src/lib/planner/route-catalog.ts`) and its Explore page
   (`builder/web/src/pages/Explore.svelte`), the companion app (`OBCPlanner/SignedRoutes.swift`).
@@ -25,6 +26,7 @@ relation with a member outside the extract leaves the catalog.
 | Grid | `routes/tiles/9-X-Y.json` | One file for each grid cell |
 | Grid | `routes/tiles/trails/7-X-Y.json` | Far file: the trails of one zoom 7 cell (see [Trail files](#trail-files)) |
 | Grid | `routes/tiles/long/ID.json` | Trail record file: the whole record of one trail (see [Trail files](#trail-files)) |
+| Grid | `routes/tiles/facts/9-X-Y.json` | Facts file: the search facts of the routes of one grid cell (see [Facts files](#facts-files)) |
 
 A region file, a cell file and a trail record file are UTF-8 JSON: `{"format": 1, "routes": [...]}`.
 The records are in ascending `id` order. A far file has its own form (see [Trail files](#trail-files)). A
@@ -409,6 +411,101 @@ file is larger than 400,000 bytes. When the file is larger with each piece reduc
 segments, the build fails. So no far file is larger than 400,000 bytes, and a far line is within
 `tolerance_m` + 10 m of the plan route. A reader draws each piece as a line of its own; the pieces
 of one `id` meet on their shared segments.
+
+### Facts files
+
+A facts file holds the search facts of the routes of one grid cell: the car parks and the top
+stations of lifts near each route, the places that it passes, its highest point, and the shares
+of its length that are paved, near a big road, under trees and along water. The step
+`planner/route-facts` writes them from the route records, the OSM extract of the region, the
+GLO-30 heights and, when the release has it, the [canopy archive](trailview-tiles.md#canopy). A
+grid release has facts files only when its part `route-facts` is on; then each grid cell has one.
+A regional release has none. The facts are not in the records, so a change of the facts does not
+change a cell file.
+
+A facts file is UTF-8 JSON: `{"format": 1, "places": {...}, "routes": {...}}`. `routes` maps the
+`id` of each route record whose `cells` names the cell, as decimal text, to its entry. A long
+route has no entry. `places` maps the id of each place that an entry of the file names to the
+place, also when the place lies in another cell. A place id is `n`, `w` or `r` and the OSM ID of
+the node, way or relation, so it is the same in each file.
+
+| Entry field | Value |
+| --- | --- |
+| `car_parks` | Each car park within 3 km of the line, nearest first: `at_udeg`, `walk_m`, `size` |
+| `lifts` | Each lift whose top station is within 3 km of the line, nearest first: `top_udeg`, `walk_m`, `valley_udeg`, `valley_parking` |
+| `places` | The ids of the places within 150 m of the line, in ascending text order |
+| `highest_m` | The highest entry of `profile_m` |
+| `paved_pct`, `big_road_pct`, `water_pct`, `canopy_pct` | The shares of the samples, each a whole percent (see the table of shares) |
+
+| Item field | Value |
+| --- | --- |
+| `at_udeg` | Car park: its position |
+| `walk_m` | Car park: from `at_udeg`; lift: from `top_udeg`; to the nearest point of `line_udeg` |
+| `size` | Car park: `large` or `small` |
+| `top_udeg`, `valley_udeg` | Lift: the position of the top station and of the valley station |
+| `valley_parking` | Lift: `true` when a car park is within 300 m of the valley station |
+
+| Place field | Value |
+| --- | --- |
+| `kind` | `peak`, `hut`, `lake` or `waterfall` |
+| `name` | The OSM `name`, absent when there is none |
+| `ele_m` | The OSM `ele`, in whole metres, absent when it is not a number |
+| `at_udeg` | Its position |
+
+A list with no item is absent. `highest_m` is absent when the record has no `profile_m`.
+`canopy_pct` is absent when the release has no canopy archive, or when the archive does not know
+the cell of one sample. The other shares are always there. Positions are `[longitude, latitude]` in microdegrees. A
+distance is a straight line, in whole metres.
+
+The facts come from these OSM elements. The position of a node is its position. The position of an
+area is the mean of the points of its outer rings, and of a way that is no ring the mean of its
+points.
+
+| Fact | OSM element |
+| --- | --- |
+| Car park | `amenity=parking`, `access` not `private` or `customers`: a node, a closed way or a multipolygon |
+| Lift | A way with `aerialway` `cable_car`, `gondola`, `chair_lift` or `mixed_lift` |
+| `peak` | A node with `natural=peak` |
+| `hut` | `tourism=alpine_hut`; or `amenity` `restaurant`, `cafe` or `biergarten` whose position is outside each area with `landuse` `residential`, `commercial` or `retail` |
+| `lake` | `natural=water` with `water` `lake` or `pond`, a closed way or a multipolygon, with a `name` or an area of 1 ha or more |
+| `waterfall` | `waterway=waterfall`, a node or a way |
+| Water | The ways of each `lake`; `natural=water` with `water=river`; a way with `waterway` `river` or `canal` |
+
+A car park is `large` when its `capacity` is a number of 50 or more, and `small` when it is a
+smaller number. Without a number, it is `large` when its area is 1,250 m² or more, else `small`. A
+car park keeps its class only, never a number of spaces.
+
+The top station of a lift is the end of its way with the greater height: the `ele` of the end
+node, else the GLO-30 height there. The other end is the valley station. A lift whose two ends have
+the same height, or an end without a height, has no entry.
+
+A place is within 150 m when its position, or for a `lake` a point of one of its ways, is within
+150 m of the line.
+
+The shares count the samples of the line: the points of `line_udeg` at the shares of the length
+that the entries of `profile_m` have (see [Profile](#profile)), at each 100 m of `length_m` and at
+its end. A share is the count of samples that meet its rule, divided by the count of all samples,
+in percent, rounded to a whole number. The highways come from the routing source of the region, so
+only the ways inside its bounds count.
+
+| Share | A sample counts when |
+| --- | --- |
+| `paved_pct` | The nearest highway within 15 m has `surface` `asphalt`, `concrete`, `paving_stones` or `sett`; or it has no `surface` and `highway` is `motorway`, `trunk`, `primary`, `secondary`, `tertiary`, `unclassified`, `residential` or a `_link` of these |
+| `big_road_pct` | A way with `highway` `motorway`, `trunk` or `primary` is within 200 m |
+| `water_pct` | A way of water is within 100 m |
+| `canopy_pct` | Its canopy cell is a forest cell with a cover of 50 % or more |
+
+A facts file, shortened:
+
+```json
+{"format":1,
+ "places":{"n2735512":{"at_udeg":[8253010,46978380],"ele_m":2128,"kind":"peak","name":"Pilatus"}},
+ "routes":{"1234567":{"big_road_pct":0,"canopy_pct":34,"highest_m":2128,"paved_pct":12,
+  "places":["n2735512"],"water_pct":0,
+  "car_parks":[{"at_udeg":[8240150,46990480],"size":"large","walk_m":420}],
+  "lifts":[{"top_udeg":[8253920,46977010],"valley_parking":true,"valley_udeg":[8271800,46997320],
+            "walk_m":180}]}}}
+```
 
 ### Map view
 

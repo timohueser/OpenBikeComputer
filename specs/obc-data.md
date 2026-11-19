@@ -1256,6 +1256,7 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region` | `layer`: `ground`; `bounds`; `attribution` of the sources of the three | `ground.pmtiles`: [the ground archive](trailview-tiles.md#ground) |
 | `planner/trailview-colour` | The files of `colour`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
 | `planner/trailview-canopy` | The blocks of [`forest`](#forest) that the outline of the region meets, as `forest` defines them. A version that lacks one of those blocks refuses | `bounds`; `attribution`: the credits of the canopy models with a tile in those blocks and of the leaf type | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
+| `planner/route-facts` | `routing/route-catalog.json` of `planner/routing`, `planner/routing-source` (the highways), `planner/osm/bounds`, the GLO-30 tiles of the bounds of the region, and `trailview-canopy.pmtiles` of `planner/trailview-canopy` when that part is on | `bounds` | `facts/<cell>.json`: the [facts file](route-catalog.md#facts-files) of each grid cell, with a final newline. The metrics count the routes with a car park within 1 km, with a canopy share and with a place; the samples that are paved, and those paved only by the class rule; the car parks with an area of 1,250 m² or more and a `capacity`, and those of them with 50 or more; and the sizes of the files |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
 `terrain`, `overlays`, `climate`, `trailview-features`, `trailview-stamps`,
@@ -1275,7 +1276,7 @@ The step writes the packed bytes in `objects/<transport sha256>`, and selects `o
 encoding. `source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
-The parts of the planner are `map`, `routing`, `search`, `climate`, `snow`,
+The parts of the planner are `map`, `routing`, `route-facts`, `search`, `climate`, `snow`,
 `trailview-features`, `trailview-rules`, `trailview-ground`, `trailview-colour` and
 `trailview-canopy`; the device maps are the part `device`. A planner step is in the list when a
 part that is on makes it or reads it: `map` makes the basemap, places, assets and terrain grids,
@@ -1283,12 +1284,14 @@ part that is on makes it or reads it: `map` makes the basemap, places, assets an
 parts make their own steps. The fonts, the offline grid, the index and the catalog read only the grids that stay.
 `trailview-features` makes the stamps step too.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
+`route-facts` makes `planner/route-facts` and its grid, and needs `routing`.
 All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
 
 | Layer | Reads | Files |
 | --- | --- | --- |
 | `planner/routing/grid` | `planner/routing` | Packed `routing/blocks.json`, `routing/packs/<sha256>/pages.bin` and `pages.idx`, `offline/routing-cells/<cell>.json`, `routes/tiles/<cell>.json`, `routes/tiles/trails/<cell>.json` and `routes/tiles/long/<id>.json`. It does not build the routing blocks again. Its index records the source graph and cell descriptors |
+| `planner/route-facts/grid` | `planner/route-facts` | Packed `routes/tiles/facts/<cell>.json` |
 | `planner/search/pois/grid`, `planner/search/addresses/grid` | The database of its search component | `search/tiles/<component>/<cell>.sqlite`, packed. A cell retains intersecting places, addresses, their streets and contexts. The index records regional metadata and clipped cell bounds |
 | `planner/assets/grid`, `planner/model/grid`, `planner/trailview-rules/grid` | `planner/assets`, `planner/model` or `rules.json` of `planner/trailview-rules` | The input files, packed as `maps/assets/`, `search/model/` or `trailview/`. The index maps logical paths to file and transport identities |
 | `planner/fonts/grid` | `planner/basemap/grid`, `planner/places/grid`, `planner/overlays/grid` and `planner/assets/grid`: client files only. The route references are the `ref` of the overlay tiles | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
