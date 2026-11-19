@@ -1119,3 +1119,49 @@ fn a_passage_through_a_building_of_kind_tunnel_lies_on_the_ground_and_a_tunnel_d
     assert_eq!(level("road", "yes", false), Some(Level::Ground));
     assert_eq!(level("road", "building_passage", true), Some(Level::Ground));
 }
+
+#[test]
+fn an_open_end_cuts_a_tunnel_way_as_its_end_lines_do() {
+    // A residential tunnel from x 0 to 40 between two roads. Openings 7.5 m in from its start and 5 m in from its end
+    // make those stretches ground ways, cut at a sample of the part, and leave a tunnel piece between them.
+    let street = [("highway", "residential")];
+    let tunnel = [("highway", "residential"), ("tunnel", "yes")];
+    let lines = |tunnel_tags: &[(&'static str, &'static str)]| {
+        [
+            line("road", &street, &[[-60.0, 0.0], [0.0, 0.0]], 3.0),
+            line("tunnel", tunnel_tags, &[[0.0, 0.0], [20.0, 0.0], [40.0, 0.0]], 3.0),
+            line("road", &street, &[[40.0, 0.0], [100.0, 0.0]], 3.0),
+        ]
+    };
+    let band = crate::faces::Rules::embedded().structures.edge_band_m;
+    let ends = [OpenEnd { way: at([0.0, 0.0]), shift_m: 7.5 }, OpenEnd { way: at([40.0, 0.0]), shift_m: 5.0 }];
+    let opened = build_open(cell(), &input_of(cell(), &lines(&tunnel)), Sections::embedded(), Some(band), &ends);
+    assert_eq!(check(&opened), Vec::new());
+    let of_tunnel = |g: &WayGraph| -> Vec<(Level, f64, f64)> {
+        let first = |w: &Way| &g.samples[w.samples.start as usize];
+        let last = |w: &Way| &g.samples[w.samples.end as usize - 1];
+        let mut v: Vec<(Level, f64, f64)> = (g.ways.iter())
+            .filter(|w| g.parts[w.part as usize].feature.0 == 1)
+            .map(|w| (w.level, first(w).along_m, last(w).along_m))
+            .collect();
+        v.sort_by(|a, b| a.1.total_cmp(&b.1));
+        v
+    };
+    let ways = of_tunnel(&opened);
+    assert_eq!(ways.iter().map(|w| w.0).collect::<Vec<_>>(), [Level::Ground, Level::Tunnel, Level::Ground], "{ways:?}");
+    let len = ways[2].2;
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    assert!(near(ways[0].1, 0.0) && near(ways[0].2, 7.5) && near(ways[1].2, len - 5.0), "{ways:?}");
+    // With the bores, the end lines of a `levels` tag at the same metres cut the way to the same graph.
+    if BORES {
+        let text = format!("O 7.5 P B {} P O", len - 5.0);
+        let mut tagged = tunnel.to_vec();
+        tagged.push(("levels", Box::leak(text.into_boxed_str())));
+        let split = build_levelled(cell(), &input_of(cell(), &lines(&tagged)), Sections::embedded(), band);
+        assert_eq!((&opened.ways, &opened.samples), (&split.ways, &split.samples));
+    }
+    // Without ends, or with an end at no tunnel vertex, the tunnel stays whole.
+    let other = [OpenEnd { way: at([20.0, 0.0]), shift_m: 5.0 }];
+    let whole = build_open(cell(), &input_of(cell(), &lines(&tunnel)), Sections::embedded(), Some(band), &other);
+    assert_eq!(of_tunnel(&whole).iter().map(|w| w.0).collect::<Vec<_>>(), [Level::Tunnel]);
+}
