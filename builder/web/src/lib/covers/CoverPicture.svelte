@@ -8,7 +8,7 @@
     import Icon from '../ui/Icon.svelte';
     import PhotoMarks from '../../components/route/PhotoMarks.svelte';
 
-    let { shown, summary, breaks = [], look = 'route', colour, mark, part, line = true, pins = [], photos = [], onphoto, onpoint }: {
+    let { shown, summary, breaks = [], look = 'route', colour, mark, part, line = true, start = false, pins = [], photos = [], onphoto, onpoint }: {
         /** The image, the points of its line, and the summary that the points belong to. With no summary, the image
          * shows no mark, no part and no pins. */
         shown?: { bitmap: ImageBitmap; points: CoverPoints; summary?: Summary };
@@ -23,6 +23,8 @@
         mark?: number;
         part?: [number, number];
         line?: boolean;
+        /** A dot at the first point of the line, 10 CSS pixels across in each size of box. */
+        start?: boolean;
         /** Labels at shares of the summary line from 0 to 1: a numbered waypoint, or a night without a number. */
         pins?: { share: number; label: string; number?: number }[];
         /** The photos of a ride at shares of the summary line, each with the address of its small picture. */
@@ -42,7 +44,7 @@
         canvas.height = Math.round(height * devicePixelRatio);
         const { bitmap, points, summary } = shown;
         cut = drawCover(canvas.getContext('2d')!, { image: bitmap, width: bitmap.width, height: bitmap.height, points, summary },
-            { box: [canvas.width, canvas.height], mark, part, line, look, colour });
+            { box: [canvas.width, canvas.height], mark, part, line, look, colour, start: start ? devicePixelRatio : undefined });
     });
 
     function point(event: PointerEvent) {
@@ -87,9 +89,16 @@
         const { points, width, height } = fromAbove(lineCoordinates(summary)), pad = 8, ends = [0, ...breaks, points.length];
         const text = points.map(([x, y]) => `${(x * 100).toFixed(2)},${(y * 100).toFixed(2)}`);
         return {
+            size: [width * 100 + 2 * pad, height * 100 + 2 * pad], first: [points[0][0] * 100 + pad, points[0][1] * 100 + pad],
             box: `${-pad} ${-pad} ${width * 100 + 2 * pad} ${height * 100 + 2 * pad}`,
             pieces: ends.slice(1).map((end, i) => text.slice(ends[i], end).join(' ')),
         };
+    });
+    /** The first point of the plain line in CSS pixels of the box, by the rule `meet` of the SVG: the dot keeps its size. */
+    const fallbackStart = $derived.by(() => {
+        if (!fallback || !start || !width || !height) return undefined;
+        const [w, h] = fallback.size, scale = Math.min(width / w, height / h);
+        return { x: (width - w * scale) / 2 + fallback.first[0] * scale, y: (height - h * scale) / 2 + fallback.first[1] * scale };
     });
 </script>
 
@@ -113,6 +122,7 @@
         <svg class={look} viewBox={fallback.box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
             {#each fallback.pieces as points, i (i)}<polyline {points} />{/each}
         </svg>
+        {#if fallbackStart}<span class="start {look}" style:left={`${fallbackStart.x}px`} style:top={`${fallbackStart.y}px`}></span>{/if}
     {/if}
 </div>
 
@@ -142,5 +152,20 @@
 
     .ride polyline {
         stroke: var(--ride);
+    }
+
+    .start {
+        position: absolute;
+        box-sizing: border-box;
+        width: 10px;
+        height: 10px;
+        border: 2px solid var(--route);
+        border-radius: 50%;
+        background: #fff;
+        transform: translate(-50%, -50%);
+    }
+
+    .start.ride {
+        border-color: var(--ride);
     }
 </style>

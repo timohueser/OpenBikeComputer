@@ -18,6 +18,8 @@ vi.mock('maplibre-gl', () => ({
         once() {}
         addControl() {}
         addSource() {}
+        hasImage() { return false; }
+        addImage() {}
         addLayer(layer: { id: string; minzoom?: number; maxzoom?: number }) { this.layers.set(layer.id, layer); }
         getLayer(id: string) { return this.layers.get(id); }
         getSource() { return { setData() {} }; }
@@ -34,6 +36,8 @@ vi.mock('../../lib/planner/map-setup', () => ({
 }));
 vi.mock('../../lib/planner/map-terrain', () => ({ terrainRetry: () => () => false }));
 vi.mock('../../lib/planner/map-style', () => ({ basemapStyle: () => ({}) }));
+// The DOM of the tests has no canvas.
+vi.mock('./start', async original => ({ ...await original<typeof import('./start')>(), chevronImage: () => ({}) }));
 
 let map: ReturnType<typeof mount> | undefined;
 afterEach(async () => { if (map) await unmount(map); maps.length = 0; document.body.replaceChildren(); });

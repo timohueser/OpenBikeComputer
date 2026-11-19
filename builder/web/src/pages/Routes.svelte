@@ -222,7 +222,7 @@
                         {@const first = row.rides[0]}
                         {@const key = `${row.kind}:${row.id}`}
                         <li data-id={key}>
-                            <RouteRow name={row.name} icon={icon(rowBike(row))} current={key === selected} onclick={() => selected = key} {...rideLine(row)}>
+                            <RouteRow name={row.name} icon={icon(rowBike(row))} current={key === selected} line={first.id} onclick={() => selected = key} {...rideLine(row)}>
                                 {#snippet picture()}<Cover {library} id={first.id} />{/snippet}
                             </RouteRow>
                             {#if row.kind === 'group'}
@@ -237,7 +237,7 @@
                         {@const state = states.get(item.id)}
                         {@const summary = item.kind === 'route' && item.summary}
                         <li>
-                            <RouteRow name={item.name} icon={icon(item.summary?.bike)} current={item.id === selected} onclick={() => selected = item.id}
+                            <RouteRow name={item.name} icon={icon(item.summary?.bike)} current={item.id === selected} line={item.id} onclick={() => selected = item.id}
                                 parts={summary ? [summary.days > 1 && `${summary.days} days`, formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`] : undefined}
                                 badge={state && { text: BADGES[state], kind: state }}>
                                 {#snippet picture()}{#if item.summary}<Cover {library} id={item.id} />{/if}{/snippet}

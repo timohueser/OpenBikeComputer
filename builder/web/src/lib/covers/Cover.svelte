@@ -78,4 +78,5 @@
     });
 </script>
 
-<CoverPicture {shown} summary={item?.summary ?? undefined} {look} {mark} {part} {line} {pins} {photos} {onphoto} {onpoint} />
+<!-- The pages of a route and a ride show their own pins at the start. -->
+<CoverPicture {shown} summary={item?.summary ?? undefined} {look} {mark} {part} {line} start={place !== 'page'} {pins} {photos} {onphoto} {onpoint} />

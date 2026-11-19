@@ -9,11 +9,13 @@
     import type { Snippet } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
 
-    let { name, icon, current, onclick, lead = '', parts, tail, badge, room, picture }: {
+    let { name, icon, current, line, onclick, lead = '', parts, tail, badge, room, picture }: {
         name: string;
         /** The name of an icon of `Icon.svelte`, before the name. */
         icon?: string;
         current: boolean;
+        /** The id of the lead line of the row on the map: the row and its lines light together. */
+        line?: string;
         onclick: () => void;
         /** The second line, written when `parts` is given: `lead` (such as a date), each part in its own span, so the
          * line wraps between two parts and never inside one, then `tail` as plain text. */
@@ -39,7 +41,7 @@
     }
 </script>
 
-<button type="button" class="row" aria-current={current} {onclick} use:watch>
+<button type="button" class="row" aria-current={current} data-line={line} {onclick} use:watch>
     <span class="thumb">{#if near}{@render picture()}{/if}</span>
     <span class="text">
         <strong>{#if icon}<span class="icon"><Icon name={icon} size={16} /></span>{/if}{name}</strong>
@@ -68,7 +70,8 @@
     .row:focus-visible {
         outline-offset: -2px;
     }
-    .row:hover {
+    /* `data-hover`: the pointer is on a line of the row on the map, or a key focused the row. The frame sets it. */
+    .row:hover, .row:global([data-hover]) {
         background: var(--parchment);
     }
     .row[aria-current="true"] {
