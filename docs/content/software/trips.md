@@ -69,8 +69,8 @@ column. A row above the open profile holds the start date and the kinds of place
 A guessed value has a dashed line, and a value that the rider set has a solid line. The planner
 guesses the day count from the riding time at the plan's pace. After each route or pace change, it
 guesses the count and the suggested nights again. Pinned nights and a set day count stay. When the
-guess has fewer nights, what the rider set on a lost night goes with it; Undo brings it back. A bar for the riding time of each day
-shows the hard days.
+guess has fewer nights, what the rider set on a lost night goes with it; Undo brings it back. A bar
+for the riding time of each day shows the hard days.
 
 "Choose" or "Change" on a night, or its marker in the profile, opens the night in the day list.
 "Stay here" on a town moves the night there, and so does a drag of the day end. "Stay here" on a
