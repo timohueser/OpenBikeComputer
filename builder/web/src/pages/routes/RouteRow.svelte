@@ -55,7 +55,7 @@
 <style>
     .row {
         display: grid;
-        grid-template-columns: 150px minmax(0, 1fr);
+        grid-template-columns: var(--row-picture-width) minmax(0, 1fr);
         align-items: start;
         gap: 14px;
         width: 100%;
@@ -78,7 +78,7 @@
         background: var(--parchment-2);
     }
     .thumb {
-        height: 100px;
+        height: var(--row-picture-height);
         overflow: hidden;
         border-radius: 6px;
         background: var(--parchment-2);
@@ -138,11 +138,7 @@
     }
     @media (max-width: 760px) {
         .row {
-            grid-template-columns: 120px minmax(0, 1fr);
             gap: 10px;
-        }
-        .thumb {
-            height: 80px;
         }
     }
 </style>

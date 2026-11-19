@@ -24,6 +24,16 @@
     --link: var(--forest);
     /* The fill of a highlighted place on a map. */
     --place-disc: var(--rust);
+    /* The picture box of a list row; the row image of a cover is sized for it. */
+    --row-picture-width: 150px;
+    --row-picture-height: 100px;
+}
+
+@media (max-width: 760px) {
+    :root {
+        --row-picture-width: 120px;
+        --row-picture-height: 80px;
+    }
 }
 
 :root[data-theme="dark"] {

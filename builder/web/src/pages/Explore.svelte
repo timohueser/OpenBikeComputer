@@ -366,7 +366,7 @@
                     <li>
                         <RouteRow name={item.name} current={item.id === currentId} line={item.id} onclick={() => select(item.id)}
                             parts={item.kind === 'trail' ? trailParts(item.entry) : signedNumbers(item.record)}>
-                            {#snippet picture()}<SignedPicture {item} {oncover} small />{/snippet}
+                            {#snippet picture()}<SignedPicture {item} {oncover} row />{/snippet}
                         </RouteRow>
                     </li>
                 {:else}
@@ -498,10 +498,11 @@
         border-top: 1px solid var(--line);
         list-style: none;
     }
-    /* A row outside the list box skips its layout and paint. It keeps the height that it had, else that of a name of one line. */
+    /* A row outside the list box skips its layout and paint. It keeps the height that it had, else that of its picture
+       box and the 7 px padding of `RouteRow` above and below. */
     li {
         content-visibility: auto;
-        contain-intrinsic-size: auto 60px;
+        contain-intrinsic-size: auto calc(var(--row-picture-height) + 14px);
     }
     li.note {
         padding: 6px;
@@ -511,13 +512,13 @@
     }
     .waiting li {
         display: grid;
-        grid-template-columns: 72px 1fr;
+        grid-template-columns: var(--row-picture-width) 1fr;
         align-items: center;
         gap: 12px;
         padding: 6px;
     }
     .waiting .thumb {
-        height: 48px;
+        height: var(--row-picture-height);
         border-radius: 6px;
         background: var(--parchment-2);
     }
@@ -532,11 +533,7 @@
             max-height: 60vh;
         }
         .waiting li {
-            grid-template-columns: 64px 1fr;
             gap: 10px;
-        }
-        .waiting .thumb {
-            height: 44px;
         }
     }
 </style>
