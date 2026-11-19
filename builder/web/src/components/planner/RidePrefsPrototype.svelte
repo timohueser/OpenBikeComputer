@@ -8,12 +8,14 @@
     import type { Trip } from '../../lib/planner/editor';
     import { regionProfiles } from '../../lib/planner/routing';
 
-    let { trip, onChange, inline = false, compact = false }: {
+    let { trip, onChange, inline = false, compact = false, noType = false }: {
         trip: Trip;
         onChange: (change: Partial<Trip>, description: string) => void;
         inline?: boolean;
         /** Only the icon and the activity on the button. */
         compact?: boolean;
+        /** PROTOTYPE: the type has another home. */
+        noType?: boolean;
     } = $props();
 
     const bike = $derived(trip.bike ?? 'touring');
@@ -50,9 +52,11 @@
     </button>
     {#if open}
         <div class="panel" role={inline ? 'group' : 'dialog'} aria-label="Route preferences">
+            {#if !noType}
             <span>Plan</span>
             <Select label="Plan type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Route' }]}
                 onChange={(mode) => onChange({ mode: mode as Trip['mode'] }, mode === 'route' ? 'Route' : 'Multi-day trip')} />
+            {/if}
             <span>Activity</span>
             <Select label="Activity" value={bike} options={activities.map(([value, profile]) => ({ value, label: profile.label, icon: profile.icon }))} onChange={(value) => {
                 const next = value as BikeType;

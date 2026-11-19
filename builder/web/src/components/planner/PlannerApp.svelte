@@ -8,6 +8,7 @@
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
     import RidePrefs from './RidePrefsPrototype.svelte';
+    import TypeProto from './TypeProto.svelte';
     import SaveWindow, { type SaveAnswer, type SaveMode } from './SaveWindow.svelte';
     import Itinerary from './Itinerary.svelte';
     import RouteList from './RouteList.svelte';
@@ -480,6 +481,13 @@
 
     // PROTOTYPE: `?bar=C` puts the route preferences at the head of the side panel.
     const protoBar = new URLSearchParams(location.search).get('bar');
+    // PROTOTYPE: `?type=T1|T2|T3` selects a home for the choice between a one-day route and a multi-day trip.
+    const protoType = new URLSearchParams(location.search).get('type');
+
+    async function newOfMode(mode: Trip['mode']) {
+        await newPlan();
+        if (trip.mode !== mode) changeTrip({ mode }, mode === 'route' ? 'One-day route' : 'Multi-day trip');
+    }
 
     async function openLibrary() {
         libraryOpen = true;
@@ -1143,7 +1151,21 @@
     <TripBar
         {trip} name={session.plan.name} stored={session.stored} changed={session.changed} canSave={session.canSave} ready={session.ready && !session.busy}
         canUndo={session.canUndo} canRedo={session.canRedo} onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onLibrary={openLibrary}
-        onSave={save} onRename={renameRoute} more={[
+        onSave={save} onRename={renameRoute} more={protoType === 'T3' ? [
+            { label: 'New route', disabled: !trip.points.length, run: () => newOfMode('route') },
+            { label: 'New multi-day trip', disabled: !trip.points.length, run: () => newOfMode('trip') },
+            { label: multi ? 'Change to one-day route' : 'Change to multi-day trip', rule: true, disabled: !trip.points.length,
+                run: () => changeTrip({ mode: multi ? 'route' : 'trip' }, multi ? 'One-day route' : 'Multi-day trip') },
+            { label: 'Open route…', rule: true, run: openLibrary },
+            { label: 'Save a copy…', rule: true, disabled: !trip.points.length, run: saveCopy },
+            { label: 'Discard changes', disabled: !session.changed, run: discard },
+            { label: 'Compare routes…', rule: true, run: compare },
+        ] : protoType ? [
+            { label: 'Open route…', run: openLibrary },
+            { label: 'Save a copy…', rule: true, disabled: !trip.points.length, run: saveCopy },
+            { label: 'Discard changes', disabled: !session.changed, run: discard },
+            { label: 'Compare routes…', rule: true, run: compare },
+        ] : [
             { label: 'Save a copy…', disabled: !trip.points.length, run: saveCopy },
             { label: 'Discard changes', disabled: !session.changed, run: discard },
             { label: 'Compare routes…', rule: true, run: compare },
@@ -1159,7 +1181,7 @@
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
             <Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} />
-            {#if protoBar === 'C' && !searching}<div class="proto-prefs"><RidePrefs {trip} onChange={changeTrip} inline /></div>{/if}
+            {#if protoBar === 'C' && !searching}<div class="proto-prefs"><RidePrefs {trip} onChange={changeTrip} inline noType={!!protoType} /></div>{/if}
             {#if exploreBack && hasEndpoints && !searching}
                 <button type="button" class="back-to-routes" onclick={() => router.go(ROUTES.explore, { explore: exploreBack })}><Icon name="back" size={15} />Find another route</button>
             {/if}
@@ -1214,6 +1236,9 @@
                     </div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
+                    {#if (protoType === 'T1' || protoType === 'T2') && list === 'plan' && !focusedDay}
+                    <TypeProto variant={protoType} {trip} line={session.line} onChange={changeTrip} onPlan={changePlan} />
+                {/if}
                     {#if list === 'ways'}
                         <CompareList label="Route options" rows={optionRows} status={options.state === 'ready' ? null : options.state === 'error' ? options.message : optionStatus[options.state]}
                             retry={options.state === 'error' ? () => session.findAlternatives() : undefined} applyLabel="Use this route" previewId={session.compared?.id ?? null}

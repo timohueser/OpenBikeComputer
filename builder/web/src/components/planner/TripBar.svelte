@@ -42,7 +42,9 @@
     // PROTOTYPE: `?bar=A|B|C` selects a direction for the trip bar.
     const bar = new URLSearchParams(location.search).get('bar');
     const newItem = $derived({ label: `New ${trip.mode === 'route' ? 'route' : 'trip'}`, disabled: !ready || !trip.points.length, run: onNew });
-    const moreItems = $derived([newItem, { ...more[0], rule: true }, ...more.slice(1)]);
+    const typeProto = new URLSearchParams(location.search).get('type');
+    // With `?type=`, "New route" and "Open route…" follow the owner's choice: the page gives the whole menu but "New".
+    const moreItems = $derived(typeProto === 'T3' ? more : typeProto ? [{ ...newItem, label: 'New route' }, { ...more[0], rule: true }, ...more.slice(1)] : [newItem, { ...more[0], rule: true }, ...more.slice(1)]);
     const titleItems = $derived([
         { label: 'Rename…', disabled: !stored, run: onRename },
         { ...newItem, rule: true },
