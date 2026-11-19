@@ -42,7 +42,7 @@
 <div class="trip-bar" inert={!ready}>
     <div class="trip-name">
         <h1>{#if stored}<button type="button" class="rename" {title} aria-haspopup="dialog" onclick={onRename}>{title}</button>{:else}<span {title}>{title}</span>{/if}</h1>
-        <Select label="Plan type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Route' }]}
+        <Select label="Type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Route' }]}
             onChange={(mode) => onChange({ mode: mode as Trip['mode'] }, mode === 'route' ? 'Route' : 'Multi-day trip')} />
     </div>
     <div class="ride">
@@ -65,7 +65,7 @@
         <button type="button" class="planner-action quiet" disabled={!ready || !trip.points.length} onclick={onNew}>New {trip.mode === 'route' ? 'route' : 'trip'}</button>
         <button type="button" class="icon" disabled={!canUndo} onclick={onUndo} aria-label="Undo" title="Undo"><Icon name="undo" /></button>
         <button type="button" class="icon" disabled={!canRedo} onclick={onRedo} aria-label="Redo" title="Redo"><Icon name="redo" /></button>
-        <button type="button" class="planner-action" disabled={!ready} onclick={onLibrary}>My plans</button>
+        <button type="button" class="planner-action" disabled={!ready} onclick={onLibrary}>My routes</button>
         <div class="save">
             <!-- One button that stays in the page, so it keeps the focus after a save. -->
             <button type="button" class={saved ? 'saved' : 'planner-action primary'} aria-disabled={!ready || !canSave}

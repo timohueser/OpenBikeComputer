@@ -115,7 +115,7 @@ const shapeLabel = 'Shaping point';
 export function planTitle(trip: Trip): string {
     const start = trip.points.find(p => p.kind === 'start'), finish = trip.points.find(p => p.kind === 'finish');
     return trip.name ? trip.name : start && trip.loop ? `Loop from ${start.label}` : start && finish ? `${start.label} → ${finish.label}`
-        : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New plan';
+        : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New route';
 }
 
 /** A start, and a finish or a loop: enough points for a route. */
@@ -475,7 +475,7 @@ export function repartitionDays(trip: Trip, line: RoutingLine | undefined, [from
     const { days, total } = planView(trip, line);
     const ends = [...days.slice(0, -1).map(d => d.to * total).filter(k => k <= from + 1e-6 || k >= to - 1e-6), ...boundaries];
     ends.sort((a, b) => a - b);
-    if (ends.length >= maxRidingDays) throw new Error(`The plan can have at most ${maxRidingDays} riding days.`);
+    if (ends.length >= maxRidingDays) throw new Error(`A trip can have up to ${maxRidingDays} riding days.`);
     return { ...setDays(trip, ends.length + 1), mode: 'trip',
         splits: Object.fromEntries(ends.map((km, i) => [i + 1, km / total])) };
 }

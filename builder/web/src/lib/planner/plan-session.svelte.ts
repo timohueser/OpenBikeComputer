@@ -36,8 +36,8 @@ const lineLimit = 10;
 
 function storageError(error: unknown): string {
     if (error instanceof Error && error.name === 'QuotaExceededError') return 'Browser storage is full. Delete routes you do not need, then save again.';
-    if (error instanceof Error && error.name === OUTDATED) return 'The app was updated in another tab. Download the plan to keep your changes, then reload.';
-    return error instanceof Error ? error.message : 'Could not save in this browser. Download your plan and try again.';
+    if (error instanceof Error && error.name === OUTDATED) return 'The app was updated in another tab. Download the plan file to keep your changes, then reload.';
+    return error instanceof Error ? error.message : 'Could not save in this browser. Download the plan file and try again.';
 }
 
 /** The `sessionStorage` key of the id of the route whose draft this tab writes. A reload, and a tab that the browser
@@ -406,7 +406,7 @@ export class PlanSession {
     open(id: string): Promise<boolean> {
         return this.act(async library => {
             const latest = await this.get(library, id);
-            if (!latest) throw new Error('This plan was deleted. Reopen My plans.');
+            if (!latest) throw new Error('This route was deleted. Reopen My routes.');
             const offer = await this.offered(library, id);
             await library.setState('active', latest.id);
             this.install(latest, true, undefined, offer);
@@ -421,7 +421,7 @@ export class PlanSession {
         });
     }
 
-    /** Stores a copy of the stored record `plan`, also when it is open with changes: "My plans" shows the stored route. */
+    /** Stores a copy of the stored record `plan`, also when it is open with changes: "My routes" shows the stored route. */
     duplicate(plan: Plan): Promise<boolean> {
         return this.create(() => ({ ...newPlan(plan.trip, `${plan.name || planTitle(plan.trip)} (copy)`), summary: plan.summary }));
     }
@@ -580,7 +580,7 @@ export class PlanSession {
     private write<T>(work: (library: Library) => Promise<T>, clears = true): Promise<T> {
         const id = this.plan.id;
         if (!this.library) {
-            this.saveError = 'Browser storage is unavailable. Download your plan to keep it.';
+            this.saveError = 'Browser storage is unavailable. Download the plan file to keep your route.';
             return Promise.reject(new Error(this.saveError));
         }
         const result = work(this.library);
@@ -606,7 +606,7 @@ export class PlanSession {
         this.busy = true;
         this.libraryError = '';
         try {
-            if (!this.library) throw new Error('Browser storage is unavailable. Download your plan to keep it.');
+            if (!this.library) throw new Error('Browser storage is unavailable. Download the plan file to keep your route.');
             await this.saving;
             return await work(this.library) !== false;
         } catch (error) {
@@ -640,7 +640,7 @@ export class PlanSession {
 
     private async get(library: Library, id: string): Promise<Plan | undefined> {
         const route = await library.route(id);
-        if (route && !isPlan(route)) throw new Error('Saved plan is invalid. Open another plan or import a backup.');
+        if (route && !isPlan(route)) throw new Error('Saved route is invalid. Open another route or import a backup.');
         return route;
     }
 

@@ -19,7 +19,7 @@ async function start(page) {
     return response ? route.fulfill(response) : route.abort();
   });
   await page.goto('/planner.html#/planner');
-  await expect(page.getByRole('button', { name: 'My plans', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'My routes', exact: true })).toBeEnabled();
 }
 
 async function importFile(page, file) {
@@ -39,9 +39,9 @@ const records = (page, store) => page.evaluate(store => new Promise((resolve, re
 
 const saveButton = page => page.locator('.trip-bar .save > button');
 const dialog = page => page.getByRole('dialog');
-/** A change of the open route that needs no map: its plan type. */
+/** A change of the open route that needs no map: its type. */
 async function changeType(page, type) {
-  await page.getByRole('combobox', { name: 'Plan type', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Type', exact: true }).click();
   await page.getByRole('option', { name: type, exact: true }).click();
 }
 async function more(page, item) {
@@ -49,34 +49,34 @@ async function more(page, item) {
   await page.getByRole('button', { name: item, exact: true }).click();
 }
 
-const library = page => page.getByRole('region', { name: 'My plans', exact: true });
+const library = page => page.getByRole('region', { name: 'My routes', exact: true });
 const row = (page, name) => library(page).locator('li').filter({ has: page.locator('strong').filter({ hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }) });
 
 test('plans survive new, switch and reload, and a downloaded file opens again', async ({ page }, testInfo) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await start(page);
-  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await page.getByRole('button', { name: 'My routes', exact: true }).click();
   await expect(library(page)).toContainText('Saved in this browser');
   await importFile(page, planFile('Weekend tour'));
   await expect(row(page, 'Weekend tour')).toBeVisible();
-  await library(page).getByRole('button', { name: 'Close My plans' }).click();
+  await library(page).getByRole('button', { name: 'Close My routes' }).click();
   await page.getByRole('button', { name: 'New route', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'New plan', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'New route', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await page.getByRole('button', { name: 'My routes', exact: true }).click();
   await expect(library(page).locator('li')).toHaveCount(1);
   await importFile(page, planFile('Next ride'));
   await expect(library(page).locator('li')).toHaveCount(2);
   await row(page, 'Next ride').getByRole('button', { name: 'Rename', exact: true }).click();
-  await page.getByRole('textbox', { name: 'Plan name' }).fill('Autumn ride');
+  await page.getByRole('textbox', { name: 'Route name' }).fill('Autumn ride');
   await library(page).locator('form').getByRole('button', { name: 'Rename', exact: true }).click();
   await expect(row(page, 'Autumn ride')).toBeVisible();
   await row(page, 'Weekend tour').getByRole('button', { name: /^Weekend tour/ }).click();
   await expect(page.getByRole('heading', { name: 'Weekend tour', exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Weekend tour', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await page.getByRole('button', { name: 'My routes', exact: true }).click();
   const downloadEvent = page.waitForEvent('download');
   await row(page, 'Weekend tour').getByRole('button', { name: 'Download', exact: true }).click();
   const download = await downloadEvent;
@@ -94,7 +94,7 @@ test('plans survive new, switch and reload, and a downloaded file opens again', 
   page.once('dialog', dialog => dialog.accept());
   await row(page, 'Weekend tour (copy)').getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(library(page).locator('li')).toHaveCount(2);
-  await expect(page.getByRole('heading', { name: 'New plan', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'New route', exact: true })).toBeVisible();
   await importFile(page, backup);
   await expect(library(page).locator('li')).toHaveCount(3);
   await expect(page.getByRole('heading', { name: 'Weekend tour', exact: true })).toBeVisible();
@@ -105,14 +105,14 @@ test('GPX files open as a new trip with a transfer and leave the open plan in th
   const gpx = (name, line) => ({ name, mimeType: 'application/gpx+xml', buffer: Buffer.from(`<gpx><trk><name>${name.replace('.gpx', '')} ride</name><trkseg>${
     line.map(([lon, lat]) => `<trkpt lat="${lat}" lon="${lon}"/>`).join('')}</trkseg></trk></gpx>`) });
   await start(page);
-  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await page.getByRole('button', { name: 'My routes', exact: true }).click();
   await importFile(page, planFile('Keep me'));
   await page.getByLabel('Import plan or GPX files').setInputFiles([
     gpx('north.gpx', [[7.8, 48], [7.82, 48.01], [7.85, 48]]), gpx('south.gpx', [[7.9, 47.95], [7.92, 47.96]])]);
   await expect(library(page).getByRole('region', { name: 'Import GPX' })).toContainText('New trip · 2 days');
   await page.getByRole('button', { name: "Keep the file's line", exact: true }).click();
   await expect(page.getByRole('heading', { name: 'north ride', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await page.getByRole('button', { name: 'My routes', exact: true }).click();
   await expect(library(page).locator('li')).toHaveCount(2);
   await expect(row(page, 'north ride')).toContainText('2 days · 6.2 km');
   await expect(row(page, 'Keep me')).toBeVisible();
@@ -120,32 +120,32 @@ test('GPX files open as a new trip with a transfer and leave the open plan in th
 
 test('invalid imports and failed writes preserve the open plan and offer a download', async ({ page }) => {
   await start(page);
-  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await page.getByRole('button', { name: 'My routes', exact: true }).click();
   await importFile(page, planFile('Keep me'));
   await expect(row(page, 'Keep me')).toBeVisible();
   await importFile(page, { ...planFile('Broken'), trip: {} });
   await expect(library(page).getByRole('alert')).toContainText('invalid plan');
   await expect(library(page).locator('li')).toHaveCount(1);
   await expect(page.getByRole('heading', { name: 'Keep me', exact: true })).toBeVisible();
-  await library(page).getByRole('button', { name: 'Close My plans' }).click();
+  await library(page).getByRole('button', { name: 'Close My routes' }).click();
   await page.evaluate(() => {
     const put = IDBObjectStore.prototype.put;
     globalThis.restorePlanWrites = () => { IDBObjectStore.prototype.put = put; };
     IDBObjectStore.prototype.put = function () { throw new DOMException('Full', 'QuotaExceededError'); };
   });
   await changeType(page, 'Multi-day trip');
-  await expect(page.getByRole('button', { name: 'Download plan', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download plan file', exact: true })).toBeVisible();
   await expect(page.locator('.status-line')).toContainText('Browser storage is full. Delete routes you do not need, then save again.');
   await saveButton(page).click();
-  await expect(page.getByRole('button', { name: 'Download plan', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download plan file', exact: true })).toBeVisible();
   await expect(saveButton(page)).toHaveText('Save');
   await page.evaluate(() => globalThis.restorePlanWrites());
   await saveButton(page).click();
   await expect(saveButton(page)).toHaveText('Saved');
-  await expect(page.getByRole('button', { name: 'Download plan', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Download plan file', exact: true })).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Keep me', exact: true })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Plan type' })).toContainText('Multi-day trip');
+  await expect(page.getByRole('combobox', { name: 'Type' })).toContainText('Multi-day trip');
 });
 
 test('a new route is stored only at Save, with the name of the window, and a reload continues its changes', async ({ page }) => {
@@ -183,7 +183,7 @@ test('a new route is stored only at Save, with the name of the window, and a rel
   await expect(saveButton(page)).toHaveText('Save');
   await expect.poll(async () => (await records(page, 'drafts')).map(draft => draft.trip.mode)).toEqual(['trip']);
   await page.reload();
-  await expect(page.getByRole('combobox', { name: 'Plan type' })).toContainText('Multi-day trip');
+  await expect(page.getByRole('combobox', { name: 'Type' })).toContainText('Multi-day trip');
   await expect(saveButton(page)).toHaveText('Save');
   expect((await records(page, 'routes'))[0].trip.mode).toBe('route');
   await page.getByRole('button', { name: 'Undo', exact: true }).click();
@@ -193,14 +193,14 @@ test('a new route is stored only at Save, with the name of the window, and a rel
 
 test('before another route opens, the question keeps the route at Cancel, its draft at Discard, and stores it at Save', async ({ page }) => {
   await start(page);
-  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await page.getByRole('button', { name: 'My routes', exact: true }).click();
   await importFile(page, planFile('First'));
   await importFile(page, planFile('Second'));
   await row(page, 'First').getByRole('button', { name: /^First/ }).click();
   await expect(page.getByRole('heading', { name: 'First', exact: true })).toBeVisible();
   await changeType(page, 'Multi-day trip');
   const openSecond = async () => {
-    await page.getByRole('button', { name: 'My plans', exact: true }).click();
+    await page.getByRole('button', { name: 'My routes', exact: true }).click();
     await row(page, 'Second').getByRole('button', { name: /^Second/ }).click();
     await expect(dialog(page).getByRole('heading')).toHaveText('Save changes to ‘First’?');
     await expect(dialog(page).getByRole('button', { name: 'Save', exact: true })).toBeFocused();
@@ -219,7 +219,7 @@ test('before another route opens, the question keeps the route at Cancel, its dr
   expect((await first()).trip.mode).toBe('route');
   expect((await records(page, 'drafts')).map(draft => draft.trip.mode)).toEqual(['trip']);
 
-  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await page.getByRole('button', { name: 'My routes', exact: true }).click();
   await row(page, 'First').getByRole('button', { name: /^First/ }).click();
   await expect(saveButton(page)).toHaveText('Saved');
   await changeType(page, 'Multi-day trip');
@@ -232,9 +232,9 @@ test('before another route opens, the question keeps the route at Cancel, its dr
 
 test('"Save a copy…" stores the changes as a new route, and "Discard changes" has Undo', async ({ page }) => {
   await start(page);
-  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await page.getByRole('button', { name: 'My routes', exact: true }).click();
   await importFile(page, planFile('First'));
-  await library(page).getByRole('button', { name: 'Close My plans' }).click();
+  await library(page).getByRole('button', { name: 'Close My routes' }).click();
   await changeType(page, 'Multi-day trip');
   await more(page, 'Save a copy…');
   await expect(dialog(page).getByRole('heading')).toHaveText('Save a copy');
@@ -247,32 +247,32 @@ test('"Save a copy…" stores the changes as a new route, and "Discard changes" 
 
   await changeType(page, 'Route');
   await more(page, 'Discard changes');
-  await expect(page.getByRole('combobox', { name: 'Plan type' })).toContainText('Multi-day trip');
+  await expect(page.getByRole('combobox', { name: 'Type' })).toContainText('Multi-day trip');
   await expect(saveButton(page)).toHaveText('Saved');
   await expect(page.locator('.status-line')).toContainText('Changes discarded');
   await page.locator('.status-line').getByRole('button', { name: 'Undo', exact: true }).click();
-  await expect(page.getByRole('combobox', { name: 'Plan type' })).toContainText('Route');
+  await expect(page.getByRole('combobox', { name: 'Type' })).toContainText('Route');
   await expect(saveButton(page)).toHaveText('Save');
 });
 
 
 test('a new page shows the stored route with a reminder of the changes of another page, and Restore and the Undo of "×" bring them back', async ({ page, context }) => {
   await start(page);
-  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await page.getByRole('button', { name: 'My routes', exact: true }).click();
   await importFile(page, planFile('First'));
-  await library(page).getByRole('button', { name: 'Close My plans' }).click();
+  await library(page).getByRole('button', { name: 'Close My routes' }).click();
   await changeType(page, 'Multi-day trip');
   await expect.poll(async () => (await records(page, 'drafts')).map(draft => draft.trip.mode)).toEqual(['trip']);
 
   const next = await context.newPage();
   await start(next);
   await expect(next.getByRole('heading', { name: 'First', exact: true })).toBeVisible();
-  await expect(next.getByRole('combobox', { name: 'Plan type' })).toContainText('Route');
+  await expect(next.getByRole('combobox', { name: 'Type' })).toContainText('Route');
   await expect(saveButton(next)).toHaveText('Saved');
   const status = next.locator('.status-line');
   await expect(status).toContainText(/Unsaved changes from Today \d/);
   await status.getByRole('button', { name: 'Restore', exact: true }).click();
-  await expect(next.getByRole('combobox', { name: 'Plan type' })).toContainText('Multi-day trip');
+  await expect(next.getByRole('combobox', { name: 'Type' })).toContainText('Multi-day trip');
   await expect(saveButton(next)).toHaveText('Save');
   await expect(status.getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
 
@@ -283,6 +283,6 @@ test('a new page shows the stored route with a reminder of the changes of anothe
   await expect(line).toContainText('Earlier unsaved changes discarded');
   await expect.poll(() => records(third, 'drafts')).toEqual([]);
   await line.getByRole('button', { name: 'Undo', exact: true }).click();
-  await expect(third.getByRole('combobox', { name: 'Plan type' })).toContainText('Multi-day trip');
+  await expect(third.getByRole('combobox', { name: 'Type' })).toContainText('Multi-day trip');
   await expect(line).not.toContainText('Earlier unsaved changes discarded');
 });
