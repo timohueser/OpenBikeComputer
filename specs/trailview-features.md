@@ -551,10 +551,10 @@ The bake selects a part for each opening of a tunnel and writes it as the kinds 
 of the step: per group of road classes `look`, `collar_max_m`, `wing_max_m` and `least_height_m`, and the values of
 `bake`. The values below are those names.
 
-A chain is a run of tunnel ways that meet end to end, as the levels walk them from each tag end (see Structures). Only
-the ways of the kind `tunnel` belong to a chain: a shallow tunnel lies on the ground in the ground plan, so a chain
-stops at it. A chain end opens where no other way of the kind `tunnel` has a vertex at its end vertex; else the tube
-goes on in the hill there and that end has no opening. The tube is the curve of the chain's ways (at most 10 m between
+A chain is a run of the ways of the kind `tunnel` that meet end to end: it goes on through each vertex where the
+ends of two such ways meet and no other such way has a vertex. A shallow tunnel lies on the ground in the ground plan
+and belongs to no chain. A chain end opens where no other way of the kind `tunnel` has a vertex at its end vertex;
+else the tube goes on in the hill there and that end has no opening. The tube is the curve of the chain's ways (at most 10 m between
 vertices), joined. Its section is that of its widest way: `half` is the way's half-width with its widening and
 `margin_m` (`margin_narrow_m` where the bore is 3 m or less), `height` is its bore.
 
