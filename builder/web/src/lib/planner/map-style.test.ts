@@ -89,6 +89,18 @@ describe('planner land use style', () => {
         expect(drawn('earth', 'cliff').map((layer) => layer.id)).toEqual(['cliffs', 'cliff-teeth']);
         expect(drawn('roads', 'ferry').map((layer) => layer.id)).toEqual(['ferries']);
     });
+
+    it('draws cable cars over the bridges and under the labels', async () => {
+        const { layers } = await landLayers('light');
+        const ids = layers.map((layer) => layer.id);
+        const cableCars = layers.filter((layer) => 'source-layer' in layer && layer['source-layer'] === 'roads'
+            && JSON.stringify(layer.filter) === JSON.stringify(['==', ['get', 'kind'], 'aerialway']));
+        expect(cableCars.map((layer) => layer.id)).toEqual(['cable-cars', 'cable-car-ticks']);
+        for (const layer of cableCars) {
+            expect(ids.indexOf(layer.id)).toBeGreaterThan(ids.indexOf('roads_bridges_highway'));
+            expect(ids.indexOf(layer.id)).toBeLessThan(layers.findIndex((other) => other.type === 'symbol'));
+        }
+    });
 });
 
 describe('planner label fonts', () => {
