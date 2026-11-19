@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Explore day hikes</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;600;700&family=Atkinson+Hyperlegible+Mono:wght@700&display=swap">
+<link rel="stylesheet" href="shared.css">
+</head>
+<body>
+
+<header class="bar">
+    <div class="brand"><svg viewBox="0 0 128 128" aria-hidden="true"><rect width="128" height="128" fill="#f4f2eb"/><g transform="translate(6.5 8.8) scale(1.15)"><path fill="#5c5a2e" d="M44 10H56V91H44Z"/><path fill="#f4a81d" d="M13.1 26.4 27.8 16.4 78.7 20 77.2 41.9 26.3 38.4Z"/><path fill="#f4a81d" d="M21.3 54 73.2 50.4 87.9 60.3 74.7 72.3 22.8 75.9Z"/></g></svg><span>OpenBikeComputer</span></div>
+    <nav aria-label="Pages of the app, not active in this mock"><span>Planner</span><span>Routes</span><span aria-current="page">Explore</span><span>Device</span></nav>
+</header>
+<main class="page">
+    <h1 class="sr">Explore day hikes</h1>
+    <section class="side" aria-labelledby="filters-title">
+        <div class="side-top"><h2 id="filters-title">Filters</h2><button type="button" class="text-button" id="reset">Reset</button></div>
+        <div class="scroll"><div class="filters" id="filters"></div></div>
+        <button type="button" class="button primary show-results" id="show"></button>
+    </section>
+    <section class="geo" id="geo" aria-label="Map and hikes">
+        <div class="map" id="map"></div>
+        <div class="split" id="split" role="separator" tabindex="0" aria-label="Height of the hike list" aria-orientation="horizontal" aria-controls="results"></div>
+        <div class="results" id="results">
+            <div class="results-top" id="results-top"><h2 class="count" id="count" aria-live="polite"></h2><p class="query" id="query"></p></div>
+            <div class="scroll" id="list"><table id="table">
+                <thead><tr>
+                    <th scope="col">Hike</th>
+                    <th scope="col" class="num" data-col="short"><button type="button" data-sort="short">Length</button></th>
+                    <th scope="col" class="num c-climb" data-col="climb"><button type="button" data-sort="climb">Climb</button></th>
+                    <th scope="col" class="num c-time" data-col="time"><button type="button" data-sort="time">Time</button></th>
+                    <th scope="col" class="c-grade">Grade</th>
+                    <th scope="col" class="c-acc" data-col="near"><button type="button" data-sort="near">Getting there</button></th>
+                    <th scope="col" class="c-wish" data-col="match"><button type="button" data-sort="match"><span class="long">Your wishes</span><span class="short">Wishes</span></button></th>
+                </tr></thead>
+                <tbody id="rows"></tbody>
+            </table></div>
+        </div>
+    </section>
+</main>
+
+<script src="engine.js"></script>
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const { icon, fmt } = OBC;
+OBC.mountFilters($('filters'));
+OBC.mountMap($('map'));
+for (const b of document.querySelectorAll('[data-sort]')) b.insertAdjacentHTML('beforeend', icon('down', 14));
+
+// The wishes of a row in fixed slots, so each wish keeps its column: filled when the hike has it, faint when not.
+function wishCells(r) {
+    const met = new Set(r.met), keys = OBC.niceWishes();
+    const cells = keys.map(k => `<span class="w${met.has(k) ? ' on' : ''}" title="${met.has(k) ? 'Has' : 'Missing'}: ${OBC.wishLabel(k)}">${icon(OBC.wishIcon(k), 15)}</span>`).join('');
+    return `<span class="wl" aria-hidden="true">${cells}</span><span class="sr">${r.met.length} of ${keys.length} wishes</span>`;
+}
+// Scroll only the list, never the page, to show a row.
+function reveal(id) {
+    const list = $('list'), tr = list.querySelector(`tr[data-id="${id}"]`);
+    if (!tr || list.scrollHeight <= list.clientHeight) return;
+    const head = list.querySelector('thead').offsetHeight, top = tr.offsetTop - head, bottom = tr.offsetTop + tr.offsetHeight + (tr.nextElementSibling?.matches('.more') ? tr.nextElementSibling.offsetHeight : 0);
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = Math.min(top, bottom - list.clientHeight);
+}
+OBC.page = {
+    reveal,
+    render(found) {
+        const s = OBC.state, steps = r => OBC.accessSteps(r.acc[0], r.h);
+        $('count').textContent = OBC.countText(found.length);
+        $('show').textContent = 'Show ' + OBC.countText(found.length);
+        $('query').innerHTML = OBC.queryHtml();
+        $('query').title = $('query').textContent;
+        $('reset').disabled = OBC.isFresh();
+        $('table').classList.toggle('no-wishes', !OBC.niceWishes().length);
+        for (const th of document.querySelectorAll('th[data-col]')) th.dataset.col === s.sort ? th.setAttribute('aria-sort', s.sort === 'match' ? 'descending' : 'ascending') : th.removeAttribute('aria-sort');
+        $('rows').innerHTML = found.length ? found.map(r => {
+            const h = r.h, open = s.selected === h.id;
+            return `<tr class="hike-row${open ? ' open' : ''}" data-id="${h.id}"${s.hover === h.id ? ' data-hover' : ''}>
+                <td><button type="button" class="name" aria-expanded="${open}"><span class="swatch" style="--c:${h.c}"></span><span class="nm"><strong>${h.n}</strong>${h.made ? '<span class="ours">Our loop</span>' : ''}<span class="sub"><span>T${h.t} · ${h.time}</span><span class="acc">${steps(r)}</span></span></span></button></td>
+                <td class="num">${h.km} km<span class="up">${fmt(h.up)} m up</span></td><td class="num c-climb">${fmt(h.up)} m</td><td class="num c-time">${h.time}</td><td class="c-grade">T${h.t}</td>
+                <td class="c-acc"><span class="acc">${steps(r)}</span></td><td class="c-wish">${wishCells(r)}</td></tr>${open ? `<tr class="more"><td colspan="7">${OBC.detailHtml(r)}</td></tr>` : ''}`;
+        }).join('') : `<tr><td colspan="7">${OBC.emptyHtml()}</td></tr>`;
+        if (s.selected !== null) reveal(s.selected);
+    },
+};
+$('rows').addEventListener('click', e => {
+    if (e.target.closest('tr.more')) return;
+    const tr = e.target.closest('tr[data-id]'); if (tr) OBC.update({ selected: OBC.state.selected === +tr.dataset.id ? null : +tr.dataset.id });
+});
+$('rows').addEventListener('pointerover', e => { const tr = e.target.closest('tr[data-id]'); OBC.hover(tr ? +tr.dataset.id : null); });
+$('rows').addEventListener('pointerleave', () => OBC.hover(null));
+document.querySelector('thead').addEventListener('click', e => { const b = e.target.closest('[data-sort]'); if (b) OBC.update({ sort: b.dataset.sort }); });
+$('reset').addEventListener('click', OBC.reset);
+$('show').addEventListener('click', () => $('geo').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
+
+// The height of the results, set with the handle like the planner's elevation drawer: arrow keys step 16 px, Home and End go to the ends,
+// and below the open minimum it closes to the count line. Each viewer keeps their height.
+const split = $('split'), geo = $('geo'), KEY = 'explore-results-height', MIN_OPEN = 150, MIN_MAP = 160;
+const closed = () => $('results-top').offsetHeight;
+const max = () => Math.max(MIN_OPEN, geo.clientHeight - split.offsetHeight - MIN_MAP);
+let height = null;
+try { height = +localStorage.getItem(KEY) || null; } catch (e) { /* Not kept. */ }
+function settle(value, byKey) {
+    if (value >= MIN_OPEN) return value;
+    if (byKey) return value > shown() || (shown() > MIN_OPEN && value > closed()) ? MIN_OPEN : closed();
+    return value >= (MIN_OPEN + closed()) / 2 ? MIN_OPEN : closed();
+}
+const shown = () => Math.round(Math.min(max(), Math.max(closed(), height ?? geo.clientHeight * 0.46)));
+function apply() {
+    const h = shown();
+    geo.style.setProperty('--results-h', h + 'px');
+    split.setAttribute('aria-valuenow', h); split.setAttribute('aria-valuemin', closed()); split.setAttribute('aria-valuemax', max());
+}
+function resize(value, byKey = false) {
+    height = settle(Math.round(Math.max(closed(), Math.min(max(), value))), byKey);
+    apply();
+    try { localStorage.setItem(KEY, height); } catch (e) { /* Not kept. */ }
+}
+let drag = null;
+split.addEventListener('pointerdown', e => { e.preventDefault(); split.setPointerCapture(e.pointerId); drag = { y: e.clientY, h: shown() }; split.classList.add('dragging'); });
+// The list grows upwards, so a downward drag shrinks it.
+split.addEventListener('pointermove', e => { if (drag) resize(drag.h - (e.clientY - drag.y)); });
+for (const type of ['pointerup', 'pointercancel']) split.addEventListener(type, () => { drag = null; split.classList.remove('dragging'); });
+const STEPS = { ArrowUp: 16, ArrowRight: 16, ArrowDown: -16, ArrowLeft: -16 };
+split.addEventListener('keydown', e => {
+    if (e.key in STEPS) resize(shown() + STEPS[e.key], true);
+    else if (e.key === 'Home') resize(closed(), true);
+    else if (e.key === 'End') resize(max(), true);
+    else return;
+    e.preventDefault();
+});
+new ResizeObserver(apply).observe(geo);
+apply();
+OBC.render();
+})();
+</script>
+
+</body>
+</html>
