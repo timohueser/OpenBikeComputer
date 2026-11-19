@@ -161,7 +161,7 @@
             };
         }
     }
-    const hooks = { pipelines: 0, popFirst: undefined, errors: 0, fetches: [] };
+    const hooks = { pipelines: 0, popFirst: undefined, errors: 0, fetches: [], terrain: { tiles: 0, wasm: 0 } };
     const original = {};
 
     /** The ground jobs sent before `until`: count, round trip median, p95 and sum in ms, and the ms from the probe to the last of their pages. */
@@ -182,6 +182,12 @@
                 const name = String(url).split('/').pop().split('?')[0];
                 this.addEventListener('error', e => event('worker error', { worker: name, message: e.message, at: `${e.filename}:${e.lineno}` }));
                 this.addEventListener('messageerror', () => event('worker message error', { worker: name }));
+                // The terrain decode worker: its tiles, and those that phone-worker.js saw decoded in WASM.
+                if (name.includes('decode-worker')) this.addEventListener('message', ({ data }) => {
+                    if (!data?.kit) return;
+                    hooks.terrain.tiles++;
+                    if (data.kit.wasm) hooks.terrain.wasm++;
+                });
                 if (!name.includes('ground-worker')) return;
                 const post = this.postMessage.bind(this), sent = new Map();
                 this.postMessage = (data, ...rest) => {
@@ -388,7 +394,7 @@
             nodes: nodes.length, own, finest: Math.max(0, ...nodes.map(n => n.level)), resident: s.resident, loads: t.pages.loads, missing: t.pages.missing,
             arrivals: t.pages.arrivals?.length, left: s.terrain.left.reduce((a, b) => a + b, 0), stamps: s.terrain.jobs, stampsLoading: t.stamps?.loading,
             roadsLoading: t.roads?.loading, near: t.near, eye: t.eye, ground: hooks.groundTimes.inFlight, groundShort: s.ground.shortage, quality: s.terrain.quality,
-            cpu: round(tv.cpu), errors: hooks.errors,
+            cpu: round(tv.cpu), errors: hooks.errors, terrainTiles: hooks.terrain.tiles, terrainWasm: hooks.terrain.wasm,
         };
     }
     const quantile = (list, q) => { const s = [...list].sort((a, b) => a - b); return s.length ? round(s[Math.min(s.length - 1, Math.floor(q * s.length))]) : undefined; };
@@ -448,7 +454,61 @@
         say(`${label}: reading the heights`);
         await pagesReport(tv, `${step.id}-end`, WALK_END).catch(e => event('report failed', { name: 'pages end', message: e.message }));
         const ground = hooks.groundTimes.jobs.map(job => Object.fromEntries(Object.entries(job).map(([k, v]) => [k, typeof v === 'number' ? Math.round(v) : v])));
-        await post(key, { marks, flightStart: t0, frame: { median: quantile(intervals, 0.5), p95: quantile(intervals, 0.95), max: Math.max(...intervals) }, intervals, shots, ground, fetches: fetches(t0) });
+        if (step.id === 'cold-off') {
+            say(`${label}: decoding a terrain tile three ways`);
+            await decodeCheck(tv, WALK_END).catch(e => event('decode check failed', { message: e.message }));
+        }
+        await post(key, { terrain: hooks.terrain, marks, flightStart: t0, frame: { median: quantile(intervals, 0.5), p95: quantile(intervals, 0.95), max: Math.max(...intervals) }, intervals, shots, ground, fetches: fetches(t0) });
+    }
+
+    /**
+     * The stored terrain tiles of zoom 12 and 13 under `eye`, each decoded in a fresh worker the three ways of phone-decode.js:
+     * per way its time, the count of each alpha, and the pixels and bytes per channel that differ from the WASM decode. The
+     * RGBA bytes post as blobs.
+     */
+    async function decodeCheck(tv, eye) {
+        const worker = new Worker('/phone/decode.js', { type: 'module' });
+        try {
+            for (const z of [12, 13]) {
+                const [ex, ey] = worldUnits(eye.lon, eye.lat), x = Math.floor(ex / 2 ** (30 - z)), y = Math.floor(ey / 2 ** (30 - z)), tile = `${z}/${x}/${y}`;
+                const body = await tv.terrain.pages.body(z, x, y);
+                if (!body) {
+                    post(`decode.${tile}`, { error: 'no body' });
+                    continue;
+                }
+                const ways = await within(new Promise(resolve => {
+                    worker.onmessage = ({ data }) => resolve(data);
+                    worker.postMessage({ body: body.slice(0) });
+                }), 30_000, 'decode check');
+                const reference = ways.wasm?.data, out = { bytes: body.byteLength };
+                for (const [name, way] of Object.entries(ways)) {
+                    if (!way.data) {
+                        out[name] = { error: way.error };
+                        continue;
+                    }
+                    const d = way.data, alphas = {}, count = [0, 0, 0, 0], max = [0, 0, 0, 0];
+                    let pixels = 0;
+                    for (let p = 0; p < d.length; p += 4) {
+                        alphas[d[p + 3]] = (alphas[d[p + 3]] ?? 0) + 1;
+                        if (!reference || reference.length !== d.length) continue;
+                        let differs = false;
+                        for (let c = 0; c < 4; c++) {
+                            const delta = Math.abs(d[p + c] - reference[p + c]);
+                            if (!delta) continue;
+                            differs = true;
+                            count[c]++;
+                            if (delta > max[c]) max[c] = delta;
+                        }
+                        if (differs) pixels++;
+                    }
+                    out[name] = { ms: round(way.ms), length: d.length, alphas, ...(reference && reference.length === d.length ? { differs: { pixels, count, max } } : {}) };
+                    blob(`decode-${tile.replaceAll('/', '-')}-${name}.rgba`, d);
+                }
+                await post(`decode.${tile}`, out);
+            }
+        } finally {
+            worker.terminate();
+        }
     }
 
     const statsOf = tv => JSON.parse(JSON.stringify(tv.stats(), (_, v) => (v instanceof Map ? Object.fromEntries(v) : v)));

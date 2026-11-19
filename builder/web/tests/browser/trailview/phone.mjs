@@ -73,6 +73,10 @@ function serve() {
         // A phone keyboard adds a capital or a slash.
         if (path === '/phone/measure.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-measure.js')));
         if (path === '/phone/diagnose.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-diagnose.js')));
+        // The decode check's worker, and the WebP bridge of this checkout (built by obc suites prepare; absent before it exists).
+        if (path === '/phone/decode.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-decode.js')));
+        const bridge = /^\/phone\/webp\/(obc_webp_bridge(?:_bg\.wasm|\.js))$/.exec(path), bridgeFile = bridge && join(WEB, 'src/lib/trailview/stream/webp', bridge[1]);
+        if (bridgeFile) return existsSync(bridgeFile) ? send(response, 200, TYPES[extname(bridgeFile)], readFileSync(bridgeFile)) : send(response, 404, 'text/plain', '');
         if (path === '/phone/compile') return send(response, 200, 'text/html', page('compile'));
         const page_ = /^\/phone\/(diagnos(?:e|is)|compile|cold)\/?$/i.exec(path);
         const name = page_?.[1].toLowerCase();
@@ -93,7 +97,7 @@ function serve() {
             let body = readFileSync(local);
             const type = TYPES[extname(local)] ?? 'application/octet-stream';
             // The ground worker's jobs carry their time split (phone-worker.js).
-            if (/\/ground-worker-[\w-]+\.js$/.test(local)) body = Buffer.concat([readFileSync(join(HERE, 'phone-worker.js')), body]);
+            if (/\/(ground|decode)-worker-[\w-]+\.js$/.test(local)) body = Buffer.concat([readFileSync(join(HERE, 'phone-worker.js')), body]);
             // The scripts run before the page's module, so they see the WebGPU device as the page asks for it. Each acts only
             // while a session of its own runs in the tab.
             return send(response, 200, type, type === 'text/html' ? body.toString().replace('<head>', '<head><script src="/phone/measure.js"></script><script src="/phone/diagnose.js"></script>') : body);
@@ -188,6 +192,16 @@ function summarize(record) {
     const l = record.groundLoad;
     if (l) console.log(`ground load (diagnose): ${l.jobs} jobs · median ${f(l.median)} p95 ${f(l.p95)} sum ${f(l.sum, 0)} ms · probe to last page ${f(l.openToLast / 1000, 2)} s`);
     for (const [key, value] of Object.entries(record)) if (key.startsWith('cold.')) coldStep(record, key.slice(5), value, f);
+    // The decode check: per tile and way, its time, the alphas other than 0 and 255, and the difference to the WASM decode.
+    for (const [key, d] of Object.entries(record)) {
+        if (!key.startsWith('decode.')) continue;
+        if (d.error) console.log(`decode ${key.slice(7)}: ${d.error}`);
+        for (const [way, w] of Object.entries(d)) {
+            if (way === 'bytes' || way === 'error') continue;
+            const a = w.alphas ?? {}, other = Object.entries(a).filter(([v]) => v !== '0' && v !== '255').reduce((s, [, n]) => s + n, 0);
+            console.log(`decode ${key.slice(7)} ${way.padEnd(6)}: ${w.error ?? `${f(w.ms, 0)} ms · alpha 255 ${a[255] ?? 0}, 0 ${a[0] ?? 0}, other ${other} · ${w.differs ? `differs from WASM in ${w.differs.pixels} px (R/G/B/A count ${w.differs.count.join('/')}, max ${w.differs.max.join('/')})` : 'no WASM to compare'}`}`);
+        }
+    }
     // The fault check's events: only the errors.
     const shown = record.events.filter(e => e.text || (/error|lost|rejected|failed/.test(e.kind) && !(e.kind === 'first frames scope' && !e.found)));
     for (const event of shown) console.log(`event ${event.at} ${event.run ?? event.step ?? '–'}: ${event.text ?? `${event.kind} ${JSON.stringify({ ...event, at: undefined, step: undefined, kind: undefined }).slice(0, 300)}`}`);
@@ -196,6 +210,7 @@ function summarize(record) {
 /** One load of the cold start check: its marks, the ground jobs' time split, the requests, the drawn pages' spikes, and a line per picture. */
 function coldStep(record, step, c, f) {
     const s = ms => f(ms / 1000), m = c.marks ?? {}, median = list => [...list].sort((a, b) => a - b)[list.length >> 1];
+    if (c.terrain) console.log(`\n${step}: terrain tiles ${c.terrain.tiles}, decoded in WASM ${c.terrain.wasm}`);
     console.log(`\n${step}: eye ${s(m.eyeReady)} s · near ${s(m.nearReady)} s · proper ${s(m.proper)} s · flight from ${s(c.flightStart)} s · frame median ${f(c.frame?.median, 0)} p95 ${f(c.frame?.p95, 0)} max ${f(c.frame?.max, 0)} ms`);
     for (const [phase, jobs] of [['load', (c.ground ?? []).filter(j => j.start < c.flightStart)], ['flight', (c.ground ?? []).filter(j => j.start >= c.flightStart)]]) {
         if (!jobs.length) continue;

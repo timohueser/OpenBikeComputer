@@ -1,12 +1,12 @@
-// The time split of the ground worker's jobs, for the fault check of phone-diagnose.js: phone.mjs puts this script
-// before the built ground worker. Each answer to a job carries `kit`: the clock (timeOrigin + now, the same clock as the
+// The time split of the ground and terrain decode workers' jobs, for the fault check of phone-diagnose.js: phone.mjs puts
+// this script before the built workers. Each answer to a job carries `kit`: the clock (timeOrigin + now, the same clock as the
 // page's) when the worker took the job and when it answered, the decode time that ended while the job ran, and the
-// time from the last decode to the answer (the page build). Jobs of one worker overlap, so a decode can count for two.
+// time from the last decode to the answer (the page build), and the number of WASM decodes. Jobs of one worker overlap, so a decode can count for two.
 {
     const clock = () => performance.timeOrigin + performance.now();
     const taken = new Map(), decodes = [];
     // Registered before the bundle sets onmessage, so it runs first.
-    self.addEventListener('message', ({ data }) => data?.job && taken.set(data.id, clock()));
+    self.addEventListener('message', ({ data }) => (data?.job || data?.body) && taken.set(data.id, clock()));
     const timed = (run, kind) => function (...args) {
         const start = clock();
         const done = () => decodes.push({ kind, start, end: clock() });
@@ -35,7 +35,7 @@
             taken.delete(data.id);
             const end = clock(), mine = decodes.filter(d => d.end >= start && d.end <= end);
             const last = Math.max(start, ...mine.map(d => d.end));
-            data.kit = { start, end, decode: mine.reduce((sum, d) => sum + d.end - Math.max(d.start, start), 0), decodes: mine.length, build: end - last };
+            data.kit = { start, end, decode: mine.reduce((sum, d) => sum + d.end - Math.max(d.start, start), 0), decodes: mine.length, wasm: mine.filter(d => d.kind === 'wasm').length, build: end - last };
             while (decodes.length && decodes[0].end < end - 60_000) decodes.shift();
         }
         return post(data, ...rest);
