@@ -222,6 +222,11 @@ fn add(a: [f64; 2], b: [f64; 2], s: f64) -> [f64; 2] {
     [a[0] + s * b[0], a[1] + s * b[1]]
 }
 
+fn unit(a: [f64; 2]) -> Option<[f64; 2]> {
+    let l = dot(a, a).sqrt();
+    (l > 0.0).then(|| [a[0] / l, a[1] / l])
+}
+
 /// The distance of p from segment ab, and the share of its foot.
 fn seg_foot(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> (f64, f64) {
     let ab = sub(b, a);
@@ -525,6 +530,50 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// The passages that keep the A line at a tag end of way w: every way, and water that runs under no ground arm
+    /// there. Water runs under an arm where its centre line, on the arm's side of the line through the node square to
+    /// the arm's first chord, comes within the two half-widths of the arm's centre line. Water under a ground way has a
+    /// general answer already, the culvert; a way under a ground way has none, so a way always keeps its passage.
+    fn kept(&self, w: u32, start: bool, passages: &[u32]) -> Vec<u32> {
+        let arms: Vec<(u32, bool)> =
+            self.others(w, start).into_iter().flatten().copied().filter(|&(o, _)| !self.water(o)).collect();
+        let under = |p: u32| {
+            arms.iter().any(|&(o, o_start)| {
+                let r = &self.g.ways[o as usize].samples;
+                let ks: Vec<usize> = if o_start {
+                    (r.start as usize..r.end as usize - 1).take(8).collect()
+                } else {
+                    (r.start as usize..r.end as usize - 1).rev().take(8).collect()
+                };
+                let (i, j) = if o_start { (ks[0], ks[0] + 1) } else { (ks[0] + 1, ks[0]) };
+                let node = self.global(&self.g.samples[i]);
+                let Some(into) = unit(sub(self.global(&self.g.samples[j]), node)) else { return false };
+                let mpu = self.mpu(node);
+                let Some(f) = self.feet(node, HALF_MAX_M + BODY_M).into_iter().find(|f| f.way == p) else {
+                    return false;
+                };
+                let rp = &self.g.ways[p as usize].samples;
+                (f.k.saturating_sub(8).max(rp.start as usize)..(f.k + 9).min(rp.end as usize - 1)).any(|kp| {
+                    let (mut a, mut b) = (self.global(&self.g.samples[kp]), self.global(&self.g.samples[kp + 1]));
+                    let (sa, sb) = (dot(sub(a, node), into), dot(sub(b, node), into));
+                    match (sa > 0.0, sb > 0.0) {
+                        (false, false) => return false,
+                        (true, false) => b = add(a, sub(b, a), sa / (sa - sb)),
+                        (false, true) => a = add(a, sub(b, a), -sa / (sb - sa)),
+                        (true, true) => {}
+                    }
+                    let hp = self.half(p, self.g.samples[kp].widen_m);
+                    ks.iter().any(|&k| {
+                        let (sa, sb) = (&self.g.samples[k], &self.g.samples[k + 1]);
+                        let ho = self.half(o, sa.widen_m.max(sb.widen_m));
+                        segs_dist(a, b, self.global(sa), self.global(sb)) * mpu < ho + hp
+                    })
+                })
+            })
+        };
+        passages.iter().copied().filter(|&p| !self.water(p) || !under(p)).collect()
+    }
+
     /// How far the deck stroke at metres m stands clear of the paved strokes of `ways`, metres.
     fn clear(&self, w: u32, m: f64, ways: &[u32]) -> f64 {
         let a = self.at(w, m);
@@ -722,7 +771,7 @@ fn deck_ends(ctx: &Ctx, w: u32, ground: &[bool], pass: &Passages) -> Option<Deck
             continue;
         }
         let arms: Vec<u32> = others.iter().map(|(o, _)| *o).filter(|&o| !ctx.water(o)).collect();
-        a[i] = Some(place_a(ctx, w, start, &arms, &pass.under[w as usize], &probes)?);
+        a[i] = Some(place_a(ctx, w, start, &arms, &ctx.kept(w, start, &pass.under[w as usize]), &probes)?);
     }
     let mut between_m = a[1].unwrap_or(len) - a[0].unwrap_or(0.0);
     for (i, start) in [(0, true), (1, false)] {
@@ -748,7 +797,7 @@ fn bisect(mut lo: f64, mut hi: f64, ok: &dyn Fn(f64) -> bool) -> f64 {
 
 /// An A line at a tag end of way w: the nearer of the first point where the deck's end line is clear of the paved
 /// strokes of the ground arms there, at most `A_MAX_M` in, and the last point before it touches the stroke of a
-/// passage, at the tag end where a passage reaches it or the line lies less than `MIN_STEP_M / 2` from it. None where
+/// passage that it keeps (`Ctx::kept`), at the tag end where a passage reaches it or the line lies less than `MIN_STEP_M / 2` from it. None where
 /// neither is. `probes` are metres along w: its samples and its passages' stations.
 fn place_a(ctx: &Ctx, w: u32, start: bool, arms: &[u32], passages: &[u32], probes: &[f64]) -> Option<f64> {
     let len = ctx.lengths[w as usize];
@@ -1239,7 +1288,8 @@ pub fn check_levels(g: &WayGraph, input: &CellInput, sections: &Sections, s: &St
             .map(|(o, _)| *o)
             .filter(|&o| !ctx.water(o) && !ctx.deck_tagged(o))
             .collect();
-        let passage = |m: f64| ctx.clear(w, m, &pass.under[w as usize]);
+        let kept = ctx.kept(w, start, &pass.under[w as usize]);
+        let passage = |m: f64| ctx.clear(w, m, &kept);
         // At the edge of a passage: the end line touches it within `PLACE_TO_M` further in.
         let inward = if start { m + 2.0 * PLACE_TO_M } else { m - 2.0 * PLACE_TO_M };
         let tag_end = m <= PLACE_TO_M || m >= len - PLACE_TO_M;

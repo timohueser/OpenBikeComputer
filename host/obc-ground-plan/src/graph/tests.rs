@@ -953,14 +953,15 @@ fn a_short_bridge_keeps_a_deck_over_the_way_below_it() {
 }
 
 #[test]
-fn an_a_line_stops_before_the_stroke_of_a_way_that_passes_below() {
-    // A bridge from x -20 to 20 over a road square to it at x 10, 7 m below. A side road leaves its east tag end at a
-    // sharp angle: its stroke covers the deck back to x 1.7. The east A line stops at the edge of the road below
-    // (x 12.5, 32.5 m along), not on its stroke.
-    let side = road(&[[20.0, 0.0], [-20.0, -12.0]], 7.0);
-    let lines = bridge_lines("residential", -20.0, 20.0, &[side, road(&[[10.0, -40.0], [10.0, 40.0]], 0.0)]);
-    let (a, b) = deck_of(&lines);
-    assert!(a < 27.5 && (b - 32.5).abs() < 0.05, "deck {a} to {b}");
+fn water_under_a_ground_arm_does_not_hold_the_a_line() {
+    // A bridge from x -20 to 20, 7 m up, with a side road that leaves its east tag end to the south, and a stream under
+    // the bridge at x 19 that runs beside the side road, 1 m off it, under its stroke: a culvert under the side road.
+    // The east A line stays clear of the side road's stroke (x 17.5, 37.5 m along) as on a bridge with no passage, and
+    // does not move out to the stream's edge (x 19.5).
+    let side = road(&[[20.0, 0.0], [20.0, 40.0]], 7.0);
+    let lines = bridge_lines("residential", -20.0, 20.0, &[side, stream(&[], &[[19.0, -40.0], [19.0, 40.0]], 0.0)]);
+    let (_, b) = deck_of(&lines);
+    assert!((b - 37.5).abs() < 0.05, "deck to {b}");
 }
 
 #[test]
