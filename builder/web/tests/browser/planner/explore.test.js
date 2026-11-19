@@ -94,6 +94,11 @@ test('the name of a card opens the page of the route, and Back and "‹ Explore"
   await expect(page.getByRole('region', { name: 'Westweg 2' })).toBeVisible();
   await page.getByRole('region', { name: 'Westweg 2' }).getByRole('link', { name: 'Westweg 2' }).click();
   await expect(page).toHaveURL(/#\/signed\/9-267-177\/202$/);
+  // Coming from the card, "‹ Explore" is Back.
+  await page.getByRole('link', { name: '‹ Explore' }).click();
+  await expect(page.getByRole('region', { name: 'Westweg 2' })).toBeVisible();
+  await page.goForward();
+  await expect(page).toHaveURL(/#\/signed\/9-267-177\/202$/);
 
   // After a reload, "‹ Explore" opens Explore on the route; the test build has no trail files, so it is a day route.
   for (const [name, address] of [['Westweg 2', '9-267-177/202'], ['Schlossberg loop', '9-267-177/101']]) {
