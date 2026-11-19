@@ -371,12 +371,8 @@ impl Tunnel {
     }
 }
 
-/// The states of the tunnel features, as found runs and tag-end lines: along each chain of tunnel features from each
-/// tag end, open up to the first point with room (its portal line), at most `open_max_m`; a bore where it has room up
-/// to `body_m` behind the portal line; hidden elsewhere. A way on top that crosses an open stretch hides it there (a
-/// door); one whose stroke goes on over a stretch with room is that bore's lid. A stretch over the body of a way that
-/// it ends at is hidden. A chain goes on at a feature's end only where one feature goes on.
-fn tunnel_states(found: &BTreeMap<u32, Vec<Found>>, links: &[Link<u32>], s: &Structures) -> BTreeMap<u32, Found> {
+/// The tunnel features that the cells found, their stretches joined, with the features that go on at their metres.
+fn tunnels(found: &BTreeMap<u32, Vec<Found>>, links: &[Link<u32>]) -> BTreeMap<u32, Tunnel> {
     let mut tunnels: BTreeMap<u32, Tunnel> = BTreeMap::new();
     for (&id, fs) in found {
         let all = |k: fn(&Found) -> &Vec<(f64, f64)>| union(fs.iter().flat_map(|f| k(f).iter().copied()).collect());
@@ -413,6 +409,59 @@ fn tunnel_states(found: &BTreeMap<u32, Vec<Found>>, links: &[Link<u32>], s: &Str
             }
         }
     }
+    tunnels
+}
+
+/// A chain of tunnel features, walked from a tag end: per feature in the order of the walk, its id and the metres along
+/// its stroke where the chain enters and leaves it; per end (first, last), whether no tunnel way goes on there (a tag
+/// end). An end that is not a tag end is a node where more than one tunnel feature goes on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chain {
+    pub ways: Vec<(u32, f64, f64)>,
+    pub tag: [bool; 2],
+}
+
+/// The chains of the tunnel features that the cells found: from each tag end along the features, on through a node
+/// where one feature goes on, as `tunnel_states` walks them. A chain with two tag ends comes once.
+pub fn chains(found: &BTreeMap<u32, Vec<Found>>, links: &[Link<u32>]) -> Vec<Chain> {
+    let tunnels = tunnels(found, links);
+    let mut out = Vec::new();
+    for (&id, t) in &tunnels {
+        for &(m0, d0) in &t.tag_ends {
+            let (mut f, mut m, mut dir) = (id, m0, d0);
+            let mut chain = Chain { ways: Vec::new(), tag: [true, false] };
+            for _ in 0..=tunnels.len() {
+                let t = &tunnels[&f];
+                let end = t.end(m, dir);
+                chain.ways.push((f, m, end));
+                let next: Vec<&(f64, u32, f64, f64)> = t.links.iter().filter(|l| (l.0 - end).abs() <= LINK_M).collect();
+                let seen = |g: u32, mg: f64| chain.ways.iter().any(|w| w.0 == g && (w.1 - mg).abs() <= LINK_M);
+                match next[..] {
+                    [&(_, g, mg, dg)] if tunnels.contains_key(&g) && !seen(g, mg) => (f, m, dir) = (g, mg, dg),
+                    [] => {
+                        chain.tag[1] = t.tag_ends.iter().any(|&(mt, dt)| (mt - end).abs() <= LINK_M && dt == -dir);
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+            let (first, last) = (chain.ways[0], chain.ways[chain.ways.len() - 1]);
+            // Walked from both of its tag ends, a chain is kept from the end that comes first.
+            if !chain.tag[1] || (first.0, first.1) < (last.0, last.2) {
+                out.push(chain);
+            }
+        }
+    }
+    out
+}
+
+/// The states of the tunnel features, as found runs and tag-end lines: along each chain of tunnel features from each
+/// tag end, open up to the first point with room (its portal line), at most `open_max_m`; a bore where it has room up
+/// to `body_m` behind the portal line; hidden elsewhere. A way on top that crosses an open stretch hides it there (a
+/// door); one whose stroke goes on over a stretch with room is that bore's lid. A stretch over the body of a way that
+/// it ends at is hidden. A chain goes on at a feature's end only where one feature goes on.
+fn tunnel_states(found: &BTreeMap<u32, Vec<Found>>, links: &[Link<u32>], s: &Structures) -> BTreeMap<u32, Found> {
+    let tunnels = tunnels(found, links);
     let ids: Vec<u32> = tunnels.keys().copied().collect();
     let (mut open, mut body) = (BTreeMap::<u32, Vec<(f64, f64)>>::new(), BTreeMap::<u32, Vec<(f64, f64)>>::new());
     for &id in &ids {
@@ -940,5 +989,14 @@ mod tests {
         let tags = merge(&found, &[], &[], &links, &crate::faces::Rules::embedded().structures);
         let levels = |id: u32| tags.get(&id).and_then(|t| t.get(LEVELS)).cloned();
         assert_eq!(levels(2).as_deref(), Some("O"), "the feature between the parts");
+        // The same walk gives the chain once, from the tag end that comes first, with both ends tag ends.
+        let want = Chain { ways: vec![(1, 0.0, 100.0), (2, 0.0, 30.0), (1, 130.0, 300.0)], tag: [true, true] };
+        assert_eq!(chains(&found, &links), [want]);
+        // A third feature that goes on at the node of the second part's start forks there: three chains stop at it.
+        let mut fork = found.clone();
+        fork.insert(3, vec![tunnel(vec![(0.0, 20.0)], Vec::new(), vec![(20.0, -1.0)])]);
+        let links = [links[0], links[1], (2, 30.0, -1.0, 3, 0.0, 1.0), (1, 130.0, 1.0, 3, 0.0, 1.0)];
+        let ends: Vec<(u32, [bool; 2])> = chains(&fork, &links).iter().map(|c| (c.ways[0].0, c.tag)).collect();
+        assert_eq!(ends, [(1, [true, false]), (1, [true, false]), (3, [true, false])]);
     }
 }
