@@ -165,5 +165,7 @@ describe('planner query requests',()=>{
         resolve({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12}]})});
         await vi.advanceTimersByTimeAsync(0);await tick();
         expect(fetch).toHaveBeenCalledTimes(1);
+        // The answer is kept: the understood request comes from it.
+        expect(target.querySelector('[aria-label="Understood request"]')).not.toBeNull();
     });
 });
