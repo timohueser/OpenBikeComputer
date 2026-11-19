@@ -498,10 +498,11 @@
         border-top: 1px solid var(--line);
         list-style: none;
     }
-    /* A row outside the list box skips its layout and paint. It keeps the height that it had, else that of a name of one line. */
+    /* A row outside the list box skips its layout and paint. It keeps the height that it had, else that of its picture
+       box and the 7 px padding of `RouteRow` above and below. */
     li {
         content-visibility: auto;
-        contain-intrinsic-size: auto 60px;
+        contain-intrinsic-size: auto calc(var(--row-picture-height) + 14px);
     }
     li.note {
         padding: 6px;

@@ -59,7 +59,7 @@ A UTF-8 JSON object.
 | `look` | `C\|L\|W\|H`: the version `C` of the camera rule, the light `L` of the [camera](#4-cover) as `MMDD-HHMM`, and the size of each full image. Now `1\|0715-1000\|960\|640`. |
 | `months` | Object: for each month `MM` (`01` to `12`) that the set holds, the light of its images as `MMDD-HHMM`, the date and the time in the year of the render. The `MM` of a light is its key. `DD` is a day of each year, so never `0229`. `HHMM` is from `0000` to `2359`. Each cover of the set has an image of each of these months. Now `{"07": "0715-1000"}`. |
 | `default_month` | A key of `months`: the month that a reader shows when the set does not hold the current month. A writer refuses to make live a set where it is not a key of `months`. Now `07`. |
-| `width`, `height` | `960`, `640`: the size of each full image in pixels. Each is a multiple of 4. |
+| `width`, `height` | `960`, `640`: the size of each full image in pixels. Each is a multiple of 2, so the row image is `width / 2` × `height / 2`. |
 | `covers` | The count of covers of the set |
 | `credits` | Array of strings: each credit of each cover, one time each. The page shows them with a cover. |
 
