@@ -79,6 +79,39 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
   expect(errors).toEqual([]);
 });
 
+test('the name of a card opens the page of the route, and Back and "‹ Explore" show Explore with its card again', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  let card = await openCard(page, 'Westweg 2', 1440, 900);
+  await card.getByRole('link', { name: 'Westweg 2' }).click();
+  await expect(page).toHaveURL(/#\/signed\/9-267-177\/202$/);
+  await expect(page.getByRole('heading', { name: 'Westweg 2' })).toBeVisible();
+  await expect(page.locator('.title')).toContainText('Stage 2 of 2 · Westweg');
+  await expect(page.getByRole('button', { name: 'Plan this route' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Explore', exact: true })).toHaveAttribute('aria-current', 'page');
+
+  await page.goBack();
+  await expect(page.getByRole('region', { name: 'Westweg 2' })).toBeVisible();
+  await page.getByRole('region', { name: 'Westweg 2' }).getByRole('link', { name: 'Westweg 2' }).click();
+  await expect(page).toHaveURL(/#\/signed\/9-267-177\/202$/);
+
+  // After a reload, "‹ Explore" opens Explore on the route; the test build has no trail files, so it is a day route.
+  for (const [name, address] of [['Westweg 2', '9-267-177/202'], ['Schlossberg loop', '9-267-177/101']]) {
+    await page.goto(`/planner.html#/signed/${address}`);
+    await page.reload();
+    await expect(page.getByRole('heading', { name })).toBeVisible();
+    await page.getByRole('link', { name: '‹ Explore' }).click();
+    await expect(page).toHaveURL(/#\/explore$/);
+    card = page.getByRole('region', { name });
+    await expect(card).toBeVisible();
+    await expect(page.locator('.list .row[aria-current="true"]')).toContainText(name);
+  }
+
+  await page.goto('/planner.html#/signed/9-267-177/999');
+  await expect(page.getByText('This route is no longer in the map data.')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 /** Shows the card of the signed route `name` in a window of `width` × `height` px. */
 async function openCard(page, name, width, height) {
   await page.setViewportSize({ width, height });

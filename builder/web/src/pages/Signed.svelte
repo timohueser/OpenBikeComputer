@@ -177,7 +177,7 @@
         {#snippet mark()}{#if record}<TrailMarker symbol={record.symbol} ref={record.ref} />{/if}{/snippet}
         {#snippet tags()}
             {#if stage?.part}
-                <span class="plain">{stage.part}{#if trailName} · <a class="trail" href={ROUTES.explore} onclick={event => toExplore(event, longId)}>{trailName}</a>{/if}</span>
+                <span class="plain">{stage.part}{#if trailName}{' · '}<a class="trail" href={ROUTES.explore} onclick={event => toExplore(event, longId)}>{trailName}</a>{/if}</span>
             {/if}
         {/snippet}
         {#snippet buttons()}
