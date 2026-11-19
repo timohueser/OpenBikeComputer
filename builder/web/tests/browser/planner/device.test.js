@@ -34,7 +34,7 @@ async function fill(page, state, remembered = null) {
   await page.waitForFunction(() => window.coverTest);
   await page.evaluate(async ({ summary, state, remembered }) => {
     const { library } = window.coverTest;
-    for (const [id, name] of [['lake', 'Lake loop'], ['pass', 'Pass day']]) await library.saveRoute({ id, revision: 0, name, updatedAt: 0, trip: {}, summary });
+    for (const [id, name] of [['lake', 'Lake loop'], ['pass', 'Pass day']]) await library.saveRoute({ id, name, updatedAt: 0, trip: {}, summary });
     for (const [key, value] of Object.entries(state)) await library.setState(key, value);
     if (remembered) localStorage.setItem('obc-device', JSON.stringify(remembered));
   }, { summary, state, remembered });

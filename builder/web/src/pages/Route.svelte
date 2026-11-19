@@ -3,7 +3,7 @@
     import Card from '../lib/ui/Card.svelte';
     import Window from '../lib/ui/Window.svelte';
     import Detail from '../components/route/Detail.svelte';
-    import Menu from '../components/route/Menu.svelte';
+    import Menu from '../lib/ui/Menu.svelte';
     import Facts from '../components/route/Facts.svelte';
     import Picture from '../components/route/Picture.svelte';
     import Rows from '../components/route/Rows.svelte';
@@ -70,7 +70,7 @@
         const load = async () => {
             const [item, ids, copies] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent')]);
             if (!live) return;
-            record = item && 'revision' in item ? item : null;
+            record = item && 'id' in item ? item : null;
             [waiting, sent] = [ids, copies];
         };
         void load();

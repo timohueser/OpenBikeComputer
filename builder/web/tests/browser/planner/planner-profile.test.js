@@ -9,7 +9,7 @@ const drawn = (id, kind, lon, from, to, extra = {}) => ({
 // A plan of two days with drawn legs, so its line needs no routing request: 15.2 km along the parallel 47, the night in
 // the middle.
 const plan = {
-  id: 'two', revision: 0, name: 'Two days', updatedAt: 0, summary: null,
+  id: 'two', name: 'Two days', updatedAt: 0, summary: null,
   trip: {
     mode: 'trip', bike: 'touring', days: 2, daysSet: true, restAfter: [], routeOrder: ['up', 'night-1', 'flat'], points: [
       drawn('start', 'start', 8, 400, 400), drawn('up', 'waypoint', 8.05, 400, 600), drawn('night-1', 'night', 8.1, 600, 600, { night: 1, label: 'Inn' }),

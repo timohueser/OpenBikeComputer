@@ -1,14 +1,19 @@
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
+    import Menu from '../../lib/ui/Menu.svelte';
     import Select from './PlannerSelect.svelte';
     import { onMount } from 'svelte';
     import { paces, planPace, planPreset, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
     import { planTitle, type Trip } from '../../lib/planner/editor';
     import { regionProfiles } from '../../lib/planner/routing';
 
-    let { trip, name, canUndo, canRedo, onChange, onUndo, onRedo, onCompare, onNew, onLibrary, ready }: {
+    let { trip, name, stored, changed, canSave, canUndo, canRedo, onChange, onUndo, onRedo, onNew, onLibrary, onSave, onRename, more, ready }: {
         trip: Trip;
         name: string;
+        /** The route has a record in the library: its title renames it, and with no changes it is "Saved". */
+        stored: boolean;
+        changed: boolean;
+        canSave: boolean;
         ready: boolean;
         onLibrary: () => void;
         canUndo: boolean;
@@ -17,11 +22,15 @@
         onNew: () => void;
         onUndo: () => void;
         onRedo: () => void;
-        onCompare: () => void;
+        onSave: () => void;
+        onRename: () => void;
+        /** The items of the "More" menu. */
+        more: { label: string; disabled?: boolean; rule?: boolean; run: () => void }[];
     } = $props();
 
     const bike = $derived(trip.bike ?? 'touring');
     const title = $derived(name || planTitle(trip));
+    const saved = $derived(stored && !changed);
     // The profiles of the routing region; until they arrive, every activity and preset shows.
     let profiles = $state<string[]>();
     // An activity that the region does not serve stays listed while the plan uses it.
@@ -32,7 +41,7 @@
 
 <div class="trip-bar" inert={!ready}>
     <div class="trip-name">
-        <h1>{title}</h1>
+        <h1>{#if stored}<button type="button" class="rename" {title} aria-haspopup="dialog" onclick={onRename}>{title}</button>{:else}<span {title}>{title}</span>{/if}</h1>
         <Select label="Plan type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Route' }]}
             onChange={(mode) => onChange({ mode: mode as Trip['mode'] }, mode === 'route' ? 'Route' : 'Multi-day trip')} />
     </div>
@@ -57,14 +66,19 @@
         <button type="button" class="icon" disabled={!canUndo} onclick={onUndo} aria-label="Undo" title="Undo"><Icon name="undo" /></button>
         <button type="button" class="icon" disabled={!canRedo} onclick={onRedo} aria-label="Redo" title="Redo"><Icon name="redo" /></button>
         <button type="button" class="planner-action" disabled={!ready} onclick={onLibrary}>My plans</button>
-        <button type="button" class="planner-action quiet compare-routes" onclick={onCompare}>Compare routes</button>
+        <div class="save">
+            <!-- One button that stays in the page, so it keeps the focus after a save. -->
+            <button type="button" class={saved ? 'saved' : 'planner-action primary'} aria-disabled={!ready || !canSave}
+                onclick={() => { if (ready && canSave) onSave(); }}>{#if saved}<Icon name="check" size={15} />Saved{:else}Save{/if}</button>
+            <Menu label="More" items={more} buttonClass="planner-action quiet" />
+        </div>
     </div>
 </div>
 
 <style>
     .trip-bar {
         display: grid;
-        grid-template-columns: calc(var(--side-width) - 16px) minmax(0, 1fr) auto;
+        grid-template-columns: minmax(calc(var(--side-width) - 16px), max-content) minmax(min-content, 1fr) auto;
         align-items: center;
         gap: 16px;
         min-height: 56px;
@@ -80,11 +94,54 @@
         min-width: 0;
     }
     h1 {
+        display: flex;
+        min-width: 0;
         margin: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         font: 700 17px var(--sans);
+    }
+    h1 > * {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .rename {
+        margin: 0 -6px;
+        padding: 2px 6px;
+        white-space: nowrap;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+    }
+    .rename:hover { background: var(--parchment-2); }
+    .save {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-left: 8px;
+    }
+    .saved {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 32px;
+        padding: 0 8px;
+        border: 0;
+        background: none;
+        color: var(--ink-soft);
+        font: inherit;
+        font-weight: 600;
+        cursor: default;
+    }
+    .primary[aria-disabled="true"] {
+        opacity: 0.45;
+        cursor: default;
+        pointer-events: none;
     }
     .ride {
         display: flex;
@@ -128,8 +185,5 @@
         .trip-bar { grid-template-columns: minmax(0, 1fr); }
         .trip-name h1 { flex: 1; }
         .actions { grid-column: 1; grid-row: 3; justify-content: flex-end; }
-    }
-    .compare-routes {
-        margin-left: 8px;
     }
 </style>

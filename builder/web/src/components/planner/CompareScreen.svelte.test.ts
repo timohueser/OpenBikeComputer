@@ -21,7 +21,7 @@ afterEach(async () => {
     vi.unstubAllGlobals();
 });
 
-const route = (id: string, name: string, trip: Trip): Plan => ({ ...newPlan(trip, name), id, revision: 1 });
+const route = (id: string, name: string, trip: Trip): Plan => ({ ...newPlan(trip, name), id });
 // Six calendar days: five riding days and a rest day after day 2; four riding days; and three.
 const long = { ...testTrip(), days: 5, restAfter: [2] }, short = { ...testTrip(), days: 4 }, shortest = { ...testTrip(), days: 3 };
 const lines = Object.fromEntries([long, short, shortest].map(trip => [routingKey(trip), testLine(trip)]));

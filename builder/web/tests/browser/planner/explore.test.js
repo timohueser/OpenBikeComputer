@@ -59,6 +59,12 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
   await card.getByRole('button', { name: 'Plan this route' }).click();
   await expect(page).toHaveURL(/#\/planner$/);
   await expect(page.getByText(/Westweg 2 planned/)).toBeVisible();
+  // The planned route is not stored until the rider saves it.
+  await expect(page.locator('.trip-bar .save > button')).toHaveText('Save');
+  expect(await page.evaluate(() => new Promise(resolve => {
+    const request = indexedDB.open('obc-library');
+    request.onsuccess = () => { const all = request.result.transaction('routes').objectStore('routes').count(); all.onsuccess = () => { request.result.close(); resolve(all.result); }; };
+  }))).toBe(0);
   await page.getByRole('button', { name: 'Find another route' }).click();
 
   await expect(page).toHaveURL(/#\/explore$/);

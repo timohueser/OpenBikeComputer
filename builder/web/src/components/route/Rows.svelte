@@ -6,7 +6,7 @@
     import SurfaceLegend from '../planner/SurfaceLegend.svelte';
     import Icon from '../../lib/ui/Icon.svelte';
     import ElevationRow from './ElevationRow.svelte';
-    import Menu from './Menu.svelte';
+    import Menu from '../../lib/ui/Menu.svelte';
     import { placeAside } from './PlacePopup.svelte';
     import PlaceDisc from '../planner/PlaceDisc.svelte';
     import Lanes from '../../lib/ui/Lanes.svelte';

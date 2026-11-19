@@ -89,7 +89,7 @@
     const nameOf = (route: RouteRecord) => route.name || (isPlan(route) ? planTitle(route.trip) : 'Route');
     async function named(ids: string[]): Promise<Named[]> {
         const routes = await Promise.all(ids.map(id => library.item(id)));
-        return routes.flatMap(route => route && 'revision' in route ? [{ id: route.id, name: nameOf(route) }] : []);
+        return routes.flatMap(route => route && 'id' in route ? [{ id: route.id, name: nameOf(route) }] : []);
     }
 
     /** The rides come from `library.rides()`: a ride record names its card in `device`, and the library has no index of it. */
