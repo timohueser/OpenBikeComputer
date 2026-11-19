@@ -91,7 +91,7 @@
     });
     onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 </script>
-<svelte:window onpointerdown={() => pressing = true} onpointerup={() => { pressing = false; if (leaving) setTimeout(leave); }} onpointercancel={() => { pressing = false; if (leaving) leave(); }} />
+<svelte:window onpointerdown={() => pressing = true} onpointerup={() => { pressing = false; if (leaving) setTimeout(() => { if (leaving) leave(); }); }} onpointercancel={() => { pressing = false; if (leaving) leave(); }} />
 <div class="planner-query" bind:this={root} onfocusin={() => { focused = true; leaving = false; }}
     onfocusout={(event) => { if (!root?.contains(event.relatedTarget as Node | null)) { if (pressing) leaving = true; else leave(); } }}>
     <form onsubmit={event => { event.preventDefault(); run(20, request, { reparse: !edited }); }}>

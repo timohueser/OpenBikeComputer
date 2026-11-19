@@ -73,6 +73,7 @@
 <style>
     /* Fixed columns, so a long value never wraps the bar. The cells have no icons: three do not fit at the default width. */
     .trip-row {
+        position: relative;
         display: grid;
         grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
         gap: 4px;
@@ -110,13 +111,15 @@
     }
     button:disabled { cursor: default; opacity: .45; }
     button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-    .dates { position: relative; min-width: 0; }
+    .dates { min-width: 0; }
     .popover {
         position: absolute;
         z-index: 40;
+        /* Under the start of the bar, not of the date cell: the cell is the second one, and a phone is narrow. */
         top: 48px;
         left: 0;
-        width: 280px;
+        width: min(280px, 100%);
+        box-sizing: border-box;
         padding: 14px;
         border-radius: 8px;
         background: var(--panel);

@@ -1563,7 +1563,8 @@
         .planner-shell { min-width: 0; height: auto; min-height: 100%; }
         main { grid-template-columns: minmax(0, 1fr); }
         main > :global([aria-label="Sidebar width"]) { display: none; }
-        .planner-pane { max-height: 50dvh; }
+        /* An open stay list or date popover of the trip bar can be taller than the pane: the pane scrolls. */
+        .planner-pane { max-height: 50dvh; overflow-y: auto; }
         .geography { height: 75dvh; }
         .status-line { height: auto; min-height: 38px; flex-wrap: wrap; padding-block: 8px; }
         .lab-note { display: none; }
