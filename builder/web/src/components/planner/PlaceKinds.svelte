@@ -42,9 +42,8 @@
         transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
     }
     .mark :global(svg) { opacity: .55; stroke-width: 2; }
-    .mark.lit { border: 0; background: var(--rust, #a4501e); color: #fff; }
+    .mark.lit { border: 0; background: var(--place-disc); color: #fff; }
     .mark.lit :global(svg) { opacity: 1; }
-    :global([data-theme="dark"]) .mark.lit { background: #c8642a; }
 
     .head { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 4px; }
     .head strong { font-weight: 600; }
