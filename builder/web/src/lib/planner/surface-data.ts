@@ -1,4 +1,4 @@
-import { cumulative } from './geo';
+import { cumulative, type Coordinate } from './geo';
 import type { RoutingLine, Surface } from './routing';
 
 export const surfaceBarColors: Record<Surface, string> = { Paved: '#536674', Compacted: '#7d8b63', Gravel: '#ba9c5c', Dirt: '#a36d49', Rough: '#875f72', Unknown: '#b8b5ac' };
@@ -21,6 +21,18 @@ export function surfaceRuns(line?: Pick<RoutingLine, 'coordinates' | 'edges'>): 
         else runs.push({ surface, pushing, from, to });
     }
     return runs;
+}
+
+/** The stretches of the route with `surface`, as lines for the map. Edge `i` runs from point `i` to point `i + 1`. */
+export function surfaceLines(line: Pick<RoutingLine, 'coordinates' | 'edges'> | undefined, surface: Surface): Coordinate[][] {
+    const lines: Coordinate[][] = [], coordinates = line?.coordinates ?? [];
+    for (let i = 1; i < coordinates.length; i++) {
+        if ((line?.edges.surfaces?.[i - 1] ?? 'Unknown') !== surface) continue;
+        const last = lines.at(-1);
+        if (last?.at(-1) === coordinates[i - 1]) last.push(coordinates[i]);
+        else lines.push([coordinates[i - 1], coordinates[i]]);
+    }
+    return lines;
 }
 
 export function surfaceWindow(runs: SurfaceRun[], from: number, to: number): SurfaceRun[] {

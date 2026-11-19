@@ -4,7 +4,7 @@ import { chunks, LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
 import { paceFactor, presetName, servedPresets, type BikeType } from './riding-profiles';
-import { surfaceRuns, surfaceShares, surfaceWindow } from './surface-data';
+import { surfaceLines, surfaceRuns, surfaceShares, surfaceWindow } from './surface-data';
 import { daySegments, planView, removeRoutePoint, setEndpoint, type RoutePoint, type Trip } from './editor';
 import { cumulative, type Coordinate } from './geo';
 import { testTrip } from '../../../test-support/planner/trip';
@@ -171,6 +171,13 @@ describe('routing integration', () => {
         const sameSurface = surfaceRuns({ ...line, edges: { ...line.edges, surfaces: ['Paved', 'Paved'] } });
         expect(sameSurface.map(run => run.pushing)).toEqual([false, true]);
         expect(sameSurface.map(run => run.surface)).toEqual(['Paved', 'Paved']);
+    });
+    it('gives the stretches of one surface as lines, joined where they touch', () => {
+        const coordinates: Coordinate[] = [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]];
+        const line = { coordinates, edges: { surfaces: ['Gravel', 'Gravel', 'Paved', 'Gravel'] as Surface[] } };
+        expect(surfaceLines(line, 'Gravel')).toEqual([coordinates.slice(0, 3), coordinates.slice(3)]);
+        expect(surfaceLines(line, 'Paved')).toEqual([coordinates.slice(2, 4)]);
+        expect(surfaceLines({ coordinates, edges: {} }, 'Unknown')).toEqual([coordinates]);
     });
     it('gives the surface shares in whole percent that add to 100, the largest first and Unknown last', () => {
         const shares = (lengths: [Surface, number][]) => {
