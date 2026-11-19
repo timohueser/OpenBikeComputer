@@ -6,6 +6,7 @@ import { PAGE } from '../stream/heights';
 import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import WATERWAY_RULES from '../../../../../../data/trailview/waterways.json' with { type: 'json' };
+import PLAN_RULES from '../../../../../../data/trailview/plan.json' with { type: 'json' };
 import { approaches } from './approaches';
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
@@ -226,7 +227,12 @@ export interface Building { rings: number[][]; outer: boolean[] }
  * The shapes of a tile: lines, lakes and the sea with heights, the river areas, which lie on the drawn
  * surface, the pads under the platforms and the buildings.
  */
-export interface Shapes { lines: Line[]; mouths: CulvertMouth[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[]; crossings: { x: number; y: number }[] }
+export interface Shapes {
+    lines: Line[]; mouths: CulvertMouth[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[];
+    crossings: { x: number; y: number }[];
+    /** Each part of a bridge whole, missing heights included, in world units, and the half-width of its deck in metres. */
+    bridges: { xy: number[]; half: number }[];
+}
 
 /**
  * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit, the edges
@@ -271,13 +277,10 @@ export function features(list: Feature[], tile: Node): Shapes {
  * A tile's lines and outlines in grids of their boxes, made once per tile and released with its shapes: a node asks them
  * for what comes near it, and a structure for the lines and the water near a point (`linesNear`).
  * `reach` is the farthest in metres that a line's stamp acts past it, and `waterHalf` the widest half-width of a
- * waterway. The outlines are the lakes, the seas, the pads, the river areas, the buildings and the bridges' footprints, in
- * that order; `seasFrom` and the others are the index of the first of each.
+ * waterway. The outlines are the lakes, the seas, the pads, the river areas and the buildings, in that order; `seasFrom` and
+ * the others are the index of the first of each.
  */
-export interface TileIndex {
-    lines: Grid; reach: number; waterHalf: number; decks: Building[];
-    outlines: Grid & { seasFrom: number; padsFrom: number; areasFrom: number; buildingsFrom: number; decksFrom: number };
-}
+export interface TileIndex { lines: Grid; reach: number; waterHalf: number; outlines: Grid & { seasFrom: number; padsFrom: number; areasFrom: number; buildingsFrom: number } }
 const indexes = new WeakMap<Shapes, TileIndex>();
 /**
  * The cells of a tile's index, 2^13 world units (about 200 m in the Alps): a level-18 node asks a few, and a lake's box
@@ -299,37 +302,84 @@ function ringsBox(rings: number[][]): number[] {
     return box;
 }
 
-/** The footprint of a bridge line: one ring along it, its half-width to each side of each vertex. */
-export function deckOutline({ xy, h }: Line): Building {
-    const n = xy.length / 2, ring: number[] = [];
-    for (const side of [1, -1]) {
-        for (let k = 0; k < n; k++) {
-            const v = side > 0 ? k : n - 1 - k, a = Math.max(v - 1, 0), b = Math.min(v + 1, n - 1);
-            const dx = xy[2 * b] - xy[2 * a], dy = xy[2 * b + 1] - xy[2 * a + 1];
-            const off = (side * h) / metresPerUnit(xy[2 * v + 1]) / (Math.hypot(dx, dy) || 1);
-            ring.push(xy[2 * v] - dy * off, xy[2 * v + 1] + dx * off);
-        }
-    }
-    return { rings: [ring], outer: [true] };
-}
-
 export function tileIndex(shapes: Shapes): TileIndex {
     let index = indexes.get(shapes);
     if (index) return index;
     const { lines, lakes, seas, pads, areas, buildings } = shapes, seasAt = lakes.length, padsAt = seasAt + seas.length, areasAt = padsAt + pads.length;
-    const decks = lines.filter(({ kind }) => kind === BRIDGE).map(deckOutline);
     index = {
         lines: gridOf(lines.map(({ xy }) => ringsBox([xy])), INDEX_SHIFT),
         reach: lines.reduce((most, line) => Math.max(most, reachOf(line, NEAR), reachOf(line, NEAR - 1)), REACH_M),
         waterHalf: lines.reduce((most, { kind, h }) => (kind === RIVER || kind === STREAM ? Math.max(most, h) : most), 0),
-        outlines: {
-            ...gridOf([...lakes, ...seas, ...pads, ...areas, ...buildings, ...decks].map(({ rings }) => ringsBox(rings)), INDEX_SHIFT),
-            seasFrom: seasAt, padsFrom: padsAt, areasFrom: areasAt, buildingsFrom: areasAt + areas.length,
-            decksFrom: areasAt + areas.length + buildings.length,
-        },
-        decks,
+        outlines: { ...gridOf([...lakes, ...seas, ...pads, ...areas, ...buildings].map(({ rings }) => ringsBox(rings)), INDEX_SHIFT), seasFrom: seasAt, padsFrom: padsAt, areasFrom: areasAt, buildingsFrom: areasAt + areas.length },
     };
     indexes.set(shapes, index);
+    return index;
+}
+
+/** A deck ring's points lie this near the line that it stands for, and the ring grows by as much (metres). */
+const DECK_TOLERANCE_M = 0.1;
+/** A ring's mitre reaches at most this many half-widths out from its line at a bend. */
+const MITRE_CAP = 2;
+
+/**
+ * The ring around a bridge part's deck, in world units: its line thinned to `DECK_TOLERANCE_M`, each end carried on by
+ * the half-width (two deck lines that meet at a bend leave no wedge, and the ground past a deck's end is paved road), and
+ * offset by the half-width and the tolerance with mitred bends, capped at `MITRE_CAP`.
+ */
+function deckRing(xy: number[], half: number): number[] {
+    const metres = metresPerUnit(xy[1]), tol = DECK_TOLERANCE_M / metres;
+    const pts: number[][] = [];
+    for (let i = 0; i < xy.length; i += 2) {
+        const last = pts[pts.length - 1];
+        if (!last || last[0] !== xy[i] || last[1] !== xy[i + 1]) pts.push([xy[i], xy[i + 1]]);
+    }
+    if (pts.length < 2) return [];
+    // Douglas-Peucker: the points kept hold every dropped one within the tolerance.
+    const keep = new Uint8Array(pts.length);
+    keep[0] = keep[pts.length - 1] = 1;
+    const stack = [[0, pts.length - 1]];
+    while (stack.length) {
+        const [a, b] = stack.pop()!;
+        let far = -1, most = tol;
+        for (let i = a + 1; i < b; i++) {
+            const d = segmentDistance(pts[i][0], pts[i][1], pts[a][0], pts[a][1], pts[b][0], pts[b][1]);
+            if (d > most) (most = d), (far = i);
+        }
+        if (far >= 0) (keep[far] = 1), stack.push([a, far], [far, b]);
+    }
+    const line = pts.filter((_, i) => keep[i]), n = line.length, out = (half + DECK_TOLERANCE_M) / metres;
+    const unit = (a: number[], b: number[]) => {
+        const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+    };
+    const head = unit(line[1], line[0]), tail = unit(line[n - 2], line[n - 1]);
+    line[0] = [line[0][0] + head[0] * out, line[0][1] + head[1] * out];
+    line[n - 1] = [line[n - 1][0] + tail[0] * out, line[n - 1][1] + tail[1] * out];
+    const ring: number[] = [];
+    for (const side of [1, -1]) {
+        for (let k = 0; k < n; k++) {
+            const v = side > 0 ? k : n - 1 - k;
+            const a = v > 0 ? unit(line[v - 1], line[v]) : unit(line[v], line[v + 1]);
+            const b = v < n - 1 ? unit(line[v], line[v + 1]) : a;
+            const nx = -(a[1] + b[1]), ny = a[0] + b[0], l = Math.hypot(nx, ny) || 1;
+            // The bisector's normal, out by 1 / cos(θ/2) of the turn θ, capped.
+            const cos = Math.max((nx * -a[1] + ny * a[0]) / l, 1 / MITRE_CAP);
+            const off = (side * out) / cos / l;
+            ring.push(line[v][0] + nx * off, line[v][1] + ny * off);
+        }
+    }
+    return ring;
+}
+
+/** The deck rings of a tile's bridges and a grid of their boxes, made on the first use with `ground=plan`. */
+interface DeckIndex { grid: Grid; rings: Building[] }
+const deckIndexes = new WeakMap<Shapes, DeckIndex>();
+function deckIndex(shapes: Shapes): DeckIndex {
+    let index = deckIndexes.get(shapes);
+    if (!index) {
+        const rings = shapes.bridges.map(({ xy, half }) => ({ rings: [deckRing(xy, half)], outer: [true] })).filter(({ rings }) => rings[0].length);
+        deckIndexes.set(shapes, (index = { grid: gridOf(rings.map(({ rings }) => ringsBox(rings)), INDEX_SHIFT), rings }));
+    }
     return index;
 }
 
@@ -364,7 +414,7 @@ export function fronts(list: Feature[], tile: Node): Front[] {
         const frame = frameOf(tile), town = townOf(frame.buildings(list)), lines: Line[] = [];
         list.forEach((feature, f) => {
             const type = lineType(feature.kind, feature.tags);
-            if (type === ROAD || type === PATH) addLines(lines, f, feature, type, frame, town);
+            if (type === ROAD || type === PATH) addLines(lines, [], f, feature, type, frame, town);
         });
         frontsMade.set(list, (known = { tile: name, fronts: faceRoads(lines, town) }));
     }
@@ -414,7 +464,7 @@ function lineType(kind: string, tags: Record<string, string>): number | undefine
  * Adds the lines of feature `feature` of the list, of primitive kind `type`. In a town, a road's sidewalk keeps out of the
  * `beds` of the other lines where they are given.
  */
-function addLines(lines: Line[], feature: number, { kind, tags, parts }: Feature, type: number, { world, drawn }: Frame, town: Town, beds?: () => Beds): void {
+function addLines(lines: Line[], bridges: Shapes['bridges'], feature: number, { kind, tags, parts }: Feature, type: number, { world, drawn }: Frame, town: Town, beds?: () => Beds): void {
     const river = type === RIVER || type === STREAM, bridge = type === BRIDGE, bore = type === TUNNEL, path = Object.hasOwn(PATH_HALF, tags.highway), track = isTrack(tags);
     const surface = track ? trackSurface(tags) : surfaceOf(tags), h = halfOf(kind, tags), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
     const profile = profileOf(kind === 'tunnel' || kind === 'gallery' ? (path ? 'path' : 'road') : kind, river ? waterwayOf(kind, tags) : classOf(tags));
@@ -424,8 +474,16 @@ function addLines(lines: Line[], feature: number, { kind, tags, parts }: Feature
     // In a town, where a building is near a piece of it: a road has a sidewalk on that side, and a footway is paved.
     const sidewalk = type === ROAD && kind !== 'gallery' ? sidewalkOf(tags, surface) : 0;
     const paving = type === PATH && kind !== 'gallery' && surfaceOf(tags, true) !== surface;
+    // A deck as the ground plan draws it: its class's carriageway and paved shoulder (the OSM width where wider), its
+    // widest widening and the band past its edge.
+    const rule = (CLASS_RULES as Record<string, { half_m: number; shoulder_m: number; shoulder_paved: boolean }>)[classOf(tags)];
+    const deckHalf = Math.max(h, rule ? rule.half_m + (rule.shoulder_paved ? rule.shoulder_m : 0) : 0) + PLAN_RULES.structures.edge_band_m;
     for (const part of parts) {
         const curve = drawn(part, kind, tags), { xy, z } = curve, sideWaysOf = sidesAlong(part, world);
+        if (bridge) {
+            const widen = 'plan' in curve && curve.plan ? curve.plan.widen.reduce((most, w) => Math.max(most, w), 0) : 0;
+            bridges.push({ xy: Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat(), half: deckHalf + widen });
+        }
         if (!z) continue;
         // A line splits where a vertex has no height: a missing height is unknown, never 0 m. A footway splits
         // where it enters or leaves a town.
@@ -466,6 +524,7 @@ function addLines(lines: Line[], feature: number, { kind, tags, parts }: Feature
 function shapesOf(list: Feature[], tile: Node): Shapes {
     const frame = frameOf(tile), { world, drawn, area } = frame;
     const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [], barriers: Barrier[] = [], crossings: Shapes['crossings'] = [];
+    const bridges: Shapes['bridges'] = [];
     // The beds are made at the first sidewalk that a building is near.
     const buildings = frame.buildings(list), town = townOf(buildings);
     let made: Beds | undefined;
@@ -495,14 +554,14 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             continue;
         }
         const type = lineType(kind, tags);
-        if (type !== undefined) addLines(lines, feature, list[feature], type, frame, town, beds);
+        if (type !== undefined) addLines(lines, bridges, feature, list[feature], type, frame, town, beds);
     }
     // Before the culverts: `waysOf` keeps each way's segments by their vertices, and this adds vertices.
     approaches(lines);
     const buried = joinCulverts(list, lines, world);
     junctionPlanes(lines);
     abutments(lines);
-    return { lines, lakes, seas, areas, pads, buildings, barriers, crossings, mouths: standMouths(lines, buried) };
+    return { lines, lakes, seas, areas, pads, buildings, barriers, crossings, bridges, mouths: standMouths(lines, buried) };
 }
 
 /**
@@ -1165,13 +1224,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     // Per lake, sea polygon, pad and area near the node, its edges in each cell that they reach.
     const { outlines } = index, all = Array.from({ length: GRID * GRID }, (_, c) => c);
     // No outline acts farther than REACH_M past its box.
-    const near = nearBoxes(outlines, square, REACH_M * units + 1).flatMap(k => {
-        const kind = k < outlines.seasFrom ? LAKE : k < outlines.padsFrom ? SEA : k < outlines.areasFrom ? PAD : AREA, box = outlines.boxes[k];
-        if ((kind === SEA && !seaShows(node.level)) || (kind === PAD && node.level < PAD_LEVEL) || (kind === AREA && (node.level < NEAR || !areas))) return [];
-        // A bridge's footprint takes the ground under its deck with `plan`, where the records draw the deck over the ground.
-        if (k >= outlines.decksFrom && !plan) return [];
-        const outline = k < outlines.buildingsFrom ? shapes.areas[k - outlines.areasFrom] : k < outlines.decksFrom ? buildings[k - outlines.buildingsFrom] : index.decks[k - outlines.decksFrom];
-        const lake = kind === LAKE ? lakes[k] : kind === SEA ? seas[k - outlines.seasFrom] : kind === PAD ? pads[k - outlines.padsFrom] : { level: 0, ...outline };
+    const item = (kind: number, box: number[], lake: Lake) => {
         // An area acts only inside it: its edges go to the cells that they cross, so a village's cells stay
         // short. The sea acts no farther than the end of its bed's slope from its coast, so its long coasts
         // stay short too: BED_M past sea_band of stamp-core.wgsl, in units at most a shore band and the
@@ -1189,7 +1242,19 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
         }
         const cells = kind === AREA ? within(box, 0) : all;
         return [{ lake, kind, edges, cells }];
+    };
+    const near = nearBoxes(outlines, square, REACH_M * units + 1).flatMap(k => {
+        const kind = k < outlines.seasFrom ? LAKE : k < outlines.padsFrom ? SEA : k < outlines.areasFrom ? PAD : AREA, box = outlines.boxes[k];
+        if ((kind === SEA && !seaShows(node.level)) || (kind === PAD && node.level < PAD_LEVEL) || (kind === AREA && (node.level < NEAR || !areas))) return [];
+        const lake = kind === LAKE ? lakes[k] : kind === SEA ? seas[k - outlines.seasFrom] : kind === PAD ? pads[k - outlines.padsFrom]
+            : { level: 0, ...(k < outlines.buildingsFrom ? shapes.areas[k - outlines.areasFrom] : buildings[k - outlines.buildingsFrom]) };
+        return item(kind, box, lake);
     });
+    // With `plan` the records draw each deck over the ground: its ring takes the ground under it, as an area does.
+    if (plan && areas && node.level >= NEAR) {
+        const decks = deckIndex(shapes);
+        for (const k of nearBoxes(decks.grid, square, 1)) near.push(...item(AREA, decks.grid.boxes[k], { level: 0, ...decks.rings[k] }));
+    }
     // The origin of the lake crossings of a cell: its centre, held inside the node, as stamp-core.wgsl
     // has it, and moved a few units off every lake edge of the cell, so that no rule of a point on a
     // shore line decides inside or outside.

@@ -234,13 +234,14 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         expect(Array.from(corner)).toEqual([0]);
     });
 
-    it('takes the ground under a bridge with the plan only', () => {
-        // A residential bridge across a level-18 node, 5 m up: with `plan` the points on its deck are taken, as in an area,
-        // and a point 10 m off it is not; without `plan` the node lists no area.
+    it('takes the ground under a bridge deck with the plan only, out to its band and round its bends', () => {
+        // A residential bridge, 5 m up, across a level-18 node with a bend of 60° in its middle. Its deck reaches its
+        // carriageway (2.5 m) and the band (0.5 m) past it. With `plan` a point under the deck's edge band on the
+        // outside of the bend is taken, and a point 10 m off the deck is not; without `plan` the node holds no area.
         const tile = { level: 13, x: 4287, y: 2889 }, node = { level: 18, x: tile.x * 32 + 10, y: tile.y * 32 + 10 }, shift = 22 - node.level, cell = CELL * 2 ** shift;
-        const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, ym = y0 + (GRID / 2) * cell, m = 1 / metresPerUnit(ym);
-        const world = [x0 - 10 * cell, ym, x0 + (GRID + 10) * cell, ym];
-        const bridge = { kind: 'road', tags: { highway: 'residential', bridge: 'yes' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(world, (v, i) => v / 8 - (i % 2 ? tile.y : tile.x) * EXTENT), z: Float32Array.of(1005, 1005) }] };
+        const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, mid = [x0 + (GRID / 2) * cell, y0 + (GRID / 2) * cell], m = 1 / metresPerUnit(mid[1]);
+        const leg = 12 * cell, turn = Math.PI / 3, world = [mid[0] - leg, mid[1], mid[0], mid[1], mid[0] + leg * Math.cos(turn), mid[1] + leg * Math.sin(turn)];
+        const bridge = { kind: 'road', tags: { highway: 'residential', bridge: 'yes' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(world, (v, i) => v / 8 - (i % 2 ? tile.y : tile.x) * EXTENT), z: Float32Array.of(1005, 1005, 1005) }] };
         const taken = (plan: boolean, p: number[]) => {
             const { data } = nodeStamps([bridge], tile, node, plan);
             const records = 2 + GRID * GRID + 1 + data![1], word = (r: number, i: number) => data![records + RECORD * r + i] | 0;
@@ -254,8 +255,10 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
             }
             return inside;
         };
-        const on = [x0 + (GRID / 2 + 0.3) * cell, ym + 0.5 * m], off = [on[0], ym + 10 * m];
-        expect([taken(true, on), taken(true, off), taken(false, on)]).toEqual([true, false, false]);
+        // The outside of the bend lies against the bisector of the turn: 2.9 m out along it from the vertex.
+        const out = [Math.sin(turn / 2), -Math.cos(turn / 2)], bend = [mid[0] + 2.9 * m * out[0], mid[1] + 2.9 * m * out[1]];
+        const off = [mid[0] - 6 * cell, mid[1] + 10 * m];
+        expect([taken(true, bend), taken(true, off), taken(false, bend)]).toEqual([true, false, false]);
     });
 
     it('takes the points inside the buildings and the river areas, from each cell origin and the edges that the cell lists', () => {
