@@ -446,7 +446,7 @@ is the lid of the bore. A stretch over the body of a way that the tunnel ends at
 only where one tunnel way goes on. A cell reads no chain, so the open stretch takes none of a cell's reach. The A lines of one deck group that cross or lie within
 `edge_band_m` of each other move in together: each A moves in along its way to where its centre line meets the line
 normal to their mean direction into the decks through the farthest one in, and each end line stays square to its own
-way. One pass merges them; a cell merges the A lines that it sees. The storey is one per deck group, the deck ways that share a
+way. An A does not move onto or past a way that passes below its deck with room. One pass merges them; a cell merges the A lines that it sees. The storey is one per deck group, the deck ways that share a
 point, joined over all cells: 1, and one more than each group under it at a crossing that a cell owns and whose
 ladder gives a deck (full or thin). A crossing of a group over itself lifts nothing. The metres along of a way are
 those of its stroke (see Alignment): `along_code` at the first vertex of each part, and the length of the ground
