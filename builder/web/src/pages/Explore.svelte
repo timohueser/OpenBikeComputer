@@ -10,7 +10,7 @@
     import { decodeCoordinates } from '../lib/planner/route-answer';
     import { routeColor } from '../lib/planner/route-colors';
     import { catalog, tooWide, trailsTooWide, type Box } from '../lib/planner/route-catalog';
-    import { gradeName, kinds, longTrailId, recordCredits, routePlan, type CatalogRecord, type RouteRecord, type TrailEntry } from '../lib/planner/signed-routes';
+    import { gradeName, kinds, recordCredits, routePlan, type CatalogRecord, type RouteRecord, type TrailEntry } from '../lib/planner/signed-routes';
     import { hasTrailView, loadTrailView } from '../lib/planner/trailview';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
@@ -24,7 +24,7 @@
     import TrailCard, { trailParts } from './explore/TrailCard.svelte';
     import { firstRows, ROWS } from './explore/rows';
     import Chips from './routes/Chips.svelte';
-    import { farOrder, nearTrails, PROFILE_STEP_M, results, signedItem, splitDay, trailItem, type Chips as ChipValues, type Item, type SignedItem, type TrailItem } from './routes/filter';
+    import { farOrder, farTrailId, nearTrails, PROFILE_STEP_M, results, signedItem, splitDay, trailItem, type Chips as ChipValues, type Item, type SignedItem, type TrailItem } from './routes/filter';
     import ListAndMap from './routes/ListAndMap.svelte';
     import PlaceSearch from './routes/PlaceSearch.svelte';
     import RouteRow from './routes/RouteRow.svelte';
@@ -80,7 +80,7 @@
     const split = $derived(answered?.records ? splitDay(answered.records, answered.all, recordOf) : { day: [], long: [] });
     const dayItems = $derived(split.day.map(record => signedOf(record)));
     /** The stages and single routes of the trails of a near view, in the colour of their trail. */
-    const stageItems = $derived(split.long.map(record => signedOf(record, String(longTrailId(record, recordOf)))));
+    const stageItems = $derived(split.long.map(record => signedOf(record, String(farTrailId(record, answered!.all, recordOf)))));
     const trailItems = $derived((!answered?.trails ? [] : answered.far ? answered.trails : nearTrails(answered.trails, answered.all, split.long, recordOf))
         .filter(entry => kinds[bike].includes(entry.kind)).map(trailOf));
     /** The answer is for another view: until the load of the new view ends, each tab shows its rows in the new view. */
@@ -118,7 +118,7 @@
         return stageItems.filter(item => listed.has(item.trail!));
     });
     // The map credits are HTML, and a record credit is plain text. A far file has no credits: the selected trail brings its own.
-    const credits = $derived(recordCredits([...mapItems.flatMap(item => item.kind === 'signed' ? [item.record] : []), ...tab === 'long' && trail?.record ? [trail.record] : []])
+    const credits = $derived(recordCredits([...mapShown.flatMap(item => item.kind === 'signed' ? [item.record] : []), ...tab === 'long' && trail?.record ? [trail.record] : []])
         .map(escapeMarkup));
     /** The pictures that show a cover, and the credits of the set: the map shows them while a cover shows. */
     let covers = $state(0), coverCredits = $state.raw<string[]>([]);
@@ -257,11 +257,8 @@
         if (trail === next) trail = opened.entry || opened.record ? opened : undefined;
     }
 
-    /** The trail button of a route card opens the trail card in the long trails tab; the focus moves to the new card. */
+    /** The trail button of a stage card opens the trail card; the focus moves to the new card. */
     function trailOfCard(id: number) {
-        // The trail card shows on the page, under the TrailView window.
-        trailView = undefined;
-        tab = 'long';
         void openTrail(id);
         void tick().then(() => document.querySelector<HTMLElement>('.selected .close')?.focus());
     }
@@ -274,7 +271,7 @@
 
     // Back from another page brings the view, the chips and the selection again.
     const keep = keepInHistory('explore', (): Kept => ({ chips, view, tab, selected, trail: trail?.id, stage }));
-    if (kept?.trail !== undefined) void openTrail(kept.trail).then(() => { stage = kept.stage; });
+    if (kept?.trail !== undefined) void openTrail(kept.trail).then(() => { if (trail?.id === kept.trail) stage = kept.stage; });
 
     // TrailView shows the first routes of the list from a view above them all.
     const TRAILVIEW_ROUTES = 100;
@@ -374,7 +371,7 @@
 </ListAndMap>
 
 {#snippet card(refocus: () => void)}
-    <SignedCard item={chosen!} {oncover} onplan={() => plan(chosen!)} ontrail={config.trails ? trailOfCard : undefined} onclose={() => { refocus(); selected = undefined; }} />
+    <SignedCard item={chosen!} {oncover} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
 {/snippet}
 
 {#snippet dayOrLong()}

@@ -137,13 +137,16 @@ export function trailItem(entry: TrailEntry, bike: Bike): TrailItem {
 /** The colour of a line: a stage of a trail has the colour of its trail. */
 export const lineColor = (item: SignedItem | TrailItem) => routeColor(item.kind === 'signed' ? item.trail ?? item.id : item.id);
 
-/** The records of a near view by tab: a record whose long trail is a trail of `trails` is no day route. */
+/** The trail of `trails` that `record` is in: its long trail, else the complete long route of a stage (`parent`), which
+ * can hold the innermost long route of `trail` when that one is no trail. */
+export function farTrailId(record: CatalogRecord, trails: Map<number, TrailEntry>, recordOf: (id: number) => CatalogRecord | undefined): number | undefined {
+    return [longTrailId(record, recordOf), record.parent].find(id => id !== undefined && trails.has(id));
+}
+
+/** The records of a near view by tab: a record in a trail of `trails` is no day route. */
 export function splitDay(records: CatalogRecord[], trails: Map<number, TrailEntry>, recordOf: (id: number) => CatalogRecord | undefined) {
     const day: CatalogRecord[] = [], long: CatalogRecord[] = [];
-    for (const record of records) {
-        const trail = longTrailId(record, recordOf);
-        (trail !== undefined && trails.has(trail) ? long : day).push(record);
-    }
+    for (const record of records) (farTrailId(record, trails, recordOf) === undefined ? day : long).push(record);
     return { day, long };
 }
 
@@ -153,7 +156,7 @@ export function nearTrails(inView: TrailEntry[], trails: Map<number, TrailEntry>
     recordOf: (id: number) => CatalogRecord | undefined): TrailEntry[] {
     const found = new Map(inView.map(entry => [entry.id, entry]));
     for (const record of long) {
-        const entry = trails.get(longTrailId(record, recordOf)!);
+        const entry = trails.get(farTrailId(record, trails, recordOf)!);
         if (entry) found.set(entry.id, entry);
     }
     return [...found.values()];
