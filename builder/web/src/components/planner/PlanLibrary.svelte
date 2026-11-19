@@ -56,7 +56,7 @@
     }
 </script>
 
-<svelte:window onpointerdown={event => { if (!panel.contains(event.target as Node) && !(event.target as Element).closest('button')?.textContent?.includes('My routes')) onClose(); }} />
+<svelte:window onpointerdown={event => { if (!panel.contains(event.target as Node)) onClose(); }} />
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <section class="library" aria-label="My routes" bind:this={panel} onkeydown={key}>

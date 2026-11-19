@@ -13,6 +13,7 @@ import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
 import RouteStats from './RouteStats.svelte';
 import TripBar from './TripBar.svelte';
+import RoutePreferences from './RoutePreferences.svelte';
 import { coordinateName } from '../../lib/planner/point-names';
 import SaveWindow, { type SaveMode } from './SaveWindow.svelte';
 import type { RoutingLine } from '../../lib/planner/routing';
@@ -277,13 +278,14 @@ describe('trip pace', () => {
         const props = itineraryProps(null);
         let trip = $state.raw<Trip>(props.trip);
         const onChange = vi.fn((change: Partial<Trip>) => { trip = { ...trip, ...change }; });
-        mounted.push(mount(TripBar, { target: document.body, props: { get trip() { return trip; }, name: '', ready: true,
-            canUndo: false, canRedo: false, onChange, onUndo: vi.fn(), onRedo: vi.fn(), onNew: vi.fn(), onLibrary: vi.fn(), ...saveProps } }));
+        mounted.push(mount(RoutePreferences, { target: document.body, props: { get trip() { return trip; }, onChange } }));
         mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get trip() { return trip; },
             get itinerary() { return planView(trip, props.line).itinerary; }, get days() { return planView(trip, props.line).days; } } }));
         await tick();
         const firstDay = () => document.querySelector('[data-day="1"]')!.textContent;
         const moderate = firstDay();
+        document.querySelector<HTMLButtonElement>('button[aria-expanded="false"][title$="Moderate pace"]')!.click();
+        await tick();
         button('Pace').click();
         await tick();
         [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent?.includes('Fast'))!.click();
@@ -479,7 +481,7 @@ describe('save', () => {
     });
     const bar = (props: { stored: boolean; changed: boolean; canSave: boolean; more?: { label: string; disabled?: boolean; run: () => void }[] }) =>
         mounted.push(mount(TripBar, { target: document.body, props: { ...saveProps, ...props, trip: testTrip(), name: 'Lake loop', ready: true,
-            canUndo: false, canRedo: false, onChange: vi.fn(), onUndo: vi.fn(), onRedo: vi.fn(), onNew: vi.fn(), onLibrary: vi.fn() } }));
+            canUndo: false, canRedo: false, onUndo: vi.fn(), onRedo: vi.fn() } }));
     const saveButton = () => document.querySelector<HTMLButtonElement>('.trip-bar .save > button')!;
 
     it.each([

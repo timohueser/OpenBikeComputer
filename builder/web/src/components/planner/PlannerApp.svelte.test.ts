@@ -117,6 +117,18 @@ async function search(text: string, label = tilePlace.label) {
     await vi.waitFor(() => expect(document.querySelector('.results')?.textContent).toContain(label));
 }
 
+const preferencesLine = () => [...document.querySelectorAll('button')].find(found => found.textContent?.trim().startsWith('Route preferences: '))!;
+
+async function openPreferences() {
+    if (preferencesLine().getAttribute('aria-expanded') === 'false') preferencesLine().click();
+    await tick();
+}
+
+async function chooseMore(item: string) {
+    button('More ▾').click(); await tick();
+    button(item).click(); await tick();
+}
+
 async function setRidingDays(days: number) {
     const count = () => Number(document.querySelector('[aria-label="Number of riding days"] .count')!.textContent!.split(' ')[0]);
     while (count() !== days) { button(count() < days ? 'One day more' : 'One day fewer').click(); await tick(); }
@@ -130,6 +142,7 @@ describe('planner app transitions', () => {
         saved.preset = 'Shorter';
         stored.set('trip', JSON.stringify(saved));
         await startApp(); await tick();
+        await openPreferences();
         expect(button('Preset').textContent?.trim()).toBe('Balanced');
         expect(button('Pan map').dataset.accessMode).toBe('walking');
         await vi.waitFor(() => expect(document.querySelector('.trip-summary')?.textContent).toContain('Walking time'));
@@ -146,7 +159,7 @@ describe('planner app transitions', () => {
         button('Map settings').click(); await tick();
         const menu = document.querySelector('[role="dialog"][aria-label="Map settings"]')!;
         const network = () => menu.querySelector('[aria-label="Routes, one at a time"] [aria-pressed="true"]')?.textContent?.trim();
-        const activity = async (label: string) => { button('Activity').click(); await tick(); button(label).click(); await tick(); };
+        const activity = async (label: string) => { await openPreferences(); button('Activity').click(); await tick(); button(label).click(); await tick(); };
         expect(network()).toBe('Cycling');
         button('Hiking', menu).click(); await tick();
         await activity('Gravel bike');
@@ -299,7 +312,7 @@ describe('planner app transitions', () => {
         expect(document.body.textContent).toContain('Where would you like to ride?');
         button('Undo').click(); await tick();
         expect(document.body.textContent).toContain('Choose your start');
-        button(mode === 'route' ? 'New route' : 'New trip').click();
+        await chooseMore('New route');
         await vi.waitFor(() => expect(document.querySelector('dialog h2')?.textContent).toBe('Save changes to ‘To Finish’?'));
         button('Discard').click();
         await vi.waitFor(() => expect(document.body.textContent).toContain('Where would you like to ride?'));
@@ -362,6 +375,7 @@ describe('planner app transitions', () => {
         for (const [bike, requests] of [['Gravel bike', 1], ['Touring bike', 2]] as const) {
             await vi.waitFor(() => expect(document.querySelector('section.elevation')).not.toBeNull());
             expect(routeRequests()).toBe(requests);
+            await openPreferences();
             button('Activity').click(); await tick();
             button(bike).click(); await tick();
         }
@@ -489,6 +503,7 @@ describe('planner app transitions', () => {
         vi.mocked(routing.calculateLine).mockImplementation(async (...args) => ({ ...await measured(...args) }));
         await select();
         expect(part()).not.toBeNull();
+        await openPreferences();
         button('Activity').click(); await tick();
         button('Gravel bike').click();
         await vi.waitFor(() => expect(part()).toBeNull());
@@ -620,3 +635,67 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.labels')?.textContent).toContain('Sun 20');
     });
 });
+
+describe('planner side panel', () => {
+    const asRoute = (change: object = {}) => stored.set('trip', JSON.stringify({ ...testTrip(), mode: 'route', ...change }));
+    const dayOpen = () => !!document.querySelector('[aria-label="Selected day"]');
+
+    it('makes the view follow the type after Undo and Redo', async () => {
+        asRoute();
+        await startApp();
+        button('One day more').click(); await tick();
+        await vi.waitFor(() => dayButton(1).click()); await tick();
+        expect(dayOpen()).toBe(true);
+        await search('campsites');
+        button('Undo').click(); await tick();
+        expect([!!document.querySelector('ol.route'), dayOpen(), !!document.querySelector('.results')]).toEqual([true, false, false]);
+        button('Map point: Basel').click(); await tick();
+        expect(document.querySelector('.callout')).not.toBeNull();
+        button('Redo').click(); await tick();
+        expect([!!document.querySelector('ol.route'), dayOpen(), !!document.querySelector('.callout')]).toEqual([false, false, false]);
+        expect(document.querySelector('[aria-label="Number of riding days"]')?.textContent).toContain('3 riding days');
+    });
+
+    it('opens the preferences line in the page, keeps it open after a pick, and closes it on Escape only', async () => {
+        await startApp();
+        expect(preferencesLine().textContent?.trim()).toBe('Route preferences: Touring bike · Balanced · Moderate pace');
+        button('Map point: Basel').click(); await tick();
+        await openPreferences();
+        const choices = () => document.querySelector('[role="group"][aria-label="Choose route preferences"]');
+        expect(choices()).not.toBeNull();
+        button('Pace').click(); await tick();
+        button('Fast').click(); await tick();
+        expect([choices() !== null, JSON.parse(written()!).pace]).toEqual([true, 'fast']);
+        expect(preferencesLine().textContent).toContain('Fast pace');
+        button('Pace').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await tick();
+        expect([choices(), document.activeElement === preferencesLine(), !!document.querySelector('.callout')]).toEqual([null, true, true]);
+    });
+
+    it.each([
+        ['a route with a shaping point', { mode: 'route', routeOrder: ['via'], points: [...testTrip().points, { id: 'via', kind: 'via', label: 'Bend', coordinate: [7.7, 47.36] }] }, 'Edit shaping points on the map.'],
+        ['a multi-day trip', {}, 'Choose where to sleep each night.'],
+        ['a route with no shaping point', { mode: 'route' }, null],
+    ])('shows the help of %s behind the "?"', async (_, change, text) => {
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Search offline')));
+        stored.set('trip', JSON.stringify({ ...testTrip(), ...change }));
+        await startApp();
+        await vi.waitFor(() => expect(document.querySelector('.trip-summary')).not.toBeNull());
+        const help = () => [...document.querySelectorAll('button')].find(found => found.getAttribute('aria-label') === 'Help');
+        if (!text) return expect(help()).toBeUndefined();
+        expect(document.body.textContent).not.toContain(text);
+        help()!.click(); await tick();
+        expect(help()!.getAttribute('aria-expanded')).toBe('true');
+        expect(document.getElementById(help()!.getAttribute('aria-controls')!)?.textContent).toContain(text);
+    });
+
+    it('makes the side panel with the preferences line inert while the planner is busy', async () => {
+        await startApp();
+        let finish!: () => void;
+        vi.spyOn(Library.prototype, 'newestUnstoredDraft').mockReturnValue(new Promise(resolve => finish = () => resolve(undefined)));
+        await chooseMore('New route');
+        await vi.waitFor(() => expect(preferencesLine().closest('[inert]')?.getAttribute('aria-label')).toBe('Trip planning'));
+        finish();
+        await vi.waitFor(() => expect(preferencesLine().closest('[inert]')).toBeNull());
+    });
+});
+
