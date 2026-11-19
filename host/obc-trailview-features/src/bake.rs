@@ -415,14 +415,12 @@ pub fn bake(
     metrics.insert("census".into(), json!({"ground": ground_census.metrics(), "water": water_census.metrics()}));
     let pass = Instant::now();
     crate::step::release();
-    let (mut levels, cells, chains) =
-        levels::tags(&placer.tiles, terrain, memory.saturating_sub(crate::step::resident()));
+    let (mut levels, cells) = levels::tags(&placer.tiles, terrain, memory.saturating_sub(crate::step::resident()));
     eprintln!("levels: {cells} cells, {} ways tagged in {:.1} s", levels.len(), pass.elapsed().as_secs_f64());
     metrics.insert("levels".into(), json!({"cells": cells, "ways": levels.len()}));
     // The tunnel parts read the tiles with the tags of the levels, and come after the sea.
     let pass = Instant::now();
     let input = parts::Input {
-        chains: &chains,
         tunnels: &tunnels,
         ways: ways.iter().map(|(e, tags, parts)| (kinds[*e].kind.as_str(), tags, parts.as_slice())).collect(),
         tunnel_ways: &tunnel_ways,

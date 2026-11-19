@@ -127,8 +127,6 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         let t = &tubes[o.tube];
         if !t.heights {
             rung[i] = Some("a vertex of unknown height");
-        } else if !t.vertices {
-            rung[i] = Some("an end that is no end vertex of its way");
         }
     }
     let near = near(openings, input);

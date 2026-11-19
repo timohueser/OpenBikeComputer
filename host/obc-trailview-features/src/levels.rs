@@ -25,13 +25,9 @@ const JOB_BYTES: usize = 400 << 20;
 /// The decoded pages of a terrain tile.
 type Quadrants = [Option<StoredPage>; 4];
 
-/// The tags of each feature id of the zoom-13 tiles, the number of cells read, and the chains of the tunnel features
-/// (`level_tags::chains`). A job reads the cells of one tile, as many jobs at once as `memory` holds.
-pub fn tags(
-    tiles: &Tiles,
-    terrain: &dyn Terrain,
-    memory: usize,
-) -> (HashMap<u32, Tags>, usize, Vec<level_tags::Chain>) {
+/// The tags of each feature id of the zoom-13 tiles, and the number of cells read. A job reads the cells of one tile, as
+/// many jobs at once as `memory` holds.
+pub fn tags(tiles: &Tiles, terrain: &dyn Terrain, memory: usize) -> (HashMap<u32, Tags>, usize) {
     let rules = Rules::embedded();
     let z13 = |c: u32, r: u32| tiles.tiles.get(&(MAX_ZOOM, c, r));
     let mut jobs: Vec<(u32, u32)> =
@@ -65,8 +61,7 @@ pub fn tags(
             .extend(cell.links.into_iter().filter_map(|(a, ma, da, b, mb, db)| Some((id(a)?, ma, da, id(b)?, mb, db))));
     }
     let tags = level_tags::merge(&by_id, &groups, &over, &links, &rules.structures);
-    let chains = level_tags::chains(&by_id, &links);
-    (tags.into_iter().collect(), jobs.len() << (2 * (CELL_ZOOM - FEATURE_ZOOM)), chains)
+    (tags.into_iter().collect(), jobs.len() << (2 * (CELL_ZOOM - FEATURE_ZOOM)))
 }
 
 /// `job` of each of `jobs` on as many threads as `memory` holds jobs of `JOB_BYTES`, in the order of the jobs whatever
