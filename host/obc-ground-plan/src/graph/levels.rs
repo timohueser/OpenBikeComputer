@@ -530,10 +530,11 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The passages that keep the A line at a tag end of way w: every way, and water that runs under no ground arm
-    /// there. Water runs under an arm where its centre line, on the arm's side of the line through the node square to
-    /// the arm's first chord, comes within the two half-widths of the arm's centre line. Water under a ground way has a
-    /// general answer already, the culvert; a way under a ground way has none, so a way always keeps its passage.
+    /// The passages that keep the A line at a tag end of way w: every way, and water whose stroke does not reach under
+    /// the paved stroke of a ground arm there (its centre line, on the arm's side of the line through the node square
+    /// to the arm's first chord, comes within the two half-widths of the arm's centre line). Such water already runs
+    /// under the ground road, and the arm's A line holds as for a bridge with no passage; a way below a ground stub is
+    /// a walled-up passage, so a way always keeps its passage.
     fn kept(&self, w: u32, start: bool, passages: &[u32]) -> Vec<u32> {
         let arms: Vec<(u32, bool)> =
             self.others(w, start).into_iter().flatten().copied().filter(|&(o, _)| !self.water(o)).collect();
@@ -751,6 +752,13 @@ impl Passages {
     fn keeps(&self, w: u32) -> bool {
         !self.at[w as usize].is_empty()
     }
+
+    /// Whether the deck of way w from metres `lo` to `hi` keeps a passage: one of its passage stations lies strictly
+    /// between them, so the deck has a length.
+    fn holds(&self, ctx: &Ctx, w: u32, lo: f64, hi: f64) -> bool {
+        let from = ctx.g.ways[w as usize].from;
+        self.at[w as usize].iter().map(|st| between(&ctx.g.parts, &from, st)).any(|m| lo < m && m < hi)
+    }
 }
 
 /// A DECK way's A lines (metres along) at its tag ends and the metres between them, read on through
@@ -797,8 +805,9 @@ fn bisect(mut lo: f64, mut hi: f64, ok: &dyn Fn(f64) -> bool) -> f64 {
 
 /// An A line at a tag end of way w: the nearer of the first point where the deck's end line is clear of the paved
 /// strokes of the ground arms there, at most `A_MAX_M` in, and the last point before it touches the stroke of a
-/// passage that it keeps (`Ctx::kept`), at the tag end where a passage reaches it or the line lies less than `MIN_STEP_M / 2` from it. None where
-/// neither is. `probes` are metres along w: its samples and its passages' stations.
+/// passage that it keeps (`Ctx::kept`), at the tag end where a passage reaches it or the line lies less than
+/// `MIN_STEP_M / 2` from it. None where neither is. `probes` are metres along w: its samples and its passages'
+/// stations.
 fn place_a(ctx: &Ctx, w: u32, start: bool, arms: &[u32], passages: &[u32], probes: &[f64]) -> Option<f64> {
     let len = ctx.lengths[w as usize];
     let at = |d: f64| if start { d } else { len - d };
@@ -940,8 +949,9 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
     let (ended, culvert) = step3(g, ladders);
     let ways: Vec<u32> = (0..g.ways.len() as u32).filter(|&w| ctx.tagged(w) || !ended[w as usize].is_empty()).collect();
     let pass = Passages::new(ctx, ladders);
-    // Deck ways that are ground, unless they keep a passage: over a culvert, or with no room for a deck between their
-    // A lines. A deck way that turns ground changes the A lines of the deck ways at its ends only.
+    // Deck ways that are ground, unless their deck keeps a passage (`Passages::holds`): over a culvert, or with no room
+    // for a deck between their A lines. A way with no passage station keeps none. A deck way that turns ground changes
+    // the A lines of the deck ways at its ends only.
     let mut ground: Vec<bool> =
         (0..g.ways.len() as u32).map(|w| !ctx.deck_tagged(w) || (culvert[w as usize] && !pass.keeps(w))).collect();
     let mut deck_of: Vec<Option<DeckEnds>> = vec![None; g.ways.len()];
@@ -950,7 +960,9 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
         let mut turned = Vec::new();
         for &w in &dirty {
             let ends = deck_ends(ctx, w, &ground, &pass);
-            if ends.is_none_or(|e| e.1 < ctx.s.deck_min_m && !pass.keeps(w)) {
+            let len = ctx.lengths[w as usize];
+            let short = |e: &DeckEnds| e.1 < ctx.s.deck_min_m || culvert[w as usize];
+            if ends.is_none_or(|e| short(&e) && !pass.holds(ctx, w, e.0[0].unwrap_or(0.0), e.0[1].unwrap_or(len))) {
                 ground[w as usize] = true;
                 turned.push(w);
             }
@@ -1087,7 +1099,8 @@ fn merge_a(ctx: &Ctx, out: &mut Levels, pass: &Passages) {
                 continue;
             }
             let mut crossed = pass.at[w as usize].iter().map(|st| between(&g.parts, &from, st));
-            if ctx.clear(w, moved, &pass.under[w as usize]) <= 0.0 || crossed.any(|x| (x - at) * (x - moved) <= 0.0) {
+            let kept = ctx.kept(w, ahead, &pass.under[w as usize]);
+            if ctx.clear(w, moved, &kept) <= 0.0 || crossed.any(|x| (x - at) * (x - moved) <= 0.0) {
                 continue;
             }
             let st = ctx.at(w, moved).st;
@@ -1275,7 +1288,11 @@ pub fn check_levels(g: &WayGraph, input: &CellInput, sections: &Sections, s: &St
                     0.0
                 }
             };
-            if deck + on(true) + on(false) < s.deck_min_m - tolerance && !pass.keeps(w) {
+            let m = |st: &Station| between(&g.parts, &way.from, st);
+            let decks = runs.iter().filter(|r| r.state == State::Deck);
+            let lo = decks.clone().map(|r| m(&r.from)).fold(f64::INFINITY, f64::min);
+            let hi = decks.map(|r| m(&r.to)).fold(f64::NEG_INFINITY, f64::max);
+            if deck + on(true) + on(false) < s.deck_min_m - tolerance && !pass.holds(&ctx, w, lo, hi) {
                 fault("G8", format!("way {w}: a deck of {deck} m between its end lines"));
             }
         }
@@ -1292,8 +1309,17 @@ pub fn check_levels(g: &WayGraph, input: &CellInput, sections: &Sections, s: &St
         let passage = |m: f64| ctx.clear(w, m, &kept);
         // At the edge of a passage: the end line touches it within `PLACE_TO_M` further in.
         let inward = if start { m + 2.0 * PLACE_TO_M } else { m - 2.0 * PLACE_TO_M };
+        // At its tag end the line may lie there from less than `MIN_STEP_M / 2` in: it is read that far in.
         let tag_end = m <= PLACE_TO_M || m >= len - PLACE_TO_M;
-        if ctx.clear(w, m, &arms) < -PLACE_TO_M && passage(inward) > 0.0 && !tag_end {
+        let read = if !tag_end {
+            m
+        } else if start {
+            m + MIN_STEP_M / 2.0
+        } else {
+            m - MIN_STEP_M / 2.0
+        };
+        let edge = if tag_end { read } else { inward };
+        if ctx.clear(w, read, &arms) < -PLACE_TO_M && passage(edge) > 0.0 {
             fault("G9", format!("way {w}: an A line at {:?} lies inside a ground arm", line.at));
         }
         if passage(m) < -PLACE_TO_M && !tag_end {
