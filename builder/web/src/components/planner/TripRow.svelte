@@ -1,6 +1,6 @@
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
-    import { allStay, fewestDays, maxRidingDays, setDays, type Stay, type Trip } from '../../lib/planner/editor';
+    import { allStay, type Stay, type Trip } from '../../lib/planner/editor';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
     import { stayOptions as kinds } from '../../lib/planner/search/presentation';
 
@@ -14,10 +14,6 @@
         const last = addDays(trip.startDate, trip.days + (trip.restAfter?.length ?? 0) - 1);
         return `${weekdayLabel(trip.startDate, trip.startDate.slice(0, 7) !== last.slice(0, 7))} – ${weekdayLabel(last, true)}`;
     });
-
-    function changeDays(days: number) {
-        onChange(setDays(trip, days), `${days} riding ${days === 1 ? 'day' : 'days'}`);
-    }
 
     function toggle(kind: Stay) {
         const next = allStay.filter(k => k === kind ? !stay.includes(k) : stay.includes(k));
@@ -53,11 +49,6 @@
                 </div>
             </div>
         {/if}
-    </div>
-    <div class="days" role="group" aria-label="Number of riding days">
-        <button type="button" aria-label="One day fewer" disabled={trip.days <= fewestDays(trip)} onclick={() => changeDays(trip.days - 1)}><Icon path="M5 12h14" size={15} /></button>
-        <span class="count"><span class:guess={!trip.daysSet}>{trip.days} riding {trip.days === 1 ? 'day' : 'days'}</span></span>
-        <button type="button" aria-label="One day more" disabled={trip.days >= maxRidingDays} onclick={() => changeDays(trip.days + 1)}><Icon name="plus" size={15} /></button>
     </div>
     <div class="stay" role="group" aria-label="Where you sleep">
         <span>Sleep in</span>
@@ -153,42 +144,6 @@
         border-radius: 6px;
         background: var(--amber);
         color: var(--on-amber);
-        font-weight: 600;
-    }
-    .days {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        padding: 2px;
-        border: 1px solid var(--line-strong);
-        border-radius: 8px;
-    }
-    .days button {
-        display: grid;
-        place-items: center;
-        width: 30px;
-        height: 30px;
-        padding: 0;
-        border: 0;
-        border-radius: 6px;
-        background: none;
-        color: var(--ink);
-    }
-    .days button:not(:disabled):hover { background: var(--parchment-2); }
-    .count {
-        min-width: 108px;
-        text-align: center;
-        font-size: 14px;
-        color: var(--ink);
-        font-variant-numeric: tabular-nums;
-    }
-    .count span {
-        padding-bottom: 1px;
-        border-bottom: 2px solid var(--ink);
-        font-weight: 700;
-    }
-    .count span.guess {
-        border-bottom: 1.5px dashed var(--ink-soft);
         font-weight: 600;
     }
     .stay {

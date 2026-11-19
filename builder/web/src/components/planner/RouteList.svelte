@@ -63,6 +63,7 @@
 
 <svelte:window onkeydown={(event) => { if (event.key === 'Escape') drag = null; }} onblur={() => drag = null} />
 
+{#if measured}<p class="note">Cumulative from the start</p>{/if}
 <ol class="route" bind:this={list}>
     {#each listed as { point, distance }, index (point.id)}
         <li class:dragging={drag?.id === point.id && Math.abs(drag.delta) > 4}
@@ -97,8 +98,6 @@
 {#if onLoop && !loop && listed.at(-1)?.point.kind === 'finish'}
     <button type="button" class="stop back" onclick={onLoop}><Icon name="loop" size={17} />Back to start</button>
 {/if}
-{#if measured}<p class="note">Cumulative from the start</p>{/if}
-{#if stops.some(stop => stop.point.kind === 'via' || stop.point.leg === 'drawn')}<p class="note">Edit shaping points on the map. Reordering stops clears shapes on changed legs. Undo restores them.</p>{/if}
 <span class="sr-only" id={helpId}>Drag to reorder. Use the up and down arrow keys when focused.</span>
 <span class="sr-only" role="status">{announcement}</span>
 
@@ -182,8 +181,9 @@
         background: var(--parchment-2);
     }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    /* Over the text column, so it reads as the caption of the distances under the names. */
     .note {
-        margin: 8px 16px 16px;
+        margin: 4px 16px 0 45px;
         font-size: 13px;
         color: var(--ink-soft);
     }

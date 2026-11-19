@@ -114,10 +114,17 @@
         {/if}
         {#if text.length > 80}<p class="note">Smart requests use up to 80 characters. Longer text uses ordinary place search.</p>{/if}
     {/if}
+    {#snippet region()}
+        <button type="button" class="data-button" aria-expanded={settings} onclick={() => settings = !settings}>{config.name} · {online ? 'online' : 'local data'}<PlannerIcon name="down" size={12} /></button>
+    {/snippet}
     {#if !text.trim()}
-        <div class="meaning"><QueryChip bind:active={activeFilter} field="where" value={context.pointing ?? { scope: 'view' }} {days} {selection} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
+        <div class="find-row">
+            <div class="meaning"><QueryChip bind:active={activeFilter} field="where" value={context.pointing ?? { scope: 'view' }} {days} {selection} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
+            {@render region()}
+        </div>
+    {:else}
+        {@render region()}
     {/if}
-    <button type="button" class="data-button" aria-expanded={settings} onclick={() => settings = !settings}>{config.name} · {online ? 'online' : 'local data'}<PlannerIcon name="down" size={12} /></button>
     {#if settings}
         <div class="settings">
             <button type="button" onclick={onLocation}>{context.here ? 'Update my location' : 'Use my location'}</button>
@@ -146,6 +153,8 @@
     .meaning-label { font-size: 11px; color: var(--ink-soft); width: 100%; text-transform: capitalize; }
     .note { margin: 8px 0 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
     .data-button { display: flex; align-items: center; gap: 5px; padding: 8px 0 0; min-height: 32px; border: 0; background: transparent; font-size: 11px; color: var(--ink-soft); }
+    .find-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 12px; }
+    .find-row .data-button { padding-top: 10px; }
     .settings { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; font-size: 13px; }
     .settings button { border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--panel); min-height: 36px; padding: 6px; font: inherit; }
     @media (max-width: 700px) { .query-input input { font-size: 16px; } }

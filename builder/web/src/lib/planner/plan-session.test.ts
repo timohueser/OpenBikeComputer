@@ -328,7 +328,8 @@ describe('plan session', () => {
         await session.start(library);
         vi.spyOn(library, 'saveDraft').mockImplementation(async draft => { saved.push((draft.trip as Trip).days); });
         const visit = (trip: Trip, id: string): Trip => ({ ...trip, routeOrder: [...trip.routeOrder, id], points: [...trip.points, point(id, 'waypoint', [8.05, 48.1])] });
-        session.commit({ ...plan, daysSet: undefined });
+        // Only a multi-day trip has a guessed count.
+        session.commit({ ...plan, mode: 'trip', daysSet: undefined });
         await vi.waitFor(() => expect(session.trip.days).toBe(4));
         session.commit(visit(session.trip, 'a'));
         // A step of the same route before its line arrives.
@@ -354,7 +355,7 @@ describe('plan session', () => {
         });
         const session = new PlanSession();
         await session.start(new Library(new IDBFactory()));
-        session.commit({ ...plan, daysSet: undefined });
+        session.commit({ ...plan, mode: 'trip', daysSet: undefined });
         await vi.waitFor(() => expect(session.trip.days).toBe(4));
         session.commit({ ...session.trip, pace: 'fast' });
         expect([session.trip.days, session.stale]).toEqual([3, false]);
@@ -363,7 +364,7 @@ describe('plan session', () => {
         expect(calculate).toHaveBeenCalledOnce();
         session.redo();
         expect(await session.newPlan()).toBe(true);
-        expect(session.trip.pace).toBeUndefined();
+        expect([session.trip.pace, session.trip.mode]).toEqual([undefined, 'route']);
         session.close();
     });
 });
