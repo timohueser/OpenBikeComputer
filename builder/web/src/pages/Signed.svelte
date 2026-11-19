@@ -15,7 +15,6 @@
     import type { Library } from '../lib/library/store';
     import { lineCoordinates } from '../lib/library/summary';
     import { emptyTrip, planView } from '../lib/planner/editor';
-    import { planSummary } from '../lib/planner/library';
     import { config, coversCell } from '../lib/planner/map-data';
     import type { RoutePlace } from '../lib/planner/place-index';
     import { catalog } from '../lib/planner/route-catalog';
@@ -25,13 +24,13 @@
     import { routeWebsite } from '../lib/planner/route-overlays';
     import { calculateLine, type RoutingLine } from '../lib/planner/routing';
     import { planTrip, routeBase } from '../lib/planner/signed-route-plan';
-    import { gradeName, longTrailId, routePlan, type CatalogRecord, type RouteRecord, type TrailPart } from '../lib/planner/signed-routes';
+    import { gradeName, routePlan, type CatalogRecord, type RouteRecord, type TrailPart } from '../lib/planner/signed-routes';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import Menu from '../lib/ui/Menu.svelte';
-    import { kindName, stagePart } from './explore/SignedCard.svelte';
+    import { kindName } from './explore/SignedCard.svelte';
     import StageStrip from './explore/StageStrip.svelte';
-    import { exploreAt, readAddress, shownDescription, signedHref } from './explore/signed-page';
+    import { exploreAt, readAddress, shownDescription, signedHref, stagePart } from './explore/signed-page';
     import { signedItem } from './routes/filter';
 
     let {}: { library: Library; active: boolean } = $props();
@@ -62,7 +61,8 @@
     const trip = $derived(record && planTrip(routeBase(record, emptyTrip()), routePlan(record), record.loop));
     const line = $derived(routed?.record === record ? routed?.line : undefined);
     const error = $derived(routed?.record === record ? routed?.error : undefined);
-    const summary = $derived(trip && line ? planSummary(trip, line) : item?.summary);
+    // The numbers are those of the card: the catalog's length, climb and highest point. The answer adds only the time.
+    const summary = $derived(item && (line ? { ...item.summary, seconds: Math.round(planView(trip!, line).summary.hours * 3600) } : item.summary));
     const facts = $derived(trip && line ? routeFacts(trip, line) : undefined);
     const pins = $derived(trip && summary ? routePins(trip, lineCoordinates(summary), line) : []);
     const focus = $derived(part ?? day);
@@ -72,19 +72,22 @@
     };
     const opened = $derived(part && line ? facts?.climbs.find(climb => climbShare(climb).every((end, i) => Math.abs(end - part![i]) < 1e-9)) : undefined);
 
-    const longId = $derived(record && (record.trail ?? record.parent) !== undefined ? longTrailId(record, recordOf) : undefined);
-    const colour = $derived(record ? routeColor(longId ?? record.id) : undefined);
     const stage = $derived(record ? stagePart(record, recordOf) : undefined);
+    /** The trail of a stage or a section, whose strip the page shows and whose name opens it on Explore. */
+    const longId = $derived(record && (record.trail ?? record.parent) !== undefined ? stage!.trailId : undefined);
+    const colour = $derived(record ? routeColor(longId ?? record.id) : undefined);
     const trailName = $derived(stage?.part && (stage.long?.name ?? stage.long?.ref));
     const website = $derived(routeWebsite(record?.website));
     const description = $derived(record && shownDescription(record, recordOf));
     const lead = $derived(record && [record.loop ? 'Loop' : 'One way', kindName(record),
         ...record.kind !== 'bicycle' && record.hardest !== undefined ? [gradeName(record.kind, record.hardest)] : []].join(' · '));
+    /** A section has its number in its id, −(relation × 100 + section); its part has the stage number of its cut stage. */
+    const partName = (one: TrailPart) => one.id < 0 ? `Section ${-one.id % 100}` : one.stage !== undefined ? `Stage ${one.stage}` : undefined;
     /** The parts before and after this one in its trail, when the catalog holds them. */
     const neighbours = $derived.by(() => {
         const parts = trail?.parts, at = parts?.findIndex(one => one.id === record?.id) ?? -1;
         const link = (one: TrailPart | undefined, word: string) => one && !one.missing && one.cells && signedHref({ id: one.id, cells: one.cells }, config.bounds)
-            ? { href: signedHref({ id: one.id, cells: one.cells }, config.bounds)!, label: one.stage !== undefined ? `Stage ${one.stage}` : word } : undefined;
+            ? { href: signedHref({ id: one.id, cells: one.cells }, config.bounds)!, label: partName(one) ?? word } : undefined;
         return at < 0 ? {} : { before: link(parts![at - 1], 'Part before'), after: link(parts![at + 1], 'Part after') };
     });
 

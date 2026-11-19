@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CatalogRecord } from '../../lib/planner/signed-routes';
-import { shownDescription, signedHref } from './signed-page';
+import { shownDescription, signedHref, stagePart } from './signed-page';
 
 const record = (fields: Partial<CatalogRecord>): CatalogRecord => ({
     id: 1, kind: 'hiking', rank: 1, loop: false, length_m: 1000, ascent_m: 0, descent_m: 0, cells: ['9-268-180'], ...fields,
@@ -35,5 +35,19 @@ describe('signedHref', () => {
 
     it('gives no address when the release covers no cell of the record', () => {
         expect(signedHref(record({ cells: ['9-267-180'] }), bounds)).toBeUndefined();
+    });
+});
+
+describe('stagePart', () => {
+    // 100 is a complete trail of two stages; 250 a long route of one stage inside it; 300 a trail of five stages.
+    const longs = [record({ id: 100, name: 'Grand', stages: [1, 6] }), record({ id: 250, name: 'Inner', stage_count: 1 }),
+        record({ id: 300, name: 'Five', stage_count: 5 })];
+    const recordOf = (id: number) => longs.find(long => long.id === id);
+
+    it('names a stage in its trail, and a stage of a long route of one stage in its parent', () => {
+        expect(stagePart(record({ trail: 300, trail_stage: 2 }), recordOf)).toMatchObject({ part: 'Stage 2 of 5', trailId: 300 });
+        const inner = stagePart(record({ id: 6, trail: 250, trail_stage: 1, parent: 100, stage: 2 }), recordOf);
+        expect(inner).toMatchObject({ part: 'Stage 2 of 2', byParent: true, trailId: 100 });
+        expect(inner.long?.name).toBe('Grand');
     });
 });

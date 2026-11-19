@@ -3,7 +3,7 @@ import type { Bounds } from '../../lib/planner/config';
 import { coversCell } from '../../lib/planner/map-data';
 import type { Box } from '../../lib/planner/route-catalog';
 import { decodeCoordinates } from '../../lib/planner/route-answer';
-import type { CatalogRecord } from '../../lib/planner/signed-routes';
+import { longTrailId, type CatalogRecord } from '../../lib/planner/signed-routes';
 import { ROUTES } from '../../lib/routes';
 import type { Chips } from '../routes/filter';
 
@@ -58,4 +58,20 @@ export function shownDescription(record: CatalogRecord, recordOf: (id: number) =
         .filter(token => !own.has(token.toLowerCase()) && !STAGE_WORDS.has(token.toLowerCase()));
     const places = DASH.test(text) && !fresh.some(token => token.length > 3 && /^\p{Ll}/u.test(token));
     return fresh.length >= 3 && !places ? text : undefined;
+}
+
+/**
+ * The place of a stage or a section in its long route, "Stage 2 of 5" or "Section 3", that long route, and the trail that
+ * its name opens. The long route is `trail ?? parent`, but a stage whose `trail` has fewer than two stages is named in
+ * `parent`, the complete long route that holds it (`byParent`). The card and the page of the route use this one rule, so
+ * they need no far file. `parent` and `trail` can name two long routes: the number is of the one named.
+ */
+export function stagePart(record: CatalogRecord, recordOf: (id: number) => CatalogRecord | undefined) {
+    const inner = record.trail === undefined ? undefined : recordOf(record.trail);
+    const byParent = record.parent !== undefined && record.trail !== undefined && record.trail !== record.parent
+        && (inner?.stages?.length ?? inner?.stage_count ?? 0) < 2;
+    const longId = byParent ? record.parent : record.trail ?? record.parent, long = longId === undefined ? undefined : recordOf(longId);
+    const number = record.trail !== undefined && !byParent ? record.trail_stage : record.stage, of = long?.stages?.length ?? long?.stage_count;
+    const part: string | false = record.section !== undefined ? `Section ${record.section}` : number === undefined ? false : of ? `Stage ${number} of ${of}` : `Stage ${number}`;
+    return { part, long, byParent, trailId: byParent ? record.parent : longTrailId(record, recordOf) };
 }

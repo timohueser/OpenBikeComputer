@@ -1,7 +1,7 @@
 <!-- The card of the selected signed route over the map: its line, its mark and name, what kind of route it is, its
      numbers and profile, its description and official page, the credit of its source, and "Plan this route". -->
 <script module lang="ts">
-    import { gradeName, longTrailId, type CatalogRecord } from '../../lib/planner/signed-routes';
+    import { gradeName, type CatalogRecord } from '../../lib/planner/signed-routes';
     import { formatDistance, formatHeight } from '../../lib/settings/format';
 
     type About = Pick<CatalogRecord, 'kind' | 'rank' | 'hardest' | 'length_m' | 'ascent_m'>;
@@ -18,17 +18,6 @@
     /** "National hiking route", or "Hiking route" with no network level. */
     export const kindName = (record: About) =>
         LEVELS[record.rank] ? `${LEVELS[record.rank]} ${KINDS[record.kind]}` : KINDS[record.kind].replace(/^./, first => first.toUpperCase());
-
-    /**
-     * The place of a stage or a section in its long route, "Stage 2 of 5" or "Section 3", and that long route: `trail ??
-     * parent`, or `parent` with `byParent`. `parent` and `trail` can name two long routes: the number is of the one named.
-     */
-    export function stagePart(record: CatalogRecord, recordOf: (id: number) => CatalogRecord | undefined, byParent = false) {
-        const longId = byParent ? record.parent : record.trail ?? record.parent, long = longId === undefined ? undefined : recordOf(longId);
-        const number = record.trail !== undefined && !byParent ? record.trail_stage : record.stage, of = long?.stages?.length ?? long?.stage_count;
-        const part: string | false = record.section !== undefined ? `Section ${record.section}` : number === undefined ? false : of ? `Stage ${number} of ${of}` : `Stage ${number}`;
-        return { part, long };
-    }
 </script>
 
 <script lang="ts">
@@ -38,7 +27,7 @@
     import type { SignedItem } from '../routes/filter';
     import RouteCard from '../routes/RouteCard.svelte';
     import SignedPicture from './SignedPicture.svelte';
-    import { shownDescription } from './signed-page';
+    import { shownDescription, stagePart } from './signed-page';
 
     let { item, href, oncover, onplan, ontrail, onclose }: {
         item: SignedItem;
@@ -54,15 +43,13 @@
 
     const record = $derived(item.record);
     const recordOf = (id: number) => catalog.record(id);
-    /** The stage is in a trail of the view only through its complete long route (`parent`): the card names that trail. */
-    const byParent = $derived(item.trail !== undefined && Number(item.trail) === record.parent && record.parent !== longTrailId(record, recordOf));
     /** The long route of a stage or a section: each file that holds a part also holds its long route. */
-    const { part, long } = $derived(stagePart(record, recordOf, byParent));
+    const { part, long, byParent, trailId } = $derived(stagePart(record, recordOf));
     // A cut stage is no trail: its sections open the trail that the stage is in. A cut route of fewer than two stages has
     // a trail record file only when it takes more than 12 hours, which no reader knows: its name is no button.
     const longName = $derived((part && (long?.name ?? long?.ref)) || false);
     const opens = $derived(!!ontrail && !!long && (byParent || long.trail !== undefined || (long.stage_count ?? 0) >= 2));
-    const trailName = $derived(longName && opens ? { text: longName, onclick: () => ontrail!(byParent ? record.parent! : longTrailId(record, recordOf)!) } : longName);
+    const trailName = $derived(longName && opens ? { text: longName, onclick: () => ontrail!(trailId!) } : longName);
     const website = $derived(routeWebsite(record.website));
     const description = $derived(shownDescription(record, recordOf));
     const about = $derived(!!(description || record.operator || website || record.credit));

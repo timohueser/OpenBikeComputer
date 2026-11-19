@@ -282,9 +282,10 @@
     let show = kept?.show;
     $effect(() => {
         if (show === undefined || !answer) return;
-        const id = show, record = catalog.record(id);
+        const id = show, record = answer.records?.find(one => one.id === id);
         show = undefined;
-        const at = record && answer.records?.includes(record) ? showAt(record, answer.all, recordOf)
+        // By id: each cell file holds its own copy of a record.
+        const at = record ? showAt(record, answer.all, recordOf)
             : answer.all.has(id) ? { tab: 'long' as const, trail: id } : undefined;
         if (!at) return;
         tab = at.tab;
