@@ -111,14 +111,16 @@
     li {
         border-bottom: 1px solid var(--line);
     }
-    a, li > span {
+    a {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-        padding: 8px 6px;
         color: var(--ink);
         text-decoration: none;
+    }
+    a, li > span {
+        padding: 8px 6px;
     }
     a > span, li > span {
         display: flex;
