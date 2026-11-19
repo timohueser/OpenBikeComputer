@@ -31,7 +31,8 @@
     import RouteRow from './routes/RouteRow.svelte';
 
     /** What the page keeps in `history.state.explore`, so that Back and "Find another route" find it again. The page of a
-     * signed route gives only `show`, the id of the record to show: the first answer decides its tab and its card. */
+     * signed route gives `show`, the id of the route record to show: the first answer decides its tab and its card. The page
+     * of a trail gives the long trails tab and the trail. */
     interface Kept { chips: ChipValues; view?: Box; tab?: Tab; selected?: string; trail?: number; stage?: string; show?: number }
     type Place = { lon: number; lat: number; box?: Box };
     type Tab = 'day' | 'long';
@@ -285,9 +286,8 @@
         const id = show, record = answer.records?.find(one => one.id === id);
         show = undefined;
         // By id: each cell file holds its own copy of a record.
-        const at = record ? showAt(record, answer.all, recordOf)
-            : answer.all.has(id) ? { tab: 'long' as const, trail: id } : undefined;
-        if (!at) return;
+        if (!record) return;
+        const at = showAt(record, answer.all, recordOf);
         tab = at.tab;
         if (at.tab === 'day') selected = at.selected;
         else void openTrail(at.trail).then(() => { if (trail?.id === at.trail) stage = at.stage; });

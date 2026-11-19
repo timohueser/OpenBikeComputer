@@ -100,7 +100,7 @@ test('the name of a card opens the page of the route, and Back and "‹ Explore"
   await page.goForward();
   await expect(page).toHaveURL(/#\/signed\/9-267-177\/202$/);
 
-  // After a reload, "‹ Explore" opens Explore on the route; the test build has no trail files, so it is a day route.
+  // After a reload, "‹ Explore" opens Explore on the route; the test build has no far files, so it is a day route.
   for (const [name, address] of [['Westweg 2', '9-267-177/202'], ['Schlossberg loop', '9-267-177/101']]) {
     await page.goto(`/planner.html#/signed/${address}`);
     await page.reload();
@@ -114,6 +114,42 @@ test('the name of a card opens the page of the route, and Back and "‹ Explore"
 
   await page.goto('/planner.html#/signed/9-267-177/999');
   await expect(page.getByText('This route is no longer in the map data.')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('the trail name on a stage page opens the page of the trail, whose rows open the pages of its stages', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await stub(page);
+  await page.goto('/planner.html#/signed/9-267-177/202');
+  await page.locator('.title').getByRole('link', { name: 'Westweg', exact: true }).click();
+  await expect(page).toHaveURL(/#\/trail\/300$/);
+  await expect(page.getByRole('heading', { name: 'Westweg', exact: true })).toBeVisible();
+  await expect(page.locator('.title')).toContainText('1 of 3 stages');
+  // Stage 1 is a gap; stage 3 is outside the release and has no row.
+  const rows = page.locator('.facts li');
+  await expect(rows).toHaveText([/^Stage 1.*Not in the map data/, /^Stage 2/]);
+  await expect(rows.nth(0)).toHaveClass(/\bgap\b/);
+  await expect(rows.nth(0).getByRole('link')).toHaveCount(0);
+
+  await rows.nth(1).getByRole('link').click();
+  await expect(page).toHaveURL(/#\/signed\/9-267-177\/202$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/trail\/300$/);
+  await expect(rows).toHaveCount(2);
+  // After a reload no page is before this one: "‹ Explore" opens Explore on the trail, in the box of its stage lines. The
+  // click writes that state at once; Explore writes its own state later.
+  await page.reload();
+  await expect(page.locator('.routes-map')).toBeVisible();
+  const state = await page.evaluate(() => {
+    [...document.querySelectorAll('a')].find(link => link.textContent === '‹ Explore').click();
+    return history.state.explore;
+  });
+  expect(state).toEqual({ chips: { bike: 'hiking' }, view: [7.88, 47.98, 7.91, 48].map(value => expect.closeTo(value, 6)), tab: 'long', trail: 300 });
+  await expect(page).toHaveURL(/#\/explore$/);
+
+  await page.goto('/planner.html#/trail/1');
+  await expect(page.getByText('This trail is no longer in the map data.')).toBeVisible();
   expect(errors).toEqual([]);
 });
 

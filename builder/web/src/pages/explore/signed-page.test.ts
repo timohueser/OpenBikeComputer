@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CatalogRecord } from '../../lib/planner/signed-routes';
-import { shownDescription, signedHref, stagePart } from './signed-page';
+import { partLabel, shownDescription, signedHref, stagePart } from './signed-page';
 
 const record = (fields: Partial<CatalogRecord>): CatalogRecord => ({
     id: 1, kind: 'hiking', rank: 1, loop: false, length_m: 1000, ascent_m: 0, descent_m: 0, cells: ['9-268-180'], ...fields,
@@ -49,5 +49,11 @@ describe('stagePart', () => {
         const inner = stagePart(record({ id: 6, trail: 250, trail_stage: 1, parent: 100, stage: 2 }), recordOf);
         expect(inner).toMatchObject({ part: 'Stage 2 of 2', byParent: true, trailId: 100 });
         expect(inner.long?.name).toBe('Grand');
+    });
+});
+
+describe('partLabel', () => {
+    it('names a part with no stage and no section by its name', () => {
+        expect([partLabel(undefined, undefined, 'Etappe 1'), partLabel()]).toEqual(['Etappe 1', false]);
     });
 });

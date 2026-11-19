@@ -29,6 +29,7 @@
         explore: { label: 'Explore', load: () => import('./pages/Explore.svelte') },
         // The page loads the core only for an export.
         signed: { section: 'explore', load: () => import('./pages/Signed.svelte') },
+        trail: { section: 'explore', load: () => import('./pages/Trail.svelte') },
         // The page writes GPX and FIT.
         route: { load: () => initCore().then(() => import('./pages/Route.svelte')) },
         // The page reads and writes GPX and FIT.

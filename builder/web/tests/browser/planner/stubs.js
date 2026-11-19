@@ -91,6 +91,15 @@ const CATALOG = [
   { id: 303, kind: 'bicycle', name: 'Dreisam path', rank: 2, loop: false, length_m: 3000, ascent_m: 10, descent_m: 10, cells: [ROUTE_CELL],
     line_udeg: udeg([[7.83, 47.99], [7.87, 47.99]]), via: [] },
 ];
+/** The trail record file of "Westweg": stage 1 is a gap, stage 2 is in the catalog, and stage 3 is outside the release. */
+const WESTWEG = {
+  ...CATALOG[2], stage_count: 3, trail_profile_m: Array.from({ length: 201 }, (_, i) => i < 100 ? null : 300 + i),
+  parts: [
+    { id: 201, stage: 1, length_m: 2500, end_m: 2500, missing: true, start_udeg: [7_800_000, 47_970_000], end_udeg: [7_880_000, 47_980_000] },
+    { id: 202, stage: 2, length_m: 2500, ascent_m: 80, end_m: 5000, cells: [ROUTE_CELL] },
+    { id: 203, stage: 3, end_m: 5000, missing: true },
+  ],
+};
 
 /** The live set of route pictures (`specs/route-pictures.md`) holds a cover of the first route of `CATALOG` only. */
 const LOOK = '1|0715-1000|960|640';
@@ -160,6 +169,7 @@ export function respond(request) {
       return PICTURES[path] ? json(PICTURES[path]) : { headers: CORS, status: 404 };
     }
     case 'routes':
+      if (url.pathname.startsWith('/routes/tiles/long/')) return url.pathname.endsWith(`/${WESTWEG.id}.json`) ? json({ format: 1, routes: [WESTWEG] }) : { headers: CORS, status: 404 };
       return json({ format: 1, routes: url.pathname.endsWith(`/${ROUTE_CELL}.json`) ? CATALOG : [] });
     case 'route': {
       const { points, profile, alternatives, alternatives_only } = request.postDataJSON();
