@@ -45,7 +45,8 @@
 
 <!-- A row clears the ground of its cover and shows its own, so the wrapper carries the ground as well. -->
 <div style:--route={colour} style:--parchment={SIGNED_GROUND} style:background={SIGNED_GROUND}>
-    <CoverPicture shown={cover} summary={item.summary} {breaks} {colour} />
+    <!-- A trail has no start: its far pieces have no order. -->
+<CoverPicture shown={cover} summary={item.summary} {breaks} {colour} start={item.kind !== 'trail'} />
 </div>
 
 <style>

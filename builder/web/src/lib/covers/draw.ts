@@ -1,6 +1,6 @@
 /** Draws a cover into a box: the image cut as CSS `cover` cuts it, the line of the route, a selected part and the mark. */
 import type { CoverPoints, Summary } from '../library/records';
-import { along, distanceAt, metresAlong, placed, runs } from './line';
+import { along, distanceAt, metresAlong, placed, runs, visibleAt } from './line';
 
 /** The image is the same in both themes, so the line of a route keeps the colour of the light theme: `--route`. As the
  * ribbon of TrailView, a glow in a lighter tint of the line fades out beyond it, and a weak light core runs in its
@@ -46,9 +46,11 @@ export function crop(cover: Pick<CoverImage, 'width' | 'height' | 'points'>, [wi
 }
 
 /** Draws the cover over the whole canvas of `context`, which is `box` pixels in size, and returns the cut. `mark` and
- * `part` are metres along the route. `trim` leaves out the line in that many metres along the route at each end. */
+ * `part` are metres along the route. `trim` leaves out the line in that many metres along the route at each end.
+ * `start` draws the start dot where the first point is visible, at that many canvas pixels for each CSS pixel: it has
+ * one size in each box. */
 export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
-    { box, mark, part, line, look = 'route', colour, trim = 0 }: { box: [number, number]; mark?: number; part?: [number, number]; line: boolean; look?: Look; colour?: string; trim?: number }): Crop {
+    { box, mark, part, line, look = 'route', colour, trim = 0, start }: { box: [number, number]; mark?: number; part?: [number, number]; line: boolean; look?: Look; colour?: string; trim?: number; start?: number }): Crop {
     const cut = crop(cover, box), { points, summary } = cover, colours = colour ? own(colour) : LOOKS[look];
     context.drawImage(cover.image, cut.left, cut.top, box[0] / cut.scale, box[1] / cut.scale, 0, 0, box[0], box[1]);
     if (!line) return cut;
@@ -119,6 +121,15 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
         context.fill();
         context.lineWidth = widest * 0.5;
         context.strokeStyle = colours.ring;
+        context.stroke();
+    }
+    if (start && placed(points, 0) && visibleAt(points, 0)) {
+        context.beginPath();
+        context.arc(x(0), y(0), 4 * start, 0, 2 * Math.PI);
+        context.fillStyle = '#fff';
+        context.fill();
+        context.lineWidth = 2 * start;
+        context.strokeStyle = colours.line;
         context.stroke();
     }
     return cut;

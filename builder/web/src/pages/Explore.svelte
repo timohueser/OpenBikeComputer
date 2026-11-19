@@ -117,6 +117,13 @@
         const listed = new Set(longList.map(item => item.id));
         return stageItems.filter(item => listed.has(item.trail!));
     });
+    /** The lines of the row of a line, for the hover. In a near view, a trail row of the long trails tab draws as the
+     * lines of its stages: the trail leads, so a stage line lights its trail row, and a trail has no start mark. */
+    function together(id: string): string[] {
+        if (tab === 'day' || far) return [id];
+        const trailId = stageItems.find(item => item.id === id)?.trail ?? id;
+        return [...new Set([trailId, ...mapShown.flatMap(item => item.kind === 'signed' && item.trail === trailId ? [item.id] : [])])];
+    }
     // The map credits are HTML, and a record credit is plain text. A far file has no credits: the selected trail brings its own.
     const credits = $derived(recordCredits([...mapShown.flatMap(item => item.kind === 'signed' ? [item.record] : []), ...tab === 'long' && trail?.record ? [trail.record] : []])
         .map(escapeMarkup));
@@ -337,7 +344,7 @@
 
 <!-- TrailView shows the day routes of a near view only. -->
 <ListAndMap title="Explore" items={mapItems} shown={mapShown} {place} fit={0} look="signed" credits={covers ? [...coverCredits, ...credits] : credits}
-    selected={tab === 'day' ? chosen ? [chosen.id] : [] : staged ? [staged.id] : []} {marked} onselect={select} onview={next => setView(wrapped(next))}
+    selected={tab === 'day' ? chosen ? [chosen.id] : [] : staged ? [staged.id] : []} {marked} {together} onselect={select} onview={next => setView(wrapped(next))}
     card={tab === 'day' ? chosen ? card : undefined : staged ? stageCard : trailAbout ? trailCard : undefined}
     mapButtons={hasTrailView(config) && tab === 'day' && dayList.length && !far ? mapButtons : undefined} tabs={config.trails ? dayOrLong : undefined}>
     {#snippet list()}
@@ -357,7 +364,7 @@
             <ul bind:this={rows} onscroll={drawMore}>
                 {#each drawn as item (item.id)}
                     <li>
-                        <RouteRow name={item.name} current={item.id === currentId} onclick={() => select(item.id)}
+                        <RouteRow name={item.name} current={item.id === currentId} line={item.id} onclick={() => select(item.id)}
                             parts={item.kind === 'trail' ? trailParts(item.entry) : signedNumbers(item.record)}>
                             {#snippet picture()}<SignedPicture {item} {oncover} small />{/snippet}
                         </RouteRow>
