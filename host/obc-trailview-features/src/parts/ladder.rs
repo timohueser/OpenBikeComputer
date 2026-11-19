@@ -5,6 +5,8 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
+use obc_ground_plan::graph::OpenEnd;
+
 use super::measure::{self, Ask, Site};
 use super::{along_dir, counts, distance, first_way_m, left_of, open_ends, Input, Opening, Tube, ROCK_GROUPS};
 
@@ -60,6 +62,9 @@ pub(crate) struct Decided {
     pub metrics: Value,
 }
 
+/// The measure of the asks, with the open ends of all openings.
+pub(crate) type Measure<'a> = dyn Fn(&[Ask], &[OpenEnd]) -> Vec<Site> + 'a;
+
 /// Two openings of other tubes that lead the same way within `pair_max_deg` and lie within `pair_max_m`: their
 /// metres apart, and b's metres to the left of a and in along a.
 struct Near {
@@ -71,13 +76,12 @@ struct Near {
 }
 
 /// Every pair of openings of different tubes within `pair_max_m` and `pair_max_deg`, nearest first.
-fn near(tubes: &[Tube], openings: &[Opening], input: &Input) -> Vec<Near> {
+fn near(openings: &[Opening], input: &Input) -> Vec<Near> {
     let b = &input.rules.bake;
     let cos = b.pair_max_deg.to_radians().cos();
-    let cell = |p: [f64; 2]| {
-        let size = b.pair_max_m.max(1.0) / crate::metres(p[1]);
-        ((p[0] / size).floor() as i64, (p[1] / size).floor() as i64)
-    };
+    // One grid for all openings, its cells at least `pair_max_m` wide at each of them.
+    let size = openings.iter().map(|o| b.pair_max_m.max(1.0) / crate::metres(o.p[1])).fold(0.0, f64::max);
+    let cell = |p: [f64; 2]| ((p[0] / size).floor() as i64, (p[1] / size).floor() as i64);
     let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
     for (i, o) in openings.iter().enumerate() {
         grid.entry(cell(o.p)).or_default().push(i);
@@ -99,7 +103,6 @@ fn near(tubes: &[Tube], openings: &[Opening], input: &Input) -> Vec<Near> {
             }
         }
     }
-    let _ = tubes;
     out.sort_by(|x, y| x.d.total_cmp(&y.d).then((x.a, x.b).cmp(&(y.a, y.b))));
     out
 }
@@ -114,18 +117,21 @@ fn first_covered(site: &Site, floors: &[f64], need: f64) -> Option<usize> {
 }
 
 /// The kinds, numbers and counts of the openings; a pair moves its nearer opening in onto the frame line of the other.
-pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, memory: usize) -> Decided {
+pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, measure: &Measure) -> Decided {
     let b = &input.rules.bake;
     let n = openings.len();
     let mut rung: Vec<Option<&'static str>> = vec![None; n];
     let mut half: Vec<f64> = tubes.iter().map(|t| t.half).collect();
     let mut height: Vec<f64> = tubes.iter().map(|t| t.height).collect();
     for (i, o) in openings.iter().enumerate() {
-        if !tubes[o.tube].known {
-            rung[i] = Some("unknown height");
+        let t = &tubes[o.tube];
+        if !t.heights {
+            rung[i] = Some("a vertex of unknown height");
+        } else if !t.vertices {
+            rung[i] = Some("an end that is no end vertex of its way");
         }
     }
-    let near = near(tubes, openings, input);
+    let near = near(openings, input);
     // Rung 2: an end in the tube of a wider one; the widest takes first.
     let mut same: Vec<(usize, usize, f64, f64)> = Vec::new();
     for x in &near {
@@ -199,7 +205,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             )
         })
         .collect();
-    let measured = measure::sites(&asks, input, &open_ends(openings), memory);
+    let measured = measure(&asks, &open_ends(openings));
     let mut sites: Vec<Option<Site>> = vec![None; n];
     let mut rights: Vec<u32> = vec![0; n];
     for ((&i, site), a) in asked.iter().zip(measured).zip(&asks) {
@@ -285,7 +291,10 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         let most = (o.shift + b.pair_max_m).min(t.curve.len / 2.0).min(first_way_m(t, o.end));
         let off = |shift: f64| along_dir(pf, o.at(t, shift).p, df);
         let (mut lo, mut hi) = (o.shift, most.max(o.shift));
-        if off(hi) >= 0.0 {
+        // Where its way never reaches the line within its limits, the opening stays.
+        if off(hi) < 0.0 {
+            hi = o.shift;
+        } else {
             for _ in 0..40 {
                 let mid = (lo + hi) / 2.0;
                 if off(mid) < 0.0 {
@@ -310,7 +319,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         let numbers = kind
             .filter(|_| drawn)
             .map(|kind| numbers(i, kind, (mate[i], far_of[i]), parts, openings, tubes, (&half, &height), input));
-        ends.push(End { kinds: kinds[i].clone(), kind, rung: rung[i].unwrap_or("unknown height"), numbers });
+        ends.push(End { kinds: kinds[i].clone(), kind, rung: rung[i].unwrap_or_default(), numbers });
     }
     let shown = |e: &End| match e.kind {
         Some(k) => k.name().to_string(),
@@ -372,17 +381,19 @@ fn numbers(
         let mut d = 1.0;
         while d <= g.wing_max_m {
             let gr = ground(from + sign * d);
+            // A wall's top lies at least its coping over the floor.
+            let top = |g: f64| (g + b.coping_m - floor).clamp(b.coping_m, face.max(b.coping_m));
             if gr.is_none_or(|v| v < floor + b.wing_ground_m) {
                 if row.is_empty() {
-                    row.push((gr.unwrap_or(floor) + b.coping_m - floor).min(face));
+                    row.push(top(gr.unwrap_or(floor)));
                 }
                 break;
             }
-            row.push((gr.unwrap() + b.coping_m - floor).min(face));
+            row.push(top(gr.unwrap()));
             d += 1.0;
         }
         if row.is_empty() {
-            row.push(b.coping_m.min(face));
+            row.push(b.coping_m);
         }
         row
     };

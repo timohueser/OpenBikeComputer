@@ -173,6 +173,8 @@ pub(crate) struct Placed {
     pub features: Vec<(&'static str, Tags, Part)>,
     pub tags: HashMap<u32, Tags>,
     pub metrics: Value,
+    /// Per opening its way's id and its decision.
+    pub ends: Vec<(u32, ladder::End)>,
 }
 
 /// A point of a chain's curve: world point, floor height, metres along the chain, and metres along the stroke of its
@@ -278,8 +280,9 @@ fn way_curve(part: &Part) -> Option<Vec<Point>> {
 pub(crate) struct Tube {
     pub curve: Curve,
     pub ids: Vec<u32>,
-    /// Every vertex has a height, and each end with an opening is an end vertex of its way.
-    pub known: bool,
+    /// Every vertex has a height (`heights`), and each end with an opening is an end vertex of its way (`vertices`).
+    pub heights: bool,
+    pub vertices: bool,
     pub ends: [Option<(Option<[i64; 2]>, u32)>; 2],
     /// Of its widest way: its id, its class and its group, the half-width of its carriageway and that with its
     /// widening; the inside half-width and height of the tube.
@@ -318,7 +321,7 @@ fn runs(chain: &Chain, tunnels: &HashMap<u32, (Tags, Vec<Part>)>) -> Vec<(Vec<(u
 /// The tube of a run of tunnel ways, or None where a way of it has no curve.
 fn tube(run: &[(u32, f64, f64)], open: [bool; 2], input: &Input) -> Option<Tube> {
     let mut curve = Curve::default();
-    let mut known = true;
+    let (mut heights, mut vertices) = (true, true);
     let mut ends = [None, None];
     let (mut widest, mut way_half, mut best) = (run[0].0, 0.0, f64::NEG_INFINITY);
     for (k, &(id, m_in, m_out)) in run.iter().enumerate() {
@@ -334,8 +337,8 @@ fn tube(run: &[(u32, f64, f64)], open: [bool; 2], input: &Input) -> Option<Tube>
             stretch.reverse();
         }
         let (first, last) = (stretch.first()?.along, stretch.last()?.along);
-        known &= (first - m_in).abs() <= LINK_M && (last - m_out).abs() <= LINK_M;
-        known &= stretch.iter().all(|q| q.z.is_finite());
+        vertices &= (first - m_in).abs() <= LINK_M && (last - m_out).abs() <= LINK_M;
+        heights &= stretch.iter().all(|q| q.z.is_finite());
         // The end vertex of the way at an end of the run.
         let part = &parts[p];
         let plan = part.plan.as_ref()?;
@@ -366,7 +369,7 @@ fn tube(run: &[(u32, f64, f64)], open: [bool; 2], input: &Input) -> Option<Tube>
         curve.len = s;
         curve.stretches.push((id, stretch));
     }
-    known &= ends.iter().flatten().all(|e| e.0.is_some());
+    vertices &= ends.iter().flatten().all(|e| e.0.is_some());
     let (tags, _) = &input.tunnels[&widest];
     let w = input.widths.way("tunnel", tags, false);
     let class = input.class_names.get(w.rank).cloned().unwrap_or_default();
@@ -376,7 +379,8 @@ fn tube(run: &[(u32, f64, f64)], open: [bool; 2], input: &Input) -> Option<Tube>
     let margin = if height <= NARROW_BORE_M { b.margin_narrow_m } else { b.margin_m };
     Some(Tube {
         ids: run.iter().map(|r| r.0).collect(),
-        known: known && curve.len > 0.0,
+        heights: heights && curve.len > 0.0,
+        vertices,
         curve,
         ends,
         widest,
@@ -472,8 +476,13 @@ pub(crate) fn num(v: f64) -> String {
     }
 }
 
-/// The placement of the tunnel parts.
+/// The placement of the tunnel parts, measured on the ground plan.
 pub(crate) fn place(input: &Input, memory: usize) -> Placed {
+    place_with(input, &|asks, ends| measure::sites(asks, input, ends, memory))
+}
+
+/// The placement with the sites that `measure` gives of the asks, with the open ends of all openings.
+pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
     let b = &input.rules.bake;
     let tubes: Vec<Tube> = (input.chains.iter())
         .flat_map(|c| runs(c, input.tunnels))
@@ -521,7 +530,7 @@ pub(crate) fn place(input: &Input, memory: usize) -> Placed {
             };
             let mut o = o.at(t, 0.0);
             o.others = others.len();
-            if t.known && others.len() >= 2 {
+            if t.heights && t.vertices && others.len() >= 2 {
                 let lines: Vec<(f64, Vec<[f64; 2]>)> = (others.iter())
                     .flat_map(|&w| {
                         let (kind, tags, parts) = input.ways[w];
@@ -535,7 +544,7 @@ pub(crate) fn place(input: &Input, memory: usize) -> Placed {
             openings.push(o);
         }
     }
-    let measured = ladder::decide(&tubes, &mut openings, input, memory);
+    let measured = ladder::decide(&tubes, &mut openings, input, measure);
     records(&tubes, &openings, &measured, input)
 }
 
@@ -624,7 +633,8 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         let part = Part { outer: false, points: vec![o.p], z: Some(vec![o.floor]), plan: None };
         features.push(("tunnel-end", t, part));
     }
-    Placed { features, tags, metrics: decided.metrics.clone() }
+    let ends = openings.iter().map(|o| o.way_id).zip(decided.ends.iter().cloned()).collect();
+    Placed { features, tags, metrics: decided.metrics.clone(), ends }
 }
 
 /// The open ends of the openings: each moved opening on its way, for the ground plan's `graph::build_open`.
