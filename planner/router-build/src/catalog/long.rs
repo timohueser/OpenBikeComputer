@@ -150,7 +150,7 @@ pub(super) fn record(
     let way = |i: usize| parts[i].ends().map(|e| if flags[i].0 { (e.finish, e.start) } else { (e.start, e.finish) });
     let mut record = header(relation, kind, kept.iter().any(|k| k.french));
     let sum = |field: &str| kept.iter().map(|k| k.record[field].as_u64().unwrap()).sum::<u64>();
-    for field in ["length_m", "ascent_m", "descent_m"] {
+    for field in ["length_m", "ascent_m", "descent_m", "moving_s"] {
         record.insert(field.into(), json!(sum(field)));
     }
     if graded(kind) {
@@ -212,8 +212,11 @@ fn entry(part: &Part, end_m: u64, (backwards, jump): (bool, bool)) -> Value {
     }
     match part.kept {
         Some(kept) => {
-            entry.insert("ascent_m".into(), kept.record["ascent_m"].clone());
-            entry.insert("cells".into(), kept.record["cells"].clone());
+            for field in ["ascent_m", "cells", "moving_s", "hardest"] {
+                if let Some(value) = kept.record.get(field) {
+                    entry.insert(field.into(), value.clone());
+                }
+            }
         }
         None => {
             entry.insert("missing".into(), json!(true));

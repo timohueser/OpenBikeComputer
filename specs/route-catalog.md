@@ -94,6 +94,7 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 | `loop` | `true` for a loop, `false` for a one-way route |
 | `length_m` | Length of the plan route |
 | `ascent_m`, `descent_m` | Climb and descent of the plan route |
+| `moving_s` | Route record: the moving time of the plan route at the default pace of its plan profile, in whole seconds; long route: the sum over its parts in the catalog |
 | `grades_m` | `hiking`, `foot` and `mtb` only: 6 lengths, one for each grade |
 | `hardest` | Index in `grades_m` of the hardest explicit grade |
 | `cells` | Sorted IDs `9-X-Y` of the zoom 9 cells that the plan route touches |
@@ -296,7 +297,7 @@ level, the one with the lower relation ID. A reader that knows only
 these fields shows the parts of every other long route as single routes.
 
 A long route has no `line_udeg`, `via`, `turnarounds` or `profile_m`. `length_m`, `ascent_m`,
-`descent_m` and `grades_m` are the sums of the values of its parts in the catalog. `hardest` is the
+`descent_m`, `moving_s` and `grades_m` are the sums of the values of its parts in the catalog. `hardest` is the
 largest `hardest` of these parts, and `cells` the union of their `cells`. So each file that holds a
 part in the catalog also holds its long route. A long route is a loop when its first and last parts
 are in the catalog and the trail start of the first part is the trail end of the last part, or when
@@ -315,6 +316,8 @@ An object of `parts` has these fields. A field with no value is absent.
 | `name` | The OSM `name` of the part |
 | `length_m` | The `length_m` of the part's record; for a part not in the catalog, the length of its main line |
 | `ascent_m` | The `ascent_m` of the part's record |
+| `moving_s` | The `moving_s` of the part's record |
+| `hardest` | The `hardest` of the part's record |
 | `end_m` | The sum of `length_m` of this part and each part before it; a part without `length_m` adds 0 |
 | `cells` | The `cells` of the part's record |
 | `missing` | `true` when the part is not in the catalog |
@@ -322,6 +325,9 @@ An object of `parts` has these fields. A field with no value is absent.
 | `start_udeg`, `end_udeg` | Part not in the catalog only: its first and its last end |
 | `backwards` | `true` when the part runs backwards |
 | `jump` | `true` when the part has a jump |
+
+`ascent_m` and `moving_s` of a part are in the direction of its record, also for a part that runs
+backwards.
 
 Entry `k` of `trail_profile_m` is the height at `k / 200` of the whole trail, from its start (entry
 0) to the last `end_m` (entry 200). The place along the trail lies on the first part whose `end_m`
@@ -373,9 +379,7 @@ route lies wholly inside the download when each of its `cells` is the `id` of a 
 ### Trail files
 
 A trail is a record with no `trail` field that has a `stage_count` of 2 or more, or that takes more
-than 12 hours of moving time. The moving time of a route record is the time of its plan route at
-the default pace of its plan profile; that of a long route is the sum over its parts in the
-catalog. So a long route inside another one can be a trail, and a cut stage is none.
+than 12 hours of moving time: its `moving_s`. So a long route inside another one can be a trail, and a cut stage is none.
 
 A trail record file is `{"format": 1, "routes": [record]}` with the whole record of one trail, as
 in the region file, `parts` and `trail_profile_m` included. So a reader of cell files reads it too.
@@ -429,7 +433,7 @@ A one-way stage of 3.7 km in cell `9-267-178`, with one shaping point:
 {"ascent_m":184,"cells":["9-267-178"],"descent_m":251,"grades_m":[2460,1250,0,0,0,0],
  "hardest":1,"id":1234567,"kind":"hiking","length_m":3710,
  "line_udeg":[8004512,47873120,9210,-6400,8800,-11500,6500,-4200,5510,-2100],
- "loop":false,"name":"Mühlbach-Weg, Etappe 1","operator":"Schwarzwaldverein",
+ "loop":false,"moving_s":4380,"name":"Mühlbach-Weg, Etappe 1","operator":"Schwarzwaldverein",
  "parent":2345678,
  "profile_m":[620,618,625,631,640,652,661,668,676,684,690,699,708,716,725,733,741,748,752,
               760,768,773,779,784,788,780,768,751,733,712,694,671,650,628,610,590,571,555,553],
@@ -441,7 +445,7 @@ Its long route, with two stages, as in a cell file:
 
 ```json
 {"ascent_m":420,"cells":["9-267-178"],"descent_m":449,"grades_m":[6830,2000,0,0,0,0],
- "hardest":1,"id":2345678,"kind":"hiking","length_m":8830,"loop":false,
+ "hardest":1,"id":2345678,"kind":"hiking","length_m":8830,"loop":false,"moving_s":10500,
  "name":"Mühlbach-Weg","operator":"Schwarzwaldverein","rank":1,"ref":"MW","stage_count":2,
  "stages":[1234567,1234568],"start_udeg":[8004512,47873120],
  "symbol":"yellow:white:yellow_diamond"}
@@ -454,16 +458,16 @@ the catalog; the whole trail is the last `end_m`. `trail_profile_m` is shortened
 
 ```json
 {"ascent_m":610,"cells":["9-267-178"],"descent_m":655,"grades_m":[9930,3200,0,0,0,0],
- "hardest":1,"id":2345678,"kind":"hiking","length_m":13130,"loop":false,"name":"Mühlbach-Weg",
- "operator":"Schwarzwaldverein","parts":[
-  {"ascent_m":184,"cells":["9-267-178"],"end_m":3710,"id":1234567,"length_m":3710,
-   "name":"Mühlbach-Weg, Etappe 1","stage":1},
-  {"ascent_m":236,"cells":["9-267-178"],"end_m":8830,"id":1234568,"length_m":5120,
-   "name":"Mühlbach-Weg, Etappe 2","stage":2},
+ "hardest":1,"id":2345678,"kind":"hiking","length_m":13130,"loop":false,"moving_s":15240,
+ "name":"Mühlbach-Weg","operator":"Schwarzwaldverein","parts":[
+  {"ascent_m":184,"cells":["9-267-178"],"end_m":3710,"hardest":1,"id":1234567,"length_m":3710,
+   "moving_s":4380,"name":"Mühlbach-Weg, Etappe 1","stage":1},
+  {"ascent_m":236,"cells":["9-267-178"],"end_m":8830,"hardest":1,"id":1234568,"length_m":5120,
+   "moving_s":6120,"name":"Mühlbach-Weg, Etappe 2","stage":2},
   {"end_m":13650,"end_udeg":[8051210,47840730],"id":1234569,"length_m":4820,"missing":true,
    "name":"Mühlbach-Weg, Etappe 3","stage":3,"start_udeg":[8043980,47851020]},
-  {"ascent_m":190,"cells":["9-267-178"],"end_m":17950,"id":1234570,"length_m":4300,
-   "name":"Mühlbach-Weg, Etappe 4","stage":4}],
+  {"ascent_m":190,"cells":["9-267-178"],"end_m":17950,"hardest":1,"id":1234570,"length_m":4300,
+   "moving_s":4740,"name":"Mühlbach-Weg, Etappe 4","stage":4}],
  "rank":1,"ref":"MW","stage_count":4,"symbol":"yellow:white:yellow_diamond",
  "trail_profile_m":[620,624,629,"…",655,null,null,"…",null,604,"…",612]}
 ```

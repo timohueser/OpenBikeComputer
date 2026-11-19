@@ -318,8 +318,6 @@ struct Kept {
     start: P,
     finish: P,
     points: usize,
-    /// The moving time of the plan route.
-    seconds: f64,
     cells: BTreeSet<(u32, u32)>,
     grades: Option<[u64; 6]>,
     /// A vertex of the plan route is in France.
@@ -453,8 +451,8 @@ pub fn write(directory: &Path, osm: Data) -> Result<(Vec<(Value, Value)>, Report
     let shared = routing.shared_bytes(PROFILES).map_err(|e| e.to_string())?;
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
     let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
-    let (records, hours, mut report) = catalog(&routing, osm, workers, SECTION_M)?;
-    let trails = trails::trails(&records, &hours);
+    let (records, mut report) = catalog(&routing, osm, workers, SECTION_M)?;
+    let trails = trails::trails(&records);
     report.trails_by_hours =
         trails.iter().filter(|(_, record)| record["stage_count"].as_u64().is_none_or(|count| count < 2)).count();
     let bytes =
@@ -463,15 +461,12 @@ pub fn write(directory: &Path, osm: Data) -> Result<(Vec<(Value, Value)>, Report
     Ok((trails, Report { seconds: started.elapsed().as_secs_f64(), ..report }))
 }
 
-/// The records, the moving time of each route record in hours, and the report.
-type Catalog = (Vec<Value>, HashMap<i64, f64>, Report);
-
 fn catalog<S: Source + Clone + Send>(
     selection: &Selection<S>,
     osm: Data,
     workers: usize,
     section_m: f64,
-) -> Result<Catalog, String> {
+) -> Result<(Vec<Value>, Report), String> {
     let Data { ways, relations, .. } = osm;
     let mut report = Report::default();
     let mut drops = BTreeMap::<i64, Reason>::new();
@@ -684,13 +679,10 @@ fn catalog<S: Source + Clone + Send>(
         in_trail(&mut record, id);
         records.push(Value::Object(record));
     }
-    // The moving time of each route record, in hours.
-    let mut hours = HashMap::new();
     for (id, mut route) in kept {
         if !named(&mut route.record, id) {
             continue;
         }
-        hours.insert(id, route.seconds / 3600.0);
         in_trail(&mut route.record, id);
         if let Some((_, parent, number)) = parents.get(&id) {
             route.record.insert("parent".into(), json!(parent));
@@ -707,7 +699,7 @@ fn catalog<S: Source + Clone + Send>(
     for (id, reason) in drops {
         report.dropped.entry(format!("{reason:?}")).or_default().push(id);
     }
-    Ok((records, hours, report))
+    Ok((records, report))
 }
 
 /// Builds the record of one route, or the reason it leaves the catalog.
@@ -887,6 +879,7 @@ fn planned<D: RoutingData>(
     record.insert("length_m".into(), json!(totals.distance_m));
     record.insert("ascent_m".into(), json!(totals.ascent_m));
     record.insert("descent_m".into(), json!(totals.descent_m));
+    record.insert("moving_s".into(), json!(totals.seconds.round() as u64));
     let mut grades = None;
     if graded(&job.kind) {
         let (lengths, hardest) = grade_lengths(&plan.route, &geometry, job.kind == "mtb");
@@ -918,7 +911,6 @@ fn planned<D: RoutingData>(
         start: simple[0],
         finish: simple[simple.len() - 1],
         points: plan.points.len(),
-        seconds: totals.seconds,
         cells: cover,
         grades,
         french,
