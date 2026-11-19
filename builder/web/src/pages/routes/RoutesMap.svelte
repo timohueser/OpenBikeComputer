@@ -34,7 +34,7 @@
         /** The lines of the row of a line: the rides of its row, or the line alone. The first is the lead line, which
          * has the start mark. */
         together?: (id: string) => string[];
-        /** The line whose row the map lights. */
+        /** The lead line of the row that the map lights. */
         hovered?: string;
         /** The line under the pointer, or undefined when the pointer leaves the lines or the map moves under it. */
         onhover?: (id: string | undefined) => void;
@@ -72,12 +72,14 @@
         : [];
     const lines = $derived<FeatureCollection<LineString | MultiLineString>>({ type: 'FeatureCollection', features: items.flatMap(item => lineOf(item)) });
     const itemOf = $derived(new Map(items.map(item => [item.id, item])));
+    /** The lit row draws only the lines that the map shows: a chip that hides a line under a still pointer hides its copy. */
+    const shownIds = $derived(new Set(shown.map(item => item.id)));
     /** The few features that the hover look and the start mark draw: copies of the lines of the hovered row, and the start
      * of the lead line of the hovered and of the selected row. A trail has no start: its far pieces have no order. */
     const focusData = $derived.by<FeatureCollection>(() => {
-        const lit = hovered === undefined ? [] : together(hovered);
+        const lit = hovered === undefined ? [] : together(hovered).filter(id => shownIds.has(id));
         const features: Feature[] = lit.flatMap(id => { const item = itemOf.get(id); return item ? lineOf(item, 'hover') : []; });
-        for (const id of new Set([lit[0], selected[0]])) {
+        for (const id of new Set([hovered !== undefined && shownIds.has(hovered) ? hovered : undefined, selected[0]])) {
             const item = id === undefined ? undefined : itemOf.get(id), start = item?.summary && item.kind !== 'trail' ? startOf(item.summary.line) : undefined;
             if (start) features.push({ type: 'Feature', properties: { color: colorOf(item!), role: 'start', bearing: start.bearing }, geometry: { type: 'Point', coordinates: start.at } });
         }

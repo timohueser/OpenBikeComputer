@@ -46,7 +46,9 @@
     let buttonsWidth = $state(0);
     let listBox = $state<HTMLElement>();
     const hover = new HoverState();
-    /** The focus that `toRow` moves lights nothing: after Escape the rider sees nothing lit. */
+    /** The lead line of the lit row: another line of the same row changes nothing on the map or in the list. */
+    const lead = $derived(hover.id === undefined ? undefined : (together?.(hover.id) ?? [hover.id])[0]);
+    /** The focus that `toRow` moves lights nothing: after the close button the rider sees nothing lit. */
     let quiet = false;
     // With no scroll: on a phone the list is above the map, and the rider who closes the card looks at the map.
     function toRow() {
@@ -102,9 +104,9 @@
      * row that the list draws later gets its mark at the next change. */
     let lit: Element[] = [];
     $effect(() => {
-        const id = hover.id, lead = id === undefined ? undefined : (together?.(id) ?? [id])[0];
+        const line = lead;
         for (const row of lit) row.removeAttribute('data-hover');
-        lit = lead === undefined || !listBox ? [] : [...listBox.querySelectorAll(`[data-line="${CSS.escape(lead)}"]`)];
+        lit = line === undefined || !listBox ? [] : [...listBox.querySelectorAll(`[data-line="${CSS.escape(line)}"]`)];
         for (const row of lit) row.setAttribute('data-hover', '');
     });
 
@@ -116,6 +118,10 @@
         return () => { document.body.style.removeProperty('--card-room'); };
     });
 </script>
+
+<!-- Escape closes the card as the close button does, and lights nothing either: the row that a key focused goes dark until
+     the next key moves the focus. Escape in an open window closes only the window. -->
+<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) hover.blur(); }} />
 
 <div class="routes-page">
     <header>
@@ -134,7 +140,7 @@
         <div class="map" style:--map-buttons={mapButtons ? `${buttonsWidth + 10}px` : null}>
             {#await import('./RoutesMap.svelte') then { default: RoutesMap }}
                 <RoutesMap {items} {shown} {selected} {marked} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} {credits}
-                    {look} {together} hovered={hover.id} onhover={id => id === undefined ? hover.leave('map') : hover.point(id, 'map')} {onselect} {onview} />
+                    {look} {together} hovered={lead} onhover={id => id === undefined ? hover.leave('map') : hover.point(id, 'map')} {onselect} {onview} />
             {:catch error}
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>
             {/await}
