@@ -3,7 +3,7 @@
 Coordinate routing over immutable regional packages. No dependency on OBC firmware, HTTP, a map
 renderer or an itinerary model. The default build needs Rust and `std`; the same core compiles for
 native iOS and WebAssembly. Run browser queries in a worker. The [route API](../../specs/route-api.md)
-defines snapping, direction continuity, alternatives, pace and request limits.
+defines snapping, direction continuity, pace and request limits.
 
 ## Run
 
@@ -15,9 +15,9 @@ let budget = package.default_budget();
 let mut router = Router::new(package, budget);
 let request: Request = serde_json::from_str(r#"{
   "points": [[7.849,47.997],[8.154,47.902]],
-  "profile": "touring", "alternatives": true
+  "profile": "touring"
 }"#)?;
-let result = router.routes(&request, &Control::default())?;
+let route = router.route(&request, &Control::default())?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -68,11 +68,7 @@ Physical phone performance and complete-country preparation need separate valida
 - Snapping uses only roads that the prepared profile permits. A disconnected leg returns `NoPath`;
   it does not retry other roads.
 - Missing terrain stays unknown and uses level slope for moving time.
-- Alternative discovery is bounded, not exhaustive. All routes share one query budget.
-  Cancellation, a limit or a lack of memory keeps the routes already found; no alternatives is a
-  valid answer.
-- Corridor probes apply to two-point requests. Optional landmarks guide the same search without
-  changing its result.
+- Optional landmarks guide the search without changing its result.
 - Keep itinerary state and learned pace outside this crate. Preserve a chosen route when the
   itinerary changes.
 - `elapsed` is moving time along the route geometry, not an arrival clock time.
@@ -97,7 +93,7 @@ never blocks other routers' reads. `routing_bytes` is one router's own blocks pl
 shared data. When a search queue lacks room or a profile does not fit, the router drops the cached
 profiles that no router holds and tries once before it answers `Memory`.
 
-The router retains 32 snap results. The geometry
-cache has a 32 MiB ceiling. A decoded page is at most 8 MiB. Default request limits are 64 points,
-8,192 batched attachment queries and 250,000 geometry vertices. `Control` can lower these limits,
-cap the search queues and supply a cancellation callback. These are service budgets.
+The router retains 32 snap results. The geometry cache has a 32 MiB ceiling. A decoded page is at
+most 8 MiB. Default request limits are 64 points, 8,192 batched attachment queries and 250,000
+geometry vertices. `Control` can lower these limits, cap the search queues and supply a
+cancellation callback. These are service budgets.

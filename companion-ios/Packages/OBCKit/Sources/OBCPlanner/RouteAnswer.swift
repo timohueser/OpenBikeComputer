@@ -1,17 +1,12 @@
 import Foundation
 import OBCDomain
 
-/// One route of a route answer, decoded from the integer deltas that `specs/route-api.md` specifies.
+/// The route of a route answer, decoded from the integer deltas that `specs/route-api.md` specifies.
 /// The companion does not read the surface and pushing runs.
 struct RouteAnswer: Decodable {
     /// `start` and `end` are opaque road positions. A request can pin its first or last point to one.
     struct Leg: Decodable { let from_index: Int; let to_index: Int; let start: String; let end: String; let totals: Totals }
-    /// `surface_m` gives metres for each surface, `Unknown` first.
-    struct Totals: Decodable { let distance_m: Double; let ascent_m: Double; let seconds: Double; let surface_m: [Double]? }
-    /// `primary`, or the trade-off of an alternative route.
-    let reason: String
-    /// Only on a `corridor` route: start, `via` and finish route to the same line.
-    let via: Coordinate?
+    struct Totals: Decodable { let distance_m: Double; let ascent_m: Double; let seconds: Double }
     let package: String
     let profile: String
     let coordinates: [Coordinate]
@@ -21,18 +16,11 @@ struct RouteAnswer: Decodable {
     let totals: Totals
 
     private enum CodingKeys: String, CodingKey {
-        case reason, via, package, profile, coordinates_udeg, elevation_dm, elapsed_s, legs, totals
+        case package, profile, coordinates_udeg, elevation_dm, elapsed_s, legs, totals
     }
 
     init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        reason = try values.decode(String.self, forKey: .reason)
-        via = try values.decodeIfPresent([Double].self, forKey: .via).map { pair in
-            guard pair.count == 2 else {
-                throw DecodingError.dataCorruptedError(forKey: .via, in: values, debugDescription: "Unpaired coordinate")
-            }
-            return Coordinate(latitude: pair[1], longitude: pair[0])
-        }
         package = try values.decode(String.self, forKey: .package)
         profile = try values.decode(String.self, forKey: .profile)
         legs = try values.decode([Leg].self, forKey: .legs)

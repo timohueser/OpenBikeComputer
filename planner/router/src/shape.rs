@@ -63,8 +63,6 @@ pub fn request(profile: &str, points: &[P], turnarounds: Vec<usize>) -> Request 
         points: points.iter().map(|p| [p[0] as f64 * 1e-6, p[1] as f64 * 1e-6]).collect(),
         profile: profile.into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds,
         start_position: None,
         end_position: None,

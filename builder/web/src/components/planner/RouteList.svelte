@@ -63,7 +63,6 @@
 
 <svelte:window onkeydown={(event) => { if (event.key === 'Escape') drag = null; }} onblur={() => drag = null} />
 
-{#if measured}<p class="note">Cumulative from the start</p>{/if}
 <ol class="route" bind:this={list}>
     {#each listed as { point, distance }, index (point.id)}
         <li class:dragging={drag?.id === point.id && Math.abs(drag.delta) > 4}
@@ -181,10 +180,4 @@
         background: var(--parchment-2);
     }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    /* Over the text column, so it reads as the caption of the distances under the names. */
-    .note {
-        margin: 4px 16px 0 45px;
-        font-size: 13px;
-        color: var(--ink-soft);
-    }
 </style>

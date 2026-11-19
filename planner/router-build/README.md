@@ -175,7 +175,7 @@ track grade, trail grade and traffic. Hiking also adds trail visibility. Touring
 less-climbing variant with triple climb cost. A signed cycle route discounts only the preference above the physical and
 traffic cost, in the direction that its member role gives. Access rules apply to every variant.
 MTB permits S2 at most and `mtb/technical` every grade; hiking permits T2 at most and
-`hiking/alpine` every known grade up to T6. Alternatives keep the difficulty limit of the request.
+`hiking/alpine` every known grade up to T6.
 
 The package holds geometry, snap cells, a shared directed graph, profile costs and snap bits,
 possible closures and compressed landmark bounds, separate from map tiles. A profile's snap bits

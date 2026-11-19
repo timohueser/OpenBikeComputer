@@ -18,7 +18,7 @@
     import { settings } from '../../lib/settings/settings.svelte';
 
     let {
-        kind, trip, line, days, detailsError = '', dayLabels, night, point, place, coordinate, legMode,
+        kind, trip, line, days, detailsError = '', dayLabels, night, point, place, coordinate, legMode, takeFocus = true,
         onClose, onEndpoint, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onChooseNight, onStay, onAddVisit, onRename, onKind, onRemove, children,
     }: {
         detailsError?: string;
@@ -37,6 +37,8 @@
         /** Where a place callout would pin the overnight. */
         coordinate?: Coordinate | null;
         legMode: LegMode;
+        /** False keeps the focus where it is, such as in a radio group that moves on with the arrow keys. */
+        takeFocus?: boolean;
         onEndpoint?: (kind: 'start' | 'finish') => void;
         onClose: () => void;
         onAddHere: (kind: EditableKind) => void;
@@ -97,7 +99,7 @@
         <button type="button" onclick={() => onEndpoint?.('finish')}><Icon name="flag" size={15} />Finish here</button>
     </div>{/if}
 {/snippet}
-<Callout label="Map details" {onClose}>
+<Callout label="Map details" {onClose} {takeFocus}>
     {#if kind === 'add'}
         <h2>{hasEndpoints ? 'Add point here' : 'Plan from here'}</h2>
         {@render endpoints()}

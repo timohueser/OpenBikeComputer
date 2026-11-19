@@ -39,8 +39,7 @@ const gapLeg = (from: Coordinate, to: Coordinate): Leg => ({ start: '', end: '',
  * to the leg after it. Its points have no height, so it adds no climb, and the leg after it keeps its own first point. */
 function stitch(legs: Leg[], profile: string): EngineRoute {
     const totals = noTotals();
-    // The id only tells the primary route from its alternatives; the server id needs the whole geometry.
-    const route: EngineRoute = { id: 'primary', reason: 'primary', package: legs.find(leg => !leg.gap)?.package ?? '', profile, geometry: [],
+    const route: EngineRoute = { package: legs.find(leg => !leg.gap)?.package ?? '', profile, geometry: [],
         elevation: [], elapsed: [], edges: {}, legs: [], snap_truncated: false, totals };
     legs.forEach((leg, k) => {
         const geometry = leg.gap ? [route.geometry.at(-1) ?? leg.geometry[0], legs[k + 1]?.geometry[0] ?? leg.geometry[1]] : leg.geometry;
@@ -178,7 +177,7 @@ export class LegCache {
         for (let attempt = 0; ; attempt++) {
             signal.throwIfAborted();
             try {
-                const [answer] = await requestRoute(points.slice(from, to + 2), profile, signal, false,
+                const answer = await requestRoute(points.slice(from, to + 2), profile, signal,
                     turnarounds.filter(t => t > from && t <= to).map(t => t - from), pins);
                 const fresh = answer.legs.map(leg => cut(answer, leg));
                 if (fresh.length !== to + 1 - from) throw new Error('The routing service returned an invalid response.');
@@ -188,11 +187,6 @@ export class LegCache {
                 await new Promise(resolve => setTimeout(resolve, RETRY_MS));
             }
         }
-    }
-
-    /** Keeps the legs of `route`, the answer for `points` without turnarounds, so a run through those points needs no request. */
-    add(points: Coordinate[], route: EngineRoute): void {
-        this.keep(legKeys(points, [], route.profile), route.legs.map(leg => cut(route, leg)));
     }
 
     /** Keeps the legs of a route as the most recent. When the cache holds too many coordinates, the least recently used

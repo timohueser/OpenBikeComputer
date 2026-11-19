@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let request: Request = serde_json::from_slice(&bytes)?;
     let budget = package.default_budget();
-    let response = Router::new(package, budget).routes(&request, &Control::default())?;
-    serde_json::to_writer(std::io::stdout(), &planner_router::answer::answer(&response))?;
+    let route = Router::new(package, budget).route(&request, &Control::default())?;
+    serde_json::to_writer(std::io::stdout(), &planner_router::answer::answer(&route))?;
     Ok(())
 }

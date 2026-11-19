@@ -12,7 +12,7 @@ export const stretchKey = (route: string, [from, to]: [number, number]) => `${ro
 // Answers kept for stretches no longer wanted, so Undo and a step back do not search again.
 const kept = 40;
 
-/** The stops along stretches of routes: one search for places to sleep and one for food, shops and water per stretch. */
+/** The stops along stretches of routes: one search for places to sleep and one for food and shops per stretch. */
 export class StopFinder {
     found = $state.raw<Record<string, NightStops>>({});
     private aborts = new Map<string, AbortController>();
@@ -62,7 +62,7 @@ export class StopFinder {
         };
         Promise.all([
             searchPlaces('', context, 80, abort.signal, { type: 'places', what: ['sleep'], where }),
-            searchPlaces('', context, 100, abort.signal, { type: 'places', what: ['food', 'resupply', 'water'], where }),
+            searchPlaces('', context, 100, abort.signal, { type: 'places', what: ['food', 'resupply'], where }),
         ]).then(([sleep, services]) => settle({ state: 'ready', stops: groupStops(sleep.results ?? [], services.results ?? []) }),
             () => settle({ state: 'error', message: 'Places to sleep could not load. Check your connection and retry.' }));
     }
@@ -75,6 +75,8 @@ export interface NightChoices {
     choosing: number | null;
     /** The open town of that night. */
     stopId: string | null;
+    /** The id of the place or point that the map shows. */
+    shownId: string | null;
     found(night: number): NightStops | undefined;
     window(night: number): [number, number] | null;
     /** The kinds of place to sleep of a night (`nightKinds`). */
@@ -98,7 +100,8 @@ export interface NightChoices {
     step(night: number, direction: -1 | 1): void;
     endHere(night: number, stop: Stop): void;
     stay(night: number, place: Place): void;
-    selectPlace(place: Place): void;
+    /** Shows a place on the map; null shows none and leaves the map where it is. */
+    selectPlace(place: Place | null): void;
     pick(): void;
     retry(night: number): void;
 }

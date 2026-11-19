@@ -48,17 +48,17 @@ pub static PLANNER_TERRAIN: Layer =
 /// costs of `planner_router_build::step`. A change of their bytes changes their format (`work`), a
 /// change of their content their revision: of the import rules the source, of the split, the order
 /// or the terrain the roads, of the cost code the costs.
-pub static PLANNER_ROUTING_SOURCE: Layer = work(step::SOURCE);
+pub static PLANNER_ROUTING_SOURCE: Layer = Layer { revision: 2, ..work(step::SOURCE) };
 pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
 pub static PLANNER_ROUTING_COSTS: Layer = Layer { revision: 2, ..work(step::COSTS) };
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
-    revision: 21,
+    revision: 22,
     ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
 };
 /// The search databases and the query model. Its format is the search schema of
 /// `specs/planner-release.md`.
-pub static PLANNER_SEARCH: Layer = Layer { revision: 2, ..whole("planner/search", 6, &[&SEARCH_SERVICE]) };
+pub static PLANNER_SEARCH: Layer = Layer { revision: 3, ..whole("planner/search", 6, &[&SEARCH_SERVICE]) };
 /// The rider places of the search.
 pub static PLANNER_PLACES: Layer = whole("planner/places", 1, &[&WEB_PLANNER]);
 pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER]);

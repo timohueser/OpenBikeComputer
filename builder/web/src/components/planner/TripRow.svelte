@@ -1,5 +1,6 @@
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
+    import StayChip from './StayChip.svelte';
     import { allStay, type Stay, type Trip } from '../../lib/planner/editor';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
     import { stayOptions as kinds } from '../../lib/planner/search/presentation';
@@ -15,8 +16,7 @@
         return `${weekdayLabel(trip.startDate, trip.startDate.slice(0, 7) !== last.slice(0, 7))} – ${weekdayLabel(last, true)}`;
     });
 
-    function toggle(kind: Stay) {
-        const next = allStay.filter(k => k === kind ? !stay.includes(k) : stay.includes(k));
+    function changeStay(next: Stay[]) {
         onChange({ ...trip, stay: next.length === allStay.length ? undefined : next },
             `Sleeping in ${kinds.filter(k => next.includes(k.kind)).map(k => k.label.toLowerCase()).join(', ')}`);
     }
@@ -32,8 +32,8 @@
 <div class="trip-row">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="dates" bind:this={root} onkeydown={(event) => { if (event.key === 'Escape' && dating) { event.stopPropagation(); close(); } }}>
-        <button type="button" class="date" class:guess={!trip.startDate} aria-label={`Trip dates: ${range}`} aria-expanded={dating} onclick={() => dating = !dating}>
-            <Icon name="calendar" size={15} />{range}
+        <button type="button" class="planner-chip date" class:guess={!trip.startDate} aria-label={`Trip dates: ${range}`} aria-expanded={dating} onclick={() => dating = !dating}>
+            <Icon name="calendar" size={14} />{range}
         </button>
         {#if dating}
             <div class="popover">
@@ -50,23 +50,15 @@
             </div>
         {/if}
     </div>
-    <div class="stay" role="group" aria-label="Where you sleep">
-        <span>Sleep in</span>
-        {#each kinds as { kind, label, icon } (kind)}
-            {@const on = stay.includes(kind)}
-            <button type="button" aria-pressed={on} disabled={on && stay.length === 1} onclick={() => toggle(kind)}>{#if icon}<Icon name={icon} size={14} />{/if}{label}</button>
-        {/each}
-    </div>
+    <StayChip value={stay} onChange={changeStay} />
 </div>
 
 <style>
     .trip-row {
         display: flex;
         align-items: center;
-        gap: 16px;
+        gap: 8px;
         flex-wrap: wrap;
-        flex: 1;
-        min-width: 0;
         font-size: 13px;
         color: var(--ink-soft);
     }
@@ -79,26 +71,18 @@
     button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     .dates { position: relative; }
     .date {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        height: 34px;
-        padding: 0 10px;
-        border: 1px solid var(--line-strong);
-        border-radius: 8px;
-        background: var(--panel);
-        color: var(--ink);
-        font-weight: 600;
+        --chip-ink: var(--query-time);
         white-space: nowrap;
     }
-    .date.guess {
+    /* Outranks the global `.planner-shell .planner-chip`, whose stylesheet loads later. */
+    .date.planner-chip.guess {
         border: 1.5px dashed var(--ink-soft);
         color: var(--ink-soft);
     }
     .popover {
         position: absolute;
         z-index: 40;
-        bottom: 42px;
+        top: 40px;
         left: 0;
         width: 280px;
         padding: 14px;
@@ -146,33 +130,4 @@
         color: var(--on-amber);
         font-weight: 600;
     }
-    .stay {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        flex-wrap: wrap;
-        margin-left: auto;
-        padding: 2px;
-        border-radius: 6px;
-        background: var(--parchment-2);
-    }
-    .stay > span { padding: 0 6px 0 8px; }
-    .stay button {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        min-height: 30px;
-        padding: 0 10px;
-        border: 0;
-        border-radius: 5px;
-        background: transparent;
-        font-weight: 600;
-        white-space: nowrap;
-    }
-    .stay button[aria-pressed="true"] {
-        background: var(--panel);
-        color: var(--ink);
-        box-shadow: inset 0 0 0 1px var(--line-strong);
-    }
-    .stay button:disabled { opacity: 1; }
 </style>

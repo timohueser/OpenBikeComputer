@@ -2,9 +2,10 @@
     import { onMount, type Snippet } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
 
-    /** The frame of a map popup: a close button, Escape, and the focus, which it takes on mount and gives back to the
-     * opener on close. It never takes the focus from a control that the rider chose before its first frame. */
-    let { label, onClose, children }: { label: string; onClose: () => void; children: Snippet } = $props();
+    /** The frame of a map popup: a close button, Escape, and the focus, which it takes on mount unless `takeFocus` is
+     * false and gives back to the opener on close. It never takes the focus from a control that the rider chose before
+     * its first frame. */
+    let { label, onClose, takeFocus = true, children }: { label: string; onClose: () => void; takeFocus?: boolean; children: Snippet } = $props();
 
     let root: HTMLDivElement;
     let opener: HTMLElement | null = null;
@@ -14,6 +15,7 @@
         // The map moves this content into its popup after mounting.
         // MapLibre can focus the close button as it adds the popup.
         const frame = requestAnimationFrame(() => {
+            if (!takeFocus) return;
             const at = document.activeElement;
             if (at === opener || at === document.body || root.contains(at)) root.focus({ preventScroll: true });
         });

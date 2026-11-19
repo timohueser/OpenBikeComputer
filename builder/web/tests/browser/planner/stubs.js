@@ -43,7 +43,7 @@ const metres = ([lon1, lat1], [lon2, lat2]) =>
   Math.hypot((lon2 - lon1) * 111_320 * Math.cos((lat1 * Math.PI) / 180), (lat2 - lat1) * 110_574);
 
 /** A straight-line route through the points, in the answer format of `specs/route-api.md`. A leg position names its point. */
-function route(points, profile, id) {
+function route(points, profile) {
   const steps = 8;
   const geometry = [points[0]];
   const legs = [];
@@ -61,7 +61,7 @@ function route(points, profile, id) {
   const [lon, lat] = [0, 1].map(axis => deltas(geometry.map(p => Math.round(p[axis] * 1e6))));
   const edges = geometry.length - 1;
   return {
-    id, reason: id === 'primary' ? 'primary' : 'alternative', package: 'budget-test', profile,
+    package: 'budget-test', profile,
     coordinates_udeg: lon.flatMap((x, i) => [x, lat[i]]),
     elevation_dm: deltas(geometry.map((_, i) => Math.round(3000 + 400 * Math.sin(i / 3)))),
     elapsed_s: deltas(distance.map(d => Math.round(d / 5))),
@@ -172,10 +172,8 @@ export function respond(request) {
       if (url.pathname.startsWith('/routes/tiles/long/')) return url.pathname.endsWith(`/${WESTWEG.id}.json`) ? json({ format: 1, routes: [WESTWEG] }) : { headers: CORS, status: 404 };
       return json({ format: 1, routes: url.pathname.endsWith(`/${ROUTE_CELL}.json`) ? CATALOG : [] });
     case 'route': {
-      const { points, profile, alternatives, alternatives_only } = request.postDataJSON();
-      const routes = alternatives_only ? [] : [route(points, profile, 'primary')];
-      if (alternatives || alternatives_only) routes.push(route(points, profile, 'alternative'));
-      return json({ routes });
+      const { points, profile } = request.postDataJSON();
+      return json({ routes: [route(points, profile)] });
     }
     case 'region':
       return json({ package: 'budget-test', profiles: ['gravel', 'hiking', 'mtb', 'road', 'touring', 'gravel/less-climbing', 'road/less-climbing', 'touring/less-climbing'] });

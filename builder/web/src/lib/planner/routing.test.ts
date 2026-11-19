@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, pacedLine, profileId, regionProfiles, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals, type RoutingLine, type Surface } from './routing';
+import { calculateLine, pacedLine, profileId, regionProfiles, requestRoute, routingKey, movingSecondsAt, type RouteTotals, type RoutingLine, type Surface } from './routing';
 import { chunks, LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
@@ -8,12 +8,12 @@ import { surfaceRuns, surfaceShares, surfaceWindow } from './surface-data';
 import { daySegments, planView, removeRoutePoint, setEndpoint, type RoutePoint, type Trip } from './editor';
 import { cumulative, type Coordinate } from './geo';
 import { testTrip } from '../../../test-support/planner/trip';
-import { gapNote, routeGaps } from './route-gaps';
+import { gapLabel, routeGaps } from './route-gaps';
 
 const totals = (metres: number, unknown = 0, pushing = 0): RouteTotals =>
     ({ distance_m: metres, ascent_m: 0, seconds: metres, surface_m: [unknown, metres - unknown, 0, 0, 0, 0], unknown_elevation_m: metres, pushing_m: pushing });
 const answer: AnswerRoute = {
-    id: 'test-route', edges: { surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]] }, reason: 'primary', elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
+    edges: { surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]] }, elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
     coordinates_udeg: [7_800_000, 48_000_000, 100_000, 0, 100_000, 0], elevation_dm: [2000, null, 2000],
     totals: { ...totals(15000, 1000, 100), seconds: 4000 },
     legs: [{ from_index: 0, to_index: 1, start: 'a', end: 'b', totals: { ...totals(7500, 1000), seconds: 3000 } },
@@ -48,16 +48,9 @@ describe('routing integration', () => {
         const plan = trip();
         const line = await calculateLine(plan, new AbortController().signal, new LegCache());
         expect(fetch).toHaveBeenCalledTimes(1);
-        expect(JSON.parse(fetch.mock.calls[0][1].body).alternatives).toBe(false);
-        expect(line.primary?.geometry).toEqual(route.geometry);
+        expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ points: plan.points.map(p => p.coordinate), profile: 'touring', turnarounds: [] });
         expect(line.edges).toEqual({ surfaces: ['Paved', 'Gravel'], pushing: [false, true] });
         expect(line.package).toBe('test');
-        expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
-        fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'climb', reason: 'less_climbing' }] }) });
-        const alternatives = await requestAlternatives(plan, line.primary!, new AbortController().signal);
-        const { alternatives: _primaryOnly, ...request } = JSON.parse(fetch.mock.calls[0][1].body);
-        expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ ...request, alternatives_only: true });
-        expect(alternatives.map(r => r.id)).toEqual(['primary', 'climb']);
         expect(movingSecondsAt(line, 0.5)).toBeCloseTo(3000);
         expect(line.elevation).toEqual([200, null, 400]);
         expect(line.stops.map(s => s.distance)).toEqual(cumulative(route.geometry));
@@ -130,7 +123,6 @@ describe('routing integration', () => {
         const body = JSON.parse(fetch.mock.calls[0][1].body);
         expect(body.points).toEqual([[7.8, 48], [7.85, 48], [7.9, 48], [7.85, 48], [8, 48]]);
         expect(body.turnarounds).toEqual([2]);
-        expect(body.alternatives).toBe(false);
         const legs = (modes: RoutePoint['leg'][]): Trip => ({ ...trip(), points: trip().points.map((p, i) => ({ ...p, leg: modes[i] })) });
         const line = await calculateLine(legs([undefined, 'straight', 'straight']), new AbortController().signal, new LegCache());
         expect(line.unroutedKm).toBeCloseTo(line.unknownSurfaceKm);
@@ -209,7 +201,7 @@ describe('joins beside manual legs', () => {
         const { points } = JSON.parse(init.body as string) as { points: Coordinate[] };
         const snapped = points.map(([lon, lat]): Coordinate => [lon, lat + .000045]);
         const legTotals = { ...totals(1000), unknown_elevation_m: 0 };
-        const routes: AnswerRoute[] = [{ id: 'snapped', reason: 'primary', package: 'p', profile: 'touring', snap_truncated: false,
+        const routes: AnswerRoute[] = [{ package: 'p', profile: 'touring', snap_truncated: false,
             coordinates_udeg: snapped.flat().map((value, i, flat) => Math.round(value * 1e6) - (i > 1 ? Math.round(flat[i - 2] * 1e6) : 0)),
             elevation_dm: snapped.map(() => 2000), elapsed_s: snapped.map((_, i) => i && 1000), totals: { ...totals(1000 * (points.length - 1)), unknown_elevation_m: 0 },
             legs: snapped.slice(1).map((_, k) => ({ from_index: k, to_index: k + 1, start: `${k}`, end: `${k + 1}`, totals: legTotals })) }];
@@ -401,7 +393,7 @@ describe('runs longer than one request', () => {
         const view = planView(shaped, line);
         // The left-out point stops where the line passes nearest to it.
         expect(view.stops[66].distance).toBeCloseTo(cumulative([coordinates[0], [coordinates[66][0], 48]])[1], 4);
-        expect(gapNote(routeGaps(view.stops, view.coordinates))).toBe('Route passes 2.2 km from the selected point — no accessible path');
+        expect(routeGaps(view.stops, view.coordinates).map(gapLabel)).toEqual(['Passes 2.2 km from your point']);
         await calculateLine(plan([[8, 48], [8.05, 48.02], [8.1, 48]], { 1: { kind: 'detour', anchor: [8.05, 48] } }), signal, new LegCache());
         expect(bodies(fetch).at(-1)).toEqual(expect.objectContaining({ points: [[8, 48], [8.1, 48]], turnarounds: [] }));
         const requests = fetch.mock.calls.length;
@@ -423,7 +415,7 @@ describe('runs longer than one request', () => {
         expect([line.gapLegs, bodies(fetch).at(-2).points]).toEqual([[], [[8, 48], [8.05, 48]]]);
         expect(line.unroutedKm).toBeCloseTo(cumulative([[8.05, 48], [8.1, 48]])[1]);
         const view = planView(far, line);
-        expect(gapNote(routeGaps(view.stops, view.coordinates))).toBe('Route passes 2.2 km from the selected point — no accessible path');
+        expect(routeGaps(view.stops, view.coordinates).map(gapLabel)).toEqual(['Passes 2.2 km from your point']);
         expect((await calculateLine(visit(48.005), signal, new LegCache())).gapLegs).toEqual(['p1']);
     });
 
@@ -436,19 +428,10 @@ describe('runs longer than one request', () => {
         const note = async (lat: number, leg: RoutePoint['leg']) => {
             const visit = plan([[8, 48], [8.05, lat], [8.1, 48], [8.2, 48]], { 1: { kind: 'detour', anchor: [8.05, 48] }, 2: { leg } });
             const view = planView(visit, await calculateLine(visit, signal, new LegCache()));
-            return routeGaps(view.stops, view.coordinates).map(gap => gapNote([gap]));
+            return routeGaps(view.stops, view.coordinates).map(gapLabel);
         };
         expect(await Promise.all([note(48.0054, 'routed'), note(48.0054, 'transfer'), note(48.02, 'routed'), note(48.02, 'transfer')])).toEqual([[], [],
-            ['Route passes 2.2 km from the selected point — no accessible path'], ['Route passes 2.2 km from the selected point — no accessible path']]);
+            ['Passes 2.2 km from your point'], ['Passes 2.2 km from your point']]);
     });
 
-    it('offers route options only for a plan that fits one request', async () => {
-        vi.stubGlobal('fetch', vi.fn(routeService('one')));
-        const plan = (count: number): Trip => {
-            const points = run(count).map((coordinate, i): RoutePoint => ({ id: `p${i}`, kind: i ? i < count - 1 ? 'via' : 'finish' : 'start', coordinate, label: '' }));
-            return { ...trip(), points, routeOrder: points.slice(1, -1).map(point => point.id) };
-        };
-        expect((await calculateLine(plan(64), signal, new LegCache())).primary).toBeDefined();
-        expect((await calculateLine(plan(65), signal, new LegCache())).primary).toBeUndefined();
-    });
 });

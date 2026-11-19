@@ -58,7 +58,6 @@
    "category": "hotel",
    "data": [
     "campsite",
-    "caravan_site",
     "shelter",
     "chalet",
     "hotel",
@@ -72,8 +71,7 @@
    "parent": "sleep",
    "category": "camp",
    "data": [
-    "campsite",
-    "caravan_site"
+    "campsite"
    ]
   },
   "shelter": {
@@ -493,7 +491,6 @@
   "spring": "spring",
   "water_tap": "water_tap",
   "campsite": "campsite",
-  "caravan_site": "campsite",
   "shelter": "shelter",
   "chalet": "lodging",
   "hotel": "hotel",
