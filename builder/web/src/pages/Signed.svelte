@@ -59,14 +59,18 @@
     let routePlaces = $state.raw<RoutePlace[]>([]), litPlaces = $state.raw<string[]>([]), openPlaceId = $state<string | null>(null);
 
     const item = $derived(record && signedItem(record, exploreAt(record).chips.bike!));
-    // The time is at the pace of a new plan.
     const trip = $derived(record && planTrip(routeBase(record, emptyTrip()), routePlan(record), record.loop));
     const line = $derived(routed?.record === record ? routed?.line : undefined);
     const error = $derived(routed?.record === record ? routed?.error : undefined);
-    // The line, its heights, the time and the highest point come from the answer, so the map and the rows measure along one
-    // line; the length and the climb stay those of the card. Before the answer, the record's line with no highest point.
-    const summary = $derived(item && (line ? { ...planSummary(trip!, line), lengthM: item.summary.lengthM, climbM: item.summary.climbM }
-        : { ...item.summary, highestM: null }));
+    // The time is the stored time of the catalog when the record has one, so it does not change when the answer comes; else
+    // the time of the answer at the pace of a new plan. The line, its heights and the highest point come from the answer, so
+    // the map and the rows measure along one line; the length and the climb stay those of the card. Before the answer, the
+    // record's line with no highest point.
+    const summary = $derived.by(() => {
+        if (!item) return undefined;
+        const shown = line ? { ...planSummary(trip!, line), lengthM: item.summary.lengthM, climbM: item.summary.climbM } : { ...item.summary, highestM: null };
+        return { ...shown, seconds: record!.moving_s ?? shown.seconds };
+    });
     const facts = $derived(trip && line ? routeFacts(trip, line) : undefined);
     const pins = $derived(trip && summary ? routePins(trip, lineCoordinates(summary), line) : []);
     const focus = $derived(part ?? day);

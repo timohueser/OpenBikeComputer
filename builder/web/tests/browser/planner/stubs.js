@@ -83,7 +83,7 @@ const CATALOG = [
     description: 'Over the castle hill and through the old town. '.repeat(12), operator: 'Test club', website: 'https://example.test/schlossberg', symbol: 'red:white:red_bar',
     cells: [ROUTE_CELL], line_udeg: udeg([[7.85, 47.99], [7.86, 47.995], [7.855, 48.0], [7.85, 47.99]]), via: [1, 2],
     profile_m: Array.from({ length: 14 }, (_, i) => 300 + 10 * Math.min(i, 13 - i)) },
-  { id: 202, kind: 'hiking', name: 'Westweg 2', ref: 'WW', rank: 3, loop: false, length_m: 2500, ascent_m: 80, descent_m: 20, hardest: 0,
+  { id: 202, kind: 'hiking', name: 'Westweg 2', ref: 'WW', rank: 3, loop: false, length_m: 2500, ascent_m: 80, descent_m: 20, hardest: 0, moving_s: 5400,
     cells: [ROUTE_CELL], line_udeg: udeg([[7.88, 47.98], [7.9, 47.985], [7.91, 48.0]]), via: [1], parent: 300, stage: 2,
     description: 'The stage follows the old trail through the forest and along the ridge to the next village. '.repeat(40) },
   { id: 300, kind: 'hiking', name: 'Westweg', rank: 3, loop: false, length_m: 5000, ascent_m: 200, descent_m: 100, cells: [ROUTE_CELL],
