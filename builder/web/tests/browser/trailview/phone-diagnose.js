@@ -5,20 +5,30 @@
 // errors. For each pipeline that the browser refuses, it finds the function that the compiler rejects: it stubs
 // functions of the shader and compiles again. Each finding posts at once, so a tab that the system kills leaves its
 // data. A classic script, injected before the page's module: it wraps the WebGPU calls first.
+//
+// /phone/cold runs the cold start check instead: a cold load of the walk view per debug view of `?views=` (default
+// off,normals), with a picture each second from the first drawn frame through the load and the walk flight, the state of
+// the engine at each picture, the drawn pages' heights when the load is ready and after the flight, and the time split of
+// the ground worker's jobs (phone-worker.js).
 (() => {
     const KEY = 'obc-diagnose';
     const TAIL = '&date=2026-08-15&time=15:00&weather=sunny';
     const WALK = { lat: 46.8205, lon: 8.403, heading: 160, pitch: 0, eye: 1.6 };
     const WALK_URL = `/trailview.html?lat=${WALK.lat}&lon=${WALK.lon}&heading=${WALK.heading}&pitch=${WALK.pitch}&eye=${WALK.eye}${TAIL}`;
-    const STEPS = [{ id: 'today', url: WALK_URL }, { id: 'plan', url: `${WALK_URL}&ground=plan` }];
     // The walk flight of phone-measure.js: 20 s from the walk view to here.
-    const WALK_END = { lat: 46.817, lon: 8.405, heading: 200, pitch: 5 };
+    const WALK_END = { lat: 46.817, lon: 8.405, heading: 200, pitch: 5, height: 1.6 };
     /** Seconds that the refused pipelines may take to bisect, per load. */
     const BISECT_S = 150;
+    /** The cold start check: the longest load before the flight starts anyway, and the flight. */
+    const COLD_READY_MS = 45_000, FLIGHT_S = 20;
 
     const load = () => { try { return JSON.parse(sessionStorage.getItem(KEY)) ?? undefined; } catch { return undefined; } };
     const save = () => { try { sessionStorage.setItem(KEY, JSON.stringify(state)); } catch { /* the next load starts again */ } };
+    const stepsOf = s => (s?.mode === 'cold'
+        ? s.views.map(view => ({ id: `cold-${view}`, url: view === 'off' ? WALK_URL : `${WALK_URL}&debug=${view}` }))
+        : [{ id: 'today', url: WALK_URL }, { id: 'plan', url: `${WALK_URL}&ground=plan` }]);
     let state = load();
+    const STEPS = stepsOf(state);
     // A start page with ?budget=S gives the session S seconds in place of 170, and its waits grow alike (a software GPU).
     const slow = Math.max(1, (state?.budget ?? 170) / 170);
     const START_MS = 60_000 * slow, IDLE_MS = 10_000 * slow;
@@ -27,7 +37,10 @@
         return fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body, keepalive: body.length < 60_000 }).catch(() => {});
     };
     let events = 0;
-    const event = (kind, value) => events++ < 600 && post('event', { step: STEPS[state.index]?.id, kind, ...value });
+    const event = (kind, value) => {
+        if (/error|lost|rejected|failed/.test(kind) || value?.found) hooks.errors++;
+        return events++ < 600 && post('event', { step: STEPS[state.index]?.id, kind, ...value });
+    };
     const blob = (name, body, type = 'application/octet-stream') =>
         fetch(`/blob?session=${state.session}&name=${encodeURIComponent(name)}`, { method: 'POST', headers: { 'content-type': type }, body }).catch(() => {});
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -57,6 +70,12 @@
     };
     const errorText = (filter, error) => ({ filter, type: error?.constructor?.name, message: String(error?.message ?? '') });
     function hook() {
+        performance.setResourceTimingBufferSize?.(10_000);
+        try {
+            new PerformanceObserver(list => {
+                for (const e of list.getEntries()) hooks.fetches.push({ layer: new URL(e.name).pathname.split('/')[1], start: e.startTime, ms: e.duration, bytes: e.transferSize || e.encodedBodySize || 0 });
+            }).observe({ type: 'resource', buffered: true });
+        } catch { /* no resource timing */ }
         addEventListener('error', e => event('page error', { message: e.message, at: `${e.filename}:${e.lineno}:${e.colno}` }));
         addEventListener('unhandledrejection', e => event('unhandled rejection', { message: String(e.reason?.message ?? e.reason), type: e.reason?.constructor?.name }));
         let said = 0;
@@ -142,7 +161,7 @@
             };
         }
     }
-    const hooks = { pipelines: 0, popFirst: undefined };
+    const hooks = { pipelines: 0, popFirst: undefined, errors: 0, fetches: [] };
     const original = {};
 
     /** The ground jobs sent before `until`: count, round trip median, p95 and sum in ms, and the ms from the probe to the last of their pages. */
@@ -156,7 +175,7 @@
     function tapWorkers() {
         const Base = window.Worker;
         let jobs = 0, replies = 0, failures = 0;
-        const times = hooks.groundTimes = { open: undefined, jobs: [] };
+        const times = hooks.groundTimes = { open: undefined, jobs: [], inFlight: 0 };
         window.Worker = class extends Base {
             constructor(url, options) {
                 super(url, options);
@@ -169,9 +188,12 @@
                     // The first message is the decode probe that GroundSource.open sends.
                     const now = performance.now(), job = data?.job;
                     times.open ??= now;
-                    if (job) sent.set(data.id, now);
+                    if (job) {
+                        sent.set(data.id, now);
+                        times.inFlight++;
+                    }
                     // The bodies of the first job, to decode them on a desktop the same way.
-                    if (job && jobs++ === 0) for (const body of [job.ground, ...(job.quarters ?? []), job.snow]) if (body?.body) blob(`ground-${body.layer}-${body.z}-${body.x}-${body.y}.bin`, body.body.slice(0));
+                    if (job && jobs++ === 0 && state.mode !== 'cold') for (const body of [job.ground, ...(job.quarters ?? []), job.snow]) if (body?.body) blob(`ground-${body.layer}-${body.z}-${body.x}-${body.y}.bin`, body.body.slice(0));
                     return post(data, ...rest);
                 };
                 this.addEventListener('message', ({ data }) => {
@@ -180,7 +202,11 @@
                     const start = sent.get(data?.id);
                     if (start !== undefined) {
                         sent.delete(data.id);
-                        times.jobs.push({ start, ms: performance.now() - start });
+                        times.inFlight--;
+                        const now = performance.now(), sentAt = performance.timeOrigin + start, k = data.kit;
+                        // phone-worker.js: the wait for the worker, its decodes and page build, and the way back to this thread.
+                        const split = k && { wait: k.start - sentAt, work: k.end - k.start, decode: k.decode, decodes: k.decodes, build: k.build, back: performance.timeOrigin + now - k.end };
+                        times.jobs.push({ start, ms: now - start, failed: !!data.error, ...split });
                     }
                     hooks.ground = { jobs, replies, failures };
                 });
@@ -306,7 +332,7 @@
                 }
                 const row = { name: job.name, which: job.which, kind: job.p.kind, slot: job.slot, copy: job.p.copy, mask: job.p.mask, complete: job.p.complete, offset, scale, hash: fnv(u8(codes)), known, min: round(min), max: round(max), maxLaplacian: round(lap), spikes };
                 rows.push(row);
-                if (under(job.p.node)) blob(`page-${tag}-${job.name.replaceAll('/', '-')}-${job.which}.bin`, codes.slice(0));
+                if (under(job.p.node) && state.mode !== 'cold') blob(`page-${tag}-${job.name.replaceAll('/', '-')}-${job.which}.bin`, codes.slice(0));
             }
             staging.unmap();
             staging.destroy();
@@ -322,7 +348,7 @@
         try { await within(tv.waitForIdle(), IDLE_MS, 'waitForIdle'); return true; } catch (e) { event('not idle', { message: e.message }); return false; }
     }
     /** The canvas as the page shows it after the frame that just drew, as a JPEG; no wait for the jitter to converge. */
-    function grab(tv, name) {
+    function grab(tv, name, extra) {
         const source = document.querySelector('canvas'), canvas = Object.assign(document.createElement('canvas'), { width: source.width, height: source.height });
         const context = canvas.getContext('2d');
         context.drawImage(source, 0, 0);
@@ -330,8 +356,11 @@
         let sum = 0;
         for (let i = 0; i < row.length; i += 4) sum += row[i] + row[i + 1] + row[i + 2];
         const s = tv.stats();
-        event('grab', { name, blank: sum === 0, view: tv.view, drawn: s.drawn, resident: s.resident, quality: s.terrain.quality, pools: Math.round([...s.pools.values()].reduce((a, b) => a + b, 0) / 2 ** 20) });
-        canvas.toBlob(jpeg => jpeg && blob(`${name}.jpg`, jpeg, 'image/jpeg'), 'image/jpeg', 0.8);
+        const record = { name, blank: sum === 0, view: tv.view, drawn: s.drawn, resident: s.resident, quality: s.terrain.quality, pools: Math.round([...s.pools.values()].reduce((a, b) => a + b, 0) / 2 ** 20), ...extra };
+        if (!extra) event('grab', record);
+        // A still view that has all its jittered frames draws none, and the canvas reads black: no picture then.
+        if (!(extra && record.blank)) canvas.toBlob(jpeg => jpeg && blob(`${name}.jpg`, jpeg, 'image/jpeg'), 'image/jpeg', 0.8);
+        return record;
     }
     /** A flight whose pose follows the clock, as phone-measure.js flies, with a picture every `every` seconds. */
     async function fly(tv, name, from, to, seconds, every) {
@@ -346,6 +375,82 @@
             if (t >= 1) break;
         }
     }
+    // --- The cold start check -----------------------------------------------------------------------------------
+    /** What the engine draws and waits for at a picture: drawn nodes, and those that draw their own page; loads, stamps and ground jobs in flight. */
+    function busy(tv) {
+        const s = tv.stats(), t = tv.terrain, pages = t.pages.pages, nodes = t.selected?.drawn ?? [];
+        let own = 0;
+        for (const n of nodes) {
+            const page = pages.get(`${n.level}/${n.x}/${n.y}`);
+            if (page?.ready && page.drawn !== undefined) own++;
+        }
+        return {
+            nodes: nodes.length, own, finest: Math.max(0, ...nodes.map(n => n.level)), resident: s.resident, loads: t.pages.loads, missing: t.pages.missing,
+            arrivals: t.pages.arrivals?.length, left: s.terrain.left.reduce((a, b) => a + b, 0), stamps: s.terrain.jobs, stampsLoading: t.stamps?.loading,
+            roadsLoading: t.roads?.loading, near: t.near, eye: t.eye, ground: hooks.groundTimes.inFlight, groundShort: s.ground.shortage, quality: s.terrain.quality,
+            cpu: round(tv.cpu), errors: hooks.errors,
+        };
+    }
+    const quantile = (list, q) => { const s = [...list].sort((a, b) => a - b); return s.length ? round(s[Math.min(s.length - 1, Math.floor(q * s.length))]) : undefined; };
+    /** The requests per first path segment, before the flight and in it: count, median and p95 ms, bytes. */
+    function fetches(flightStart) {
+        const out = {};
+        for (const f of hooks.fetches) {
+            const group = (out[`${f.layer} ${f.start < flightStart ? 'load' : 'flight'}`] ??= { ms: [], bytes: 0 });
+            group.ms.push(f.ms);
+            group.bytes += f.bytes;
+        }
+        return Object.fromEntries(Object.entries(out).map(([k, g]) => [k, { count: g.ms.length, median: quantile(g.ms, 0.5), p95: quantile(g.ms, 0.95), bytes: g.bytes }]));
+    }
+    /** One cold load: a picture each second from the first drawn frame, through the load and the walk flight of phone-measure.js. */
+    async function cold(tv, step) {
+        const marks = {}, shots = [], intervals = [], key = `cold.${step.id}`;
+        const mark = name => () => (marks[name] ??= Math.round(performance.now()));
+        tv.eyeReady().then(mark('eyeReady'), e => event('eyeReady failed', { message: e.message }));
+        tv.nearReady().then(mark('nearReady'), e => event('nearReady failed', { message: e.message }));
+        const shot = (phase, extra) => {
+            shots.push(grab(tv, `${step.id}-${String(shots.length).padStart(2, '0')}-${phase}`, { at: Math.round(performance.now()), phase, ...extra, ...busy(tv) }));
+            if (shots.length % 5 === 0) post(key, { marks, shots });
+        };
+        const label = `Step ${state.index + 1} of ${STEPS.length}${step.id === 'cold-off' ? '' : ' (test colours)'}`;
+        say(`${label}: loading …`);
+        // The engine draws as it wants while it loads; each second one frame is asked for, and the picture taken after it.
+        const deadline = performance.now() + COLD_READY_MS;
+        for (let due = 0; performance.now() < deadline;) {
+            await new Promise(requestAnimationFrame);
+            // The first proper render of phone-measure.js, where its flight starts.
+            if (marks.nearReady !== undefined && !tv.terrain.meshesLoading) {
+                marks.proper = Math.round(performance.now());
+                break;
+            }
+            if (tv.stats().drawn > 0 && performance.now() >= due) {
+                await Promise.race([tv.nextFrame(), sleep(5000)]);
+                shot('load');
+                due = performance.now() + 1000;
+            }
+        }
+        await pagesReport(tv, `${step.id}-ready`, WALK).catch(e => event('report failed', { name: 'pages ready', message: e.message }));
+        say(`${label}: the walk`);
+        const from = { ...tv.view }, to = { ...from, ...WALK_END }, t0 = Math.round(performance.now());
+        for (let n = 0, last; ;) {
+            const t = Math.min(1, (performance.now() - t0) / (FLIGHT_S * 1000)), mix = (a, b) => a + (b - a) * t;
+            tv.view = { ...from, lat: mix(from.lat, to.lat), lon: mix(from.lon, to.lon), heading: mix(from.heading, to.heading), pitch: mix(from.pitch, to.pitch), height: mix(from.height, to.height) };
+            await Promise.race([tv.nextFrame(), sleep(5000)]);
+            const now = performance.now();
+            if (last !== undefined) intervals.push(Math.round(now - last));
+            last = now;
+            if (now - t0 >= n * 1000) {
+                shot('fly', { t: round((now - t0) / 1000), frame: intervals.at(-1) });
+                n++;
+            }
+            if (t >= 1) break;
+        }
+        say(`${label}: reading the heights`);
+        await pagesReport(tv, `${step.id}-end`, WALK_END).catch(e => event('report failed', { name: 'pages end', message: e.message }));
+        const ground = hooks.groundTimes.jobs.map(job => Object.fromEntries(Object.entries(job).map(([k, v]) => [k, typeof v === 'number' ? Math.round(v) : v])));
+        await post(key, { marks, flightStart: t0, frame: { median: quantile(intervals, 0.5), p95: quantile(intervals, 0.95), max: Math.max(...intervals) }, intervals, shots, ground, fetches: fetches(t0) });
+    }
+
     const statsOf = tv => JSON.parse(JSON.stringify(tv.stats(), (_, v) => (v instanceof Map ? Object.fromEntries(v) : v)));
 
     const say = text => {
@@ -401,7 +506,7 @@
         state.loaded = state.index;
         save();
         await new Promise(resolve => (document.readyState === 'loading' ? addEventListener('DOMContentLoaded', resolve) : resolve()));
-        say(`Starting: ${step.id === 'today' ? "today's app" : 'the new roads'} …`);
+        say(`Starting: ${{ today: "today's app", plan: 'the new roads' }[step.id] ?? `step ${state.index + 1} of ${STEPS.length}`} …`);
         const started = performance.now();
         let tv;
         while (!(tv = window.trailView) && !notice() && performance.now() - started < START_MS) await sleep(100);
@@ -410,49 +515,54 @@
             // The page's own notice has no canvas to capture: its text and the errors above are the record.
             await post(`steps.${step.id}`, { ...record, notice: notice() ?? null, failure: notice() ? 'the page shows a notice' : `no viewer in ${START_MS / 1000} s` });
             hooks.popFirst?.();
-            await plan();
+            if (state.mode !== 'cold') await plan();
             return next();
         }
         await post(`steps.${step.id}`, { ...record, adapter: tv.stats().adapter, canvas: [document.querySelector('canvas')?.width, document.querySelector('canvas')?.height] });
-        await (step.id === 'today' ? today(tv) : plan());
+        await (step.id === 'today' ? today(tv) : step.id === 'plan' ? plan() : cold(tv, step));
         await post(`steps.${step.id}`, { ...record, done: true, stats: (() => { try { const s = tv.stats(); return { recoveries: s.recoveries, failed: s.failed, quality: s.terrain.quality, pools: Object.fromEntries(s.pools) }; } catch (e) { return { error: e.message }; } })() });
         await sleep(1500);
         next();
     }
 
-    function next() {
+    /** The next step, or the end page of the mode. Each load starts cold: the answers are no-store, and the engine's Cache Storage goes. */
+    async function next() {
         state.index++;
         save();
-        location.replace(state.index < STEPS.length ? STEPS[state.index].url : '/phone/diagnose');
+        try { for (const name of await caches.keys()) await caches.delete(name); } catch { /* no Cache Storage */ }
+        location.replace(state.index < STEPS.length ? STEPS[state.index].url : `/phone/${state.mode ?? 'diagnose'}`);
     }
 
-    async function home() {
+    async function home(mode) {
         await new Promise(resolve => (document.readyState === 'loading' ? addEventListener('DOMContentLoaded', resolve) : resolve()));
         document.body.style.cssText = 'margin:0;padding:24px 16px;font:20px/1.4 system-ui,sans-serif;background:#fff;color:#111';
         const big = text => Object.assign(document.createElement('p'), { textContent: text });
-        if (state?.index >= STEPS.length) {
+        if ((state?.mode ?? 'diagnose') === mode && state.index >= STEPS.length) {
             await post('finished', { elapsed: Date.now() - state.started });
             document.body.replaceChildren(big('Done. Thank you. You can close this page.'), big(`Session ${state.session}`));
             return;
         }
         const button = Object.assign(document.createElement('button'), { textContent: 'Start' });
         button.style.cssText = 'display:block;width:100%;padding:32px;font:700 32px system-ui;border-radius:16px;border:0;background:#1a7f37;color:#fff';
-        document.body.replaceChildren(big('TrailView fault check on this phone. It takes about 5 minutes.'), big('Tap Start, put the phone down and do not touch it until it says "Done".'), button);
+        const what = mode === 'cold' ? 'TrailView cold start check on this phone. It takes about 3 minutes.' : 'TrailView fault check on this phone. It takes about 5 minutes.';
+        document.body.replaceChildren(big(what), big('Tap Start, put the phone down and do not touch it until it says "Done".'), button);
         button.onclick = async () => {
             button.disabled = true;
-            const budget = +(new URLSearchParams(location.search).get('budget') ?? 170);
-            state = { session: `${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}-d${Math.random().toString(36).slice(2, 5)}`, index: 0, started: Date.now(), budget, deadline: Date.now() + budget * 1000 };
+            const query = new URLSearchParams(location.search), budget = +(query.get('budget') ?? 170);
+            const views = (query.get('views') ?? 'off,normals').split(',').filter(view => /^[a-z]+$/.test(view));
+            state = { session: `${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}-${mode[0]}${Math.random().toString(36).slice(2, 5)}`, mode, views, index: 0, started: Date.now(), budget, deadline: Date.now() + budget * 1000 };
             save();
             // A measuring session left in this tab would take over the TrailView page.
             try { sessionStorage.removeItem('obc-phone'); } catch { /* no storage */ }
             try { await navigator.wakeLock?.request('screen'); } catch { /* Auto-Lock "Never" keeps the screen on */ }
-            await post('device', await facts());
-            location.replace(STEPS[0].url);
+            await post('device', await facts(mode));
+            try { for (const name of await caches.keys()) await caches.delete(name); } catch { /* no Cache Storage */ }
+            location.replace(stepsOf(state)[0].url);
         };
     }
 
-    async function facts() {
-        const f = { mode: 'diagnose', userAgent: navigator.userAgent, screen: [screen.width, screen.height], viewport: [innerWidth, innerHeight], pixelRatio: devicePixelRatio, secure: isSecureContext };
+    async function facts(mode) {
+        const f = { mode, userAgent: navigator.userAgent, screen: [screen.width, screen.height], viewport: [innerWidth, innerHeight], pixelRatio: devicePixelRatio, secure: isSecureContext };
         try {
             const adapter = await navigator.gpu.requestAdapter(), info = adapter.info ?? {}, limits = {};
             for (const name in adapter.limits) limits[name] = adapter.limits[name];
@@ -465,7 +575,8 @@
         return f;
     }
 
-    if (location.pathname.startsWith('/phone/diagnose')) return void home();
+    const page = /^\/phone\/(diagnose|cold)/.exec(location.pathname)?.[1];
+    if (page) return void home(page);
     if (!state || state.index >= STEPS.length || !location.pathname.endsWith('/trailview.html')) return;
     hook();
     run().catch(e => {

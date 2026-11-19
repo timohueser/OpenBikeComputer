@@ -6,7 +6,8 @@
 //   node phone.mjs summarize RESULT.json
 //
 // The phone opens https://IP:PORT/phone/ to measure, or https://IP:PORT/phone/diagnose for the fault check of
-// phone-diagnose.js, whose pictures and page bytes land in RESULTS/<session>/, or https://IP:PORT/phone/compile for the
+// phone-diagnose.js, whose pictures and page bytes land in RESULTS/<session>/, or https://IP:PORT/phone/cold for its cold
+// start check (pictures of a cold load and the walk flight; phone-worker.js times the ground worker), or https://IP:PORT/phone/compile for the
 // compile test of phone-compile.js over RESULTS/shaders/. --data is the origin of `obc data serve` (or a stand-in), whose catalogue
 // names its own origin: the proxy writes the phone's origin in its place. --requests is a folder of the ground plan's
 // `requests` tool: the session then ends with the timing page on those cells. Every answer is `no-store`, so each run
@@ -68,13 +69,14 @@ function serve() {
         if (request.method === 'POST' && path === '/result') return collect(request, response);
         if (request.method === 'POST' && path === '/blob') return keep(request, response);
         if (path === '/phone/' || path === '/phone') return send(response, 200, 'text/html', page('measure'));
-        if (path === '/phone/diagnose') return send(response, 200, 'text/html', page('diagnose'));
+        if (path === '/phone/diagnose' || path === '/phone/cold') return send(response, 200, 'text/html', page('diagnose'));
         // A phone keyboard adds a capital or a slash.
         if (path === '/phone/measure.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-measure.js')));
         if (path === '/phone/diagnose.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-diagnose.js')));
         if (path === '/phone/compile') return send(response, 200, 'text/html', page('compile'));
-        const page_ = /^\/phone\/(diagnos(?:e|is)|compile)\/?$/i.exec(path);
-        if (page_) return response.writeHead(302, { location: page_[1].toLowerCase().startsWith('d') ? '/phone/diagnose' : '/phone/compile' }).end();
+        const page_ = /^\/phone\/(diagnos(?:e|is)|compile|cold)\/?$/i.exec(path);
+        const name = page_?.[1].toLowerCase();
+        if (name) return response.writeHead(302, { location: `/phone/${name.startsWith('diagnos') ? 'diagnose' : name}` }).end();
         if (path === '/phone/compile.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-compile.js')));
         // The shaders of the compile test, as the fault check saved them.
         const shader = /^\/phone\/shaders\/([\w-]+\.wgsl)$/.exec(path), shaderFile = shader && join(a.results, 'shaders', shader[1]);
@@ -88,7 +90,10 @@ function serve() {
         }
         const local = join(DIST, path);
         if (local.startsWith(DIST) && extname(local) && existsSync(local)) {
-            const body = readFileSync(local), type = TYPES[extname(local)] ?? 'application/octet-stream';
+            let body = readFileSync(local);
+            const type = TYPES[extname(local)] ?? 'application/octet-stream';
+            // The ground worker's jobs carry their time split (phone-worker.js).
+            if (/\/ground-worker-[\w-]+\.js$/.test(local)) body = Buffer.concat([readFileSync(join(HERE, 'phone-worker.js')), body]);
             // The scripts run before the page's module, so they see the WebGPU device as the page asks for it. Each acts only
             // while a session of its own runs in the tab.
             return send(response, 200, type, type === 'text/html' ? body.toString().replace('<head>', '<head><script src="/phone/measure.js"></script><script src="/phone/diagnose.js"></script>') : body);
@@ -182,5 +187,32 @@ function summarize(record) {
     }
     const l = record.groundLoad;
     if (l) console.log(`ground load (diagnose): ${l.jobs} jobs · median ${f(l.median)} p95 ${f(l.p95)} sum ${f(l.sum, 0)} ms · probe to last page ${f(l.openToLast / 1000, 2)} s`);
-    for (const event of record.events) console.log(`event ${event.at} run ${event.run ?? '–'}: ${event.text}`);
+    for (const [key, value] of Object.entries(record)) if (key.startsWith('cold.')) coldStep(record, key.slice(5), value, f);
+    // The fault check's events: only the errors.
+    const shown = record.events.filter(e => e.text || (/error|lost|rejected|failed/.test(e.kind) && !(e.kind === 'first frames scope' && !e.found)));
+    for (const event of shown) console.log(`event ${event.at} ${event.run ?? event.step ?? '–'}: ${event.text ?? `${event.kind} ${JSON.stringify({ ...event, at: undefined, step: undefined, kind: undefined }).slice(0, 300)}`}`);
+}
+
+/** One load of the cold start check: its marks, the ground jobs' time split, the requests, the drawn pages' spikes, and a line per picture. */
+function coldStep(record, step, c, f) {
+    const s = ms => f(ms / 1000), m = c.marks ?? {}, median = list => [...list].sort((a, b) => a - b)[list.length >> 1];
+    console.log(`\n${step}: eye ${s(m.eyeReady)} s · near ${s(m.nearReady)} s · proper ${s(m.proper)} s · flight from ${s(c.flightStart)} s · frame median ${f(c.frame?.median, 0)} p95 ${f(c.frame?.p95, 0)} max ${f(c.frame?.max, 0)} ms`);
+    for (const [phase, jobs] of [['load', (c.ground ?? []).filter(j => j.start < c.flightStart)], ['flight', (c.ground ?? []).filter(j => j.start >= c.flightStart)]]) {
+        if (!jobs.length) continue;
+        const of = k => f(median(jobs.map(j => j[k]).filter(v => v !== undefined)), 0);
+        console.log(`  ground ${phase}: ${jobs.length} jobs, median ms: round trip ${of('ms')} = wait ${of('wait')} + worker ${of('work')} (decode ${of('decode')}, build ${of('build')}) + back ${of('back')} · failed ${jobs.filter(j => j.failed).length}`);
+    }
+    for (const [group, g] of Object.entries(c.fetches ?? {})) console.log(`  requests ${group}: ${g.count} · median ${f(g.median, 0)} p95 ${f(g.p95, 0)} ms · ${f(g.bytes / 2 ** 20, 1)} MiB`);
+    for (const when of ['ready', 'end']) {
+        const p = record[`pages.${step}-${when}`];
+        if (!p) continue;
+        // Per level: the largest 4-neighbour Laplacian of a drawn page, in metres; a height that does not belong to the land shows here.
+        const levels = {};
+        for (const r of p.rows) levels[r.name.split('/')[0]] = Math.max(levels[r.name.split('/')[0]] ?? 0, r.maxLaplacian);
+        console.log(`  pages ${when}: ${p.count} drawn, ${p.rows.filter(r => !r.complete).length} not complete · max Laplacian m per level: ${Object.entries(levels).map(([l, v]) => `L${l} ${f(v, 0)}`).join(' ')}`);
+    }
+    console.log('  picture                     s     phase  t     frame nodes own  loads miss stamps n/c/m ground short errors');
+    for (const p of c.shots ?? []) {
+        console.log(`  ${p.name.padEnd(27)} ${s(p.at).padEnd(5)} ${p.phase.padEnd(6)} ${String(p.t ?? '').padEnd(5)} ${String(p.frame ?? '').padEnd(5)} ${String(p.nodes).padEnd(5)} ${String(p.own).padEnd(4)} ${String(p.loads).padEnd(5)} ${String(p.missing).padEnd(4)} ${`${p.stamps?.near}/${p.stamps?.coarse}/${p.stamps?.masks}`.padEnd(12)} ${String(p.ground).padEnd(6)} ${String(p.groundShort).padEnd(5)} ${p.errors}${p.blank ? ' (no new frame: no picture)' : ''}`);
+    }
 }
