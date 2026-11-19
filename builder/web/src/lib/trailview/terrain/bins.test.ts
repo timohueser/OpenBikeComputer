@@ -234,6 +234,30 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         expect(Array.from(corner)).toEqual([0]);
     });
 
+    it('takes the ground under a bridge with the plan only', () => {
+        // A residential bridge across a level-18 node, 5 m up: with `plan` the points on its deck are taken, as in an area,
+        // and a point 10 m off it is not; without `plan` the node lists no area.
+        const tile = { level: 13, x: 4287, y: 2889 }, node = { level: 18, x: tile.x * 32 + 10, y: tile.y * 32 + 10 }, shift = 22 - node.level, cell = CELL * 2 ** shift;
+        const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, ym = y0 + (GRID / 2) * cell, m = 1 / metresPerUnit(ym);
+        const world = [x0 - 10 * cell, ym, x0 + (GRID + 10) * cell, ym];
+        const bridge = { kind: 'road', tags: { highway: 'residential', bridge: 'yes' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(world, (v, i) => v / 8 - (i % 2 ? tile.y : tile.x) * EXTENT), z: Float32Array.of(1005, 1005) }] };
+        const taken = (plan: boolean, p: number[]) => {
+            const { data } = nodeStamps([bridge], tile, node, plan);
+            const records = 2 + GRID * GRID + 1 + data![1], word = (r: number, i: number) => data![records + RECORD * r + i] | 0;
+            const c = Math.floor((p[1] - y0) / cell) * GRID + Math.floor((p[0] - x0) / cell), { entries, origin } = cellOf(data!, node, c);
+            let crossed = false, inside = false;
+            for (const entry of entries) {
+                const r = entry & ~INSIDE, kind = word(r, 4);
+                if (kind === EDGE) crossed = crossed !== crosses(origin, p, [0, 1, 2, 3].map(k => word(r, k)));
+                if (kind === AREA) inside ||= ((entry & INSIDE) !== 0) !== crossed;
+                if (kind !== EDGE) crossed = false;
+            }
+            return inside;
+        };
+        const on = [x0 + (GRID / 2 + 0.3) * cell, ym + 0.5 * m], off = [on[0], ym + 10 * m];
+        expect([taken(true, on), taken(true, off), taken(false, on)]).toEqual([true, false, false]);
+    });
+
     it('takes the points inside the buildings and the river areas, from each cell origin and the edges that the cell lists', () => {
         // Engelberg: a level-17 node on the river through the village.
         const tile = { level: 13, x: 4287, y: 2887 }, list = fixture(tile.level, tile.x, tile.y), { areas, buildings } = features(list, tile);
