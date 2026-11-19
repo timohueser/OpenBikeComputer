@@ -9,9 +9,9 @@
     import { basemapStyle, type Relief } from '../../lib/planner/map-style';
     import { ClosedAttribution, styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
     import { terrainRetry } from '../../lib/planner/map-terrain';
-    import { routeColor, SIGNED_GROUND } from '../../lib/planner/route-colors';
+    import { SIGNED_GROUND } from '../../lib/planner/route-colors';
     import { appearance } from '../../lib/theme.svelte';
-    import type { Box, Item } from './filter';
+    import { lineColor, type Box, type Item } from './filter';
 
     let { items, shown, selected, marked = [], look = 'route', covered = 0, credits = [], together = id => [id], onselect, onview, fit, place }: {
         items: Item[];
@@ -58,7 +58,7 @@
 
     const pairs = (line: number[]) => Array.from({ length: line.length / 2 }, (_, i) => [line[2 * i], line[2 * i + 1]]);
     // All lines are in one source; a filter of the layers shows the shown ones, so a chip change sets no data.
-    const colorOf = ({ id, kind }: Item) => kind === 'signed' || kind === 'trail' ? routeColor(id) : '';
+    const colorOf = (item: Item) => item.kind === 'signed' || item.kind === 'trail' ? lineColor(item) : '';
     // A trail is one feature with a line for each piece of its far line.
     const lines = $derived<FeatureCollection<LineString | MultiLineString>>({ type: 'FeatureCollection', features: items.flatMap(item =>
         item.summary ? [{ type: 'Feature', properties: { id: item.id, color: colorOf(item) }, geometry: item.kind === 'trail'

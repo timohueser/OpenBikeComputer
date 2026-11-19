@@ -2,8 +2,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSettings, updateSettings } from '../../lib/settings/settings.svelte';
 import type { RouteSummary } from '../../lib/library/records';
-import type { CatalogRecord, TrailEntry } from '../../lib/planner/signed-routes';
-import { distanceToBox, farOrder, readSearch, results, rideItem, routeItem, scale, signedItem, trailItem, type Item } from './filter';
+import { longTrailId, type CatalogRecord, type TrailEntry } from '../../lib/planner/signed-routes';
+import { distanceToBox, farOrder, farTrailId, nearTrails, readSearch, results, rideItem, routeItem, scale, signedItem, splitDay, trailItem, type Item } from './filter';
 
 vi.mock('../../lib/planner/search/types', () => ({
     searchPlaces: async () => ({ type: 'places', request: {}, results: [
@@ -145,6 +145,41 @@ describe('trailItem', () => {
         const items = [entry({ id: 5, rank: 2, length_m: 400_000 }), entry({ id: 4, rank: 4, length_m: 50_000 }),
             entry({ id: 3, rank: 2, length_m: 90_000 }), entry({ id: 1, rank: 2, length_m: 90_000 })].map(trail => trailItem(trail, 'hiking'));
         expect(ids(items.sort(farOrder))).toEqual(['4', '5', '1', '3']);
+    });
+});
+
+describe('the split of a near view into day routes and long trails', () => {
+    // Trails 100 and 300 are in the far files; long routes 200 and 250 are no trails, and 250 is inside the complete trail 100.
+    // 400 is a cut stage of trail 300; 500 is not loaded.
+    const longs = [record({ id: 100, line_udeg: undefined, stages: [1, 6] }), record({ id: 200, line_udeg: undefined, stages: [3] }),
+        record({ id: 250, line_udeg: undefined, stage_count: 1 }),
+        record({ id: 300, line_udeg: undefined, stage_count: 5 }), record({ id: 400, line_udeg: undefined, trail: 300, trail_stage: 2 })];
+    const recordOf = (id: number) => longs.find(long => long.id === id);
+    const trail = (id: number) => ({ id, kind: 'hiking', rank: 3, loop: false, length_m: 90_000, ascent_m: 4000, far_udeg: [] }) as TrailEntry;
+    const trails = new Map([100, 300, 600].map(id => [id, trail(id)]));
+    const stage = record({ id: 1, trail: 100, trail_stage: 1, parent: 100, stage: 1 }), partial = record({ id: 2, trail: 300, trail_stage: 1 });
+    const section = record({ id: -40001, trail: 400, section: 1 }), single = record({ id: 600 });
+    const inner = record({ id: 6, trail: 250, trail_stage: 1, parent: 100, stage: 2 });
+    const notTrail = record({ id: 3, trail: 200, trail_stage: 1, parent: 200, stage: 1 }), day = record({ id: 5 });
+    const lost = record({ id: 4, trail: 500, trail_stage: 1, parent: 500, stage: 1 });
+    const all = [stage, partial, section, single, inner, notTrail, lost, day];
+
+    it('names the long trail of each record', () => {
+        expect(all.map(one => longTrailId(one, recordOf))).toEqual([100, 300, 300, 600, 250, 200, undefined, 5]);
+        // A stage of a long route that is no trail is in the complete trail of its `parent`.
+        expect(all.map(one => farTrailId(one, trails, recordOf))).toEqual([100, 300, 300, 600, 100, undefined, undefined, undefined]);
+    });
+
+    it('moves a record whose long trail is a trail of the far files, and keeps the others as day routes', () => {
+        const { day: days, long } = splitDay(all, trails, recordOf);
+        expect(long).toEqual([stage, partial, section, single, inner]);
+        expect(days).toEqual([notTrail, lost, day]);
+        expect(splitDay(all, new Map(), recordOf)).toEqual({ day: all, long: [] });
+    });
+
+    it('lists each trail of the view once, and the trail of a moved record whose far line misses the view', () => {
+        const near = nearTrails([trails.get(100)!, trail(700)], trails, [stage, partial, section], recordOf);
+        expect(near.map(entry => entry.id)).toEqual([100, 700, 300]);
     });
 });
 

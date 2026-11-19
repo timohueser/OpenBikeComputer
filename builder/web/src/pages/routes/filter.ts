@@ -3,7 +3,8 @@ import type { Bike, RideRecord, RideSummary, RouteRecord, RouteSummary, Summary 
 import { kilometres, type Coordinate } from '../../lib/planner/geo';
 import { decodeCoordinates } from '../../lib/planner/route-answer';
 import type { Box } from '../../lib/planner/route-catalog';
-import type { CatalogRecord, TrailEntry } from '../../lib/planner/signed-routes';
+import { routeColor } from '../../lib/planner/route-colors';
+import { longTrailId, type CatalogRecord, type TrailEntry } from '../../lib/planner/signed-routes';
 import { distanceIn, heightIn } from '../../lib/settings/format';
 import { profileEntry, profileHeight } from '../../lib/trailview/route/profile';
 
@@ -14,7 +15,7 @@ export type { Box };
  * `at` is the time in ms of the last change of a route, or of the start of a ride. */
 export type Item = { id: string; name: string; at: number }
     & ({ kind: 'route'; summary: RouteSummary | null; plan?: true } | { kind: 'ride'; summary: RideSummary }
-        | { kind: 'signed'; summary: RouteSummary; record: CatalogRecord; profile?: Pick<Summary, 'line' | 'heights'> }
+        | { kind: 'signed'; summary: RouteSummary; record: CatalogRecord; profile?: Pick<Summary, 'line' | 'heights'>; trail?: string }
         | { kind: 'trail'; summary: RouteSummary; entry: TrailEntry; pieces: Coordinate[][] });
 export type RideItem = Extract<Item, { kind: 'ride' }>;
 export type SignedItem = Extract<Item, { kind: 'signed' }>;
@@ -85,8 +86,9 @@ const round5 = (value: number) => Math.round(value * 1e5) / 1e5;
 
 /** A route record of the catalog. The height of a point of its line is the profile at the share of the line's length
  * that the point has (`specs/route-catalog.md`, "Profile"). With a profile, `profile` places each entry on the line at
- * the share of the route's length that the entry has. */
-export function signedItem(record: CatalogRecord, bike: Bike): SignedItem {
+ * the share of the route's length that the entry has. `trail` is the id of the long trail that the record is in, when that
+ * is a trail of the far files. */
+export function signedItem(record: CatalogRecord, bike: Bike, trail?: string): SignedItem {
     const points = decodeCoordinates(record.line_udeg ?? []), along = [0];
     for (let i = 1; i < points.length; i++) along.push(along[i - 1] + kilometres(points[i - 1], points[i]));
     const total = along.at(-1)!, entries = record.profile_m, length = record.length_m;
@@ -107,7 +109,7 @@ export function signedItem(record: CatalogRecord, bike: Bike): SignedItem {
     const lons = points.map(point => point[0]), lats = points.map(point => point[1]);
     const known = entries?.filter((entry): entry is number => entry !== null) ?? [];
     return {
-        kind: 'signed', id: String(record.id), name: record.name ?? record.ref ?? '', at: 0, record,
+        kind: 'signed', id: String(record.id), name: record.name ?? record.ref ?? '', at: 0, record, ...trail === undefined ? {} : { trail },
         summary: {
             line: points.flatMap(([lon, lat]) => [round5(lon), round5(lat)]),
             heights: along.map(metres => heightAt(total > 0 ? metres / total : 0)),
@@ -130,6 +132,34 @@ export function trailItem(entry: TrailEntry, bike: Bike): TrailItem {
             lengthM: entry.length_m, climbM: entry.ascent_m, highestM: null, seconds: 0, bike, days: 1,
         },
     };
+}
+
+/** The colour of a line: a stage of a trail has the colour of its trail. */
+export const lineColor = (item: SignedItem | TrailItem) => routeColor(item.kind === 'signed' ? item.trail ?? item.id : item.id);
+
+/** The trail of `trails` that `record` is in: its long trail, else the complete long route of a stage (`parent`), which
+ * can hold the innermost long route of `trail` when that one is no trail. */
+export function farTrailId(record: CatalogRecord, trails: Map<number, TrailEntry>, recordOf: (id: number) => CatalogRecord | undefined): number | undefined {
+    return [longTrailId(record, recordOf), record.parent].find(id => id !== undefined && trails.has(id));
+}
+
+/** The records of a near view by tab: a record in a trail of `trails` is no day route. */
+export function splitDay(records: CatalogRecord[], trails: Map<number, TrailEntry>, recordOf: (id: number) => CatalogRecord | undefined) {
+    const day: CatalogRecord[] = [], long: CatalogRecord[] = [];
+    for (const record of records) (farTrailId(record, trails, recordOf) === undefined ? day : long).push(record);
+    return { day, long };
+}
+
+/** The trails of a near view: those of `inView`, and the trail of each record of `long`, so that a stage at the edge of the
+ * view whose far line misses the view keeps its trail row. Each trail once. */
+export function nearTrails(inView: TrailEntry[], trails: Map<number, TrailEntry>, long: CatalogRecord[],
+    recordOf: (id: number) => CatalogRecord | undefined): TrailEntry[] {
+    const found = new Map(inView.map(entry => [entry.id, entry]));
+    for (const record of long) {
+        const entry = trails.get(farTrailId(record, trails, recordOf)!);
+        if (entry) found.set(entry.id, entry);
+    }
+    return [...found.values()];
 }
 
 /** The order of the far list: the highest network level first, then the longest, then the lowest relation id. */
