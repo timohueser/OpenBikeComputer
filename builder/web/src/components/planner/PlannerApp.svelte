@@ -120,7 +120,7 @@
         if ((list === 'ways' || firstOptions) && !session.dragging && session.line) untrack(() => { firstOptions = false; session.findAlternatives(); });
     });
     const optionStatus = { unavailable: 'Route options need one routed line from start to finish.', loading: 'Finding route options…',
-        stale: 'Your plan changed. Finding route options for it…' };
+        stale: 'Your route changed. Finding route options for it…' };
     const optionRows = $derived(options.state === 'ready' ? options.routes.map((route, i) =>
         i ? routeRow(route, optionName(route, session.optionPlaces)) : { ...routeRow(route, 'Your route'), detail: presetName(route.profile) }) : []);
     const optionsReason = $derived(otherWays(optionRows));
@@ -563,7 +563,7 @@
             return;
         }
         libraryOpen = false;
-        message = 'Plan opened';
+        message = 'Route opened';
     }
 
     function deletePlan(plan: Plan) {
@@ -867,7 +867,7 @@
         mapMode = null;
         const label = name ?? map?.placeName(coordinate) ?? await townName(coordinate) ?? coordinateName(coordinate);
         if (trip !== before) {
-            message = 'The plan changed, so the train or bus was not added. Try again.';
+            message = 'The route changed, so the train or bus was not added. Try again.';
             return;
         }
         const around = days[number - 1].pinned ? undefined : nights.around(number);
@@ -983,7 +983,7 @@
 
     async function newPlan() {
         if (!await leave() || !await session.newPlan()) return;
-        message = 'New plan';
+        message = 'New route';
         libraryOpen = false;
     }
 
@@ -1060,7 +1060,7 @@
         applyingQuery = true; queryApplyError = '';
         try {
             const next = await applyQueryChanges(before, session.line, answer.changes, plan => session.calculate(plan, new AbortController().signal));
-            if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The plan changed. Review the search again.');
+            if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The route changed. Review the search again.');
             if (answer.changes.some(change => change.op === 'route')) exploreBack = undefined;
             session.commit(next.trip, next.line);
             afterEdit(answer.description ?? 'Query applied');
@@ -1157,7 +1157,7 @@
     {/key}
     <main aria-busy={!session.ready}>
         {#if libraryOpen}
-            <LibraryPanel plans={session.plans} unreadable={session.unreadable} onDeleteUnreadable={() => { if (window.confirm('Delete the saved plans that cannot be read? This cannot be undone.')) void session.removeUnreadable(); }} activeId={planId} busy={session.busy} error={session.libraryError}
+            <LibraryPanel plans={session.plans} unreadable={session.unreadable} onDeleteUnreadable={() => { if (window.confirm('Delete the saved routes that cannot be read? This cannot be undone.')) void session.removeUnreadable(); }} activeId={planId} busy={session.busy} error={session.libraryError}
                 onClose={() => libraryOpen = false} onOpen={plan => openPlan(plan.id)} onRename={(plan, name) => session.rename(plan, name)} onDuplicate={duplicate}
                 onDelete={deletePlan} onImport={importFiles} gpxNames={session.gpxLines?.map(line => line.name) ?? null}
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
@@ -1313,7 +1313,7 @@
                     </div>
                 {/if}
                 {#if dropping}
-                    <div class="drop-frame"><strong>Drop to open as a plan</strong><span>One file is a route. Several files are a trip.</span></div>
+                    <div class="drop-frame"><strong>Drop to open</strong><span>One file is a route. Several files are a trip.</span></div>
                 {/if}
                 {#if mapMode}
                     <div class="mode-chip" role="status">
@@ -1347,7 +1347,7 @@
             {/if}
             <div class="status-line" role="status">
                 <span class:save-error={!!session.saveError}>{session.saveError || `${message} · ${routingMessage}`}</span>
-                {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button>
+                {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan file</button>
                 {:else if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>
                 {:else if session.earlier}<span>· Earlier unsaved changes discarded ·</span><button type="button" class="planner-action" onclick={restoreDraft}>Undo</button>{/if}
                 {#if session.offer}

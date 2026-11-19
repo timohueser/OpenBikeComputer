@@ -498,7 +498,7 @@ describe('planner app transitions', () => {
         stored.set('trip', JSON.stringify({ points: [], days: 3, limit: 50 }));
         await startApp();
         await tick();
-        expect(document.body.textContent).toContain('Saved plan is invalid.');
+        expect(document.body.textContent).toContain('Saved route is invalid.');
         expect(document.body.textContent).toContain('Where would you like to ride?');
     });
 
@@ -566,7 +566,7 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.trip-bar')).toBeNull();
         expect(document.activeElement?.textContent).toBe('Planner');
         button('Open in planner').click();
-        await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Plan opened'));
+        await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Route opened'));
         expect(document.querySelector('.compare')).toBeNull();
         expect(document.querySelector('.trip-bar h1')?.textContent).toBe('Coast');
         expect(document.activeElement).toBe(document.querySelector('.trip-bar .menu > button'));

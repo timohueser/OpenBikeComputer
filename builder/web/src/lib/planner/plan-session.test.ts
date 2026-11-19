@@ -463,7 +463,7 @@ describe('save and draft', () => {
         expect([session.changed, session.saveError]).toEqual([true, 'Browser storage is full. Delete routes you do not need, then save again.']);
         expect([(await library.route(id))!.trip, await draftTrip(library, id)]).toEqual([moved(plan, 8.2), moved(plan, 8.3)]);
         expect(await session.save()).toBe(false);
-        expect([session.saveError, await session.saved()]).toEqual(['The app was updated in another tab. Download the plan to keep your changes, then reload.', false]);
+        expect([session.saveError, await session.saved()]).toEqual(['The app was updated in another tab. Download the plan file to keep your changes, then reload.', false]);
         session.undo();
         expect(session.changed).toBe(false);
         session.close();
