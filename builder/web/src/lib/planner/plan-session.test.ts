@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { emptyTrip, orderedRoutePoints, setDays, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { Library } from '../library/store';
+import { newPlan } from './library';
 import { PlanSession } from './plan-session.svelte';
 import * as routing from './routing';
 import { routingKey } from './routing';
@@ -53,8 +54,7 @@ function options(session: PlanSession) {
 const choice = (session: PlanSession) => session.routeOptions.state === 'ready' ? session.routeOptions.choice : undefined;
 
 /** The `sessionStorage` of one tab: a reload of the tab keeps it. */
-function tab() {
-    const items = new Map<string, string>();
+function tab(items = new Map<string, string>()) {
     vi.stubGlobal('sessionStorage', { getItem: (key: string) => items.get(key) ?? null, setItem: (key: string, value: string) => items.set(key, value),
         removeItem: (key: string) => items.delete(key) });
     return items;
@@ -759,6 +759,75 @@ describe('save and draft', () => {
         session.redo();
         session.undo(); session.undo();
         expect([session.trip.points, session.changed]).toEqual([[], true]);
+        session.close();
+    });
+
+    /** A stored route "Lake loop" with the draft `moved(plan, 8.2)` that a closed tab wrote, and a new tab. */
+    async function returned(factory = new IDBFactory()) {
+        const closed = tab(), first = await open(factory);
+        first.session.commit(plan);
+        await first.session.save('Lake loop');
+        first.session.commit(moved(plan, 8.2));
+        await settled(first.session);
+        first.session.close();
+        tab();
+        return { ...await open(factory), id: first.session.plan.id, closed };
+    }
+
+    it('offers the draft of a closed tab on the stored route, and a reload continues the own draft with no offer', async () => {
+        service();
+        const { session, factory, id, closed } = await returned();
+        expect([session.plan.id, session.trip, session.changed, session.offer?.trip]).toEqual([id, plan, false, moved(plan, 8.2)]);
+        session.close();
+        tab(closed);
+        const reloaded = await open(factory);
+        expect([reloaded.session.trip, reloaded.session.offer]).toEqual([moved(plan, 8.2), null]);
+        reloaded.session.close();
+    });
+
+    it('restores the offer as the own draft, and "×" and the first edit each remove it with an Undo that brings it back', async () => {
+        service();
+        const restored = await returned();
+        expect(restored.session.restore()).toBe(true);
+        await settled(restored.session);
+        expect([restored.session.trip, restored.session.changed, restored.session.offer, sessionStorage.getItem('obc-draft')]).toEqual([moved(plan, 8.2), true, null, restored.id]);
+        expect(restored.session.undo() && restored.session.trip).toEqual(plan);
+        restored.session.close();
+
+        const dismissed = await returned();
+        dismissed.session.dismiss();
+        await settled(dismissed.session);
+        expect([dismissed.session.offer, dismissed.session.earlier, await dismissed.library.draft(dismissed.id)]).toEqual([null, moved(plan, 8.2), undefined]);
+        expect(dismissed.session.restore()).toBe(true);
+        await settled(dismissed.session);
+        expect([dismissed.session.trip, dismissed.session.earlier, await draftTrip(dismissed.library, dismissed.id)]).toEqual([moved(plan, 8.2), null, moved(plan, 8.2)]);
+        dismissed.session.close();
+
+        const edited = await returned();
+        edited.session.commit(moved(plan, 8.3));
+        await settled(edited.session);
+        expect([edited.session.offer, edited.session.earlier, await draftTrip(edited.library, edited.id)]).toEqual([null, moved(plan, 8.2), moved(plan, 8.3)]);
+        edited.session.restore();
+        await settled(edited.session);
+        expect([edited.session.trip, await draftTrip(edited.library, edited.id)]).toEqual([moved(plan, 8.2), moved(plan, 8.2)]);
+        edited.session.close();
+    });
+
+    it('offers the drafts of routes that are not stored one after the other, newest first, at the start and at "New route"', async () => {
+        service();
+        const library = new Library(new IDBFactory());
+        await library.saveDraft({ id: 'older', updatedAt: 1, trip: plan });
+        await library.saveDraft({ id: 'newer', updatedAt: 2, trip: moved(plan, 8.2) });
+        await library.saveRoute({ ...newPlan(plan, 'Stored'), id: 'stored' });
+        await library.saveDraft({ id: 'stored', updatedAt: 3, trip: moved(plan, 8.3) });
+        const session = new PlanSession();
+        await session.start(library);
+        const shown = () => [session.plan.id, session.stored, session.trip.points, session.offer?.trip];
+        expect(shown()).toEqual(['newer', false, [], moved(plan, 8.2)]);
+        await session.newPlan();
+        expect(shown()).toEqual(['older', false, [], plan]);
+        await session.newPlan();
+        expect(shown()).toEqual(['newer', false, [], moved(plan, 8.2)]);
         session.close();
     });
 });

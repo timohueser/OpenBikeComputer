@@ -31,6 +31,8 @@
     // Raw: `planView` freezes the trip that it reads.
     let record = $state.raw<RouteRecord | null>();
     let waiting = $state.raw<string[]>(), sent = $state.raw<Record<string, SentRoute>>();
+    /** The planner has a draft of the route. The page shows the stored route. */
+    let drafted = $state(false);
     let routed = $state.raw<{ key: string; line?: RoutingLine; error?: string }>();
     /** The pointer, as a share of the summary line from 0 to 1. */
     let share = $state<number>();
@@ -68,10 +70,10 @@
         [share, deleting, sharing, failure, part, hover, day] = [undefined, false, false, '', null, null, null];
         [routePlaces, litPlaces, openPlaceId] = [[], [], null];
         const load = async () => {
-            const [item, ids, copies] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent')]);
+            const [item, ids, copies, draft] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent'), library.draft(target)]);
             if (!live) return;
             record = item && 'id' in item ? item : null;
-            [waiting, sent] = [ids, copies];
+            [waiting, sent, drafted] = [ids, copies, !!draft];
         };
         void load();
         const stop = library.onChange((store, changedKey) => {
@@ -153,6 +155,7 @@
             <a class="button primary" href={`${ROUTES.planner}/${id}`}>Open in planner</a>
             <button type="button" class="button" disabled={device === 'sent'} onclick={() => send(device !== 'waiting')}>{device === 'waiting' ? 'Do not send' : 'Send to device'}</button>
             <Menu label="More" items={more} />
+            {#if drafted}<span class="drafted">This route has unsaved changes in the planner.</span>{/if}
         {/if}
     {/snippet}
     {#snippet left()}
@@ -186,3 +189,11 @@
         </Window>
     {/if}
 </Detail>
+
+<style>
+    .drafted {
+        align-self: center;
+        color: var(--ink-soft);
+        font-size: 13px;
+    }
+</style>
