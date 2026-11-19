@@ -242,11 +242,12 @@
     const multi = $derived(multiDay(trip));
     // The view follows the type on each path that changes it: the day count, Undo, Redo, a search, an import.
     let viewMulti: boolean | undefined;
-    $effect(() => {
+    $effect.pre(() => {
         if (viewMulti !== undefined && multi !== viewMulti) untrack(() => {
             night = 1;
             expandedDay = null;
             list = 'plan';
+            stopChoosing();
             exitSearch();
             clearSelection();
         });
@@ -1186,7 +1187,7 @@
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
             <Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} />
-            {#if !searching}<RoutePreferences bind:this={preferences} {trip} onChange={edit} />{/if}
+            {#if !searching}{#key planId}<RoutePreferences bind:this={preferences} {trip} onChange={edit} />{/key}{/if}
             {#if exploreBack && hasEndpoints && !searching}
                 <button type="button" class="back-to-routes" onclick={() => router.go(ROUTES.explore, { explore: exploreBack })}><Icon name="back" size={15} />Find another route</button>
             {/if}

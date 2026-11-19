@@ -649,11 +649,23 @@ describe('planner side panel', () => {
         await search('campsites');
         button('Undo').click(); await tick();
         expect([!!document.querySelector('ol.route'), dayOpen(), !!document.querySelector('.results')]).toEqual([true, false, false]);
+        button('Redo').click(); await tick();
+        expect([!!document.querySelector('ol.route'), dayOpen()]).toEqual([false, false]);
+        expect(document.querySelector('[aria-label="Number of riding days"]')?.textContent).toContain('3 riding days');
+    });
+
+    it('closes the map selection and the night chooser when the day count changes the type', async () => {
+        stored.set('trip', JSON.stringify({ ...testTrip(), days: 2 }));
+        await startApp();
+        await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(1));
+        document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick();
+        expect(button('Close night 1').getAttribute('aria-expanded')).toBe('true');
+        button('One day fewer').click(); await tick();
         button('Map point: Basel').click(); await tick();
         expect(document.querySelector('.callout')).not.toBeNull();
-        button('Redo').click(); await tick();
-        expect([!!document.querySelector('ol.route'), dayOpen(), !!document.querySelector('.callout')]).toEqual([false, false, false]);
-        expect(document.querySelector('[aria-label="Number of riding days"]')?.textContent).toContain('3 riding days');
+        button('One day more').click(); await tick();
+        expect(document.querySelector('.callout')).toBeNull();
+        expect(document.querySelector('[aria-label="Close night 1"]')).toBeNull();
     });
 
     it('opens the preferences line in the page, keeps it open after a pick, and closes it on Escape only', async () => {
