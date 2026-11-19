@@ -484,10 +484,15 @@ pub(crate) fn place(input: &Input, memory: usize) -> Placed {
 /// The placement with the sites that `measure` gives of the asks, with the open ends of all openings.
 pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
     let b = &input.rules.bake;
-    let tubes: Vec<Tube> = (input.chains.iter())
-        .flat_map(|c| runs(c, input.tunnels))
-        .filter_map(|(run, open)| tube(&run, open, input))
-        .collect();
+    let runs: Vec<_> = input.chains.iter().flat_map(|c| runs(c, input.tunnels)).collect();
+    let tubes: Vec<Tube> = runs.iter().filter_map(|(run, open)| tube(run, *open, input)).collect();
+    // The chain ends that open on no part: on a shallow tunnel, where more tunnel ways go on, in a run with no tube.
+    let shallow = (input.chains.iter())
+        .flat_map(|c| [(c.tag[0], c.ways[0].0), (c.tag[1], c.ways[c.ways.len() - 1].0)])
+        .filter(|&(tag, id)| tag && !input.tunnels.contains_key(&id))
+        .count();
+    let forks = tubes.iter().flat_map(|t| &t.ends).filter(|e| e.is_none()).count();
+    let lost = runs.len() - tubes.len();
     // The ways at the end vertices of the tubes.
     let mut at_end: HashMap<[u64; 2], Vec<usize>> = HashMap::new();
     for t in &tubes {
@@ -544,8 +549,13 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
             openings.push(o);
         }
     }
-    let measured = ladder::decide(&tubes, &mut openings, input, measure);
-    records(&tubes, &openings, &measured, input)
+    let mut decided = ladder::decide(&tubes, &mut openings, input, measure);
+    if let Value::Object(m) = &mut decided.metrics {
+        m.insert("shallow_ends".into(), shallow.into());
+        m.insert("fork_ends".into(), forks.into());
+        m.insert("runs_without_tube".into(), lost.into());
+    }
+    records(&tubes, &openings, &decided, input)
 }
 
 /// The features of the placement and the tag `parts` of the tunnel ways.

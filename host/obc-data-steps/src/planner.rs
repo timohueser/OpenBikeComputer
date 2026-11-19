@@ -610,6 +610,8 @@ impl Planner {
             let finishes: serde_json::Value =
                 serde_json::from_str(include_str!("../../../data/trailview/finishes.json"))
                     .map_err(|e| Unplanned::Failed(format!("data/trailview/finishes.json: {e}")))?;
+            let parts: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/parts.json"))
+                .map_err(|e| Unplanned::Failed(format!("data/trailview/parts.json: {e}")))?;
             // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the
             // roads; the sea, which OSM maps only as coastlines, from the water polygons.
             let sea = snapshot(inputs, store, "water-polygons", Vec::new(), &mut wanted)?;
@@ -620,12 +622,14 @@ impl Planner {
             let roads = obc_trailview_features::kinds::solver_rows(&roads);
             let waterways = obc_trailview_features::kinds::waterway_rows(&waterways);
             let finishes = obc_trailview_features::kinds::finish_rows(&finishes);
+            let parts = obc_trailview_features::kinds::part_rows(&parts);
             steps.push(Step {
                 layer: &PLANNER_TRAILVIEW_FEATURES,
                 name: "planner/trailview-features".into(),
                 inputs: vec![Input::step("planner/osm"), Input::step("planner/terrain/grid"), sea],
                 options: json!({"bounds": bounds, "kinds": kinds, "roads": roads, "finishes": finishes,
-                                "waterways": waterways, "levels": levels, "attribution": attribution("osm-planet")}),
+                                "waterways": waterways, "levels": levels, "parts": parts,
+                                "attribution": attribution("osm-planet")}),
                 outputs: vec!["trailview-features.pmtiles".into()],
                 run: Run::Rust(&functions::TRAILVIEW_FEATURES),
                 client: Client::All,

@@ -63,7 +63,7 @@ pub(crate) struct Decided {
 }
 
 /// The measure of the asks, with the open ends of all openings.
-pub(crate) type Measure<'a> = dyn Fn(&[Ask], &[OpenEnd]) -> Vec<Site> + 'a;
+pub(crate) type Measure<'a> = dyn Fn(&[Ask], &[OpenEnd]) -> (Vec<Site>, usize) + 'a;
 
 /// Two openings of other tubes that lead the same way within `pair_max_deg` and lie within `pair_max_m`: their
 /// metres apart, and b's metres to the left of a and in along a.
@@ -205,7 +205,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             )
         })
         .collect();
-    let measured = measure(&asks, &open_ends(openings));
+    let (measured, cells) = measure(&asks, &open_ends(openings));
     let mut sites: Vec<Option<Site>> = vec![None; n];
     let mut rights: Vec<u32> = vec![0; n];
     for ((&i, site), a) in asked.iter().zip(measured).zip(&asks) {
@@ -331,6 +331,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         "rungs": counts(ends.iter().map(|e| e.rung.to_string())),
         "ends": counts(ends.iter().map(shown)),
         "end_records": ends.iter().filter(|e| e.numbers.is_some()).count(),
+        "cells": cells,
     });
     Decided { ends, half, height, metrics }
 }
