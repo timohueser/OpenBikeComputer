@@ -36,8 +36,6 @@ export interface RouteRecord {
     revision: number;
     name: string;
     updatedAt: number;
-    /** The id of the saved version that `trip` belongs to. */
-    open?: string;
     /** Null only while the plan never had a calculated line. */
     summary: RouteSummary | null;
     /** The planner checks a plan when it opens it. */
@@ -202,7 +200,7 @@ export const isRideSummary = (value: unknown): value is RideSummary =>
 
 export function isRouteRecord(value: unknown): value is RouteRecord {
     return isRecord(value) && isString(value.id) && !!value.id && Number.isInteger(value.revision) && (value.revision as number) >= 0
-        && isString(value.name) && isNumber(value.updatedAt) && optional(value.open, isString)
+        && isString(value.name) && isNumber(value.updatedAt)
         && (value.summary === null || isRouteSummary(value.summary)) && value.trip !== undefined;
 }
 

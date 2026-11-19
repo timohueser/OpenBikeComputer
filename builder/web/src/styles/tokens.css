@@ -1,9 +1,9 @@
 @import "../../../../docs/assets/theme.css";
 
-/* The two versions of the compare screen, and the line of a ride on the map and on a plain ground. */
+/* The two routes of the compare screen, and the line of a ride on the map and on a plain ground. */
 :root {
-    --version-a: var(--water);
-    --version-b: #c8701f;
+    --compare-a: var(--water);
+    --compare-b: #c8701f;
     --ride: #0b8f8b;
     /* A connected device, in the greens of its housing: on the page, and on the rust top bar. */
     --connected: #2f6350;
@@ -22,12 +22,14 @@
     --planner-shadow: 0 6px 18px rgba(28, 27, 20, .12);
     /* Links are rust in light and tan in dark, so amber stays the one action colour in both. */
     --link: var(--forest);
+    /* The fill of a highlighted place on a map. */
+    --place-disc: var(--rust);
 }
 
 :root[data-theme="dark"] {
     --planner-shadow: 0 6px 18px rgba(0, 0, 0, .4);
     --link: var(--wood);
-    --version-b: #e8964a;
+    --compare-b: #e8964a;
     --ride: #3fd0c6;
     --connected: #8be3bc;
     --zone-1: #6f6c5f;
@@ -38,4 +40,5 @@
     --speed: #7aa7f0;
     --cadence: #c2a3dc;
     --heart-rate: #e0874c;
+    --place-disc: #c8642a;
 }

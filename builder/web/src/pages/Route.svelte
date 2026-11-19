@@ -15,12 +15,11 @@
     import type { Library } from '../lib/library/store';
     import { lineCoordinates } from '../lib/library/summary';
     import { hasEndpoints, planTitle, planView } from '../lib/planner/editor';
-    import { downloadPlan, isPlan, isVersion, newPlan } from '../lib/planner/library';
+    import { downloadPlan, isPlan, newPlan } from '../lib/planner/library';
+    import type { RoutePlace } from '../lib/planner/place-index';
     import { routeFacts, routePins, type Climb } from '../lib/planner/route-facts';
-    import type { Coordinate } from '../lib/planner/geo';
     import { LegCache } from '../lib/planner/route-legs';
     import { calculateLine, routingKey, type RoutingLine } from '../lib/planner/routing';
-    import type { Version } from '../lib/planner/versions';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import { deviceState, stateText, waitingWith } from './routes/state';
@@ -36,10 +35,12 @@
     /** The pointer, as a share of the summary line from 0 to 1. */
     let share = $state<number>();
     let deleting = $state(false), sharing = $state(false), failure = $state('');
-    /** The selected part, the stretch of the climb under the pointer and the chosen day, as shares of the line; the
-     * place whose panel is open. A chosen day acts as the part when none is selected. */
+    /** The selected part, the stretch of the climb under the pointer and the chosen day, as shares of the line. A chosen
+     * day acts as the part when none is selected. */
     let part = $state<[number, number] | null>(null), hover = $state<[number, number] | null>(null);
-    let day = $state<[number, number] | null>(null), place = $state<Coordinate | null>(null);
+    let day = $state<[number, number] | null>(null);
+    /** The places of the kind chosen in the rows, the ids of the lit places, and the id of the place whose popup is open. */
+    let routePlaces = $state.raw<RoutePlace[]>([]), litPlaces = $state.raw<string[]>([]), openPlaceId = $state<string | null>(null);
 
     const plan = $derived(record && isPlan(record) ? record : undefined);
     // Derived, so the remembered device of a first connection shows at once.
@@ -64,7 +65,8 @@
         const target = id;
         let live = true;
         record = undefined;
-        [share, deleting, sharing, failure, part, hover, day, place] = [undefined, false, false, '', null, null, null, null];
+        [share, deleting, sharing, failure, part, hover, day] = [undefined, false, false, '', null, null, null];
+        [routePlaces, litPlaces, openPlaceId] = [[], [], null];
         const load = async () => {
             const [item, ids, copies] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent')]);
             if (!live) return;
@@ -98,13 +100,9 @@
 
     const send = (on: boolean) => act(() => library.changeState('waiting', waitingWith(id, on)));
 
-    async function versions(): Promise<Version[]> {
-        return (await library.versions(id)).filter((v): v is Version => isVersion(v) && typeof v.summary === 'string');
-    }
-
     function duplicate() {
         return act(async () => {
-            const copy = await library.saveRoute({ ...newPlan(plan!.trip, `${name} (copy)`), summary }, await versions());
+            const copy = await library.saveRoute({ ...newPlan(plan!.trip, `${name} (copy)`), summary });
             location.hash = `${ROUTES.route}/${copy.id}`;
         });
     }
@@ -134,7 +132,7 @@
         { label: 'GPX', disabled: !facts, run: () => download(writeGpx(course()), 'application/gpx+xml', name, 'gpx') },
         // The stored time is at the pace of the route.
         { label: 'FIT', disabled: !facts, run: () => download(writeFitCourse({ ...course(), elapsedS: summary?.seconds ?? 0 }) as Uint8Array<ArrayBuffer>, 'application/vnd.ant.fit', name, 'fit') },
-        { label: 'Plan file', run: () => void act(async () => downloadPlan(plan!, await versions())) },
+        { label: 'Plan file', run: () => downloadPlan(plan!) },
     ]);
     const more = $derived<{ label: string; disabled?: boolean; rule?: boolean; danger?: boolean; run: () => void }[]>([
         { label: 'Share', disabled: !summary, run: () => { sharing = true; } },
@@ -170,16 +168,17 @@
     {/snippet}
     {#snippet picture()}
         {#if summary}<Picture {library} {id} {summary} {pins} mark={share} onpoint={next => share = next ?? undefined}
-            part={focus} lit={hover ?? focus} {place} />{/if}
+            part={focus} lit={hover ?? focus} {routePlaces} bind:litPlaces bind:openPlaceId />{/if}
     {/snippet}
     {#if plan && summary}
         {#key id}<Rows {summary} trip={plan.trip} {line} {facts} {pins} mark={share} onpoint={next => share = next ?? undefined}
-            {part} onpart={next => part = next} onhover={next => hover = next} onday={next => day = next} onplace={next => place = next} />{/key}
+            {part} onpart={next => part = next} onhover={next => hover = next} onday={next => day = next}
+            bind:routePlaces bind:litPlaces bind:openPlaceId />{/key}
     {/if}
     {#if sharing && summary}<Share {library} {id} {name} {summary} onClose={() => sharing = false} />{/if}
     {#if deleting}
         <Window title="Delete this route?" onClose={() => deleting = false}>
-            <p>“{name}” and its saved versions go. You cannot undo this.</p>
+            <p>“{name}” goes. You cannot undo this.</p>
             <div class="window-buttons">
                 <button type="button" class="button" onclick={() => deleting = false}>Cancel</button>
                 <button type="button" class="button danger" onclick={remove}>Delete</button>

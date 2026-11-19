@@ -6,6 +6,7 @@
     import { placeTile, placeTileKeys } from '../../lib/planner/place-index';
     import { placeCategories, poiKinds, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import type { Coordinate } from '../../lib/planner/map-types';
+    import PlaceDisc from './PlaceDisc.svelte';
 
     let { map, ready, theme, url, kinds, highlight, still, onOpen }: {
         map: MapLibre;
@@ -202,10 +203,7 @@
             {@const id = `${mark.key}/0`}
             <button type="button" class="disc" data-id={id} tabindex={!still && id === stop ? 0 : -1} aria-label={label(places, category)}
                 {@attach track(mark)}>
-                <span class="face">
-                    <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d={placeCategories[category].icon} /></svg>
-                    {#if places.length > 1}<b>{places.length > 99 ? '99+' : places.length}</b>{/if}
-                </span>
+                <PlaceDisc icon={placeCategories[category].icon} count={places.length} />
             </button>
         {:else}
             <div class="row" style:width={`${Math.min(mark.icons.length, PER_LINE) * CELL}px`} {@attach track(mark)}>
@@ -222,12 +220,12 @@
 
 <style>
     .place-marks {
-        --quiet: #59604d; --disc: var(--rust, #a4501e); --paper: #f4f2eb;
+        --quiet: #59604d; --paper: #f4f2eb;
         --ease: cubic-bezier(0.23, 1, 0.32, 1);
         /* `clip`, unlike `hidden`, makes no scroll container: a focus or a script cannot scroll the marks off their places. */
         position: absolute; inset: 0; isolation: isolate; overflow: clip; pointer-events: none;
     }
-    .place-marks.dark { --quiet: #b9bfae; --disc: #c8642a; --paper: #181d19; }
+    .place-marks.dark { --quiet: #b9bfae; --paper: #181d19; }
     button { padding: 0; border: 0; background: none; font: inherit; cursor: pointer; pointer-events: auto; -webkit-tap-highlight-color: transparent; }
     .still button { pointer-events: none; }
     button:focus { outline: none; }
@@ -248,29 +246,16 @@
 
     /* A disc of the highlighted kind draws over the rows. */
     .disc { position: absolute; left: 0; top: 0; z-index: 1; translate: -50% -50%; }
-    .face {
-        position: relative; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
-        color: #fff; background: var(--disc); box-shadow: 0 0 0 1.5px var(--paper); transition: transform 120ms var(--ease);
-    }
-    .face svg { stroke-width: 2; }
-    .face::after { content: ''; position: absolute; inset: 0; border-radius: 50%; box-shadow: 0 3px 8px rgba(28, 27, 20, .35); opacity: 0; transition: opacity 120ms var(--ease); }
-    .face b {
-        position: absolute; left: 14px; top: -6px; box-sizing: border-box; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px;
-        color: var(--ink, #1c1b14); background: var(--panel, #fff); font: 700 9px/14px var(--sans, sans-serif); font-variant-numeric: tabular-nums; text-align: center;
-    }
-    .disc:active .face { transform: scale(0.95); }
-    .disc:focus-visible .face { box-shadow: 0 0 0 1.5px var(--paper), 0 0 0 3.5px var(--amber, #f4a81d); }
+    .disc:active :global(.place-disc) { transform: scale(0.95); }
+    .disc:focus-visible :global(.place-disc) { box-shadow: 0 0 0 1.5px var(--paper), 0 0 0 3.5px var(--amber, #f4a81d); }
 
     @media (hover: hover) and (pointer: fine) {
         .row button:hover { color: var(--ink, #1c1b14); }
         .row button:hover::before { opacity: 1; }
         .row button:hover svg { transform: scale(1.15); }
         .row button:hover:active svg { transform: scale(0.95); }
-        .disc:hover .face { transform: scale(1.1); }
-        .disc:hover .face::after { opacity: 1; }
-        .disc:hover:active .face { transform: scale(0.95); }
     }
     @media (prefers-reduced-motion: reduce) {
-        .row svg, .face { transform: none !important; }
+        .row svg { transform: none !important; }
     }
 </style>

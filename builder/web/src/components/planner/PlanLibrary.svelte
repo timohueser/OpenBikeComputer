@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onMount, tick } from 'svelte';
-    import { planTitle } from '../../lib/planner/versions';
+    import { planTitle } from '../../lib/planner/editor';
     import type { RouteSummary } from '../../lib/library/records';
     import type { Plan } from '../../lib/planner/library';
     import Icon from '../../lib/ui/Icon.svelte';
