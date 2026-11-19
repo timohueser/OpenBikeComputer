@@ -256,7 +256,7 @@ test('"Save a copy…" stores the changes as a new route, and "Discard changes" 
 });
 
 
-test('a new page shows the stored route with a reminder of the changes of another page, and Restore brings them back', async ({ page, context }) => {
+test('a new page shows the stored route with a reminder of the changes of another page, and Restore and the Undo of "×" bring them back', async ({ page, context }) => {
   await start(page);
   await page.getByRole('button', { name: 'My plans', exact: true }).click();
   await importFile(page, planFile('First'));
@@ -275,4 +275,14 @@ test('a new page shows the stored route with a reminder of the changes of anothe
   await expect(next.getByRole('combobox', { name: 'Plan type' })).toContainText('Multi-day trip');
   await expect(saveButton(next)).toHaveText('Save');
   await expect(status.getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
+
+  const third = await context.newPage();
+  await start(third);
+  const line = third.locator('.status-line');
+  await line.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(line).toContainText('Earlier unsaved changes discarded');
+  await expect.poll(() => records(third, 'drafts')).toEqual([]);
+  await line.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(third.getByRole('combobox', { name: 'Plan type' })).toContainText('Multi-day trip');
+  await expect(line).not.toContainText('Earlier unsaved changes discarded');
 });
