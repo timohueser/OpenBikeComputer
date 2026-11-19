@@ -1,7 +1,8 @@
 # WebP bridge
 
-`obc-webp-bridge`: the WebP decode of the TrailView ground worker behind `wasm-bindgen`. The worker
-loads it only where the browser's decode fails the worker's probe.
+`obc-webp-bridge`: the exact WebP decode of TrailView's workers behind `wasm-bindgen`. The ground
+worker loads it where the browser's decode fails its probe; the terrain decode loads it from the
+first terrain tile whose browser decode has an alpha other than 0 or 255.
 
 ## Build and test
 

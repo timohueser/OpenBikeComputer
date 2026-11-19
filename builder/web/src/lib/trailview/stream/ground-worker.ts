@@ -1,6 +1,6 @@
 // Decodes the ground, colour and snow tiles of a ground tile and builds its pages, off the main thread.
 import { colourTexels, groundPages, type GroundDate, type Raster } from './ground-pages';
-import initWebp, { decode_webp } from './webp/obc_webp_bridge.js';
+import { wasmPixels, type Pixels } from './exact-pixels';
 
 /** A tile body of a layer of specs/trailview-tiles.md. */
 export interface Body { key: string; z: number; x: number; y: number; body: ArrayBuffer; layer: 'ground' | 'colour' | 'snow' }
@@ -20,8 +20,6 @@ const BUDGET = 96 * 2 ** 20;
 let held = 0;
 
 let gl: WebGL2RenderingContext | null | undefined;
-
-type Pixels = { size: number; data: Uint8Array };
 
 /**
  * The RGBA bytes of an image as stored. A 2D canvas premultiplies alpha, which loses the bytes under
@@ -56,13 +54,6 @@ async function webglPixels(body: ArrayBuffer): Promise<Pixels> {
  */
 const PROBE = 'UklGRioAAABXRUJQVlA4TB4AAAAvAUAAEB8wZIM8MgKSJP9vDuIBYJANUKYKs4j+xw4=';
 
-/** The bytes of a WebP image in WASM: slower than the browser's decode, and exact where that premultiplies (WebKit). */
-async function wasmPixels(body: ArrayBuffer): Promise<Pixels> {
-    const size = new Uint32Array(1);
-    const data = decode_webp(new Uint8Array(body), size);
-    return { size: size[0], data };
-}
-
 /** Whether a decode gives the probe's bytes: the RGB under a low alpha exactly. */
 async function exact(decode: (body: ArrayBuffer) => Promise<Pixels>): Promise<boolean> {
     const { data } = await decode(Uint8Array.from(atob(PROBE), c => c.charCodeAt(0)).buffer);
@@ -71,17 +62,13 @@ async function exact(decode: (body: ArrayBuffer) => Promise<Pixels>): Promise<bo
 
 let straight: Promise<(body: ArrayBuffer) => Promise<Pixels>> | undefined;
 
-/** The exact decode of the ground tiles: the browser's through WebGL where it is exact, else WASM. A failure is tried again on the next job. */
+/** The exact decode of the ground tiles: the browser's through WebGL where it is exact, else WASM. */
 function straightDecode(): Promise<(body: ArrayBuffer) => Promise<Pixels>> {
-    straight ??= exact(webglPixels).catch(() => false).then(async browser => {
+    straight ??= exact(webglPixels).then(async browser => {
         if (browser) return webglPixels;
         console.info('TrailView decodes the ground tiles in WASM: this browser does not decode the colour under a low alpha exactly.');
-        await initWebp().catch(error => { throw new Error(`The WASM decode of the ground tiles does not load: ${error}`); });
         if (!(await exact(wasmPixels))) throw new Error('This browser does not decode the RGB under a low alpha exactly, which the ground needs.');
         return wasmPixels;
-    }).catch(error => {
-        straight = undefined;
-        throw error;
     });
     return straight;
 }
