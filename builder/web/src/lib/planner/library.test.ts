@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { pinNight, addRestDay, setDrawnLeg } from './editor';
-import { exportPlan, importPlan, newPlan, planSummary } from './library';
+import { exportPlan, importPlan, newPlan, planSummary, savedWhen } from './library';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 
 describe('plan file', () => {
@@ -41,5 +41,15 @@ describe('plan file', () => {
             expect(() => importPlan(JSON.stringify(invalid))).toThrow();
         }
         expect(() => importPlan('{')).toThrow();
+    });
+});
+
+describe('saved when', () => {
+    it('names today, yesterday and an older day', () => {
+        const now = new Date(2026, 9, 14, 20, 0).getTime(), time = (at: Date) => at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+        const today = new Date(2026, 9, 14, 14, 5), yesterday = new Date(2026, 9, 13, 9, 30), older = new Date(2026, 9, 12, 18, 0);
+        expect(savedWhen(today.getTime(), now)).toBe(`Today ${time(today)}`);
+        expect(savedWhen(yesterday.getTime(), now)).toBe(`Yesterday ${time(yesterday)}`);
+        expect(savedWhen(older.getTime(), now)).toBe(`${older.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${time(older)}`);
     });
 });

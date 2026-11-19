@@ -52,3 +52,11 @@ export function downloadPlan(plan: Plan): void {
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+/** When a draft was written: "Today 14:05", "Yesterday 09:30" or "12 Oct 18:00". */
+export function savedWhen(at: number, now = Date.now()): string {
+    const date = new Date(at);
+    const days = Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(at).setHours(0, 0, 0, 0)) / 86400000);
+    const day = days === 0 ? 'Today' : days === 1 ? 'Yesterday' : date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    return `${day} ${date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+}

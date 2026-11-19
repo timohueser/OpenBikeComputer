@@ -28,7 +28,10 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   await page.goto('/planner.html?cover=none');
   await page.waitForFunction(() => window.coverTest);
   await page.evaluate(record => window.coverTest.library.saveRoute(record), route);
+  // A draft that the planner cannot open, so the planner below shows no reminder.
+  await page.evaluate(() => window.coverTest.library.saveDraft({ id: 'lake', updatedAt: 0, trip: {} }));
   await page.goto('/planner.html#/route/lake');
+  await expect(page.getByText('This route has unsaved changes in the planner.')).toBeVisible();
   const facts = page.locator('.facts');
   await expect(page.getByRole('heading', { name: 'Lake test', level: 1 })).toBeVisible();
   // The map shows the relief, so the credit of the terrain is behind the button of credits.

@@ -181,6 +181,17 @@ export class Library {
         return isDraftRecord(draft) ? draft : undefined;
     }
 
+    /** The newest draft of a route that is not stored whose trip is `usable`, other than the draft of `except`. */
+    async newestUnstoredDraft(usable: (trip: unknown) => boolean, except?: string): Promise<DraftRecord | undefined> {
+        await this.pending;
+        return this.run(['routes', 'drafts'], 'readonly', tx => {
+            const routes = tx.objectStore('routes').getAllKeys(), drafts = tx.objectStore('drafts').getAll();
+            return () => (drafts.result as unknown[]).filter(isDraftRecord)
+                .filter(draft => draft.id !== except && !(routes.result as IDBValidKey[]).includes(draft.id) && usable(draft.trip))
+                .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+        });
+    }
+
     saveDraft(draft: DraftRecord): Promise<void> {
         const record = structuredClone(draft);
         return this.write(['drafts'], tx => {
@@ -189,10 +200,17 @@ export class Library {
         });
     }
 
-    removeDraft(id: string): Promise<void> {
+    /** Deletes the draft of `id`; with `updatedAt`, only while the draft is still that write. True when it deleted. */
+    removeDraft(id: string, updatedAt?: number): Promise<boolean> {
         return this.write(['drafts'], tx => {
-            tx.objectStore('drafts').delete(id);
-            return () => {};
+            const store = tx.objectStore('drafts'), request = store.get(id);
+            let removed = false;
+            request.onsuccess = () => {
+                if (updatedAt !== undefined && request.result?.updatedAt !== updatedAt) return;
+                store.delete(id);
+                removed = true;
+            };
+            return () => removed;
         });
     }
 

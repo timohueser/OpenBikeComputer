@@ -35,7 +35,7 @@
     import type { RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
     import LibraryPanel from './PlanLibrary.svelte';
-    import type { Plan } from '../../lib/planner/library';
+    import { savedWhen, type Plan } from '../../lib/planner/library';
     import type { Library } from '../../lib/library/store';
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { router } from '../../lib/router.svelte';
@@ -545,6 +545,15 @@
         if (!await session.discard()) return;
         afterHistory('Changes discarded');
         statusUndo = undo;
+    }
+
+    async function restoreDraft() {
+        if (await session.restore()) afterHistory('Unsaved changes restored');
+    }
+
+    function dismissDraft() {
+        void session.dismiss();
+        statusUndo = null;
     }
 
     async function openPlan(id: string) {
@@ -1339,7 +1348,15 @@
             <div class="status-line" role="status">
                 <span class:save-error={!!session.saveError}>{session.saveError || `${message} · ${routingMessage}`}</span>
                 {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button>
-                {:else if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>{/if}
+                {:else if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>
+                {:else if session.earlier}<span>· Earlier unsaved changes discarded ·</span><button type="button" class="planner-action" onclick={restoreDraft}>Undo</button>{/if}
+                {#if session.offer}
+                    <span class="reminder">
+                        <span>Unsaved changes from {savedWhen(session.offer.updatedAt)}</span>
+                        <button type="button" class="planner-action quiet" onclick={restoreDraft}>Restore</button>
+                        <button type="button" class="planner-action quiet" aria-label="Dismiss" onclick={dismissDraft}><Icon name="close" size={14} /></button>
+                    </span>
+                {/if}
                 <span class="lab-note">Regional map, search and routing</span>
             </div>
         </section>
@@ -1543,6 +1560,11 @@
         color: var(--ink-soft);
     }
     .save-error { color: var(--coral); }
+    .reminder {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
     .lab-note {
         margin-left: auto;
     }

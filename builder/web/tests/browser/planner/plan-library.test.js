@@ -161,7 +161,7 @@ test('a new route is stored only at Save, with the name of the window, and a rel
   await expect.poll(() => records(page, 'drafts')).toHaveLength(1);
   await page.reload();
   await expect(saveButton(page)).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
   expect(await records(page, 'routes')).toEqual([]);
 
   await saveButton(page).click();
@@ -255,3 +255,34 @@ test('"Save a copy…" stores the changes as a new route, and "Discard changes" 
   await expect(saveButton(page)).toHaveText('Save');
 });
 
+
+test('a new page shows the stored route with a reminder of the changes of another page, and Restore and the Undo of "×" bring them back', async ({ page, context }) => {
+  await start(page);
+  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await importFile(page, planFile('First'));
+  await library(page).getByRole('button', { name: 'Close My plans' }).click();
+  await changeType(page, 'Multi-day trip');
+  await expect.poll(async () => (await records(page, 'drafts')).map(draft => draft.trip.mode)).toEqual(['trip']);
+
+  const next = await context.newPage();
+  await start(next);
+  await expect(next.getByRole('heading', { name: 'First', exact: true })).toBeVisible();
+  await expect(next.getByRole('combobox', { name: 'Plan type' })).toContainText('Route');
+  await expect(saveButton(next)).toHaveText('Saved');
+  const status = next.locator('.status-line');
+  await expect(status).toContainText(/Unsaved changes from Today \d/);
+  await status.getByRole('button', { name: 'Restore', exact: true }).click();
+  await expect(next.getByRole('combobox', { name: 'Plan type' })).toContainText('Multi-day trip');
+  await expect(saveButton(next)).toHaveText('Save');
+  await expect(status.getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
+
+  const third = await context.newPage();
+  await start(third);
+  const line = third.locator('.status-line');
+  await line.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(line).toContainText('Earlier unsaved changes discarded');
+  await expect.poll(() => records(third, 'drafts')).toEqual([]);
+  await line.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(third.getByRole('combobox', { name: 'Plan type' })).toContainText('Multi-day trip');
+  await expect(line).not.toContainText('Earlier unsaved changes discarded');
+});

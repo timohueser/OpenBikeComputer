@@ -36,6 +36,7 @@ vi.mock('../../lib/library/store', () => ({
             return savedPlan = plan;
         }
         async draft(id: string) { return stored.has('draft') ? { id, updatedAt: 0, trip: JSON.parse(stored.get('draft')!) } : undefined; }
+        async newestUnstoredDraft() { return undefined; }
         // The page writes the open state of the trip here at each change.
         async saveDraft(draft: { trip: unknown }) { stored.set('draft', JSON.stringify(draft.trip)); }
         async removeDraft() { stored.delete('draft'); }
