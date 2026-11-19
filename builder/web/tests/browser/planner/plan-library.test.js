@@ -181,6 +181,7 @@ test('a new route is stored only at Save, with the name of the window, and a rel
 
   await changeType(page, 'Multi-day trip');
   await expect(saveButton(page)).toHaveText('Save');
+  await expect.poll(async () => (await records(page, 'drafts')).map(draft => draft.trip.mode)).toEqual(['trip']);
   await page.reload();
   await expect(page.getByRole('combobox', { name: 'Plan type' })).toContainText('Multi-day trip');
   await expect(saveButton(page)).toHaveText('Save');
