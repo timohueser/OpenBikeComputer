@@ -107,8 +107,9 @@
     const trailAbout = $derived(trail?.record ?? trail?.entry);
     /** A trail that is a route record has the card of a route. */
     const trailRoute = $derived(trail?.record?.line_udeg ? signedOf(trail.record, String(trail.id)) : undefined);
-    /** The selected trail and its parts. The map marks them and does not move to them: a trail runs out of most views. */
-    const marked = $derived(tab === 'long' && trail && trailAbout ? [trail.id, ...trail.record?.parts?.map(part => part.id) ?? trail.record?.stages ?? []].map(String) : []);
+    /** The selected trail and its parts. The map marks them and does not move to them: a trail runs out of most views. With a
+     * stage open, only the stage is wide. */
+    const marked = $derived(tab === 'long' && !staged && trail && trailAbout ? [trail.id, ...trail.record?.parts?.map(part => part.id) ?? trail.record?.stages ?? []].map(String) : []);
     /** The lines of the open tab: in a near view, the long trails tab draws the stage lines of its trails. */
     const mapItems = $derived<Item[]>(tab === 'day' ? dayItems : far ? trailItems : stageItems);
     const mapShown = $derived.by<Item[]>(() => {
