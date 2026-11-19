@@ -61,14 +61,14 @@ route's line as a drawn leg.
 
 ### Days in the planner
 
-In the web planner, the day count above the stops makes a route a multi-day trip ("+") and back
-("−" from the lowest count). The start date and the stay kinds stand at the top of the day
-list. With a start date, each day shows its weekday. The elevation profile is the timeline: the
-days by colour, a marker at each night and a column for each rest day.
+In the web planner, one bar above the stops holds the day count, the start date and, for a trip, the
+stay kinds. Its "+" makes a route a multi-day trip, and "−" from the lowest count undoes it. With a
+start date, each day shows its weekday. The elevation profile is the timeline: the days by colour, a
+marker at each night and a column for each rest day.
 
-A guessed value has a dashed line. A set value has a solid line. The planner guesses the day count
-from the riding time at the plan's pace. After each route or pace change, it guesses the count and
-the suggested nights again. Pinned nights and a set day count stay. When the guess has fewer nights,
+A guessed day count is grey and dotted; a set one is dark. The planner guesses the day count from
+the riding time at the plan's pace. After each route or pace change, it guesses the count and the
+suggested nights again. Pinned nights and a set day count stay. When the guess has fewer nights,
 what the rider set on a lost night goes with it; Undo brings it back. A riding-time bar on each day
 shows the hard days.
 

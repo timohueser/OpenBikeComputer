@@ -1,4 +1,4 @@
-<!-- The number of riding days, and the only control that sets the type: 1 day is a route, 2 or more a multi-day trip. -->
+<!-- The number of days, and the only control that sets the type: 1 day is a route, 2 or more a multi-day trip. -->
 <script lang="ts">
     import { tick } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
@@ -8,7 +8,7 @@
     let { trip, line, onChange }: { trip: Trip; line: RoutingLine | undefined; onChange: (next: Trip, description: string) => void } = $props();
 
     const days = $derived(multiDay(trip) ? trip.days : 1);
-    const text = (days: number) => `${days} riding ${days === 1 ? 'day' : 'days'}`;
+    const text = (days: number) => `${days} ${days === 1 ? 'day' : 'days'}`;
     let fewerButton: HTMLButtonElement, moreButton: HTMLButtonElement;
 
     // A focused button that becomes disabled drops the focus to the body.
@@ -32,26 +32,28 @@
     }
 </script>
 
-<div class="days" role="group" aria-label="Number of riding days">
+<div class="days" role="group" aria-label="Number of days">
     <button type="button" aria-label="One day fewer" bind:this={fewerButton} disabled={days === 1} onclick={fewer}><Icon path="M5 12h14" size={15} /></button>
     <span class="count"><span class:guess={days > 1 && !trip.daysSet}>{text(days)}</span></span>
     <button type="button" aria-label="One day more" bind:this={moreButton} disabled={days >= maxRidingDays} onclick={more}><Icon name="plus" size={15} /></button>
 </div>
 
 <style>
+    /* A cell of the trip bar (`TripRow`). */
     .days {
         display: flex;
         align-items: center;
-        gap: 2px;
-        padding: 2px;
-        border: 1px solid var(--line-strong);
+        justify-content: space-between;
+        height: 44px;
+        padding: 0 4px;
         border-radius: 8px;
+        background: var(--parchment-2);
     }
     button {
         display: grid;
         place-items: center;
-        width: 30px;
-        height: 30px;
+        width: 32px;
+        height: 32px;
         padding: 0;
         border: 0;
         border-radius: 6px;
@@ -59,23 +61,20 @@
         color: var(--ink);
         cursor: pointer;
     }
-    button:disabled { cursor: default; opacity: .45; }
-    button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-    button:not(:disabled):hover { background: var(--parchment-2); }
+    button:disabled { cursor: default; opacity: .4; }
+    button:focus-visible { outline: 2px solid var(--ink); outline-offset: 0; }
+    button:not(:disabled):hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
     .count {
-        min-width: 92px;
-        text-align: center;
-        font-size: 14px;
+        padding: 0 4px;
+        white-space: nowrap;
+        font: 700 14px var(--sans);
         color: var(--ink);
         font-variant-numeric: tabular-nums;
     }
-    .count span {
-        padding-bottom: 1px;
-        border-bottom: 2px solid var(--ink);
-        font-weight: 700;
-    }
-    .count span.guess {
-        border-bottom: 1.5px dashed var(--ink-soft);
-        font-weight: 600;
+    /* A guessed count: the planner set it, the rider did not. */
+    .count .guess {
+        color: var(--ink-soft);
+        text-decoration: underline dotted 1.5px;
+        text-underline-offset: 4px;
     }
 </style>

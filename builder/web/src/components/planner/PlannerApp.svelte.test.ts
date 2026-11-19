@@ -142,7 +142,7 @@ async function chooseMore(item: string) {
 }
 
 async function setRidingDays(days: number) {
-    const count = () => Number(document.querySelector('[aria-label="Number of riding days"] .count')!.textContent!.split(' ')[0]);
+    const count = () => Number(document.querySelector('[aria-label="Number of days"] .count')!.textContent!.split(' ')[0]);
     while (count() !== days) { button(count() < days ? 'One day more' : 'One day fewer').click(); await tick(); }
 }
 
@@ -778,7 +778,7 @@ describe('planner app transitions', () => {
     it('sets the day count when the rider steps it, even back to the guess, and not when only the stay changes', async () => {
         stored.set('trip', JSON.stringify({ ...testTrip(), daysSet: undefined }));
         const draft = () => JSON.parse(written()!);
-        const count = () => Number(document.querySelector('[aria-label="Number of riding days"] .count')!.textContent!.split(' ')[0]);
+        const count = () => Number(document.querySelector('[aria-label="Number of days"] .count')!.textContent!.split(' ')[0]);
         await startApp();
         // A guess on the route as it opened writes nothing.
         await vi.waitFor(() => expect(count()).not.toBe(3));
@@ -815,7 +815,7 @@ describe('planner app transitions', () => {
         expect(document.querySelector<HTMLElement>('.query-slot')!.style.display).toBe('none');
         button('All days').click(); await tick(); await tick();
         expect(document.activeElement).toBe(button('Choose night 1'));
-        button('Trip dates: Start date').click(); await tick();
+        button('Trip dates: Any date').click(); await tick();
         const date = document.querySelector<HTMLInputElement>('.trip-row input[type="date"]')!;
         date.value = '2027-06-19';
         date.dispatchEvent(new Event('change', { bubbles: true })); await tick();
@@ -845,7 +845,7 @@ describe('planner side panel', () => {
         expect([!!document.querySelector('ol.route'), dayOpen(), !!document.querySelector('.results')]).toEqual([true, false, false]);
         button('Redo').click(); await tick();
         expect([!!document.querySelector('ol.route'), dayOpen()]).toEqual([false, false]);
-        expect(document.querySelector('[aria-label="Number of riding days"]')?.textContent).toContain('3 riding days');
+        expect(document.querySelector('[aria-label="Number of days"]')?.textContent).toContain('3 days');
     });
 
     it('closes the map selection and the night page when the type changes', async () => {

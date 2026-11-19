@@ -7,7 +7,6 @@
     import Query from './PlannerQuery.svelte';
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
-    import DayCount from './DayCount.svelte';
     import RoutePreferences from './RoutePreferences.svelte';
     import SaveWindow, { type SaveAnswer, type SaveMode } from './SaveWindow.svelte';
     import Itinerary from './Itinerary.svelte';
@@ -1209,14 +1208,12 @@
                 {/if}
                 {#if !focusedDay && nightPage === null}
                     <RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />
-                    <div class="list-links">
-                        <DayCount {trip} line={session.line} onChange={(next, description) => { changePlan(next, description); if (!multiDay(next)) statusUndo = undo; }} />
-                    </div>
+                    <!-- The rider's trip, not `planned`: a change must not keep the suggested nights as day ends. -->
+                    <div class="trip-settings"><TripRow {trip} line={session.line} onChange={changePlan}
+                        onDays={(next, description) => { changePlan(next, description); if (!multiDay(next)) statusUndo = undo; }} /></div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if itineraryShown}
-                        <!-- The rider's trip, not `planned`: a change must not keep the suggested nights as day ends. -->
-                        {#if !focusedDay && nightPage === null}<div class="trip-settings"><TripRow {trip} onChange={changePlan} /></div>{/if}
                         <Itinerary
                             trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nightPage} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
                             onToggle={showDay} onOverview={showAllDays}
@@ -1446,7 +1443,7 @@
         min-height: 0;
         background: var(--panel);
     }
-    .trip-settings { padding: 4px 16px 12px; border-bottom: 1px solid var(--line); }
+    .trip-settings { padding: 12px 16px; border-top: 1px solid var(--line); }
     .back-to-routes { display: flex; align-items: center; gap: 6px; min-height: 32px; margin: -4px 12px 8px; padding: 0 6px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; text-align: left; }
     .back-to-routes:hover { background: var(--parchment-2); color: var(--ink); }
     /* Clear of the map controls column, which reaches the bottom on a short map. The map reaches the clicks beside the legend. */
@@ -1454,7 +1451,6 @@
     .layer-date > :global(*) { pointer-events: auto; }
     .layer-legend { justify-self: start; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 7px 12px; border-radius: 8px; background: var(--panel); box-shadow: var(--planner-shadow); font-size: 12px; color: var(--ink-soft); }
     .layer-legend strong { font-weight: 600; color: var(--ink); }
-    .list-links { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 16px; border-top: 1px solid var(--line); }
     .pane-scroll {
         flex: 1;
         min-height: 0;
@@ -1567,7 +1563,8 @@
         .planner-shell { min-width: 0; height: auto; min-height: 100%; }
         main { grid-template-columns: minmax(0, 1fr); }
         main > :global([aria-label="Sidebar width"]) { display: none; }
-        .planner-pane { max-height: 50dvh; }
+        /* An open stay list or date popover of the trip bar can be taller than the pane: the pane scrolls. */
+        .planner-pane { max-height: 50dvh; overflow-y: auto; }
         .geography { height: 75dvh; }
         .status-line { height: auto; min-height: 38px; flex-wrap: wrap; padding-block: 8px; }
         .lab-note { display: none; }
