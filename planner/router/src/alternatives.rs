@@ -46,7 +46,7 @@ impl<P: RoutingData> Router<P> {
                         routes.push(candidate);
                     }
                 }
-                Err(Error::NoPath | Error::NoSnap(_)) => {}
+                Err(Error::NoPath(_) | Error::NoSnap(_)) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -109,7 +109,7 @@ impl<P: RoutingData> Router<P> {
                 };
                 let mut candidate = match self.route_counted(&probed, control, queries) {
                     Ok(route) => route,
-                    Err(Error::NoPath | Error::NoSnap(_) | Error::MissingRegion(_)) => continue,
+                    Err(Error::NoPath(_) | Error::NoSnap(_) | Error::MissingRegion(_)) => continue,
                     Err(error) => return Err(error),
                 };
                 candidate.reason = "corridor";
