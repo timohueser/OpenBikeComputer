@@ -488,7 +488,7 @@ describe('save and draft', () => {
         await session.save('Lake loop');
         const id = session.plan.id;
         session.commit(moved(plan, 8.2));
-        session.discard();
+        await session.discard();
         await settled(session);
         expect([session.trip, session.changed, await library.draft(id)]).toEqual([plan, false, undefined]);
         session.undo();
@@ -497,7 +497,7 @@ describe('save and draft', () => {
 
         await session.newPlan();
         session.commit(plan);
-        session.discard();
+        await session.discard();
         await settled(session);
         expect([session.trip.points, session.changed, await library.draft(session.plan.id)]).toEqual([[], false, undefined]);
         expect(session.undo() && session.trip).toEqual(plan);
@@ -590,6 +590,39 @@ describe('save and draft', () => {
         await session.nameVisit(visit);
         await vi.waitFor(() => expect(session.line).toBeDefined());
         expect([session.trip.points.at(-1)!.label, state(), drafts.mock.calls.length]).toEqual(['Dorfstraße 12', [true, false, false], 0]);
+        session.close();
+    });
+
+    it('shows a save that fails while the rider asks for another route: the route stays open and changed, with the error', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const id = session.plan.id;
+        session.commit(moved(plan, 8.2));
+        let fail!: (error: Error) => void;
+        vi.spyOn(library, 'saveRoute').mockImplementationOnce(() => new Promise((_, reject) => fail = reject));
+        const saving = session.save();
+        // The question before another route reads `changed` after the save in flight.
+        const asked = session.whenSaved().then(() => [session.plan.id, session.trip, session.changed, session.saveError]);
+        await vi.waitFor(() => expect(fail).toBeDefined());
+        fail(Object.assign(new Error('Full'), { name: 'QuotaExceededError' }));
+        expect(await asked).toEqual([id, moved(plan, 8.2), true, 'Browser storage is full. Delete routes you do not need, then save again.']);
+        expect(await saving).toBe(false);
+        session.close();
+    });
+
+    it('discards the changes after a save in flight to the state that the save stored', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        session.commit(moved(plan, 8.2));
+        const saving = session.save();
+        session.commit(moved(plan, 8.3));
+        await session.discard();
+        expect(await saving).toBe(true);
+        expect([session.trip, session.changed, (await library.route(session.plan.id))!.trip]).toEqual([moved(plan, 8.2), false, moved(plan, 8.2)]);
         session.close();
     });
 

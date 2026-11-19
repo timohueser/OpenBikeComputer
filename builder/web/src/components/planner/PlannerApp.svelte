@@ -514,6 +514,8 @@
     /** Asks before another route replaces a route with changes: "Save" saves it, "Discard" leaves its draft. False at
      * "Cancel" or a failed save. */
     async function leave(): Promise<boolean> {
+        // A save that fails makes the route changed again.
+        await session.whenSaved();
         if (!session.changed || !session.canSave) return true;
         const answer = await ask('leave');
         return answer === false || (answer !== null && await session.save(answer));
@@ -537,8 +539,8 @@
         if (name) await session.rename(session.plan, name);
     }
 
-    function discard() {
-        session.discard();
+    async function discard() {
+        await session.discard();
         afterHistory('Changes discarded');
         statusUndo = undo;
     }

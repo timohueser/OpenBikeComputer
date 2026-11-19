@@ -296,8 +296,8 @@ describe('planner app transitions', () => {
         expect(document.body.textContent).toContain('Where would you like to ride?');
         button('Undo').click(); await tick();
         expect(document.body.textContent).toContain('Choose your start');
-        button(mode === 'route' ? 'New route' : 'New trip').click(); await tick();
-        expect(document.querySelector('dialog h2')?.textContent).toBe('Save changes to ‘To Finish’?');
+        button(mode === 'route' ? 'New route' : 'New trip').click();
+        await vi.waitFor(() => expect(document.querySelector('dialog h2')?.textContent).toBe('Save changes to ‘To Finish’?'));
         button('Discard').click();
         await vi.waitFor(() => expect(document.body.textContent).toContain('Where would you like to ride?'));
         expect(window.confirm).not.toHaveBeenCalled();
