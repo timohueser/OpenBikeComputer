@@ -422,12 +422,13 @@ pub struct Chain {
 }
 
 /// The chains of the tunnel features that the cells found: from each tag end along the features, on through a node
-/// where one feature goes on, as `tunnel_states` walks them. A chain with two tag ends comes once.
+/// where one feature goes on, as `tunnel_states` walks them. A chain with two tag ends comes once. A tag end where
+/// another feature links (two cells that see the node apart) starts no chain: the walk from the other side holds it.
 pub fn chains(found: &BTreeMap<u32, Vec<Found>>, links: &[Link<u32>]) -> Vec<Chain> {
     let tunnels = tunnels(found, links);
     let mut out = Vec::new();
     for (&id, t) in &tunnels {
-        for &(m0, d0) in &t.tag_ends {
+        for &(m0, d0) in t.tag_ends.iter().filter(|e| !t.links.iter().any(|l| (l.0 - e.0).abs() <= LINK_M)) {
             let (mut f, mut m, mut dir) = (id, m0, d0);
             let mut chain = Chain { ways: Vec::new(), tag: [true, false] };
             for _ in 0..=tunnels.len() {
@@ -998,5 +999,10 @@ mod tests {
         let links = [links[0], links[1], (2, 30.0, -1.0, 3, 0.0, 1.0), (1, 130.0, 1.0, 3, 0.0, 1.0)];
         let ends: Vec<(u32, [bool; 2])> = chains(&fork, &links).iter().map(|c| (c.ways[0].0, c.tag)).collect();
         assert_eq!(ends, [(1, [true, false]), (1, [true, false]), (3, [true, false])]);
+        // The cell of the second part's start sees no feature go on there, the cell of the feature between links them:
+        // the chain still comes once.
+        let mut apart = found.clone();
+        apart.get_mut(&1).unwrap().push(tunnel(Vec::new(), Vec::new(), vec![(130.0, 1.0)]));
+        assert_eq!(chains(&apart, &links[..2]).len(), 1);
     }
 }
