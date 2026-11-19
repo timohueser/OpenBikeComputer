@@ -518,7 +518,9 @@
         await session.whenSaved();
         if (!session.changed || !session.canSave) return true;
         const answer = await ask('leave');
-        return answer === false || (answer !== null && await session.save(answer));
+        if (answer === false) return true;
+        // An edit or an Undo during the save leaves the route changed, so it asks again.
+        return answer !== null && await session.save(answer) && leave();
     }
 
     async function save() {
