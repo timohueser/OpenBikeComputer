@@ -93,4 +93,5 @@
         font-size: 13px;
         color: var(--ink-soft);
     }
+    .choices :global(.trigger) { width: 100%; }
 </style>

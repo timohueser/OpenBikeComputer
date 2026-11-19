@@ -52,7 +52,7 @@
     button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     button:not(:disabled):hover { background: var(--parchment-2); }
     .count {
-        min-width: 108px;
+        min-width: 92px;
         text-align: center;
         font-size: 14px;
         color: var(--ink);
