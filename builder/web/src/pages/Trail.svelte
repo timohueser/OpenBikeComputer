@@ -9,7 +9,7 @@
     import type { Library } from '../lib/library/store';
     import { config } from '../lib/planner/map-data';
     import { decodeCoordinates } from '../lib/planner/route-answer';
-    import { catalog } from '../lib/planner/route-catalog';
+    import { catalog, type Box } from '../lib/planner/route-catalog';
     import { routeColor } from '../lib/planner/route-colors';
     import { routeWebsite } from '../lib/planner/route-overlays';
     import type { CatalogRecord } from '../lib/planner/signed-routes';
@@ -27,7 +27,8 @@
 
     let {}: { library: Library; active: boolean } = $props();
 
-    const ELEVATION_PX = 120;
+    /** The height of the profile, and the margin around the stage lines as a share of their box on each side. */
+    const ELEVATION_PX = 120, MARGIN = 0.08;
 
     const id = $derived(Number(router.id));
     let attempt = $state(0);
@@ -49,8 +50,13 @@
 
     const items = $derived(stages?.trail === record ? stages!.records.map(one => signedItem(one, bike, String(id))) : []);
     const lines = $derived(new Map(stages?.trail === record ? stages!.records.map(one => [one.id, decodeCoordinates(one.line_udeg!)]) : []));
-    /** The box of the stage lines, made once for the map: it moves only when its place changes. */
-    const box = $derived(lines.size ? lineBox([...lines.values()]) : undefined);
+    /** The box of the stage lines with a margin that keeps them clear of the edges and the buttons of the map. It is made once:
+     * the map moves only when its place changes. */
+    const box = $derived.by((): Box | undefined => {
+        if (!lines.size) return undefined;
+        const [west, south, east, north] = lineBox([...lines.values()]), x = (east - west) * MARGIN, y = (north - south) * MARGIN;
+        return [west - x, south - y, east + x, north + y];
+    });
     const place = $derived(box && { lon: (box[0] + box[2]) / 2, lat: (box[1] + box[3]) / 2, box });
     const borders = $derived({ points: borderPoints(parts, one => lines.get(one)), colour });
 
