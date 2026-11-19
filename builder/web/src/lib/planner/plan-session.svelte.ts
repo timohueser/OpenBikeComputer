@@ -450,7 +450,7 @@ export class PlanSession {
         const record = await this.library!.item(id).catch(() => null);
         if (this.closed || this.plan.id !== id || record === null) return;
         if (!record) this.install(newPlan(emptyTrip(this.trip.mode)), false);
-        else if (record.name !== this.plan.name) this.plan = { ...this.plan, name: record.name };
+        else if ('updatedAt' in record && record.name !== this.plan.name) this.plan = { ...this.plan, name: record.name, updatedAt: record.updatedAt };
     }
 
     private openNew(plan: Plan): Promise<boolean> {
@@ -503,26 +503,30 @@ export class PlanSession {
         } catch {
             // The transaction deleted no draft.
             this.history = this.history.map(({ clean: _, before, ...step }) => before ? { ...step, clean: true } : step);
+            // An Undo to the step of the save can have deleted the draft since. The error of the save stays: a draft
+            // write is no save.
+            if (ownDraft() !== this.plan.id) this.keepDraft(false);
             return false;
         }
     }
 
-    /** Writes the open state to the draft of the route when it is changed, and deletes the own draft when it is not. */
-    private keepDraft(): void {
+    /** Writes the open state to the draft of the route when it is changed, and deletes the own draft when it is not.
+     * With `clears` false, its success keeps the error of an earlier write. */
+    private keepDraft(clears = true): void {
         const id = this.plan.id;
         if (!this.library) return;
         if (this.changed) {
             setOwnDraft(id);
-            void this.write(library => library.saveDraft({ id, updatedAt: Date.now(), trip: this.trip })).catch(() => {});
+            void this.write(library => library.saveDraft({ id, updatedAt: Date.now(), trip: this.trip }), clears).catch(() => {});
         } else if (ownDraft() === id) {
             setOwnDraft(null);
-            void this.write(library => library.removeDraft(id)).catch(() => {});
+            void this.write(library => library.removeDraft(id), clears).catch(() => {});
         }
     }
 
     /** Runs a write of the open route. Writes run in order. A failed write shows its error until a later write of the
      * same route succeeds. */
-    private write<T>(work: (library: Library) => Promise<T>): Promise<T> {
+    private write<T>(work: (library: Library) => Promise<T>, clears = true): Promise<T> {
         const id = this.plan.id;
         if (!this.library) {
             this.saveError = 'Browser storage is unavailable. Download your plan to keep it.';
@@ -530,7 +534,7 @@ export class PlanSession {
         }
         const result = work(this.library);
         this.lastWrite = result;
-        result.then(() => { if (this.plan.id === id) this.saveError = ''; },
+        result.then(() => { if (clears && this.plan.id === id) this.saveError = ''; },
             error => { if (this.plan.id === id) this.saveError = storageError(error); });
         return result;
     }
@@ -616,9 +620,9 @@ export class PlanSession {
     }
 
     private writeSummary(summary: RouteSummary): void {
-        const id = this.plan.id;
+        const { id, updatedAt } = this.plan;
         this.plan = { ...this.plan, summary };
-        void this.write(library => library.setSummary(id, summary)).catch(() => {});
+        void this.write(library => library.setSummary(id, summary, updatedAt)).catch(() => {});
     }
 
     /** Ends the drag preview and the option preview. */

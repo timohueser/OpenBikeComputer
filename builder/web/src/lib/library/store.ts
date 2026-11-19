@@ -160,12 +160,13 @@ export class Library {
     }
 
     /** Writes only the summary of a stored route, with no new `updatedAt`: the summary is data that the route lacked, not
-     * an edit. */
-    setSummary(id: string, summary: RouteSummary): Promise<void> {
+     * an edit. It writes only while the route is the record of `updatedAt` that the summary was made for, so a save of
+     * another tab keeps its own trip and summary. */
+    setSummary(id: string, summary: RouteSummary, updatedAt: number): Promise<void> {
         return this.write(['routes'], (tx, _, changed) => {
             const store = tx.objectStore('routes'), request = store.get(id);
             request.onsuccess = () => {
-                if (!isRouteRecord(request.result)) return;
+                if (!isRouteRecord(request.result) || request.result.updatedAt !== updatedAt) return;
                 store.put({ ...request.result, summary });
                 changed('routes', id);
             };

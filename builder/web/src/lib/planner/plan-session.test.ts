@@ -660,6 +660,48 @@ describe('save and draft', () => {
         session.close();
     });
 
+    it('leaves each step changed when the step that was clean before a failed save is gone from the history', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        session.commit(moved(plan, 8.2));
+        await session.save('Lake loop');
+        session.undo();
+        let fail!: (error: Error) => void;
+        vi.spyOn(library, 'saveRoute').mockImplementationOnce(() => new Promise((_, reject) => fail = reject));
+        const saving = session.save();
+        session.commit(moved(plan, 8.3));
+        await vi.waitFor(() => expect(fail).toBeDefined());
+        fail(new Error('Full'));
+        expect(await saving).toBe(false);
+        expect([session.changed, session.canSave, (await library.route(session.plan.id))!.trip]).toEqual([true, true, moved(plan, 8.2)]);
+        session.undo();
+        expect(session.changed).toBe(true);
+        session.close();
+    });
+
+    it('writes the draft again when a save fails after an Undo and a Redo deleted it', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const id = session.plan.id;
+        session.commit(moved(plan, 8.2));
+        let fail!: (error: Error) => void;
+        vi.spyOn(library, 'saveRoute').mockImplementationOnce(() => new Promise((_, reject) => fail = reject));
+        const saving = session.save();
+        session.undo();
+        session.redo();
+        await settled(session);
+        await vi.waitFor(() => expect(fail).toBeDefined());
+        fail(Object.assign(new Error('Full'), { name: 'QuotaExceededError' }));
+        expect(await saving).toBe(false);
+        await settled(session);
+        expect([session.changed, await draftTrip(library, id), sessionStorage.getItem('obc-draft'), session.saveError])
+            .toEqual([true, moved(plan, 8.2), id, 'Browser storage is full. Delete routes you do not need, then save again.']);
+        session.close();
+    });
+
     it('stores a copy as a new route with one clean step, and leaves the first route as it was stored', async () => {
         service();
         const { session, library } = await open();
