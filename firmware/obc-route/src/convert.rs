@@ -187,6 +187,7 @@ pub fn points_to_obcr(
         remap.positions.push((*distance, None));
     }
     let mut emitter = ObcrEmitter::new(sink)?;
+    emitter.keep_booked_elevation();
     emitter.set_bike_type(bike);
     if !waypoints.is_empty() {
         emitter.enc.remap = Some(alloc::boxed::Box::new(remap));
@@ -238,6 +239,8 @@ pub(crate) struct ObcrEmitter {
     /// Elevation-detail keep threshold (m). `0` turns it off. See
     /// [`keep_elevation_detail`](ObcrEmitter::keep_elevation_detail).
     ele_keep_m: i16,
+    /// Measure the elevation keep threshold from the dead-band reference, not the last kept point.
+    ele_keep_from_band: bool,
     surface: u8,
     /// A pushed point had no elevation, or an incomplete one.
     ele_gap: bool,
@@ -261,6 +264,7 @@ impl ObcrEmitter {
             addr_of_mut!((*slot).last_kept).write(None);
             addr_of_mut!((*slot).pending).write(None);
             addr_of_mut!((*slot).ele_keep_m).write(1);
+            addr_of_mut!((*slot).ele_keep_from_band).write(false);
             addr_of_mut!((*slot).surface).write(0);
             addr_of_mut!((*slot).ele_gap).write(false);
             addr_of_mut!((*slot).flags).write(0);
@@ -276,6 +280,7 @@ impl ObcrEmitter {
                 last_kept: _,
                 pending: _,
                 ele_keep_m: _,
+                ele_keep_from_band: _,
                 surface: _,
                 ele_gap: _,
                 flags: _,
@@ -302,6 +307,7 @@ impl ObcrEmitter {
             last_kept: None,
             pending: None,
             ele_keep_m: 1,
+            ele_keep_from_band: false,
             surface: 0,
             ele_gap: false,
             flags: 0,
@@ -318,6 +324,14 @@ impl ObcrEmitter {
     /// Retain elevation changes of at least this many metres. The default is one metre.
     pub(crate) fn keep_elevation_detail(&mut self, threshold_m: i16) {
         self.ele_keep_m = threshold_m;
+    }
+
+    /// Keep each point that moves the elevation dead-band from its reference over the kept points,
+    /// so the stored ascent and descent equal those of all pushed points.
+    #[cfg(feature = "alloc")]
+    pub(crate) fn keep_booked_elevation(&mut self) {
+        self.ele_keep_m = obc_elevation::ELE_DEADBAND_M as i16;
+        self.ele_keep_from_band = true;
     }
 
     pub(crate) fn set_surface(&mut self, surface: u8) {
@@ -383,8 +397,9 @@ impl ObcrEmitter {
             (Some(lk), Some(pd)) => {
                 let perp = perp_dist_m(lk, c, pd);
                 let span = (c.cum_d - lk.cum_d) as f32;
-                let ele_break =
-                    self.ele_keep_m > 0 && (i32::from(pd.ele) - i32::from(lk.ele)).abs() >= i32::from(self.ele_keep_m);
+                let band_base = self.enc.band.smoothed().filter(|_| self.ele_keep_from_band);
+                let base = band_base.map_or(i32::from(lk.ele), |e| libm::round(e) as i32);
+                let ele_break = self.ele_keep_m > 0 && (i32::from(pd.ele) - base).abs() >= i32::from(self.ele_keep_m);
                 if perp > EPSILON_M
                     || span > MAX_SPAN_M
                     || ele_break
