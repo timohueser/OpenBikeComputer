@@ -137,6 +137,8 @@ export class PlanSession {
     // The calculation in flight, or the one that failed, so a label edit neither restarts nor clears it.
     private request?: { key: string; abort: AbortController };
     private lastWrite: Promise<unknown> = Promise.resolve();
+    // Counts the opens of a route, so a save that ends after another route opened changes nothing of it.
+    private opens = 0;
     private closed = false;
     private stopFollowing = () => {};
     private readonly previews = routePreview((draft: Trip, signal: AbortSignal) => this.calculate(draft, signal), (trip, line) => {
@@ -365,9 +367,9 @@ export class PlanSession {
         });
     }
 
+    /** Stores a copy of the stored record `plan`, also when it is open with changes: "My plans" shows the stored route. */
     duplicate(plan: Plan): Promise<boolean> {
-        const source = plan.id === this.plan.id ? this.snapshot() : plan;
-        return this.create(() => ({ ...newPlan(source.trip, `${source.name || planTitle(source.trip)} (copy)`), summary: source.summary }));
+        return this.create(() => ({ ...newPlan(plan.trip, `${plan.name || planTitle(plan.trip)} (copy)`), summary: plan.summary }));
     }
 
     /** Deletes the records of the library that are not valid plans. */
@@ -452,7 +454,7 @@ export class PlanSession {
 
     /** Writes `route` with the open step as the only clean step, and runs `stored` after the write. */
     private async store(route: Plan, stored: (saved: Plan) => void): Promise<boolean> {
-        const at = this.at, before = this.history.findIndex(step => step.clean);
+        const at = this.at, before = this.history.findIndex(step => step.clean), opens = this.opens;
         this.flagClean(at);
         try {
             const saved = await this.write(async library => {
@@ -460,16 +462,21 @@ export class PlanSession {
                 await library.setState('active', saved.id);
                 return saved;
             });
+            if (opens !== this.opens) return true;
             this.stored = true;
             stored(saved);
-            if (this.changed) return true;
+            // An edit during the save goes to the draft of the route that is now open.
+            if (this.changed) {
+                this.keepDraft();
+                return true;
+            }
             setOwnDraft(null);
             // The line arrived during the save.
             if (!saved.summary && this.line) this.writeSummary(planSummary(this.trip, this.line));
             return true;
         } catch {
             // The transaction deleted no draft.
-            this.flagClean(before);
+            if (opens === this.opens) this.flagClean(before);
             return false;
         }
     }
@@ -560,6 +567,7 @@ export class PlanSession {
     /** Opens `plan` as one clean step, and `draft` as the Undo step after it. The tab then writes the draft of `plan`
      * only. */
     private install(plan: Plan, stored: boolean, draft?: Trip): void {
+        this.opens++;
         this.cancelPreview();
         this.plan = plan;
         this.stored = stored;

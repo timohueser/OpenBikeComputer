@@ -526,6 +526,73 @@ describe('save and draft', () => {
         session.close();
     });
 
+    it('stores the route that a save started with, and leaves the route that opens during the save as it opened', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const id = session.plan.id;
+        session.commit(moved(plan, 8.2));
+        const saving = session.save();
+        expect(await session.newPlan()).toBe(true);
+        expect(await saving).toBe(true);
+        expect([session.plan.id === id, session.stored, session.trip.points]).toEqual([false, false, []]);
+        session.commit(moved(plan, 8.3));
+        await session.save('Other');
+        expect((await library.route(id))!.trip).toEqual(moved(plan, 8.2));
+        session.close();
+    });
+
+    it('keeps an edit that the rider makes while a copy is stored in the draft of the copy', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const copying = session.saveCopy('Lake loop (copy)');
+        session.commit(moved(plan, 8.2));
+        expect(await copying).toBe(true);
+        await settled(session);
+        expect([session.changed, await draftTrip(library, session.plan.id), sessionStorage.getItem('obc-draft')]).toEqual([true, moved(plan, 8.2), session.plan.id]);
+        session.close();
+    });
+
+    it('duplicates the stored record of the open route, not its changes', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const stored = session.plan;
+        session.commit(moved(plan, 8.2));
+        expect(await session.duplicate(stored)).toBe(true);
+        expect([session.plan.name, (await library.route(session.plan.id))!.trip]).toEqual(['Lake loop (copy)', plan]);
+        session.close();
+    });
+
+    it('enables Save for a new route with points and a stored route with changes, and a line or a place name on a clean step changes nothing', async () => {
+        service();
+        const routed = globalThis.fetch;
+        vi.stubGlobal('fetch', (url: string, init: RequestInit) => url.endsWith('/reverse')
+            ? Promise.resolve({ ok: true, json: async () => ({ label: 'Dorfstraße 12' }) }) : routed(url, init));
+        const { session, library } = await open();
+        const state = () => [session.stored, session.changed, session.canSave];
+        expect(state()).toEqual([false, false, false]);
+        session.commit(plan);
+        expect(state()).toEqual([false, true, true]);
+        await session.save('Lake loop');
+        expect(state()).toEqual([true, false, false]);
+        session.commit(moved(plan, 8.2));
+        expect(state()).toEqual([true, true, true]);
+        const visit = { ...point('visit', 'waypoint', [8.05, 48.02]), autoLabel: true, label: '48.02000, 8.05000' };
+        const named: Trip = { ...plan, points: [...plan.points, visit], routeOrder: ['visit'] };
+        await library.saveRoute({ ...session.plan, id: 'named', name: 'Named', trip: named });
+        const drafts = vi.spyOn(library, 'saveDraft');
+        expect(await session.open('named')).toBe(true);
+        await session.nameVisit(visit);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        expect([session.trip.points.at(-1)!.label, state(), drafts.mock.calls.length]).toEqual(['Dorfstraße 12', [true, false, false], 0]);
+        session.close();
+    });
+
     it('stores a copy as a new route with one clean step, and leaves the first route as it was stored', async () => {
         service();
         const { session, library } = await open();
