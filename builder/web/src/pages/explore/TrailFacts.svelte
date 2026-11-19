@@ -9,7 +9,7 @@
     import Icon from '../../lib/ui/Icon.svelte';
     import { kindName } from './SignedCard.svelte';
     import { shownDescription } from './signed-page';
-    import { stageCount } from './strip';
+    import { heldStages } from './strip';
     import type { TrailRow } from './trail-page';
 
     let { record, rows, hovered, onhover }: {
@@ -22,7 +22,11 @@
 
     const lead = $derived([record.loop ? 'Loop' : 'One way', kindName(record),
         ...record.kind !== 'bicycle' && record.hardest !== undefined ? [gradeName(record.kind, record.hardest)] : []].join(' · '));
-    const stages = $derived(stageCount(record.stage_count, record.parts));
+    // As the count in the title: a trail of fewer than two stages shows none.
+    const stages = $derived.by(() => {
+        const count = record.stage_count ?? 0, held = heldStages(record.parts ?? []);
+        return count < 2 ? undefined : held < count ? `${held} of ${count}` : String(count);
+    });
     const description = $derived(shownDescription(record, id => catalog.record(id)));
 </script>
 
@@ -37,7 +41,7 @@
             {@render number('Length', formatDistance(record.length_m))}
             {@render number('Climb', formatHeight(record.ascent_m))}
             {#if record.moving_s !== undefined}{@render number('Time', duration(record.moving_s / 3600))}{/if}
-            {#if stages}{@render number('Stages', stages.replace(/ stages/, ''))}{/if}
+            {#if stages}{@render number('Stages', stages)}{/if}
         </dl>
         {#if description}<p class="description">{description}</p>{/if}
         <h3>Stages</h3>

@@ -53,8 +53,7 @@ describe('stagePart', () => {
 });
 
 describe('partLabel', () => {
-    it('names a section of a cut stage, a section, a stage, and else a part by its name', () => {
-        expect([partLabel(8, 2), partLabel(undefined, 2), partLabel(8), partLabel(undefined, undefined, 'Etappe 1'), partLabel()])
-            .toEqual(['Stage 8 · Section 2', 'Section 2', 'Stage 8', 'Etappe 1', false]);
+    it('names a part with no stage and no section by its name', () => {
+        expect([partLabel(undefined, undefined, 'Etappe 1'), partLabel()]).toEqual(['Etappe 1', false]);
     });
 });

@@ -100,7 +100,7 @@ test('the name of a card opens the page of the route, and Back and "‹ Explore"
   await page.goForward();
   await expect(page).toHaveURL(/#\/signed\/9-267-177\/202$/);
 
-  // After a reload, "‹ Explore" opens Explore on the route; the test build has no trail files, so it is a day route.
+  // After a reload, "‹ Explore" opens Explore on the route; the test build has no far files, so it is a day route.
   for (const [name, address] of [['Westweg 2', '9-267-177/202'], ['Schlossberg loop', '9-267-177/101']]) {
     await page.goto(`/planner.html#/signed/${address}`);
     await page.reload();
@@ -137,10 +137,15 @@ test('the trail name on a stage page opens the page of the trail, whose rows ope
   await page.goBack();
   await expect(page).toHaveURL(/#\/trail\/300$/);
   await expect(rows).toHaveCount(2);
-  // After a reload no page is before this one: "‹ Explore" opens Explore on the trail.
+  // After a reload no page is before this one: "‹ Explore" opens Explore on the trail, in the box of its stage lines. The
+  // click writes that state at once; Explore writes its own state later.
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'Westweg', exact: true })).toBeVisible();
-  await page.getByRole('link', { name: '‹ Explore' }).click();
+  await expect(page.locator('.routes-map')).toBeVisible();
+  const state = await page.evaluate(() => {
+    [...document.querySelectorAll('a')].find(link => link.textContent === '‹ Explore').click();
+    return history.state.explore;
+  });
+  expect(state).toEqual({ chips: { bike: 'hiking' }, view: [7.88, 47.98, 7.91, 48].map(value => expect.closeTo(value, 6)), tab: 'long', trail: 300 });
   await expect(page).toHaveURL(/#\/explore$/);
 
   await page.goto('/planner.html#/trail/1');

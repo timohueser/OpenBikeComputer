@@ -45,10 +45,11 @@
         onview: (view: Box) => void;
         /** A change fits the map to the shown items. */
         fit: number;
-        /** A new place moves the map: a box of some size fits the map, a point shows at zoom 12. */
-        place?: { lon: number; lat: number; box?: Box };
+        /** A new place moves the map: a box of some size fits the map with `padding` pixels on each side, a point shows at
+         * zoom 12. */
+        place?: { lon: number; lat: number; box?: Box; padding?: number };
         /** A white dot with a ring in `colour` at each point, over the lines, such as the stage borders of a trail. The map
-         * reads them when it adds its layers. */
+         * reads them when it adds its layers. A map with them shows no start mark: the dots mark where the lines start. */
         borders?: { points: Coordinate[]; colour: string };
     } = $props();
 
@@ -83,7 +84,7 @@
     const focusData = $derived.by<FeatureCollection>(() => {
         const lit = hovered === undefined ? [] : together(hovered).filter(id => shownIds.has(id));
         const features: Feature[] = lit.flatMap(id => { const item = itemOf.get(id); return item ? lineOf(item, 'hover') : []; });
-        for (const id of new Set([hovered !== undefined && shownIds.has(hovered) ? hovered : undefined, selected[0]])) {
+        for (const id of borders ? [] : new Set([hovered !== undefined && shownIds.has(hovered) ? hovered : undefined, selected[0]])) {
             const item = id === undefined ? undefined : itemOf.get(id), start = item?.summary && item.kind !== 'trail' ? startOf(item.summary.line) : undefined;
             if (start) features.push({ type: 'Feature', properties: { color: colorOf(item!), role: 'start', bearing: start.bearing }, geometry: { type: 'Point', coordinates: start.at } });
         }
@@ -297,8 +298,8 @@
     // With no padding, a box that `onview` gave shows the same view again.
     $effect(() => {
         if (!map || !place) return;
-        const { lon, lat, box: [west, south, east, north] = [lon, lat, lon, lat] } = place;
-        if (west < east && south < north) map.fitBounds([[west, south], [east, north]], { padding: 0, animate: false });
+        const { lon, lat, box: [west, south, east, north] = [lon, lat, lon, lat], padding = 0 } = place;
+        if (west < east && south < north) map.fitBounds([[west, south], [east, north]], { padding, animate: false });
         else map.jumpTo({ center: [lon, lat], zoom: 12 });
     });
 </script>

@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { Coordinate } from '../../lib/planner/geo';
 import { cumulative } from '../../lib/planner/geo';
 import type { CatalogRecord, TrailPart } from '../../lib/planner/signed-routes';
-import { borderPoints, stageBorders, stageCells, trailProfileLine, trailRows } from './trail-page';
+import { borderPoints, stageBorders, stageCells, stageNumbers, stageStretches, trailProfileLine, trailRows } from './trail-page';
 
 // A release of one zoom 9 cell, 9-268-180; 9-267-180 is outside it.
 const bounds: [number, number, number, number] = [8.4375, 46.8, 9.1, 47.2];
@@ -20,6 +19,12 @@ const viaAlpina: TrailPart[] = [
     { id: 74, stage: 74, length_m: 10_000, ascent_m: 500, end_m: 30_000, cells: ['9-267-180', CELL] },
     { id: 75, stage: 75, end_m: 30_000, missing: true },
 ];
+// The Freiämterweg: stage 3 is cut into two sections.
+const freiamt: TrailPart[] = [
+    { id: 1, stage: 1, length_m: 9_000, ascent_m: 100, end_m: 9_000, cells: [CELL] },
+    { id: -228255701, stage: 3, length_m: 5_000, ascent_m: 50, end_m: 14_000, cells: [CELL] },
+    { id: -228255702, stage: 3, length_m: 6_000, ascent_m: 60, end_m: 20_000, cells: [CELL] },
+];
 
 describe('trailRows', () => {
     it('gives a row for each stage in the catalog and for each gap, and none for a stage outside the release', () => {
@@ -31,12 +36,6 @@ describe('trailRows', () => {
     });
 
     it('names the sections of a cut stage, and a section of a trail with no stage numbers', () => {
-        // Freiämterweg: stage 3 is cut into two sections.
-        const freiamt: TrailPart[] = [
-            { id: 1, stage: 1, length_m: 9_000, ascent_m: 100, end_m: 9_000, cells: [CELL] },
-            { id: -228255701, stage: 3, length_m: 5_000, ascent_m: 50, end_m: 14_000, cells: [CELL] },
-            { id: -228255702, stage: 3, length_m: 6_000, ascent_m: 60, end_m: 20_000, cells: [CELL] },
-        ];
         expect(rowsOf(freiamt).map(row => row[0])).toEqual(['Stage 1', 'Stage 3 · Section 1', 'Stage 3 · Section 2']);
         // Grenzpfad Napfbergland: no stage numbers, and its second section is a gap.
         const napf: TrailPart[] = [
@@ -61,11 +60,17 @@ describe('the profile', () => {
         expect(line.elevation[100]).toBeNull();
         expect(stageBorders(viaAlpina)).toEqual([13_300 / 30_000, 20_000 / 30_000]);
     });
+
+    it('numbers the sections of a stage once, and numbers no stage when one has too little room', () => {
+        // Stage 1 takes 0.45 of the axis, the two sections of stage 3 the rest.
+        expect(stageNumbers(stageStretches(freiamt), 100)).toEqual([{ at: expect.closeTo(0.225), label: '1' }, { at: expect.closeTo(0.725), label: '3' }]);
+        expect(stageNumbers(stageStretches(freiamt), 30)).toEqual([]);
+    });
 });
 
 describe('the map', () => {
     it('marks the start of each stage but the first, at the end of a line that runs against the trail', () => {
-        const lines = new Map<number, Coordinate[]>([[58, [[8.5, 46.9], [8.6, 46.95]]], [74, [[8.8, 47.1], [8.7, 47.0]]]]);
+        const lines = new Map([[58, [8.5, 46.9, 8.6, 46.95]], [74, [8.8, 47.1, 8.7, 47.0]]]);
         const parts = viaAlpina.map(part => part.id === 74 ? { ...part, backwards: true as const } : part);
         expect(borderPoints(parts, id => lines.get(id))).toEqual([[8.7, 47.0]]);
     });

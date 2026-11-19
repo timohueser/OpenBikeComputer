@@ -8,7 +8,6 @@
     import { distanceTicks, fitTicks } from '../components/route/ticks';
     import type { Library } from '../lib/library/store';
     import { config } from '../lib/planner/map-data';
-    import { decodeCoordinates } from '../lib/planner/route-answer';
     import { catalog, type Box } from '../lib/planner/route-catalog';
     import { routeColor } from '../lib/planner/route-colors';
     import { routeWebsite } from '../lib/planner/route-overlays';
@@ -21,14 +20,14 @@
     import TrailFacts from './explore/TrailFacts.svelte';
     import { exploreAt, signedHref } from './explore/signed-page';
     import { stageCount } from './explore/strip';
-    import { borderPoints, lastEnd, lineBox, stageBorders, stageCells, stageNumbers, stageStretches, trailProfileLine, trailRows } from './explore/trail-page';
+    import { borderPoints, lastEnd, stageBorders, stageCells, stageNumbers, stageStretches, trailProfileLine, trailRows } from './explore/trail-page';
     import { signedItem } from './routes/filter';
     import RoutesMap from './routes/RoutesMap.svelte';
 
     let {}: { library: Library; active: boolean } = $props();
 
-    /** The height of the profile, and the margin around the stage lines as a share of their box on each side. */
-    const ELEVATION_PX = 120, MARGIN = 0.08;
+    /** The height of the profile. The stage lines keep `PADDING_PX` from the edges of the map, clear of its buttons. */
+    const ELEVATION_PX = 120, PADDING_PX = 48;
 
     const id = $derived(Number(router.id));
     let attempt = $state(0);
@@ -49,16 +48,16 @@
     const website = $derived(routeWebsite(record?.website));
 
     const items = $derived(stages?.trail === record ? stages!.records.map(one => signedItem(one, bike, String(id))) : []);
-    const lines = $derived(new Map(stages?.trail === record ? stages!.records.map(one => [one.id, decodeCoordinates(one.line_udeg!)]) : []));
-    /** The box of the stage lines with a margin that keeps them clear of the edges and the buttons of the map. It is made once:
-     * the map moves only when its place changes. */
+    const itemOf = $derived(new Map(items.map(item => [item.record.id, item])));
+    /** The box of the stage lines. It is made once: the map moves only when its place changes. */
     const box = $derived.by((): Box | undefined => {
-        if (!lines.size) return undefined;
-        const [west, south, east, north] = lineBox([...lines.values()]), x = (east - west) * MARGIN, y = (north - south) * MARGIN;
-        return [west - x, south - y, east + x, north + y];
+        const all = items.map(item => item.summary.bounds);
+        if (!all.length) return undefined;
+        const side = (i: number, pick: (...values: number[]) => number) => pick(...all.map(bounds => bounds[i]));
+        return [side(0, Math.min), side(1, Math.min), side(2, Math.max), side(3, Math.max)];
     });
-    const place = $derived(box && { lon: (box[0] + box[2]) / 2, lat: (box[1] + box[3]) / 2, box });
-    const borders = $derived({ points: borderPoints(parts, one => lines.get(one)), colour });
+    const place = $derived(box && { lon: (box[0] + box[2]) / 2, lat: (box[1] + box[3]) / 2, box, padding: PADDING_PX });
+    const borders = $derived({ points: borderPoints(parts, one => itemOf.get(one)?.summary.line), colour });
 
     const total = $derived(lastEnd(parts));
     const profile = $derived(record && trailProfileLine(record));
@@ -106,8 +105,10 @@
         return () => { live = false; };
     });
 
-    /** Back when Explore is the page before this one in this tab; else Explore opens on this trail in the long trails tab. */
+    /** Back when Explore is the page before this one in this tab; else Explore opens on this trail in the long trails tab.
+     * With no trail record, the link opens Explore as it is. */
     function toExplore(event: MouseEvent) {
+        if (router.from !== 'explore' && !record) return;
         event.preventDefault();
         if (router.from === 'explore') history.back();
         else router.go(ROUTES.explore, { explore: { chips: { bike }, view: box, tab: 'long', trail: id } });
@@ -129,7 +130,7 @@
 </script>
 
 <div class="trail" style:--route={colour}>
-    <Detail {message} name={record?.name ?? record?.ref ?? ''} back={{ label: '‹ Explore', href: ROUTES.explore, onclick: record ? toExplore : undefined }}>
+    <Detail {message} name={record?.name ?? record?.ref ?? ''} back={{ label: '‹ Explore', href: ROUTES.explore, onclick: toExplore }}>
         {#snippet action()}
             {#if gone}
                 <a class="action" href={ROUTES.explore} onclick={event => { event.preventDefault(); router.go(ROUTES.explore, { explore: { chips: { bike: 'hiking' }, tab: 'long' } }); }}>Show the long trails</a>

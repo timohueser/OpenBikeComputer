@@ -1,12 +1,11 @@
 /** The page of a long trail: its address, a row for each stage, the profile of the whole trail with its stages, and the
- * cell files and the box of the stage lines on its map. */
+ * cell files and the border points of the stage lines on its map. */
 import type { Tick } from '../../components/route/ticks';
 import type { Bounds } from '../../lib/planner/config';
 import { duration } from '../../lib/planner/editor';
 import { kmPerDegree, type Coordinate } from '../../lib/planner/geo';
 import { coversCell } from '../../lib/planner/map-data';
 import type { ProfileLine } from '../../lib/planner/profile-data';
-import type { Box } from '../../lib/planner/route-catalog';
 import { gradeName, type CatalogRecord, type TrailPart } from '../../lib/planner/signed-routes';
 import { ROUTES } from '../../lib/routes';
 import { formatDistance, formatHeight } from '../../lib/settings/format';
@@ -46,8 +45,8 @@ export function trailRows(parts: TrailPart[], kind: CatalogRecord['kind'], bound
     });
 }
 
-/** The profile of the whole trail as a line along the equator, so that its length in kilometres is the last `end_m`: the
- * heights of `trail_profile_m` stand at equal shares of it. */
+/** The profile of the whole trail as a line along the equator, as long as the last `end_m` (`cumulative` gives it in
+ * kilometres): the heights of `trail_profile_m` stand at equal shares of it. */
 export function trailProfileLine(record: CatalogRecord): ProfileLine {
     const heights = record.trail_profile_m ?? [], degrees = lastEnd(record.parts ?? []) / 1000 / kmPerDegree;
     return { coordinates: heights.map((_, k) => [k / Math.max(1, heights.length - 1) * degrees, 0]), elevation: heights };
@@ -83,11 +82,13 @@ export function stageBorders(parts: TrailPart[]): number[] {
 }
 
 /** Where each part in the catalog but the first starts in trail order: the first point of its line, or the last when its
- * line runs against the trail. A part with no line has no point. */
-export function borderPoints(parts: TrailPart[], lineOf: (id: number) => Coordinate[] | undefined): Coordinate[] {
+ * line runs against the trail. `lineOf` gives a line as longitude, latitude, longitude, …; a part with no line has no point. */
+export function borderPoints(parts: TrailPart[], lineOf: (id: number) => number[] | undefined): Coordinate[] {
     return parts.filter(part => !part.missing).slice(1).flatMap(part => {
-        const line = lineOf(part.id), point = part.backwards ? line?.at(-1) : line?.[0];
-        return point ? [point] : [];
+        const line = lineOf(part.id);
+        if (!line?.length) return [];
+        const at = part.backwards ? line.length - 2 : 0;
+        return [[line[at], line[at + 1]] as Coordinate];
     });
 }
 
@@ -102,16 +103,4 @@ export function stageCells(parts: TrailPart[], recordOf: (id: number) => Catalog
         if (cell !== undefined && !cells.includes(cell)) cells.push(cell);
     }
     return cells;
-}
-
-/** The box of the points of `lines`. */
-export function lineBox(lines: Coordinate[][]): Box {
-    let [west, south, east, north] = [Infinity, Infinity, -Infinity, -Infinity];
-    for (const line of lines) {
-        for (const [lon, lat] of line) {
-            [west, east] = [Math.min(west, lon), Math.max(east, lon)];
-            [south, north] = [Math.min(south, lat), Math.max(north, lat)];
-        }
-    }
-    return [west, south, east, north];
 }
