@@ -2,7 +2,7 @@
  * leave the device, and the routes that wait go to it. And one send of the map that waits. */
 import type { JobContext } from '../device/progress';
 import { displayName } from '../device/write';
-import type { NextMap } from '../library/records';
+import type { NextMap, SentRoute } from '../library/records';
 import type { Library } from '../library/store';
 import { sentKey } from '../library/summary';
 import { planTitle } from '../planner/editor';
@@ -18,7 +18,8 @@ import type { MapArea } from './area';
 import { archivedRows } from './metadata';
 import { remember, rememberCard, remembered, type DeviceBytes } from './remembered.svelte';
 import { rideRecord } from './ride';
-import { routeObcr } from './route';
+import { dayRoutes, type DeviceRoute } from './route';
+import { startDay, tripKey, tripObject } from './trip';
 
 /** What a sync uses of the client. */
 export type SyncClient = Pick<FlatStoreClient, 'list' | 'get' | 'put' | 'remove' | 'archiveRide'>;
@@ -28,7 +29,10 @@ export interface SyncReport {
     rides: number;
     /** Rides that the device now marks as taken. */
     marked: number;
+    /** Routes sent as one route. */
     sent: number;
+    /** Routes sent as day routes and a trip object, each once, however many of its objects went. */
+    trips: number;
     removed: number;
     /** Waypoints of the sent routes past the 32 that the device reads. */
     waypointsLeft: number;
@@ -47,6 +51,7 @@ export type BuildMap = (next: NextMap, ctx: JobContext) => Promise<Pick<PutRespo
 
 const unused = (entry: CatalogEntry) => (entry.flags & (EntryFlags.Recording | EntryFlags.Retained)) === 0;
 const ofKind = (catalog: Catalog, kind: number) => catalog.entries.filter(entry => entry.kind === kind && unused(entry));
+const key = (entry: CatalogEntry) => entry.objectId.toString();
 const byId = (a: CatalogEntry, b: CatalogEntry) => a.objectId < b.objectId ? -1 : a.objectId > b.objectId ? 1 : 0;
 const text = (error: unknown) => error instanceof Error ? error.message : String(error);
 /** The link went away, or the run was cancelled: nothing more can be done in this run. */
@@ -59,11 +64,11 @@ function today(): string {
 }
 
 /** Runs one sync with the device `serial`, only when it is the remembered device. State writes use `changeState`, so a
- * write of another tab or page is not lost. A ride is stored only after its whole `get`, and a route is `sent` only after
- * its `put`, so a cut cable loses nothing. A lost `put` answer, and then a new line from the routing, can leave a second
- * copy of a route on the device. */
+ * write of another tab or page is not lost. A ride is stored only after its whole `get`, and each object of a route is in
+ * `sent` right after its `put`, so a cut cable loses nothing. A lost `put` answer, and then a new line from the routing,
+ * can leave a second copy of a route on the device. */
 export async function syncDevice(client: SyncClient, serial: string, library: Library, signal: AbortSignal): Promise<SyncReport> {
-    const report: SyncReport = { rides: 0, marked: 0, sent: 0, removed: 0, waypointsLeft: 0, tried: [], problem: null };
+    const report: SyncReport = { rides: 0, marked: 0, sent: 0, trips: 0, removed: 0, waypointsLeft: 0, tried: [], problem: null };
     const problems: string[] = [];
     if (remembered.device?.serial !== serial) return report;
     try {
@@ -102,71 +107,33 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
         if (await library.persist()) report.marked = await mark(client, catalog, rides, library, signal, problems);
 
         // A route sent to another card is not on this one: it has nothing to remove here, and a new send creates it.
-        const sent = await library.state('sent') ?? {};
+        const routes = ofKind(catalog, ObjectKind.Route), trips = ofKind(catalog, ObjectKind.Trip);
+        const onCard: Card = { client, library, signal, problems, id: card, objects: new Map([...routes, ...trips].map(entry => [key(entry), entry])),
+            count: { routes: routes.length, trips: trips.length } };
         for (const id of await library.state('leaving') ?? []) {
             report.tried.push(id);
-            const entry = ofKind(catalog, ObjectKind.Route).find(e => ref(e) === sent[id]?.device);
-            try {
-                if (entry) await client.remove(entry, signal);
-            } catch (error) {
-                if (!refused(error, 'not-found')) { if (cut(error)) throw error; problems.push(text(error)); continue; }
-            }
+            const copy = await entryOn(onCard, id), had = [copy.trip, ...copy.days].some(Boolean);
+            if (!await shrink(onCard, id, copy, 0, false, '')) continue;
             await library.changeState('sent', routes => Object.fromEntries(Object.entries(routes ?? {}).filter(([other]) => other !== id)));
             await library.changeState('leaving', ids => (ids ?? []).filter(other => other !== id));
-            if (entry) report.removed++;
+            if (had) report.removed++;
         }
 
         const legs = new LegCache();
         for (const id of await library.state('waiting') ?? []) {
             report.tried.push(id);
-            const route = await library.item(id);
-            if (!route || !('id' in route) || !isPlan(route)) { problems.push('A route that waits cannot be read.'); continue; }
-            const name = displayName(route.name || planTitle(route.trip), 'Route');
-            let file;
-            try {
-                const line = await calculateLine(route.trip, signal, legs), gaps = line.gapLegs.length;
-                // A line with a gap is not complete; a point that the line passes by is not on it.
-                if (gaps) {
-                    problems.push(`“${name}” waits: ${gaps} ${gaps > 1 ? 'legs have' : 'leg has'} no legal path. Change it in the planner.`);
-                    continue;
-                }
-                file = await routeObcr(route, line);
-            } catch (error) {
-                if (signal.aborted) throw error;
-                problems.push(`“${name}” waits: ${text(error)}`);
-                continue;
-            }
-            const crc = Crc32.of(file.bytes), length = BigInt(file.bytes.length), routes = ofKind(catalog, ObjectKind.Route);
-            const others = await library.state('sent') ?? {}, object = others[id]?.device;
-            // A lost answer of an earlier put left this copy; the copy of another route of the library is not it.
-            const taken = new Set(Object.entries(others).flatMap(([other, route]) => other === id ? [] : [route.device]));
-            const target = routes.find(e => ref(e) === object)
-                ?? routes.find(e => e.payloadLength === length && e.payloadCrc32 === crc && e.displayName === name && !taken.has(ref(e)));
-            // Without a target, the put creates an object.
-            const put = (on?: CatalogEntry) =>
-                client.put({ objectId: on?.objectId, expectedRevision: on?.revision, kind: ObjectKind.Route, displayName: name }, file.bytes, { signal });
-            let answer;
-            try {
-                answer = await put(target).catch(error => target && refused(error, 'not-found') ? put() : Promise.reject(error));
-            } catch (error) {
-                if (cut(error)) throw error;
-                problems.push(`“${name}” waits: ${text(error)}`);
-                continue;
-            }
-            await library.changeState('sent', routes => ({ ...routes, [id]: { device: `${card}:${answer.objectId}`, key: sentKey(route) } }));
-            // The rider deleted the route during its upload, after `removeRoute` looked at `sent`.
-            if (!await library.item(id)) await library.changeState('leaving', ids => [...(ids ?? []).filter(other => other !== id), id]);
-            await library.changeState('waiting', ids => (ids ?? []).filter(other => other !== id));
-            report.sent++;
-            report.waypointsLeft += file.left;
+            const sent = await sendRoute(onCard, id, legs);
+            if (!sent) continue;
+            report[sent.trip ? 'trips' : 'sent']++;
+            report.waypointsLeft += sent.left;
         }
 
         const last = await client.list({ signal });
-        // A route that the device lost, or that the rider deleted on it, can be sent again.
-        const on = new Set(ofKind(last, ObjectKind.Route).map(entry => `${last.storeId}:${entry.objectId}`));
-        if (Object.values(await library.state('sent') ?? {}).some(route => route.device.startsWith(`${last.storeId}:`) && !on.has(route.device))) {
-            await library.changeState('sent', routes => Object.fromEntries(Object.entries(routes ?? {})
-                .filter(([, route]) => !route.device.startsWith(`${last.storeId}:`) || on.has(route.device))));
+        // A route of which the device lost an object, or the rider deleted one on it, can be sent again.
+        const held = new Set([...ofKind(last, ObjectKind.Route), ...ofKind(last, ObjectKind.Trip)].map(key));
+        const lost = (copy: SentRoute) => copy.card === last.storeId && [copy.trip, ...copy.days].some(object => object && !held.has(object));
+        if (Object.values(await library.state('sent') ?? {}).some(lost)) {
+            await library.changeState('sent', routes => Object.fromEntries(Object.entries(routes ?? {}).filter(([, copy]) => !lost(copy))));
         }
         rememberContents(last);
     } catch (error) {
@@ -174,6 +141,167 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
     }
     report.problem = problems.join(' ') || null;
     return report;
+}
+
+/** The routes and the trips that the menu of the device holds (`MAX_ROUTES` and `MAX_TRIPS` of `obc-app`). */
+const MENU = { routes: 64, trips: 16 };
+
+/** What the route steps of one sync share: the card `id` with its route and trip objects by id, the number of its routes and
+ * trips, which the steps keep current, and the sentences of what did not finish. */
+interface Card {
+    client: SyncClient;
+    library: Library;
+    signal: AbortSignal;
+    problems: string[];
+    id: string;
+    objects: Map<string, CatalogEntry>;
+    count: { routes: number; trips: number };
+}
+
+/** An object that a route needs on the card. */
+interface Payload {
+    kind: ObjectKind;
+    name: string;
+    bytes: Uint8Array;
+    crc: number;
+}
+
+const payload = (kind: ObjectKind, name: string, bytes: Uint8Array): Payload => ({ kind, name, bytes, crc: Crc32.of(bytes) });
+const holds = (entry: CatalogEntry, file: Payload) => entry.payloadLength === BigInt(file.bytes.length) && entry.payloadCrc32 === file.crc;
+const save = (library: Library, id: string, copy: SentRoute) => library.changeState('sent', routes => ({ ...routes, [id]: { ...copy, days: [...copy.days] } }));
+
+/** The entry of route `id` on the card. An object that the card does not hold is gone: it reads as no object. An entry of
+ * another card counts as no entry. */
+async function entryOn(card: Card, id: string): Promise<SentRoute> {
+    const copy = (await card.library.state('sent'))?.[id], held = (object: string | null) => object && card.objects.has(object) ? object : '';
+    return copy?.card === card.id ? { key: copy.key, card: card.id, days: copy.days.map(held), trip: held(copy.trip) || null }
+        : { key: '', card: card.id, days: [], trip: null };
+}
+
+/** Removes the trip object of `copy` unless `keepTrip`, then its day routes past `days`, the last first, and writes the entry
+ * after each removal. "Not found" counts as removed. False when the device refused a removal: `problems` gets its sentence
+ * after `prefix`. */
+async function shrink(card: Card, id: string, copy: SentRoute, days: number, keepTrip: boolean, prefix: string): Promise<boolean> {
+    const remove = async (object: string) => {
+        const entry = card.objects.get(object);
+        if (!entry) return true;
+        try { await card.client.remove(entry, card.signal); } catch (error) {
+            if (cut(error)) throw error;
+            if (!refused(error, 'not-found')) { card.problems.push(prefix + text(error)); return false; }
+        }
+        card.objects.delete(object);
+        card.count[entry.kind === ObjectKind.Trip ? 'trips' : 'routes']--;
+        await save(card.library, id, copy);
+        return true;
+    };
+    if (!keepTrip && copy.trip) {
+        const trip = copy.trip;
+        copy.trip = null;
+        if (!await remove(trip)) return false;
+    }
+    while (copy.days.length > days) {
+        if (!await remove(copy.days.pop()!)) return false;
+    }
+    return true;
+}
+
+/** The trip object `name` with the trip key `wanted` on the card, of those that `open` lets through. */
+async function tripOn(card: Card, name: string, wanted: bigint, open: (entry: CatalogEntry) => boolean): Promise<string | undefined> {
+    for (const entry of card.objects.values()) {
+        if (entry.kind !== ObjectKind.Trip || entry.displayName !== name || entry.payloadLength < 64n || !open(entry)) continue;
+        let bytes;
+        try { bytes = (await card.client.get(entry, { signal: card.signal })).bytes; } catch (error) {
+            if (cut(error)) throw error;
+            continue;
+        }
+        if (new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(56, true) === wanted) return key(entry);
+    }
+}
+
+/**
+ * Sends the route `id` that waits: a plan of one riding day as one route, else one route for each riding day and then the
+ * trip object. An object whose copy on the card has the same length and CRC is skipped, another object of the entry is
+ * replaced in place, and a missing one is created. A route on the card with the length, the CRC and the name of a missing
+ * day takes its place, and so does a trip object with the name and the trip key of the route, so the card gets no second
+ * copy. When the menu of the device has no room for the new objects, nothing goes. Gives how the route went, or nothing
+ * while it waits: then `problems` says why.
+ */
+async function sendRoute(card: Card, id: string, legs: LegCache): Promise<{ trip: boolean; left: number } | undefined> {
+    const { client, library, signal, problems } = card;
+    const route = await library.item(id);
+    if (!route || !('id' in route) || !isPlan(route)) { problems.push('A route that waits cannot be read.'); return; }
+    const name = displayName(route.name || planTitle(route.trip), 'Route'), waits = `“${name}” waits: `;
+    let routes: DeviceRoute[];
+    try {
+        const line = await calculateLine(route.trip, signal, legs), gaps = line.gapLegs.length;
+        // A line with a gap is not complete; a point that the line passes by is not on it.
+        if (gaps) {
+            problems.push(`${waits}${gaps} ${gaps > 1 ? 'legs have' : 'leg has'} no legal path. Change it in the planner.`);
+            return;
+        }
+        routes = await dayRoutes(route, line);
+    } catch (error) {
+        if (signal.aborted) throw error;
+        problems.push(waits + text(error));
+        return;
+    }
+    const files = routes.map(day => payload(ObjectKind.Route, displayName(day.name, 'Route'), day.bytes)), days = files.length;
+    const copy = await entryOn(card, id), sent = await library.state('sent') ?? {}, tripId = tripKey(id, route.trip);
+
+    // A lost answer of an earlier put, or an entry that a sync dropped, left objects of the route on the card. An object of
+    // another entry on this card is not one.
+    const taken = new Set(Object.entries(sent).flatMap(([other, them]) => other === id || them.card !== card.id ? [] : [them.trip, ...them.days]));
+    const unnamed = (entry: CatalogEntry) => !taken.has(key(entry)) && copy.trip !== key(entry) && !copy.days.includes(key(entry));
+    files.forEach((file, i) => {
+        const copied = [...card.objects.values()].find(entry => entry.kind === file.kind && entry.displayName === file.name && holds(entry, file) && unnamed(entry));
+        copy.days[i] ||= copied ? key(copied) : '';
+    });
+    // The days of a trip object change when a day route is made again, its key does not.
+    if (days > 1 && !copy.trip) copy.trip = await tripOn(card, name, tripId, unnamed) ?? null;
+
+    if (!await shrink(card, id, copy, days, days > 1, waits)) return;
+
+    const needed = copy.days.filter(object => !object).length, free = Math.max(0, MENU.routes - card.count.routes);
+    if (needed > free) {
+        problems.push(`${waits}the bike computer has room for ${free} more ${free === 1 ? 'route' : 'routes'}, it needs ${needed}. Remove ridden or unused routes on the bike computer.`);
+        return;
+    }
+    if (days > 1 && !copy.trip && card.count.trips >= MENU.trips) {
+        problems.push(`${waits}the bike computer holds ${MENU.trips} trips, as many as it can. Remove a ridden or unused trip on the bike computer.`);
+        return;
+    }
+
+    /** Puts `file` on `object`, or creates it, unless `object` holds it, and writes the entry. False when the route stops: the
+     * device refused the put, or the rider deleted the route during its upload. */
+    const put = async (file: Payload, object: string | null, set: (object: string) => void) => {
+        const target = object ? card.objects.get(object) : undefined;
+        if (target && holds(target, file)) return true;
+        const send = (on?: CatalogEntry) =>
+            client.put({ objectId: on?.objectId, expectedRevision: on?.revision, kind: file.kind, displayName: file.name }, file.bytes, { signal });
+        let answer;
+        try {
+            answer = await send(target).catch(error => target && refused(error, 'not-found') ? send() : Promise.reject(error));
+        } catch (error) {
+            if (cut(error)) throw error;
+            problems.push(waits + text(error));
+            return false;
+        }
+        if (answer.objectId !== target?.objectId) card.count[file.kind === ObjectKind.Trip ? 'trips' : 'routes']++;
+        set(answer.objectId.toString());
+        await save(library, id, copy);
+        // The rider deleted the route during its upload, after `removeRoute` looked at `sent`.
+        if (await library.item(id)) return true;
+        await library.changeState('leaving', ids => [...(ids ?? []).filter(other => other !== id), id]);
+        return false;
+    };
+    for (const [i, file] of files.entries()) if (!await put(file, copy.days[i], object => { copy.days[i] = object; })) return;
+    if (days > 1) {
+        const trip = tripObject(tripId, name, startDay(route.trip), copy.days.map(object => ({ route: BigInt(object), joinM: 0, leaveM: 0xffff_ffff })));
+        if (!await put(payload(ObjectKind.Trip, name, trip), copy.trip, object => { copy.trip = object; })) return;
+    }
+    await save(library, id, { ...copy, key: sentKey(route) });
+    await library.changeState('waiting', ids => (ids ?? []).filter(other => other !== id));
+    return { trip: days > 1, left: routes.reduce((sum, day) => sum + day.left, 0) };
 }
 
 /**

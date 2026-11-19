@@ -17,7 +17,7 @@ vi.mock('./map.svelte', () => ({ buildMap: vi.fn() }));
 const SERIAL = '9F3A00C1E2B47D10';
 const session = (status: DeviceSession['status']) =>
     ({ status, client: status === 'ready' ? {} : null, info: { serialNumber: SERIAL }, store: status === 'ready' ? {} : null }) as unknown as DeviceSession;
-const report = (tried: string[]): SyncReport => ({ rides: 0, marked: 0, sent: 0, removed: 0, waypointsLeft: 0, tried, problem: null });
+const report = (tried: string[]): SyncReport => ({ rides: 0, marked: 0, sent: 0, trips: 0, removed: 0, waypointsLeft: 0, tried, problem: null });
 const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 
 afterEach(() => vi.restoreAllMocks());

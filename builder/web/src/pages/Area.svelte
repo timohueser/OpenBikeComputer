@@ -91,7 +91,7 @@
             if (start) made.setArea(start);
             stored = next ?? null;
             const card = remembered.device?.storeId;
-            onDevice = new Set([...waiting ?? [], ...Object.entries(sent ?? {}).filter(([, copy]) => copy.device.startsWith(`${card}:`)).map(([id]) => id)]);
+            onDevice = new Set([...waiting ?? [], ...Object.entries(sent ?? {}).filter(([, copy]) => copy.card === card).map(([id]) => id)]);
             routes = all;
             store = made;
         })().catch(error => { if (live) failure = error instanceof Error ? error.message : String(error); });

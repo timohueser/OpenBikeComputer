@@ -14,7 +14,7 @@ import { ObjectKind } from '../usb/protocol';
 import { archivedRows } from './metadata';
 import { rideRecord } from './ride';
 import { rememberCard, remembered } from './remembered.svelte';
-import { CABLE_OUT, MAP_LOST, NO_ROOM, sendMap, syncDevice } from './sync';
+import { CABLE_OUT, MAP_LOST, NO_ROOM, sendMap, syncDevice, type SyncClient } from './sync';
 
 beforeAll(loadFlatDevice);
 beforeEach(() => { remembered.device = null; });
@@ -34,22 +34,51 @@ function ride(start: number, extra: Partial<RideObject> = {}, points = 3): RideO
     };
 }
 
-/** A point at `lon` on the parallel 47 at the end of a drawn leg, so no routing service is asked. */
-function point(id: string, kind: RoutePoint['kind'], lon: number, extra: Partial<RoutePoint> = {}): RoutePoint {
-    const drawn: DrawnCoordinate[] = [[lon - .05, 47, 400], [lon - .025, 47, 420], [lon, 47, 410]];
+/** A point at `lon` on the parallel 47 at the end of a drawn leg from `from`, so no routing service is asked. */
+function point(id: string, kind: RoutePoint['kind'], lon: number, extra: Partial<RoutePoint> = {}, from = lon - .05): RoutePoint {
+    const drawn: DrawnCoordinate[] = [[from, 47, 400], [(from + lon) / 2, 47, 420], [lon, 47, 410]];
     return { id, kind, label: id, coordinate: [lon, 47], ...kind !== 'start' && { leg: 'drawn', drawn }, ...extra };
 }
 
+/** A route of one day with two stops. */
 function plan(finish = 8.15, leg?: RoutePoint['leg']): Plan {
-    const trip: Trip = { ...emptyTrip('trip'), days: 2, daysSet: true, routeOrder: ['night-1', 'Spring'], points: [
+    const trip: Trip = { ...emptyTrip('route'), days: 1, routeOrder: ['Camp', 'Spring'], points: [
         point('start', 'start', 8),
-        point('night-1', 'night', 8.05, { night: 1, label: 'Camp', placeKind: 'campsite' }),
+        point('Camp', 'waypoint', 8.05, { placeKind: 'campsite' }),
         point('Spring', 'waypoint', 8.1, { placeKind: 'drinking_water' }),
         point('finish', 'finish', finish, leg && { leg }),
     ] };
-    const summary = { ...summarize([[8, 47, 400], [finish, 47, 410]], { lengthM: 11_000, climbM: 20, seconds: 2400, bike: 'touring' as const }), days: 2 };
+    const summary = { ...summarize([[8, 47, 400], [finish, 47, 410]], { lengthM: 11_000, climbM: 20, seconds: 2400, bike: 'touring' as const }), days: 1 };
     return { ...newPlan(trip, 'Black Forest'), summary };
 }
+
+/** A trip of `count` riding days along the parallel 47 from 8°E, one drawn leg of 0.05° (about 3.8 km) for each day. The
+ * nights of `kept` are kept at their day ends, and `stop` names a stop in the middle of day 5. */
+function longTrip(count: number, kept = Array.from({ length: count - 1 }, (_, i) => i + 1), stop?: string): Plan {
+    const points = [point('start', 'start', 8)];
+    const add = (id: string, kind: RoutePoint['kind'], lon: number, extra: Partial<RoutePoint> = {}) =>
+        points.push(point(id, kind, lon, extra, points.at(-1)!.coordinate[0]));
+    for (let k = 1; k <= count; k++) {
+        if (k === 5 && stop) add('stop', 'waypoint', 8.225, { label: stop });
+        const lon = 8 + .05 * k;
+        if (k === count) add('finish', 'finish', lon);
+        else if (kept.includes(k)) add(`night-${k}`, 'night', lon, { night: k, label: `Camp ${k}` });
+        else add(`via-${k}`, 'via', lon);
+    }
+    const trip: Trip = { ...emptyTrip('trip'), days: count, daysSet: true, routeOrder: points.slice(1, -1).map(p => p.id), points };
+    const summary = { ...summarize([[8, 47, 400], [8 + .05 * count, 47, 410]], { lengthM: count * 3800, climbM: 20, seconds: count * 900, bike: 'touring' as const }), days: count };
+    return { ...newPlan(trip, 'Alps'), summary };
+}
+
+/** The route ids that a trip object names, in ride order. */
+function tripDays(bytes: Uint8Array): bigint[] {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return Array.from({ length: view.getUint16(2, true) }, (_, i) => view.getBigUint64(64 + 16 * i, true));
+}
+
+/** `client` with its `put` replaced. */
+const withPut = (client: SyncClient, put: SyncClient['put']): SyncClient => ({ list: options => client.list(options), get: (...args) => client.get(...args),
+    remove: (...args) => client.remove(...args), archiveRide: (...args) => client.archiveRide(...args), put });
 
 function setup(storeId = CARD) {
     const rig = flatDevice({ storeId, streamCeiling: streamCeilingFor(512) });
@@ -57,11 +86,12 @@ function setup(storeId = CARD) {
     const sync = (client: Parameters<typeof syncDevice>[0] = rig.client) => syncDevice(client, SERIAL, library, new AbortController().signal);
     const seedRide = (object: RideObject) => rig.device.seed({ kind: ObjectKind.Ride, displayName: 'ride', bytes: encodeRideObject(object) });
     const routes = () => rig.device.entries.filter(entry => entry.kind === ObjectKind.Route);
+    const trips = () => rig.device.entries.filter(entry => entry.kind === ObjectKind.Trip);
     const send = async (route: RouteRecord) => {
         await library.saveRoute(route);
         await library.changeState('waiting', ids => [...ids ?? [], route.id]);
     };
-    return { rig, library, sync, seedRide, routes, send };
+    return { rig, library, sync, seedRide, routes, trips, send };
 }
 
 describe('syncDevice', () => {
@@ -119,15 +149,15 @@ describe('syncDevice', () => {
         rememberCard(SERIAL, CARD);
         const route = plan();
         await send(route);
-        expect(await sync()).toMatchObject({ sent: 1, waypointsLeft: 0, problem: null });
+        expect(await sync()).toMatchObject({ sent: 1, trips: 0, waypointsLeft: 0, problem: null });
         const [first] = routes();
         expect(first.displayName).toBe('Black Forest');
-        // The night, then the stop, each with its category (`specs/obcr-route.md` §4).
+        // The stops, each with its category (`specs/obcr-route.md` §4).
         const obcr = rig.device.payloadOf(first.objectId)!, view = new DataView(obcr.buffer, obcr.byteOffset);
         const table = view.getUint32(112, true), waypoints = Array.from({ length: view.getUint16(116, true) }, (_, i) => table + i * 80);
         expect(waypoints.map(at => [new TextDecoder().decode(obcr.subarray(at + 20, at + 20 + obcr[at + 15])), obcr[at + 14]]))
             .toEqual([['Camp', 2], ['Spring', 1]]);
-        expect(await library.state('sent')).toEqual({ [route.id]: { device: `${CARD}:${first.objectId}`, key: sentKey(route) } });
+        expect(await library.state('sent')).toEqual({ [route.id]: { key: sentKey(route), card: CARD, days: [`${first.objectId}`], trip: null } });
         expect(await library.state('waiting')).toEqual([]);
 
         const changed = { ...(await library.route(route.id))!, trip: plan(8.2).trip };
@@ -147,7 +177,7 @@ describe('syncDevice', () => {
         await sync();
         const [again] = routes();
         expect(again.objectId).not.toBe(first.objectId);
-        expect((await library.state('sent'))![route.id].device).toBe(`${CARD}:${again.objectId}`);
+        expect((await library.state('sent'))![route.id].days).toEqual([`${again.objectId}`]);
 
         await library.removeRoute(route.id);
         expect(await sync()).toMatchObject({ removed: 1, tried: [route.id] });
@@ -182,15 +212,145 @@ describe('syncDevice', () => {
         await rig.close();
         // The card is formatted, and the phone puts two routes with the same ObjectIds on it.
         const other = setup(OTHER_CARD), phone = [1, 2].map(() => other.rig.device.seed({ kind: ObjectKind.Route, displayName: 'Phone', bytes: new Uint8Array(64) }));
-        expect(phone.map(entry => entry.objectId)).toEqual(Object.values((await library.state('sent'))!).map(route => BigInt(route.device.split(':')[1])));
+        expect(phone.map(entry => `${entry.objectId}`)).toEqual(Object.values((await library.state('sent'))!).map(route => route.days[0]));
         await library.removeRoute(deleted.id);
         await library.changeState('waiting', ids => [...ids ?? [], kept.id]);
         const report = await syncDevice(other.rig.client, SERIAL, library, new AbortController().signal);
         expect(report).toMatchObject({ problem: null, sent: 1, removed: 0 });
         const [first, second, created] = other.routes();
         expect([first, second]).toMatchObject(phone.map(entry => ({ objectId: entry.objectId, revision: entry.revision })));
-        expect([await library.state('sent'), await library.state('leaving')]).toEqual([{ [kept.id]: { device: `${OTHER_CARD}:${created.objectId}`, key: sentKey(kept) } }, []]);
+        expect([await library.state('sent'), await library.state('leaving')]).toEqual([{ [kept.id]: { key: sentKey(kept), card: OTHER_CARD, days: [`${created.objectId}`], trip: null } }, []]);
         await other.rig.close();
+    });
+
+    it('sends a plan of several days as a route for each day and a trip object, sends nothing more when it did not change, and removes all when deleted', async () => {
+        const { rig, library, sync, routes, trips, send } = setup();
+        rememberCard(SERIAL, CARD);
+        const alps = longTrip(10);
+        await send(alps);
+        expect(await sync()).toMatchObject({ sent: 0, trips: 1, problem: null });
+        const days = routes(), [trip] = trips();
+        expect(days.map(day => day.displayName)).toEqual([...Array.from({ length: 9 }, (_, i) => `Day ${i + 1} Camp ${i + 1}`), 'Day 10']);
+        expect([trip.displayName, tripDays(rig.device.payloadOf(trip.objectId)!)]).toEqual(['Alps', days.map(day => day.objectId)]);
+        expect(await library.state('sent')).toEqual({ [alps.id]: { key: sentKey(alps), card: CARD, days: days.map(day => `${day.objectId}`), trip: `${trip.objectId}` } });
+
+        const put = vi.spyOn(rig.client, 'put');
+        await send(alps);
+        expect(await sync()).toMatchObject({ trips: 1, problem: null });
+        expect(put).not.toHaveBeenCalled();
+
+        await library.removeRoute(alps.id);
+        expect(await sync()).toMatchObject({ removed: 1, tried: [alps.id] });
+        expect([routes(), trips(), await library.state('sent'), await library.state('leaving')]).toEqual([[], [], {}, []]);
+        await rig.close();
+    });
+
+    it('with nights 4 and 5 kept, replaces only the route of day 5 when a stop of day 5 changes', async () => {
+        const { rig, library, sync, routes, trips, send } = setup();
+        rememberCard(SERIAL, CARD);
+        const alps = longTrip(10, [4, 5], 'Spring');
+        await send(alps);
+        await sync();
+        expect(routes().map(day => day.displayName)).toEqual(['Day 1', 'Day 2', 'Day 3', 'Day 4 Camp 4', 'Day 5 Camp 5', 'Day 6', 'Day 7', 'Day 8', 'Day 9', 'Day 10']);
+        const before = [...routes(), ...trips()], put = vi.spyOn(rig.client, 'put');
+        await send(await library.saveRoute({ ...alps, trip: { ...alps.trip, points: alps.trip.points.map(p => p.id === 'stop' ? { ...p, label: 'Well' } : p) } }));
+        expect(await sync()).toMatchObject({ trips: 1, problem: null });
+        // The trip object names the same routes, so it stays as it is.
+        expect(put).toHaveBeenCalledTimes(1);
+        expect([...routes(), ...trips()].map((entry, i) => entry.revision !== before[i].revision)).toEqual(before.map((_, i) => i === 4));
+        await rig.close();
+    });
+
+    it('sends nothing of a plan when the menu of the device has no room for its days', async () => {
+        const { rig, library, sync, routes, trips, send } = setup();
+        rememberCard(SERIAL, CARD);
+        for (let i = 0; i < 60; i++) rig.device.seed({ kind: ObjectKind.Route, displayName: 'Phone', bytes: new Uint8Array(64) });
+        const alps = longTrip(10);
+        await send(alps);
+        expect((await sync()).problem).toBe('“Alps” waits: the bike computer has room for 4 more routes, it needs 10. Remove ridden or unused routes on the bike computer.');
+        expect([routes().length, trips().length, await library.state('waiting'), await library.state('sent')]).toEqual([60, 0, [alps.id], undefined]);
+        await rig.close();
+    });
+
+    it('after a cut cable sends only the rest, and keeps the copy that a lost answer left', async () => {
+        const { rig, library, sync, routes, trips, send } = setup();
+        rememberCard(SERIAL, CARD);
+        const alps = longTrip(10), client = rig.client;
+        await send(alps);
+        let puts = 0;
+        // The sixth put reaches the card, and its answer is lost.
+        const cutting = withPut(client, async (...args) => {
+            const answer = await client.put(...args);
+            if (++puts === 6) throw new DeviceError('link', 'gone');
+            return answer;
+        });
+        expect(await sync(cutting)).toMatchObject({ trips: 0, problem: CABLE_OUT });
+        expect([routes().length, (await library.state('sent'))![alps.id].days.filter(Boolean).length]).toEqual([6, 5]);
+        const put = vi.spyOn(client, 'put');
+        expect(await sync()).toMatchObject({ trips: 1, problem: null });
+        // Days 7 to 10 and the trip object.
+        expect([put.mock.calls.length, routes().length, trips().length]).toEqual([5, 10, 1]);
+        await rig.close();
+    });
+
+    it('removes the trip and days 2 to 10 of a plan that becomes one day, keeps day 1 as the route, and back again', async () => {
+        const { rig, library, sync, routes, trips, send } = setup();
+        rememberCard(SERIAL, CARD);
+        const alps = longTrip(10);
+        await send(alps);
+        await sync();
+        const [first, ...rest] = routes(), [trip] = trips(), remove = vi.spyOn(rig.client, 'remove');
+        const one = await library.saveRoute({ ...alps, trip: { ...alps.trip, mode: 'route' } });
+        await send(one);
+        expect(await sync()).toMatchObject({ sent: 1, trips: 0, problem: null });
+        expect(remove.mock.calls.map(([entry]) => entry.objectId)).toEqual([trip, ...rest.reverse()].map(entry => entry.objectId));
+        expect([routes(), trips()]).toMatchObject([[{ objectId: first.objectId, displayName: 'Alps' }], []]);
+
+        await send(await library.saveRoute({ ...one, trip: alps.trip }));
+        expect(await sync()).toMatchObject({ sent: 0, trips: 1, problem: null });
+        expect([routes()[0].objectId, routes().length, trips().length]).toEqual([first.objectId, 10, 1]);
+        await rig.close();
+    });
+
+    it('starts the route of a day after a train where the train arrives', async () => {
+        const { rig, sync, routes, send } = setup();
+        rememberCard(SERIAL, CARD);
+        const alps = longTrip(2), arrival: RoutePoint = { id: 'arrival', kind: 'via', label: 'Station', coordinate: [8.3, 47.2], leg: 'transfer' };
+        const finish: RoutePoint = { ...point('finish', 'finish', 8.35), coordinate: [8.35, 47.2], drawn: [[8.3, 47.2, 400], [8.35, 47.2, 410]] };
+        await send({ ...alps, trip: { ...alps.trip, routeOrder: ['night-1', 'arrival'], points: [...alps.trip.points.slice(0, 2), arrival, finish] } });
+        expect(await sync()).toMatchObject({ trips: 1, problem: null });
+        const obcr = rig.device.payloadOf(routes()[1].objectId)!, view = new DataView(obcr.buffer, obcr.byteOffset);
+        // The start point of the header (`specs/obcr-route.md` §1).
+        expect([view.getInt32(24, true), view.getInt32(28, true)]).toEqual([8_300_000, 47_200_000]);
+        await rig.close();
+    });
+
+    it('forgets a trip that the rider deleted on the device, and a new send keeps what is still on the card', async () => {
+        const { rig, library, sync, routes, trips, send } = setup();
+        rememberCard(SERIAL, CARD);
+        const alps = longTrip(10);
+        await send(alps);
+        await sync();
+        // A delete of a trip on the device removes the trip and its routes.
+        for (const entry of [...trips(), ...routes()]) await rig.client.remove(entry);
+        await sync();
+        expect(await library.state('sent')).toEqual({});
+        await send(alps);
+        expect(await sync()).toMatchObject({ trips: 1, problem: null });
+        expect([routes().length, trips().length]).toEqual([10, 1]);
+
+        // The rider deletes the route of day 4 on the device.
+        const [trip] = trips();
+        await rig.client.remove(routes()[3]);
+        await sync();
+        expect(await library.state('sent')).toEqual({});
+        const put = vi.spyOn(rig.client, 'put');
+        await send(alps);
+        expect(await sync()).toMatchObject({ trips: 1, problem: null });
+        // Day 4 again, and the trip object with its new id, in place.
+        expect(put.mock.calls.map(([target]) => target.kind)).toEqual([ObjectKind.Route, ObjectKind.Trip]);
+        expect([routes().length, trips()]).toMatchObject([10, [{ objectId: trip.objectId }]]);
+        await rig.close();
     });
 
     it('sends the routes that wait after the device refuses a ride and a mark', async () => {

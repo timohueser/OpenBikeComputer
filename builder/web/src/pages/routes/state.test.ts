@@ -5,7 +5,7 @@ import { sentKey } from '../../lib/library/summary';
 import { deviceState } from './state';
 
 const route: RouteRecord = { id: 'r', name: 'Lake loop', updatedAt: 0, summary: null, trip: { points: [] } };
-const sent = { r: { device: 'card:7', key: sentKey(route) } };
+const sent = { r: { key: sentKey(route), card: 'card', days: ['7'], trip: null } };
 
 beforeEach(() => {
     remembered.device = { serial: '00AB', storeId: 'card', at: null, map: null, mapObject: null, built: null, routes: 1, bytes: { map: 0, routes: 0, rides: 0, other: 0 }, came: null, skipped: [] };
@@ -19,7 +19,7 @@ describe('deviceState', () => {
     });
 
     it('is not on the device for a route of another card, or with no remembered device', () => {
-        expect(deviceState(route, [], { r: { device: 'other:7', key: sentKey(route) } })).toBeUndefined();
+        expect(deviceState(route, [], { r: { ...sent.r, card: 'other' } })).toBeUndefined();
         remembered.device = null;
         expect(deviceState(route, [], sent)).toBeUndefined();
     });

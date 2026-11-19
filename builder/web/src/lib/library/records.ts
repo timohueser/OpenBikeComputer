@@ -140,11 +140,14 @@ export interface DeletedRide {
     device?: string;
 }
 
-/** A route on a device: `storeId:objectId` of its object, as the `device` of a ride, and the `sentKey` of the route when it
- * was sent. */
+/** The objects of a route on the card `card` (a store id), as decimal object ids: the route of each riding day, and the
+ * trip object of a plan of several days. An empty string is a day with no object yet. `key` is the `sentKey` of the route
+ * when all its objects are on the card, else empty. */
 export interface SentRoute {
-    device: string;
     key: string;
+    card: string;
+    days: string[];
+    trip: string | null;
 }
 
 /** A box of a map area, in whole microdegrees. */
@@ -229,7 +232,8 @@ const isTrip = (value: unknown): value is RideTrip => isRecord(value) && isStrin
     && Number.isInteger(value.day) && (value.day as number) >= 1 && isString(value.name);
 
 const isSent = (value: unknown): value is Record<string, SentRoute> => isRecord(value)
-    && Object.values(value).every(route => isRecord(route) && isString(route.device) && isString(route.key));
+    && Object.values(value).every(route => isRecord(route) && isString(route.key) && isString(route.card) && isStrings(route.days)
+        && (route.trip === null || isString(route.trip)));
 
 const isDeleted = (value: unknown): value is DeletedRide =>
     isRecord(value) && isString(value.key) && rideKey.test(value.key) && optional(value.device, isString);

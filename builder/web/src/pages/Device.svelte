@@ -22,10 +22,10 @@
 
     type Named = { id: string; name: string };
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    /** What the library holds for the remembered device: the routes that wait or leave, the routes on its card, the
-     * rides that came from its card, and the map that waits. */
-    let held = $state.raw<{ waiting: Named[]; leaving: number; sent: Named[]; rides: number; last: number | null; next: NextMap | null }>(
-        { waiting: [], leaving: 0, sent: [], rides: 0, last: null, next: null });
+    /** What the library holds for the remembered device: the routes that wait or leave, the routes on its card with the
+     * number of their route objects, the rides that came from its card, and the map that waits. */
+    let held = $state.raw<{ waiting: Named[]; leaving: number; sent: Named[]; objects: number; rides: number; last: number | null; next: NextMap | null }>(
+        { waiting: [], leaving: 0, sent: [], objects: 0, rides: 0, last: null, next: null });
     /** The regions of the map catalog, loaded one time when a map waits: a region of it can be the map on the device. */
     let regions = $state.raw<{ id: string; name: string }[] | null>(null);
     let asked = false;
@@ -77,9 +77,10 @@
     const did = $derived(report ? [
         report.rides && `${plural(report.rides, 'ride')} came in`,
         report.sent && `${plural(report.sent, 'route')} sent`,
+        report.trips && `${plural(report.trips, 'trip')} sent`,
         report.removed && `${plural(report.removed, 'route')} removed`,
     ].filter(Boolean).join(' · ') : '');
-    const more = $derived(device ? device.routes - held.sent.length : 0);
+    const more = $derived(device ? device.routes - held.objects : 0);
     const parts = $derived(device ? [
         { label: 'Map', bytes: device.bytes.map, colour: 'var(--water)' },
         { label: 'Routes', bytes: device.bytes.routes, colour: 'var(--route)' },
@@ -97,9 +98,10 @@
         const mine = ++reads;
         const [waiting, leaving, sent, next, rides] = await Promise.all([library.state('waiting'), library.state('leaving'), library.state('sent'),
             library.state('nextMap'), card ? library.rides() : []]);
-        const onCard = Object.entries(sent ?? {}).filter(([, copy]) => copy.device.startsWith(`${card}:`)).map(([id]) => id);
+        const onCard = Object.entries(sent ?? {}).filter(([, copy]) => copy.card === card);
         const fromCard = rides.filter(ride => ride.device?.startsWith(`${card}:`));
-        const now = { waiting: await named(waiting ?? []), leaving: leaving?.length ?? 0, sent: await named(onCard),
+        const now = { waiting: await named(waiting ?? []), leaving: leaving?.length ?? 0, sent: await named(onCard.map(([id]) => id)),
+            objects: onCard.reduce((count, [, copy]) => count + copy.days.filter(Boolean).length, 0),
             rides: fromCard.length, last: fromCard.length ? Math.max(...fromCard.map(ride => ride.summary.start)) : null, next: next ?? null };
         if (mine === reads) held = now;
     }

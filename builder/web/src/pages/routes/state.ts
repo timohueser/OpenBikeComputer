@@ -16,7 +16,7 @@ export const stateText: Record<DeviceState, string> = {
 export function deviceState(route: RouteRecord, waiting: LibraryState['waiting'] | undefined, sent: LibraryState['sent'] | undefined): DeviceState | undefined {
     if (waiting?.includes(route.id)) return 'waiting';
     const copy = sent?.[route.id], card = remembered.device?.storeId;
-    if (!copy || card === undefined || !copy.device.startsWith(`${card}:`)) return undefined;
+    if (!copy || card === undefined || copy.card !== card) return undefined;
     return copy.key === sentKey(route) ? 'sent' : 'changed';
 }
 
