@@ -18,7 +18,13 @@ import { isTrip } from './trip-validation';
 type Routed = { trip: Trip; line?: RoutingLine };
 /** An Undo step. `clean`: the step is the stored route, or the state with which a route that is not stored opened. At
  * most one step has it. */
-type Step = { trip: Trip; clean?: true };
+type Step = {
+    trip: Trip;
+    clean?: true;
+    /** The clean step before the save in flight: it is clean again when the save fails. A step replaced in place keeps
+     * both flags. */
+    before?: true;
+};
 export type RouteOptions = { state: 'unavailable' | 'loading' | 'stale' } | { state: 'error'; message: string }
     | { state: 'ready'; routes: EngineRoute[]; choice: string };
 type PlaceName = (coordinate: Coordinate) => string | undefined;
@@ -337,10 +343,11 @@ export class PlanSession {
 
     /** Commits the stored route, or the state with which a route that is not stored opened, as one Undo step that is the
      * only clean step. Its Undo is the plain Undo, which writes the draft again. */
-    async discard(): Promise<void> {
+    async discard(): Promise<boolean> {
         await this.saving;
-        if (!this.changed) return;
+        if (!this.changed) return false;
         this.step({ trip: this.plan.trip, clean: true });
+        return true;
     }
 
     /** Downloads a plan of the library; the open plan with its latest edits, also when the library fails. */
@@ -464,21 +471,24 @@ export class PlanSession {
     private store(make: () => Plan, stored: (saved: Plan) => void): Promise<boolean> {
         // A save takes the state of the moment the rider asks; a save asked during another one takes the state after it.
         const start = () => this.storeNow(make(), stored);
-        const run = this.inFlight ? this.saving.then(start) : start();
+        // The count drops before the caller hears the end, so a save that the caller then asks starts at once.
+        const run = (this.inFlight ? this.saving.then(start) : start()).finally(() => this.inFlight--);
         this.inFlight++;
-        this.saving = run.finally(() => this.inFlight--);
+        // Never rejects: each switch, discard and later save waits for it.
+        this.saving = run.then(() => {}, () => {});
         return run;
     }
 
     private async storeNow(route: Plan, stored: (saved: Plan) => void): Promise<boolean> {
-        const at = this.at, before = this.history.findIndex(step => step.clean);
-        this.flagClean(at);
+        const at = this.at;
+        this.history = this.history.map(({ clean, before: _, ...step }, i) => i === at ? { ...step, clean: true } : clean ? { ...step, before: true } : step);
         try {
             const saved = await this.write(async library => {
                 const saved = await library.saveRoute(route);
                 await library.setState('active', saved.id);
                 return saved;
             });
+            this.history = this.history.map(({ before: _, ...step }) => step);
             this.stored = true;
             stored(saved);
             // An edit during the save goes to the draft of the route that is now open.
@@ -492,14 +502,9 @@ export class PlanSession {
             return true;
         } catch {
             // The transaction deleted no draft.
-            this.flagClean(before);
+            this.history = this.history.map(({ clean: _, before, ...step }) => before ? { ...step, clean: true } : step);
             return false;
         }
-    }
-
-    /** Gives step `at`, and no other, the clean flag; -1 gives it to none. */
-    private flagClean(at: number): void {
-        this.history = this.history.map(({ clean: _, ...step }, i) => i === at ? { ...step, clean: true } : step);
     }
 
     /** Writes the open state to the draft of the route when it is changed, and deletes the own draft when it is not. */

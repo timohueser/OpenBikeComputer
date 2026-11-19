@@ -540,7 +540,7 @@
     }
 
     async function discard() {
-        await session.discard();
+        if (!await session.discard()) return;
         afterHistory('Changes discarded');
         statusUndo = undo;
     }

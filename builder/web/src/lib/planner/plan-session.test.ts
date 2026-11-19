@@ -626,6 +626,40 @@ describe('save and draft', () => {
         session.close();
     });
 
+    it('gives the clean flag back to the step that was clean when a save fails while an edit drops the oldest Undo step', async () => {
+        service();
+        const { session, library } = await open();
+        for (let i = 0; i < 52; i++) session.commit(moved(plan, 8.1 + i / 1000));
+        await session.save('Lake loop');
+        const saved = session.trip;
+        session.commit(moved(plan, 8.3));
+        let fail!: (error: Error) => void;
+        vi.spyOn(library, 'saveRoute').mockImplementationOnce(() => new Promise((_, reject) => fail = reject));
+        const saving = session.save();
+        session.commit(moved(plan, 8.4));
+        await vi.waitFor(() => expect(fail).toBeDefined());
+        fail(new Error('Full'));
+        expect(await saving).toBe(false);
+        session.undo();
+        expect([session.trip, session.changed]).toEqual([moved(plan, 8.3), true]);
+        session.undo();
+        expect([session.trip, session.changed]).toEqual([saved, false]);
+        session.close();
+    });
+
+    it('reports no discard when a queued save already stored the open step', async () => {
+        service();
+        const { session } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        session.commit(moved(plan, 8.2));
+        void session.save();
+        session.commit(moved(plan, 8.3));
+        const queued = session.save();
+        expect([await session.discard(), session.trip, await queued]).toEqual([false, moved(plan, 8.3), true]);
+        session.close();
+    });
+
     it('stores a copy as a new route with one clean step, and leaves the first route as it was stored', async () => {
         service();
         const { session, library } = await open();
