@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use obc_trailview_features::bake::{bake, Options};
-use obc_trailview_features::{kinds, step, terrain};
+use obc_trailview_features::{kinds, parts, step, terrain};
 
 fn main() {
     if let Err(error) = run() {
@@ -42,6 +42,7 @@ fn run() -> Result<(), String> {
         waterways: kinds::waterways(&kinds::waterway_rows(&table(include_str!(
             "../../../data/trailview/waterways.json"
         ))?))?,
+        parts: parts::Rules::parse(&kinds::part_rows(&table(include_str!("../../../data/trailview/parts.json"))?))?,
         sea: args.iter().any(|a| a == "--sea").then(|| arg("--sea").map(PathBuf::from)).transpose()?,
     };
     let terrain = terrain::Tiles::mbtiles(Path::new(terrain))?;

@@ -13,6 +13,7 @@ pub fn step(request: &Request) -> Result<(), String> {
     let (class_names, classes) = kinds::classes(&options["roads"])?;
     let widths = kinds::widths(&options["roads"], &options["finishes"])?;
     let waterways = kinds::waterways(&options["waterways"])?;
+    let parts = crate::parts::Rules::parse(&options["parts"])?;
     let bounds: [f64; 4] =
         serde_json::from_value(options["bounds"].clone()).map_err(|_| "option `bounds` is not four numbers")?;
     let attribution = options["attribution"].as_str().ok_or("option `attribution` is not a string")?.to_string();
@@ -22,7 +23,7 @@ pub fn step(request: &Request) -> Result<(), String> {
         return Err("`water-polygons` is not one file".into());
     };
     let sea = Some(sea.clone());
-    let options = Options { kinds, bounds, attribution, classes, class_names, widths, waterways, sea };
+    let options = Options { kinds, bounds, attribution, classes, class_names, widths, waterways, parts, sea };
     let layer = |name: &str| request.layers.get(name).ok_or(format!("the step has no input `{name}`"));
     let [pbf] = layer("planner/osm")?.values().collect::<Vec<_>>()[..] else {
         return Err("`planner/osm` is not one file".into());
@@ -282,7 +283,8 @@ mod tests {
                             "kinds": table(include_str!("../../../data/trailview/kinds.json")),
                             "roads": kinds::solver_rows(&table(include_str!("../../../data/trailview/roads.json"))),
                             "finishes": kinds::finish_rows(&table(include_str!("../../../data/trailview/finishes.json"))),
-                            "waterways": kinds::waterway_rows(&table(include_str!("../../../data/trailview/waterways.json")))}),
+                            "waterways": kinds::waterway_rows(&table(include_str!("../../../data/trailview/waterways.json"))),
+                            "parts": kinds::part_rows(&table(include_str!("../../../data/trailview/parts.json")))}),
             output: root.join("output"),
             metrics: root.join("metrics.json"),
             memory_bytes: Some(1 << 30),
