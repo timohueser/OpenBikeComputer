@@ -60,10 +60,14 @@ identity and has the same OSM source. `search/` contains `pois/REGION.sqlite`,
 contains `REGION.json` from the [route catalog contract](route-catalog.md). `device/catalog.json` is
 a snapshot. Its file references are absolute URLs to the original immutable cell objects.
 
-Search packages use schema `6`. Each place stores `website`, `phone`, and `description` as UTF-8
-text. Empty values are empty strings. Each place stores `country`, the lowercase ISO 3166-1 code of
-its source record, and `region`, its state. A Swiss `region` is the German canton name of the
-opening hours library, for example `Sankt Gallen`. Opening hours select public holidays by `country`
+Search packages use schema `7`. Each place stores `website`, `phone`, and `description` as UTF-8
+text. Empty values are empty strings. Each place stores `ele`, its height in metres as a real
+number, from the OSM tag `ele`. The producer trims the tag. The tag gives a height only when it is
+one to four digits, optionally followed by a point and one or more digits, for example `1234` or
+`1234.5`. Otherwise `ele` is null, so a height is below 10,000 metres.
+Each place stores `country`, the lowercase ISO 3166-1 code of its source record, and `region`, its
+state. A Swiss `region` is the German canton name of the opening hours library, for example
+`Sankt Gallen`. Opening hours select public holidays by `country`
 and `region`, and evaluate times in the metadata `time_zone`. The producer uses `website` before
 `contact:website`, and `phone` before `contact:phone`, skipping empty values. A description uses
 `description`, then `description:en`, then `description:de`, then the first nonempty `description:*`
@@ -105,10 +109,11 @@ addition. Shared geometry retains every source point.
 
 `places.pmtiles` holds rider places from the POI search database. It has gzip MVT at zoom 11, extent
 4096, and one `pois` layer. Each point has the database's `kind` and `name`. String properties `lon`
-and `lat` retain the search coordinates without tile quantization. The feature ID is
-`(type << 44) | source_id`, where type is 1 for nodes, 2 for ways, 3 for relations, and 4 for
-curated Wikidata items. Source IDs are positive and below 2^44; a Wikidata item uses the digits
-after `Q`. Categories are defined in the [place categories](../planner/search/place-kinds.json).
+and `lat` retain the search coordinates without tile quantization. The unsigned integer property
+`ele` is the database `ele` rounded to the nearest whole metre, with a tie to the even metre. It is
+absent when the database `ele` is null. The feature ID is `(type << 44) | source_id`, where type is
+1 for nodes, 2 for ways, 3 for relations, and 4 for curated Wikidata items. Source IDs are positive
+and below 2^44; a Wikidata item uses the digits after `Q`. Categories are defined in the [place categories](../planner/search/place-kinds.json).
 Archive metadata includes the source `osm_sha256`. Empty tiles are absent, except that an empty
 archive contains one empty tile at the southwest bound.
 
@@ -260,7 +265,7 @@ Each file entry has `bytes` and `sha256`. Cost fields are `elapsed_seconds`, `cp
 process while the component builds, so it includes a component that builds at the same time.
 `sources.grid_components` records the partition and transport receipts.
 
-Search schema 6 metadata `component` is `pois`, `addresses`, or `all`. Metadata `time_zone` is the
+Search schema 7 metadata `component` is `pois`, `addresses`, or `all`. Metadata `time_zone` is the
 IANA time zone of the region recipe. All components and cells of a release have the same
 `time_zone`. Addresses own street records and house records. POIs own the other searchable places,
 including locality records. Independent POI IDs are positive integers below 2^52; independent

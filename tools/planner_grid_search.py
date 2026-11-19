@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def search_metadata(database, full=False):
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as db:
         metadata = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata")}
-        if metadata.get("schema") != 6:
+        if metadata.get("schema") != 7:
             raise ValueError(f"Rebuild search package {database}: incompatible schema.")
         try:
             db.execute('SELECT rowid FROM addresses INDEXED BY address_cells LIMIT 0')

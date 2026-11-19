@@ -40,7 +40,7 @@ test('the POI builder retains contact aliases and descriptions for named and unn
   try {
     connection=writePlaces(directory,records);
     db=openCells([join(directory,'test.sqlite')]);
-    assert.equal(db.metadata.schema,6);
+    assert.equal(db.metadata.schema,7);
     const rows=connection.prepare('SELECT website,phone,description FROM places ORDER BY id').all().map(row=>({...row}));
     assert.deepEqual(rows,[
       {website:'https://hotel.example',phone:'+49 123',description:'Tents welcome.'},
@@ -55,6 +55,19 @@ test('the POI builder retains contact aliases and descriptions for named and unn
     assert.equal(result.results[0].source,'n2');
     assert.equal((await answerQuery(db,{source:'n99',q:''},{},hours)).results.length,0);
   } finally {db?.close();connection?.close();rmSync(directory,{recursive:true,force:true});}
+});
+
+test('a place keeps the tag ele as its height only when the tag is a plain number of metres',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'obc-heights-'));
+  const heights=[['1234',1234],[' 1234.5 ',1234.5],['1234 m',null],['-12',null],['+12',null],['1234,5',null],
+    ['1234;1240',null],['1.2.3',null],['35000',null],['1'.repeat(21),null],['',null],[undefined,null]];
+  const records=heights.map(([ele],i)=>({object_type:'N',object_id:i+1,centroid:[8,48],osm_key:'natural',osm_value:'peak',
+    name:{name:`Peak ${i}`},extra:ele===undefined?{}:{ele}}));
+  let connection;
+  try {
+    connection=writePlaces(directory,records);
+    assert.deepEqual(connection.prepare('SELECT ele FROM places ORDER BY id').all().map(row=>row.ele),heights.map(([,ele])=>ele));
+  } finally {connection?.close();rmSync(directory,{recursive:true,force:true});}
 });
 
 test('shelters that are no place to sleep leave the shelter kind; a picnic roof becomes a rest place',()=>{

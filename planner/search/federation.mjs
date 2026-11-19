@@ -1,5 +1,5 @@
 /** The search schema that this code reads: the format of the `planner/search` layer. */
-export const SCHEMA = 6;
+export const SCHEMA = 7;
 
 const overlaps = (a, b) => !a || !b || a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 const typeOrder = value => value === null || value === undefined ? 0 : typeof value === 'number' ? 1 : 2;

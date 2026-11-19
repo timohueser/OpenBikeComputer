@@ -58,9 +58,9 @@ pub static PLANNER_ROUTING: Layer = Layer {
 };
 /// The search databases and the query model. Its format is the search schema of
 /// `specs/planner-release.md`.
-pub static PLANNER_SEARCH: Layer = Layer { revision: 2, ..whole("planner/search", 6, &[&SEARCH_SERVICE]) };
+pub static PLANNER_SEARCH: Layer = Layer { revision: 2, ..whole("planner/search", 7, &[&SEARCH_SERVICE, &IOS]) };
 /// The rider places of the search.
-pub static PLANNER_PLACES: Layer = whole("planner/places", 1, &[&WEB_PLANNER]);
+pub static PLANNER_PLACES: Layer = Layer { revision: 2, ..whole("planner/places", 1, &[&WEB_PLANNER]) };
 pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER]);
 /// The snow archives of `specs/planner-snow-tiles.md`.
 pub static PLANNER_SNOW: Layer = whole("planner/snow", 2, &[&WEB_PLANNER]);

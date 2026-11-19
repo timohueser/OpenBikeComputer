@@ -49,7 +49,7 @@ def write_indexes(root):
         names = {cell: f"search/tiles/{component}/{cell}.sqlite" for cell in cells}
         indexes[component] = {"files": files(*names.values()), "cells": [
             {"id": cell, "bounds": box, "files": [names[cell]]} for cell, box in cells.items()],
-            "metadata": {"schema": 6, "time_zone": "Europe/Berlin", "bounds": bounds, "osm_sha256": "o" * 64,
+            "metadata": {"schema": 7, "time_zone": "Europe/Berlin", "bounds": bounds, "osm_sha256": "o" * 64,
                          "component": component, "counts": {"place": 1}}}
     layers = {}
     for kind, index in indexes.items():
