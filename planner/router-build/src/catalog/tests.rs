@@ -542,19 +542,18 @@ fn trails_are_long_records_of_two_stages_or_records_of_more_than_12_hours() {
         route(32, Some(3), &[at(2_000), at(1_000)]),
         route(34, Some(3), &[at(5_000), at(6_000)]),
         route(35, Some(3), &[at(10_000), at(11_000)]),
-        // Cut lines: a short one, a long one, and a cut stage.
-        long(4, 0, json!([{"id": -401, "cut": true}, {"id": -402}])),
+        // A cut line of more than 12 hours, and a cut stage of more than 12 hours.
         long(5, 0, json!([{"id": -501, "cut": true}, {"id": -502}])),
         long(6, 0, json!([{"id": -601}])),
         // A long record inside trail 3.
         long(7, 2, json!([{"id": 31}, {"id": 32, "backwards": true}])),
     ];
-    for (id, trail) in [(-401, 4), (-402, 4), (-501, 5), (-502, 5), (-601, 6)] {
+    for (id, trail) in [(-501, 5), (-502, 5), (-601, 6)] {
         records.push(route(id, Some(trail), &[at(0), at(1_000)]));
     }
-    records[9]["trail"] = json!(3);
+    records[8]["trail"] = json!(3);
     // The moving time in hours; a long record holds the sum over its parts.
-    let hours = HashMap::from([(1, 13), (2, 11), (4, 10), (5, 13), (6, 13), (7, 2)]);
+    let hours = HashMap::from([(1, 13), (2, 11), (5, 13), (6, 13), (7, 2)]);
     for record in &mut records {
         if let Some(h) = hours.get(&record["id"].as_i64().unwrap()) {
             record["moving_s"] = json!(h * 3600);

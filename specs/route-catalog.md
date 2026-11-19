@@ -139,8 +139,9 @@ The plan reproduces the route with a profile of each activity that lists the kin
 for `hiking` and `foot`, `mtb/technical` for `mtb`, and `road`, `gravel` and `touring` for
 `bicycle`. A client plans a `hiking` or `foot` route with `hardest` above 1 (T2) with
 `hiking/alpine`, an `mtb` route with `hardest` above 2 (S2) with `mtb/technical`, and every other
-route with the Balanced profile. Both profiles give the same route when no grade on it is above the
-ordinary limit. A hiking route can have `hardest` 4 or 5 (T5 or T6).
+route with the Balanced profile. When no grade on the route is above the ordinary limit, both
+profiles give a route of the same cost. Cost is not time: on a tie, the route and its time can
+differ slightly. A hiking route can have `hardest` 4 or 5 (T5 or T6).
 The main line is the member ways with an empty, `main`, `forward` or `backward`
 role, ordered as the Waymarked Trails route builder orders them, with the forward branch where the
 route splits by direction. When that order has more than one piece, the builder joins the pieces at
