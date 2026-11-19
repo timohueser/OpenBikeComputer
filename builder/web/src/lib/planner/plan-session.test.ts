@@ -788,17 +788,16 @@ describe('save and draft', () => {
     it('restores the offer as the own draft, and "×" and the first edit each remove it with an Undo that brings it back', async () => {
         service();
         const restored = await returned();
-        expect(restored.session.restore()).toBe(true);
+        expect(await restored.session.restore()).toBe(true);
         await settled(restored.session);
         expect([restored.session.trip, restored.session.changed, restored.session.offer, sessionStorage.getItem('obc-draft')]).toEqual([moved(plan, 8.2), true, null, restored.id]);
         expect(restored.session.undo() && restored.session.trip).toEqual(plan);
         restored.session.close();
 
         const dismissed = await returned();
-        dismissed.session.dismiss();
-        await settled(dismissed.session);
-        expect([dismissed.session.offer, dismissed.session.earlier, await dismissed.library.draft(dismissed.id)]).toEqual([null, moved(plan, 8.2), undefined]);
-        expect(dismissed.session.restore()).toBe(true);
+        await dismissed.session.dismiss();
+        expect([dismissed.session.offer, dismissed.session.earlier?.trip, await dismissed.library.draft(dismissed.id)]).toEqual([null, moved(plan, 8.2), undefined]);
+        expect(await dismissed.session.restore()).toBe(true);
         await settled(dismissed.session);
         expect([dismissed.session.trip, dismissed.session.earlier, await draftTrip(dismissed.library, dismissed.id)]).toEqual([moved(plan, 8.2), null, moved(plan, 8.2)]);
         dismissed.session.close();
@@ -806,28 +805,79 @@ describe('save and draft', () => {
         const edited = await returned();
         edited.session.commit(moved(plan, 8.3));
         await settled(edited.session);
-        expect([edited.session.offer, edited.session.earlier, await draftTrip(edited.library, edited.id)]).toEqual([null, moved(plan, 8.2), moved(plan, 8.3)]);
-        edited.session.restore();
+        expect([edited.session.offer, edited.session.earlier?.trip, await draftTrip(edited.library, edited.id)]).toEqual([null, moved(plan, 8.2), moved(plan, 8.3)]);
+        // Ctrl+Z after the first edit deletes the own draft, and the Undo of the status line still brings the offer back.
+        edited.session.undo();
+        await settled(edited.session);
+        expect([edited.session.earlier?.trip, await edited.library.draft(edited.id)]).toEqual([moved(plan, 8.2), undefined]);
+        expect(await edited.session.restore()).toBe(true);
         await settled(edited.session);
         expect([edited.session.trip, await draftTrip(edited.library, edited.id)]).toEqual([moved(plan, 8.2), moved(plan, 8.2)]);
         edited.session.close();
     });
 
-    it('offers the drafts of routes that are not stored one after the other, newest first, at the start and at "New route"', async () => {
+    it('leaves a draft that another tab wrote since the offer at "×", and "Restore" applies the draft as it is stored now', async () => {
+        service();
+        const changed = await returned();
+        await changed.library.saveDraft({ id: changed.id, updatedAt: Date.now() + 1, trip: moved(plan, 8.4) });
+        await changed.session.dismiss();
+        expect([changed.session.offer, changed.session.earlier, await draftTrip(changed.library, changed.id)]).toEqual([null, null, moved(plan, 8.4)]);
+        changed.session.close();
+
+        const newer = await returned();
+        await newer.library.saveDraft({ id: newer.id, updatedAt: Date.now() + 1, trip: moved(plan, 8.4) });
+        expect([await newer.session.restore(), newer.session.trip]).toEqual([true, moved(plan, 8.4)]);
+        newer.session.close();
+
+        const gone = await returned();
+        await gone.library.removeDraft(gone.id);
+        expect([await gone.session.restore(), gone.session.offer, gone.session.trip, gone.session.changed]).toEqual([false, null, plan, false]);
+        gone.session.close();
+    });
+
+    it('offers the newest draft of a route that is not stored to an empty plan with its own id, until "×" or "Restore"', async () => {
         service();
         const library = new Library(new IDBFactory());
-        await library.saveDraft({ id: 'older', updatedAt: 1, trip: plan });
-        await library.saveDraft({ id: 'newer', updatedAt: 2, trip: moved(plan, 8.2) });
+        for (const [id, updatedAt] of [['a', 1], ['b', 2], ['c', 3]] as const) await library.saveDraft({ id, updatedAt, trip: moved(plan, 8 + updatedAt / 10) });
         await library.saveRoute({ ...newPlan(plan, 'Stored'), id: 'stored' });
-        await library.saveDraft({ id: 'stored', updatedAt: 3, trip: moved(plan, 8.3) });
+        await library.saveDraft({ id: 'stored', updatedAt: 4, trip: moved(plan, 8.4) });
         const session = new PlanSession();
         await session.start(library);
-        const shown = () => [session.plan.id, session.stored, session.trip.points, session.offer?.trip];
-        expect(shown()).toEqual(['newer', false, [], moved(plan, 8.2)]);
+        const shown = () => [session.stored, session.trip.points, session.offer?.id];
+        expect(shown()).toEqual([false, [], 'c']);
+        expect(session.plan.id).not.toBe('c');
+        for (const _ of [1, 2]) {
+            await session.newPlan();
+            expect(shown()).toEqual([false, [], 'c']);
+        }
+        await session.dismiss();
         await session.newPlan();
-        expect(shown()).toEqual(['older', false, [], plan]);
+        expect(shown()).toEqual([false, [], 'b']);
+        expect(await session.restore()).toBe(true);
+        expect([session.plan.id, session.trip]).toEqual(['b', moved(plan, 8.2)]);
+        // "Discard" at the question keeps the draft of the route that the rider leaves, and does not offer it at once.
+        await settled(session);
         await session.newPlan();
-        expect(shown()).toEqual(['newer', false, [], moved(plan, 8.2)]);
+        expect(shown()).toEqual([false, [], 'a']);
         session.close();
+    });
+
+    it('keeps the new route of another tab when an empty plan that offers its draft is edited and saved', async () => {
+        service();
+        const factory = new IDBFactory();
+        tab();
+        const b = await open(factory);
+        b.session.commit(plan);
+        await settled(b.session);
+        tab();
+        const a = await open(factory);
+        expect(a.session.offer?.id).toBe(b.session.plan.id);
+        a.session.commit(moved(plan, 8.3));
+        expect(await a.session.save('A route')).toBe(true);
+        expect([a.session.offer, a.session.earlier, await draftTrip(a.library, b.session.plan.id)]).toEqual([null, null, plan]);
+        expect(await b.session.save('B route')).toBe(true);
+        expect((await a.library.routes()).map(route => [route.name, route.trip]).sort()).toEqual([['A route', moved(plan, 8.3)], ['B route', plan]]);
+        a.session.close();
+        b.session.close();
     });
 });

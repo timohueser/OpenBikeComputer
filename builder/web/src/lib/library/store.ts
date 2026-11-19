@@ -200,10 +200,17 @@ export class Library {
         });
     }
 
-    removeDraft(id: string): Promise<void> {
+    /** Deletes the draft of `id`; with `updatedAt`, only while the draft is still that write. True when it deleted. */
+    removeDraft(id: string, updatedAt?: number): Promise<boolean> {
         return this.write(['drafts'], tx => {
-            tx.objectStore('drafts').delete(id);
-            return () => {};
+            const store = tx.objectStore('drafts'), request = store.get(id);
+            let removed = false;
+            request.onsuccess = () => {
+                if (updatedAt !== undefined && request.result?.updatedAt !== updatedAt) return;
+                store.delete(id);
+                removed = true;
+            };
+            return () => removed;
         });
     }
 

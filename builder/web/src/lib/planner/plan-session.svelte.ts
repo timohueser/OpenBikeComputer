@@ -70,10 +70,11 @@ export class PlanSession {
     plan = $state.raw<Plan>(newPlan(emptyTrip()));
     /** The route has a record in the library. */
     stored = $state(false);
-    /** The draft of the open route that this tab did not write, which the rider can restore, or null. */
+    /** A draft that this tab did not write, which the rider can restore, or null: the draft of the open route, or for an
+     * empty plan the newest draft of a route that is not stored. */
     offer = $state.raw<Offer | null>(null);
-    /** The trip of the offer that "×" or the first edit removed, until the next change. `restore` brings it back. */
-    earlier = $state.raw<Trip | null>(null);
+    /** The offer of the open route that "×" or the first edit removed, until the next step. `restore` brings it back. */
+    earlier = $state.raw<Offer | null>(null);
     /** The library has opened, or failed to open. */
     ready = $state(false);
     /** A library action runs. */
@@ -181,7 +182,7 @@ export class PlanSession {
             const offer = await this.offered(library, plan?.id);
             if (this.closed) return;
             if (plan) this.install(plan, true, undefined, offer);
-            else if (offer) this.install({ ...this.plan, id: offer.id }, false, undefined, offer);
+            else this.offer = offer;
         } catch (error) { this.saveError = storageError(error); }
         finally { this.ready = true; }
     }
@@ -340,23 +341,29 @@ export class PlanSession {
         });
     }
 
-    /** Applies the offer, or the trip that it had before it was removed, as one Undo step, and so makes it the own
-     * draft. */
-    restore(): boolean {
-        const trip = this.offer?.trip ?? this.earlier;
-        if (!trip) return false;
+    /** Applies the offer as it is stored now, or the trip of `earlier`, as one Undo step that becomes the own draft. An
+     * empty plan takes the id of the offer. A draft that another tab deleted since the offer ends the offer. */
+    async restore(): Promise<boolean> {
+        const offer = this.offer ?? this.earlier;
+        if (!offer || !this.library) return false;
+        const draft = offer === this.offer ? await this.library.draft(offer.id).catch(() => undefined) : offer;
+        if (offer !== (this.offer ?? this.earlier)) return false;
         this.offer = null;
-        this.commit(trip);
+        if (!draft || !isTrip(draft.trip)) return false;
+        this.plan = { ...this.plan, id: offer.id };
+        this.commit(draft.trip);
         return true;
     }
 
-    /** Deletes the draft of the offer. `restore` brings its trip back until the next change. */
-    dismiss(): void {
+    /** Deletes the draft of the offer, unless another tab wrote it since the offer. `restore` brings its trip back until
+     * the next step. */
+    async dismiss(): Promise<void> {
         const offer = this.offer;
         if (!offer) return;
         this.offer = null;
-        this.earlier = offer.trip;
-        void this.write(library => library.removeDraft(offer.id)).catch(() => {});
+        this.earlier = offer;
+        const removed = await this.write(library => library.removeDraft(offer.id, offer.updatedAt)).catch(() => false);
+        if (!removed && this.earlier === offer) this.earlier = null;
     }
 
     /** Waits for the save in flight, so that `changed` tells whether the open route has changes that are not stored. */
@@ -467,8 +474,8 @@ export class PlanSession {
         return this.openNew(newPlan({ ...trip, points: trip.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: placeName(p.coordinate) ?? p.label } : p) }));
     }
 
-    /** Opens a new empty plan with the activity and preset of the open plan. It takes the id of the draft that it offers,
-     * so the first edit overwrites that draft. */
+    /** Opens a new empty plan with the activity and preset of the open plan, and offers the newest draft of a route that
+     * is not stored. */
     newPlan(): Promise<boolean> {
         return this.openNew(newPlan({ ...emptyTrip(this.trip.mode), bike: this.trip.bike, preset: this.trip.preset }), true);
     }
@@ -487,12 +494,12 @@ export class PlanSession {
         return this.act(async library => {
             const offer = offers ? await this.offered(library) : null;
             await library.setState('active', null);
-            this.install(offer ? { ...plan, id: offer.id } : plan, false, undefined, offer);
+            this.install(plan, false, undefined, offer);
         });
     }
 
-    /** The draft of route `id`, or with no `id` the newest draft of a route that is not stored, other than the open
-     * one: so each open of an empty plan offers the next one. */
+    /** The draft of route `id`, or with no `id` the newest draft of a route that is not stored, other than the draft of
+     * the open route, which the rider leaves. */
     private async offered(library: Library, id?: string): Promise<Offer | null> {
         const draft = id ? await library.draft(id) : await library.newestUnstoredDraft(this.plan.id);
         return draft && isTrip(draft.trip) ? draft as Offer : null;
@@ -578,7 +585,8 @@ export class PlanSession {
     }
 
     private step(next: Step, line?: RoutingLine): void {
-        this.earlier = this.offer?.trip ?? null;
+        // The first edit of the open route overwrites its offered draft. An empty plan has another id: the draft stays.
+        this.earlier = this.offer?.id === this.plan.id ? this.offer : null;
         this.offer = null;
         const kept = this.history.slice(0, this.at + 1).slice(-historyLimit).map(({ clean, ...step }) => next.clean || !clean ? step : { ...step, clean });
         if (line) this.remember(routingKey(next.trip), line);
@@ -647,7 +655,6 @@ export class PlanSession {
     }
 
     private travel(at: number): true {
-        this.earlier = null;
         this.cancelPreview();
         this.show(this.history, at);
         this.keepDraft();

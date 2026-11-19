@@ -547,12 +547,12 @@
         statusUndo = undo;
     }
 
-    function restoreDraft() {
-        if (session.restore()) afterHistory('Unsaved changes restored');
+    async function restoreDraft() {
+        if (await session.restore()) afterHistory('Unsaved changes restored');
     }
 
     function dismissDraft() {
-        session.dismiss();
+        void session.dismiss();
         statusUndo = null;
     }
 
