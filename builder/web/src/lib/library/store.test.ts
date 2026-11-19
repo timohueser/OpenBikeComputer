@@ -118,7 +118,7 @@ describe('library store', () => {
         await library.close(); await fresh.close();
     });
 
-    it('opens a database of version 1 with its routes and rides, adds the stores of the photos and the drafts, and deletes the versions and the field `open`', async () => {
+    it('opens a database of version 1 with its routes and rides, adds the stores of the photos and the drafts, and deletes the versions and the fields `open` and `revision`', async () => {
         const factory = new IDBFactory(), key = '20260801T070000Z';
         await new Promise<void>((resolve, reject) => {
             const request = factory.open('obc-library', 1);
@@ -131,7 +131,7 @@ describe('library store', () => {
             };
             request.onsuccess = () => {
                 const db = request.result, tx = db.transaction(['routes', 'rides', 'ride-files'], 'readwrite');
-                tx.objectStore('routes').put({ ...route('a'), open: 'v1' });
+                tx.objectStore('routes').put({ ...route('a'), open: 'v1', revision: 3 });
                 tx.objectStore('rides').put(ride(key));
                 tx.objectStore('ride-files').put(new Blob(['ride']), key);
                 tx.oncomplete = () => { db.close(); resolve(); };

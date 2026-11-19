@@ -41,14 +41,15 @@ export class Library {
             request.onupgradeneeded = event => {
                 const db = request.result;
                 for (const name of [...db.objectStoreNames]) if (!STORES.includes(name as StoreName)) db.deleteObjectStore(name);
-                // A route of an earlier version can have the field `open`, the id of a version.
+                // A route of an earlier version can have the field `open`, the id of a version, and the field
+                // `revision`.
                 if (event.oldVersion) {
                     const cursor = request.transaction!.objectStore('routes').openCursor();
                     cursor.onsuccess = () => {
                         const at = cursor.result;
                         if (!at) return;
-                        if (at.value && typeof at.value === 'object' && 'open' in at.value) {
-                            const { open: _, ...route } = at.value;
+                        if (at.value && typeof at.value === 'object' && ('open' in at.value || 'revision' in at.value)) {
+                            const { open: _, revision: __, ...route } = at.value;
                             at.update(route);
                         }
                         at.continue();
