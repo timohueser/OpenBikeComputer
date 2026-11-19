@@ -489,7 +489,7 @@ describe('save and draft', () => {
         reloaded.session.close();
         const again = await open(first.factory);
         expect([again.session.plan.id, again.session.trip, again.session.stored, again.session.changed]).toEqual([fresh, plan, false, true]);
-        expect(again.session.undo() && again.session.trip.points).toEqual([]);
+        expect([again.session.undo(), again.session.trip]).toEqual([false, plan]);
         again.session.close();
 
         sessionStorage.setItem('obc-draft', 'gone');
@@ -783,6 +783,12 @@ describe('save and draft', () => {
         const reloaded = await open(factory);
         expect([reloaded.session.trip, reloaded.session.offer]).toEqual([moved(plan, 8.2), null]);
         reloaded.session.close();
+
+        tab();
+        const saving = await open(factory);
+        saving.session.commit(moved(plan, 8.3));
+        expect([saving.session.earlier?.trip, await saving.session.save(), saving.session.earlier]).toEqual([moved(plan, 8.2), true, null]);
+        saving.session.close();
     });
 
     it('restores the offer as the own draft, and "×" and the first edit each remove it with an Undo that brings it back', async () => {
@@ -820,7 +826,9 @@ describe('save and draft', () => {
         service();
         const changed = await returned();
         await changed.library.saveDraft({ id: changed.id, updatedAt: Date.now() + 1, trip: moved(plan, 8.4) });
-        await changed.session.dismiss();
+        const dismissing = changed.session.dismiss();
+        expect(changed.session.earlier).toBeNull();
+        await dismissing;
         expect([changed.session.offer, changed.session.earlier, await draftTrip(changed.library, changed.id)]).toEqual([null, null, moved(plan, 8.4)]);
         changed.session.close();
 
@@ -854,7 +862,10 @@ describe('save and draft', () => {
         await session.newPlan();
         expect(shown()).toEqual([false, [], 'b']);
         expect(await session.restore()).toBe(true);
-        expect([session.plan.id, session.trip]).toEqual(['b', moved(plan, 8.2)]);
+        expect([session.plan.id, session.trip, session.changed]).toEqual(['b', moved(plan, 8.2), true]);
+        // A route that is not stored has nothing under its draft, so Ctrl+Z cannot delete it.
+        await settled(session);
+        expect([session.undo(), await draftTrip(library, 'b')]).toEqual([false, moved(plan, 8.2)]);
         // "Discard" at the question keeps the draft of the route that the rider leaves, and does not offer it at once.
         await settled(session);
         await session.newPlan();

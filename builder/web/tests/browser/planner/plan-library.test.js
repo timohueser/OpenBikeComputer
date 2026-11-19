@@ -161,7 +161,7 @@ test('a new route is stored only at Save, with the name of the window, and a rel
   await expect.poll(() => records(page, 'drafts')).toHaveLength(1);
   await page.reload();
   await expect(saveButton(page)).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
   expect(await records(page, 'routes')).toEqual([]);
 
   await saveButton(page).click();

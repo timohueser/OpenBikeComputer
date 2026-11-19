@@ -342,7 +342,8 @@ export class PlanSession {
     }
 
     /** Applies the offer as it is stored now, or the trip of `earlier`, as one Undo step that becomes the own draft. An
-     * empty plan takes the id of the offer. A draft that another tab deleted since the offer ends the offer. */
+     * empty plan takes the id of the offer and opens the draft as its only step. A draft that another tab deleted since
+     * the offer ends the offer. */
     async restore(): Promise<boolean> {
         const offer = this.offer ?? this.earlier;
         if (!offer || !this.library) return false;
@@ -350,8 +351,11 @@ export class PlanSession {
         if (offer !== (this.offer ?? this.earlier)) return false;
         this.offer = null;
         if (!draft || !isTrip(draft.trip)) return false;
-        this.plan = { ...this.plan, id: offer.id };
-        this.commit(draft.trip);
+        if (this.stored) this.commit(draft.trip);
+        else {
+            this.install({ ...this.plan, id: offer.id }, false, draft.trip);
+            this.keepDraft();
+        }
         return true;
     }
 
@@ -361,9 +365,10 @@ export class PlanSession {
         const offer = this.offer;
         if (!offer) return;
         this.offer = null;
-        this.earlier = offer;
+        const id = this.plan.id;
         const removed = await this.write(library => library.removeDraft(offer.id, offer.updatedAt)).catch(() => false);
-        if (!removed && this.earlier === offer) this.earlier = null;
+        // An edit or another route during the delete has its own Undo.
+        if (removed && this.plan.id === id && this.at === 0 && !this.changed) this.earlier = offer;
     }
 
     /** Waits for the save in flight, so that `changed` tells whether the open route has changes that are not stored. */
@@ -536,6 +541,7 @@ export class PlanSession {
             this.history = this.history.map(({ before: _, ...step }) => step);
             this.stored = true;
             stored(saved);
+            this.earlier = null;
             // An edit during the save goes to the draft of the route that is now open.
             if (this.changed) {
                 this.keepDraft();
@@ -638,8 +644,9 @@ export class PlanSession {
         return route;
     }
 
-    /** Opens `plan` as one clean step, and `draft` as the Undo step after it. The tab then writes the draft of `plan`
-     * only. */
+    /** Opens `plan` as one clean step, and `draft` as the Undo step after it. A route that is not stored has no state
+     * to go back to, so its draft is the only step: an Undo would delete the only copy. The tab then writes the draft of
+     * `plan` only. */
     private install(plan: Plan, stored: boolean, draft?: Trip, offer: Offer | null = null): void {
         this.cancelPreview();
         this.plan = plan;
@@ -650,7 +657,8 @@ export class PlanSession {
         this.options = null;
         this.saveError = '';
         setOwnDraft(draft ? plan.id : null);
-        this.show([{ trip: plan.trip, clean: true }, ...draft ? [{ trip: draft }] : []], draft ? 1 : 0);
+        const steps: Step[] = draft && !stored ? [{ trip: draft }] : [{ trip: plan.trip, clean: true }, ...draft ? [{ trip: draft }] : []];
+        this.show(steps, steps.length - 1);
         this.opened(plan);
     }
 
