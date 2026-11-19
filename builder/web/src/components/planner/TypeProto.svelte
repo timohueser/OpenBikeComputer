@@ -3,12 +3,15 @@
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
-    import { fewestDays, guessDays, maxRidingDays, setDays, type Trip } from '../../lib/planner/editor';
+    import { fewestDays, maxRidingDays, setDays, type Trip } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
-    import { paces, planPace } from '../../lib/planner/riding-profiles';
 
-    let { variant, trip, line, onChange, onPlan }: {
+    let { variant, trip, line, onChange, onPlan, look = '', onOptions }: {
         variant: string;
+        /** PROTOTYPE: S1 makes it the head of the stops; S2 and S3 show only the stepper. */
+        look?: string;
+        /** S1: "Route options" on the right of the head. */
+        onOptions?: () => void;
         trip: Trip;
         line: RoutingLine | undefined;
         onChange: (change: Partial<Trip>, description: string) => void;
@@ -17,9 +20,6 @@
 
     const multi = $derived(trip.mode !== 'route');
     const days = $derived(multi ? trip.days : 1);
-    // The days that the riding time at the pace needs.
-    const guess = $derived(multi ? trip.days : guessDays({ ...trip, mode: 'trip', daysSet: undefined }, line));
-    const pace = $derived(paces[planPace(trip)].label);
 
     function more() {
         if (!multi) onPlan(setDays({ ...trip, mode: 'trip' }, 2), 'Multi-day trip, 2 riding days');
@@ -38,21 +38,24 @@
             options={[{ value: 'route', label: 'One day' }, { value: 'trip', label: 'Multi-day' }]}
             onChange={(mode) => onChange({ mode: mode as Trip['mode'] }, mode === 'route' ? 'One-day route' : 'Multi-day trip')} />
     </div>
-{:else}
-    <div class="type t2">
-        <div class="days" role="group" aria-label="Riding days">
-            <button type="button" aria-label="One day fewer" disabled={!multi || (trip.days > 2 && trip.days <= fewestDays(trip))} onclick={fewer}><Icon path="M5 12h14" size={15} /></button>
-            <span class="count" class:guess={multi && !trip.daysSet}>{days} {days === 1 ? 'day' : 'days'}</span>
-            <button type="button" aria-label="One day more" disabled={days >= maxRidingDays} onclick={more}><Icon name="plus" size={15} /></button>
-        </div>
-        {#if !multi && guess > 1}
-            <p class="hint">About {guess} days at {pace} pace
-                <button type="button" class="link" onclick={() => onChange({ mode: 'trip' }, 'Multi-day trip')}>Split into {guess} days</button></p>
-        {:else if !multi}
-            <button type="button" class="link quiet" onclick={more}>Split into days</button>
-        {/if}
+{:else if look === 'S2' || look === 'S3'}
+    {@render stepper()}
+{:else if look === 'S1'}
+    <div class="type head">
+        {@render stepper()}
+        {#if onOptions && line}<button type="button" class="options" onclick={onOptions}><Icon name="route" size={15} />Route options</button>{/if}
     </div>
+{:else}
+    <div class="type t2">{@render stepper()}</div>
 {/if}
+
+{#snippet stepper()}
+    <div class="days" role="group" aria-label="Riding days">
+        <button type="button" aria-label="One day fewer" disabled={!multi || (trip.days > 2 && trip.days <= fewestDays(trip))} onclick={fewer}><Icon path="M5 12h14" size={15} /></button>
+        <span class="count" class:guess={multi && !trip.daysSet}>{days} {days === 1 ? 'day' : 'days'}</span>
+        <button type="button" aria-label="One day more" disabled={days >= maxRidingDays} onclick={more}><Icon name="plus" size={15} /></button>
+    </div>
+{/snippet}
 
 <style>
     .type { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 13px; color: var(--ink-soft); }
@@ -60,9 +63,9 @@
     .days button { display: grid; place-items: center; width: 30px; height: 30px; border: 0; background: none; color: var(--ink); cursor: pointer; }
     .days button:disabled { opacity: .35; cursor: default; }
     .days button:not(:disabled):hover { background: var(--parchment-2); }
+    .head { padding: 8px 16px; border-top: 1px solid var(--line); }
+    .options { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; min-height: 28px; padding: 0 6px; border: 0; border-radius: 6px; background: none; color: var(--ink-soft); font: inherit; cursor: pointer; }
+    .options:hover { background: var(--parchment-2); color: var(--ink); }
     .count { min-width: 52px; text-align: center; font-weight: 600; color: var(--ink); }
     .count.guess { font-style: italic; }
-    .hint { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0; padding: 6px 10px; border-radius: 6px; background: var(--parchment-2); color: var(--ink); }
-    .link { padding: 0; border: 0; background: none; color: var(--link); font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
-    .link.quiet { color: var(--ink-soft); font-weight: 400; }
 </style>

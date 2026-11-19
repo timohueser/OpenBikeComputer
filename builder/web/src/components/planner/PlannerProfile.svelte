@@ -21,7 +21,7 @@
 
     let {
         lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260, open = true,
-        trip, rests = [], onTrip, onToggle, onNight, onDayEndDrag, onHover, strip, part = null, onPart,
+        trip, rests = [], onTrip, onToggle, dayCount, onNight, onDayEndDrag, onHover, strip, part = null, onPart,
     }: {
         /** Route length in km. */
         lineData?: RoutingLine;
@@ -51,6 +51,8 @@
         onDayEndDrag: (night: number, progress: number) => void;
         onHover: (progress: number | null) => void;
         /** A data layer strip for the shown stretch and its rest columns, as route progress, and the hover callback. */
+        /** PROTOTYPE (S3): the day count in the title row, also when the drawer is closed. */
+        dayCount?: Snippet;
         strip?: Snippet<[number, number, number[], (progress: number | null) => void]>;
         /** The selected part, as route progress. */
         part?: [number, number] | null;
@@ -189,6 +191,7 @@
 <section class="elevation" class:open style:height={`${height}px`} aria-label="Elevation profile">
     <div class="title">
         <DrawerTitle title="Elevation" {open} {onToggle} />
+        {#if dayCount}<div class="proto-days">{@render dayCount()}</div>{/if}
         {#if open}
         <Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
             options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />
@@ -199,7 +202,7 @@
         {:else}
             <span class="distance">{distanceIn(span * total * 1000).toFixed(1)} {settings.units}</span>
         {/if}
-        {#if trip && onTrip && !singleRoute}<div class="trip"><TripRow {trip} onChange={onTrip} /></div>{/if}
+        {#if trip && onTrip && !singleRoute}<div class="trip"><TripRow {trip} onChange={onTrip} noDays={!!dayCount} /></div>{/if}
         {/if}
     </div>
     {#if open}
@@ -342,6 +345,7 @@
         margin-left: auto;
         font-variant-numeric: tabular-nums;
     }
+    .proto-days { display: flex; font-size: 13px; color: var(--ink-soft); }
     .trip { flex-basis: 100%; display: flex; padding: 4px 0; }
     .grade-toggle { display: flex; align-items: center; gap: 6px; margin-left: 4px; min-height: 28px; font-weight: 600; cursor: pointer; }
     .grade-toggle input { width: 14px; height: 14px; margin: 0; accent-color: var(--ink-soft); }

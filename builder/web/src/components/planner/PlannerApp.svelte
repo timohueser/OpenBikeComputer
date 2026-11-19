@@ -483,6 +483,8 @@
     const protoBar = new URLSearchParams(location.search).get('bar');
     // PROTOTYPE: `?type=T1|T2|T3` selects a home for the choice between a one-day route and a multi-day trip.
     const protoType = new URLSearchParams(location.search).get('type');
+    // PROTOTYPE: `?look=S1|S2|S3` selects a look for the side panel, with the day count of T2.
+    const protoLook = new URLSearchParams(location.search).get('look') ?? '';
 
     async function newOfMode(mode: Trip['mode']) {
         await newPlan();
@@ -1139,9 +1141,11 @@
 
 </script>
 
+{#snippet dayCount()}<TypeProto variant="T2" look="S2" {trip} line={session.line} onChange={changeTrip} onPlan={changePlan} />{/snippet}
+
 <svelte:window onkeydown={keyboard} bind:innerHeight={viewportHeight} bind:innerWidth={viewportWidth} />
 
-<div class="planner-shell" style:--side-width={`${Math.min(sideWidth, maxSide)}px`}>
+<div class="planner-shell" data-look={protoLook} style:--side-width={`${Math.min(sideWidth, maxSide)}px`}>
     {#if comparing}
     <CompareScreen routes={session.plans.filter(plan => endpointsChosen(plan.trip))} first={session.stored ? session.plan.id : undefined} changed={session.changed}
         lines={session.foundLines} {theme} onBack={endCompare} onOpen={async id => { comparing = false; await openPlan(id); await endCompare(); }}
@@ -1213,7 +1217,7 @@
                     </div>
                 {/if}
                 {#if !focusedDay && visualRoute}
-                    <div class="trip-summary"><RouteStats distance={view.summary.distance} ascent={view.line?.unknownElevationKm === 0 ? view.summary.ascent : null} descent={view.line?.unknownElevationKm === 0 ? view.summary.descent : null} walking={shown.trip.bike === 'hiking'} hours={view.line ? view.summary.hours : null} /></div>
+                    <div class="trip-summary"><RouteStats compact={protoLook === 'S1'} days={protoLook === 'S2' ? dayCount : undefined} distance={view.summary.distance} ascent={view.line?.unknownElevationKm === 0 ? view.summary.ascent : null} descent={view.line?.unknownElevationKm === 0 ? view.summary.descent : null} walking={shown.trip.bike === 'hiking'} hours={view.line ? view.summary.hours : null} /></div>
                 {/if}
                 {#if !focusedDay && gaps.length}
                     <p class="closure-note"><Icon name="pin" size={15} /><span>{gapNote(gaps)}</span></p>
@@ -1230,14 +1234,14 @@
                         <h2>Route options</h2>
                     </header>
                     <p class="list-lead">Compare other ways from start to finish, or keep your route.</p>
-                {:else if visualRoute && !focusedDay}
+                {:else if visualRoute && !focusedDay && protoLook !== 'S1'}
                     <div class="list-links" bind:this={listLinks}>
                         <button type="button" data-list="ways" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options{optionsReason ? ` · ${optionsReason}` : ''}</button>
                     </div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
-                    {#if (protoType === 'T1' || protoType === 'T2') && list === 'plan' && !focusedDay}
-                    <TypeProto variant={protoType} {trip} line={session.line} onChange={changeTrip} onPlan={changePlan} />
+                    {#if (protoType === 'T1' || protoType === 'T2') && list === 'plan' && !focusedDay && protoLook !== 'S2' && protoLook !== 'S3'}
+                    <TypeProto variant={protoType} look={protoLook} {trip} line={visualRoute ? session.line : undefined} onChange={changeTrip} onPlan={changePlan} onOptions={protoLook === 'S1' ? () => list = 'ways' : undefined} />
                 {/if}
                     {#if list === 'ways'}
                         <CompareList label="Route options" rows={optionRows} status={options.state === 'ready' ? null : options.state === 'error' ? options.message : optionStatus[options.state]}
@@ -1356,7 +1360,7 @@
             {:else}
             <Profile
                 lineData={visualRoute} walking={shown.trip.bike === 'hiking'} singleRoute={!multi} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} {total} {days} {dayLabels} {theme}
-                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {trip} {rests} onTrip={changePlan}
+                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {trip} {rests} onTrip={changePlan} dayCount={protoLook === 'S3' ? dayCount : undefined}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
                 {part} onPart={next => { if (active) part = next; }}
@@ -1456,7 +1460,16 @@
         background: var(--panel);
     }
     .trip-summary { padding: 0 16px; }
-    .proto-prefs { border-bottom: 1px solid var(--line); }
+    .proto-prefs { display: flex; align-items: center; border-bottom: 1px solid var(--line); }
+    .proto-prefs > :global(.prefs) { flex: 1; }
+    .proto-options { display: inline-flex; align-items: center; gap: 6px; flex: none; margin-right: 12px; min-height: 28px; padding: 0 6px; border: 0; border-radius: 6px; background: none; font-size: 13px; color: var(--ink-soft); cursor: pointer; }
+    .proto-options:hover { background: var(--parchment-2); color: var(--ink); }
+    /* S1: the region line beside the scope chip; no help texts in the flow. */
+    [data-look="S1"] :global(.planner-query) { display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; }
+    [data-look="S1"] :global(.planner-query > form), [data-look="S1"] :global(.planner-query > .settings), [data-look="S1"] :global(.planner-query > .note) { flex-basis: 100%; }
+    [data-look="S1"] :global(.planner-query > .data-button) { margin-left: auto; padding-top: 10px; }
+    [data-look="S1"] :global(.planner-pane .hint), [data-look="S1"] :global(.planner-pane .note) { display: none; }
+    [data-look="S1"] .trip-summary { padding: 0 16px; }
     .back-to-routes { display: flex; align-items: center; gap: 6px; min-height: 32px; margin: -4px 12px 8px; padding: 0 6px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; text-align: left; }
     .back-to-routes:hover { background: var(--parchment-2); color: var(--ink); }
     .closure-note { display: flex; align-items: center; gap: 8px; margin: 0 16px 12px; font-size: 13px; color: var(--ink-soft); }

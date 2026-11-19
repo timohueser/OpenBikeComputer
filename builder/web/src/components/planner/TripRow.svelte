@@ -4,7 +4,7 @@
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
     import { stayOptions as kinds } from '../../lib/planner/search/presentation';
 
-    let { trip, onChange }: { trip: Trip; onChange: (next: Trip, description: string) => void } = $props();
+    let { trip, onChange, noDays = false }: { trip: Trip; onChange: (next: Trip, description: string) => void; noDays?: boolean } = $props();
 
     let dating = $state(false);
     let root = $state<HTMLDivElement>();
@@ -54,11 +54,11 @@
             </div>
         {/if}
     </div>
-    <div class="days" role="group" aria-label="Number of riding days">
+    {#if !noDays}<div class="days" role="group" aria-label="Number of riding days">
         <button type="button" aria-label="One day fewer" disabled={trip.days <= fewestDays(trip)} onclick={() => changeDays(trip.days - 1)}><Icon path="M5 12h14" size={15} /></button>
         <span class="count"><span class:guess={!trip.daysSet}>{trip.days} riding {trip.days === 1 ? 'day' : 'days'}</span></span>
         <button type="button" aria-label="One day more" disabled={trip.days >= maxRidingDays} onclick={() => changeDays(trip.days + 1)}><Icon name="plus" size={15} /></button>
-    </div>
+    </div>{/if}
     <div class="stay" role="group" aria-label="Where you sleep">
         <span>Sleep in</span>
         {#each kinds as { kind, label, icon } (kind)}
