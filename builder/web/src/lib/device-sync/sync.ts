@@ -165,6 +165,8 @@ interface Card {
     id: string;
     objects: Map<string, CatalogEntry>;
     count: { routes: number; trips: number };
+    /** The trip objects of the card at the start of the sync, with their trip keys and day route ids, read on first use. */
+    trips?: Promise<Map<string, { key: string; days: string[] }>>;
 }
 
 /** An object that a route needs on the card. */
@@ -179,21 +181,45 @@ const payload = (kind: ObjectKind, name: string, bytes: Uint8Array): Payload => 
 const holds = (entry: CatalogEntry, file: Payload) => entry.payloadLength === BigInt(file.bytes.length) && entry.payloadCrc32 === file.crc;
 const save = (library: Library, id: string, copy: SentRoute) => library.changeState('sent', routes => ({ ...routes, [id]: { ...copy, days: [...copy.days] } }));
 
+/** The trip objects of the card with their trip keys in decimal and their day route ids, read once in a sync. */
+function tripsOf(card: Card): Promise<Map<string, { key: string; days: string[] }>> {
+    return card.trips ??= (async () => {
+        const trips = new Map<string, { key: string; days: string[] }>();
+        for (const entry of card.objects.values()) {
+            if (entry.kind !== ObjectKind.Trip || entry.payloadLength < 64n) continue;
+            let bytes;
+            try { bytes = (await card.client.get(entry, { signal: card.signal })).bytes; } catch (error) {
+                if (cut(error)) throw error;
+                continue;
+            }
+            const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), count = Math.min(view.getUint16(2, true), Math.floor((bytes.length - 64) / 16));
+            trips.set(key(entry), { key: `${view.getBigUint64(56, true)}`, days: Array.from({ length: count }, (_, i) => `${view.getBigUint64(64 + 16 * i, true)}`) });
+        }
+        return trips;
+    })();
+}
+
 /**
- * The entry of route `id` on the card, with no key while the steps change it, and the objects of the other entries on the
- * card. An object that the card does not hold is gone: it reads as no object. An entry of another card counts as no entry.
- * An entry with no trip object, of a route that has or had several days, takes the trip object that a lost put answer
- * left: one that no other entry names, with the trip key `wanted` of the route or with a route of the entry among its
- * days. A trip of the phone has a random key and names routes of the phone, and the device never gives an object id
- * twice, so the trip of another plan, of the phone or of the rider never matches.
+ * The entry of route `id` on the card, with no key while the steps change it, and the objects that it may not take: those
+ * of the other entries on the card, and the routes that a foreign trip object lists. An object that the card does not hold
+ * is gone, and a route that a foreign trip object lists is not this library's to change: both read as no object. An entry
+ * of another card counts as no entry. A trip object is foreign when no entry on the card names it or its trip key, such as
+ * a trip of the phone, which takes routes into its trips by their content. An entry with no trip object takes the one
+ * with the trip key that it stored before the put of its trip object, so a lost answer leaves no second trip.
  */
-async function entryOn(card: Card, id: string, wanted?: bigint, days = 0): Promise<{ copy: SentRoute; taken: Set<string | null> }> {
-    const sent = await card.library.state('sent') ?? {}, stored = sent[id];
-    const held = (object: string | null) => object && card.objects.has(object) ? object : '';
-    const copy: SentRoute = stored?.card === card.id ? { key: '', card: card.id, days: stored.days.map(held), trip: held(stored.trip) || null }
-        : { key: '', card: card.id, days: [], trip: null };
-    const taken = new Set(Object.entries(sent).flatMap(([other, them]) => other === id || them.card !== card.id ? [] : [them.trip, ...them.days]));
-    if (!copy.trip && Math.max(days, copy.days.length) > 1) copy.trip = await tripOn(card, copy, wanted, taken) ?? null;
+async function entryOn(card: Card, id: string): Promise<{ copy: SentRoute; taken: Set<string | null> }> {
+    const sent = await card.library.state('sent') ?? {}, stored = sent[id], trips = await tripsOf(card);
+    const ours = Object.values(sent).filter(them => them.card === card.id);
+    const ids = new Set(ours.map(them => them.trip)), keys = new Set(ours.map(them => them.tripKey));
+    const foreign = new Set([...trips].flatMap(([trip, { key, days }]) => ids.has(trip) || keys.has(key) ? [] : days));
+    const held = (object: string | null) => object && card.objects.has(object) && !foreign.has(object) ? object : '';
+    const copy: SentRoute = stored?.card === card.id
+        ? { key: '', card: card.id, days: stored.days.map(held), trip: held(stored.trip) || null, tripKey: stored.tripKey }
+        : { key: '', card: card.id, days: [], trip: null, tripKey: null };
+    const taken = new Set([...Object.entries(sent).flatMap(([other, them]) => other === id || them.card !== card.id ? [] : [them.trip, ...them.days]), ...foreign]);
+    if (!copy.trip && copy.tripKey) {
+        copy.trip = [...trips].find(([trip, { key }]) => key === copy.tripKey && card.objects.has(trip) && !taken.has(trip))?.[0] ?? null;
+    }
     return { copy, taken };
 }
 
@@ -215,30 +241,13 @@ async function shrink(card: Card, id: string, copy: SentRoute, days: number, kee
     };
     if (!keepTrip && copy.trip) {
         const trip = copy.trip;
-        copy.trip = null;
+        [copy.trip, copy.tripKey] = [null, null];
         if (!await remove(trip)) return false;
     }
     while (copy.days.length > days) {
         if (!await remove(copy.days.pop()!)) return false;
     }
     return true;
-}
-
-/** The trip object on the card that `taken` does not name, with the trip key `wanted` or with a route of `copy` among its
- * days. */
-async function tripOn(card: Card, copy: SentRoute, wanted: bigint | undefined, taken: Set<string | null>): Promise<string | undefined> {
-    const mine = new Set(copy.days.filter(Boolean));
-    for (const entry of card.objects.values()) {
-        if (entry.kind !== ObjectKind.Trip || taken.has(key(entry)) || entry.payloadLength < 64n) continue;
-        let bytes;
-        try { bytes = (await card.client.get(entry, { signal: card.signal })).bytes; } catch (error) {
-            if (cut(error)) throw error;
-            continue;
-        }
-        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), count = Math.min(view.getUint16(2, true), Math.floor((bytes.length - 64) / 16));
-        const days = Array.from({ length: count }, (_, i) => `${view.getBigUint64(64 + 16 * i, true)}`);
-        if (view.getBigUint64(56, true) === wanted || days.some(day => mine.has(day))) return key(entry);
-    }
 }
 
 /**
@@ -268,7 +277,7 @@ async function sendRoute(card: Card, id: string, legs: LegCache): Promise<{ trip
         return;
     }
     const files = routes.map(day => payload(ObjectKind.Route, displayName(day.name, 'Route'), day.bytes)), days = files.length;
-    const tripId = tripKey(id, route.trip), { copy, taken } = await entryOn(card, id, tripId, days);
+    const tripId = tripKey(id, route.trip), { copy, taken } = await entryOn(card, id);
 
     // A lost answer of an earlier put left a copy on the card. An object of another entry on this card is not one.
     const unnamed = (entry: CatalogEntry) => !taken.has(key(entry)) && copy.trip !== key(entry) && !copy.days.includes(key(entry));
@@ -276,11 +285,14 @@ async function sendRoute(card: Card, id: string, legs: LegCache): Promise<{ trip
         const copied = [...card.objects.values()].find(entry => entry.kind === file.kind && entry.displayName === file.name && holds(entry, file) && unnamed(entry));
         copy.days[i] ||= copied ? key(copied) : '';
     });
-    // A route of one day leaves its trip first. A trip removes its surplus days after it names only the others.
+    // A route of one day leaves its trip first. A trip removes its surplus days after it names only the others, unless its
+    // new days need their room first: the menu of the device shows only the newest 64 routes.
     if (days === 1 && !await shrink(card, id, copy, 1, false, waits)) return;
+    const needed = copy.days.slice(0, days).filter(object => !object).length;
+    if (needed > MENU.routes - card.count.routes && !await shrink(card, id, copy, days, true, waits)) return;
 
     const surplus = copy.days.slice(days).filter(object => card.objects.has(object)).length;
-    const needed = copy.days.slice(0, days).filter(object => !object).length, free = Math.max(0, MENU.routes - card.count.routes + surplus);
+    const free = Math.max(0, MENU.routes - card.count.routes + surplus);
     if (needed > free) {
         problems.push(`${waits}the bike computer has room for ${free} more ${free === 1 ? 'route' : 'routes'}, it needs ${needed}. Remove ridden or unused routes on the bike computer.`);
         return;
@@ -315,6 +327,11 @@ async function sendRoute(card: Card, id: string, legs: LegCache): Promise<{ trip
     };
     for (const [i, file] of files.entries()) if (!await put(file, copy.days[i], object => { copy.days[i] = object; })) return;
     if (days > 1) {
+        // A lost answer of this put leaves the trip key in the entry, so the next sync finds the trip object.
+        if (copy.tripKey !== `${tripId}`) {
+            copy.tripKey = `${tripId}`;
+            await save(library, id, copy);
+        }
         const trip = tripObject(tripId, name, startDay(route.trip), copy.days.slice(0, days).map(object => ({ route: BigInt(object), joinM: 0, leaveM: 0xffff_ffff })));
         if (!await put(payload(ObjectKind.Trip, name, trip), copy.trip, object => { copy.trip = object; })) return;
         if (!await shrink(card, id, copy, days, true, waits)) return;

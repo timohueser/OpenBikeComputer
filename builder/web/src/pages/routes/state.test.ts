@@ -5,7 +5,7 @@ import { sentKey } from '../../lib/library/summary';
 import { deviceState } from './state';
 
 const route: RouteRecord = { id: 'r', name: 'Lake loop', updatedAt: 0, summary: null, trip: { points: [] } };
-const sent = { r: { key: sentKey(route), card: 'card', days: ['7'], trip: null } };
+const sent = { r: { key: sentKey(route), card: 'card', days: ['7'], trip: null, tripKey: null } };
 
 beforeEach(() => {
     remembered.device = { serial: '00AB', storeId: 'card', at: null, map: null, mapObject: null, built: null, routes: 1, bytes: { map: 0, routes: 0, rides: 0, other: 0 }, came: null, skipped: [] };

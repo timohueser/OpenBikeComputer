@@ -141,13 +141,15 @@ export interface DeletedRide {
 }
 
 /** The objects of a route on the card `card` (a store id), as decimal object ids: the route of each riding day, and the
- * trip object of a plan of several days. An empty string is a day with no object yet. `key` is the `sentKey` of the route
- * when all its objects are on the card, else empty. */
+ * trip object of a plan of several days. An empty string is a day with no object. `tripKey` is the trip key in decimal of
+ * the trip object that the sync put or puts. `key` is the `sentKey` of the route when all its objects are on the card,
+ * else empty. */
 export interface SentRoute {
     key: string;
     card: string;
     days: string[];
     trip: string | null;
+    tripKey: string | null;
 }
 
 /** All objects of `copy` are on the card `card`: the route is on the device. An empty slot is an object that is not made yet,
@@ -238,7 +240,7 @@ const isTrip = (value: unknown): value is RideTrip => isRecord(value) && isStrin
 
 const isSent = (value: unknown): value is Record<string, SentRoute> => isRecord(value)
     && Object.values(value).every(route => isRecord(route) && isString(route.key) && isString(route.card) && isStrings(route.days)
-        && (route.trip === null || isString(route.trip)));
+        && (route.trip === null || isString(route.trip)) && (route.tripKey === null || isString(route.tripKey)));
 
 const isDeleted = (value: unknown): value is DeletedRide =>
     isRecord(value) && isString(value.key) && rideKey.test(value.key) && optional(value.device, isString);
