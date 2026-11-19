@@ -207,7 +207,8 @@ export class RouteCatalog {
         });
     }
 
-    /** The whole record of the trail `id`, with `parts` and `trail_profile_m`, or null for a grid release with no trail files. */
+    /** The whole record of the trail `id`, with `parts` and `trail_profile_m`, or null for a grid release with no trail files
+     * and for an id that the release has no trail record file of. */
     trail(id: number): Promise<CatalogRecord | null> {
         return cached(this.trails, id, loadTrailRecord);
     }

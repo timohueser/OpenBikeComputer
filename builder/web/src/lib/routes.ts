@@ -10,6 +10,7 @@ export const ROUTES = {
     explore: "#/explore",
     route: "#/route",
     signed: "#/signed",
+    trail: "#/trail",
     ride: "#/ride",
     device: "#/device",
     area: "#/device/area",

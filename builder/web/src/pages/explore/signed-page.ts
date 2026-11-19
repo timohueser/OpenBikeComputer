@@ -1,9 +1,10 @@
-/** The address of the page of a signed route, the Explore state that leads back to it, and the description it shows. */
+/** The address of the page of a signed route, the Explore state that leads back to it, the description it shows, and the
+ * names of the parts of its trail. */
 import type { Bounds } from '../../lib/planner/config';
 import { coversCell } from '../../lib/planner/map-data';
 import type { Box } from '../../lib/planner/route-catalog';
 import { decodeCoordinates } from '../../lib/planner/route-answer';
-import { longTrailId, type CatalogRecord } from '../../lib/planner/signed-routes';
+import { longTrailId, type CatalogRecord, type TrailPart } from '../../lib/planner/signed-routes';
 import { ROUTES } from '../../lib/routes';
 import type { Chips } from '../routes/filter';
 
@@ -24,14 +25,14 @@ export function readAddress(address: string): { cell: string; zoom: number; box:
     return { cell: match[1], zoom, box: [x / n * 360 - 180, latitude(y + 1), (x + 1) / n * 360 - 180, latitude(y)], id: Number(match[5]) };
 }
 
-/** The Explore state that shows the record `show`, by default `record` itself: the view of the line of `record`, the bike of
- * its kind and the id. Explore decides the tab and the card. */
-export function exploreAt(record: CatalogRecord, show = record.id): { chips: Chips; view?: Box; show: number } {
+/** The Explore state that shows `record`: the view of its line, the bike of its kind and its id. Explore decides the tab and
+ * the card. */
+export function exploreAt(record: CatalogRecord): { chips: Chips; view?: Box; show: number } {
     const bike = record.kind === 'mtb' ? 'mtb' : record.kind === 'bicycle' ? 'touring' : 'hiking';
     const points = decodeCoordinates(record.line_udeg ?? []);
     const lons = points.map(point => point[0]), lats = points.map(point => point[1]);
     const view: Box | undefined = points.length ? [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)] : undefined;
-    return { chips: { bike }, ...view ? { view } : {}, show };
+    return { chips: { bike }, ...view ? { view } : {}, show: record.id };
 }
 
 /** Words that name a part of a route, in the languages of the catalog. */
@@ -74,4 +75,13 @@ export function stagePart(record: CatalogRecord, recordOf: (id: number) => Catal
     const number = record.trail !== undefined && !byParent ? record.trail_stage : record.stage, of = long?.stages?.length ?? long?.stage_count;
     const part: string | false = record.section !== undefined ? `Section ${record.section}` : number === undefined ? false : of ? `Stage ${number} of ${of}` : `Stage ${number}`;
     return { part, long, byParent, trailId: byParent ? record.parent : longTrailId(record, recordOf) };
+}
+
+/** The number of a section in its cut line: a section has it in its id, −(relation × 100 + section). */
+export const partSection = (part: Pick<TrailPart, 'id'>) => part.id < 0 ? -part.id % 100 : undefined;
+
+/** The name of a part of a trail: "Stage 8 · Section 2", "Section 2", "Stage 8", else `name`. */
+export function partLabel(stage?: number, section?: number, name?: string): string | false {
+    const words = [stage !== undefined && `Stage ${stage}`, section !== undefined && `Section ${section}`].filter(Boolean);
+    return words.join(' · ') || name || false;
 }

@@ -19,6 +19,8 @@ export interface CatalogRecord {
     descent_m: number;
     grades_m?: number[];
     hardest?: number;
+    /** The moving time of the plan route at the default pace, in seconds; not in every release. */
+    moving_s?: number;
     cells: string[];
     line_udeg?: number[];
     profile_m?: (number | null)[];
@@ -48,6 +50,9 @@ export interface TrailPart {
     name?: string;
     length_m?: number;
     ascent_m?: number;
+    /** As on the route record of the part; not in every release. */
+    moving_s?: number;
+    hardest?: number;
     end_m: number;
     cells?: string[];
     missing?: true;

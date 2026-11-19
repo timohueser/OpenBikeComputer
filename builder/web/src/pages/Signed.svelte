@@ -31,7 +31,8 @@
     import Menu from '../lib/ui/Menu.svelte';
     import { kindName } from './explore/SignedCard.svelte';
     import StageStrip from './explore/StageStrip.svelte';
-    import { exploreAt, readAddress, shownDescription, signedHref, stagePart } from './explore/signed-page';
+    import { exploreAt, partLabel, partSection, readAddress, shownDescription, signedHref, stagePart } from './explore/signed-page';
+    import { trailHref } from './explore/trail-page';
     import { signedItem } from './routes/filter';
 
     let {}: { library: Library; active: boolean } = $props();
@@ -76,21 +77,28 @@
     const opened = $derived(part && line ? facts?.climbs.find(climb => climbShare(climb).every((end, i) => Math.abs(end - part![i]) < 1e-9)) : undefined);
 
     const stage = $derived(record ? stagePart(record, recordOf) : undefined);
-    /** The trail of a stage or a section, whose strip the page shows and whose name opens it on Explore. */
+    /** The trail of a stage or a section, whose strip the page shows and whose name opens its page. */
     const longId = $derived(record && (record.trail ?? record.parent) !== undefined ? stage!.trailId : undefined);
     const colour = $derived(record ? routeColor(longId ?? record.id) : undefined);
-    const trailName = $derived(stage?.part && (stage.long?.name ?? stage.long?.ref));
+    // The cell file of a part holds its trail record.
+    const trailName = $derived.by(() => {
+        const long = stage?.part && longId !== undefined ? recordOf(longId) : undefined;
+        return long?.name ?? long?.ref;
+    });
     const website = $derived(routeWebsite(record?.website));
     const description = $derived(record && shownDescription(record, recordOf));
     const lead = $derived(record && [record.loop ? 'Loop' : 'One way', kindName(record),
         ...record.kind !== 'bicycle' && record.hardest !== undefined ? [gradeName(record.kind, record.hardest)] : []].join(' · '));
-    /** A section has its number in its id, −(relation × 100 + section); its part has the stage number of its cut stage. */
-    const partName = (one: TrailPart) => one.id < 0 ? `Section ${-one.id % 100}` : one.stage !== undefined ? `Stage ${one.stage}` : undefined;
-    /** The parts before and after this one in its trail, when the catalog holds them. */
+    /** The parts before and after this one in its trail, when the catalog holds them. A section is named by its number
+     * alone, as its own page names it. */
     const neighbours = $derived.by(() => {
         const parts = trail?.parts, at = parts?.findIndex(one => one.id === record?.id) ?? -1;
+        const name = (one: TrailPart) => {
+            const section = partSection(one);
+            return partLabel(section === undefined ? one.stage : undefined, section);
+        };
         const link = (one: TrailPart | undefined, word: string) => one && !one.missing && one.cells && signedHref({ id: one.id, cells: one.cells }, config.bounds)
-            ? { href: signedHref({ id: one.id, cells: one.cells }, config.bounds)!, label: partName(one) ?? word } : undefined;
+            ? { href: signedHref({ id: one.id, cells: one.cells }, config.bounds)!, label: name(one) || word } : undefined;
         return at < 0 ? {} : { before: link(parts![at - 1], 'Part before'), after: link(parts![at + 1], 'Part after') };
     });
 
@@ -152,10 +160,10 @@
     });
 
     /** Back when Explore is the page before this one in this tab; else Explore opens on this route. */
-    function toExplore(event: MouseEvent, show?: number) {
+    function toExplore(event: MouseEvent) {
         event.preventDefault();
-        if (router.from === 'explore' && show === undefined) history.back();
-        else if (record) router.go(ROUTES.explore, { explore: exploreAt(record, show) });
+        if (router.from === 'explore') history.back();
+        else if (record) router.go(ROUTES.explore, { explore: exploreAt(record) });
     }
 
     function plan() {
@@ -183,7 +191,7 @@
         {#snippet mark()}{#if record}<TrailMarker symbol={record.symbol} ref={record.ref} />{/if}{/snippet}
         {#snippet tags()}
             {#if stage?.part}
-                <span class="plain">{stage.part}{#if trailName}{' · '}<a class="trail" href={ROUTES.explore} onclick={event => toExplore(event, longId)}>{trailName}</a>{/if}</span>
+                <span class="plain">{stage.part}{#if trailName}{' · '}{#if trail}<a class="trail" href={trailHref(longId!)}>{trailName}</a>{:else}{trailName}{/if}{/if}</span>
             {/if}
         {/snippet}
         {#snippet buttons()}

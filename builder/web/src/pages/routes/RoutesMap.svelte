@@ -11,11 +11,12 @@
     import { ClosedAttribution, styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
     import { terrainRetry } from '../../lib/planner/map-terrain';
     import { SIGNED_GROUND } from '../../lib/planner/route-colors';
+    import type { Coordinate } from '../../lib/planner/geo';
     import { appearance } from '../../lib/theme.svelte';
     import { lineColor, type Box, type Item } from './filter';
     import { chevronImage, startOf } from './start';
 
-    let { items, shown, selected, marked = [], look = 'route', covered = 0, credits = [], together = id => [id], hovered, onhover, onselect, onview, fit, place }: {
+    let { items, shown, selected, marked = [], look = 'route', covered = 0, credits = [], together = id => [id], hovered, onhover, onselect, onview, fit, place, borders }: {
         items: Item[];
         /** The items of the list. The map draws only these, and the bubbles count only these. */
         shown: Item[];
@@ -46,6 +47,9 @@
         fit: number;
         /** A new place moves the map: a box of some size fits the map, a point shows at zoom 12. */
         place?: { lon: number; lat: number; box?: Box };
+        /** A white dot with a ring in `colour` at each point, over the lines, such as the stage borders of a trail. The map
+         * reads them when it adds its layers. */
+        borders?: { points: Coordinate[]; colour: string };
     } = $props();
 
     const LINE_ZOOM = 8;
@@ -135,6 +139,13 @@
             paint: { 'line-color': edge, 'line-width': 9 } });
         map.addLayer({ id: 'selected', type: 'line', source: 'routes', filter: selectedNow, layout: round,
             paint: { 'line-color': line, 'line-width': 5 } });
+        const dots = untrack(() => borders);
+        if (dots) {
+            const features = dots.points.map((point): Feature<Point> => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: point } }));
+            map.addSource('borders', { type: 'geojson', data: { type: 'FeatureCollection', features } });
+            map.addLayer({ id: 'borders', type: 'circle', source: 'borders',
+                paint: { 'circle-radius': 4, 'circle-color': '#fff', 'circle-stroke-width': 2.5, 'circle-stroke-color': dots.colour } });
+        }
         // A new style drops the images of the last one.
         if (!map.hasImage('obc-start-arrow')) map.addImage('obc-start-arrow', chevronImage(), { pixelRatio: 2 });
         map.addLayer({ id: 'start-dot', type: 'circle', source: 'focus', minzoom, filter: role('start'),

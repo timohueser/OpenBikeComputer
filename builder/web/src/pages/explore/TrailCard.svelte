@@ -1,5 +1,6 @@
 <!-- The card of the selected trail over the map: its far line, its mark and name, its shape, its stages and its kind, its
-     numbers, the profile of the whole trail, the strip of its parts and the credit of its source. -->
+     numbers, the profile of the whole trail, the strip of its parts and the credit of its source. The name opens the page
+     of the trail. -->
 <script module lang="ts">
     import type { TrailEntry } from '../../lib/planner/signed-routes';
     import { signedNumbers } from './SignedCard.svelte';
@@ -18,6 +19,7 @@
     import { kindName } from './SignedCard.svelte';
     import SignedPicture from './SignedPicture.svelte';
     import StageStrip from './StageStrip.svelte';
+    import { trailHref } from './trail-page';
 
     let { about: trail, item, record, failed, onclose }: {
         /** The record or the far entry of the trail. */
@@ -36,7 +38,7 @@
     const profile = $derived(record?.trail_profile_m && { line: record.trail_profile_m.flatMap((_, i) => [i / 1000, 0]), heights: record.trail_profile_m });
 </script>
 
-<RouteCard name={trail.name ?? trail.ref ?? ''} meta={[trail.loop ? 'Loop' : 'One way', count, kindName(trail)]} numbers={signedNumbers(trail)}
+<RouteCard name={trail.name ?? trail.ref ?? ''} href={trailHref(trail.id)} meta={[trail.loop ? 'Loop' : 'One way', count, kindName(trail)]} numbers={signedNumbers(trail)}
     {profile} failure={failed ? 'The trail could not load.' : undefined} more={record?.parts || record?.credit ? more : undefined} {onclose}>
     {#snippet picture()}{#if item}<SignedPicture {item} />{/if}{/snippet}
     {#snippet mark()}<span class="mark"><TrailMarker symbol={trail.symbol} ref={trail.ref} /></span>{/snippet}
