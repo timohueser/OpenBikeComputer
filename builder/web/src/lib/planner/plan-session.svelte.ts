@@ -479,10 +479,10 @@ export class PlanSession {
         return this.openNew(newPlan({ ...trip, points: trip.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: placeName(p.coordinate) ?? p.label } : p) }));
     }
 
-    /** Opens a new empty plan with the activity and preset of the open plan, and offers the newest draft of a route that
-     * is not stored. */
+    /** Opens a new empty one-day route with the activity and preset of the open plan, and offers the newest draft of a
+     * route that is not stored. */
     newPlan(): Promise<boolean> {
-        return this.openNew(newPlan({ ...emptyTrip(this.trip.mode), bike: this.trip.bike, preset: this.trip.preset }), true);
+        return this.openNew(newPlan({ ...emptyTrip(), bike: this.trip.bike, preset: this.trip.preset }), true);
     }
 
     /** Takes the stored name of the open plan after a write of this tab; a removed plan gives a new empty plan, and its
