@@ -1,0 +1,2341 @@
+[
+ {
+  "country": "Austria",
+  "region": "Oberösterreich",
+  "searched": [
+   "data.gv.at hub search API (/api/hub/search/search; the CKAN path /katalog/api/3 returns the SPA page): wanderweg, wanderwege, wandern, rundwanderweg, themenweg, Rundweg, Wanderroute(n), Weitwanderweg, Wegenetz, Lehrpfad, Spazierweg, Naturpark",
+   "DORIS Gemeindewanderwege zip downloaded and parsed"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Austria",
+  "region": "Vorarlberg",
+  "searched": [
+   "data.gv.at hub search API (/api/hub/search/search; the CKAN path /katalog/api/3 returns the SPA page): wanderweg, wanderwege, wandern, rundwanderweg, themenweg, Rundweg, Wanderroute(n), Weitwanderweg, Wegenetz, Lehrpfad, Spazierweg, Naturpark",
+   "VoGIS WFS (robots disallow)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Austria",
+  "region": "Tirol",
+  "searched": [
+   "data.gv.at hub search API (/api/hub/search/search; the CKAN path /katalog/api/3 returns the SPA page): wanderweg, wanderwege, wandern, rundwanderweg, themenweg, Rundweg, Wanderroute(n), Weitwanderweg, Wegenetz, Lehrpfad, Spazierweg, Naturpark",
+   "web search tiris/data.tirol.gv.at; gis.tirol.gv.at reset connection"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Austria",
+  "region": "Wien",
+  "searched": [
+   "data.gv.at hub search API (/api/hub/search/search; the CKAN path /katalog/api/3 returns the SPA page): wanderweg, wanderwege, wandern, rundwanderweg, themenweg, Rundweg, Wanderroute(n), Weitwanderweg, Wegenetz, Lehrpfad, Spazierweg, Naturpark"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Austria",
+  "region": "Salzburg",
+  "searched": [
+   "data.gv.at hub search API (/api/hub/search/search; the CKAN path /katalog/api/3 returns the SPA page): wanderweg, wanderwege, wandern, rundwanderweg, themenweg, Rundweg, Wanderroute(n), Weitwanderweg, Wegenetz, Lehrpfad, Spazierweg, Naturpark",
+   "web search SAGIS, Geodatenliste 2024 (no hiking layer seen), Stadt Salzburg"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Austria",
+  "region": "Burgenland",
+  "searched": [
+   "data.gv.at hub search API (/api/hub/search/search; the CKAN path /katalog/api/3 returns the SPA page): wanderweg, wanderwege, wandern, rundwanderweg, themenweg, Rundweg, Wanderroute(n), Weitwanderweg, Wegenetz, Lehrpfad, Spazierweg, Naturpark",
+   "web search gis.bgld.gv.at, Wandern Burgenland"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Austria",
+  "region": "Kärnten",
+  "searched": [
+   "data.gv.at hub search API (/api/hub/search/search; the CKAN path /katalog/api/3 returns the SPA page): wanderweg, wanderwege, wandern, rundwanderweg, themenweg, Rundweg, Wanderroute(n), Weitwanderweg, Wegenetz, Lehrpfad, Spazierweg, Naturpark",
+   "web search KAGIS (gis.ktn.gv.at reset the connection)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Austria",
+  "region": "Steiermark",
+  "searched": [
+   "data.gv.at hub search API (/api/hub/search/search; the CKAN path /katalog/api/3 returns the SPA page): wanderweg, wanderwege, wandern, rundwanderweg, themenweg, Rundweg, Wanderroute(n), Weitwanderweg, Wegenetz, Lehrpfad, Spazierweg, Naturpark",
+   "crawl of Land Steiermark title list (Radwege, Almzentren, Alpine Schutzhütten, Naturparke, no hiking layer)",
+   "web search data.steiermark.at"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Austria",
+  "region": "Niederösterreich",
+  "searched": [
+   "data.gv.at hub search API (/api/hub/search/search; the CKAN path /katalog/api/3 returns the SPA page): wanderweg, wanderwege, wandern, rundwanderweg, themenweg, Rundweg, Wanderroute(n), Weitwanderweg, Wegenetz, Lehrpfad, Spazierweg, Naturpark",
+   "noe.gv.at OGD Geographie page (Kulturwege, Touristischer Radverkehr), web search data.noe.gv.at"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Liechtenstein",
+  "region": "Liechtenstein",
+  "searched": [
+   "ckan.opendata.swiss dataset page, geodaten.llv.li download"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Slovenia",
+  "region": "Slovenia",
+  "searched": [
+   "podatki.gov.si search: pohodne poti, planinske poti, tematske poti, učna pot, pohodniške poti, pohodništvo, kolesarske poti; PROCESS FLAW: first queries went to /api/3/action/package_search which robots.txt disallows (7 calls); later queries used the HTML /dataset/ search with 10 s delay"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Slovenia",
+  "region": "Slovenia",
+  "searched": [
+   "podatki.gov.si HTML search: pohodniške poti, pohodništvo, Planinska zveza, Triglavski narodni park, Slovenska turistična, javna infrastruktura planinske, pešpoti, sprehajalne, izletniške, planinska pot, tematska pot",
+   "pzs.si, mapzs.pzs.si, planinske-poti.si (robots 404/none; mapzs reset)",
+   "web search for maPZS terms, GURS"
+  ],
+  "result": "sources found",
+  "note": "GURS, Slovenian Tourist Board and Triglav NP trail data not found as open data in the portal; GURS and STB sites not opened."
+ },
+ {
+  "country": "Croatia",
+  "region": "Croatia",
+  "searched": [
+   "data.gov.hr CKAN API (no robots restrictions; robots path returns the app page): staza, staze, planinarske staze, planinar, pješačka, tematske staze, poučne staze, turističke staze, trase, izlet, nacionalni park, park prirode, turizam",
+   "hps.hr robots and Opći uvjeti, hps.hr/karta",
+   "web search for HPS terms and Istria trails",
+   "geoportal.dgu.hr/nipp.hr (robots read, no trail layer found), parkovihrvatske.hr (no data/GPX terms found), istra.hr hiking page (404), dalmatia.hr, kvarner.hr (connection reset)"
+  ],
+  "result": "sources found",
+  "note": "data.gov.hr has no hiking datasets. National and nature parks, Istria, Kvarner and Dalmatia boards: nothing open found (only web lists); kvarner.hr reset the connection. Only usable lead is the parks visitor-infrastructure WFS, whose host does not resolve."
+ },
+ {
+  "country": "Serbia",
+  "region": "Serbia",
+  "searched": [
+   "data.gov.rs udata API (robots path returns the app page, no rule): планинарске стазе, стаза, planinarski, pešačke staze, turizam, trail, Обележена планинарска",
+   "web: OSM wiki notes the Planinarski savez Srbije trails project (not open data checked)"
+  ],
+  "result": "sources found",
+  "note": "Only 4 datasets, all Priboj. Hiking federation PSS trails not found on the portal."
+ },
+ {
+  "country": "Montenegro",
+  "region": "Montenegro",
+  "searched": [
+   "data.gov.me (connection reset twice)"
+  ],
+  "result": "not searched",
+  "note": "Portal unreachable or not queried; owner can try by hand."
+ },
+ {
+  "country": "North Macedonia",
+  "region": "North Macedonia",
+  "searched": [
+   "data.gov.mk CKAN API: hiking (0 hits); патека, планинарска, стаза, пешачка timed out"
+  ],
+  "result": "nothing found",
+  "note": "Only the English query returned (0 hits); Macedonian queries timed out."
+ },
+ {
+  "country": "Albania",
+  "region": "Albania",
+  "searched": [
+   "opendata.gov.al CKAN API: trail, pista (empty replies)"
+  ],
+  "result": "not searched",
+  "note": "Portal unreachable or not queried; owner can try by hand."
+ },
+ {
+  "country": "Kosovo",
+  "region": "Kosovo",
+  "searched": [
+   "opendata.rks-gov.net (proxy 502)"
+  ],
+  "result": "not searched",
+  "note": "Portal unreachable or not queried; owner can try by hand."
+ },
+ {
+  "country": "Bosnia and Herzegovina",
+  "region": "Bosnia and Herzegovina",
+  "searched": [],
+  "result": "not searched",
+  "note": "Portal unreachable or not queried; owner can try by hand."
+ },
+ {
+  "country": "Luxembourg",
+  "region": "Luxembourg (national)",
+  "searched": [
+   "data.public.lu API q=sentiers, randonnée, wanderweg, circuits, auto-pédestres, sentier pédestre commune",
+   "data.geoportail.lu mymaps categories",
+   "features.geoportail.lu"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Netherlands",
+  "region": "Netherlands (12 provinces, national and provincial pass)",
+  "searched": [
+   "data.overheid.nl CKAN API: wandelroute, wandelroutes, wandelpad, wandelnetwerk, streekpad, wandellus, wandeling, wandelen, recreatieve routes, klompenpad, Staatsbosbeheer routes, Natuurmonumenten, toeristische routes, NS wandelingen, wandelpaden gemeente",
+   "PDOK wandelnet services",
+   "geodata-utrecht, geoportaal.fryslan.nl WFS",
+   "web search for Noord-Brabant, Gelderland, Overijssel, Limburg, Drenthe, klompenpaden, ommetjes, Staatsbosbeheer, Natuurmonumenten, Routedatabank",
+   "data.openstate.eu Zuid-Holland",
+   "geodan DigiTwin databank"
+  ],
+  "result": "sources found",
+  "notes": "Only Zuid-Holland (143 named ommetjes, 2016 data) has named local routes as open lines. Others: segments (Fryslân), one loop (Hilversum), networks (Utrecht, PDOK WMS). Provinces Groningen, Drenthe, Overijssel, Flevoland, Gelderland, Noord-Brabant, Limburg, Zeeland: nothing found in the portals searched; no provincial geoportal was queried directly."
+ },
+ {
+  "country": "Belgium",
+  "region": "Flanders (Antwerpen, Limburg, Oost-Vlaanderen, Vlaams-Brabant, West-Vlaanderen)",
+  "searched": [
+   "Datavindplaats (page is JS-rendered, search not usable)",
+   "Toerisme Vlaanderen GeoServer WFS capabilities",
+   "linked.toerismevlaanderen.be",
+   "transportdata.be",
+   "web search: wandellussen, wandelroutes, Westtoer, provinciale open data, Natuur en Bos wandelroutes, geopunt"
+  ],
+  "result": "path network only",
+  "notes": "Only the junction network (21545 segments) is open. No named loop dataset found for any province or for Natuur en Bos. Provincial portals and Geopunt were not queried directly (Datavindplaats search needs JavaScript)."
+ },
+ {
+  "country": "Belgium",
+  "region": "Wallonia (all five provinces)",
+  "searched": [
+   "ODWB Opendatasoft API (titles: randonn, sentier, balade, promenade, circuit, PIVOT)",
+   "metawal.wallonie.be geocatalogue (randonnée, promenade, sentier, pédestre, balisage, parc naturel)",
+   "PIVOT host",
+   "web search: PIVOT, Maisons du Tourisme, parcs naturels"
+  ],
+  "result": "sources found",
+  "notes": "Only municipal sets found on ODWB: Tournai (9 tourist-office walks, CC BY). The regional geoportal has cycle networks and Namur geological trails, no hiking route layer. GR Sentiers (grsentiers.org) offers GPX under its own terms (not opened). The ODWB API reset connections often, so Verviers and the Tournai 2021 set stay leads."
+ },
+ {
+  "country": "Belgium",
+  "region": "Brussels",
+  "searched": [
+   "opendata.brussels.be Opendatasoft: promenade, balade, sentier, itineraire, wandel, parcours, walk"
+  ],
+  "result": "nothing found",
+  "notes": "Found only street-art and comic trails and cycle routes. No walking route layer."
+ },
+ {
+  "country": "Belgium",
+  "region": "Ostbelgien",
+  "searched": [
+   "web search: Wanderwege Open Data GPX Lizenz Ostbelgien"
+  ],
+  "result": "nothing found",
+  "notes": "GPX downloads exist on ostbelgien.eu but no licence is stated in the results; not opened. The region has a junction network (LEADER paper). No open dataset found."
+ },
+ {
+  "country": "Poland",
+  "region": "all 16 voivodeships",
+  "searched": [
+   "api.dane.gov.pl search: szlaki turystyczne, szlak pieszy, szlaki piesze, sciezka dydaktyczna, trasy turystyczne, szlaki rowerowe, sciezki przyrodnicze, szlaki kulturowe, trasy spacerowe (fuzzy, mostly noise)",
+   "Dolnoslaskie dataset 25370",
+   "Lasy Panstwowe BDL WFS",
+   "web search",
+   "dane.gov.pl resources search for szlaki, sciezki, trasy, nordic walking, park krajobrazowy, Nadlesnictwo: only 3 trail-related resources exist (Dolnoslaskie WMS cultural and underground routes, Kolobrzeg CSV)",
+   "PTTK platform pages",
+   "web search for Malopolska MIIP, Slaskie, Pomorskie, Podkarpackie, Opolskie, national parks (TPN etc.): no open trail dataset found"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Czechia",
+  "region": "all 14 regions",
+  "searched": [
+   "CUZK ArcGIS REST and ZABAGED page",
+   "web search KCT open data",
+   "Liberec geoportal REST layer list (19 layers, none for trails)",
+   "web search Moravian-Silesian, CzechTourism, Lesy CR, naucne stezky: nothing found",
+   "Brno, Praha, Vysocina ArcGIS layers found via search; none states a licence"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Slovakia",
+  "region": "all 8 regions",
+  "searched": [
+   "data.slovensko.sk",
+   "geoportalksk.sk WFS (401)",
+   "web search KST",
+   "skgeodesy.sk / zbgis (host reset twice)",
+   "web search SOP SR, Lesy SR, naucne chodniky: nothing found; mapy.com has a naucne chodniky catalogue (commercial, not checked)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Hungary",
+  "region": "counties and national parks",
+  "searched": [
+   "data.gov.hu (reset)",
+   "web search MTSZ",
+   "OSM talk-hu 2021: MTSZ layer not public",
+   "kozadat.hu robots 200 only"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Switzerland",
+  "region": "geodienste.ch",
+  "searched": [
+   "atom/download.xml (731 datasets), sitemap"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Switzerland",
+  "region": "Parks and tourism hubs (Netzwerk Schweizer Pärke, Nationalpark, UNESCO Entlebuch, discover.swiss, MySwitzerland)",
+  "searched": [
+   "opendata.swiss: MySwitzerland, Naturpark Wanderweg, Nationalpark Wanderung, Ticino sentieri, Graubünden Wanderung Route, Wallis Wanderung",
+   "curl: opendata.myswitzerland.io (403 without key), paerke.ch (403), biosphaere.ch (502 twice), nationalpark.ch (web list), discover.swiss (free account)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Switzerland",
+  "region": "Hiking associations (Schweizer Wanderwege and 20 cantonal sites)",
+  "searched": [
+   "wandern.ch, luzerner/urner/schwyzer/ow/nw/zuger/zuercher/thurgauer/aargauer/valrando etc. /de/wandervorschlaege/",
+   "Berner Wanderwege: path has 404, not found",
+   "Glarner Wanderwege and Vaud Rando: 502 or reset",
+   "Fribourg Rando: page loads, no count"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Switzerland",
+  "region": "Geneva",
+  "searched": [
+   "opendata.swiss itinéraire pédestre; SITG ArcGIS count"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Switzerland",
+  "region": "Basel-Stadt, Aargau, Zürich, Bern, Valais, Jura",
+  "searched": [
+   "opendata.swiss"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Switzerland",
+  "region": "Ticino, Vaud, Neuchâtel, Basel-Land, Zug, Graubünden (cantonal data)",
+  "searched": [
+   "opendata.swiss: sentieri escursionistici, itinerari, chemins pédestres Vaud, Neuchâtel, Wanderwege BL/ZG/GR",
+   "geoportal robots: sitn.ne.ch, geo.bl.ch, map.geo.ti.ch, geo.gr.ch (404 or JS portal), zugmap.ch (blocked), geo.vd.ch, gis-daten.ch, geo.zh.ch (fetched, JS portals not read)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Switzerland",
+  "region": "Fribourg, St. Gallen, Thurgau, Schaffhausen, Glarus, Solothurn, Jura (cantonal data)",
+  "searched": [
+   "opendata.swiss path-network layers only; Weg der Vielfalt St.Gallen is the one themed trail"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Switzerland",
+  "region": "Terms of opendata.swiss",
+  "searched": [
+   "opendata.swiss/en/terms-of-use read once"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Switzerland",
+  "region": "Central Switzerland (LU, UR, SZ, OW, NW, ZG)",
+  "searched": [
+   "opendata.swiss CKAN: Wanderweg, Luzern/Obwalden/Nidwalden/Zug/Uri/Schwyz, Themenweg, Lehrpfad, Naturpfad, Erlebnisweg, Rundgang, Biosphäre Entlebuch"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Germany",
+  "region": "Schleswig-Holstein",
+  "searched": [
+   "opendata.schleswig-holstein.de search 'Wanderweg' (12 hits)",
+   "geodatenkatalog snippets",
+   "WebSearch Wanderwege Open Data SH"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Hamburg",
+  "searched": [
+   "suche.transparenz.hamburg.de HTML search: Wanderweg (0 hits), Wanderwege, Wandern, Freizeitrouten (0), Rundweg (only a landscape plan document)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Germany",
+  "region": "Berlin",
+  "searched": [
+   "gdi.berlin.de GeoNetwork record and WFS (Grüne Hauptwege)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Thüringen",
+  "searched": [
+   "geoproxy.geoportal-th.de WMS capabilities (read)",
+   "geoportal.thueringen.de (Link11 captcha page, not readable)",
+   "opendata.thueringen.de (no connection)",
+   "WebSearch: Thüringer Wald, Rennsteig, Erholungswege"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Bremen",
+  "searched": [
+   "WebSearch: Bremen Wanderwege Freizeitrouten Open Data Rundwege",
+   "geoportal.bremen.de answers, no catalogue query made"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Germany",
+  "region": "national",
+  "searched": [
+   "wanderinstitut.de Premiumwege pages",
+   "wanderbares-deutschland.de /wege pages"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Sachsen-Anhalt",
+  "searched": [
+   "WebSearch: LVermGeo, Geodatenportal, Wandernadel, IMG/SAiNT",
+   "saint.tech about, API, terms (read)",
+   "geodatenportal.sachsen-anhalt.de and geoportal.sachsen-anhalt.de not reachable by curl (301/000)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Brandenburg",
+  "searched": [
+   "WebSearch Brandenburg Wanderwege Open Data, TMB Open Data",
+   "geoportal.brandenburg.de robots (allows all), CSW query returned an HTML page",
+   "geodatenkatalog snippets (Ludwigsfelde, Beelitz, Nuthetal, Potsdam-Mittelmark)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Mecklenburg-Vorpommern",
+  "searched": [
+   "WebSearch: GAIA-MV, geoportal-mv, TMV Open Data, Naturpark Mecklenburgische Schweiz",
+   "geoportal-mv.de robots 404; umweltkarten.mv-regierung.de and geodaten-mv.de redirect only"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Germany",
+  "region": "Sachsen",
+  "searched": [
+   "opendata.sachsen.de (JS portal, API reset), SaTourN pages, geoportal.sachsen.de (reset / captcha), ArcGIS Hub Chemnitz (read, 27 routes), WebSearch Sächsische Schweiz, Erzgebirge, Dresden, Chemnitz"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Niedersachsen",
+  "searched": [
+   "WebSearch: Wanderwege Open Data, Niedersachsen Hub, Naturpark Lüneburger Heide/Solling, Region Hannover",
+   "TMN Hub presentation PDF read (counts)",
+   "geodaten.niedersachsen.de, geoportal.niedersachsen.de, opendata.niedersachsen.de: no connection or redirect only"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Harz (Niedersachsen, Sachsen-Anhalt, Thüringen)",
+  "searched": [
+   "WebSearch: Nationalpark Harz Open Data, Harzer Wandernadel, harzinfo Tourenportal",
+   "harzer-wandernadel GPS terms (snippet): private use only"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Sächsische Schweiz",
+  "searched": [
+   "WebSearch: Nationalparkverwaltung, Sachsenforst, saechsische-schweiz.de, Geoportal Sachsen"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Germany",
+  "region": "Erzgebirge",
+  "searched": [
+   "WebSearch: Tourismusverband Erzgebirge, Naturpark Erzgebirge/Vogtland, SaTourN"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Germany",
+  "region": "Thüringer Wald",
+  "searched": [
+   "WebSearch: Thüringer Wald Open Data, Rennsteig; ThüringenForst WMS FORST (read)",
+   "Thüringer Tourismus GmbH ThüCAT (snippet)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "all regions (process note)",
+  "searched": [
+   "govdata.de: robots.txt says 'Disallow: /' for all agents; I made ONE count request to its CKAN API before reading robots (q=Wanderweg, rows=0, 155 hits) and made no further call, so GovData was not searched; gdk.gdi-de.org (geodatenkatalog) and inspire-geoportal.ec.europa.eu reset every curl and cannot be resolved by WebFetch, so geodatenkatalog leads stay unverified; opendata.sachsen.de search is a JS app; SH and Hamburg portals searched by HTML (API disallowed)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Germany",
+  "region": "Saarland",
+  "searched": [
+   "earlier pass; Premiumwanderwege WFS verified, not redone"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Bayern",
+  "searched": [
+   "not re-searched in this run; earlier pass only"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Nordrhein-Westfalen",
+  "searched": [
+   "web searches; opengeodata.nrw.de; open.nrw mirrors (reset)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Germany",
+  "region": "Rheinland-Pfalz",
+  "searched": [
+   "geoportal.rlp.de catalogue search (mod_callMetadata.php, WMS and WFS) for Wanderweg, Wandern, Premiumweg, Premiumwanderweg, Traumpfad, Traumschleife, Freizeitwege, Rundweg, Wanderroute, Wanderwegenetz, Wegenetz, Naturpark, Pfälzerwald, Pfalz, Lehrpfad, Erlebnispfad, Qualitätsweg, Touren, Radweg, Tourismus",
+   "open.rlp.de (search 418, /api/ barred)",
+   "Pfalz Touristik Leitfaden PDF",
+   "web: Tourenplaner RLP terms, LVermGeo open data, Prädikatswanderwege"
+  ],
+  "result": "path network only",
+  "notes": "No Premiumweg, Traumpfad, Traumschleife or Prädikatswanderweg layer in the catalogue. Tourenplaner RLP terms not found. The tourism records follow the per-record CC rule (CC-BY-SA or similar); the state does not publish routes as in Saarland."
+ },
+ {
+  "country": "Germany",
+  "region": "Hessen",
+  "searched": [
+   "opendata.hessen.de HTML search: wanderweg, wandern, rundweg, freizeitwege = 0; tourismus = 23 statistics",
+   "geoportal.hessen.de catalogue search (mod_callMetadata.php): Wanderweg, Wandern, Premiumweg, Extratour, Wanderwegenetz, Freizeitwege, Rundweg, Tourismus, Naturpark. Hits: Radverkehrsanlagen GDI-Südhessen, Hessenatlas_Tourismus (WMS, statistics), HLNUG Naturparke (boundaries), Regionalpläne, Bebauungspläne",
+   "web: HVBG open data, Hessen Tourismus open data hub, Extratouren, Qualitätswege"
+  ],
+  "result": "nothing found",
+  "notes": "HVBG geodata is open since 2022-02-01 (OSM forum posts; terms not read) but no hiking route layer found. A snippet says an HVBG dataset on the INSPIRE geoportal is CC BY 4.0 (not a route dataset; not opened, host blocked). No Hessen tourism open data pool found."
+ },
+ {
+  "country": "Germany",
+  "region": "Baden-Württemberg",
+  "searched": [
+   "daten-bw.de (search 403 to curl)",
+   "LGL Open GeoData list and Basis-DLM page",
+   "metadaten.geoportal-bw.de GeoNetwork: Wander*, Wanderweg, Freizeitweg, Rundweg, Themenweg, Lehrpfad, Albverein, Schwarzwaldverein, Naturpark, Tourismus Route, Freizeit Weg",
+   "mobidata-bw.de CKAN HTML search: wander, wanderweg, rundweg = 0 (note: one API call, /api/3/action/package_search, was made before robots.txt was applied; it returned count 0)",
+   "wanderservice-schwarzwald.de (a trail-management software vendor page, no data)",
+   "pages.destination.one open-data template page (one tour, licence CC-BY-SA, images on Outdooractive static host: platform-fed)",
+   "web: Landkreise Breisgau-Hochschwarzwald, Ortenau, Schwarzwald-Baar, Lörrach, Calw, Freudenstadt, Rastatt, Emmendingen, Waldshut; Naturpark Südschwarzwald and Schwarzwald Mitte/Nord; cities Freiburg, Karlsruhe, Stuttgart"
+  ],
+  "result": "nothing found",
+  "notes": "No Landkreis, nature park or city publishes hiking routes as open data that I could find. Only Hohenlohekreis (token, restrictive terms) and the paid LGL TFIS. Karlsruhe publishes a Radnetz (CC BY 4.0) and POIs (CC0) on MobiData BW, cycling only. Landkreis and park sites were searched by web search only, not opened."
+ },
+ {
+  "country": "Spain",
+  "region": "País Vasco",
+  "searched": [
+   "opendata.euskadi.eus Gipuzkoa recorridos cortos page",
+   "Bizkaia lead from earlier pass"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Spain",
+  "region": "Navarra",
+  "searched": [
+   "earlier pass: datosabiertos.navarra.es SL-NA"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Spain",
+  "region": "La Rioja",
+  "searched": [
+   "earlier pass: datos.gob.es record (403 today)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Spain",
+  "region": "Andalucía",
+  "searched": [
+   "Junta de Andalucia CKAN: sendero, senderos homologados, ruta senderista, senderos uso publico, vias verdes",
+   "REDIAM geonetwork record read (portalrediam.cica.es)",
+   "web search REDIAM senderos de uso publico"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Spain",
+  "region": "Aragón",
+  "searched": [
+   "opendata.aragon.es catalogue (page senderos)",
+   "icearagon.aragon.es IGEAR geonetwork record",
+   "senderosturisticos.turismodearagon.com",
+   "web search: senderos turisticos de Aragon"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Spain",
+  "region": "Asturias",
+  "searched": [
+   "web search: Asturias senderos PR datos abiertos SITPA-IDEAS (asturias-cotesa.opendata.arcgis.com), datos.gob.es record for recreational areas only; asturias.es robots blocks crawling (earlier pass); FEMPA has its own route database, not open data found"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Spain",
+  "region": "Illes Balears",
+  "searched": [
+   "intranet.caib.es opendatacataleg: senderisme, rutes, camins, gr221 (one search before robots check)",
+   "web search: GR 221, Cami de Cavalls, Consell de Mallorca/Menorca/Eivissa"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Spain",
+  "region": "Canarias",
+  "searched": [
+   "datos.canarias.es CKAN: senderos, sendero, itinerarios, rutas, caminos, GR PR, island names (Gran Canaria, La Palma, Lanzarote, Fuerteventura), Cabildo senderos"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Spain",
+  "region": "Cantabria",
+  "searched": [
+   "web search: Cantabria senderos PR-S datos abiertos",
+   "datos.cantabria.es and gobiernoabierto.cantabria.es returned proxy 502"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Spain",
+  "region": "Castilla-La Mancha",
+  "searched": [
+   "datosabiertos.castillalamancha.es (Drupal, /api/3 returned an HTML page)",
+   "web search: senderos homologados PR SL datos abiertos; FDMCM site senderosdecastillalamancha.org has per-route tracks but no open licence seen; OSM wiki lists SL-CU only"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Spain",
+  "region": "Castilla y León",
+  "searched": [
+   "web search: datosabiertos.jcyl.es senderos / sendas; analisis.datosabiertos.jcyl.es and datosabiertos.jcyl.es reset connection"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Spain",
+  "region": "Catalunya",
+  "searched": [
+   "analisi.transparenciacatalunya.cat Socrata catalogue: senders, itineraris, camins, ruta, senderisme, excursionisme",
+   "dadesobertes.diba.cat (Drupal, no dataset API answered)",
+   "FEEC senders.feec.cat (web search)",
+   "ICGC (web search; no trail layer found)",
+   "Gencat dadesobertes (HTML only)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Spain",
+  "region": "Extremadura",
+  "searched": [
+   "web search: Extremadura senderos homologados datos abiertos (FEXME, extremadurarural.es list only)",
+   "datosabiertos.juntaex.es returned proxy 502"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Spain",
+  "region": "Galicia",
+  "searched": [
+   "web search: Xunta datos abertos sendeiros homologados, Sendegal app (no data file)",
+   "abertos.xunta.gal reset; portal licence said to be CC BY-SA 4.0 per snippet, not verified"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Spain",
+  "region": "Madrid",
+  "searched": [
+   "datos.comunidad.madrid robots.txt (earlier pass): User-agent * Disallow /, not fetched"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Spain",
+  "region": "Murcia",
+  "searched": [
+   "datosabiertos.regiondemurcia.es CKAN search: senderos (16 hits, none are trails), senderismo (10 hits, none are trails)",
+   "web search: murcianatural.carm.es, FMRM register, murciapie.es is unofficial"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Spain",
+  "region": "Comunitat Valenciana",
+  "searched": [
+   "carto.icv.gva.es ArcGIS REST layers 50-52",
+   "descargas.icv.gva.es (out of service)",
+   "dadesobertes.gva.es (reset)",
+   "FEDME province filter Alicante"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Spain",
+  "region": "National (FEDME)",
+  "searched": [
+   "CNIG Centro de Descargas series page and search endpoint",
+   "web search for WFS"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "France",
+  "region": "Auvergne-Rhône-Alpes",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Ain, Savoie, Haute-Savoie (3 PDIPR sets, LOv2/ODbL), Isère, Drôme, Puy-de-Dôme (Clermont), Métropole de Lyon, Annemasse, Vichy; Geotrek Livradois-Forez 381 treks"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "France",
+  "region": "Bourgogne-Franche-Comté",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Doubs (ODbL, 493 Geotrek-style treks), Saône-et-Loire (PDIPR, no download listed), Grand Besançon, Belfort, regional \"itinéraires touristiques d'intérêt régional\" shp"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "France",
+  "region": "Bretagne",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Côtes d'Armor (fr-lo/LOv2), Finistère (no resource listed), Lannion-Trégor, Brest, Lorient"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "France",
+  "region": "Centre-Val de Loire",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Loiret (LOv2), Eure-et-Loir (LOv2; host data.eurelien.fr robots disallow the export path, not fetched), Tours Métropole"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "France",
+  "region": "Corse",
+  "searched": [
+   "data.gouv.fr API q=randonnée Corse, sentiers, GR20 (no relevant dataset returned); Geotrek host guesses (parc-corse.org) no answer"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "France",
+  "region": "Grand Est",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Meurthe-et-Moselle (PDIPR, 58 resources, WFS, Licence Ouverte v1.0), Mulhouse Alsace Agglomération (LOv2), Thionville, Vandoeuvre schema_randonnee (ODbL), PNR Vosges du Nord (licence not specified); Sitlor, Club Vosgien, Alsace queries: no SIT portal dataset found on data.gouv.fr"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "France",
+  "region": "Hauts-de-France",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Métropole Européenne de Lille PDIPR (LOv2, OGC API features), Douaisis (fr-lo, 2019)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "France",
+  "region": "Île-de-France",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Hauts-de-Seine PDIPR (fr-lo, 2019), Région IDF PDIPR Hauts-de-Seine (no resources), Paris walks (not routes)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "France",
+  "region": "Normandie",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Calvados (LOv2, circuits qualité; host data.calvados.fr reset twice), Seine-Maritime PDESI (several, licence mostly notspecified, ArcGIS REST), Eure not found"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "France",
+  "region": "Nouvelle-Aquitaine",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Dordogne (LOv2, schema_randonnee, 8 resources), Grand Châtellerault (LOv2 gpkg); Landes, Gironde, Pyrénées-Atlantiques, Charente: nothing returned"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "France",
+  "region": "Occitanie",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Gard (LOv2, PR and GRP), Gers (LOv2), Haute-Garonne (LOv2), Aveyron (GR only), Lot agglomérations (fr-lo, 2017), Cévennes (fr-lo), Grands Causses Geotrek 1262 treks, Occitanie Pyrénées en Intelligence (Gard Geotrek sync datasets)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "France",
+  "region": "Pays de la Loire",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Loire-Atlantique (LOv2, 2021), CapAtlantique, Saint-Nazaire agglo; Vendée, Maine-et-Loire, Mayenne, Sarthe: nothing returned"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "France",
+  "region": "Provence-Alpes-Côte d'Azur",
+  "searched": [
+   "data.gouv.fr API q=PDIPR, randonnée, itinéraires de randonnée, sentiers, boucles, circuits, chemins de randonnée, balades, geotrek; Alpes-de-Haute-Provence (LOv2, WFS), PNR PACA via datasud (LOv2, 542 routes), Ecrins (LOv2, Geotrek 737), Vercors (LOv2 gpkg, Auvergne-Rhône-Alpes side), Port-Cros national park; Nice Métropole (VTT)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Alto Adige/Südtirol",
+  "searched": [
+   "data.civis.bz.it HTML search (sentieri, percorsi, escursion, itinerari)",
+   "civis WFS hits",
+   "tourism.opendatahub.com /v1/ODHActivityPoi all 3147 hiking-tagged records"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Trentino",
+  "searched": [
+   "dati.trentino.it HTML search: sentieri, percorsi, escursion, itinerari, trekking (API disallowed by robots)",
+   "web search Visit Trentino open data",
+   "SAT page (earlier pass)",
+   "siat.provincia.tn.it WFS GetCapabilities (68 layers: elevation, orthophoto, boundaries; no trails)",
+   "provincia.tn.it 'Tracciati alpini e vie ferrate' page (descriptive, no data link)",
+   "visittrentino.info robots allows; only per-trail pages and Word downloads found, no open-data release",
+   "web search Visit Trentino open data"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Italy",
+  "region": "Veneto",
+  "searched": [
+   "earlier pass: dati.veneto.it (verified)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Piemonte",
+  "searched": [
+   "regione.piemonte.it RPE pages",
+   "rpe.sistemapiemonte.it (404 on robots)",
+   "dati.piemonte.it (404)",
+   "geoportale.piemonte.it (502)",
+   "Torino WMS GetCapabilities and WFS attempt"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Friuli Venezia Giulia",
+  "searched": [
+   "irdat.regione.fvg.it geoserver WFS GetCapabilities (1145 types, grepped sentier/escurs/percors/itiner/cammin/ciclo)",
+   "hits and one sample per layer",
+   "IRDAT consultatore page licence text",
+   "dati.friuliveneziagiulia.it (TLS certificate mismatch, not usable)",
+   "eaglefvg.regione.fvg.it (500)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Lombardia",
+  "searched": [
+   "dati.lombardia.it Socrata catalog: sentieri, sentiero, escursion, percorsi",
+   "regione.lombardia.it REL page",
+   "web search for geoportale WFS URL and licence",
+   "INSPIRE record (502)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Italy",
+  "region": "Liguria",
+  "searched": [
+   "dati.regione.liguria.it HTML search (sentieri, escursion, itinerari: only Trenitalia/bus timetables)",
+   "geoservizi.regione.liguria.it WFS GetCapabilities (grepped titles), hits, CSV of names",
+   "web search for geoportal"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Emilia-Romagna",
+  "searched": [
+   "servizigis WFS (empty reply/no DNS)",
+   "dati.emilia-romagna.it (reset)",
+   "geoportale.regione.emilia-romagna.it (SPA, catalogue page 404)",
+   "ambiente.regione.emilia-romagna.it trail-network page (404)",
+   "web search REER licence"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Italy",
+  "region": "Valle d'Aosta",
+  "searched": [
+   "geoportale.regione.vda.it search, open-data page, download/rete-sentieristica page",
+   "catastosentieri.regione.vda.it",
+   "metadati.partout.it (no DNS)",
+   "web search"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Parks and provinces (all northern regions)",
+  "searched": [
+   "web search: Gran Paradiso, Stelvio, Adamello Brenta, Dolomiti Bellunesi, Cinque Terre open data trails",
+   "pngp.it page read: no GPX/open data link, only a general 'Note legali e licenze contenuti' footer link",
+   "Provinces Cuneo, Bergamo, Brescia, Sondrio, Belluno by web search; Torino covered through the Piemonte WMS",
+   "hosts unreachable: mappe.parconazionale5terre.it (reset), parcoadamellobrenta.it (502), dolomitibellunesi.it (TLS error)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Italy",
+  "region": "Not searched",
+  "searched": [
+   "CAI sections with their own register, mountain communities, large municipalities, Lombardia/Bergamo 'Sentieri bergamaschi' licence, Emilia-Romagna Moka Sentieri, Veneto and Alto Adige park pages (Dolomiti Bellunesi, Puez-Odle, etc.)"
+  ],
+  "result": "not searched"
+ },
+ {
+  "country": "Italy",
+  "region": "Marche",
+  "searched": [
+   "dati.gov.it CKAN: sentieri, escursionistici, percorsi",
+   "dati.regione.marche.it and marchegetlod.planetek.it (no DNS)",
+   "Sibillini park site",
+   "web search: RESM catasto (LR 2/2010) open data, nothing found"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Sardegna",
+  "searched": [
+   "dati.gov.it CKAN: sentieri (5 RNDT records of Ente Foreste)",
+   "sardegnasentieri.it home, sentieri, itinerari, Note legali",
+   "dati.regione.sardegna.it (CKAN API path not valid; no search made)",
+   "web search: catasto sentieri open data"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Basilicata",
+  "searched": [
+   "dati.gov.it CKAN: percorsi, sentieri, trekking",
+   "opservice.regione.basilicata.it (reset twice)",
+   "Matera open data record"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Toscana",
+  "searched": [
+   "dati.toscana.it web pages (robots disallow /api/; I used the CKAN API for 5 search calls before reading robots, then stopped)",
+   "dati.gov.it CKAN",
+   "geoscopio.regione.toscana.it (no DNS)",
+   "web search: RET open data, no regional RET dataset or licence found"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Umbria",
+  "searched": [
+   "dati.gov.it CKAN records for 3 regional datasets and Sud-Ovest Orvietano",
+   "dati.regione.umbria.it (no DNS)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Lazio",
+  "searched": [
+   "dati.lazio.it (502)",
+   "geoportale.regione.lazio.it (robots read; one /api/ call by mistake)",
+   "dati.gov.it: Lazio sentieri 0 hits, cammini",
+   "web search"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Italy",
+  "region": "Abruzzo",
+  "searched": [
+   "dati.gov.it CKAN: Abruzzo sentieri (0)",
+   "web search: open data sentieri Majella Gran Sasso",
+   "CAI Sulmona page read",
+   "opendata.regione.abruzzo.it and dati.regione.abruzzo.it did not resolve"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Italy",
+  "region": "Molise",
+  "searched": [
+   "dati.regione.molise.it (no DNS)",
+   "dati.gov.it: Molise sentieri 0 hits",
+   "web search: rete sentieri open data"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Italy",
+  "region": "Campania",
+  "searched": [
+   "dati.gov.it: Campania sentieri 0 hits",
+   "opendata.regione.campania.it, iteropendata (no DNS)",
+   "park of Vesuvio and Cilento pages",
+   "web search"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Italy",
+  "region": "Puglia",
+  "searched": [
+   "dati.gov.it CKAN: sentieri, rete escursionistica, cammini",
+   "dati.puglia.it CKAN (robots allow): sentieri 1 hit (Catasti, cadastre), escursion 0 hits",
+   "Lecce municipal dataset downloaded",
+   "web search: regional Catasto dei Sentieri (LR 21/2003) exists, no open geodata found; portal data under Italian Open Data License 2.0"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Italy",
+  "region": "Calabria",
+  "searched": [
+   "dati.gov.it: Calabria sentieri 0 hits",
+   "dati.regione.calabria.it, geoportale (no DNS)",
+   "Pollino park page",
+   "web search: no regional law or register published yet (draft PL 302 RECAL)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Italy",
+  "region": "Sicilia",
+  "searched": [
+   "sitr.regione.sicilia.it search sentieri and licence page",
+   "dati.regione.sicilia.it (no DNS)",
+   "Etna park pages",
+   "dati.gov.it: Sicilia sentieri 0 hits",
+   "web search"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Italy",
+  "region": "San Marino",
+  "searched": [
+   "web search: sentieri open data, Carta dei Sentieri, Catasto dei Sentieri",
+   "consigliograndeegenerale.sm (403), sanmarino.sm (no DNS)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Italy",
+  "region": "Malta",
+  "searched": [
+   "web search: walking trails open data",
+   "data.gov.mt / portal.data.gov.mt (Cloudflare block 403)",
+   "geoportal.gov.mt (no DNS)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Finland",
+  "region": "national and national parks",
+  "searched": [
+   "LIPAS API type codes 4403/4404/4405/4401/4406",
+   "Metsahallitus / Luontoon.fi open data (web search; kartta.luontoon.fi unreachable)",
+   "avoindata.fi (robots 403 for curl, not queried)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Norway",
+  "region": "national and counties",
+  "searched": [
+   "Geonorge kartkatalog: turrutebasen, tur og friluftsruter, turbase",
+   "WFS Turrutebasen counts",
+   "nasjonalturbase.no, ut.no",
+   "data.norge.no (search page only)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Sweden",
+  "region": "national and counties",
+  "searched": [
+   "Naturvardsverket geodata leder_friluftsliv WFS and GeoJSON",
+   "dataportal.se (JS page, API not reachable)",
+   "Naturkartan open data and terms",
+   "lansstyrelsen.se kartor och geodata; geodatakatalog (502)",
+   "Lantmateriet not searched (topographic map only)",
+   "vandringsleder, leder, naturreservat"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Denmark",
+  "region": "national and municipalities",
+  "searched": [
+   "opendata.dk GeoFA page",
+   "geofa.geodanmark.dk WFS capabilities and counts",
+   "geodanmark.dk licence terms",
+   "udinaturen.dk (robots empty; data comes from GeoFA)",
+   "dataforsyningen.dk (no trail layer looked for beyond reachability)",
+   "search: vandreruter WFS, Friluftsguiden"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Iceland",
+  "region": "national and national parks",
+  "searched": [
+   "gatt.lmi.is metadata catalogue search (gonguleidir, hiking, walking)",
+   "opingogn.is (CKAN API returned no JSON)",
+   "Ferdamalastofa hiking trail register project (search result only)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Portugal",
+  "region": "FCMP national register",
+  "searched": "not searched yet",
+  "result": "not searched"
+ },
+ {
+  "country": "Portugal",
+  "region": "dados.gov.pt (national portal)",
+  "searched": [
+   "udata API q= percursos pedestres, pequena rota, grande rota, trilhos, trilho, rotas, percurso pedestre, caminhada, levadas, veredas, rede de percursos, GPX, passadicos, sendeirismo, hiking, walking, trail, BTT, Madeira, Acores; tags percursos-pedestres, trilhos, turismo; direct slug reads"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Portugal",
+  "region": "FCMP national register (RNPP)",
+  "searched": [
+   "WebSearch FCMP RNPP licence dados abertos",
+   "fcmp.pt and percursospedestres.pt: certificate errors (name mismatch, expired), rnpp.fcmp.pt 502"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Estonia",
+  "region": "Estonia",
+  "searched": [
+   "avaandmed.eesti.ee API search: matkarada, matkaraja, matkarajad, RMK, rada, turism, trail, Metsa, puhke",
+   "WebSearch RMK avaandmed, Maa-amet"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Latvia",
+  "region": "Latvia",
+  "searched": [
+   "WebSearch LVM dabas takas atvertie dati",
+   "lvmgeo.lv/dati",
+   "data.gov.lv (down), geoserver.lvmgeo.lv (reset)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Portugal",
+  "region": "ICNF",
+  "searched": [
+   "WebSearch ICNF geocatalogo",
+   "sig.icnf.pt portal sharing search q=percursos (ArcGIS Enterprise), items and services read; dados.gov.pt ICNF organisation (42 datasets, no trail title)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Portugal",
+  "region": "Madeira",
+  "searched": [
+   "WebSearch Madeira percursos IFCN levadas veredas GPX; WebSearch Madeira ArcGIS FeatureServer; dados.gov.pt Madeira SRTAC organisation (18 datasets) title scan",
+   "dados.madeira.gov.pt, geoportal.madeira.gov.pt, ideram.madeira.gov.pt: proxy 502"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Portugal",
+  "region": "Intermunicipal communities and municipalities",
+  "searched": [
+   "dados.gov.pt organisations CIM, Municipio, AML, Palmela, Moura, Alto Tamega e Barroso title scan for percurso/trilho/rota/pedestre",
+   "WebSearch CIM percursos homologados GPX"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Andorra",
+  "region": "Andorra",
+  "searched": [
+   "WebSearch Govern d'Andorra dades obertes senders GPX; Camins de Natura",
+   "opendata.govern.ad and dades.govern.ad: proxy 502; govern.ad robots read; turisme.ad redirects to govern.ad"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Lithuania",
+  "region": "Lithuania",
+  "searched": [
+   "WebSearch VSTT pazintiniai takai atviri duomenys",
+   "data.gov.lt: WAF block on robots.txt and API",
+   "geoportal.lt open-data page read (robots ok): CC BY 4.0 shape downloads, no trail layer seen"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Romania",
+  "region": "Romania",
+  "searched": [
+   "data.gov.ro, geoportal.ancpi.ro, romsilva.ro, turism.gov.ro, economie.gov.ro: all reset or 502 from here, so unreachable",
+   "web search: trasee montane omologate, ROPED, Salvamont county registers, Romsilva GPX, park GPX",
+   "Retezat park site and Salvamont Harghita opened",
+   "Salvamont Maramures/Alba mentioned (44 and 85 trails, in news/PDF only)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Bulgaria",
+  "region": "Bulgaria",
+  "searched": [
+   "data.egov.bg (403 for robots.txt from here)",
+   "tourism.government.bg draft rulebook read",
+   "web search: Bulgarian Tourist Union GPX, registers, national parks Rila/Pirin/Central Balkan, geoportal/INSPIRE trail layers, Forestry Agency",
+   "only komoot/visorando/Balkan Green Belt (Mapy.cz) GPX and OSM hiking network wiki found; no official dataset",
+   "not reachable: geoportal.bg, park sites, old.bgmountains.org (503)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Greece",
+  "region": "Greece",
+  "searched": [
+   "data.gov.gr dataset search (robots allows /dataset/?q=): terms trail, μονοπάτια, μονοπάτι, πεζοπορία, διαδρομές, περίπατος, Ζαγόρι, Πήλιο, Άνδρος, δασική αναψυχή, path network",
+   "datasets read: Chania, Rethymno, Naxos, Crete Region, Mouzaki, Decentralised Admin of Crete, Kato Nevrokopi; Chalkidona OASTH is bus routes, excluded",
+   "monopatia.necca.gov.gr (funding portal only)",
+   "androsroutes.gr, menalontrail.eu, pathsofgreece.gr (all rights reserved; Menalon owner not found)",
+   "web search: forest service, ΕΟΟΑ, ministry path-recording rules (opengov.gr consultation), no forest or federation dataset",
+   "geodata.gov.gr reset the connection; Zagori and Pelion not found on data.gov.gr"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Cyprus",
+  "region": "Cyprus",
+  "searched": [
+   "data.gov.cy (search and /dataset paths 404 or disallowed by robots; files under /sites/default/files read)",
+   "ecoedatahub.eratosthenes.org.cy CKAN search 'trail' (4 datasets, all Department of Forests)",
+   "visitcyprus.com GPX pages (lead only)",
+   "Department of Land and Surveys tourist maps (licence and royalties required, per web search)",
+   "web search: licence, Creative Commons, Deputy Ministry of Tourism catalogue (no catalogue found)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Ireland",
+  "region": "Ireland (national)",
+  "searched": [
+   "data.gov.ie",
+   "Sport Ireland National Trails Register",
+   "ArcGIS Online search",
+   "Coillte",
+   "Wexford County Council",
+   "ArcGIS Online Heritage Council",
+   "Waterford",
+   "Donegal"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United Kingdom",
+  "region": "England",
+  "searched": [
+   "data.gov.uk (via dataset pages and web search)",
+   "Forestry England",
+   "Natural England National Trails",
+   "Yorkshire Dales NPA",
+   "North York Moors NPA",
+   "ArcGIS Online search for Dartmoor, Peak, Exmoor, Northumberland, South Downs, Lake District (no walk routes found)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United Kingdom",
+  "region": "Scotland",
+  "searched": [
+   "spatialdata.gov.scot (robots disallow all)",
+   "NatureScot hub",
+   "FLS recreation routes",
+   "core paths"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United Kingdom",
+  "region": "Wales",
+  "searched": [
+   "DataMapWales",
+   "NRW metadata",
+   "Snowdonia NPA ArcGIS",
+   "Brecon Beacons ArcGIS search"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United Kingdom",
+  "region": "Northern Ireland",
+  "searched": [
+   "OpenDataNI via data.gov.uk",
+   "Walk NI"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Australia",
+  "region": "New South Wales",
+  "searched": [
+   "Data.NSW CKAN API (walking track, walks, bushwalk, national parks walking, park walking tracks, NPWS, trail, visitor facilities)",
+   "SEED (download blocked, HTTP 202)",
+   "NPWS AMS_Assets ArcGIS",
+   "Crown Lands Recreation_Trails ArcGIS",
+   "web search for NPWS walking tracks service"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Australia",
+  "region": "Victoria",
+  "searched": [
+   "DataVic (discover.data.vic.gov.au) dataset search: walking track, walks, trails",
+   "DataVic API not used (robots disallows /api)",
+   "opendata.maps.vic.gov.au WFS",
+   "data.melbourne.vic.gov.au",
+   "web search for Parks Victoria dataset"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Australia",
+  "region": "Queensland",
+  "searched": [
+   "data.qld.gov.au (blocked HTTP 202, /api disallowed)",
+   "Brisbane council ArcGIS service",
+   "Sunshine Coast ArcGIS (down)",
+   "Gold Coast open data (web search found no trails dataset)",
+   "web search for QPWS tracks"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Australia",
+  "region": "South Australia",
+  "searched": [
+   "data.sa.gov.au CKAN API (walking trail, walks, national parks trails)",
+   "DEW Recreation Trails download",
+   "SA National Parks (parks.sa.gov.au) not checked for an open walks list"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Australia",
+  "region": "Western Australia",
+  "searched": [
+   "catalogue.data.wa.gov.au CKAN API (walk trail, trails, walking, Trails WA, DBCA recreation, bushwalk)",
+   "SLIP public services",
+   "web search Trails WA dataset",
+   "Perth councils: only a City of Canning footpath layer seen"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Australia",
+  "region": "Tasmania",
+  "searched": [
+   "data.gov.au search results (blocked by robots.txt)",
+   "theLIST ArcGIS public services directory",
+   "web search for PWS 60 Great Short Walks",
+   "City of Hobart ArcGIS service"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Australia",
+  "region": "Northern Territory",
+  "searched": [
+   "web search for data.nt.gov.au walking tracks, parks, trails",
+   "data.nt.gov.au robots.txt (API disallowed), host returned 502 once",
+   "Parks Australia (Kakadu, Uluru-Kata Tjuta) search found only a Geoscience Australia tourist map"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Australia",
+  "region": "Australian Capital Territory",
+  "searched": [
+   "ACT Socrata catalogue (walking, trail, nature reserve, track)",
+   "web search ACTmapi and data.gov.au",
+   "ACTmapi robots.txt"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Australia",
+  "region": "Australia (national)",
+  "searched": [
+   "data.gov.au (robots.txt disallows all; one CKAN call made before reading robots, then stopped)",
+   "Parks Australia and Geoscience Australia via web search",
+   "state forestry bodies (Forestry Corporation NSW, Sustainable Timber Tasmania, FPC WA) via web search: nothing found"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Australia",
+  "region": "Tasmania",
+  "searched": [
+   "theLIST ArcGIS public services (PWSPublic, OpenDataWFS and all Public folders)",
+   "listdata.thelist.tas.gov.au (returns 404 and an Apache error from here)",
+   "web search: Walking Tracks (PWS), Trails (PWS), Walking Track Surface and Structures (PWS), 60 Great Short Walks"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Australia",
+  "region": "Victoria (Parks Victoria)",
+  "searched": [
+   "DataVic search: parks victoria, Parks Victoria walks, walking track (only Parks Victoria camp grounds and huts appears)",
+   "opendata.maps.vic.gov.au WFS GetCapabilities grep for track, walk, trail (only recweb layers)",
+   "data-parksvic.opendata.arcgis.com ('Site does not exist')"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Australia",
+  "region": "Northern Territory",
+  "searched": [
+   "data.nt.gov.au dataset search pages for walk, track, trail (0 results)",
+   "web search"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Canada",
+  "region": "New Brunswick",
+  "searched": [
+   "GeoNB ArcGIS service list (62 services, folders)",
+   "GeoNB data catalogue (search)",
+   "gnb.socrata.com (catalog API returned nothing)",
+   "hikingnb.ca",
+   "Nature Trust of NB (search)",
+   "sentiers pédestres Nouveau-Brunswick données ouvertes (search)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Canada",
+  "region": "Nova Scotia",
+  "searched": [
+   "data.novascotia.ca Socrata catalogue (trail, trails, hiking, park)",
+   "Halifax open data hub (trails)",
+   "web search for provincial parks trails GIS, Hike Nova Scotia, Trails Nova Scotia: no data found",
+   "Natural Resources forestry digital data licence page"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Canada",
+  "region": "Ontario",
+  "searched": [
+   "data.ontario.ca (trail, hiking)",
+   "LIO ArcGIS REST",
+   "Conservation Ontario ArcGIS Hub (trails search, 7 hits)",
+   "TRCA, Conservation Halton, HCA, CLOCA, Quinte",
+   "Toronto CKAN (trails, hiking, walking trail, ravine)",
+   "Ottawa (open.ottawa.ca, maps.ottawa.ca service list)",
+   "NCC",
+   "Bruce Trail Conservancy"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Canada",
+  "region": "Prince Edward Island",
+  "searched": [
+   "data.princeedwardisland.ca hub (q=trail: one road centreline layer)",
+   "web search for PEI open data trails, Confederation Trail, provincial parks",
+   "Island Trails GitHub repository"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Canada",
+  "region": "Newfoundland and Labrador",
+  "searched": [
+   "opendata.gov.nl.ca home and 4 topic pages (no trail, park, recreation entries)",
+   "web search for NL trails open data, Trails NL, East Coast Trail",
+   "eastcoasttrail.ca (TLS failure)",
+   "provincial parks agency: not searched beyond web search"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Canada",
+  "region": "Québec",
+  "searched": [
+   "Données Québec (sentiers, sentier pédestre, randonnée pédestre) via web search and dataset pages",
+   "Sépaq",
+   "Balise Québec / Rando Québec (conditions d'utilisation)",
+   "Trois-Rivières, Sherbrooke",
+   "Montréal grands parcs (search only)",
+   "Ville de Québec, MRC portals, Géoboutique, tourism regions: only a search, not examined"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Canada",
+  "region": "Federal",
+  "searched": [
+   "open.canada.ca CKAN API: hiking trails, trails, sentiers randonnée, Parks Canada trails, Parks Canada activities hiking, Trans Canada Trail, The Great Trail, CanVec trails, National Trail Network",
+   "tctrail.ca terms"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Canada",
+  "region": "British Columbia",
+  "searched": [
+   "open.canada.ca CKAN (BC records): BC Parks trails, Recreation Sites and Trails BC, British Columbia park trails, recreation trails hiking, Trails BC",
+   "BC Data Catalogue (robots.txt disallows /api/; search page is a JS app, not readable by curl)",
+   "openmaps.gov.bc.ca WFS capabilities (TRAIL layers), counts and field read",
+   "BC Parks API"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "Canada",
+  "region": "Alberta",
+  "searched": [
+   "open.canada.ca CKAN: Alberta Parks trails, Kananaskis trails (0 hits), parks and protected areas",
+   "Alberta Designated and Provincial Trails service queried",
+   "Calgary and Edmonton Socrata catalogues: trail, pathway"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Canada",
+  "region": "British Columbia (municipalities)",
+  "searched": [
+   "Metro Vancouver, City of Vancouver (Opendatasoft API), DNV, CRD, Whistler via ArcGIS Hub search API",
+   "hub.arcgis.com datasets search"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Canada",
+  "region": "Manitoba",
+  "searched": [
+   "open.canada.ca CKAN: Manitoba provincial park hiking trails, trails, hiking trails",
+   "Winnipeg Socrata catalogue: trail (0 hits), pathway (1: Cycling Network)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Canada",
+  "region": "Saskatchewan",
+  "searched": [
+   "geohub.saskatchewan.ca search API: trail, park, recreation, hiking (only park boundaries and PCS regions found)",
+   "open.canada.ca CKAN: Saskatchewan trails parks (only national park items and federal records)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Canada",
+  "region": "Yukon",
+  "searched": [
+   "open.canada.ca CKAN: Yukon recreation trails parks hiking, trails",
+   "GeoYukon service query"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "Canada",
+  "region": "Northwest Territories",
+  "searched": [
+   "open.canada.ca CKAN: Northwest Territories parks trails"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "Canada",
+  "region": "Nunavut",
+  "searched": [
+   "open.canada.ca CKAN: Nunavut territorial parks trails (12 hits, only NRCan map sheets)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Auckland",
+  "searched": [
+   "Auckland Council hub data-aucklandcouncil.opendata.arcgis.com: walk, track, trail, walkway, path, hiking, footpath, regional park, open space",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 1832 (Auckland 1832)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Canterbury",
+  "searched": [
+   "Christchurch City Council hub (walking track, track): Walking and Mountain Bike Route layer with 277 walk records",
+   "Environment Canterbury Canterbury_Maps layer 22",
+   "Selwyn District ArcGIS folders (no tracks layer)",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 3031 (Christchurch 1179, Timaru 759, Mackenzie 293, Hurunui 224, Selwyn 210, Ashburton 181, Waimakariri 102, Waimate 46, Kaikoura 37)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Wellington",
+  "searched": [
+   "Wellington City hub (walk, track, trail, walkway, park, cycle) and WCC Parks MapServer: Parks Named Tracks, 26 walkways",
+   "Greater Wellington Regional_Tracks MapServer",
+   "web search for GWRC Park Tracks (lead on data.govt.nz)",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 4350 (Wellington City 2719, Kapiti Coast 667, Porirua 441, Lower Hutt 231, Upper Hutt 68, South Wairarapa 85, Masterton 85, Carterton 54)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Marlborough",
+  "searched": [
+   "Marlborough hub data-marlborough.opendata.arcgis.com: track, walk, trail",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 1032 (Marlborough 1032)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Waikato",
+  "searched": [
+   "maps.waikatoregion.govt.nz root listing (robots disallow /arcgis/, so no further calls)",
+   "web search: Waikato Regional Council open data tracks",
+   "Hamilton City hub data-hcc.opendata.arcgis.com: track, walk, trail gave 0",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 1291 (Thames-Coromandel 410, Taupo 231, Waipa 145, Waikato 142, Hauraki 93, Waitomo 80, South Waikato 75, Matamata-Piako 62, Otorohanga 44, Hamilton 9)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Bay of Plenty",
+  "searched": [
+   "maps.boprc.govt.nz and data-boprc hub (search API returned nothing)",
+   "Tauranga City gis.tauranga.govt.nz: Cycle_and_Walk is counter points only",
+   "web search: Tauranga walkways (PDF booklet and web pages only), Western Bay uploaded tracks to WAMS",
+   "Rotorua not found as own dataset; 1591 segments in national tracks dataset",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 2032 (Rotorua 1591, Whakatane 270, Western Bay of Plenty 143, Opotiki 28)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Otago",
+  "searched": [
+   "QLDC gis.qldc.govt.nz/server OpenSpaces folder (parks only)",
+   "web search: Dunedin City 'Tracks and trails around Dunedin' web map, no download found",
+   "Otago Regional Council not found",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 4230 (Queenstown-Lakes 2317, Dunedin 1370, Central Otago 263, Waitaki 195, Clutha 85)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Tasman",
+  "searched": [
+   "web search: Tasman District Council TDC GeoHUB (said to exist, not opened, some layers not downloadable), Top of the South Maps",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 1142 (Tasman 1142)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Nelson",
+  "searched": [
+   "web search: Nelson City Council GIS (CC BY 3.0 NZ stated in a search result, not read), Top of the South Maps",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 1232 (Nelson 1232)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Taranaki",
+  "searched": [
+   "maps.trc.govt.nz OpenData/LocalMaps folders (no tracks)",
+   "web search: New Plymouth GeoHUB (no walkways layer in harvest titles)",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 512 (New Plymouth 291, Stratford 162, South Taranaki 59)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Hawke's Bay",
+  "searched": [
+   "web search: Hastings open data hub (17 datasets, no tracks), Napier, HBRC trails page (web page only)",
+   "maps.hbrc.govt.nz returned 523",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 739 (Hastings 464, Napier 105, Wairoa 102, Central Hawke's Bay 68)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Manawatu-Whanganui",
+  "searched": [
+   "maps.horizons.govt.nz LocalMapsPublic folder (no tracks)",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 1676 (Palmerston North 1135, Ruapehu 231, Manawatu 80, Tararua 72, Horowhenua 71, Rangitikei 69, Whanganui 18)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Northland",
+  "searched": [
+   "No region-specific search made; only the national datasets (DOC, Herenga a Nuku) cover it",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 674 (Far North 452, Whangarei 128, Kaipara 94)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Gisborne",
+  "searched": [
+   "No region-specific search made; only the national datasets (DOC, Herenga a Nuku) cover it",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 50 (Gisborne 50)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "West Coast",
+  "searched": [
+   "No region-specific search made; only the national datasets (DOC, Herenga a Nuku) cover it",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 685 (Westland 322, Buller 277, Grey 86)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "Southland",
+  "searched": [
+   "No region-specific search made; only the national datasets (DOC, Herenga a Nuku) cover it",
+   "National tracks dataset (Herenga a Nuku) segments in this region: 809 (Southland 460, Invercargill 274, Gore 75)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "New Zealand",
+  "region": "National",
+  "searched": [
+   "DOC open data hub + API portal",
+   "LINZ topo track layer",
+   "Herenga a Nuku open data hub",
+   "Te Araroa trust",
+   "data.govt.nz (blocked by bot protection)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Minnesota",
+  "searched": [
+   "MN Geospatial Commons (gisdata.mn.gov, JS site, API not usable)",
+   "ArcGIS Online search: Minnesota DNR state trails, state park trails, hiking trails, Three Rivers Park District",
+   "enterprise.gisdata.mn.gov DNR service directory"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Michigan",
+  "searched": [
+   "ArcGIS Online search (Michigan DNR trails, state park trails hiking)",
+   "Michigan DNR DNRTrailsOPENDATA service directory",
+   "Oakland County open data"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Wisconsin",
+  "searched": [
+   "ArcGIS Online search: Wisconsin DNR trails, state park trails, county park trails hiking, Milwaukee County",
+   "dnrmaps.wi.gov service directory"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Ohio",
+  "searched": [
+   "ArcGIS Online search: Ohio DNR trails, Ohio statewide trails, Cleveland Metroparks, Great Parks of Hamilton County",
+   "gis.ohiodnr.gov and gis2.ohiodnr.gov service directories"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Indiana",
+  "searched": [
+   "ArcGIS Online search: Indiana DNR trails, Indiana state park trails",
+   "gisdata.in.gov Trails_AGOL_RO service"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Illinois",
+  "searched": [
+   "ArcGIS Online search: Illinois DNR trails, state parks trails, Cook County Forest Preserves, Chicago Park District",
+   "Socrata catalog: Cook County, data.illinois.gov, Chicago",
+   "ISGS clearinghouse robots"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Kentucky",
+  "searched": [
+   "ArcGIS Online search: Kentucky trails hiking, Kentucky State Parks",
+   "Socrata catalog data.kentucky.gov (not found)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Tennessee",
+  "searched": [
+   "ArcGIS Online search: Tennessee State Parks trails, TDEC trails, Nashville greenways, NashvilleOpenData",
+   "Socrata catalog data.nashville.gov (not found)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Texas",
+  "searched": [
+   "ArcGIS Online search: Texas Parks and Wildlife trails, TPWD State Park Trails, Houston, Dallas, Austin parks trails",
+   "Socrata catalog data.texas.gov (no trail dataset returned)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Missouri",
+  "searched": [
+   "ArcGIS Online search: Missouri state parks trails, Missouri DNR trails, MoDNR, Missouri Department of Conservation trails",
+   "Socrata catalog data.mo.gov (only a water trail dataset)",
+   "gis.dnr.mo.gov service directory (404)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Arkansas",
+  "searched": [
+   "ArcGIS Online search: Arkansas state parks trails, Arkansas trails hiking, Arkansas State Parks Natural Heritage"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Iowa",
+  "searched": [
+   "ArcGIS Online search: Iowa DNR trails, Iowa state park trails, Iowa state forest trails",
+   "Socrata data.iowa.gov (no catalogue entry)",
+   "programs.iowadnr.gov Recreation services"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Nebraska",
+  "searched": [
+   "ArcGIS Online search: Nebraska Game and Parks trails, Nebraska trails state recreation area"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Oklahoma",
+  "searched": [
+   "ArcGIS Online search: Oklahoma state parks trails, Oklahoma Tourism Recreation trails, Oklahoma City"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "South Dakota",
+  "searched": [
+   "ArcGIS Online search: South Dakota trails, South Dakota Game Fish Parks trails, state parks Custer"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "North Dakota",
+  "searched": [
+   "ArcGIS Online search: North Dakota trails, North Dakota Parks and Recreation trails, Maah Daah Hey, Fargo Bismarck trails",
+   "gis.nd.gov news: Parks and Recreation asked for help building a statewide trail inventory (not yet published); GIS Hub lists snowmobile trails and state parks only",
+   "gf.nd.gov maps/data (no trail layer found in text)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "United States",
+  "region": "Kansas",
+  "searched": [
+   "ArcGIS Online search: Kansas trails state parks, Kansas Wildlife and Parks trails, Kansas City, Wichita, Lawrence, Topeka",
+   "web search: Kansas DASC (kansasgis.org) clearinghouse: no trail layer found; 2007 KDWP Recreation Finder lists 450 trails but is dated"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "United States",
+  "region": "Louisiana",
+  "searched": [
+   "ArcGIS Online search: Louisiana state parks trails, Louisiana trails hiking, New Orleans, Baton Rouge",
+   "web search: Louisiana Office of State Parks GIS (SCORP names a data system LORI, not opened); trail GIS data listed as a planned task"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "United States",
+  "region": "Massachusetts",
+  "searched": [
+   "data.mass.gov",
+   "MassGIS trails pages (mass.gov blocks curl with 403, used search)",
+   "DCR roads and trails",
+   "MassTrails statewide trails roadmap",
+   "ArcGIS Online MassGIS org services"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Vermont",
+  "searched": [
+   "geodata.vermont.gov hub API",
+   "VCGI ArcGIS REST",
+   "ANR open data services",
+   "search: Vermont Trails and Greenways"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "New Hampshire",
+  "searched": [
+   "GRANIT metadata and FTP",
+   "NH geodata hub API",
+   "search: NH DNCR Bureau of Trails data, NH statewide trails inventory"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Maine",
+  "searched": [
+   "Maine GeoLibrary / MEGIS (403 to curl, search only)",
+   "gis.maine.gov ArcGIS REST folders acf, bpl, escb",
+   "Maine Bureau of Parks and Lands GIS/mapping page",
+   "Maine Trail Finder",
+   "search: Maine trails open data"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "United States",
+  "region": "Connecticut",
+  "searched": [
+   "geodata.ct.gov hub API (DEEP trails)",
+   "services1.arcgis.com DEEP org",
+   "search: CT blue-blazed trails CFPA data",
+   "data.ct.gov"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Rhode Island",
+  "searched": [
+   "RIGIS ArcGIS REST RIDEM folder",
+   "search: RIGIS hiking trails",
+   "Outdoor Recreation Map v4 layers"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Pennsylvania",
+  "searched": [
+   "DCNR GIS ArcGIS REST Parks folder",
+   "DCNR open data hub",
+   "search: PASDA, DCNR state forest trails",
+   "Keystone Trails Association (lead only)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "New Jersey",
+  "searched": [
+   "NJDEP mapsdep.nj.gov ArcGIS REST (Features/Land, Land_lu)",
+   "search: NJ state park trails open data, NJ GeoWeb",
+   "NJ Trails task force"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Maryland",
+  "searched": [
+   "dnr.geodata.md.gov ArcGIS REST (AIMS Trail_Atlas_2016)",
+   "search: Maryland DNR trails open data, Maryland Trails Program",
+   "Montgomery County MD (not yet)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Virginia",
+  "searched": [
+   "dcr.virginia.gov trail data and mapping page",
+   "VDCR Trails hub (API query gave no vdcr datasets)",
+   "search: Virginia State Parks trails feature service",
+   "Fairfax County TrailBuddy ArcGIS REST"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "North Carolina",
+  "searched": [
+   "NC OneMap NC1Map_Recreation REST",
+   "search: NC State Parks trails GIS, trails.nc.gov",
+   "county data surfaced by search: Carteret, Jackson, Wake (Wake not opened)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "United States",
+  "region": "Delaware",
+  "searched": [
+   "Delaware FirstMap ArcGIS REST (Transportation)",
+   "search: DNREC trails, Delaware Greenways (none found)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "West Virginia",
+  "searched": [
+   "WVGISTC / mapwv.gov trails (404 to curl)",
+   "WV ArcGIS Online services1 cTNi34MxOdcfum3A",
+   "search: WVDNR state parks and forests trails (none found)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Washington DC",
+  "searched": [
+   "maps2.dcgis.dc.gov ArcGIS REST (Recreation, Bikes_Trails)",
+   "search: opendata.dc.gov trails, Rock Creek Park"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Alabama",
+  "searched": [
+   "alapark.com mapping and trail mapping resources",
+   "conservationgis.alabama.gov (REST roots return 404)",
+   "search: Alabama state parks trails GIS open data"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "United States",
+  "region": "Mississippi",
+  "searched": [
+   "MARIS metadata (state parks 2019, recreational facilities 2017)",
+   "MDWFP trails page and GIS program",
+   "search: Mississippi state parks trails GIS"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "United States",
+  "region": "South Carolina",
+  "searched": [
+   "sctrails.net about and resources",
+   "search: SCPRT state parks trails GIS, SC open data",
+   "Beaufort County GIS (seen in search, not opened)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "United States",
+  "region": "Georgia",
+  "searched": [
+   "search: Georgia State Parks trails GIS, Georgia DNR shapefile",
+   "data.georgiaspatial.org (GA GIS Clearinghouse, redirects, robots old)",
+   "Friends of Georgia State Parks trail mapping"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "United States",
+  "region": "New York",
+  "searched": [
+   "data.ny.gov Socrata catalog (trails, state park trail)",
+   "data.cityofnewyork.us (directory of hiking trails)",
+   "NYS DEC DIL ArcGIS REST folders dil/opsrec",
+   "OPRHP trails",
+   "Westchester County GIS",
+   "NYNJTC, ADK, APA GIS downloads (search)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Florida",
+  "searched": [
+   "FDEP open data ArcGIS REST (PARKS_BOUNDARIES)",
+   "FGDL / Office of Greenways and Trails Existing Trails service",
+   "search: Florida Greenways and Trails System data"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Federal / national",
+  "searched": [
+   "catalog.data.gov /search: national forest system trails, NPS trails, recreation opportunities, RIDB, national recreation trail, BLM trails, USGS national digital trails, Army Corps trails, FWS refuge trails",
+   "FS EDW ArcGIS (arcx), NPS mapservices, BLM gis.blm.gov, USGS carto.nationalmap.gov, ArcGIS Online search for FWS/Reclamation/USACE",
+   "NPS API thingstodo (DEMO_KEY)",
+   "RIDB, Recreation.gov robots",
+   "web search for NRT database and TrailLink terms"
+  ],
+  "result": "sources found",
+  "not_done": [
+   "FS data hub (data-usfs.hub.arcgis.com) not called (robots Crawl-delay 60)",
+   "NPS /places and /tours endpoints",
+   "RIDB bulk download",
+   "Full terms pages of AHS, AMC, American Trails",
+   "NPS National Trails System per-trail layers",
+   "BLM national-trail layers beyond OR/WA",
+   "Federal 'Trails of X' DataStore items individually"
+  ]
+ },
+ {
+  "country": "United States",
+  "region": "Utah",
+  "searched": [
+   "ArcGIS Online search: Utah trails pathways, Salt Lake County trails, Utah State Parks trails, UGRC",
+   "gis.utah.gov trails-and-pathways product page",
+   "Utah Trail Network Master Plan (proposed network, not a route dataset)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Colorado",
+  "searched": [
+   "ArcGIS Online item search: COTREX, Colorado Parks and Wildlife trails, Jefferson County trails, Boulder OSMP",
+   "data.colorado.gov Socrata catalogue API (q=trail)",
+   "trails.colorado.gov (COTREX web app, robots allows non-map paths)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Washington",
+  "searched": [
+   "ArcGIS Online item search: Washington State Parks trails, WA RCO statewide trails, WA DNR recreation trails, King County trails, WDFW wildlife area trails",
+   "data.wa.gov Socrata catalogue (q=trails): only a Kenmore Trails map and a small 'Trails' dataset, not examined",
+   "geo.wa.gov robots.txt (crawl-delay 60, so not crawled)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Oregon",
+  "searched": [
+   "ArcGIS Online item search: Oregon State Parks trails, Oregon statewide trails OPRD, Metro RLIS trails, Oregon Dept of Forestry recreation trails",
+   "ODF has a Recreation Inventory Public View service (not examined)",
+   "no statewide Oregon trails register found beyond the above"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "California",
+  "searched": [
+   "data.ca.gov CKAN package_search q=trails",
+   "ArcGIS Online item search: California State Parks trails, EBRPD, Marin trails, Midpen, LA County trails, Santa Clara County Parks",
+   "web search for EBRPD and LA County open trails data",
+   "not examined: CAL FIRE, CDFW, Sonoma County, San Diego County and SANDAG, City of San Diego, Orange County, Sierra Club or conservancy layers, Santa Monica Mountains conservancy"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Arizona",
+  "searched": [
+   "ArcGIS Online item search: Arizona State Parks trails, Arizona statewide trails, Maricopa County parks trails, Arizona Game and Fish",
+   "not examined: Pima County, Tucson, Phoenix, Flagstaff, Coconino County, Sedona, Scottsdale McDowell Sonoran Preserve"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "New Mexico",
+  "searched": [
+   "ArcGIS Online item search: New Mexico State Parks trails, Albuquerque Open Space trails, New Mexico recreation trails, Santa Fe trails",
+   "web search for RGIS, EMNRD State Parks, Albuquerque Open Space",
+   "RGIS (gstore.unm.edu) holds only a 2009 State Parks boundary layer, not trails"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "United States",
+  "region": "Idaho",
+  "searched": [
+   "ArcGIS Online item search: Idaho State Parks trails, IDPR statewide trails, Boise Ridge to Rivers",
+   "not examined: Idaho Transportation Dept, Idaho Department of Lands, Ada County, Coeur d'Alene or Pocatello trail layers"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Montana",
+  "searched": [
+   "ArcGIS Online item search: Montana State Parks trails, Montana FWP trails",
+   "not examined: Montana State Library / Montana Natural Heritage statewide layers, Missoula, Bozeman, Flathead County"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Wyoming",
+  "searched": [
+   "ArcGIS Online item search: Wyoming State Parks trails, Wyoming trails statewide hiking",
+   "not examined: Wyoming Geospatial Hub (geospatialhub.org), Teton County, Jackson, Casper, Cheyenne"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "Nevada",
+  "searched": [
+   "ArcGIS Online item search: Nevada State Parks trails, Clark County, Washoe County, Reno trails, Nevada Division of Outdoor Recreation SCORP",
+   "data.nv.gov Socrata catalogue q=trails: no result",
+   "only motorized SCORP layers found (SCORP_Moto, ClarkCounty_MotoRoads_Trails2025)"
+  ],
+  "result": "nothing found"
+ },
+ {
+  "country": "United States",
+  "region": "Hawaii",
+  "searched": [
+   "ArcGIS Online item search: Na Ala Hele trails, Hawaii DLNR trails, Hawaii statewide GIS hiking",
+   "geodata.hawaii.gov service layer 34 queried directly",
+   "not examined: county parks (Honolulu, Maui, Hawaii County), National parks (federal, out of scope)"
+  ],
+  "result": "sources found"
+ },
+ {
+  "country": "United States",
+  "region": "Alaska",
+  "searched": [
+   "ArcGIS Online item search: Alaska State Parks trails, Alaska DNR trails, Anchorage trails, Alaska statewide trails inventory",
+   "found also a 2022 SCORP Trails layer from the Alaska Geospatial Office (services1.arcgis.com/7HDiw78fcUiM2BWn, not examined) and Anchorage Nordic trails (winter use)"
+  ],
+  "result": "path network only"
+ },
+ {
+  "country": "United States",
+  "region": "US west (all states)",
+  "searched": [
+   "Curated hike or loop datasets with difficulty and duration: searched ArcGIS Online and state portals for recommended hikes, loops, hike lists",
+   "none found as open data; the nearest are whole named trails with a difficulty field (Hawaii Na Ala Hele, Maricopa County, Boulder OSMP and Boulder County, Boise Ridge to Rivers, Wyoming state parks, LA County DPR). No duration field was found in any layer. Curated hike content sits in apps (COTREX Featured Routes, trails.lacounty.gov on OuterSpatial), not in open layers."
+  ],
+  "result": "nothing found"
+ }
+]

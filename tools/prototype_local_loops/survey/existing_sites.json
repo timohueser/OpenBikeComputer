@@ -1,0 +1,533 @@
+[
+ {
+  "name": "Waymarked Trails (Hiking)",
+  "url": "https://hiking.waymarkedtrails.org/",
+  "coverage": "Worldwide map layer of OSM hiking route relations",
+  "source": "OpenStreetMap route relations tagged iwn/nwn/rwn/lwn",
+  "quality_mark": "No quality mark; shows the OSM network level (international/national/regional/local)",
+  "curated": "No; shows whatever OSM mappers tagged as routes",
+  "open_data": "Yes, OSM (ODbL); site has no robots.txt (404)",
+  "gap": "Signed routes only, not 'recommended loops'; levels are tagged inconsistently by country; no day-hike filter or tourism-office mark",
+  "evidence": {
+   "coverage": "direct (page title only) + lead",
+   "source": "lead",
+   "quality_mark": "lead",
+   "curated": "lead",
+   "open_data": "lead",
+   "gap": "inference"
+  }
+ },
+ {
+  "name": "Komoot",
+  "url": "https://www.komoot.com/",
+  "coverage": "Global, strong in Europe",
+  "source": "Users, Komoot editors, partner tourism boards and brands (Collections)",
+  "quality_mark": "Highlights are community-rated; Collections come from editors, partners and friends; no official-route mark found",
+  "curated": "Mixed: Collections partly curated, rest is a large user pile",
+  "open_data": "No (not checked in detail); robots.txt exists",
+  "gap": "No separation of official versus user routes; sponsored collections possible; closed data",
+  "evidence": {
+   "coverage": "direct (homepage description)",
+   "source": "lead",
+   "quality_mark": "lead",
+   "curated": "lead",
+   "open_data": "not checked",
+   "gap": "inference"
+  }
+ },
+ {
+  "name": "Outdooractive / Alpenvereinaktiv",
+  "url": "https://www.outdooractive.com/",
+  "coverage": "Europe-wide, densest in DACH; Alpenvereinaktiv is the Alpine clubs' portal run on the same platform",
+  "source": "Destinations, tourism offices, guides, Alpine clubs, users; 'Alliance of the Officials' partner programme",
+  "quality_mark": "Partner/publisher attribution and a Pro+ premium tier; exact 'official' badge not verified; homepage (direct) says routes are recommended by mountain guides, trail wardens and industry pros; alpenvereinaktiv.com menu (direct) has 'Recommended Tours' and Pro tier",
+  "curated": "Mixed: official partner content plus user content",
+  "open_data": "No; robots.txt disallows GPX download paths and sets ai-train=no",
+  "gap": "Closest content match for DACH but closed, commercial, and official versus user routes not cleanly filterable (not verified); thin outside DACH",
+  "evidence": {
+   "coverage": "lead",
+   "source": "lead",
+   "quality_mark": "lead",
+   "curated": "lead",
+   "open_data": "direct (robots.txt)",
+   "gap": "inference"
+  }
+ },
+ {
+  "name": "AllTrails",
+  "url": "https://www.alltrails.com/",
+  "coverage": "Global; homepage claims over 500,000 trails",
+  "source": "Users and curated trail pages; claims verified routes plus OSM segments",
+  "quality_mark": "Curated Trails vs Community Content (third-party description)",
+  "curated": "Mixed",
+  "open_data": "No (not checked)",
+  "gap": "US-centred, not official-route based, closed data",
+  "evidence": {
+   "coverage": "direct",
+   "source": "lead",
+   "quality_mark": "lead",
+   "curated": "lead",
+   "open_data": "not checked",
+   "gap": "inference"
+  }
+ },
+ {
+  "name": "Wikiloc",
+  "url": "https://www.wikiloc.com/",
+  "coverage": "Global user tracks",
+  "source": "Users",
+  "quality_mark": "None found",
+  "curated": "No, unfiltered pile",
+  "open_data": "No; downloads are paid",
+  "gap": "Unfiltered user tracks; site blocked my curl with a bot challenge (403), so not opened",
+  "evidence": {
+   "coverage": "lead",
+   "source": "lead",
+   "quality_mark": "lead",
+   "curated": "lead",
+   "open_data": "lead",
+   "gap": "inference"
+  }
+ },
+ {
+  "name": "Bergfex",
+  "url": "https://www.bergfex.com/",
+  "coverage": "Alpine countries mainly (not checked)",
+  "source": "not checked",
+  "quality_mark": "not checked",
+  "curated": "not checked",
+  "open_data": "not checked",
+  "gap": "Site returned a bot challenge (403) and robots.txt disallows my agent; not fetched",
+  "evidence": {
+   "all": "not checked"
+  }
+ },
+ {
+  "name": "Mapy.com (Mapy.cz)",
+  "url": "https://mapy.com/",
+  "coverage": "World maps, strongest in Czechia and Central Europe",
+  "source": "Map shows hiking trails (OSM-based marked trails; Czech KCT marked trails)",
+  "quality_mark": "Not checked",
+  "curated": "Not checked; map layer rather than a route catalogue",
+  "open_data": "Not checked",
+  "gap": "Map layer of marked trails, no loop catalogue or official mark checked",
+  "evidence": {
+   "coverage": "direct (description: displays hiking trails)",
+   "source": "not checked",
+   "quality_mark": "not checked",
+   "curated": "not checked",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "OsmAnd and Organic Maps route layers",
+  "url": "https://osmand.net/docs/user/map/routes",
+  "coverage": "Worldwide, wherever OSM has route relations",
+  "source": "OSM route relations (lwn/rwn/nwn/iwn)",
+  "quality_mark": "Network level only",
+  "curated": "No",
+  "open_data": "Yes (OSM); apps open source",
+  "gap": "Same as Waymarked Trails; display only, no loop browsing or filtering by quality",
+  "evidence": {
+   "coverage": "lead",
+   "source": "lead",
+   "quality_mark": "lead",
+   "curated": "lead",
+   "open_data": "lead",
+   "gap": "inference"
+  }
+ },
+ {
+  "name": "European Ramblers Association: Leading Quality Trails (LQT), Quality Day Walk",
+  "url": "https://www.era-ewv-ferp.org/lqt/",
+  "coverage": "Certified trails in many European countries; Day Walk certificate for 4-25 km exists",
+  "source": "ERA certification by audit; valid 3 years then re-tested",
+  "quality_mark": "Yes, the certification itself",
+  "curated": "Yes, strictly",
+  "open_data": "Not checked",
+  "gap": "Very few routes (mostly multi-day, min 50 km); Day Walk list size not checked; ERA site returned 503 to my curl, so facts are from search",
+  "evidence": {
+   "coverage": "lead",
+   "source": "lead",
+   "quality_mark": "lead",
+   "curated": "lead",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "SchweizMobil / Wanderland Schweiz",
+  "url": "https://www.schweizmobil.ch/en",
+  "coverage": "Switzerland and Liechtenstein; national, regional, local routes",
+  "source": "Federal Roads Office (ASTRA) with cantonal bodies",
+  "quality_mark": "Official network numbering",
+  "curated": "Yes, official",
+  "open_data": "Yes: opendata.swiss and geo.admin.ch, 'open use, cite source' (lead); robots.txt allows all (direct)",
+  "gap": "One country only; routes are network stages, not 'loops' chosen for day hikes",
+  "evidence": {
+   "coverage": "lead",
+   "source": "lead",
+   "quality_mark": "lead",
+   "curated": "lead",
+   "open_data": "lead + direct robots"
+  }
+ },
+ {
+  "name": "UT.no",
+  "url": "https://ut.no/",
+  "coverage": "Norway",
+  "source": "DNT and member associations, Statskog, Norwegian Environment Agency, Kartverket; volunteers write and verify; municipalities and companies add content",
+  "quality_mark": "Marked routes and trip suggestions; no explicit badge seen",
+  "curated": "Largely yes",
+  "open_data": "Not checked; robots.txt disallows GPX paths",
+  "gap": "Norway only, Norwegian language only (lead)",
+  "evidence": {
+   "coverage": "direct",
+   "source": "direct (footer) + lead",
+   "quality_mark": "not checked",
+   "curated": "lead",
+   "open_data": "direct (robots)"
+  }
+ },
+ {
+  "name": "Naturkartan",
+  "url": "https://www.naturkartan.se/en",
+  "coverage": "Sweden; municipalities, counties and trail organisations",
+  "source": "Customer organisations (about 170 per a search snippet)",
+  "quality_mark": "Not checked",
+  "curated": "Yes, by organisations that pay to join (lead)",
+  "open_data": "Not checked",
+  "gap": "Sweden only; no cross-country view",
+  "evidence": {
+   "coverage": "direct",
+   "source": "lead",
+   "quality_mark": "not checked",
+   "curated": "lead",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "udinaturen.dk",
+  "url": "https://udinaturen.dk/",
+  "coverage": "Denmark; 'thousands of routes and facilities'",
+  "source": "Not checked; links to Danmarks Naturstier and Danske Naturparker (Friluftsrådet quality mark)",
+  "quality_mark": "Danske Naturparker is called Friluftsrådet's quality mark (direct page text)",
+  "curated": "Likely yes, not verified",
+  "open_data": "Not checked (no robots.txt)",
+  "gap": "Denmark only",
+  "evidence": {
+   "coverage": "direct",
+   "source": "not checked",
+   "quality_mark": "direct",
+   "curated": "not checked",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "Luontoon.fi",
+  "url": "https://luontoon.fi/en",
+  "coverage": "Finland; national parks to municipal recreation areas",
+  "source": "Metsahallitus (state forest and park agency)",
+  "quality_mark": "Not checked",
+  "curated": "Yes, official",
+  "open_data": "Not checked",
+  "gap": "Finland only",
+  "evidence": {
+   "coverage": "direct",
+   "source": "direct (copyright line) + lead",
+   "quality_mark": "not checked",
+   "curated": "lead",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "Geoportail Luxembourg",
+  "url": "https://map.geoportail.lu/",
+  "coverage": "Luxembourg",
+  "source": "State geoportal",
+  "quality_mark": "Not checked",
+  "curated": "Not checked",
+  "open_data": "Not checked",
+  "gap": "Page is a JavaScript app; I saw only the title. LQT trails such as Mullerthal Trail exist in Luxembourg (lead)",
+  "evidence": {
+   "all": "not checked"
+  }
+ },
+ {
+  "name": "Sport Ireland: Find Your Trails (irishtrails.ie)",
+  "url": "https://www.irishtrails.ie/",
+  "coverage": "Ireland",
+  "source": "Sport Ireland national trails; National Waymarked Ways",
+  "quality_mark": "Not checked",
+  "curated": "Official, extent not checked",
+  "open_data": "Not checked",
+  "gap": "Ireland only",
+  "evidence": {
+   "coverage": "direct (page title)",
+   "source": "not checked",
+   "quality_mark": "not checked",
+   "curated": "not checked",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "Wanderbares Deutschland (Deutscher Wanderverband)",
+  "url": "https://www.wanderbares-deutschland.de/",
+  "coverage": "Germany; menu: long and short Qualitaetswege, quality regions, long-distance trails, Leading Quality Trails",
+  "source": "Certification by the Deutscher Wanderverband; operators apply",
+  "quality_mark": "Yes: Qualitaetsweg Wanderbares Deutschland",
+  "curated": "Yes, strictly",
+  "open_data": "Not checked",
+  "gap": "Germany only; certified set is small compared with all local loops; no cross-country view",
+  "evidence": {
+   "coverage": "direct (menu)",
+   "source": "lead",
+   "quality_mark": "direct + lead",
+   "curated": "direct",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "Deutsches Wanderinstitut (Premiumwege)",
+  "url": "https://www.wanderinstitut.de/",
+  "coverage": "Germany and neighbours; about 580 Premiumwanderwege (lead)",
+  "source": "Independent hiking experts audit trails against 34 criteria (lead)",
+  "quality_mark": "Yes: Deutsches Wandersiegel / Premiumweg",
+  "curated": "Yes, strictly",
+  "open_data": "Not checked",
+  "gap": "Mostly Germany; closest to 'signed trailhead-board loops' but no pan-European list",
+  "evidence": {
+   "coverage": "lead",
+   "source": "lead",
+   "quality_mark": "lead",
+   "curated": "lead",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "FFRandonnee / MonGR",
+  "url": "https://www.ffrandonnee.fr/",
+  "coverage": "France",
+  "source": "Federation labels GR, GR de Pays, PR routes",
+  "quality_mark": "Yes, federation labels (known; not verified on page)",
+  "curated": "Yes",
+  "open_data": "Not checked",
+  "gap": "mongr.fr opened (direct): described as site of long-distance (itinerant) walking, GR routes, RandoPass; not day loops. France only",
+  "evidence": {
+   "coverage": "direct (homepage only)",
+   "quality_mark": "not checked",
+   "curated": "not checked",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "IGNrando / IGN route portal",
+  "url": "https://www.ignrando.fr/",
+  "coverage": "France",
+  "source": "IGN, partner route providers",
+  "quality_mark": "n/a",
+  "curated": "n/a",
+  "open_data": "n/a",
+  "gap": "Closed: FFRandonnee reports ignrando.fr stopped on 20 Nov 2025 (lead, snippet); replacement named inconsistently (WeTrek or MaRando); IGN now pushes the 'Cartes IGN' app",
+  "evidence": {
+   "all": "lead"
+  }
+ },
+ {
+  "name": "Visorando",
+  "url": "https://www.visorando.com/",
+  "coverage": "France-focused with other countries (not measured)",
+  "source": "Users and tourism bodies (not verified)",
+  "quality_mark": "Not checked",
+  "curated": "Not checked, probably mixed",
+  "open_data": "Not checked; robots.txt allows crawling except admin paths",
+  "gap": "Quality and official status not visible on the home page",
+  "evidence": {
+   "coverage": "direct (partial)",
+   "source": "not checked",
+   "quality_mark": "not checked",
+   "curated": "not checked",
+   "open_data": "direct robots only"
+  }
+ },
+ {
+  "name": "Cirkwi",
+  "url": "https://www.cirkwi.com/en/",
+  "coverage": "France-centred, multi-activity",
+  "source": "Tourism offices and professionals (they pay to publish; lead from Geotrek slides)",
+  "quality_mark": "Not checked",
+  "curated": "Not checked",
+  "open_data": "Not checked; robots.txt disallows GPX export paths",
+  "gap": "Close to the wish in France as it holds tourism-office content; closed export",
+  "evidence": {
+   "coverage": "direct",
+   "source": "lead",
+   "quality_mark": "not checked",
+   "curated": "not checked",
+   "open_data": "direct robots"
+  }
+ },
+ {
+  "name": "FEDME (Spain)",
+  "url": "https://fedme.es/",
+  "coverage": "Spain",
+  "source": "Federation says it regulates and manages senderismo; homologated trails (GR, PR, SL)",
+  "quality_mark": "Homologation (known; not verified on page)",
+  "curated": "Yes",
+  "open_data": "Not checked",
+  "gap": "Trail site not opened; only the federation home page",
+  "evidence": {
+   "coverage": "direct (home page)",
+   "quality_mark": "not checked",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "CAI (Italy): Sentiero Italia and regional portals",
+  "url": "https://www.cai.it/",
+  "coverage": "Italy",
+  "source": "Club Alpino Italiano",
+  "quality_mark": "Not checked",
+  "curated": "Not checked",
+  "open_data": "Not checked",
+  "gap": "Only home page opened; no regional portals checked. DIGIWAY (Interreg Italy-Austria) publishes hiking network data on NOI Open Data Hub (lead)",
+  "evidence": {
+   "coverage": "direct (home page)",
+   "other": "not checked"
+  }
+ },
+ {
+  "name": "maPZS (Slovenia)",
+  "url": "https://www.pzs.si/",
+  "coverage": "Slovenia; about 2030 mountain trails",
+  "source": "Alpine Association of Slovenia and its clubs",
+  "quality_mark": "Official club-maintained trails",
+  "curated": "Yes",
+  "open_data": "Not checked",
+  "gap": "Mountain trails, not day loops; app not opened",
+  "evidence": {
+   "coverage": "lead",
+   "source": "lead",
+   "quality_mark": "lead",
+   "curated": "lead",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "Hrvatski planinarski savez (HPS) and Sigurne staze (Croatia)",
+  "url": "https://www.hps.hr/",
+  "coverage": "Croatia",
+  "source": "HPS trail registry; HGSS Sigurne staze uses verified HPS data",
+  "quality_mark": "Registry verified (lead)",
+  "curated": "Yes",
+  "open_data": "Not checked",
+  "gap": "Safety map rather than loop browser; sigurnestaze.hr not opened",
+  "evidence": {
+   "coverage": "direct (home page title only)",
+   "source": "lead",
+   "curated": "lead",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "Walking Britain",
+  "url": "https://www.walkingbritain.co.uk/",
+  "coverage": "England, Scotland, Wales; over 2,800 walks",
+  "source": "Site author's own walks (not verified)",
+  "quality_mark": "None known",
+  "curated": "Single-author collection",
+  "open_data": "No (not checked)",
+  "gap": "Not official routes",
+  "evidence": {
+   "coverage": "direct",
+   "source": "not checked",
+   "curated": "not checked",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "OS Maps",
+  "url": "https://osmaps.com/",
+  "coverage": "Great Britain",
+  "source": "Ordnance Survey plus user and partner routes",
+  "quality_mark": "Not checked",
+  "curated": "Not checked",
+  "open_data": "No",
+  "gap": "GB only; closed",
+  "evidence": {
+   "coverage": "direct",
+   "source": "not checked",
+   "curated": "not checked",
+   "open_data": "not checked"
+  }
+ },
+ {
+  "name": "Wandelnet (Netherlands)",
+  "url": "https://www.wandelnet.nl/",
+  "coverage": "Netherlands; route menu (direct) lists LAW long-distance routes, Streekpaden, Rondwandelingen (circular walks), Stadswandelingen, plus a 'Routedatabank' for professionals",
+  "source": "Wandelnet (national walking body)",
+  "quality_mark": "Not checked",
+  "curated": "Looks curated, not verified",
+  "open_data": "Not checked",
+  "gap": "Has a circular-walk category, but NL only; whether Rondwandelingen are official or user-made not checked",
+  "evidence": {
+   "coverage": "direct (menu)",
+   "other": "not checked"
+  }
+ },
+ {
+  "name": "Geotrek ecosystem, data.gouv.fr rando datasets, DATAtourisme (France)",
+  "url": "https://geotrek.ecrins-parcnational.fr/",
+  "coverage": "France: parks and departments publish trails via Geotrek, synced with Apidae, Tourinsoft, Cirkwi, Outdooractive",
+  "source": "Official bodies (parks, departments, tourism agencies)",
+  "quality_mark": "Not checked",
+  "curated": "Official publishers",
+  "open_data": "Partly: national trail data schema on schema.data.gouv.fr; some parks publish GeoJSON (lead)",
+  "gap": "France-only data plumbing, not a browsing site",
+  "evidence": {
+   "all": "lead"
+  }
+ },
+ {
+  "name": "EU tourism data space and Interreg DIGIWAY",
+  "url": "https://www.provincia.tn.it/en/Administration/Projects/DIGIWAY",
+  "coverage": "EU policy; DIGIWAY covers hiking network data in Trentino/South Tyrol/Austria",
+  "source": "Official bodies",
+  "quality_mark": "n/a",
+  "curated": "n/a",
+  "open_data": "DIGIWAY output on Open Data Hub (lead)",
+  "gap": "No EU-wide trail database found",
+  "evidence": {
+   "all": "lead"
+  }
+ },
+ {
+  "name": "HiiKER",
+  "url": "https://hiiker.app/",
+  "coverage": "Europe-focused hiking app; claims 1.5M+ hikers",
+  "source": "Not checked (own 'HiiKER Hikes' plus 'Community Hikes')",
+  "quality_mark": "Separates HiiKER Hikes from Community Hikes (direct menu)",
+  "curated": "Partly",
+  "open_data": "Not checked",
+  "gap": "Mostly long trails; closed; official status not checked",
+  "evidence": {
+   "coverage": "direct (self-claim)",
+   "quality_mark": "direct",
+   "other": "not checked"
+  }
+ },
+ {
+  "name": "Open Data Hub (NOI Techpark, South Tyrol)",
+  "url": "https://opendatahub.com/",
+  "coverage": "South Tyrol / Trentino region data platform",
+  "source": "Official data providers",
+  "quality_mark": "n/a",
+  "curated": "Official",
+  "open_data": "Yes, open data platform (direct homepage); hiking datasets not checked",
+  "gap": "One region; not a browsing site",
+  "evidence": {
+   "coverage": "direct",
+   "open_data": "direct",
+   "other": "not checked"
+  }
+ }
+]
