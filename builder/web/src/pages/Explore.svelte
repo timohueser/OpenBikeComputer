@@ -366,7 +366,7 @@
                     <li>
                         <RouteRow name={item.name} current={item.id === currentId} line={item.id} onclick={() => select(item.id)}
                             parts={item.kind === 'trail' ? trailParts(item.entry) : signedNumbers(item.record)}>
-                            {#snippet picture()}<SignedPicture {item} {oncover} small />{/snippet}
+                            {#snippet picture()}<SignedPicture {item} {oncover} row />{/snippet}
                         </RouteRow>
                     </li>
                 {:else}
@@ -511,13 +511,13 @@
     }
     .waiting li {
         display: grid;
-        grid-template-columns: 72px 1fr;
+        grid-template-columns: var(--row-picture-width) 1fr;
         align-items: center;
         gap: 12px;
         padding: 6px;
     }
     .waiting .thumb {
-        height: 48px;
+        height: var(--row-picture-height);
         border-radius: 6px;
         background: var(--parchment-2);
     }
@@ -532,11 +532,7 @@
             max-height: 60vh;
         }
         .waiting li {
-            grid-template-columns: 64px 1fr;
             gap: 10px;
-        }
-        .waiting .thumb {
-            height: 44px;
         }
     }
 </style>

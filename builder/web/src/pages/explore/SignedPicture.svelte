@@ -6,10 +6,10 @@
     import { SIGNED_GROUND } from '../../lib/planner/route-colors';
     import { lineColor, type SignedItem, type TrailItem } from '../routes/filter';
 
-    let { item, small = false, oncover }: {
+    let { item, row = false, oncover }: {
         item: SignedItem | TrailItem;
-        /** The small image of the cover, for a list row. */
-        small?: boolean;
+        /** The row image of the cover, for a list row. */
+        row?: boolean;
         /** The credits of the set when the cover shows, and undefined when that cover goes. */
         oncover?: (credits: string[] | undefined) => void;
     } = $props();
@@ -27,7 +27,7 @@
     $effect(() => {
         cover = undefined;
         if (item.kind === 'trail') return;
-        const { cover: loading, release } = holdCover(item.record, small);
+        const { cover: loading, release } = holdCover(item.record, row);
         let live = true, shown = false;
         void loading.then(found => {
             if (!live || !found) return;

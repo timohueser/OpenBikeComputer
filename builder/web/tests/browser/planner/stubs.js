@@ -156,7 +156,7 @@ export function respond(request) {
       return url.pathname.endsWith('.png') ? { headers: CORS, contentType: 'image/png', body: PIXEL } : json({});
     case 'pictures': {
       const path = url.pathname.slice('/route-pictures/'.length);
-      if ([`covers/${COVERED.id}/${COVER}-0715-1000.webp`, `covers/${COVERED.id}/${COVER}-0715-1000-small.webp`].includes(path)) return { headers: CORS, contentType: 'image/png', body: PIXEL };
+      if ([`covers/${COVERED.id}/${COVER}-0715-1000.webp`, `covers/${COVERED.id}/${COVER}-0715-1000-row.webp`].includes(path)) return { headers: CORS, contentType: 'image/png', body: PIXEL };
       return PICTURES[path] ? json(PICTURES[path]) : { headers: CORS, status: 404 };
     }
     case 'routes':
