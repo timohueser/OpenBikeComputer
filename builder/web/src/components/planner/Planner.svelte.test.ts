@@ -323,7 +323,7 @@ describe('profile part', () => {
     it('selects a part with Shift and an arrow key, shows its numbers with Clear, keeps its stretch while the map window changes, and clears at Escape, at Clear and at another range', async () => {
         const line: RoutingLine = {
             profile: 'touring', coordinates: [[8, 46], [8, 46.5], [8, 47]], elevation: [100, 600, 100], elapsed: [0, 1, 2], edges: {},
-            stops: [], seconds: 2, unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
+            stops: [], seconds: 2, unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
         };
         let view = $state({ from: 0, to: .5 });
         let part = $state<[number, number] | null>(null);
@@ -363,7 +363,7 @@ describe('profile part', () => {
     it('counts the part of an open day from its start, keeps it when the day end moves, and clears it at another day', async () => {
         const line: RoutingLine = {
             profile: 'touring', coordinates: [[8, 46], [8, 46.5], [8, 47]], elevation: [100, 600, 100], elapsed: [0, 1, 2], edges: {},
-            stops: [], seconds: 2, unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
+            stops: [], seconds: 2, unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
         };
         let part = $state<[number, number] | null>(null);
         let focus = $state({ from: .4, to: .6, label: 'Day 2' });
@@ -392,7 +392,7 @@ describe('profile access', () => {
         const line: RoutingLine = {
             profile: 'road', coordinates: [[8,48], [8.001,48], [8.002,48]],
             elevation: [100, 90, 110], elapsed: [0, 20, 80], edges: { surfaces: ['Paved', 'Paved'], pushing: [false, true] },
-            stops: [], seconds: 80, unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: .075, unroutedKm: 0, unknownElevationKm: 0,
+            stops: [], seconds: 80, unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: .075, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
         };
         const onHover = vi.fn();
         mounted.push(mount(Profile, { target: document.body, props: {
@@ -418,7 +418,7 @@ describe('profile access', () => {
         const line: RoutingLine = {
             profile: 'gravel', coordinates: [[8,48], [8.001,48], [8.002,48], [8.003,48]],
             elevation: [100, 90, 110, 100], elapsed: [0, 20, 40, 60], edges: { surfaces: ['Paved', 'Gravel', 'Gravel'], pushing: [false, false, false] },
-            stops: [], seconds: 60, unknownSurfaceKm: 0, unpavedKm: .15, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
+            stops: [], seconds: 60, unknownSurfaceKm: 0, unpavedKm: .15, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
         };
         mounted.push(mount(Profile, { target: document.body, props: {
             lineData: line, total: .225, days: [], dayLabels: {}, activeNight: 0, band: null, window: { from: 0, to: .5 },

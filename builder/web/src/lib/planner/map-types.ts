@@ -24,5 +24,6 @@ export interface MapSegment {
     coordinates: Coordinate[];
     color: string;
     legEndId: string;
-    leg: import("./editor").LegMode;
+    /** A gap is a leg with no legal path, drawn as a dashed straight line. */
+    leg: import("./editor").LegMode | "gap";
 }

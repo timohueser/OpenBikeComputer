@@ -182,7 +182,9 @@ never use steps. The clients offer the presets of the profiles that the region s
 
 ## Errors
 
-An error answer is `{"code", "message"}`. It never contains a substitute route.
+An error answer is `{"code", "message"}`; a `no_snap` answer also has `point`, the index of the
+point, from 0; a `no_path` answer also has `leg`, the index of the leg from 0, between point `leg`
+and `leg + 1`. It never contains a substitute route.
 
 The service attaches each point to the nearest road that the profile can use and that lies in a
 large connected part of its road graph, within 250 m. When none is that near, it uses the nearest

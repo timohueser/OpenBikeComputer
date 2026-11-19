@@ -90,6 +90,11 @@ pub(crate) fn busy() -> (u16, Value) {
 }
 
 pub(crate) fn error_body(error: Error) -> (u16, Value) {
+    let at = match error {
+        Error::NoSnap(point) => Some(("point", point)),
+        Error::NoPath(leg) => Some(("leg", leg)),
+        _ => None,
+    };
     let (status, code, message) = match error {
         Error::InvalidRequest(message) => (400, "invalid_request", message),
         Error::MissingRegion(_) => {
@@ -100,7 +105,7 @@ pub(crate) fn error_body(error: Error) -> (u16, Value) {
             "no_snap",
             format!("No accessible road within {} km of point {}.", planner_router::snap::REACH_M / 1000.0, index + 1),
         ),
-        Error::NoPath => (422, "no_path", "No legal route connects these points in this region.".into()),
+        Error::NoPath(_) => (422, "no_path", "No legal route connects these points in this region.".into()),
         Error::Cancelled => (408, "cancelled", "The routing request was cancelled or timed out.".into()),
         Error::Limit => {
             (422, "limit", "This route exceeds the limits of the route service. Plan it in shorter parts.".into())
@@ -123,7 +128,11 @@ pub(crate) fn error_body(error: Error) -> (u16, Value) {
             (500, "invalid_data", "Routing data failed validation.".into())
         }
     };
-    (status, json!({ "code": code, "message": message }))
+    let mut body = json!({ "code": code, "message": message });
+    if let Some((field, index)) = at {
+        body[field] = index.into();
+    }
+    (status, body)
 }
 
 #[cfg(test)]
@@ -136,5 +145,13 @@ mod tests {
         assert_eq!((status, body["code"].as_str()), (422, Some("limit")));
         assert_eq!(error_body(Error::Memory), busy());
         assert_eq!(busy().0, 503);
+    }
+
+    #[test]
+    fn a_missing_road_names_its_point_and_a_missing_path_its_leg() {
+        let (_, snap) = error_body(Error::NoSnap(3));
+        let (_, path) = error_body(Error::NoPath(2));
+        assert_eq!((snap["code"].as_str(), snap["point"].as_u64()), (Some("no_snap"), Some(3)));
+        assert_eq!((path["code"].as_str(), path["leg"].as_u64()), (Some("no_path"), Some(2)));
     }
 }

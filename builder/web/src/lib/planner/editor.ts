@@ -286,11 +286,12 @@ export function planView(trip: Trip, routed: RoutingLine | undefined): PlanView 
 }
 
 /** One stretch of the route for each leg and riding day, so a map can tell legs apart and colour days. */
-export function daySegments({ stops, days, coordinates }: PlanView): (Omit<MapSegment, 'color'> & { day: number })[] {
+export function daySegments({ stops, days, coordinates, line }: PlanView): (Omit<MapSegment, 'color'> & { day: number })[] {
     const length = stops.at(-1)?.distance || 1;
     return stops.slice(1).flatMap((stop, i) => days.flatMap(day => {
         const from = Math.max(day.from, stops[i].distance / length), to = Math.min(day.to, stop.distance / length);
-        return to <= from ? [] : [{ day: day.number, coordinates: routeSlice(coordinates, from, to), legEndId: stop.point.id, leg: stop.point.leg ?? 'routed' }];
+        const leg = line?.gapLegs.includes(stop.point.id) ? 'gap' : stop.point.leg ?? 'routed';
+        return to <= from ? [] : [{ day: day.number, coordinates: routeSlice(coordinates, from, to), legEndId: stop.point.id, leg }];
     }));
 }
 

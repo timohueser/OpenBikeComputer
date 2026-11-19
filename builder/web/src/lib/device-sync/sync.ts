@@ -123,7 +123,15 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
             if (!route || !('id' in route) || !isPlan(route)) { problems.push('A route that waits cannot be read.'); continue; }
             const name = displayName(route.name || planTitle(route.trip), 'Route');
             let file;
-            try { file = await routeObcr(route, await calculateLine(route.trip, signal, legs)); } catch (error) {
+            try {
+                const line = await calculateLine(route.trip, signal, legs), gaps = line.gapLegs.length;
+                // A line with a gap is not complete; a point that the line passes by is not on it.
+                if (gaps) {
+                    problems.push(`“${name}” waits: ${gaps} ${gaps > 1 ? 'legs have' : 'leg has'} no legal path. Change it in the planner.`);
+                    continue;
+                }
+                file = await routeObcr(route, line);
+            } catch (error) {
                 if (signal.aborted) throw error;
                 problems.push(`“${name}” waits: ${text(error)}`);
                 continue;
