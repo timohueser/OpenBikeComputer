@@ -406,7 +406,7 @@ export class PlanSession {
     open(id: string): Promise<boolean> {
         return this.act(async library => {
             const latest = await this.get(library, id);
-            if (!latest) throw new Error('This route was deleted. Reopen My routes.');
+            if (!latest) throw new Error('This route was deleted. Open another with “Open route…” in “More”.');
             const offer = await this.offered(library, id);
             await library.setState('active', latest.id);
             this.install(latest, true, undefined, offer);
@@ -439,7 +439,7 @@ export class PlanSession {
         return this.act(async library => {
             await this.lastWrite.catch(() => {});
             await library.removeRoute(plan.id);
-            if (plan.id === this.plan.id) this.install(newPlan(emptyTrip(this.trip.mode)), false);
+            if (plan.id === this.plan.id) this.install(newPlan(emptyTrip()), false);
             await this.list(library);
         });
     }
@@ -491,7 +491,7 @@ export class PlanSession {
         await this.saving;
         const record = await this.library!.item(id).catch(() => null);
         if (this.closed || this.plan.id !== id || record === null) return;
-        if (!record) this.install(newPlan(emptyTrip(this.trip.mode)), false);
+        if (!record) this.install(newPlan(emptyTrip()), false);
         else if (record.name !== this.plan.name) this.plan = { ...this.plan, name: record.name };
     }
 

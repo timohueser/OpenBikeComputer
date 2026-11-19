@@ -364,7 +364,7 @@ describe('plan session', () => {
         expect(calculate).toHaveBeenCalledOnce();
         session.redo();
         expect(await session.newPlan()).toBe(true);
-        expect(session.trip.pace).toBeUndefined();
+        expect([session.trip.pace, session.trip.mode]).toEqual([undefined, 'route']);
         session.close();
     });
 });
