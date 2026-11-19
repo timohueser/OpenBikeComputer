@@ -372,8 +372,10 @@ fn numbers(
     let highest = frame.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let mut face = (h + b.shell_m + b.band_m).max(highest - floor + b.coping_m);
     face = face.min(h + b.shell_m + b.face_over_crown_max_m);
+    // A deck over the frame line or its wing walls: its underside lies over the floor (a way that goes on from the
+    // opening on a deck lies at the floor, not over it).
     for &(x, under) in &site.decks {
-        if x >= lo - g.wing_max_m && x <= hi + g.wing_max_m {
+        if x >= lo - g.wing_max_m && x <= hi + g.wing_max_m && under - b.coping_m > floor {
             face = face.min(under - b.coping_m - floor);
         }
     }

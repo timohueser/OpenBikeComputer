@@ -553,8 +553,8 @@ of the step: per group of road classes `look`, `collar_max_m`, `wing_max_m` and 
 
 A chain is a run of tunnel ways that meet end to end, as the levels walk them from each tag end (see Structures). Only
 the ways of the kind `tunnel` belong to a chain: a shallow tunnel lies on the ground in the ground plan, so a chain
-stops at it and opens there. A chain end opens where no tunnel way goes on, or where it meets a shallow tunnel. An end
-where two or more tunnel ways go on has no opening. The tube is the curve of the chain's ways (at most 10 m between
+stops at it. A chain end opens where no other way of the kind `tunnel` has a vertex at its end vertex; else the tube
+goes on in the hill there and that end has no opening. The tube is the curve of the chain's ways (at most 10 m between
 vertices), joined. Its section is that of its widest way: `half` is the way's half-width with its widening and
 `margin_m` (`margin_narrow_m` where the bore is 3 m or less), `height` is its bore.
 
@@ -595,7 +595,8 @@ The numbers, in metres over the floor of the opening unless named:
   two tubes.
 - `face`: the highest ground on the frame line plus `coping_m`, at least `height` + `shell_m` + `band_m`, at most
   `height` + `shell_m` + `face_over_crown_max_m`, and at most the underside of a deck over the frame line or its wing
-  walls less `coping_m`.
+  walls less `coping_m`. A deck is over them where that lies over the floor: a way that goes on from the opening on a
+  deck is not.
 - `left`, `right`: a row of wall tops, one per metre out from the outer edge of the frame, the ground plus
   `coping_m`, from `coping_m` up to `face`. A row ends before the first metre whose ground lies under the floor +
   `wing_ground_m`, or at `wing_max_m`, and has one value at least. `left` is to the left of the way into the tube.

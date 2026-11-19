@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use obc_ground_plan::graph::level_tags::Chain;
 use obc_ground_plan::graph::OpenEnd;
@@ -97,10 +97,12 @@ impl Case {
             .collect();
         chains.sort_by_key(|c| c.ways[0].0);
         let (tiles, levels) = (Tiles::new([8.3, 46.7, 8.5, 46.9]), HashMap::new());
+        let tunnel_ways: HashSet<usize> = tunnels.keys().map(|&id| id as usize).collect();
         let input = Input {
             chains: &chains,
             tunnels: &tunnels,
             ways: self.ways.iter().map(|(k, t, p)| (*k, t, p.as_slice())).collect(),
+            tunnel_ways: &tunnel_ways,
             tiles: &tiles,
             levels: &levels,
             terrain: &|_: f64, _: f64| 0.0,
@@ -184,6 +186,13 @@ fn each_rung_gives_its_kinds_in_the_order_of_the_rungs() {
     let placed = case.place(&site(&|_| 500.0, &[], true), &mut Vec::new());
     assert_eq!(of(&placed, 0), vec![(vec![], "under a building"); 2]);
     assert!(placed.features.is_empty() && placed.tags.is_empty());
+    // Where another tunnel way meets an end, the tube goes on in the hill: that end has no opening.
+    let mut case = Case::default();
+    let (a, b) = (case.tunnel(&ROAD, (0.0, 200.0), 0.0), case.tunnel(&ROAD, (200.0, 400.0), 0.0));
+    let placed = case.place(&site(&ridge(400.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!((of(&placed, a), of(&placed, b)), (vec![(vec![Arch, Free], "hill")], vec![(vec![Arch, Free], "hill")]));
+    assert_eq!(placed.metrics["fork_ends"], 2);
+    assert_eq!(placed.tags[&a]["parts"], "arch none");
     // A vertex of unknown height: no part.
     let mut case = road();
     case.ways[0].2[0].z.as_mut().unwrap()[1] = f64::NAN;

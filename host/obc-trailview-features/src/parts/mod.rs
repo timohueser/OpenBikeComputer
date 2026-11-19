@@ -159,6 +159,8 @@ pub(crate) struct Input<'a> {
     pub chains: &'a [Chain],
     pub tunnels: &'a HashMap<u32, (Tags, Vec<Part>)>,
     pub ways: Vec<(&'a str, &'a Tags, &'a [Part])>,
+    /// The ways that the tiles hold as the kind `tunnel`, with an id or none, by their place in `ways`.
+    pub tunnel_ways: &'a HashSet<usize>,
     pub tiles: &'a Tiles,
     pub levels: &'a HashMap<u32, Tags>,
     pub terrain: &'a dyn Terrain,
@@ -274,8 +276,8 @@ fn way_curve(part: &Part) -> Option<Vec<Point>> {
     Some(out)
 }
 
-/// A run of tunnel ways of a chain with its ends: per end, the way's end vertex in the ground plan's frame and the way
-/// there, or None where the run has no opening (a node where more tunnel ways go on).
+/// A run of tunnel ways of a chain with its ends: per end, the way's end vertex in the ground plan's frame (None where
+/// the end is no end vertex of its way) and the way there.
 #[derive(Clone, Debug)]
 pub(crate) struct Tube {
     pub curve: Curve,
@@ -283,7 +285,7 @@ pub(crate) struct Tube {
     /// Every vertex has a height (`heights`), and each end with an opening is an end vertex of its way (`vertices`).
     pub heights: bool,
     pub vertices: bool,
-    pub ends: [Option<(Option<[i64; 2]>, u32)>; 2],
+    pub ends: [(Option<[i64; 2]>, u32); 2],
     /// Of its widest way: its id, its class and its group, the half-width of its carriageway and that with its
     /// widening; the inside half-width and height of the tube.
     pub widest: u32,
@@ -298,8 +300,8 @@ pub(crate) struct Tube {
 }
 
 /// The runs of a chain's ways of kind `tunnel`: a way of another kind lies on the ground in the new roads (a shallow
-/// tunnel), so the run next to it opens there. Per run its ways, and per end whether it opens.
-fn runs(chain: &Chain, tunnels: &HashMap<u32, (Tags, Vec<Part>)>) -> Vec<(Vec<(u32, f64, f64)>, [bool; 2])> {
+/// tunnel).
+fn runs(chain: &Chain, tunnels: &HashMap<u32, (Tags, Vec<Part>)>) -> Vec<Vec<(u32, f64, f64)>> {
     let mut out = Vec::new();
     let n = chain.ways.len();
     let mut k = 0;
@@ -312,17 +314,16 @@ fn runs(chain: &Chain, tunnels: &HashMap<u32, (Tags, Vec<Part>)>) -> Vec<(Vec<(u
         while k < n && tunnels.contains_key(&chain.ways[k].0) {
             k += 1;
         }
-        let open = [if start == 0 { chain.tag[0] } else { true }, if k == n { chain.tag[1] } else { true }];
-        out.push((chain.ways[start..k].to_vec(), open));
+        out.push(chain.ways[start..k].to_vec());
     }
     out
 }
 
 /// The tube of a run of tunnel ways, or None where a way of it has no curve.
-fn tube(run: &[(u32, f64, f64)], open: [bool; 2], input: &Input) -> Option<Tube> {
+fn tube(run: &[(u32, f64, f64)], input: &Input) -> Option<Tube> {
     let mut curve = Curve::default();
     let (mut heights, mut vertices) = (true, true);
-    let mut ends = [None, None];
+    let mut ends = [(None, run[0].0), (None, run[run.len() - 1].0)];
     let (mut widest, mut way_half, mut best) = (run[0].0, 0.0, f64::NEG_INFINITY);
     for (k, &(id, m_in, m_out)) in run.iter().enumerate() {
         let (tags, parts) = input.tunnels.get(&id)?;
@@ -346,11 +347,11 @@ fn tube(run: &[(u32, f64, f64)], open: [bool; 2], input: &Input) -> Option<Tube>
             let n = part.points.len();
             [0, n - 1].into_iter().find(|&i| (plan[i].along - m).abs() <= LINK_M).map(|i| frame_point(parts, p, i))
         };
-        if k == 0 && open[0] {
-            ends[0] = Some((vertex(m_in), id));
+        if k == 0 {
+            ends[0].0 = vertex(m_in);
         }
-        if k + 1 == run.len() && open[1] {
-            ends[1] = Some((vertex(m_out), id));
+        if k + 1 == run.len() {
+            ends[1].0 = vertex(m_out);
         }
         let w = input.widths.way("tunnel", tags, false);
         let widen = plan.iter().filter(|v| v.along >= lo && v.along <= hi).map(|v| v.widen).fold(0.0, f64::max);
@@ -369,7 +370,7 @@ fn tube(run: &[(u32, f64, f64)], open: [bool; 2], input: &Input) -> Option<Tube>
         curve.len = s;
         curve.stretches.push((id, stretch));
     }
-    vertices &= ends.iter().flatten().all(|e| e.0.is_some());
+    vertices &= ends.iter().all(|e| e.0.is_some());
     let (tags, _) = &input.tunnels[&widest];
     let w = input.widths.way("tunnel", tags, false);
     let class = input.class_names.get(w.rank).cloned().unwrap_or_default();
@@ -485,22 +486,19 @@ pub(crate) fn place(input: &Input, memory: usize) -> Placed {
 pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
     let b = &input.rules.bake;
     let runs: Vec<_> = input.chains.iter().flat_map(|c| runs(c, input.tunnels)).collect();
-    let tubes: Vec<Tube> = runs.iter().filter_map(|(run, open)| tube(run, *open, input)).collect();
-    // The chain ends that open on no part: on a shallow tunnel, where more tunnel ways go on, in a run with no tube.
+    let tubes: Vec<Tube> = runs.iter().filter_map(|run| tube(run, input)).collect();
+    // The chain ends on a shallow tunnel, and the runs with no tube, open on no part.
     let shallow = (input.chains.iter())
         .flat_map(|c| [(c.tag[0], c.ways[0].0), (c.tag[1], c.ways[c.ways.len() - 1].0)])
         .filter(|&(tag, id)| tag && !input.tunnels.contains_key(&id))
         .count();
-    let forks = tubes.iter().flat_map(|t| &t.ends).filter(|e| e.is_none()).count();
     let lost = runs.len() - tubes.len();
+    let mut forks = 0;
     // The ways at the end vertices of the tubes.
     let mut at_end: HashMap<[u64; 2], Vec<usize>> = HashMap::new();
     for t in &tubes {
-        for (e, end) in t.ends.iter().enumerate() {
-            if end.is_some() {
-                let p = if e == 0 { t.curve.at(0.0).0.p } else { t.curve.at(t.curve.len).0.p };
-                at_end.entry(key(p)).or_default();
-            }
+        for p in [t.curve.at(0.0).0.p, t.curve.at(t.curve.len).0.p] {
+            at_end.entry(key(p)).or_default();
         }
     }
     for (w, (_, _, parts)) in input.ways.iter().enumerate() {
@@ -515,12 +513,17 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
     let mut openings: Vec<Opening> = Vec::new();
     for (ti, t) in tubes.iter().enumerate() {
         for e in 0..2 {
-            let Some((way, way_id)) = t.ends[e] else { continue };
+            let (way, way_id) = t.ends[e];
             let s = if e == 0 { 0.0 } else { t.curve.len };
             let vertex = t.curve.at(s).0.p;
-            // The ways at the vertex but the tube's own: a way's id is its place in the ways of the bake.
+            // The ways at the vertex but the tube's own: a way's id is its place in the ways of the bake. Where another
+            // tunnel way has a vertex there, the tube goes on in the hill: no opening.
             let others: Vec<usize> =
                 at_end.get(&key(vertex)).into_iter().flatten().copied().filter(|&w| w != way_id as usize).collect();
+            if others.iter().any(|w| input.tunnel_ways.contains(w)) {
+                forks += 1;
+                continue;
+            }
             let o = Opening {
                 tube: ti,
                 end: e,

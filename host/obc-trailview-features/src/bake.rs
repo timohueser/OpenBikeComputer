@@ -238,6 +238,7 @@ pub fn bake(
     let (mut ground_census, mut water_census) = (Census::default(), Census::default());
     // The ways of kind `tunnel` as the tiles hold them, by id: the parts place their openings.
     let mut tunnels: HashMap<u32, (Tags, Vec<Part>)> = HashMap::new();
+    let mut tunnel_ways: HashSet<usize> = HashSet::new();
     if !(waters.is_empty() && ways.is_empty() && stations.is_empty()) {
         metrics.insert("water".into(), water);
         let is_river = |e: usize| RIVERS.contains(&kinds[e].kind.as_str());
@@ -360,8 +361,11 @@ pub fn bake(
                 }
                 // A way whose parts all have an alignment takes the tags of the levels: its metres along run on.
                 let id = parts.iter().all(|p| p.plan.is_some()).then_some(n as u32);
-                if let Some(id) = id.filter(|_| entry.kind == "tunnel") {
-                    tunnels.insert(id, (tags.clone(), parts.clone()));
+                if entry.kind == "tunnel" {
+                    tunnel_ways.insert(n);
+                    if let Some(id) = id {
+                        tunnels.insert(id, (tags.clone(), parts.clone()));
+                    }
                 }
                 placer.place_with(&entry.kind, entry.geometry, entry.min_zoom, all, parts, id);
             }
@@ -421,6 +425,7 @@ pub fn bake(
         chains: &chains,
         tunnels: &tunnels,
         ways: ways.iter().map(|(e, tags, parts)| (kinds[*e].kind.as_str(), tags, parts.as_slice())).collect(),
+        tunnel_ways: &tunnel_ways,
         tiles: &placer.tiles,
         levels: &levels,
         terrain,
