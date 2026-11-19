@@ -171,8 +171,9 @@
     let hoverProgress = $state<number | null>(null);
     // The place on the route under the map pointer, for the profile.
     let mapHover = $state<number | null>(null);
-    // The surface that the rider points at in the surface legend, for the map.
+    // The surface that the rider points at in the surface legend, for the map. A legend that leaves the page lights nothing.
     let litSurface = $state<Surface>();
+    $effect(() => { if (!visualRoute || !profileOpen) litSurface = undefined; });
     // The part of the route the profile selects, as route progress. Another line ends it; the map fits each part.
     let part = $state<[number, number] | null>(null);
     $effect(() => { void visualRoute; part = null; });

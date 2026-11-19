@@ -603,9 +603,14 @@
         highlightedLines;
         if (map && ready) (map.getSource("trip-highlight") as GeoJSONSource | undefined)?.setData(highlightData());
     });
+    // A hit belongs to the line it was found on: a new line clears the place until the pointer moves again.
     $effect(() => {
-        const at = hover && coordinates.length > 1 ? nearestProgress(coordinates, hover.coordinate) : null;
-        untrack(() => onRouteHover?.(at));
+        const hit = hover;
+        untrack(() => onRouteHover?.(hit && coordinates.length > 1 ? nearestProgress(coordinates, hit.coordinate) : null));
+    });
+    $effect(() => {
+        void coordinates;
+        untrack(() => onRouteHover?.(null));
     });
     $effect(() => {
         if (picking) hover = null;
