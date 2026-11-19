@@ -257,7 +257,7 @@ fn way_curve(part: &Part) -> Option<Vec<Point>> {
         let chord = |j: usize| distance(poly.points[j - 1], poly.points[j]);
         let total: f64 = (start.max(1)..=next).map(chord).sum();
         let mut run = 0.0;
-        for j in start..=next {
+        for (j, (&p, &zj)) in poly.points.iter().zip(z).enumerate().take(next + 1).skip(start) {
             if j > 0 && k > 0 {
                 run += chord(j);
             }
@@ -266,7 +266,7 @@ fn way_curve(part: &Part) -> Option<Vec<Point>> {
             } else {
                 plan[k - 1].along + (plan[k].along - plan[k - 1].along) * (run / total)
             };
-            out.push(Point { p: poly.points[j], z: z[j], s: 0.0, along });
+            out.push(Point { p, z: zj, s: 0.0, along });
         }
         at = next;
     }

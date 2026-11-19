@@ -313,10 +313,9 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         let kind = kinds[i].first().copied();
         // A pair has one record, at the opening of the lower feature id.
         let drawn = mate[i].is_none_or(|m| (openings[i].way_id, i) < (openings[m].way_id, m));
-        let parts = (&sites[..], &rights[..], &cover[..], &moved[..]);
-        let numbers = kind
-            .filter(|_| drawn)
-            .map(|kind| numbers(i, kind, (mate[i], far_of[i]), parts, openings, tubes, (&half, &height), input));
+        let m = Measured { sites: &sites, rights: &rights, cover: &cover, moved: &moved };
+        let numbers = (kind.filter(|_| drawn))
+            .map(|kind| numbers(i, kind, (mate[i], far_of[i]), &m, (openings, tubes), (&half, &height), input));
         ends.push(End { kinds: kinds[i].clone(), kind, rung: rung[i].unwrap_or_default(), numbers });
     }
     let shown = |e: &End| match e.kind {
@@ -334,19 +333,28 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     Decided { ends, half, height, metrics }
 }
 
+/// What the measure gave of each opening: its site, the metres of its row to the right, the metres to its first covered
+/// metre, and the metres that a pair moved it in.
+#[derive(Clone, Copy)]
+struct Measured<'a> {
+    sites: &'a [Option<Site>],
+    rights: &'a [u32],
+    cover: &'a [Option<f64>],
+    moved: &'a [f64],
+}
+
 /// The numbers of drawn opening i of `kind` (Plan 8): its frame is its own, or in a pair the frame line of the
 /// opening farther in, which holds both.
-#[allow(clippy::too_many_arguments)]
 fn numbers(
     i: usize,
     kind: Kind,
     (mate, far): (Option<usize>, usize),
-    (sites, rights, cover, moved): (&[Option<Site>], &[u32], &[Option<f64>], &[f64]),
-    openings: &[Opening],
-    tubes: &[Tube],
+    m: &Measured,
+    (openings, tubes): (&[Opening], &[Tube]),
     (half, height): (&[f64], &[f64]),
     input: &Input,
 ) -> Numbers {
+    let Measured { sites, rights, cover, moved } = *m;
     let b = &input.rules.bake;
     let o = &openings[i];
     let t = &tubes[o.tube];

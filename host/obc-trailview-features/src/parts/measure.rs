@@ -158,6 +158,9 @@ enum Read {
     Row(usize, usize),
 }
 
+/// The reads in one cell, each with its world point.
+type Reads = Vec<(Read, [f64; 2])>;
+
 /// What a cell answers: the ground at its points, and per ask that reads in it the decks over its row, the rooms of the
 /// ways on top of its chain and whether a building holds a station of its centre line in the cell.
 type Answers = (Vec<(Read, Option<f64>)>, Vec<(usize, Vec<(f64, f64)>, Vec<f64>, bool)>);
@@ -175,7 +178,7 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
         })
         .collect();
     // The reads by cell, the cells by zoom-13 tile.
-    let mut by_cell: BTreeMap<CellKey, Vec<(Read, [f64; 2])>> = BTreeMap::new();
+    let mut by_cell: BTreeMap<CellKey, Reads> = BTreeMap::new();
     for (k, a) in asks.iter().enumerate() {
         for (i, st) in a.stations.iter().enumerate() {
             for (w, &p) in st.iter().enumerate() {
@@ -190,7 +193,7 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
     }
     let cells = by_cell.len();
     let shift = obc_ground_plan::frame::CELL_ZOOM - u32::from(MAX_ZOOM);
-    let mut jobs: BTreeMap<(u32, u32), Vec<(CellKey, Vec<(Read, [f64; 2])>)>> = BTreeMap::new();
+    let mut jobs: BTreeMap<(u32, u32), Vec<(CellKey, Reads)>> = BTreeMap::new();
     for (key, reads) in by_cell {
         jobs.entry((key.x >> shift, key.y >> shift)).or_default().push((key, reads));
     }

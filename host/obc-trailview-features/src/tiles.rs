@@ -1073,7 +1073,7 @@ mod tests {
         let points: Vec<[f64; 2]> = (0..12)
             .map(|k| {
                 let k = k as f64;
-                let tie = if k as u32 % 3 == 0 { 0.5 } else { 0.37 * k };
+                let tie = if (k as u32).is_multiple_of(3) { 0.5 } else { 0.37 * k };
                 [(column + 0.97 + k * 0.006) / n + tie * quarter, (row + 0.5) / n + (2.0 * tie + k) * quarter]
             })
             .collect();
