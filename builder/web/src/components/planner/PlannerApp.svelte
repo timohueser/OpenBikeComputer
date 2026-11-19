@@ -7,6 +7,7 @@
     import Query from './PlannerQuery.svelte';
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
+    import RidePrefs from './RidePrefsPrototype.svelte';
     import SaveWindow, { type SaveAnswer, type SaveMode } from './SaveWindow.svelte';
     import Itinerary from './Itinerary.svelte';
     import RouteList from './RouteList.svelte';
@@ -476,6 +477,9 @@
     function nameVisits(trip: Trip) {
         trip.points.filter(point => point.autoLabel).forEach(point => void session.nameVisit(point));
     }
+
+    // PROTOTYPE: `?bar=C` puts the route preferences at the head of the side panel.
+    const protoBar = new URLSearchParams(location.search).get('bar');
 
     async function openLibrary() {
         libraryOpen = true;
@@ -1155,6 +1159,7 @@
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
             <Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} />
+            {#if protoBar === 'C' && !searching}<div class="proto-prefs"><RidePrefs {trip} onChange={changeTrip} inline /></div>{/if}
             {#if exploreBack && hasEndpoints && !searching}
                 <button type="button" class="back-to-routes" onclick={() => router.go(ROUTES.explore, { explore: exploreBack })}><Icon name="back" size={15} />Find another route</button>
             {/if}
@@ -1426,6 +1431,7 @@
         background: var(--panel);
     }
     .trip-summary { padding: 0 16px; }
+    .proto-prefs { border-bottom: 1px solid var(--line); }
     .back-to-routes { display: flex; align-items: center; gap: 6px; min-height: 32px; margin: -4px 12px 8px; padding: 0 6px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; text-align: left; }
     .back-to-routes:hover { background: var(--parchment-2); color: var(--ink); }
     .closure-note { display: flex; align-items: center; gap: 8px; margin: 0 16px 12px; font-size: 13px; color: var(--ink-soft); }

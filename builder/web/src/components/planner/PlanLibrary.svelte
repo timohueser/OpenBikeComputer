@@ -56,12 +56,12 @@
     }
 </script>
 
-<svelte:window onpointerdown={event => { if (!panel.contains(event.target as Node) && !(event.target as Element).closest('button')?.textContent?.includes('My plans')) onClose(); }} />
+<svelte:window onpointerdown={event => { if (!panel.contains(event.target as Node) && !(event.target as Element).closest('button')?.textContent?.match(/My plans|My routes/)) onClose(); }} />
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <section class="library" aria-label="My plans" bind:this={panel} onkeydown={key}>
     <header>
-        <h2>My plans</h2>
+        <h2>{location.search.includes('bar=') ? 'My routes' : 'My plans'}</h2>
         <button type="button" class="icon" aria-label="Close My plans" bind:this={closer} onclick={onClose}><Icon name="close" /></button>
     </header>
     <p class="storage">Saved in this browser. Download a plan to keep a backup or move it to another device.</p>
