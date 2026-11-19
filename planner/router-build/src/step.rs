@@ -3,7 +3,7 @@
 //! (the OSM objects with their facts), `planner/routing-roads` (the roads with their terrain and
 //! their topology) and `planner/routing-costs` (the costs of each profile). `planner/routing`
 //! writes the package, its overlay index, its route catalog, the routing blocks and the routes of
-//! each grid cell.
+//! each grid cell. `planner/route-facts` writes the search facts of the routes of each cell.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,12 +19,14 @@ use crate::column::Layout;
 use crate::osm::{Counts, Source};
 use crate::source::{Data, Sets};
 use crate::work::{Guard, OWN_BYTES};
-use crate::{catalog, grid, overlays, Costs, Graph, Limits, SETS};
+use crate::{catalog, facts, grid, overlays, Costs, Graph, Limits, SETS};
 
 /// The step of the source layer. The last part of the name of a work layer names its folder.
 pub const SOURCE: &str = "planner/routing-source";
 pub const ROADS: &str = "planner/routing-roads";
 pub const COSTS: &str = "planner/routing-costs";
+/// The step of the search facts of the routes.
+pub const FACTS: &str = "planner/route-facts";
 
 fn text(options: &Value, name: &str) -> Result<String, String> {
     options[name].as_str().map(str::to_string).ok_or(format!("option `{name}` is not a string"))
@@ -250,6 +252,54 @@ pub fn step(request: &Request) -> Result<(), String> {
         "far_files": far.len(), "largest_far_bytes": largest(&far), "tolerances_m": tolerances,
         "record_files": long.len(), "largest_record_bytes": largest(&long),
     });
+    fs::write(&request.metrics, metrics.to_string()).map_err(|e| e.to_string())
+}
+
+/// The facts step, `planner/route-facts`. It reads `routing/route-catalog.json` of
+/// `planner/routing`, the source layer (the highways), the OSM extract `osm.pbf` of the region, the
+/// GLO-30 tiles of its bounds (the lift stations without `ele`) and, when the request has it, the
+/// canopy archive `trailview-canopy.pmtiles`. The option is `bounds`. It writes
+/// `facts/<cell>.json` for each grid cell; its metrics are the counts of `facts::Report`.
+pub fn facts(request: &Request) -> Result<(), String> {
+    let _guard = start()?;
+    let started = std::time::Instant::now();
+    Guard::stage("facts");
+    let bounds = obc_dem::step::bounds(&request.options)?;
+    let input = |path: &str| request.layers.values().find_map(|files| files.get(path));
+    let catalog = input("routing/route-catalog.json").ok_or("the step reads no route catalog")?;
+    let catalog: Value = serde_json::from_slice(&fs::read(catalog).map_err(|e| format!("{}: {e}", catalog.display()))?)
+        .map_err(|e| format!("route-catalog.json: {e}"))?;
+    let routes = facts::routes(&catalog)?;
+    drop(catalog);
+    eprintln!("Reading the facts of {} routes from the OSM extract", routes.len());
+    let features = facts::osm::read(&[input("osm.pbf").ok_or("the step reads no OSM extract")?.clone()])?;
+    let lat = bounds[1].abs().max(bounds[3].abs());
+    let mut samples = facts::shares::Samples::new(&routes, lat);
+    samples.highways(&Data::open(&folder(request, SOURCE)?)?.ways);
+    samples.water(&features.water);
+    if let Some(path) = input("trailview-canopy.pmtiles") {
+        samples.canopy(&obc_data::pmtiles::Archive::open(path)?)?;
+    }
+    let terrain = Terrain::open(&obc_dem::step::glo30(request, bounds), obc_dem::step::GLO30, None, bounds)?;
+    let mut recent = Recent::default();
+    let mut height = |p: planner_router::shape::P| terrain.height(p[1], p[0], &mut recent);
+    let mut facts = facts::entries(&routes, &features, &samples.shares(), &mut height)?;
+    let report = &mut facts.report;
+    (report.samples, report.paved_samples, report.paved_by_class_samples) = samples.paved();
+    let cells = grid::cells(bounds);
+    let ids: Vec<&str> = cells.iter().map(|(id, _)| id.as_str()).collect();
+    let folder = request.output.join("facts");
+    fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let mut sizes = Vec::new();
+    for (cell, document) in facts::files(&ids, &routes, &facts) {
+        let bytes = grid::file_bytes(&document);
+        fs::write(folder.join(format!("{cell}.json")), &bytes).map_err(|e| e.to_string())?;
+        sizes.push(bytes.len());
+    }
+    let mut metrics = facts.report.to_json();
+    metrics["seconds"] = json!(started.elapsed().as_secs_f64());
+    metrics["files"] =
+        json!({"count": sizes.len(), "bytes": sizes.iter().sum::<usize>(), "largest_bytes": sizes.iter().max()});
     fs::write(&request.metrics, metrics.to_string()).map_err(|e| e.to_string())
 }
 

@@ -20,3 +20,5 @@ rayon = "1"
 obc-data = { path = "../../host/obc-data" }
 # The heights of the roads, and the planner routing step of `obc data`.
 obc-dem = { path = "../../host/obc-dem", default-features = false, features = ["geotiff", "fetch"] }
+# The canopy tiles of the route facts.
+image = { workspace = true, features = ["webp"] }
