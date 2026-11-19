@@ -17,6 +17,8 @@ vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../t
 let app: ReturnType<typeof mount> | undefined;
 const stored = new Map<string, string>();
 let savedPlan: Plan | undefined;
+// The renames that the page asked for, as [id, name].
+const renamed: [string, string][] = [];
 // The other routes of the library.
 let others: Plan[] = [];
 const storedPlan = (): Plan => ({ ...newPlan(emptyTrip()), id: 'stored', trip: JSON.parse(stored.get('trip')!) });
@@ -40,6 +42,7 @@ vi.mock('../../lib/library/store', () => ({
         // The page writes the open state of the trip here at each change.
         async saveDraft(draft: { trip: unknown }) { stored.set('draft', JSON.stringify(draft.trip)); }
         async removeDraft() { stored.delete('draft'); }
+        async renameRoute(id: string, name: string) { renamed.push([id, name]); }
         async setSummary() {}
         async setState(_key: string, id: string | null) { if (!id) { stored.delete('trip'); savedPlan = undefined; } }
         onChange() { return () => {}; }
@@ -57,6 +60,7 @@ beforeEach(() => {
     HTMLElement.prototype.showPopover ??= () => {};
     savedPlan = undefined;
     others = [];
+    renamed.length = 0;
     vi.stubGlobal('confirm', vi.fn(() => true));
     const trip = testTrip();
     const coordinates = routeLine;
@@ -681,6 +685,27 @@ describe('planner side panel', () => {
         expect(preferencesLine().textContent).toContain('Fast pace');
         button('Pace').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await tick();
         expect([choices(), document.activeElement === preferencesLine(), !!document.querySelector('.callout')]).toEqual([null, true, true]);
+    });
+
+    it('keeps the preferences line open at a save and a rename, and closes it when another route opens', async () => {
+        await startApp();
+        await openPreferences();
+        const choices = () => document.querySelector('[role="group"][aria-label="Choose route preferences"]');
+        button('Pace').click(); await tick();
+        button('Fast').click(); await tick();
+        document.querySelector<HTMLButtonElement>('.trip-bar .save > button')!.click();
+        await vi.waitFor(() => expect(document.querySelector('.trip-bar .save > button')?.textContent?.trim()).toBe('Saved'));
+        document.querySelector<HTMLButtonElement>('.trip-bar h1 button')!.click(); await tick();
+        const name = document.querySelector<HTMLInputElement>('dialog input')!;
+        name.value = 'Lake round';
+        name.dispatchEvent(new Event('input', { bubbles: true }));
+        name.form!.requestSubmit();
+        await vi.waitFor(() => expect(renamed.map(([, name]) => name)).toEqual(['Lake round']));
+        await vi.waitFor(() => expect(document.querySelector('main')?.getAttribute('aria-busy')).toBe('false'));
+        expect(choices()).not.toBeNull();
+        await chooseMore('New route');
+        await vi.waitFor(() => expect(document.body.textContent).toContain('Where would you like to ride?'));
+        expect(choices()).toBeNull();
     });
 
     it.each([

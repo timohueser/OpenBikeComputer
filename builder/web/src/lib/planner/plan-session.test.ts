@@ -138,22 +138,24 @@ describe('plan session', () => {
         const id = session.plan.id;
         await library.renameRoute(id, 'Lake loop');
         await vi.waitFor(() => expect(session.plan.name).toBe('Lake loop'));
-        session.commit(moved(plan, 8.2));
+        session.commit({ ...moved(plan, 8.2), mode: 'trip' });
         expect(await session.save()).toBe(true);
         expect(await library.route(id)).toMatchObject({ name: 'Lake loop', trip: { points: moved(plan, 8.2).points } });
         await session.rename(session.plan, 'Lake round');
         await vi.waitFor(() => expect(session.plan.name).toBe('Lake round'));
         expect(await session.remove(session.plan)).toBe(true);
         expect(await library.route(id)).toBeUndefined();
+        // The empty plan after a delete is a one-day route, also when the deleted route was a multi-day trip.
+        expect(session.trip.mode).toBe('route');
 
-        session.commit(plan);
+        session.commit({ ...plan, mode: 'trip' });
         await vi.waitFor(() => expect(session.line).toBeDefined());
         await session.save('Second');
         const second = session.plan.id;
 
         await library.removeRoute(second);
         await vi.waitFor(() => expect(session.plan.id).not.toBe(second));
-        expect([session.trip.points, session.saveError]).toEqual([[], '']);
+        expect([session.trip.points, session.trip.mode, session.saveError]).toEqual([[], 'route', '']);
         session.close();
     });
 
