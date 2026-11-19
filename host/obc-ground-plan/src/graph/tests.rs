@@ -956,7 +956,7 @@ fn a_short_bridge_keeps_a_deck_over_the_way_below_it() {
 fn a_way_under_a_ground_arm_keeps_its_passage_and_water_there_does_not() {
     // A bridge from x -20 to 20, 7 m up, with a side road that leaves its east tag end to the south, and below the
     // bridge at x 19, 1 m off the side road and under its paved stroke, a footway or a stream. The footway keeps its
-    // passage: the east A line stops at the footway's stroke, past its centre line (39 m along). The stream already
+    // passage: its stroke reaches the east tag end, so the east A line is there (40 m along). The stream already
     // runs under the side road: the east A line stays clear of the side road's stroke (x 17.5, 37.5 m along), as on a
     // bridge with no passage.
     let side = || road(&[[20.0, 0.0], [20.0, 40.0]], 7.0);
