@@ -18,6 +18,17 @@
     /** "National hiking route", or "Hiking route" with no network level. */
     export const kindName = (record: About) =>
         LEVELS[record.rank] ? `${LEVELS[record.rank]} ${KINDS[record.kind]}` : KINDS[record.kind].replace(/^./, first => first.toUpperCase());
+
+    /**
+     * The place of a stage or a section in its long route, "Stage 2 of 5" or "Section 3", and that long route: `trail ??
+     * parent`, or `parent` with `byParent`. `parent` and `trail` can name two long routes: the number is of the one named.
+     */
+    export function stagePart(record: CatalogRecord, recordOf: (id: number) => CatalogRecord | undefined, byParent = false) {
+        const longId = byParent ? record.parent : record.trail ?? record.parent, long = longId === undefined ? undefined : recordOf(longId);
+        const number = record.trail !== undefined && !byParent ? record.trail_stage : record.stage, of = long?.stages?.length ?? long?.stage_count;
+        const part: string | false = record.section !== undefined ? `Section ${record.section}` : number === undefined ? false : of ? `Stage ${number} of ${of}` : `Stage ${number}`;
+        return { part, long };
+    }
 </script>
 
 <script lang="ts">
@@ -27,9 +38,12 @@
     import type { SignedItem } from '../routes/filter';
     import RouteCard from '../routes/RouteCard.svelte';
     import SignedPicture from './SignedPicture.svelte';
+    import { shownDescription } from './signed-page';
 
-    let { item, oncover, onplan, ontrail, onclose }: {
+    let { item, href, oncover, onplan, ontrail, onclose }: {
         item: SignedItem;
+        /** The page of the route: the name links to it. */
+        href?: string;
         /** As `oncover` of the picture: it is too small for its credits, so the page shows them with the map. */
         oncover?: (credits: string[] | undefined) => void;
         onplan: () => void;
@@ -43,20 +57,18 @@
     /** The stage is in a trail of the view only through its complete long route (`parent`): the card names that trail. */
     const byParent = $derived(item.trail !== undefined && Number(item.trail) === record.parent && record.parent !== longTrailId(record, recordOf));
     /** The long route of a stage or a section: each file that holds a part also holds its long route. */
-    const longId = $derived(byParent ? record.parent : record.trail ?? record.parent), long = $derived(longId === undefined ? undefined : recordOf(longId));
-    // `parent` and `trail` can name two long routes: the number must be of the one that the card names.
-    const number = $derived(record.trail !== undefined && !byParent ? record.trail_stage : record.stage), of = $derived(long?.stages?.length ?? long?.stage_count);
-    const part = $derived(record.section !== undefined ? `Section ${record.section}` : number === undefined ? false : of ? `Stage ${number} of ${of}` : `Stage ${number}`);
+    const { part, long } = $derived(stagePart(record, recordOf, byParent));
     // A cut stage is no trail: its sections open the trail that the stage is in. A cut route of fewer than two stages has
     // a trail record file only when it takes more than 12 hours, which no reader knows: its name is no button.
     const longName = $derived((part && (long?.name ?? long?.ref)) || false);
     const opens = $derived(!!ontrail && !!long && (byParent || long.trail !== undefined || (long.stage_count ?? 0) >= 2));
     const trailName = $derived(longName && opens ? { text: longName, onclick: () => ontrail!(byParent ? record.parent! : longTrailId(record, recordOf)!) } : longName);
     const website = $derived(routeWebsite(record.website));
-    const about = $derived(!!(record.description || record.operator || website || record.credit));
+    const description = $derived(shownDescription(record, recordOf));
+    const about = $derived(!!(description || record.operator || website || record.credit));
 </script>
 
-<RouteCard name={item.name} meta={[record.loop ? 'Loop' : 'One way', part, trailName, kindName(record)]} numbers={signedNumbers(record)} profile={item.profile}
+<RouteCard name={item.name} {href} meta={[record.loop ? 'Loop' : 'One way', part, trailName, kindName(record)]} numbers={signedNumbers(record)} profile={item.profile}
     more={about ? more : undefined} {onclose}>
     {#snippet picture()}<SignedPicture {item} {oncover} />{/snippet}
     {#snippet mark()}<span class="mark"><TrailMarker symbol={record.symbol} ref={record.ref} /></span>{/snippet}
@@ -65,7 +77,7 @@
 
 {#snippet more()}
     <p class="about">
-        {#if record.description}<span class="description">{record.description}</span>{/if}
+        {#if description}<span class="description">{description}</span>{/if}
         {#if record.operator}<span>{record.operator}</span>{/if}
         {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Official page ↗</a>{/if}
         {#if record.credit}<span>Route data: {record.credit}</span>{/if}

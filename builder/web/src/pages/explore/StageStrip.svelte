@@ -1,11 +1,12 @@
 <!-- The strip of the parts of a trail: a cell in the colour of the trail for each part in the catalog, a grey dashed cell
-     for each part that is not, each as wide as its length. Narrow cells make one bar with filled and empty runs. -->
+     for each part that is not, each as wide as its length. Narrow cells make one bar with filled and empty runs. With
+     `marked`, that part keeps the full colour and the others are paler. -->
 <script lang="ts">
     import { onRouteColor } from '../../lib/planner/route-colors';
     import type { TrailPart } from '../../lib/planner/signed-routes';
     import { stripCells } from './strip';
 
-    let { parts, numbered, color }: { parts: TrailPart[]; numbered: boolean; color: string } = $props();
+    let { parts, numbered, color, marked }: { parts: TrailPart[]; numbered: boolean; color: string; marked?: number } = $props();
 
     /** The numbers show only when each cell is wide enough for its number. With no numbers, cells under `CELL_PX` on
      * average make the strip one bar with filled and empty runs. */
@@ -20,7 +21,7 @@
 
 <div class="strip" class:thin style:--trail={color} style:--on-trail={onRouteColor(color)} bind:clientWidth={width} aria-hidden="true">
     {#each cells as cell, i (i)}
-        <span class="cell" class:missing={cell.missing} class:jump={cell.jump} style:flex-grow={cell.share}>
+        <span class="cell" class:missing={cell.missing} class:jump={cell.jump} class:pale={marked !== undefined && cell.id !== marked} style:flex-grow={cell.share}>
             {#if numbers}{cell.number}{/if}
         </span>
     {/each}
@@ -42,6 +43,9 @@
         background: var(--trail);
         color: var(--on-trail);
         font: 600 11px/1 var(--sans);
+    }
+    .pale {
+        opacity: 0.4;
     }
     .missing {
         border: 1px dashed var(--line-strong);

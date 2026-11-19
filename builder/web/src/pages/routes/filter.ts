@@ -150,6 +150,15 @@ export function splitDay(records: CatalogRecord[], trails: Map<number, TrailEntr
     return { day, long };
 }
 
+/** Where Explore shows `record` of a near view whose far files hold `trails`: its card on the day routes tab, else its trail
+ * on the long trails tab with the record as its stage, or alone when the record is the trail. */
+export function showAt(record: CatalogRecord, trails: Map<number, TrailEntry>, recordOf: (id: number) => CatalogRecord | undefined):
+    { tab: 'day'; selected: string } | { tab: 'long'; trail: number; stage?: string } {
+    const trail = farTrailId(record, trails, recordOf);
+    if (trail === undefined) return { tab: 'day', selected: String(record.id) };
+    return trail === record.id ? { tab: 'long', trail } : { tab: 'long', trail, stage: String(record.id) };
+}
+
 /** The trails of a near view: those of `inView`, and the trail of each record of `long`, so that a stage at the edge of the
  * view whose far line misses the view keeps its trail row. Each trail once. */
 export function nearTrails(inView: TrailEntry[], trails: Map<number, TrailEntry>, long: CatalogRecord[],
