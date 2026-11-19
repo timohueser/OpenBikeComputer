@@ -30,7 +30,7 @@ The device does not know this line. At upload, the phone or the web planner cuts
 day ends into one route per day. Each day route has the trip's bike type and a name such as "Day 2
 Ulrichen". Then it writes a small trip object that lists the day routes in ride order. The
 navigator on the device sees only ordinary routes, so every route feature works on a trip day
-without extra code. It sends only the day routes that changed, and it sends the trip object last.
+without extra code. It sends only the day routes that changed, and the trip object last.
 An interrupted upload so never leaves a trip that points at nothing.
 
 ### Day ends are places
