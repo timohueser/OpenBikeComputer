@@ -176,6 +176,7 @@ test('grid archives share download objects and assets stream from their pointers
     [`objects/${'f'.repeat(64)}`, packed],
     [`${prefix}/public/routes/tiles/5-16-11.json`, JSON.stringify({ '9-268-178.json': JSON.parse(pointer('b'.repeat(64), packedRoutes, 'gzip', routes.length)) })],
     [`objects/${'b'.repeat(64)}`, packedRoutes],
+    [`${prefix}/public/routes/tiles/facts/5-16-11.json`, JSON.stringify({ '9-268-178.json': JSON.parse(pointer('b'.repeat(64), packedRoutes, 'gzip', routes.length)) })],
     [`${prefix}/public/routes/tiles/trails/3-4-2.json`, JSON.stringify({ '7-66-45.json': JSON.parse(pointer('b'.repeat(64), packedRoutes, 'gzip', routes.length)) })],
     [`${prefix}/public/routes/tiles/long/123.json.json`, pointer('b'.repeat(64), packedRoutes, 'gzip', routes.length)],
     [`${prefix}/public/device/catalog.json.json`, pointer('e'.repeat(64), asset)],
@@ -202,8 +203,8 @@ test('grid archives share download objects and assets stream from their pointers
   assert.equal(font.headers.get('Content-Type'),'application/x-protobuf');assert.deepEqual(new Uint8Array(await font.arrayBuffer()),glyphs);
   const cell=await worker.fetch(new Request(`https://tiles.example/releases/${id}/routes/tiles/9-268-178.json`),env,ctx);
   assert.equal(cell.headers.get('Content-Type'),'application/json');assert.deepEqual(await cell.json(),{format:1,routes:[]});
-  // A far file has its pointer in a block index, a trail record file in a pointer of its own.
-  for (const file of ['trails/7-66-45', 'long/123']) {
+  // A facts file and a far file have their pointers in a block index, a trail record file in a pointer of its own.
+  for (const file of ['facts/9-268-178', 'trails/7-66-45', 'long/123']) {
     const response=await worker.fetch(new Request(`https://tiles.example/releases/${id}/routes/tiles/${file}.json`),env,ctx);
     assert.deepEqual(await response.json(),{format:1,routes:[]});
   }

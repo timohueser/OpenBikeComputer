@@ -56,6 +56,9 @@ pub static PLANNER_ROUTING: Layer = Layer {
     revision: 21,
     ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
 };
+/// The search facts of the routes, `facts/<cell>.json` of `specs/route-catalog.md`: its format is
+/// their `format`.
+pub static PLANNER_ROUTE_FACTS: Layer = whole(step::FACTS, 1, &[&WEB_PLANNER]);
 /// The search databases and the query model. Its format is the search schema of
 /// `specs/planner-release.md`.
 pub static PLANNER_SEARCH: Layer = Layer { revision: 2, ..whole("planner/search", 6, &[&SEARCH_SERVICE]) };
@@ -250,6 +253,7 @@ impl Product for Planner {
         &[
             "map",
             "routing",
+            "route-facts",
             "search",
             "climate",
             "snow",
@@ -645,6 +649,9 @@ impl Planner {
         steps.extend(trailview(root, inputs, store, &on, (bounds, &requested), &config.trailview, &mut wanted)?);
         if on("trailview-canopy") {
             steps.extend(trailview_canopy(inputs, store, (bounds, &requested), &mut wanted)?);
+        }
+        if on("route-facts") {
+            steps.extend(route_facts(&on, &steps, bounds, tiles(bounds, &land, &glo30))?);
         }
         let maps = [
             "basemap",
@@ -1086,6 +1093,45 @@ fn trailview_canopy(
     )))
 }
 
+/// `planner/route-facts` and its grid. It reads the route catalog of `planner/routing`, the highways
+/// of its source layer, the cut of the OSM, the GLO-30 tiles `glo30` of `bounds` and, when `steps`
+/// has it, the canopy archive.
+fn route_facts(
+    on: &dyn Fn(&str) -> bool,
+    steps: &[Step],
+    bounds: [f64; 4],
+    glo30: Vec<Input>,
+) -> Result<[Step; 2], Unplanned> {
+    if !on("routing") {
+        return Err(invalid("the layer route-facts reads routing: name both".into()));
+    }
+    let canopy = "planner/trailview-canopy";
+    let canopy =
+        steps.iter().any(|step| step.name == canopy).then(|| layer_files(canopy, &["trailview-canopy.pmtiles"]));
+    let reads = [layer_files("planner/routing", &["routing/route-catalog.json"]), Input::step(step::SOURCE)];
+    let facts = Step {
+        layer: &PLANNER_ROUTE_FACTS,
+        name: step::FACTS.into(),
+        inputs: reads.into_iter().chain([Input::step("planner/osm/bounds")]).chain(glo30).chain(canopy).collect(),
+        options: json!({"bounds": bounds}),
+        outputs: vec!["facts".into()],
+        run: Run::Rust(&functions::ROUTE_FACTS),
+        client: Client::None,
+    };
+    let grid = Step {
+        client: Client::Paths(vec!["objects".into(), "index.json".into()]),
+        ..python(
+            &PLANNER_ROUTE_FACTS,
+            &format!("{}/grid", step::FACTS),
+            vec![Input::step(step::FACTS)],
+            json!({"kind": "facts"}),
+            ("tools.planner_grid_pack", None),
+            &["objects", "index.json"],
+        )
+    };
+    Ok([facts, grid])
+}
+
 /// The version of `colour` that the target reads, and its files of `year` of the blocks that `outline`
 /// meets. None while the store lacks the manifest; then `wanted` has its fetch.
 fn trailview_colour(
@@ -1367,8 +1413,15 @@ mod tests {
     const AREA: &str = "europe/test";
     const OPTIONAL_SOURCES: [&str; 7] =
         ["climate", "snow", "esa-worldcover", "corine-land-cover", "colour", "egdi-geology", "igme5000"];
-    const OPTIONAL: [&str; 6] =
-        ["climate", "snow", "trailview-features", "trailview-rules", "trailview-ground", "trailview-colour"];
+    const OPTIONAL: [&str; 7] = [
+        "climate",
+        "snow",
+        "trailview-features",
+        "trailview-rules",
+        "trailview-ground",
+        "trailview-colour",
+        "route-facts",
+    ];
     /// The day of the version of `wiki` in the store.
     const DAY: &str = "2026-10-01";
 
@@ -2013,6 +2066,7 @@ mod tests {
                 ["planner", "routing-roads"] => "planner/routing-roads",
                 ["planner", "routing-costs"] => "planner/routing-costs",
                 ["planner", "routing" | "overlays", ..] => "planner/routing",
+                ["planner", "route-facts", ..] => "planner/route-facts",
                 ["planner", "search" | "model", ..] => "planner/search",
                 ["planner", "places", ..] => "planner/places",
                 ["planner", "climate", ..] => "planner/climate",
@@ -2033,8 +2087,8 @@ mod tests {
         let named: BTreeSet<&str> = steps.iter().map(|step| step.layer.name).collect();
         assert_eq!(
             named.len(),
-            20,
-            "sixteen operator layers, the OSM of the region and the work layers of the routing: {named:?}"
+            21,
+            "seventeen operator layers, the OSM of the region and the work layers of the routing: {named:?}"
         );
 
         // A target holds only client files: a step reads only those of a step of another layer
@@ -2044,7 +2098,8 @@ mod tests {
         // of the layer bakes both steps. The reads below bake their step again on such a machine:
         // the POI database is large, and its grid holds it in another form; the landmark and
         // peak content is compiled again from the `wiki` shards, which the target holds; the TrailView
-        // ruleset step reads only the repository.
+        // ruleset step reads only the repository; the route facts read the whole route catalog, which
+        // the routing grid holds only cut into cells.
         let mut unheld = Vec::new();
         for step in &steps {
             for input in &step.inputs {
@@ -2066,6 +2121,7 @@ mod tests {
             ("planner/trailview-material", "planner/trailview-rules"),
             ("planner/trailview-lithology", "planner/trailview-rules"),
             ("planner/trailview-region", "planner/trailview-rules"),
+            ("planner/route-facts", "planner/routing"),
         ];
         assert_eq!(unheld, exempt, "a step reads files of another layer that no client reads");
     }

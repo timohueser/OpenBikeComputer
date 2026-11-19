@@ -154,7 +154,7 @@ time_zone = "Europe/Berlin"
     ];
     let version = |id: &str| if id == "nominatim-country-data" { nominatim.clone() } else { "1".into() };
     let serving = read.map(|id| ((id.to_string(), Vec::new()), version(id)));
-    let layers = ["map", "routing", "search"].map(String::from).into();
+    let layers = ["map", "routing", "route-facts", "search"].map(String::from).into();
     let settings = Settings { region: AREA.into(), layers, ..Settings::default() };
     let mut inputs = Inputs { settings, serving: BTreeMap::from(serving), ..Inputs::default() };
     inputs.resolved.insert(("wiki".into(), Vec::new()), wiki(&store));
@@ -173,6 +173,7 @@ time_zone = "Europe/Berlin"
             "planner/routing-roads",
             "planner/routing-costs",
             "planner/routing",
+            "planner/route-facts",
         ];
         steps.retain(|step| python || rust.contains(&step.name.as_str()));
         for step in &mut steps {
@@ -207,7 +208,7 @@ time_zone = "Europe/Berlin"
 
     let built = build(&steps(false, &inputs));
     let names: Vec<&str> = built.iter().map(|built| built.receipt.step.as_str()).collect();
-    assert_eq!(names.len(), 9);
+    assert_eq!(names.len(), 10);
     for name in ["planner/osm", "planner/osm/bounds", "planner/terrain", "planner/routing"] {
         assert!(names.contains(&name), "{name} is not built");
     }
@@ -230,6 +231,11 @@ time_zone = "Europe/Berlin"
     for path in ["blocks/blocks.json", "blocks/catalog.json", "routes/9-267-177.json", "routing/route-catalog.json"] {
         assert!(paths.contains(&path), "{path} is not in the layer");
     }
+    // The route of the fixture has its facts in the file of its cell.
+    let facts = &built.iter().find(|built| built.receipt.step == "planner/route-facts").unwrap().receipt;
+    let file = facts.files.iter().find(|file| file.path == "facts/9-267-177.json").unwrap();
+    let file: serde_json::Value = serde_json::from_slice(&std::fs::read(store.object(&file.sha256)).unwrap()).unwrap();
+    assert!(file["routes"]["200"]["paved_pct"].is_u64(), "{file}");
 
     if Command::new("uv").arg("--version").output().is_err() {
         // CI installs uv, so there a missing uv is a failure, not a skip.
@@ -415,6 +421,7 @@ for entries in [catalog['assets'], *(cell[key] for cell in cells for key in ('fi
     assert_eq!(pointer["active"]["manifest"], format!("https://maps.openbikecomputer.com/releases/{id}/release.json"));
     let tiles = format!("https://tiles.openbikecomputer.com/releases/{id}/routes/tiles");
     assert_eq!(pointer["active"]["trails"], format!("{tiles}/trails/{{cell}}.json"));
+    assert_eq!(pointer["active"]["facts"], format!("{tiles}/facts/{{cell}}.json"));
     assert_eq!(pointer["active"]["trail"], format!("{tiles}/long/{{id}}.json"));
     let settings = Settings { region: AREA.into(), ..Settings::default() };
     let files = Files { outputs, ..Files::default() };
