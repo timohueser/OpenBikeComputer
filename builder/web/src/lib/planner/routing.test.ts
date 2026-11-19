@@ -427,6 +427,21 @@ describe('runs longer than one request', () => {
         expect((await calculateLine(visit(48.005), signal, new LegCache())).gapLegs).toEqual(['p1']);
     });
 
+    it('notes a visit that the line passes by, but not a visit that the line reaches, before a routed or a manual leg', async () => {
+        // A place at 48.02 has no road within 1 km; the service reaches a place at 48.0054, 600 m from its anchor.
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+            const point = (JSON.parse(init.body as string).points as Coordinate[]).findIndex(([, lat]) => lat > 48.01);
+            return point < 0 ? routeService('one')(url, init) : failing('no_snap', 'No accessible road.', { point })();
+        }));
+        const note = async (lat: number, leg: RoutePoint['leg']) => {
+            const visit = plan([[8, 48], [8.05, lat], [8.1, 48], [8.2, 48]], { 1: { kind: 'detour', anchor: [8.05, 48] }, 2: { leg } });
+            const view = planView(visit, await calculateLine(visit, signal, new LegCache()));
+            return routeGaps(view.stops, view.coordinates).map(gap => gapNote([gap]));
+        };
+        expect(await Promise.all([note(48.0054, 'routed'), note(48.0054, 'transfer'), note(48.02, 'routed'), note(48.02, 'transfer')])).toEqual([[], [],
+            ['Route passes 2.2 km from the selected point — no accessible path'], ['Route passes 2.2 km from the selected point — no accessible path']]);
+    });
+
     it('offers route options only for a plan that fits one request', async () => {
         vi.stubGlobal('fetch', vi.fn(routeService('one')));
         const plan = (count: number): Trip => {
