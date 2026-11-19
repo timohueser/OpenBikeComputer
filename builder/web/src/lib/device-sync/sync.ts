@@ -170,11 +170,11 @@ const payload = (kind: ObjectKind, name: string, bytes: Uint8Array): Payload => 
 const holds = (entry: CatalogEntry, file: Payload) => entry.payloadLength === BigInt(file.bytes.length) && entry.payloadCrc32 === file.crc;
 const save = (library: Library, id: string, copy: SentRoute) => library.changeState('sent', routes => ({ ...routes, [id]: { ...copy, days: [...copy.days] } }));
 
-/** The entry of route `id` on the card. An object that the card does not hold is gone: it reads as no object. An entry of
- * another card counts as no entry. */
+/** The entry of route `id` on the card, with no key while the steps change it. An object that the card does not hold is
+ * gone: it reads as no object. An entry of another card counts as no entry. */
 async function entryOn(card: Card, id: string): Promise<SentRoute> {
     const copy = (await card.library.state('sent'))?.[id], held = (object: string | null) => object && card.objects.has(object) ? object : '';
-    return copy?.card === card.id ? { key: copy.key, card: card.id, days: copy.days.map(held), trip: held(copy.trip) || null }
+    return copy?.card === card.id ? { key: '', card: card.id, days: copy.days.map(held), trip: held(copy.trip) || null }
         : { key: '', card: card.id, days: [], trip: null };
 }
 
