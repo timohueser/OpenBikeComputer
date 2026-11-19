@@ -1,4 +1,5 @@
 <script lang="ts">
+    import type { Snippet } from 'svelte';
     import Card from '../../lib/ui/Card.svelte';
     import Icon from '../../lib/ui/Icon.svelte';
     import { townOf } from './towns';
@@ -12,8 +13,9 @@
     import { kindLabel } from '../../lib/planner/search/presentation';
 
     /** The left card of the Route page: the numbers of the stored summary, then the days, the climbs and the waypoints
-     * of the calculated line, or the routing error. The opened climb is the selected part of the page. */
-    let { summary, trip, line, facts, error, changed, opened, onopen }: {
+     * of the calculated line, or the routing error. The opened climb is the selected part of the page. A summary with no
+     * time shows "–" for it. */
+    let { summary, trip, line, facts, error, changed, opened, onopen, lead, more, foot }: {
         summary: RouteSummary | null;
         trip: Trip;
         /** The calculated line, which `facts` belongs to. */
@@ -24,6 +26,12 @@
         changed: boolean;
         opened?: Climb;
         onopen: (climb: Climb | undefined) => void;
+        /** A line over the numbers. */
+        lead?: string;
+        /** After the numbers. */
+        more?: Snippet;
+        /** At the end of the card. */
+        foot?: Snippet;
     } = $props();
 
     // A climb of an earlier line or route does not stay open.
@@ -91,15 +99,17 @@
         {#if shownClimb && line}
             {@render climbCard(shownClimb, line)}
         {:else}
+            {#if lead}<p class="lead-line">{lead}</p>{/if}
             <dl class="numbers">
                 {@render number('Length', summary ? formatDistance(summary.lengthM) : '–')}
                 {@render number('Climb', summary ? formatHeight(summary.climbM) : '–')}
                 {#if !days}
-                    {@render number('Time', summary ? duration(summary.seconds / 3600) : '–')}
+                    {@render number('Time', summary?.seconds ? duration(summary.seconds / 3600) : '–')}
                     {@render number('Highest point', summary?.highestM != null ? formatHeight(summary.highestM) : '–')}
                 {/if}
             </dl>
             {#if changed}<p class="note">Changed since the last save</p>{/if}
+            {@render more?.()}
 
             {#if error}
                 <p class="note" role="alert">{error}</p>
@@ -142,6 +152,7 @@
                     <ol class="rows">{#each facts.stops as stop (stop.point.id)}{@render pin(stop, [about(stop.point), at(stop.km)].filter(Boolean).join(' · '))}{/each}</ol>
                 {/if}
             {/if}
+            {#if foot}<div class="foot">{@render foot()}</div>{/if}
         {/if}
     </Card>
 </div>
@@ -155,6 +166,18 @@
         flex-direction: column;
         height: 100%;
         overflow: auto;
+    }
+    .lead-line {
+        margin: 0 0 12px;
+        color: var(--ink-soft);
+        font-size: 13px;
+    }
+    /* The foot stands at the bottom of a card that is higher than its content. */
+    .foot {
+        margin-top: auto;
+        padding-top: 20px;
+        color: var(--ink-soft);
+        font-size: 12.5px;
     }
     .numbers {
         display: grid;
