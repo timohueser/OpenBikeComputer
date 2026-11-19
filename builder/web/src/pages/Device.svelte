@@ -9,7 +9,7 @@
     import { deviceName, rememberDevice, remembered, rememberedReady } from '../lib/device-sync/remembered.svelte';
     import { deviceSync, type MapStep } from '../lib/device-sync/state.svelte';
     import { formatBytes } from '../lib/format';
-    import type { NextMap, RouteRecord } from '../lib/library/records';
+    import { allOnCard, type NextMap, type RouteRecord } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { planTitle } from '../lib/planner/editor';
     import { isPlan } from '../lib/planner/library';
@@ -79,6 +79,7 @@
         report.sent && `${plural(report.sent, 'route')} sent`,
         report.trips && `${plural(report.trips, 'trip')} sent`,
         report.removed && `${plural(report.removed, 'route')} removed`,
+        report.removedTrips && `${plural(report.removedTrips, 'trip')} removed`,
     ].filter(Boolean).join(' · ') : '');
     const more = $derived(device ? device.routes - held.objects : 0);
     const parts = $derived(device ? [
@@ -98,7 +99,7 @@
         const mine = ++reads;
         const [waiting, leaving, sent, next, rides] = await Promise.all([library.state('waiting'), library.state('leaving'), library.state('sent'),
             library.state('nextMap'), card ? library.rides() : []]);
-        const onCard = Object.entries(sent ?? {}).filter(([, copy]) => copy.card === card);
+        const onCard = Object.entries(sent ?? {}).filter(([, copy]) => allOnCard(copy, card));
         const fromCard = rides.filter(ride => ride.device?.startsWith(`${card}:`));
         const now = { waiting: await named(waiting ?? []), leaving: leaving?.length ?? 0, sent: await named(onCard.map(([id]) => id)),
             objects: onCard.reduce((count, [, copy]) => count + copy.days.filter(Boolean).length, 0),

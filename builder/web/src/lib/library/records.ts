@@ -150,6 +150,11 @@ export interface SentRoute {
     trip: string | null;
 }
 
+/** All objects of `copy` are on the card `card`: the route is on the device. An empty slot is an object that is not made yet,
+ * or that the device lost or the rider deleted on it. */
+export const allOnCard = (copy: SentRoute | undefined, card: string | undefined): boolean =>
+    !!copy && copy.card === card && copy.key !== '' && copy.days.every(Boolean);
+
 /** A box of a map area, in whole microdegrees. */
 export interface MapBox { minLat: number; minLon: number; maxLat: number; maxLon: number }
 

@@ -18,8 +18,10 @@ describe('deviceState', () => {
         expect(deviceState(route, ['r'], sent)).toBe('waiting');
     });
 
-    it('is not on the device for a route of another card, or with no remembered device', () => {
+    it('is not on the device for a route of another card, with an object gone, or with no remembered device', () => {
         expect(deviceState(route, [], { r: { ...sent.r, card: 'other' } })).toBeUndefined();
+        // An object of the route is gone from the card.
+        expect(deviceState(route, [], { r: { ...sent.r, key: '', days: [''] } })).toBeUndefined();
         remembered.device = null;
         expect(deviceState(route, [], sent)).toBeUndefined();
     });

@@ -10,11 +10,12 @@ import { newPlan, type Plan } from '../planner/library';
 import { DeviceError, type FlatStoreClient } from '../usb/client';
 import { flatDevice, streamCeilingFor } from '../usb/flat-device';
 import { encodeRideObject, type RideObject } from '../usb/objects';
-import { ObjectKind } from '../usb/protocol';
+import { ObjectKind, type CatalogEntry } from '../usb/protocol';
 import { archivedRows } from './metadata';
 import { rideRecord } from './ride';
 import { rememberCard, remembered } from './remembered.svelte';
 import { CABLE_OUT, MAP_LOST, NO_ROOM, sendMap, syncDevice, type SyncClient } from './sync';
+import { tripObject } from './trip';
 
 beforeAll(loadFlatDevice);
 beforeEach(() => { remembered.device = null; });
@@ -76,9 +77,25 @@ function tripDays(bytes: Uint8Array): bigint[] {
     return Array.from({ length: view.getUint16(2, true) }, (_, i) => view.getBigUint64(64 + 16 * i, true));
 }
 
-/** `client` with its `put` replaced. */
-const withPut = (client: SyncClient, put: SyncClient['put']): SyncClient => ({ list: options => client.list(options), get: (...args) => client.get(...args),
-    remove: (...args) => client.remove(...args), archiveRide: (...args) => client.archiveRide(...args), put });
+/** `client` with some of its calls replaced. */
+const wrapped = (client: SyncClient, calls: Partial<SyncClient>): SyncClient => ({ list: options => client.list(options), get: (...args) => client.get(...args),
+    remove: (...args) => client.remove(...args), archiveRide: (...args) => client.archiveRide(...args), put: (...args) => client.put(...args), ...calls });
+
+/** A trip of the phone named "Alps", with a random key and two routes named as days of the planner: no sync may touch them. */
+function seedPhoneTrip(rig: ReturnType<typeof flatDevice>): CatalogEntry[] {
+    const days = [1, 2].map(k => rig.device.seed({ kind: ObjectKind.Route, displayName: `Day ${k} Camp ${k}`, bytes: new Uint8Array(64).fill(k) }));
+    const trip = tripObject(0x5eed_0bc1_7a2e_9d43n, 'Alps', 0, days.map(day => ({ route: day.objectId, joinM: 0, leaveM: 0xffff_ffff })));
+    return [...days, rig.device.seed({ kind: ObjectKind.Trip, displayName: 'Alps', bytes: trip })];
+}
+
+/** The routes and trips on the card that are not of `phone`. */
+const mine = (rig: ReturnType<typeof flatDevice>, phone: CatalogEntry[]) => rig.device.entries
+    .filter(entry => (entry.kind === ObjectKind.Route || entry.kind === ObjectKind.Trip) && !phone.some(other => other.objectId === entry.objectId));
+
+function expectUntouched(rig: ReturnType<typeof flatDevice>, phone: CatalogEntry[]): void {
+    expect(rig.device.entries.filter(entry => phone.some(other => other.objectId === entry.objectId)).map(entry => [entry.objectId, entry.revision]))
+        .toEqual(phone.map(entry => [entry.objectId, entry.revision]));
+}
 
 function setup(storeId = CARD) {
     const rig = flatDevice({ storeId, streamCeiling: streamCeilingFor(512) });
@@ -240,7 +257,7 @@ describe('syncDevice', () => {
         expect(put).not.toHaveBeenCalled();
 
         await library.removeRoute(alps.id);
-        expect(await sync()).toMatchObject({ removed: 1, tried: [alps.id] });
+        expect(await sync()).toMatchObject({ removed: 0, removedTrips: 1, tried: [alps.id] });
         expect([routes(), trips(), await library.state('sent'), await library.state('leaving')]).toEqual([[], [], {}, []]);
         await rig.close();
     });
@@ -279,11 +296,11 @@ describe('syncDevice', () => {
         await send(alps);
         let puts = 0;
         // The sixth put reaches the card, and its answer is lost.
-        const cutting = withPut(client, async (...args) => {
+        const cutting = wrapped(client, { put: async (...args) => {
             const answer = await client.put(...args);
             if (++puts === 6) throw new DeviceError('link', 'gone');
             return answer;
-        });
+        } });
         expect(await sync(cutting)).toMatchObject({ trips: 0, problem: CABLE_OUT });
         expect([routes().length, (await library.state('sent'))![alps.id].days.filter(Boolean).length]).toEqual([6, 5]);
         const put = vi.spyOn(client, 'put');
@@ -325,7 +342,7 @@ describe('syncDevice', () => {
         await rig.close();
     });
 
-    it('forgets a trip that the rider deleted on the device, and a new send keeps what is still on the card', async () => {
+    it('forgets a trip that the rider deleted on the device with its routes, and sends it again', async () => {
         const { rig, library, sync, routes, trips, send } = setup();
         rememberCard(SERIAL, CARD);
         const alps = longTrip(10);
@@ -338,18 +355,82 @@ describe('syncDevice', () => {
         await send(alps);
         expect(await sync()).toMatchObject({ trips: 1, problem: null });
         expect([routes().length, trips().length]).toEqual([10, 1]);
+        await rig.close();
+    });
 
-        // The rider deletes the route of day 4 on the device.
-        const [trip] = trips();
-        await rig.client.remove(routes()[3]);
-        await sync();
-        expect(await library.state('sent')).toEqual({});
-        const put = vi.spyOn(rig.client, 'put');
+    it('keeps the objects that are left when the rider deletes a day on the device: a new send and a delete leave no loose route', async () => {
+        const { rig, library, sync, routes, trips, send } = setup();
+        rememberCard(SERIAL, CARD);
+        const phone = seedPhoneTrip(rig), alps = longTrip(10);
         await send(alps);
+        await sync();
+        const ids = mine(rig, phone).map(entry => `${entry.objectId}`);
+        await rig.client.remove(routes().find(entry => entry.displayName === 'Day 4 Camp 4')!);
+        await sync();
+        // The plan is not on the device, and the entry still names the trip and the other days.
+        expect((await library.state('sent'))![alps.id]).toEqual({ key: '', card: CARD, days: ids.slice(0, 10).map((id, i) => i === 3 ? '' : id), trip: ids[10] });
+
+        // Another bike type changes every day, so no copy matches by its content: the days are replaced in place, and day 4 is made again.
+        const put = vi.spyOn(rig.client, 'put');
+        await send(await library.saveRoute({ ...alps, trip: { ...alps.trip, bike: 'gravel' } }));
         expect(await sync()).toMatchObject({ trips: 1, problem: null });
-        // Day 4 again, and the trip object with its new id, in place.
-        expect(put.mock.calls.map(([target]) => target.kind)).toEqual([ObjectKind.Route, ObjectKind.Trip]);
-        expect([routes().length, trips()]).toMatchObject([10, [{ objectId: trip.objectId }]]);
+        expect(put.mock.calls.map(([target]) => target.objectId === undefined)).toEqual([false, false, false, true, false, false, false, false, false, false, false]);
+        expect([mine(rig, phone).length, trips().length]).toEqual([11, 2]);
+
+        // The rider deletes day 7 on the device, then the plan in the library.
+        await rig.client.remove(routes().find(entry => entry.displayName === 'Day 7 Camp 7')!);
+        await sync();
+        await library.removeRoute(alps.id);
+        expect(await sync()).toMatchObject({ removed: 0, removedTrips: 1, problem: null });
+        expect([mine(rig, phone), await library.state('sent')]).toEqual([[], {}]);
+        expectUntouched(rig, phone);
+        await rig.close();
+    });
+
+    it('finds a trip object whose put answer was lost: a rename replaces it, a delete removes it', async () => {
+        const { rig, library, sync, trips, send } = setup();
+        rememberCard(SERIAL, CARD);
+        const phone = seedPhoneTrip(rig), client = rig.client;
+        // The trip object reaches the card, and its answer is lost.
+        const lossy = wrapped(client, { put: async (target, ...rest) => {
+            const answer = await client.put(target, ...rest);
+            if (target.kind === ObjectKind.Trip) throw new DeviceError('link', 'gone');
+            return answer;
+        } });
+        const alps = longTrip(10), rhine = { ...longTrip(10), name: 'Rhine' };
+        await send(alps);
+        expect(await sync(lossy)).toMatchObject({ problem: CABLE_OUT });
+        const [lost] = mine(rig, phone).filter(entry => entry.kind === ObjectKind.Trip);
+        expect((await library.state('sent'))![alps.id].trip).toBeNull();
+        // The plan still waits.
+        await library.renameRoute(alps.id, 'Alps north');
+        expect(await sync()).toMatchObject({ trips: 1, problem: null });
+        expect(mine(rig, phone).filter(entry => entry.kind === ObjectKind.Trip)).toMatchObject([{ objectId: lost.objectId, displayName: 'Alps north' }]);
+
+        await send(rhine);
+        expect(await sync(lossy)).toMatchObject({ problem: CABLE_OUT });
+        await library.removeRoute(rhine.id);
+        expect(await sync()).toMatchObject({ removedTrips: 1, problem: null });
+        // Only the trip and the 10 days of "Alps north" are left of the planner.
+        expect([mine(rig, phone).length, trips().map(entry => entry.displayName).sort()]).toEqual([11, ['Alps', 'Alps north']]);
+        expectUntouched(rig, phone);
+        await rig.close();
+    });
+
+    it('names only the kept days in the trip object before it removes the days that a shorter trip no longer has', async () => {
+        const { rig, library, sync, routes, trips, send } = setup();
+        rememberCard(SERIAL, CARD);
+        const alps = longTrip(10), client = rig.client;
+        await send(alps);
+        await sync();
+        const ids = routes().map(entry => entry.objectId);
+        // The device refuses to remove day 7, as for a route that a ride holds. The plan keeps its id and its first two points,
+        // so its trip key.
+        const refusing = wrapped(client, { remove: (ref, signal) => ref.objectId === ids[6] ? Promise.reject(new DeviceError('busy', 'The route is in use.')) : client.remove(ref, signal) });
+        await send({ ...longTrip(6), id: alps.id });
+        expect((await sync(refusing)).problem).toBe('“Alps” waits: The route is in use.');
+        expect([tripDays(rig.device.payloadOf(trips()[0].objectId)!), routes().map(entry => entry.objectId)]).toEqual([ids.slice(0, 6), ids.slice(0, 7)]);
+        expect(await library.state('waiting')).toEqual([alps.id]);
         await rig.close();
     });
 

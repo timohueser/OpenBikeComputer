@@ -33,7 +33,10 @@ export interface SyncReport {
     sent: number;
     /** Routes sent as day routes and a trip object, each once, however many of its objects went. */
     trips: number;
+    /** Routes removed that went as one route. */
     removed: number;
+    /** Routes removed that went as a trip. */
+    removedTrips: number;
     /** Waypoints of the sent routes past the 32 that the device reads. */
     waypointsLeft: number;
     /** The route ids that the sync tried to send or to remove. */
@@ -68,7 +71,7 @@ function today(): string {
  * `sent` right after its `put`, so a cut cable loses nothing. A lost `put` answer, and then a new line from the routing,
  * can leave a second copy of a route on the device. */
 export async function syncDevice(client: SyncClient, serial: string, library: Library, signal: AbortSignal): Promise<SyncReport> {
-    const report: SyncReport = { rides: 0, marked: 0, sent: 0, trips: 0, removed: 0, waypointsLeft: 0, tried: [], problem: null };
+    const report: SyncReport = { rides: 0, marked: 0, sent: 0, trips: 0, removed: 0, removedTrips: 0, waypointsLeft: 0, tried: [], problem: null };
     const problems: string[] = [];
     if (remembered.device?.serial !== serial) return report;
     try {
@@ -112,11 +115,11 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
             count: { routes: routes.length, trips: trips.length } };
         for (const id of await library.state('leaving') ?? []) {
             report.tried.push(id);
-            const copy = await entryOn(onCard, id), had = [copy.trip, ...copy.days].some(Boolean);
+            const { copy } = await entryOn(onCard, id), had = [copy.trip, ...copy.days].some(Boolean), trip = !!copy.trip || copy.days.length > 1;
             if (!await shrink(onCard, id, copy, 0, false, '')) continue;
             await library.changeState('sent', routes => Object.fromEntries(Object.entries(routes ?? {}).filter(([other]) => other !== id)));
             await library.changeState('leaving', ids => (ids ?? []).filter(other => other !== id));
-            if (had) report.removed++;
+            if (had) report[trip ? 'removedTrips' : 'removed']++;
         }
 
         const legs = new LegCache();
@@ -129,11 +132,17 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
         }
 
         const last = await client.list({ signal });
-        // A route of which the device lost an object, or the rider deleted one on it, can be sent again.
+        // An object that the device lost, or that the rider deleted on it, leaves an empty slot and no key: the route is not on
+        // the device and can be sent again, and a delete or a send still has the objects that are left. With none left, the
+        // entry goes.
         const held = new Set([...ofKind(last, ObjectKind.Route), ...ofKind(last, ObjectKind.Trip)].map(key));
         const lost = (copy: SentRoute) => copy.card === last.storeId && [copy.trip, ...copy.days].some(object => object && !held.has(object));
         if (Object.values(await library.state('sent') ?? {}).some(lost)) {
-            await library.changeState('sent', routes => Object.fromEntries(Object.entries(routes ?? {}).filter(([, copy]) => !lost(copy))));
+            await library.changeState('sent', routes => Object.fromEntries(Object.entries(routes ?? {}).flatMap(([id, copy]) => {
+                if (!lost(copy)) return [[id, copy]];
+                const left = { ...copy, key: '', days: copy.days.map(object => held.has(object) ? object : ''), trip: copy.trip && held.has(copy.trip) ? copy.trip : null };
+                return [left.trip, ...left.days].some(Boolean) ? [[id, left]] : [];
+            })));
         }
         rememberContents(last);
     } catch (error) {
@@ -170,12 +179,22 @@ const payload = (kind: ObjectKind, name: string, bytes: Uint8Array): Payload => 
 const holds = (entry: CatalogEntry, file: Payload) => entry.payloadLength === BigInt(file.bytes.length) && entry.payloadCrc32 === file.crc;
 const save = (library: Library, id: string, copy: SentRoute) => library.changeState('sent', routes => ({ ...routes, [id]: { ...copy, days: [...copy.days] } }));
 
-/** The entry of route `id` on the card, with no key while the steps change it. An object that the card does not hold is
- * gone: it reads as no object. An entry of another card counts as no entry. */
-async function entryOn(card: Card, id: string): Promise<SentRoute> {
-    const copy = (await card.library.state('sent'))?.[id], held = (object: string | null) => object && card.objects.has(object) ? object : '';
-    return copy?.card === card.id ? { key: '', card: card.id, days: copy.days.map(held), trip: held(copy.trip) || null }
+/**
+ * The entry of route `id` on the card, with no key while the steps change it, and the objects of the other entries on the
+ * card. An object that the card does not hold is gone: it reads as no object. An entry of another card counts as no entry.
+ * An entry with no trip object, of a route that has or had several days, takes the trip object that a lost put answer
+ * left: one that no other entry names, with the trip key `wanted` of the route or with a route of the entry among its
+ * days. A trip of the phone has a random key and names routes of the phone, and the device never gives an object id
+ * twice, so the trip of another plan, of the phone or of the rider never matches.
+ */
+async function entryOn(card: Card, id: string, wanted?: bigint, days = 0): Promise<{ copy: SentRoute; taken: Set<string | null> }> {
+    const sent = await card.library.state('sent') ?? {}, stored = sent[id];
+    const held = (object: string | null) => object && card.objects.has(object) ? object : '';
+    const copy: SentRoute = stored?.card === card.id ? { key: '', card: card.id, days: stored.days.map(held), trip: held(stored.trip) || null }
         : { key: '', card: card.id, days: [], trip: null };
+    const taken = new Set(Object.entries(sent).flatMap(([other, them]) => other === id || them.card !== card.id ? [] : [them.trip, ...them.days]));
+    if (!copy.trip && Math.max(days, copy.days.length) > 1) copy.trip = await tripOn(card, copy, wanted, taken) ?? null;
+    return { copy, taken };
 }
 
 /** Removes the trip object of `copy` unless `keepTrip`, then its day routes past `days`, the last first, and writes the entry
@@ -205,16 +224,20 @@ async function shrink(card: Card, id: string, copy: SentRoute, days: number, kee
     return true;
 }
 
-/** The trip object `name` with the trip key `wanted` on the card, of those that `open` lets through. */
-async function tripOn(card: Card, name: string, wanted: bigint, open: (entry: CatalogEntry) => boolean): Promise<string | undefined> {
+/** The trip object on the card that `taken` does not name, with the trip key `wanted` or with a route of `copy` among its
+ * days. */
+async function tripOn(card: Card, copy: SentRoute, wanted: bigint | undefined, taken: Set<string | null>): Promise<string | undefined> {
+    const mine = new Set(copy.days.filter(Boolean));
     for (const entry of card.objects.values()) {
-        if (entry.kind !== ObjectKind.Trip || entry.displayName !== name || entry.payloadLength < 64n || !open(entry)) continue;
+        if (entry.kind !== ObjectKind.Trip || taken.has(key(entry)) || entry.payloadLength < 64n) continue;
         let bytes;
         try { bytes = (await card.client.get(entry, { signal: card.signal })).bytes; } catch (error) {
             if (cut(error)) throw error;
             continue;
         }
-        if (new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(56, true) === wanted) return key(entry);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), count = Math.min(view.getUint16(2, true), Math.floor((bytes.length - 64) / 16));
+        const days = Array.from({ length: count }, (_, i) => `${view.getBigUint64(64 + 16 * i, true)}`);
+        if (view.getBigUint64(56, true) === wanted || days.some(day => mine.has(day))) return key(entry);
     }
 }
 
@@ -222,9 +245,8 @@ async function tripOn(card: Card, name: string, wanted: bigint, open: (entry: Ca
  * Sends the route `id` that waits: a plan of one riding day as one route, else one route for each riding day and then the
  * trip object. An object whose copy on the card has the same length and CRC is skipped, another object of the entry is
  * replaced in place, and a missing one is created. A route on the card with the length, the CRC and the name of a missing
- * day takes its place, and so does a trip object with the name and the trip key of the route, so the card gets no second
- * copy. When the menu of the device has no room for the new objects, nothing goes. Gives how the route went, or nothing
- * while it waits: then `problems` says why.
+ * day takes its place, so the card gets no second copy. When the menu of the device has no room for the new objects,
+ * nothing goes. Gives how the route went, or nothing while it waits: then `problems` says why.
  */
 async function sendRoute(card: Card, id: string, legs: LegCache): Promise<{ trip: boolean; left: number } | undefined> {
     const { client, library, signal, problems } = card;
@@ -246,22 +268,19 @@ async function sendRoute(card: Card, id: string, legs: LegCache): Promise<{ trip
         return;
     }
     const files = routes.map(day => payload(ObjectKind.Route, displayName(day.name, 'Route'), day.bytes)), days = files.length;
-    const copy = await entryOn(card, id), sent = await library.state('sent') ?? {}, tripId = tripKey(id, route.trip);
+    const tripId = tripKey(id, route.trip), { copy, taken } = await entryOn(card, id, tripId, days);
 
-    // A lost answer of an earlier put, or an entry that a sync dropped, left objects of the route on the card. An object of
-    // another entry on this card is not one.
-    const taken = new Set(Object.entries(sent).flatMap(([other, them]) => other === id || them.card !== card.id ? [] : [them.trip, ...them.days]));
+    // A lost answer of an earlier put left a copy on the card. An object of another entry on this card is not one.
     const unnamed = (entry: CatalogEntry) => !taken.has(key(entry)) && copy.trip !== key(entry) && !copy.days.includes(key(entry));
     files.forEach((file, i) => {
         const copied = [...card.objects.values()].find(entry => entry.kind === file.kind && entry.displayName === file.name && holds(entry, file) && unnamed(entry));
         copy.days[i] ||= copied ? key(copied) : '';
     });
-    // The days of a trip object change when a day route is made again, its key does not.
-    if (days > 1 && !copy.trip) copy.trip = await tripOn(card, name, tripId, unnamed) ?? null;
+    // A route of one day leaves its trip first. A trip removes its surplus days after it names only the others.
+    if (days === 1 && !await shrink(card, id, copy, 1, false, waits)) return;
 
-    if (!await shrink(card, id, copy, days, days > 1, waits)) return;
-
-    const needed = copy.days.filter(object => !object).length, free = Math.max(0, MENU.routes - card.count.routes);
+    const surplus = copy.days.slice(days).filter(object => card.objects.has(object)).length;
+    const needed = copy.days.slice(0, days).filter(object => !object).length, free = Math.max(0, MENU.routes - card.count.routes + surplus);
     if (needed > free) {
         problems.push(`${waits}the bike computer has room for ${free} more ${free === 1 ? 'route' : 'routes'}, it needs ${needed}. Remove ridden or unused routes on the bike computer.`);
         return;
@@ -296,8 +315,9 @@ async function sendRoute(card: Card, id: string, legs: LegCache): Promise<{ trip
     };
     for (const [i, file] of files.entries()) if (!await put(file, copy.days[i], object => { copy.days[i] = object; })) return;
     if (days > 1) {
-        const trip = tripObject(tripId, name, startDay(route.trip), copy.days.map(object => ({ route: BigInt(object), joinM: 0, leaveM: 0xffff_ffff })));
+        const trip = tripObject(tripId, name, startDay(route.trip), copy.days.slice(0, days).map(object => ({ route: BigInt(object), joinM: 0, leaveM: 0xffff_ffff })));
         if (!await put(payload(ObjectKind.Trip, name, trip), copy.trip, object => { copy.trip = object; })) return;
+        if (!await shrink(card, id, copy, days, true, waits)) return;
     }
     await save(library, id, { ...copy, key: sentKey(route) });
     await library.changeState('waiting', ids => (ids ?? []).filter(other => other !== id));
