@@ -62,7 +62,8 @@
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import { appearance } from '../../lib/theme.svelte';
-    import { routingKey, type RoutingLine } from '../../lib/planner/routing';
+    import { routingKey, type RoutingLine, type Surface } from '../../lib/planner/routing';
+    import { surfaceLines } from '../../lib/planner/surface-data';
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
     import { closureStretches } from '../../lib/planner/route-closures';
     import { alpineStretches } from '../../lib/planner/route-difficulty';
@@ -168,6 +169,10 @@
     let asking = $state<{ mode: SaveMode; answer: (answer: SaveAnswer) => void } | null>(null);
     let visibleRange = $state<[number, number] | null>(null);
     let hoverProgress = $state<number | null>(null);
+    // The place on the route under the map pointer, for the profile.
+    let mapHover = $state<number | null>(null);
+    // The surface that the rider points at in the surface legend, for the map.
+    let litSurface = $state<Surface>();
     // The part of the route the profile selects, as route progress. Another line ends it; the map fits each part.
     let part = $state<[number, number] | null>(null);
     $effect(() => { void visualRoute; part = null; });
@@ -294,8 +299,8 @@
         const window = pickerNight !== null ? stopWindows[pickerNight] : undefined;
         return window && total ? { from: window[0] / total, to: window[1] / total, blocked: false } : null;
     });
-    const highlighted = $derived(nightBand ? [routeSlice(coordinates, nightBand.from, nightBand.to)]
-        : shownNote?.coordinates ?? []);
+    const highlighted = $derived(litSurface ? surfaceLines(visualRoute, litSurface)
+        : nightBand ? [routeSlice(coordinates, nightBand.from, nightBand.to)] : shownNote?.coordinates ?? []);
     const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId && suits(stop, nightKinds(trip, pickerNight))) : undefined);
     const routeHeights = $derived(currentRoute ? profileSamples(currentRoute) : []);
     const nights: NightChoices = {
@@ -1170,7 +1175,7 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={nightPage !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} /></div>
+            <div class="query-slot" style:display={nightPage !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} /></div>
             {#if !searching && nightPage === null}{#key planId}<RoutePreferences {trip} onChange={edit} />{/key}{/if}
             {#if exploreBack && hasEndpoints && !searching && nightPage === null}
                 <button type="button" class="back-to-routes" onclick={() => router.go(ROUTES.explore, { explore: exploreBack })}><Icon name="back" size={15} />Find another route</button>
@@ -1243,7 +1248,7 @@
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
                     onVisibleRange={(range) => visibleRange = range}
-                    onRiderMove={() => nightToShow = null}
+                    onRiderMove={() => nightToShow = null} onRouteHover={progress => mapHover = progress}
                 >
                     {#snippet popup()}
                         {#if calloutKind}
@@ -1325,7 +1330,7 @@
                 activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {rests} {totals}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
-                {part} onPart={next => { if (active) part = next; }}
+                {part} onPart={next => { if (active) part = next; }} marker={mapHover} bind:surface={litSurface}
             >
                 {#snippet strip(from, to, rests, onHover)}
                     {#if dataLayer?.strip}<LayerStrip layer={dataLayer} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {rests} {onHover} />{/if}

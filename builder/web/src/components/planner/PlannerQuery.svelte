@@ -2,12 +2,11 @@
     import { onDestroy, untrack } from 'svelte';
     import PlannerIcon from '../../lib/ui/Icon.svelte';
     import QueryChip from './QueryChip.svelte';
-    import type { Coordinate } from '../../lib/planner/geo';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
 
-    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, revision = 0, viewRevision = 0, onResults, onSearch, onClear, onLocation, onPointing }: {
+    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, revision = 0, viewRevision = 0, onSearch, onClear, onLocation, onPointing }: {
         text?: string; searchState?: SearchState; context: SearchContext; selection?: Where;
-        revision?: number; viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => Promise<'denied' | 'unavailable' | undefined>; onPointing: (where?: Where) => void;
+        revision?: number; viewRevision?: number; onSearch: () => void; onClear: () => void; onLocation: () => Promise<'denied' | 'unavailable' | undefined>; onPointing: (where?: Where) => void;
     } = $props();
     let edited = $state(false);
     let request = $state<QueryRequest | undefined>();
@@ -15,7 +14,6 @@
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
     let serial = 0;
-    let framePending = false;
     let requestContext: SearchContext | undefined;
     let searchedView = $state(0);
     const usesView = $derived(!request?.where && !context.pointing || (request?.where ?? context.pointing)?.scope === 'view');
@@ -27,9 +25,8 @@
     const required = $derived(request?.type === 'places' ? ['what'] : request?.type === 'place' ? ['name'] : request?.type === 'route' ? ['to'] : request?.type === 'end_day' ? ['day','at'] : ['add_point','remove_point'].includes(request?.type ?? '') ? ['point'] : request?.type === 'split' ? ['days','per_day'] : request?.type === 'join' ? ['day'] : request?.type === 'stretches' ? ['what'] : []);
     const explicitWhere = $derived(request?.where ?? context.pointing ?? { scope: 'view' as const });
 
-    async function run(nextLimit = 20, parsed = request, options: { reparse?: boolean; fit?: boolean; context?: SearchContext } = {}) {
-        const { reparse = false, fit = true } = options;
-        if (fit) framePending = true;
+    async function run(nextLimit = 20, parsed = request, options: { reparse?: boolean; context?: SearchContext } = {}) {
+        const { reparse = false } = options;
         if (reparse) parsed = undefined;
         clearTimeout(timer); controller?.abort(); const id = ++serial;
         if (!text.trim()) { clear(); return; }
@@ -50,15 +47,12 @@
                 throw new Error(failure === 'denied' ? 'Allow location access to search near you.' : 'Your position is not available.');
             }
             searchState = { loading: false, error: '', answer };
-            if (framePending && answer.type === 'places' && answer.results?.length) onResults?.(answer.results.map(p => [p.lon, p.lat]));
-            framePending = false;
         } catch (error) {
             if (id !== serial || signal.aborted) return;
             searchState = { loading: false, answer: searchState.answer, error: error instanceof TypeError ? 'Search is unavailable. Check your connection and retry.' : (error as Error).message };
         }
     }
     function input(value: string) {
-        framePending = true;
         text = value; request = undefined; removed = {}; edited = false; activeFilter = null;
         clearTimeout(timer); controller?.abort(); serial++;
         searchState = { loading: !!text.trim(), error: '', answer: null };
@@ -67,7 +61,6 @@
     }
     function clear() {
         clearTimeout(timer); controller?.abort(); serial++;
-        framePending = false;
         text = ''; request = undefined; removed = {}; edited = false; activeFilter = null;
         searchState = { loading: false, error: '', answer: null }; onClear();
     }
@@ -88,7 +81,7 @@
     $effect(() => {
         // Map movement advances viewRevision instead, so the searched area stays until the rider searches the new view.
         void revision;
-        untrack(() => { if (text.trim()) { clearTimeout(timer); controller?.abort(); serial++; searchState = { ...searchState, loading: true, error: '' }; timer = setTimeout(() => run(limit, request, { fit: false }), 200); } });
+        untrack(() => { if (text.trim()) { clearTimeout(timer); controller?.abort(); serial++; searchState = { ...searchState, loading: true, error: '' }; timer = setTimeout(() => run(limit, request), 200); } });
     });
     onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 </script>
@@ -101,7 +94,7 @@
         </div>
     </form>
     {#if text.trim()}
-        {#if movedView}<button type="button" class="search-view" disabled={searchState.loading} onclick={() => run(limit, request, { fit: false })}><PlannerIcon name="search" size={14} />Search this map view</button>{/if}
+        {#if movedView}<button type="button" class="search-view" disabled={searchState.loading} onclick={() => run(limit, request)}><PlannerIcon name="search" size={14} />Search this map view</button>{/if}
         {#if request}
             <div class="meaning" aria-label="Understood request">
                 {#each fields as [field, value] (field)}

@@ -10,7 +10,7 @@
     import { formatGrade, gradeBands, gradePaths, profileGrades } from '../../lib/planner/grade-data';
     import { dayColor } from '../../lib/planner/day-colors';
     import { formatPart, heightRange, profileAscent, profileHeightAt, profilePaths, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
-    import type { RoutingLine } from '../../lib/planner/routing';
+    import type { RoutingLine, Surface as SurfaceKind } from '../../lib/planner/routing';
     import type { Day } from '../../lib/planner/editor';
     import { axisColumn, axisLeft, axisPieces, axisRest, axisProgress, axisWidth, type ProfileAxis } from '../../lib/planner/profile-axis';
     import { sleepIcon } from '../../lib/planner/search/presentation';
@@ -20,7 +20,7 @@
 
     let {
         lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260, open = true,
-        rests = [], totals = null, onToggle, onNight, onDayEndDrag, onHover, strip, part = null, onPart,
+        rests = [], totals = null, onToggle, onNight, onDayEndDrag, onHover, strip, part = null, onPart, marker = null, surface = $bindable(),
     }: {
         /** Route length in km. */
         lineData?: RoutingLine;
@@ -53,6 +53,10 @@
         /** The selected part, as route progress. */
         part?: [number, number] | null;
         onPart?: (part: [number, number] | null) => void;
+        /** The place on the route under the pointer on the map, as route progress. */
+        marker?: number | null;
+        /** The surface that the rider points at in the surface legend. */
+        surface?: SurfaceKind;
     } = $props();
 
     // The drawer height counts one title row: the top padding, the row of the range switch and its margin.
@@ -62,16 +66,12 @@
     const known = $derived(samples.flatMap(s => s.height === null ? [] : [s.height]));
     const { low, high } = $derived(heightRange(samples));
     const { line, area } = $derived(profilePaths(samples, low, high));
-    let hover = $state<number | null>(null);
+    let pointer = $state<number | null>(null);
     let gradeChoice = $state<boolean | null>(null);
     const showGrade = $derived(gradeChoice ?? singleRoute);
     const grades = $derived(profileGrades(samples, total));
     const bandPaths = $derived(gradePaths(samples, grades, low, high));
     function color(index: number) { return theme === 'dark' ? gradeBands[index].dark : gradeBands[index].color; }
-    const hoverHeight = $derived(hover === null ? null : profileHeightAt(hover, samples));
-    const hoverIndex = $derived(hover === null ? -1 : Math.max(0, sampleIndex(samples, hover) - 1));
-    const hoverGrade = $derived(grades[hoverIndex] ?? null);
-    const hoverPushing = $derived(lineData?.edges.pushing?.[hoverIndex]);
     let plot = $state<HTMLDivElement>();
     let drag = $state<{ night: number; progress: number; moved: boolean } | null>(null);
     let range = $state<'map' | 'route'>('map');
@@ -94,6 +94,12 @@
     const shown = $derived(range === 'map' ? focus ?? (part && held ? held : view) : { from: 0, to: 1 });
     const origin = $derived(range === 'map' && focus ? focus.from : 0);
     const span = $derived(Math.max(1e-6, shown.to - shown.from));
+    // The pointer in the profile, else the pointer on the map while it is in the shown stretch.
+    const hover = $derived(pointer ?? (marker !== null && marker >= shown.from && marker <= shown.to ? marker : null));
+    const hoverHeight = $derived(hover === null ? null : profileHeightAt(hover, samples));
+    const hoverIndex = $derived(hover === null ? -1 : Math.max(0, sampleIndex(samples, hover) - 1));
+    const hoverGrade = $derived(grades[hoverIndex] ?? null);
+    const hoverPushing = $derived(lineData?.edges.pushing?.[hoverIndex]);
     // Ticks less than 1 unit apart need a decimal, or the labels repeat.
     const ticks = $derived([0, .25, .5, .75, 1].map(t => ({ at: t,
         label: `${distanceIn((shown.from + t * span - origin) * total * 1000).toFixed(distanceIn(span * total * 1000) / 4 < 1 ? 1 : 0)} ${settings.units}` })));
@@ -134,8 +140,8 @@
         const day = days[drag.night - 1];
         drag.progress = Math.max(day.from + .005, Math.min(days[drag.night].to - .005, progressAt(event)));
         drag.moved = true;
-        hover = drag.progress;
-        onHover(hover);
+        pointer = drag.progress;
+        onHover(pointer);
     }
 
     /** The pointer of `Lanes`; while a day end is dragged, `track` moves it. */
@@ -161,7 +167,7 @@
     });
 
     function inspect(progress: number | null) {
-        hover = progress;
+        pointer = progress;
         onHover(progress);
     }
 
@@ -267,7 +273,7 @@
         <Lanes label="Profile" rows={[{ label: '', draw: profile, grow: true }]} {ticks} axis={lanesAxis} pointer={hover === null ? undefined : share(hover)}
             chip={readout} onpointer={point} part={part && [share(part[0]), share(part[1])]} onpart={onPart && select} onclick={() => select(null)} />
     </div>
-    <Surface {walking} line={lineData} from={shown.from} to={shown.to} rests={axis.rests} onHover={inspect} />
+    <Surface {walking} line={lineData} from={shown.from} to={shown.to} rests={axis.rests} bind:lit={surface} onHover={inspect} />
     {@render strip?.(shown.from, shown.to, axis.rests, inspect)}
     </div></div>
     {/if}

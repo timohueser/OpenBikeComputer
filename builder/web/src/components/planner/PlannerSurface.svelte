@@ -4,8 +4,10 @@
     import type { RoutingLine, Surface } from '../../lib/planner/routing';
     import { axisLeft, axisProgress, axisWidth } from '../../lib/planner/profile-axis';
     import { noteDistance } from '../../lib/planner/route-closures';
-    let { line, from, to, rests = [], walking = false, onHover }: {
+    let { line, from, to, rests = [], walking = false, lit = $bindable(), onHover }: {
         walking?: boolean; line?: RoutingLine; from: number; to: number;
+        /** The surface of the legend entry under the pointer or with the focus. */
+        lit?: Surface;
         /** The rest columns of the profile, as route progress. */
         rests?: number[];
         onHover: (progress: number | null) => void;
@@ -18,8 +20,6 @@
     const hasPushing = $derived(!walking && runs.some(run => run.pushing));
     const pushingDistance = $derived(noteDistance(line?.pushingKm ?? 0));
     let position = $state<number | null>(null);
-    /** The surface of the legend entry under the pointer or with the focus: the bar lights its stretches. */
-    let lit = $state<Surface>();
     const at = $derived(Math.max(from, Math.min(to, position ?? from)));
     const current = $derived(visible.find(run => run.to > at) ?? visible.at(-1));
     const access = $derived(current?.pushing == null ? 'Access unverified' : walking ? 'Walking' : current.pushing ? 'Push bike' : 'Riding');

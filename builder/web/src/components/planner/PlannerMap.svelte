@@ -29,7 +29,7 @@
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         placeKinds = [], highlightedKind = null, mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
         lines = [], onPick = null, part = null,
-        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, popup,
+        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onRouteHover, popup,
     }: {
         /** Lines that take no edits, such as the days of two saved routes, each in its colour and width; a later line
          * draws on top. A transfer draws dashed. */
@@ -77,6 +77,8 @@
         onVisibleRange?: (range: [number, number]) => void; popup?: Snippet;
         /** The rider starts to move the map, by pointer, wheel or keyboard. */
         onRiderMove?: () => void;
+        /** The place on the route under the pointer, as route progress, or null off the route. */
+        onRouteHover?: (progress: number | null) => void;
     } = $props();
 
     type LineHit = { legEndId: string; coordinate: Coordinate };
@@ -190,13 +192,6 @@
         // The centre of the box goes to the centre of the padded view.
         if (shown.action === 'pan') map.panTo([(west + east) / 2, (south + north) / 2], { offset: [(fitPadding.left - fitPadding.right) / 2, (fitPadding.top - bottom) / 2], duration: motionDuration() });
         else fitBounds([[west, south], [east, north]], map.getZoom(), motionDuration());
-    }
-
-    export function fitSearchResults(region: Coordinate[]) {
-        if (!map || !region.length) return;
-        fittedInitialRoute = true;
-        wholeRoute = false;
-        fitBounds(region, 14, motionDuration(), true);
     }
 
     /** The coordinate under a viewport point, or null outside the map. */
@@ -607,6 +602,10 @@
     $effect(() => {
         highlightedLines;
         if (map && ready) (map.getSource("trip-highlight") as GeoJSONSource | undefined)?.setData(highlightData());
+    });
+    $effect(() => {
+        const at = hover && coordinates.length > 1 ? nearestProgress(coordinates, hover.coordinate) : null;
+        untrack(() => onRouteHover?.(at));
     });
     $effect(() => {
         if (picking) hover = null;
