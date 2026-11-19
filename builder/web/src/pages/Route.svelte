@@ -51,7 +51,7 @@
     const name = $derived(plan ? plan.name || planTitle(plan.trip) : record?.name ?? '');
     const key = $derived(plan && hasEndpoints(plan.trip) ? routingKey(plan.trip) : undefined);
     const line = $derived(routed?.key === key ? routed?.line : undefined);
-    const error = $derived(!key ? 'This plan has no start and finish.' : routed?.key === key ? routed?.error : undefined);
+    const error = $derived(!key ? 'This route has no start and finish.' : routed?.key === key ? routed?.error : undefined);
     const facts = $derived(plan && line ? routeFacts(plan.trip, line) : undefined);
     const pins = $derived(plan && summary ? routePins(plan.trip, lineCoordinates(summary), line) : []);
     const changed = $derived(!!plan && !!line && (!summary || Math.abs(planView(plan.trip, line).summary.distance * 1000 - summary.lengthM) > summary.lengthM / 100));

@@ -64,7 +64,7 @@
         <h2>My routes</h2>
         <button type="button" class="icon" aria-label="Close My routes" bind:this={closer} onclick={onClose}><Icon name="close" /></button>
     </header>
-    <p class="storage">Saved in this browser. Download a route to keep a backup or move it to another device.</p>
+    <p class="storage">Saved in this browser. Download a plan file to keep a backup or move it to another device.</p>
     <input class="file" type="file" multiple accept=".obcplan,.gpx,application/json,application/gpx+xml" aria-label="Import plan or GPX files" bind:this={picker} onchange={() => {
         const files = [...picker.files ?? []];
         if (files.length) onImport(files);

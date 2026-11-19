@@ -625,7 +625,7 @@ describe('Trip structural edits', () => {
         expect(repartitionDays(next, line, [0, total], []).days).toBe(1);
         expect(trip).toEqual(before);
         expect(() => repartitionDays(trip, line, [0, total], Array.from({ length: maxRidingDays }, (_, i) => total * (i + 1) / (maxRidingDays + 1))))
-            .toThrow('at most');
+            .toThrow('A trip can have up to');
     });
     it('keeps pinned nights and rest days out of repartition and refuses a reversal with a final rest day', () => {
         const trip = testTrip(), line = testLine(trip), total = planView(trip, line).total;

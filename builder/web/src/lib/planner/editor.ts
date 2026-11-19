@@ -475,7 +475,7 @@ export function repartitionDays(trip: Trip, line: RoutingLine | undefined, [from
     const { days, total } = planView(trip, line);
     const ends = [...days.slice(0, -1).map(d => d.to * total).filter(k => k <= from + 1e-6 || k >= to - 1e-6), ...boundaries];
     ends.sort((a, b) => a - b);
-    if (ends.length >= maxRidingDays) throw new Error(`The route can have at most ${maxRidingDays} riding days.`);
+    if (ends.length >= maxRidingDays) throw new Error(`A trip can have up to ${maxRidingDays} riding days.`);
     return { ...setDays(trip, ends.length + 1), mode: 'trip',
         splits: Object.fromEntries(ends.map((km, i) => [i + 1, km / total])) };
 }
