@@ -39,16 +39,19 @@
     } = $props();
 
     const record = $derived(item.record);
+    const recordOf = (id: number) => catalog.record(id);
+    /** The stage is in a trail of the view only through its complete long route (`parent`): the card names that trail. */
+    const byParent = $derived(item.trail !== undefined && Number(item.trail) === record.parent && record.parent !== longTrailId(record, recordOf));
     /** The long route of a stage or a section: each file that holds a part also holds its long route. */
-    const longId = $derived(record.trail ?? record.parent), long = $derived(longId === undefined ? undefined : catalog.record(longId));
+    const longId = $derived(byParent ? record.parent : record.trail ?? record.parent), long = $derived(longId === undefined ? undefined : recordOf(longId));
     // `parent` and `trail` can name two long routes: the number must be of the one that the card names.
-    const number = $derived(record.trail !== undefined ? record.trail_stage : record.stage), of = $derived(long?.stages?.length ?? long?.stage_count);
+    const number = $derived(record.trail !== undefined && !byParent ? record.trail_stage : record.stage), of = $derived(long?.stages?.length ?? long?.stage_count);
     const part = $derived(record.section !== undefined ? `Section ${record.section}` : number === undefined ? false : of ? `Stage ${number} of ${of}` : `Stage ${number}`);
     // A cut stage is no trail: its sections open the trail that the stage is in. A cut route of fewer than two stages has
     // a trail record file only when it takes more than 12 hours, which no reader knows: its name is no button.
     const longName = $derived((part && (long?.name ?? long?.ref)) || false);
-    const opens = $derived(!!ontrail && !!long && (long.trail !== undefined || (long.stage_count ?? 0) >= 2));
-    const trailName = $derived(longName && opens ? { text: longName, onclick: () => ontrail!(longTrailId(record, id => catalog.record(id))!) } : longName);
+    const opens = $derived(!!ontrail && !!long && (byParent || long.trail !== undefined || (long.stage_count ?? 0) >= 2));
+    const trailName = $derived(longName && opens ? { text: longName, onclick: () => ontrail!(byParent ? record.parent! : longTrailId(record, recordOf)!) } : longName);
     const website = $derived(routeWebsite(record.website));
     const about = $derived(!!(record.description || record.operator || website || record.credit));
 </script>
