@@ -1,5 +1,7 @@
-/** The two hosts the planner build is pointed at (see `config.json`). */
-export const HOSTS = { tiles: 'tiles.test', api: 'api.test' };
+import { createHash } from 'node:crypto';
+
+/** The two hosts the planner build is pointed at (see `config.json`), and the host of its planner catalogue. */
+export const HOSTS = { tiles: 'tiles.test', api: 'api.test', catalog: 'maps.openbikecomputer.com' };
 
 /** The tile Worker serves these, and Cloudflare bills them; the VPS serves `api`. */
 export const CLOUDFLARE = ['basemap', 'places', 'overlays', 'terrain', 'glyphs', 'sprites'];
@@ -25,6 +27,7 @@ export function classify(url) {
     if (pathname.startsWith('/fonts')) return 'glyphs';
     if (pathname.startsWith('/sprites')) return 'sprites';
     if (pathname.startsWith('/places')) return 'places';
+    if (pathname.startsWith('/routes/')) return 'routes';
     return pathname.startsWith('/overlays') ? 'overlays' : 'basemap';
   }
   if (hostname === HOSTS.api) {
@@ -32,6 +35,7 @@ export function classify(url) {
     if (pathname.endsWith('/v1/region')) return 'region';
     return pathname.endsWith('/reverse') ? 'reverse' : 'query';
   }
+  if (hostname === HOSTS.catalog && pathname.startsWith('/route-pictures/')) return 'pictures';
   return `other:${hostname}`;
 }
 
@@ -67,7 +71,81 @@ function route(points, profile) {
   };
 }
 
-/** The response for a request to one of the two hosts, or null when the path has no stub. */
+/** The zoom 9 cell of the route catalog around Freiburg that holds `CATALOG`; every other cell has no route. */
+const ROUTE_CELL = '9-267-177';
+/** Integer microdegrees: the first point, then the difference of each point to the one before (`specs/route-catalog.md`). */
+const udeg = points => points.map(point => point.map(value => Math.round(value * 1e6)))
+  .flatMap((point, i, all) => i ? [point[0] - all[i - 1][0], point[1] - all[i - 1][1]] : point);
+/** A loop with a profile, a description of a few lines and an official page, stage 2 of a long route with a long description and no profile, the
+ * long route, and a cycle route. */
+const CATALOG = [
+  { id: 101, kind: 'hiking', name: 'Schlossberg loop', rank: 1, loop: true, length_m: 1200, ascent_m: 150, descent_m: 150, hardest: 1,
+    description: 'Over the castle hill and through the old town. '.repeat(12), operator: 'Test club', website: 'https://example.test/schlossberg', symbol: 'red:white:red_bar',
+    cells: [ROUTE_CELL], line_udeg: udeg([[7.85, 47.99], [7.86, 47.995], [7.855, 48.0], [7.85, 47.99]]), via: [1, 2],
+    profile_m: Array.from({ length: 14 }, (_, i) => 300 + 10 * Math.min(i, 13 - i)) },
+  { id: 202, kind: 'hiking', name: 'Westweg 2', ref: 'WW', rank: 3, loop: false, length_m: 2500, ascent_m: 80, descent_m: 20, hardest: 0, moving_s: 5400,
+    cells: [ROUTE_CELL], line_udeg: udeg([[7.88, 47.98], [7.9, 47.985], [7.91, 48.0]]), via: [1], parent: 300, stage: 2,
+    description: 'The stage follows the old trail through the forest and along the ridge to the next village. '.repeat(40) },
+  { id: 300, kind: 'hiking', name: 'Westweg', rank: 3, loop: false, length_m: 5000, ascent_m: 200, descent_m: 100, cells: [ROUTE_CELL],
+    stages: [201, 202], start_udeg: [7_800_000, 47_970_000] },
+  { id: 303, kind: 'bicycle', name: 'Dreisam path', rank: 2, loop: false, length_m: 3000, ascent_m: 10, descent_m: 10, cells: [ROUTE_CELL],
+    line_udeg: udeg([[7.83, 47.99], [7.87, 47.99]]), via: [] },
+];
+/** The trail record file of "Westweg": stage 1 is a gap, stage 2 is in the catalog, and stage 3 is outside the release. */
+const WESTWEG = {
+  ...CATALOG[2], stage_count: 3, trail_profile_m: Array.from({ length: 201 }, (_, i) => i < 100 ? null : 300 + i),
+  parts: [
+    { id: 201, stage: 1, length_m: 2500, end_m: 2500, missing: true, start_udeg: [7_800_000, 47_970_000], end_udeg: [7_880_000, 47_980_000] },
+    { id: 202, stage: 2, length_m: 2500, ascent_m: 80, moving_s: 5400, end_m: 5000, cells: [ROUTE_CELL] },
+    { id: 203, stage: 3, end_m: 5000, missing: true },
+  ],
+};
+
+/** The live set of route pictures (`specs/route-pictures.md`) holds a cover of the first route of `CATALOG` only. */
+const LOOK = '1|0715-1000|960|640';
+const SET = '0123456789abcdef';
+const COVERED = CATALOG[0];
+const COVER = createHash('sha256').update(`${LOOK}|${COVERED.line_udeg.join(',')}`).digest('hex').slice(0, 16);
+const PICTURES = {
+  'manifest.json': { format: 1, set: SET, look: LOOK, months: { '07': '0715-1000' }, default_month: '07', credits: ['© Test terrain'] },
+  [`sets/${SET}/cells/${ROUTE_CELL}.json`]: { format: 1, routes: { [COVERED.id]: COVER } },
+  [`covers/${COVERED.id}/${COVER}.json`]: { x: [100, 860, 480, 100], y: [100, 300, 540, 100], eye: [140, 140, 140, 140] },
+};
+
+/** Bytes of a protobuf varint, and of a field with a varint or with bytes. */
+const varint = value => { const out = []; for (; value > 127; value = Math.floor(value / 128)) out.push((value % 128) | 128); out.push(value); return out; };
+const field = (number, value) => typeof value === 'number'
+  ? [...varint(number * 8), ...varint(value)]
+  : [...varint(number * 8 + 2), ...varint(value.length), ...value];
+const text = value => [...Buffer.from(value)];
+const zigzag = value => value < 0 ? -2 * value - 1 : 2 * value;
+
+/** A Mapbox vector tile, version 2, with one layer `pois`: a point for each place, with its kind, name and position. */
+function placeTile([z, x, y], places) {
+  const extent = 4096, keys = ['kind', 'name', 'lon', 'lat'], values = [];
+  const features = places.map(({ id, kind, name, lon, lat }) => {
+    const column = ((lon + 180) / 360) * 2 ** z, row = ((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * 2 ** z;
+    const tags = [kind, name, lon, lat].flatMap((value, key) => [key, values.push(value) - 1]);
+    const geometry = [9, zigzag(Math.round((column - x) * extent)), zigzag(Math.round((row - y) * extent))];
+    return field(2, [...field(1, id), ...field(2, tags.flatMap(varint)), ...field(3, 1), ...field(4, geometry.flatMap(varint))]);
+  });
+  const value = v => field(4, typeof v === 'string' ? field(1, text(v)) : [3 * 8 + 1, ...new Uint8Array(new Float64Array([v]).buffer)]);
+  const layer = [...field(15, 2), ...field(1, text('pois')), ...features.flat(), ...keys.flatMap(key => field(3, text(key))), ...values.flatMap(value), ...field(5, extent)];
+  return Buffer.from(field(3, layer));
+}
+
+/** Two restaurants 5 m apart where the map starts, in the Mercator middle of `BOUNDS`, a fountain 50 m east of them, a water
+ * tap 50 m north of them, and a café 450 m south: at zoom 16, in the margin below the map. */
+const PLACE_TILE = '11/1075/706';
+const PLACES = placeTile([11, 1075, 706], [
+  { id: 2 ** 44 + 1, kind: 'restaurant', name: 'Bistro', lon: 8.975, lat: 48.6887 },
+  { id: 2 ** 44 + 2, kind: 'restaurant', name: 'Pizzeria', lon: 8.97507, lat: 48.6887 },
+  { id: 2 ** 44 + 3, kind: 'fountain', name: 'Town fountain', lon: 8.97568, lat: 48.6887 },
+  { id: 2 ** 44 + 4, kind: 'cafe', name: 'Hill café', lon: 8.975, lat: 48.6847 },
+  { id: 2 ** 44 + 5, kind: 'water_tap', name: 'Square tap', lon: 8.975, lat: 48.68915 },
+]);
+
+/** The response for a request to one of the hosts, or null when the path has no stub. */
 export function respond(request) {
   const url = new URL(request.url());
   const kind = classify(url);
@@ -78,13 +156,21 @@ export function respond(request) {
     case 'overlays':
       return url.pathname === `/${kind}.json`
         ? json({ tilejson: '3.0.0', tiles: [`https://${HOSTS.tiles}/${kind}/{z}/{x}/{y}.mvt`], minzoom: ZOOMS[kind][0], maxzoom: ZOOMS[kind][1], bounds: BOUNDS, routing_package: 'budget-test' })
-        : { headers: CORS, status: 204 };
+        : url.pathname === `/places/${PLACE_TILE}.mvt` ? { headers: CORS, contentType: 'application/x-protobuf', body: PLACES } : { headers: CORS, status: 204 };
     case 'terrain':
       return { headers: CORS, contentType: 'image/png', body: PIXEL };
     case 'glyphs':
       return { headers: CORS, contentType: 'application/x-protobuf', body: Buffer.alloc(0) };
     case 'sprites':
       return url.pathname.endsWith('.png') ? { headers: CORS, contentType: 'image/png', body: PIXEL } : json({});
+    case 'pictures': {
+      const path = url.pathname.slice('/route-pictures/'.length);
+      if ([`covers/${COVERED.id}/${COVER}-0715-1000.webp`, `covers/${COVERED.id}/${COVER}-0715-1000-row.webp`].includes(path)) return { headers: CORS, contentType: 'image/png', body: PIXEL };
+      return PICTURES[path] ? json(PICTURES[path]) : { headers: CORS, status: 404 };
+    }
+    case 'routes':
+      if (url.pathname.startsWith('/routes/tiles/long/')) return url.pathname.endsWith(`/${WESTWEG.id}.json`) ? json({ format: 1, routes: [WESTWEG] }) : { headers: CORS, status: 404 };
+      return json({ format: 1, routes: url.pathname.endsWith(`/${ROUTE_CELL}.json`) ? CATALOG : [] });
     case 'route': {
       const { points, profile } = request.postDataJSON();
       return json({ routes: [route(points, profile)] });

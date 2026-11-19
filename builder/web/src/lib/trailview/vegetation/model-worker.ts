@@ -14,8 +14,11 @@ const TRIANGLES = [600, 200];
 /** A phase draws the summer crown through a colour matrix where that turns every crown vertex within this many sRGB steps of 255. */
 const FIT = 8;
 
-/** A job: species to build in summer, kept green all year or not, and crowns of a species in a phase. */
-export interface ModelJob { id: number; leafy: { model: string; evergreen: boolean }[]; crowns: { model: string; phase: number }[] }
+/**
+ * A job: species to build in summer, with the colour matrices and crowns of their phases, and crowns of a species in
+ * a phase. A species that a pack keeps green all year takes the same build and leaves its phases out.
+ */
+export interface ModelJob { id: number; leafy: { model: string }[]; crowns: { model: string; phase: number }[] }
 export interface BuiltTier { position: Float32Array; normal: Float32Array; color: Float32Array; index: Uint32Array }
 /** A model's tiers, each with its trunk's vertices first, and its crown's lowest point in model units at every tier. */
 export interface BuiltModel { tiers: (BuiltTier & { trunk: number })[]; crown: number }
@@ -31,11 +34,11 @@ export interface BuiltLeafy extends BuiltModel { tones: (number[] | undefined)[]
 self.onmessage = async ({ data: { id, leafy, crowns } }: MessageEvent<ModelJob>) => {
     try {
         await simplifierReady;
-        const species = leafy.map(({ model, evergreen }): BuiltLeafy => {
+        const species = leafy.map(({ model }): BuiltLeafy => {
             const summer = ([0, 1, 2] as Lod[]).map(lod => tree(model, 'summer', lod));
             const tones: (number[] | undefined)[] = [], own: boolean[] = [];
             SEASONS.forEach((season, phase) => {
-                if (evergreen || phase === SUMMER) return;
+                if (phase === SUMMER) return;
                 const near = bareIn(model, season) ? undefined : tree(model, season, 0), matrix = near && tone(summer[0], near);
                 tones[phase] = matrix;
                 own[phase] = !matrix || !fits(matrix, summer[0], near!, FIT);

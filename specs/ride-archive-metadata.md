@@ -8,7 +8,7 @@ automatically.
 - Writers: `firmware/obc-storage` (`src/flat/metadata.rs`).
 - Readers: `firmware/obc-storage` (`src/flat/metadata/read.rs`).
 - Code authority: `firmware/obc-storage/src/flat/metadata.rs` (header and row lengths, row cap);
-  `firmware/obc-formats/src/assistant.rs` (checkpoint); `firmware/obc-formats/src/trip_progress.rs`
+  `firmware/obc-formats/src/navigator.rs` (checkpoint); `firmware/obc-formats/src/trip_progress.rs`
   (progress records).
 - Test vectors: the [two-ride vector](vectors/ride-archive-metadata/two-rides.bin) binds two exact
   source tuples on StoreId `42` repeated 16 times.

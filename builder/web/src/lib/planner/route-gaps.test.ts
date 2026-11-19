@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { settings } from '../settings/settings.svelte';
 import { calculateLine, type EngineRoute } from './routing';
 import { emptyTrip, planView, type RoutePoint, type Trip } from './editor';
 import type { LegCache } from './route-legs';
@@ -12,7 +13,13 @@ const road: EngineRoute = {
     legs: [{ from_index: 0, to_index: 2, start: 'a', end: 'b', totals: { distance_m: 2224, ascent_m: 0, seconds: 2, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 } }],
     snap_truncated: false,
 };
-const legs = { route: async () => road } as unknown as LegCache;
+// One leg for each stop: out along the road, back, and out again.
+const legs = { route: async (points: unknown[]) => {
+    const forward = road.geometry, back = [...forward].reverse();
+    const geometry = points.slice(1).flatMap((_, k) => (k % 2 ? back : forward).slice(k ? 1 : 0));
+    return { ...road, geometry, elevation: geometry.map(() => null), elapsed: geometry.map((_, i) => i),
+        legs: points.slice(1).map((_, k) => ({ ...road.legs[0], from_index: 2 * k, to_index: 2 * k + 2 })) };
+} } as unknown as LegCache;
 const point = (id: string, kind: RoutePoint['kind'], coordinate: [number, number], leg?: RoutePoint['leg']): RoutePoint =>
     ({ id, kind, coordinate, label: id, leg });
 
@@ -32,6 +39,10 @@ describe('route gaps', () => {
         expect(gap.at).toBeCloseTo(2.224, 2);
         expect(gapLabel(gap)).toBe('Ends 220 m before your point');
         expect(gapLabel({ ...gap, point: { ...gap.point, kind: 'start' }, km: 1.24 })).toBe('Starts 1.2 km from your point');
+        settings.units = 'mi';
+        onTestFinished(() => { settings.units = 'km'; });
+        expect(gapLabel(gap)).toBe('Ends 0.1\u00a0mi before your point');
+        expect(gapLabel({ ...gap, km: 1.24 })).toBe('Ends 0.8\u00a0mi before your point');
     });
 
     it('names an off-road loop start once, where the route starts', async () => {

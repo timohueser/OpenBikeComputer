@@ -7,6 +7,8 @@ pub const FOOT: u8 = 2;
 pub const PUSH: u8 = 4;
 pub const NO_ELEVATION: f32 = f32::MIN;
 
+/// `#[repr(C)]`: the routing bake stores points as 12-byte records.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Point {
     pub lat: i32,
@@ -132,7 +134,7 @@ impl Profile {
                 },
                 mtb_pace: false,
                 route_bonus: 0.0,
-                // Up to `mountain_hiking` (T2); `hiking/alpine` goes to T4.
+                // Up to `mountain_hiking` (T2); `hiking/alpine` goes to T6.
                 max_difficulty: 2,
             },
         ];
@@ -160,8 +162,9 @@ impl Profile {
             })
             .collect();
         profiles.extend(variants);
-        // Explicit skill choices. T5 and T6 need climbing; MTB has no upper limit.
-        for (base, name, difficulty) in [("mtb", "mtb/technical", 6), ("hiking", "hiking/alpine", 4)] {
+        // Explicit skill choices up to the highest known grade, so an unknown grade value (255)
+        // stays refused. Alpine keeps off T5 and T6 paths only through their cost factors.
+        for (base, name, difficulty) in [("mtb", "mtb/technical", 6), ("hiking", "hiking/alpine", 6)] {
             let mut profile = profiles.iter().find(|p| p.name == base).unwrap().clone();
             profile.name = name.into();
             profile.max_difficulty = difficulty;
@@ -332,7 +335,7 @@ mod tests {
             let sac = (1..=6).filter(|&t| profile.permits(&Road { hiking_difficulty: Some(t), ..path.clone() }));
             let mtb = (0..=6).filter(|&s| profile.permits(&Road { difficulty: s, ..path.clone() }));
             let expected = match profile.name.as_str() {
-                "hiking/alpine" => (4, 6),
+                "hiking/alpine" => (6, 6),
                 "mtb/technical" => (2, 6),
                 name if name.starts_with("hiking") => (2, 6),
                 name if name.starts_with("mtb") => (2, 2),

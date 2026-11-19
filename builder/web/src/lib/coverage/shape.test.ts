@@ -25,7 +25,7 @@ describe("patchCount", () => {
         expect(patchCount([cellId(18, 100, 100), cellId(18, 100, 101), cellId(18, 101, 100), cellId(18, 101, 101)])).toBe(1);
     });
 
-    it("counts disjoint patches — the corridor panel's gaps are this minus one", () => {
+    it("counts disjoint patches — the proof's gaps are this minus one", () => {
         expect(patchCount([cellId(18, 100, 100), cellId(18, 200, 200)])).toBe(2);
     });
 

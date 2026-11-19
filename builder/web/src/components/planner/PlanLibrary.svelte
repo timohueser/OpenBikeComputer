@@ -1,8 +1,11 @@
 <script lang="ts">
     import { onMount, tick } from 'svelte';
-    import { planTitle } from '../../lib/planner/versions';
+    import { planTitle } from '../../lib/planner/editor';
+    import type { RouteSummary } from '../../lib/library/records';
     import type { Plan } from '../../lib/planner/library';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { plans, unreadable, onDeleteUnreadable, activeId, busy, error, gpxNames, onClose, onOpen, onRename, onDuplicate, onDelete, onDownload, onImport, onGpx }: {
         plans: Plan[];
@@ -18,6 +21,9 @@
         /** `true` plans the files on roads, `false` keeps their lines, `null` cancels. */
         onGpx: (roads: boolean | null) => void;
     } = $props();
+
+    const figures = ({ days, lengthM, climbM }: RouteSummary) =>
+        [...days > 1 ? [`${days} days`] : [], `${distanceIn(lengthM).toFixed(1)} ${settings.units}`, `↑ ${Math.round(heightIn(climbM))} ${heightUnit()}`].join(' · ');
 
     let renaming = $state<string | null>(null);
     let name = $state('');
@@ -50,24 +56,24 @@
     }
 </script>
 
-<svelte:window onpointerdown={event => { if (!panel.contains(event.target as Node) && !(event.target as Element).closest('button')?.textContent?.includes('My plans')) onClose(); }} />
+<svelte:window onpointerdown={event => { if (!panel.contains(event.target as Node)) onClose(); }} />
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<section class="library" aria-label="My plans" bind:this={panel} onkeydown={key}>
+<section class="library" aria-label="My routes" bind:this={panel} onkeydown={key}>
     <header>
-        <h2>My plans</h2>
-        <button type="button" class="icon" aria-label="Close My plans" bind:this={closer} onclick={onClose}><Icon name="close" /></button>
+        <h2>My routes</h2>
+        <button type="button" class="icon" aria-label="Close My routes" bind:this={closer} onclick={onClose}><Icon name="close" /></button>
     </header>
-    <p class="storage">Saved in this browser. Download a plan to keep a backup or move it to another device.</p>
+    <p class="storage">Saved in this browser. Download a plan file to keep a backup or move it to another device.</p>
     <input class="file" type="file" multiple accept=".obcplan,.gpx,application/json,application/gpx+xml" aria-label="Import plan or GPX files" bind:this={picker} onchange={() => {
         const files = [...picker.files ?? []];
         if (files.length) onImport(files);
         picker.value = '';
     }} />
-    <button type="button" class="planner-action" disabled={busy} onclick={() => picker.click()}>Import plan or GPX</button>
+    <button type="button" class="planner-action" disabled={busy} onclick={() => picker.click()}>Import plan or GPX files</button>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if unreadable}
-        <p class="error">{unreadable === 1 ? '1 saved plan cannot be read. It is not in the list.' : `${unreadable} saved plans cannot be read. They are not in the list.`}
+        <p class="error">{unreadable === 1 ? '1 saved route cannot be read. It is not in the list.' : `${unreadable} saved routes cannot be read. They are not in the list.`}
             <button type="button" class="planner-action quiet" disabled={busy} onclick={onDeleteUnreadable}>Delete {unreadable === 1 ? 'it' : 'them'}</button></p>
     {/if}
     {#if gpxNames}
@@ -84,25 +90,25 @@
         </section>
     {/if}
     {#if !plans.length}
-        <p class="empty">Your plans appear here when you choose a point on the map.</p>
+        <p class="empty">Your routes appear here when you choose a point on the map.</p>
     {:else}
         <ul>
             {#each plans as plan (plan.id)}
                 <li>
                     {#if renaming === plan.id}
                         <form onsubmit={event => { event.preventDefault(); void rename(plan); }}>
-                            <label>Plan name<input aria-label="Plan name" maxlength="120" bind:value={name} disabled={busy} /></label>
+                            <label>Route name<input aria-label="Route name" maxlength="120" bind:value={name} disabled={busy} /></label>
                             <button type="submit" class="planner-action" disabled={busy || !name.trim()}>Rename</button>
                             <button type="button" class="planner-action quiet" onclick={() => renaming = null}>Cancel</button>
                         </form>
                     {:else}
                         <button type="button" class="open" disabled={busy} aria-current={plan.id === activeId ? 'true' : undefined} onclick={() => onOpen(plan)}>
                             <strong>{plan.name || planTitle(plan.trip)}</strong>
-                            <span>{plan.summary}</span>
+                            <span>{plan.summary ? figures(plan.summary) : 'No route yet'}</span>
                             <small>{plan.id === activeId ? 'Open · ' : ''}Edited {new Date(plan.updatedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</small>
                         </button>
                         <div class="actions">
-                            <button type="button" class="planner-action quiet" disabled={busy} onclick={() => { renaming = plan.id; name = plan.name || planTitle(plan.trip); void tick().then(() => panel.querySelector<HTMLInputElement>('[aria-label="Plan name"]')?.select()); }}>Rename</button>
+                            <button type="button" class="planner-action quiet" disabled={busy} onclick={() => { renaming = plan.id; name = plan.name || planTitle(plan.trip); void tick().then(() => panel.querySelector<HTMLInputElement>('[aria-label="Route name"]')?.select()); }}>Rename</button>
                             <button type="button" class="planner-action quiet" disabled={busy} onclick={() => onDuplicate(plan)}>Duplicate</button>
                             <button type="button" class="planner-action quiet" onclick={() => onDownload(plan)}>Download</button>
                             <button type="button" class="planner-action quiet" disabled={busy} onclick={() => onDelete(plan)}>Delete</button>

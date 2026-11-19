@@ -201,7 +201,7 @@ debug *args:
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_riscv || exit 1; ensure_probe || exit 1
     gpx="${1:-}"
-    elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
+    elf="${CARGO_TARGET_DIR:-$OBC_ROOT/firmware/obc-fw-nrf54l/target}/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
     _say "building debug-uart firmware…"
     ( cd "$OBC_ROOT/firmware/obc-fw-nrf54l" && _run cargo build --release --features debug-uart )
     _say "flashing over J-Link…"
@@ -226,7 +226,7 @@ rtt *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_probe || exit 1
-    elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
+    elf="${CARGO_TARGET_DIR:-$OBC_ROOT/firmware/obc-fw-nrf54l/target}/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
     if [[ $# -gt 0 && "$1" != --* ]]; then elf="$(_abspath "$1")"; shift; fi
     [[ -f "$elf" ]] || { _err "no matching board ELF — pass it to: obc rtt ELF"; exit 1; }
     _run python3 "$OBC_TOOLS/board.py" attach "$elf" "$@"
@@ -260,7 +260,7 @@ pack *args:
     else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
     ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake --bin obc-pack )
     _say "preset $preset"
-    cmd=("$OBC_ROOT/target/release/obc-pack" "$pbf" "$preset" "$out")
+    cmd=("${CARGO_TARGET_DIR:-$OBC_ROOT/target}/release/obc-pack" "$pbf" "$preset" "$out")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     _run "${cmd[@]}"
     _say "wrote $out"
@@ -279,7 +279,7 @@ inspect *args:
     set -euo pipefail
     source "{{lib}}"; obc_init
     ( cd "$OBC_ROOT" && _run cargo build --release --quiet -p obc-inspect )
-    _run "$OBC_ROOT/target/release/obc-inspect" "$@"
+    _run "${CARGO_TARGET_DIR:-$OBC_ROOT/target}/release/obc-inspect" "$@"
 
 # Data targets and the store: a bare `obc data` shows what each target serves and what to run
 # next. `obc data update TARGET` bakes what is stale and switches the target to the new release;
@@ -329,7 +329,7 @@ bake *args:
     source "{{lib}}"; obc_init; ensure_geos
     export OBC_LANDMARK_CAPTURE_TOOL="${OBC_LANDMARK_CAPTURE_TOOL:-$OBC_ROOT/tools/landmark_capture.py}"
     ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake )
-    bin="$OBC_ROOT/target/release/obc-bake"
+    bin="${CARGO_TARGET_DIR:-$OBC_ROOT/target}/release/obc-bake"
     tree="${OBC_BAKE_TREE:-$HOME/obc-bake}"
     # The terrain stage reads the reference archive for its crest lifts. A run that forgets
     # `--reference` re-bakes every lifted cell without lifts, so obc.local names the archive
@@ -441,79 +441,6 @@ bake *args:
         _say "bake tree: $tree — verify with: obc bake verify" ;;
     esac
 
-# Run the web map builder at http://localhost:8000 (bootstraps the venv, obc-pack,
-# and the frontend on first run). Extra args pass through (e.g. --no-browser).
-[doc("Run the web map builder on :8000 (bootstraps venv/frontend on first run)")]
-[group('run')]
-web *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init; ensure_geos
-    cd "$OBC_ROOT"
-    export OBC_PACK_BIN="$OBC_ROOT/target/release/obc-pack"
-    _run uv sync --locked --inexact --group builder
-    if [[ "${1:-}" == preview-source ]]; then
-      shift
-      (( $# == 0 )) || { _err "usage: obc web preview-source"; exit 1; }
-      _say "preparing the small reference-complete source for the Teningen schema lab…"
-      _run uv run --locked --group builder python -m builder.server.schema_preview --download-source
-      exit 0
-    fi
-    # This is the maintainer schema host: a present binary may still predate the
-    # config/parser source the editor is showing. Cargo's no-op rebuild is cheap
-    # and makes the served schema and every preview use this checkout exactly.
-    _say "refreshing obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake --bin obc-pack )
-    [[ -d builder/web/node_modules ]] || { _say "installing frontend dependencies…"; ( cd builder/web && _run npm ci ); }
-    # Generated bindings are gitignored; existence cannot prove that any bridge
-    # matches its Rust source. Warm wasm-pack builds are incremental.
-    _say "refreshing the wasm bridges…"; ( cd builder/web && _run npm run build:wasm )
-    # Always rebuild this small local bundle: tools/obc.local is runtime state,
-    # but a source checkout must never keep serving yesterday's platform adapter.
-    _say "building the maintainer frontend…"; ( cd builder/web && _run npm run build )
-    _run uv run --locked --group builder python -m builder.server "$@"
-
-# Run the desktop app (Tauri + the shared published-cell frontend). The Rust side
-# embeds the built frontend. Opts: dev (live reload against Vite), build (compile
-# only, don't open the window).
-#   obc desktop         obc desktop dev        obc desktop build
-# The desktop app consumes published cells and no longer links the packer or GEOS.
-# `dev` drops `custom-protocol`, the feature that embeds the frontend, so the window
-# follows Vite instead.
-[doc("Build & run the desktop app. Opts: dev (live-reload) build (compile only)")]
-[group('run')]
-desktop *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    mode=run
-    for o in "$@"; do case "$o" in
-      dev)              mode=dev ;;
-      build|build-only) mode=build ;;
-      *) _err "unknown desktop option: '$o'  (want: dev build)"; exit 1 ;;
-    esac; done
-    fe="$OBC_ROOT/builder/web"
-    [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
-    # The app imports the shared WASM core. Generated bindings are gitignored;
-    # existence cannot prove that any bridge matches its Rust source, so always
-    # rebuild — warm wasm-pack builds are incremental.
-    _say "refreshing the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
-    if [[ "$mode" == dev ]]; then
-      # `custom-protocol` is a default feature here, which is what makes plain
-      # `cargo run` embed dist/desktop; opt out of it and the window follows Vite.
-      _say "starting Vite (desktop mode) on :5173 — leave it running, then this window follows it"
-      ( cd "$fe" && npm run dev -- --mode desktop & )
-      cd "$OBC_ROOT/builder/desktop"; _run cargo run --no-default-features
-    else
-      # vite/esbuild strips types without checking them; svelte-check is what
-      # fails loudly when the app drifts from a bridge's generated bindings.
-      _say "type-checking the frontend…"; ( cd "$fe" && _run npm run check )
-      _say "building the desktop frontend bundle…"
-      ( cd "$fe" && _run npm run build:desktop )
-      cd "$OBC_ROOT/builder/desktop"
-      [[ "$mode" == build ]] && { _run cargo build --release; _say "built: $PWD/target/release/obc-desktop"; exit 0; }
-      _run cargo run --release
-    fi
-
 [doc("Pack the iOS host as target/OBCHost.xcframework, in release. Args: [--sim-only|--mac-only]")]
 [group('ios')]
 ios-host *args:
@@ -568,7 +495,7 @@ prose *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/prose.py" "$@"
 
-[doc("System docs against the code. Args: check [--base REF] [--update | --accept] | map | leaves SYSTEM | model ROLE | report [--publish] [--drift]")]
+[doc("System docs against the code. Args: check [--base REF] [--update | --accept] | map | leaves SYSTEM | model ROLE | report [--publish]")]
 [group('docs')]
 cairn *args:
     #!/usr/bin/env bash
@@ -577,14 +504,12 @@ cairn *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/cairn/cairn.py" "$@"
 
-# Serve the static hosted tier — the no-backend site (phase C of #894), as deployed.
-# Builds and serves it on :4173. Args: [PORT]. It reads the device catalogue of the
-# active planner release, as deployed; OBC_CATALOG_URL=… points it at another one.
-# Two deliberate differences from the deploy: this mounts the builder at the server
-# root rather than at /builder/ (nothing else is being served beside it), and it leaves
-# VITE_SITE_BASE unset, so the Docs/Home links point at the published site instead of
+# Builds the web app as the deploy builds it and serves it on :4173 at /planner.html. Args: [PORT].
+# It reads the device catalogue of the active planner release, as deployed;
+# OBC_CATALOG_URL=… points it at another one. One deliberate difference from the deploy: it
+# leaves VITE_SITE_BASE unset, so the Docs/Home links point at the published site instead of
 # at siblings that aren't here.
-[doc("Build & serve the static hosted tier (no backend) on :4173. Args: [PORT]")]
+[doc("Build & serve the web app (no backend) on :4173. Args: [PORT]")]
 [group('run')]
 site *args:
     #!/usr/bin/env bash
@@ -599,13 +524,38 @@ site *args:
     # vite/esbuild strips types without checking them; svelte-check is what
     # fails loudly when the app drifts from a bridge's generated bindings.
     _say "type-checking the frontend…"; ( cd "$fe" && _run npm run check )
-    _say "building the static web tier…"
-    ( cd "$fe" && export VITE_CATALOG_URL="${OBC_CATALOG_URL:-}" && _run npm run build:web )
+    _say "building the web app…"
+    ( cd "$fe" && export VITE_CATALOG_URL="${OBC_CATALOG_URL:-}" && _run npm run build )
     cd "$OBC_ROOT"
-    _say "serving http://localhost:$port  (Ctrl-C to stop)"
+    _say "serving http://localhost:$port/planner.html  (Ctrl-C to stop)"
     # `--directory` rather than `cd` + a relative path: the relative form resolved against the
     # *serving* directory and vanished the moment we left the repo root.
-    _run python3 -m http.server "$port" --directory "$fe/dist/web"
+    _run python3 -m http.server "$port" --directory "$fe/dist/planner"
+
+# Builds the wasm bridges and the planner, with no VITE_PLANNER_CONFIG and no VITE_FAKE_DEVICE, so it
+# reads the active planner release or VITE_PLANNER_CATALOG, and runs a UX study of it
+# (builder/web/tests/browser/ux-study/). The study calls the Anthropic
+# API with OBC_UX_API_KEY, from the environment or from ~/.config/openbikecomputer/credentials.env.
+[doc("Run a UX study of the web planner. Args: [--task ID] [--model ID]")]
+[group('run')]
+ux *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    fe="$OBC_ROOT/builder/web"
+    credentials="$HOME/.config/openbikecomputer/credentials.env"
+    if [[ -z "${OBC_UX_API_KEY:-}" && -f "$credentials" ]]; then
+        OBC_UX_API_KEY="$(sed -nE 's/^OBC_UX_API_KEY=(.*)$/\1/p' "$credentials" | tail -n 1)"
+        export OBC_UX_API_KEY
+    fi
+    [[ -n "${OBC_UX_API_KEY:-}" ]] || { _err "OBC_UX_API_KEY is not set"; exit 1; }
+    [[ -d "$fe/node_modules" ]] || ( cd "$fe" && _run npm ci )
+    # Small, and a stale install lacks the SDK of the study.
+    ( cd "$fe/tests/browser" && _run npm ci )
+    _run npm run ux-study --prefix "$fe/tests/browser" -- --check "$@"
+    ( cd "$fe" && _run npm run build:wasm )
+    ( cd "$fe" && unset VITE_PLANNER_CONFIG VITE_FAKE_DEVICE && _run npm run build:planner )
+    _run npm run ux-study --prefix "$fe/tests/browser" -- "$@"
 
 # A scope is required: `obc test -p obc-pack` runs nextest and then the same scope's doctests;
 # `--lib` runs the library target alone and no doctests.
@@ -656,9 +606,9 @@ test *args:
     case "$mode" in
       full)
         shift
-        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast)" "$@"
+        _run cargo nextest run --workspace --all-features --locked --tests --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast)" "$@"
         fixture_env
-        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fixtures)" "$@"
+        _run cargo nextest run --workspace --all-features --locked --tests --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fixtures)" "$@"
         _run cargo test --workspace --all-features --locked --doc
         ;;
       affected)
@@ -710,7 +660,6 @@ fmt:
     _run cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
     _run cargo fmt --manifest-path firmware/obc-boot/Cargo.toml
     _run cargo fmt --manifest-path firmware/obc-sensor-sim/Cargo.toml
-    _run cargo fmt --manifest-path builder/desktop/Cargo.toml
 
 [doc("Regenerate THIRD-PARTY.md (the licence texts shipped binaries owe). Args: (none) | --check.")]
 [group('build')]
@@ -762,14 +711,13 @@ check *args:
       step "fmt (board crate)" cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
       step "fmt (bootloader)"  cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml
       step "fmt (sensor mock)" cargo fmt --check --manifest-path firmware/obc-sensor-sim/Cargo.toml
-      step "fmt (desktop app)" cargo fmt --check --manifest-path builder/desktop/Cargo.toml
     fi
     want clippy && step "clippy (workspace, all-targets/features)" \
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     if want test; then
       rm -rf .artifacts/python/repository-tools
       step "firmware production dependency direction" python3 "$OBC_ROOT/firmware/tools/check_dependencies.py"
-      step "fixture registry unit tests" uv run --locked --group dev --group planner-snow --group forest-reference python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
+      step "fixture registry unit tests" uv run --locked --group dev --group planner-snow --group forest-reference --group route-sources python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
       step "test (fast hermetic binaries)" bash tools/ci/test.sh nextest-fast
       step "doctests (selected packages)" bash tools/ci/test.sh doctests
       step "obc-formats (default features = the device's shape)" bash tools/ci/test.sh formats-default
@@ -808,8 +756,8 @@ check *args:
         # gets the core and test device from the `wasm-bridges` job; locally we build them.
         step "wasm bridges"          npm run build:wasm
         step "frontend svelte-check" npm run check
+        # `bundle.test.ts` builds the web app and inspects the emitted chunks.
         step "frontend vitest"       npm test
-        step "frontend builds (dev + web + desktop)" npm run build:all
         popd >/dev/null
       else _warn "skip frontend — npm not installed"; SKIPPED+=("frontend"); fi
     fi
@@ -819,7 +767,6 @@ check *args:
         step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
         step "deny (bootloader)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-boot/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
         step "deny (sensor sim)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-sensor-sim/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
-        step "deny (desktop app)"  cargo deny --manifest-path "$OBC_ROOT/builder/desktop/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
       else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
     fi
     if want wasm; then
@@ -850,8 +797,8 @@ clean *args:
     source "{{lib}}"; obc_init
     _run python3 "$OBC_TOOLS/dev_cleanup.py" "$@"
 
-# A raw shell has neither `obc.local` (the tools on PATH, the shared Cargo target) nor GEOS, so a
-# command that no task covers runs here:
+# A raw shell has neither `obc.local` (the tools on PATH, the Cargo target of the checkout) nor
+# GEOS, so a command that no task covers runs here:
 #   obc exec cargo clippy -p obc-data --all-targets -- -D warnings
 #   obc exec npx vitest run src/lib/trailview/roads
 [doc("Run one command in the environment of the obc tasks. Args: COMMAND [ARGS…]")]
@@ -960,7 +907,7 @@ doctor *args:
     ck probe    "probe-rs (flashing)"       'command -v probe-rs' 'obc doctor --install'
     ck node     "node + npm (web builder)"  'command -v node && command -v npm' 'install Node 22+ (system package — needs sudo)'
     ck uv       "uv (Python groups)"         'command -v uv'     'install uv, then run obc doctor --install'
-    ck venv     "python venv (web builder)" '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'obc doctor --install (or run obc web)'
+    ck venv     "python venv" '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'obc doctor --install'
     if python3 "$OBC_TOOLS/fixtures.py" exists grimsel; then _ok "default sim scenario → grimsel"
     else _err "fixture catalog has no grimsel scenario"; MISSING+=(fixtures); fi
 
@@ -977,7 +924,7 @@ doctor *args:
       probe)    _run cargo install probe-rs-tools --locked ;;
       riscv)    _run bash "$OBC_TOOLS/install-riscv.sh" ;;
       geos)     _run bash "$OBC_TOOLS/install-geos.sh" ;;
-      venv)     _run uv sync --locked --inexact --project "$OBC_ROOT" --group builder ;;
+      venv)     _run uv sync --locked --inexact --project "$OBC_ROOT" ;;
       uv)       _err "install uv via your system package manager" ;;
       cargo)    _err "install Rust yourself: https://rustup.rs" ;;
       node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;

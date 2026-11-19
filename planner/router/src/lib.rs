@@ -35,8 +35,9 @@ pub enum Error {
     InvalidData(String),
     #[error("No accessible road near point {0}")]
     NoSnap(usize),
+    /// The index of the leg in the request: the leg from point `n` to point `n + 1`.
     #[error("No route connects the selected points")]
-    NoPath,
+    NoPath(usize),
     #[error("Routing was cancelled")]
     Cancelled,
     #[error("Routing resource limit reached")]

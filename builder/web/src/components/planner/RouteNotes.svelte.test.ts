@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from 'svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import type { RouteNote } from '../../lib/planner/route-notes';
+import { settings } from '../../lib/settings/settings.svelte';
 import RouteNotes from './RouteNotes.svelte';
 
 let notes: ReturnType<typeof mount> | undefined;
@@ -30,6 +31,10 @@ describe('route notes', () => {
         entries[0].click(); flushSync();
         expect(shown).toBe(list[0]);
         expect(entries.map(entry => entry.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false']);
+        settings.units = 'mi';
+        onTestFinished(() => { settings.units = 'km'; });
+        flushSync();
+        expect([...document.querySelectorAll('li small')].map(place => place.textContent!.replace(/\s/g, ' '))).toEqual(['mi 25.6 · 0.2 mi', 'mi 70.8', 'mi 65.0 – 73.5']);
     });
 
     it('shows the length of a merged note whose start and end print the same', () => {

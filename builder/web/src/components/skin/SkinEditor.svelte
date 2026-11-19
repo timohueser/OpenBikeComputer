@@ -82,12 +82,10 @@
 <div class="backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && onclose()}>
     <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="skin-editor-title">
         <header>
-            <div>
-                <p class="eyebrow small faint">{theme} map style</p>
-                <h2 id="skin-editor-title">Customize {theme.toLocaleLowerCase()}</h2>
-                <p class="small faint intro">Adjust colours, line styles, and the rider marker.</p>
-            </div>
-            <button type="button" class="iconbtn" aria-label="Close the skin editor" onclick={onclose}>✕</button>
+            <h2 id="skin-editor-title">The colours of the {theme === "Light" ? "day" : "night"}</h2>
+            <button type="button" class="close" aria-label="Close" onclick={onclose}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6" /></svg>
+            </button>
         </header>
 
         <div class="body">
@@ -100,7 +98,7 @@
                         dark={theme === "Dark"}
                     />
                     <label class="name-field">
-                        <span class="small">Skin name</span>
+                        <span class="small">Name</span>
                         <input bind:this={nameInput} bind:value={name} maxlength="64" />
                     </label>
                     <div class="marker-row">
@@ -121,7 +119,7 @@
                 </label>
 
                 <div class="table-head small faint" aria-hidden="true">
-                    <span>Feature</span><span>color</span><span>color 2</span><span>width</span><span>order</span><span>dash</span>
+                    <span>Feature</span><span>Colour</span><span>Colour 2</span><span>Width</span><span>Order</span><span>Line</span>
                 </div>
                 {#each groups as group (group.name)}
                     <section class="group">
@@ -183,9 +181,9 @@
         <footer>
             {#if saveError}<p class="save-error small" role="alert">{saveError}</p>{/if}
             <span class="spacer"></span>
-            <button type="button" class="btn ghost" onclick={onclose}>Cancel</button>
+            <button type="button" class="btn" onclick={onclose}>Cancel</button>
             <button type="button" class="btn" onclick={() => (draft = cloneSkin(base))}>Reset</button>
-            <button type="button" class="btn primary" disabled={!name.trim()} onclick={save}>Save {theme.toLocaleLowerCase()} style</button>
+            <button type="button" class="btn primary" disabled={!name.trim()} onclick={save}>Save</button>
         </footer>
     </div>
 </div>
@@ -198,8 +196,11 @@
         display: grid;
         place-items: center;
         padding: 18px;
-        background: rgba(27, 36, 23, 0.52);
-        backdrop-filter: blur(3px);
+        background: rgb(28 27 20 / 0.7);
+        font-family: var(--sans);
+    }
+    :global([data-theme="dark"]) .backdrop {
+        background: rgb(0 0 0 / 0.55);
     }
 
     .sheet {
@@ -210,9 +211,59 @@
         overflow: hidden;
         color: var(--ink);
         background: var(--panel);
-        border: 1px solid var(--parchment-3);
-        border-radius: 18px;
-        box-shadow: 0 24px 70px rgba(27, 36, 23, 0.35);
+        border-radius: 14px;
+        box-shadow: 0 18px 48px rgb(28 27 20 / 0.35);
+    }
+
+    /* The letters, the fields and the buttons of a window of the shell. */
+    .small {
+        font-size: 13px;
+    }
+    .faint {
+        color: var(--ink-soft);
+    }
+    .mono {
+        font-family: var(--mono);
+    }
+    input,
+    select {
+        padding: 5px 8px;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--ink);
+    }
+    .btn {
+        min-height: 34px;
+        padding: 5px 14px;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--ink);
+    }
+    .btn:hover:not(:disabled) {
+        background: var(--parchment-2);
+    }
+    .primary,
+    .primary:hover:not(:disabled) {
+        border-color: var(--rust);
+        background: var(--rust);
+        color: var(--cream);
+    }
+    .close {
+        display: grid;
+        place-items: center;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: var(--ink-soft);
+    }
+    .close:hover {
+        background: var(--parchment-2);
+        color: var(--ink);
     }
 
     header,
@@ -229,18 +280,9 @@
         border-bottom: 1px solid var(--line);
     }
 
-    header h2,
-    header p {
+    header h2 {
         margin: 0;
-    }
-
-    .eyebrow {
-        text-transform: uppercase;
-        letter-spacing: 0.09em;
-    }
-
-    .intro {
-        margin-top: 3px;
+        font: 600 17px/1.3 var(--sans);
     }
 
     .body {
@@ -298,7 +340,7 @@
     .table-head,
     .style-row {
         display: grid;
-        grid-template-columns: minmax(130px, 1fr) 38px 64px 56px 56px 36px;
+        grid-template-columns: minmax(130px, 1fr) 46px 64px 56px 56px 92px;
         align-items: center;
         gap: 8px;
     }
@@ -322,10 +364,9 @@
     .group h3 {
         margin: 0;
         padding: 7px 9px;
-        font-size: 12px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--ink-faint);
+        font: 600 13px/1.4 var(--sans);
+        text-transform: capitalize;
+        color: var(--ink-soft);
         background: var(--parchment-2);
         border-bottom: 1px solid var(--line);
     }
@@ -356,9 +397,8 @@
     }
 
     .check {
-        justify-self: center;
-        width: 17px;
-        height: 17px;
+        min-width: 0;
+        width: 100%;
     }
 
     .empty {

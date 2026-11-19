@@ -169,6 +169,9 @@ time_zone = "Europe/Berlin"
             "planner/osm",
             "planner/osm/bounds",
             "planner/terrain",
+            "planner/routing-source",
+            "planner/routing-roads",
+            "planner/routing-costs",
             "planner/routing",
         ];
         steps.retain(|step| python || rust.contains(&step.name.as_str()));
@@ -204,7 +207,7 @@ time_zone = "Europe/Berlin"
 
     let built = build(&steps(false, &inputs));
     let names: Vec<&str> = built.iter().map(|built| built.receipt.step.as_str()).collect();
-    assert_eq!(names.len(), 6);
+    assert_eq!(names.len(), 9);
     for name in ["planner/osm", "planner/osm/bounds", "planner/terrain", "planner/routing"] {
         assert!(names.contains(&name), "{name} is not built");
     }
@@ -410,6 +413,9 @@ for entries in [catalog['assets'], *(cell[key] for cell in cells for key in ('fi
     assert_eq!(pointer["active"]["name"], "Test");
     assert_eq!(pointer["active"]["device_catalog"], "https://maps.openbikecomputer.com/cell-catalog/catalog.json");
     assert_eq!(pointer["active"]["manifest"], format!("https://maps.openbikecomputer.com/releases/{id}/release.json"));
+    let tiles = format!("https://tiles.openbikecomputer.com/releases/{id}/routes/tiles");
+    assert_eq!(pointer["active"]["trails"], format!("{tiles}/trails/{{cell}}.json"));
+    assert_eq!(pointer["active"]["trail"], format!("{tiles}/long/{{id}}.json"));
     let settings = Settings { region: AREA.into(), ..Settings::default() };
     let files = Files { outputs, ..Files::default() };
     let time = "2026-10-01T00:00:00Z".to_string();

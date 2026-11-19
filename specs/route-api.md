@@ -170,12 +170,14 @@ route request. The deadline is 30 s.
 A profile ID is an activity, such as `touring`, or an activity, `/` and a variant. Each activity
 has one variant: `touring/less-climbing`, `road/less-climbing`, `gravel/less-climbing`,
 `mtb/technical` and `hiking/alpine`. Two variants are skill choices. `mtb/technical` permits every MTB grade;
-`mtb` permits S2 at most. `hiking/alpine` permits T4; `hiking` permits T2 at most. Cycling profiles
+`mtb` permits S2 at most. `hiking/alpine` permits each grade up to T6; `hiking` permits T2 at most. Cycling profiles
 never use steps. The clients offer the presets of the profiles that the region serves.
 
 ## Errors
 
-An error answer is `{"code", "message"}`. It never contains a substitute route.
+An error answer is `{"code", "message"}`; a `no_snap` answer also has `point`, the index of the
+point, from 0; a `no_path` answer also has `leg`, the index of the leg from 0, between point `leg`
+and `leg + 1`. It never contains a substitute route.
 
 The service attaches each point to the nearest road that the profile can use and that lies in a
 large connected part of its road graph, within 250 m. When none is that near, it uses the nearest

@@ -1,7 +1,8 @@
 //! The rules of the country a way is in: its default access and its side of the road. Borders
 //! come from the OSM-derived boundaries of the JOSM project, embedded in `country-boundaries`.
-use country_boundaries::{CountryBoundaries, LatLon, BOUNDARIES_ODBL_360X180};
+use country_boundaries::{BoundingBox, CountryBoundaries, LatLon, BOUNDARIES_ODBL_360X180};
 use planner_router::model::{Point, BIKE, FOOT, PUSH};
+use planner_router::shape::P;
 use std::sync::LazyLock;
 
 const ALL: u8 = BIKE | FOOT | PUSH;
@@ -52,6 +53,20 @@ const RIGHT_HAND: &[&str] = &["GI", "IO"];
 static BOUNDARIES: LazyLock<CountryBoundaries> =
     LazyLock::new(|| CountryBoundaries::from_reader(BOUNDARIES_ODBL_360X180).expect("embedded country boundaries"));
 
+/// Whether a vertex of a line, in microdegrees of longitude and latitude, is in France.
+pub fn in_france(line: &[P]) -> bool {
+    let degrees = |k: usize, max: bool| {
+        let values = line.iter().map(|p| p[k]);
+        (if max { values.max() } else { values.min() }).map_or(0.0, |v| v as f64 * 1e-6)
+    };
+    // The cells of the boundaries that the bounds of the line meet: most lines meet no French one.
+    let near = BoundingBox::new(degrees(1, false), degrees(0, false), degrees(1, true), degrees(0, true))
+        .is_ok_and(|bounds| BOUNDARIES.intersecting_ids(bounds).contains("FR"));
+    near && line
+        .iter()
+        .any(|p| LatLon::new(p[1] as f64 * 1e-6, p[0] as f64 * 1e-6).is_ok_and(|at| BOUNDARIES.is_in(at, "FR")))
+}
+
 /// The rules of the country at a point: the row of its entry in `DEFAULTS`, and its side of the
 /// road. Outside every country, the worldwide rules apply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +83,15 @@ impl Default for Country {
 }
 
 impl Country {
+    /// The row of defaults and 1 for left-hand traffic, as `WayFacts` stores them.
+    pub fn parts(self) -> (u8, u8) {
+        (self.defaults, u8::from(self.left_hand))
+    }
+
+    pub fn from_parts(defaults: u8, left_hand: u8) -> Self {
+        Country { defaults, left_hand: left_hand != 0 }
+    }
+
     pub fn at(point: Point) -> Self {
         let Ok(position) = LatLon::new(point.lat as f64 * 1e-6, point.lon as f64 * 1e-6) else {
             return Self::default();
@@ -127,5 +151,9 @@ mod tests {
         assert!(of("GB").left_hand() && !of("DE").left_hand() && !Country::default().left_hand());
         // Jersey drives on the left like the United Kingdom; Gibraltar drives on the right.
         assert!(at(49.21, -2.13).left_hand() && !at(36.14, -5.35).left_hand());
+        // Annemasse is in France, Geneva next to it in Switzerland.
+        assert!(
+            in_france(&[[6_143_000, 46_204_000], [6_236_000, 46_193_000]]) && !in_france(&[[6_143_000, 46_204_000]])
+        );
     }
 }

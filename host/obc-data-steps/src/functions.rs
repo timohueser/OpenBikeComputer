@@ -16,10 +16,18 @@ pub static MAP: Function = Function { name: "obc-bake/map", run: obc_bake::step:
 pub static TERRAIN: Function = Function { name: "obc-dem/terrain", run: obc_dem::step::terrain };
 pub static PLANNER_TERRAIN: Function =
     Function { name: "obc-dem/planner-terrain", run: obc_dem::step::planner_terrain };
+pub static ROUTING_SOURCE: Function =
+    Function { name: "planner-router-build/routing-source", run: planner_router_build::step::source };
+pub static ROUTING_ROADS: Function =
+    Function { name: "planner-router-build/routing-roads", run: planner_router_build::step::roads };
+pub static ROUTING_COSTS: Function =
+    Function { name: "planner-router-build/routing-costs", run: planner_router_build::step::costs };
 pub static ROUTING: Function = Function { name: "planner-router-build/routing", run: planner_router_build::step::step };
 pub static SEARCH: Function = Function { name: "obc-search-bake/search", run: obc_search_bake::step::step };
 pub static TRAILVIEW_FEATURES: Function =
     Function { name: "obc-trailview-features/features", run: obc_trailview_features::step::step };
+pub static TRAILVIEW_STAMPS: Function =
+    Function { name: "obc-trailview-features/stamps", run: obc_trailview_features::stamps::step };
 pub static PLANNER_CATALOG: Function =
     Function { name: "obc-data-steps/planner-catalog", run: crate::planner::catalog::pointer };
 
@@ -36,9 +44,13 @@ pub const FUNCTIONS: &[&Function] = &[
     &MAP,
     &TERRAIN,
     &PLANNER_TERRAIN,
+    &ROUTING_SOURCE,
+    &ROUTING_ROADS,
+    &ROUTING_COSTS,
     &ROUTING,
     &SEARCH,
     &TRAILVIEW_FEATURES,
+    &TRAILVIEW_STAMPS,
     &PLANNER_CATALOG,
     &obc_data::engine::PASS,
 ];

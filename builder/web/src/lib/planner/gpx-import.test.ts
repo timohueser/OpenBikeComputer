@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { dayStops, guessDays, orderedRoutePoints, planView, type DrawnCoordinate } from './editor';
+import { dayStops, guessDays, maxRidingDays, orderedRoutePoints, planView, type DrawnCoordinate } from './editor';
 import { cumulative, kilometres, type Coordinate } from './geo';
 import { profileAscent } from './profile-data';
-import { importedTrip, planOnRoads, readTracks } from './gpx-import';
+import { importedTrip, planFromFile, planOnRoads, readTracks } from './gpx-import';
 import { exportPlan, importPlan, newPlan } from './library';
 import { LegCache } from './route-legs';
 import { calculateLine, requestShape } from './routing';
@@ -73,7 +73,7 @@ describe('GPX import', () => {
         const markers = [{ kind: 'marker', label: 'Spring & bench', coordinate: [7.61, 47.501], note: 'Cold water' }, { kind: 'marker', label: 'Marker', coordinate: [7.62, 47.499] }];
         expect(trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
         expect(trip.points.at(-1)).not.toHaveProperty('note');
-        expect(importPlan(exportPlan(newPlan(trip, 'ride'), [])).plan.trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
+        expect(importPlan(exportPlan(newPlan(trip, 'ride'))).trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
     });
 
     it('keeps a waypoint in the day of its file where the trip rides back on the same road', async () => {
@@ -88,9 +88,20 @@ describe('GPX import', () => {
         expect(dayStops(trip, line, days[1])[0].km).toBeCloseTo(kilometres(out.at(-1)!, [7.605, 47.5]), 6);
     });
 
+    it('makes a plan of one day from a file, with its id and its summary, and no request', async () => {
+        const fetch = vi.fn();
+        vi.stubGlobal('fetch', fetch);
+        const points = track([7.6, 47.5], 50).map(([lon, lat], i) => ({ lat: Math.round(lat * 1e6), lon: Math.round(lon * 1e6), ele: 400 + i }));
+        const plan = await planFromFile({ name: 'Jura', points, waypoints: [{ lat: 47.5e6, lon: 7.61e6, name: 'Spring' }] }, 'file-1', 'hiking');
+        expect(plan).toMatchObject({ id: 'file-1', name: 'Jura', trip: { mode: 'route', bike: 'hiking' }, summary: { days: 1, bike: 'hiking', climbM: 49 } });
+        expect(orderedRoutePoints(plan.trip).map(p => p.leg)).toEqual([undefined, 'drawn']);
+        expect(plan.summary!.lengthM).toBeCloseTo(cumulative(track([7.6, 47.5], 50)).at(-1)! * 1000, -1);
+        expect(fetch).not.toHaveBeenCalled();
+    });
+
     it('rejects more files than a trip has days', () => {
-        const files = Array.from({ length: 15 }, (_, i) => ({ name: `${i}.gpx`, text: gpx(track([7.6, 47.5], 2)) }));
-        expect(() => readTracks(files)).toThrow('A trip has at most 14 days. Import 14 files or fewer.');
+        const files = Array.from({ length: maxRidingDays + 1 }, (_, i) => ({ name: `${i}.gpx`, text: gpx(track([7.6, 47.5], 2)) }));
+        expect(() => readTracks(files)).toThrow(`A trip has at most ${maxRidingDays} days. Import ${maxRidingDays} files or fewer.`);
     });
 
     it('routes a shaped file through its points and keeps the line of a file that cannot be shaped', async () => {

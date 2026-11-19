@@ -2,6 +2,8 @@
 //! SQLite layout of `specs/planner-release.md`.
 mod access;
 
+use crate::column::Column;
+use crate::sort::{self, Sorted};
 use crate::source::{Data, Id, Relations, Table, Tags};
 use rusqlite::{params, Connection, Transaction};
 use serde_json::{json, Value};
@@ -33,6 +35,17 @@ fn kind(tags: &Tags) -> Option<&'static str> {
     }
 }
 
+/// How wide the basemap draws the road of a way: `major`, `minor`, or empty for a path or a track. The planner draws
+/// a route line wider than the road it follows. The basemap draws a link as wide as a side road.
+fn road(tags: &Tags) -> &'static str {
+    match tag(tags, "highway") {
+        "motorway" | "trunk" | "primary" | "secondary" | "tertiary" => "major",
+        "residential" | "unclassified" | "living_street" | "service" | "road" => "minor",
+        link if link.ends_with("_link") => "minor",
+        _ => "",
+    }
+}
+
 fn rank(network: &str) -> u8 {
     match network {
         "icn" | "iwn" => 4,
@@ -53,10 +66,10 @@ fn access_zoom(status: &str) -> Option<f64> {
     })
 }
 
-type Memberships = BTreeMap<i64, Vec<i64>>;
-
-fn memberships(relations: &Table<Relations>) -> (Memberships, BTreeMap<i64, Value>) {
-    let mut members = Memberships::new();
+/// The (way ID, relation ID) pair of each way of each active route, in order, and the properties of
+/// each route.
+fn memberships(relations: &Table<Relations>) -> (Sorted<(i64, i64)>, BTreeMap<i64, Value>) {
+    let mut members = Column::default();
     let mut routes = BTreeMap::new();
     for relation in relations.iter().filter(|r| active(&r.tags)) {
         let Some(activity) = kind(&relation.tags) else { continue };
@@ -89,18 +102,18 @@ fn memberships(relations: &Table<Relations>) -> (Memberships, BTreeMap<i64, Valu
             }
         }
         for id in ways {
-            members.entry(id).or_default().push(relation.id);
+            members.push((id, relation.id));
         }
         routes.insert(relation.id, route);
     }
-    (members, routes)
+    (sort::sorted(members), routes)
 }
 
 /// Writes a new index for the routing package whose manifest identity is `package`.
 pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result<(), String> {
     let mut database = Connection::open(path).map_err(text)?;
     database
-        .execute_batch("PRAGMA journal_mode=OFF; PRAGMA cache_size=-65536; PRAGMA user_version=2;")
+        .execute_batch("PRAGMA journal_mode=OFF; PRAGMA cache_size=-65536; PRAGMA user_version=3;")
         .map_err(text)?;
     let transaction = database.transaction().map_err(text)?;
     transaction
@@ -118,6 +131,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
         .execute("INSERT INTO metadata VALUES (?,?)", params![package, serde_json::to_string(&bounds).map_err(text)?])
         .map_err(text)?;
     let (members, routes) = memberships(&osm.relations);
+    let mut members = members.peekable();
     for (id, properties) in &routes {
         transaction
             .execute(
@@ -126,10 +140,14 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
             )
             .map_err(text)?;
     }
-    let mut attributes = HashMap::new();
+    let (mut attributes, mut memberships) = (HashMap::new(), Vec::new());
     for way in osm.ways.iter() {
-        let access = access::feature(&way, way.facts.country);
-        let memberships = members.get(&way.id).map_or(&[][..], Vec::as_slice);
+        let access = access::feature(&way, way.facts.country());
+        while members.next_if(|&(id, _)| id < way.id).is_some() {}
+        memberships.clear();
+        while let Some((_, relation)) = members.next_if(|&(id, _)| id == way.id) {
+            memberships.push(relation);
+        }
         if access.is_none() && memberships.is_empty() {
             continue;
         }
@@ -144,7 +162,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
             if let Some(first) = selected.first() {
                 properties.push((
                     activity,
-                    json!({ "way": way.id, "kind": activity,
+                    json!({ "way": way.id, "kind": activity, "road": road(&way.tags),
                     "rank": first["rank"], "ref": first["ref"],
                     "routes": selected.iter().map(|route| &route["id"]).collect::<Vec<_>>() }),
                 ));
@@ -290,10 +308,18 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
+        let cycling: String = database
+            .query_row(
+                "SELECT a.properties FROM features f JOIN attributes a ON a.id=f.attributes WHERE f.kind='cycling'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         drop(database);
         std::fs::remove_file(&path).unwrap();
         // Way 1 carries three routes. Way 2 keeps only the run before its missing node; way 3 is one access line.
         assert_eq!(counts, (5, 3, 3, 2));
+        assert_eq!(cycling, r#"{"rank":2,"ref":"","road":"major","routes":[1]}"#);
     }
 
     #[test]
@@ -304,10 +330,8 @@ mod tests {
             (3, "bicycle", "lcn", &[Id::Way(20)], "proposed"),
         ]);
         let (members, routes) = memberships(&relations);
-        assert_eq!(
-            members[&10].iter().map(|id| routes[id]["network"].as_str().unwrap()).collect::<Vec<_>>(),
-            ["icn", "rcn"]
-        );
-        assert!(!members.contains_key(&20));
+        let members: Vec<_> = members.collect();
+        let networks = members.iter().map(|(way, id)| (*way, routes[id]["network"].as_str().unwrap()));
+        assert_eq!(networks.collect::<Vec<_>>(), [(10, "icn"), (10, "rcn")]);
     }
 }

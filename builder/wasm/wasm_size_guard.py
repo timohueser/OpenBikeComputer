@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Gate the production builder core on raw WASM and gzipped WASM plus glue.
+"""Gate each production wasm bridge on raw WASM and gzipped WASM plus glue.
 
 The test-device variant is measured but does not ship. Raising a cap needs a reason in the PR.
+The ground-plan budget is its recorded CI size plus the owner's margin; both parts print.
 """
 
 from __future__ import annotations
 
-GOVERNS = ['builder/wasm/**', 'host/obcm-assemble/**']
+GOVERNS = ['builder/wasm/**', 'host/obcm-assemble/**', 'builder/ground-plan-wasm/**', 'host/obc-ground-plan/**']
 RULE = 'A wasm bridge stays inside its recorded gzip and raw size budgets.'
 
 import argparse
@@ -15,22 +16,46 @@ import sys
 from pathlib import Path
 
 
-# Preserve the sum of the conversion, assembly and preview caps. Consolidation does not
-# increase the permitted production download or raw WASM size.
-BUDGETS = {
-    "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
+# Measured in CI on the build with the outline's turns, the levels that the tiles carry, the faces' tile-line
+# vertices, the decks' ceilings and end faces, the shared water level and curve of the feature bake, line water
+# and its culverts with their mouths, the classifier's ford rule, and the storeys over the ground with their open
+# junction ends, their ends on the stubs' points, what each deck is made of, the junctions that lie on the
+# ground, a building passage of an older bake on the ground, and the plumbing of the storey under the ground (the
+# crate's feature `storeys` on and `bores` off, the crate at one codegen unit in the release profile, stable 1.100.0),
+# the sidewalks' slabs with their ends, rings and kerbs, and the portal line's levels with the cover's sides.
+# The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
+GROUND_PLAN_MEASURED = {"gzipped": 788_028, "raw_wasm": 2_026_303}
+# The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
+# unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
+# A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
+# and dependency noise.
+GROUND_PLAN_MARGIN_GZIPPED = 8 * 1024
+GROUND_PLAN_MARGIN = {
+    "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
+    "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * GROUND_PLAN_MEASURED["raw_wasm"] / GROUND_PLAN_MEASURED["gzipped"]),
 }
+
+BUDGETS = {
+    # Preserve the sum of the conversion, assembly and preview caps. Consolidation does not
+    # increase the permitted production download or raw WASM size.
+    "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
+    "ground-plan": {key: GROUND_PLAN_MEASURED[key] + GROUND_PLAN_MARGIN[key] for key in GROUND_PLAN_MEASURED},
+}
+# A budget made of a measured size and a margin prints both, so a reviewer sees growth inside the margin.
+BUDGET_PARTS = {"ground-plan": (GROUND_PLAN_MEASURED, GROUND_PLAN_MARGIN)}
 
 ADVICE = {
     "builder": (
         "Check the production dependency graph with cargo tree -p obc-builder-bridge"
         " --target wasm32-unknown-unknown. GEOS, obc-pack and the test device must stay out."
     ),
+    "ground-plan": "Check the dependency graph with cargo tree -p obc-ground-plan-bridge --target wasm32-unknown-unknown.",
 }
 
 PKG_DIRS = {
     "builder": Path("builder/web/src/lib/core/pkg"),
     "flat-device": Path("builder/web/test-support/flat-device/pkg"),
+    "ground-plan": Path("builder/web/src/lib/trailview/plan/pkg"),
 }
 UNBUDGETED = {"flat-device"}
 
@@ -91,13 +116,21 @@ def main() -> int:
 
     failed = False
     budgets = BUDGETS[args.module]
-    for label, measured, budget in (
-        ("gzipped wasm + glue", total_gzipped, budgets["gzipped"]),
-        ("raw wasm", raw_wasm, budgets["raw_wasm"]),
+    parts = BUDGET_PARTS.get(args.module)
+    for key, label, measured in (
+        ("gzipped", "gzipped wasm + glue", total_gzipped),
+        ("raw_wasm", "raw wasm", raw_wasm),
     ):
+        budget = budgets[key]
         pct = 100 * measured / budget
         status = "over" if measured > budget else "ok"
         print(f"{label}: {measured:,} B / {budget:,} B budget ({pct:.0f}%) — {status}")
+        if parts:
+            recorded, margin = parts
+            print(
+                f"  budget = {recorded[key]:,} B recorded + {margin[key]:,} B margin;"
+                f" {measured - recorded[key]:+,} B against the recorded size"
+            )
         if measured > budget:
             print(
                 f"::error::obc-{args.module}-bridge {label} is {measured:,} B, over the {budget:,} B budget."

@@ -270,7 +270,7 @@ pub fn route_heads(
 pub fn fingerprint_reads() -> u32 {
     FINGERPRINT_READS.get()
 }
-pub fn route_fingerprint(store: &FlatStore<FlatCard>, id: u64) -> Option<obc_formats::assistant::PayloadFingerprint> {
+pub fn route_fingerprint(store: &FlatStore<FlatCard>, id: u64) -> Option<obc_formats::navigator::PayloadFingerprint> {
     FINGERPRINT_READS.set(FINGERPRINT_READS.get() + 1);
     store.entries().map(Result::unwrap).find(|e| e.id.0 == id).map(metadata::fingerprint)
 }

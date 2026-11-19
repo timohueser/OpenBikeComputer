@@ -7,8 +7,9 @@ The [data contract](../../specs/obc-data.md) defines bytes and admission checks.
 
 ## Setup
 
-Prepare Rust, Python with `uv`, GEOS and Osmium before an update, and a Java 21 JDK and Maven for
-the planner layers; `obc data` does not install them.
+Prepare Rust, Python with `uv`, GEOS and Osmium before an update, a Java 21 JDK and Maven for
+the planner layers, and `npm ci --prefix builder/web` for TrailView; `obc data` does
+not install them.
 `obc data setup` shows what this machine can do and the tools and credentials that it has.
 
 `data/targets.toml` names the targets: `local` is a folder beside the store, and `prod` the
@@ -94,8 +95,8 @@ The [page README](../../builder/web/src/components/data/README.md) covers the pa
 ## Serve
 
 `obc data serve` serves `local` on port 8710 of every IPv4 address of the machine. It prints the
-command that opens each app on `local`: the web planner, the map builder, the desktop app, the
-simulator and the Debug iOS app. It runs the routing, search and downloads services of each
+command that opens each app on `local`: the web planner, the map builder, the simulator and the
+Debug iOS app. It runs the routing, search and downloads services of each
 planner release and the tile server of `planner/tiles`. At start it builds `planner-service` with
 cargo. Prepare Node and the other services once:
 

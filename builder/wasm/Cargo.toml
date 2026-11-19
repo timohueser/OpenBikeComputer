@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 test-device = ["dep:obc-flat-device", "obc-link/std", "dep:obc-storage"]
 
 [dependencies]
-obc-route = { workspace = true }
+obc-route = { workspace = true, features = ["alloc"] }
 obc-formats = { workspace = true }
 obcm-assemble = { workspace = true }
 obc-map-scene = { workspace = true }
@@ -27,6 +27,7 @@ obc-link = { workspace = true, features = ["client"] }
 obc-storage = { workspace = true, features = ["std"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+obc-fit = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true }

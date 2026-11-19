@@ -2,8 +2,12 @@
 //! sort: it joins the nodes to the ways by a sort of the node references, and it reads the tags of
 //! each object once.
 use crate::column::Column;
-use crate::source::{self, Builder, Data, Id, NodeRef, Oneway, Relations, Sets, Table, Tags, Way, WayFacts, Ways};
-use crate::{base, cost, country::Country, sort, Graph, RoadSource};
+use crate::layout::{self, Buckets};
+use crate::source::{
+    self, Builder, Data, Id, NodeRef, Oneway, Relations, Rule, Sets, Table, Tags, Way, WayFacts, Ways,
+};
+use crate::terrain::{self, Height};
+use crate::{base, cost, country::Country, sort, Graph, RoadSource, Turn};
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader};
 use planner_router::closures::{Closure, Kind};
 use planner_router::model::{Road, Surface, BIKE, FOOT, PUSH};
@@ -12,10 +16,11 @@ use std::fs::File;
 use std::iter::Peekable;
 use std::path::PathBuf;
 
-type Counts = BTreeMap<&'static str, usize>;
+/// The counts of the import that the warnings of the manifest report, by label.
+pub type Counts = BTreeMap<String, usize>;
 
-fn count(counts: &mut Counts, key: &'static str) {
-    *counts.entry(key).or_default() += 1;
+fn count(counts: &mut Counts, key: &str) {
+    *counts.entry(key.into()).or_default() += 1;
 }
 
 #[derive(Clone, Copy)]
@@ -26,15 +31,6 @@ struct Attributes {
     difficulty: u8,
     hiking_difficulty: Option<u8>,
     structure: bool,
-}
-
-struct Restriction {
-    from: i64,
-    to: i64,
-    via: i64,
-    only: bool,
-    u_turn: bool,
-    walking: bool,
 }
 
 /// Conditional restrictions do not count: the router keeps them open, and the route reports them.
@@ -145,7 +141,7 @@ fn relation_rules(
     relation: &source::Relation,
     ways: &Table<Ways>,
     facts: &mut [WayFacts],
-    rules: &mut Vec<Restriction>,
+    rules: &mut Column<Rule>,
     counts: &mut Counts,
 ) {
     let mut mode_rules = Vec::new();
@@ -167,7 +163,7 @@ fn relation_rules(
     if mode_rules.is_empty() {
         return;
     }
-    let find = |facts: &[WayFacts], id: i64| ways.index(id).filter(|&row| facts[row].routable);
+    let find = |facts: &[WayFacts], id: i64| ways.index(id).filter(|&row| facts[row].routable());
     let members: Vec<_> = relation.members().filter_map(|(member, _)| member.way()).collect();
     if !members.iter().any(|&id| find(facts, id).is_some()) {
         return;
@@ -193,13 +189,14 @@ fn relation_rules(
         if !supported_shape || !supported_rule {
             excluded |= if walking { FOOT | PUSH } else { BIKE | PUSH };
         } else {
-            rules.push(Restriction {
+            rules.push(Rule {
                 from: from[0],
                 to: to[0],
                 via: via_node.unwrap(),
-                only: value.starts_with("only_"),
-                u_turn: value.ends_with("u_turn"),
-                walking,
+                only: u8::from(value.starts_with("only_")),
+                u_turn: u8::from(value.ends_with("u_turn")),
+                walking: u8::from(walking),
+                padding: [0; 5],
             });
         }
     }
@@ -241,9 +238,23 @@ fn member(id: OsmId) -> Id {
     }
 }
 
+/// The source of the roads: the objects of the import with the facts of each way, the closure sets
+/// of the ways and the nodes, the turn rules of the relations, and the counts so far.
+pub struct Source {
+    pub osm: Data,
+    pub sets: Sets,
+    pub rules: Column<Rule>,
+    pub counts: Counts,
+}
+
+/// The import of `source` and then of `roads`.
+pub fn import(paths: &[PathBuf], bounds: [f64; 4], terrain: Option<Height>) -> Result<Graph, String> {
+    roads(source(paths, bounds)?, terrain)
+}
+
 /// Bounds are [west, south, east, north]. Missing or outside nodes break ways. The nodes of the
 /// input must come in ID order, as `osmium sort` writes them.
-pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
+pub fn source(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Source, String> {
     if paths.is_empty()
         || bounds.iter().any(|v| !v.is_finite())
         || bounds[0] >= bounds[2]
@@ -272,7 +283,7 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
     })?;
     let mut counts = Counts::new();
     let (mut ways, duplicates) = ways.finish();
-    counts.insert("duplicate input ways", duplicates);
+    counts.insert("duplicate input ways".into(), duplicates);
     // Only a relation with a highway, a node or a relation as a member can restrict a turn or be preserved.
     let relations = relations.finish().0.filter(|relation| {
         relation.members().any(|(member, _)| match member {
@@ -295,7 +306,7 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
     })?;
     let (points, members) = join.finish(&mut counts)?;
     ways.set_points(points);
-    build_graph(Data { ways, relations, members }, sets, counts)
+    Ok(scan(Data { ways, relations, members }, sets, counts))
 }
 
 /// Pass 2 of the import: merges the nodes of the input, in ID order, with the node references of
@@ -356,7 +367,7 @@ impl Join {
     /// Each referenced node that is not in the input or not inside the bounds.
     fn missing(&mut self, below: Option<i64>, counts: &mut Counts) {
         while self.next_group(below).is_some() {
-            *counts.entry("outside bounds or missing referenced nodes").or_default() += 1;
+            count(counts, "outside bounds or missing referenced nodes");
             let node = NodeRef::missing(self.positions.len() > 1);
             for &position in &self.positions {
                 self.records.push((position, node));
@@ -388,7 +399,7 @@ impl Join {
         let (lat, lon) = (decimicro[0] as f64 * 1e-7, decimicro[1] as f64 * 1e-7);
         let bounds = self.bounds;
         if lon < bounds[0] || lat < bounds[1] || lon > bounds[2] || lat > bounds[3] {
-            *counts.entry("outside bounds or missing referenced nodes").or_default() += 1;
+            count(counts, "outside bounds or missing referenced nodes");
             let node = NodeRef::missing(self.positions.len() > 1);
             for &position in &self.positions {
                 self.records.push((position, node));
@@ -402,6 +413,7 @@ impl Join {
             closures: u32::MAX,
             access: BIKE | FOOT | PUSH,
             flags: NodeRef::PRESENT | shared,
+            padding: [0; 2],
         };
         let tags = tags();
         if !tags.is_empty() {
@@ -505,7 +517,8 @@ fn facts(osm: &Data, sets: &mut Sets, counts: &mut Counts) -> Column<WayFacts> {
                 .iter()
                 .find(|point| point.present())
                 .map_or_else(Country::default, |point| Country::at(point.point()));
-            let mut facts = WayFacts { country, ..WayFacts::default() };
+            let (defaults, left_hand) = country.parts();
+            let mut facts = WayFacts { defaults, left_hand, ..WayFacts::default() };
             while ranks.next_if(|(id, _)| *id < way.id).is_some() {}
             if let Some((_, found)) = ranks.next_if(|(id, _)| *id == way.id) {
                 facts.ranks = found;
@@ -518,12 +531,12 @@ fn facts(osm: &Data, sets: &mut Sets, counts: &mut Counts) -> Column<WayFacts> {
             let Some(attributes) = attributes(&way.tags, country, counts) else {
                 return facts;
             };
-            facts.routable = true;
+            facts.routable = 1;
             facts.class = attributes.class;
-            facts.surface = attributes.surface;
+            facts.surface = source::surface_byte(attributes.surface);
             facts.difficulty = attributes.difficulty;
-            facts.hiking_difficulty = attributes.hiking_difficulty;
-            facts.structure = attributes.structure;
+            facts.hiking_difficulty = source::hiking_byte(attributes.hiking_difficulty);
+            facts.structure = u8::from(attributes.structure);
             facts.access = attributes.access;
             (facts.closures, facts.doubts) = way_closures(&way.tags, sets);
             facts
@@ -589,7 +602,7 @@ pub(crate) struct Run {
 pub(crate) fn split(way: &Way, vias: &[i64]) -> impl Iterator<Item = Run> {
     let mut runs = Vec::new();
     let facts = way.facts;
-    if !facts.routable || facts.access == [0, 0] {
+    if !facts.routable() || facts.access == [0, 0] {
         return runs.into_iter();
     }
     let points = way.points;
@@ -630,18 +643,29 @@ pub(crate) fn split(way: &Way, vias: &[i64]) -> impl Iterator<Item = Run> {
 /// The junction of each via node that a road uses.
 type Vias = HashMap<i64, u32>;
 
+/// The (from, to) junction of each road in emit order, the junction of each via node that a road
+/// uses, and the shape points of all roads before and after the resampling of the terrain.
+type Walk = (Column<(u32, u32)>, Vias, [u64; 2]);
+
 /// Walk 1: numbers the junctions that the roads use in the order of their first use, run by run,
 /// and writes their columns into `graph`. The geometry pages store the junction numbers of each
-/// road, so this order keeps the bytes of the package. Returns the (from, to) junction of each run
-/// in emit order, and the junction of each via node of `vias` that a road uses.
-fn junctions(osm: &Data, vias: &[i64], graph: &mut Graph) -> Result<(Column<(u32, u32)>, Vias), String> {
+/// road, so this order keeps the bytes of the package.
+fn junctions(osm: &Data, vias: &[i64], graph: &mut Graph) -> Result<Walk, String> {
     // End `2k` is the first node of run `k`, end `2k + 1` its last.
     let mut ends = Column::<((i64, u64), NodeRef)>::default();
+    let mut access = Column::<[u8; 2]>::default();
+    let (mut points, mut shape) = ([0u64; 2], Vec::new());
     let mut run = 0u64;
     for way in osm.ways.iter() {
         for Run { first, last, .. } in split(&way, vias) {
             ends.push(((way.nodes[first], 2 * run), way.points[first]));
             ends.push(((way.nodes[last], 2 * run + 1), way.points[last]));
+            access.push(way.facts.access);
+            shape.clear();
+            shape.extend(way.points[first..=last].iter().map(NodeRef::point));
+            let roads = way.facts.access.iter().filter(|&&modes| modes != 0).count() as u64;
+            points[0] += roads * shape.len() as u64;
+            points[1] += roads * terrain::resampled_len(&shape) as u64;
             run += 1;
         }
     }
@@ -668,7 +692,7 @@ fn junctions(osm: &Data, vias: &[i64], graph: &mut Graph) -> Result<(Column<(u32
         graph.points.push(node.point());
         graph.node_ids.push(id);
         graph.node_access.push(node.access);
-        graph.signals.push(node.flags & NodeRef::SIGNALS != 0);
+        graph.signals.push(u8::from(node.flags & NodeRef::SIGNALS != 0));
         graph.node_closures.push(node.closures);
         graph.node_doubts.push(cost::doubts(graph.sets.get(node.closures)));
         if vias.binary_search(&id).is_ok() {
@@ -680,32 +704,45 @@ fn junctions(osm: &Data, vias: &[i64], graph: &mut Graph) -> Result<(Column<(u32
     }
     let mut numbers = sort::sorted(numbered).map(|(_, junction)| junction);
     let mut pairs = Column::default();
-    while let (Some(from), Some(to)) = (numbers.next(), numbers.next()) {
-        pairs.push((from, to));
+    for &[forward, backward] in access.values() {
+        let (Some(from), Some(to)) = (numbers.next(), numbers.next()) else { unreachable!("two ends per run") };
+        if forward != 0 {
+            pairs.push((from, to));
+        }
+        if backward != 0 {
+            pairs.push((to, from));
+        }
     }
-    Ok((pairs, via_junctions))
+    Ok((pairs, via_junctions, points))
 }
 
-/// Walk 2: the roads of each run, in the order of walk 1. `ends` comes from `junctions`.
-fn emit(osm: &Data, vias: &[i64], ends: &Column<(u32, u32)>, graph: &mut Graph) {
-    let mut ends = ends.values().iter();
+/// Walk 2: the roads of each run, in the order of walk 1, into `buckets` by `keys`. `ends` and
+/// `keys` have one entry for each road. Returns the roads in their final order.
+fn emit(
+    osm: &Data,
+    vias: &[i64],
+    (ends, keys): (&Column<(u32, u32)>, &Column<u64>),
+    mut buckets: Buckets,
+    terrain: Option<Height>,
+    graph: &mut Graph,
+) -> Result<(), String> {
+    let mut roads = ends.values().iter().zip(keys.values());
     // The road set of each (way set, node set) pair.
     let mut road_sets = HashMap::<(u32, u32), u32>::new();
     for (row, way) in osm.ways.iter().enumerate() {
         let facts = way.facts;
         for Run { first, last, length } in split(&way, vias) {
-            let &(from, to) = ends.next().expect("walk 1 numbered each run");
             let shape: Vec<_> = way.points[first..=last].iter().map(NodeRef::point).collect();
             for direction in 0..2 {
                 let access = facts.access[direction];
                 if access == 0 {
                     continue;
                 }
+                let (&(from, to), &sort_key) = roads.next().expect("walk 1 gives each road its ends");
                 let mut shape = shape.clone();
                 if direction == 1 {
                     shape.reverse();
                 }
-                let (from, to) = if direction == 0 { (from, to) } else { (to, from) };
                 let key = (facts.closures[direction], graph.node_closures.values()[to as usize]);
                 let sets = &mut graph.sets;
                 let closures = *road_sets.entry(key).or_insert_with(|| road_closures(sets, key.0, key.1));
@@ -717,38 +754,60 @@ fn emit(osm: &Data, vias: &[i64], ends: &Column<(u32, u32)>, graph: &mut Graph) 
                     length_m: length.round().max(1.0) as u32,
                     ascent_m: 0,
                     descent_m: 0,
-                    surface: facts.surface,
+                    surface: facts.surface(),
                     class: facts.class,
                     access,
                     difficulty: facts.difficulty,
-                    hiking_difficulty: facts.hiking_difficulty,
-                    structure: facts.structure,
+                    hiking_difficulty: facts.hiking_difficulty(),
+                    structure: facts.structure(),
                     shape,
                 };
-                graph.roads.push(road, RoadSource { way_row: row as u32, closures });
+                buckets.push(road, RoadSource { way_row: row as u32, closures }, sort_key)?;
             }
         }
     }
+    graph.roads = buckets.finish(terrain)?.0;
+    Ok(())
 }
 
 /// `osm` holds every highway with the node of each reference, the relations that may be
-/// preserved and the node members of `Data`.
-fn build_graph(mut osm: Data, sets: Sets, mut counts: Counts) -> Result<Graph, String> {
-    let mut graph = Graph { sets, ..Graph::default() };
-    let mut facts = facts(&osm, &mut graph.sets, &mut counts);
-    let mut rules = Vec::new();
+/// preserved and the node members of `Data`. Gives each way its facts, and keeps the ways with a
+/// present node and the relations that may be preserved.
+fn scan(mut osm: Data, mut sets: Sets, mut counts: Counts) -> Source {
+    let mut facts = facts(&osm, &mut sets, &mut counts);
+    let mut rules = Column::default();
     for relation in osm.relations.iter() {
         relation_rules(&relation, &osm.ways, facts.values_mut(), &mut rules, &mut counts);
     }
     osm.ways.set_facts(facts);
     osm.ways = osm.ways.filter(|way| way.points.iter().any(NodeRef::present));
     osm.relations = preserve_relations(&osm);
-    let mut vias: Vec<i64> = rules.iter().map(|rule| rule.via).collect();
+    Source { osm, sets, rules, counts }
+}
+
+/// The roads of `source` in their final order (`layout`), their junctions and their turn rules.
+/// With `terrain`, their shapes are resampled and have heights. The import checks the counts of
+/// the roads and their transitions before it emits the roads.
+pub fn roads(source: Source, terrain: Option<Height>) -> Result<Graph, String> {
+    let Source { osm, sets, rules, mut counts } = source;
+    let mut graph = Graph { sets, ..Graph::default() };
+    let mut vias: Vec<i64> = rules.values().iter().map(|rule| rule.via).collect();
     vias.sort_unstable();
     vias.dedup();
-    let (ends, via_junctions) = junctions(&osm, &vias, &mut graph)?;
-    emit(&osm, &vias, &ends, &mut graph);
-    drop(ends);
+    let (ends, via_junctions, [shape_points, resampled]) = junctions(&osm, &vias, &mut graph)?;
+    crate::check_counts((osm.ways.len(), osm.ways.references().len()), ends.values(), graph.points.len())?;
+    crate::work::Guard::stage("emit");
+    let points = graph.points.values();
+    let keys = layout::keys(&ends, |_, to| layout::spatial_key(points[to as usize]))?;
+    let points = shape_points + if terrain.is_some() { resampled } else { 0 };
+    let bounds = layout::bounds(&keys, layout::bucket_count(ends.len() as u64, points)?);
+    eprintln!(
+        "{} the roads into {} buckets",
+        if terrain.is_some() { "Sampling terrain and ordering" } else { "Ordering" },
+        bounds.len() + 1
+    );
+    emit(&osm, &vias, (&ends, &keys), Buckets::new(bounds), terrain, &mut graph)?;
+    drop((ends, keys));
     // The roads that depart from and arrive at each point, in road order.
     let [departures, arrivals] =
         [&graph.roads.from, &graph.roads.to].map(|ends| base::group(ends.values(), graph.points.len()));
@@ -756,7 +815,7 @@ fn build_graph(mut osm: Data, sets: Sets, mut counts: Counts) -> Result<Graph, S
         let start = start.values();
         &roads.values()[start[point as usize] as usize..start[point as usize + 1] as usize]
     }
-    for rule in rules {
+    for &rule in rules.values() {
         let Some(&via) = via_junctions.get(&rule.via) else {
             count(&mut counts, "restrictions outside retained graph");
             continue;
@@ -768,13 +827,13 @@ fn build_graph(mut osm: Data, sets: Sets, mut counts: Counts) -> Result<Graph, S
         if arrivals.is_empty() || !has_target {
             count(&mut counts, "restriction members missing at retained junction");
         }
-        let forbidden = if rule.walking { &mut graph.forbidden_foot } else { &mut graph.forbidden };
+        let forbidden = if rule.walking != 0 { &mut graph.forbidden_foot } else { &mut graph.forbidden };
         for from in arrivals {
             for &to in outgoing {
                 let target = graph.roads.way(to as usize) == rule.to
-                    && (!rule.u_turn || graph.roads.from(from as usize) == graph.roads.to(to as usize));
-                if target != rule.only {
-                    forbidden.push((from, to));
+                    && (rule.u_turn == 0 || graph.roads.from(from as usize) == graph.roads.to(to as usize));
+                if target != (rule.only != 0) {
+                    forbidden.push(Turn { from, to });
                 }
             }
         }
@@ -782,10 +841,10 @@ fn build_graph(mut osm: Data, sets: Sets, mut counts: Counts) -> Result<Graph, S
     for forbidden in [&mut graph.forbidden, &mut graph.forbidden_foot] {
         *forbidden = sort::sorted(std::mem::take(forbidden)).counted().map(|(turn, _)| turn).collect();
     }
-    counts.insert("retained directed roads", graph.roads.len());
-    counts.insert("retained graph nodes", graph.points.len());
+    counts.insert("retained directed roads".into(), graph.roads.len());
+    counts.insert("retained graph nodes".into(), graph.points.len());
     let unknown = (0..graph.roads.len()).filter(|&id| graph.roads.surface(id) == Surface::Unknown).count();
-    counts.insert("roads with unknown surface", unknown);
+    counts.insert("roads with unknown surface".into(), unknown);
     graph.warnings = counts.into_iter().filter(|(_, n)| *n != 0).map(|(label, n)| format!("{label}: {n}")).collect();
     graph.warnings.push("No DEM applied; elevation is unknown and climbing costs are not validated".into());
     graph.warnings.push("Country access defaults; ferry schedules, conditional access and via-way restrictions require conservative handling".into());
@@ -821,7 +880,7 @@ mod tests {
             ways.push(id, &[1, 2], &tags(&[("highway", "path")]));
         }
         let access = attributes(&tags(&[("highway", "path")]), &mut Counts::new()).unwrap().access;
-        (ways.finish().0, vec![WayFacts { routable: true, access, ..WayFacts::default() }; ids.len()])
+        (ways.finish().0, vec![WayFacts { routable: 1, access, ..WayFacts::default() }; ids.len()])
     }
 
     fn relation(values: &[(&str, &str)], members: &[(Id, &str)]) -> Table<Relations> {
@@ -867,7 +926,7 @@ mod tests {
         present.sort_unstable();
         let present: Vec<_> = present.iter().map(|&id| (id, [0, id as i32 * 500])).collect();
         let (ways, members, sets, counts) = join(ways, &present, tagged, &relations, [-1.0, -1.0, 1.0, 1.0]).unwrap();
-        build_graph(Data { ways, relations, members }, sets, counts).unwrap()
+        roads(scan(Data { ways, relations, members }, sets, counts), None).unwrap()
     }
 
     #[test]
@@ -879,7 +938,7 @@ mod tests {
         let present = [(3, [1000, 3000]), (5, [2000, 5000]), (7, [0, 20_000_000])];
         let (ways, members, _, counts) = join(&ways, &present, &signal, &relations, [-1.0, -1.0, 1.0, 1.0]).unwrap();
         let all = BIKE | FOOT | PUSH;
-        let node = |lat, lon, flags| NodeRef { lat, lon, closures: u32::MAX, access: all, flags };
+        let node = |lat, lon, flags| NodeRef { lat, lon, closures: u32::MAX, access: all, flags, padding: [0; 2] };
         let shared = node(100, 300, NodeRef::PRESENT | NodeRef::SHARED);
         let signal = node(200, 500, NodeRef::PRESENT | NodeRef::MARKED | NodeRef::SIGNALS);
         let points: Vec<_> = ways.iter().map(|way| way.points.to_vec()).collect();
@@ -897,8 +956,35 @@ mod tests {
         let ways = [way(10, &[9, 5, 1], &[("highway", "path")]), way(20, &[1, 3], &[("highway", "path")])];
         let graph = fixture(&ways, &[1, 3, 5, 9], &[], Default::default());
         assert_eq!(graph.node_ids.values(), [9, 1, 3]);
-        let ends: Vec<_> = (0..graph.roads.len()).map(|id| (graph.roads.from(id), graph.roads.to(id))).collect();
-        assert_eq!(ends, [(0, 1), (1, 0), (1, 2), (2, 1)]);
+        let mut ends: Vec<_> = graph.roads.iter().map(|road| (road.from, road.to, road.reversed)).collect();
+        ends.sort_unstable();
+        assert_eq!(ends, [(0, 1, false), (1, 0, true), (1, 2, false), (2, 1, true)]);
+        for road in graph.roads.iter() {
+            let ends = [road.from, road.to].map(|junction| graph.points.values()[junction as usize]);
+            assert_eq!(ends, [road.shape[0], road.shape[road.shape.len() - 1]]);
+        }
+    }
+
+    #[test]
+    fn the_count_check_fails_before_the_terrain() {
+        // 2^16 paths from one hub: 2^16 roads arrive at the hub and 2^16 leave it, 2^32 turns.
+        let ids: Vec<[i64; 2]> = (1..=1 << 16).map(|node| [0, node]).collect();
+        let ways: Vec<_> = ids.iter().map(|nodes| (nodes[1], &nodes[..], tags(&[("highway", "path")]))).collect();
+        let present: Vec<_> = (0..=1 << 16).map(|id| (id, [0, id as i32 * 10])).collect();
+        let bounds = [-1.0, -1.0, 1.0, 1.0];
+        let (ways, members, sets, counts) = join(&ways, &present, &[], &Table::default(), bounds).unwrap();
+        let mut height = |_| -> Result<Option<f64>, String> { panic!("the terrain runs after the count check") };
+        let source = scan(Data { ways, relations: Table::default(), members }, sets, counts);
+        let error = roads(source, Some(&mut height));
+        assert!(error.is_err_and(|e| e.contains("Too many road transitions")));
+    }
+
+    #[test]
+    fn a_profile_list_that_passes_the_manifest_limit_fails() {
+        let graph = fixture(&[way(10, &[1, 2], &[("highway", "path")])], &[1, 2], &[], Default::default());
+        // A million profiles need a manifest larger than format 9 allows.
+        let limits = crate::Limits { profiles: 1_000_000, bounds: [-1.0, -1.0, 1.0, 1.0] };
+        assert!(limits.check(&graph).is_err_and(|e| e.contains("manifest")));
     }
 
     #[test]
@@ -1074,7 +1160,7 @@ mod tests {
         let graph = fixture(&ways, &[1, 2, 3], &[], relation);
         assert!(graph.forbidden.is_empty());
         assert_eq!(graph.forbidden_foot.len(), 1);
-        let (from, to) = graph.forbidden_foot.values()[0];
+        let Turn { from, to } = graph.forbidden_foot.values()[0];
         assert!(!graph.permits_turn(from, to, true));
         assert!(graph.permits_turn(from, to, false));
     }
@@ -1087,7 +1173,7 @@ mod tests {
             &[(Id::Way(10), "from"), (Id::Way(20), "via"), (Id::Way(30), "to")],
         );
         let mut counts = Counts::new();
-        let mut rules = Vec::new();
+        let mut rules = Column::default();
         relation_rules(&relation.iter().next().unwrap(), &ways, &mut facts, &mut rules, &mut counts);
         assert!(rules.is_empty());
         assert!(facts.iter().all(|w| w.access == [FOOT; 2]));
@@ -1149,7 +1235,7 @@ mod tests {
                 &[("type", "restriction"), (key, "no_right_turn @ (Mo-Fr 07:00-09:00)")],
                 &[(Id::Way(10), "from"), (Id::Node(2), "via"), (Id::Way(20), "to")],
             );
-            let mut rules = Vec::new();
+            let mut rules = Column::default();
             relation_rules(&relation.iter().next().unwrap(), &ways, &mut facts, &mut rules, &mut Counts::new());
             assert!(rules.is_empty(), "{key}");
             assert!(facts.iter().all(|w| w.access == [BIKE | FOOT | PUSH; 2]), "{key}");
@@ -1166,8 +1252,10 @@ mod tests {
         assert!(profiles.iter().filter(|p| !p.walking).all(|p| p.permits(&road) == (p.name == "mtb/technical")));
         let alpine = path(&[("highway", "path"), ("sac_scale", "alpine_hiking")]);
         assert!(profiles.iter().all(|p| p.permits(&alpine) == (p.name == "hiking/alpine")));
-        let climbing = path(&[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")]);
-        assert!(profiles.iter().all(|p| !p.permits(&climbing)));
+        let demanding = path(&[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")]);
+        assert!(profiles.iter().all(|p| p.permits(&demanding) == (p.name == "hiking/alpine")));
+        let unknown = path(&[("highway", "path"), ("sac_scale", "ddemanding_mountain_hiking")]);
+        assert!(profiles.iter().all(|p| !p.permits(&unknown)));
     }
 
     #[test]

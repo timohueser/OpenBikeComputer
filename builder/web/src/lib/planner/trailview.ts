@@ -1,3 +1,5 @@
+import type { PlannerConfig } from './config';
+
 /** The heading of a new view, in degrees clockwise from north. */
 export const FIRST_HEADING = 0;
 /** The binoculars hang this far below the pointer, in CSS pixels. Their bottom is the drop point. */
@@ -7,6 +9,11 @@ const DEGREES_PER_PX = 1.5, MAX_SWING = 35, SETTLE_MS = 140;
 /** A press that moves farther than this, in CSS pixels, is a drag; a shorter one is a click. A finger wobbles more than a mouse. */
 export function dragPx(pointerType: string): number {
     return pointerType === 'touch' ? 10 : 5;
+}
+
+/** Whether this browser and the release can show TrailView. */
+export function hasTrailView(config: PlannerConfig): boolean {
+    return 'gpu' in navigator && !!config.trailview_rules;
 }
 
 /** The engine is a chunk of its own: the planner loads it at the first press of the binoculars. */

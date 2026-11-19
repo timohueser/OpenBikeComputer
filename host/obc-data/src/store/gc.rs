@@ -20,6 +20,10 @@ pub struct Roots {
     pub served: BTreeMap<(String, String), Vec<String>>,
     /// Each SHA-256 that an output of a release or a fixture names, with which of them.
     pub sha256s: BTreeMap<String, &'static str>,
+    /// The SHA-256 of each file of a release output that no client reads, by the key of the
+    /// output. They are roots unless the layer is a cache layer: a release does not keep the work
+    /// layers that made it.
+    pub unread: BTreeMap<String, Vec<String>>,
     /// `(source, version)` that `obc data source refresh` took: the next update reads it.
     pub refreshed: BTreeSet<(String, String)>,
     /// The SHA-256 of each file that the archive lists; `None` keeps every unpacked copy.
@@ -47,7 +51,9 @@ impl Roots {
     pub fn add_release(&mut self, target: &str, files: &Files) {
         self.name(files.lists.iter().map(|list| list.sha256.clone()), "release");
         for output in &files.outputs {
-            self.name(output.files.iter().map(|file| file.sha256.clone()), "release");
+            self.name(output.client_files().map(|file| file.sha256.clone()), "release");
+            let unread = output.files.iter().filter(|file| !output.client.includes(&file.path));
+            self.unread.entry(output.key.clone()).or_default().extend(unread.map(|file| file.sha256.clone()));
             for (source, read) in &output.snapshots {
                 let targets = self.served.entry((source.clone(), read.version.clone())).or_default();
                 if !targets.iter().any(|known| known == target) {
@@ -108,9 +114,10 @@ pub struct Kept {
 /// of a release or a fixture names it, or a reached record or layer has it. A layer is reached when each input
 /// is: a snapshot input whose digest is of the files that it names of a reached record of its
 /// source, and a step input whose digest is of the files that it selects (all when it names
-/// none) of a reached layer of its step.
+/// none) of a reached layer of its step. A layer of a cache layer is reached only when it is also
+/// the newest of its step and options, by the last run that used it.
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
-    let named = &roots.sha256s;
+    let mut named = roots.sha256s.clone();
     // The objects of the kept records and layers.
     let mut reached = HashSet::new();
     let mut kept_snapshots = HashMap::<&str, Vec<&Snapshot>>::new();
@@ -168,6 +175,28 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     // A receipt that this build cannot read can be of a newer build: its objects stay.
     let receipts: Vec<engine::Receipt> = read_records(&store.root().join("layers"), read_record)
         .map_err(|e| format!("{e}; a newer obc data may have written it, so nothing is collected"))?;
+    let cache: HashSet<&str> =
+        receipts.iter().filter(|receipt| receipt.cache).map(|receipt| receipt.key.as_str()).collect();
+    for (_, sha256s) in roots.unread.iter().filter(|(key, _)| !cache.contains(key.as_str())) {
+        for sha256 in sha256s {
+            named.entry(sha256.clone()).or_insert("release");
+        }
+    }
+    // Of the layers of a cache step with the same options, only the one that a run used last
+    // can be reached, whatever else is; the key decides a tie, so the order of the receipts does
+    // not.
+    let last = |receipt: &engine::Receipt| {
+        (receipt.used.clone().unwrap_or_else(|| receipt.built.clone()), receipt.key.clone())
+    };
+    let mut newest = HashMap::<(&str, String), &engine::Receipt>::new();
+    for receipt in receipts.iter().filter(|receipt| receipt.cache) {
+        let group = (receipt.step.as_str(), engine::sorted(receipt.options.clone()).to_string());
+        let entry = newest.entry(group).or_insert(receipt);
+        if last(receipt) > last(entry) {
+            *entry = receipt;
+        }
+    }
+    let newest: HashSet<&str> = newest.values().map(|receipt| receipt.key.as_str()).collect();
     let mut keys = HashSet::new();
     // The reached layers of each step.
     let mut layers = HashMap::<&str, Vec<&engine::Receipt>>::new();
@@ -175,6 +204,9 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     loop {
         let before = keys.len();
         for receipt in &receipts {
+            if receipt.cache && !newest.contains(receipt.key.as_str()) {
+                continue;
+            }
             let inputs_reached = receipt.inputs.iter().all(|input| match input.kind {
                 InputKind::Snapshot => kept_snapshots.get(input.name.as_str()).is_some_and(|snapshots| {
                     let names: HashSet<&str> = input.files.iter().map(String::as_str).collect();
@@ -421,6 +453,7 @@ mod tests {
     use crate::engine::{InputRecord, LayerFile, Receipt};
     use crate::store::tests::Scratch;
     use crate::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot};
+    use serde_json::json;
 
     fn object(store: &Store, bytes: &[u8]) -> String {
         let sha256 = sha256_hex(bytes);
@@ -453,6 +486,16 @@ mod tests {
 
     /// A layer of `files`, `(path, bytes)`, that reads `inputs`; its digest.
     fn layer_of(store: &Store, key: &str, inputs: Vec<InputRecord>, files: &[(&str, &[u8])]) -> String {
+        put(store, Receipt { step: key.into(), key: key.into(), ..receipt(store, inputs, files) })
+    }
+
+    fn put(store: &Store, receipt: Receipt) -> String {
+        store.put_layer(&receipt).unwrap();
+        receipt.digest
+    }
+
+    /// The receipt of a test layer of `files` that reads `inputs`.
+    fn receipt(store: &Store, inputs: Vec<InputRecord>, files: &[(&str, &[u8])]) -> Receipt {
         let files: Vec<LayerFile> = files
             .iter()
             .map(|(path, bytes)| LayerFile {
@@ -462,17 +505,19 @@ mod tests {
             })
             .collect();
         let digest = engine::digest(files.iter().map(|file| (file.path.as_str(), file.sha256.as_str())));
-        let receipt = Receipt {
+        Receipt {
             layer: "test".into(),
-            step: key.into(),
+            step: String::new(),
             format: 1,
             revision: 1,
-            key: key.into(),
+            cache: false,
+            key: String::new(),
             inputs,
             options: serde_json::json!({}),
             digest: digest.clone(),
             files,
             built: "2026-10-05T00:00:00Z".into(),
+            used: None,
             wall_ms: 0,
             cpu_ms: None,
             peak_rss_bytes: None,
@@ -480,9 +525,7 @@ mod tests {
             bytes_in: 0,
             bytes_out: 0,
             metrics: Default::default(),
-        };
-        store.put_layer(&receipt).unwrap();
-        digest
+        }
     }
 
     fn input(kind: InputKind, name: &str, digest: String, files: &[&str]) -> InputRecord {
@@ -641,5 +684,57 @@ mod tests {
         assert_eq!((plan.remove_bytes, plan.keep_bytes), (3, 3));
         apply(&store, &roots, &plan).unwrap().unwrap();
         assert!(store.unpacked("aa").is_dir() && !store.unpacked("bb").exists());
+    }
+
+    #[test]
+    fn a_collection_keeps_the_cache_layer_of_each_step_and_options_that_a_run_used_last() {
+        // Two costs layers on one roads layer, the older first and then last in key order, and a
+        // costs layer of other bounds. A release that read the older one does not keep it.
+        let collected = |scratch: &str, old: &str, new: &str, used: Option<&str>| {
+            let scratch = Scratch::new(scratch);
+            let (repo, store) = (scratch.0.join("repo"), Store::at(scratch.0.join("store")));
+            fs::create_dir_all(&repo).unwrap();
+            snapshot(&store, "osm", "1", "2026-10-05", &[("cut.pbf", b"cut")]);
+            let cut = engine::digest([("cut.pbf", sha256_hex(b"cut").as_str())]);
+            let cache = |step: &str, key: &str, inputs, options, day: &str, bytes: &[u8]| {
+                let built = format!("2026-10-{day}T00:00:00Z");
+                let receipt = receipt(&store, inputs, &[("out", bytes)]);
+                Receipt { step: step.into(), key: key.into(), cache: true, options, built, ..receipt }
+            };
+            let osm = vec![input(InputKind::Snapshot, "osm", cut, &["cut.pbf"])];
+            let roads = put(&store, cache("roads", "roads", osm, json!({"bounds": [1]}), "05", b"roads"));
+            let on_roads = || vec![input(InputKind::Step, "roads", roads.clone(), &[])];
+            let swiss = json!({"bounds": [1], "profiles": ["all"]});
+            let older = cache("costs", old, on_roads(), swiss.clone(), "06", b"costs old");
+            put(&store, Receipt { used: used.map(|day| format!("2026-10-{day}T00:00:00Z")), ..older.clone() });
+            put(&store, cache("costs", new, on_roads(), swiss, "07", b"costs new"));
+            put(
+                &store,
+                cache("costs", "other", on_roads(), json!({"bounds": [2], "profiles": ["all"]}), "06", b"costs other"),
+            );
+            let mut roots = Roots::from_repo(&repo).unwrap();
+            let output = crate::release::Output {
+                layer: older.layer,
+                step: older.step,
+                format: 1,
+                revision: 1,
+                key: older.key,
+                inputs: older.inputs,
+                options: older.options,
+                digest: older.digest,
+                files: older.files,
+                snapshots: Default::default(),
+                client: engine::Client::None,
+                cost: crate::release::Cost { wall_ms: 0, peak_rss_bytes: None, bytes_out: 0 },
+            };
+            roots.add_release("local", &Files { outputs: vec![output], ..Files::default() });
+            let plan = plan(&store, &roots).unwrap();
+            plan.objects.into_iter().map(|(sha256, _)| sha256).collect::<Vec<_>>()
+        };
+        let (old, new) = ([sha256_hex(b"costs old")], [sha256_hex(b"costs new")]);
+        assert_eq!(collected("gc-cache-a", "costs-a", "costs-b", None), old);
+        assert_eq!(collected("gc-cache-b", "costs-b", "costs-a", None), old);
+        // An update back to the older layer reused it, after the newer one was built.
+        assert_eq!(collected("gc-cache-c", "costs-a", "costs-b", Some("08")), new);
     }
 }

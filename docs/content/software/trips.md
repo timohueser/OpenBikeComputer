@@ -55,22 +55,22 @@ order that chains the file ends. The rider can drag the rows into a different or
 Between two rows, the sheet says "joins" or shows the gap. A trip made from files gets one day per
 file, with the day ends on the file boundaries, and its page opens. Its plan has each file's
 line, kept or planned, with a night at each day end and a transfer leg where the next file starts
-more than 200 m away. A trip has at most 14 days, the limit of the plan format: the phone does not
-add a 15th file and says so in one line. Add to trip and Group into trip keep each route's line as
-a drawn leg.
+more than 200 m away. A trip has at most 32 days, the size of the device's trip progress record: the
+phone does not add a 33rd file and says so in one line. Add to trip and Group into trip keep each
+route's line as a drawn leg.
 
 ### Days in the planner
 
-In the web planner, a "Multi-day trip" plan splits its route into riding days. The trip values
-stand at the top of the day list: the start date, the day count and the stay kinds. With a start
-date, each day shows its weekday. The elevation profile is the timeline.
-It shows the days by colour, a marker at each night and a column for each rest day.
+In the web planner, the day count above the stops makes a route a multi-day trip ("+") and back
+("−" from the lowest count). The start date and the stay kinds stand at the top of the day
+list. With a start date, each day shows its weekday. The elevation profile is the timeline: the
+days by colour, a marker at each night and a column for each rest day.
 
-A guessed value has a dashed line. A day count or a date that the rider set has a solid line. The
-planner guesses the day count from the riding time. After each route change, it guesses the count
-and the suggested nights again. It never changes a value that the rider set. So a new plan needs no
-settings, and the rider's choices stay. The day count is the only control for the length of the
-days. A riding-time bar on each day shows the hard days.
+A guessed value has a dashed line. A set value has a solid line. The planner guesses the day count
+from the riding time at the plan's pace. After each route or pace change, it guesses the count and
+the suggested nights again. Pinned nights and a set day count stay. When the guess has fewer nights,
+what the rider set on a lost night goes with it; Undo brings it back. A riding-time bar on each day
+shows the hard days.
 
 "Choose" or "Change" on a night, or its profile marker, shows only that night in the panel. A town
 replaces its town list, also in an open day. A back row or Escape goes back one level. One button
@@ -92,12 +92,16 @@ On the phone, "Edit" on the trip page opens the phone's planner, where "End day 
 Save offers "Save changes", which writes the plan into the trip, and "Save as copy…", which makes a
 new trip.
 
-### Saved versions
+### Save and copies
 
-The Version menu in the top bar switches between the saved versions. A switch first writes the open
-plan back into its version, so no work is lost. "Compare versions" shows both routes on one map,
-the days of both versions side by side with their riding time, and both elevation profiles on one
-scale. The compare screen has no share button, because the planner keeps plans only in the browser.
+The planner stores a route at "Save"; the first save asks for its name. Until then, changes stay
+in the browser as a draft. Before another route opens, the planner asks to save or discard
+them. "More" has "New route", "Open route…", "Save a copy…" and "Discard changes".
+
+### Compare routes
+
+"Compare routes…" in "More" shows two saved routes on one map, their days side by side with
+riding times, and both elevation profiles on one scale.
 
 ### Transfers
 
@@ -120,9 +124,9 @@ to the device.
 A trip can have a start date. Dates follow the rides: when the rider rides Day 2 on Wednesday and
 not on Tuesday, Day 3 shows Thursday.
 
-The trip has one of four fixed bike types, and each day route carries it. The phone and the device
-use the same estimate table for each bike type. So the phone's day estimate is the device's
-estimate for the same day route.
+Each day route carries the trip's bike type. The phone and the device show the same estimate, from
+one table for each bike type. The web planner times each bike type at its own flat speed and the
+plan's pace, so its time can differ.
 
 ## Riding a trip on the device
 

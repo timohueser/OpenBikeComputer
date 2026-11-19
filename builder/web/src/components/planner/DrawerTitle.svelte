@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
 
     /** The title of the elevation drawer, which opens and closes it. `iconOnly` shows the chevron alone; the title stays for a screen reader and a pointer. */
     let { title, open, onToggle, iconOnly = false }: { title: string; open: boolean; onToggle: () => void; iconOnly?: boolean } = $props();

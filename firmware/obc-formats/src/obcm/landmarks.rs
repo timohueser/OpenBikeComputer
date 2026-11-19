@@ -33,11 +33,11 @@ impl ContentRef {
         self.offset == 0 && self.len == 0
     }
 
-    fn decode(bytes: &[u8], at: usize) -> Self {
+    pub(crate) fn decode(bytes: &[u8], at: usize) -> Self {
         Self { offset: rd_u32(bytes, at), len: rd_u32(bytes, at + 4) }
     }
 
-    fn encode(self, bytes: &mut [u8], at: usize) {
+    pub(crate) fn encode(self, bytes: &mut [u8], at: usize) {
         bytes[at..at + 4].copy_from_slice(&self.offset.to_le_bytes());
         bytes[at + 4..at + 8].copy_from_slice(&self.len.to_le_bytes());
     }

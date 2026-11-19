@@ -14,7 +14,7 @@ test('Esc stops a drag of the binoculars, a drop on the map opens TrailView, and
     const response = respond(route.request());
     return response ? route.fulfill(response) : route.abort();
   });
-  await page.goto('/planner.html');
+  await page.goto('/planner.html#/planner');
   const map = page.locator('.maplibregl-canvas');
   await expect(map).toBeVisible();
 

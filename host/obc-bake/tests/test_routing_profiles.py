@@ -1,0 +1,185 @@
+"""Routing profiles through the real `obc-pack` binary.
+
+A config carrying custom ``routing.profiles`` is packed over the tiny corpus fixture, and the
+§8.6 profile-table bytes of the map are compared with expectations that this file quantizes
+itself from the spec. A sub-1.0 multiplier and any profile set but the four bike types must fail
+the pack with the packer's own error.
+
+Run from the repo root, after ``cargo build -p obc-bake --bin obc-pack --release``::
+
+    uv run --locked --group packer-test python -m pytest host/obc-bake/tests/test_routing_profiles.py
+"""
+import json
+import os
+import re
+import struct
+import subprocess
+
+import pytest
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+TINY_PBF = os.path.join(REPO_ROOT, "builder", "tests", "corpus", "data", "tiny.osm.pbf")
+SCHEMA_PRESET = os.path.join(REPO_ROOT, "builder", "presets", "schema.json")
+
+# Canonical class order; must match obc-map-core/src/nav.rs and the OBCM spec.
+HIGHWAY_CLASSES = [
+    "cycleway", "path", "track", "footway", "steps", "bridleway", "living_street",
+    "residential", "service", "unclassified", "tertiary", "secondary", "primary", "trunk_cycl",
+]
+SURFACE_CLASSES = ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "cobbles", "grass"]
+NAME_LEN = 12
+PROFILE_RECORD_LEN = 56  # 12 name + 32 highway + 8 surface + climb_weight + 3 reserved (v12)
+CLIMB_WEIGHT_OFF = 52
+# The one OBCM version literal in the tree is the format crate's constant.
+OBCM_VERSION = int(re.search(r"pub const VERSION: u8 = (\d+);",
+                             open(os.path.join(REPO_ROOT, "firmware/obc-formats/src/obcm.rs")).read())[1])
+
+def _pack_bin():
+    override = os.environ.get("OBC_PACK_BIN")
+    if override and os.path.exists(override):
+        return override
+    for profile in ("release", "debug"):
+        p = os.path.join(REPO_ROOT, "target", profile, "obc-pack")
+        if os.path.exists(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+requires_pack = pytest.mark.skipif(
+    _pack_bin() is None or not os.path.exists(TINY_PBF),
+    reason="obc-pack binary or tiny corpus fixture not built",
+)
+
+def _quantize(v):
+    """Mirror obc-pack's quantize_multiplier: forbidden -> 0, else round(v*16) clamped 16..255."""
+    if v == "forbidden":
+        return 0
+    q = round(v * 16)
+    return max(16, min(255, q))
+
+def _expected_record(profile):
+    """Build the 56-byte v12 §8.6 record we expect the packer to write for a profile."""
+    default_q = _quantize(profile.get("default", 2.0))
+    highway = [default_q] * 32
+    surface = [default_q] * 8
+    for cls, val in profile.get("highway", {}).items():
+        highway[HIGHWAY_CLASSES.index(cls)] = _quantize(val)
+    for cls, val in profile.get("surface", {}).items():
+        surface[SURFACE_CLASSES.index(cls)] = _quantize(val)
+    name = profile["name"].encode("utf-8")
+    assert len(name) <= NAME_LEN
+    name_field = name + b"\xff" * (NAME_LEN - len(name))
+        # The climb weight (absent in a config means climb-blind) and three reserved ZERO bytes.
+        # Zero, not 0xFF: the name field is a padded string, this is a reserved field.
+    climb = bytes([int(profile.get("climb_weight", 0))]) + b"\x00" * 3
+    return name_field + bytes(highway) + bytes(surface) + climb
+
+def _pack(tmp_path, profiles, min_component_edges=None):
+    """Pack the tiny corpus with the given routing.profiles; return the .obcm bytes."""
+    cfg = json.load(open(SCHEMA_PRESET))
+    cfg.pop("_meta", None)
+    routing = {"profiles": profiles}
+    if min_component_edges is not None:
+        routing["min_component_edges"] = min_component_edges
+    cfg["routing"] = routing
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps(cfg))
+    out_path = tmp_path / "out.obcm"
+        # --no-land avoids the network land-polygon dataset; the profile table is
+        # written regardless of graph contents.
+    proc = subprocess.run(
+        [_pack_bin(), TINY_PBF, str(cfg_path), str(out_path), "--no-land"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, f"obc-pack failed: {proc.stdout}\n{proc.stderr}"
+    return out_path.read_bytes()
+
+def _profile_table(data):
+    """Locate and slice the §8.6 profile table out of a packed .obcm."""
+    assert data[:4] == b"OBCM", "bad magic"
+    assert data[4] == OBCM_VERSION, f"expected OBCM v{OBCM_VERSION}, got v{data[4]}"
+        # Every offset that addresses the *file* counts 2^scale-byte units, not bytes.
+        # Arithmetic *inside* a structure (the `nav_off + 22` below) stays in bytes.
+    scale = data[40]  # header: Offset Scale @ 40 (u8)
+    assert 0 <= scale <= 9, f"§1.1 restricts Offset Scale to 0..=9, got {scale}"
+    unit = 1 << scale
+    (nav_off,) = struct.unpack_from("<I", data, 36)  # header: Nav Graph Offset @ 36 (scaled)
+    nav_off *= unit
+    (table_off,) = struct.unpack_from("<I", data, nav_off + 22)  # dir: Profile Table Offset @ 22 (scaled)
+    table_off *= unit
+    count = data[nav_off + 26]  # dir: Profile Count @ 26 (u8)
+    assert 1 <= count <= 8, f"profile count {count} out of range"
+    end = table_off + count * PROFILE_RECORD_LEN
+    return count, data[table_off:end]
+
+CUSTOM = {
+    "name": "Road",
+    "default": 4.0,  # -> 64
+    "highway": {"cycleway": 1.0, "track": 7.0, "steps": "forbidden", "primary": 2.5},
+    "surface": {"paved": 1.0, "gravel": 5.0, "rough": "forbidden"},
+    "climb_weight": 12,  # v12 §8.6: flat metres charged per metre of ascent
+}
+MINIMAL = {"name": "Gravel", "default": 2.0}
+
+def _four(road, gravel=None):
+    """The four bike types in their fixed order, with the given Road and Gravel entries."""
+    return [road, gravel or {"name": "Gravel"}, {"name": "MTB"}, {"name": "Touring"}]
+
+@requires_pack
+def test_custom_profiles_round_trip_to_112_bytes(tmp_path):
+    """A config with custom weights packs to §8.6 records that match byte-for-byte."""
+    data = _pack(tmp_path, _four(CUSTOM, MINIMAL))
+    count, table = _profile_table(data)
+    assert count == 4
+    rec0 = table[:PROFILE_RECORD_LEN]
+    rec1 = table[PROFILE_RECORD_LEN:2 * PROFILE_RECORD_LEN]
+    assert rec0 == _expected_record(CUSTOM)
+    assert rec1 == _expected_record(MINIMAL)
+    # Spot-check the load-bearing cells directly against the spec's encoding.
+    assert rec0[NAME_LEN + HIGHWAY_CLASSES.index("cycleway")] == 16   # 1.0x
+    assert rec0[NAME_LEN + HIGHWAY_CLASSES.index("steps")] == 0       # forbidden
+    assert rec0[NAME_LEN + HIGHWAY_CLASSES.index("footway")] == 64    # inherits default 4.0x
+    assert rec0[NAME_LEN + 32 + SURFACE_CLASSES.index("rough")] == 0  # forbidden
+    assert rec0[CLIMB_WEIGHT_OFF] == 12          # v12: taken verbatim, no admissibility floor
+    assert rec1[CLIMB_WEIGHT_OFF] == 0           # …and absent means climb-blind
+    assert rec0[CLIMB_WEIGHT_OFF + 1:] == b"\x00" * 3, "the reserved tail is zero"
+
+@requires_pack
+def test_forbidden_primary_is_quantized_to_zero(tmp_path):
+    """The acceptance-criterion shape: switching a class to forbidden zeroes its wire byte."""
+    profile = {"name": "Road", "default": 2.0, "highway": {"primary": "forbidden"}}
+    data = _pack(tmp_path, _four(profile))
+    _count, table = _profile_table(data)
+    assert table[NAME_LEN + HIGHWAY_CLASSES.index("primary")] == 0
+
+@requires_pack
+def test_anything_but_the_four_bike_types_is_rejected(tmp_path):
+    """The count, the order and the names of the profiles are fixed (OBCM §8.6)."""
+    cfg = json.load(open(SCHEMA_PRESET))
+    cfg.pop("_meta", None)
+    for profiles in ([CUSTOM], _four(CUSTOM)[::-1], _four({"name": "Racer"})):
+        cfg["routing"] = {"profiles": profiles}
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps(cfg))
+        proc = subprocess.run(
+            [_pack_bin(), TINY_PBF, str(cfg_path), str(tmp_path / "out.obcm"), "--no-land"],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode != 0, f"{[p['name'] for p in profiles]} must fail the pack"
+        assert "four bike types" in proc.stdout + proc.stderr
+
+@requires_pack
+def test_sub_one_multiplier_is_rejected_with_admissibility_error(tmp_path):
+    """A multiplier below 1.0 must be rejected by the packer with the admissibility error."""
+    cfg = json.load(open(SCHEMA_PRESET))
+    cfg.pop("_meta", None)
+    cfg["routing"] = {"profiles": _four({"name": "Road", "highway": {"cycleway": 0.5}})}
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps(cfg))
+    proc = subprocess.run(
+        [_pack_bin(), TINY_PBF, str(cfg_path), str(tmp_path / "out.obcm"), "--no-land"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0, "a sub-1.0 multiplier must fail the pack"
+    msg = proc.stdout + proc.stderr
+    assert "below 1.0" in msg
+    assert "admissible" in msg

@@ -191,6 +191,10 @@ export class Instances {
     private readonly sunTally: number[][] = [];
     private quad: [number, number, number] = [0, 0, 0];
     private uploaded = false;
+    /** Where each mesh lies in the pools since an upload wrote it, and the first free vertex and index. */
+    private pool = emptyPool();
+    /** Per model, the mesh and the record of its last baked impostor: it bakes again when either changes. */
+    private readonly baked = new Map<number, { mesh: Mesh; record: Float32Array }>();
     private detail_ = 1;
     /** The factor of the tier distances in the last frame. */
     private lod = 1;
@@ -283,6 +287,8 @@ export class Instances {
         this.uploaded = false;
         this.atlas.clear();
         this.unbaked.clear();
+        this.pool = emptyPool();
+        this.baked.clear();
         const { device } = gpu, p = await gpu.once(instancePipelines);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, uniform = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
         const atlas = () => gpu.texture('instances', {
@@ -576,53 +582,61 @@ export class Instances {
         return made;
     }
 
-    /** Writes the models and their meshes into the pools; every impostor bakes again. */
-    private upload(r: Resources): void {
+    /**
+     * Writes the models into the pools. A mesh stays where an earlier upload wrote it, so an upload writes only
+     * the meshes that are new; a model that finds no room packs the pools again from empty, without the meshes
+     * that no model draws any more. A model's impostor bakes again when its mesh or its record changed.
+     */
+    private upload(r: Resources, packed = false): void {
         const models = new ArrayBuffer(MODELS * MODEL_BYTES), f = new Float32Array(models);
-        const meshes = new Int32Array(DRAWS * MESH_BYTES / 4);
-        let vertex = 0, index = 0;
+        const meshes = new Int32Array(DRAWS * MESH_BYTES / 4), pool = this.pool;
         const fits = (tiers: Mesh[]) => {
             const count = tiers.reduce((sum, mesh) => sum + mesh.position.length / 3, 0), indices = tiers.reduce((sum, mesh) => sum + mesh.index.length, 0);
-            return (vertex + count) * VERTEX_BYTES <= VERTEX_POOL && (index + indices) * 4 <= INDEX_POOL;
+            return (pool.vertex + count) * VERTEX_BYTES <= VERTEX_POOL && (pool.index + indices) * 4 <= INDEX_POOL;
         };
+        // A mesh that models share, such as a tree as a tree and as a shrub, lies once in the pools.
         const put = (mesh: Mesh, extent: number): [number, number, number] => {
+            const known = pool.at.get(mesh);
+            if (known?.extent === extent) return known.at;
             const count = mesh.position.length / 3;
-            r.gpu.device.queue.writeBuffer(r.vertices, vertex * VERTEX_BYTES, quantize(mesh, extent));
-            r.gpu.device.queue.writeBuffer(r.indices, index * 4, Uint32Array.from(mesh.index));
-            const at: [number, number, number] = [index, mesh.index.length, vertex];
-            vertex += count;
-            index += mesh.index.length;
+            r.gpu.device.queue.writeBuffer(r.vertices, pool.vertex * VERTEX_BYTES, quantize(mesh, extent));
+            r.gpu.device.queue.writeBuffer(r.indices, pool.index * 4, Uint32Array.from(mesh.index));
+            const at: [number, number, number] = [pool.index, mesh.index.length, pool.vertex];
+            pool.vertex += count;
+            pool.index += mesh.index.length;
+            pool.at.set(mesh, { extent, at });
             return at;
         };
         this.quad = put(QUAD, 1);
-        // A mesh that models share, such as a tree as a tree and as a shrub, lies once in the pools.
-        const shared = new Map<Mesh, { extent: number; at: [number, number, number] }>();
-        const putOnce = (mesh: Mesh, extent: number) => {
-            const known = shared.get(mesh);
-            if (known?.extent === extent) return known.at;
-            const at = put(mesh, extent);
-            shared.set(mesh, { extent, at });
-            return at;
-        };
         const dropped: number[] = [];
+        // The meshes that an upload writes: those that the pools do not hold at this extent.
+        const room = (meshes: Mesh[], extent: number) => fits(meshes.filter(mesh => pool.at.get(mesh)?.extent !== extent));
         this.placed = this.specs.map((spec, m) => {
             const { tiers } = spec;
             if (!tiers.length) return [];
-            if (!fits(tiers.map(({ mesh }) => mesh).filter(mesh => !shared.has(mesh)))) return void dropped.push(m), [];
-            const extent = Math.max(...tiers.map(({ mesh }) => largest(mesh.position)));
+            const extent = Math.max(...tiers.map(({ mesh }) => scan(mesh).largest));
+            if (!room(tiers.map(({ mesh }) => mesh), extent)) return void dropped.push(m), [];
             const placed = tiers.map(({ mesh, until }, t) => {
-                const at = putOnce(mesh, extent);
+                const at = put(mesh, extent);
                 meshes.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
                 f[m * 20 + t] = until;
                 return at;
             });
-            if (spec.impostor) {
-                f[m * 20 + tiers.length] = spec.impostor.until;
-                if (this.atlas.has(m)) this.unbaked.add(m);
-            }
+            if (spec.impostor) f[m * 20 + tiers.length] = spec.impostor.until;
             f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0, spec.sized ?? 0, ...sinks(spec)], m * 20 + 4);
+            if (spec.impostor) {
+                const mesh = tiers[spec.impostor.from].mesh, record = f.slice(m * 20, m * 20 + 20), last = this.baked.get(m);
+                if (last?.mesh !== mesh || !last.record.every((value, i) => Object.is(value, record[i]))) {
+                    this.baked.set(m, { mesh, record });
+                    if (this.atlas.has(m)) this.unbaked.add(m);
+                }
+            }
             return placed;
         });
+        if (dropped.length && !packed) {
+            this.pool = emptyPool();
+            return this.upload(r, true);
+        }
         // A model that does not fit the pools draws nothing; the frames go on.
         if (dropped.length) console.warn(`The instance meshes of ${dropped.length} models do not fit their pools.`);
         r.gpu.device.queue.writeBuffer(r.models, 0, models);
@@ -642,13 +656,21 @@ export class Instances {
         this.meshTable = meshes;
         r.gpu.device.queue.writeBuffer(r.meshes, 0, meshes);
         const coarse = meshes.slice(), proxies = meshes.slice();
+        let hullless = false;
         this.specs.forEach((spec, m) => {
             const coarsest = this.placed[m].at(-1);
             if (!coarsest) return;
             if (spec.impostor) coarse.set([coarsest[1], coarsest[0], coarsest[2], 0], (m * TIERS + spec.tiers.length) * 4);
-            const hull = proxy(spec.tiers.at(-1)!.mesh), at = hull && fits([hull]) ? put(hull, f[m * 20 + 4]) : coarsest;
+            const hull = scan(spec.tiers.at(-1)!.mesh).proxy, fitted = hull && room([hull], f[m * 20 + 4]);
+            hullless ||= !!hull && !fitted;
+            const at = fitted ? put(hull, f[m * 20 + 4]) : coarsest;
             for (let t = 0; t < TIERS; t++) proxies.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
         });
+        // A shadow proxy without room packs the pools once too, as a model without room does.
+        if (hullless && !packed) {
+            this.pool = emptyPool();
+            return this.upload(r, true);
+        }
         this.casterTables = [coarse, proxies];
         this.uploaded = true;
     }
@@ -781,9 +803,27 @@ function largest(values: ArrayLike<number>): number {
 
 /** The radius of a sphere about (0, 0, 0.5) that holds every mesh of a model, in model units; a sized plant may stand taller than 1. */
 function radius(spec: ModelSpec): number {
-    let most = 0;
-    for (const { mesh: { position: p } } of spec.tiers) for (let i = 0; i < p.length; i += 3) most = Math.max(most, Math.hypot(p[i], p[i + 1], p[i + 2] - 0.5));
-    return most;
+    return Math.max(0, ...spec.tiers.map(({ mesh }) => scan(mesh).radius));
+}
+
+/** A pool keyed weakly: a mesh that no model draws any more does not stay in memory for the pool's sake. */
+const emptyPool = () => ({ at: new WeakMap<Mesh, { extent: number; at: [number, number, number] }>(), vertex: 0, index: 0 });
+
+/** What an upload reads of a mesh, made once per mesh: a mesh does not change once made. */
+const scans = new WeakMap<Mesh, { largest: number; radius: number; spread: number; proxy?: Mesh }>();
+
+function scan(mesh: Mesh): { largest: number; radius: number; spread: number; proxy?: Mesh } {
+    let known = scans.get(mesh);
+    if (!known) {
+        const p = mesh.position;
+        let most = 0, spread = 0;
+        for (let i = 0; i < p.length; i += 3) {
+            most = Math.max(most, Math.hypot(p[i], p[i + 1], p[i + 2] - 0.5));
+            spread = Math.max(spread, Math.hypot(p[i], p[i + 1]));
+        }
+        scans.set(mesh, (known = { largest: largest(p), radius: most, spread, proxy: proxy(mesh) }));
+    }
+    return known;
 }
 
 /**
@@ -840,9 +880,7 @@ export function outlines(mesh: Mesh, radius: number): Float32Array<ArrayBuffer> 
 
 /** The farthest that a vertex of a model lies from its axis. */
 function spread(spec: ModelSpec): number {
-    let most = 0;
-    for (const { mesh: { position: p } } of spec.tiers) for (let i = 0; i < p.length; i += 3) most = Math.max(most, Math.hypot(p[i], p[i + 1]));
-    return most;
+    return Math.max(0, ...spec.tiers.map(({ mesh }) => scan(mesh).spread));
 }
 
 /**

@@ -1,12 +1,20 @@
 import { edgeStretches, type Stretch } from './route-closures';
 import type { RoutingLine } from './routing';
 
-/** SAC T4, `alpine_hiking`: the hardest grade of the Alpine hiking preset, and the first that needs a note. */
+/** SAC T4, `alpine_hiking`: the first grade that needs a note. */
 const ALPINE = 4;
 
-/** The stretches of the line on alpine paths. */
-export function alpineStretches(line?: Pick<RoutingLine, 'coordinates' | 'edges'>): Stretch[] {
-    return line ? edgeStretches(line.coordinates, line.edges.sac_scale, grade => (grade ?? 0) >= ALPINE) : [];
+export interface AlpineStretch extends Stretch {
+    /** The hardest SAC grade on the stretch, 4 to 6. */
+    grade: number;
 }
 
-export const alpineLabel = `Alpine path (T${ALPINE})`;
+/** The stretches of the line on alpine paths. */
+export function alpineStretches(line?: Pick<RoutingLine, 'coordinates' | 'edges'>): AlpineStretch[] {
+    const grades = line?.edges.sac_scale ?? [];
+    return edgeStretches(line?.coordinates ?? [], grades, grade => (grade ?? 0) >= ALPINE)
+        .map(({ from, to, coordinates, km, at }) => ({ coordinates, km, at, grade: Math.max(...grades.slice(from, to).map(grade => grade ?? 0)) }));
+}
+
+/** Such as "Alpine path (T5)", with the hardest grade of the stretch. */
+export const alpineLabel = (stretch: AlpineStretch) => `Alpine path (T${stretch.grade})`;

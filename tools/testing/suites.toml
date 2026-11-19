@@ -21,20 +21,28 @@ name = "obc-app"
 triggers = ["specs/vectors/**", "data/sources.toml"]
 
 # The captured planner export is under `fixtures/`, which already selects every unit that declares
-# fixture inputs. Its SwiftPM duplicate is not, and only this suite holds the two identical.
+# fixture inputs. Its SwiftPM duplicate is not, and only this suite holds the two identical. The
+# climb test reads the shared climb vectors; no Cargo edge carries that.
 [[package]]
 name = "obc-route"
-triggers = ["companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx"]
+triggers = ["companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx", "specs/vectors/climbs.json"]
 
 [[package]]
 name = "obc-formats"
 route = "required"
 triggers = ["specs/**"]
 
-# The bake embeds the kind table and the road classes, and its codec test reads the shared vectors.
+# The bake embeds the kind table and the road classes, its codec test reads the shared vectors, and
+# the census test reads the TrailView fixture.
 [[package]]
 name = "obc-trailview-features"
-triggers = ["data/trailview/kinds.json", "data/trailview/roads.json", "specs/vectors/trailview-features.*"]
+triggers = ["data/trailview/kinds.json", "data/trailview/roads.json", "data/trailview/finishes.json", "data/trailview/waterways.json", "specs/vectors/trailview-features.*", "builder/web/tests/browser/trailview/fixture/**"]
+
+# The ground plan embeds the cross-section tables, and its tests read the shared vectors, the
+# TrailView fixture and the viewer's mask reach: Cargo cannot see these inputs.
+[[package]]
+name = "obc-ground-plan"
+triggers = ["data/trailview/plan.json", "data/trailview/roads.json", "data/trailview/finishes.json", "data/trailview/waterways.json", "specs/vectors/trailview-features.*", "builder/web/tests/browser/trailview/fixture/**", "builder/web/src/lib/trailview/terrain/features.wgsl"]
 
 [[package]]
 name = "obc-link"
@@ -184,12 +192,6 @@ name = "obc-boot"
 command = "cargo build --manifest-path firmware/obc-boot/Cargo.toml --release --locked"
 platforms = ["linux"]
 
-[[package]]
-name = "obc-desktop"
-command = "cargo test --manifest-path builder/desktop/Cargo.toml --release --locked"
-# A web change reaches the shell only as the bundle that desktop-frontend builds and checks.
-triggers = ["planner/search/place-kinds.json"]
-
 # ── Suites no Cargo package owns ────────────────────────────────────────────
 
 [[suite]]
@@ -213,17 +215,15 @@ triggers = [
   "builder/web/**/*.test.ts",
   "builder/web/src/**",
   "builder/web/test-support/**",
-  # mesh.test.ts counts the census of the fixture's feature tiles.
+  # mesh.test.ts meshes the fixture's feature tiles.
   "builder/web/tests/browser/trailview/fixture/**",
   "builder/web/package.json",
   "builder/web/package-lock.json",
   "tools/planner_mvt_verify.mjs",
-  # bins.test.ts reads the path widths of the bake.
-  "host/obc-trailview-features/src/structures.rs",
-  # bins.test.ts checks the stamp profiles of the road classes.
+  # bins.test.ts checks the stamp profiles of the road classes and the cross-section tables.
   "data/trailview/roads.json",
-  "builder/web/vite.config.ts",
-  "host/obc-map-core/schema/config.schema.json",
+  "data/trailview/finishes.json",
+  "builder/web/vite.config.ts", "builder/web/tsconfig.json",
   "specs/vectors/**",
   "sim/flat-device/**",
   "planner/search/query/contract.json",
@@ -232,8 +232,7 @@ triggers = [
 ]
 
 # The whole app is the subject, the bridge fixture is the input, and the shared catalog
-# generator is what publishes it. The schema examples are not here: this catalog is cut
-# from the bridge fixture, and only the desktop smoke reads the examples.
+# generator is what publishes it. This catalog is cut from the bridge fixture.
 [[suite]]
 id = "web.verification"
 route = "ordinary"
@@ -243,15 +242,6 @@ platforms = ["linux", "macos"]
 triggers = ["tools/verification/**"]
 
 [[suite]]
-id = "web.builder-browser"
-route = "ordinary"
-command = "npm test --prefix builder/web/tests/browser"
-jobs = ["web-browser"]
-fixtures = ["checked-in-web-fixtures"]
-platforms = ["linux", "macos"]
-triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/web/**", "builder/wasm/**", "tools/fixture_catalog.py", "tools/loopback_port.mjs"]
-
-[[suite]]
 id = "web.planner-requests"
 route = "ordinary"
 command = "npm run test:planner --prefix builder/web/tests/browser"
@@ -259,9 +249,11 @@ jobs = ["web-browser"]
 platforms = ["linux", "macos"]
 triggers = [
   "planner/search/place-kinds.json",
-  "builder/web/src/components/planner/**",
-  "builder/web/src/lib/planner/**",
-  "builder/web/src/planner.ts",
+  "docs/assets/theme.css", "docs/assets/fonts/**",
+  # The area and Device journeys build a map in the tab from the fixture catalog, with the wasm core.
+  "builder/web/src/**",
+  "builder/wasm/**",
+  "tools/fixture_catalog.py",
   "builder/web/planner.html",
   "builder/web/tests/browser/planner/**",
   "builder/web/tests/browser/playwright.planner.config.js",
@@ -270,6 +262,20 @@ triggers = [
   "builder/web/package.json",
   "builder/web/vite.config.ts",
   "planner/search/query/contract.json",
+]
+
+# The run loop of the UX study with a stand-in environment and participant: no browser, no model call.
+[[suite]]
+id = "web.ux-study"
+route = "ordinary"
+command = "npm run test:ux-study --prefix builder/web/tests/browser"
+jobs = ["web-browser"]
+platforms = ["linux", "macos"]
+triggers = [
+  "builder/web/tests/browser/ux-study/**",
+  "builder/web/tests/browser/package.json",
+  # The task checks import the food kinds of the search.
+  "planner/search/place-kinds.json",
 ]
 
 [[suite]]
@@ -305,11 +311,10 @@ jobs = ["web"]
 platforms = ["linux", "macos"]
 triggers = ["builder/web/src/lib/trailview/**/*.wgsl", "builder/web/src/lib/trailview/gpu/include.ts", "builder/web/scripts/check-wgsl.mjs", "builder/web/package.json"]
 
-# The TrailView page on the checked-in fixture tiles, in Chromium with SwiftShader: one page load that
-# draws with no WebGPU error and whose probe gives the height of an instance shader, and the snow mark of
-# the ground worker. A test that draws for minutes on SwiftShader takes the tag @gpu (the crack and
-# surface audits, the invariant audits of the stamps along the roads of a village and in a lake,
-# debug=mask): pull requests skip it, `web.trailview-weekly` runs it.
+# The TrailView ground worker in Chromium: the ground bytes under a low alpha and the snow mark. A test
+# that draws on SwiftShader takes minutes, so it takes the tag @gpu (the page load with its probe, the
+# crack and surface audits, the stamp audits of a village and a lake): pull requests skip it,
+# `web.trailview-gpu` runs it on a GPU.
 [[suite]]
 id = "web.trailview-smoke"
 route = "ordinary"
@@ -334,12 +339,13 @@ triggers = [
   "builder/web/vite.config.ts",
 ]
 
-# Every TrailView browser test, the @gpu ones too. `test-weekly.yml` runs it each Monday.
+# The @gpu TrailView browser tests on the machine's GPU, where they take seconds. A CI runner has no
+# GPU, and SwiftShader takes minutes per test.
 [[suite]]
-id = "web.trailview-weekly"
+id = "web.trailview-gpu"
 route = "manual"
-command = "npm run test:trailview --prefix builder/web/tests/browser"
-platforms = ["linux", "macos"]
+command = "OBC_TRAILVIEW_GPU=1 flock /tmp/trailview-gpu.lock npm run test:trailview --prefix builder/web/tests/browser -- --grep @gpu"
+platforms = ["linux"]
 triggers = ["builder/web/tests/browser/trailview/**"]
 
 # The job table is not derived from the builders it describes, so the unit tests that pin
@@ -348,7 +354,7 @@ triggers = ["builder/web/tests/browser/trailview/**"]
 [[suite]]
 id = "python.repository-tools"
 route = "required"
-command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group forest-reference python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
+command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group forest-reference --group route-sources python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
 jobs = ["guards", "selection"]
 triggers = [
   "planner/search/place-kinds.json",
@@ -365,7 +371,6 @@ triggers = [
   "specs/vectors/trailview-features.*",
   # The footers that test_data_registry.py compares with the registry.
   "docs/templates/*.html",
-  "builder/web/src/App.svelte",
   "tools/testing/*.toml",
   "docs/testing.md",
   ".github/workflows/**",
@@ -405,27 +410,27 @@ triggers = ["host/obc-dem/reference/**", ".python-version", "pyproject.toml", "u
 # The TrailView tools need rasterio, pyogrio and osmium, which no other suite wants, so the suite runs
 # under the locked uv group `trailview`. The tests write their own rasters, read the ruleset of
 # data/trailview/, the engine's tree and plant models that a pack may name and the captured service
-# answers of fixtures/sources/trailview-ground/: no service.
+# answers of fixtures/sources/trailview-ground/: no service. They take seconds and build no Rust, so
+# they ride the unconditional `guards` job.
 [[suite]]
 id = "python.trailview"
-route = "ordinary"
+route = "required"
 command = "rm -rf .artifacts/python/trailview && uv run --locked --group trailview --group dev python -m xmlrunner discover -s tools/trailview/tests -v -o .artifacts/python/trailview"
-jobs = ["test"]
+jobs = ["guards"]
 triggers = ["tools/trailview/**", "data/trailview/**", "fixtures/sources/trailview-ground/**", "tools/planner_geo.py",
   "tools/step_pool.py", "tools/step_request.py", "tools/data_registry.py", "tools/planner_runtime.py", "data/sources.toml",
   "builder/web/src/lib/trailview/models/trees/**", "builder/web/src/lib/trailview/models/plants/**", "pyproject.toml", "uv.lock"]
 
 [[suite]]
-id = "python.builder"
+id = "python.packer-profiles"
 route = "ordinary"
-command = "rm -f .artifacts/python/builder.xml && PYTHONPATH=. uv run --locked --group builder-test python -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml"
-jobs = ["builder-python"]
+command = "rm -f .artifacts/python/packer.xml && uv run --locked --group packer-test python -m pytest host/obc-bake/tests/test_routing_profiles.py -v --junitxml=.artifacts/python/packer.xml"
+jobs = ["packer-python"]
 fixtures = ["builder-corpus"]
 triggers = [
-  "builder/tests/**",
+  "host/obc-bake/tests/test_routing_profiles.py",
+  "builder/tests/corpus/**",
   "builder/presets/**",
-  "builder/server/*.py",
-  "builder/server/**/*.py",
   "host/obc-map-core/schema/config.schema.json",
   "pyproject.toml", "uv.lock",
 ]
@@ -490,7 +495,7 @@ triggers = [
 id = "ci.rust-workspace-tests"
 route = "ordinary"
 command = "obc check test"
-jobs = ["desktop", "test"]
+jobs = ["test"]
 foundation = true
 triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/fixtures.py"]
 
@@ -514,7 +519,7 @@ triggers = [".rustfmt.toml"]
 id = "ci.rust-clippy"
 route = "ordinary"
 command = "obc check clippy"
-jobs = ["boot", "clippy", "desktop", "embedded"]
+jobs = ["boot", "clippy", "embedded"]
 foundation = true
 triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
 
@@ -522,7 +527,7 @@ triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
 id = "ci.rust-builds"
 route = "ordinary"
 command = "obc check device board wasm"
-jobs = ["boot", "builder-python", "desktop", "device", "embedded", "ui-snapshots", "wasm"]
+jobs = ["boot", "device", "embedded", "packer-python", "ui-snapshots", "wasm"]
 foundation = true
 triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/install-riscv.sh"]
 
@@ -593,11 +598,42 @@ triggers = [
   "docs/index.html",
 ]
 
+# The fixture census of the ground plan: every cell's faces, records, heights, mesh and graph. Its
+# inputs are the crate, the rule tables and the TrailView fixture. The fast tier runs its targets
+# when the suite is selected.
+[[suite]]
+id = "ci.ground-plan-census"
+route = "ordinary"
+jobs = ["test"]
+package = "obc-ground-plan"
+targets = ["faces", "records", "heights_fixture", "mesh", "graph"]
+foundation = true
+triggers = [
+  "host/obc-ground-plan/**",
+  "data/trailview/**",
+  "specs/vectors/trailview-features.*",
+  "builder/web/tests/browser/trailview/fixture/**",
+]
+
+# Check 7 of the ground plan: every fixture cell gives the same plan digest natively and in WASM.
+[[suite]]
+id = "ci.ground-plan-bytes"
+route = "ordinary"
+command = "bash builder/ground-plan-wasm/check-bytes.sh"
+jobs = ["wasm-bridges"]
+rust_packages = ["obc-ground-plan-bridge"]
+triggers = [
+  "builder/ground-plan-wasm/**",
+  "host/obc-ground-plan/**",
+  "data/trailview/**",
+  "builder/web/tests/browser/trailview/fixture/**",
+]
+
 [[suite]]
 id = "ci.web-build"
 route = "ordinary"
 command = "obc check frontend"
-jobs = ["desktop-frontend", "web"]
+jobs = ["web"]
 triggers = ["planner/search/place-kinds.json", "docs/assets/theme.css", "docs/assets/fonts/**", "builder/web/package.json", "builder/web/package-lock.json", "builder/web/src/**"]
 
 [[suite]]
@@ -612,6 +648,8 @@ triggers = [
   # The agent on-ramps are owned here so they are not unowned paths. `build_docs.py` does not
   # read them; the check that does is the unconditional `guards` job.
   "AGENTS.md", "**/AGENTS.md", "companion-ios/README.md",
+  # The third-party agent skills and their lock file are agent prose too.
+  ".agents/skills/**", "skills-lock.json",
 ]
 
 [[suite]]
@@ -650,9 +688,9 @@ command = "python3 tools/prose.py --check"
 jobs = ["guards"]
 triggers = ["tools/prose.py", "tools/testing/prose-baseline.json"]
 
-# Report only: `cairn check` fails only for a new violation of a system whose doc is approved,
-# and whenever the system map is stale.
-# It reads source paths (ownership), source lines (R3) and Cargo manifests (dependencies), so any
+# `cairn check` fails for a new violation of a system whose doc is approved. For every doc, it
+# fails for a stale system map, a lost name in a Rules table and a skill file over its budget.
+# It reads source paths (ownership), system docs (the Rules tables) and Cargo manifests (dependencies), so any
 # change to one of them selects it, and a documentation-only or data-only change does not.
 [[suite]]
 id = "ci.cairn"
@@ -830,12 +868,6 @@ triggers = [
 ]
 
 [[suite]]
-id = "manual.desktop-linux-launch"
-route = "manual"
-command = "xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py"
-platforms = ["linux"]
-
-[[suite]]
 id = "manual.obc-link"
 route = "manual"
 command = "cargo run -p obc-link --features std --example flat_vectors --release --locked"
@@ -878,36 +910,6 @@ route = "live"
 command = "cargo test -p obc-dem --locked --test decode --test real_tile -- --ignored --nocapture"
 package = "obc-dem"
 targets = ["decode", "real_tile"]
-
-# The empirical half of the memory projection. `estimateMemory` prices a selection before the
-# download and the preflight refuses on it, but arithmetic cannot fail when the assembler buffers
-# a whole map anyway. This suite assembles the published catalogue's largest region in Chromium
-# and holds the whole linear memory the worker reports against that estimate's `peakBytes`, the
-# bottom line `fits` is decided on. Both sides are whole-memory figures, so the gate needs no
-# margin: a measured country-scale run lands at 0.877 of the projection, and what the gate exists
-# to catch is a buffered map or a buffered selection, hundreds of megabytes either way. The
-# published objects are the only input big enough for it to be able to fail, so it contacts the
-# live CDN. It reads a figure and does not re-fit one: an earlier measurement of the same selection
-# on a differently staged page read less, and nothing here isolates the engine term, so that
-# difference stays unattributed.
-#
-# Run it by hand before a release, and after a change to the assembler or to the estimator. It
-# moves about 890 MB over the network, needs about 3 GB of free disk and takes minutes. Needs
-# `npm install` in its own directory and `npx playwright install chromium`.
-[[suite]]
-id = "live.builder-memory"
-route = "live"
-command = "npm run test:live --prefix builder/web/tests/browser"
-platforms = ["linux", "macos"]
-triggers = [
-  "builder/web/tests/browser/live-memory.test.ts",
-  "builder/web/tests/browser/playwright.live.config.js",
-  "builder/web/tests/browser/package.json",
-  "builder/web/src/lib/assemble/**",
-  "builder/web/src/lib/cells/store.ts",
-  "builder/web/src/components/coverage/DownloadStep.svelte",
-  "builder/wasm/**",
-]
 
 # `test-weekly.yml` invokes this each Monday, and a maintainer can invoke it by hand. The
 # schedule belongs to that workflow; this row owns the XCUITest classes and the command.

@@ -20,7 +20,6 @@
     export function showNight(spot: Coordinate, towns: Coordinate[][]) { nightCalls.push([spot, towns]); }
     export function showPlace() { moves.count++; }
     export function zoomBy() {}
-    export function centerOn() {}
     export function underTrees() { return false; }
     export function placeName(coordinate: Coordinate) { return tiles.placeName(coordinate); }
 </script>

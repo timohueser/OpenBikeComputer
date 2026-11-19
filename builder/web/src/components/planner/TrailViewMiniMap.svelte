@@ -3,7 +3,7 @@
     import * as maplibregl from 'maplibre-gl';
     import { basemapStyle } from '../../lib/planner/map-style';
     import { appearance } from '../../lib/theme.svelte';
-    import { styleConfig } from './PlannerMap.svelte';
+    import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
 
     /** The basemap north up about the eye, with a cone of `fov` degrees along the heading. For orientation only. */
     let { lat, lon, heading, fov }: { lat: number; lon: number; heading: number; fov: number } = $props();
@@ -17,8 +17,8 @@
     const theme = $derived(appearance.dark ? 'dark' : 'light');
     let shown: typeof theme;
 
-    // The planner map registers the `release` and `pmtiles` protocols of the style, and it stays under the window.
     onMount(() => {
+        useMapProtocols();
         const created = new maplibregl.Map({
             container, style: basemapStyle(shown = theme, styleConfig), center: [lon, lat], zoom: 13,
             interactive: false, attributionControl: false, renderWorldCopies: false, fadeDuration: 0,

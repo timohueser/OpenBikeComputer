@@ -24,7 +24,7 @@ async function digest(body: string) {
 function selection(catalog = exampleCatalog) {
     const indices = fixtureIndices(catalog, { network: [{ id, bytes: 19 }] });
     const box = cellSquare(parseCellId(id));
-    const resolution = resolveSelection({ parts: [{ kind: "box", id: "pick", name: "Pick", box }], corridorRadiusM: 0 },
+    const resolution = resolveSelection({ parts: [{ kind: "box", id: "pick", name: "Pick", box }] },
         { catalog, indices, regionCells: new Map() });
     return { resolution, indices };
 }

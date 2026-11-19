@@ -1,6 +1,6 @@
 # Editable planner files
 
-An `.obcplan` file is a UTF-8 JSON object: one editable plan and its saved versions. It has no
+An `.obcplan` file is a UTF-8 JSON object: one editable plan. It has no
 browser database ID or database revision, and no routed line: the planner calculates the line again
 from the points. Import gives the plan a new ID and does not replace another plan.
 
@@ -17,13 +17,8 @@ from the points. Import gives the plan a new ID and does not replace another pla
 | `version` | `1` |
 | `name` | Non-empty string, at most 120 characters |
 | `trip` | Plan object |
-| `versions` | Array of version objects, newest first |
-| `open` | Optional ID of the version that `trip` belongs to |
 
-A version has a unique non-empty string `id`, a UTC ISO timestamp `at` with milliseconds, an
-optional string `name`, a display string `summary`, and a plan object `trip`. Import calculates each
-summary from the plan. It rejects duplicate version IDs. It drops an `open` that names no version of
-the file.
+A reader ignores the fields `versions` and `open` of an older file.
 
 ## Plan object
 
@@ -36,7 +31,7 @@ does not require them and the web planner ignores their values. A reader ignores
 | --- | --- |
 | `points` | Array of point objects |
 | `routeOrder` | Array of point IDs in route order, as specified below |
-| `days` | Integer from 1 to 14 |
+| `days` | Integer from 1 to 32 |
 | `daysSet` | Optional `true`; the rider set `days`. Without it, the planner guessed `days`. |
 | `budget` | Optional; written as `"days"` |
 | `target` | Optional; written as the value of `days` |
@@ -45,6 +40,7 @@ does not require them and the web planner ignores their values. A reader ignores
 | `name` | Optional signed-route name |
 | `bike` | Optional activity: `road`, `gravel`, `touring`, `mtb` or `hiking` |
 | `preset` | Optional preset: `Balanced`, `Less climbing` (`touring`, `road` and `gravel` only), `Technical` (`mtb` only) or `Alpine` (`hiking` only). A reader uses `Balanced` for a preset that the activity does not have |
+| `pace` | Optional pace of a ride: `easy`, `moderate`, `sporty` or `fast`. A reader shows the times at `moderate` for a missing or unknown value |
 | `startDate` | Optional valid calendar date in `YYYY-MM-DD` form |
 | `loop` | Optional `true`; the start also ends the route |
 | `restAfter` | Optional array of riding-day numbers from 1 to `days` |
@@ -87,5 +83,5 @@ its start. `routeOrder` contains each route point that is not the start or the f
 
 ## Import
 
-Import validates the complete file before saving it. An invalid plan or version rejects the file.
+Import validates the complete file before saving it. An invalid plan rejects the file.
 The open plan stays unchanged.

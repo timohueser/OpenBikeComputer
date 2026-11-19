@@ -55,9 +55,9 @@ describe('the plant models', () => {
         const rules = { vocabulary, regions: [{ ground: [], trees: [shrub] }], styles: [] } as unknown as Rules;
         const plants = new Plants(rules, {} as TreeModels, instances as unknown as Instances, () => {}, new AbortController().signal);
         expect(specs).toHaveLength(1);
-        const first = plants.rowModel('grapevine');
+        const first = plants.rowModel(0, 'grapevine');
         expect(first).toBe(1);
-        expect(plants.rowModel('grapevine')).toBe(first);
+        expect(plants.rowModel(0, 'grapevine')).toBe(first);
         expect(specs).toHaveLength(1 + SEEDS);
     });
 });

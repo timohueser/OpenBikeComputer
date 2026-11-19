@@ -1,3 +1,4 @@
+import type { Place } from '../editor';
 import type { Coordinate } from '../geo';
 import type { RoutingLine } from '../routing';
 import { config } from '../map-data';
@@ -31,6 +32,8 @@ export interface HoursStatus { state: 'open' | 'closed' | 'unknown'; closesAt?: 
 export interface SearchPlace {
     source: string; name: string; kind: string; lon: number; lat: number; city: string; region: string;
     distance: number; position?: { along: number; distance: number }; precision: 'place' | 'street' | 'house';
+    /** The bounds of the record; a record with no extent has its point. */
+    west?: number; south?: number; east?: number; north?: number;
     opening_hours?: string; opening?: string; hoursStatus?: HoursStatus;
     website?: string; phone?: string; description?: string;
     content?: import('../place-content').PlaceContent;
@@ -57,6 +60,11 @@ export async function placeDetails(source: string, coordinate: Coordinate, signa
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Place details are unavailable.');
     return result.results?.find((place: SearchPlace) => place.source === source);
+}
+/** The place with the details that search found for it. */
+export function withDetails(place: Place, found: SearchPlace | null | undefined): Place {
+    return found ? { ...place, website: found.website, phone: found.phone, content: found.content, description: found.description || place.description,
+        openingHours: found.opening_hours, hoursStatus: found.hoursStatus, locality: found.city } : place;
 }
 /** The route is simplified and its segments are found here, at most once per route (see `searchLine` and `routeSegments`),
  * and never on a route change alone. */

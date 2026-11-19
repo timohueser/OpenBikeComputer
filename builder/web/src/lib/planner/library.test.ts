@@ -1,134 +1,55 @@
-import { IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it } from 'vitest';
-import { emptyTrip, setEndpoint, pinNight, addRestDay, setDrawnLeg } from './editor';
-import { PlanLibrary, exportPlan, importPlan, newPlan } from './library';
-import { newVersion } from './versions';
-import { testTrip } from '../../../test-support/planner/trip';
+import { pinNight, addRestDay, setDrawnLeg } from './editor';
+import { exportPlan, importPlan, newPlan, planSummary, savedWhen } from './library';
+import { testLine, testTrip } from '../../../test-support/planner/trip';
 
-/** Runs `work` on the plans store of the library database, outside `PlanLibrary`. */
-async function rawPlans(factory: IDBFactory, work: (plans: IDBObjectStore) => IDBRequest | void, version?: number): Promise<unknown> {
-    const db = await new Promise<IDBDatabase>(resolve => {
-        const request = factory.open('obc-planner-plans', version);
-        request.onupgradeneeded = () => { request.result.createObjectStore('plans', { keyPath: 'id' }); request.result.createObjectStore('state'); };
-        request.onsuccess = () => resolve(request.result);
-    });
-    const tx = db.transaction('plans', 'readwrite'), request = work(tx.objectStore('plans'));
-    await new Promise(resolve => tx.oncomplete = resolve);
-    db.close();
-    return request?.result;
-}
-
-describe('local plan library', () => {
-    it('keeps independent plans and their versions, resumes the active one and removes its pointer on deletion', async () => {
-        const factory = new IDBFactory();
-        const store = new PlanLibrary(factory);
-        const first = await store.save(newPlan(testTrip(), 'Weekend'));
-        const versioned = await store.save(first, [newVersion(first.trip, undefined, 'Valley')]);
-        // An edit without versions leaves the saved versions as they are.
-        await store.save({ ...versioned, name: 'Weekend edit' });
-        const second = await store.save(newPlan(setEndpoint(emptyTrip(), 'start', [8, 48], 'Home'), 'Next ride'));
-        await store.activate(second.id);
-        await store.close();
-        const reopened = new PlanLibrary(factory);
-        expect((await reopened.active())?.id).toBe(second.id);
-        expect((await reopened.list()).plans.map(p => p.name)).toEqual(['Next ride', 'Weekend edit']);
-        expect((await reopened.versions(first.id)).map(v => v.name)).toEqual(['Valley']);
-        expect(await reopened.versions(second.id)).toEqual([]);
-        await reopened.remove((await reopened.get(first.id))!);
-        expect(await reopened.versions(first.id)).toEqual([]);
-        await reopened.remove(second);
-        expect(await reopened.active()).toBeUndefined();
-        expect((await reopened.list()).plans).toEqual([]);
-        await reopened.close();
+describe('plan file', () => {
+    it('round-trips nights, dates, the pace, rest days and drawings under a new identity', () => {
+        const trip = { ...addRestDay(pinNight(testTrip(), undefined, 1, [7.2, 47.5], 'Camp'), 1), startDate: '2026-10-04', pace: 'easy' as const };
+        const plan = newPlan(setDrawnLeg(trip, 'finish', [[7, 47.5]]), 'Autumn tour');
+        const imported = importPlan(exportPlan(plan));
+        expect(imported.id).not.toBe(plan.id);
+        expect(imported).toMatchObject({ name: plan.name, trip: JSON.parse(JSON.stringify(plan.trip)) });
+        expect(imported.trip.pace).toBe('easy');
     });
 
-    it('lists only valid plans, counts the others and deletes them on request', async () => {
-        const factory = new IDBFactory();
-        const store = new PlanLibrary(factory);
-        const valid = await store.save(newPlan(testTrip(), 'Valid'));
-        const broken = await store.save(newPlan(testTrip(), 'Broken'), [newVersion(testTrip(), undefined)]);
-        await store.close();
-        await rawPlans(factory, plans => { plans.put({ ...broken, trip: {} }); });
-        const reopened = new PlanLibrary(factory);
-        expect(await reopened.list()).toEqual({ plans: [valid], unreadable: 1 });
-        await expect(reopened.get(broken.id)).rejects.toThrow('invalid');
-        await reopened.removeUnreadable();
-        expect(await reopened.list()).toEqual({ plans: [valid], unreadable: 0 });
-        expect(await reopened.versions(broken.id)).toEqual([]);
-        await reopened.close();
+    it('opens an older file with saved versions as its plan, and ignores the versions', () => {
+        const plan = newPlan(testTrip(), 'Tour'), file = JSON.parse(exportPlan(plan));
+        expect(file).not.toHaveProperty('versions');
+        const older = { ...file, open: 'v1', versions: [{ id: 'v1', at: '2026-01-01T09:00:00.000Z', summary: '', trip: file.trip }] };
+        const imported = importPlan(JSON.stringify(older));
+        expect(imported).toMatchObject({ name: 'Tour', trip: JSON.parse(JSON.stringify(plan.trip)) });
+        expect(imported).not.toHaveProperty('open');
     });
 
-    it('keeps the plans of a version 1 library and saves them without the versions they held', async () => {
-        const factory = new IDBFactory();
-        const old = { ...newPlan(testTrip(), 'Old'), revision: 1, versions: [newVersion(testTrip(), undefined, 'Inside')] };
-        await rawPlans(factory, plans => { plans.put(old); }, 1);
-        const store = new PlanLibrary(factory);
-        const [listed] = (await store.list()).plans;
-        expect(listed).toEqual({ id: old.id, revision: 1, name: 'Old', updatedAt: old.updatedAt, summary: old.summary, trip: old.trip });
-        await store.save({ ...listed, name: 'Kept' });
-        await store.close();
-        expect(await rawPlans(factory, plans => plans.get(old.id))).not.toHaveProperty('versions');
+    it('writes the riding time at the pace of the plan into its summary', () => {
+        const trip = testTrip(), line = testLine(trip);
+        expect(planSummary(trip, line).seconds).toBe(Math.round(line.seconds));
+        expect(planSummary({ ...trip, pace: 'fast' }, line).seconds).toBe(Math.round(line.seconds * 19 / 27));
     });
 
-    it('orders rapid edits and refuses unseen edits or deletion from another tab', async () => {
-        const factory = new IDBFactory();
-        const first = new PlanLibrary(factory), second = new PlanLibrary(factory);
-        const plan = await first.save(newPlan(testTrip(), 'Original'));
-        await first.activate(plan.id);
-        const stale = (await second.active())!;
-        await Promise.all([first.save({ ...plan, name: 'First edit' }), first.save({ ...plan, name: 'Last edit' })]);
-        expect((await first.list()).plans[0]).toMatchObject({ name: 'Last edit', revision: 3 });
-        await expect(second.save({ ...stale, name: 'Unseen overwrite' })).rejects.toThrow('another tab');
-        await expect(second.remove(stale)).rejects.toThrow('changed');
-        const latest = (await second.get(plan.id))!;
-        await second.save({ ...latest, name: 'After reopening' });
-        expect((await first.list()).plans[0].name).toBe('After reopening');
-        await first.close(); await second.close();
+    it('writes the keys the companion app needs into the plan object', () => {
+        const file = JSON.parse(exportPlan(newPlan({ ...testTrip(), days: 4 }, 'Tour')));
+        expect(file.trip).toMatchObject({ budget: 'days', target: 4, limit: 0 });
     });
 
-    it('accepts a refreshed catalog revision while keeping stale active edits protected', async () => {
-        const factory = new IDBFactory();
-        const first = new PlanLibrary(factory), second = new PlanLibrary(factory);
-        const original = await first.save(newPlan(testTrip(), 'Original'));
-        const other = (await second.get(original.id))!;
-        await second.save({ ...other, name: 'Other tab' });
-        const [refreshed] = (await first.list()).plans;
-        await expect(first.save({ ...original, name: 'Stale active edit' })).rejects.toThrow('another tab');
-        const renamed = await first.save({ ...refreshed, name: 'Catalog rename' });
-        expect(renamed).toMatchObject({ name: 'Catalog rename', revision: 3 });
-        await expect(second.save({ ...other, name: 'Unseen edit' })).rejects.toThrow('another tab');
-        await first.close(); await second.close();
-    });
-
-    it('round-trips nights, dates, rest days and drawings with its versions under a new identity', () => {
-        const trip = { ...addRestDay(pinNight(testTrip(), undefined, 1, [7.2, 47.5], 'Camp'), 1), startDate: '2026-10-04' };
-        const drawn = setDrawnLeg(trip, 'finish', [[7, 47.5]]);
-        const plan = newPlan(drawn, 'Autumn tour'), versions = [newVersion(trip, undefined, 'Before the detour')];
-        const imported = importPlan(exportPlan(plan, versions));
-        expect(imported.plan.id).not.toBe(plan.id);
-        expect(imported.plan).toMatchObject({ revision: 0, name: plan.name, trip: JSON.parse(JSON.stringify(drawn)) });
-        expect(imported.versions).toMatchObject(JSON.parse(JSON.stringify(versions)));
-    });
-
-    it('writes the keys the companion app needs into each plan object, and keeps an open version that the file has', () => {
-        const trip = { ...testTrip(), days: 4 }, versions = [newVersion(trip, undefined), newVersion(testTrip(), undefined)];
-        const file = JSON.parse(exportPlan({ ...newPlan(trip, 'Tour'), open: versions[0].id }, versions));
-        for (const plan of [file.trip, ...file.versions.map((v: { trip: unknown }) => v.trip)]) expect(plan).toMatchObject({ budget: 'days', limit: 0 });
-        expect([file.trip.target, ...file.versions.map((v: { trip: { target: number } }) => v.trip.target)]).toEqual([4, 4, 3]);
-        expect(importPlan(JSON.stringify(file)).plan.open).toBe(versions[0].id);
-        expect(importPlan(JSON.stringify({ ...file, open: 'deleted' })).plan).not.toHaveProperty('open');
-        expect(JSON.parse(exportPlan({ ...newPlan(trip, 'Tour'), open: 'deleted' }, versions))).not.toHaveProperty('open');
-    });
-
-    it('rejects malformed plans and versions without accepting part of a file', () => {
-        const file = JSON.parse(exportPlan(newPlan(testTrip(), 'Valid'), [newVersion(testTrip(), undefined)]));
+    it('rejects malformed plans', () => {
+        const file = JSON.parse(exportPlan(newPlan(testTrip(), 'Valid')));
         for (const invalid of [null, {}, { ...file, version: 99 }, { ...file, trip: {} },
             { ...file, trip: { ...file.trip, startDate: '2026-02-30' } },
-            { ...file, trip: { ...file.trip, points: [{ ...file.trip.points[0], anchor: [999, 0] }, file.trip.points[1]] } },
-            { ...file, versions: [null] }, { ...file, versions: [file.versions[0], file.versions[0]] },
-            { ...file, versions: [{ ...file.versions[0], trip: {} }] }]) {
+            { ...file, trip: { ...file.trip, points: [{ ...file.trip.points[0], anchor: [999, 0] }, file.trip.points[1]] } }]) {
             expect(() => importPlan(JSON.stringify(invalid))).toThrow();
         }
         expect(() => importPlan('{')).toThrow();
+    });
+});
+
+describe('saved when', () => {
+    it('names today, yesterday and an older day', () => {
+        const now = new Date(2026, 9, 14, 20, 0).getTime(), time = (at: Date) => at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+        const today = new Date(2026, 9, 14, 14, 5), yesterday = new Date(2026, 9, 13, 9, 30), older = new Date(2026, 9, 12, 18, 0);
+        expect(savedWhen(today.getTime(), now)).toBe(`Today ${time(today)}`);
+        expect(savedWhen(yesterday.getTime(), now)).toBe(`Yesterday ${time(yesterday)}`);
+        expect(savedWhen(older.getTime(), now)).toBe(`${older.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${time(older)}`);
     });
 });

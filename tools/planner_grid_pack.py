@@ -30,7 +30,7 @@ def routing(layers):
                       "archives": descriptor["archives"]})
     for name, source in inputs.items():
         if name.startswith("routes/"):
-            files[f"routes/tiles/{Path(name).name}"] = source
+            files[f"routes/tiles/{name.removeprefix('routes/')}"] = source
     return files, {"graph": graph, "cells": cells}
 
 

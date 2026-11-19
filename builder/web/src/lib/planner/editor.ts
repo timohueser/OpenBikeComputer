@@ -1,13 +1,15 @@
-import { movingSecondsAt, progressAtSeconds, type RoutingLine } from './routing';
+import { movingSecondsAt, pacedLine, progressAtSeconds, type RoutingLine } from './routing';
 import { profileAscent, profileDescent } from './profile-data';
 import { ridingProfiles } from './riding-profiles';
 import { coordinateAt, cumulative, firstIndex, nearestOnLine, nearestProgress, routeSlice, segmentDistances, type Coordinate } from './geo';
 import type { MapSegment } from './map-types';
 import type { PlaceCategory } from './poi-kinds';
+import { formatMinutes } from '../settings/format';
 
 /** A vertex of a drawn leg; a third number is its elevation in metres. */
 export type DrawnCoordinate = Coordinate | [number, number, number];
-export const maxRidingDays = 14;
+/** The device's trip progress record holds 32 days, and a send to it holds 32 waypoints. */
+export const maxRidingDays = 32;
 /** A transfer is a straight leg that the rider does not ride, such as a train; it adds no ridden distance or time. */
 export type LegMode = 'routed' | 'straight' | 'drawn' | 'transfer';
 /** A kind of place to sleep. */
@@ -57,6 +59,8 @@ export interface Trip {
     startDate?: string;
     bike?: import('./riding-profiles').BikeType;
     preset?: string;
+    /** A stored plan can hold a pace that this reader does not know: `planPace` reads it as Moderate. */
+    pace?: import('./riding-profiles').Pace;
     /** Every route point between the start and the finish, in route order. Markers are not route points. */
     routeOrder: string[];
     restNames?: string[];
@@ -85,8 +89,7 @@ export interface Figures {
 }
 /** "5h 20m" */
 export function duration(hours: number): string {
-    const minutes = Math.round(hours * 60);
-    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+    return formatMinutes(Math.round(hours * 60));
 }
 export interface Day extends Figures {
     number: number;
@@ -116,7 +119,7 @@ export const endpointLabel = (kind: 'start' | 'finish') => kind === 'start' ? st
 export function planTitle(trip: Trip): string {
     const start = trip.points.find(p => p.kind === 'start'), finish = trip.points.find(p => p.kind === 'finish');
     return trip.name ? trip.name : start && trip.loop ? `Loop from ${start.label}` : start && finish ? `${start.label} → ${finish.label}`
-        : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New plan';
+        : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New route';
 }
 
 /** A start, and a finish or a loop: enough points for a route. */
@@ -244,7 +247,7 @@ type Stop = { point: RoutePoint; distance: number };
 
 /** What the panel, the map and the profile show of a plan. */
 export interface PlanView {
-    /** The routed line of the current points, when it is calculated. */
+    /** The routed line of the current points at the pace of the plan, when it is calculated. */
     line?: RoutingLine;
     coordinates: Coordinate[];
     /** Each route point by position, with its kilometres along `coordinates`. A loop lists its start twice. */
@@ -269,12 +272,13 @@ function freeze(...values: object[]): void {
 
 /** The view of `trip` along `line`, which must be the line calculated for the trip's points (`routingKey`). Without a
  * line, a route has no length. */
-export function planView(trip: Trip, line: RoutingLine | undefined): PlanView {
+export function planView(trip: Trip, routed: RoutingLine | undefined): PlanView {
     let byLine = views.get(trip);
     if (!byLine) views.set(trip, byLine = new WeakMap());
-    const known = byLine.get(line ?? unrouted);
+    const known = byLine.get(routed ?? unrouted);
     if (known) return known;
     freeze(trip, trip.points, ...trip.points);
+    const line = routed && pacedLine(routed, trip);
     const points = orderedRoutePoints(trip);
     // By position: a loop lists its start twice.
     const coordinates = points.length < 2 ? [] : line?.coordinates ?? [points[0].coordinate];
@@ -283,16 +287,17 @@ export function planView(trip: Trip, line: RoutingLine | undefined): PlanView {
     const days = points.length < 2 ? [] : splitDays(trip, layout);
     const view: PlanView = { ...layout, summary: figures(trip, layout, 0, 1), days, itinerary: itinerary(trip, days) };
     freeze(view, view.stops, view.days, view.itinerary);
-    byLine.set(line ?? unrouted, view);
+    byLine.set(routed ?? unrouted, view);
     return view;
 }
 
 /** One stretch of the route for each leg and riding day, so a map can tell legs apart and colour days. */
-export function daySegments({ stops, days, coordinates }: PlanView): (Omit<MapSegment, 'color'> & { day: number })[] {
+export function daySegments({ stops, days, coordinates, line }: PlanView): (Omit<MapSegment, 'color'> & { day: number })[] {
     const length = stops.at(-1)?.distance || 1;
     return stops.slice(1).flatMap((stop, i) => days.flatMap(day => {
         const from = Math.max(day.from, stops[i].distance / length), to = Math.min(day.to, stop.distance / length);
-        return to <= from ? [] : [{ day: day.number, coordinates: routeSlice(coordinates, from, to), legEndId: stop.point.id, leg: stop.point.leg ?? 'routed' }];
+        const leg = line?.gapLegs.includes(stop.point.id) ? 'gap' : stop.point.leg ?? 'routed';
+        return to <= from ? [] : [{ day: day.number, coordinates: routeSlice(coordinates, from, to), legEndId: stop.point.id, leg }];
     }));
 }
 
@@ -330,7 +335,7 @@ function nightCount(trip: Trip): number {
 
 /** The stretch around the even end of day `night`, `width` of a day on either side, within the fixed nights around it. */
 export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night: number, width = .2): { from: number; to: number; center: number; blocked: boolean } {
-    const { stops } = planView(trip, line);
+    const { stops, line: paced } = planView(trip, line);
     const count = nightCount(trip);
     const fixed = fixedNights(trip, stops);
     fixed.delete(night);
@@ -341,7 +346,7 @@ export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night
     const hi = after === undefined ? 1 : fixed.get(after)!;
     const daysBefore = night - (before ?? 0);
     const daysAfter = (after ?? count) - night;
-    const effort = effortScale(line), start = effort.at(lo);
+    const effort = effortScale(paced), start = effort.at(lo);
     const dayEffort = (effort.at(hi) - start) / (daysBefore + daysAfter);
     const center = Math.max(0, Math.min(1, effort.progress(start + dayEffort * daysBefore)));
     if (night <= 0 || night >= count || hi <= lo) return { from: center, to: center, center, blocked: true };
@@ -361,8 +366,11 @@ function figures(trip: Trip, { line, stops, total }: Layout, from: number, to: n
     };
 }
 
+/** A trip with 2 or more riding days. A route, and a trip with 1 day, look and act as one-day routes. */
+export const multiDay = (trip: Trip) => trip.mode !== 'route' && trip.days > 1;
+
 function splitDays(trip: Trip, layout: Layout, provisionalEnd?: { night: number; progress: number }): Day[] {
-    if (trip.mode === 'route') return [{ number: 1, from: 0, to: 1, pinned: undefined, ...figures(trip, layout, 0, 1) }];
+    if (!multiDay(trip)) return [{ number: 1, from: 0, to: 1, pinned: undefined, ...figures(trip, layout, 0, 1) }];
     const pinned = trip.points.filter(p => p.kind === 'night');
     const count = nightCount(trip);
     const fixed = fixedNights(trip, layout.stops);
@@ -399,12 +407,15 @@ function transferKm(stops: Stop[], from: number, to: number): number {
         : km + Math.max(0, Math.min(to, stop.distance) - Math.max(from, stops[i].distance)), 0);
 }
 
+/** The kinds of the points that `dayStops` lists. */
+export const stopKinds: PointKind[] = ['pass', 'waypoint', 'detour', 'marker'];
+
 /** Stops inside a day in route order, with kilometres from the day start. */
 export function dayStops(trip: Trip, line: RoutingLine | undefined, day: Pick<Day, 'from' | 'to'>): { point: RoutePoint; km: number }[] {
     const layout = planView(trip, line), { stops } = layout;
     const total = stops.at(-1)?.distance ?? 0;
     const markers = trip.points.filter(p => p.kind === 'marker').map(point => ({ point, distance: markerKm(layout, point) }));
-    return [...stops.filter(stop => ['pass', 'waypoint', 'detour'].includes(stop.point.kind)), ...markers]
+    return [...stops.filter(stop => stopKinds.includes(stop.point.kind)), ...markers]
         // The first day also holds what lies at the start.
         .filter(stop => (stop.distance > day.from * total || !day.from) && stop.distance <= day.to * total)
         .sort((a, b) => a.distance - b.distance)
@@ -440,7 +451,7 @@ export function anchorMarker(trip: Trip, line: RoutingLine | undefined, marker: 
 /** Moves a provisional day end along the route, keeping a day of at least 1 km on both sides. */
 export function setSplit(trip: Trip, line: RoutingLine | undefined, night: number, progress: number): Trip {
     const { days, total } = planView(trip, line);
-    if (trip.mode === 'route' || night < 1 || night >= days.length || days[night - 1].pinned) return trip;
+    if (!multiDay(trip) || night < 1 || night >= days.length || days[night - 1].pinned) return trip;
     const gap = minDayKm / (total || 1);
     const clamped = Math.max(days[night - 1].from + gap, Math.min(days[night].to - gap, progress));
     return { ...trip, splits: { ...trip.splits, [night]: clamped } };
@@ -474,7 +485,7 @@ export function repartitionDays(trip: Trip, line: RoutingLine | undefined, [from
     const { days, total } = planView(trip, line);
     const ends = [...days.slice(0, -1).map(d => d.to * total).filter(k => k <= from + 1e-6 || k >= to - 1e-6), ...boundaries];
     ends.sort((a, b) => a - b);
-    if (ends.length >= maxRidingDays) throw new Error(`The plan can have at most ${maxRidingDays} riding days.`);
+    if (ends.length >= maxRidingDays) throw new Error(`A trip can have up to ${maxRidingDays} riding days.`);
     return { ...setDays(trip, ends.length + 1), mode: 'trip',
         splits: Object.fromEntries(ends.map((km, i) => [i + 1, km / total])) };
 }
@@ -488,23 +499,29 @@ export function guessDays(trip: Trip, line: RoutingLine | undefined): number {
     return hours > 0 ? withDays(trip, Math.round(hours / guessedDayHours)).days : trip.days;
 }
 
-/** A trip whose day count the rider did not set has the guessed count of the line. */
+/** A multi-day trip whose day count the rider did not set has the guessed count of the line. The guess never
+ * changes the type: it gives at least 2 days, and a route keeps its stored count. */
 export function guessedTrip(trip: Trip, line: RoutingLine | undefined): Trip {
-    if (trip.daysSet) return trip;
-    const days = guessDays(trip, line);
+    if (trip.daysSet || !multiDay(trip)) return trip;
+    const days = Math.max(2, guessDays(trip, line));
     return days === trip.days ? trip : withDays(trip, days);
 }
 
-/** A route as a trip. */
+/** A route as a multi-day trip. A set count and its kept nights come back. */
 export function routeToTrip(trip: Trip, line: RoutingLine | undefined): Trip {
-    return guessedTrip({ ...trip, mode: 'trip' }, line);
+    return guessedTrip({ ...trip, mode: 'trip', days: Math.max(2, trip.days) }, line);
+}
+
+/** One riding day fewer. At the lowest count the trip becomes a route that keeps its days, nights and rest days. */
+export function fewerDays(trip: Trip): Trip {
+    return trip.days > Math.max(2, fewestDays(trip)) ? setDays(trip, trip.days - 1) : { ...trip, mode: 'route' };
 }
 
 function itinerary(trip: Trip, days: Day[]): ItineraryDay[] {
     const result: ItineraryDay[] = [];
     for (const day of days) {
         result.push({ ...day, number: result.length + 1, ridingNumber: day.number, rest: false });
-        (trip.mode === 'route' ? [] : trip.restAfter ?? []).forEach((after, restIndex) => {
+        (!multiDay(trip) ? [] : trip.restAfter ?? []).forEach((after, restIndex) => {
             if (after === day.number) result.push({
                 ...day, number: result.length + 1, ridingNumber: day.number, rest: true, restIndex,
                 from: day.to, to: day.to, distance: 0, hours: 0, ascent: 0, descent: 0,
@@ -611,7 +628,7 @@ export function addTransfer(trip: Trip, line: RoutingLine | undefined, night: nu
 
 /** A clicked point extends a single route at its end. On a trip it joins its nearest leg, so it stays in the day it lies in. */
 export function addClickedPoint(trip: Trip, line: RoutingLine | undefined, point: RoutePoint): Trip {
-    if (trip.mode !== 'route') return addPointNear(trip, line, point);
+    if (multiDay(trip)) return addPointNear(trip, line, point);
     return point.kind === 'marker' ? addPointNear(trip, line, point) : intoLeg(trip, point, orderedRoutePoints(trip).at(-1)!.id);
 }
 

@@ -7,20 +7,17 @@
 // #include ../ground/look.wgsl
 // #include track-looks.wgsl
 // #include details.wgsl
+// #include look-codes.wgsl
 
-// As MAT and LOOK of section.ts.
+// As MAT of section.ts.
 const MAT_KERB: u32 = 2u;
 const MAT_SIDEWALK: u32 = 3u;
-const LOOK_ASPHALT: u32 = 20u;
-const LOOK_MOTORWAY: u32 = 22u;
-const LOOK_CONCRETE: u32 = 23u;
-const LOOK_SETT: u32 = 24u;
-const LOOK_PAVERS: u32 = 25u;
-const LOOK_GRAVEL: u32 = 26u;
-const LOOK_DIRT: u32 = 27u;
-const LOOK_TRAIL: u32 = 28u;
-const LOOK_BALLAST: u32 = 29u;
-const LOOK_STRIPS: u32 = 30u;
+// A ground plan slab's kerb top (kerb_top_m of roads.json) and its bevel, and the edging stone along its back edge on
+// a slab at least EDGING_MIN_M wide, as the kerb profile of section.ts.
+const KERB_TOP_M: f32 = 0.16;
+const KERB_BEVEL_M: f32 = 0.025;
+const EDGING_M: f32 = 0.1;
+const EDGING_MIN_M: f32 = 0.36;
 // As CF of section.ts.
 const CF_NO_LEFT_LINE: u32 = 8u;
 const CF_NO_RIGHT_LINE: u32 = 16u;
@@ -82,6 +79,8 @@ struct WayPixel {
     pw: f32,
     cw: f32,
     aw: f32,
+    // The share by which its edge opens whatever its flags: a piece's, where its face goes on past its frame's edge.
+    open: f32,
 }
 
 fn surface_colour(region: u32, code: u32) -> vec3f {
@@ -128,17 +127,18 @@ fn asphalt(code: u32, region: u32, p: vec2f, pw: f32) -> vec3f {
     return base * asphalt_grain(p, pw);
 }
 
-// Whether a pixel lies on a side of its way that opens into a junction's faces: `flags` are the face's (CF of
-// section.ts). That edge has no line, and it does not fray.
-fn opens(w: WayPixel, flags: u32) -> bool {
-    return (w.across > 0.0 && (flags & CF_NO_LEFT_LINE) != 0u) || (w.across < 0.0 && (flags & CF_NO_RIGHT_LINE) != 0u);
+// The share by which a pixel's edge opens: on a side of its way that opens into a junction's faces (`flags` are the
+// face's, CF of section.ts), or by the pixel's own share. An open edge has no line, and it does not fray.
+fn opens(w: WayPixel, flags: u32) -> f32 {
+    let side = (w.across > 0.0 && (flags & CF_NO_LEFT_LINE) != 0u) || (w.across < 0.0 && (flags & CF_NO_RIGHT_LINE) != 0u);
+    return select(w.open, 1.0, side);
 }
 
 // The lines of a way, by class: `mat` LOOK_MAIN or LOOK_MOTORWAY, `oneway` without a middle line.
 fn markings(mat: u32, oneway: bool, region: u32, w: WayPixel, flags: u32) -> f32 {
     let inside = w.half - abs(w.across);
     let dash = rule(region, slot_dashes());
-    let edge = select(1.0, 0.0, opens(w, flags));
+    let edge = 1.0 - opens(w, flags);
     var m = 0.0;
     if (mat == LOOK_MOTORWAY) {
         m = band(inside, 0.25, 0.45, w.cw) * edge;
@@ -197,8 +197,8 @@ fn paved_look(mat: u32, code: u32, region: u32, w: WayPixel, flags: u32) -> WayL
     }
     out.albedo = c;
     // A narrow way without a shoulder: grass creeps over its edges.
-    if (w.half < 2.0 && !opens(w, flags)) {
-        out.ground = 1.0 - smoothstep(0.0, 0.1, edge + 0.08 * (noise(p / 0.3) - 0.5) + 0.04 * seen(0.07, w.pw) * (noise(p / 0.07) - 0.5));
+    if (w.half < 2.0) {
+        out.ground = (1.0 - opens(w, flags)) * (1.0 - smoothstep(0.0, 0.1, edge + 0.08 * (noise(p / 0.3) - 0.5) + 0.04 * seen(0.07, w.pw) * (noise(p / 0.07) - 0.5)));
     }
     return out;
 }
@@ -208,8 +208,9 @@ fn paint_wear(p: vec2f) -> f32 {
     return 0.82 + 0.18 * noise(p / 0.7);
 }
 
-// A zebra over its road's own surface: `across` is metres off the straight line through its crossing node.
-fn zebra_look(mat: u32, code: u32, region: u32, w: WayPixel) -> WayLook {
+// A zebra over its road's own surface: `across` is metres off the straight line through its crossing node; `piece` on
+// a mesh of the ground plan.
+fn zebra_look(mat: u32, code: u32, region: u32, w: WayPixel, piece: bool) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     switch mat {
         case LOOK_ZEBRA_SETT: {
@@ -219,7 +220,11 @@ fn zebra_look(mat: u32, code: u32, region: u32, w: WayPixel) -> WayLook {
             out = pavers_look(region, w);
         }
         case LOOK_ZEBRA_CONCRETE: {
-            out = concrete_look(code, region, w, false);
+            if (piece) {
+                out = concrete_look(code, region, w, false, false);
+            } else {
+                out = corridor_concrete_look(code, region, w, false);
+            }
         }
         default: {
             out.albedo = asphalt(code, region, w.p, w.pw);
@@ -244,13 +249,45 @@ fn give_way_look(code: u32, region: u32, w: WayPixel) -> WayLook {
     return WayLook(c, vec2f(0.0), 0.0, 0.0, 0.0);
 }
 
-// Concrete: slabs 5 m long with sealed joints; on a narrow track two strips on the way's asphalt.
-fn concrete_look(code: u32, region: u32, w: WayPixel, track: bool) -> WayLook {
+// A lane's width, by which a concrete way counts its lanes for the tyre tracks.
+const CONCRETE_LANE_M: f32 = 4.0;
+
+// Concrete: one pale grey with fine grain and faint tyre tracks; on a narrow track two strips on the way's asphalt.
+// Its tone is a function of the place, so the faces of a junction show one surface; only the tracks read the frame,
+// `framed` where `across` is the lanes of a road, not a zebra's or a path's. Every detail but the tracks has a mean of
+// 1, so the far paint keeps about the slot's colour.
+fn concrete_look(code: u32, region: u32, w: WayPixel, track: bool, framed: bool) -> WayLook {
+    var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
+    let p = w.p;
+    // The tracks fade where the frame runs faster than the world, as in a triangle between two arms' frames in a
+    // junction. The rate is constant over a triangle, thus a track can end on a triangle's edge in a junction face.
+    let frame = select(0.0, 1.0 - smoothstep(2.5, 5.0, max(w.aw, w.cw) * look.screen.z / max(w.pw, 1e-5)), framed);
+    var c = rule(region, slot_concrete()).rgb * concrete_tone(p);
+    // Cement paste and aggregate: mottled at a few cm, grains at 1 cm, each its mean once a pixel spans it.
+    c *= 1.0 + 0.05 * seen(0.15, w.pw) * (noise(p / 0.07 + 5.0) - 0.5) + 0.1 * seen(0.03, w.pw) * (noise(p / 0.011) - 0.5);
+    c *= 1.0 + seen(0.02, w.pw) * (0.25 * step(0.93, hash(floor(p / 0.009))) - 0.0175);
+    // Worn tyre tracks, soft bands about 1 m wide 0.8 m each side of a lane's middle, faint and darker in long patches.
+    let lanes = max(1.0, round(2.0 * w.half / CONCRETE_LANE_M));
+    let lane = 2.0 * w.half / lanes;
+    let u = (fract((w.across + w.half) / lane) - 0.5) * lane;
+    let tyre = smoothstep(0.55, 0.05, abs(abs(u) - 0.8));
+    c *= 1.0 - 0.028 * frame * tyre * (0.6 + 0.8 * noise(p / 7.0 + 3.0));
+    out.albedo = c;
+    if (track && w.half <= STRIPS_HALF_M) {
+        // 0.55 m wide, their middles 0.75 m out.
+        out.albedo = mix(asphalt(code, region, p, w.pw), out.albedo, on_strips(w.across, w.cw));
+    }
+    return out;
+}
+
+// The corridors' concrete: slabs 5 m long with sealed joints and a tone of its own; on a narrow track two strips on the
+// way's asphalt. It keeps the default path as it is and goes with the corridors.
+fn corridor_concrete_look(code: u32, region: u32, w: WayPixel, track: bool) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let p = w.p;
     let across = w.across;
     let along = w.along;
-    let wide = w.half > 2.2;
+    let wide = w.half > STRIPS_HALF_M;
     let slab = vec2f(floor(along / 5.0), select(0.0, sign(across), wide));
     var c = rule(region, slot_concrete()).rgb * (0.95 + 0.1 * hash(slab)) * (0.95 + 0.1 * noise(p / 3.0));
     // Brushed across, fine.
@@ -265,7 +302,7 @@ fn concrete_look(code: u32, region: u32, w: WayPixel, track: bool) -> WayLook {
     out.albedo = c;
     if (track && !wide) {
         // 0.55 m wide, their middles 0.75 m out.
-        out.albedo = mix(asphalt(code, region, p, w.pw), out.albedo * (0.95 + 0.1 * smoothstep(0.2, 0.0, abs(abs(across) - 0.75))), band(abs(across), 0.48, 1.03, w.cw));
+        out.albedo = mix(asphalt(code, region, p, w.pw), out.albedo * (0.95 + 0.1 * smoothstep(0.2, 0.0, abs(abs(across) - 0.75))), on_strips(across, w.cw));
     }
     return out;
 }
@@ -300,7 +337,7 @@ fn pavers_look(region: u32, w: WayPixel) -> WayLook {
     let edge = min(0.5 - abs(local.x), (0.5 - abs(local.y)) * 0.5);
     let bevel = smoothstep(0.0, 0.035, edge);
     let tone = base * (0.86 + 0.24 * hash(cell)) * mix(vec3f(1.0), vec3f(1.05, 1.0, 0.92), step(0.7, hash(cell + 2.0)));
-    out.albedo = base * (0.97 + 0.06 * noise(p / 4.0));
+    out.albedo = base * pavers_tone(p);
     out.albedo = mix(out.albedo, tone * mix(0.45, 1.0, bevel) * (1.0 + 0.1 * (noise(p / 0.02) - 0.5)), s);
     out.bump = s * (1.0 - bevel) * 0.6 * sign(local) * vec2f(step(abs(local.y) * 0.5, abs(local.x) - 0.25), step(abs(local.x) - 0.25, abs(local.y) * 0.5));
     return out;
@@ -331,7 +368,7 @@ fn gravel_look(region: u32, w: WayPixel, flags: u32) -> WayLook {
     let track = w.half > 1.3;
     // A few tufts in the middle of a track, never a patch: a patch of shaded meadow reads as a hole.
     let middle = select(0.0, smoothstep(0.3, 0.1, x + 0.1 * (noise(p / 0.3) - 0.5)) * smoothstep(0.45, 0.7, noise(vec2f(w.along / 20.0, 6.0))), track);
-    let edge = select(soil_gives_way(1.0 - smoothstep(0.0, 0.3, frayed(p, w.half - x, 0.35, w.pw)), w), 0.0, opens(w, flags));
+    let edge = (1.0 - opens(w, flags)) * soil_gives_way(1.0 - smoothstep(0.0, 0.3, frayed(p, w.half - x, 0.35, w.pw)), w);
     // Past a pixel's reach the tufts are their mean.
     out.ground = max(edge, 0.35 * middle * mix(GRAVEL_TUFT_MEAN, smoothstep(0.55, 0.75, noise(p / 0.07)), seen(0.07, w.pw)));
     if (out.ground >= 1.0) {
@@ -463,8 +500,9 @@ fn ballast_look(code: u32, w: WayPixel) -> WayLook {
     return out;
 }
 
-// The look of a face of material `mat`; `slope` is its normal's z and `altitude` its height.
-fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32, slope: f32, altitude: f32) -> WayLook {
+// The look of a face of material `mat`; `slope` is its normal's z and `altitude` its height, `piece` on a mesh of the
+// ground plan.
+fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32, slope: f32, altitude: f32, piece: bool) -> WayLook {
     if (mat >= DETAIL_MATS) {
         return detail_look(mat, su, w, altitude);
     }
@@ -473,16 +511,30 @@ fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32
             return WayLook(rule(region, slot_kerb()).rgb * (0.94 + 0.12 * noise(w.p / 0.9)), vec2f(0.0), 0.0, 0.0, 0.0);
         }
         case MAT_SIDEWALK: {
-            return WayLook(paving(region, w.p, w.pw), vec2f(0.0), 0.0, 0.0, 0.0);
+            if (!piece) {
+                return WayLook(paving(region, w.p, w.pw), vec2f(0.0), 0.0, 0.0, 0.0);
+            }
+            // A slab's frame: the metres from its kerb across, its width as the half.
+            let kerb = rule(region, slot_kerb()).rgb * (0.94 + 0.12 * noise(w.p / 0.9));
+            let top = 1.0 - smoothstep(KERB_TOP_M - w.pw, KERB_TOP_M + w.pw, w.across);
+            let bevel = 1.0 - smoothstep(KERB_BEVEL_M - w.pw, KERB_BEVEL_M + w.pw, w.across);
+            let back = w.half - EDGING_M;
+            let edge = select(0.0, smoothstep(back - w.pw, back + w.pw, w.across), w.half >= EDGING_MIN_M);
+            var c = mix(paving(region, w.p, w.pw), kerb * 0.9, edge);
+            c = mix(c, kerb * (1.0 - 0.1 * bevel), top);
+            return WayLook(c, vec2f(0.0), 0.0, 0.0, 0.0);
         }
         case LOOK_ZEBRA, LOOK_ZEBRA_SETT, LOOK_ZEBRA_PAVERS, LOOK_ZEBRA_CONCRETE: {
-            return zebra_look(mat, code, region, w);
+            return zebra_look(mat, code, region, w, piece);
         }
         case LOOK_GIVE_WAY: {
             return give_way_look(code, region, w);
         }
         case LOOK_CONCRETE, LOOK_STRIPS: {
-            return concrete_look(code, region, w, mat == LOOK_STRIPS);
+            if (piece) {
+                return concrete_look(code, region, w, mat == LOOK_STRIPS, code != CODE_PATH);
+            }
+            return corridor_concrete_look(code, region, w, mat == LOOK_STRIPS);
         }
         case LOOK_SETT: {
             return sett_look(region, w);

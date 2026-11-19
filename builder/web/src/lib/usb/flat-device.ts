@@ -1,5 +1,5 @@
 /**
- * The real device, on the other end of a {@link DeviceLink}.
+ * The real device, on the other end of a {@link RecordLink}.
  *
  * `obc_link::flat::Engine` over `obc_storage::flat`'s simulated card, compiled to wasm and driven
  * from here. It is the same assembly `firmware/obc-link`'s Rust suites run on, so a difference
@@ -20,7 +20,7 @@
 
 import init, { FlatDevice as WasmDevice, type DeviceReaction, type InitInput } from "../../../test-support/flat-device/pkg/obc_builder_bridge.js";
 import { FlatStoreClient } from "./client";
-import { PipeError, type DeviceLink } from "./pipe";
+import { PipeError, type RecordLink } from "./pipe";
 import { MAX_DEVICE_RECORD, MAX_HOST_CONTROL_RECORD, MAX_HOST_STREAM_RECORD, RecordChannel, type DeviceInfo } from "./records";
 import {
     EntryFlags,
@@ -123,7 +123,7 @@ export class FlatDevice {
     /** Anything that failed which is not a disconnect — a defect in the adapter or the device. */
     readonly faults: unknown[] = [];
 
-    constructor(link: DeviceLink, options: FlatDeviceOptions = {}) {
+    constructor(link: RecordLink, options: FlatDeviceOptions = {}) {
         this.device = new WasmDevice(
             options.extents ?? 64,
             options.formatted ?? true,

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onDestroy } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { dragPx, dropPoint, loadTrailView, settle, swing } from '../../lib/planner/trailview';
 
     let { active, onActivate, onDrop }: {

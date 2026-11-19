@@ -21,12 +21,7 @@ name: CI
 #     board crate; its job adds a flash-size guard against the 32 KB slot.
 #   * obc-builder-bridge is a workspace library and the builder's shared WASM core.
 #     The wasm-bridges job gates its production size and hands the same bytes to frontend jobs.
-#   * obc-desktop (#906) is the third excluded + standalone crate: a Tauri app, so it brings a
-#     platform webview with it (WebKitGTK on Linux) and would otherwise put those headers in
-#     every renderer test's way. The shell embeds the frontend, so both halves are built there.
-#     The planner artifact verifier also needs the locked Node reader dependencies.
-#     It is the only **three-OS matrix** in this file because it is the artifact a user installs.
-#   * `--locked` everywhere so a stale Cargo.lock (any of the four) fails CI.
+#   * `--locked` everywhere so a stale Cargo.lock (any of them) fails CI.
 
 on:
   workflow_call:
@@ -129,7 +124,7 @@ jobs:
         with:
           version: &python-uv-version "0.8.17"
       - name: Install Python test reporter
-        run: uv sync --locked --group dev --group planner-snow --group forest-reference
+        run: uv sync --locked --group dev --group planner-snow --group forest-reference --group route-sources
       - name: Test plan drift
         run: uv run --locked --group dev python tools/test_plan.py check
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
@@ -143,13 +138,25 @@ jobs:
         id: python-repository-tools
         run: |
           rm -rf .artifacts/python/repository-tools
-          uv run --locked --group dev --group planner-snow --group forest-reference python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
+          uv run --locked --group dev --group planner-snow --group forest-reference --group route-sources python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
       - name: Upload repository Python test results
         if: ${{ !cancelled() && (steps.python-repository-tools.outcome == 'success' || steps.python-repository-tools.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
           name: python-repository-tools-${{ github.run_attempt }}
           path: .artifacts/python/repository-tools/*.xml
+          if-no-files-found: error
+      - name: TrailView tool unit tests
+        id: python-trailview
+        run: |
+          rm -rf .artifacts/python/trailview
+          uv run --locked --group trailview --group dev python -m xmlrunner discover -s tools/trailview/tests -v -o .artifacts/python/trailview
+      - name: Upload TrailView tool Python test results
+        if: ${{ !cancelled() && (steps.python-trailview.outcome == 'success' || steps.python-trailview.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-trailview-${{ github.run_attempt }}
+          path: .artifacts/python/trailview/*.xml
           if-no-files-found: error
       - name: The job table and this workflow describe the same jobs
         run: uv run --locked --group dev python tools/test_plan.py validate-filters
@@ -207,9 +214,6 @@ jobs:
           echo "::endgroup::"
           echo "::group::obc-boot (workspace-excluded)"
           cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml || rc=1
-          echo "::endgroup::"
-          echo "::group::obc-desktop (workspace-excluded)"
-          cargo fmt --check --manifest-path builder/desktop/Cargo.toml || rc=1
           echo "::endgroup::"
           exit $rc
 
@@ -301,6 +305,10 @@ jobs:
       # is the same one `obc check test` runs.
       - name: cargo nextest (fast hermetic binaries)
         id: nextest
+        # The targets of a suite that owns some, such as the ground plan census, run only when the
+        # plan selects that suite.
+        env:
+          OBC_SELECTED_SUITES: ${{ join(fromJSON(needs.selection.outputs.plan).selected_suite_ids, ' ') }}
         run: bash tools/ci/test.sh nextest-fast
       - name: cargo nextest (captured fixture binaries)
         id: nextest-fixtures
@@ -407,15 +415,13 @@ jobs:
           path: ${{ runner.temp }}/ui-snapshots/*.png
           if-no-files-found: ignore
 
-  # Routing-profile round-trips through the builder's pack path. These shell out to the real
-  # obc-pack binary over the tiny corpus and byte-compare the §8.6 profile table against
-  # independently quantized expectations — so they pin the packer's writer against the spec
-  # rather than against itself — plus the pure /api/schema and /api/presets endpoints via
-  # FastAPI's TestClient. The preflight is what stops a missing binary or corpus from turning
-  # the packer half of the suite into a silent skip.
-  builder-python:
+  # Routing-profile round-trips through the obc-pack binary. These pack the tiny corpus with custom
+  # profiles and byte-compare the §8.6 profile table against independently quantized expectations,
+  # so they pin the packer's writer against the spec rather than against itself. The preflight is
+  # what stops a missing binary or corpus from turning the suite into a silent skip.
+  packer-python:
     needs: selection
-    if: contains(fromJSON(needs.selection.outputs.jobs), 'builder-python')
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'packer-python')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -437,26 +443,26 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: *python-uv-version
-      - name: Prepare web-builder packer tests
+      - name: Prepare the packer profile tests
         run: |
-          uv sync --locked --group builder-test
+          uv sync --locked --group packer-test
           cargo build -p obc-bake --bin obc-pack --release --locked
       - name: Packer binary and corpus are present
         run: |
           test -x target/release/obc-pack
           test -f builder/tests/corpus/data/tiny.osm.pbf
-      - name: web-builder packer tests (pytest)
-        id: python-builder
+      - name: Packer profile tests (pytest)
+        id: python-packer
         run: |
           mkdir -p .artifacts/python
-          rm -f .artifacts/python/builder.xml
-          PYTHONPATH=. uv run --locked --group builder-test python -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml
-      - name: Upload builder Python test results
-        if: ${{ !cancelled() && (steps.python-builder.outcome == 'success' || steps.python-builder.outcome == 'failure') }}
+          rm -f .artifacts/python/packer.xml
+          uv run --locked --group packer-test python -m pytest host/obc-bake/tests/test_routing_profiles.py -v --junitxml=.artifacts/python/packer.xml
+      - name: Upload packer Python test results
+        if: ${{ !cancelled() && (steps.python-packer.outcome == 'success' || steps.python-packer.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
-          name: python-builder-${{ github.run_attempt }}
-          path: .artifacts/python/builder.xml
+          name: python-packer-${{ github.run_attempt }}
+          path: .artifacts/python/packer.xml
           if-no-files-found: error
 
   embedded:
@@ -673,10 +679,6 @@ jobs:
         run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features --config tools/licenses/deny.toml check
       - name: cargo-deny (obc-sensor-sim)
         run: cargo deny --manifest-path firmware/obc-sensor-sim/Cargo.toml --all-features --config tools/licenses/deny.toml check
-      # The desktop shell is the one artifact a *user* installs, so its tree is the
-      # one where a bad licence or a live advisory matters most.
-      - name: cargo-deny (obc-desktop app)
-        run: cargo deny --manifest-path builder/desktop/Cargo.toml --all-features --config tools/licenses/deny.toml check
       # deny.toml skips the repository's own crates, so it cannot see obc-data reach one.
       - name: obc-data depends on no GPL crate
         run: python3 tools/check_obc_data_licence.py
@@ -748,8 +750,9 @@ jobs:
       - name: cargo build -p obcm-assemble --lib (wasm32, engine only)
         run: cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
 
-  # Build the shared core and its test-device feature variant. Gate production bytes before
-  # handing the same artifact to frontend tests and builds. The test device never ships.
+  # Build the shared core, its test-device feature variant and the ground plan bridge. Gate
+  # production bytes and run check 7 before handing the same artifacts to frontend tests and
+  # builds. The test device never ships.
   wasm-bridges:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'wasm-bridges')
@@ -769,14 +772,27 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@0.15.0
-      - name: Build builder core and test device
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build builder core, test device and ground plan bridge
         run: bash builder/build-wasm-bridges.sh
       - name: Builder core size budget
         run: python3 builder/wasm/wasm_size_guard.py
+      - name: Ground plan bridge size budget
+        run: python3 builder/wasm/wasm_size_guard.py --module ground-plan
+      # Every run: it writes the native digests that the browser jobs compare with the viewer's.
+      - name: Ground plan check 7, native and WASM bytes
+        run: bash builder/ground-plan-wasm/check-bytes.sh
       - uses: actions/upload-artifact@v4
         with:
           name: obc-builder-bridge-pkg
           path: builder/web/src/lib/core/pkg
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-ground-plan-bridge-pkg
+          path: builder/web/src/lib/trailview/plan/pkg
           retention-days: 1
       # The test device. No size budget: it ships to nobody and only the `web` job downloads it.
       - uses: actions/upload-artifact@v4
@@ -998,19 +1014,14 @@ jobs:
             exit 1
           fi
 
-  # The web builder's Svelte frontend: type-check, unit tests, production builds.
-  #
-  # One source tree, three hosts (#895): `npm run build` is the local FastAPI one,
-  # `build:web` the static hosted site and `build:desktop` the Tauri shell. All three
-  # are built here — a host that stops compiling is otherwise invisible until someone
-  # tries to ship it. The *contents* of the web bundle (no job polling, no style
-  # editor) are asserted by vitest, which builds and inspects the emitted chunks.
+  # The web app's Svelte frontend: type-check and unit tests. The production build of the app is
+  # in vitest too: `bundle.test.ts` builds it and inspects the emitted chunks.
   #
   # The three wasm bridges come from `wasm-bridges` rather than being rebuilt here, so the
   # module the byte-identity tests run against is literally the one the size budget passed. It is
   # a hard dependency, not an optimisation, and it is why the downloads land before `npm ci`:
   # every step below needs them — the TS wrappers import the generated bindings, so `npm run check`
-  # type-checks against them, and the vitest suites and `build:all` fail without the artifacts.
+  # type-checks against them, and the vitest suites fail without the artifacts.
   # The assembly bridge's suite is also the *headless smoke* for #1034: it assembles the checked-in
   # cell fixture in Node and compares the result to the bytes the native CLI wrote.
   web:
@@ -1029,8 +1040,11 @@ jobs:
         with:
           name: obc-builder-bridge-pkg
           path: builder/web/src/lib/core/pkg
-      # The device the USB suites run against. The desktop-frontend job does not download it: that
-      # job only builds the shipped bundle, which must not contain this package at all.
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-ground-plan-bridge-pkg
+          path: builder/web/src/lib/trailview/plan/pkg
+      # The device the USB suites run against. The shipped bundle must not contain this package.
       - uses: actions/download-artifact@v4
         with:
           name: obc-flat-device-pkg
@@ -1048,8 +1062,6 @@ jobs:
         run: |
           rm -f "$RUNNER_TEMP/web-builder-junit.xml"
           npm run test:components -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"
-      - name: production builds (dev + web + desktop hosts)
-        run: npm run build:all
       # naga is the WGSL front end of Firefox; Chrome's Tint compiles the same files in the TrailView smoke.
       - name: Cache the WGSL validator
         id: naga
@@ -1073,17 +1085,15 @@ jobs:
           path: ${{ runner.temp }}/web-builder-junit.xml
           if-no-files-found: error
 
-  # The builder's download journey in a real browser: the shipped `dist/web` build, the real
-  # assembly worker, real OPFS, and the checked-in bridge fixture served as a loopback catalog.
+  # The web app in a real browser: the planner build with the pretend device, the real assembly
+  # worker, real OPFS, and the checked-in bridge fixture served as a loopback catalog.
   #
   # Its own job rather than a step on `web`, because the registry routes a suite to the job whose
-  # step executes it: sharing `web` would make the component tier and this end-to-end journey one
-  # route, and neither could be selected without the other. It needs the production core and
-  # deliberately not the flat test device — the shipped build must not contain it, and
-  # `bundle.test.ts` is what says so.
+  # step executes it: sharing `web` would make the component tier and these end-to-end journeys one
+  # route, and neither could be selected without the other.
   #
-  # `npm test` builds `dist/web` itself (the package's `pretest`), so the bundle under test can
-  # never be stale or built against a different catalog URL.
+  # Each `npm run test:*` builds its page itself (the package's `pretest:*`), so the bundle under
+  # test can never be stale.
   web-browser:
     needs: [selection, wasm-bridges]
     if: contains(fromJSON(needs.selection.outputs.jobs), 'web-browser')
@@ -1097,6 +1107,15 @@ jobs:
         with:
           name: obc-builder-bridge-pkg
           path: builder/web/src/lib/core/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-ground-plan-bridge-pkg
+          path: builder/web/src/lib/trailview/plan/pkg
+      # The planner build of the browser tests holds the pretend device of `?fake-device`.
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-flat-device-pkg
+          path: builder/web/test-support/flat-device/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -1110,18 +1129,19 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium --only-shell
-      - name: Builder assemble and download journey
+      - name: Web app journeys and the planner request budget
         id: browser-journey
-        run: npm test --prefix builder/web/tests/browser
+        run: npm run test:planner --prefix builder/web/tests/browser
       - name: Require browser journey execution
         if: ${{ !cancelled() }}
         env:
           JOURNEY_OUTCOME: ${{ steps.browser-journey.outcome }}
         run: test "$JOURNEY_OUTCOME" = success
-      - name: Planner request budget
-        run: npm run test:planner --prefix builder/web/tests/browser
       - name: Operator page at phone width
         run: npm run test:data --prefix builder/web/tests/browser
+      - name: UX study run loop
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.ux-study')
+        run: npm run test:ux-study --prefix builder/web/tests/browser
       - name: TrailView smoke on SwiftShader
         if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-smoke')
         run: npm run test:trailview --prefix builder/web/tests/browser -- --grep-invert @gpu
@@ -1132,145 +1152,6 @@ jobs:
           name: web-builder-browser-${{ github.run_attempt }}
           path: .artifacts/web-builder/
           if-no-files-found: error
-
-  desktop-frontend:
-    needs: [selection, wasm-bridges]
-    if: contains(fromJSON(needs.selection.outputs.jobs), 'desktop-frontend')
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_sha || github.sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: obc-builder-bridge-pkg
-          path: builder/web/src/lib/core/pkg
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: builder/web/package-lock.json
-      - name: Build the desktop bundle
-        working-directory: builder/web
-        run: |
-          npm ci
-          npm run build:desktop
-      - uses: actions/upload-artifact@v4
-        with:
-          name: obc-desktop-frontend
-          path: builder/web/dist/desktop
-          retention-days: 1
-
-  desktop:
-    needs: [selection, desktop-frontend]
-    if: contains(fromJSON(needs.selection.outputs.jobs), 'desktop')
-    runs-on: ${{ matrix.os }}
-    env:
-      # Baked into packaged apps; a runtime variable can still override it for a
-      # maintainer testing an unpublished tree.
-      OBC_CATALOG_URL: ${{ vars.OBC_CATALOG_URL }}
-    strategy:
-      # One platform's failure must not hide another's.
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            slug: linux-x86_64
-            exe: obc-desktop
-          - os: macos-latest
-            slug: macos-arm64
-            exe: obc-desktop
-          - os: windows-latest
-            slug: windows-x86_64-msvc
-            exe: obc-desktop.exe
-    defaults:
-      run:
-        # Git Bash on the Windows runner, so the shared steps below are one script
-        # rather than three. Nothing here needs a Windows-native shell.
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_sha || github.sha }}
-          persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: false
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: builder/desktop
-          key: desktop-${{ matrix.slug }}
-      # wry's Linux backend. macOS and Windows need nothing extra — which is most of
-      # why Tauri was chosen over Electron (#906) — but Linux wants WebKitGTK.
-      - name: Install the Linux webview deps
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/apt-install
-        with:
-          packages: libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev librsvg2-dev
-      # The bundle the shell embeds, built once on Linux by `desktop-frontend` and
-      # unpacked here. It is byte-identical on all three runners — a Vite build of the
-      # same sources — so building it per-platform was three runs of `npm ci` and
-      # three Node toolchains for one output. Landing it at the path tauri.conf.json's
-      # `frontendDist` names is the whole integration; nothing here runs npm, and the
-      # `beforeBuildCommand` in that file is never executed (there is no Tauri CLI in
-      # this repo — see the note above about `custom-protocol`).
-      - uses: actions/download-artifact@v4
-        with:
-          name: obc-desktop-frontend
-          path: builder/web/dist/desktop
-      # Order matters. `cargo test` never produces the plain binary — even with
-      # --all-targets it builds bins as *test harnesses*, a different artifact — so the
-      # `build` below is a full codegen + link either way. Running it first means the
-      # normal lib it produces is already there for `test` to link against, instead of
-      # `test` building one set of artifacts and `build` starting a second.
-      - name: "obc-desktop: clippy"
-        working-directory: builder/desktop
-        run: cargo clippy --release --all-targets --locked -- -D warnings
-      - name: "obc-desktop: build (release)"
-        working-directory: builder/desktop
-        run: cargo build --release --locked
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest@0.9.143
-      - name: "obc-desktop: test"
-        id: desktop-tests
-        working-directory: builder/desktop
-        env:
-          NEXTEST_PROFILE: ci
-        run: |
-          rm -f target/nextest/ci/junit.xml
-          cargo nextest run --release --locked --config-file ../../.config/nextest.toml --no-tests fail
-      - name: Upload native desktop test results
-        if: ${{ !cancelled() && (steps.desktop-tests.outcome == 'success' || steps.desktop-tests.outcome == 'failure') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-tests-${{ matrix.slug }}-${{ github.run_attempt }}
-          path: builder/desktop/target/nextest/ci/junit.xml
-          if-no-files-found: error
-      # Recorded so an accidental native dependency or bundling regression is visible.
-      - name: "obc-desktop: record the artifact size"
-        working-directory: builder/desktop
-        run: |
-          bytes=$(wc -c < "target/release/${{ matrix.exe }}")
-          echo "| ${{ matrix.slug }} | $bytes bytes |" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: obc-desktop-${{ matrix.slug }}
-          path: builder/desktop/target/release/${{ matrix.exe }}
-          retention-days: 7
-      # macOS ships two architectures and this crate is built on the Apple-silicon
-      # runner, so cross-build the Intel slice to keep a future universal bundle open.
-      #
-      # Push events only: a second target triple is build-only insurance, not a
-      # correctness gate on the app anyone runs.
-      - name: "obc-desktop: the macOS Intel slice (build-only)"
-        if: runner.os == 'macOS' && github.event_name == 'push'
-        working-directory: builder/desktop
-        run: |
-          rustup target add x86_64-apple-darwin
-          cargo build --release --locked --target x86_64-apple-darwin
-          file target/x86_64-apple-darwin/release/obc-desktop
 
   planner-search:
     needs: selection
@@ -1333,7 +1214,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, cairn, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, desktop-frontend, desktop, verification, planner-search]
+    needs: [selection, guards, cairn, fmt, clippy, test, ui-snapshots, packer-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, verification, planner-search]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

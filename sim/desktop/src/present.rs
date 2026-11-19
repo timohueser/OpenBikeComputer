@@ -1,5 +1,5 @@
 //! The simulator's display presenter: the host stand-in for the device's panel, and the second
-//! live backend of the generic display contracts.
+//! implementation of the presenter contracts.
 //!
 //! Like the device, the simulator keeps one resident device-64 frame, one byte per pixel, that the
 //! shared renderer draws the whole frame into. [`Present::present_now`] then pushes it through the
@@ -26,7 +26,7 @@
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
 use obc_display::display_contracts::{Device64Frame, OverlayPresenter, Presenter};
-use obc_display::ls021::{clip_span, diff_rows, row_hash, spans_missed_changes, RowDamage, RowWindow};
+use obc_display::ls021::{clip_span, diff_rows, row_hash, spans_missed_changes, RowWindow};
 use obc_display::{composite_overlay_window, device64_to_rgb565, Band};
 use obc_reader::rgb565_to_rgb888;
 
@@ -242,33 +242,16 @@ impl Present {
 // are one-line delegations to the runtime engine above. The frame type's geometry must match the
 // presenter's constructed geometry, which is checked on every present in debug builds.
 
-impl<'b, const W: usize, const H: usize> Presenter<Device64Frame<'b, W, H>> for Present {
-    type Damage = RowDamage;
-    /// A host texture write never faults.
+impl<const W: usize, const H: usize> Presenter<W, H> for Present {
+    /// A host texture write never faults, so the recovery rule holds trivially.
     type Error = core::convert::Infallible;
-
-    fn damage_full() -> RowDamage {
-        RowDamage::Full
-    }
-
-    fn damage_unknown() -> RowDamage {
-        RowDamage::SelfDiff { exclude: None }
-    }
 
     async fn present(
         &mut self,
-        frame: &Device64Frame<'b, W, H>,
-        damage: RowDamage,
+        frame: &Device64Frame<'_, W, H>,
+        exclude: Option<(u16, u16)>,
     ) -> Result<obc_display::display_contracts::PresentStats, Self::Error> {
         debug_assert!(W == self.width && H == self.rows, "frame type geometry != presenter geometry");
-        let exclude = match damage {
-            RowDamage::Full => {
-                // Full damage re-seeds the store and pushes every row.
-                self.primed = false;
-                None
-            }
-            RowDamage::SelfDiff { exclude } => exclude,
-        };
         self.present_now(frame.bytes(), exclude);
         Ok(obc_display::display_contracts::PresentStats {
             pushed_units: self.stats.pushed_rows as u32,
@@ -278,33 +261,22 @@ impl<'b, const W: usize, const H: usize> Presenter<Device64Frame<'b, W, H>> for 
     }
 }
 
-impl<'b, const W: usize, const H: usize> OverlayPresenter<Device64Frame<'b, W, H>> for Present {
-    type Region = RowWindow;
-    type OverlayTarget<'t> = Band<'t>;
-
-    fn region(rect: Rectangle) -> RowWindow {
-        RowWindow::from_rect(rect, W as u32, H as u32)
-    }
-
-    fn damage_around(region: RowWindow) -> RowDamage {
-        RowDamage::SelfDiff { exclude: Some(region.exclude_span()) }
-    }
-
+impl<const W: usize, const H: usize> OverlayPresenter<W, H> for Present {
     async fn present_overlay(
         &mut self,
-        frame: &mut Device64Frame<'b, W, H>,
-        region: RowWindow,
-        draw: impl for<'t> FnOnce(&mut Band<'t>),
+        frame: &mut Device64Frame<'_, W, H>,
+        window: RowWindow,
+        draw: impl FnOnce(&mut Band<'_>),
     ) -> Result<obc_display::display_contracts::PresentStats, Self::Error> {
         debug_assert!(W == self.width && H == self.rows, "frame type geometry != presenter geometry");
         let mut draw = Some(draw);
-        self.present_overlay_now(frame.bytes(), region, &mut |band| {
+        self.present_overlay_now(frame.bytes(), window, &mut |band| {
             if let Some(d) = draw.take() {
                 d(band)
             }
         });
         Ok(obc_display::display_contracts::PresentStats {
-            pushed_units: region.rows as u32,
+            pushed_units: window.rows as u32,
             total_units: self.rows as u32,
             regions: 1,
         })

@@ -1,5 +1,7 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     /** The totals of the whole plan as one line of strong numbers; its labels are for a screen reader only. */
     let { distance, ascent, descent, hours, walking = false }: { distance: number; ascent: number | null; descent: number | null; walking?: boolean; hours: number | null } = $props();
@@ -8,9 +10,9 @@
 
 <!-- An unknown figure shows its icon and a dash, without a unit. -->
 <dl class="plan-totals" aria-label="Whole plan">
-    <div><dt>Distance</dt><dd><Icon name="route" size={16} />{distance.toFixed(1)}<small>{' '}km</small></dd></div>
-    <div><dt>Ascent</dt><dd><Icon name="ascent" size={16} />{#if ascent === null}—{:else}{ascent}<small>{' '}m</small>{/if}</dd></div>
-    <div><dt>Descent</dt><dd><Icon name="descent" size={16} />{#if descent === null}—{:else}{descent}<small>{' '}m</small>{/if}</dd></div>
+    <div><dt>Distance</dt><dd><Icon name="route" size={16} />{distanceIn(distance * 1000).toFixed(1)}<small>{' '}{settings.units}</small></dd></div>
+    <div><dt>Ascent</dt><dd><Icon name="ascent" size={16} />{#if ascent === null}—{:else}{Math.round(heightIn(ascent))}<small>{' '}{heightUnit()}</small>{/if}</dd></div>
+    <div><dt>Descent</dt><dd><Icon name="descent" size={16} />{#if descent === null}—{:else}{Math.round(heightIn(descent))}<small>{' '}{heightUnit()}</small>{/if}</dd></div>
     <div><dt>{walking ? 'Walking time' : 'Riding time'}</dt><dd><Icon name="clock" size={16} />{#if minutes === null}—{:else if minutes < 60}{minutes}<small>{' '}min</small>{:else}{Math.floor(minutes / 60)}<small>{' '}h{' '}</small>{minutes % 60}<small>{' '}m</small>{/if}</dd></div>
 </dl>
 

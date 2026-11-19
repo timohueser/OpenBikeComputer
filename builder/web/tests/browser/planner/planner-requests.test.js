@@ -33,10 +33,10 @@ async function countRequests(page) {
   };
 }
 
-/** One rider's session: look around, plan a trip, change bike, search, and show places along the route. */
+/** One rider's session: look around, plan a trip, change bike, search, and highlight a kind of places. */
 test('a planning session stays inside the request budget', async ({ page }) => {
   const { counts, phases, order, idle, phase } = await countRequests(page);
-  await page.goto('/planner.html');
+  await page.goto('/planner.html#/planner');
   const canvas = page.locator('.maplibregl-canvas');
   await expect(canvas).toBeVisible();
   // Terrain and overlays wait for the basemap. Every total stays the same when they do not, so only the order shows it.
@@ -101,6 +101,7 @@ test('a planning session stays inside the request budget', async ({ page }) => {
   }
   phase('drag markers');
 
+  await page.getByRole('button', { name: /^Route preferences:/ }).click();
   for (const bike of [/Gravel/, /Road/, /Gravel/, /Mountain|MTB/, /Touring/, /Gravel/]) {
     await page.getByRole('combobox', { name: 'Activity' }).click();
     await page.getByRole('option', { name: bike }).click();
@@ -122,9 +123,8 @@ test('a planning session stays inside the request budget', async ({ page }) => {
   }
   phase('search');
 
-  await page.getByRole('button', { name: 'Map settings' }).click();
-  await page.getByText('Places', { exact: true }).click();
-  await page.getByRole('button', { name: /^Highlight .* at every zoom$/ }).first().click();
+  await page.getByRole('button', { name: 'Kinds of places' }).click();
+  await page.getByRole('button', { name: 'Highlight Water' }).click();
   await idle();
   phase('show places');
   await drag(-200, -60);

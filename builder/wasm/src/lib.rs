@@ -12,6 +12,9 @@ mod browser;
 #[cfg(target_arch = "wasm32")]
 mod client_web;
 
+#[cfg(target_arch = "wasm32")]
+mod fit;
+
 pub use driver::*;
 pub use estimate::*;
 pub use preview::*;

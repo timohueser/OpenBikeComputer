@@ -24,7 +24,9 @@ the palette of the `world` region.
 
 | Path | Holds |
 | --- | --- |
-| `engine.ts` | The frame loop, the view, `prepare()`, `waitForIdle()`, `nearReady()`, `eyeReady()`, `destroy()`, the recovery from a lost device |
+| `engine.ts` | The frame loop, the view, `prepare()`, `waitForIdle()`, `nearReady()`, `eyeReady()`, `capture()`, `destroy()`, the recovery from a lost device |
+| `still.ts` | `still()`: one view to an image and, for a line, the place of each point in the image and whether it is visible, with an engine of its own that ends after it; `canRenderStills()`: false with no GPU or a software renderer |
+| `still-view.ts` | The view of a cover from the route and the terrain tiles (`coverView()`, `chooseView()`): not toward the sun, as low as shows 85 % of the route |
 | `pacer.ts` | The frame rate, `FRAME_RATE`, and the display frames that draw. Headless Chromium runs at 60 Hz, so flights and shots draw each display frame |
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device, its pools and shared layouts, the GPU time per pass, the WGSL `// #include` |
@@ -41,6 +43,7 @@ the palette of the `world` region.
 | `dressing/` | The herds of the packs on the materials that they graze, and rocks on rough and rocky ground, placed each frame (`dressing.wgsl`); the rocks' density and placement, which the ground also paints past their instances (`rocks.wgsl`) |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky with the moon, the stars and the Milky Way, and a solar eclipse where the moon covers the sun (`celestial.ts`, `eclipse.ts`, `night.ts`; `tools/trailview/sky.py` makes `milkyway.webp`, `stars.bin` and `moon.webp`), the object shadow maps near and far from the eye (`shadow.ts`) |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |
+| `plan/` | The ground plan with `ground=plan`: the cells about the eye and their inputs (`plan.ts`, `inputs.ts`), the build in the bridge of [`builder/ground-plan-wasm`](../../../../ground-plan-wasm/README.md), one copy per page (`bridge.ts`, `plan-worker.ts`, `pkg/`), the debug draw over the canvas (`debug.ts`, `draw.ts`, `debug.wgsl`) |
 | `rules/` | The regions of `rules.json`, resolved |
 | `view.ts` | The view in the address |
 | `hud.ts` | The HUD |
@@ -57,6 +60,9 @@ the palette of the `world` region.
 | `weather` | `sunny`, `cloudy` or `rainy` |
 | `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask, flat, as `mask_view` in `terrain.wgsl` colours them) |
 | `scale` | The render scale per axis, 0.25 to 0.75 (default 0.7); debug views draw at 1, with the nodes of the scale |
+| `ground` | `plan`: a worker builds the ground plan of each cell near the eye; the HUD shows its line. Read once, as `scale` is |
+| `plan` | With `ground=plan`: `faces` draws the plan over the view in the debug tool's colours (default `off`) |
+| `still` | No engine starts. A headless script calls `window.trailviewStill.still(job, options)`, `coverView(line, when)`, `canRenderStills(options)`, `view(search)`, the view of a query string, and reads `release`, the id of the release; `still.test.js` and `home-views.mjs` show how |
 
 The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 
@@ -66,13 +72,15 @@ From `builder/web/tests/browser`:
 
 ```sh
 npm run pretest:trailview                  # the page against the fixture
-node trailview/shoot.mjs [--views FILE] [--out DIR] [--width PX] [--height PX] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--hud] [--gpu] [--audit] [--pages N]
+node trailview/shoot.mjs [--views FILE] [--out DIR] [--width PX] [--height PX] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--hud] [--gpu] [--audit] [--pages N] [--query Q]
 node trailview/shoot.mjs --gpu --views trailview/road-views.json --width 1920 --height 960  # these views need this size: the default is 1280 × 800
-node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--cracks N] [--audit N] [--resolve MS]
+node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--cracks N] [--audit N] [--resolve MS] [--query Q]
+flock /tmp/trailview-gpu.lock node trailview/shoot.mjs --gpu --views trailview/road-views-top.json --width 1920 --height 960 --query 'ground=plan&plan=faces'  # Q is appended to each view
 node trailview/skyline.mjs [--tiles FILE] [--gpu]
 trailview/box.sh [view | flight ARGS]       # bake the Engelberg box without obc data; open it; time it
 node trailview/network.mjs [--view V] [--mbit 25] [--rtt 40] [--web DIR]  # a cold view of the bake on a shaped link
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
+OBC_TRAILVIEW_GPU=1 flock /tmp/trailview-gpu.lock npm run test:trailview -- --grep @gpu  # @gpu tests on the GPU
 (cd ../.. && npx vite-node scripts/road-census.ts .artifacts/census)  # the census's CPU counts and samples
 flock /tmp/trailview-gpu.lock node trailview/census.mjs --gpu ../../.artifacts/census --ground DIR  # its GPU counts
 ```
@@ -92,8 +100,8 @@ The fault census counts over the fixture, 70 m inside its bounds. Each count pri
 | `torn-slivers` | a face is under 2 cm wide in plan and steps over 3 cm across |
 | `torn-twists` | a quad's two faces turn 30° to 100° apart |
 
-Tears and lifts compare with the drawn mesh everywhere, and leave out decks. `mesh.test.ts` gates the
-first three at their values on develop, and the torn faces at `census-baseline.json`.
+Tears and lifts compare with the drawn mesh everywhere, and leave out decks. `road-census.ts` gates the
+first three and the torn faces (`census-baseline.json`): it fails past a gate.
 
 `shoot.mjs` writes one PNG per view after `waitForIdle()`, `--pages` views at once (3 with `--gpu`,
 else 1); lines come as views finish. Two runs can differ in a few pixels by a few levels: compare
@@ -147,7 +155,7 @@ uv run --locked --group planner-maps python FIX features features.pmtiles
 - A GPU lowers its clock when a frame has time to spare, so a pass measures long;
   `flight.mjs --gpu` keeps the clock high.
 - Tag a browser test that draws for minutes on SwiftShader `{ tag: '@gpu' }`: pull requests skip
-  it, `test-weekly.yml` runs it each Monday.
+  it; `web.trailview-gpu` runs it on a GPU.
 - Headless Chromium on Linux with no GPU shows a WebGPU canvas only with
   `--use-vulkan=swiftshader` (`SWIFTSHADER` in `harness.js`). Else the device is lost: "A valid
   external Instance reference no longer exists".

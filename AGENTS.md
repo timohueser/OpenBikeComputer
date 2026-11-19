@@ -19,7 +19,7 @@ The goal for this codebase is to make this a robust and extendable open source m
 
 The layout table is in [README.md](README.md#repository-layout). The root Cargo workspace lists
 its crates in `Cargo.toml`. Keep device-reachable dependencies in `firmware/`.
-The nRF54L board image, the bootloader, the Tauri desktop app and the sensor simulator are standalone Cargo roots; build
+The nRF54L board image, the bootloader and the sensor simulator are standalone Cargo roots; build
 and test them from their own directories. The nearest README has the surface's setup;
 `companion-ios/README.md` is the iOS on-ramp.
 
@@ -38,7 +38,7 @@ and test them from their own directories. The nearest README has the surface's s
   ```
 
 - Run a command that no task covers with `obc exec`: a raw shell lacks the tools of `obc.local`,
-  GEOS and the shared Cargo target. `obc suites prepare` installs the npm projects and the wasm
+  GEOS and the Cargo target of the checkout. `obc suites prepare` installs the npm projects and the wasm
   bridges of a new worktree; `obc test affected` installs the ones its suites need.
 
 - `obc test fixtures -p <crate>` is for captured external data only. For a non-Rust surface, run
@@ -77,6 +77,7 @@ Every durable artifact answers one question. If it answers two, it is in the wro
 | Guide | how does the product work, and why? | `docs/content/`, listed in `nav.json` |
 | README | how do I build, run and flash this, and what will bite me? | next to the code |
 | Rule | what must we not break? | the guard that enforces it, with `GOVERNS` and `RULE`, or one sentence here |
+| Principle | which idea decides a design question? | `PRODUCT.md` |
 | Requirement | what must it do for a rider? | the verification console |
 | Record | what happened, measured how? | the pull request; GitHub generates the release notes from it |
 

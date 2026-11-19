@@ -26,7 +26,7 @@
             "leaves": [],
             "drops": [],
             "dropped_leaves": [],
-            "readers": ["map builder", "desktop app"],
+            "readers": ["map builder"],
             "format": null
         }
     ],

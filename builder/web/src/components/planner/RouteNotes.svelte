@@ -1,14 +1,17 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { noteDistance } from '../../lib/planner/route-closures';
     import type { RouteNote } from '../../lib/planner/route-notes';
+    import { distanceIn } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { notes, shown, onShow }: { notes: RouteNote[]; shown?: RouteNote; onShow: (note: RouteNote) => void } = $props();
     let open = $state(false);
+    const along = (km: number) => distanceIn(km * 1000).toFixed(1);
     // A merged note whose start and end print the same shows its length instead.
     function place(note: RouteNote) {
-        const from = note.km.toFixed(1), to = note.end?.toFixed(1);
-        return `km ${from}${to && to !== from ? ` – ${to}` : note.length !== undefined ? ` · ${noteDistance(note.length)}` : ''}`;
+        const from = along(note.km), to = note.end === undefined ? undefined : along(note.end);
+        return `${settings.units} ${from}${to && to !== from ? ` – ${to}` : note.length !== undefined ? ` · ${noteDistance(note.length)}` : ''}`;
     }
 </script>
 

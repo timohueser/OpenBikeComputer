@@ -49,6 +49,7 @@ pub static DEVICE_TERRAIN: Layer = Layer {
     format: obct::SURFACE_VERSION as u32,
     revision: 1,
     readers: &[&readers::DEVICE, &readers::MAP_BUILDER],
+    cache: false,
 };
 
 /// The map cells of each band in each leaf.
@@ -58,6 +59,7 @@ pub static DEVICE_MAP: Layer = Layer {
     format: obcm::VERSION as u32,
     revision: 1,
     readers: &[&readers::DEVICE, &readers::MAP_BUILDER],
+    cache: false,
 };
 
 /// The landmark and peak artifacts of each leaf, and the content that they are compiled from.
@@ -68,6 +70,7 @@ pub static DEVICE_LANDMARKS: Layer = Layer {
     format: (obcm::landmarks::SECTION_VERSION + obcm::peaks::VERSION) as u32,
     revision: 1,
     readers: &[&readers::DEVICE],
+    cache: false,
 };
 
 pub struct Device;

@@ -2,7 +2,9 @@ import { SvelteMap } from 'svelte/reactivity';
 import { anchorMarker, emptyTrip, endpointLabel, guessedTrip, hasEndpoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { importedTrip, planOnRoads, readTracks, type ImportedLine } from './gpx-import';
-import { downloadPlan, importPlan, newPlan, PlanLibrary, type Plan } from './library';
+import type { DraftRecord, RouteSummary } from '../library/records';
+import { OUTDATED, type Library } from '../library/store';
+import { downloadPlan, importPlan, isPlan, newPlan, planSummary, type Plan } from './library';
 import { coordinateName, visitName } from './point-names';
 import { LegCache } from './route-legs';
 import { routePreview } from './route-preview';
@@ -10,21 +12,38 @@ import { calculateLine, profileId, requestShape, routingKey, type RoutingLine } 
 import { planTrip, routeBase, type RoutePlan } from './signed-route-plan';
 import type { CatalogRecord } from './signed-routes';
 import { isTrip } from './trip-validation';
-import { newVersion, versionSummary, writeBack, type Version } from './versions';
 
 type Routed = { trip: Trip; line?: RoutingLine };
-/** An Undo step: a trip and the saved version it belongs to. */
-type Step = { trip: Trip; open?: string };
-type Created = { plan: Plan; versions?: Version[] };
+/** An Undo step. `clean`: the step is the stored route, or the state with which a route that is not stored opened. At
+ * most one step has it. */
+type Step = {
+    trip: Trip;
+    clean?: true;
+    /** The clean step before the save in flight: it is clean again when the save fails. A step replaced in place keeps
+     * both flags. */
+    before?: true;
+};
 type PlaceName = (coordinate: Coordinate) => string | undefined;
+type Offer = DraftRecord & { trip: Trip };
 
 const historyLimit = 50;
 /** Undo and redo show these recent lines at once; the leg cache calculates older lines again without a request. */
 const lineLimit = 10;
 
 function storageError(error: unknown): string {
-    if (error instanceof Error && error.name === 'QuotaExceededError') return 'Browser storage is full. Download your plan, remove unused plans, and retry saving.';
-    return error instanceof Error ? error.message : 'Could not save in this browser. Download your plan and try again.';
+    if (error instanceof Error && error.name === 'QuotaExceededError') return 'Browser storage is full. Delete routes you do not need, then save again.';
+    if (error instanceof Error && error.name === OUTDATED) return 'The app was updated in another tab. Download the plan file to keep your changes, then reload.';
+    return error instanceof Error ? error.message : 'Could not save in this browser. Download the plan file and try again.';
+}
+
+/** The `sessionStorage` key of the id of the route whose draft this tab writes. A reload, and a tab that the browser
+ * copies or restores, keeps it. */
+const DRAFT_KEY = 'obc-draft';
+function ownDraft(): string | null {
+    try { return sessionStorage.getItem(DRAFT_KEY); } catch { return null; }
+}
+function setOwnDraft(id: string | null): void {
+    try { if (id) sessionStorage.setItem(DRAFT_KEY, id); else sessionStorage.removeItem(DRAFT_KEY); } catch { /* The draft then lasts only for this page. */ }
 }
 
 // A moved night keeps its number, and a moved marker takes the leg nearest to it. A moved point no longer stands for its
@@ -41,18 +60,23 @@ function movedPoint(trip: Trip, line: RoutingLine | undefined, id: string, coord
 
 /**
  * The open plan: its trip, Undo history, routed line, drag preview and saved record in the browser library. The planner
- * page shows it and calls its commands. A change of the points starts the calculation of the new line.
+ * page shows it and calls its commands. A change of the points starts the calculation of the new line. Only `save` and
+ * `saveCopy` store the open state; each change writes the draft of the route instead.
  */
 export class PlanSession {
-    /** The saved record of the trip: its id, name and revision. */
+    /** The record of the route as it is stored, or as it opened when it is not stored. */
     plan = $state.raw<Plan>(newPlan(emptyTrip()));
-    /** The saved versions of the plan, newest first. */
-    versions = $state.raw<Version[]>([]);
+    /** The route has a record in the library. */
+    stored = $state(false);
+    /** A draft that this tab did not write, which the rider can restore, or null: the draft of the open route, or for an
+     * empty plan the newest draft of a route that is not stored. */
+    offer = $state.raw<Offer | null>(null);
+    /** The offer of the open route that "×" or the first edit removed, until the next step. `restore` brings it back. */
+    earlier = $state.raw<Offer | null>(null);
     /** The library has opened, or failed to open. */
     ready = $state(false);
-    /** A library action or a version save runs. */
+    /** A library action runs. */
     busy = $state(false);
-    savedAt = $state<number | null>(null);
     saveError = $state('');
     plans = $state.raw<Plan[]>([]);
     /** Records of the library that are not valid plans; `plans` leaves them out. */
@@ -65,11 +89,13 @@ export class PlanSession {
     previewStatus = $state('');
 
     // The steps in Undo order; `at` is the open one. Raw state: a change replaces a step and never edits it in place.
-    private history = $state.raw<Step[]>([{ trip: emptyTrip() }]);
+    private history = $state.raw<Step[]>([{ trip: emptyTrip(), clean: true }]);
     private at = $state(0);
     readonly trip = $derived(this.history[this.at].trip);
-    /** The id of the saved version that the trip belongs to. A deleted version is no longer open. */
-    readonly openId = $derived(this.openIn(this.versions));
+    /** The open step differs from the stored route, or from the state with which a route that is not stored opened. */
+    readonly changed = $derived(!this.history[this.at].clean);
+    /** "Save" is enabled: a stored route with changes, or a route that is not stored and has points. */
+    readonly canSave = $derived(this.stored ? this.changed : this.trip.points.length > 0);
     readonly canUndo = $derived(this.at > 0);
     readonly canRedo = $derived(this.at < this.history.length - 1);
 
@@ -87,18 +113,22 @@ export class PlanSession {
     /** The shown line belongs to an earlier trip. */
     readonly stale = $derived(this.shown.trip !== (this.preview?.trip ?? this.trip));
 
-    /** The lines of the saved versions by routing key, or the message of a failed calculation. */
-    versionLines = $state.raw<Record<string, RoutingLine | string>>({});
-    private versionsRequest?: AbortController;
+    /** The lines that `findLines` found by routing key, or the message of a failed calculation. */
+    foundLines = $state.raw<Record<string, RoutingLine | string>>({});
+    private linesRequest?: AbortController;
+    private wantedLines = new Set<string>();
 
     private readonly legs = new LegCache();
-    private library?: PlanLibrary;
+    private library?: Library;
     // The calculation in flight, or the one that failed, so a label edit neither restarts nor clears it.
     private request?: { key: string; abort: AbortController };
-    private lastSave: Promise<void> = Promise.resolve();
-    // A line arrived while `busy`; its summary is saved afterwards, so a failed version save leaves no trace.
-    private unsaved = false;
+    private lastWrite: Promise<unknown> = Promise.resolve();
+    // The save in flight. Each open of a route, each discard and each later save waits for it, so a save always
+    // ends on the route that it started with, and a failed save shows on that route.
+    private saving: Promise<unknown> = Promise.resolve();
+    private inFlight = 0;
     private closed = false;
+    private stopFollowing = () => {};
     private readonly previews = routePreview((draft: Trip, signal: AbortSignal) => this.calculate(draft, signal), (trip, line) => {
         this.preview = this.last = { trip, line };
         this.previewStatus = 'Route preview · release to keep';
@@ -107,25 +137,36 @@ export class PlanSession {
     /** `opened` runs after another plan replaces the trip, so the page can reset its view. */
     constructor(private readonly opened: (plan: Plan) => void = () => {}) {}
 
-    /** Opens the library and the plan that was active when the planner closed. */
-    async start(factory?: IDBFactory): Promise<void> {
+    /** Continues the own draft of the tab with no message, else opens the route that was active when the planner closed,
+     * else offers a draft of a route that is not stored. It follows the changes of the open route by other pages. */
+    async start(library: Library): Promise<void> {
+        this.library = library;
+        this.stopFollowing = library.onChange((store, key) => { if (store === 'routes' && key === this.plan.id) void this.follow(key); });
         try {
-            this.library = new PlanLibrary(factory);
-            const plan = await this.library.active();
-            if (plan) {
-                const versions = await this.library.versions(plan.id);
-                if (!this.closed) this.install(plan, versions);
+            const own = ownDraft(), draft = own ? await library.draft(own) : undefined;
+            if (draft && isTrip(draft.trip)) {
+                const route = await this.get(library, draft.id);
+                const plan = route ?? { ...newPlan({ ...emptyTrip(draft.trip.mode), bike: draft.trip.bike, preset: draft.trip.preset }), id: draft.id };
+                if (!this.closed) this.install(plan, !!route, draft.trip);
+                return;
             }
+            if (own) setOwnDraft(null);
+            const id = await library.state('active');
+            const plan = id ? await this.get(library, id) : undefined;
+            const offer = await this.offered(library, plan?.id);
+            if (this.closed) return;
+            if (plan) this.install(plan, true, undefined, offer);
+            else this.offer = offer;
         } catch (error) { this.saveError = storageError(error); }
         finally { this.ready = true; }
     }
 
     close(): void {
         this.closed = true;
+        this.stopFollowing();
         this.cancelPreview();
         this.request?.abort.abort();
-        this.versionsRequest?.abort();
-        void this.library?.close();
+        this.linesRequest?.abort();
     }
 
     /** Calculates the line of any plan with the leg cache of the session, such as a route of the catalog. */
@@ -136,7 +177,7 @@ export class PlanSession {
     /** Replaces the trip with an edited copy as one Undo step. `line`, when known, is the line of `next`. A day count that
      * the rider did not set follows the line of the step, here or when the line arrives. */
     commit(next: Trip, line?: RoutingLine): void {
-        this.step({ trip: next, open: this.history[this.at].open }, line);
+        this.step({ trip: next }, line);
     }
 
     undo(): boolean {
@@ -145,34 +186,6 @@ export class PlanSession {
 
     redo(): boolean {
         return this.canRedo && this.travel(this.at + 1);
-    }
-
-    /** Opens saved version `id` as one Undo step. First the trip goes back into the version it belongs to, or, when it
-     * belongs to none, becomes a new version. False when the version is not a valid plan or the versions could not be
-     * saved. A known line skips its calculation. */
-    async openVersion(id: string): Promise<boolean> {
-        if (id === this.openId) return true;
-        const version = this.versions.find(v => v.id === id);
-        if (!version || !isTrip(version.trip)) return false;
-        const { trip, line, openId: open } = this;
-        // An empty trip goes into no version, so the content of its version stays.
-        const kept = trip.points.length > 0, added = kept && !open ? newVersion(trip, line) : undefined;
-        const versions = !kept ? this.versions : added ? [added, ...this.versions] : writeBack(this.versions, open!, trip, line);
-        try { await this.saveVersions(versions); } catch { return false; }
-        if (added) this.adopt(added.id);
-        // An edit made during the save is not in the saved versions.
-        if (this.trip !== trip) return false;
-        const known = this.versionLines[routingKey(version.trip)];
-        this.step({ trip: version.trip, open: id }, typeof known === 'object' ? known : undefined);
-        return true;
-    }
-
-    /** Saves the trip as a new version named `name`, and the trip then belongs to it. */
-    async saveNewVersion(name: string): Promise<void> {
-        const version = newVersion(this.trip, this.line, name);
-        await this.saveVersions([version, ...this.versions]);
-        this.adopt(version.id);
-        this.autosave();
     }
 
     /** Shows the route with point `id` at `coordinate` once the pointer rests there. The trip does not change. */
@@ -204,23 +217,28 @@ export class PlanSession {
         if (this.closed || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
         const named = { ...this.trip, points: this.trip.points.map(p => p.id === id ? { ...p, label } : p) };
         this.show(this.history.map((step, i) => i === this.at ? { ...step, trip: named } : step), this.at);
-        this.autosave();
+        if (this.changed) this.keepDraft();
     }
 
-    /** Calculates the lines of the saved versions that have none, and with `retry` the failed ones. One request runs at a
-     * time; the lines of other plans' versions are dropped when it answers. */
-    findVersionLines(retry = false): void {
-        const saved = new Map(this.versions.filter(v => isTrip(v.trip)).map(v => [routingKey(v.trip), v.trip] as const));
-        const missing = [...saved].filter(([key]) => this.versionLines[key] === undefined || (retry && typeof this.versionLines[key] === 'string'));
-        if (!missing.length || this.versionsRequest) return;
-        const abort = this.versionsRequest = new AbortController();
-        void Promise.all(missing.map(([key, trip]) => (this.lines.get(key) ? Promise.resolve(this.lines.get(key)!) : this.calculate(trip, abort.signal)).then(
-            line => [key, line] as const, error => [key, error instanceof Error ? error.message : 'Routing is unavailable.'] as const))).then(found => {
+    /** Calculates the lines of `trips` that `foundLines` has not, and with `retry` the failed ones. One request runs at a
+     * time; when it answers, the lines of trips that the last call did not name are dropped. */
+    findLines(trips: Trip[], retry = false): void {
+        const wanted = new Map(trips.map(trip => [routingKey(trip), trip] as const));
+        this.wantedLines = new Set(wanted.keys());
+        const missing = [...wanted].filter(([key]) => this.foundLines[key] === undefined || (retry && typeof this.foundLines[key] === 'string'));
+        if (!missing.length || this.linesRequest) return;
+        const abort = this.linesRequest = new AbortController();
+        void (async () => {
+            // One trip after the other, so that a later trip finds the shared legs in the cache.
+            const found: (readonly [string, RoutingLine | string])[] = [];
+            for (const [key, trip] of missing) found.push(await (this.lines.get(key) ? Promise.resolve(this.lines.get(key)!) : this.calculate(trip, abort.signal)).then(
+                line => [key, line] as const, error => [key, error instanceof Error ? error.message : 'Routing is unavailable.'] as const));
+            return found;
+        })().then(found => {
             if (abort.signal.aborted) return;
-            this.versionsRequest = undefined;
-            const lines: Record<string, RoutingLine | string> = { ...this.versionLines, ...Object.fromEntries(found) };
-            const kept = new Set(this.versions.filter(v => isTrip(v.trip)).map(v => routingKey(v.trip)));
-            this.versionLines = Object.fromEntries(Object.entries(lines).filter(([key]) => kept.has(key)));
+            this.linesRequest = undefined;
+            const lines: Record<string, RoutingLine | string> = { ...this.foundLines, ...Object.fromEntries(found) };
+            this.foundLines = Object.fromEntries(Object.entries(lines).filter(([key]) => this.wantedLines.has(key)));
         });
     }
 
@@ -228,84 +246,117 @@ export class PlanSession {
         this.route(true);
     }
 
-    /** Saves the trip, and `versions` when given. Writes run in order. A failed write shows its error until a later write
-     * succeeds. */
-    save(versions?: Version[]): Promise<void> {
-        if (!this.ready) return Promise.resolve();
-        const plan = this.plan = this.snapshot(versions);
-        if (!plan.trip.points.length && !plan.revision) return Promise.resolve();
-        const library = this.library;
-        this.lastSave = library ? library.save(plan, versions).then(async saved => {
-            await library.activate(saved.id);
-            if (this.plan.id !== saved.id) return;
-            this.plan = { ...this.plan, revision: saved.revision };
-            if (versions) this.versions = versions;
-            this.savedAt = saved.updatedAt;
-            this.saveError = '';
+    /** Stores the open state, and deletes its draft. `name` names a route that is not stored; a stored route keeps its
+     * name. The open step becomes the only clean step before the write: a draft write queued before runs first, and a
+     * line that arrives during the save writes no draft. A failed save gives the flags of before back. True when the
+     * route is stored. */
+    save(name = ''): Promise<boolean> {
+        return this.store(() => ({ ...this.snapshot(), ...!this.stored && { name: name.trim().slice(0, 120) } }), saved => {
+            this.plan = saved;
             this.plans = this.plans.map(p => p.id === saved.id ? saved : p);
-            if (saved.revision === 1) void navigator.storage?.persist?.().catch(() => {});
-        }) : Promise.reject(new Error('Browser storage is unavailable. Download your plan to keep it.'));
-        this.lastSave.catch(error => { if (this.plan.id === plan.id) this.saveError = storageError(error); });
-        return this.lastSave;
+        });
     }
 
-    /** Waits for the last save; true when it and every save before it succeeded. */
+    /** Stores the open state as a new route named `name`, and opens it with the Undo history. The first route stays as
+     * it is stored, and its own draft goes; a draft that it offers stays for the next open. */
+    saveCopy(name: string): Promise<boolean> {
+        const from = this.plan.id, offered = !!this.offer;
+        return this.store(() => ({ ...newPlan(this.trip, name), summary: this.snapshot().summary }), saved => {
+            this.plan = saved;
+            this.offer = this.earlier = null;
+            if (!offered) void this.write(library => library.removeDraft(from));
+        });
+    }
+
+    /** Applies the offer as it is stored now, or the trip of `earlier`, as one Undo step that becomes the own draft. An
+     * empty plan takes the id of the offer and opens the draft as its only step. A draft that another tab deleted since
+     * the offer ends the offer. */
+    async restore(): Promise<boolean> {
+        const offer = this.offer ?? this.earlier;
+        if (!offer || !this.library) return false;
+        const draft = offer === this.offer ? await this.library.draft(offer.id).catch(() => undefined) : offer;
+        if (offer !== (this.offer ?? this.earlier)) return false;
+        this.offer = null;
+        if (!draft || !isTrip(draft.trip)) return false;
+        if (this.stored) this.commit(draft.trip);
+        else {
+            this.install({ ...this.plan, id: offer.id }, false, draft.trip);
+            this.keepDraft();
+        }
+        return true;
+    }
+
+    /** Deletes the draft of the offer, unless another tab wrote it since the offer. `restore` brings its trip back until
+     * the next step. */
+    async dismiss(): Promise<void> {
+        const offer = this.offer;
+        if (!offer) return;
+        this.offer = null;
+        const id = this.plan.id;
+        const removed = await this.write(library => library.removeDraft(offer.id, offer.updatedAt)).catch(() => false);
+        // An edit or another route during the delete has its own Undo.
+        if (removed && this.plan.id === id && this.at === 0 && !this.changed) this.earlier = offer;
+    }
+
+    /** Waits for the save in flight, so that `changed` tells whether the open route has changes that are not stored. */
+    async whenSaved(): Promise<void> {
+        await this.saving;
+    }
+
+    /** Waits for the last write; true when it and every write before it succeeded. */
     saved(): Promise<boolean> {
-        return this.lastSave.then(() => !this.saveError, () => false);
+        return this.lastWrite.then(() => !this.saveError, () => false);
     }
 
-    /** Saves the versions of the plan; a failed save keeps the versions it had. */
-    async saveVersions(versions: Version[]): Promise<void> {
-        this.busy = true;
-        try { await this.save(versions); }
-        finally { this.idle(); }
+    /** Commits the stored route, or the state with which a route that is not stored opened, as one Undo step that is the
+     * only clean step. Its Undo is the plain Undo, which writes the draft again. */
+    async discard(): Promise<boolean> {
+        await this.saving;
+        if (!this.changed) return false;
+        this.step({ trip: this.plan.trip, clean: true });
+        return true;
     }
 
     /** Downloads a plan of the library; the open plan with its latest edits, also when the library fails. */
-    async download(plan: Plan = this.plan): Promise<void> {
-        if (plan.id === this.plan.id) downloadPlan(this.snapshot(), this.versions);
-        else await this.act(async library => downloadPlan(plan, await library.versions(plan.id)));
+    download(plan: Plan = this.plan): void {
+        downloadPlan(plan.id === this.plan.id ? this.snapshot() : plan);
     }
 
     listPlans(): Promise<boolean> {
         return this.act(async library => {
-            await this.lastSave.catch(() => {});
+            await this.lastWrite.catch(() => {});
             await this.list(library);
         });
     }
 
-    /** Opens a plan of the library. When the open plan has unsaved edits, only `discard` lets them go. */
-    open(plan: Plan, discard: () => boolean): Promise<boolean> {
+    /** Opens plan `id` of the library and offers its draft. The draft of the open route stays. */
+    open(id: string): Promise<boolean> {
         return this.act(async library => {
-            try { await this.lastSave; } catch { if (!discard()) return false; }
-            const latest = await library.get(plan.id);
-            if (!latest) throw new Error('This plan was deleted. Reopen My plans.');
-            const versions = await library.versions(latest.id);
-            await library.activate(latest.id);
-            this.install(latest, versions);
+            const latest = await this.get(library, id);
+            if (!latest) throw new Error('This route was deleted. Open another with “Open route…” in “More”.');
+            const offer = await this.offered(library, id);
+            await library.setState('active', latest.id);
+            this.install(latest, true, undefined, offer);
         });
     }
 
+    /** `follow` gives the open plan its new name. The changes and the draft of the open plan stay. */
     rename(plan: Plan, name: string): Promise<boolean> {
         return this.act(async library => {
-            await this.lastSave;
-            const active = plan.id === this.plan.id;
-            const saved = await library.save({ ...(active ? this.snapshot() : plan), name, updatedAt: Date.now() });
-            if (active) this.plan = { ...this.plan, name, revision: saved.revision };
+            await library.renameRoute(plan.id, name);
             await this.list(library);
         });
     }
 
+    /** Stores a copy of the stored record `plan`, also when it is open with changes: "My routes" shows the stored route. */
     duplicate(plan: Plan): Promise<boolean> {
-        const open = plan.id === this.plan.id, source = open ? this.snapshot() : plan;
-        return this.create(async library => ({ plan: newPlan(source.trip, `${source.name || planTitle(source.trip)} (copy)`),
-            versions: open ? this.versions : await library.versions(plan.id) }));
+        return this.create(() => ({ ...newPlan(plan.trip, `${plan.name || planTitle(plan.trip)} (copy)`), summary: plan.summary }));
     }
 
     /** Deletes the records of the library that are not valid plans. */
     removeUnreadable(): Promise<boolean> {
         return this.act(async library => {
-            await library.removeUnreadable();
+            for (const id of await this.unreadableIds(library)) await library.removeRoute(id);
             await this.list(library);
         });
     }
@@ -313,10 +364,9 @@ export class PlanSession {
     /** Deletes a plan; deleting the open plan opens a new empty one. */
     remove(plan: Plan): Promise<boolean> {
         return this.act(async library => {
-            await this.lastSave.catch(() => {});
-            const active = plan.id === this.plan.id;
-            await library.remove(active ? this.plan : plan);
-            if (active) this.install(newPlan(emptyTrip(this.trip.mode)), []);
+            await this.lastWrite.catch(() => {});
+            await library.removeRoute(plan.id);
+            if (plan.id === this.plan.id) this.install(newPlan(emptyTrip()), false);
             await this.list(library);
         });
     }
@@ -345,103 +395,203 @@ export class PlanSession {
             const planned = roads ? await planOnRoads(lines, line => requestShape(line, profileId(this.trip))) : { lines, failed: [] };
             const trip = importedTrip(this.trip, planned.lines);
             failed = planned.failed;
-            return { plan: newPlan({ ...trip, points: trip.points.map(p => p.kind === 'via' || p.kind === 'marker' ? p : { ...p, label: placeName(p.coordinate) ?? p.label }) }, lines[0].name) };
+            return newPlan({ ...trip, points: trip.points.map(p => p.kind === 'via' || p.kind === 'marker' ? p : { ...p, label: placeName(p.coordinate) ?? p.label }) }, lines[0].name);
         });
         return done ? failed : undefined;
     }
 
-    async planSignedRoute(route: CatalogRecord, plan: RoutePlan, placeName: PlaceName): Promise<boolean> {
+    /** Opens a signed route as a new route that is not stored. */
+    planSignedRoute(route: CatalogRecord, plan: RoutePlan, placeName: PlaceName): Promise<boolean> {
         const trip = planTrip(routeBase(route, this.trip), plan, route.loop);
-        const done = await this.create(() => ({ plan: newPlan({ ...trip, points: trip.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: placeName(p.coordinate) ?? p.label } : p) }) }));
-        if (!done) this.saveError = this.libraryError;
-        return done;
+        return this.openNew(newPlan({ ...trip, points: trip.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: placeName(p.coordinate) ?? p.label } : p) }));
     }
 
-    /** Opens a new empty plan with the activity and preset of the open plan. */
-    async newPlan(): Promise<boolean> {
-        const done = await this.act(async library => {
-            await this.lastSave;
-            await library.activate(null);
-            this.install(newPlan({ ...emptyTrip(this.trip.mode), bike: this.trip.bike, preset: this.trip.preset }), []);
+    /** Opens a new empty one-day route with the activity and preset of the open plan, and offers the newest draft of a
+     * route that is not stored. */
+    newPlan(): Promise<boolean> {
+        return this.openNew(newPlan({ ...emptyTrip(), bike: this.trip.bike, preset: this.trip.preset }), true);
+    }
+
+    /** Takes the stored name of the open plan after a write of this tab; a removed plan gives a new empty plan, and its
+     * failed save shows no error, as the error belongs to another plan. */
+    private async follow(id: string): Promise<void> {
+        await this.saving;
+        const record = await this.library!.item(id).catch(() => null);
+        if (this.closed || this.plan.id !== id || record === null) return;
+        if (!record) this.install(newPlan(emptyTrip()), false);
+        else if (record.name !== this.plan.name) this.plan = { ...this.plan, name: record.name };
+    }
+
+    private openNew(plan: Plan, offers = false): Promise<boolean> {
+        return this.act(async library => {
+            const offer = offers ? await this.offered(library) : null;
+            await library.setState('active', null);
+            this.install(plan, false, undefined, offer);
         });
-        if (!done) this.saveError = this.libraryError;
-        return done;
     }
 
-    private snapshot(versions = this.versions): Plan {
-        return { ...this.plan, trip: this.trip, open: this.openIn(versions), summary: versionSummary(this.trip, this.line), updatedAt: Date.now() };
+    /** The draft of route `id`, or with no `id` the newest draft of a route that is not stored, other than the draft of
+     * the open route, which the rider leaves. */
+    private async offered(library: Library, id?: string): Promise<Offer | null> {
+        const draft = id ? await library.draft(id) : await library.newestUnstoredDraft(isTrip, this.plan.id);
+        return draft && isTrip(draft.trip) ? draft as Offer : null;
+    }
+
+    /** The open state as a record. With no calculated line, the summary is null, so no page shows the numbers of another
+     * state; the line that arrives later writes it. */
+    private snapshot(): Plan {
+        return { ...this.plan, trip: this.trip, summary: this.line ? planSummary(this.trip, this.line) : null, updatedAt: Date.now() };
+    }
+
+    /** Writes the record that `make` gives, with the open step as the only clean step, and runs `stored` after the
+     * write. */
+    private store(make: () => Plan, stored: (saved: Plan) => void): Promise<boolean> {
+        // A save takes the state of the moment the rider asks; a save asked during another one takes the state after it.
+        const start = () => this.storeNow(make(), stored);
+        // The count drops before the caller hears the end, so a save that the caller then asks starts at once.
+        const run = (this.inFlight ? this.saving.then(start) : start()).finally(() => this.inFlight--);
+        this.inFlight++;
+        // Never rejects: each switch, discard and later save waits for it.
+        this.saving = run.then(() => {}, () => {});
+        return run;
+    }
+
+    private async storeNow(route: Plan, stored: (saved: Plan) => void): Promise<boolean> {
+        const at = this.at;
+        this.history = this.history.map(({ clean, before: _, ...step }, i) => i === at ? { ...step, clean: true, ...clean && { before: true } } : clean ? { ...step, before: true } : step);
+        try {
+            const saved = await this.write(async library => {
+                const saved = await library.saveRoute(route);
+                await library.setState('active', saved.id);
+                return saved;
+            });
+            this.history = this.history.map(({ before: _, ...step }) => step);
+            this.stored = true;
+            stored(saved);
+            this.earlier = null;
+            // An edit during the save goes to the draft of the route that is now open.
+            if (this.changed) {
+                this.keepDraft();
+                return true;
+            }
+            setOwnDraft(null);
+            // The line arrived during the save.
+            if (!saved.summary && this.line) this.writeSummary(planSummary(this.trip, this.line));
+            return true;
+        } catch {
+            // The transaction deleted no draft.
+            this.history = this.history.map(({ clean: _, before, ...step }) => before ? { ...step, clean: true } : step);
+            // An Undo or a Redo during the save wrote or deleted the draft by the flags of then. The error of the save
+            // stays: a draft write is no save.
+            this.keepDraft(false);
+            return false;
+        }
+    }
+
+    /** Writes the open state to the draft of the route when it is changed, and deletes the own draft when it is not.
+     * With `clears` false, its success keeps the error of an earlier write. */
+    private keepDraft(clears = true): void {
+        const id = this.plan.id;
+        if (!this.library) return;
+        if (this.changed) {
+            setOwnDraft(id);
+            void this.write(library => library.saveDraft({ id, updatedAt: Date.now(), trip: this.trip }), clears).catch(() => {});
+        } else if (ownDraft() === id) {
+            setOwnDraft(null);
+            void this.write(library => library.removeDraft(id), clears).catch(() => {});
+        }
+    }
+
+    /** Runs a write of the open route. Writes run in order. A failed write shows its error until a later write of the
+     * same route succeeds. */
+    private write<T>(work: (library: Library) => Promise<T>, clears = true): Promise<T> {
+        const id = this.plan.id;
+        if (!this.library) {
+            this.saveError = 'Browser storage is unavailable. Download the plan file to keep your route.';
+            return Promise.reject(new Error(this.saveError));
+        }
+        const result = work(this.library);
+        this.lastWrite = result;
+        result.then(() => { if (clears && this.plan.id === id) this.saveError = ''; },
+            error => { if (this.plan.id === id) this.saveError = storageError(error); });
+        return result;
     }
 
     private step(next: Step, line?: RoutingLine): void {
-        const kept = this.history.slice(0, this.at + 1).slice(-historyLimit);
+        // The first edit of the open route overwrites its offered draft. An empty plan has another id: the draft stays.
+        this.earlier = this.offer?.id === this.plan.id ? this.offer : null;
+        this.offer = null;
+        const kept = this.history.slice(0, this.at + 1).slice(-historyLimit).map(({ clean, ...step }) => next.clean || !clean ? step : { ...step, clean });
         if (line) this.remember(routingKey(next.trip), line);
         this.cancelPreview();
         this.show([...kept, { ...next, trip: guessedTrip(next.trip, this.lines.get(routingKey(next.trip))) }], kept.length);
-        this.autosave();
-    }
-
-    private openIn(versions: Version[]): string | undefined {
-        const { open } = this.history[this.at];
-        return versions.some(v => v.id === open) ? open : undefined;
-    }
-
-    /** The trip, and the earlier steps of no version, belong to version `id`; no Undo step. */
-    private adopt(id: string): void {
-        this.history = this.history.map((step, i) => i === this.at || (i < this.at && !this.versions.some(v => v.id === step.open)) ? { ...step, open: id } : step);
-    }
-
-    private autosave(): void {
-        this.save().catch(() => {});
+        this.keepDraft();
     }
 
     /** Runs a library action; its error shows in `libraryError`. True when it completed and was not cancelled. */
-    private async act(work: (library: PlanLibrary) => Promise<boolean | void>): Promise<boolean> {
+    private async act(work: (library: Library) => Promise<boolean | void>): Promise<boolean> {
         this.busy = true;
         this.libraryError = '';
         try {
-            if (!this.library) throw new Error('Browser storage is unavailable. Download your plan to keep it.');
+            if (!this.library) throw new Error('Browser storage is unavailable. Download the plan file to keep your route.');
+            await this.saving;
             return await work(this.library) !== false;
         } catch (error) {
             this.libraryError = storageError(error);
             return false;
-        } finally { this.idle(); }
+        } finally { this.busy = false; }
     }
 
-    private idle(): void {
-        this.busy = false;
-        if (this.unsaved) { this.unsaved = false; this.autosave(); }
-    }
-
-    private create(make: (library: PlanLibrary) => Created | Promise<Created>): Promise<boolean> {
+    /** Stores a route that the rider adds, such as an import or a copy, and opens it. */
+    private create(make: () => Plan | Promise<Plan>): Promise<boolean> {
         return this.act(async library => {
-            const { plan, versions = [] } = await make(library);
-            await this.lastSave;
-            const saved = await library.save(plan, versions);
-            await library.activate(saved.id);
-            this.install(saved, versions);
+            const plan = await make();
+            const saved = await library.saveRoute(plan);
+            await library.setState('active', saved.id);
+            this.install(saved, true);
             await this.list(library);
         });
     }
 
-    private async list(library: PlanLibrary): Promise<void> {
-        ({ plans: this.plans, unreadable: this.unreadable } = await library.list());
+    /** The routes of the library that are plans, most recently edited first, and the number of the others. */
+    private async list(library: Library): Promise<void> {
+        const routes = await library.routes();
+        this.plans = routes.filter(isPlan).sort((a, b) => b.updatedAt - a.updatedAt);
+        this.unreadable = routes.length - this.plans.length + (await library.unreadableRoutes()).length;
     }
 
-    private install(plan: Plan, versions: Version[]): void {
+    /** The ids of the records that are no route, and of the routes that are no plan. */
+    private async unreadableIds(library: Library): Promise<string[]> {
+        return [...await library.unreadableRoutes(), ...(await library.routes()).filter(route => !isPlan(route)).map(route => route.id)];
+    }
+
+    private async get(library: Library, id: string): Promise<Plan | undefined> {
+        const route = await library.route(id);
+        if (route && !isPlan(route)) throw new Error('Saved route is invalid. Open another route or import a backup.');
+        return route;
+    }
+
+    /** Opens `plan` as one clean step, and `draft` as the Undo step after it. A route that is not stored has no state
+     * to go back to, so its draft is the only step: an Undo would delete the only copy. The tab then writes the draft of
+     * `plan` only. */
+    private install(plan: Plan, stored: boolean, draft?: Trip, offer: Offer | null = null): void {
         this.cancelPreview();
         this.plan = plan;
-        this.versions = versions;
+        this.stored = stored;
+        this.offer = offer;
+        this.earlier = null;
         this.last = null;
-        this.savedAt = plan.revision ? plan.updatedAt : null;
         this.saveError = '';
-        this.show([{ trip: plan.trip, open: plan.open }], 0);
+        setOwnDraft(draft ? plan.id : null);
+        const steps: Step[] = draft && !stored ? [{ trip: draft }] : [{ trip: plan.trip, clean: true }, ...draft ? [{ trip: draft }] : []];
+        this.show(steps, steps.length - 1);
         this.opened(plan);
     }
 
     private travel(at: number): true {
         this.cancelPreview();
         this.show(this.history, at);
-        this.autosave();
+        this.keepDraft();
         return true;
     }
 
@@ -451,6 +601,12 @@ export class PlanSession {
         const trip = this.trip, line = this.line;
         this.last = line ? { trip, line } : hasEndpoints(trip) ? this.last : null;
         this.route();
+    }
+
+    private writeSummary(summary: RouteSummary): void {
+        const { id, trip } = this.plan;
+        this.plan = { ...this.plan, summary };
+        void this.write(library => library.setSummary(id, summary, trip)).catch(() => {});
     }
 
     /** Ends the drag preview. */
@@ -482,8 +638,10 @@ export class PlanSession {
             // Undo and Redo reuse the cached line and never guess, so every step of this route takes the guess now.
             this.history = this.history.map(step => routingKey(step.trip) === key ? { ...step, trip: guessedTrip(step.trip, line) } : step);
             this.last = { trip: this.trip, line };
-            if (this.busy) this.unsaved = true;
-            else this.autosave();
+            // A clean step stays clean: the guessed days and the visit names are calculated again at each open. A stored
+            // route that lacks its summary gets only the summary.
+            if (this.changed) this.keepDraft();
+            else if (this.stored && !this.plan.summary) this.writeSummary(planSummary(this.trip, line));
         }, error => {
             if (!request.abort.signal.aborted) this.routeError = error instanceof Error ? error.message : 'Routing is unavailable.';
         });

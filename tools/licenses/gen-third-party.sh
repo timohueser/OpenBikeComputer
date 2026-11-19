@@ -41,7 +41,6 @@ fi
 ARTIFACTS=(
     "Device firmware (\`UPDATE.BIN\`)|firmware/obc-fw-nrf54l/Cargo.toml|the image the device runs, and the one served from updates.openbikecomputer.com"
     "Bootloader (\`obc-boot\`)|firmware/obc-boot/Cargo.toml|flashed once at manufacture; it installs the image above"
-    "Desktop application|builder/desktop/Cargo.toml|the Rust half of the desktop app — its web half ships its own notices beside the bundle"
     "iOS route library (\`planner-service\`)|planner/service/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios|--no-default-features"
     "Linux routing service (\`planner-service\`, \`x86_64-unknown-linux-gnu\`)|planner/service/Cargo.toml|the HTTP executable in the stored routing runtime|x86_64-unknown-linux-gnu"
     "Linux routing service (\`planner-service\`, \`aarch64-unknown-linux-gnu\`)|planner/service/Cargo.toml|the HTTP executable in the stored routing runtime|aarch64-unknown-linux-gnu"
@@ -91,13 +90,11 @@ trap 'rm -f "$tmp"' EXIT
     echo "separate GPL-3.0-only crate, and an \`obc-data\` binary that links them is GPL-3.0-only as a"
     echo "whole."
     echo
-    echo "GEOS deserves a line, because deny.toml's note about it predates the current tree:"
-    echo "\`geos-src\` declares MIT for the *wrapper* while the C++ sources it carries are"
-    echo "**LGPL-2.1**, and that obligation follows whatever links them. Today nothing"
-    echo "distributed does — GEOS is reached only through \`obc-pack\`, a host tool shipped as"
-    echo "source, and \`cargo tree -e normal\` finds no \`geos\` in the desktop app's graph, which"
-    echo "is why no section below carries an LGPL text. Should a packaged artifact ever link it,"
-    echo "the LGPL text and the corresponding source have to travel in that package."
+    echo "GEOS deserves a line: \`geos-src\` declares MIT for the *wrapper* while the C++ sources"
+    echo "it carries are **LGPL-2.1**, and that obligation follows whatever links them. Today"
+    echo "nothing distributed does — GEOS is reached only through \`obc-pack\`, a host tool shipped"
+    echo "as source, which is why no section below carries an LGPL text. Should a packaged artifact"
+    echo "ever link it, the LGPL text and the corresponding source have to travel in that package."
     echo
 
     for entry in "${ARTIFACTS[@]}"; do

@@ -15,24 +15,15 @@ use crate::{world, Part, Tags};
 /// input reaches this far past the tiles of the region, more than the longest aerial lift.
 pub const LIFT_REACH_M: f64 = 20000.0;
 const METRES_PER_DEGREE: f64 = 111320.0;
+/// Up to this size, the input is renumbered before the cut. Osmium's extract keeps bit sets up to the
+/// largest ID of the file, 3.97 GiB on the Swiss OSM and as much on any file with the IDs of OSM.
+/// `osmium renumber` keeps 8 bytes per object in vectors that double, 16 bytes per object while one
+/// doubles. The limit assumes at most 0.22 objects per byte of input: then the vectors stay under 4 GiB.
+/// Two samples, with Osmium's buffers: the Swiss OSM (549 MB, 0.12 objects per byte) and the Irish OSM
+/// (417 MB, 0.15 objects per byte) took 11.8 bytes per object. A denser input can take more.
+const RENUMBER_MAX_BYTES: u64 = 1_200_000_000;
 /// The landuse areas whose value a building in them keeps as its tag `landuse`. They are not features.
 pub const LANDUSE: [&str; 2] = ["farmyard", "industrial"];
-/// The uses that a building shows on its walls, as its tag `use`: its own, or that of a point in it or an
-/// area about it. One before another in the list wins.
-pub const USES: [&str; 3] = ["pharmacy", "hospital", "shop"];
-
-/// The use of an object's tags, of USES.
-pub fn use_of(tags: &Tags) -> Option<&'static str> {
-    let is = |key: &str, value: &str| tags.get(key).is_some_and(|v| v == value);
-    if is("amenity", "pharmacy") || is("healthcare", "pharmacy") {
-        Some("pharmacy")
-    } else if is("amenity", "hospital") || is("healthcare", "hospital") {
-        Some("hospital")
-    } else {
-        tags.contains_key("shop").then_some("shop")
-    }
-}
-
 /// The Osmium program: `OBC_OSMIUM`, else `osmium` on the path; and its version.
 pub fn probe() -> Result<(PathBuf, String), String> {
     let binary = PathBuf::from(std::env::var_os("OBC_OSMIUM").unwrap_or_else(|| "osmium".into()));
@@ -98,11 +89,19 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
         set.into_iter().collect()
     };
     let area = |zoom: u8, reach_m: f64| reach(tiles, zoom, reach_m).map(|v| format!("{v:.7}")).join(",");
+    // Renumbered from 1 in the order of the file, the IDs of the cut take MBs in the bit sets of the extract
+    // and of the filter. The export writes no IDs, so the objects that it gives stay the same.
+    let size = std::fs::metadata(pbf).map_err(|e| format!("{}: {e}", pbf.display()))?.len();
+    let numbered = (size <= RENUMBER_MAX_BYTES).then(|| work.join("numbered.osm.pbf"));
+    if let Some(numbered) = &numbered {
+        run(binary, &[&"renumber", &pbf, &"-o", numbered])?;
+    }
+    let input = numbered.as_deref().unwrap_or(pbf);
     // The cut comes first: the filter keeps the nodes of each way that it keeps, so alone it leaves most
     // of a file.
     let cut = |name: &str, bounds: String, entries: &[&Entry], more: &[String]| -> Result<PathBuf, String> {
         let (area_pbf, kept) = (work.join(format!("{name}-area.osm.pbf")), work.join(format!("{name}.osm.pbf")));
-        run(binary, &[&"extract", &"-b", &bounds, &"-s", &"smart", &pbf, &"-o", &area_pbf])?;
+        run(binary, &[&"extract", &"-b", &bounds, &"-s", &"smart", &input, &"-o", &area_pbf])?;
         let mut args: Vec<&dyn AsRef<std::ffi::OsStr>> = vec![&"tags-filter", &area_pbf];
         let filters: Vec<String> = expressions(entries).into_iter().chain(more.iter().cloned()).collect();
         args.extend(filters.iter().map(|f| f as &dyn AsRef<std::ffi::OsStr>));
@@ -111,14 +110,8 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
         std::fs::remove_file(&area_pbf).map_err(|e| e.to_string())?;
         Ok(kept)
     };
-    // A building of the region keeps the landuse of the area that holds it, and shows the use of the
-    // points in it and the areas about it.
-    let more = [
-        format!("nwr/landuse={}", LANDUSE.join(",")),
-        "nwr/shop".into(),
-        "nwr/amenity=pharmacy,hospital".into(),
-        "nwr/healthcare=pharmacy,hospital".into(),
-    ];
+    // A building of the region keeps the landuse of the area that holds it.
+    let more = [format!("nwr/landuse={}", LANDUSE.join(","))];
     let mut paths = vec![cut("near", area(MAX_ZOOM, LIFT_REACH_M), &active, &more)?];
     if let Some(zoom) = low.iter().map(|e| e.min_zoom).min() {
         paths.push(cut("wide", area(zoom, 0.0), &low, &[])?);
@@ -128,30 +121,39 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
     args.extend(paths.iter().map(|p| p as &dyn AsRef<std::ffi::OsStr>));
     args.extend([&"-o" as &dyn AsRef<std::ffi::OsStr>, &out]);
     run(binary, &args)?;
-    for path in paths {
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    for path in paths.iter().chain(&numbered) {
+        std::fs::remove_file(path).map_err(|e| e.to_string())?;
     }
     Ok(out)
 }
 
-/// What an exported object becomes: a feature of an entry, a landuse area that a building takes
-/// its `landuse` from, or a point or an area that a building takes its `use` from.
+/// What an exported object becomes: a feature of an entry, or a landuse area that a building takes
+/// its `landuse` from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Selected {
     Entry(usize),
     Landuse,
-    Use,
 }
 
 /// An exported object: what it becomes, the tags that it keeps, and its parts. A ring does not repeat
 /// its first point, and each outer ring precedes its holes.
 pub type Object = (Selected, Tags, Vec<Part>);
 
-/// Each object of an active kind to `each`, the points and the lines first and then the areas, each in
+/// The geometry types of an export of Osmium: of the points and the lines, and of the areas.
+pub const ALL: [&str; 2] = ["point,linestring", AREAS];
+pub const AREAS: &str = "polygon";
+
+/// Each object of an active kind and of the geometry `types` to `each`, in the order of `types`, each in
 /// the order of the file. Osmium writes a point or a line as it reads it but buffers the areas, so one
 /// export of both would put an area among the lines where its buffer ran full.
-pub fn objects(entries: &[Entry], pbf: &Path, binary: &Path, mut each: impl FnMut(Object)) -> Result<(), String> {
-    for types in ["point,linestring", "polygon"] {
+pub fn objects(
+    entries: &[Entry],
+    pbf: &Path,
+    binary: &Path,
+    types: &[&str],
+    mut each: impl FnMut(Object),
+) -> Result<(), String> {
+    for &types in types {
         let mut child = Command::new(binary)
             .arg("export")
             .arg(pbf)
@@ -199,7 +201,6 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
         None if kind == Geometry::Area && tags.get("landuse").is_some_and(|l| LANDUSE.contains(&l.as_str())) => {
             (Selected::Landuse, vec!["landuse".to_string()])
         }
-        None if kind != Geometry::Line && use_of(&tags).is_some() => (Selected::Use, Vec::new()),
         None => return None,
     };
     let point = |v: &Value| -> Option<[f64; 2]> { Some(world(v[0].as_f64()?, v[1].as_f64()?)) };
@@ -231,15 +232,7 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
             parts
         }
     };
-    let mut kept: Tags = keep.iter().filter_map(|k| Some((k.clone(), tags.get(k)?.clone()))).collect();
-    let shows = match selected {
-        Selected::Entry(e) => entries[e].kind == "building",
-        Selected::Use => true,
-        Selected::Landuse => false,
-    };
-    if let Some(value) = use_of(&tags).filter(|_| shows) {
-        kept.insert("use".into(), value.into());
-    }
+    let kept: Tags = keep.iter().filter_map(|k| Some((k.clone(), tags.get(k)?.clone()))).collect();
     Some((selected, kept, parts))
 }
 
@@ -329,6 +322,7 @@ mod tests {
             .lines()
             .filter_map(|line| line.strip_prefix('w')?.split(' ').next()?.parse().ok())
             .collect();
-        assert_eq!(kept, [101, 103]);
+        // The cut numbers the objects from 1 in the order of the file: ways 101 and 103 are ways 1 and 3.
+        assert_eq!(kept, [1, 3]);
     }
 }

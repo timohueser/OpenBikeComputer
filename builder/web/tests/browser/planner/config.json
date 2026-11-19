@@ -4,6 +4,8 @@
   "basemap": "https://tiles.test/basemap.json",
   "places": "https://tiles.test/places.json",
   "overlays": "https://tiles.test/overlays.json",
+  "routes": "https://tiles.test/routes/tiles/{cell}.json",
+  "trail": "https://tiles.test/routes/tiles/long/{id}.json",
   "terrain": "https://tiles.test/terrain/{z}/{x}/{y}.webp",
   "attribution": "Map test data",
   "landcover_attribution": "Land cover test data",

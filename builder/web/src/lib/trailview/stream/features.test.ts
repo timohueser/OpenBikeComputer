@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { decodeFeatures, type Feature } from './features';
+import { decodedTile, decodeFeatures, heldTile, tileBudget, wantTiles, type Feature } from './features';
 
 const vector = (name: string) => readFileSync(new URL(`../../../../../../specs/vectors/${name}`, import.meta.url));
 
@@ -28,5 +28,15 @@ describe('feature tiles', () => {
         expect(() => decodeFeatures(bytes.subarray(0, bytes.length - 1))).toThrow('ends inside');
         expect(() => decodeFeatures(new Uint8Array([...bytes, 0]))).toThrow('after its last feature');
         expect(decodeFeatures(new Uint8Array([0, 0]))).toEqual([]);
+    });
+
+    it('keep a wanted tile past the budget, and let it go as soon as no job wants it', async () => {
+        tileBudget(1);
+        wantTiles(['13/1/1']);
+        for (const name of ['13/1/1', '13/1/2']) await decodedTile(name, bytes.slice().buffer);
+        expect([heldTile('13/1/1') !== undefined, heldTile('13/1/2') !== undefined]).toEqual([true, true]);
+        wantTiles([]);
+        expect([heldTile('13/1/1'), heldTile('13/1/2')]).toEqual([undefined, undefined]);
+        tileBudget(32 * 2 ** 20);
     });
 });

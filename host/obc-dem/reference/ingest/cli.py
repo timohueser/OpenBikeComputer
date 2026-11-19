@@ -30,7 +30,6 @@ from .archive import (MEAN, coarse, local_rasters, padded, pixel_digest, pool_ti
 from .lattice import (BLOCK_PX, BLOCK_TILES, MEAN_NODATA, NODATA, TILE_PX, Refuse, block_path, block_window,
                       check_world, covering_window, in_block, tile_bounds, tile_window)
 from .sources import SOURCES, ManualSource
-from .sources.protocols import NotMirrored
 
 
 def registered(key: str):
@@ -75,7 +74,7 @@ def command_fetch(args) -> int:
         tiles[ti, tj] = keys.split(",")
     blocks = {MEAN: np.full((BLOCK_PX, BLOCK_PX), MEAN_NODATA, "int32"),
               "": np.full((BLOCK_PX, BLOCK_PX), NODATA, "int16")}
-    made, lacking = {}, []
+    made = {}
     try:
         for (ti, tj), keys in sorted(tiles.items()):
             into = in_block(ti, tj)
@@ -84,12 +83,7 @@ def command_fetch(args) -> int:
             ranked = sorted(set(keys), key=priority_rank)
             for rank in reversed(range(len(ranked))):
                 model = registered(ranked[rank])
-                try:
-                    pooled = pool_model(model, ti, tj, work / f"{ti:04}-{tj:04}" / ranked[rank], shared)
-                except NotMirrored as waiting:
-                    # The other tiles still name what they lack, so one pass lists the whole block.
-                    lacking.append(waiting)
-                    continue
+                pooled = pool_model(model, ti, tj, work / f"{ti:04}-{tj:04}" / ranked[rank], shared)
                 missing += [f"{model.key} {name}" for name in model.missing]
                 if pooled is None:
                     continue
@@ -102,8 +96,6 @@ def command_fetch(args) -> int:
                 made[f"{ti:04}/{tj:04}"] = {"sources": [key for k, key in enumerate(ranked) if (source == k).any()],
                                             "samples": samples(blocks[MEAN][into]),
                                             **({"missing": sorted(missing)} if missing else {})}
-        if lacking:
-            raise Refuse(f"{len(lacking)} tiles wait for the mirror, such as {lacking[0]}")
         out.mkdir(parents=True, exist_ok=True)
         name = f"{bi:04}-{bj:04}"
         if not made:
