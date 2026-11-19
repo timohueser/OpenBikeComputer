@@ -74,7 +74,7 @@ export const mapPicture: MapPictureMaker = async (summary, dark, signal, size = 
 function style(dark: boolean): maplibregl.StyleSpecification {
     const full = mapStyle(dark ? 'dark' : 'light', styleConfig, { dem: styleConfig.terrain });
     const { basemap, terrain } = full.sources;
-    return { version: 8, sources: { basemap, terrain }, layers: full.layers.filter(layer => layer.type !== 'symbol' && layer.id !== 'planner-pois') };
+    return { version: 8, sources: { basemap, terrain }, layers: full.layers.filter(layer => layer.type !== 'symbol') };
 }
 
 async function encode(canvas: HTMLCanvasElement): Promise<Blob> {

@@ -281,7 +281,7 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
                             assert!(graph.permits_turn(pair[0].road, pair[1].road, profile.walking));
                         }
                     }
-                    (None, Err(Error::NoPath)) => {}
+                    (None, Err(Error::NoPath(_))) => {}
                     (expected, actual) => panic!("expected {expected:?}, got {actual:?}"),
                 }
             }

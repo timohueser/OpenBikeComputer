@@ -33,14 +33,20 @@ export interface RideSummary extends Summary {
 
 export interface RouteRecord {
     id: string;
-    revision: number;
     name: string;
     updatedAt: number;
-    /** The id of the saved version that `trip` belongs to. */
-    open?: string;
     /** Null only while the plan never had a calculated line. */
     summary: RouteSummary | null;
     /** The planner checks a plan when it opens it. */
+    trip: unknown;
+}
+
+/** The open state of a route that the rider did not save, by the id of the route. A route that is not stored has only
+ * its draft. */
+export interface DraftRecord {
+    id: string;
+    updatedAt: number;
+    /** The planner checks a trip when it opens it. */
     trip: unknown;
 }
 
@@ -201,10 +207,12 @@ export const isRideSummary = (value: unknown): value is RideSummary =>
     isSummary(value) && isNumber((value as RideSummary).start) && isNumber((value as RideSummary).movingS);
 
 export function isRouteRecord(value: unknown): value is RouteRecord {
-    return isRecord(value) && isString(value.id) && !!value.id && Number.isInteger(value.revision) && (value.revision as number) >= 0
-        && isString(value.name) && isNumber(value.updatedAt) && optional(value.open, isString)
+    return isRecord(value) && isString(value.id) && !!value.id && isString(value.name) && isNumber(value.updatedAt)
         && (value.summary === null || isRouteSummary(value.summary)) && value.trip !== undefined;
 }
+
+export const isDraftRecord = (value: unknown): value is DraftRecord =>
+    isRecord(value) && isString(value.id) && !!value.id && isNumber(value.updatedAt) && value.trip !== undefined;
 
 export function isRideRecord(value: unknown): value is RideRecord {
     return isRecord(value) && isString(value.key) && rideKey.test(value.key) && isString(value.name)

@@ -1,10 +1,10 @@
 <script lang="ts">
     import type { Snippet } from 'svelte';
 
-    /** A button of a detail page, such as "More" or "Places", and its menu. The menu is in the top layer, so no card cuts
-     * it: it opens under its button and moves up or to the side where it would leave the window. A click outside the
-     * menu, Escape or a new size of the window closes it. */
-    let { label, items, left = false }: {
+    /** A button, such as "More" or "Places", and its menu. The menu is in the top layer, so no card cuts it: it opens
+     * under its button and moves up or to the side where it would leave the window. A click outside the menu, Escape or
+     * a new size of the window closes it. */
+    let { label, items, left = false, buttonClass = 'button' }: {
         label: string;
         /** `rule` draws a line over the item; `checked` marks the chosen item of a choice; `danger` is an action that
          * removes something. `control` stands over the item: a control for it and the items after it, such as a
@@ -12,6 +12,8 @@
         items: { label: string; note?: string; disabled?: boolean; rule?: boolean; checked?: boolean; danger?: boolean; control?: Snippet; run: () => void }[];
         /** The menu opens to the right of the button, not to its left. */
         left?: boolean;
+        /** The class of the button, which gives it the look of the buttons around it. */
+        buttonClass?: string;
     } = $props();
     /** The menu keeps EDGE_PX from the edges of the window and GAP_PX from its button. */
     const EDGE_PX = 8, GAP_PX = 4;
@@ -38,13 +40,13 @@
     onkeydowncapture={escape} onresize={() => open = false} />
 
 <div class="menu" bind:this={root}>
-    <button type="button" class="button" bind:this={button} aria-expanded={open} onclick={() => open = !open}>{label} ▾</button>
+    <button type="button" class={buttonClass} bind:this={button} aria-expanded={open} onclick={() => open = !open}>{label} ▾</button>
     {#if open}
         <menu popover="manual" use:place>
             {#each items as item (item.label)}
                 <li class:rule={item.rule}>
                     {#if item.control}<div class="control">{@render item.control()}</div>{/if}
-                    <button type="button" class:danger={item.danger} disabled={item.disabled} onclick={() => { open = false; item.run(); }}>
+                    <button type="button" class:danger={item.danger} disabled={item.disabled} onclick={() => { open = false; button?.focus(); item.run(); }}>
                         <span>{#if item.checked !== undefined}<i>{item.checked ? '✓' : ''}</i>{/if}{item.label}</span>
                         {#if item.note}<small>{item.note}</small>{/if}
                     </button>
@@ -67,11 +69,11 @@
         margin: 0;
         padding: 4px;
         overflow-y: auto;
-        border: 1px solid var(--line);
+        border: 1px solid var(--line-strong);
         border-radius: 8px;
         background: var(--panel);
         color: var(--ink);
-        box-shadow: 0 8px 24px rgb(28 27 20 / 0.18);
+        box-shadow: var(--planner-shadow);
         list-style: none;
     }
     .control {

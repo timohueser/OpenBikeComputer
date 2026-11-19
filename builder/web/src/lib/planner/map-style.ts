@@ -1,6 +1,5 @@
 import { layers, namedFlavor, type Flavor } from "@protomaps/basemaps";
 import type { ExpressionSpecification, StyleSpecification, LayerSpecification } from "maplibre-gl";
-import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from "./poi-kinds";
 import type { BasemapConfig } from "../map/basemap-config";
 import type { PlannerConfig } from "./config";
 
@@ -199,7 +198,7 @@ export function reliefPaint(dark: boolean, snow = false) {
     };
 }
 
-/** The basemap with the relief, the cycleways and the places of the planner. */
+/** The basemap with the relief and the cycleways of the planner. */
 export function mapStyle(theme: "light" | "dark", config: PlannerConfig, relief: Relief): StyleSpecification {
     const dark = theme === "dark";
     const style = basemapStyle(theme, config, relief), base = style.layers;
@@ -209,29 +208,7 @@ export function mapStyle(theme: "light" | "dark", config: PlannerConfig, relief:
         filter: ["==", ["get", "kind_detail"], "cycleway"],
         paint: { "line-color": dark ? "#45a382" : "#14855f", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.4, 16, 2.8] },
     });
-    const panel = dark ? "#201f17" : "#ffffff";
-    const category = ["match", ["get", "kind"], ...categoryIds.flatMap((id) => [Object.keys(placeCategories[id].kinds), id]), ""] as unknown as ExpressionSpecification;
-    // The heights of the contour lines stay over the places.
-    const contourLabels = base.findIndex((layer) => layer.id === "contour-labels");
-    base.splice(contourLabels < 0 ? base.length : contourLabels, 0, {
-        id: "planner-pois", type: "circle", source: "places", "source-layer": "pois", minzoom: 12, maxzoom: 13, filter: poiFilter(categoryIds),
-        paint: { "circle-radius": 3.5, "circle-color": panel, "circle-stroke-color": dark ? "#aaa383" : "#676443", "circle-stroke-width": 1.5 },
-    }, {
-        id: "planner-poi-icons", type: "symbol", source: "places", "source-layer": "pois", minzoom: 13, filter: poiFilter(categoryIds),
-        layout: {
-            "icon-image": ["concat", "poi-", category, `-${theme}`], "icon-padding": 1,
-            "text-field": ["step", ["zoom"], "", 14, ["coalesce", ["get", "name:en"], ["get", "name"]]],
-            "text-font": ["Noto Sans Regular"], "text-size": 11, "text-anchor": "top", "text-offset": [0, 0.9], "text-optional": true,
-        },
-        paint: { "text-color": dark ? "#f2efe3" : "#1c1b14", "text-halo-color": panel, "text-halo-width": 1.2 },
-    });
     // The planner map lists the credit of the terrain behind its own button of credits.
     for (const id of ["terrain", "contours"]) Object.assign(style.sources[id] ?? {}, { attribution: config.terrain_attribution });
-    style.sources.places = { type: "vector", url: config.places.endsWith(".json") ? config.places : `pmtiles://${config.places}`, attribution: config.attribution };
     return style;
-}
-
-/** Matches searchable places of the given categories. */
-export function poiFilter(categories: PlaceCategory[]): ExpressionSpecification {
-    return ["in", ["get", "kind"], ["literal", Object.keys(poiKinds).filter((kind) => categories.includes(poiKinds[kind].category))]];
 }

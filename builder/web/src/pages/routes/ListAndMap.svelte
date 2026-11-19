@@ -1,23 +1,28 @@
 <!-- The frame of a page with a list beside a map: the header with the title, the list in a card, the map, and the card
-     of the selected item over the map. On a phone the map is under the list, and the card is at the bottom of the screen. -->
+     of the selected item over the map. On a phone the map is under the list, and the card is at the bottom of the screen.
+     A row and the lines of its row light together: under the pointer on either side, or when a key focuses the row. -->
 <script lang="ts">
-    import type { Snippet } from 'svelte';
+    import { tick, type Snippet } from 'svelte';
+    import { on } from 'svelte/events';
     import Card from '../../lib/ui/Card.svelte';
     import type { Box, Item } from './filter';
+    import { HoverState } from './hover.svelte';
 
-    let { title, failure, items, shown, selected, fit, place, look, credits, together, onselect, onview, tabs, actions, list, mapButtons, card }: {
+    let { title, failure, items, shown, selected, marked, fit, place, look, credits, together, onselect, onview, tabs, actions, list, mapButtons, card }: {
         title: string;
         failure?: string;
         /** The props of the map. */
         items: Item[];
         shown: Item[];
         selected: string[];
+        marked?: string[];
         fit: number;
         place?: { lon: number; lat: number; box?: Box };
         look: 'route' | 'ride' | 'signed';
         /** The credits that the map shows after its own: of the pictures that the page shows, of the sources of its routes. */
         credits: string[];
-        /** The lines that a click on one line selects, for the map. Without it, a line stands alone. */
+        /** The lines of the row of a line, its lead line first: the row has it as `data-line`. Without it, a line stands
+         * alone. */
         together?: (id: string) => string[];
         onselect: (id: string | undefined) => void;
         onview: (view: Box) => void;
@@ -25,7 +30,7 @@
         tabs?: Snippet;
         /** The buttons at the end of the header. */
         actions?: Snippet;
-        /** The content of the list card. */
+        /** The content of the list card. Each row has the id of its lead line in `data-line`. */
         list: Snippet;
         /** At the top right of the map, left of its zoom buttons. */
         mapButtons?: Snippet;
@@ -40,8 +45,70 @@
     /** The width of the buttons of the page on the map: the credits of the map end before them. */
     let buttonsWidth = $state(0);
     let listBox = $state<HTMLElement>();
+    const hover = new HoverState();
+    /** The lead line of the lit row: another line of the same row changes nothing on the map or in the list. */
+    const lead = $derived(hover.id === undefined ? undefined : (together?.(hover.id) ?? [hover.id])[0]);
+    /** The focus that `toRow` moves lights nothing: after the close button the rider sees nothing lit. */
+    let quiet = false;
     // With no scroll: on a phone the list is above the map, and the rider who closes the card looks at the map.
-    const toRow = () => listBox?.querySelector<HTMLElement>('[aria-current="true"]')?.focus({ preventScroll: true });
+    function toRow() {
+        quiet = true;
+        listBox?.querySelector<HTMLElement>('[aria-current="true"]')?.focus({ preventScroll: true });
+        quiet = false;
+    }
+
+    const lineOf = (target: EventTarget | null) => (target as Element | null)?.closest<HTMLElement>('[data-line]')?.dataset.line;
+    /** A tap lights nothing: it selects. */
+    const mouse = (event: PointerEvent) => event.pointerType === 'mouse' || event.pointerType === 'pen';
+    /** The last place of the pointer in the list, to find the row under it when the list moves under a still pointer. */
+    let pointer: { x: number; y: number } | undefined, frame = 0;
+    function onpointerover(event: PointerEvent) {
+        if (!mouse(event)) return;
+        pointer = { x: event.clientX, y: event.clientY };
+        hover.point(lineOf(event.target), 'list');
+    }
+    function onpointermove(event: PointerEvent) {
+        if (mouse(event)) pointer = { x: event.clientX, y: event.clientY };
+    }
+    function onpointerleave() {
+        pointer = undefined;
+        hover.leave('list');
+    }
+    function lookup() {
+        const at = pointer;
+        if (at) hover.lookup(() => lineOf(document.elementFromPoint(at.x, at.y)));
+    }
+    function onscroll() {
+        if (pointer && !frame) frame = requestAnimationFrame(() => { frame = 0; lookup(); });
+    }
+    // A click or a tap on a row does not match `:focus-visible`, a key does.
+    function onfocusin(event: FocusEvent) {
+        const row = (event.target as Element).closest<HTMLElement>('[data-line]');
+        if (quiet || !row?.matches(':focus-visible')) hover.blur();
+        else hover.focus(row.dataset.line!);
+    }
+    $effect(() => {
+        void shown;
+        void tick().then(lookup);
+    });
+    // The listeners only watch the rows: the list box is no control, so they are not attributes that ask for a role.
+    $effect(() => {
+        const box = listBox;
+        if (!box) return;
+        const stops = [on(box, 'pointerover', onpointerover), on(box, 'pointermove', onpointermove), on(box, 'pointerleave', onpointerleave),
+            on(box, 'scroll', onscroll, { capture: true }), on(box, 'focusin', onfocusin), on(box, 'focusout', () => hover.blur())];
+        return () => { for (const stop of stops) stop(); cancelAnimationFrame(frame); };
+    });
+
+    /** The rows that have `data-hover`. The marks change outside the state of the rows, so only those rows change. A
+     * row that the list draws later gets its mark at the next change. */
+    let lit: Element[] = [];
+    $effect(() => {
+        const line = lead;
+        for (const row of lit) row.removeAttribute('data-hover');
+        lit = line === undefined || !listBox ? [] : [...listBox.querySelectorAll(`[data-line="${CSS.escape(line)}"]`)];
+        for (const row of lit) row.setAttribute('data-hover', '');
+    });
 
     // A card that is fixed at the bottom of the screen covers the end of the document: the document gets its height
     // as room there. The rule of the phone layout reads it.
@@ -51,6 +118,10 @@
         return () => { document.body.style.removeProperty('--card-room'); };
     });
 </script>
+
+<!-- Escape closes the card as the close button does, and lights nothing either: the row that a key focused goes dark until
+     the next key moves the focus. Escape in an open window closes only the window. -->
+<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) hover.blur(); }} />
 
 <div class="routes-page">
     <header>
@@ -68,8 +139,8 @@
         </div>
         <div class="map" style:--map-buttons={mapButtons ? `${buttonsWidth + 10}px` : null}>
             {#await import('./RoutesMap.svelte') then { default: RoutesMap }}
-                <RoutesMap {items} {shown} {selected} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} {credits}
-                    {look} {together} {onselect} {onview} />
+                <RoutesMap {items} {shown} {selected} {marked} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} {credits}
+                    {look} {together} hovered={lead} onhover={id => id === undefined ? hover.leave('map') : hover.point(id, 'map')} {onselect} {onview} />
             {:catch error}
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>
             {/await}
@@ -129,9 +200,11 @@
         height: 100%;
         min-height: 0;
     }
+    /* A size container, so the height limit of the card over it follows its height. */
     .map {
         position: relative;
         overflow: hidden;
+        container-type: size;
         border: 1px solid var(--line);
         border-radius: 10px;
         background: var(--parchment);
@@ -157,12 +230,14 @@
         outline-offset: -2px;
         box-shadow: none;
     }
+    /* The whole card with its close button stays in the map: its long text scrolls inside it. */
     .selected {
         position: absolute;
         z-index: 2;
         right: 12px;
         bottom: 12px;
         left: 12px;
+        --card-height: calc(100cqh - 24px);
     }
     @media (max-width: 760px) {
         .routes-page {
@@ -175,6 +250,9 @@
         }
         .map {
             height: 70vh;
+            /* Some browsers give a size container layout containment, which makes the map the containing block of the
+               fixed card. */
+            container-type: normal;
         }
         /* The map is under the list, so a card over the map is below the screen after a tap on a row. */
         .selected {

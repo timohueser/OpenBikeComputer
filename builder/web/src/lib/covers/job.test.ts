@@ -8,7 +8,7 @@ import { coverKey, settled, startCoverJob, wantCover, type Renderer } from './jo
 import type { MapPictureMaker, MapPictureResult } from './map-picture';
 
 const route = (id: string, name = id, line = [8.38, 46.82, 8.42, 46.81]): RouteRecord => ({
-    id, revision: 0, name, updatedAt: Date.UTC(2026, 7, 15), trip: {},
+    id, name, updatedAt: Date.UTC(2026, 7, 15), trip: {},
     summary: { line, heights: [null, null], bounds: [8.38, 46.81, 8.42, 46.82], lengthM: 3000, climbM: 0, highestM: null, seconds: 600, bike: 'road', days: 1 },
 });
 const result: Still = {
@@ -344,6 +344,28 @@ describe('the cover job', () => {
         expect(stills).toHaveLength(15);
         for (const id of ['card', 'plan']) expect(await library.cover(id)).toMatchObject({ state: 'done' });
         expect(await library.cover('r0')).toBeUndefined();
+    });
+
+    it('keeps the ask of a card in work after an ask of its row and 13 later asks of rows, while another tab holds the lock', async () => {
+        const rows = Array.from({ length: 13 }, (_, i) => `r${i}`);
+        await saved('card', ...rows);
+        const { renderer, stills } = fake();
+        await start(renderer);
+        held = true;
+        wantCover('card', 'card');
+        wantCover('card', 'row');
+        // The card comes back to the queue before the other rows ask.
+        await settle();
+        for (const id of rows) wantCover(id, 'row');
+        await settle();
+        held = false;
+        await vi.advanceTimersByTimeAsync(10_000);
+        await settle();
+        for (let i = 0; i < stills.length; i++) {
+            stills[i].resolve(result);
+            await settle();
+        }
+        expect(await library.cover('card')).toMatchObject({ state: 'done' });
     });
 
     it('does nothing for an ask before or after it starts when the browser saves data', async () => {

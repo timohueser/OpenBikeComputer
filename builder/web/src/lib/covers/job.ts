@@ -11,7 +11,7 @@ import { pack } from './line';
 import type { MapPictureMaker } from './map-picture';
 
 export const WIDTH = 1920, HEIGHT = 1280;
-/** A changed route waits this long after its last change, so a rider who edits a route gets one cover at the end. */
+/** A changed route waits this long after its last change, so several saves in a row give one cover. */
 const SETTLE_MS = 30_000;
 /** A tab that finds the lock of another tab tries again after this. */
 const RETRY_MS = 10_000;
@@ -79,10 +79,10 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         early.length = 0;
         return () => {};
     }
+    // `asks` holds the ids that a card, a page or the job asked for, until their work ends, and whether a card asked.
     // `rows` holds the waiting ids that only rows asked for, the oldest first. Only such an id leaves the queue unasked.
-    const queue: string[] = [], cards = new Set<string>(), rows = new Set<string>();
-    // A parked id keeps whether it was a row ask.
-    const parked = new Map<string, boolean>(), settling = new Map<string, ReturnType<typeof setTimeout>>(), stops: (() => void)[] = [];
+    const queue: string[] = [], asks = new Map<string, boolean>(), rows = new Set<string>();
+    const parked = new Set<string>(), settling = new Map<string, ReturnType<typeof setTimeout>>(), stops: (() => void)[] = [];
     // A phone gets no covers, as a browser with no WebGPU: its cards show the map picture.
     let engine: Promise<Renderer | undefined> | undefined, off = !('gpu' in navigator) || matchMedia('(pointer: coarse)').matches, busy = false, stopped = false;
     let rendering: AbortController | undefined, drawing: AbortController | undefined, retry: ReturnType<typeof setTimeout> | undefined;
@@ -99,9 +99,9 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
     const want = (id: string, place: Place) => {
         // A row asks for the cover only, so with covers off it has nothing to ask for.
         if (place === 'row' && off) return;
-        if (place === 'card') cards.add(id);
-        if (place !== 'row') rows.delete(id);
-        else if (rows.delete(id) || !queue.includes(id)) rows.add(id);
+        rows.delete(id);
+        if (place !== 'row') asks.set(id, asks.get(id) || place === 'card');
+        else if (!asks.has(id)) rows.add(id);
         if (queue.includes(id)) queue.splice(queue.indexOf(id), 1);
         queue.unshift(id);
         trim();
@@ -116,11 +116,11 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         }
     };
     /** An id that comes back to the queue unworked keeps its row ask, so the limit still counts it. */
-    const requeue = (id: string, row: boolean, first: boolean) => {
+    const requeue = (id: string, first: boolean) => {
         if (queue.includes(id)) return;
         if (first) queue.unshift(id);
         else queue.push(id);
-        if (row) rows.add(id);
+        if (!asks.has(id)) rows.add(id);
         trim();
     };
 
@@ -129,7 +129,7 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         if (!await loaded.canRender()) return undefined;
         stops.push(loaded.onTrailViewOpen(() => {
             if (loaded.trailViewOpen()) return rendering?.abort();
-            for (const [id, row] of parked) requeue(id, row, false);
+            for (const id of parked) requeue(id, false);
             parked.clear();
             void pump();
         }));
@@ -143,11 +143,12 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         try {
             while (queue.length && !waits()) {
                 // An ask during the work puts the id in the queue again, for the line that it has then.
-                const id = queue.shift()!, row = rows.delete(id);
+                const id = queue.shift()!;
+                rows.delete(id);
                 const outcome = await navigator.locks.request(LOCK, { ifAvailable: true }, lock => lock && work(id));
-                if (outcome === 'park') parked.set(id, row);
-                else if (outcome === 'next') { if (!queue.includes(id)) cards.delete(id); }
-                else requeue(id, row, true);
+                if (outcome === 'park') parked.add(id);
+                else if (outcome === 'next') { if (!queue.includes(id)) asks.delete(id); }
+                else requeue(id, true);
                 if (!outcome) {
                     retry = setTimeout(() => void pump(), RETRY_MS);
                     return;
@@ -179,7 +180,7 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
             }
         }
         const coverless = off || (settled(item, cover) && cover!.state !== 'done');
-        return cards.has(id) && coverless && wantsPicture(item, cover, appearance.dark) ? draw(id, item, cover) : 'next';
+        return !!asks.get(id) && coverless && wantsPicture(item, cover, appearance.dark) ? draw(id, item, cover) : 'next';
     }
 
     /** One cover. */

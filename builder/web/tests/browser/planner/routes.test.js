@@ -10,9 +10,9 @@ const trip = days => ({ mode: 'route', bike: 'touring', days, routeOrder: [], po
 
 // A named route that waits, a plan with no name on the device with an older line, and a route that is not a plan.
 const routes = [
-  { id: 'lake', revision: 0, name: 'Lake test', updatedAt: 3, trip: trip(1), summary: summary(22_239, 1) },
-  { id: 'long', revision: 0, name: '', updatedAt: 2, trip: trip(3), summary: summary(150_000, 3) },
-  { id: 'broken', revision: 0, name: '', updatedAt: 1, trip: { nope: true }, summary: summary(22_239, 1) },
+  { id: 'lake', name: 'Lake test', updatedAt: 3, trip: trip(1), summary: summary(22_239, 1) },
+  { id: 'long', name: '', updatedAt: 2, trip: trip(3), summary: summary(150_000, 3) },
+  { id: 'broken', name: '', updatedAt: 1, trip: { nope: true }, summary: summary(22_239, 1) },
 ];
 
 test('the Routes page lists the routes, filters them with a chip, shows the selected one and its state', async ({ page }) => {
@@ -154,6 +154,12 @@ test('the Routes page with a selected route, at the width of a computer and of a
     await expect.poll(async () => { const actual = await layout(page); return Object.keys(PARTS).filter(key => !near(actual[key], LAYOUT[width][key])); },
       { message: `parts out of place at ${width} px` }).toEqual([]);
   }
+  // In a low window, the picture of the card is lower, so the card holds it.
+  await page.setViewportSize({ width: 1440, height: 320 });
+  await expect.poll(() => page.getByRole('region', { name: 'Start → Finish' }).evaluate(card => {
+    const style = getComputedStyle(card), inner = card.getBoundingClientRect().bottom - parseFloat(style.paddingBottom) - parseFloat(style.borderBottomWidth);
+    return card.querySelector('.picture').getBoundingClientRect().bottom <= inner + 0.5;
+  })).toBe(true);
 });
 
 const year = new Date().getFullYear();
@@ -189,7 +195,7 @@ test('the ridden view shows a trip, a group of rides on a route, a ride taken ou
     const { library } = window.coverTest;
     await library.saveRoute(route);
     for (const ride of rides) await library.addRide(ride, new Blob(['ride']));
-  }, { rides, route: { id: 'lake', revision: 0, name: 'Lake test', updatedAt: 1, trip: trip(1), summary: { ...rides[0].summary, days: 1 } } });
+  }, { rides, route: { id: 'lake', name: 'Lake test', updatedAt: 1, trip: trip(1), summary: { ...rides[0].summary, days: 1 } } });
 
   await page.goto('/planner.html#/routes/ridden');
   await expect(page.getByRole('radio', { name: 'Ridden 6' })).toBeChecked();

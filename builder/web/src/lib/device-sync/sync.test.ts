@@ -226,6 +226,18 @@ describe('syncDevice', () => {
         await rig.close();
     });
 
+    it('keeps a route that waits when a leg of its line has no legal path, and says so', async () => {
+        const { rig, library, sync, routes, send } = setup();
+        rememberCard(SERIAL, CARD);
+        vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.', leg: 0 }) } as Response);
+        const route = plan(8.15, 'routed');
+        await send(route);
+        const report = await sync();
+        expect([report.sent, report.problem]).toEqual([0, '“Black Forest” waits: 1 leg has no legal path. Change it in the planner.']);
+        expect([await library.state('waiting'), routes()]).toEqual([[route.id], []]);
+        await rig.close();
+    });
+
     it('does not touch a device that is not remembered', async () => {
         const { library } = setup();
         const list = vi.fn();

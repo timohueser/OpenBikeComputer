@@ -273,18 +273,22 @@ impl<P: RoutingData> Router<P> {
                 }
             }
             if next.iter().all(|&cost| cost == u64::MAX) {
-                return Err(Error::NoPath);
+                return Err(Error::NoPath(stage_index));
             }
             costs = next;
             stages.push(paths);
         }
-        let (mut selected, &cost) = costs.iter().enumerate().min_by_key(|(_, cost)| *cost).ok_or(Error::NoPath)?;
+        let (mut selected, &cost) = costs
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, cost)| *cost)
+            .ok_or(Error::NoPath(stages.len().saturating_sub(1)))?;
         // Each leg departs from its start candidate and arrives at the candidate that the next leg
         // continues from; they differ only at a turnaround.
         let mut paths = Vec::new();
         for (index, stage) in stages.into_iter().enumerate().rev() {
             let end = candidates[index + 1][selected].position;
-            let (previous, source, roads) = stage.into_iter().nth(selected).flatten().ok_or(Error::NoPath)?;
+            let (previous, source, roads) = stage.into_iter().nth(selected).flatten().ok_or(Error::NoPath(index))?;
             paths.push((&candidates[index][source], end, roads));
             selected = previous;
         }

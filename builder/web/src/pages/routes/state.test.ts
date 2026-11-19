@@ -4,7 +4,7 @@ import type { RouteRecord } from '../../lib/library/records';
 import { sentKey } from '../../lib/library/summary';
 import { deviceState } from './state';
 
-const route: RouteRecord = { id: 'r', revision: 1, name: 'Lake loop', updatedAt: 0, summary: null, trip: { points: [] } };
+const route: RouteRecord = { id: 'r', name: 'Lake loop', updatedAt: 0, summary: null, trip: { points: [] } };
 const sent = { r: { device: 'card:7', key: sentKey(route) } };
 
 beforeEach(() => {

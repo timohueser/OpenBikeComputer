@@ -22,7 +22,7 @@ const drawn = (id, kind, lon, from, to, extra = {}) => ({
 });
 // A route of two days with drawn legs, so its line needs no routing request.
 const twoDays = {
-  id: 'two', revision: 0, name: 'Two days', updatedAt: 0,
+  id: 'two', name: 'Two days', updatedAt: 0,
   trip: {
     mode: 'trip', bike: 'touring', days: 2, daysSet: true, restAfter: [], routeOrder: ['night-1'], points: [
       drawn('start', 'start', 8, 400, 400), drawn('night-1', 'night', 8.1, 400, 600, { night: 1, label: 'Inn' }), drawn('finish', 'finish', 8.2, 600, 400),
@@ -111,7 +111,7 @@ test('the settings set the look and the units, and a backup brings the library b
   await page.waitForFunction(() => window.coverTest);
   await page.evaluate(async summary => {
     const { library } = window.coverTest;
-    await library.saveRoute({ id: 'route', revision: 0, name: 'Route', updatedAt: 0, trip: {}, summary: { ...summary, days: 1 } });
+    await library.saveRoute({ id: 'route', name: 'Route', updatedAt: 0, trip: {}, summary: { ...summary, days: 1 } });
     await library.addRide({ key: '20260801T070000Z', name: 'Ride', source: 'file', format: 'gpx', maxHr: null, ftp: null,
       summary: { ...summary, start: 1_785_481_200, movingS: 280 } }, new Blob(['ride']));
   }, summary);

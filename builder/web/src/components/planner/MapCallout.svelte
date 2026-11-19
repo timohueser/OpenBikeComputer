@@ -6,15 +6,12 @@
 </script>
 
 <script lang="ts">
-    import { onMount, tick, type Snippet } from 'svelte';
+    import { tick, type Snippet } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
-    import OpeningHours from './OpeningHours.svelte';
-    import PlaceContent from './PlaceContent.svelte';
-    import { kindLabel } from '../../lib/planner/search/presentation';
-    import { websiteLink, phoneNumbers, phoneLink } from '../../lib/planner/contact-links';
+    import Callout from './Callout.svelte';
+    import PlaceDetails from './PlaceDetails.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
-    import { placeCategories } from '../../lib/planner/poi-kinds';
-    import { canMoveLoopStart, hasEndpoints as endpointsChosen, maxRidingDays, planView, provisionalDays, type Day, type LegMode, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { canMoveLoopStart, hasEndpoints as endpointsChosen, maxRidingDays, multiDay, planView, provisionalDays, type Day, type LegMode, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { nearestProgress, type Coordinate } from '../../lib/planner/geo';
     import type { RoutingLine } from '../../lib/planner/routing';
     import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
@@ -64,9 +61,7 @@
     } = $props();
 
     const hasEndpoints = $derived(endpointsChosen(trip));
-    const website = $derived(websiteLink(place?.website));
-    const phones = $derived(phoneNumbers(place?.phone));
-    const multi = $derived(trip.mode !== 'route');
+    const multi = $derived(multiDay(trip));
     const types = $derived(([
         { value: 'via', label: 'Shape', icon: 'route' },
         { value: 'waypoint', label: 'Visit', icon: 'flag' },
@@ -80,8 +75,6 @@
         { value: 'transfer', label: 'Transfer (not ridden)' },
     ];
 
-    let root: HTMLDivElement;
-    let opener: HTMLElement | null = null;
     let renaming = $state(false);
     let renameButton = $state<HTMLButtonElement>();
     // svelte-ignore state_referenced_locally
@@ -93,24 +86,6 @@
         return provisionalDays(trip, line, sleepDay, nearestProgress(planView(trip, line).coordinates, coordinate))[sleepDay - 1];
     });
 
-    onMount(() => {
-        opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-        // The map moves this content into its popup after mounting.
-        const frame = requestAnimationFrame(() => { if (takeFocus) root.focus({ preventScroll: true }); });
-        return () => cancelAnimationFrame(frame);
-    });
-
-    function close() {
-        onClose();
-        if (opener?.isConnected) opener.focus({ preventScroll: true });
-    }
-
-    function key(event: KeyboardEvent) {
-        if (event.key !== 'Escape' || (event.target as HTMLElement).closest('input, select')) return;
-        event.stopPropagation();
-        close();
-    }
-
     function rename(label: string) {
         if (!label.trim()) return;
         onRename(label.trim());
@@ -118,31 +93,13 @@
     }
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="callout" bind:this={root} tabindex="-1" role="dialog" aria-label="Map details" onkeydown={key}>
-    <button type="button" class="close" onclick={close} aria-label="Close"><Icon name="close" size={15} /></button>
-    {#snippet about(place: Place)}
-        {#if place.content}<PlaceContent content={place.content} name={place.label} />{/if}
-        {#if place.description && place.description !== placeCategories[place.category].label}<p class="place-note">{place.description}</p>{/if}
-        {#if website || place.website || phones.length}
-            <div class="contacts">
-                {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Website</a>
-                {:else if place.website}<span>{place.website}</span>{/if}
-                {#each phones as phone}
-                    {@const link = phoneLink(phone)}
-                    {#if link}<a href={link}>{phone}</a>{:else}<span>{phone}</span>{/if}
-                {/each}
-            </div>
-        {/if}
-        {#if detailsError}<p class="hint" role="status">{detailsError}</p>{/if}
-        {#if place.openingHours || ['shop','food','pharmacy','hotel','bike'].includes(place.category)}<OpeningHours value={place.openingHours} />{/if}
-    {/snippet}
-    {#snippet endpoints()}
-        {#if onEndpoint}<div class="add-types endpoints">
-            <button type="button" onclick={() => onEndpoint?.('start')}><Icon name="pin" size={15} />Start here</button>
-            <button type="button" onclick={() => onEndpoint?.('finish')}><Icon name="flag" size={15} />Finish here</button>
-        </div>{/if}
-    {/snippet}
+{#snippet endpoints()}
+    {#if onEndpoint}<div class="add-types endpoints">
+        <button type="button" onclick={() => onEndpoint?.('start')}><Icon name="pin" size={15} />Start here</button>
+        <button type="button" onclick={() => onEndpoint?.('finish')}><Icon name="flag" size={15} />Finish here</button>
+    </div>{/if}
+{/snippet}
+<Callout label="Map details" {onClose} {takeFocus}>
     {#if kind === 'add'}
         <h2>{hasEndpoints ? 'Add point here' : 'Plan from here'}</h2>
         {@render endpoints()}
@@ -169,14 +126,12 @@
         <button type="button" class="planner-action" onclick={onPick}>Pick another spot on the map</button>
         <p class="hint">Drag the marker along the route to move the day end.</p>
     {:else if kind === 'place'}
-        <div class="place-heading">
-            {#if place}<span class="place-symbol"><Icon path={placeCategories[place.category].icon} size={21} /></span>{/if}
-            <div><h2>{place?.label ?? 'Overnight spot'}</h2>
-                {#if place}<p class="kind">{place.placeKind ? kindLabel(place.placeKind) : placeCategories[place.category].label}{place.locality ? ` · ${place.locality}` : ''}</p>{/if}
-            </div>
-        </div>
-        {#if place}{@render about(place)}{/if}
-        {#if place}{@render endpoints()}{/if}
+        {#if place}
+            <PlaceDetails {place} error={detailsError} />
+            {@render endpoints()}
+        {:else}
+            <h2 class="spot">Overnight spot</h2>
+        {/if}
         {#if sleeps}
             <label class="field">End of day
                 <select bind:value={sleepDay}>
@@ -215,10 +170,7 @@
                     if (!renaming) tick().then(() => renameButton?.focus());
                 }} />
         {/if}
-        {#if place}
-            <p class="kind">{place.placeKind ? kindLabel(place.placeKind) : placeCategories[place.category].label}{place.locality ? ` · ${place.locality}` : ''}</p>
-            {@render about(place)}
-        {/if}
+        {#if place}<PlaceDetails {place} titled={false} error={detailsError} />{/if}
         {#if hasEndpoints && point.kind !== 'start' && point.kind !== 'finish'}
             <Segmented label="Point type" options={types} columns={types.length > 3 ? 2 : 0} value={point.kind === 'detour' ? 'waypoint' : point.kind as EditableKind} onChange={onKind} />
         {/if}
@@ -229,21 +181,9 @@
         <button type="button" class="quiet" onclick={onRemove}><Icon name="trash" size={15} />Remove point</button>
     {/if}
     {@render children?.()}
-</div>
+</Callout>
 
 <style>
-    /* The map sets the free room; the content scrolls as a last resort. */
-    .callout {
-        position: relative;
-        width: 340px;
-        max-width: var(--callout-width);
-        max-height: var(--callout-room);
-        overflow-y: auto;
-        padding: 16px;
-        color: var(--ink);
-        font: 400 13px var(--sans);
-        outline: none;
-    }
     h2 {
         margin: 0 28px 12px 0;
         font: 600 14px var(--sans);
@@ -255,18 +195,12 @@
         font: inherit;
         cursor: pointer;
     }
-    .close {
-        position: absolute;
-        top: 10px;
-        right: 10px;
-        display: grid;
-        place-items: center;
-        width: 28px;
-        height: 28px;
-        border-radius: 6px;
-        color: var(--ink-soft);
+    /* As the name of a place, which this title stands for. */
+    .spot {
+        margin-bottom: 5px;
+        font-size: 17px;
+        line-height: 1.3;
     }
-    .close:hover,
     .icon:hover {
         background: var(--parchment-2);
         color: var(--ink);
@@ -288,15 +222,6 @@
         border-radius: 6px;
         color: var(--ink-soft);
     }
-    .place-heading { display: flex; gap: 12px; align-items: flex-start; margin-right: 16px; }
-    .place-heading h2 { margin: 0 12px 5px 0; font-size: 17px; line-height: 1.3; overflow-wrap: anywhere; }
-    .place-symbol { display: grid; place-items: center; width: 40px; height: 40px; flex: none; border-radius: 50%; color: var(--query-place); background: color-mix(in srgb, var(--query-place) 10%, var(--panel)); }
-    .kind { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
-    .place-note { margin: 10px 0; color: var(--ink); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .contacts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 12px 0; overflow-wrap: anywhere; }
-    .contacts a { color: var(--ink); text-underline-offset: 3px; padding: 4px 0; }
-    .contacts a:hover { color: var(--query-place); }
-    .contacts a:focus-visible { outline: 2px solid var(--query-place); outline-offset: 3px; border-radius: 2px; }
     .endpoints { margin-bottom: 12px; }
     .add-types {
         display: flex;

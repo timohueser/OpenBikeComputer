@@ -13,8 +13,9 @@
         href?: string;
         /** The name of an icon of `Icon.svelte`, before the line under the name. */
         icon?: string;
-        /** The parts of the line under the name. An empty list writes no line, as does an empty `numbers`. */
-        meta: (string | false)[];
+        /** The parts of the line under the name, a part with `onclick` as a quiet button. An empty list writes no line, as
+         * does an empty `numbers`. */
+        meta: (string | false | { text: string; onclick: () => void })[];
         numbers: string[];
         profile?: Pick<Summary, 'line' | 'heights'>;
         state?: string;
@@ -30,7 +31,7 @@
         onclose?: () => void;
     } = $props();
 
-    const metaParts = $derived(meta.filter(Boolean));
+    const metaParts = $derived(meta.filter((part): part is Exclude<typeof part, false> => !!part));
 </script>
 
 <div class="frame">
@@ -38,7 +39,7 @@
         <div class="picture">{@render picture()}</div>
         <div class="text">
             <h2>{@render mark?.()}{#if href}<a class="open" {href}>{name}</a>{:else}{name}{/if}</h2>
-            {#if metaParts.length}<p class="meta">{#if icon}<span class="icon"><Icon name={icon} size={15} /></span>{/if}{#each metaParts as part, i (i)}{i ? ' ' : ''}<span>{part}{i < metaParts.length - 1 ? ' ·' : ''}</span>{/each}</p>{/if}
+            {#if metaParts.length}<p class="meta">{#if icon}<span class="icon"><Icon name={icon} size={15} /></span>{/if}{#each metaParts as part, i (i)}{i ? ' ' : ''}<span>{#if typeof part === 'string'}{part}{:else}<button type="button" class="link" onclick={part.onclick}>{part.text}</button>{/if}{i < metaParts.length - 1 ? ' ·' : ''}</span>{/each}</p>{/if}
             {#if numbers.length}<p class="numbers">{#each numbers as number, i (i)}<span>{number}</span>{/each}</p>{/if}
             {#if state}<p class="state">{state}</p>{/if}
             {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
@@ -75,8 +76,8 @@
         }
     }
     /* The profile is a strip under the text and the buttons, as high as the room that they leave beside the picture. A
-       place that fixes the card to the screen limits its height with `--card-height`: the rows of the picture keep
-       their height, and the row of `more` after them takes the rest and scrolls. */
+       place limits the height of the card with `--card-height`: the rows of the picture keep their height, and the row
+       of `more` after them takes the rest and scrolls. */
     .card {
         position: relative;
         display: grid;
@@ -93,12 +94,18 @@
         background: var(--panel);
         box-shadow: 0 6px 20px rgb(28 27 20 / 0.18);
     }
+    /* A low limit of the card's height makes the picture lower, so the card holds it: less the padding and the borders,
+       and with `more` also its gap and about three lines. */
     .picture {
         position: relative;
         grid-area: picture;
         height: 200px;
+        max-height: calc(var(--card-height) - 22px);
         overflow: hidden;
         border-radius: 6px;
+    }
+    .card:has(.more) .picture {
+        max-height: calc(var(--card-height) - 88px);
     }
     .text {
         grid-area: text;
@@ -125,6 +132,21 @@
     /* The line wraps between two parts, and inside a part only when the part is longer than the line. */
     .meta span {
         display: inline-block;
+    }
+    .link {
+        position: relative;
+        z-index: 1;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: inherit;
+        font: inherit;
+        text-decoration: underline;
+        text-decoration-color: var(--line-strong);
+        text-underline-offset: 2px;
+    }
+    .link:hover {
+        color: var(--ink);
     }
     .meta .icon {
         display: inline-flex;
@@ -289,6 +311,20 @@
         }
         .more {
             grid-row: 4;
+        }
+        /* A low window leaves too little room for the strip and three lines of `more` in each place that shows the
+           card: the text keeps the room. */
+        @media (max-height: 480px) {
+            .card:has(.more) .profile {
+                display: none;
+            }
+            /* The text takes the row of the strip, so no empty row and gap stay. */
+            .card:has(.more) {
+                grid-template-rows: auto auto minmax(0, 1fr);
+            }
+            .more {
+                grid-row: 3;
+            }
         }
     }
     @container (max-width: 480px) {

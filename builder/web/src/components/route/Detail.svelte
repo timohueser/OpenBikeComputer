@@ -7,16 +7,22 @@
      * side, and `children` under them. The frame is as high as the page: the cards take the height that the children
      * leave, down to their least height, so a bottom card keeps its rows low in a low window. No child is a scroll box,
      * so a menu or a panel of a bottom card is never cut. Its button styles apply only inside the frame. */
-    let { message, name, nameLabel, onrename, failure, tags, buttons, left, picture, children }: {
+    let { message, action, back = { label: '‹ Routes', href: ROUTES.routes }, name, nameLabel, onrename, failure, mark, tags, buttons, left, picture, children }: {
         /** Shows instead of the page, for example while the record loads. */
         message?: string;
+        /** A link or a button after the message. */
+        action?: Snippet;
+        /** The link back, before the title and under a message. `onclick` can take the click in place of the link. */
+        back?: { label: string; href: string; onclick?: (event: MouseEvent) => void };
         name: string;
         /** The label of the name field, such as "Route name". */
-        nameLabel: string;
-        /** Gets a new name that differs from `name`, at most 120 characters. */
-        onrename: (name: string) => void;
+        nameLabel?: string;
+        /** Gets a new name that differs from `name`, at most 120 characters. Without it, the name has no rename button. */
+        onrename?: (name: string) => void;
         /** The error of the last action, under the title. */
         failure?: string;
+        /** Before the name. */
+        mark?: Snippet;
         tags?: Snippet;
         buttons?: Snippet;
         left?: Snippet;
@@ -38,25 +44,29 @@
     function rename() {
         const next = input?.value.trim().slice(0, 120);
         renaming = false;
-        if (next && next !== name) onrename(next);
+        if (next && next !== name) onrename?.(next);
     }
 </script>
+
+{#snippet backLink()}<a class="back" href={back.href} onclick={back.onclick}>{back.label}</a>{/snippet}
 
 <div class="detail">
     {#if message}
         <p class="message">{message}</p>
-        <a class="back" href={ROUTES.routes}>‹ Routes</a>
+        {@render action?.()}
+        {@render backLink()}
     {:else}
         <header>
-            <a class="back" href={ROUTES.routes}>‹ Routes</a>
+            {@render backLink()}
             <div class="title">
                 {#if renaming}
                     <input bind:this={input} aria-label={nameLabel} value={name}
                         onkeydown={event => { if (event.key === 'Enter') rename(); else if (event.key === 'Escape') renaming = false; }}
                         onblur={() => renaming = false} />
                 {:else}
+                    {@render mark?.()}
                     <h1>{name}</h1>
-                    <button type="button" class="icon" aria-label="Rename" onclick={startRename}><Icon name="pencil" size={16} /></button>
+                    {#if onrename}<button type="button" class="icon" aria-label="Rename" onclick={startRename}><Icon name="pencil" size={16} /></button>{/if}
                 {/if}
                 {@render tags?.()}
             </div>

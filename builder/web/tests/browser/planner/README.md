@@ -1,7 +1,7 @@
 # Planner request budget
 
 A browser journey counts the requests of one planning session: browse the map, plan a trip,
-drag markers, switch bikes, search, and show places along the route. Two stand-in hosts answer
+drag markers, switch bikes, search, and highlight a kind of places. Two stand-in hosts answer
 for the tile Worker and the route service, so nothing leaves the machine.
 
 ```sh
@@ -16,8 +16,9 @@ Cloudflare bills `basemap`, `places`, `overlays`, `terrain`, `glyphs` and `sprit
 
 After a deliberate change, set each limit by the rule in `basis`.
 
-`places` counts the places TileJSON and the zoom 11 places tiles that the place index reads along
-the route. `overlays` counts the route network and access TileJSON and its tiles.
+`places` counts the places TileJSON and the zoom 11 place tiles that the place marks read for
+the view. The marks read tiles only from zoom 16, or from zoom 12 with a highlighted kind, so this
+session reads none. `places.test.js` counts the place tiles that the marks read while the map pans. `overlays` counts the route network and access TileJSON and its tiles.
 
 ## Tile pictures
 

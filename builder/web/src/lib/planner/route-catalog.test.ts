@@ -65,6 +65,8 @@ describe('route catalog', () => {
 
     it('joins the pieces of a trail from the far files of a box, and loads none for a box of more than the most cells', async () => {
         config.trails = 'https://tiles.test/routes/tiles/trails/{cell}.json';
+        const bounds = config.bounds;
+        config.bounds = [5, 45, 10, 48];
         asked.length = 0;
         const entry = (id: number, far_udeg: number[][]): TrailEntry => ({ id, kind: 'hiking', rank: 2, loop: false, length_m: 9e4, ascent_m: 900, far_udeg });
         // 8.4375° E is the edge between the zoom 7 columns 66 and 67.
@@ -74,7 +76,12 @@ describe('route catalog', () => {
         const box: Box = [7.5, 46, 9.5, 46.9];
         expect(boxCells(box, 7)).toEqual(['7-66-45', '7-67-45']);
         // Trail 2 is in a far file of the box, but not in the box.
-        expect(await new RouteCatalog().trailsInBox(box)).toEqual([entry(1, [west, east])]);
+        const catalog = new RouteCatalog();
+        expect(catalog.trailsInBoxNow(box)).toBeUndefined();
+        const found = await catalog.trailsInBox(box);
+        expect(found).toEqual([entry(1, [west, east])]);
+        // With its files loaded, a box has its answer with no wait, and the joined trail keeps its object.
+        expect(catalog.trailsInBoxNow(box)![0]).toBe(found![0]);
         // A segment of trail 3 cuts the south-west corner of the box, with no vertex in it.
         const corner = [8200000, 46050000, 120000, -100000];
         files['7-66-45'].push(entry(3, [corner]));
@@ -82,6 +89,7 @@ describe('route catalog', () => {
         asked.length = 0;
         expect(await new RouteCatalog().trailsInBox([5, 43, 20, 47])).toBeNull();
         delete config.trails;
+        config.bounds = bounds;
         expect(await new RouteCatalog().trailsInBox(box)).toBeNull();
         expect(asked).toEqual([]);
     });

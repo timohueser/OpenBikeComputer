@@ -28,7 +28,7 @@ function ride(points: [number, number][], start: number): RideRecord {
 }
 
 const route = (id: string, updatedAt: number, from: RideRecord): RouteRecord =>
-    ({ id, revision: 0, name: id, updatedAt, summary: { ...from.summary, days: 1 }, trip: {} });
+    ({ id, name: id, updatedAt, summary: { ...from.summary, days: 1 }, trip: {} });
 
 describe('sameRoute', () => {
     const a = ride(noisy(loop(), 1), 1000).summary;

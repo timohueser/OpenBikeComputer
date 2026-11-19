@@ -78,7 +78,7 @@ The first run:
 3. Measure a sample: `node trailview/route-pictures.mjs render --gpu --sample 30`. It prints the
    time and the size of each cover and of all routes.
 4. Render all routes in `.artifacts/route-pictures/`: `node trailview/route-pictures.mjs render --gpu`.
-   It writes the covers, their small images and the set. Then upload:
+   It writes the covers, their row images and the set. Then upload:
    `node trailview/route-pictures.mjs upload`. It prints the set id. Approve the set id, then make the set live:
    `node trailview/route-pictures.mjs switch SET`.
    `curl -sI https://maps.openbikecomputer.com/route-pictures/manifest.json` answers 200.
@@ -86,7 +86,7 @@ The first run:
 
 For a new planner release, do steps 1 and 4: only the routes whose line changed render.
 
-`node trailview/route-pictures.mjs small [--out DIR]` makes each missing or older small
+`node trailview/route-pictures.mjs row [--out DIR]` makes each missing or older row
 image, with no render or network. A broken image gives exit code 1.
 
 ## Options of render
@@ -108,7 +108,7 @@ image, with no render or network. A broken image gives exit code 1.
 - `render` skips a route whose cover or `.none` mark exists for its key. A change of the size, the
   camera rule or its light in the script changes `look` and so each key: all routes render again.
 - `upload` takes the routes of the active production release, and refuses while one of them has no
-  cover and no `.none` mark, or a cover has no small image. It sends only the files that are not in
+  cover and no `.none` mark, or a cover has no row image. It sends only the files that are not in
   the bucket. After a 429 of the host it waits one minute, at most 5 times for a file.
 - `upload` and `switch` call `obc data r2`, which needs `OBC_R2_*`. `switch` checks the covers in
   the bucket, because the public host keeps a deleted file in its cache for a year.

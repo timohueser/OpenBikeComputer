@@ -5,7 +5,7 @@ export interface Box { left: number; top: number; right: number; bottom: number 
 // Above the point first, then below, then beside it.
 const ANCHORS: Anchor[] = ['bottom', 'top', 'bottom-left', 'bottom-right', 'top-left', 'top-right', 'left', 'right'];
 /** The tip of a MapLibre popup: 10 px deep. */
-const TIP = 10;
+export const TIP = 10;
 
 /** The box MapLibre draws for `anchor`, with a number `offset` as MapLibre spreads it over the anchors. */
 export function calloutBox(anchor: Anchor, [x, y]: [number, number], [width, height]: [number, number], offset: number): Box {
@@ -28,14 +28,16 @@ function overflow(box: Box, free: Box): [number, number] {
 
 /**
  * The first anchor whose popup fits inside `free`, the map area clear of bars and controls.
- * When none fits, the anchor that needs the shortest pan, and that pan.
+ * When none fits, the anchor that needs the shortest pan, and that pan. A box larger than `free` fits after no pan, so
+ * it is the last choice.
  */
 export function placeCallout(point: [number, number], size: [number, number], free: Box, offset: number): { anchor: Anchor; pan: [number, number] } {
-    let best: { anchor: Anchor; pan: [number, number] } | undefined;
+    let best: { anchor: Anchor; pan: [number, number]; larger: boolean } | undefined;
     for (const anchor of ANCHORS) {
-        const pan = overflow(calloutBox(anchor, point, size, offset), free);
+        const box = calloutBox(anchor, point, size, offset), pan = overflow(box, free);
         if (!pan[0] && !pan[1]) return { anchor, pan };
-        if (!best || Math.hypot(...pan) < Math.hypot(...best.pan)) best = { anchor, pan };
+        const larger = box.right - box.left > free.right - free.left || box.bottom - box.top > free.bottom - free.top;
+        if (!best || larger < best.larger || (larger === best.larger && Math.hypot(...pan) < Math.hypot(...best.pan))) best = { anchor, pan, larger };
     }
-    return best!;
+    return { anchor: best!.anchor, pan: best!.pan };
 }

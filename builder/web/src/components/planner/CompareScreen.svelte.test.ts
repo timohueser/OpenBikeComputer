@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Trip } from '../../lib/planner/editor';
 import { routingKey } from '../../lib/planner/routing';
-import type { Version } from '../../lib/planner/versions';
+import { newPlan, type Plan } from '../../lib/planner/library';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import CompareScreen from './CompareScreen.svelte';
 
@@ -21,16 +21,14 @@ afterEach(async () => {
     vi.unstubAllGlobals();
 });
 
-const version = (id: string, name: string, trip: Trip): Version => ({ id, name, at: '2026-11-09T10:00:00Z', summary: '', trip });
-// Six calendar days: five riding days and a rest day after day 2; and four riding days.
-const long = { ...testTrip(), days: 5, restAfter: [2] }, short = { ...testTrip(), days: 4 };
+const route = (id: string, name: string, trip: Trip): Plan => ({ ...newPlan(trip, name), id });
+// Six calendar days: five riding days and a rest day after day 2; four riding days; and three.
+const long = { ...testTrip(), days: 5, restAfter: [2] }, short = { ...testTrip(), days: 4 }, shortest = { ...testTrip(), days: 3 };
+const lines = Object.fromEntries([long, short, shortest].map(trip => [routingKey(trip), testLine(trip)]));
 
-function open() {
+function open(routes = [route('short', 'Fast', short), route('long', 'Slow', long)], props: { changed?: boolean; onFindLines?: (trips: Trip[]) => void } = {}) {
     screen = mount(CompareScreen, { target: document.body, props: {
-        name: 'Basel → Thun', trip: long, line: testLine(long), openId: 'long', theme: 'light',
-        versions: [version('long', 'Slow', long), version('short', 'Fast', short)],
-        versionLines: { [routingKey(short)]: testLine(short) },
-        onBack: () => {}, onOpen: () => {}, onFindLines: () => {},
+        routes, first: 'long', changed: false, lines, theme: 'light', onBack: () => {}, onOpen: () => {}, onFindLines: () => {}, ...props,
     } });
     flushSync();
 }
@@ -39,7 +37,27 @@ const column = (side: number, selector: string) => [...document.querySelectorAll
 const heads = () => [...document.querySelectorAll('.head')];
 
 describe('compare screen', () => {
-    it('gives each calendar day one row, and the shorter version "Finished" after its last day', () => {
+    it('starts on the open route and the newest other route, and asks for the lines of these two only', () => {
+        const onFindLines = vi.fn();
+        open([route('shortest', 'Hills', shortest), route('short', 'Fast', short), route('long', 'Slow', long)], { onFindLines });
+        expect([...document.querySelectorAll('.head .name strong')].map(name => name.textContent)).toEqual(['Slow', 'Hills']);
+        expect(onFindLines).toHaveBeenLastCalledWith([long, shortest]);
+        expect(document.querySelector('.note')).toBeNull();
+    });
+
+    it('asks for a second saved route, and says when the open route shows its saved state', async () => {
+        open([route('long', 'Slow', long)]);
+        expect(document.querySelector('.empty')?.textContent).toBe('Save two routes to compare them.');
+        expect(document.querySelector('[aria-label="First route"]')).toBeNull();
+        await unmount(screen!);
+        open([], { changed: true });
+        expect(document.querySelector('.empty')?.textContent).toBe('Save two routes to compare them.');
+        await unmount(screen!);
+        open(undefined, { changed: true });
+        expect(document.querySelector('.note')?.textContent).toBe('‘Slow’ shows its saved state. Your latest changes could not be saved.');
+    });
+
+    it('gives each calendar day one row, and the shorter route "Finished" after its last day', () => {
         open();
         expect([...document.querySelectorAll('.rows .label')].map(label => label.textContent)).toEqual(['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Day 6']);
         expect(column(0, '.rest')).toHaveLength(1);

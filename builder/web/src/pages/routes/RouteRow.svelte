@@ -9,11 +9,13 @@
     import type { Snippet } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
 
-    let { name, icon, current, onclick, lead = '', parts, tail, badge, room, picture }: {
+    let { name, icon, current, line, onclick, lead = '', parts, tail, badge, room, picture }: {
         name: string;
         /** The name of an icon of `Icon.svelte`, before the name. */
         icon?: string;
         current: boolean;
+        /** The id of the lead line of the row on the map: the row and its lines light together. */
+        line?: string;
         onclick: () => void;
         /** The second line, written when `parts` is given: `lead` (such as a date), each part in its own span, so the
          * line wraps between two parts and never inside one, then `tail` as plain text. */
@@ -39,7 +41,7 @@
     }
 </script>
 
-<button type="button" class="row" aria-current={current} {onclick} use:watch>
+<button type="button" class="row" aria-current={current} data-line={line} {onclick} use:watch>
     <span class="thumb">{#if near}{@render picture()}{/if}</span>
     <span class="text">
         <strong>{#if icon}<span class="icon"><Icon name={icon} size={16} /></span>{/if}{name}</strong>
@@ -53,7 +55,7 @@
 <style>
     .row {
         display: grid;
-        grid-template-columns: 150px minmax(0, 1fr);
+        grid-template-columns: var(--row-picture-width) minmax(0, 1fr);
         align-items: start;
         gap: 14px;
         width: 100%;
@@ -68,14 +70,15 @@
     .row:focus-visible {
         outline-offset: -2px;
     }
-    .row:hover {
+    /* `data-hover`: the pointer is on a line of the row on the map, or a key focused the row. The frame sets it. */
+    .row:hover, .row:global([data-hover]) {
         background: var(--parchment);
     }
     .row[aria-current="true"] {
         background: var(--parchment-2);
     }
     .thumb {
-        height: 100px;
+        height: var(--row-picture-height);
         overflow: hidden;
         border-radius: 6px;
         background: var(--parchment-2);
@@ -135,11 +138,7 @@
     }
     @media (max-width: 760px) {
         .row {
-            grid-template-columns: 120px minmax(0, 1fr);
             gap: 10px;
-        }
-        .thumb {
-            height: 80px;
         }
     }
 </style>

@@ -21,9 +21,10 @@ export function coversCell(bounds: Bounds, id: string): boolean {
         && Math.min(bounds[3], latitude(y)) - Math.max(bounds[1], latitude(y + 1)) > margin;
 }
 
-/** The list `key` of a route catalog file. */
-async function catalogFile<T>(url: string, key: "routes" | "trails"): Promise<T[]> {
+/** The list `key` of a route catalog file; with `absent`, a missing file (404) gives it. */
+async function catalogFile<T>(url: string, key: "routes" | "trails", absent?: T[]): Promise<T[]> {
     const response = await releaseFetch(url);
+    if (response.status === 404 && absent) return absent;
     if (!response.ok) throw new Error(`Route catalog request failed with status ${response.status}`);
     const document = await response.json();
     if (document?.format !== 1 || !Array.isArray(document[key])) throw new Error("Unsupported route catalog");
@@ -63,10 +64,11 @@ export async function loadTrailCell(id: string): Promise<TrailEntry[] | null> {
     return catalogFile<TrailEntry>(url.replace("{cell}", id), "trails");
 }
 
-/** The whole record of the trail `id`: its trail record file, or the record of the region file of a regional release. */
+/** The whole record of the trail `id`: its trail record file, or the record of the region file of a regional release. Null
+ * when the release has no such trail. */
 export async function loadTrailRecord(id: number): Promise<CatalogRecord | null> {
     const { trail, routes } = config;
-    const records = trail ? await routeFile(trail.replace("{id}", String(id)))
+    const records = trail ? await catalogFile<CatalogRecord>(trail.replace("{id}", String(id)), "routes", [])
         : routes && !routes.includes("{cell}") ? await regionFile(routes) : null;
     return records?.find((record) => record.id === id) ?? null;
 }

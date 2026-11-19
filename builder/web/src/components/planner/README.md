@@ -29,7 +29,7 @@ replaces only the entry of the planner: the map pages still read the device cata
 `active` entry, unless `VITE_CATALOG_URL` names another device catalogue.
 
 Basemap zooms are 0–14; terrain zooms are 0–12. Browser contours use terrain
-neighbours. Highlighted places use zoom 11.
+neighbours. The place marks read the place tiles of zoom 11.
 
 Extract a smaller map archive with bounds inside its source coverage:
 

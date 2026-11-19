@@ -1,6 +1,6 @@
 # Library backup file
 
-A library backup file is a ZIP file that holds the routes, their versions, the rides, the source
+A library backup file is a ZIP file that holds the routes, the rides, the source
 file of each ride, the library state and the settings of one browser. It can hold the photos of the
 rides. It holds no covers: the browser renders them again.
 
@@ -38,25 +38,24 @@ no `photos` field and no photo entry.
 | `format` | `"openbikecomputer-library"` |
 | `version` | `1` |
 | `routes` | Array of [route records](#3-route-record), each with a unique `id` |
-| `versions` | Object: for a route id, the array of the versions of that route, newest first |
 | `rides` | Array of [ride records](#4-ride-record), each with a unique `key` |
 | `state` | [State](#6-state) object |
 | `settings` | Object: the settings of the app |
 | `photos` | Optional array of [photo records](#7-photo-record), each with a unique `id`. Without it, the file has no photos. |
 
-A version is a version object of [planner-plan.md](planner-plan.md).
+A reader ignores the field `versions` of an older file.
 
 ## 3. Route record
 
 | Field | Value |
 | --- | --- |
 | `id` | Non-empty string |
-| `revision` | Integer, 0 or more |
 | `name` | String |
 | `updatedAt` | Unix time in milliseconds of the last edit |
-| `open` | Optional string: the id of the version that `trip` belongs to |
 | `summary` | [Summary](#5-summary) with `days`, or `null` when the plan never had a calculated line |
 | `trip` | Plan object of [planner-plan.md](planner-plan.md) |
+
+A reader ignores the fields `open` and `revision` of a route record of an older file.
 
 ## 4. Ride record
 
@@ -133,7 +132,7 @@ reader with no photos loads the routes and the rides of a file with photos.
 
 Then one transaction adds:
 
-- each route whose `id` is not stored, with its versions;
+- each route whose `id` is not stored;
 - each ride whose `key` is not stored and is not a key of the deleted rides, with its source file.
 
 The load takes `state` and `settings` only when the library is empty: no route, no ride and no

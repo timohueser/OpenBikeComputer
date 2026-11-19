@@ -4,7 +4,7 @@ import type { Place } from './editor';
 import { kmPerDegree, routeDistance, type Coordinate } from './geo';
 import { openSource, requestSignal, type Source } from './layers/archive';
 import type { TilePlace } from './place-groups';
-import { poiKinds } from './poi-kinds';
+import { placeCategories, poiKinds, type PlaceCategory } from './poi-kinds';
 
 /** Place tile IDs use namespaces 1–3 for OSM elements and 4 for Wikidata, above the 44-bit ID. */
 export function placeSource(id: string | number | undefined): string | undefined {
@@ -73,13 +73,33 @@ export async function placeTile(url: string, key: string): Promise<TilePlace[]> 
     return tiles.get(key)!;
 }
 
-/** Rider places within `bufferKm` of the route, from the archive's most detailed tiles. */
-export async function corridorPlaces(url: string, coordinates: Coordinate[], bufferKm = 5): Promise<Place[]> {
-    const archive = await placeArchive(url);
-    const loaded = await Promise.all(corridorTiles(coordinates, bufferKm, archive.maxZoom).map(key => placeTile(url, key)));
-    const places = loaded.flat().flatMap(place => poiPlace(place.id, place.kind, place.name, [place.lon, place.lat]) ?? []);
-    const distance = routeDistance(coordinates, bufferKm);
-    return [...new Map(places.map(place => [place.id, place])).values()].filter(place => Number.isFinite(distance(place.coordinate)));
+/** Keys `z/x/y` of the tiles of the place archive that the bounds `[west, south, east, north]` touch. */
+export async function placeTileKeys(url: string, [west, south, east, north]: [number, number, number, number]): Promise<string[]> {
+    const zoom = (await placeArchive(url)).maxZoom, last = 2 ** zoom - 1;
+    const clamp = (value: number) => Math.min(last, Math.max(0, Math.floor(value)));
+    const keys: string[] = [];
+    for (let x = clamp(tileColumn(west, zoom)); x <= clamp(tileColumn(east, zoom)); x++) {
+        for (let y = clamp(tileRow(north, zoom)); y <= clamp(tileRow(south, zoom)); y++) keys.push(`${zoom}/${x}/${y}`);
+    }
+    return keys;
+}
+
+export type CorridorPlace = { place: Place; offM: number };
+/** A place along the route of the Route page, `alongM` from its start. */
+export type RoutePlace = CorridorPlace & { alongM: number };
+
+/** The places of `category` within its `routeM` of the route, each with its distance from the route, from the archive's
+ * most detailed tiles. */
+export async function corridorPlaces(url: string, coordinates: Coordinate[], category: PlaceCategory): Promise<CorridorPlace[]> {
+    const archive = await placeArchive(url), km = placeCategories[category].routeM / 1000;
+    const loaded = await Promise.all(corridorTiles(coordinates, km, archive.maxZoom).map(key => placeTile(url, key)));
+    const distance = routeDistance(coordinates, km), found = new Map<string, CorridorPlace>();
+    for (const { id, kind, name, lon, lat, category: of } of loaded.flat()) {
+        if (of !== category) continue;
+        const place = poiPlace(id, kind, name, [lon, lat])!, offKm = distance(place.coordinate);
+        if (Number.isFinite(offKm)) found.set(place.id, { place, offM: offKm * 1000 });
+    }
+    return [...found.values()];
 }
 
 async function loadTile(source: Source, key: string): Promise<TilePlace[]> {
@@ -90,11 +110,11 @@ async function loadTile(source: Source, key: string): Promise<TilePlace[]> {
     const found: TilePlace[] = [];
     for (let i = 0; i < layer.length; i++) {
         const feature = layer.feature(i);
-        const { kind, name, lon, lat, ele } = feature.properties;
+        const { kind, name, lon, lat, ele } = feature.properties, label = feature.properties['name:en'] ?? name;
         const known = poiKinds[String(kind)];
         if (!known || typeof feature.id !== 'number' || feature.toGeoJSON(x, y, z).geometry.type !== 'Point') continue;
         found.push({
-            id: feature.id, kind: String(kind), category: known.category, name: String(feature.properties['name:en'] ?? name ?? known.label),
+            id: feature.id, kind: String(kind), category: known.category, ...label !== undefined && { name: String(label) },
             lon: Number(lon), lat: Number(lat), ...typeof ele === 'number' && { ele },
         });
     }

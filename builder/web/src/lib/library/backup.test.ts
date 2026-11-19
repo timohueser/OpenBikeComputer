@@ -6,7 +6,7 @@ import { Library } from './store';
 import { summarize } from './summary';
 import { TooLarge, unzip, zip } from './zip';
 
-const route: RouteRecord = { id: 'r1', revision: 0, name: 'Alps', updatedAt: 5, open: 'v1',
+const route: RouteRecord = { id: 'r1', name: 'Alps', updatedAt: 5,
     summary: summarize<RouteSummary>([[8, 47, 400], [8.1, 47.1, 900]], { lengthM: 13_000, climbM: 500, seconds: 3600, days: 1, bike: 'touring' }),
     trip: { points: [], routeOrder: [], days: 1 } };
 
@@ -16,7 +16,7 @@ const ride = (key: string): RideRecord => ({ key, name: key, source: 'device', f
 /** A library with one route, two rides and a deleted ride. */
 async function filled(): Promise<Library> {
     const library = new Library(new IDBFactory());
-    await library.saveRoute(route, [{ id: 'v1', at: '2026-08-01T07:00:00.000Z', trip: route.trip }]);
+    await library.saveRoute(route);
     await library.setState('active', 'r1');
     await library.setState('nextMap', { regions: ['europe/switzerland'], boxes: [{ minLat: 46_000_000, minLon: 8_000_000, maxLat: 46_500_000, maxLon: 9_000_000 }], light: 'default', dark: 'dusk', bytes: 870_000_000 });
     for (const key of ['20260801T070000Z', '20260802T070000Z', '20260803T070000Z']) await library.addRide(ride(key), new Blob([`bytes of ${key}`]));
@@ -38,10 +38,17 @@ describe('library backup', () => {
         expect(await target.contents()).toEqual(await source.contents());
         expect(await (await target.rideFile('20260802T070000Z'))!.text()).toBe('bytes of 20260802T070000Z');
         expect(await loadBackup(target, backup)).toEqual({ routes: 0, rides: 0, photos: 0 });
-        expect((await target.routes())[0].revision).toBe(1);
         // A file with no photos has no `photos` field.
         const older = await edited(backup, ({ photos: _, ...json }) => json);
         expect(await loadBackup(new Library(new IDBFactory()), older)).toMatchObject({ routes: 1, rides: 2, photos: 0 });
+        expect(JSON.parse(await (await unzip(backup)).get('library.json')!.text())).not.toHaveProperty('versions');
+        // A reader ignores the saved versions of an older file.
+        const versions = await edited(backup, json => ({ ...json, routes: [{ ...route, open: 'v1' }],
+            versions: { r1: [{ id: 'v1', at: '2026-08-01T07:00:00.000Z', trip: route.trip }] } }));
+        const merged = new Library(new IDBFactory());
+        expect(await loadBackup(merged, versions)).toMatchObject({ routes: 1, rides: 2, photos: 0 });
+        expect(await merged.routes()).toEqual([route]);
+        expect(JSON.parse(await (await unzip(await saveBackup(merged, {}))).get('library.json')!.text()).routes[0]).not.toHaveProperty('open');
         // A reader ignores a field of the envelope and an entry that it does not know.
         const later = await zip([...(await unzip(await edited(backup, json => ({ ...json, later: [1] }))))].map(([name, data]) => ({ name, data }))
             .concat({ name: 'later/a.bin', data: new Blob(['later']) }));
@@ -95,7 +102,7 @@ describe('library backup', () => {
             // A box with no height.
             await edited(backup, json => ({ ...json, state: { nextMap: { regions: [], boxes: [{ minLat: 46_000_000, minLon: 8_000_000, maxLat: 46_000_000, maxLon: 9_000_000 }], light: 'default', dark: 'dusk', bytes: 1 } } }))];
         for (const file of files) await expect(loadBackup(target, file)).rejects.toThrow();
-        expect(await target.contents()).toEqual({ routes: [], versions: {}, rides: [], files: new Map(), state: {} });
+        expect(await target.contents()).toEqual({ routes: [], rides: [], files: new Map(), state: {} });
     });
 
     it('does not bring back a ride that the rider deleted', async () => {

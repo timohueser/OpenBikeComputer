@@ -19,6 +19,8 @@ export interface CatalogRecord {
     descent_m: number;
     grades_m?: number[];
     hardest?: number;
+    /** The moving time of the plan route at the default pace, in seconds; not in every release. */
+    moving_s?: number;
     cells: string[];
     line_udeg?: number[];
     profile_m?: (number | null)[];
@@ -48,6 +50,9 @@ export interface TrailPart {
     name?: string;
     length_m?: number;
     ascent_m?: number;
+    /** As on the route record of the part; not in every release. */
+    moving_s?: number;
+    hardest?: number;
     end_m: number;
     cells?: string[];
     missing?: true;
@@ -78,6 +83,18 @@ export const recordCredits = (records: { credit?: string }[]) =>
 
 /** The name of grade `index` of `grades_m`: T1 to T6 for hiking and foot, S0 to S5 for mountain bike. */
 export const gradeName = (kind: 'hiking' | 'foot' | 'mtb', index: number) => kind === 'mtb' ? `S${index}` : `T${index + 1}`;
+
+/**
+ * The id of the long trail that `record` is in: for a part, its long route L (`trail ?? parent`) or, when L is a cut stage,
+ * the trail of L; for any other record, its own id. Undefined when L is not loaded: each file that holds a part also holds
+ * L, so only a broken file gives it.
+ */
+export function longTrailId(record: CatalogRecord, recordOf: (id: number) => CatalogRecord | undefined): number | undefined {
+    const longId = record.trail ?? record.parent;
+    if (longId === undefined) return record.id;
+    const long = recordOf(longId);
+    return long && (long.trail ?? long.id);
+}
 
 /** The plan of a route record: start, shaping points and finish, and the plan indices where it turns back on purpose. */
 export function routePlan(route: RouteRecord): { points: Coordinate[]; turnarounds: number[] } {

@@ -1,13 +1,15 @@
 <script lang="ts">
-    import type { ComponentProps, Snippet } from 'svelte';
+    import { untrack, type ComponentProps, type Snippet } from 'svelte';
     import DrawerTitle from './DrawerTitle.svelte';
     import PlanTotals from './PlanTotals.svelte';
     import Surface from './PlannerSurface.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
     import Icon from '../../lib/ui/Icon.svelte';
+    import Lanes from '../../lib/ui/Lanes.svelte';
+    import SelectedPart from '../../lib/ui/SelectedPart.svelte';
     import { formatGrade, gradeBands, gradePaths, profileGrades } from '../../lib/planner/grade-data';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { heightRange, profileHeightAt, profilePaths, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
+    import { formatPart, heightRange, profileAscent, profileHeightAt, profilePaths, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
     import type { Day } from '../../lib/planner/editor';
     import { axisColumn, axisLeft, axisPieces, axisRest, axisProgress, axisWidth, type ProfileAxis } from '../../lib/planner/profile-axis';
@@ -18,7 +20,7 @@
 
     let {
         lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260, open = true,
-        rests = [], totals = null, onToggle, onNight, onDayEndDrag, onHover, strip,
+        rests = [], totals = null, onToggle, onNight, onDayEndDrag, onHover, strip, part = null, onPart,
     }: {
         /** Route length in km. */
         lineData?: RoutingLine;
@@ -48,6 +50,9 @@
         onHover: (progress: number | null) => void;
         /** A data layer strip for the shown stretch and its rest columns, as route progress, and the hover callback. */
         strip?: Snippet<[number, number, number[], (progress: number | null) => void]>;
+        /** The selected part, as route progress. */
+        part?: [number, number] | null;
+        onPart?: (part: [number, number] | null) => void;
     } = $props();
 
     // The drawer height counts one title row: the top padding, the row of the range switch and its margin.
@@ -71,6 +76,7 @@
     let drag = $state<{ night: number; progress: number; moved: boolean } | null>(null);
     let range = $state<'map' | 'route'>('map');
     let body = $state<HTMLDivElement>();
+    let rows = $state<HTMLDivElement>();
     let content = $state<HTMLDivElement>();
     // More content below the visible part shows as a fade at the bottom edge.
     let more = $state(false);
@@ -83,10 +89,14 @@
         return () => observer.disconnect();
     });
 
-    const shown = $derived(range === 'map' ? focus ?? view : { from: 0, to: 1 });
+    // While a part is selected, the profile keeps the stretch of the map from when the part started.
+    let held = $state<{ from: number; to: number }>();
+    const shown = $derived(range === 'map' ? focus ?? (part && held ? held : view) : { from: 0, to: 1 });
     const origin = $derived(range === 'map' && focus ? focus.from : 0);
     const span = $derived(Math.max(1e-6, shown.to - shown.from));
-    const ticks = $derived([0, .25, .5, .75, 1].map(t => ({ t, at: shown.from + t * span })));
+    // Ticks less than 1 unit apart need a decimal, or the labels repeat.
+    const ticks = $derived([0, .25, .5, .75, 1].map(t => ({ at: t,
+        label: `${distanceIn((shown.from + t * span - origin) * total * 1000).toFixed(distanceIn(span * total * 1000) / 4 < 1 ? 1 : 0)} ${settings.units}` })));
     const endAt = (day: ProfileDay) => drag?.night === day.number ? drag.progress : day.to;
     // A rest day is a column of fixed width after its night; the riding days share the rest of the width.
     const restColumns = $derived(singleRoute ? [] : rests.flatMap(rest => {
@@ -95,6 +105,15 @@
         return at > shown.from && at < shown.to ? [{ ...rest, at }] : [];
     }));
     const axis = $derived<ProfileAxis>({ from: shown.from, to: shown.to, rests: restColumns.map(rest => rest.at) });
+    // `axisProgress` holds a pointer outside the plot at its edge; `Lanes` needs a share outside 0 to 1 there.
+    const lanesAxis = $derived({
+        left: (x: number, after?: boolean) => axisLeft(axis, shown.from + x * span, after),
+        at: (px: number, width: number) => px < 0 || px > width ? px / width : (axisProgress(axis, px, width) - shown.from) / span,
+    });
+    const share = (progress: number) => Math.min(1, Math.max(0, (progress - shown.from) / span));
+    // From the start of the open day, as the ticks and the readout.
+    const partText = $derived(part ? formatPart((part[0] - origin) * total * 1000, (part[1] - origin) * total * 1000,
+        known.length ? profileAscent(part[0], part[1], lineData) : null) : '');
     // The day ends inside the shown stretch; with none inside, the nearest one on each side sits at the edge so it can still be dragged in.
     const handles = $derived.by(() => {
         const ends = days.slice(0, -1).map(day => ({ day, at: endAt(day) }));
@@ -111,25 +130,39 @@
     }
 
     function track(event: PointerEvent) {
-        const progress = progressAt(event);
-        if (drag) {
-            const day = days[drag.night - 1];
-            drag.progress = Math.max(day.from + .005, Math.min(days[drag.night].to - .005, progress));
-            drag.moved = true;
-        }
-        hover = drag?.progress ?? progress;
+        if (!drag) return;
+        const day = days[drag.night - 1];
+        drag.progress = Math.max(day.from + .005, Math.min(days[drag.night].to - .005, progressAt(event)));
+        drag.moved = true;
+        hover = drag.progress;
         onHover(hover);
     }
+
+    /** The pointer of `Lanes`; while a day end is dragged, `track` moves it. */
+    function point(at: number | null) {
+        if (drag) return;
+        inspect(at === null ? null : shown.from + at * span);
+    }
+
+    function select(next: [number, number] | null) {
+        // A drag inside one rest column covers no route.
+        const progress: [number, number] | null = next && [shown.from + next[0] * span, shown.from + next[1] * span];
+        if (progress && progress[1] - progress[0] < 1e-9) return onPart?.(null);
+        if (progress && !part) held = view;
+        onPart?.(progress);
+    }
+
+    // Another range, another day, a closed drawer or no profile ends the part; a moved day end keeps it. A derived
+    // value, because the effect would run again at each new `focus` object.
+    const openDay = $derived(focus?.label);
+    $effect(() => {
+        void [range, open, openDay];
+        return () => untrack(() => onPart?.(null));
+    });
 
     function inspect(progress: number | null) {
         hover = progress;
         onHover(progress);
-    }
-
-    function leave() {
-        if (drag) return;
-        hover = null;
-        onHover(null);
     }
 
     function press(event: PointerEvent, day: ProfileDay) {
@@ -157,6 +190,10 @@
         <Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
             options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />
         <label class="grade-toggle"><input type="checkbox" checked={showGrade} onchange={(event) => gradeChoice = event.currentTarget.checked} />Grade</label>
+        {#if part}
+            <!-- Clear leaves the document, so the focus goes to the profile. -->
+            <div class="selected"><SelectedPart text={partText} onclear={() => { select(null); rows?.querySelector<HTMLElement>('[role="slider"]')?.focus(); }} /></div>
+        {/if}
         {/if}
     </div>
     {#if open}
@@ -170,8 +207,9 @@
             {/each}
         </div>
     {/if}
+    {#snippet profile()}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="plot" bind:this={plot} onpointermove={track} onpointerleave={leave} onpointerup={release} onpointercancel={() => drag = null}>
+    <div class="plot" bind:this={plot} onpointermove={track} onpointerup={release} onpointercancel={() => drag = null}>
         <span class="height" style:top="5%">{Math.round(heightIn(high))} {heightUnit()}</span>
         <span class="height" style:top="94%">{Math.round(heightIn(low))} {heightUnit()}</span>
         {#each axisPieces(axis) as [start, end], i (i)}
@@ -205,11 +243,6 @@
             {/each}
         </svg>
         {/each}
-        {#if hover !== null}
-            <span class="readout" style:left={axisLeft(axis, hover)}>
-                <span class="chip" class:flip={(hover - shown.from) / span > .8}>{distanceIn((hover - origin) * total * 1000).toFixed(1)} {settings.units}{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(heightIn(hoverHeight))} ${heightUnit()}`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}</span>
-            </span>
-        {/if}
         {#each handles as { day, left } (day.number)}
             <button
                 type="button"
@@ -226,9 +259,13 @@
             >{#if day.pinned}<Icon name={sleepIcon(day.pinned.placeKind)} size={13} />{:else}{dayLabels[day.number] ?? day.number}{/if}</button>
         {/each}
     </div>
-    <div class="axis">
-        <!-- Ticks less than 1 unit apart need a decimal, or the labels repeat. -->
-        {#each ticks as { t, at }, i (i)}<span style:left={axisLeft(axis, at)} style:translate={`${-t * 100}%`}>{distanceIn((at - origin) * total * 1000).toFixed(distanceIn(span * total * 1000) / 4 < 1 ? 1 : 0)} {settings.units}</span>{/each}
+    {/snippet}
+    {#snippet readout()}
+        {distanceIn(((hover ?? 0) - origin) * total * 1000).toFixed(1)} {settings.units}{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(heightIn(hoverHeight))} ${heightUnit()}`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}
+    {/snippet}
+    <div class="plot-rows" bind:this={rows}>
+        <Lanes label="Profile" rows={[{ label: '', draw: profile, grow: true }]} {ticks} axis={lanesAxis} pointer={hover === null ? undefined : share(hover)}
+            chip={readout} onpointer={point} part={part && [share(part[0]), share(part[1])]} onpart={onPart && select} onclick={() => select(null)} />
     </div>
     <Surface {walking} line={lineData} from={shown.from} to={shown.to} rests={axis.rests} onHover={inspect} />
     {@render strip?.(shown.from, shown.to, axis.rests, inspect)}
@@ -288,13 +325,18 @@
     .grade-toggle input { width: 14px; height: 14px; margin: 0; accent-color: var(--ink-soft); }
     .grade-toggle input:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
     .unavailable { margin: 4px 0 8px 48px; color: var(--ink-soft); font-size: 12px; }
+    .selected { margin-left: auto; }
+    .plot-rows {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        /* The strips scroll before the profile gets too flat to read: 72 px of plot over the ticks. */
+        min-height: 94px;
+        margin: 0 12px 0 48px;
+    }
     .plot {
         position: relative;
-        flex: 1;
-        /* The strips scroll before the profile gets too flat to read. */
-        min-height: 72px;
-        margin: 0 12px 0 48px;
-        touch-action: none;
+        height: 100%;
     }
     .plot > svg {
         /* Out of the flow: the viewBox ratio would otherwise set the plot height. */
@@ -339,30 +381,6 @@
     line.pinned {
         stroke: var(--ink);
         stroke-dasharray: none;
-    }
-    .readout {
-        position: absolute;
-        top: 0;
-        bottom: 0;
-        width: 1px;
-        background: var(--ink);
-        pointer-events: none;
-    }
-    .chip {
-        position: absolute;
-        top: 0;
-        left: 6px;
-        padding: 2px 6px;
-        border-radius: 6px;
-        background: var(--ink);
-        color: var(--panel);
-        font: 600 12px var(--sans);
-        font-variant-numeric: tabular-nums;
-        white-space: nowrap;
-    }
-    .chip.flip {
-        left: auto;
-        right: 6px;
     }
     .rests {
         position: absolute;
@@ -433,13 +451,4 @@
         outline: 2px solid var(--forest);
         outline-offset: 3px;
     }
-    .axis {
-        position: relative;
-        height: 14px;
-        margin: 8px 12px 0 48px;
-        font-size: 11px;
-        color: var(--ink-faint);
-        font-variant-numeric: tabular-nums;
-    }
-    .axis span { position: absolute; z-index: 2; top: 0; white-space: nowrap; }
 </style>

@@ -9,6 +9,8 @@ export const ROUTES = {
     routes: "#/routes",
     explore: "#/explore",
     route: "#/route",
+    signed: "#/signed",
+    trail: "#/trail",
     ride: "#/ride",
     device: "#/device",
     area: "#/device/area",
@@ -21,14 +23,14 @@ export type Route = keyof typeof ROUTES;
 const segments = (hash: string) => hash.replace(/^#?\/?/, "").split("/").filter(Boolean);
 const ROUTE_SEGMENTS = Object.entries(ROUTES).map(([route, hash]) => [route as Route, segments(hash)] as const);
 
-/** The route with the most whole segments at the start of the hash, and the next segment as its id. */
+/** The route with the most whole segments at the start of the hash, and the rest of the hash as its id. */
 export function parseRoute(hash: string): { route: Route; id?: string } {
     const parts = segments(hash);
     let best: { route: Route; length: number } = { route: "home", length: 0 };
     for (const [route, start] of ROUTE_SEGMENTS) {
         if (start.length > best.length && start.every((segment, i) => parts[i] === segment)) best = { route, length: start.length };
     }
-    const id = best.length ? parts[best.length] : undefined;
+    const id = best.length ? parts.slice(best.length).join("/") : undefined;
     return id ? { route: best.route, id } : { route: best.route };
 }
 

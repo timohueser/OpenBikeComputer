@@ -7,6 +7,9 @@
     import Query from './PlannerQuery.svelte';
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
+    import DayCount from './DayCount.svelte';
+    import RoutePreferences from './RoutePreferences.svelte';
+    import SaveWindow, { type SaveAnswer, type SaveMode } from './SaveWindow.svelte';
     import Itinerary from './Itinerary.svelte';
     import TripRow from './TripRow.svelte';
     import RouteList from './RouteList.svelte';
@@ -14,6 +17,7 @@
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import MapSettings from './MapSettings.svelte';
+    import PlaceKinds from './PlaceKinds.svelte';
     import LayerLegend from './LayerLegend.svelte';
     import LayerDateBar from './LayerDateBar.svelte';
     import LayerInspect from './LayerInspect.svelte';
@@ -30,22 +34,20 @@
     import type { RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
     import LibraryPanel from './PlanLibrary.svelte';
-    import type { Plan } from '../../lib/planner/library';
+    import { savedWhen, type Plan } from '../../lib/planner/library';
     import type { Library } from '../../lib/library/store';
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { router } from '../../lib/router.svelte';
     import { ROUTES } from '../../lib/routes';
-    import { isTrip } from '../../lib/planner/trip-validation';
     import {
-        addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, routeToTrip, hasEndpoints as endpointsChosen,
+        addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, multiDay, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
         orderedRoutePoints, pinNight, pinNights, planView, daySegments, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, endpointLabel,
         type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
-    import { coordinateAt, cumulative, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
-    import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
-    import { corridorPlaces } from '../../lib/planner/place-index';
+    import { coordinateAt, cumulative, nearestOnLine, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
+    import { placeChoice } from '../../lib/planner/place-choice.svelte';
     import { config } from '../../lib/planner/map-data';
     import { beforeReload } from '../../lib/planner/release';
     import { coordinateName, townName } from '../../lib/planner/point-names';
@@ -54,17 +56,17 @@
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
     import { nightKinds, nightWindows, proposal, proposeNights, suitable, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlan } from '../../lib/planner/search/plan';
-    import { placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
+    import { placeDetails, withDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
+    import { placeSource } from '../../lib/planner/place-index';
     import { asPlace, category, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
-    import type { Version } from '../../lib/planner/versions';
     import { appearance } from '../../lib/theme.svelte';
     import { routingKey, type RoutingLine } from '../../lib/planner/routing';
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
     import { closureStretches } from '../../lib/planner/route-closures';
     import { alpineStretches } from '../../lib/planner/route-difficulty';
-    import { routeGaps } from '../../lib/planner/route-gaps';
+    import { legGaps, routeGaps } from '../../lib/planner/route-gaps';
     import { noteKey, routeNotes as notesOf, type RouteNote } from '../../lib/planner/route-notes';
     import RouteNotes from './RouteNotes.svelte';
     import { distanceIn } from '../../lib/settings/format';
@@ -104,7 +106,7 @@
     const routingMessage = $derived(session.dragging ? session.previewStatus : currentRoute
         ? `${distance(currentRoute.unknownSurfaceKm)} unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${distance(currentRoute.pushingKm)} pushing` : ''}${currentRoute.unroutedKm ? ` · ${distance(currentRoute.unroutedKm)} manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
-    // The compare screen of saved versions replaces the trip bar and the planner below it.
+    // The compare screen of saved routes replaces the trip bar and the planner below it.
     let comparing = $state(false);
 
     let searching = $state(false);
@@ -135,10 +137,6 @@
     let mapPlace = $state<Place | null>(null);
     // A place selected in a town card opens its callout without the focus, so the arrow keys stay in the card.
     let quietCallout = $state(false);
-    let hiddenCategories = $state<PlaceCategory[]>([]);
-    let highlightedCategories = $state<PlaceCategory[]>([]);
-    let corridor = $state<Place[]>([]);
-    let corridorLoad = $state<'done' | 'loading' | 'failed'>('done');
     const theme = $derived<'light' | 'dark'>(appearance.dark ? 'dark' : 'light');
     let hoveredId = $state<string | null>(null);
     let hillshade = $state(true);
@@ -164,10 +162,19 @@
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
     let message = $state(`Plan a ride in ${config.name}`);
-    // The status line offers Undo after a version opens or is deleted, until the next change.
+    // The status line offers Undo after "Discard changes", until the next change.
     let statusUndo = $state<(() => void) | null>(null);
+    // The open window of a save, a copy, a rename or the question before another route replaces the open one.
+    let asking = $state<{ mode: SaveMode; answer: (answer: SaveAnswer) => void } | null>(null);
     let visibleRange = $state<[number, number] | null>(null);
     let hoverProgress = $state<number | null>(null);
+    // The part of the route the profile selects, as route progress. Another line ends it; the map fits each part.
+    let part = $state<[number, number] | null>(null);
+    $effect(() => { void visualRoute; part = null; });
+    $effect(() => {
+        const fit = part;
+        untrack(() => { if (fit) map?.fitCoordinates(routeSlice(coordinates, fit[0], fit[1]), true); });
+    });
     let sideWidth = $state(360);
     let profileHeight = $state(260);
     let profileOpen = $state(true);
@@ -199,7 +206,19 @@
         if (hasProfile) profileOpen = open; else emptyOpen = open;
         if (open) profileHeight = next;
     }
-    const multi = $derived(trip.mode !== 'route');
+    const multi = $derived(multiDay(trip));
+    // The view follows the type on each path that changes it: the day count, Undo, Redo, a search, an import.
+    let viewMulti: boolean | undefined;
+    $effect.pre(() => {
+        if (viewMulti !== undefined && multi !== viewMulti) untrack(() => {
+            night = 1;
+            expandedDay = null;
+            stopChoosing();
+            exitSearch();
+            clearSelection();
+        });
+        viewMulti = multi;
+    });
     // The days of the trip without its suggested nights. The towns are searched around their ends, and the suggestions
     // then move them. A drag preview changes the line but not the trip, so they follow the line of the trip.
     const evenDays = $derived(planView(trip, session.line).days);
@@ -251,6 +270,7 @@
     const days = $derived(view.days.map(day => day.split && trip.splits?.[day.number] === undefined ? { ...day, split: false } : day));
     const itinerary = $derived(view.itinerary);
     const focusedDay = $derived(multi && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
+    const itineraryShown = $derived(multi && !!visualRoute && (!!currentRoute || routingStatus === 'Calculating route…'));
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
     const queryPlan = $derived(searchPlan(trip, view));
@@ -260,7 +280,8 @@
         pointing, startDate: trip.startDate, plan: queryPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(shown.trip, shown.line) : []);
     const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
-    const routeNotes = $derived(notesOf(gaps, closureStretches(visualRoute), alpineStretches(visualRoute)));
+    const gapLegs = $derived(visualRoute ? legGaps(visualStops, coordinates, visualRoute.gapLegs) : []);
+    const routeNotes = $derived(notesOf(gaps, gapLegs, closureStretches(visualRoute), alpineStretches(visualRoute)));
     // Plan edits rebuild the notes without a new route, so the shown note is kept by key; a route without it marks nothing.
     let shownKey = $state<string | null>(null);
     const shownNote = $derived(routeNotes.find(note => noteKey(note) === shownKey));
@@ -327,31 +348,8 @@
     const results = $derived((searchState.answer?.results ?? []).map(result => ({ place: asPlace(result) })));
     const visiblePlaces = $derived(searching ? results.map(result => result.place) : pickerNight === null ? []
         : (openStop ? [openStop] : readyStops(pickerNight)).flatMap(stop => suitable(stop, nights.kinds(pickerNight)).map(p => p.place)));
-    const highlights = $derived(highlightedCategories);
-    const highlightLimit = 300;
-    // Basemap places within 5 km of the route, nearest first.
-    const highlightCandidates = $derived.by(() => {
-        if (!highlights.length || coordinates.length < 2) return [];
-        const pinned = new Set(visiblePlaces.map(place => place.id));
-        const distance = routeDistance(coordinates, 5);
-        const nearby = corridor
-            .filter(place => highlights.includes(place.category))
-            .map(place => ({ place, off: distance(place.coordinate) }))
-            .filter(({ off }) => Number.isFinite(off))
-            .sort((a, b) => a.off - b.off)
-            .map(({ place }) => place);
-        return nearby.filter(place => !pinned.has(place.id));
-    });
-    const highlightedPlaces = $derived(highlightCandidates.slice(0, highlightLimit));
-    const placeNote = $derived(
-        !highlights.length ? ''
-        : corridorLoad === 'loading' ? 'Loading places along the route…'
-        : corridorLoad === 'failed' ? 'Places along the route could not load'
-        : highlightCandidates.length > highlightLimit ? `Showing ${highlightLimit} of ${highlightCandidates.length} highlighted places, nearest the route first`
-        : '',
-    );
     const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
-    const shownPlace = $derived((mapPlace?.id === selectedId ? mapPlace : undefined) ?? visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId));
+    const shownPlace = $derived((mapPlace?.id === selectedId ? mapPlace : undefined) ?? visiblePlaces.find(p => p.id === selectedId));
     // List searches leave out details such as the website and phone; they load per place id, and null means search has none.
     let details = $state.raw<Record<string, SearchPlace | null>>({});
     let detailsError = $state('');
@@ -361,7 +359,7 @@
         const id = detailsId;
         void mapPlace;
         detailsError = '';
-        if (!id || !/^(?:[nwr]|Q)[1-9]\d*$/.test(id) || untrack(() => id in details)) return;
+        if (!id || !placeSource(id) || untrack(() => id in details)) return;
         const coordinate = untrack(() => (shownPlace ?? selectedPoint)!.coordinate);
         const abort = new AbortController();
         placeDetails(id, coordinate, abort.signal).then(found => {
@@ -456,18 +454,6 @@
     });
     const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme }) : null);
 
-    $effect(() => {
-        if (!highlights.length || coordinates.length < 2) return;
-        const route = coordinates;
-        let current = true;
-        corridorLoad = 'loading';
-        corridorPlaces(config.places, route).then(
-            found => { if (current) { corridor = found; corridorLoad = 'done'; } },
-            () => { if (current) corridorLoad = 'failed'; },
-        );
-        return () => { current = false; };
-    });
-
     // A query runs again when anything it sends other than the map view changes.
     $effect(() => { void [queryPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
 
@@ -478,7 +464,7 @@
     });
 
     /** Resets the view after another plan replaced the trip. */
-    function opened(plan: Plan) {
+    function opened() {
         exploreBack = undefined;
         statusUndo = null;
         clearSelection();
@@ -490,8 +476,9 @@
         stopChoosing();
         visibleRange = null;
         hoverProgress = null;
+        part = null;
         fitPlan = true;
-        nameVisits(plan.trip);
+        nameVisits(session.trip);
     }
 
     function nameVisits(trip: Trip) {
@@ -536,25 +523,82 @@
         else map?.showPlace([place.lon, place.lat], 12);
     }
 
+    function ask(mode: SaveMode): Promise<SaveAnswer> {
+        return new Promise(answer => asking = { mode, answer });
+    }
+
+    /** Asks before another route replaces a route with changes: "Save" saves it, "Discard" leaves its draft. False at
+     * "Cancel" or a failed save. */
+    async function leave(): Promise<boolean> {
+        // A save that fails makes the route changed again.
+        await session.whenSaved();
+        if (!session.changed || !session.canSave) return true;
+        const answer = await ask('leave');
+        if (answer === false) return true;
+        // An edit or an Undo during the save leaves the route changed, so it asks again.
+        return answer !== null && await session.save(answer) && leave();
+    }
+
+    async function save() {
+        const name = session.stored ? '' : await ask('save');
+        if (typeof name === 'string' && await session.save(name)) message = 'Route saved';
+    }
+
+    async function saveCopy() {
+        const name = await ask('copy');
+        if (!name || !await session.saveCopy(name)) return;
+        message = 'Copy saved';
+        // The trip bar of the copy is a new one.
+        await focusMore();
+    }
+
+    async function renameRoute() {
+        const name = await ask('rename');
+        if (name) await session.rename(session.plan, name);
+    }
+
+    async function discard() {
+        if (!await session.discard()) return;
+        afterHistory('Changes discarded');
+        statusUndo = undo;
+    }
+
+    async function restoreDraft() {
+        if (await session.restore()) afterHistory('Unsaved changes restored');
+    }
+
+    function dismissDraft() {
+        void session.dismiss();
+        statusUndo = null;
+    }
+
     async function openPlan(id: string) {
-        if (!await session.open(id, () => window.confirm('Some edits are not saved. Download a backup before reopening a plan. Discard the unsaved edits?'))) {
+        if (!await leave()) return;
+        if (!await session.open(id)) {
             if (session.libraryError) message = session.libraryError;
             return;
         }
         libraryOpen = false;
-        message = 'Plan opened';
+        message = 'Route opened';
     }
 
     function deletePlan(plan: Plan) {
-        if (window.confirm(`Delete “${plan.name || planTitle(plan.trip)}” and its saved versions? Download it first if you need a backup.`)) void session.remove(plan);
+        if (window.confirm(`Delete “${plan.name || planTitle(plan.trip)}”? Download it first if you need a backup.`)) void session.remove(plan);
     }
 
     async function importFiles(files: File[]) {
+        // GPX files ask at the choice of their line.
+        if (!files.some(file => /\.gpx$/i.test(file.name)) && !await leave()) return;
         if (!libraryOpen) await openLibrary();
         await session.importFiles(files);
     }
 
+    async function duplicate(plan: Plan) {
+        if (await leave()) await session.duplicate(plan);
+    }
+
     async function importGpx(roads: boolean) {
+        if (!await leave()) return;
         const count = session.gpxLines!.length;
         if (roads) message = 'Planning on roads…';
         const failed = await session.importGpx(roads, coordinate => map?.placeName(coordinate));
@@ -576,14 +620,6 @@
         dropping = false;
         const files = [...event.dataTransfer?.files ?? []];
         if (files.length) void importFiles(files);
-    }
-
-    async function changeVersions(versions: Version[]) {
-        const before = session.versions;
-        await session.saveVersions(versions);
-        const deleted = versions.length < before.length;
-        message = deleted ? 'Version deleted' : 'Versions saved';
-        statusUndo = deleted ? () => void changeVersions(before).then(() => { message = 'Delete undone'; }, () => {}) : null;
     }
 
     function commit(next: Trip, description: string) {
@@ -714,7 +750,7 @@
 
     function selectPoint(id: string) {
         if (id === 'pending') return;
-        const place = visiblePlaces.find(p => p.id === id) ?? corridor.find(p => p.id === id) ?? (mapPlace?.id === id ? mapPlace : undefined);
+        const place = visiblePlaces.find(p => p.id === id) ?? (mapPlace?.id === id ? mapPlace : undefined);
         if (place) { choosePlace(place); return; }
         clearSelection();
         selectedId = id;
@@ -780,6 +816,7 @@
     }
 
     async function planSignedRoute(route: CatalogRecord, plan: RoutePlan, explore?: unknown) {
+        if (!await leave()) return;
         if (!await session.planSignedRoute(route, plan, coordinate => map?.placeName(coordinate))) {
             message = `${route.name ?? route.ref} could not be planned. ${session.libraryError}`;
             return;
@@ -842,7 +879,7 @@
         mapMode = null;
         const label = name ?? map?.placeName(coordinate) ?? await townName(coordinate) ?? coordinateName(coordinate);
         if (trip !== before) {
-            message = 'The plan changed, so the train or bus was not added. Try again.';
+            message = 'The route changed, so the train or bus was not added. Try again.';
             return;
         }
         const around = days[number - 1].pinned ? undefined : nights.around(number);
@@ -918,11 +955,6 @@
 
     const placeRef = (place: Place): PlaceRef => ({ placeKind: place.placeKind, placeId: place.id });
 
-    function withDetails(place: Place, found: SearchPlace | null | undefined): Place {
-        return found ? { ...place, website: found.website, phone: found.phone, content: found.content, description: found.description || place.description,
-            openingHours: found.opening_hours, hoursStatus: found.hoursStatus, locality: found.city } : place;
-    }
-
     function newPoint(coordinate: Coordinate, kind: EditableKind, label?: string): RoutePoint {
         const autoLabel = kind === 'waypoint' && label === undefined;
         return { id: crypto.randomUUID(), coordinate: [...coordinate], label: label ?? (autoLabel ? coordinateName(coordinate) : defaultLabels[kind]),
@@ -974,8 +1006,8 @@
     }
 
     async function newPlan() {
-        if (!await session.newPlan()) return;
-        message = 'New plan';
+        if (!await leave() || !await session.newPlan()) return;
+        message = 'New route';
         libraryOpen = false;
     }
 
@@ -1007,17 +1039,6 @@
         void session.nameVisit(next.points.find(p => p.id === id)!);
     }
 
-    function changeTrip(change: Partial<Trip>, description: string) {
-        if (change.mode === 'trip' && trip.mode === 'route') commit(routeToTrip(trip, session.line), description);
-        else edit(change, description);
-        if (!('mode' in change)) return;
-        night = 1;
-        expandedDay = null;
-        stopChoosing();
-        exitSearch();
-        clearSelection();
-    }
-
     function changePlan(next: Trip, description: string) {
         commit(next, description);
         clampNight();
@@ -1040,7 +1061,7 @@
         applyingQuery = true; queryApplyError = '';
         try {
             const next = await applyQueryChanges(before, session.line, answer.changes, plan => session.calculate(plan, new AbortController().signal));
-            if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The plan changed. Review the search again.');
+            if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The route changed. Review the search again.');
             if (answer.changes.some(change => change.op === 'route')) exploreBack = undefined;
             session.commit(next.trip, next.line);
             afterEdit(answer.description ?? 'Query applied');
@@ -1054,44 +1075,40 @@
         edit({ restNames: names }, 'Rest day named');
     }
 
-    async function openVersion(id: string, name: string) {
-        if (id === session.openId) return;
-        if (!await session.openVersion(id)) {
-            message = `‘${name}’ could not be opened. Try again.`;
+    async function compare() {
+        if (!await session.listPlans()) {
+            message = session.libraryError;
             return;
         }
-        afterEdit(`Opened ‘${name}’`);
-        exploreBack = undefined;
-        statusUndo = undo;
-        clearSelection();
-        clampNight();
-    }
-
-    function compare() {
         clearSelection();
         exitSearch();
         comparing = true;
     }
 
-    /** Back in the planner, the Version menu that opened the compare screen takes the focus. The trip bar is inert while a
-     * version opens, so an opening version waits for it. */
+    /** Back in the planner, the menu button that opened the compare screen takes the focus. */
     async function endCompare() {
         comparing = false;
+        await focusMore();
+    }
+
+    async function focusMore() {
         await tick();
-        document.querySelector<HTMLElement>('.versions .toggle')?.focus();
+        document.querySelector<HTMLElement>('.trip-bar .menu > button')?.focus();
     }
 
     function keyboard(event: KeyboardEvent) {
-        if (!active || comparing || (event.target as HTMLElement)?.closest('input, select, textarea')) return;
+        if (!active || comparing || asking || (event.target as HTMLElement)?.closest('input, select, textarea')) return;
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
             event.preventDefault();
             if (event.shiftKey) redo();
-            else (statusUndo ?? undo)();
+            else undo();
         }
         // Escape goes back one level wherever the focus is: a town, then a night page, then an open day. The map
-        // prevents the default when Escape closes its route details: that is the level.
+        // prevents the default when Escape closes its route details or its place list: that is the level. A map selection
+        // or mode closes before the selected part, which `Lanes` clears unless the default is prevented.
         if (event.key === 'Escape' && !event.defaultPrevented) {
-            if (!selectedId && !mapMode) {
+            if (selectedId || mapMode) event.preventDefault();
+            else if (!part) {
                 if (openStop) stopId = null;
                 else if (nightPage !== null) stopChoosing();
                 else if (focusedDay) showAllDays();
@@ -1128,27 +1145,33 @@
 
 <div class="planner-shell" style:--side-width={`${Math.min(sideWidth, maxSide)}px`}>
     {#if comparing}
-    <CompareScreen name={session.plan.name || planTitle(trip)} {trip} line={session.line} routeError={session.routeError} openId={session.openId}
-        versions={session.versions.filter(version => isTrip(version.trip))} versionLines={session.versionLines} {theme} onBack={endCompare}
-        onOpen={async (id, name) => { comparing = false; await openVersion(id, name); await endCompare(); }}
-        onFindLines={retry => { session.findVersionLines(retry); if (retry && session.routeError) session.retry(); }} />
+    <CompareScreen routes={session.plans.filter(plan => endpointsChosen(plan.trip))} first={session.stored ? session.plan.id : undefined} changed={session.changed}
+        lines={session.foundLines} {theme} onBack={endCompare} onOpen={async id => { comparing = false; await openPlan(id); await endCompare(); }}
+        onFindLines={(trips, retry) => session.findLines(trips, retry)} />
     {:else}
     {#key planId}
     <TripBar
-        {trip} line={session.line} name={session.plan.name} versions={session.versions} openId={session.openId} ready={session.ready && !session.busy} canUndo={session.canUndo} canRedo={session.canRedo} draftSavedAt={session.savedAt} draftError={session.saveError}
-        onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onOpen={openVersion}
-        onSaveNew={name => session.saveNewVersion(name)} onVersions={changeVersions} onCompare={compare} onLibrary={openLibrary}
+        {trip} name={session.plan.name} stored={session.stored} changed={session.changed} canSave={session.canSave} ready={session.ready && !session.busy}
+        canUndo={session.canUndo} canRedo={session.canRedo} onUndo={undo} onRedo={redo}
+        onSave={save} onRename={renameRoute} more={[
+            { label: 'New route', disabled: !trip.points.length, run: newPlan },
+            { label: 'Open route…', run: openLibrary },
+            { label: 'Save a copy…', rule: true, disabled: !trip.points.length, run: saveCopy },
+            { label: 'Discard changes', disabled: !session.changed, run: discard },
+            { label: 'Compare routes…', rule: true, run: compare },
+        ]}
     />
     {/key}
     <main aria-busy={!session.ready}>
         {#if libraryOpen}
-            <LibraryPanel plans={session.plans} unreadable={session.unreadable} onDeleteUnreadable={() => { if (window.confirm('Delete the saved plans that cannot be read? This cannot be undone.')) void session.removeUnreadable(); }} activeId={planId} busy={session.busy} error={session.libraryError}
-                onClose={() => libraryOpen = false} onOpen={plan => openPlan(plan.id)} onRename={(plan, name) => session.rename(plan, name)} onDuplicate={plan => session.duplicate(plan)}
+            <LibraryPanel plans={session.plans} unreadable={session.unreadable} onDeleteUnreadable={() => { if (window.confirm('Delete the saved routes that cannot be read? This cannot be undone.')) void session.removeUnreadable(); }} activeId={planId} busy={session.busy} error={session.libraryError}
+                onClose={() => libraryOpen = false} onOpen={plan => openPlan(plan.id)} onRename={(plan, name) => session.rename(plan, name)} onDuplicate={duplicate}
                 onDelete={deletePlan} onImport={importFiles} gpxNames={session.gpxLines?.map(line => line.name) ?? null}
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
             <div class="query-slot" style:display={nightPage !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} /></div>
+            {#if !searching && nightPage === null}{#key planId}<RoutePreferences {trip} onChange={edit} />{/key}{/if}
             {#if exploreBack && hasEndpoints && !searching && nightPage === null}
                 <button type="button" class="back-to-routes" onclick={() => router.go(ROUTES.explore, { explore: exploreBack })}><Icon name="back" size={15} />Find another route</button>
             {/if}
@@ -1178,9 +1201,14 @@
                         {/if}
                     </div>
                 {/if}
-                {#if !focusedDay && nightPage === null}<RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />{/if}
+                {#if !focusedDay && nightPage === null}
+                    <RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />
+                    <div class="list-links">
+                        <DayCount {trip} line={session.line} onChange={(next, description) => { changePlan(next, description); if (!multiDay(next)) statusUndo = undo; }} />
+                    </div>
+                {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
-                    {#if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
+                    {#if itineraryShown}
                         <!-- The rider's trip, not `planned`: a change must not keep the suggested nights as day ends. -->
                         {#if !focusedDay && nightPage === null}<div class="trip-settings"><TripRow {trip} onChange={changePlan} /></div>{/if}
                         <Itinerary
@@ -1207,11 +1235,11 @@
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`} ondragover={dragOver} ondrop={drop}
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
-                    bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
+                    bind:this={map} {part} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
                     {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedLines={highlighted} pickMode={picking || mapMode?.kind === 'transfer'} routingPackage={currentRoute?.package}
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
-                    shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces}
+                    placeKinds={placeChoice.kinds} highlightedKind={placeChoice.highlight}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
                     onVisibleRange={(range) => visibleRange = range}
@@ -1254,7 +1282,8 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
+                    <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:hillshade bind:contours />
+                    <PlaceKinds />
                     {#if hasTrailView(config)}
                         <div class="control-group">
                             <TrailViewControl bind:this={trailViewControl} active={mapMode?.kind === 'look'} onActivate={binoculars}
@@ -1273,7 +1302,7 @@
                     </div>
                 {/if}
                 {#if dropping}
-                    <div class="drop-frame"><strong>Drop to open as a plan</strong><span>One file is a route. Several files are a trip.</span></div>
+                    <div class="drop-frame"><strong>Drop to open</strong><span>One file is a route. Several files are a trip.</span></div>
                 {/if}
                 {#if mapMode}
                     <div class="mode-chip" role="status">
@@ -1296,6 +1325,7 @@
                 activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {rests} {totals}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
+                {part} onPart={next => { if (active) part = next; }}
             >
                 {#snippet strip(from, to, rests, onHover)}
                     {#if dataLayer?.strip}<LayerStrip layer={dataLayer} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {rests} {onHover} />{/if}
@@ -1304,13 +1334,23 @@
             {/if}
             <div class="status-line" role="status">
                 <span class:save-error={!!session.saveError}>{session.saveError || `${message} · ${routingMessage}`}</span>
-                {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button><button type="button" class="planner-action" onclick={() => { session.save().catch(() => {}); }}>Retry save</button>{/if}
-                {#if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>{/if}
-                {#if placeNote}<span>· {placeNote}</span>{/if}
+                {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan file</button>
+                {:else if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>
+                {:else if session.earlier}<span>· Earlier unsaved changes discarded ·</span><button type="button" class="planner-action" onclick={restoreDraft}>Undo</button>{/if}
+                {#if session.offer}
+                    <span class="reminder">
+                        <span>Unsaved changes from {savedWhen(session.offer.updatedAt)}</span>
+                        <button type="button" class="planner-action quiet" onclick={restoreDraft}>Restore</button>
+                        <button type="button" class="planner-action quiet" aria-label="Dismiss" onclick={dismissDraft}><Icon name="close" size={14} /></button>
+                    </span>
+                {/if}
                 <span class="lab-note">Regional map, search and routing</span>
             </div>
         </section>
     </main>
+    {/if}
+    {#if asking}
+        <SaveWindow mode={asking.mode} name={session.plan.name} stored={session.stored} {trip} onAnswer={answer => { asking?.answer(answer); asking = null; }} />
     {/if}
     {#if trailView}
         <TrailViewWindow at={trailView.at} near={trailView.near} origin={trailView.origin} onClose={() => { trailView = null; trailViewControl?.focus(); }} />
@@ -1385,6 +1425,8 @@
     }
     .planner-shell :global(.planner-chip > svg:first-child) { color: var(--chip-ink, var(--ink-soft)); }
     .planner-shell :global(.planner-chip[aria-expanded="true"]) { border-color: var(--ink); }
+    .planner-shell :global(.planner-action.primary) { border-color: var(--amber); background: var(--amber); color: var(--on-amber); }
+    .planner-shell :global(.planner-action.primary:hover:not(:disabled)) { border-color: transparent; background: color-mix(in srgb, var(--amber) 86%, var(--ink)); }
     main {
         position: relative;
         display: grid;
@@ -1406,6 +1448,7 @@
     .layer-date > :global(*) { pointer-events: auto; }
     .layer-legend { justify-self: start; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 7px 12px; border-radius: 8px; background: var(--panel); box-shadow: var(--planner-shadow); font-size: 12px; color: var(--ink-soft); }
     .layer-legend strong { font-weight: 600; color: var(--ink); }
+    .list-links { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 16px; border-top: 1px solid var(--line); }
     .pane-scroll {
         flex: 1;
         min-height: 0;
@@ -1506,6 +1549,11 @@
         color: var(--ink-soft);
     }
     .save-error { color: var(--coral); }
+    .reminder {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
     .lab-note {
         margin-left: auto;
     }

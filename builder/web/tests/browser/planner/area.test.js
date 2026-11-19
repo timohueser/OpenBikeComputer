@@ -88,7 +88,7 @@ test('with an empty library, a click on the map adds its region, and Done keeps 
 test('a route that waits and leaves the area gives the warning, the box around it ends it, and the Device page shows the new area', async ({ page }) => {
   await library(page, async ({ summary, west, device }) => {
     const { library } = window.coverTest;
-    await library.saveRoute({ id: 'pass', revision: 0, name: 'Pass day', updatedAt: 0, trip: {}, summary });
+    await library.saveRoute({ id: 'pass', name: 'Pass day', updatedAt: 0, trip: {}, summary });
     await library.setState('waiting', ['pass']);
     await library.setState('nextMap', { regions: [], boxes: [west], light: 'default', dark: 'dusk', bytes: 1 });
     localStorage.setItem('obc-device', JSON.stringify(device));

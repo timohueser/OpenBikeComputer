@@ -33,6 +33,8 @@ describe('signed route plans', () => {
         expect([preset('hiking'), preset('foot', 1), preset('hiking', 2), preset('mtb', 2), preset('mtb', 3), preset('bicycle', 5)])
             .toEqual(['Balanced', 'Balanced', 'Alpine', 'Balanced', 'Technical', 'Balanced']);
         expect(routeBase({ ...record(103), kind: 'bicycle' }, { ...base(), bike: 'gravel', pace: 'fast' }).pace).toBe('fast');
+        // A signed route opens as a one-day route, also while a multi-day trip is open.
+        expect(routeBase(record(103), { ...base(), mode: 'trip', days: 4 }).mode).toBe('route');
     });
 
     it('joins the stages of a long route at their shared ends', () => {
