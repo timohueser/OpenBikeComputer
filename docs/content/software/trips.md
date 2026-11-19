@@ -61,16 +61,15 @@ route's line as a drawn leg.
 
 ### Days in the planner
 
-In the web planner, a "Multi-day trip" plan splits its route into riding days. The elevation
-profile is the timeline. Each day has a label with its date, distance and riding time, each night
-has a marker, and each rest day has a narrow column. While the profile is open, a row above it
-holds the start date, the day count and the kinds of places to sleep.
+In the web planner, the day count at the head of the stops makes a route a multi-day trip ("+")
+and back ("−" from the lowest count). The elevation profile is the timeline. Each day has a label
+with its date, distance and riding time, each night has a marker, and each rest day has a narrow
+column. A row above the open profile holds the start date and the kinds of places to sleep.
 
 A guessed value has a dashed line, and a value that the rider set has a solid line. The planner
 guesses the day count from the riding time at the plan's pace. After each route or pace change, it
 guesses the count and the suggested nights again. Pinned nights and a set day count stay. When the
-guess has fewer nights, what the rider set on a lost night goes with it; Undo brings it back. The
-day count is the only control for the length of the days. A bar for the riding time of each day
+guess has fewer nights, what the rider set on a lost night goes with it; Undo brings it back. A bar for the riding time of each day
 shows the hard days.
 
 "Choose" or "Change" on a night, or its marker in the profile, opens the night in the day list.
@@ -97,7 +96,7 @@ new trip.
 
 The planner stores a route at "Save"; the first save asks for its name. Until then, changes stay
 in the browser as a draft. Before another route opens, the planner asks to save or discard
-them. "More" has "Save a copy…" and "Discard changes".
+them. "More" has "New route", "Open route…", "Save a copy…" and "Discard changes".
 
 ### Compare routes
 
