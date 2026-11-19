@@ -526,7 +526,10 @@
 
     async function saveCopy() {
         const name = await ask('copy');
-        if (name && await session.saveCopy(name)) message = 'Copy saved';
+        if (!name || !await session.saveCopy(name)) return;
+        message = 'Copy saved';
+        // The trip bar of the copy is a new one.
+        await focusMore();
     }
 
     async function renameRoute() {
@@ -1071,6 +1074,10 @@
     /** Back in the planner, the menu button that opened the compare screen takes the focus. */
     async function endCompare() {
         comparing = false;
+        await focusMore();
+    }
+
+    async function focusMore() {
         await tick();
         document.querySelector<HTMLElement>('.trip-bar .menu > button')?.focus();
     }

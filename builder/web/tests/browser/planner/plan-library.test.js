@@ -174,6 +174,7 @@ test('a new route is stored only at Save, with the name of the window, and a rel
   await name.press('Enter');
   await expect(saveButton(page)).toHaveText('Saved');
   await expect(saveButton(page)).toBeDisabled();
+  await expect(saveButton(page)).toBeFocused();
   await expect(page.getByRole('heading', { name: 'Lake test', exact: true })).toBeVisible();
   expect((await records(page, 'routes')).map(route => [route.name, route.trip.mode])).toEqual([['Lake test', 'route']]);
   expect(await records(page, 'drafts')).toEqual([]);
@@ -240,6 +241,7 @@ test('"Save a copy…" stores the changes as a new route, and "Discard changes" 
   await dialog(page).getByRole('button', { name: 'Save copy', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'First (copy)', exact: true })).toBeVisible();
   await expect(saveButton(page)).toHaveText('Saved');
+  await expect(page.getByRole('button', { name: 'More ▾', exact: true })).toBeFocused();
   expect((await records(page, 'routes')).map(route => [route.name, route.trip.mode]).sort()).toEqual([['First (copy)', 'trip'], ['First', 'route']]);
 
   await changeType(page, 'Route');

@@ -46,7 +46,7 @@
             {#each items as item (item.label)}
                 <li class:rule={item.rule}>
                     {#if item.control}<div class="control">{@render item.control()}</div>{/if}
-                    <button type="button" class:danger={item.danger} disabled={item.disabled} onclick={() => { open = false; item.run(); }}>
+                    <button type="button" class:danger={item.danger} disabled={item.disabled} onclick={() => { open = false; button?.focus(); item.run(); }}>
                         <span>{#if item.checked !== undefined}<i>{item.checked ? '✓' : ''}</i>{/if}{item.label}</span>
                         {#if item.note}<small>{item.note}</small>{/if}
                     </button>

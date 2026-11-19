@@ -490,7 +490,7 @@ describe('save', () => {
     ])('shows the Save button of %s', async (_, props, label, disabled) => {
         bar(props);
         await tick();
-        expect([saveButton().textContent?.trim(), saveButton().disabled]).toEqual([label, disabled]);
+        expect([saveButton().textContent?.trim(), saveButton().getAttribute('aria-disabled')]).toEqual([label, String(disabled)]);
         // Only a stored route has a title that renames it.
         expect(!!document.querySelector('.trip-bar h1 button')).toBe(props.stored);
     });

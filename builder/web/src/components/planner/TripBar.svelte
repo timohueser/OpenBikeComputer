@@ -67,11 +67,9 @@
         <button type="button" class="icon" disabled={!canRedo} onclick={onRedo} aria-label="Redo" title="Redo"><Icon name="redo" /></button>
         <button type="button" class="planner-action" disabled={!ready} onclick={onLibrary}>My plans</button>
         <div class="save">
-            {#if saved}
-                <button type="button" class="saved" disabled><Icon name="check" size={15} />Saved</button>
-            {:else}
-                <button type="button" class="planner-action primary" disabled={!ready || !canSave} onclick={onSave}>Save</button>
-            {/if}
+            <!-- One button that stays in the page, so it keeps the focus after a save. -->
+            <button type="button" class={saved ? 'saved' : 'planner-action primary'} aria-disabled={!ready || !canSave}
+                onclick={() => { if (ready && canSave) onSave(); }}>{#if saved}<Icon name="check" size={15} />Saved{:else}Save{/if}</button>
             <Menu label="More" items={more} buttonClass="planner-action quiet" />
         </div>
     </div>
@@ -138,6 +136,12 @@
         color: var(--ink-soft);
         font: inherit;
         font-weight: 600;
+        cursor: default;
+    }
+    .primary[aria-disabled="true"] {
+        opacity: 0.45;
+        cursor: default;
+        pointer-events: none;
     }
     .ride {
         display: flex;
