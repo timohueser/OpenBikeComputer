@@ -483,7 +483,8 @@ function addLines(lines: Line[], bridges: Shapes['bridges'], feature: number, { 
     for (const part of parts) {
         const curve = drawn(part, kind, tags), { xy, z } = curve, sideWaysOf = sidesAlong(part, world);
         if (bridge) {
-            const widen = 'plan' in curve && curve.plan ? curve.plan.widen.reduce((most, w) => Math.max(most, w), 0) : 0;
+            let widen = 0;
+            if ('plan' in curve && curve.plan) for (let v = 0; v < curve.plan.widen.length; v++) widen = Math.max(widen, curve.plan.widen[v]);
             bridges.push({ xy: Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat(), half: deckHalf + widen });
         }
         if (!z) continue;
