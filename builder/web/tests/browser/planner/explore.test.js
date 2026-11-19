@@ -83,9 +83,19 @@ test('the name of a card opens the page of the route, and Back and "‹ Explore"
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   let card = await openCard(page, 'Westweg 2', 1440, 900);
+  let answer;
+  const held = new Promise(done => answer = done);
+  await page.route(url => url.pathname.endsWith('/v1/route'), async route => { await held; await route.fallback(); });
   await card.getByRole('link', { name: 'Westweg 2' }).click();
   await expect(page).toHaveURL(/#\/signed\/9-267-177\/202$/);
   await expect(page.getByRole('heading', { name: 'Westweg 2' })).toBeVisible();
+  // The Time is the stored time of the record, before and after the routing answer, whose own time is a few minutes.
+  const time = page.locator('.numbers div', { hasText: 'Time' }).locator('dd');
+  await expect(time).toHaveText('1h 30m');
+  await expect(page.getByText('Finding the climbs…')).toBeVisible();
+  answer();
+  await expect(page.getByText('Finding the climbs…')).toHaveCount(0);
+  await expect(time).toHaveText('1h 30m');
   await expect(page.locator('.title')).toContainText('Stage 2 of 2 · Westweg');
   await expect(page.getByRole('button', { name: 'Plan this route' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Explore', exact: true })).toHaveAttribute('aria-current', 'page');
@@ -128,7 +138,7 @@ test('the trail name on a stage page opens the page of the trail, whose rows ope
   await expect(page.locator('.title')).toContainText('1 of 3 stages');
   // Stage 1 is a gap; stage 3 is outside the release and has no row.
   const rows = page.locator('.facts li');
-  await expect(rows).toHaveText([/^Stage 1.*Not in the map data/, /^Stage 2/]);
+  await expect(rows).toHaveText([/^Stage 1.*Not in the map data/, /^Stage 2.*1h 30m/]);
   await expect(rows.nth(0)).toHaveClass(/\bgap\b/);
   await expect(rows.nth(0).getByRole('link')).toHaveCount(0);
 
