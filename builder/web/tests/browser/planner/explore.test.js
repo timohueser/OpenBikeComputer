@@ -138,7 +138,7 @@ test('the trail name on a stage page opens the page of the trail, whose rows ope
   await expect(page.locator('.title')).toContainText('1 of 3 stages');
   // Stage 1 is a gap; stage 3 is outside the release and has no row.
   const rows = page.locator('.facts li');
-  await expect(rows).toHaveText([/^Stage 1.*Not in the map data/, /^Stage 2/]);
+  await expect(rows).toHaveText([/^Stage 1.*Not in the map data/, /^Stage 2.*1h 30m/]);
   await expect(rows.nth(0)).toHaveClass(/\bgap\b/);
   await expect(rows.nth(0).getByRole('link')).toHaveCount(0);
 

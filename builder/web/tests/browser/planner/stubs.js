@@ -96,7 +96,7 @@ const WESTWEG = {
   ...CATALOG[2], stage_count: 3, trail_profile_m: Array.from({ length: 201 }, (_, i) => i < 100 ? null : 300 + i),
   parts: [
     { id: 201, stage: 1, length_m: 2500, end_m: 2500, missing: true, start_udeg: [7_800_000, 47_970_000], end_udeg: [7_880_000, 47_980_000] },
-    { id: 202, stage: 2, length_m: 2500, ascent_m: 80, end_m: 5000, cells: [ROUTE_CELL] },
+    { id: 202, stage: 2, length_m: 2500, ascent_m: 80, moving_s: 5400, end_m: 5000, cells: [ROUTE_CELL] },
     { id: 203, stage: 3, end_m: 5000, missing: true },
   ],
 };
