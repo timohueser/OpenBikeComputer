@@ -11,7 +11,7 @@
     import Callout from './Callout.svelte';
     import PlaceDetails from './PlaceDetails.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
-    import { canMoveLoopStart, hasEndpoints as endpointsChosen, maxRidingDays, planView, provisionalDays, type Day, type LegMode, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { canMoveLoopStart, hasEndpoints as endpointsChosen, maxRidingDays, multiDay, planView, provisionalDays, type Day, type LegMode, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { nearestProgress, type Coordinate } from '../../lib/planner/geo';
     import type { RoutingLine } from '../../lib/planner/routing';
     import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
@@ -59,7 +59,7 @@
     } = $props();
 
     const hasEndpoints = $derived(endpointsChosen(trip));
-    const multi = $derived(trip.mode !== 'route');
+    const multi = $derived(multiDay(trip));
     const types = $derived(([
         { value: 'via', label: 'Shape', icon: 'route' },
         { value: 'waypoint', label: 'Visit', icon: 'flag' },

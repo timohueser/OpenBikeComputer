@@ -132,15 +132,11 @@
     </div>
 {/snippet}
 
-{#if !focused}
-    {#if nights.campsites}
-        <div class="keep">
-            <p id="keep-campsites"><strong>{nights.campsites} {nights.campsites === 1 ? 'campsite' : 'campsites'} suggested</strong><small>{nights.campsites === 1 ? 'Keep it' : 'Keep them'}, or choose each night yourself.</small></p>
-            <button type="button" class="keep-all" aria-describedby="keep-campsites" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
-        </div>
-    {:else}
-        <p class="hint">Choose where to sleep each night. Open a day for its stops.</p>
-    {/if}
+{#if !focused && nights.campsites}
+    <div class="keep">
+        <p id="keep-campsites"><strong>{nights.campsites} {nights.campsites === 1 ? 'campsite' : 'campsites'} suggested</strong><small>{nights.campsites === 1 ? 'Keep it' : 'Keep them'}, or choose each night yourself.</small></p>
+        <button type="button" class="keep-all" aria-describedby="keep-campsites" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
+    </div>
 {/if}
 <div class="itinerary" class:ladder={!focused} bind:this={root}>
     {#if !focused}

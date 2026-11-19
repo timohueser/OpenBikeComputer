@@ -7,6 +7,8 @@
     import Query from './PlannerQuery.svelte';
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
+    import DayCount from './DayCount.svelte';
+    import RoutePreferences from './RoutePreferences.svelte';
     import SaveWindow, { type SaveAnswer, type SaveMode } from './SaveWindow.svelte';
     import Itinerary from './Itinerary.svelte';
     import RouteList from './RouteList.svelte';
@@ -41,7 +43,7 @@
     import { router } from '../../lib/router.svelte';
     import { ROUTES } from '../../lib/routes';
     import {
-        addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, routeToTrip, hasEndpoints as endpointsChosen,
+        addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, multiDay, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
         orderedRoutePoints, pinNight, pinNights, planView, daySegments, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
@@ -237,7 +239,20 @@
         if (hasProfile) profileOpen = open; else emptyOpen = open;
         if (open) profileHeight = next;
     }
-    const multi = $derived(trip.mode !== 'route');
+    const multi = $derived(multiDay(trip));
+    // The view follows the type on each path that changes it: the day count, Undo, Redo, a search, an import.
+    let viewMulti: boolean | undefined;
+    $effect.pre(() => {
+        if (viewMulti !== undefined && multi !== viewMulti) untrack(() => {
+            night = 1;
+            expandedDay = null;
+            list = 'plan';
+            stopChoosing();
+            exitSearch();
+            clearSelection();
+        });
+        viewMulti = multi;
+    });
     // The days of the trip without its suggested nights. The towns are searched around their ends, and the suggestions
     // then move them. A drag preview changes the line but not the trip, so they follow the line of the trip.
     const evenDays = $derived(planView(trip, session.line).days);
@@ -268,6 +283,22 @@
     const days = $derived(view.days.map(day => day.split && trip.splits?.[day.number] === undefined ? { ...day, split: false } : day));
     const itinerary = $derived(view.itinerary);
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
+    const itineraryShown = $derived(multi && !!visualRoute && (!!currentRoute || routingStatus === 'Calculating route…'));
+    // The help of the stops, behind the "?" of their head row; with no head row there is no help.
+    const help = $derived(!hasEndpoints || searching || list !== 'plan' || focusedDay ? []
+        : itineraryShown ? campsites.length ? [] : ['Choose where to sleep each night. Open a day for its stops.']
+        : stops.some(stop => stop.point.kind === 'via' || stop.point.leg === 'drawn') ? ['Edit shaping points on the map. Reordering stops clears shapes on changed legs. Undo restores them.'] : []);
+    let helpOpen = $state(false);
+    let helpButton = $state<HTMLButtonElement>();
+    let preferences = $state<RoutePreferences>();
+    // Before the "?" leaves the page: a focus on it would fall to the body.
+    $effect.pre(() => {
+        if (help.length) return;
+        untrack(() => {
+            helpOpen = false;
+            if (helpButton && document.activeElement === helpButton) void tick().then(() => preferences?.focus());
+        });
+    });
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
     const queryPlan = $derived(searchPlan(trip, view));
@@ -458,6 +489,7 @@
     function opened() {
         exploreBack = undefined;
         statusUndo = null;
+        helpOpen = false;
         clearSelection();
         exitSearch();
         pointing = undefined;
@@ -1015,17 +1047,6 @@
         void session.nameVisit(next.points.find(p => p.id === id)!);
     }
 
-    function changeTrip(change: Partial<Trip>, description: string) {
-        if (change.mode === 'trip' && trip.mode === 'route') commit(routeToTrip(trip, session.line), description);
-        else edit(change, description);
-        if (!('mode' in change)) return;
-        night = 1;
-        expandedDay = null;
-        list = 'plan';
-        exitSearch();
-        clearSelection();
-    }
-
     function changePlan(next: Trip, description: string) {
         commit(next, description);
         clampNight();
@@ -1147,9 +1168,11 @@
     {#key planId}
     <TripBar
         {trip} name={session.plan.name} stored={session.stored} changed={session.changed} canSave={session.canSave} ready={session.ready && !session.busy}
-        canUndo={session.canUndo} canRedo={session.canRedo} onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onLibrary={openLibrary}
+        canUndo={session.canUndo} canRedo={session.canRedo} onUndo={undo} onRedo={redo}
         onSave={save} onRename={renameRoute} more={[
-            { label: 'Save a copy…', disabled: !trip.points.length, run: saveCopy },
+            { label: 'New route', disabled: !trip.points.length, run: newPlan },
+            { label: 'Open route…', run: openLibrary },
+            { label: 'Save a copy…', rule: true, disabled: !trip.points.length, run: saveCopy },
             { label: 'Discard changes', disabled: !session.changed, run: discard },
             { label: 'Compare routes…', rule: true, run: compare },
         ]}
@@ -1164,6 +1187,7 @@
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
             <Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} />
+            {#if !searching}{#key planId}<RoutePreferences bind:this={preferences} {trip} onChange={edit} />{/key}{/if}
             {#if exploreBack && hasEndpoints && !searching}
                 <button type="button" class="back-to-routes" onclick={() => router.go(ROUTES.explore, { explore: exploreBack })}><Icon name="back" size={15} />Find another route</button>
             {/if}
@@ -1181,7 +1205,7 @@
                             <Icon name="pin" size={18} /><span><small>{point.kind === 'start' ? 'Start' : 'Finish'}</small><strong>{point.label}</strong></span><Icon name="chevron" size={16} />
                         </button>
                     {/each}
-                    <p class="next-step">{multi ? 'Choose both points to see the route and split it into riding days.' : 'Your route appears when you have a start and finish. Add stops along the way.'}</p>
+                    <p class="next-step">Your route appears when you have a start and finish. Add stops along the way.</p>
                 </div>
             {:else}
                 {#if !currentRoute}
@@ -1212,17 +1236,22 @@
                         <h2>Route options</h2>
                     </header>
                     <p class="list-lead">Compare other ways from start to finish, or keep your route.</p>
-                {:else if visualRoute && !focusedDay}
+                {:else if !focusedDay}
                     <div class="list-links" bind:this={listLinks}>
-                        <button type="button" data-list="ways" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options{optionsReason ? ` · ${optionsReason}` : ''}</button>
+                        <DayCount {trip} line={session.line} onChange={(next, description) => { changePlan(next, description); if (!multiDay(next)) statusUndo = undo; }} />
+                        <span class="list-end">
+                            {#if visualRoute}<button type="button" data-list="ways" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options{optionsReason ? ` · ${optionsReason}` : ''}</button>{/if}
+                            {#if help.length}<button type="button" class="help" aria-label="Help" aria-expanded={helpOpen} aria-controls="stops-help" bind:this={helpButton} onclick={() => helpOpen = !helpOpen}>?</button>{/if}
+                        </span>
                     </div>
+                    {#if helpOpen}<div class="help-text" id="stops-help">{#each help as line (line)}<p>{line}</p>{/each}</div>{/if}
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if list === 'ways'}
                         <CompareList label="Route options" rows={optionRows} status={options.state === 'ready' ? null : options.state === 'error' ? options.message : optionStatus[options.state]}
                             retry={options.state === 'error' ? () => session.findAlternatives() : undefined} applyLabel="Use this route" previewId={session.compared?.id ?? null}
                             note={optionRows.length < 2 ? 'No useful alternative to your route was found.' : 'Differences compare with your route.'} onPreview={id => session.previewOption(id)} onApply={useOptionRow} />
-                    {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
+                    {:else if itineraryShown}
                         <Itinerary
                             trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
                             onToggle={showDay} onOverview={showAllDays}
@@ -1457,9 +1486,13 @@
     .list-head h2 { margin: 0; font: 600 15px var(--sans); }
     .list-head :global(.planner-action) { gap: 4px; padding-left: 6px; }
     .list-lead { margin: 4px 16px 0; font-size: 13px; color: var(--ink-soft); }
-    .list-links { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 6px 16px 8px; border-top: 1px solid var(--line); }
-    .list-links button { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; font-size: 13px; color: var(--ink-soft); }
-    .list-links button:hover { color: var(--ink); }
+    .list-links { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 16px; border-top: 1px solid var(--line); }
+    .list-end { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+    .list-end button { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 6px; border-radius: 6px; font-size: 13px; color: var(--ink-soft); }
+    .list-end button:hover, .list-end .help[aria-expanded="true"] { background: var(--parchment-2); color: var(--ink); }
+    .list-end .help { justify-content: center; width: 28px; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; font-weight: 700; }
+    .help-text { padding: 0 16px 4px; font-size: 13px; color: var(--ink-soft); }
+    .help-text p { margin: 0 0 6px; }
     .pane-scroll {
         flex: 1;
         min-height: 0;

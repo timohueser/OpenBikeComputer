@@ -15,14 +15,15 @@
 
 <style>
     .stats {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 12px 16px;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 8px 12px;
         margin: 0;
-        padding: 12px 0;
+        padding: 10px 0;
     }
     .stats div { display: flex; flex-direction: column-reverse; }
-    dt { font-size: 13px; color: var(--ink-soft); }
-    dd { margin: 0; font: 700 22px var(--sans); font-variant-numeric: tabular-nums; white-space: nowrap; }
-    small { margin-left: 4px; font: 400 13px var(--sans); color: var(--ink-soft); }
+    dt { font-size: 12px; color: var(--ink-soft); }
+    dd { margin: 0; font: 700 17px var(--sans); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    small { margin-left: 3px; font: 400 12px var(--sans); color: var(--ink-soft); }
 </style>

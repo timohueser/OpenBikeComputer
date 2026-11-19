@@ -30,7 +30,7 @@ export function routeBase(route: CatalogRecord, trip: Trip): Trip {
         : ['road', 'gravel', 'touring'].includes(bike) ? bike : 'touring';
     const hardest = route.hardest ?? 0;
     const preset = activity === 'hiking' && hardest > 1 ? 'Alpine' : activity === 'mtb' && hardest > 2 ? 'Technical' : 'Balanced';
-    return { ...emptyTrip(trip.mode), name: route.name ?? route.ref, bike: activity, preset, pace: trip.pace, startDate: trip.startDate };
+    return { ...emptyTrip(), name: route.name ?? route.ref, bike: activity, preset, pace: trip.pace, startDate: trip.startDate };
 }
 
 /** A plan of `base` that follows `plan`, from the route's own start. At a turnaround the route turns back. A loop plan ends at its start. */
