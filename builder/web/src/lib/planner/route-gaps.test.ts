@@ -33,6 +33,8 @@ describe('route gaps', () => {
         expect(gapNote([gap])).toBe('Route ends 220 m before the selected point — no accessible path');
         expect(gapNote([{ ...gap, point: { ...gap.point, kind: 'start' } }, { ...gap, km: 1.24 }]))
             .toBe('Route misses 2 selected points by up to 1.2 km — no accessible path');
+        expect([gapNote([], [gap]), gapNote([gap], [gap, gap])])
+            .toEqual(['No legal path between 2 points', 'Route ends 220 m before the selected point — no accessible path · 2 legs have no legal path']);
         settings.units = 'mi';
         onTestFinished(() => { settings.units = 'km'; });
         expect(gapNote([gap])).toBe('Route ends 0.1\u00a0mi before the selected point — no accessible path');

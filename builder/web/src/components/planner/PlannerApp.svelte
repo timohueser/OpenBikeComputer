@@ -70,7 +70,7 @@
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
     import { closureNote, closureStretches, type Stretch } from '../../lib/planner/route-closures';
     import { alpineNote, alpineStretches } from '../../lib/planner/route-difficulty';
-    import { gapNote, routeGaps } from '../../lib/planner/route-gaps';
+    import { gapNote, legGaps, routeGaps } from '../../lib/planner/route-gaps';
     import { distanceIn } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
     const defaultLabels: Record<EditableKind, string> = {
@@ -307,6 +307,9 @@
     const closures = $derived(closureStretches(visualRoute));
     const alpine = $derived(alpineStretches(visualRoute));
     const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
+    const gapLegs = $derived(visualRoute ? legGaps(visualStops, coordinates, visualRoute.gapLegs) : []);
+    // Show steps through the points that the route passes by, then the legs with no legal path.
+    const missing = $derived<Stretch[]>([...gaps, ...gapLegs]);
     // A new route makes the shown stretch stale, so the map no longer marks it.
     let shownStretch = $state.raw<Stretch | null>(null);
     const shownIndex = (stretches: Stretch[]) => shownStretch ? stretches.indexOf(shownStretch) : -1;
@@ -1221,8 +1224,8 @@
                 {#if !focusedDay && visualRoute}
                     <div class="trip-summary"><RouteStats distance={view.summary.distance} ascent={view.line?.unknownElevationKm === 0 ? view.summary.ascent : null} descent={view.line?.unknownElevationKm === 0 ? view.summary.descent : null} walking={shown.trip.bike === 'hiking'} hours={view.line ? view.summary.hours : null} /></div>
                 {/if}
-                {#if !focusedDay && gaps.length}
-                    <p class="closure-note"><Icon name="pin" size={15} /><span>{gapNote(gaps)}</span></p>
+                {#if !focusedDay && missing.length}
+                    <p class="closure-note"><Icon name="pin" size={15} /><span>{gapNote(gaps, gapLegs)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(missing)}>{stepLabel(missing)}</button></p>
                 {/if}
                 {#if !focusedDay && closures.length}
                     <p class="closure-note"><Icon name="calendar" size={15} /><span>{closureNote(closures)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(closures)}>{stepLabel(closures)}</button></p>
