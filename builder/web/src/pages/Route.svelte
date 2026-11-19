@@ -163,7 +163,7 @@
             part={focus} lit={hover ?? focus} {routePlaces} bind:litPlaces bind:openPlaceId />{/if}
     {/snippet}
     {#if plan && summary}
-        {#key id}<Rows {summary} trip={plan.trip} {line} {facts} {pins} mark={share} onpoint={next => share = next ?? undefined}
+        {#key id}<Rows {summary} trip={plan.trip} {line} failed={!!error} {facts} {pins} mark={share} onpoint={next => share = next ?? undefined}
             {part} onpart={next => part = next} onhover={next => hover = next} onday={next => day = next}
             bind:routePlaces bind:litPlaces bind:openPlaceId />{/key}
     {/if}
