@@ -15,6 +15,7 @@ owns:
   - builder/web/src/lib/routes.test.ts
   - builder/web/src/lib/router.svelte.ts
   - builder/web/src/lib/keep-in-history.svelte.ts
+  - builder/web/src/lib/keep-in-history.svelte.test.ts
   - builder/web/vite/third-party-licenses.ts
   - builder/web/vite/licenses/**
   - builder/web/src/styles/tokens.css

@@ -391,10 +391,35 @@ export class Library {
         });
     }
 
+    /** Removes a photo. A ride whose cards show it gets its cover back. */
     removePhoto(id: string): Promise<void> {
-        return this.write(['photos'], (tx, _, changed) => {
-            tx.objectStore('photos').delete(id);
-            changed('photos', id);
+        return this.write(['photos', 'rides'], (tx, _, changed) => {
+            const photos = tx.objectStore('photos'), rides = tx.objectStore('rides'), photo = photos.get(id);
+            photo.onsuccess = () => {
+                photos.delete(id);
+                changed('photos', id);
+                const ride = photo.result && rides.get(photo.result.ride);
+                if (ride) ride.onsuccess = () => {
+                    if (ride.result?.photo !== id) return;
+                    const { photo: _, ...rest } = ride.result;
+                    rides.put(rest);
+                    changed('rides', rest.key);
+                };
+            };
+            return () => {};
+        });
+    }
+
+    /** Gives the cards of a stored ride the photo `id`, or with null their cover again. */
+    setCardPhoto(key: string, id: string | null): Promise<void> {
+        return this.write(['rides'], (tx, _, changed) => {
+            const rides = tx.objectStore('rides'), ride = rides.get(key);
+            ride.onsuccess = () => {
+                if (!isRideRecord(ride.result)) return;
+                const { photo: _, ...rest } = ride.result;
+                rides.put(id === null ? rest : { ...rest, photo: id });
+                changed('rides', key);
+            };
             return () => {};
         });
     }

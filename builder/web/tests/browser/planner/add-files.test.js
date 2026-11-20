@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { crc32, deflateRawSync, gzipSync } from 'node:zlib';
 import { expect, test } from '@playwright/test';
 import { initSync, obc_fit_write_course, obc_fit_write_ride } from '../../../src/lib/core/pkg/obc_builder_bridge.js';
+import { drawnJpeg, photoFile } from './photos.js';
 
 initSync({ module: readFileSync(new URL('../../../src/lib/core/pkg/obc_builder_bridge_bg.wasm', import.meta.url)) });
 
@@ -65,14 +66,14 @@ test('adds the rides and the routes of files and a ZIP file once, and gives the 
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await open(page);
-  await expect(page.locator('dl > div')).toHaveText(['rides2', 'planned routes2', 'are in your library already0', 'not readable1']);
+  await expect(page.locator('dl > div')).toHaveText(['rides2', 'planned routes2', 'photos0', 'are in your library already0', 'not readable1']);
   await expect(page.getByRole('listitem').filter({ hasText: 'old.tcx' })).toContainText('not readable: TCX files cannot be read');
   // A GPX file with times can also be a planned route.
   const form = page.getByRole('radiogroup', { name: 'ride: ride or planned route' });
   await form.getByRole('radio', { name: 'planned route' }).click();
-  await expect(page.locator('dl > div')).toHaveText(['ride1', 'planned routes3', 'are in your library already0', 'not readable1']);
+  await expect(page.locator('dl > div')).toHaveText(['ride1', 'planned routes3', 'photos0', 'are in your library already0', 'not readable1']);
   await form.getByRole('radio', { name: 'ride', exact: true }).click();
-  await expect(page.locator('dl > div')).toHaveText(['rides2', 'planned routes2', 'are in your library already0', 'not readable1']);
+  await expect(page.locator('dl > div')).toHaveText(['rides2', 'planned routes2', 'photos0', 'are in your library already0', 'not readable1']);
   await page.getByRole('button', { name: 'Add 4 to the library' }).click();
   await expect(page.getByRole('status')).toHaveText('Added 2 rides and 2 planned routes.');
   await page.keyboard.press('Escape');
@@ -89,7 +90,30 @@ test('adds the rides and the routes of files and a ZIP file once, and gives the 
   expect(stored).toEqual({ rides: ['20260801T070000Z', '20260802T070000Z'], routes: [['file-', 1, 'route'], ['file-', 1, 'route']] });
 
   await open(page);
-  await expect(page.locator('dl > div')).toHaveText(['rides0', 'planned routes0', 'are in your library already4', 'not readable1']);
+  await expect(page.locator('dl > div')).toHaveText(['rides0', 'planned routes0', 'photos0', 'are in your library already4', 'not readable1']);
   await expect(page.getByRole('button', { name: 'Add 0 to the library' })).toBeDisabled();
+  expect(errors).toEqual([]);
+});
+
+test('adds the photos of a ride file to that ride, and names a photo that fits no ride', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/planner.html#/routes');
+  const jpeg = await drawnJpeg(page);
+  await page.getByRole('button', { name: 'Add files' }).click();
+  // The ride starts at `start` and takes 1770 s.
+  await page.getByLabel('Choose files').setInputFiles([files[0], photoFile(jpeg, 'top.jpg', start + 600), photoFile(jpeg, 'lake.jpg', start + 1200),
+    photoFile(jpeg, 'home.jpg', start + 86_400)]);
+  await expect(page.getByText('4 files read')).toBeVisible();
+  await expect(page.locator('dl > div')).toHaveText(['ride1', 'planned routes0', 'photos2', 'are in your library already0', 'not readable0']);
+  await expect(page.getByRole('listitem').filter({ hasText: 'top.jpg' })).toContainText('photo of ride');
+  await expect(page.getByText('home.jpg fits no ride. It is not added.')).toBeVisible();
+  await page.getByRole('button', { name: 'Add 3 to the library' }).click();
+  await expect(page.getByRole('status')).toHaveText('Added 1 ride, 0 planned routes and 2 photos.');
+
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  const photos = await page.evaluate(async () => (await window.coverTest.library.photos('20260801T070000Z')).map(photo => photo.time).sort());
+  expect(photos).toEqual([start + 600, start + 1200]);
   expect(errors).toEqual([]);
 });
