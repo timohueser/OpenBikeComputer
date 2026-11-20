@@ -85,8 +85,9 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::pmtiles::{self, Archive, Header};
+    use crate::pmtiles::{self, Header};
     use crate::tiles::{decode, Feature, Tiles, EXTENT, FINE, FORMAT, MAX_ZOOM, MIN_ZOOM};
+    use obc_data::pmtiles::{tile_id, Archive};
 
     /// A zoom-13 tile in Engelberg. Each node is (id, u, v) in its tile units.
     const COLUMN: u32 = 4286;
@@ -214,7 +215,7 @@ mod tests {
                 }
                 let mut data = Vec::new();
                 WebPEncoder::new_lossless(&mut data).encode(&rgba, 512, 512, ExtendedColorType::Rgba8).unwrap();
-                (pmtiles::tile_id(13, COLUMN + east, ROW), data)
+                (tile_id(13, COLUMN + east, ROW), data)
             })
             .collect();
         let header =
