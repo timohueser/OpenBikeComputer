@@ -23,7 +23,7 @@ KEYS = {
     "route": SHARED | {"key", "rank"},
     "stage": SHARED | {"of", "number"},
 }
-NEEDS = {"description": {"origin", "countries", "kind", "route"}, "route": {"layer", "key"}, "stage": {"layer", "of", "number"}}
+NEEDS = {"description": {"origin", "countries", "kind", "route"}, "route": {"key"}, "stage": {"of", "number"}}
 KEY_LIMIT = 10**10
 # One metre in degrees of latitude: the tolerance of the simplification.
 METRE = 1 / 111_320
@@ -160,10 +160,15 @@ def features(name, files, table, wanted):
     if len(files) != 1:
         raise ValueError(f"{name}: a route source has one file, not {len(files)}")
     path = str(next(iter(files.values())))
-    path = f"/vsizip/{path}/{table['file']}" if "file" in table else path
-    layer = table["layer"]
-    if layer not in {row[0] for row in pyogrio.list_layers(path)}:
-        raise ValueError(f"{name}: the file has no layer {layer}")
+    # The braces mark the zip: a store object has no `.zip` that would end it.
+    path = f"/vsizip/{{{path}}}/{table['file']}" if "file" in table else path
+    layers = [row[0] for row in pyogrio.list_layers(path)]
+    # A GeoJSON without a `name` has the name of its file as its layer, and a store object is named
+    # by its digest: a file of one layer needs no `layer`.
+    layer = table.get("layer", layers[0] if len(layers) == 1 else None)
+    if layer not in layers:
+        raise ValueError(f"{name}: the file has no layer {layer}" if "layer" in table
+                         else f"{name}: the file has {len(layers)} layers; name one with `layer`")
     if missing := wanted - set(pyogrio.read_info(path, layer=layer)["fields"]):
         raise ValueError(f"{name}: the layer {layer} has no field {', '.join(sorted(missing))}")
     meta, fids, geometry, values = pyogrio.raw.read(path, layer=layer, columns=sorted(wanted), force_2d=True, return_fids=True)
@@ -222,11 +227,11 @@ def read(source, files, bounds):
         kind_of = kind if isinstance(kind, str) else kind["values"].get(str(row[kind["field"]]))
         if kind_of is None:
             continue
-        for key, text in keys(row, route["key"], f"{name}: {route['layer']} feature {fid}"):
+        for key, text in keys(row, route["key"], f"{name}: {route.get('layer', 'route')} feature {fid}"):
             routes.setdefault(key, {"row": row, "text": text, "kind": kind_of, "members": []})["members"] += found
     stages = {}
     for fid, row, found in features(name, files, stage, fields(stage)) if stage else []:
-        where = f"{name}: {stage['layer']} feature {fid}"
+        where = f"{name}: {stage.get('layer', 'stage')} feature {fid}"
         for key, _ in keys(row, stage["of"], where):
             if key in routes:
                 stages.setdefault(key, []).append((where, row, found))
