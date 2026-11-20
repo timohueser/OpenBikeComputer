@@ -110,7 +110,7 @@ fn near(openings: &[Opening], input: &Input) -> Vec<Near> {
 /// An opening is measured again where a changed open stretch lies this near: its reads reach about 100 m (the stations
 /// in, up to `free_max_m` and the longest stagger of a pair, and the row across, up to `pair_max_m` and two tubes with
 /// their wings), and a stretch changes the ground up to about 100 m from its end vertex (its length, at most
-/// `junction_shift_max_m` or `pair_max_m`, and the cut and fill of its road beyond it).
+/// `junction_shift_max_m` plus `pair_max_m`, and the cut and fill of its road beyond it).
 const AGAIN_M: f64 = 200.0;
 const SQUARE: f64 = (1u64 << obc_ground_plan::frame::FRAME_BITS) as f64;
 
@@ -158,7 +158,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         if openings[a].s >= openings[c].s {
             let t = &tubes[openings[i].tube];
             for j in [a, c] {
-                openings[j] = Opening { others: openings[j].others, ..openings[j].at(t, 0.0) };
+                openings[j] = openings[j].at(t, 0.0);
             }
             met += 1;
         }
@@ -356,9 +356,10 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             (sites[i], rights[i], moved[i]) = (Some(site), a.right, 0.0);
         }
     }
-    // Where the ground of the second measure no longer fits the kind (no cover, or cover past the limit), the end takes
-    // its next kind; a pair with such an end is no pair.
-    let mut refitted = 0;
+    // Where the ground of the second measure no longer fits a kind (no cover, or cover past the limit), the end drops
+    // it; a pair with an end that dropped `Pair` is no pair. Dropping kinds commutes, so the order of the ends does not
+    // matter.
+    let before: Vec<Option<Kind>> = kinds.iter().map(|k| k.first().copied()).collect();
     for &i in &again {
         let g = &input.rules.groups[tubes[openings[i].tube].group];
         let d = cover[i];
@@ -367,17 +368,17 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             Kind::Rock => d.is_some_and(|d| d <= g.collar_max_m.min(b.rock_cover_max_m)),
             Kind::Box | Kind::Free => true,
         };
-        if kinds[i].first().is_none_or(fits) {
-            continue;
-        }
-        refitted += 1;
         kinds[i].retain(|k| fits(k));
-        if let Some(m) = mate[i].take() {
-            mate[m] = None;
+        if before[i] != Some(Kind::Free) && kinds[i].first() == Some(&Kind::Free) {
+            rung[i] = Some(if d.is_none() { "free: never covered" } else { "free: covered past the limit" });
+        }
+        if let Some(m) = mate[i].filter(|_| !kinds[i].contains(&Kind::Pair)) {
+            (mate[i], mate[m]) = (None, None);
             kinds[m].retain(|&k| k != Kind::Pair);
             (far_of[i], far_of[m]) = (i, m);
         }
     }
+    let refitted = (0..n).filter(|&i| kinds[i].first().copied() != before[i]).count();
     // The numbers of each drawn opening.
     let mut ends: Vec<End> = Vec::with_capacity(n);
     for i in 0..n {
