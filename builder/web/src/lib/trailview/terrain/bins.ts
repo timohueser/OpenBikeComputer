@@ -1140,7 +1140,7 @@ export interface NodeStamps {
 
 /**
  * What the tunnel parts of a tile stamp with the ground plan (`partStamps` of structures/parts.ts): the tunnel lines of the
- * chains that draw as parts, the metres from each end of such a line in which it stamps no cover, and the rings that the
+ * chains that draw as parts, the metres from each end of such a line in which it stamps nothing, and the rings that the
  * parts take from the ground.
  */
 export interface PartStamps { built: Set<Line>; stops: Map<Line, [number, number]>; taken: number[][] }
@@ -1240,7 +1240,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             // steps of 2 cm, how far its edge lies out at the start and the end, where it tapers to a partner's.
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
             // The mitres of the two ends, then the rise of the bank to the right at each. On a tunnel that draws as parts,
-            // the decimetres from the segment's start and from its end in which it stamps no cover.
+            // the decimetres from the segment's start and from its end in which it stamps nothing.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
             const stop = parts?.stops.get(line), dm = (m: number) => Math.min(0xffff, Math.round(10 * Math.max(0, m)));
             const bare = stop ? dm(stop[0] - along[v]) | (dm(stop[1] - (along[n - 1] - along[v + 1])) << 16) : 0;
