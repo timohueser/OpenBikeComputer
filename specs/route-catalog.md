@@ -634,17 +634,23 @@ pairs by (a) count: a pair by (b) is another route on the same path, which canno
 A kept record never leaves for a job of a later origin, so an official record never leaves for an
 OSM job.
 
-So no route leaves the catalog for another one unless the records that stay cover four fifths of its
-line: the rule counts only kept records of earlier origins, and nothing removes such a record later,
-as `named` drops only unnamed OSM stages and the builder cuts no source line into sections. A job
-that fails removes nothing. The builder plans all source jobs first. Then it applies the rule to the
-jobs of the second and later sources, in their order, and to the OSM jobs, so an OSM job that
-leaves needs no search. Then it plans the OSM jobs that stay.
+So no route leaves the catalog for another one unless the match lines of the records that stay cover
+four fifths of its match line: the rule counts only kept records of earlier origins, and nothing
+removes such a record later, as `named` drops only unnamed OSM stages and the builder cuts no source
+line into sections. The line that a record shows can differ from its match line where its plan goes
+around a cut of [Line of a source job](#line-of-a-source-job). A job that fails removes nothing. The
+builder plans all source jobs first. Then it applies the rule to the jobs of the second and later
+sources, in their order, and to the OSM jobs, so an OSM job that leaves needs no search. Then it
+plans the OSM jobs that stay.
 
 A route can show twice: an OSM job that its pairs cover by less than four fifths stays beside them.
 Examples are two stagings of one route with other stage ends, such as an official stage and an OSM
 stage of one trail that lie three quarters along each other, and a long OSM route with the number
 of a short official route. To remove one could remove a stretch that shows nowhere else.
+
+A name can show nowhere: a job that is no part of a long route can leave for an official record of
+another name on the same path, a pair by (b), such as a EuroVelo stage on the line of a national
+route with another number.
 
 ### Successors
 
