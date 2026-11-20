@@ -412,6 +412,21 @@ fn a_way_whose_short_reach_lies_next_to_a_curve_point_holds_the_floor_down() {
 }
 
 #[test]
+fn a_way_half_a_metre_beside_the_reach_cuts_nothing() {
+    // A road runs beside the tube 0.5 m outside its reach from 60 m to 140 m east, then crosses it near 141 m. Only the
+    // crossing holds the floor down, from about 134 m, with the grade on to 118 m; beside it, the floor stays.
+    let reach = widths().way("road", &tags(&[("highway", "residential")]), false).outer_m()
+        + widths().way("tunnel", &tags(&ROAD), false).half_m
+        + 0.6
+        + 0.5;
+    let placed = under(&[[60.0, reach + 0.5], [140.0, reach + 0.5], [150.0, -50.0]], 504.0, None);
+    let chords = chords(&placed);
+    assert!((floor_at(&chords, 141.4) - 498.0).abs() < 0.5, "{}", floor_at(&chords, 141.4));
+    assert!([60.0, 80.0, 100.0, 110.0].iter().all(|&e| floor_at(&chords, e) == 500.0), "{chords:?}");
+    assert!(chords.iter().filter(|c| c.0[1] <= 118.0).all(|c| c.2 == 5.0));
+}
+
+#[test]
 fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height() {
     // 3 m from the opening, the floor cannot go down in time: the section there is lower. A road on top at 505.5 m
     // leaves 4.5 m over the floor of the opening (its underside, less the shell); the opening takes that height.
