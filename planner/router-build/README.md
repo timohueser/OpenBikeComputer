@@ -23,6 +23,7 @@ fails in the costs step, after the source and the roads steps.
 ## Layers
 
 The store keeps only the work layer of each step and options that a run used last (`cache`).
+`planner/routing` and `planner/route-facts` (part `route-facts`) are client layers.
 
 | Step | Runs | Layer |
 | --- | --- | --- |
@@ -30,15 +31,16 @@ The store keeps only the work layer of each step and options that a run used las
 | `planner/routing-roads` | The walks of the roads with the terrain, the turn restrictions, the topology | `roads/` |
 | `planner/routing-costs` | The way bases, the road pass, the snap bits | `costs/` |
 | `planner/routing` | The landmarks, the package, the overlay index, the route catalog, the blocks and the routes | `routing/`, `blocks/`, `routes/` |
-| `planner/route-facts` | The places of the OSM extract, the shares of the route samples, the facts of each route | `facts/` |
+| `planner/route-facts` | The places of the OSM extract, the shares and the facts of each route | `facts/` |
 
 | Change | Steps that run |
 | --- | --- |
 | A stop or a crash in a step | That step and the steps after it |
-| The profile list, or the revision of `planner/routing-costs` | Costs, package |
-| `region`, `attribution` | Package |
-| The GLO-30 tiles or the reference, or the revision of `planner/routing-roads` | Roads, costs, package |
-| The OSM cut, the bounds, the router `FORMAT`, or the revision of `planner/routing-source` | All four |
+| The profile list, or the revision of `planner/routing-costs` | Costs, package, facts |
+| `region`, `attribution` | Package, facts |
+| The GLO-30 tiles or the reference, or the revision of `planner/routing-roads` | Roads, costs, package, facts |
+| The OSM cut, the bounds, the router `FORMAT`, or the revision of `planner/routing-source` | All five |
+| The canopy archive, or the revision of `planner/route-facts` | Facts |
 
 A change of the bytes of a work layer changes its format, of its content its revision. A column
 is one file of little-endian values; `layout.json` gives its type and count (`column::Layout`).
