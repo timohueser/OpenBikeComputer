@@ -172,9 +172,17 @@ export function halfWidth(tags: Record<string, string>, surface: Surface): numbe
 export const MOTORWAYS = ['motorway', 'motorway_link', 'trunk', 'trunk_link'], MAINS = ['primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link'];
 export const SETTS = ['sett', 'cobblestone', 'unhewn_cobblestone', 'stone'];
 /** Whether a road wears lines: one of those classes on asphalt. Its corridor (lookOf of roads/section.ts) and its paint read this one fact. */
-export function marked(line: Line): boolean {
+export function marked(line: Pick<Line, 'code' | 'profile' | 'surface'>): boolean {
     const tag = line.surface ?? '', surface = Object.keys(SURFACES)[(line.code & 15) - 1] as Surface;
     return [...MOTORWAYS, ...MAINS].includes(CLASSES[line.profile]) && PAVED_ROADS.includes(surface) && !SETTS.includes(tag) && tag !== 'paving_stones' && !tag.startsWith('concrete');
+}
+
+/** The surface code and the lines of a way of class `cls` (as `classOf` names it) with a `surface` tag, as a tunnel's line has them. */
+export function classPaint(cls: string, surface?: string): { code: number; marked: boolean } {
+    const tags: Record<string, string> = cls === 'rack' ? { railway: 'rail', rack: 'yes' } : TRACKS.includes(cls) ? { railway: cls } : { highway: cls };
+    if (surface !== undefined) tags.surface = surface;
+    const code = codeOf(isTrack(tags) ? trackSurface(tags) : surfaceOf(tags));
+    return { code, marked: marked({ code, profile: profileOf('road', cls), surface }) };
 }
 
 /** The width of a line's sidewalks where it has them. */
@@ -431,10 +439,16 @@ function strokeAt({ along, backward }: NonNullable<FeaturePart['plan']>, xy: Arr
     return backward ? { at: along - metres, sign: -1 } : { at: along + metres, sign: 1 };
 }
 
+/** Vertex v of a part's points of a tile, in world units. */
+export function worldPoint(tile: Node, xy: ArrayLike<number>, v: number): number[] {
+    const scale = unitScale(tile.level);
+    return [(tile.x * EXTENT + xy[2 * v]) * scale, (tile.y * EXTENT + xy[2 * v + 1]) * scale];
+}
+
 /** A tile's frame: its features' points in world units, the line of a part, whose curve is made once, and the rings of an area. */
 function frameOf(tile: Node) {
-    const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
-    const world = (xy: ArrayLike<number>, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
+    const scale = unitScale(tile.level), oy = tile.y * EXTENT;
+    const world = (xy: ArrayLike<number>, v: number) => worldPoint(tile, xy, v);
     const curves = new Map<FeaturePart, Curve>();
     /** A part of a line feature as its line: the chords of its curve where it has an alignment, for the outer edge of its sidewalks. */
     const drawn = (part: FeaturePart, kind: string, tags: Record<string, string>): Curve | FeaturePart => {

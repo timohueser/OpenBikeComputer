@@ -5,9 +5,10 @@ import { stationsOf, strokeMetres, type Station as CurveStation } from '../roads
 
 /**
  * Words of a vertex, as `StructureIn` of structures.wgsl: x, y (int32 world units), z, colour and flags
- * (unorm8x4), across and half-width (snorm16x2 of ±ROAD_RANGE_M), and a track's sleepers from its start.
+ * (unorm8x4), across and half-width (snorm16x2 of ±ROAD_RANGE_M), a track's sleepers from its start, and a
+ * part's share of daylight (-1: the boxes of the portals give it).
  */
-export const STRUCTURE_VERTEX = 6;
+export const STRUCTURE_VERTEX = 7;
 const ROAD_RANGE_M = 16;
 /** As NO_SLEEPERS of roads.wgsl: a face without a count of sleepers. */
 export const NO_SLEEPERS = -1e9;
@@ -93,9 +94,9 @@ export class MeshBuilder {
     private indices = this.onPlan;
 
     /** A vertex at a station's corner, or at a point. */
-    vertex(x: number, y: number, z: number, colour: number, across = 0, half = 0, sleepers = NO_SLEEPERS): number {
+    vertex(x: number, y: number, z: number, colour: number, across = 0, half = 0, sleepers = NO_SLEEPERS, daylight = -1): number {
         const snorm = (metres: number) => Math.round(Math.max(-1, Math.min(1, metres / ROAD_RANGE_M)) * 32767) & 0xffff;
-        this.words.push(Math.round(x), Math.round(y), z, colour, (snorm(across) | (snorm(half) << 16)) >>> 0, sleepers);
+        this.words.push(Math.round(x), Math.round(y), z, colour, (snorm(across) | (snorm(half) << 16)) >>> 0, sleepers, daylight);
         return this.words.length / STRUCTURE_VERTEX - 1;
     }
 

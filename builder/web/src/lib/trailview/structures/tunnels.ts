@@ -19,7 +19,8 @@ const boxDepth = (y: number) => (RULES.PORTAL_CELLS + Math.SQRT2) * RULES.MESH_T
 /** A road's bore: the kerb's height, and its lamps' length and spacing. */
 const KERB_M = 0.15, LAMP_M = 1.2, LAMPS_M = 10;
 /** The arch springs at this share of the bore's height; the void stands this far in. */
-const SPRING = 0.6, VOID_M = 0.7;
+const SPRING = 0.6;
+export const VOID_M = 0.7;
 /**
  * The facade's thickness, the box's walls and roof, and how deep the facade stands in the ground. The
  * facade's top is flush with the roof, under COVER_M of the road solver: a road over a tunnel hides both.

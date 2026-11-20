@@ -47,6 +47,8 @@ struct StructureIn {
     @location(3) road: vec2f,
     // A track's sleepers from its start; a road's metres along its stroke; NO_SLEEPERS elsewhere.
     @location(4) sleepers: f32,
+    // A part's share of daylight from 0 to 1; -1 where the boxes of the portals give it.
+    @location(5) daylight: f32,
 }
 
 struct StructureOut {
@@ -58,6 +60,7 @@ struct StructureOut {
     @location(3) @interpolate(flat) colour: vec4f,
     @location(4) road: vec2f,
     @location(5) sleepers: f32,
+    @location(6) daylight: f32,
 }
 
 // Vertex flags, as in mesh.ts.
@@ -120,6 +123,7 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     out.colour = v.colour;
     out.road = v.road * ROAD_RANGE_M;
     out.sleepers = v.sleepers;
+    out.daylight = v.daylight;
     return out;
 }
 
