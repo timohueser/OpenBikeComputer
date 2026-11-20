@@ -71,7 +71,7 @@ pub static PLANNER_SNOW: Layer = whole("planner/snow", 2, &[&WEB_PLANNER]);
 /// holds what the stamp worker makes of the tiles; `stamp_version` of `specs/trailview-tiles.md` says
 /// which stamp code made it.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 28, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
+    Layer { revision: 29, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -1287,8 +1287,8 @@ fn ruleset(root: &Path) -> Result<String, String> {
 
 /// The digest of the files that the TrailView stamp code can read, by their paths in the repository: the
 /// TypeScript of `builder/web/src/lib/trailview/` but its tests and generated packages, the JSON of
-/// `data/trailview/`, the sources of the parts bridge that it inlines, the bake module, the stamp process and the
-/// npm lock. It changes with each change of the stamp version, and with more: the exact version needs Node and the
+/// `data/trailview/`, the tracked sources of the parts bridge that it inlines, the bake module, the stamp process and
+/// the npm lock. It changes with each change of the stamp version, and with more: the exact version needs Node and the
 /// npm packages, which a plan has not.
 fn stamp_sources(root: &Path) -> Result<String, String> {
     let mut files = Vec::new();
@@ -1298,8 +1298,19 @@ fn stamp_sources(root: &Path) -> Result<String, String> {
     };
     walk(&root.join("builder/web/src/lib/trailview"), root, &typescript, &mut files)?;
     walk(&root.join("data/trailview"), root, &|path| path.extension().is_some_and(|e| e == "json"), &mut files)?;
-    for bridge in ["host/obc-trailview-parts", "builder/trailview-parts-wasm"] {
-        walk(&root.join(bridge), root, &|_| true, &mut files)?;
+    // The tracked sources of the parts bridge but their Markdown, as `partsSources` of the stamp bundle takes them.
+    let listed = std::process::Command::new("git")
+        .args(["ls-files", "-z", "--", "host/obc-trailview-parts", "builder/trailview-parts-wasm", ":(exclude)*.md"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("git ls-files: {e}"))?;
+    if !listed.status.success() {
+        return Err(format!("git ls-files: {}", String::from_utf8_lossy(&listed.stderr)));
+    }
+    for name in listed.stdout.split(|&b| b == 0).filter(|n| !n.is_empty()) {
+        let name = String::from_utf8_lossy(name).into_owned();
+        let bytes = std::fs::read(root.join(&name)).map_err(|e| format!("{name}: {e}"))?;
+        files.push((name, obc_data::store::sha256_hex(&bytes)));
     }
     for name in [
         "builder/web/vite/stamp-bundle.ts",

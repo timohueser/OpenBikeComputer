@@ -243,16 +243,14 @@ pub(crate) fn floors(
             }
         }
         let (s0, s1) = (points[0].s, points[points.len() - 1].s);
-        let mut s: Vec<f64> = points.iter().map(|q| q.s).collect();
+        // The openings and the joins of the ways stay; a point of the curve, then a point of a reach, nearer than
+        // `vertex_gap_m` to a vertex is that vertex.
+        let joins = tube.curve.stretches.iter().map(|(_, ps)| ps[0].s).filter(|&x| x > s0 && x < s1);
+        let fixed: Vec<f64> = [s0, s1].into_iter().chain(joins).collect();
+        let curve: Vec<f64> = points.iter().map(|q| q.s).collect();
         extra.retain(|&e| e > s0 && e < s1);
         extra.sort_by(f64::total_cmp);
-        for e in extra {
-            let at = s.partition_point(|&x| x < e);
-            let close = |k: usize| s.get(k).is_some_and(|&x| (x - e).abs() < MERGE_M);
-            if !close(at) && !(at > 0 && close(at - 1)) {
-                s.insert(at, e);
-            }
-        }
+        let s = spaced(&extra, spaced(&curve, fixed, b.vertex_gap_m), b.vertex_gap_m);
         let (ls, lz): (Vec<f64>, Vec<f64>) = points.iter().map(|q| (q.s, q.z)).unzip();
         let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();
         let xy: Vec<[f64; 2]> = s.iter().map(|&x| tube.curve.at(x).0.p).collect();
@@ -379,6 +377,20 @@ pub(crate) fn floors(
         "tube_clash_places": places(tube_clashes, 1.0),
     });
     (out, metrics)
+}
+
+/// The metres of `kept`, sorted, with each of `more` in its order that lies `gap` or farther from every kept one.
+fn spaced(more: &[f64], mut kept: Vec<f64>, gap: f64) -> Vec<f64> {
+    kept.sort_by(f64::total_cmp);
+    kept.dedup();
+    for &x in more {
+        let at = kept.partition_point(|&k| k < x);
+        let far = |k: usize| kept.get(k).is_none_or(|&y| (y - x).abs() >= gap);
+        if far(at) && (at == 0 || far(at - 1)) {
+            kept.insert(at, x);
+        }
+    }
+    kept
 }
 
 /// The points of a tube from metres a to b along its chain: a point at each end and the points of its curve between,

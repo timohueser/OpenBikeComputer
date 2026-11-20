@@ -511,8 +511,7 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
             let mut way_tags = Tags::new();
             way_tags.insert("parts".into(), ends.clone());
             tags.insert(*way, way_tags);
-            // The points of the stretch within the openings, with a point at each opening and at each vertex of the
-            // floor.
+            // The points of the stretch within the openings: its ends and each vertex of the floor between.
             let Some(fl) = fl else { continue };
             let (a, z) = (ps[0].s.max(s0), ps.last().unwrap().s.min(s1));
             if z - a <= 1e-6 {
@@ -520,12 +519,8 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
             }
             let inside = |s: f64| s > a + 1e-6 && s < z - 1e-6;
             let mut pts: Vec<Point> = vec![t.curve.at(a).0];
-            pts.extend(ps.iter().filter(|q| inside(q.s)).copied());
             pts.extend(fl.s.iter().filter(|&&s| inside(s)).map(|&s| t.curve.at(s).0));
             pts.push(t.curve.at(z).0);
-            // A floor vertex at the metres of a curve point is that point.
-            pts.sort_by(|x, y| x.s.total_cmp(&y.s));
-            pts.dedup_by(|later, first| later.s == first.s);
             for w in pts.windows(2) {
                 let (p, q) = if rising { (w[0], w[1]) } else { (w[1], w[0]) };
                 let ((pz, ph), (qz, qh)) = (fl.at(p.s), fl.at(q.s));
