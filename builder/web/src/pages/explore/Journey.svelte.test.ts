@@ -19,7 +19,7 @@ function liftsOff(shapes: Shape[]): Partial<Query> {
 }
 
 it('turns lifts off and keeps the shapes when loop or there and back is on', () => {
-    expect(liftsOff(['back', 'liftUp'])).toEqual({ lift: undefined });
+    expect(liftsOff(['back', 'liftUp'])).toEqual({ lift: undefined, shapes: ['back', 'liftUp'] });
 });
 
 it('turns loop and there and back on with lifts off when no shape of them is on', () => {

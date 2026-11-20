@@ -12,6 +12,11 @@ export type Shape = 'loop' | 'back' | 'liftDown' | 'liftUp';
 export const SHAPES: Shape[] = ['loop', 'back', 'liftDown', 'liftUp'];
 const LIFT_SHAPES: Shape[] = ['liftDown', 'liftUp'];
 
+/** The accepted shapes with lifts off, which hides the lift shapes: with neither loop nor there and back on, both come on
+ * again, and the lift shapes stay for lifts on. */
+export const liftsOff = (shapes: Shape[]): Shape[] =>
+    shapes.some(shape => !LIFT_SHAPES.includes(shape)) ? shapes : SHAPES.filter(shape => !LIFT_SHAPES.includes(shape) || shapes.includes(shape));
+
 /** The wishes, in the order of the filter column; `via:<place id>` is "Passes <name>". */
 export const WISHES = ['peak', 'lake', 'hut', 'waterfall', 'official', 'snow', 'quiet', 'forest', 'open', 'water'] as const;
 export type Wish = typeof WISHES[number] | `via:${string}`;
@@ -459,6 +464,7 @@ export function readQuery(text: string, today: string): { query: Query; view?: B
     query.climb = readRange(params.get('climb'), 1);
     const shapes = params.get('shapes');
     if (shapes !== null) query.shapes = SHAPES.filter(shape => shapes.split(',').includes(shape));
+    if (!query.lift) query.shapes = liftsOff(query.shapes);
     const grade = /^T([1-6])-T([1-6])$/.exec(params.get('grade') ?? '');
     if (grade && grade[1] <= grade[2]) query.grade = [Number(grade[1]) - 1, Number(grade[2]) - 1];
     query.ungraded = params.get('ungraded') !== '0';

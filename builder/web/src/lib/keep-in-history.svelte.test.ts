@@ -5,11 +5,12 @@ import { keepInHistory } from './keep-in-history.svelte';
 
 afterEach(() => vi.useRealTimers());
 
-it('writes the state and the address of its page, and nothing while another page shows, such as the settings window', () => {
+it('writes the state and the address of its page; while another page shows, as the settings window, the write waits for the next call', () => {
     vi.useFakeTimers();
     history.replaceState(null, '', '#/explore');
     let value = $state(1);
-    const stop = $effect.root(() => { keepInHistory('explore', () => value, () => `#/explore?v=${value}`); });
+    let keep = () => {};
+    const stop = $effect.root(() => { keep = keepInHistory('explore', () => value, () => `#/explore?v=${value}`); });
     flushSync();
     vi.advanceTimersByTime(300);
     expect([location.hash, history.state.explore]).toEqual(['#/explore?v=1', 1]);
@@ -18,5 +19,9 @@ it('writes the state and the address of its page, and nothing while another page
     flushSync();
     vi.advanceTimersByTime(300);
     expect([location.hash, history.state]).toEqual(['#/settings', null]);
+    // Back on the page, the next call writes what the page skipped.
+    history.replaceState(null, '', '#/explore?v=1');
+    keep();
+    expect([location.hash, history.state.explore]).toEqual(['#/explore?v=2', 2]);
     stop();
 });

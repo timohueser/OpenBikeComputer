@@ -18,9 +18,11 @@ export function keepInHistory(key: string, read: () => unknown, address?: () => 
     const page = parseRoute(location.hash).route;
     $effect(() => {
         const value = $state.snapshot(read()), url = address?.();
+        // A write that another page skips waits for the next call.
         keep = () => {
+            if (parseRoute(location.hash).route !== page) return;
             keep = undefined;
-            if (parseRoute(location.hash).route === page) history.replaceState({ ...history.state, [key]: value }, '', url);
+            history.replaceState({ ...history.state, [key]: value }, '', url);
         };
         // After a link wrote the state, `keep` is undefined: the timer must not write into the next entry.
         const timer = setTimeout(() => keep?.(), KEEP_AFTER_MS);

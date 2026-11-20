@@ -4,7 +4,7 @@
 <script lang="ts">
     import type { FactsPlace } from '../../lib/planner/signed-routes';
     import Icon from '../../lib/ui/Icon.svelte';
-    import { DRIVE_KM, SHAPES, type Query } from './search';
+    import { DRIVE_KM, liftsOff, type Query } from './search';
     import { placeName, shortDistance } from './words';
 
     let { query, cap, place, onchange }: {
@@ -21,12 +21,6 @@
     const pinned = $derived(query.pin ? place(query.pin) : undefined);
     const from = $derived(!!query.start || !!query.pin);
     const drive = $derived(Math.min(query.drive, cap));
-    /** Lifts off hides the lift shapes: with neither loop nor there and back on, both come on again. */
-    function lifts() {
-        if (!query.lift) return onchange({ lift: 'helps' });
-        const ground = (shape: string) => shape === 'loop' || shape === 'back';
-        onchange({ lift: undefined, ...query.shapes.some(ground) ? {} : { shapes: SHAPES.filter(shape => ground(shape) || query.shapes.includes(shape)) } });
-    }
     const walkNote = $derived(query.pin ? `From the ${pinned?.kind === 'lift' ? 'top station' : 'car park'} to the route`
         : query.car || query.lift ? 'The last part, to the route' : 'From your start to the route');
 </script>
@@ -71,7 +65,7 @@
         {/if}
         {#if !query.pin}
             <li class="leg" class:on={!!query.lift}>
-                <button type="button" class="leg-head" aria-pressed={!!query.lift} onclick={lifts}>
+                <button type="button" class="leg-head" aria-pressed={!!query.lift} onclick={() => onchange(query.lift ? { lift: undefined, shapes: liftsOff(query.shapes) } : { lift: 'helps' })}>
                     <span class="node box"><Icon name="check" size={12} /></span><Icon name="lift" />
                     <span class="label">Lifts<small>cable cars, gondolas, chairlifts</small></span>
                     {#if query.lift === 'always'}<b class="value">always</b>{/if}
