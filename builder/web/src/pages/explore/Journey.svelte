@@ -1,17 +1,22 @@
 <!-- Getting there: a line from the start point through the ways to travel that the rider ticks, Car, Train (later) and
      Lifts, to one walk to the route. With no start point every hike of the map view counts, and only Lifts shows: it adds
-     the lift shapes. A pinned car park or top station is the only start. -->
+     the lift shapes. A pinned car park or top station is the only start. The start point is picked on the map or comes
+     from the browser. -->
 <script lang="ts">
     import type { FactsPlace } from '../../lib/planner/signed-routes';
     import Icon from '../../lib/ui/Icon.svelte';
     import { DRIVE_KM, liftsOff, type Query } from './search';
+    import { myLocation } from './search-map';
     import { placeName, shortDistance } from './words';
 
-    let { query, cap, place, onchange }: {
+    let { query, cap, place, picking, onpicking, onchange }: {
         query: Query;
         /** The longest drive of the start point. */
         cap: number;
         place: (id: string) => FactsPlace | undefined;
+        /** The next click on the map picks the start point. */
+        picking: boolean;
+        onpicking: (on: boolean) => void;
         onchange: (change: Partial<Query>) => void;
     } = $props();
 
@@ -21,6 +26,18 @@
     const pinned = $derived(query.pin ? place(query.pin) : undefined);
     const from = $derived(!!query.start || !!query.pin);
     const drive = $derived(Math.min(query.drive, cap));
+    /** Why the browser gave no location. */
+    let located = $state<'asking' | 'denied' | 'unknown'>();
+    async function locate() {
+        located = 'asking';
+        onpicking(false);
+        const at = await myLocation();
+        if (typeof at === 'string') located = at;
+        else {
+            located = undefined;
+            onchange({ start: at, pin: undefined });
+        }
+    }
     const walkNote = $derived(query.pin ? `From the ${pinned?.kind === 'lift' ? 'top station' : 'car park'} to the route`
         : query.car || query.lift ? 'The last part, to the route' : 'From your start to the route');
 </script>
@@ -39,10 +56,20 @@
                 <div class="leg-head">
                     <span class="node dot"></span><Icon name="pin" />
                     <span class="label">Start point<small>{query.start[1].toFixed(3)}° N, {query.start[0].toFixed(3)}° E</small></span>
-                    <button type="button" class="remove" aria-label="Remove the start point" onclick={() => onchange({ start: undefined })}><Icon name="close" size={16} /></button>
+                    <span class="acts">
+                        <button type="button" class="text" aria-pressed={picking} onclick={() => onpicking(!picking)}>Move</button>
+                        <button type="button" class="remove" aria-label="Remove the start point" onclick={() => onchange({ start: undefined })}><Icon name="close" size={16} /></button>
+                    </span>
                 </div>
             {:else}
                 <p class="hint">No start point: every hike in the map view counts.</p>
+                <div class="start-buttons">
+                    <button type="button" class="button" aria-pressed={picking} onclick={() => onpicking(!picking)}><Icon name="pin" size={16} />Pick on the map</button>
+                    <button type="button" class="button" aria-busy={located === 'asking'} onclick={locate}><Icon name="locate" size={16} />My location</button>
+                </div>
+                {#if located === 'denied' || located === 'unknown'}
+                    <p class="hint" role="status">{located === 'denied' ? 'The browser does not share your location.' : 'The browser does not know your location.'}</p>
+                {/if}
             {/if}
         </li>
         {#if query.start && !query.pin}
@@ -297,6 +324,45 @@
         background: var(--water);
         color: var(--panel);
         font: 700 10.5px/1 var(--sans);
+    }
+    .acts {
+        display: flex;
+        align-items: center;
+    }
+    .start-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 0 0 8px;
+    }
+    .button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 32px;
+        padding: 0 10px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--ink);
+        font: 600 12.5px var(--sans);
+    }
+    .button :global(svg) {
+        color: var(--ink-soft);
+    }
+    .button:hover {
+        background: var(--parchment);
+    }
+    .button[aria-pressed="true"] {
+        border-color: var(--ink);
+        background: var(--parchment-2);
+    }
+    .button[aria-busy="true"] {
+        cursor: progress;
+    }
+    .text[aria-pressed="true"] {
+        background: var(--parchment-2);
+        color: var(--ink);
     }
     .text, .remove {
         padding: 4px 8px;

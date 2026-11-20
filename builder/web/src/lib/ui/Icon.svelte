@@ -1,7 +1,6 @@
-<script lang="ts">
-    /** `path` draws a 24 px stroke path instead of a named icon. */
-    let { name = 'pin', path, size = 18 }: { name?: string; path?: string; size?: number } = $props();
-    const paths: Record<string, string> = {
+<script lang="ts" module>
+    /** The 24 px stroke paths of the named icons; the map draws some of them on its markers. */
+    export const ICON_PATHS: Record<string, string> = {
         road: 'M1.6 16.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM15.6 16.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM17.1 7.4a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM5 16.6L8.4 9.9L15 9.3L17.2 13.2L19 16.6M8.4 9.9L12.8 13L11.4 16.6',
         gravel: 'M1.6 16a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM15.6 16a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM14.5 2.6a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM2 22.3v.01M7 22.3v.01M12 22.3v.01M17 22.3v.01M22 22.3v.01M5 16L8.4 9.2L13.6 5.4L17 10.8L19 16M8.4 9.2L13 12L11.4 16',
         touring: 'M8.4 17.6A3.4 3.4 0 0 1 1.6 17.6M2.9 11.4H6.5a1.1 1.1 0 0 1 1.1 1.1V16.5a1.1 1.1 0 0 1 -1.1 1.1H2.9a1.1 1.1 0 0 1 -1.1 -1.1V12.5a1.1 1.1 0 0 1 1.1 -1.1ZM15.6 17.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM11.3 2.5a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM8.8 11.2L11.2 6.2L16.4 10.6L19 17.6M8.8 11.2L13.4 13L12 17.6',
@@ -56,4 +55,9 @@
         rain: 'M7 15h10a4 4 0 0 0 .7-7.9A5.5 5.5 0 0 0 7.2 6 4.5 4.5 0 0 0 7 15Zm2 3-1 3m5-3-1 3m5-3-1 3',
     };
 </script>
-<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={path ?? paths[name] ?? paths.pin} /></svg>
+
+<script lang="ts">
+    /** `path` draws a 24 px stroke path instead of a named icon. */
+    let { name = 'pin', path, size = 18 }: { name?: string; path?: string; size?: number } = $props();
+</script>
+<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={path ?? ICON_PATHS[name] ?? ICON_PATHS.pin} /></svg>

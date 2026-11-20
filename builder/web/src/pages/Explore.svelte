@@ -28,6 +28,8 @@
     import { counts, defaultQuery, DRIVE_KM, driveCap, find, keepQuery, loadBox, openingQuery, queryParams, reachBox, storedQuery, suggestions,
         type Loaded, type Query, type Shape, type Sort } from './explore/search';
     import SearchFilters from './explore/SearchFilters.svelte';
+    import { addMarkerLayers, MARKER_LAYERS, mapData, markerClick, markerTip, rowBox, startAt } from './explore/search-map';
+    import type { MapOverlay } from './routes/RoutesMap.svelte';
     import { LENGTH_TOP_M } from './explore/words';
     import { signedHref } from './explore/signed-page';
     import Chips from './routes/Chips.svelte';
@@ -41,7 +43,7 @@
      * of a trail gives the long trails tab and the trail. `query` is the search of the day routes (`queryParams`), and `shape`
      * the shape of its open row. */
     interface Kept { chips: ChipValues; query?: string; view?: Box; tab?: Tab; selected?: string; shape?: Shape; trail?: number; stage?: string; show?: number }
-    type Place = { lon: number; lat: number; box?: Box };
+    type Place = { lon: number; lat: number; box?: Box; padding?: number };
     type Tab = 'day' | 'long';
     /** The files of a view: the records and the trails of a near view, or the trails of a far view. `trails` is null when
      * the view is too wide or the release has no trail files. The records are those of the cells of `from`, which the search
@@ -87,6 +89,11 @@
     // The trails of a far answer are for each bike.
     const answered = $derived(answer && answer.far === far && (far || answer.bike === bike) && (!searching || answer.facts) ? answer : undefined);
     const recordOf = (id: number) => catalog.record(id);
+    /** A place of the loaded facts files: a new answer gives a new function, so a name that waited for its file shows. */
+    const placeById = $derived.by(() => {
+        void answer;
+        return (id: string) => catalog.place(id);
+    });
     // An item is made once for each record or trail and bike, so a new answer changes no row that it keeps.
     const made = new WeakMap<CatalogRecord | TrailEntry, Item>();
     function signedOf(record: CatalogRecord, trail?: string): SignedItem {
@@ -321,9 +328,41 @@
     function setQuery(change: Partial<Query>) {
         const journey = (['start', 'walk', 'car', 'drive', 'lift', 'pin'] as const).some(key => key in change && change[key] !== query[key]);
         query = { ...query, ...change };
-        const box = journey ? reachBox(query) : undefined;
-        if (box) place = placeOf(box);
+        const box = journey ? reachBox(query, id => catalog.place(id)) : undefined;
+        if (box) {
+            place = placeOf(box);
+            before = undefined;
+        }
     }
+
+    /** The next click on the map picks the start point. */
+    let picking = $state(false);
+    const pick = $derived(searching && picking
+        ? { text: 'Click the map where you start. Esc cancels.', onpick: (at: [number, number]) => { picking = false; setQuery({ start: startAt(at), pin: undefined }); } }
+        : undefined);
+    /** The markers of the search: the row under the pointer, else the open row, shows its places. */
+    const overlay = $derived<MapOverlay | undefined>(searching ? {
+        data: hovered => mapData(found, query, (hovered === undefined ? undefined : found.find(row => String(row.record.id) === hovered)) ?? opened, id => catalog.place(id)),
+        add: addMarkerLayers, hit: MARKER_LAYERS, tip: id => markerTip(id, query, loaded), onclick: id => setQuery(markerClick(id, query, id => catalog.place(id))),
+    } : undefined);
+
+    // An open row fits the map to its route and the way there; closing it brings back the view before. The view of the
+    // history already shows its open row.
+    let fitted = kept?.selected, before: Box | undefined;
+    $effect(() => {
+        const id = searching ? selected : undefined, row = opened;
+        if (id === fitted || (id !== undefined && !row)) return;
+        fitted = id;
+        untrack(() => {
+            if (row && id !== undefined) {
+                before ??= view;
+                place = { ...placeOf(rowBox(row, query, id => catalog.place(id))), padding: 48 };
+            } else if (before) {
+                place = placeOf(before);
+                before = undefined;
+            }
+        });
+    });
 
     function placeOf(box: Box): Place {
         return { lon: (box[0] + box[2]) / 2, lat: (box[1] + box[3]) / 2, box };
@@ -425,11 +464,11 @@
 </script>
 
 <!-- Escape in an open window closes only the window. -->
-<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) select(undefined); }} />
+<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) { if (picking) picking = false; else select(undefined); } }} />
 
 <!-- TrailView shows the day routes of a near view only. -->
 <ListAndMap title="Explore" items={mapItems} shown={mapShown} {place} fit={0} look="signed" credits={covers ? [...coverCredits, ...credits] : credits}
-    selected={tab === 'day' ? chosen ? [chosen.id] : [] : staged ? [staged.id] : []} {marked} {together} onselect={select} onview={next => setView(wrapped(next))}
+    selected={tab === 'day' ? chosen ? [chosen.id] : [] : staged ? [staged.id] : []} {marked} {together} {overlay} {pick} onselect={select} onview={next => setView(wrapped(next))}
     card={tab === 'day' ? chosen && !searching ? card : undefined : staged ? stageCard : trailAbout ? trailCard : undefined}
     mapButtons={hasTrailView(config) && tab === 'day' && dayShown.length && !dayClosed ? mapButtons : undefined} tabs={config.trails ? dayOrLong : undefined}
     table={searching ? table : undefined}>
@@ -438,7 +477,7 @@
         <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />
         {#if searching}
             <SearchFilters {query} today={day} cap={query.start ? driveCap(query.start[1]) : DRIVE_KM.max} counts={tally?.wishes ?? new Map()} ungraded={tally?.ungraded ?? 0}
-                {lengths} {climbs} place={id => catalog.place(id)} fresh={!queryParams(query, day)} top={bikeChip} onchange={setQuery}
+                {lengths} {climbs} place={placeById} fresh={!queryParams(query, day)} top={bikeChip} {picking} onpicking={on => picking = on} onchange={setQuery}
                 onreset={() => query = defaultQuery(day)} />
         {:else}
             <Chips bind:chips={() => chips, setChips} {view} keys={['bike', ...tab === 'day' ? ['length' as const, 'climb' as const] : [], ...graded ? ['grade' as const] : [], 'shape']} fixed={['bike']}
@@ -476,7 +515,7 @@
 {#snippet table()}
     <ResultsTable rows={dayRows ? found : undefined} note={failed ? 'The routes could not load.' : dayClosed ? 'Zoom in to search.' : 'Loading the hikes…'}
         waiting={!failed && !dayClosed && !dayRows} none={!!dayRows && !dayInView.length} {query} {sort} {opened} suggestions={helps}
-        place={id => catalog.place(id)} itemOf={record => signedOf(record)} {linkOf} {oncover} onsort={next => sort = next}
+        place={placeById} itemOf={record => signedOf(record)} {linkOf} {oncover} onsort={next => sort = next}
         onopen={row => [selected, shape] = [row && String(row.record.id), row?.shape]} onquery={setQuery} onreset={() => query = defaultQuery(day)}
         onplan={record => plan(signedOf(record))} onretry={failed ? retry : undefined} />
 {/snippet}

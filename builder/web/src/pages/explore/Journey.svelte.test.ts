@@ -11,7 +11,7 @@ afterEach(async () => { if (journey) await unmount(journey); document.body.repla
 function liftsOff(shapes: Shape[]): Partial<Query> {
     const changes: Partial<Query>[] = [];
     journey = mount(Journey, { target: document.body, props: {
-        query: { ...defaultQuery('2026-07-01'), lift: 'helps', shapes }, cap: 45, place: () => undefined, onchange: (change: Partial<Query>) => changes.push(change),
+        query: { ...defaultQuery('2026-07-01'), lift: 'helps', shapes }, cap: 45, place: () => undefined, picking: false, onpicking: () => {}, onchange: (change: Partial<Query>) => changes.push(change),
     } });
     flushSync();
     [...document.querySelectorAll('button')].find(button => button.textContent?.includes('Lifts'))!.click();

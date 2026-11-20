@@ -99,7 +99,7 @@ export interface Row {
 // ── Reach ───────────────────────────────────────────────────────────────────
 
 /** The box of the points within `km` of `at`. */
-function around([lon, lat]: Coordinate, km: number): Box {
+export function around([lon, lat]: Coordinate, km: number): Box {
     const dy = km / kmPerDegree, dx = km / (kmPerDegree * Math.cos(lat * Math.PI / 180));
     return [lon - dx, lat - dy, lon + dx, lat + dy];
 }
@@ -120,11 +120,14 @@ export function driveCap(lat: number): number {
 }
 
 /** The drive limit in km that the search uses. */
-const driveOf = (query: Query) => query.start ? Math.min(query.drive, driveCap(query.start[1])) : query.drive;
+export const driveOf = (query: Query) => query.start ? Math.min(query.drive, driveCap(query.start[1])) : query.drive;
 
 /** The box of the reach: the start point widened by the first leg (the drive with the car, else the walk limit), 5 km with
- * lifts, and 3 km for the last walk. None with no start point. The map fits it when the way of getting there changes. */
-export function reachBox(query: Query): Box | undefined {
+ * lifts, and 3 km for the last walk; a pinned car park or top station widened by the walk and the last walk. None with no
+ * start point. The map fits it when the way of getting there changes. */
+export function reachBox(query: Query, place?: (id: string) => FactsPlace | undefined): Box | undefined {
+    const pinned = query.pin ? place?.(query.pin) : undefined;
+    if (pinned) return around(point(pinned.at_udeg), query.walk / 1000 + LAST_WALK_KM);
     if (!query.start) return undefined;
     const first = query.car ? driveOf(query) : query.walk / 1000;
     return around(query.start, first + (query.lift ? LIFT_KM : 0) + LAST_WALK_KM);
@@ -151,7 +154,8 @@ function lineOf(record: CatalogRecord): Coordinate[] {
     return line;
 }
 
-const point = ([lon, lat]: [number, number]): Coordinate => [lon / 1e6, lat / 1e6];
+/** A position of a facts file in degrees. */
+export const point = ([lon, lat]: [number, number]): Coordinate => [lon / 1e6, lat / 1e6];
 
 /** What one search reads for each route. */
 interface Search { query: Query; loaded: Loaded; driveKm: number; step: number }

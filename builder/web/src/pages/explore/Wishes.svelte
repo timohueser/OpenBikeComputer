@@ -31,6 +31,7 @@
     <div class="wishes">
         {#each [...passes, ...WAY_WISHES] as wish (wish)}{@render row(wish)}{/each}
     </div>
+    <p class="hint"><Icon name="pin" size={14} />Or click a summit, hut or lake on the map.</p>
 </section>
 <section>
     <div class="head"><h3>The route</h3></div>
