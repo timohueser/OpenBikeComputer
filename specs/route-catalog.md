@@ -445,7 +445,7 @@ relations), then by ID. An area is a closed way or a multipolygon relation. A pl
 | Kind | OSM object; an object that fits more than one row takes the first |
 | --- | --- |
 | `parking` | A node or an area with `amenity=parking`, without `access` `private` or `customers`. It is `large` when `capacity` is a whole number of 50 or more, or, when `capacity` is no whole number, when the area has 1,250 m² or more; else `small` |
-| `lift` | A way with `aerialway` `cable_car`, `gondola`, `chair_lift` or `mixed_lift`. Its ends are the stations. The top station is the end with the greater height: the `ele` of a node with `aerialway=station` at the end, else the GLO-30 height. A lift without a height at an end, or with two equal heights, is no place |
+| `lift` | A way with `aerialway` `cable_car`, `gondola`, `chair_lift` or `mixed_lift`, without `access` `private` or `no`. Its ends are the stations. The top station is the end with the greater height: the `ele` of a node with `aerialway=station` at the end, else the GLO-30 height. A lift without a height at an end, or with two equal heights, is no place |
 | `peak` | A node with `natural=peak` |
 | `hut` | A node or an area with `tourism=alpine_hut`, or with `amenity` `restaurant`, `cafe` or `biergarten` whose `at_udeg` is not inside an area with `landuse` `residential`, `commercial` or `retail` |
 | `lake` | An area with `natural=water` and `water` `lake` or `pond`, with a `name` or with 10,000 m² or more |

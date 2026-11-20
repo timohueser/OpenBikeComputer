@@ -104,6 +104,8 @@ pub struct Counts {
     pub kinds: BTreeMap<&'static str, usize>,
     /// Lifts left out: an end has no height, or both ends have the same.
     pub lifts_without_height: usize,
+    /// Lifts left out for `access` `private` or `no`.
+    pub private_lifts: usize,
     /// Car parks with an area and a whole number of spaces that the area calls large, and of them
     /// those with `LARGE_SPACES` or more.
     pub area_large_with_capacity: usize,
@@ -175,6 +177,10 @@ impl Places {
                 rings: rings(shape),
             };
             let point = matches!(shape, Shape::Point(_));
+            if kind == Kind::Lift && is(tags, "access", &["private", "no"]) {
+                counts.private_lifts += 1;
+                continue;
+            }
             let keep = match kind {
                 Kind::Parking => {
                     place.size = Some(size(tags, area_m2));
@@ -203,7 +209,7 @@ impl Places {
                 },
                 Kind::Peak | Kind::Waterfall => point,
                 Kind::Hut => (point || area_m2.is_some()) && (tags.contains("tourism", "alpine_hut") || !in_built(at)),
-                Kind::Lake => tags.get("name").is_some() || area_m2.is_some_and(|area| area >= LAKE_MIN_M2),
+                Kind::Lake => area_m2.is_some_and(|area| tags.get("name").is_some() || area >= LAKE_MIN_M2),
             };
             if keep {
                 *counts.kinds.entry(kind.name()).or_default() += 1;
@@ -336,9 +342,14 @@ pub(crate) mod tests {
     #[test]
     fn the_place_rules_follow_the_tags() {
         // A residential area of about 760 m square, a restaurant in it and one outside it, a hut in
-        // it, an unnamed pond of about 0.9 ha and a named one, and a peak as a node and as an area.
+        // it, an unnamed pond of about 0.9 ha and a named one, a named lake as a node and as an open
+        // way, a peak as a node and as an area, and a lift that the public may use and two that it
+        // may not.
         let town = square([8_000_000, 47_000_000], 10_000);
         let pond = square([8_100_000, 47_000_000], 1_050);
+        let lake: &[(&str, &str)] = &[("natural", "water"), ("water", "lake"), ("name", "See")];
+        let (valley, top) = ([8_400_000, 47_000_000], [8_400_000, 47_010_000]);
+        let line = || Shape::Line(vec![valley, top]);
         let places = places(vec![
             (&[("landuse", "residential")], town),
             (&[("amenity", "restaurant")], Shape::Point([8_005_000, 47_005_000])),
@@ -348,10 +359,19 @@ pub(crate) mod tests {
             (&[("natural", "water"), ("water", "pond"), ("name", "Seeli")], pond),
             (&[("natural", "peak"), ("ele", "2128 m")], Shape::Point([8_200_000, 47_000_000])),
             (&[("natural", "peak")], square([8_300_000, 47_000_000], 100)),
+            (lake, Shape::Point([8_500_000, 47_000_000])),
+            (lake, Shape::Line(vec![[8_500_000, 47_000_000], [8_501_000, 47_000_000]])),
+            (&[("aerialway", "station"), ("ele", "1000")], Shape::Point(valley)),
+            (&[("aerialway", "station"), ("ele", "2000")], Shape::Point(top)),
+            (&[("aerialway", "gondola")], line()),
+            (&[("aerialway", "gondola"), ("access", "private")], line()),
+            (&[("aerialway", "gondola"), ("access", "no")], line()),
         ]);
         let kept: Vec<(Id, Kind)> = places.list.iter().map(|place| (place.id, place.kind)).collect();
         let way = Id::Way;
-        assert_eq!(kept, [(way(3), Kind::Hut), (way(4), Kind::Hut), (way(6), Kind::Lake), (way(7), Kind::Peak)]);
+        let expected = [(3, Kind::Hut), (4, Kind::Hut), (6, Kind::Lake), (7, Kind::Peak), (13, Kind::Lift)];
+        assert_eq!(kept, expected.map(|(id, kind)| (way(id), kind)));
+        assert_eq!(places.counts.private_lifts, 2);
         assert_eq!(places.get(way(7)).unwrap().ele_m, Some(2128));
         // The edge of the named pond is water; its middle is about 40 m from the edge.
         assert!(places.by_water([8_100_000, 47_000_500], 100.0));
