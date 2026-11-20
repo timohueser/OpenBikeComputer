@@ -214,7 +214,8 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         (0..len).map(|k| t.curve.at(o.s + sign * k as f64).0.z).collect()
     };
     let asks: Vec<Ask> = asked.iter().map(|&i| ask_of(i, openings, tubes, &half, &reach, input)).collect();
-    let (measured, mut cells) = measure(&asks, &open_ends(openings));
+    let first = open_ends(openings);
+    let (measured, mut cells) = measure(&asks, &first);
     let mut sites: Vec<Option<Site>> = vec![None; n];
     let mut rights: Vec<u32> = vec![0; n];
     for ((&i, site), a) in asked.iter().zip(measured).zip(&asks) {
@@ -326,7 +327,6 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     }
     // The numbers come from the ground with the stretches that the records open: of each opening with a part, at its
     // final place. The openings near a stretch that the first measure opened otherwise are measured again there.
-    let first = open_ends(openings);
     let with_part: Vec<Opening> = (0..n).filter(|&i| !kinds[i].is_empty()).map(|i| openings[i].clone()).collect();
     let last = open_ends(&with_part);
     let changed: Vec<[f64; 2]> = (first.iter().filter(|e| !last.contains(e)))

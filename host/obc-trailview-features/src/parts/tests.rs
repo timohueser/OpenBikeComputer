@@ -214,6 +214,7 @@ fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
     let west = ends.iter().find(|t| t["mate"] == "20").expect("the west pair");
     assert_eq!((west["part"].as_str(), west["shift"].as_str(), west["mate_shift"].as_str()), ("pair", "3", "0"));
     assert!(ends.iter().any(|t| t["mate"] == "-20" && t["shift"] == "0"));
+    assert!(placed.metrics["measured_again"].as_u64() >= Some(2), "the moved pair, with its stretch on the ground");
     // The first tube widens to the far edge of the footway and its margin.
     let foot_half = widths().way("tunnel", &tags(&FOOT), false).half_m;
     assert_eq!(west["half"], num(2.5 + foot_half + 0.6));
