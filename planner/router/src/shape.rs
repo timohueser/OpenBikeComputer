@@ -121,7 +121,7 @@ impl<'a> Near<'a> {
         Self { line, cell, cells }
     }
 
-    fn near(&self, p: P) -> bool {
+    pub fn near(&self, p: P) -> bool {
         let (x, y) = ((p[0] as f64 / self.cell[0]).floor() as i32, (p[1] as f64 / self.cell[1]).floor() as i32);
         (x - 1..=x + 1).any(|x| {
             (y - 1..=y + 1).any(|y| {

@@ -139,6 +139,14 @@ impl<'a> Roads<'a> {
         let rows = self.big.items([around(&[p], BIG_ROAD_M)]);
         rows.into_iter().any(|row| way_distance(p, self.osm.ways.row(row as usize).points, BIG_ROAD_M).is_some())
     }
+
+    /// Whether a road or path whose OSM way id passes `keep` lies within `reach_m` of `p`.
+    pub fn within(&self, p: P, reach_m: f64, keep: impl Fn(i64) -> bool) -> bool {
+        self.ways.items([around(&[p], reach_m)]).into_iter().any(|row| {
+            let way = self.osm.ways.row(row as usize);
+            keep(way.id) && way_distance(p, way.points, reach_m).is_some()
+        })
+    }
 }
 
 /// Forest of a canopy code (`specs/trailview-tiles.md`, section Canopy): None for an unknown cell.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CatalogRecord } from '../../lib/planner/signed-routes';
-import { partLabel, shownDescription, signedHref, stagePart } from './signed-page';
+import { partLabel, partSection, shownDescription, signedHref, stagePart } from './signed-page';
 
 const record = (fields: Partial<CatalogRecord>): CatalogRecord => ({
     id: 1, kind: 'hiking', rank: 1, loop: false, length_m: 1000, ascent_m: 0, descent_m: 0, cells: ['9-268-180'], ...fields,
@@ -49,6 +49,19 @@ describe('stagePart', () => {
         const inner = stagePart(record({ id: 6, trail: 250, trail_stage: 1, parent: 100, stage: 2 }), recordOf);
         expect(inner).toMatchObject({ part: 'Stage 2 of 2', byParent: true, trailId: 100 });
         expect(inner.long?.name).toBe('Grand');
+    });
+
+    it('counts the stages of a trail by its highest stage number, which can have no part', () => {
+        // An official route stands for the stages 3 to 5 of a trail of six.
+        const trail = record({ id: 400, name: 'Six', stage_count: 6, stages: [11, -1000000056100, 12, 16] });
+        expect(stagePart(record({ trail: 400, trail_stage: 3 }), id => id === 400 ? trail : undefined).part).toBe('Stage 3 of 6');
+    });
+});
+
+describe('partSection', () => {
+    it('reads a section from a negative id above −10¹², and names a record of a second source by its stage', () => {
+        expect([partSection({ id: -345678902 }), partSection({ id: -1000000056100 }), partSection({ id: 56 })]).toEqual([2, undefined, undefined]);
+        expect(partLabel(3, partSection({ id: -1000000056100 }), 'Rigi Panoramaweg')).toBe('Stage 3');
     });
 });
 

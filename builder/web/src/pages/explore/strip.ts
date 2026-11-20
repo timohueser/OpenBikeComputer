@@ -25,8 +25,13 @@ export function stripCells(parts: TrailPart[], numbered: boolean): StripCell[] {
     }));
 }
 
-/** The count of the stage numbers of `parts` that have a part in the catalog. */
-export const heldStages = (parts: TrailPart[]) => new Set(parts.filter(part => !part.missing && part.stage !== undefined).map(part => part.stage)).size;
+/** The count of the stages of `parts` that the catalog holds: the highest stage number, less the numbers that only parts
+ * not in the catalog have. A number can have two parts, or none when one part stands for several stages. */
+export function heldStages(parts: TrailPart[]): number {
+    const numbers = (missing: boolean) => new Set(parts.filter(part => !!part.missing === missing).map(part => part.stage ?? 0));
+    const held = numbers(false);
+    return Math.max(0, ...parts.map(part => part.stage ?? 0)) - [...numbers(true)].filter(stage => stage > 0 && !held.has(stage)).length;
+}
 
 /** "N stages", or "K of N stages" when the catalog holds K of the N stages of `parts`, or "N stages, none listed" when it
  * holds none; nothing under two stages. */

@@ -53,7 +53,7 @@ pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
 pub static PLANNER_ROUTING_COSTS: Layer = Layer { revision: 2, ..work(step::COSTS) };
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
-    revision: 22,
+    revision: 23,
     ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
 };
 /// The facts of the catalog routes for the search of the Explore page, `specs/route-catalog.md`,
@@ -238,6 +238,7 @@ impl Product for Planner {
                 reads.push(id);
             }
         }
+        reads.extend(route_sources(root).into_iter().flatten().map(|source| source.id));
         reads
     }
 
@@ -461,10 +462,18 @@ impl Planner {
             json!({"bounds": bounds, "profiles": config.routing.profiles}),
             &functions::ROUTING_COSTS,
         );
+        let route_sources = match on("routing") {
+            true => route_source_step(root, inputs, store, (countries.as_slice(), bounds), &mut wanted)?,
+            false => None,
+        };
         let routing = Step {
             layer: &PLANNER_ROUTING,
             name: "planner/routing".into(),
-            inputs: [step::SOURCE, step::ROADS, step::COSTS].into_iter().map(Input::step).collect(),
+            inputs: [step::SOURCE, step::ROADS, step::COSTS]
+                .into_iter()
+                .chain(route_sources.as_ref().map(|step| step.name.as_str()))
+                .map(Input::step)
+                .collect(),
             options: json!({
                 "region": name,
                 "bounds": bounds,
@@ -573,6 +582,7 @@ impl Planner {
         steps.extend(shapes);
         steps.extend(content.steps);
         steps.extend(reference);
+        steps.extend(route_sources);
         steps.extend([
             osm,
             cut,
@@ -832,6 +842,74 @@ fn prune(steps: &mut Vec<Step>, on: &dyn Fn(&str) -> bool) {
             .map(|step| step.name.clone())
             .collect();
     }
+}
+
+/// A route source of `data/routes/`: its id, the countries of its routes and the text of its
+/// description.
+struct RouteSource {
+    id: String,
+    countries: Vec<String>,
+    text: String,
+}
+
+/// The route sources of `data/routes/`, in the order of their rows in `data/sources.toml`. A
+/// description without a row fails.
+fn route_sources(root: &Path) -> Result<Vec<RouteSource>, String> {
+    #[derive(Deserialize)]
+    struct Description {
+        countries: Vec<String>,
+    }
+    let folder = root.join("data/routes");
+    let mut found = BTreeMap::new();
+    for entry in std::fs::read_dir(&folder).map_err(|e| format!("{}: {e}", folder.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let Some(id) =
+            path.file_stem().and_then(|stem| stem.to_str()).filter(|_| path.extension() == Some("toml".as_ref()))
+        else {
+            continue;
+        };
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let countries = toml::from_str::<Description>(&text).map_err(|e| format!("{}: {e}", path.display()))?.countries;
+        found.insert(id.to_string(), RouteSource { id: id.into(), countries, text });
+    }
+    let sources = obc_data::sources::all().iter().filter_map(|row| found.remove(&row.id)).collect();
+    match found.into_keys().next() {
+        Some(id) => Err(format!("data/routes/{id}.toml has no row in data/sources.toml")),
+        None => Ok(sources),
+    }
+}
+
+/// The step `planner/route-sources`: it reads the route sources whose `countries` share a code
+/// with those of the region and whose extent meets its bounds. `None` when no source does.
+fn route_source_step(
+    root: &Path,
+    inputs: &Inputs,
+    store: &Store,
+    (countries, bounds): (&[String], [f64; 4]),
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<Step>, Unplanned> {
+    let read = |source: &RouteSource| {
+        source.countries.iter().any(|code| countries.contains(code)) && embedded(&source.id).meets(bounds)
+    };
+    let sources: Vec<RouteSource> = route_sources(root).map_err(Unplanned::Failed)?.into_iter().filter(read).collect();
+    if sources.is_empty() {
+        return Ok(None);
+    }
+    let snapshots = sources.iter().map(|source| snapshot(inputs, store, &source.id, Vec::new(), wanted));
+    let options = sources
+        .iter()
+        .map(|source| json!({"id": source.id, "credit": attribution(&source.id), "description": source.text}));
+    Ok(Some(Step {
+        client: Client::None,
+        ..python(
+            &PLANNER_ROUTING,
+            step::ROUTE_SOURCES,
+            snapshots.collect::<Result<_, _>>()?,
+            json!({"bounds": bounds, "sources": options.collect::<Vec<_>>()}),
+            ("tools.planner_route_sources", Some("route-sources")),
+            &[planner_router_build::catalog::sources::FILE],
+        )
+    }))
 }
 
 /// The route facts and their grid. The facts read the canopy and the `snow-seasons` archive when
@@ -1725,6 +1803,56 @@ mod tests {
             assert!(get(name).layer.cache && get(name).client.is_none(), "{name}");
         }
         assert!(!get("planner/routing").layer.cache);
+    }
+
+    /// A region reads the route sources of its countries whose extent meets its bounds, in the order
+    /// of `data/sources.toml`, and the catalog reads them. A region of another country reads none.
+    #[test]
+    fn the_routing_reads_the_route_sources_of_the_countries_of_its_region() {
+        let temp = temp("planner-route-sources");
+        let store = store(&temp, &["2026-10-01"]);
+        // A box in Switzerland, south of the box of `AREA`.
+        let area = [("area".to_string(), "europe/swiss".to_string())];
+        let poly = "swiss\n1\n 7.79 47.80\n 7.82 47.80\n 7.82 47.83\n 7.79 47.83\n 7.79 47.80\nEND\nEND\n";
+        fetched(&store, "geofabrik-poly", "2026-10-01", &area, &[("europe/swiss.poly".into(), poly.into())]);
+        let name = "europe/swiss-2026-10-01.osm.pbf";
+        crate::device::tests::extracted(&store, "2026-10-01", &area, name);
+        let pbf = include_bytes!("../tests/data/planner.osm.pbf").to_vec();
+        crate::device::tests::stored(&store, TERRAIN_OSM, "2026-10-01", &area, &[(name.into(), pbf)]);
+        let region = |id: &str, country: &str| {
+            let text = format!(
+                "name = \"{id}\"\nkind = \"geofabrik\"\nareas = [\"europe/swiss\"]\ncountries = [\"{country}\"]\n"
+            );
+            parse_region(id, &text).unwrap()
+        };
+        let regions = Regions::new(vec![region("swiss", "CH"), region("tyrol", "AT")]).unwrap();
+        let ids = ["schweizmobil-hiking", "schweizmobil-cycling", "schweizmobil-mtb"];
+        let steps = |region: &str| {
+            let mut inputs = inputs(region, &[]);
+            for id in ids {
+                inputs.resolved.insert((id.into(), Vec::new()), "2026-02-25".into());
+            }
+            Planner.steps_with_tool(&root(), &inputs, &regions, &store, Ok(())).unwrap().steps
+        };
+        let names = |inputs: &[Input]| -> Vec<String> {
+            let name = |input: &Input| match input {
+                Input::Snapshot { source, .. } => source.clone(),
+                Input::Step { name, .. } => name.clone(),
+            };
+            inputs.iter().map(name).collect()
+        };
+        let swiss = steps("swiss");
+        let read = swiss.iter().find(|step| step.name == step::ROUTE_SOURCES).unwrap();
+        assert_eq!(names(&read.inputs), ids);
+        let options: Vec<&str> =
+            read.options["sources"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect();
+        assert_eq!(options, ids);
+        let routing = swiss.iter().find(|step| step.name == "planner/routing").unwrap();
+        assert_eq!(names(&routing.inputs), [step::SOURCE, step::ROADS, step::COSTS, step::ROUTE_SOURCES]);
+        let tyrol = steps("tyrol");
+        assert!(!tyrol.iter().any(|step| step.name == step::ROUTE_SOURCES));
+        let routing = tyrol.iter().find(|step| step.name == "planner/routing").unwrap();
+        assert_eq!(names(&routing.inputs), [step::SOURCE, step::ROADS, step::COSTS]);
     }
 
     /// A version of `terrain` with `paths` and an `index.json` whose tile 4825/4218 is of `ch`, with
