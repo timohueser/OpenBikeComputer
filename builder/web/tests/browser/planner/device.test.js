@@ -63,7 +63,7 @@ test('connected, the rows show the sync, the routes, the rides, the memory card,
   await page.goto('/planner.html?fake-device#/device');
   await page.waitForFunction(() => window.deviceTest);
   const route = await page.evaluate(() => window.deviceTest.route);
-  await fill(page, { sent: { lake: { device: route, key: '' } } });
+  await fill(page, { sent: { lake: route } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route(url => url.hostname !== '127.0.0.1', route => route.abort());

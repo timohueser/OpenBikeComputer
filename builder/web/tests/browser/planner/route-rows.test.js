@@ -75,7 +75,7 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await page.evaluate(async record => {
     const { library, sentKey } = window.coverTest;
     const saved = await library.saveRoute(record);
-    await library.changeState('sent', () => ({ two: { device: 'card:5', key: sentKey(saved) } }));
+    await library.changeState('sent', () => ({ two: { key: sentKey(saved), card: 'card', days: ['5'], trip: null, tripKey: null } }));
     localStorage.setItem('obc-device', JSON.stringify({ serial: 'A1B2', storeId: 'card', at: null, map: null, routes: 1, bytes: { map: 0, routes: 0, rides: 0, other: 0 }, came: null, skipped: [] }));
   }, route);
   await page.goto('/planner.html#/route/two');
@@ -307,7 +307,7 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
     const open = indexedDB.open('obc-library');
     open.onsuccess = () => {
       const transaction = open.result.transaction('state', 'readwrite');
-      transaction.objectStore('state').put({ two: { device: 'card:5', key: 'another' } }, 'sent');
+      transaction.objectStore('state').put({ two: { key: 'another', card: 'card', days: ['5'], trip: null, tripKey: null } }, 'sent');
       transaction.oncomplete = resolve;
     };
   }));
