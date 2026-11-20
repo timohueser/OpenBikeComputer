@@ -647,7 +647,8 @@ lies under each way on top. The heights of a `tunnel-tube` are this floor, and t
 of the road solver there. The bake sets the floor before the numbers of the openings.
 
 - The curve of a way with heights, not of the kind `gallery`, lies over a vertex of the tube where the vertex is
-  within its reach (its outer half-width + `half` + `shell_m`) and the foot of its nearest point on the whole chain
+  within its reach (its outer half-width + `half` + `shell_m`; for a way whose reach meets the tube's curve, its
+  reach + `vertex_gap_m`, so a vertex keeps the cap of a reach end that it took) and the foot of its nearest point on the whole chain
   lies between the openings, each grown by the way's outer half-width. It lies on top where its height at that point
   is more than the at-grade band over the road solver's height of the chain at the foot (the lesser `snap_height_m`
   of the two classes, as at a crossing of the ground plan). A way that goes on from the chain's end meets it at the

@@ -230,6 +230,7 @@ pub(crate) fn floors(
                 }
             }
         }
+        let reached: Vec<usize> = runs.keys().copied().collect();
         for mut list in runs.into_values() {
             list.sort_by(|x, y| x[0].total_cmp(&y[0]));
             let mut run = list[0];
@@ -286,7 +287,10 @@ pub(crate) fn floors(
             }
             for (o, (m, k, u)) in best {
                 let w = &overs[o];
-                if m > reach_of(w) + MERGE_M {
+                // A way that comes within reach of the tube lies over each vertex within its reach and
+                // `vertex_gap_m`: the end of a reach that became a vertex up to that far away keeps its cap.
+                let past = if reached.contains(&o) { b.vertex_gap_m } else { MERGE_M };
+                if m > reach_of(w) + past {
                     continue;
                 }
                 let (a, e) = (w.points[k], w.points[k + 1]);

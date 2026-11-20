@@ -396,6 +396,22 @@ fn the_floor_keeps_the_crown_a_slab_under_a_way_on_top_within_the_grade_and_the_
 }
 
 #[test]
+fn a_way_whose_short_reach_lies_next_to_a_curve_point_holds_the_floor_down() {
+    // A road ends beside the tube: the tube is within its reach only from 100.65 m to 100.95 m east. Both ends of that
+    // reach lie within `vertex_gap_m` of the curve point at 100 m, so neither is a vertex; that point takes the cap.
+    let reach = widths().way("road", &tags(&[("highway", "residential")]), false).outer_m()
+        + widths().way("tunnel", &tags(&ROAD), false).half_m
+        + 0.6
+        + 0.5;
+    let beside = (reach * reach - 0.15 * 0.15).sqrt();
+    let placed = under(&[[100.8, 50.0], [100.8, beside]], 504.0, None);
+    let chords = chords(&placed);
+    assert!(chords.iter().all(|c| c.0[0] != 100.65 && c.0[1] != 100.95), "{chords:?}");
+    assert_eq!(placed.metrics["tops"].as_u64(), Some(1));
+    assert!((floor_at(&chords, 100.0) - 498.0).abs() < 1e-6, "{}", floor_at(&chords, 100.0));
+}
+
+#[test]
 fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height() {
     // 3 m from the opening, the floor cannot go down in time: the section there is lower. A road on top at 505.5 m
     // leaves 4.5 m over the floor of the opening (its underside, less the shell); the opening takes that height.
