@@ -733,6 +733,7 @@ class ShippedPlanTests(unittest.TestCase):
                 "ci.data-sources-guard",
                 "ci.fixture-policy",
                 "ci.ios-host-portability",
+                "ci.memory-x-guard",
                 "ci.prose",
                 "python.repository-tools",
                 "python.trailview",
