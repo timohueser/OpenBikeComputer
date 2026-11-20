@@ -232,7 +232,7 @@ fn read(paths: &[PathBuf], mut visit: impl FnMut(OsmObj)) -> Result<(), String> 
     Ok(())
 }
 
-fn copy_tags(tags: &osmpbfreader::Tags) -> Tags<'static> {
+pub(crate) fn copy_tags(tags: &osmpbfreader::Tags) -> Tags<'static> {
     Tags::from_pairs(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
 }
 

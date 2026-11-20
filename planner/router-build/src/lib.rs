@@ -5,6 +5,7 @@ mod column;
 pub mod connectivity;
 pub mod cost;
 pub mod country;
+pub mod extract;
 pub mod grid;
 pub mod landmarks;
 pub mod layout;

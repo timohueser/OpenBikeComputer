@@ -4928,6 +4928,7 @@ dependencies = [
  "osmpbfreader",
  "planner-router",
  "postcard",
+ "protobuf",
  "rayon",
  "rusqlite",
  "serde_json",
