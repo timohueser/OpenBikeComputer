@@ -15,9 +15,9 @@ use crate::levels::{run, Reader};
 use crate::tiles::{Tile, MAX_ZOOM};
 
 /// What to read about one opening: its point and unit direction into the tube, the metres across its frame row to the
-/// right and to the left, per metre in from it the points of the centre line and of both outer walls, and the ids of
-/// its chain's ways.
-#[derive(Clone, Debug)]
+/// right and to the left, per metre in from it the points of the centre line and of both outer walls, the ids of its
+/// chain's ways, and other points whose ground it needs.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Ask {
     pub p: [f64; 2],
     pub dir: [f64; 2],
@@ -25,12 +25,13 @@ pub(crate) struct Ask {
     pub left: u32,
     pub stations: Vec<[[f64; 2]; 3]>,
     pub ids: Vec<u32>,
+    pub points: Vec<[f64; 2]>,
 }
 
 /// What the ground plan gives about an opening: the ground at each station point (centre, left wall, right wall); the
 /// ground each metre along the frame row, from `right` metres right to `left` metres left; per deck way over the row
 /// its metres to the left and its underside; the room of each crossing where a way of the chain is the lower way;
-/// whether a building ring holds a station of the centre line.
+/// whether a building ring holds a station of the centre line; the ground at the ask's other points.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Site {
     pub stations: Vec<[Option<f64>; 3]>,
@@ -38,6 +39,7 @@ pub(crate) struct Site {
     pub decks: Vec<(f64, f64)>,
     pub rooms: Vec<f64>,
     pub building: bool,
+    pub points: Vec<Option<f64>>,
 }
 
 impl Site {
@@ -150,12 +152,13 @@ pub(crate) fn meet(p: [f64; 2], q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> Option
     ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some((t, u))
 }
 
-/// A point that an ask reads: the ask, its station and the point there (centre, left wall, right wall), or its place
-/// on the row.
+/// A point that an ask reads: the ask, its station and the point there (centre, left wall, right wall), its place on
+/// the row, or one of its other points.
 #[derive(Clone, Copy)]
 enum Read {
     Station(usize, usize, usize),
     Row(usize, usize),
+    Point(usize, usize),
 }
 
 /// The reads in one cell, each with its world point.
@@ -174,6 +177,7 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
         .map(|a| Site {
             stations: vec![[None; 3]; a.stations.len()],
             row: vec![None; (a.right + a.left + 1) as usize],
+            points: vec![None; a.points.len()],
             ..Site::default()
         })
         .collect();
@@ -189,6 +193,9 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
         for j in 0..=(a.right + a.left) {
             let p = offset(a.p, left, f64::from(j) - f64::from(a.right));
             by_cell.entry(key_of(frame(p))).or_default().push((Read::Row(k, j as usize), p));
+        }
+        for (i, &p) in a.points.iter().enumerate() {
+            by_cell.entry(key_of(frame(p))).or_default().push((Read::Point(k, i), p));
         }
     }
     let cells = by_cell.len();
@@ -211,7 +218,7 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
                 let heights: Vec<(Read, Option<f64>)> = reads.iter().map(|&(r, p)| (r, ground(p))).collect();
                 let mut readers: Vec<usize> = (reads.iter())
                     .map(|(r, _)| match *r {
-                        Read::Station(k, ..) | Read::Row(k, _) => k,
+                        Read::Station(k, ..) | Read::Row(k, _) | Read::Point(k, _) => k,
                     })
                     .collect();
                 readers.dedup();
@@ -248,6 +255,7 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
             match r {
                 Read::Station(k, i, w) => sites[k].stations[i][w] = h,
                 Read::Row(k, j) => sites[k].row[j] = h,
+                Read::Point(k, i) => sites[k].points[i] = h,
             }
         }
         for (k, decks, rooms, building) in per_ask {
@@ -289,5 +297,5 @@ pub(crate) fn ask(
         stations.push([c, offset(c, l, wall), offset(c, l, -wall)]);
         k += 1.0;
     }
-    Ask { p, dir, right, left, stations, ids }
+    Ask { p, dir, right, left, stations, ids, points: Vec::new() }
 }

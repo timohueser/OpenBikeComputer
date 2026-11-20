@@ -9,7 +9,7 @@ use obc_ground_plan::graph::OpenEnd;
 
 use super::floor::{self, Floor};
 use super::measure::{self, Ask, Site};
-use super::{along_dir, counts, distance, first_way_m, left_of, open_ends, Input, Opening, Tube};
+use super::{along_dir, built_openings, counts, distance, first_way_m, left_of, open_ends, Input, Opening, Tube};
 
 /// The kind of part at an opening.
 pub use obc_trailview_parts::Part as Kind;
@@ -312,48 +312,59 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         far_of[i] = far;
         far_of[m] = far;
     }
-    // The numbers come from the ground with the stretches that the records open: of each opening with a part, at its
-    // final place. The openings near a stretch that the first measure opened otherwise are measured again there.
-    let with_part: Vec<Opening> = (0..n).filter(|&i| !kinds[i].is_empty()).map(|i| openings[i].clone()).collect();
-    let last = open_ends(&with_part);
-    let changed: Vec<[f64; 2]> = (first.iter().filter(|e| !last.contains(e)))
-        .chain(last.iter().filter(|e| !first.contains(e)))
-        .map(|e| [e.way.x as f64 / SQUARE, e.way.y as f64 / SQUARE])
-        .collect();
-    let again: Vec<usize> = (0..n)
-        .filter(|&i| !kinds[i].is_empty() && changed.iter().any(|&p| distance(p, openings[i].p) <= AGAIN_M))
-        .collect();
-    if !again.is_empty() {
-        let asks: Vec<Ask> = again.iter().map(|&i| ask_of(i, openings, tubes, &half, &reach, input)).collect();
-        let (measured, more) = measure(&asks, &last);
-        cells += more;
-        for ((&i, site), a) in again.iter().zip(measured).zip(&asks) {
-            let o = &openings[i];
-            cover[i] = first_covered(&site, &floors_of(o, site.stations.len()), need(o.tube)).map(|k| k as f64);
-            (sites[i], rights[i], moved[i]) = (Some(site), a.right, 0.0);
-        }
-    }
-    // Where the ground of the second measure no longer fits a kind (no cover, or cover past the limit), the end drops
-    // it; a pair with an end that dropped `Pair` is no pair. Dropping kinds commutes, so the order of the ends does not
-    // matter.
+    // The numbers come from the ground with the stretches that the device opens: of each opening of a chain whose two
+    // ends are built (`BUILT`) by their final kinds, at its final place. The openings near a stretch that the first
+    // measure opened otherwise are measured again there. Where the ground no longer fits a kind (no cover, or cover
+    // past the limit), the end drops it; a pair with an end that dropped `Pair` is no pair. Dropping kinds commutes,
+    // so the order of the ends does not matter. The built chains can grow too (a broken pair's mate can become an
+    // arch), but a round goes on only where a list of kinds shrank in the round before: the rounds end within one more
+    // than the count of all kinds.
     let before: Vec<Option<Kind>> = kinds.iter().map(|k| k.first().copied()).collect();
-    for &i in &again {
-        let g = &input.rules.groups[tubes[openings[i].tube].group];
-        let d = cover[i];
-        let fits = |k: &Kind| match k {
-            Kind::Pair | Kind::Arch => d.is_some_and(|d| d <= g.collar_max_m),
-            Kind::Rock => d.is_some_and(|d| d <= g.collar_max_m.min(b.rock_cover_max_m)),
-            Kind::Box | Kind::Free => true,
-        };
-        kinds[i].retain(|k| fits(k));
-        if before[i] != Some(Kind::Free) && kinds[i].first() == Some(&Kind::Free) {
-            rung[i] = Some(if d.is_none() { "free: never covered" } else { "free: covered past the limit" });
+    let (mut remeasured, mut last): (usize, Option<Vec<OpenEnd>>) = (0, None);
+    loop {
+        let now: Vec<Option<Kind>> = kinds.iter().map(|k| k.first().copied()).collect();
+        let opened = open_ends(&built_openings(openings, &now));
+        if last.as_ref() == Some(&opened) {
+            break;
         }
-        if let Some(m) = mate[i].filter(|_| !kinds[i].contains(&Kind::Pair)) {
-            (mate[i], mate[m]) = (None, None);
-            kinds[m].retain(|&k| k != Kind::Pair);
-            (far_of[i], far_of[m]) = (i, m);
+        let changed: Vec<[f64; 2]> = (first.iter().filter(|e| !opened.contains(e)))
+            .chain(opened.iter().filter(|e| !first.contains(e)))
+            .map(|e| [e.way.x as f64 / SQUARE, e.way.y as f64 / SQUARE])
+            .collect();
+        let again: Vec<usize> = (0..n)
+            .filter(|&i| !kinds[i].is_empty() && changed.iter().any(|&p| distance(p, openings[i].p) <= AGAIN_M))
+            .collect();
+        if !again.is_empty() {
+            let asks: Vec<Ask> = again.iter().map(|&i| ask_of(i, openings, tubes, &half, &reach, input)).collect();
+            let (measured, more) = measure(&asks, &opened);
+            cells += more;
+            remeasured += again.len();
+            for ((&i, site), a) in again.iter().zip(measured).zip(&asks) {
+                let o = &openings[i];
+                cover[i] = first_covered(&site, &floors_of(o, site.stations.len()), need(o.tube)).map(|k| k as f64);
+                (sites[i], rights[i], moved[i]) = (Some(site), a.right, 0.0);
+            }
         }
+        for &i in &again {
+            let g = &input.rules.groups[tubes[openings[i].tube].group];
+            let d = cover[i];
+            let fits = |k: &Kind| match k {
+                Kind::Pair | Kind::Arch => d.is_some_and(|d| d <= g.collar_max_m),
+                Kind::Rock => d.is_some_and(|d| d <= g.collar_max_m.min(b.rock_cover_max_m)),
+                Kind::Box | Kind::Free => true,
+            };
+            let was = kinds[i].first().copied();
+            kinds[i].retain(|k| fits(k));
+            if was != Some(Kind::Free) && kinds[i].first() == Some(&Kind::Free) {
+                rung[i] = Some(if d.is_none() { "free: never covered" } else { "free: covered past the limit" });
+            }
+            if let Some(m) = mate[i].filter(|_| !kinds[i].contains(&Kind::Pair)) {
+                (mate[i], mate[m]) = (None, None);
+                kinds[m].retain(|&k| k != Kind::Pair);
+                (far_of[i], far_of[m]) = (i, m);
+            }
+        }
+        last = Some(opened);
     }
     let refitted = (0..n).filter(|&i| kinds[i].first().copied() != before[i]).count();
     // The floor of each tube with a part, from opening to opening; an end with no opening holds the end vertex. Its
@@ -392,7 +403,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         "ends": counts(ends.iter().map(shown)),
         "end_records": ends.iter().filter(|e| e.numbers.is_some()).count(),
         "cells": cells,
-        "measured_again": again.len(),
+        "measured_again": remeasured,
         "pairs_that_do_not_reach": unpaired,
         "kinds_changed_by_the_second_measure": refitted,
         "chains_whose_openings_would_meet": met,

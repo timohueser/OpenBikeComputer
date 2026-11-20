@@ -2,6 +2,7 @@
 //! numbers from the ground of the ground plan there, written as the features `tunnel-tube` and `tunnel-end` and the
 //! tag `parts` of the tunnel ways (`specs/trailview-features.md`, Tunnel parts).
 
+mod cut;
 mod floor;
 mod ladder;
 mod measure;
@@ -10,7 +11,7 @@ mod tests;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use obc_trailview_parts::{Bake, Ladder};
+use obc_trailview_parts::{Bake, Ladder, Rules};
 
 use obc_ground_plan::graph::OpenEnd;
 use obc_ground_plan::sections::{is_track, WidthRules};
@@ -477,7 +478,15 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         m.insert("tunnel_ways_without_id".into(), without_id.into());
         m.insert("chains_without_tube".into(), lost.into());
     }
-    records(&tubes, &openings, &decided, input)
+    let mut placed = records(&tubes, &openings, &decided, input);
+    // The cut of each built end, on the ground with the stretches of the built chains open, as the device builds it.
+    let kinds: Vec<Option<Kind>> = decided.ends.iter().map(|d| d.kind).collect();
+    let rules = Rules { ladder: input.rules.clone(), ..Rules::embedded().clone() };
+    let cut = cut::add(&mut placed.features, &open_ends(&built_openings(&openings, &kinds)), &rules, measure);
+    if let (Value::Object(m), Value::Object(c)) = (&mut placed.metrics, cut) {
+        m.extend(c);
+    }
+    placed
 }
 
 /// The features of the placement and the tag `parts` of the tunnel ways.
@@ -573,6 +582,14 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         #[cfg(test)]
         ends: openings.iter().map(|o| o.way_id).zip(decided.ends.iter().cloned()).collect(),
     }
+}
+
+/// The openings of the chains whose ends are all of built kinds (`obc_trailview_parts::BUILT`) by the kind of each
+/// opening: those that the device opens.
+pub(crate) fn built_openings(openings: &[Opening], kind: &[Option<Kind>]) -> Vec<Opening> {
+    let of =
+        |tube: usize, end: usize| openings.iter().position(|o| o.tube == tube && o.end == end).and_then(|j| kind[j]);
+    (openings.iter()).filter(|o| obc_trailview_parts::built(&[of(o.tube, 0), of(o.tube, 1)])).cloned().collect()
 }
 
 /// The open ends of the openings: each moved opening on its way, for the ground plan's `graph::build_open`.
