@@ -44,7 +44,8 @@
 
     function press(event: PointerEvent) {
         if (event.button !== 0) return;
-        strip!.focus();
+        // The arrow keys work after a press; the focus ring shows only for the keyboard.
+        strip!.focus({ focusVisible: false } as FocusOptions);
         strip!.setPointerCapture(event.pointerId);
         const day = dayAt(event);
         if (!inside(day)) go(centredOn(count, day));
@@ -64,6 +65,9 @@
         event.preventDefault();
         go(start);
     }
+
+    // A strip that goes during a drag, as at an Undo to fewer days, ends the drag.
+    $effect(() => () => { dragging = false; });
 
     // A non-passive listener, so the page does not scroll under the strip.
     const wheel: Attachment<HTMLElement> = node => {

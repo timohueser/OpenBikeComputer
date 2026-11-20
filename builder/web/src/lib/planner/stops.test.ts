@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { groupStops, stopWindow, daysAround, evenStop, nightWindows, proposeNights, proposalTitle, stopCounts, stopKm, suitable, type Stop } from './stops';
-import { allStay, type Stay, type Trip } from './editor';
+import { groupStops, stopWindow, daysAround, evenStop, nightWindows, proposeNights, proposalTitle, stopCounts, stopKm, suitable } from './stops';
+import { allStay, planView, type Stay, type Trip } from './editor';
+import { weekOf } from './week';
 import type { SearchPlace } from './search/types';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 
@@ -55,23 +56,15 @@ describe('stops', () => {
         expect(evenStop(stops, trip, line, 1)?.name).toBe('B');
     });
 
-    it('searches only the nights of the week, and its suggestions do not depend on the weeks shown before', () => {
+    it('searches and suggests only the nights of the week', () => {
         const trip = { ...testTrip(), days: 21 }, line = testLine(trip);
-        const second = [7, 8, 9, 10, 11, 12, 13, 14], third = [14, 15, 16, 17, 18, 19, 20, 21];
-        expect(Object.keys(nightWindows(trip, line, null, second)).map(Number)).toEqual(second);
-        expect(Object.keys(nightWindows(trip, line, 3, second)).map(Number)).toEqual([3, ...second]);
-        // As the finder, the page keeps each answer by its window: here one town near the middle of each window.
-        const found = new Map<string, Stop[]>();
-        const propose = (nights: number[]) => {
-            const windows = nightWindows(trip, line, null, nights);
-            for (const [night, [from, to]] of Object.entries(windows))
-                found.set(`${from}-${to}`, groupStops([place(`Inn ${night}`, 'hotel', `Town ${night}`, (from + to) / 2 + .3)], []));
-            return [...proposeNights(trip, line, night => windows[night] ? found.get(windows[night].join('-')) ?? [] : [])];
-        };
-        const week = propose(second);
-        expect(week.map(([night]) => night)).toEqual(second);
-        propose(third);
-        expect(propose(second)).toEqual(week);
+        // The nights that the page asks for with the week on days 8 to 14: those days and the night before them.
+        const nights = weekOf(planView(trip, line).itinerary, 8)!.nights, windows = nightWindows(trip, line, null, nights);
+        expect(Object.keys(windows).map(Number)).toEqual([7, 8, 9, 10, 11, 12, 13, 14]);
+        expect(Object.keys(nightWindows(trip, line, 3, nights)).map(Number)).toEqual([3, 7, 8, 9, 10, 11, 12, 13, 14]);
+        // Each searched night finds a town near the middle of its stretch; the other nights keep their even day end.
+        const town = ([from, to]: [number, number]) => groupStops([place('Inn', 'hotel', 'Town', (from + to) / 2 + .3)], []);
+        expect([...proposeNights(trip, line, night => windows[night] ? town(windows[night]) : []).keys()]).toEqual(nights);
     });
 
     it('proposes each open night at the nearest stop with a kind of place of that night, evening out the days left after it', () => {

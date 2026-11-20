@@ -749,7 +749,8 @@
 
     /** Opens a night in the day list, with its towns. */
     function openNight(number: number) {
-        showInWeek(dayLabels[number]);
+        // The night before the week stands at the left edge of the profile: it is one of the week's nights already.
+        if (!week?.nights.includes(number)) showInWeek(dayLabels[number]);
         expandedDay = null;
         exitSearch();
         nights.choose(number);
@@ -1095,7 +1096,7 @@
         try {
             const next = await applyQueryChanges(before, session.line, answer.changes, plan => session.calculate(plan, new AbortController().signal));
             if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The route changed. Review the search again.');
-            if (answer.changes.some(change => change.op === 'route')) exploreBack = undefined;
+            if (answer.changes.some(change => change.op === 'route')) { exploreBack = undefined; restedStart = weekStart = 1; }
             session.commit(next.trip, next.line);
             showInWeek(answer.changes.find(change => change.day !== undefined)?.day);
             afterEdit(answer.description ?? 'Query applied');
