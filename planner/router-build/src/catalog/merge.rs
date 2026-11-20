@@ -223,7 +223,7 @@ impl Merge {
         &self,
         probes: &BTreeMap<i64, Probe>,
         shown: &HashSet<i64>,
-        part: &(dyn Fn(i64) -> bool + Sync),
+        part: &dyn Fn(i64) -> bool,
     ) -> Vec<i64> {
         let gone: Vec<i64> = self.replaced.keys().chain(self.held.keys()).copied().collect();
         let place = |id: i64| -> Vec<&Probe> {
@@ -248,7 +248,9 @@ impl Merge {
             let nears: Vec<Near> = place(id).into_iter().map(Probe::near).collect();
             share(&probes[&id], &nears.iter().collect::<Vec<_>>()) < SAME_SHARE
         };
-        let back: Vec<i64> = gone.into_par_iter().filter(uncovered).collect();
+        // One job at a time: each builds the indexes of its own place, and many at once raise the
+        // memory peak of the catalog.
+        let back: Vec<i64> = gone.into_iter().filter(uncovered).collect();
         match back.iter().any(|id| self.held.contains_key(id)) {
             true => back.into_iter().filter(|id| self.held.contains_key(id)).collect(),
             false => back,
