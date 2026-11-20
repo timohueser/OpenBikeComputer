@@ -1,29 +1,31 @@
 //! The arch: a head wall on the frame line, with a frame round the opening and wings whose tops follow the rows of
-//! the bake; the outer shell of the collar; the dark face in the opening; and the box in which the ground does not
-//! draw.
+//! the bake; the outer shell of the part; and the dark face in the opening.
 
+use crate::boxes;
 use crate::mesh::{flagged, flat, outline, Builder, Corner, Station, VOID};
 use crate::tube::{self, direction, inward, spring, Net};
-use crate::{metres_per_unit, Section, BOX};
+use crate::Section;
 
-/// The pieces of the collar's shell of end e: per chord from the back of the head wall to `collar` metres in, its
-/// start and end station across to the left of the way in, its chord's height and section.
-pub fn collar(net: &Net, e: usize) -> Vec<(Station, Station, f64, Section)> {
-    let end = &net.ends[e];
+/// A piece of the shell: its start and end station across to the left of the way in, its chord's height and section,
+/// and the chord and its vertex at the end.
+pub type Piece = (Station, Station, f64, Section, usize, usize);
+
+/// The pieces of the shell of end e: per chord from the back of the head wall to `to` metres in.
+pub fn collar(net: &Net, e: usize, to: f64) -> Vec<Piece> {
     let design = &net.rules.design;
     let from = design.face_m - design.recess_m;
     let mut out = Vec::new();
-    for (c, forward, start) in net.walk(e, end.collar) {
+    for (c, forward, start) in net.walk(e, to) {
         let chord = &net.chords[c];
         let len = direction(chord).1;
-        if start + len <= from || start >= end.collar {
+        if start + len <= from || start >= to {
             continue;
         }
         let (k0, k1) = if forward { (0, 1) } else { (1, 0) };
         let (near, far) = (net.ring_along(c, k0, forward), net.ring_along(c, k1, forward));
         let s = if start <= from { net.frame(e, from) } else { near };
-        let t = if start + len > end.collar { near.mix(&far, (end.collar - start) / len) } else { far };
-        out.push((s, t, chord.height, chord.section));
+        let t = if start + len > to { near.mix(&far, (to - start) / len) } else { far };
+        out.push((s, t, chord.height, chord.section, c, k1));
     }
     out
 }
@@ -44,8 +46,7 @@ fn top(end: &crate::End, edge: f64, t: f64) -> f64 {
 }
 
 /// The faces of the arch at end e: its head wall, the sill, the reveal and the frame round the opening, the dark face
-/// in it, and the shell of its collar. The head wall and the shell go down to one level, `foot` under the opening's
-/// floor; the sill lies `lift_m` under the floor, under the road of the tube and of the ground. Faces that meet share
+/// in it, and the shell of its collar. The head wall and the shell go down to one level (`boxes::foot`); the sill lies `lift_m` under the floor, under the road of the tube and of the ground. Faces that meet share
 /// the corners of their edges.
 pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
     let end = &net.ends[e];
@@ -53,7 +54,7 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
     let chord = &net.chords[c];
     let look = &net.rules.looks[&end.look];
     let (design, bake) = (&net.rules.design, &net.rules.ladder.bake);
-    let (n, sill, foot) = (design.arch_segments, -design.lift_m, end.z + end.foot);
+    let (n, sill, foot) = (design.arch_segments, -design.lift_m, boxes::foot(net, e));
     let (half, edge) = (chord.half, chord.half + bake.shell_m);
     let sp = spring(net, chord.section, chord.height);
     let pieces = tube::floor_pieces(net, chord);
@@ -71,7 +72,8 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
     let (inner, hole) = (grown(0.0), grown(design.frame_m));
     let (front, ring, back) =
         (net.frame(e, -design.recess_m), net.frame(e, 0.0), net.frame(e, design.face_m - design.recess_m));
-    let shell = collar(net, e);
+    let reach = boxes::reach(net, e);
+    let shell = collar(net, e, reach.shell);
     let (h, section) = shell.first().map_or((chord.height, chord.section), |p| (p.2, p.3));
     let into = end.way_in();
     let (inward_, outward) = (flat(into), flat([-into[0], -into[1]]));
@@ -116,7 +118,54 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
     for k in 0..rim.len() {
         b.triangle(centre, rim[k], rim[(k + 1) % rim.len()], outward);
     }
-    tube::shell(b, net, &shell, half, foot, look.shell);
+    let run: Vec<_> = shell.iter().map(|p| (p.0, p.1, p.2, p.3)).collect();
+    tube::shell(b, net, &run, half, foot, look.shell, reach.then);
+    if let Some(&(s, t, _, _, c, k)) = shell.last().filter(|_| reach.closed) {
+        end_face(b, net, (c, k), &t, foot, look.shell, flat([t.x - s.x, t.y - s.y]));
+    }
+}
+
+/// The face that closes the shell at station `t` at vertex k of chord c: from the outside of the shell, down to `foot`,
+/// to the inside of the chord there and under its floor; facing `out`. Two strips from the shell's right foot and the
+/// inside's right floor corner: one up the right and over the top to the left spring, one across the foot and the
+/// floor and up the left to the left spring.
+fn end_face<L: Fn([f64; 3]) -> f64>(
+    b: &mut Builder<L>,
+    net: &Net,
+    (c, k): (usize, usize),
+    t: &Station,
+    foot: f64,
+    colour: u32,
+    out: [f64; 3],
+) {
+    let chord = &net.chords[c];
+    let sp = spring(net, chord.section, chord.height);
+    let shell = tube::shell_outline(net, chord.section, chord.half, chord.height, foot - t.z);
+    let inner = outline(chord.section, chord.half, chord.height, sp, net.rules.design.arch_segments);
+    let (n, pieces) = (inner.len(), tube::floor_pieces(net, chord));
+    let lower = net.lower(c, k).map(|l| spring(net, chord.section, l));
+    // The inside's wall from the floor at `x` up to the spring, with the spring of a lower chord between.
+    let wall = |x: f64, floor: f64| {
+        let mut w = vec![[x, floor]];
+        w.extend(lower.filter(|&l| l > floor && l < sp).map(|l| [x, l]));
+        w.push([x, sp]);
+        w
+    };
+    // The floor from the right wall to the left: each piece's top, and both tops where two pieces meet.
+    let mut floor: Vec<Corner> = vec![[pieces[0].0, pieces[0].2]];
+    for w in pieces.windows(2) {
+        floor.push([w[0].1, w[0].2]);
+        floor.push([w[1].0, w[1].2]);
+    }
+    floor.push([pieces[pieces.len() - 1].1, pieces[pieces.len() - 1].2]);
+    floor.dedup();
+    let right: Vec<Corner> =
+        wall(inner[0][0], pieces[0].2).into_iter().chain(inner[2..n - 1].iter().copied()).collect();
+    let mut left = floor.clone();
+    left.extend(wall(inner[n - 1][0], pieces[pieces.len() - 1].2).into_iter().skip(1));
+    b.strip((t, &shell[..n - 1]), (t, &right), colour, out);
+    let bottom = [shell[0], shell[n - 1], shell[n - 2]];
+    b.strip((t, &bottom), (t, &left), colour, out);
 }
 
 /// Whole metres from a to b, with a and b.
@@ -213,58 +262,4 @@ impl Wall<'_> {
         let tops = columns.iter().chain(&over[1..over.len() - 1]).chain(&left);
         tops.map(|(x, (ups, _))| [*x, ups[ups.len() - 1]]).collect()
     }
-}
-
-/// The box of end e (`BOX` words): its middle on the front of the head wall, as the footprint, its unit way in, its
-/// depth (`portal_cells` and a cell's diagonal of mesh cells of level 17, and the collar, from the frame line), its
-/// half-width to the outside of the shell, the height of its roof and its floor at its middle, and their rise per
-/// metre in. The rise is the least over the chord vertices in
-/// the box, so the box's foot stays under the floor, and the roof rises until it clears the crown at each.
-pub fn portal_box(net: &Net, e: usize) -> [f64; BOX] {
-    let end = &net.ends[e];
-    let (design, bake) = (&net.rules.design, &net.rules.ladder.bake);
-    let m = metres_per_unit(end.at[1]);
-    let cells = (design.portal_cells + std::f64::consts::SQRT_2) * design.mesh_texels * 32.0 * m + 1.0;
-    let mut depth = cells.max(end.collar + 2.0);
-    let walk = net.walk(e, depth);
-    // Per chord vertex in the box, and the opening: its metres in from the front of the head wall, its floor and
-    // its crown.
-    let front = net.frame(e, -design.recess_m);
-    let mut places = vec![(design.recess_m, end.z, end.z + end.height)];
-    for &(c, forward, start) in &walk {
-        let chord = &net.chords[c];
-        let len = direction(chord).1;
-        if len <= 0.0 {
-            continue;
-        }
-        let (near, far) = if forward { (chord.a[2], chord.b[2]) } else { (chord.b[2], chord.a[2]) };
-        let s = (start + len).min(depth);
-        let z = near + (far - near) * (s - start) / len;
-        for (s, z) in [(start, near), (s, z)] {
-            places.push((s + design.recess_m, z, z + chord.height));
-        }
-    }
-    // A box ends at the other opening of a shorter tube.
-    if let Some(&(c, forward, start)) = walk.last() {
-        if net.opening_at(c, usize::from(forward)) {
-            depth = depth.min(start + direction(&net.chords[c]).1);
-        }
-    }
-    let depth = depth + design.recess_m;
-    let inside: Vec<_> = places.into_iter().filter(|p| p.0 <= depth).collect();
-    let rise = inside.iter().map(|p| (p.1 - front.z) / p.0).fold(f64::INFINITY, f64::min);
-    let crown = front.z + end.height;
-    let lift = inside.iter().map(|p| p.2 - crown - rise * p.0).fold(0.0, f64::max);
-    let into = end.way_in();
-    [
-        front.x,
-        front.y,
-        into[0],
-        into[1],
-        depth,
-        end.half + bake.shell_m,
-        crown + bake.shell_m + lift,
-        front.z + design.lift_m,
-        rise,
-    ]
 }

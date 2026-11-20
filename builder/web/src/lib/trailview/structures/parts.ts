@@ -40,7 +40,7 @@ export function partMeshes(input: string): StructureMesh | null {
     return out.length > 1 ? { vertices: out.slice(1, 1 + n).buffer, indices: out.slice(1 + n) } : null;
 }
 
-/** The boxes (`BOX` words of node.ts) and the floor segments (`FLOOR` words) of the parts near the input's square. */
+/** The boxes (`BOX` of obc-trailview-parts, 12 words each) and the floor segments (`FLOOR` words) of the parts near the input's square. */
 export function partVolumes(input: string): { boxes: Float64Array<ArrayBuffer>; floors: Float64Array<ArrayBuffer> } {
     bridge();
     const out = volumes(input), n = out[0];

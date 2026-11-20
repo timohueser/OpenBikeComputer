@@ -180,7 +180,7 @@ impl Tile {
                 match part.z.as_ref().map(|z| z[index]).filter(|value| !value.is_nan()) {
                     None => out.vertices.push(0),
                     Some(value) => {
-                        let value = (value * 100.0).round_ties_even() as i64;
+                        let value = height_code(value);
                         varint(&mut out.vertices, zigzag(value - height) + 1);
                         height = value;
                     }
@@ -677,6 +677,11 @@ fn rounded(part: &Part, n: usize, [x, y]: [f64; 2], unit: i64) -> [i64; 2] {
         fine.round_ties_even() as i64
     };
     [round(x), round(y)]
+}
+
+/// A height as the tiles hold it: whole centimetres.
+pub fn height_code(value: f64) -> i64 {
+    (value * 100.0).round_ties_even() as i64
 }
 
 /// Vertex n of part `part` of a feature in the frame of the ground plan (2^34 units per side): the point that every

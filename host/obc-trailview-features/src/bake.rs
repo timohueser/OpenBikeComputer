@@ -439,6 +439,11 @@ pub fn bake(
     };
     let placed = parts::place(&input, memory.saturating_sub(crate::step::resident()));
     drop(input);
+    // The rings of a cut are simple and apart by construction: one that is not is a fault of the bake.
+    let invalid = placed.metrics["cut_invalid_rings"].as_u64().unwrap_or(0);
+    if invalid > 0 {
+        return Err(format!("the cut gate: {invalid} cuts of tunnel ends have rings that are not simple or meet"));
+    }
     eprintln!("parts: {} features in {:.1} s", placed.features.len(), pass.elapsed().as_secs_f64());
     for (kind, tags, part) in placed.features {
         let geometry = if part.points.len() == 1 { Geometry::Point } else { Geometry::Line };

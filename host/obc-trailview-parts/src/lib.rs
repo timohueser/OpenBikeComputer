@@ -6,6 +6,7 @@
 //! Points are world units of the viewer: 2^30 per side of the Web Mercator square, y down.
 
 mod arch;
+mod boxes;
 mod footprint;
 mod mesh;
 mod rules;
@@ -15,6 +16,7 @@ mod tube;
 
 use std::collections::BTreeMap;
 
+pub use boxes::{corners, outside, outside_plan, outside_wall, BOX};
 pub use mesh::WORDS;
 pub use rules::{Bake, Bore, Design, Group, Inside, Ladder, Look, Rules};
 
@@ -222,16 +224,15 @@ pub struct Mesh {
     pub indices: Vec<u32>,
 }
 
-/// The volumes near a square: the boxes in which the ground does not draw (`BOX` of the viewer's `structures/node.ts`,
-/// 9 words each) and the floor segments (`FLOOR`, 7 words each).
+/// The volumes near a square: the boxes in which the ground does not draw (`BOX` words each) and the floor segments
+/// (`FLOOR`, 7 words each).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Volumes {
     pub boxes: Vec<f64>,
     pub floors: Vec<f64>,
 }
 
-/// Words of a box and of a floor segment.
-pub const BOX: usize = 9;
+/// Words of a floor segment.
 pub const FLOOR: usize = 7;
 
 /// Whether a square `[x0, y0, x1, y1]` holds a point, half-open.
@@ -272,14 +273,10 @@ pub fn volumes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) 
     let reach = rules.design.reach_m / metres_per_unit((square[1] + square[3]) / 2.0);
     let mut out = Volumes::default();
     for e in (0..ends.len()).filter(|&e| net.built_end(e)) {
-        let words = arch::portal_box(&net, e);
-        let m = metres_per_unit(ends[e].at[1]);
-        let (into, left) = (ends[e].way_in(), mesh::left_of(ends[e].way_in()));
-        let corner =
-            |s: f64, a: f64| [words[0] + (into[0] * s + left[0] * a) / m, words[1] + (into[1] * s + left[1] * a) / m];
-        let (depth, half) = (words[4], words[5]);
-        if near(square, &[corner(0.0, half), corner(0.0, -half), corner(depth, half), corner(depth, -half)], reach) {
-            out.boxes.extend(words);
+        for words in boxes::boxes(&net, e) {
+            if near(square, &corners(&words), reach) {
+                out.boxes.extend(words);
+            }
         }
     }
     for (c, chord) in chords.iter().enumerate() {
@@ -290,6 +287,12 @@ pub fn volumes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) 
         }
     }
     out
+}
+
+/// Per end, the boxes of its part (`BOX` words each, the opening's first); none for an end that is not built.
+pub fn end_boxes(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<Vec<[f64; BOX]>> {
+    let net = Net::new(ends, chords, rules);
+    (0..ends.len()).map(|e| boxes::boxes(&net, e)).collect()
 }
 
 /// Per built end, the ring that its part takes from the ground: round its head wall and wings, from front to back,
