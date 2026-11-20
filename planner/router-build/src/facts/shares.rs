@@ -230,7 +230,7 @@ impl Shares {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::facts::places::tests::places;
     use crate::source::{Builder, Ways};
@@ -326,7 +326,7 @@ mod tests {
     }
 
     /// A PMTiles archive of one tile, with no compression.
-    fn archive(id: u64, tile: &[u8]) -> Vec<u8> {
+    pub(crate) fn archive(id: u64, tile: &[u8]) -> Vec<u8> {
         let mut root = Vec::new();
         for mut value in [1, id, 1, tile.len() as u64, 1] {
             while value >= 0x80 {

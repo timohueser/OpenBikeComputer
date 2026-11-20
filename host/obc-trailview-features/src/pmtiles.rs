@@ -241,7 +241,7 @@ mod tests {
         let archive = Archive::open(&path).unwrap();
         assert!(archive.root().iter().all(|entry| entry.run_length == 0));
         assert_eq!(archive.root()[1].tile_id, entries[4096].tile_id);
-        assert_eq!(archive.tile(tiles[4096].0).unwrap().as_ref(), Some(&tiles[4096].1));
+        assert_eq!(archive.get_id(tiles[4096].0).unwrap().as_ref(), Some(&tiles[4096].1));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

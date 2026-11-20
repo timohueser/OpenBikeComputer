@@ -88,9 +88,7 @@ impl Archive {
     fn directory(&self, offset: u64, length: u64) -> Result<Vec<Entry>, String> {
         let mut raw = self.bytes(offset, length)?;
         if self.gzip {
-            let mut out = Vec::new();
-            flate2::read::GzDecoder::new(&raw[..]).read_to_end(&mut out).map_err(|e| e.to_string())?;
-            raw = out;
+            raw = gunzip(&raw)?;
         }
         let mut at = 0;
         let mut varint = || -> Result<u64, String> {
@@ -128,11 +126,21 @@ impl Archive {
 
     /// The bytes of a tile as the archive stores them, None where it has none.
     pub fn get(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, String> {
-        self.tile(tile_id(z, x, y))
+        self.get_id(tile_id(z, x, y))
+    }
+
+    /// The bytes of a tile without its `tile_compression`, None where the archive has none.
+    pub fn tile(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, String> {
+        let Some(bytes) = self.get(z, x, y)? else { return Ok(None) };
+        match self.tile_compression {
+            1 => Ok(Some(bytes)),
+            2 => gunzip(&bytes).map(Some),
+            other => Err(format!("tile compression {other}")),
+        }
     }
 
     /// The bytes of the tile of id `id` as the archive stores them, None where it has none.
-    pub fn tile(&self, id: u64) -> Result<Option<Vec<u8>>, String> {
+    pub fn get_id(&self, id: u64) -> Result<Option<Vec<u8>>, String> {
         let mut leaf;
         let mut entries = &self.root[..];
         for _ in 0..4 {
@@ -146,6 +154,12 @@ impl Archive {
         }
         Ok(None)
     }
+}
+
+fn gunzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(bytes).read_to_end(&mut out).map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 /// The entry that holds tile `id`: a run of tiles, or the leaf directory that it lies in.
@@ -189,45 +203,66 @@ mod tests {
         assert_eq!(tiles.map(|(z, x, y)| zoom(tile_id(z, x, y))), tiles.map(|t| t.0));
     }
 
-    #[test]
-    fn an_archive_reads_a_tile_and_its_leaf_directory() {
-        let varints = |values: &[u64]| {
-            let mut out = Vec::new();
-            for &value in values {
-                let mut value = value;
-                while value >= 0x80 {
-                    out.push(value as u8 | 0x80);
-                    value >>= 7;
-                }
-                out.push(value as u8);
+    fn varints(values: &[u64]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for &value in values {
+            let mut value = value;
+            while value >= 0x80 {
+                out.push(value as u8 | 0x80);
+                value >>= 7;
             }
-            out
-        };
-        // Tiles 5 and 6, then a run of two equal tiles 9 and 10; the data holds "five", "six", "nine".
-        // Each directory lists the count, the id deltas, the run lengths, the lengths and the offsets
-        // (0 for an entry that follows the one before it, else offset + 1).
-        let leaf = varints(&[3, 5, 1, 3, 1, 1, 2, 4, 3, 4, 1, 0, 0]);
-        let root = varints(&[1, 5, 0, leaf.len() as u64, 1]);
-        let data = b"fivesixnine";
+            out.push(value as u8);
+        }
+        out
+    }
+
+    /// An archive with no directory compression, written to a temporary file.
+    fn write(name: &str, root: &[u8], leaf: &[u8], data: &[u8], tile_compression: u8) -> std::path::PathBuf {
         let (root_at, leaves_at) = (127u64, 127 + root.len() as u64);
         let data_at = leaves_at + leaf.len() as u64;
         let mut file = b"PMTiles\x03".to_vec();
         let words = [root_at, root.len() as u64, 0, 0, leaves_at, leaf.len() as u64, data_at, data.len() as u64];
         words.iter().for_each(|word| file.extend(word.to_le_bytes()));
         file.resize(97, 0);
-        file.extend([1, 1, 0]);
+        file.extend([1, tile_compression, 0]);
         file.resize(127, 0);
-        file.extend(&root);
-        file.extend(&leaf);
+        file.extend(root);
+        file.extend(leaf);
         file.extend(data);
-        let path = std::env::temp_dir().join(format!("obc-data-pmtiles-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("obc-data-pmtiles-{name}-{}", std::process::id()));
         std::fs::write(&path, file).unwrap();
+        path
+    }
+
+    #[test]
+    fn an_archive_reads_a_tile_and_its_leaf_directory() {
+        // Tiles 5 and 6, then a run of two equal tiles 9 and 10; the data holds "five", "six", "nine".
+        // Each directory lists the count, the id deltas, the run lengths, the lengths and the offsets
+        // (0 for an entry that follows the one before it, else offset + 1).
+        let leaf = varints(&[3, 5, 1, 3, 1, 1, 2, 4, 3, 4, 1, 0, 0]);
+        let root = varints(&[1, 5, 0, leaf.len() as u64, 1]);
+        let path = write("leaf", &root, &leaf, b"fivesixnine", 1);
         let archive = Archive::open(&path).unwrap();
         assert_eq!(archive.root(), [Entry { tile_id: 5, offset: 0, length: leaf.len() as u64, run_length: 0 }]);
-        let tiles: Vec<Option<Vec<u8>>> = (4..12).map(|id| archive.tile(id).unwrap()).collect();
+        let tiles: Vec<Option<Vec<u8>>> = (4..12).map(|id| archive.get_id(id).unwrap()).collect();
         let tile = |bytes: &[u8]| Some(bytes.to_vec());
         assert_eq!(tiles, [None, tile(b"five"), tile(b"six"), None, None, tile(b"nine"), tile(b"nine"), None]);
         assert_eq!(archive.get(1, 0, 0).unwrap(), None);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn tile_takes_off_the_gzip_of_the_archive() {
+        use std::io::Write;
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(b"snow").unwrap();
+        let data = gzip.finish().unwrap();
+        let root = varints(&[1, tile_id(1, 0, 1), 1, data.len() as u64, 1]);
+        let path = write("gzip", &root, &[], &data, 2);
+        let archive = Archive::open(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(archive.get(1, 0, 1).unwrap(), Some(data));
+        assert_eq!(archive.tile(1, 0, 1).unwrap(), Some(b"snow".to_vec()));
+        assert_eq!(archive.tile(1, 1, 1).unwrap(), None);
     }
 }

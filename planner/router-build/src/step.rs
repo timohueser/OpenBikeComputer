@@ -323,9 +323,9 @@ fn catalog(files: &BTreeMap<String, PathBuf>, cells: impl IntoIterator<Item = St
 }
 
 /// The route facts step. It reads the OSM extract of `planner/osm/bounds`, the source layer, the
-/// cell files of `planner/routing`, the GLO-30 tiles of its bounds and, when the request has it,
-/// the canopy archive of `planner/trailview-canopy`. The options are `bounds` and
-/// `terrain_attribution`, the credit of GLO-30. The layer `facts/` holds the facts file of each
+/// cell files of `planner/routing`, the GLO-30 tiles of its bounds and, when the request has them,
+/// the canopy archive of `planner/trailview-canopy` and `snow-seasons.pmtiles` of `planner/snow`.
+/// The options are `bounds` and `terrain_attribution`, the credit of GLO-30. The layer `facts/` holds the facts file of each
 /// grid cell. Its metrics are `facts::report`, the counts of the places and of the extract, the
 /// sizes of the facts and the catalog files, and the seconds of each stage.
 pub fn facts(request: &Request) -> Result<(), String> {
@@ -358,9 +358,13 @@ pub fn facts(request: &Request) -> Result<(), String> {
     Guard::stage("shares");
     let osm = Data::open(&folder(request, SOURCE)?)?;
     let roads = Roads::new(&osm);
-    let canopy = request.layers.get("planner/trailview-canopy").and_then(|files| files.get("trailview-canopy.pmtiles"));
-    let canopy = canopy.map(|path| Archive::open(path).map_err(|e| format!("{}: {e}", path.display()))).transpose()?;
-    let entries = crate::facts::entries(&routes, &places, &roads, canopy.as_ref())?;
+    let archive = |layer: &str, file: &str| {
+        let path = request.layers.get(layer).and_then(|files| files.get(file));
+        path.map(|path| Archive::open(path).map_err(|e| format!("{}: {e}", path.display()))).transpose()
+    };
+    let canopy = archive("planner/trailview-canopy", "trailview-canopy.pmtiles")?;
+    let snow = archive("planner/snow", "snow-seasons.pmtiles")?;
+    let entries = crate::facts::entries(&routes, &places, &roads, [canopy.as_ref(), snow.as_ref()])?;
     lap("shares");
     Guard::stage("write");
     let output = request.output.join("facts");

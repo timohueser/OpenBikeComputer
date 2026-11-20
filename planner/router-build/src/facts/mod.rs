@@ -1,11 +1,12 @@
 //! The facts of each catalog route for the search of the Explore page: the car parks, the lifts
-//! and the places near it, its shares of paved length, big road, canopy and water, and for a
-//! one-way route the lift between its ends and the time back. The section "Facts files" of
+//! and the places near it, its shares of paved length, big road, canopy and water, its snow
+//! window, and for a one-way route the lift between its ends and the time back. The section "Facts files" of
 //! `specs/route-catalog.md` defines the files.
 
 pub mod geometry;
 pub mod places;
 pub mod shares;
+pub mod snow;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,6 +20,7 @@ use crate::source::Id;
 use geometry::{Line, Plane};
 use places::Places;
 use shares::{percent, Roads, Shares, SAMPLE_M};
+use snow::{Snow, Steps, Window};
 
 /// The version of the facts files.
 pub const FORMAT: u32 = 1;
@@ -148,6 +150,8 @@ pub struct Entry {
     pub lifts: Vec<(Id, u32)>,
     pub places: Vec<(Id, u32)>,
     pub shares: Shares,
+    /// None without a snow archive.
+    pub snow: Option<Snow>,
     /// One-way routes only: the lift whose valley station lies at one end of the line and whose
     /// top station at the other, and the end at the valley.
     pub lift_ends: Option<(Id, End)>,
@@ -178,6 +182,11 @@ impl Entry {
         }
         if let Some(canopy) = shares.canopy_pct() {
             entry["canopy_pct"] = json!(canopy);
+        }
+        match self.snow.map(|snow| snow.window) {
+            Some(Window::Free(first, last)) => entry["snow_free"] = json!([first, last]),
+            Some(Window::Never) => entry["snow_free"] = json!([]),
+            _ => {}
         }
         if let Some((id, end)) = self.lift_ends {
             entry["lift_ends"] = json!([id.to_string(), if end == End::Start { "start" } else { "end" }]);
@@ -259,8 +268,16 @@ pub fn back_s(route: &Route) -> u64 {
     }
 }
 
-/// The entry of a route with its samples and, with a canopy archive, the forest of each sample.
-fn entry(route: &Route, samples: &[P], places: &Places, roads: &Roads, forest: Option<&[Option<bool>]>) -> Entry {
+/// The archive values of the samples of a route: the forest and the snowy steps of each sample,
+/// each None without its archive.
+#[derive(Clone, Copy, Default)]
+struct Layers<'a> {
+    forest: Option<&'a [Option<bool>]>,
+    snow: Option<&'a [Option<Steps>]>,
+}
+
+/// The entry of a route with its samples.
+fn entry(route: &Route, samples: &[P], places: &Places, roads: &Roads, layers: Layers) -> Entry {
     let line = Line::new(&route.line);
     let metres = |place: &Place, reach_m: f64| {
         let distance = place.distance(&line, reach_m);
@@ -288,29 +305,40 @@ fn entry(route: &Route, samples: &[P], places: &Places, roads: &Roads, forest: O
         parking: nearest(parking, 2 * NEAREST),
         lifts: nearest(lifts, NEAREST),
         places: nearest(nearby.filter_map(|place| metres(place, PLACE_M)).collect(), usize::MAX),
-        shares: Shares::new(samples, roads, places, forest),
+        shares: Shares::new(samples, roads, places, layers.forest),
+        snow: layers.snow.map(snow::window),
         lift_ends: one_way.then(|| lift_ends(&route.line, stations.into_iter())).flatten(),
         back_s: one_way.then(|| back_s(route)),
     }
 }
 
-/// The entry of each route.
+/// The entry of each route, with the canopy and the `snow-seasons` archive when the release has
+/// them.
 pub fn entries(
     routes: &[Route],
     places: &Places,
     roads: &Roads,
-    canopy: Option<&Archive>,
+    [canopy, snow]: [Option<&Archive>; 2],
 ) -> Result<BTreeMap<i64, Entry>, String> {
     let samples: Vec<Vec<P>> = routes.par_iter().map(|route| shares::samples(&route.line, route.length_m)).collect();
-    let forest = canopy.map(|archive| shares::forest(archive, &samples.concat())).transpose()?;
+    let all = samples.concat();
+    let forest = canopy.map(|archive| shares::forest(archive, &all)).transpose()?;
+    let snow = snow.map(|archive| snow::read(archive, &all)).transpose()?;
+    drop(all);
     let mut starts = vec![0];
     starts.extend(samples.iter().scan(0, |start, samples| {
         *start += samples.len();
         Some(*start)
     }));
-    let forest = |i: usize| forest.as_ref().map(|forest| &forest[starts[i]..starts[i + 1]]);
+    let layers = |i: usize| {
+        let range = starts[i]..starts[i + 1];
+        Layers {
+            forest: forest.as_ref().map(|forest| &forest[range.clone()]),
+            snow: snow.as_ref().map(|snow| &snow[range]),
+        }
+    };
     let entries = routes.par_iter().enumerate();
-    Ok(entries.map(|(i, route)| (route.id, entry(route, &samples[i], places, roads, forest(i)))).collect())
+    Ok(entries.map(|(i, route)| (route.id, entry(route, &samples[i], places, roads, layers(i)))).collect())
 }
 
 /// The facts file of each cell, from the ids of the routes of its catalog file. Its places hold
@@ -337,12 +365,17 @@ pub fn report(entries: &BTreeMap<i64, Entry>) -> Value {
     let count = |test: &dyn Fn(&Entry) -> bool| entries.values().filter(|entry| test(entry)).count();
     let sum = |field: fn(&Shares) -> u32| entries.values().map(|entry| u64::from(field(&entry.shares))).sum::<u64>();
     let paved = entries.iter().filter(|(_, entry)| percent(entry.shares.paved, entry.shares.samples) > 0);
+    let snow = |test: fn(&Snow) -> bool| count(&|entry| entry.snow.as_ref().is_some_and(test));
     json!({
         "routes": entries.len(),
         "parking_within_1km": count(&|entry| entry.parking.iter().any(|&(_, metres)| metres <= 1_000)),
         "with_canopy": count(&|entry| entry.shares.canopy_pct().is_some()),
         "with_place": count(&|entry| !entry.places.is_empty()),
         "with_lift_ends": count(&|entry| entry.lift_ends.is_some()),
+        "with_snow_free": snow(|snow| snow.window != Window::NoData),
+        "snow_never_free": snow(|snow| snow.window == Window::Never),
+        "snow_no_data": snow(|snow| snow.window == Window::NoData),
+        "snow_left_out": snow(|snow| snow.window != Window::NoData && snow.left_out > 0),
         "samples": sum(|shares| shares.samples),
         "paved_points": sum(|shares| shares.paved),
         "paved_untagged_points": sum(|shares| shares.untagged),
@@ -390,7 +423,8 @@ mod tests {
         assert_eq!(ends(&[[east(310.0), LAT], near_top]), None);
         let osm = Data::default();
         let roads = Roads::new(&osm);
-        let entry = |looped| entry(&route(vec![near_valley, near_top], looped), &[], &places, &roads, None);
+        let entry =
+            |looped| entry(&route(vec![near_valley, near_top], looped), &[], &places, &roads, Layers::default());
         assert_eq!(entry(false).lift_ends, Some((Id::Way(1), End::Start)));
         assert_eq!((entry(true).lift_ends, entry(true).back_s), (None, None));
     }
@@ -424,7 +458,7 @@ mod tests {
         let places = places(objects);
         let osm = Data::default();
         let line = vec![[east(0.0), LAT - 10_000], [east(0.0), LAT + 10_000]];
-        let entry = entry(&route(line, true), &[], &places, &Roads::new(&osm), None);
+        let entry = entry(&route(line, true), &[], &places, &Roads::new(&osm), Layers::default());
         let way = |k: i64, offset: i64| Id::Way(5 * k - offset);
         let parking: Vec<(Id, u32)> =
             (1..=5).flat_map(|k| [(way(k, 4), 100 * k as u32), (way(k, 3), 100 * k as u32 + 50)]).collect();
@@ -440,16 +474,25 @@ mod tests {
         objects.push((&[("natural", "peak"), ("name", "Pilatus")], Shape::Point([east(0.0), LAT + 900_000])));
         let places = places(objects);
         let shares = Shares { samples: 10, paved: 3, ..Shares::default() };
-        let entry =
-            |places, lifts| Entry { parking: vec![], lifts, places, shares, lift_ends: None, back_s: Some(100) };
-        let entries =
+        let entry = |places, lifts| Entry {
+            parking: vec![],
+            lifts,
+            places,
+            shares,
+            snow: None,
+            lift_ends: None,
+            back_s: Some(100),
+        };
+        let mut entries =
             BTreeMap::from([(-501, entry(vec![(Id::Way(5), 0)], vec![])), (7, entry(vec![], vec![(Id::Way(1), 40)]))]);
+        entries.get_mut(&7).unwrap().snow = Some(Snow { window: Window::Never, left_out: 0 });
         let cells =
             BTreeMap::from([("9-1-1".into(), vec![-501, 7]), ("9-1-2".into(), vec![7]), ("9-1-3".into(), vec![])]);
         let files = files(&cells, &entries, &places);
         let lift = json!({"kind": "lift", "at_udeg": top, "valley_udeg": valley, "parking": "w4"});
         let parking = json!({"kind": "parking", "size": "small", "at_udeg": [east(100.0), LAT]});
-        let route = json!({"lifts": [["w1", 40]], "paved_pct": 30, "big_road_pct": 0, "water_pct": 0, "back_s": 100});
+        let route = json!({"lifts": [["w1", 40]], "paved_pct": 30, "big_road_pct": 0, "water_pct": 0, "snow_free": [],
+                           "back_s": 100});
         assert_eq!(files["9-1-2"], json!({"format": 1, "places": {"w1": lift, "w4": parking}, "routes": {"7": route}}));
         let keys = |value: &Value| value.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
         assert_eq!(

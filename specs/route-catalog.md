@@ -415,10 +415,11 @@ of one `id` meet on their shared segments.
 ### Facts files
 
 A facts file holds the facts of the route records of one grid cell for the search of the Explore
-page: the car parks, the lifts and the places near each route, and the shares of its length. The
-optional layer `route-facts` writes them; a release without it has no facts files. The facts come
-from the OSM extract of the region bounds with their margin, the routing source, GLO-30 and, when
-the release has it, the [canopy archive](trailview-tiles.md#canopy). They do not change a record.
+page: the car parks, the lifts and the places near each route, the shares of its length, and its
+snow window. The optional layer `route-facts` writes them; a release without it has no facts files.
+The facts come from the OSM extract of the region bounds with their margin, the routing source,
+GLO-30 and, when the release has them, the [canopy archive](trailview-tiles.md#canopy) and
+[`snow-seasons`](planner-snow-tiles.md#snow-seasons). They do not change a record.
 
 Each grid cell has a facts file `{"format": 1, "places": {...}, "routes": {...}}`, also a cell with
 no routes:
@@ -460,6 +461,7 @@ An entry:
 | `places` | Each peak, hut, lake and waterfall within 150 m of the route |
 | `paved_pct`, `big_road_pct`, `water_pct` | The shares of the samples that are paved, near a big road and by water |
 | `canopy_pct` | The share of the samples with a canopy value that are in forest. Absent when fewer than 90 % of the samples have a canopy value, or without a canopy archive |
+| `snow_free` | `[first, last]`: the first and the last day step of the snow window (see below); `[]` when no day step is free. Absent when more than 20 % of the samples have fewer than 5 seasons with data, or without `snow-seasons` |
 | `lift_ends` | Route that is not a loop only: `[place id, "start"]` or `[place id, "end"]` (see below) |
 | `back_s` | Route that is not a loop only: the moving time in the other direction, in whole seconds (see below) |
 
@@ -484,6 +486,14 @@ with the line scaled to `length_m`, and at its end. A sample is:
 - In forest when the cell of the canopy archive that holds it is a forest cell with a cover of 5 or
   more (50 %). A cell with the code 65535, or a cell of a tile that the archive does not hold, has no
   canopy value.
+
+The snow window is the longest run of free day steps. A day step is the step of
+[`snow-seasons`](planner-snow-tiles.md#seasons), from 0 on 1 September to 182. Each sample reads its
+pixel in the tile of the deepest zoom that `snow-seasons` holds there. A sample with fewer than 5
+seasons with data is left out. A day step is free when no sample that is not left out had
+[snow](planner-snow-tiles.md#byte-values) on it in a quarter or more of its seasons with data. Steps 182 and 0 are neighbours, so the window can cross
+1 September; then `first` is greater than `last`. A route that is free on every step has
+`[0, 182]`. Of two runs of the same length, the window is the run with the smaller first step.
 
 A route that is not a loop has `lift_ends` when one end of `line_udeg` lies within 300 m of the
 valley station of a lift and the other end within 300 m of its top station. The second value names

@@ -658,8 +658,9 @@ impl Planner {
             if !on("routing") {
                 return Err(invalid("the layer route-facts reads routing: name both".into()));
             }
-            let canopy = steps.iter().any(|step| step.name == "planner/trailview-canopy");
-            steps.extend(route_facts(bounds, tiles(bounds, &land, &glo30), canopy));
+            let listed =
+                ["planner/trailview-canopy", "planner/snow"].map(|name| steps.iter().any(|step| step.name == name));
+            steps.extend(route_facts(bounds, tiles(bounds, &land, &glo30), listed));
         }
         let maps = [
             "basemap",
@@ -833,15 +834,16 @@ fn prune(steps: &mut Vec<Step>, on: &dyn Fn(&str) -> bool) {
     }
 }
 
-/// The route facts and their grid. The facts read the canopy archive when `canopy` says that its
-/// step is listed.
-fn route_facts(bounds: [f64; 4], glo30: Vec<Input>, canopy: bool) -> [Step; 2] {
+/// The route facts and their grid. The facts read the canopy and the `snow-seasons` archive when
+/// `listed` says that their steps are in the list.
+fn route_facts(bounds: [f64; 4], glo30: Vec<Input>, [canopy, snow]: [bool; 2]) -> [Step; 2] {
     let reads = ["planner/osm/bounds", step::SOURCE, "planner/routing"].map(Input::step);
     let canopy = canopy.then(|| layer_files("planner/trailview-canopy", &["trailview-canopy.pmtiles"]));
+    let snow = snow.then(|| layer_files("planner/snow", &["snow-seasons.pmtiles"]));
     let facts = Step {
         layer: &PLANNER_ROUTE_FACTS,
         name: step::FACTS.into(),
-        inputs: reads.into_iter().chain(glo30).chain(canopy).collect(),
+        inputs: reads.into_iter().chain(glo30).chain(canopy).chain(snow).collect(),
         options: json!({"bounds": bounds, "terrain_attribution": attribution(GLO30)}),
         outputs: vec!["facts".into()],
         run: Run::Rust(&functions::ROUTE_FACTS),
@@ -2096,7 +2098,7 @@ mod tests {
         // the POI database is large, and its grid holds it in another form; the landmark and
         // peak content is compiled again from the `wiki` shards, which the target holds; the TrailView
         // ruleset step reads only the repository; the routing grid holds the catalog cells of the
-        // route facts in another form.
+        // route facts in another form, and the snow grid the snow archive of the route facts.
         let mut unheld = Vec::new();
         for step in &steps {
             for input in &step.inputs {
@@ -2119,6 +2121,7 @@ mod tests {
             ("planner/trailview-lithology", "planner/trailview-rules"),
             ("planner/trailview-region", "planner/trailview-rules"),
             ("planner/route-facts", "planner/routing"),
+            ("planner/route-facts", "planner/snow"),
         ];
         assert_eq!(unheld, exempt, "a step reads files of another layer that no client reads");
     }
