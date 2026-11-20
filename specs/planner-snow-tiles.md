@@ -158,9 +158,9 @@ The metadata of each archive is a JSON object:
   archive lacks then reads its ancestor of zoom 10. A point on the route uses the route samples.
 - A pin on the map samples one point, so it reads one tile at the max zoom of `snow-seasons`.
 - The route facts read `snow-seasons` at each sample of a route, in the deepest tile that the
-  archive holds there, as the [facts files](route-catalog.md#facts-files) say. The planner reads a
-  coarser zoom with the worst case of its pixels, so its profile can show snow on a day that
-  `snow_free` calls free.
+  archive holds there, as the [facts files](route-catalog.md#facts-files) say. The planner can
+  read a coarser zoom with the worst case of its pixels, so its profile can show snow on a day
+  that `snow_free` calls free.
 
 ## Sources
 
