@@ -123,6 +123,7 @@ fn site<'a>(ground: &'a dyn Fn([f64; 2]) -> f64, rooms: &[f64], building: bool) 
             decks: Vec::new(),
             rooms: rooms.clone(),
             building,
+            points: a.points.iter().map(|&p| Some(ground(back(p)))).collect(),
         }
     }
 }
@@ -224,7 +225,8 @@ fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
     let west = ends.iter().find(|t| t["mate"] == "20").expect("the west pair");
     assert_eq!((west["part"].as_str(), west["shift"].as_str(), west["mate_shift"].as_str()), ("pair", "3", "0"));
     assert!(ends.iter().any(|t| t["mate"] == "-20" && t["shift"] == "0"));
-    assert!(placed.metrics["measured_again"].as_u64() >= Some(2), "the moved pair, with its stretch on the ground");
+    // A pair is not built yet: the device keeps the moved stretch a tunnel, and so does the measure of the numbers.
+    assert_eq!(placed.metrics["measured_again"].as_u64(), Some(0));
     // The first tube widens to the far edge of the footway and its margin.
     let foot_half = widths().way("tunnel", &tags(&FOOT), false).half_m;
     assert_eq!(west["half"], num(2.5 + foot_half + 0.6));
@@ -446,4 +448,49 @@ fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height
     assert_eq!(chords(&placed)[0].2, 4.0);
     assert_eq!(placed.metrics["low_stretches_at_least_height"].as_u64(), Some(1));
     assert_eq!(placed.metrics["floor_clashes"].as_u64(), Some(1));
+}
+
+/// Whether the rings of a tag `cut` hold a point, metres in and to the left: an odd number of them.
+fn in_cut(cut: &str, p: [f64; 2]) -> bool {
+    let rings: Vec<Vec<[f64; 2]>> = (cut.split(';'))
+        .map(|r| {
+            r.split(',')
+                .map(|q| q.split(' ').map(|v| v.parse().unwrap()).collect::<Vec<f64>>())
+                .map(|v| [v[0], v[1]])
+                .collect()
+        })
+        .collect();
+    let mut odd = false;
+    for ring in &rings {
+        for (i, a) in ring.iter().enumerate() {
+            let b = ring[(i + 1) % ring.len()];
+            if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+                odd = !odd;
+            }
+        }
+    }
+    odd
+}
+
+#[test]
+fn the_cut_holds_the_ground_inside_the_part_and_leaves_the_hill_over_it() {
+    // A road tunnel whose ridge rises 1 m per metre from each opening: an arch at both ends. In the first metres the
+    // ground lies in the room; from about 5.5 m in it lies over the shell. Before the head wall it is the floor.
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    let ends = records(&placed, "tunnel-end");
+    assert_eq!(placed.metrics["cut_ends"].as_u64(), Some(2));
+    for end in ends {
+        let cut = end["cut"].as_str();
+        for (p, held) in [([1.0, 0.0], true), ([3.0, 2.0], true), ([4.5, -1.5], true), ([-1.0, 0.0], false)] {
+            assert_eq!(in_cut(cut, p), held, "{p:?} in {cut}");
+        }
+        for p in [[8.0, 0.0], [20.0, 0.0], [2.0, 6.0], [2.0, -6.0]] {
+            assert!(!in_cut(cut, p), "{p:?} in {cut}");
+        }
+    }
+    // Where no end is built, no end has a cut.
+    let placed = case.place(&site(&|_| 520.0, &[], false), &mut Vec::new());
+    assert!(records(&placed, "tunnel-end").iter().all(|t| !t.contains_key("cut")));
 }

@@ -128,6 +128,14 @@ fn first_covered(site: &Site, floors: &[f64], need: f64) -> Option<usize> {
     })
 }
 
+/// Whether the chain of opening i has an opening at each end, each of a built kind (`obc_trailview_parts::BUILT`), as
+/// the device draws it.
+fn built_chain(i: usize, openings: &[Opening], kinds: &[Vec<Kind>]) -> bool {
+    let at = |end: usize| openings.iter().position(|o| o.tube == openings[i].tube && o.end == end);
+    let kind = |end: usize| at(end).and_then(|j| kinds[j].first().copied());
+    obc_trailview_parts::built(&[kind(0), kind(1)])
+}
+
 /// The kinds, numbers and counts of the openings; a pair moves its nearer opening in onto the frame line of the other.
 pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, measure: &Measure) -> Decided {
     let b = &input.rules.bake;
@@ -312,10 +320,12 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         far_of[i] = far;
         far_of[m] = far;
     }
-    // The numbers come from the ground with the stretches that the records open: of each opening with a part, at its
-    // final place. The openings near a stretch that the first measure opened otherwise are measured again there.
-    let with_part: Vec<Opening> = (0..n).filter(|&i| !kinds[i].is_empty()).map(|i| openings[i].clone()).collect();
-    let last = open_ends(&with_part);
+    // The numbers come from the ground with the stretches that the device opens: of each opening of a chain whose two
+    // ends are built (`BUILT`), at its final place. The openings near a stretch that the first measure opened otherwise
+    // are measured again there.
+    let built: Vec<Opening> =
+        (0..n).filter(|&i| built_chain(i, openings, &kinds)).map(|i| openings[i].clone()).collect();
+    let last = open_ends(&built);
     let changed: Vec<[f64; 2]> = (first.iter().filter(|e| !last.contains(e)))
         .chain(last.iter().filter(|e| !first.contains(e)))
         .map(|e| [e.way.x as f64 / SQUARE, e.way.y as f64 / SQUARE])
