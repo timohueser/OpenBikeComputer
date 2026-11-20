@@ -192,6 +192,8 @@ mod tests {
     use protobuf::{EnumOrUnknown, Message};
 
     type TagList<'a> = &'a [(&'a str, &'a str)];
+    /// A relation: its id, its member ways with their roles, and its tags.
+    type RelationRow<'a> = (i64, &'a [(i64, &'a str)], TagList<'a>);
 
     #[derive(Default)]
     struct Strings(Vec<Vec<u8>>);
@@ -216,12 +218,7 @@ mod tests {
     }
 
     /// Writes a PBF of one block with the nodes, the ways and the relations, whose members are ways.
-    fn pbf(
-        path: &Path,
-        nodes: &[(i64, P, TagList)],
-        ways: &[(i64, &[i64], TagList)],
-        relations: &[(i64, &[(i64, &str)], TagList)],
-    ) {
+    fn pbf(path: &Path, nodes: &[(i64, P, TagList)], ways: &[(i64, &[i64], TagList)], relations: &[RelationRow]) {
         let mut strings = Strings(vec![Vec::new()]);
         let mut groups = [PrimitiveGroup::new(), PrimitiveGroup::new(), PrimitiveGroup::new()];
         for &(id, point, tags) in nodes {
@@ -278,7 +275,7 @@ mod tests {
         ];
         let water: TagList = &[("type", "multipolygon"), ("natural", "water")];
         // r21 names a way that the extract does not hold.
-        let relations: [(i64, &[(i64, &str)], TagList); 2] =
+        let relations: [RelationRow; 2] =
             [(20, &[(12, "outer"), (13, ""), (14, "inner")], water), (21, &[(12, "outer"), (99, "outer")], water)];
         pbf(&path, &nodes, &ways, &relations);
         let wanted = |tags: &Tags| ["amenity", "aerialway", "natural"].iter().any(|key| tags.get(key).is_some());

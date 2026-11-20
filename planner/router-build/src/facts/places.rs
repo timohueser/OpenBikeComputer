@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use planner_router::shape::P;
 
-use super::geometry::{around, inner_point, inside, ring_m2, segment_boxes, to_segment_m, Grid, Line};
+use super::geometry::{around, bounds, inner_point, inside, ring_m2, segment_boxes, to_segment_m, widen, Grid, Line};
 use super::{Kind, Lift, Place, Size};
 use crate::extract::{Extract, Shape};
 use crate::source::{Id, Tags};
@@ -130,7 +130,7 @@ impl Places {
             }
         }
         let built_grid =
-            Grid::new(1_000.0, built.iter().enumerate().map(|(i, rings)| (around(&rings.concat(), 0.0), i as u32)));
+            Grid::new(1_000.0, built.iter().enumerate().map(|(i, rings)| (bounds(&rings.concat()), i as u32)));
         let in_built = |p: P| built_grid.items([[p, p]]).iter().any(|&i| inside(p, &built[i as usize]));
         let mut counts = Counts::default();
         let mut list = Vec::new();
@@ -210,7 +210,7 @@ impl Places {
                 list.push(place);
             }
         }
-        let grid = Grid::new(1_000.0, list.iter().enumerate().map(|(i, place)| (bounds(place), i as u32)));
+        let grid = Grid::new(1_000.0, list.iter().enumerate().map(|(i, place)| (place_bounds(place), i as u32)));
         let mut places = Places { list, grid, water: Vec::new(), water_grid: Grid::new(250.0, []), counts };
         let parking: Vec<Option<Id>> = places.list.iter().map(|place| places.valley_parking(place)).collect();
         for (place, parking) in places.list.iter_mut().zip(parking) {
@@ -226,7 +226,7 @@ impl Places {
             };
             places.water.extend(lines.iter().flat_map(|line| line.windows(2).map(|w| [w[0], w[1]])));
         }
-        let edges = places.water.iter().enumerate().map(|(i, edge)| (around(edge, 0.0), i as u32));
+        let edges = places.water.iter().enumerate().map(|(i, edge)| (bounds(edge), i as u32));
         places.water_grid = Grid::new(250.0, edges);
         Ok(places)
     }
@@ -250,7 +250,7 @@ impl Places {
     pub fn near(&self, line: &[P], reach_m: f64) -> impl Iterator<Item = &Place> {
         let boxes: Vec<[P; 2]> = match line.len() {
             1 => vec![around(line, reach_m)],
-            _ => segment_boxes(line).map(|bounds| around(&bounds, reach_m)).collect(),
+            _ => segment_boxes(line).map(|segment| widen(segment, reach_m)).collect(),
         };
         self.grid.items(boxes).into_iter().map(|i| &self.list[i as usize])
     }
@@ -262,11 +262,11 @@ impl Places {
     }
 }
 
-/// The box of a place: of its rings, else its point.
-fn bounds(place: &Place) -> [P; 2] {
+/// The box of a place: of its rings, else of its point.
+fn place_bounds(place: &Place) -> [P; 2] {
     match place.rings.is_empty() {
-        true => around(&[place.at], 0.0),
-        false => around(&place.rings.concat(), 0.0),
+        true => bounds(&[place.at]),
+        false => bounds(&place.rings.concat()),
     }
 }
 

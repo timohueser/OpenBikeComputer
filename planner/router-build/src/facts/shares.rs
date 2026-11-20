@@ -9,7 +9,7 @@ use planner_router::model::{Point, Surface};
 use planner_router::shape::P;
 use rayon::prelude::*;
 
-use super::geometry::{around, to_segment_m, Grid};
+use super::geometry::{around, bounds, meets, to_segment_m, Grid};
 use super::places::Places;
 use crate::country::Country;
 use crate::osm::surface_class;
@@ -80,7 +80,7 @@ pub struct Roads<'a> {
 /// The boxes of the segments of a way whose ends the source holds.
 fn way_boxes(points: &[NodeRef]) -> impl Iterator<Item = [P; 2]> + '_ {
     let present = points.windows(2).filter(|w| w[0].present() && w[1].present());
-    present.map(|w| around(&[[w[0].lon, w[0].lat], [w[1].lon, w[1].lat]], 0.0))
+    present.map(|w| bounds(&[[w[0].lon, w[0].lat], [w[1].lon, w[1].lat]]))
 }
 
 /// The distance from `p` to the nearest segment of a way whose ends the source holds, when that is
@@ -88,10 +88,8 @@ fn way_boxes(points: &[NodeRef]) -> impl Iterator<Item = [P; 2]> + '_ {
 fn way_distance(p: P, points: &[NodeRef], reach_m: f64) -> Option<f64> {
     let near = around(&[p], reach_m);
     let segments = points.windows(2).filter(|w| w[0].present() && w[1].present());
-    let segments = segments.map(|w| [[w[0].lon, w[0].lat], [w[1].lon, w[1].lat]]).filter(|segment| {
-        let [min, max] = around(segment, 0.0);
-        min[0] <= near[1][0] && near[0][0] <= max[0] && min[1] <= near[1][1] && near[0][1] <= max[1]
-    });
+    let segments = segments.map(|w| [[w[0].lon, w[0].lat], [w[1].lon, w[1].lat]]);
+    let segments = segments.filter(|segment| meets(near, bounds(segment)));
     segments.map(|segment| to_segment_m(p, segment)).filter(|d| *d <= reach_m).min_by(f64::total_cmp)
 }
 
@@ -237,8 +235,11 @@ mod tests {
     use crate::facts::places::tests::places;
     use crate::source::{Builder, Ways};
 
-    /// The routing source of the ways (tags, line), each node present.
-    fn data(ways: &[(&[(&str, &str)], &[P])]) -> Data {
+    /// The tags and the line of a way.
+    type WayRow<'a> = (&'a [(&'a str, &'a str)], &'a [P]);
+
+    /// The routing source of the ways, each node present.
+    fn data(ways: &[WayRow]) -> Data {
         let mut builder = Builder::<Ways>::default();
         let mut points = Vec::new();
         for (i, (tags, line)) in ways.iter().enumerate() {
@@ -267,7 +268,7 @@ mod tests {
         let p = [8_000_000, 47_000_000];
         let path: &[(&str, &str)] = &[("highway", "path"), ("surface", "gravel")];
         let road: &[(&str, &str)] = &[("highway", "residential")];
-        let paved = |ways: &[(&[(&str, &str)], &[P])]| Roads::new(&data(ways)).paved(p);
+        let paved = |ways: &[WayRow]| Roads::new(&data(ways)).paved(p);
         assert_eq!(paved(&[(path, &north(8.0)), (road, &north(-12.0))]), Paved::No);
         assert_eq!(paved(&[(road, &north(-12.0))]), Paved::Untagged);
         let asphalt: &[(&str, &str)] = &[("highway", "track"), ("surface", "asphalt")];
@@ -282,7 +283,7 @@ mod tests {
         let p = [8_000_000, 47_000_000];
         let primary: &[(&str, &str)] = &[("highway", "primary")];
         let tunnel: &[(&str, &str)] = &[("highway", "motorway"), ("tunnel", "yes")];
-        let big = |ways: &[(&[(&str, &str)], &[P])]| Roads::new(&data(ways)).big_road(p);
+        let big = |ways: &[WayRow]| Roads::new(&data(ways)).big_road(p);
         assert!(big(&[(primary, &north(190.0))]));
         assert!(!big(&[(primary, &north(210.0))]));
         assert!(!big(&[(tunnel, &north(50.0))]));

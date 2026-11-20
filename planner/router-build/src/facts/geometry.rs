@@ -103,28 +103,39 @@ pub fn inner_point(outer: &[Vec<P>]) -> P {
     *ring.iter().min_by(|a, b| plane.distance(**a, centroid).total_cmp(&plane.distance(**b, centroid))).unwrap()
 }
 
-/// The box around `points`, widened by `reach_m` on each side.
-pub fn around(points: &[P], reach_m: f64) -> [P; 2] {
+/// The box of `points`: the smallest and the largest longitude and latitude.
+pub fn bounds(points: &[P]) -> [P; 2] {
     let (mut min, mut max) = ([i32::MAX; 2], [i32::MIN; 2]);
     for p in points {
         min = [min[0].min(p[0]), min[1].min(p[1])];
         max = [max[0].max(p[0]), max[1].max(p[1])];
     }
+    [min, max]
+}
+
+/// A box widened by `reach_m` on each side, east and west at its latitude farthest from the equator.
+pub fn widen([min, max]: [P; 2], reach_m: f64) -> [P; 2] {
     let lat = (min[1].unsigned_abs().max(max[1].unsigned_abs()) as f64 * 1e-6).to_radians();
     let north = (reach_m / METRES_PER_UDEG).ceil();
     let east = (north / lat.cos().max(0.01)).ceil();
-    let widen = |value: i32, by: f64| (value as f64 + by).clamp(i32::MIN as f64, i32::MAX as f64) as i32;
-    [[widen(min[0], -east), widen(min[1], -north)], [widen(max[0], east), widen(max[1], north)]]
+    let by = |value: i32, by: f64| (value as f64 + by).clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+    [[by(min[0], -east), by(min[1], -north)], [by(max[0], east), by(max[1], north)]]
 }
 
-fn meets(a: [P; 2], b: [P; 2]) -> bool {
+/// The box of `points` widened by `reach_m`.
+pub fn around(points: &[P], reach_m: f64) -> [P; 2] {
+    widen(bounds(points), reach_m)
+}
+
+pub fn meets(a: [P; 2], b: [P; 2]) -> bool {
     a[0][0] <= b[1][0] && b[0][0] <= a[1][0] && a[0][1] <= b[1][1] && b[0][1] <= a[1][1]
 }
 
 /// A line in the plane of its first point, to measure the distances of points and areas to it.
 pub struct Line {
     plane: Plane,
-    points: Vec<P>,
+    first: P,
+    bounds: [P; 2],
     xy: Vec<Xy>,
 }
 
@@ -132,7 +143,8 @@ impl Line {
     /// A line of one or more points.
     pub fn new(points: &[P]) -> Self {
         let plane = Plane::at(points[0][1]);
-        Line { plane, points: points.to_vec(), xy: points.iter().map(|&p| plane.xy(p)).collect() }
+        let xy = points.iter().map(|&p| plane.xy(p)).collect();
+        Line { plane, first: points[0], bounds: bounds(points), xy }
     }
 
     fn segments(&self) -> impl Iterator<Item = [Xy; 2]> + '_ {
@@ -148,14 +160,14 @@ impl Line {
     /// The distance to the edge of the area of `rings`, 0 when the line enters it. An edge farther
     /// than `reach_m` from the box of the line does not count, so a far area is at infinity.
     pub fn to_area(&self, rings: &[Vec<P>], reach_m: f64) -> f64 {
-        if inside(self.points[0], rings) {
+        if inside(self.first, rings) {
             return 0.0;
         }
-        let near = around(&self.points, reach_m);
+        let near = widen(self.bounds, reach_m);
         let mut best = f64::INFINITY;
         for ring in rings {
             for w in ring.windows(2) {
-                if !meets(near, around(w, 0.0)) {
+                if !meets(near, bounds(w)) {
                     continue;
                 }
                 let edge = [self.plane.xy(w[0]), self.plane.xy(w[1])];
@@ -212,7 +224,7 @@ impl Grid {
 
 /// The box of each segment of `line`, for a grid of the line.
 pub fn segment_boxes(line: &[P]) -> impl Iterator<Item = [P; 2]> + '_ {
-    line.windows(2).map(|w| around(w, 0.0))
+    line.windows(2).map(bounds)
 }
 
 #[cfg(test)]
