@@ -251,6 +251,8 @@ function categoryRows(db, kinds, bounds, focus, limit = 2001) {
     bounds,
   }]);
 }
+/** The steps in km by which an empty search area widens. */
+const WIDEN_KM = [5, 15, 50];
 // `all` adds every sorted match with its route position for internal callers.
 export function findPlaces(db, request, context, { all = false } = {}) {
   const where = request.where || context.pointing;
@@ -357,7 +359,7 @@ export function findPlaces(db, request, context, { all = false } = {}) {
   let results = filter();
   const notes = [];
   if (!results.length && implicit && request.radius === undefined) {
-    for (const km of [5, 15, 50]) {
+    for (const km of WIDEN_KM) {
       if (
         km < distance(centre(context.view), [context.view[2], context.view[3]])
       )
@@ -372,6 +374,30 @@ export function findPlaces(db, request, context, { all = false } = {}) {
         notes.push(`No match in this map view. Search widened to ${km} km.`);
         break;
       }
+    }
+  }
+  // A route area with no match widens along the route until it holds a match before and after it.
+  if (!results.length && sc.range && !sc.w.near && !all) {
+    const route = lineOf(context),
+      ds = planKm(context),
+      total = ds.at(-1),
+      // A route point has no line: its area is a circle around it.
+      point = sc.line ? null : position(sc.focus).along,
+      [from, to] = sc.line ? sc.range : [point, point];
+    for (const km of WIDEN_KM) {
+      const range = [Math.max(0, from - km), Math.min(total, to + km)];
+      found.clear();
+      Object.assign(sc, { range, line: slice(route, ...range, ds), radial: null });
+      collect(boxes(sc.line, sc.radius));
+      results = filter();
+      const before = range[0] === 0 || results.some((p) => p.position.along < from),
+        after = range[1] === total || results.some((p) => p.position.along > to);
+      if (before && after) break;
+    }
+    if (results.length) {
+      const span = sc.range.map((km) => km.toFixed(1)).join('–');
+      sc.area = `Route km ${span}`;
+      notes.push(`No match in this part of the route. Search widened to km ${span}.`);
     }
   }
   if (unknown)

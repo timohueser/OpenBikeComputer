@@ -23,11 +23,17 @@ test('before, after and mixed route intervals constrain the complete route posit
   assert.throws(()=>findPlaces(db,{type:'places',what:['bakery'],where:{day:8}},context),/no Day 8/);
   assert.throws(()=>findPlaces(db,{type:'places',what:['bakery'],where:{scope:'here'}},context),/location/);
 });
-test('an empty viewport widens visibly, an explicit interval does not',()=>{
+test('an empty viewport widens visibly, a selected point does not',()=>{
   const out=findPlaces(db,{type:'places',what:['bakery']},{...context,view:[7.79,47.98,7.80,47.99]});
   assert.ok(out.results.length);assert.match(out.note,/widened/);
   const explicit=findPlaces(db,{type:'places',what:['bakery'],where:{anchor:[0,0]}},context);
   assert.equal(explicit.results.length,0);assert.doesNotMatch(explicit.note,/widened/);
+});
+test('a route area with no match widens along the route to the nearest matches before and after it',()=>{
+  const section=findPlaces(db,{type:'places',what:['bakery'],where:{along:{ref:'km',from:{value:2.5,unit:'km'},to:{value:2.8,unit:'km'}}}},context);
+  assert.deepEqual(section.results.map(p=>p.source),['n1','n2']);assert.match(section.note,/widened to km 0\.0–6\.0/);
+  const end=findPlaces(db,{type:'places',what:['bakery'],where:{scope:'route',part:'end'},radius:{value:1,unit:'km'}},context);
+  assert.deepEqual(end.results.map(p=>p.source),['n2','n1']);assert.match(end.area,/^Route km 1\.0–6\.0$/);
 });
 test('opening filters exclude unknown tags and require a dated trip for day filters',()=>{
   const {openingState}=openingHours('Europe/Berlin'), opening={...context,openingState};
