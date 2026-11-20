@@ -83,7 +83,7 @@ impl Case {
         let (class_names, classes) = crate::kinds::classes(&roads).unwrap();
         let widths = widths();
         let rules =
-            Rules::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))))
+            Ladder::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))))
                 .unwrap();
         let tunnels: HashMap<u32, (Tags, Vec<Part>)> = (self.ways.iter().enumerate())
             .filter(|(_, w)| w.0 == "tunnel")
@@ -304,7 +304,7 @@ fn a_tube_record_keeps_its_two_vertices_and_its_tags_after_a_tile_cut() {
 
 #[test]
 fn every_road_class_has_one_group() {
-    let rules = Rules::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))));
+    let rules = Ladder::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))));
     let rules = rules.unwrap();
     let roads = table(include_str!("../../../../data/trailview/roads.json"));
     for class in roads.as_object().unwrap().keys() {

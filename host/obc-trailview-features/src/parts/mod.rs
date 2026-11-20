@@ -10,6 +10,8 @@ mod tests;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use obc_trailview_parts::{Bake, Ladder};
+
 use obc_ground_plan::graph::OpenEnd;
 use obc_ground_plan::sections::{is_track, WidthRules};
 use serde_json::{json, Map, Value};
@@ -20,143 +22,6 @@ use crate::tiles::{frame_point, Tiles};
 use crate::{metres, roads, Part, Tags, Terrain};
 
 pub use ladder::Kind;
-
-/// The rule values of the bake, in the order of `Bake`.
-const BAKE_FIELDS: [&str; 20] = [
-    "margin_m",
-    "margin_narrow_m",
-    "shell_m",
-    "band_m",
-    "coping_m",
-    "face_over_crown_max_m",
-    "cover_m",
-    "wing_ground_m",
-    "foot_m",
-    "underpass_max_m",
-    "pair_max_m",
-    "pair_max_deg",
-    "slab_m",
-    "same_tube_gap_m",
-    "same_tube_stagger_m",
-    "rock_cover_max_m",
-    "free_max_m",
-    "junction_shift_max_m",
-    "narrow_bore_m",
-    "grade_default",
-];
-const GROUP_FIELDS: [&str; 6] = ["classes", "look", "collar_max_m", "wing_max_m", "least_height_m", "rock"];
-
-/// The values of a group of road classes (`groups` of `parts.json`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Group {
-    pub name: String,
-    pub classes: Vec<String>,
-    pub look: String,
-    pub collar_max_m: f64,
-    pub wing_max_m: f64,
-    pub least_height_m: f64,
-    /// An end covered within `rock_cover_max_m` opens in the rock.
-    pub rock: bool,
-}
-
-/// The rule values of the placement (`bake` of `parts.json`), metres unless named.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Bake {
-    pub margin_m: f64,
-    pub margin_narrow_m: f64,
-    pub shell_m: f64,
-    pub band_m: f64,
-    pub coping_m: f64,
-    pub face_over_crown_max_m: f64,
-    pub cover_m: f64,
-    pub wing_ground_m: f64,
-    pub foot_m: f64,
-    pub underpass_max_m: f64,
-    pub pair_max_m: f64,
-    pub pair_max_deg: f64,
-    pub slab_m: f64,
-    pub same_tube_gap_m: f64,
-    pub same_tube_stagger_m: f64,
-    pub rock_cover_max_m: f64,
-    pub free_max_m: f64,
-    pub junction_shift_max_m: f64,
-    /// A bore of this height or less takes `margin_narrow_m`.
-    pub narrow_bore_m: f64,
-    /// The steepest grade of the floor of a tube whose class has none.
-    pub grade_default: f64,
-}
-
-/// The rules of `data/trailview/parts.json`, the option `parts` of the step.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Rules {
-    pub groups: Vec<Group>,
-    pub bake: Bake,
-}
-
-impl Rules {
-    /// The rules of the option `parts` (`kinds::part_rows`), or an error that names the field that breaks one.
-    pub fn parse(rows: &Value) -> Result<Rules, String> {
-        let number = |row: &Value, field: &str, at: &str| {
-            row[field].as_f64().filter(|v| *v >= 0.0).ok_or(format!("parts {at}{field}: not a number of 0 or more"))
-        };
-        let bake = &rows["bake"];
-        if bake.as_object().is_none_or(|b| b.len() != BAKE_FIELDS.len()) {
-            return Err(format!("parts bake: the fields {BAKE_FIELDS:?}"));
-        }
-        let v: Vec<f64> = BAKE_FIELDS.iter().map(|f| number(bake, f, "bake.")).collect::<Result<_, _>>()?;
-        let bake = Bake {
-            margin_m: v[0],
-            margin_narrow_m: v[1],
-            shell_m: v[2],
-            band_m: v[3],
-            coping_m: v[4],
-            face_over_crown_max_m: v[5],
-            cover_m: v[6],
-            wing_ground_m: v[7],
-            foot_m: v[8],
-            underpass_max_m: v[9],
-            pair_max_m: v[10],
-            pair_max_deg: v[11],
-            slab_m: v[12],
-            same_tube_gap_m: v[13],
-            same_tube_stagger_m: v[14],
-            rock_cover_max_m: v[15],
-            free_max_m: v[16],
-            junction_shift_max_m: v[17],
-            narrow_bore_m: v[18],
-            grade_default: v[19],
-        };
-        let mut groups = Vec::new();
-        for (name, row) in rows["groups"].as_object().ok_or("parts groups: not an object")? {
-            let at = format!("groups.{name}.");
-            if row.as_object().is_none_or(|r| r.len() != GROUP_FIELDS.len()) {
-                return Err(format!("parts {at}: the fields {GROUP_FIELDS:?}"));
-            }
-            let classes = row["classes"].as_array().ok_or(format!("parts {at}classes: not a list"))?;
-            let classes: Vec<String> = classes.iter().filter_map(|c| c.as_str().map(String::from)).collect();
-            let look = row["look"].as_str().ok_or(format!("parts {at}look: not a string"))?.to_string();
-            groups.push(Group {
-                name: name.clone(),
-                classes,
-                look,
-                collar_max_m: number(row, "collar_max_m", &at)?,
-                wing_max_m: number(row, "wing_max_m", &at)?,
-                least_height_m: number(row, "least_height_m", &at)?,
-                rock: row["rock"].as_bool().ok_or(format!("parts {at}rock: not true or false"))?,
-            });
-        }
-        let mut seen = HashSet::new();
-        if let Some(class) = groups.iter().flat_map(|g| &g.classes).find(|c| !seen.insert(c.as_str())) {
-            return Err(format!("parts groups: the class {class} is in two groups"));
-        }
-        Ok(Rules { groups, bake })
-    }
-
-    /// The group of a road class.
-    pub fn group(&self, class: &str) -> Option<usize> {
-        self.groups.iter().position(|g| g.classes.iter().any(|c| c == class))
-    }
-}
 
 /// What the pass reads: the ways of kind `tunnel` that the zoom-13 tiles hold with an id (their tags and parts as
 /// placed), every way of the road solver (kind, tags, parts) and the deck depth of each bridge way by its place, the
@@ -170,7 +35,7 @@ pub(crate) struct Input<'a> {
     pub tiles: &'a Tiles,
     pub levels: &'a HashMap<u32, Tags>,
     pub terrain: &'a dyn Terrain,
-    pub rules: &'a Rules,
+    pub rules: &'a Ladder,
     pub widths: &'a WidthRules,
     pub class_names: &'a [String],
     pub classes: &'a Classes,

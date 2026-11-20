@@ -4213,12 +4213,31 @@ dependencies = [
  "libc",
  "obc-data",
  "obc-ground-plan",
+ "obc-trailview-parts",
  "rayon",
  "rstar",
  "rusqlite",
  "serde_json",
  "tempfile",
  "zip",
+]
+
+[[package]]
+name = "obc-trailview-parts"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "serde_json",
+]
+
+[[package]]
+name = "obc-trailview-parts-bridge"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "obc-trailview-parts",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]

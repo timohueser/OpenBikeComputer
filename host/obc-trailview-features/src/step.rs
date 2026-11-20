@@ -13,7 +13,7 @@ pub fn step(request: &Request) -> Result<(), String> {
     let (class_names, classes) = kinds::classes(&options["roads"])?;
     let widths = kinds::widths(&options["roads"], &options["finishes"])?;
     let waterways = kinds::waterways(&options["waterways"])?;
-    let parts = crate::parts::Rules::parse(&options["parts"])?;
+    let parts = obc_trailview_parts::Ladder::parse(&options["parts"])?;
     let bounds: [f64; 4] =
         serde_json::from_value(options["bounds"].clone()).map_err(|_| "option `bounds` is not four numbers")?;
     let attribution = options["attribution"].as_str().ok_or("option `attribution` is not a string")?.to_string();

@@ -42,6 +42,7 @@ members = [
     "host/obc-vectors",
     "host/obc-trailview-features",
     "host/obc-ground-plan",
+    "host/obc-trailview-parts",
     "host/obc-tree-walk",
     "host/obcm-assemble",
     "host/obcm-testkit",
@@ -61,6 +62,7 @@ members = [
     "planner/service",
     "builder/wasm",
     "builder/ground-plan-wasm",
+    "builder/trailview-parts-wasm",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
 # [workspace]); it's built on its own, not as part of this host workspace (which builds its
@@ -78,6 +80,7 @@ obc-fixtures = { path = "host/obc-fixtures" }
 obc-flat-device = { path = "sim/flat-device" }
 obc-formats = { path = "firmware/obc-formats" }
 obc-ground-plan = { path = "host/obc-ground-plan", default-features = false }
+obc-trailview-parts = { path = "host/obc-trailview-parts" }
 obc-link = { path = "firmware/obc-link" }
 obc-map-scene = { path = "firmware/obc-map-scene" }
 obc-pack = { path = "host/obc-pack" }
