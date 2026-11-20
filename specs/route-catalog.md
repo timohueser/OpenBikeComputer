@@ -1,8 +1,9 @@
 # Route catalog
 
 The route catalog lists the signed routes of a region: OSM route relations for hiking, foot, bicycle
-and mountain-bike routes, and the routes of the second sources of the region's countries, such as
-the SchweizMobil routes in Switzerland (see [Second sources](#second-sources)). Each route record
+and mountain-bike routes, and, when the target has the part `route-sources`, the routes of the
+second sources of the region's countries, such as the SchweizMobil routes in Switzerland (see
+[Second sources](#second-sources)). Each route record
 also holds the plan that reproduces the route. A relation with a member outside the extract leaves
 the catalog.
 
@@ -94,7 +95,7 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 | `kind` | The OSM `route` value: `hiking`, `foot`, `bicycle` or `mtb`; for a record of a second source, the kind of its route: `hiking`, `bicycle` or `mtb` |
 | `name`, `ref` | The OSM tag text; for a record of a second source, the text of the source |
 | `operator` | The OSM tag text; for a record of a second source, the text of the source, else by [Words](#words) |
-| `description` | The OSM tag text, at most 200 characters; for a record of a second source, the text of the source, else by [Words](#words) |
+| `description` | The OSM tag text, at most 200 characters; for a record of a second source, the text of the source |
 | `website` | The OSM `website` text, else `contact:website`, else `url`; for a record of a second source, the text of the source, else by [Words](#words) |
 | `symbol` | The OSM `osmc:symbol` text; for a record of a second source, by [Words](#words) |
 | `rank` | Network level from `network`: `4` for `iwn` and `icn`, `3` for `nwn` and `ncn`, `2` for `rwn` and `rcn`, `1` for `lwn` and `lcn`, else `0`; for a record of a second source, the level of the source, else `0` |
@@ -117,7 +118,7 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 | `stages` | Complete long route only: the `id` of each of its parts, in order; two parts can have one stage number |
 | `start_udeg` | Complete long route only: `[longitude, latitude]` of its start |
 | `parts` | Long route only: each of its parts, in order (see [Long routes](#long-routes)) |
-| `stage_count` | Long route only: the highest stage number in `parts`, `0` when no part has one |
+| `stage_count` | Long route only: the number of its stages, the parts of its relation by the table of [Long routes](#long-routes) before any part leaves for a second source; `0` for a cut line |
 | `trail_profile_m` | Long route only: 201 heights of the whole trail (see [Long routes](#long-routes)) |
 | `credit` | The `attribution` in `data/sources.toml` of the second route source of the record's line; on a long route, the distinct credits of its own line and of its parts, joined by `; `; absent otherwise |
 
@@ -536,7 +537,8 @@ in `data/routes/`. The step `planner/route-sources` reads the sources of the reg
 `route-sources.json` ([obc-data.md](obc-data.md#route-sources)). The builder makes a record of a
 source route as it makes one of an OSM relation, and merges the routes of all origins so that each
 route shows once. The official route takes the place of the OSM relation of the same route. A
-region with no second source has the catalog of its OSM relations only.
+region with no second source, or a target without the part `route-sources`, has the catalog of its
+OSM relations only.
 
 ### Origins
 
@@ -610,8 +612,9 @@ each piece, that lie within 30 m of a piece of the set.
 Two jobs of different origins agree when they have the same kind family (`hiking` and `foot` are
 one), the same `rank` when both are above 0, and either both have a `ref` and the refs agree, or
 one has no `ref`, both have a name, and the names agree. Two refs agree when they share a number (a
-run of digits read as a number: `SM 561` and `561`, `1;EV17` and `1`), or, when neither has a digit,
-when their letters and digits are equal in lower case. Two names agree when their letters and
+run of digits and dots, read as the whole numbers between its dots: `SM 561` and `561`, `1;EV17`
+and `1`; `4.1` agrees with neither `4` nor `1`), or, when neither has a digit, when their letters
+and digits are equal in lower case. Two names agree when their letters and
 digits are equal in lower case.
 
 For an OSM relation that is a part of a long route, the `ref` is its own or else that of its long
@@ -630,26 +633,29 @@ Two rules, in this order, each applied once:
 1. A job leaves (`Replaced`) when the kept records of earlier origins that are its pairs together
    cover at least four fifths of its match line.
 2. A kept record of a second source leaves (`Held`) when one of its pairs is a job of a later origin
-   that stays: the job did not leave by rule 1, and its plan kept a record or a section. That job
-   holds more of the route than the record gives, such as an OSM route of 30 km with the number of
-   an official route of 7 km.
+   that stays and holds at least four fifths of the record's match line. The job stays when it did
+   not leave by rule 1, its plan kept a record or a section, and it has a `name` or a `ref` of its
+   own (an unnamed stage can leave later for want of a name). That job holds more of the route than
+   the record gives, such as an OSM route of 30 km with the number of an official route of 7 km.
 
 A job that fails removes nothing: rule 1 counts only kept records, and rule 2 only jobs that kept a
-record. The builder plans all source jobs first. Then it applies rule 1 to the jobs of the second
+record. So the line of each job that leaves stays in the catalog: four fifths of it in the records
+that rule 1 counted, and four fifths of each of these in a job that holds it. The builder plans all source jobs first. Then it applies rule 1 to the jobs of the second
 and later sources and to the OSM jobs, so an OSM job that leaves needs no search. Then it plans the
 OSM jobs that stay, and applies rule 2.
 
 ### Successors
 
 The successors of a job that left by rule 1 are its pairs by (a) of earlier origins that rule 2
-kept, when they cover four fifths of its match line; else all its pairs of earlier origins that
-rule 2 kept. So a regional OSM stage on a path that a national route shares has the regional
-official stage as its successor, not the national one, when the regional official stage covers it.
+kept. A pair by (b) is another route on the same path, so it is no successor. So a regional OSM
+stage on a path that a national route shares has the regional official stage as its successor, not
+the national one, and a regional official stage never takes the place of a national stage.
 
 ### Words
 
-A record that stays takes each of `description`, `operator`, `website` and `symbol` that it lacks
-from one job whose successor it is: the job whose match line covers the largest share of the
+A record that stays takes each of `operator`, `website` and `symbol` that it lacks from one job
+whose successor it is (not `description`: an OSM description often tells how the relation is
+mapped, such as "the route is not complete"): the job whose match line covers the largest share of the
 record's match line; of two equal shares, the job with the smaller absolute `id`. An OSM job gives
 its tags by the rules of [Records](#records). A record whose plan route has a vertex in France takes
 no `symbol`.
@@ -668,15 +674,15 @@ so an official stage that runs against the trail is `backwards`, and the long ro
 complete.
 
 A reader shows "Stage n of N" with n the stage number of the part and N the `stage_count` of the
-long route, and "K of N stages", with K the stage numbers less those that only parts not in the
-catalog have.
+long route, and "K of N stages", with K = N less the stage numbers that only parts not in the
+catalog have, or 0 when no part is in the catalog.
 
 ### Record
 
 A record of a second source has the fields of a route record from its plan, `moving_s`, `hardest`
 and `profile_m` included; its `id` by [Ids](#ids); its `kind`; `rank`, `name` and `ref` from the
-source; `description`, `operator` and `website` from the source, else by [Words](#words); `symbol` by
-[Words](#words); and `credit`. It has `trail` and `trail_stage` only from an OSM long route that
+source; `description` from the source; `operator` and `website` from the source, else by
+[Words](#words); `symbol` by [Words](#words); and `credit`. It has `trail` and `trail_stage` only from an OSM long route that
 lists it, and `parent` and `stage` only from a complete one. A long route with a part that has
 `credit` has the distinct credits of its parts in the catalog, in part order, joined by `; `.
 `planner/route-facts` gives a record of a second source its facts entry as any record, under its
