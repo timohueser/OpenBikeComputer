@@ -75,36 +75,175 @@ fn metric(p: [f64; 2]) -> [f64; 2] {
     [(p[0] - X) * m, -(p[1] - Y) * m]
 }
 
-#[test]
-fn the_box_of_an_arch_holds_its_section_and_clears_the_crown_at_each_chord_vertex() {
-    let (ends, chords) = tube();
+/// A world point at station `st` of a chord: `across` metres to the left and `up` over its floor there.
+fn point_at(st: &mesh::Station, across: f64, up: f64) -> [f64; 3] {
+    st.at([across, up])
+}
+
+/// Whether a world point lies inside the outer shell of a chord: between the planes of its two rings, and inside the
+/// outline of the shell (`half` + `shell_m`) over the floor there, from its foot `foot` (a world height) up.
+fn in_shell(net: &Net, c: usize, foot: f64, p: [f64; 3]) -> bool {
+    let chord = &net.chords[c];
+    let (s, t) = (net.ring(c, 0), net.ring(c, 1));
+    let (d, len) = tube::direction(chord);
+    let m = metres_per_unit(s.y);
+    // The side of a ring's plane that faces into the chord.
+    let side = |r: &mesh::Station, p: [f64; 3], into: f64| {
+        let n = [r.ay, -r.ax];
+        let n = if n[0] * d[0] + n[1] * d[1] >= 0.0 { n } else { [-n[0], -n[1]] };
+        into * ((p[0] - r.x) * n[0] + (p[1] - r.y) * n[1]) * m >= -1e-3 * libm::hypot(n[0], n[1])
+    };
+    if !side(&s, p, 1.0) || !side(&t, p, -1.0) {
+        return false;
+    }
+    let (dx, dy) = ((p[0] - s.x) * m, (p[1] - s.y) * m);
+    let along = (dx * d[0] + dy * d[1]).clamp(0.0, len);
+    let left = mesh::left_of(d);
+    let across = dx * left[0] + dy * left[1];
+    let floor = s.z + (t.z - s.z) * along / len;
+    let shell = rules_shell(net);
+    let (w, top, sp) = (chord.half + shell, chord.height + shell, tube::spring(net, chord.section, chord.height));
+    let up = p[2] - floor;
+    if across.abs() > w || p[2] < foot || up > top {
+        return false;
+    }
+    up <= sp || chord.section == Section::Box || libm::hypot(across / w, (up - sp) / (top - sp)) <= 1.0
+}
+
+fn rules_shell(net: &Net) -> f64 {
+    net.rules.ladder.bake.shell_m
+}
+
+/// Checks the boxes of each built end of a tube: each point of the room (the inside of the opening's hole and of each
+/// chord up to the reach of the boxes) lies in a box, and each point of a box lies inside the part: the opening's box
+/// inside the head wall, a tube's box inside the outer shell of a chord. Gives the count of each kind of sample.
+fn boxes_fit(ends: &[End], chords: &[Chord]) -> (usize, usize) {
     let rules = Rules::embedded();
-    let square = [X - 1.0, Y - 1.0, X + 1.0, Y + 1.0];
-    let boxes = volumes(square, &ends[..1], &chords, rules).boxes;
-    assert_eq!(boxes.len(), BOX);
-    let [x, y, ux, uy, depth, half, roof, floor, rise] = boxes[..] else { unreachable!() };
-    // The box starts at the front of the head wall, as the footprint does.
-    let recess = rules.design.recess_m;
-    assert_eq!([x, y, ux, uy], [world(-recess, 0.0)[0], world(-recess, 0.0)[1], 1.0, 0.0]);
-    let shell = rules.ladder.bake.shell_m;
-    assert!(depth >= ends[0].collar + 2.0 && depth < 40.0, "depth {depth}");
-    assert!(half >= 4.5 + shell);
-    let mut tested = 0;
-    for c in &chords {
-        for v in [c.a, c.b] {
-            let s = metric([v[0], v[1]])[0] + recess;
-            if s > depth {
-                continue;
+    let net = Net::new(ends, chords, rules);
+    let (shell, design) = (rules.ladder.bake.shell_m, &rules.design);
+    // Within the rounding of a box's words and of a sample: a millimetre.
+    let tol = 1e-3;
+    let (mut room, mut solid) = (0, 0);
+    for e in (0..ends.len()).filter(|&e| net.built_end(e)) {
+        let list = boxes::boxes(&net, e);
+        let inside = |p: [f64; 3]| list.iter().map(|b| outside(b, p)).fold(f64::INFINITY, f64::min) <= tol;
+        let reach = boxes::reach(&net, e).boxes;
+        let foot = ends[e].z + ends[e].foot;
+        let (c0, _) = net.opening(e).unwrap();
+        let first = &net.chords[c0];
+        let sp = tube::spring(&net, first.section, first.height);
+        // The room: the opening's hole from the front of the head wall to the frame line.
+        for k in 0..=4 {
+            let st = net.frame(e, -design.recess_m * (1.0 - k as f64 / 4.0));
+            for a in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+                let hw = first.half + design.frame_m;
+                for up in [design.lift_m + 0.01, 1.0, sp, first.height] {
+                    let x = a
+                        * hw
+                        * if up > sp {
+                            libm::sqrt(1.0 - ((up - sp) / (first.height + design.frame_m - sp)).powi(2))
+                        } else {
+                            1.0
+                        };
+                    let p = point_at(&st, x, up);
+                    assert!(inside(p), "end {e}: the hole at {x} across, {up} up, {k}/4 of the reveal");
+                    room += 1;
+                }
             }
-            tested += 1;
-            assert!(roof + rise * s >= v[2] + c.height + shell - 1e-9, "the roof clears the crown {s} m in");
-            assert!(
-                floor + rise * s <= v[2] + rules.design.lift_m + 1e-9,
-                "the box's foot lies under the floor {s} m in"
-            );
+        }
+        // The room of each chord up to the reach.
+        for (c, forward, start) in net.walk(e, reach) {
+            let chord = &net.chords[c];
+            let (_, len) = tube::direction(chord);
+            let (s, t) = if forward { (net.ring(c, 0), net.ring(c, 1)) } else { (net.ring(c, 1), net.ring(c, 0)) };
+            let sp = tube::spring(&net, chord.section, chord.height);
+            for k in 0..=8 {
+                let u = k as f64 / 8.0;
+                if start + u * len > reach {
+                    continue;
+                }
+                let st = s.mix(&t, u);
+                for a in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+                    for up in [design.lift_m + 0.01, 1.0, sp, (sp + chord.height) / 2.0, chord.height] {
+                        let r = if up > sp && chord.section == Section::Round {
+                            libm::sqrt((1.0 - ((up - sp) / (chord.height - sp)).powi(2)).max(0.0))
+                        } else {
+                            1.0
+                        };
+                        let p = point_at(&st, a * chord.half * r, up);
+                        assert!(inside(p), "end {e}, chord {c} at {u}: the room at {a} across, {up} up");
+                        room += 1;
+                    }
+                }
+            }
+        }
+        // Each box: its corners and the points of its walls and roof, inside the part.
+        let m = metres_per_unit(ends[e].at[1]);
+        for (i, b) in list.iter().enumerate() {
+            let lu = mesh::left_of([b[2], b[3]]);
+            let p = |along: f64, left: f64, z: f64| {
+                [b[0] + (b[2] * along + lu[0] * left) / m, b[1] + (b[3] * along + lu[1] * left) / m, z + b[8] * along]
+            };
+            let (depth, half, roof, floor, spring) = (b[4], b[5], b[6], b[7], b[9]);
+            for k in 0..=4 {
+                for a in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+                    let left = a * half;
+                    let along = b[10] * left + (depth + b[11] * left - b[10] * left) * k as f64 / 4.0;
+                    let top = if roof > spring && left.abs() < half {
+                        spring + (roof - spring) * libm::sqrt(1.0 - (left / half).powi(2))
+                    } else if roof > spring {
+                        spring
+                    } else {
+                        roof
+                    };
+                    for z in [floor, (floor + top) / 2.0, top] {
+                        let q = p(along, left, z);
+                        if i == 0 {
+                            // The opening's box: inside the head wall, round its hole grown by half the wall.
+                            assert!(half <= first.half + shell + 1.0 && roof <= ends[e].z + ends[e].face);
+                        } else {
+                            let held = (0..net.chords.len()).any(|c| in_shell(&net, c, foot, q));
+                            assert!(held, "end {e}, box {i}: {k}/4 in, {left} left, {z} up lies outside the shell");
+                        }
+                        solid += 1;
+                    }
+                }
+            }
         }
     }
-    assert!(tested >= 5);
+    (room, solid)
+}
+
+#[test]
+fn the_boxes_hold_the_room_and_lie_inside_the_part() {
+    let rules = Rules::embedded();
+    let (straight, lower) = tube();
+    let (bent20, chords20) = bent(30.0, 20.0);
+    let (bent60, mut chords60) = bent(-10.0, 60.0);
+    // A bend of 60° on a level floor of one height.
+    chords60.iter_mut().for_each(|c| {
+        (c.a[2], c.b[2], c.height) = (500.0, 500.0, 5.0);
+    });
+    let mut boxed = lower.clone();
+    boxed.iter_mut().for_each(|c| c.section = Section::Box);
+    for (name, ends, chords) in [
+        ("straight with a lower chord", &straight, &lower),
+        ("bent 20° in the collar", &bent20, &chords20),
+        ("bent 60°", &bent60, &chords60),
+        ("a box section", &straight, &boxed),
+    ] {
+        let (room, solid) = boxes_fit(ends, chords);
+        assert!(room > 200 && solid > 100, "{name}: {room} room samples, {solid} box samples");
+    }
+    // The opening's box starts at the front of the head wall, each other box at a vertex of the axis, the first on the
+    // frame line; the depth past the collar follows the start of the cover.
+    let net = Net::new(&straight, &lower, rules);
+    let list = boxes::boxes(&net, 0);
+    let recess = rules.design.recess_m;
+    assert_eq!(list[0][..4], [world(-recess, 0.0)[0], world(-recess, 0.0)[1], 1.0, 0.0]);
+    assert_eq!(list[1][..2], straight[0].at);
+    let reach = boxes::reach(&net, 0);
+    assert!(reach.boxes >= straight[0].collar + 1.0 && reach.closed, "{reach:?}");
 }
 
 #[test]
@@ -229,9 +368,12 @@ fn a_footprint_holds_the_head_wall_and_the_collar() {
     }
 }
 
+/// Edges as their two corners.
+type Edges = Vec<[[f64; 3]; 2]>;
+
 /// The edges that one face of a mesh has alone, and those that more than two faces share; the void and the lamps
 /// left out. Two faces share an edge where they have its two corners: the same words of position.
-fn open_edges(mesh: &Mesh) -> (Vec<[[f64; 3]; 2]>, usize) {
+fn open_edges(mesh: &Mesh) -> (Edges, Edges) {
     let key = |i: u32| {
         let w = &mesh.vertices[i as usize * WORDS..];
         [w[0], w[1], w[2]]
@@ -245,36 +387,42 @@ fn open_edges(mesh: &Mesh) -> (Vec<[[f64; 3]; 2]>, usize) {
         }
     }
     let point = |w: [u32; 3]| [w[0] as i32 as f64, w[1] as i32 as f64, f32::from_bits(w[2]) as f64];
-    let open = count.iter().filter(|(_, &n)| n == 1).map(|((p, q), _)| [point(*p), point(*q)]).collect();
-    (open, count.values().filter(|&&n| n > 2).count())
+    let edges = |of: &dyn Fn(usize) -> bool| {
+        count.iter().filter(|(_, &n)| of(n)).map(|((p, q), _)| [point(*p), point(*q)]).collect::<Vec<_>>()
+    };
+    (edges(&|n| n == 1), edges(&|n| n > 2))
 }
 
-/// The open edges of the parts of a tube that lie neither at the foot of an end nor on the last ring of its collar,
-/// and the edges that more than two faces share.
-fn not_closed(ends: &[End], chords: &[Chord]) -> (Vec<[[f64; 3]; 2]>, usize) {
+/// The open edges of the parts of a tube that do not lie at the foot of an end, and the edges that more than two faces
+/// share but at the face that closes a shell: there the inside of the tube goes on past it.
+fn not_closed(ends: &[End], chords: &[Chord]) -> (Edges, Edges) {
     let rules = Rules::embedded();
     let net = Net::new(ends, chords, rules);
-    let back = rules.design.face_m - rules.design.recess_m;
-    // Per end: its foot, and the last station of its collar's shell.
-    let limits: Vec<(f64, mesh::Station)> = (0..ends.len())
-        .map(|e| {
-            let last = arch::collar(&net, e).last().map_or(net.frame(e, back), |p| p.1);
-            (ends[e].z + ends[e].foot, last)
+    let feet: Vec<f64> = ends.iter().map(|e| e.z + e.foot).collect();
+    // Per end whose shell a face closes, the station of that face.
+    let faces: Vec<mesh::Station> = (0..ends.len())
+        .filter(|&e| net.built_end(e))
+        .filter_map(|e| {
+            let r = boxes::reach(&net, e);
+            arch::collar(&net, e, r.shell).last().filter(|_| r.closed).map(|p| p.1)
         })
         .collect();
-    let allowed = |p: [f64; 3]| {
-        limits.iter().any(|(foot, t)| {
+    // Within the rounding of a vertex to whole world units.
+    let at_foot = |p: [f64; 3]| feet.iter().any(|f| (p[2] - f).abs() < 1e-3);
+    let on_face = |p: [f64; 3]| {
+        faces.iter().any(|t| {
             let m = metres_per_unit(t.y);
             let l = libm::hypot(t.ax, t.ay);
             let (dx, dy) = ((p[0] - t.x) * m, (p[1] - t.y) * m);
-            let (along, beside) = ((dx * t.ay - dy * t.ax) / l, (dx * t.ax + dy * t.ay) / l);
-            // Within the rounding of a vertex to whole world units.
-            (p[2] - foot).abs() < 1e-3 || (along.abs() < 0.03 && beside.abs() < 10.0)
+            ((dx * t.ay - dy * t.ax) / l).abs() < 0.03
         })
     };
     let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], ends, chords, rules);
     let (open, crowded) = open_edges(&mesh);
-    (open.into_iter().filter(|e| !(allowed(e[0]) && allowed(e[1]))).collect(), crowded)
+    (
+        open.into_iter().filter(|e| !(at_foot(e[0]) && at_foot(e[1]))).collect(),
+        crowded.into_iter().filter(|e| !(on_face(e[0]) && on_face(e[1]))).collect(),
+    )
 }
 
 /// A tube that runs at `turn` degrees north of east from the origin, bends `bend` degrees to the left 4 m in, inside
@@ -294,14 +442,46 @@ fn bent(turn: f64, bend: f64) -> (Vec<End>, Vec<Chord>) {
     (vec![end(0.0, 0.0, 500.0, -a0, 6.0), end(last.0[0], last.0[1], last.1, -(a1 + pi), 3.0)], chords)
 }
 
+/// A tube 18 m east, too short for the parts of its two ends: a lower chord at its middle vertex.
+fn short() -> (Vec<End>, Vec<Chord>) {
+    let floor = [(0.0, 500.0), (5.0, 500.2), (9.0, 500.3), (13.0, 500.4), (18.0, 500.6)];
+    let heights = [5.0, 5.0, 4.6, 4.6];
+    let chords = (0..heights.len())
+        .map(|i| {
+            let ((sa, za), (sb, zb)) = (floor[i], floor[i + 1]);
+            chord([sa, 0.0, za], [sb, 0.0, zb], heights[i], sa)
+        })
+        .collect();
+    (vec![end(0.0, 0.0, 500.0, 0.0, 6.0), end(18.0, 0.0, 500.6, std::f64::consts::PI, 3.0)], chords)
+}
+
 #[test]
-fn a_part_is_closed_but_at_its_foot_and_at_the_end_of_its_collar() {
+fn a_part_is_closed_but_at_its_foot() {
     let (ends, mut rock) = bent(30.0, 20.0);
     rock.iter_mut().for_each(|c| c.class = "footway".into());
-    for (name, (ends, chords)) in [("straight", tube()), ("turned and bent", bent(30.0, 20.0)), ("rock", (ends, rock))]
-    {
+    for (name, (ends, chords)) in [
+        ("straight", tube()),
+        ("turned and bent", bent(30.0, 20.0)),
+        ("rock", (ends, rock)),
+        ("two shells that meet", short()),
+    ] {
         let (open, crowded) = not_closed(&ends, &chords);
         assert!(open.is_empty(), "{name}: {} open edges, the first {:?}", open.len(), &open[..open.len().min(4)]);
-        assert_eq!(crowded, 0, "{name}: edges of more than two faces");
+        assert!(
+            crowded.is_empty(),
+            "{name}: {} edges of more than two faces, the first {:?}",
+            crowded.len(),
+            &crowded[..crowded.len().min(4)]
+        );
     }
+    // The shells of the short tube meet at its middle vertex, with no face between them; the longer tubes close theirs.
+    let (ends, chords) = short();
+    let net = Net::new(&ends, &chords, Rules::embedded());
+    let (r0, r1) = (boxes::reach(&net, 0), boxes::reach(&net, 1));
+    assert!(
+        !r0.closed && !r1.closed && (r0.shell - 9.0).abs() < 1e-6 && (r1.shell - 9.0).abs() < 1e-6,
+        "{r0:?} {r1:?}"
+    );
+    assert_eq!((r0.then.lower, r1.then.lower), (Some((4.6, Section::Round)), None));
+    assert_eq!((r0.then.foot, r1.then.foot), (Some(ends[1].z + ends[1].foot), Some(ends[0].z + ends[0].foot)));
 }

@@ -40,14 +40,16 @@ describe('the parts', () => {
         expect([portal_cells, mesh_texels, sleeper_m, void_m, lift_m]).toEqual([RULES.PORTAL_CELLS, RULES.MESH_TEXELS, SLEEPER_M, VOID_M, RULES.LIFT_M]);
     });
 
-    it('give the box and the mesh of an arch from the records of its feature tile', () => {
+    it('give the boxes and the mesh of an arch from the records of its feature tile', () => {
         const input = partInput(records(), tile, owner), { boxes, floors } = partVolumes(input);
-        // The box starts at the front of the head wall, `recess_m` out of the frame line.
+        // 12 words a box; the opening's first, from the front of the head wall, `recess_m` out of the frame line, round
+        // its hole grown to the middle of the wall; then the tube's.
         const [x, y] = worldPoint(tile, point(0), 0);
-        expect(boxes.length).toBe(9);
+        expect(boxes.length % 12).toBe(0);
+        expect(boxes.length).toBeGreaterThan(12);
         expect([...boxes.slice(1, 4)]).toEqual([y, 1, 0]);
         expect(boxes[0]).toBeCloseTo(x - table.design.recess_m / metresPerUnit(y), 0);
-        expect(boxes[5]).toBeCloseTo(4.5 + table.bake.shell_m, 6);
+        expect(boxes[5]).toBeCloseTo(4.5 + table.design.frame_m + table.bake.shell_m / 2, 6);
         expect(boxes[7]).toBeCloseTo(500 + table.design.lift_m, 1);
         expect(floors.length).toBe(6 * 7);
         const mesh = partMeshes(input)!;

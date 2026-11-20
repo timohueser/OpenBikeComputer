@@ -103,6 +103,11 @@ impl<'a> Net<'a> {
         self.end_at.contains_key(&(c, k))
     }
 
+    /// The built end whose opening is vertex k of chord c.
+    pub fn end_at(&self, c: usize, k: usize) -> Option<usize> {
+        self.end_at.get(&(c, k)).copied()
+    }
+
     pub fn built_chord(&self, c: usize) -> bool {
         built(&self.chords[c].ends)
     }
@@ -400,9 +405,18 @@ fn step<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize, k: usiz
     }
 }
 
+/// The shell that goes on after the last piece of a shell: its foot (a world height), and its height and section where
+/// it is lower, so that this shell closes the step.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Meets {
+    pub foot: Option<f64>,
+    pub lower: Option<(f64, Section)>,
+}
+
 /// The outer shell of a run of pieces, each its start and end station and its chord's height and section, with the
 /// inside half-width `half`; its walls go down to the world height `foot`. Where two pieces of different height meet,
-/// a face closes the step, facing the lower one.
+/// a face closes the step, facing the lower one; so too after the last piece where a lower shell goes on (`meets`).
+/// There the walls have a corner at the foot of the shell that goes on.
 pub fn shell<L: Fn([f64; 3]) -> f64>(
     b: &mut Builder<L>,
     net: &Net,
@@ -410,7 +424,10 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
     half: f64,
     foot: f64,
     colour: u32,
+    meets: Meets,
 ) {
+    let last = |i: usize| i + 1 == pieces.len();
+    let next_of = |i: usize| pieces.get(i + 1).map(|p| (p.2, p.3)).or(meets.lower.filter(|_| last(i)));
     let outer = |st: &Station, h: f64, section: Section| shell_outline(net, section, half, h, foot - st.z);
     for (i, (s, t, h, section)) in pieces.iter().enumerate() {
         let sp = spring(net, *section, *h);
@@ -421,26 +438,29 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
             s.mix(t, 0.5).out([-o[0], -o[1]])
         };
         // The spring of a lower piece that goes on before or after it: a step face meets its walls there.
-        let lower = |p: Option<&(Station, Station, f64, Section)>| {
-            p.filter(|p| p.2 < *h && p.3 == *section).map(|p| spring(net, *section, p.2))
-        };
-        let (before, after) = (lower(i.checked_sub(1).map(|k| &pieces[k])), lower(pieces.get(i + 1)));
+        let lower =
+            |p: Option<(f64, Section)>| p.filter(|p| p.0 < *h && p.1 == *section).map(|p| spring(net, *section, p.0));
+        let (before, after) = (lower(i.checked_sub(1).map(|k| (pieces[k].2, pieces[k].3))), lower(next_of(i)));
+        let other = meets.foot.filter(|_| last(i)).map(|f| f - t.z);
         for (j, x) in [(0, os[0][0]), (n - 2, os[n - 1][0])] {
-            let (a, z) = (wall_side(x, os[0][1], sp, before), wall_side(x, ot[0][1], sp, after));
+            let (a, mut z) = (wall_side(x, os[0][1], sp, before), wall_side(x, ot[0][1], sp, after));
+            if let Some(f) = other.filter(|&f| f > z[0][1] && f < z[1][1]) {
+                z.insert(1, [x, f]);
+            }
             b.strip((s, &a), (t, &z), colour, away(j));
         }
         for j in 1..n - 2 {
             b.strip((s, &os[j..j + 2]), (t, &ot[j..j + 2]), colour, away(j));
         }
-        let Some((_, _, next, next_section)) = pieces.get(i + 1) else { continue };
-        if next == h || next_section != section {
+        let Some((next, next_section)) = next_of(i) else { continue };
+        if next == *h || next_section != *section {
             continue;
         }
         // The step at t: from the taller outline to the lower, facing the lower piece.
-        let (tall, low) = (outer(t, h.max(*next), *section), outer(t, h.min(*next), *section));
+        let (tall, low) = (outer(t, h.max(next), *section), outer(t, h.min(next), *section));
         let ahead = s.mix(t, 0.5);
         let d = [t.x - ahead.x, t.y - ahead.y];
-        let toward = if next < h { flat(d) } else { flat([-d[0], -d[1]]) };
+        let toward = if next < *h { flat(d) } else { flat([-d[0], -d[1]]) };
         for j in 1..tall.len() - 2 {
             b.strip((t, &tall[j..j + 2]), (t, &low[j..j + 2]), colour, toward);
         }
