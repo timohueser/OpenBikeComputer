@@ -10,6 +10,6 @@
     "margin_m": 0.6, "margin_narrow_m": 0.3, "shell_m": 0.5, "band_m": 0.6, "coping_m": 0.3, "face_over_crown_max_m": 6,
     "cover_m": 0.5, "wing_ground_m": 0.6, "foot_m": 1, "underpass_max_m": 60, "pair_max_m": 40, "pair_max_deg": 25,
     "slab_m": 0.5, "same_tube_gap_m": 1, "same_tube_stagger_m": 6, "rock_cover_max_m": 3, "free_max_m": 40,
-    "junction_shift_max_m": 20, "narrow_bore_m": 3
+    "junction_shift_max_m": 20, "narrow_bore_m": 3, "grade_default": 0.15
   }
 }

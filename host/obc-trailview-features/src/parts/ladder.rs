@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use obc_ground_plan::graph::OpenEnd;
 
+use super::floor::{self, Floor};
 use super::measure::{self, Ask, Site};
 use super::{along_dir, counts, distance, first_way_m, left_of, open_ends, Input, Opening, Tube};
 
@@ -33,9 +34,11 @@ impl Kind {
 }
 
 /// The numbers of a drawn opening (Plan 8 of the design): metres, `left` and `right` per metre out from the frame's
-/// outer edge, and in a pair the mate's opening and the metres to its axis to the left.
+/// outer edge, and in a pair the mate's opening and the metres to its axis to the left; `height` is the inside height
+/// of the tube's chord there.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Numbers {
+    pub height: f64,
     pub collar: f64,
     pub face: f64,
     pub left: Vec<f64>,
@@ -54,11 +57,12 @@ pub(crate) struct End {
     pub numbers: Option<Numbers>,
 }
 
-/// The decisions of all openings, the inside half-width and height of each tube, and the counts.
+/// The decisions of all openings, the inside half-width and the floor of each tube (None with no part), and the
+/// counts.
 pub(crate) struct Decided {
     pub ends: Vec<End>,
     pub half: Vec<f64>,
-    pub height: Vec<f64>,
+    pub floors: Vec<Option<Floor>>,
     pub metrics: Value,
 }
 
@@ -149,7 +153,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     let n = openings.len();
     let mut rung: Vec<Option<&'static str>> = vec![None; n];
     let mut half: Vec<f64> = tubes.iter().map(|t| t.half).collect();
-    let mut height: Vec<f64> = tubes.iter().map(|t| t.height).collect();
+    let height: Vec<f64> = tubes.iter().map(|t| t.height).collect();
     // The two openings of a chain shorter than their shifts would meet: they stay at the ends of the chain.
     let mut met = 0;
     for i in 0..n {
@@ -275,14 +279,6 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         rung[i] = Some(r);
         kinds[i] = k;
     }
-    // An underpass takes its height from the room under the way on top.
-    for i in (0..n).filter(|&i| kinds[i].first() == Some(&Kind::Box)) {
-        let ti = openings[i].tube;
-        if let Some(least) = rooms[ti].iter().copied().reduce(f64::min) {
-            let g = &input.rules.groups[tubes[ti].group];
-            height[ti] = (least - b.slab_m - b.shell_m).clamp(g.least_height_m, tubes[ti].height.max(g.least_height_m));
-        }
-    }
     // Rung 5: the pairs, nearest first, each end in one pair at most.
     let mut mate: Vec<Option<usize>> = vec![None; n];
     let is_hill = |i: usize| hill.contains(&i);
@@ -379,6 +375,19 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         }
     }
     let refitted = (0..n).filter(|&i| kinds[i].first().copied() != before[i]).count();
+    // The floor of each tube with a part, from opening to opening; an end with no opening holds the end vertex. Its
+    // chord at an opening gives the opening its inside height.
+    let spans: Vec<Option<[f64; 2]>> = (0..tubes.len())
+        .map(|t| {
+            let at = |end: usize| openings.iter().position(|o| o.tube == t && o.end == end);
+            let with = [at(0), at(1)].into_iter().flatten().any(|i| !kinds[i].is_empty());
+            let s0 = at(0).map_or(0.0, |i| openings[i].s);
+            let s1 = at(1).map_or(tubes[t].curve.len, |i| openings[i].s);
+            (with && s1 - s0 > 1e-6).then_some([s0, s1])
+        })
+        .collect();
+    let (floors, floor_metrics) = floor::floors(tubes, &spans, (&half, &height), input);
+    let end_height = |o: &Opening| floors[o.tube].as_ref().map_or(height[o.tube], |f| f.end_height(o.end));
     // The numbers of each drawn opening.
     let mut ends: Vec<End> = Vec::with_capacity(n);
     for i in 0..n {
@@ -386,15 +395,16 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         // A pair has one record, at the opening of the lower feature id.
         let drawn = mate[i].is_none_or(|m| (openings[i].way_id, i) < (openings[m].way_id, m));
         let m = Measured { sites: &sites, rights: &rights, cover: &cover, moved: &moved };
+        let h = end_height(&openings[i]);
         let numbers = (kind.filter(|_| drawn))
-            .map(|kind| numbers(i, kind, (mate[i], far_of[i]), &m, (openings, tubes), (&half, &height), input));
+            .map(|kind| numbers(i, kind, (mate[i], far_of[i]), &m, (openings, tubes), (&half, h), input));
         ends.push(End { kinds: kinds[i].clone(), kind, rung: rung[i].unwrap_or_default(), numbers });
     }
     let shown = |e: &End| match e.kind {
         Some(k) => k.name().to_string(),
         None => format!("none: {}", e.rung),
     };
-    let metrics = json!({
+    let mut metrics = json!({
         "tubes": tubes.len(),
         "openings": n,
         "rungs": counts(ends.iter().map(|e| e.rung.to_string())),
@@ -406,7 +416,10 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         "kinds_changed_by_the_second_measure": refitted,
         "chains_whose_openings_would_meet": met,
     });
-    Decided { ends, half, height, metrics }
+    if let (Value::Object(m), Value::Object(f)) = (&mut metrics, floor_metrics) {
+        m.extend(f);
+    }
+    Decided { ends, half, floors, metrics }
 }
 
 /// What the measure gave of each opening: its site, the metres of its row to the right, the metres to its first covered
@@ -419,15 +432,15 @@ struct Measured<'a> {
     moved: &'a [f64],
 }
 
-/// The numbers of drawn opening i of `kind` (Plan 8): its frame is its own, or in a pair the frame line of the
-/// opening farther in, which holds both.
+/// The numbers of drawn opening i of `kind` (Plan 8) with the inside height `h` there: its frame is its own, or in a
+/// pair the frame line of the opening farther in, which holds both.
 fn numbers(
     i: usize,
     kind: Kind,
     (mate, far): (Option<usize>, usize),
     m: &Measured,
     (openings, tubes): (&[Opening], &[Tube]),
-    (half, height): (&[f64], &[f64]),
+    (half, h): (&[f64], f64),
     input: &Input,
 ) -> Numbers {
     let Measured { sites, rights, cover, moved } = *m;
@@ -436,7 +449,6 @@ fn numbers(
     let t = &tubes[o.tube];
     let g = &input.rules.groups[t.group];
     let floor = o.floor;
-    let h = height[o.tube];
     let site = sites[far].as_ref().expect("a measured opening");
     let left_far = left_of(openings[far].dir);
     let axis = |k: usize| along_dir(openings[far].p, openings[k].p, left_far);
@@ -502,5 +514,5 @@ fn numbers(
     let lowest = under.chain(collar_ground).fold(floor, f64::min);
     let mate = mate.map(|m| (m, axis(m) - axis(i)));
     let numbers = if kind == Kind::Free { (Vec::new(), Vec::new()) } else { (left, right) };
-    Numbers { collar, face, left: numbers.0, right: numbers.1, foot: lowest - b.foot_m - floor, mate }
+    Numbers { height: h, collar, face, left: numbers.0, right: numbers.1, foot: lowest - b.foot_m - floor, mate }
 }

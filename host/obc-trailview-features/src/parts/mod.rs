@@ -2,6 +2,7 @@
 //! numbers from the ground of the ground plan there, written as the features `tunnel-tube` and `tunnel-end` and the
 //! tag `parts` of the tunnel ways (`specs/trailview-features.md`, Tunnel parts).
 
+mod floor;
 mod ladder;
 mod measure;
 #[cfg(test)]
@@ -14,13 +15,14 @@ use obc_ground_plan::sections::{is_track, WidthRules};
 use serde_json::{json, Map, Value};
 
 use crate::geometry::key;
+use crate::roads::Classes;
 use crate::tiles::{frame_point, Tiles};
 use crate::{metres, roads, Part, Tags, Terrain};
 
 pub use ladder::Kind;
 
 /// The rule values of the bake, in the order of `Bake`.
-const BAKE_FIELDS: [&str; 19] = [
+const BAKE_FIELDS: [&str; 20] = [
     "margin_m",
     "margin_narrow_m",
     "shell_m",
@@ -40,6 +42,7 @@ const BAKE_FIELDS: [&str; 19] = [
     "free_max_m",
     "junction_shift_max_m",
     "narrow_bore_m",
+    "grade_default",
 ];
 const GROUP_FIELDS: [&str; 6] = ["classes", "look", "collar_max_m", "wing_max_m", "least_height_m", "rock"];
 
@@ -79,6 +82,8 @@ pub struct Bake {
     pub junction_shift_max_m: f64,
     /// A bore of this height or less takes `margin_narrow_m`.
     pub narrow_bore_m: f64,
+    /// The steepest grade of the floor of a tube whose class has none.
+    pub grade_default: f64,
 }
 
 /// The rules of `data/trailview/parts.json`, the option `parts` of the step.
@@ -119,6 +124,7 @@ impl Rules {
             free_max_m: v[16],
             junction_shift_max_m: v[17],
             narrow_bore_m: v[18],
+            grade_default: v[19],
         };
         let mut groups = Vec::new();
         for (name, row) in rows["groups"].as_object().ok_or("parts groups: not an object")? {
@@ -153,11 +159,12 @@ impl Rules {
 }
 
 /// What the pass reads: the ways of kind `tunnel` that the zoom-13 tiles hold with an id (their tags and parts as
-/// placed), every way of the road solver (kind, tags, parts), the tiles and their tags of the levels, the terrain, and
-/// the rules.
+/// placed), every way of the road solver (kind, tags, parts) and the deck depth of each bridge way by its place, the
+/// tiles and their tags of the levels, the terrain, the rules and the road classes.
 pub(crate) struct Input<'a> {
     pub tunnels: &'a HashMap<u32, (Tags, Vec<Part>)>,
     pub ways: Vec<(&'a str, &'a Tags, &'a [Part])>,
+    pub decks: &'a HashMap<usize, f64>,
     /// The ways that the tiles hold as the kind `tunnel`, with an id or none, by their place in `ways`.
     pub tunnel_ways: &'a HashSet<usize>,
     pub tiles: &'a Tiles,
@@ -166,6 +173,7 @@ pub(crate) struct Input<'a> {
     pub rules: &'a Rules,
     pub widths: &'a WidthRules,
     pub class_names: &'a [String],
+    pub classes: &'a Classes,
 }
 
 /// What the pass gives: the features to place (kind, tags, the part with the floor heights), the tag `parts` of each
@@ -621,17 +629,16 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
             continue;
         }
         let group = &input.rules.groups[t.group];
-        let (half, height) = (decided.half[ti], decided.height[ti]);
+        let half = decided.half[ti];
         let section = if kinds.contains(&Some(Kind::Box)) { "box" } else { "round" };
         let (wtags, _) = &input.tunnels[&t.widest];
         let mut common = Tags::new();
         common.insert("section".into(), section.into());
         common.insert("half".into(), num(half));
-        common.insert("height".into(), num(height));
         common.insert("look".into(), group.look.clone());
-        // The tube from opening to opening; an end with no opening holds the end vertex.
-        let s0 = openings.iter().find(|o| o.tube == ti && o.end == 0).map_or(0.0, |o| o.s);
-        let s1 = openings.iter().find(|o| o.tube == ti && o.end == 1).map_or(t.curve.len, |o| o.s);
+        // The tube from opening to opening, as its floor.
+        let fl = decided.floors[ti].as_ref();
+        let (s0, s1) = fl.map_or((0.0, 0.0), |f| (f.s[0], f.s[f.s.len() - 1]));
         for (way, ps) in &t.curve.stretches {
             let rising = ps.last().unwrap().along >= ps[0].along;
             let order = if rising { [kinds[0], kinds[1]] } else { [kinds[1], kinds[0]] };
@@ -639,17 +646,26 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
             let mut way_tags = Tags::new();
             way_tags.insert("parts".into(), ends.clone());
             tags.insert(*way, way_tags);
-            // The points of the stretch within the openings, with a point at each opening.
+            // The points of the stretch within the openings, with a point at each opening and at each vertex of the
+            // floor.
+            let Some(fl) = fl else { continue };
             let (a, z) = (ps[0].s.max(s0), ps.last().unwrap().s.min(s1));
             if z - a <= 1e-6 {
                 continue;
             }
+            let inside = |s: f64| s > a + 1e-6 && s < z - 1e-6;
             let mut pts: Vec<Point> = vec![t.curve.at(a).0];
-            pts.extend(ps.iter().filter(|q| q.s > a + 1e-6 && q.s < z - 1e-6).copied());
+            pts.extend(ps.iter().filter(|q| inside(q.s)).copied());
+            pts.extend(fl.s.iter().filter(|&&s| inside(s)).map(|&s| t.curve.at(s).0));
             pts.push(t.curve.at(z).0);
+            // A floor vertex at the metres of a curve point is that point.
+            pts.sort_by(|x, y| x.s.total_cmp(&y.s));
+            pts.dedup_by(|later, first| later.s == first.s);
             for w in pts.windows(2) {
                 let (p, q) = if rising { (w[0], w[1]) } else { (w[1], w[0]) };
+                let ((pz, ph), (qz, qh)) = (fl.at(p.s), fl.at(q.s));
                 let mut tube_tags = common.clone();
+                tube_tags.insert("height".into(), num(ph.min(qh)));
                 tube_tags.insert("class".into(), t.class.clone());
                 if let Some(surface) = wtags.get("surface") {
                     tube_tags.insert("surface".into(), surface.clone());
@@ -657,7 +673,7 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
                 tube_tags.insert("road".into(), num(t.road));
                 tube_tags.insert("along".into(), num(p.along));
                 tube_tags.insert("ends".into(), ends.clone());
-                let part = Part { outer: false, points: vec![p.p, q.p], z: Some(vec![p.z, q.z]), plan: None };
+                let part = Part { outer: false, points: vec![p.p, q.p], z: Some(vec![pz, qz]), plan: None };
                 features.push(("tunnel-tube", tube_tags, part));
             }
         }
@@ -668,7 +684,7 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         let section = if kind == Kind::Box { "box" } else { "round" };
         t.insert("section".into(), section.into());
         t.insert("half".into(), num(decided.half[o.tube]));
-        t.insert("height".into(), num(decided.height[o.tube]));
+        t.insert("height".into(), num(n.height));
         let look = if kind == Kind::Rock { "rock" } else { input.rules.groups[tubes[o.tube].group].look.as_str() };
         t.insert("look".into(), look.into());
         t.insert("part".into(), kind.name().into());

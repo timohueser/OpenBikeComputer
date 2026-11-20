@@ -139,7 +139,7 @@ fn holds(rings: &[Vec<[i64; 2]>], q: [f64; 2]) -> bool {
 }
 
 /// Where segment p-q meets segment a-b: the share along p-q and along a-b.
-fn meet(p: [f64; 2], q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> Option<(f64, f64)> {
+pub(crate) fn meet(p: [f64; 2], q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> Option<(f64, f64)> {
     let (r, s) = ([q[0] - p[0], q[1] - p[1]], [b[0] - a[0], b[1] - a[1]]);
     let den = r[0] * s[1] - r[1] * s[0];
     if den == 0.0 {
