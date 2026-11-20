@@ -652,8 +652,9 @@ point within 2 cm of the line of its neighbours where no edge then meets another
 deeper than 0.11 m in the sides and the roof of the boxes goes, with its holes: that ground lies in the part's wall.
 The rings of an end are simple and do not meet; the step's metric `cut_invalid_rings` counts those that are not, and
 is 0. A point lies in the cut where an odd number of rings hold it. The boxes hold the room of the part and lie inside
-its wall, at least 0.11 m from its faces as the part draws them, so ground that the cut leaves lies outside the part,
-in its wall, or over it. A change of `BUILT` or of the sizes of a part bakes the layer again.
+its wall, at least 0.11 m from its inside faces as the part draws them, so ground that the cut leaves lies outside the
+part, in its wall, or over it. The band of 0.11 m is inward: toward the outside faces the margin can be less, about
+3 cm to 6 cm at the shoulders of a wide arch. A change of `BUILT` or of the sizes of a part bakes the layer again.
 
 #### The floor of a tube
 

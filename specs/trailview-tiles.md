@@ -357,3 +357,11 @@ A vertex of a structure mesh has 7 little-endian words (28 bytes): x, y (int32 w
 colour and flags (4 bytes), the metres across a road face and its half-width (two snorm16 of ±16 m), the sleepers or
 the metres along a road's stroke (f32), and the share of daylight of a part (f32 from 0 to 1; −1 where the viewer
 takes it from the boxes of the portals).
+
+The indices of a structure mesh are in ranges, in this order: `planOnly`, the count of the first indices, which only
+the viewer with the ground plan draws (the tunnel parts); the faces of both viewers; `decks`, a bridge's other faces;
+and `offPlan`, the count of the last indices, which the viewer with the ground plan does not draw (a bridge's
+abutments, and today's tunnel of each chain that draws as parts). A count of 0 can be absent. The layer makes the
+meshes with the ground plan, so a viewer without it reads the parts too and does not draw `planOnly`. An owner node's
+`pointsOff` counts the last of its `points` that lie in the ring of a part: the viewer with the ground plan does not
+draw them. The parts draw only with the ground plan.
