@@ -6,7 +6,7 @@
     import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
     import Icon from '../../lib/ui/Icon.svelte';
-    import { scale as fit, type Range } from '../routes/filter';
+    import { rangeText, scale as fit, type Range } from '../routes/filter';
     import RangeSlider from '../routes/RangeSlider.svelte';
     import GradeRange from './GradeRange.svelte';
     import Journey from './Journey.svelte';
@@ -38,6 +38,7 @@
     /** A range of the query in metres, in the units of the rider, and back. */
     const shown = (range: Range | undefined, units: (metres: number) => number): Range | undefined => range && [units(range[0]), units(range[1])];
     const metres = (range: Range | undefined, units: (metres: number) => number): Range | undefined => range && [Math.round(range[0] / units(1)), Math.round(range[1] / units(1))];
+    const reading = (range: Range | undefined, units: (metres: number) => number, unit: () => string) => range ? rangeText(shown(range, units)!, show(unit)) : 'Any';
 </script>
 
 <div class="filters">
@@ -55,13 +56,13 @@
         <Journey {query} {cap} {place} {onchange} />
         <!-- The sliders keep one scale while the loaded hikes change. -->
         <section>
-            <div class="head"><h3>Length</h3></div>
-            <RangeSlider values={lengths} fixed={fit([distanceIn(LENGTH_TOP_M)]).step} range={shown(query.length, distanceIn)} label="Length"
+            <div class="head"><h3>Length</h3><span class="value">{reading(query.length, distanceIn, () => settings.units)}</span></div>
+            <RangeSlider values={lengths} fixed={fit([distanceIn(LENGTH_TOP_M)]).step} range={shown(query.length, distanceIn)} label="Length" reading={false}
                 format={show(() => settings.units)} onchange={range => onchange({ length: metres(range, distanceIn) })} />
         </section>
         <section>
-            <div class="head"><h3>Climb</h3></div>
-            <RangeSlider values={climbs} fixed={fit([heightIn(CLIMB_TOP_M)]).step} range={shown(query.climb, heightIn)} label="Climb"
+            <div class="head"><h3>Climb</h3><span class="value">{reading(query.climb, heightIn, heightUnit)}</span></div>
+            <RangeSlider values={climbs} fixed={fit([heightIn(CLIMB_TOP_M)]).step} range={shown(query.climb, heightIn)} label="Climb" reading={false}
                 format={show(heightUnit)} onchange={range => onchange({ climb: metres(range, heightIn) })} />
         </section>
         <Shapes {query} {onchange} />

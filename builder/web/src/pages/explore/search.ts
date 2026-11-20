@@ -472,9 +472,9 @@ export function readQuery(text: string, today: string): { query: Query; view?: B
 }
 
 /** The query that the page opens with: from its address, else from `history.state.explore`, else the last query kept in
- * the browser. Each is the text of `queryParams`. */
-export function openingQuery(address: string, kept: unknown, stored: string | null, today: string): { query: Query; view?: Box } {
-    const text = [address, kept, stored].find((one): one is string => typeof one === 'string' && one !== '');
+ * the browser. Each is the text of `queryParams`, where '' is the default query; the address has none without `?`. */
+export function openingQuery(address: string | undefined, kept: unknown, stored: string | null, today: string): { query: Query; view?: Box } {
+    const text = [address, kept, stored].find((one): one is string => typeof one === 'string');
     return readQuery(text ?? '', today);
 }
 

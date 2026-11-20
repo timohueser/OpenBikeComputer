@@ -294,7 +294,7 @@
             display: none;
         }
         .table {
-            height: auto;
+            height: 60vh;
         }
         .map {
             flex: none;

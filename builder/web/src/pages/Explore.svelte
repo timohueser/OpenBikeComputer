@@ -44,8 +44,8 @@
     type Place = { lon: number; lat: number; box?: Box };
     type Tab = 'day' | 'long';
     /** The files of a view: the records and the trails of a near view, or the trails of a far view. `trails` is null when
-     * the view is too wide or the release has no trail files; `all` holds each trail of the far files of a near view. The
-     * records are those of the cells of `from`, which the search narrows to its reach, with their facts files when `facts`. */
+     * the view is too wide or the release has no trail files. The records are those of the cells of `from`, which the search
+     * narrows to its reach, with their facts files when `facts`; `all` holds each trail of the far files of those cells. */
     type Answer = { bike: Bike; view: Box; from: Box | null; facts: boolean; far: boolean; records: CatalogRecord[] | null; trails: TrailEntry[] | null; all: Map<number, TrailEntry> };
 
     // The page reads the route catalog only.
@@ -56,7 +56,7 @@
     const kept = history.state?.explore as Kept | undefined;
     const day = today();
     /** The search of the day routes: from the page address, else the history, else the last query of the browser. */
-    const first = openingQuery(location.hash.split('?')[1] ?? '', kept?.query, storedQuery(), day);
+    const first = openingQuery(location.hash.includes('?') ? location.hash.slice(location.hash.indexOf('?') + 1) : undefined, kept?.query, storedQuery(), day);
     const firstView = first.view ?? kept?.view;
 
     let chips = $state<ChipValues>(kept?.chips ?? { bike: 'hiking' });
@@ -202,10 +202,11 @@
         const id = ++loads, far = tooWide(box);
         failed = false;
         try {
-            const [records, trails] = await Promise.all([!from ? [] : tooWide(from) ? null : catalog.inBox(box, kind, from), catalog.trailsInBox(box),
-                facts && from ? catalog.factsInBox(from) : undefined]);
-            // The far files of the box have just loaded.
-            if (id === loads) answer = { bike: kind, view: box, from, facts, far, records, trails, all: far ? new Map() : catalog.trailsOfCellsNow(box) ?? new Map() };
+            const near = !!from && !tooWide(from);
+            const [records, trails] = await Promise.all([!from ? [] : near ? catalog.inBox(box, kind, from) : null, catalog.trailsInBox(box),
+                near && from !== box ? catalog.trailsInBox(from) : undefined, facts && near ? catalog.factsInBox(from) : undefined]);
+            // The far files of the cells have just loaded.
+            if (id === loads) answer = { bike: kind, view: box, from, facts, far, records, trails, all: near ? catalog.trailsOfCellsNow(from) ?? new Map() : new Map() };
         } catch {
             if (id === loads) failed = true;
         }
@@ -216,7 +217,8 @@
     /** The answer of a view whose files the catalog holds, else undefined. */
     function answerNow(box: Box, from: Box | null, kind: Bike, facts: boolean): Answer | undefined {
         const far = tooWide(box), trails = catalog.trailsInBoxNow(box);
-        const records = !from ? [] : tooWide(from) ? null : catalog.inBoxNow(box, kind, from), all = far ? new Map() : catalog.trailsOfCellsNow(box);
+        const near = !!from && !tooWide(from);
+        const records = !from ? [] : near ? catalog.inBoxNow(box, kind, from) : null, all = near ? catalog.trailsOfCellsNow(from) : new Map();
         if (records === undefined || trails === undefined || all === undefined || (facts && from && !catalog.factsInBoxNow(from))) return undefined;
         return { bike: kind, view: box, from, facts, far, records, trails, all };
     }
@@ -336,8 +338,14 @@
     // The record of the page of a signed route: in the day routes, else a trail of the far files or a stage of one.
     let show = kept?.show;
     $effect(() => {
-        if (show === undefined || !answer) return;
+        if (show === undefined || !answer || (searching && !answer.facts)) return;
         const id = show, record = answer.records?.find(one => one.id === id);
+        // A last search that leaves the route out, also by a start point elsewhere, gives way to the default search in the
+        // view of the route; without a start point, the next answer holds the route.
+        if (searching && !(record ? find(query, { ...loaded, records: [record] }).length : !query.start && !query.pin)) {
+            query = defaultQuery(day);
+            if (!record) return;
+        }
         show = undefined;
         // By id: each cell file holds its own copy of a record.
         if (!record) return;

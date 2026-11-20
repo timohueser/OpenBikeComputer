@@ -136,8 +136,29 @@ test('the name of an open row opens the page of the route, and Back and "‹ Exp
     await expect(page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Summit' })).toHaveAttribute('aria-pressed', 'true');
   }
 
+  // A last search that leaves the route out gives way to the default search, so the row of the route opens.
+  await page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Must' }).click();
+  await expect(page).toHaveURL(/must=peak/);
+  await page.goto('/planner.html#/signed/9-267-177/202');
+  await page.reload();
+  await page.getByRole('link', { name: '‹ Explore' }).click();
+  await expect(page.locator('.results tr.row.open')).toContainText('Westweg 2');
+  await expect(page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Summit' })).toHaveAttribute('aria-pressed', 'false');
+
   await page.goto('/planner.html#/signed/9-267-177/999');
   await expect(page.getByText('This route is no longer in the map data.')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('with a start point, a view of more than 12 cells searches the cells in reach, with the drive of its cap', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await stub(page);
+  // The whole area of the test build. At Freiburg the drive is at most 40 km; the stage is 2 km away and has no car park.
+  await page.goto('/planner.html#/explore?start=7.85,47.99&car=1&drive=45&view=7.45,47.5,10.5,49.85');
+  const results = page.locator('.results');
+  await expect(results.locator('.query')).toHaveText('From the start point: walk 1 km, drive 40 km.');
+  await expect(results.locator('tr.row')).toHaveText([/Schlossberg loop/]);
   expect(errors).toEqual([]);
 });
 

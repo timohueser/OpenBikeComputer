@@ -49,7 +49,8 @@
     ];
     const nice = $derived(wishesOf(query, 'nice'));
     const key = (row: Row) => `${row.record.id}/${row.shape}`;
-    const grade = (record: CatalogRecord) => record.hardest === undefined ? 'Grade unknown' : `T${record.hardest + 1}`;
+    /** The grade of a route; the table says "Unknown" for none, the open row "Grade unknown". */
+    const grade = (record: CatalogRecord, none = 'Grade unknown') => record.hardest === undefined ? none : `T${record.hardest + 1}`;
 
     // The table draws its first rows, and more when the rider scrolls near their end.
     let scroller = $state<HTMLElement>(), body = $state<HTMLElement>(), limit = $state(ROWS);
@@ -135,7 +136,7 @@
                         <td class="num">{formatDistance(row.length_m)}</td>
                         <td class="num">{formatHeight(row.ascent_m)}</td>
                         <td class="num">{row.moving_s === undefined ? '–' : formatHours(row.moving_s)}</td>
-                        <td>{grade(record)}</td>
+                        <td>{grade(record, 'Unknown')}</td>
                         <td><span class="steps">{#each accessSteps(row, place) as step, i (i)}<span class="step" class:plain={!step.icon && !step.park}>{#if step.park}<span class="park" aria-hidden="true">P</span>{:else if step.icon}<Icon name={step.icon} size={14} />{/if}{step.text}</span>{/each}</span></td>
                         <td class="fit">
                             <span class="wishes" aria-hidden="true">

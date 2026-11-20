@@ -4,7 +4,7 @@ import type { CatalogFacts, FactsPlace } from '../../lib/planner/signed-routes';
 import { distanceIn, formatDistance, formatHeight } from '../../lib/settings/format';
 import { settings } from '../../lib/settings/settings.svelte';
 import { rangeText } from '../routes/filter';
-import { GRADE_TOP, wishesOf, WISHES, type Query, type Row, type Shape, type Suggestion, type Way, type Wish } from './search';
+import { driveCap, GRADE_TOP, wishesOf, WISHES, type Query, type Row, type Shape, type Suggestion, type Way, type Wish } from './search';
 
 type Place = (id: string) => FactsPlace | undefined;
 
@@ -152,7 +152,7 @@ export function queryLine(query: Query, place: Place): Part[] {
     const walk = `walk ${walked(query.walk)}`;
     if (query.pin) line.push('From ', { strong: placeName(place(query.pin)) }, `, ${walk}`);
     else if (query.start) {
-        const legs = [walk, query.car && `drive ${query.drive} km`, query.lift === 'always' ? 'always by lift' : query.lift && 'lifts'].filter(Boolean);
+        const legs = [walk, query.car && `drive ${Math.min(query.drive, driveCap(query.start[1]))} km`, query.lift === 'always' ? 'always by lift' : query.lift && 'lifts'].filter(Boolean);
         line.push('From ', { strong: 'the start point' }, `: ${legs.join(', ')}`);
     } else line.push('In the map view');
     const shown = query.shapes.filter(shape => query.lift || (shape !== 'liftDown' && shape !== 'liftUp'));

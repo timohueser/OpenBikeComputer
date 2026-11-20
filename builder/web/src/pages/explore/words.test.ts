@@ -41,6 +41,8 @@ it('says what the search holds in one line, with the values that the rider set',
         .toBe('From <the start point>: walk 1 km, drive 30 km, always by lift · loop or lift up, hike down · 6 km to 16 km · a T2 part, up to T3'
             + ' · must: <summit>, <passes pilatus>');
     expect(plain(queryLine(query({ pin: 'w2', walk: 500 }), place))).toBe('From <Talboden>, walk 500 m');
+    // The drive of the line is the one that the search uses: at most the cap of the start point.
+    expect(plain(queryLine(query({ start: [8, 47], car: true, drive: 50 }), place))).toBe('From <the start point>: walk 1 km, drive 45 km');
 });
 
 it('names each change that helps an empty list', () => {

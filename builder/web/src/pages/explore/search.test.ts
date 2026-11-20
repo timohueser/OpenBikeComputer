@@ -211,9 +211,11 @@ describe('page address', () => {
 
     it('opens with the address, else the history, else the last query; a past day becomes today', () => {
         expect(openingQuery('walk=500', 'walk=700', 'walk=900', TODAY).query.walk).toBe(500);
-        expect(openingQuery('', 'walk=700', 'walk=900', TODAY).query.walk).toBe(700);
-        expect(openingQuery('', undefined, 'walk=900&date=2026-06-30', TODAY).query).toMatchObject({ walk: 900, date: TODAY });
-        expect(openingQuery('', undefined, 'walk=99999&grade=T4-T2&pin=x', TODAY).query).toEqual(query());
+        expect(openingQuery(undefined, 'walk=700', 'walk=900', TODAY).query.walk).toBe(700);
+        expect(openingQuery(undefined, undefined, 'walk=900&date=2026-06-30', TODAY).query).toMatchObject({ walk: 900, date: TODAY });
+        expect(openingQuery(undefined, undefined, 'walk=99999&grade=T4-T2&pin=x', TODAY).query).toEqual(query());
+        // An empty text is the default query.
+        expect(openingQuery(undefined, '', 'walk=900', TODAY).query).toEqual(query());
         for (const date of ['2026-13-01', '2026-00-10', '2026-02-30', 'soon']) expect(readQuery(`date=${date}`, TODAY).query.date).toBe(TODAY);
     });
 });

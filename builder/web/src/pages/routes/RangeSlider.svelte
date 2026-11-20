@@ -3,11 +3,13 @@
     import { untrack } from 'svelte';
     import { rangeText, scale, STEPS, type Range } from './filter';
 
-    let { values, range, onchange, label, format, fixed }: {
+    let { values, range, onchange, label, format, fixed, reading = true }: {
         /** The value of each item, in the units of the rider. */
         values: number[];
         /** A step that does not follow `values`, for a slider that always shows. */
         fixed?: number;
+        /** Without it, the slider shows no reading of its range: the page shows it. */
+        reading?: boolean;
         range: Range | undefined;
         /** `undefined` when both handles are at the ends. */
         onchange: (range: Range | undefined) => void;
@@ -47,7 +49,7 @@
 </script>
 
 <div class="slider">
-    <p class="reading">{range ? rangeText(range, format) : 'Any'}</p>
+    {#if reading}<p class="reading">{range ? rangeText(range, format) : 'Any'}</p>{/if}
     <div class="bars" aria-hidden="true">
         {#each counts as count, i (i)}<span class:on={i >= low && i < high} class:more={over && i === STEPS - 1} class:empty={!count} style:--share={count / most}></span>{/each}
     </div>
