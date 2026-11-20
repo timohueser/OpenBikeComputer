@@ -253,6 +253,8 @@ pub(super) struct Facts<'a> {
     pub drops: &'a BTreeMap<i64, Reason>,
     /// The records in the catalog.
     pub kept: &'a BTreeSet<i64>,
+    /// The length of each cut of each source job with a line.
+    pub cuts: &'a HashMap<i64, Vec<u64>>,
 }
 
 impl Facts<'_> {
@@ -314,6 +316,14 @@ impl Facts<'_> {
                     json!({"record": name(record), "by": name(job), "shares": [round(pair.shares[1]), round(pair.shares[0])]})
                 })
                 .collect();
+            let mut cut: Vec<(i64, &Vec<u64>)> = self
+                .cuts
+                .iter()
+                .filter(|(id, lengths)| mine(id) && self.kept.contains(id) && !lengths.is_empty())
+                .map(|(id, lengths)| (*id, lengths))
+                .collect();
+            cut.sort_by_key(|(id, _)| -*id);
+            let cut: Vec<Value> = cut.into_iter().map(|(id, lengths)| json!([name(id), lengths])).collect();
             let words: BTreeMap<&str, usize> =
                 taken.iter().filter(|((s, _), _)| *s == source).map(|((_, field), &n)| (*field, n)).collect();
             let mut ratios: Vec<f64> = ascents.iter().filter(|(s, _)| *s == source).map(|(_, r)| *r).collect();
@@ -324,7 +334,7 @@ impl Facts<'_> {
                     "jobs": of.values().filter(|&&s| s == source).count(),
                     "kept": self.kept.iter().filter(|id| mine(id)).count(),
                     "failed": failed, "dropped": dropped, "replaced": replaced, "held": held,
-                    "uncertain": uncertain, "words": words, "lost": lost,
+                    "uncertain": uncertain, "words": words, "lost": lost, "cut": cut,
                     "ascent_ratio": ratios.get(ratios.len() / 2).map(|r| round(*r)),
                 }),
             );

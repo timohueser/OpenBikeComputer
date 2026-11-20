@@ -564,8 +564,8 @@ impl Planned {
     }
 }
 
-/// The line of a source job and its match line, or why it leaves.
-type SourceLine = Result<(Line, Vec<Vec<P>>), Failed>;
+/// The line of a source job, its match line and the length of each cut, or why it leaves.
+type SourceLine = Result<(Line, Vec<Vec<P>>, Vec<u64>), Failed>;
 
 /// The lines of the source jobs: the off-road cut tests against the ways of the routing source
 /// that the first plan profile of each kind may use.
@@ -714,10 +714,11 @@ fn catalog<S: Source + Clone + Send>(
 
     // The source jobs come first, so that an OSM job that leaves for them needs no search.
     let source_jobs: HashMap<i64, &SourceJob> = sources.jobs.iter().map(|job| (job.id(), job)).collect();
-    let mut lined = Vec::new();
+    let (mut lined, mut cuts) = (Vec::new(), HashMap::new());
     for (job, line) in sources.jobs.iter().zip(source_lines) {
         match line {
-            Ok((line, main)) => {
+            Ok((line, main, lengths)) => {
+                cuts.insert(job.id(), lengths);
                 probes.insert(job.id(), Probe::new(job.source, &job.kind, job.rank, &job.ref_, &job.route, main));
                 lined.push((job, line));
             }
@@ -935,7 +936,8 @@ fn catalog<S: Source + Clone + Send>(
             Some(job) => json!([job.key, job.stage, job.name]),
             None => json!([id, 0, relations.get(id).map_or(String::new(), |r| tag(&r.tags, "name").to_string())]),
         };
-        let facts = merge::Facts { merge: &merge, successors: &successors, drops: &drops, kept: &in_catalog };
+        let facts =
+            merge::Facts { merge: &merge, successors: &successors, drops: &drops, kept: &in_catalog, cuts: &cuts };
         report.sources = facts.report(&sources, &name, &taken, &ascents);
         report.cost.insert("match_s".into(), json!((match_seconds * 10.0).round() / 10.0));
         let searches = |source: bool| report.searches.iter().filter(|s| (s.0 <= -sources::ORIGIN_ID) == source).count();

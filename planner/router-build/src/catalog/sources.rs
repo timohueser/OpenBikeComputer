@@ -159,15 +159,15 @@ pub(super) fn usable_ways<S: Source>(package: &Package<S>) -> Result<HashMap<i64
     Ok(usable)
 }
 
-/// The line of a source job and its match line: the runs of its main line before the cut. The
-/// points of the members are nodes, one for each microdegree point, so members that meet at a
-/// point join there. A point outside `bounds` drops the job.
+/// The line of a source job, its match line (the runs of its main line before the cut) and the
+/// length of each cut. The points of the members are nodes, one for each microdegree point, so
+/// members that meet at a point join there. A point outside `bounds` drops the job.
 pub(super) fn line(
     job: &SourceJob,
     bounds: [f64; 4],
     roads: &Roads,
     usable: &HashMap<i64, u8>,
-) -> Result<(Line, Vec<Vec<P>>), Failed> {
+) -> Result<(Line, Vec<Vec<P>>, Vec<u64>), Failed> {
     let [west, south, east, north] = bounds.map(|degrees| (degrees * 1e6).round() as i32);
     let (mut nodes, mut points) = (HashMap::<P, i64>::new(), HashMap::new());
     let mut members = Vec::new();
@@ -190,17 +190,17 @@ pub(super) fn line(
     let closed = distance(main[0][0], *main[main.len() - 1].last().unwrap()) <= ROUNDTRIP_M;
     let bit = bit(&job.kind);
     let near = |p: P| roads.within(p, NEAR_M, |way| usable.get(&way).is_some_and(|bits| bits & bit != 0));
-    let kept = cut(&main, closed, &near).map_err(|reason| Failed { reason, line: ends(&main) })?;
+    let (kept, cuts) = cut(&main, closed, &near).map_err(|reason| Failed { reason, line: ends(&main) })?;
     let line = Line { runs: kept, own: main.concat(), close_m: closed.then_some(MAX_GAP_M) };
-    Ok((line, main))
+    Ok((line, main, cuts))
 }
 
-/// The runs of `main` without its cuts: each stretch of points at each 10 m that are not `near` a
-/// road, with each near stretch of less than `CROSSING_M` between two of them. A cut longer than
-/// `MAX_GAP_M` drops the line, and so do a cut at the start and one at the end of a loop that
-/// together are longer.
-pub(super) fn cut(main: &[Vec<P>], closed: bool, near: &dyn Fn(P) -> bool) -> Result<Vec<Vec<P>>, Reason> {
-    let mut kept = Vec::new();
+/// The runs of `main` without its cuts, and the length of each cut: a cut is a stretch of points at
+/// each 10 m that are not `near` a road, with each near stretch of less than `CROSSING_M` between
+/// two of them. A cut longer than `MAX_GAP_M` drops the line, and so do a cut at the start and one
+/// at the end of a loop that together are longer.
+pub(super) fn cut(main: &[Vec<P>], closed: bool, near: &dyn Fn(P) -> bool) -> Result<(Vec<Vec<P>>, Vec<u64>), Reason> {
+    let (mut kept, mut lengths) = (Vec::new(), Vec::new());
     let mut ends_m = [0.0; 2];
     let last = main.len() - 1;
     for (r, run) in main.iter().enumerate() {
@@ -229,6 +229,7 @@ pub(super) fn cut(main: &[Vec<P>], closed: bool, near: &dyn Fn(P) -> bool) -> Re
         if let Some(&end) = cuts.last().filter(|cut| r == last && cut.1 == points.len() - 1) {
             ends_m[1] = length(end);
         }
+        lengths.extend(cuts.iter().map(|&cut| length(cut).round() as u64));
         let mut start = 0;
         for (a, b) in cuts.into_iter().chain([(points.len(), points.len())]) {
             if a > start {
@@ -247,6 +248,6 @@ pub(super) fn cut(main: &[Vec<P>], closed: bool, near: &dyn Fn(P) -> bool) -> Re
     }
     match kept.is_empty() {
         true => Err(Reason::Short),
-        false => Ok(kept),
+        false => Ok((kept, lengths)),
     }
 }

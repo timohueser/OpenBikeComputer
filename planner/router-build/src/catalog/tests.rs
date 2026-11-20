@@ -662,12 +662,13 @@ fn the_cut_takes_out_each_stretch_away_from_the_roads() {
     let bump = |depth: f64| {
         cut(&[(-500.0, 0.0), (0.0, 0.0), (0.0, -depth), (200.0, -depth), (200.0, 0.0), (900.0, 0.0)], false)
     };
-    let runs = bump(60.0).unwrap();
+    let (runs, cuts) = bump(60.0).unwrap();
     assert_eq!(runs.len(), 2);
+    assert!(cuts.len() == 1 && (250..300).contains(&cuts[0]), "{cuts:?}");
     assert!((distance(runs[0][runs[0].len() - 1], runs[1][0]) - 200.0).abs() < 1.0);
     assert!(matches!(bump(230.0), Err(Reason::Gap)), "a cut of 600 m");
     // A start 300 m below the road shortens the line; 600 m below, it drops it.
-    let runs = cut(&[(0.0, -300.0), (0.0, 0.0), (900.0, 0.0)], false).unwrap();
+    let (runs, _) = cut(&[(0.0, -300.0), (0.0, 0.0), (900.0, 0.0)], false).unwrap();
     assert_eq!(runs.len(), 1);
     assert!(distance(runs[0][0], m(0.0, 0.0)) <= 30.0, "the line starts at the first point near the road");
     assert!(matches!(cut(&[(0.0, -600.0), (0.0, 0.0), (900.0, 0.0)], false), Err(Reason::Gap)));
@@ -678,7 +679,7 @@ fn the_cut_takes_out_each_stretch_away_from_the_roads() {
         cut(&[(-2000.0, 330.0), (-1000.0, 330.0), (-1000.0, 0.0), (x, 0.0), (x, -330.0), (-200.0, -330.0)], false)
     };
     assert!(matches!(crossing(0.0), Err(Reason::Gap)));
-    assert_eq!(crossing(100.0).unwrap().len(), 3);
+    assert_eq!(crossing(100.0).unwrap().0.len(), 3);
     // A loop that starts and ends below the square: the two cuts at its ends count together.
     let ring = |depth: f64| {
         let points = [
@@ -693,7 +694,7 @@ fn the_cut_takes_out_each_stretch_away_from_the_roads() {
         ];
         cut(&points, true)
     };
-    let runs = ring(150.0).unwrap();
+    let (runs, _) = ring(150.0).unwrap();
     assert_eq!((runs.len(), runs[0][0]), (1, runs[0][runs[0].len() - 1]));
     assert!(distance(runs[0][0], m(500.0, 0.0)) <= 30.0);
     assert!(matches!(ring(300.0), Err(Reason::Gap)), "two cuts of 270 m at the ends of a loop");
