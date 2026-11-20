@@ -123,7 +123,7 @@ getrandom = "0.4"
 image = { version = "0.25", default-features = false }
 js-sys = "0.3"
 osmpbfreader = "0.19"
-postcard = "1"
+postcard = { version = "1", default-features = false }
 rfd = "0.14"
 rusqlite = "0.41"
 schemars = "1"

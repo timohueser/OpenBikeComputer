@@ -120,7 +120,7 @@ fn gatt_vec<const N: usize>(bytes: &[u8]) -> heapless::Vec<u8, N> {
 }
 
 pub(crate) fn dis_firmware_revision() -> heapless::String<32> {
-    gatt_str(identity::firmware_revision().as_str())
+    identity::firmware_revision()
 }
 
 pub(crate) fn dis_hardware_revision() -> heapless::String<16> {
@@ -128,7 +128,7 @@ pub(crate) fn dis_hardware_revision() -> heapless::String<16> {
 }
 
 pub(crate) fn dis_serial_number() -> heapless::String<16> {
-    gatt_str(identity::serial_string().as_str())
+    identity::serial_string()
 }
 
 /// A static random address derived from the factory device id, so every board advertises a stable,
