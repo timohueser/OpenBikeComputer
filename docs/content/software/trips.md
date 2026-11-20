@@ -21,17 +21,17 @@ table in [OBCR](src:specs/obcr-route.md), and the device's trip progress record 
 
 ## One line on the phone, day routes on the device
 
-On the phone, a trip is one line with day ends on it. It is not a folder of separate routes. The
+On the phone, a trip is one line with day ends on it, not a folder of separate routes. The
 line and the day ends come from the trip's plan: the same plan object the web planner uses
 ([planner plan](src:specs/planner-plan.md)). The rider edits the plan in the phone's planner, and a
 save makes the line and the day ends from it again.
 
 The device does not know this line. At upload, the phone or the web planner cuts the line at the
 day ends into one route per day. Each day route has the trip's bike type and a name such as "Day 2
-Ulrichen". Then it writes a small trip object that lists the day routes in ride order. The
+Ulrichen". Then it writes a trip object that lists the day routes in ride order. The
 navigator on the device sees only ordinary routes, so every route feature works on a trip day
-without extra code. It sends only the day routes that changed, and the trip object last.
-An interrupted upload so never leaves a trip that points at nothing.
+without extra code. It sends only the changed day routes, and the trip object last, so an
+interrupted upload never leaves a trip that points at nothing.
 
 ### Day ends are places
 
@@ -51,7 +51,7 @@ and rides belong to a day number, so they stay with that number when the day cou
 An import asks once: keep the file's line, or plan it on roads. When the planner cannot follow
 the line, the phone keeps it and says why. One file is saved as a route and its page opens. When
 the rider shares several files at once, the phone asks to make one trip from them. It proposes an
-order that chains the file ends. The rider can drag the rows into a different order.
+order that chains the file ends; the rider can drag the rows into another order.
 Between two rows, the sheet says "joins" or shows the gap. A trip made from files gets one day per
 file, with the day ends on the file boundaries, and its page opens. Its plan has each file's
 line, kept or planned, with a night at each day end and a transfer leg where the next file starts
@@ -65,7 +65,8 @@ In the web planner, one bar above the stops holds the day count, the start date 
 stay kinds. Its "+" makes a route a multi-day trip, and "−" from the lowest count undoes it. With a
 start date, each day shows its weekday. The elevation profile is the timeline: the days by colour, a
 marker at each night and a column for each rest day. From 15 riding days, a strip of all days frames
-one week: the list, profile and town search show only that week.
+one week: the list, profile and town search show only that week. A trip has at most 64 riding days.
+Above 32, the device gets two trips: "Alps 1/2" and "Alps 2/2".
 
 A guessed day count is grey and dotted; a set one is dark. The planner guesses the day count from
 the riding time at the plan's pace. After each route or pace change, it guesses the count and the
@@ -187,9 +188,8 @@ tomorrow's profile. After an early stop, tomorrow is the rest of Day 2 and Day 3
 card loads it. After the last day, **TRIP DONE** shows today's ledger, the trip name, the day count
 and the totals of the trip's rides.
 
-The opt-in data field **Trip to go** (tile caption TRIP KM) shows the rest of the loaded day plus
-the routes of the later days. A transfer is not ridden, so it does not count. The rider adds the
-field in the data-field editor.
+The opt-in data field **Trip to go** (tile caption TRIP KM, in the data-field editor) shows the rest
+of the loaded day plus the routes of the later days, without transfers.
 
 Each ride records its trip key, its day, the trip name and the bike type in its footer. So the
 device and the phone group the rides of a trip without dates, and the device's ride list shows
@@ -238,8 +238,8 @@ rows.
 
 ### Library, sharing and editing
 
-The rides list has a year menu and bike-type filters, a totals card, and a map with every ride on
-it. The rider can share a ride as a GPX file or as an image, or save it as a route. A saved route
+The rides list has a year menu and bike-type filters, a totals card, and a map of every ride. The
+rider can share a ride as a GPX file or as an image, or save it as a route. A saved route
 keeps the ride's line and bike type, and its page opens.
 
 The rider can trim a ride or merge it with the next ride. When the next ride starts
