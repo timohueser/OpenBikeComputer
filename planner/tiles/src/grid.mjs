@@ -87,7 +87,7 @@ export async function packPointer(bucket, prefix, name, tile) {
 }
 
 export function assetRoute(path) {
-  const match = /^\/releases\/([a-f0-9]{64})\/(device\/catalog\.json|trailview\/rules\.json|routes\/tiles\/(?:9-[0-9]+-[0-9]+|trails\/7-[0-9]+-[0-9]+|long\/[0-9]+)\.json|maps\/assets\/(?:fonts\/[A-Za-z0-9 _,-]+\/[0-9]+-[0-9]+\.pbf|sprites\/v[0-9]+\/[a-z]+(?:@2x)?\.(?:json|png)))$/.exec(path);
+  const match = /^\/releases\/([a-f0-9]{64})\/(device\/catalog\.json|trailview\/rules\.json|routes\/tiles\/(?:9-[0-9]+-[0-9]+|facts\/9-[0-9]+-[0-9]+|trails\/7-[0-9]+-[0-9]+|long\/[0-9]+)\.json|maps\/assets\/(?:fonts\/[A-Za-z0-9 _,-]+\/[0-9]+-[0-9]+\.pbf|sprites\/v[0-9]+\/[a-z]+(?:@2x)?\.(?:json|png)))$/.exec(path);
   if (!match) return null;
   return { release: match[1], file: match[2], type: match[2].endsWith('.json') ? 'application/json'
     : match[2].endsWith('.png') ? 'image/png' : 'application/x-protobuf' };
