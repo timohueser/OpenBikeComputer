@@ -321,4 +321,8 @@
     .secondary:hover {
         background: var(--parchment-2);
     }
+    /* Clear of the band under the main action, which would hide the top of this button. */
+    .primary + .secondary {
+        margin-top: 16px;
+    }
 </style>
