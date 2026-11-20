@@ -610,7 +610,7 @@ export class PlanSession {
     }
 
     /** Ends the drag preview. */
-    private cancelPreview(): void {
+    cancelPreview(): void {
         this.previews.cancel();
         this.preview = null;
         this.dragging = false;
