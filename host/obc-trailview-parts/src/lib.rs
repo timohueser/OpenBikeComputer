@@ -16,7 +16,7 @@ mod tube;
 
 use std::collections::BTreeMap;
 
-pub use boxes::{outside, BOX};
+pub use boxes::{outside, outside_plan, outside_wall, BOX};
 pub use mesh::WORDS;
 pub use rules::{Bake, Bore, Design, Group, Inside, Ladder, Look, Rules};
 

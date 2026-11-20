@@ -80,8 +80,9 @@ fn point_at(st: &mesh::Station, across: f64, up: f64) -> [f64; 3] {
     st.at([across, up])
 }
 
-/// Whether a world point lies inside the outer shell of a chord: between the planes of its two rings, and inside the
-/// outline of the shell (`half` + `shell_m`) over the floor there, from its foot `foot` (a world height) up.
+/// Whether a world point lies inside the outer shell of a chord as the part draws it: between the planes of its two
+/// rings, and inside the outline of its shell (`tube::shell_outline`, the polygon of the faces) over the floor there,
+/// from its foot `foot` (a world height) up.
 fn in_shell(net: &Net, c: usize, foot: f64, p: [f64; 3]) -> bool {
     let chord = &net.chords[c];
     let (s, t) = (net.ring(c, 0), net.ring(c, 1));
@@ -101,17 +102,16 @@ fn in_shell(net: &Net, c: usize, foot: f64, p: [f64; 3]) -> bool {
     let left = mesh::left_of(d);
     let across = dx * left[0] + dy * left[1];
     let floor = s.z + (t.z - s.z) * along / len;
-    let shell = rules_shell(net);
-    let (w, top, sp) = (chord.half + shell, chord.height + shell, tube::spring(net, chord.section, chord.height));
-    let up = p[2] - floor;
-    if across.abs() > w || p[2] < foot || up > top {
-        return false;
+    let o = tube::shell_outline(net, chord.section, chord.half, chord.height, foot - floor);
+    let q = [across, p[2] - floor];
+    let mut odd = false;
+    for (i, a) in o.iter().enumerate() {
+        let b = o[(i + 1) % o.len()];
+        if (a[1] > q[1]) != (b[1] > q[1]) && q[0] < a[0] + (q[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+            odd = !odd;
+        }
     }
-    up <= sp || chord.section == Section::Box || libm::hypot(across / w, (up - sp) / (top - sp)) <= 1.0
-}
-
-fn rules_shell(net: &Net) -> f64 {
-    net.rules.ladder.bake.shell_m
+    odd
 }
 
 /// Checks the boxes of each built end of a tube: each point of the room (the inside of the opening's hole and of each
@@ -226,10 +226,19 @@ fn the_boxes_hold_the_room_and_lie_inside_the_part() {
     });
     let mut boxed = lower.clone();
     boxed.iter_mut().for_each(|c| c.section = Section::Box);
+    // A bend of 30° on a grade of 15 %: the slanted ends of the boxes there tilt their roofs.
+    let (mut steep, mut chords30) = bent(-10.0, 30.0);
+    let mut z = 500.0;
+    for c in chords30.iter_mut() {
+        let len = tube::direction(c).1;
+        (c.a[2], c.b[2], c.height, z) = (z, z + 0.15 * len, 5.0, z + 0.15 * len);
+    }
+    steep[1].z = z;
     for (name, ends, chords) in [
         ("straight with a lower chord", &straight, &lower),
         ("bent 20° in the collar", &bent20, &chords20),
         ("bent 60°", &bent60, &chords60),
+        ("bent 30° on a grade of 15 %", &steep, &chords30),
         ("a box section", &straight, &boxed),
     ] {
         let (room, solid) = boxes_fit(ends, chords);

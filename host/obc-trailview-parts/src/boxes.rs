@@ -109,31 +109,39 @@ struct Axis {
 }
 
 /// The vertices of each straight piece of an axis: the first and the last, the points where `cut` says that the section
-/// changes, and between them each point farther than `tol` metres from the chord of the piece (Douglas-Peucker in
-/// metres, the floor included).
-fn pieces(axis: &[Axis], cut: &[bool], tol: f64, m: f64) -> Vec<usize> {
-    fn split(axis: &[Axis], a: usize, b: usize, tol: f64, m: f64, out: &mut Vec<usize>) {
+/// changes, and between them the points that split a piece while its error passes `tol` metres (Douglas-Peucker in
+/// metres, the floor included). The error of a piece is the distance of a point between from its chord, and at each
+/// of its rings the tilt: a ring that is not square to the piece meets its line at the side of the room (`half`)
+/// higher or lower by the rise there. Where only the tilt of its ends passes, the piece splits at its point nearest
+/// that end; a piece of one chord stays.
+fn pieces(axis: &[Axis], cut: &[bool], tol: f64, m: f64, half: f64) -> Vec<usize> {
+    fn split(axis: &[Axis], a: usize, b: usize, (tol, m, half): (f64, f64, f64), out: &mut Vec<usize>) {
         let q = |k: usize| [axis[k].p[0] * m, axis[k].p[1] * m, axis[k].z];
         let (pa, pb) = (q(a), q(b));
         let d = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
-        let l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        let (l2, run) = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2], libm::hypot(d[0], d[1]));
+        let (u, rise) = if run > 0.0 { ([d[0] / run, d[1] / run], d[2] / run) } else { ([1.0, 0.0], 0.0) };
         let off = |k: usize| {
             let p = q(k);
             let w = [p[0] - pa[0], p[1] - pa[1], p[2] - pa[2]];
             let t = if l2 > 0.0 { ((w[0] * d[0] + w[1] * d[1] + w[2] * d[2]) / l2).clamp(0.0, 1.0) } else { 0.0 };
             libm::hypot(libm::hypot(w[0] - t * d[0], w[1] - t * d[1]), w[2] - t * d[2])
         };
-        let worst = (a + 1..b).max_by(|&i, &j| off(i).total_cmp(&off(j)));
-        if let Some(k) = worst.filter(|&k| off(k) > tol) {
-            split(axis, a, k, tol, m, out);
+        let tilt = |k: usize| rise.abs() * half * slope(u, &axis[k].ring).abs();
+        let error = |k: usize| off(k).max(tilt(k));
+        let worst = (a + 1..b).max_by(|&i, &j| error(i).total_cmp(&error(j))).filter(|&k| error(k) > tol);
+        let ends = (tilt(a) > tol || tilt(b) > tol) && b > a + 1;
+        let at = worst.or(ends.then(|| if tilt(a) >= tilt(b) { a + 1 } else { b - 1 }));
+        if let Some(k) = at {
+            split(axis, a, k, (tol, m, half), out);
             out.push(k);
-            split(axis, k, b, tol, m, out);
+            split(axis, k, b, (tol, m, half), out);
         }
     }
     let mut out = vec![0];
     let mut a = 0;
     for b in (1..axis.len()).filter(|&b| b + 1 == axis.len() || cut[b]) {
-        split(axis, a, b, tol, m, &mut out);
+        split(axis, a, b, (tol, m, half), &mut out);
         out.push(b);
         a = b;
     }
@@ -188,7 +196,7 @@ pub fn boxes(net: &Net, e: usize) -> Vec<[f64; BOX]> {
     let cut: Vec<bool> =
         (0..axis.len()).map(|k| k > 0 && k + 1 < axis.len() && sections[k] != sections[k + 1]).collect();
     let m = metres_per_unit(end.at[1]);
-    let keep = pieces(&axis, &cut, bake.shell_m / 4.0, m);
+    let keep = pieces(&axis, &cut, bake.shell_m / 4.0, m, first.half);
     for w in keep.windows(2) {
         let (a, b) = (&axis[w[0]], &axis[w[1]]);
         let (h, section, half) = sections[w[0] + 1];
@@ -216,20 +224,36 @@ pub fn boxes(net: &Net, e: usize) -> Vec<[f64; BOX]> {
     out
 }
 
-/// How far a world point lies outside a box, in about metres; negative inside.
-pub fn outside(b: &[f64; BOX], p: [f64; 3]) -> f64 {
+/// How far a world point lies outside a box in plan, in about metres; negative inside.
+pub fn outside_plan(b: &[f64; BOX], p: [f64; 2]) -> f64 {
+    let (along, left) = box_frame(b, p);
+    (b[10] * left - along).max(along - b[4] - b[11] * left).max(left.abs() - b[5])
+}
+
+/// A world point's metres along a box's way in from its start, and to the left of it.
+fn box_frame(b: &[f64; BOX], p: [f64; 2]) -> (f64, f64) {
     let m = metres_per_unit(b[1]);
     let d = [(p[0] - b[0]) * m, (p[1] - b[1]) * m];
     let lu = left_of([b[2], b[3]]);
-    let (along, left) = (d[0] * b[2] + d[1] * b[3], d[0] * lu[0] + d[1] * lu[1]);
+    (d[0] * b[2] + d[1] * b[3], d[0] * lu[0] + d[1] * lu[1])
+}
+
+/// How far a world point lies outside the sides and the roof of a box, in about metres; negative inside.
+pub fn outside_wall(b: &[f64; BOX], p: [f64; 3]) -> f64 {
+    let (along, left) = box_frame(b, [p[0], p[1]]);
     let z = p[2] - b[8] * along;
-    let [depth, half, roof, floor, spring] = [b[4], b[5], b[6], b[7], b[9]];
-    let plan = (b[10] * left - along).max(along - depth - b[11] * left).max(left.abs() - half);
+    let [half, roof, spring] = [b[5], b[6], b[9]];
     let top = if z > spring && roof > spring {
         let r = roof - spring;
         (libm::hypot(left / half, (z - spring) / r) - 1.0) * half.min(r)
     } else {
         z - roof
     };
-    plan.max(floor - z).max(top)
+    (left.abs() - half).max(top)
+}
+
+/// How far a world point lies outside a box, in about metres; negative inside.
+pub fn outside(b: &[f64; BOX], p: [f64; 3]) -> f64 {
+    let (along, _) = box_frame(b, [p[0], p[1]]);
+    outside_plan(b, [p[0], p[1]]).max(b[7] - (p[2] - b[8] * along)).max(outside_wall(b, p))
 }
