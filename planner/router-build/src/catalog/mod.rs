@@ -388,6 +388,8 @@ pub struct Report {
     pub workers: usize,
     /// Wall time of the parallel search.
     pub search_seconds: f64,
+    /// The jobs that left and came back, because the records that stay did not cover their place.
+    pub came_back: Vec<i64>,
     pub seconds: f64,
     /// What became of the jobs of each second source, by its id; null without one.
     pub sources: Value,
@@ -450,6 +452,7 @@ impl Report {
         });
         if !self.sources.is_null() {
             report["sources"] = self.sources.clone();
+            report["came_back"] = json!(self.came_back);
         }
         report
     }
@@ -720,7 +723,7 @@ fn catalog<S: Source + Clone + Send>(
         }
     }
     let size = |(_, line): &(&SourceJob, Line)| line.runs.iter().map(Vec::len).sum();
-    let (mut searched, mut search_seconds) = pool(selection, workers, lined, size, |router, (job, line), calls| {
+    let (searched, mut search_seconds) = pool(selection, workers, lined, size, |router, (job, line), calls| {
         let built = shaped(router, line, &job.header(), &job.kind, None, section_m, calls);
         (job.id(), built.map_err(|reason| Failed { reason, line: ends(&line.runs) }))
     });
@@ -728,32 +731,63 @@ fn catalog<S: Source + Clone + Send>(
     planned.take(searched, &mut report, &mut drops);
 
     Guard::exempt("merge");
-    let mut merge = Merge::replace(&probes, &|id| planned.kept.contains_key(&id));
+    let parts: HashSet<i64> = long.iter().flat_map(|(_, _, leaves, _)| leaves.iter().map(|leaf| leaf.id)).collect();
+    let mut merge = Merge::replace(&probes, &|id| planned.kept.contains_key(&id), &|id| parts.contains(&id));
+    // A job that left keeps its record and its reason aside: it can come back.
+    let (mut aside, mut earlier) = (BTreeMap::new(), HashMap::new());
     for &id in merge.replaced.keys() {
-        drops.insert(id, Reason::Replaced);
-        planned.kept.remove(&id);
+        earlier.extend(drops.insert(id, Reason::Replaced).map(|reason| (id, reason)));
+        aside.extend(planned.kept.remove(&id).map(|record| (id, record)));
     }
     Guard::exempt("catalog");
-    jobs.retain(|job| !merge.replaced.contains_key(&job.relation.id));
+    let (left, jobs): (Vec<Job>, Vec<Job>) =
+        jobs.into_iter().partition(|job| merge.replaced.contains_key(&job.relation.id));
+    let mut left: HashMap<i64, Job> = left.into_iter().map(|job| (job.relation.id, job)).collect();
     let size = |job: &Job| job.members.iter().map(|m| m.nodes.len()).sum();
-    (searched, search_seconds) = {
-        let (searched, seconds) = pool(selection, workers, jobs, size, |router, job, calls| {
+    let plan = |jobs: Vec<Job>| {
+        pool(selection, workers, jobs, size, |router, job, calls| {
             (job.relation.id, route(router, job, &points, section_m, calls))
-        });
-        (searched, search_seconds + seconds)
+        })
     };
+    let (searched, seconds) = plan(jobs);
+    search_seconds += seconds;
     planned.take(searched, &mut report, &mut drops);
+
+    Guard::exempt("merge");
+    merge.hold(&|id| planned.kept.contains_key(&id) || planned.cut.contains_key(&id));
+    for &id in merge.held.keys() {
+        drops.insert(id, Reason::Held);
+        aside.extend(planned.kept.remove(&id).map(|record| (id, record)));
+    }
+    // Each job that left and whose place the records that stay do not cover comes back, until none
+    // does. `named` can drop an unnamed stage later, so such a stage covers nothing.
+    loop {
+        let shown = planned.kept.keys().chain(planned.cut.keys()).filter(|id| !unnamed.contains_key(id));
+        let back = merge.uncovered(&probes, &shown.copied().collect(), &|id| parts.contains(&id));
+        if back.is_empty() {
+            break;
+        }
+        let mut again = Vec::new();
+        for id in back {
+            merge.replaced.remove(&id);
+            merge.held.remove(&id);
+            drops.remove(&id);
+            report.came_back.push(id);
+            if let Some(record) = aside.remove(&id) {
+                planned.kept.insert(id, record);
+            } else if let Some(job) = left.remove(&id) {
+                again.push(job);
+            } else if let Some(reason) = earlier.remove(&id) {
+                drops.insert(id, reason);
+            }
+        }
+        let (searched, seconds) = plan(again);
+        search_seconds += seconds;
+        planned.take(searched, &mut report, &mut drops);
+    }
     let Planned { mut kept, lines, cut } = planned;
     report.workers = workers.max(1);
     report.search_seconds = search_seconds;
-
-    Guard::exempt("merge");
-    // `named` can drop an unnamed stage later, so such a stage holds no record.
-    merge.hold(&|id| (kept.contains_key(&id) || cut.contains_key(&id)) && !unnamed.contains_key(&id));
-    for &id in merge.held.keys() {
-        drops.insert(id, Reason::Held);
-        kept.remove(&id);
-    }
     let successors: BTreeMap<i64, Vec<i64>> = merge
         .replaced
         .keys()

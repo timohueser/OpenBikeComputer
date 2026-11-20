@@ -987,13 +987,15 @@ fn a_job_that_leaves_still_shows_and_no_route_takes_the_place_of_another() -> Re
     ]);
     let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
-    assert_eq!(report.dropped.get("Replaced"), Some(&vec![30, 82]), "{:?}", report.dropped);
+    // Route 31 holds route 3 by rule 2, but holds too little of it, so route 3 comes back and keeps
+    // the place of route 30.
+    assert_eq!(report.dropped.get("Replaced"), Some(&vec![30]), "{:?}", report.dropped);
     assert!(by_id.contains_key(&source_id(1, 3, 0)) && by_id.contains_key(&31), "the line of route 30 still shows");
-    // Route 82 lies on the line of the regional route: it leaves, but the regional route takes no place
-    // in the national trail and no word of it.
-    let regional = by_id[&source_id(1, 20, 0)];
-    assert!(["trail", "website", "symbol"].iter().all(|field| regional.get(*field).is_none()), "{regional}");
-    assert_eq!(by_id[&80]["parts"][1]["missing"], true);
+    assert_eq!(report.came_back, [source_id(1, 3, 0)]);
+    // Stage 82 lies on the line of the regional route. Only a pair by its ref or name takes the place
+    // of a stage, so it stays, its trail stays complete, and it holds the regional route.
+    assert_eq!(report.dropped.get("Held"), Some(&vec![source_id(1, 20, 0)]), "{:?}", report.dropped);
+    assert_eq!(by_id[&80]["stages"], json!([81, 82]));
     Ok(())
 }
 
@@ -1025,80 +1027,133 @@ fn walk(seed: &mut u64, start: Option<i64>, ways: usize) -> Vec<i64> {
 }
 
 #[test]
-fn every_job_shows_and_no_two_records_of_two_origins_are_one_route() -> Result<(), String> {
-    // Walks along the streets as OSM relations and official routes, many of them on one line or along
-    // another, with few refs and levels, so many of them are pairs.
+fn every_job_that_leaves_still_shows_where_the_records_that_stay_cover_it() -> Result<(), String> {
+    // Walks along the streets as official routes of two sources (some with stages), and as OSM
+    // relations: copies, tails and heads of them, longer versions, routes that share only a part,
+    // walks of their own, stages of trails, and a route at each edge of the extract. Few refs and
+    // levels, so many of them are pairs.
     let mut seed = 7;
     let refs = ["1", "2", "SM 2", "", "3"];
     let mut lines = BTreeMap::new();
-    let mut routes = Vec::new();
-    for key in 1..=14u64 {
+    let (mut sources, mut walks) = (vec![Vec::new(), Vec::new()], Vec::new());
+    for key in 1..=16u64 {
+        let origin = 1 + next(&mut seed, 2) as usize;
         let nodes = walk(&mut seed, None, 0);
         let reference = refs[next(&mut seed, 5) as usize];
-        routes.push(official(
-            key,
-            "hiking",
-            next(&mut seed, 3) as u8,
-            reference,
-            &format!("Weg {reference}"),
-            &[at(&nodes)],
-        ));
-        lines.insert(source_id(1, key as i64, 0), at(&nodes));
+        let route =
+            official(key, "hiking", next(&mut seed, 3) as u8, reference, &format!("Weg {reference}"), &[at(&nodes)]);
+        if key % 4 == 0 && nodes.len() >= 5 {
+            let (first, second) = (nodes[..=nodes.len() / 2].to_vec(), nodes[nodes.len() / 2..].to_vec());
+            sources[origin - 1].push(staged(route, &[(1, &[at(&first)]), (2, &[at(&second)])]));
+            lines.insert(source_id(origin as i64, key as i64, 1), at(&first));
+            lines.insert(source_id(origin as i64, key as i64, 2), at(&second));
+        } else {
+            sources[origin - 1].push(route);
+            lines.insert(source_id(origin as i64, key as i64, 0), at(&nodes));
+        }
+        walks.push(nodes);
     }
-    let mut relations = Vec::new();
+    sources[0].push(official(
+        90,
+        "hiking",
+        1,
+        "9",
+        "Rand",
+        &[[at(&[60, 61, 62, 63]), vec![[ORIGIN - 2_000_000, ORIGIN]]].concat()],
+    ));
     let networks = ["lwn", "rwn", ""];
-    for id in 101..=130i64 {
-        // A copy, a piece, or a longer version of an official line, or a walk of its own.
-        let base = &routes[next(&mut seed, routes.len() as u64) as usize];
-        let base: Vec<i64> = decode_nodes(base);
-        let nodes = match next(&mut seed, 4) {
+    let mut relations: Vec<(i64, &str, &str, Vec<i64>)> = Vec::new();
+    for id in 101..=140i64 {
+        let base = walks[next(&mut seed, walks.len() as u64) as usize].clone();
+        let n = base.len();
+        let nodes = match next(&mut seed, 6) {
             0 => base.clone(),
-            1 if base.len() > 3 => base[1..].to_vec(),
-            2 => {
-                let more = walk(&mut seed, Some(base[base.len() - 1]), 3);
-                let more = more[1..].iter().take_while(|n| !base.contains(n));
-                base.iter().chain(more).copied().collect()
+            1 if n > 3 => base[1 + next(&mut seed, n as u64 - 3) as usize..].to_vec(),
+            2 if n > 3 => base[..n - 1 - next(&mut seed, n as u64 - 3) as usize].to_vec(),
+            k @ (3 | 4) => {
+                // Longer, or on its first half only and then away from it.
+                let keep = if k == 3 { n } else { n / 2 + 1 };
+                let away = walk(&mut seed, Some(base[keep - 1]), 3);
+                let away = away[1..].iter().take_while(|node| !base.contains(node));
+                base[..keep].iter().chain(away).copied().collect()
             }
             _ => walk(&mut seed, None, 0),
         };
-        lines.insert(id, at(&nodes));
         relations.push((id, refs[next(&mut seed, 5) as usize], networks[next(&mut seed, 3) as usize], nodes));
+    }
+    // Trails of two stages along official lines.
+    let mut trails = Vec::new();
+    for t in 0..4i64 {
+        let base = walks[next(&mut seed, walks.len() as u64) as usize].clone();
+        if base.len() < 5 {
+            continue;
+        }
+        let mid = base.len() / 2;
+        relations.push((201 + 2 * t, "", "", base[..=mid].to_vec()));
+        relations.push((202 + 2 * t, "", "", base[mid..].to_vec()));
+        trails.push((300 + t, refs[next(&mut seed, 5) as usize], [201 + 2 * t, 202 + 2 * t]));
     }
     let tags: Vec<Vec<(&str, &str)>> = relations
         .iter()
-        .map(|&(_, reference, network, _)| {
-            [("route", "hiking"), ("ref", reference), ("network", network), ("name", "Weg")].to_vec()
+        .map(|&(id, reference, network, _)| match id > 200 {
+            true => [("route", "hiking"), ("name", if id % 2 == 1 { "Etappe 1" } else { "Etappe 2" })].to_vec(),
+            false => [("route", "hiking"), ("ref", reference), ("network", network), ("name", "Weg")].to_vec(),
         })
         .collect();
-    let osm_routes =
+    let mut osm: Vec<Route> =
         relations.iter().zip(&tags).map(|((id, _, _, nodes), tags)| route(*id, tags, path(nodes))).collect();
-    let (package, osm) = grid(osm_routes);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources_of(vec![routes]), 2, SECTION_M)?;
-    let kept: Vec<(i64, Vec<P>)> =
-        records.iter().map(|r| (r["id"].as_i64().unwrap(), decode(&r["line_udeg"]))).collect();
-    let probe = |line: &Vec<P>| merge::Probe::new(0, "hiking", 0, "", "", vec![line.clone()]);
+    for (id, reference, stages) in &trails {
+        let tags = vec![
+            ("type", "superroute"),
+            ("route", "hiking"),
+            ("name", "Trail"),
+            ("ref", *reference),
+            ("network", "rwn"),
+        ];
+        osm.push((*id, tags, members(stages, Id::Relation)));
+    }
+    // A relation that leaves the extract, on an official line.
+    osm.push(route(150, &[("route", "hiking"), ("ref", "1"), ("name", "Weg")], [path(&walks[0]), vec![999]].concat()));
+    for (id, _, _, nodes) in &relations {
+        lines.insert(*id, at(nodes));
+    }
+    lines.insert(150, at(&walks[0]));
+    let (package, osm) = grid(osm);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources_of(sources), 2, SECTION_M)?;
+    let kept: Vec<Vec<P>> =
+        records.iter().filter(|r| r.get("line_udeg").is_some()).map(|r| decode(&r["line_udeg"])).collect();
+    let nears: Vec<shape::Near> = kept.iter().map(|line| shape::Near::new(line)).collect();
     let left: BTreeSet<i64> =
         ["Replaced", "Held"].iter().flat_map(|r| report.dropped.get(*r).into_iter().flatten().copied()).collect();
-    assert!(left.len() >= 10, "the made-up region tests the rules: {:?}", report.dropped);
+    assert!(
+        left.len() >= 20 && !report.came_back.is_empty(),
+        "the made-up region tests the rules: {:?}",
+        report.dropped
+    );
     for id in left {
-        let nears: Vec<shape::Near> = kept.iter().map(|(_, line)| shape::Near::new(line)).collect();
-        let shown = merge::share(&probe(&lines[&id]), &nears.iter().collect::<Vec<_>>());
-        assert!(shown >= 0.5, "only {shown:.2} of the line of {id} shows");
-    }
-    for (a, line_a) in kept.iter().filter(|(id, _)| *id > 0) {
-        for (b, line_b) in kept.iter().filter(|(id, _)| *id <= -sources::ORIGIN_ID) {
-            let shares = [
-                merge::share(&probe(line_a), &[&shape::Near::new(line_b)]),
-                merge::share(&probe(line_b), &[&shape::Near::new(line_a)]),
-            ];
-            assert!(shares.iter().any(|&share| share < 0.8), "{a} and {b} are one route: {shares:?}");
-        }
+        let probe = merge::Probe::new(0, "hiking", 0, "", "", vec![lines[&id].clone()]);
+        let shown = merge::share(&probe, &nears.iter().collect::<Vec<_>>());
+        assert!(shown >= 0.8, "only {shown:.2} of the line of {id} shows");
     }
     Ok(())
 }
 
-/// The grid nodes of the line of a route of `official`.
-fn decode_nodes(route: &Value) -> Vec<i64> {
-    let flat: Vec<i64> = route["members"][0].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
-    flat.chunks(2).map(|p| ((p[1] - ORIGIN as i64) / 4_000) * 10 + (p[0] - ORIGIN as i64) / 4_000).collect()
+#[test]
+fn a_job_comes_back_when_the_record_that_took_its_place_leaves() -> Result<(), String> {
+    // Official route 561 of 17 streets; OSM route 30 is its last 3 streets, and OSM route 31 with its ref
+    // runs on its first 14 streets and then turns away for 5 more.
+    let line = [0, 1, 2, 3, 4, 5, 6, 16, 15, 14, 13, 12, 11, 10, 20, 21, 22, 23];
+    let sources = sources_of(vec![vec![official(561, "hiking", 1, "561", "Rundweg", &[at(&line)])]]);
+    let hiking = [("route", "hiking"), ("ref", "561")];
+    let (package, osm) = grid(vec![
+        route(30, &hiking, path(&[20, 21, 22, 23])),
+        route(31, &hiking, path(&[0, 1, 2, 3, 4, 5, 6, 16, 15, 14, 13, 12, 11, 10, 20, 30, 40, 50, 60, 61])),
+    ]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    // Route 31 holds the official route, so route 30 lost its place and comes back.
+    assert_eq!(report.dropped.get("Held"), Some(&vec![source_id(1, 561, 0)]), "{:?}", report.dropped);
+    assert_eq!(report.came_back, [30]);
+    let ids: Vec<i64> = records.iter().map(|r| r["id"].as_i64().unwrap()).collect();
+    assert_eq!(ids, [30, 31]);
+    Ok(())
 }

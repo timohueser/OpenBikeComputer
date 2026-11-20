@@ -122,13 +122,11 @@ pub(super) enum Rule {
     B,
 }
 
-/// A pair of a job with a record: the record's id, the rule, the share of the job along the record
-/// and the share of the record along the job.
+/// A pair of a job with a record: the record's id and the rule.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Pair {
     pub id: i64,
     pub rule: Rule,
-    pub shares: [f64; 2],
 }
 
 /// The pair of a job with a record, if they are one, from the index of each.
@@ -139,7 +137,7 @@ fn pair((job, near): (&Probe, &Near), (id, record, index): &(i64, &Probe, Near))
         (_, [a, b]) if a >= SAME_SHARE && b >= SAME_SHARE => Rule::B,
         _ => return None,
     };
-    Some(Pair { id: *id, rule, shares })
+    Some(Pair { id: *id, rule })
 }
 
 /// What the two rules decide.
@@ -155,9 +153,14 @@ pub(super) struct Merge {
 
 impl Merge {
     /// Rule 1 for the jobs of each origin after the first, in rank order: a job leaves when the kept
-    /// records of earlier origins that are its pairs cover four fifths of its match line. `kept`
-    /// says whether a job of a second source kept a record.
-    pub fn replace(probes: &BTreeMap<i64, Probe>, kept: &(dyn Fn(i64) -> bool + Sync)) -> Self {
+    /// records of earlier origins that are its pairs cover four fifths of its match line; for a part
+    /// of a long relation (`part`), only its pairs by (a) count. `kept` says whether a job of a second
+    /// source kept a record.
+    pub fn replace(
+        probes: &BTreeMap<i64, Probe>,
+        kept: &(dyn Fn(i64) -> bool + Sync),
+        part: &(dyn Fn(i64) -> bool + Sync),
+    ) -> Self {
         let mut merge = Merge::default();
         let last = probes.values().map(|probe| probe.origin).max().unwrap_or(0);
         for origin in 1..=last {
@@ -178,8 +181,12 @@ impl Merge {
                     let near = job.near();
                     let pairs: Vec<Pair> =
                         candidates.into_iter().filter_map(|record| pair((job, &near), record)).collect();
-                    let covering: Vec<&Near> =
-                        records.iter().filter(|record| pairs.iter().any(|p| p.id == record.0)).map(|r| &r.2).collect();
+                    let counts = |p: &&Pair| p.rule == Rule::A || !part(id);
+                    let covering: Vec<&Near> = records
+                        .iter()
+                        .filter(|record| pairs.iter().filter(counts).any(|p| p.id == record.0))
+                        .map(|r| &r.2)
+                        .collect();
                     (!pairs.is_empty()).then(|| (id, pairs, share(job, &covering)))
                 })
                 .collect();
@@ -193,19 +200,58 @@ impl Merge {
         merge
     }
 
-    /// Rule 2: a kept record leaves when one of its pairs is a job of a later origin that stays and
-    /// holds four fifths of the record's match line. The job stays when it did not leave by rule 1
-    /// and `stays` says that it is in the catalog.
+    /// Rule 2: a kept record leaves when one of its pairs is a job of a later origin that stays: it
+    /// did not leave by rule 1, and `stays` says that its plan kept a record or a section.
     pub fn hold(&mut self, stays: &dyn Fn(i64) -> bool) {
         for (&job, pairs) in &self.pairs {
             if self.replaced.contains_key(&job) || !stays(job) {
                 continue;
             }
-            for pair in pairs.iter().filter(|pair| pair.shares[1] >= SAME_SHARE) {
+            for pair in pairs {
                 // Of two jobs that hold a record, the lower id, so the report does not depend on the
                 // order of a hash map.
                 self.held.entry(pair.id).and_modify(|holder| *holder = (*holder).min(job)).or_insert(job);
             }
+        }
+    }
+
+    /// The jobs that left by rule 1 or 2 whose match line the records that take their place cover by
+    /// less than four fifths: for a part of a long relation (`part`), its pairs by (a) in `shown`;
+    /// for any other job, the records in `shown` of its kind family. Records that left by rule 2 come
+    /// first, as they can give the place of a job that left by rule 1.
+    pub fn uncovered(
+        &self,
+        probes: &BTreeMap<i64, Probe>,
+        shown: &HashSet<i64>,
+        part: &(dyn Fn(i64) -> bool + Sync),
+    ) -> Vec<i64> {
+        let gone: Vec<i64> = self.replaced.keys().chain(self.held.keys()).copied().collect();
+        let place = |id: i64| -> Vec<&Probe> {
+            let probe = &probes[&id];
+            match part(id) {
+                true => self
+                    .pairs
+                    .get(&id)
+                    .into_iter()
+                    .flatten()
+                    .filter(|p| p.rule == Rule::A && shown.contains(&p.id))
+                    .map(|p| &probes[&p.id])
+                    .collect(),
+                false => shown
+                    .iter()
+                    .filter_map(|other| probes.get(other))
+                    .filter(|o| o.family == probe.family && o.meets(probe))
+                    .collect(),
+            }
+        };
+        let uncovered = |&id: &i64| {
+            let nears: Vec<Near> = place(id).into_iter().map(Probe::near).collect();
+            share(&probes[&id], &nears.iter().collect::<Vec<_>>()) < SAME_SHARE
+        };
+        let back: Vec<i64> = gone.into_par_iter().filter(uncovered).collect();
+        match back.iter().any(|id| self.held.contains_key(id)) {
+            true => back.into_iter().filter(|id| self.held.contains_key(id)).collect(),
+            false => back,
         }
     }
 
