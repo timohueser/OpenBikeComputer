@@ -1,7 +1,8 @@
 //! Distances in metres between points, lines and areas in microdegrees, and a grid that finds the
 //! objects near a box.
 
-use planner_router::geometry::METRES_PER_UDEG;
+use planner_router::geometry::{project, METRES_PER_UDEG};
+use planner_router::model::Point;
 use planner_router::shape::P;
 
 type Xy = [f64; 2];
@@ -37,8 +38,8 @@ fn to_segment(p: Xy, a: Xy, b: Xy) -> f64 {
 
 /// The distance from `p` to the segment `a`–`b`.
 pub fn to_segment_m(p: P, [a, b]: [P; 2]) -> f64 {
-    let plane = Plane::at(p[1]);
-    to_segment(plane.xy(p), plane.xy(a), plane.xy(b))
+    let point = |p: P| Point { lon: p[0], lat: p[1], elevation: 0.0 };
+    project(point(p), point(a), point(b)).1
 }
 
 /// The distance between two segments: 0 when they cross, else the nearest end to the other one.

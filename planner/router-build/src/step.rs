@@ -278,6 +278,50 @@ fn write_package(
     Ok(manifest)
 }
 
+/// The route records of the catalog cells, for the route facts.
+struct Catalog {
+    /// Each record with a line once, by id.
+    routes: Vec<Route>,
+    /// The ids of the records of each cell file.
+    cells: BTreeMap<String, Vec<i64>>,
+    /// The size of each cell file.
+    bytes: Vec<usize>,
+    /// The routes of kind `hiking` or `foot`, and of them those with no `hardest`.
+    hiking: usize,
+    ungraded: usize,
+}
+
+/// The catalog of the files `routes/<cell>.json` of the routing layer `files` for each of
+/// `cells`. The far files and the trail record files do not count.
+fn catalog(files: &BTreeMap<String, PathBuf>, cells: impl IntoIterator<Item = String>) -> Result<Catalog, String> {
+    let cells = cells.into_iter().map(|id| (id, Vec::new())).collect();
+    let mut catalog = Catalog { routes: Vec::new(), cells, bytes: Vec::new(), hiking: 0, ungraded: 0 };
+    let mut routes = BTreeMap::new();
+    for (path, object) in files {
+        let name = path.strip_prefix("routes/").and_then(|name| name.strip_suffix(".json"));
+        let Some(ids) = name.and_then(|name| catalog.cells.get_mut(name)) else { continue };
+        let bytes = fs::read(object).map_err(|e| format!("{path}: {e}"))?;
+        catalog.bytes.push(bytes.len());
+        let file: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        for record in file["routes"].as_array().into_iter().flatten() {
+            let id = record["id"].as_i64().ok_or(format!("{path}: a record has no id"))?;
+            ids.push(id);
+            if routes.contains_key(&id) {
+                continue;
+            }
+            if let Some(route) = Route::read(record)? {
+                if matches!(route.kind.as_str(), "hiking" | "foot") {
+                    catalog.hiking += 1;
+                    catalog.ungraded += usize::from(record.get("hardest").is_none());
+                }
+                routes.insert(id, route);
+            }
+        }
+    }
+    catalog.routes = routes.into_values().collect();
+    Ok(catalog)
+}
+
 /// The route facts step. It reads the OSM extract of `planner/osm/bounds`, the source layer, the
 /// cell files of `planner/routing`, the GLO-30 tiles of its bounds and, when the request has it,
 /// the canopy archive of `planner/trailview-canopy`. The options are `bounds` and
@@ -296,30 +340,8 @@ pub fn facts(request: &Request) -> Result<(), String> {
     let bounds = obc_dem::step::bounds(&request.options)?;
     let credit = text(&request.options, "terrain_attribution")?;
     let routing = request.layers.get("planner/routing").ok_or("the step reads no layer planner/routing")?;
-    let mut cells: BTreeMap<String, Vec<i64>> =
-        grid::cells(bounds).into_iter().map(|(id, _)| (id, Vec::new())).collect();
-    let (mut routes, mut catalog_bytes, mut hiking, mut ungraded) = (BTreeMap::new(), Vec::new(), 0, 0);
-    for (path, object) in routing {
-        let name = path.strip_prefix("routes/").and_then(|name| name.strip_suffix(".json"));
-        let Some(ids) = name.and_then(|name| cells.get_mut(name)) else { continue };
-        let bytes = fs::read(object).map_err(|e| format!("{path}: {e}"))?;
-        catalog_bytes.push(bytes.len());
-        let file: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
-        for record in file["routes"].as_array().into_iter().flatten() {
-            let id = record["id"].as_i64().ok_or(format!("{path}: a record has no id"))?;
-            ids.push(id);
-            if routes.contains_key(&id) {
-                continue;
-            }
-            if let Some(route) = Route::read(record)? {
-                if matches!(route.kind.as_str(), "hiking" | "foot") {
-                    (hiking, ungraded) = (hiking + 1, ungraded + usize::from(record.get("hardest").is_none()));
-                }
-                routes.insert(id, route);
-            }
-        }
-    }
-    let routes: Vec<Route> = routes.into_values().collect();
+    let cells = grid::cells(bounds).into_iter().map(|(id, _)| id);
+    let Catalog { routes, cells, bytes: catalog_bytes, hiking, ungraded } = catalog(routing, cells)?;
     lap("routes");
     Guard::stage("places");
     let pbf = request.layers.get("planner/osm/bounds").and_then(|files| files.get("osm.pbf"));
@@ -358,6 +380,7 @@ pub fn facts(request: &Request) -> Result<(), String> {
     let mut metrics = crate::facts::report(&entries);
     metrics["places"] = json!(counts.kinds);
     metrics["lifts_without_height"] = json!(counts.lifts_without_height);
+    metrics["private_lifts"] = json!(counts.private_lifts);
     metrics["area_large_with_capacity"] = json!(counts.area_large_with_capacity);
     metrics["of_them_50_or_more"] = json!(counts.of_them_50_or_more);
     metrics["incomplete_areas"] = json!(incomplete);
@@ -367,4 +390,36 @@ pub fn facts(request: &Request) -> Result<(), String> {
     metrics["catalog_bytes"] = sizes(catalog_bytes);
     metrics["stage_s"] = Value::Object(stage_s);
     fs::write(&request.metrics, metrics.to_string()).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_facts_read_each_route_of_the_cell_files_once() {
+        let dir = std::env::temp_dir().join(format!("obc-facts-catalog-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let line = crate::catalog::encode(&[[8_000_000, 47_000_000], [8_001_000, 47_000_000]]);
+        let route = |id: i64| json!({"id": id, "kind": "hiking", "loop": false, "length_m": 76, "line_udeg": line});
+        // Record 2 is a long route: it has no line. The far file and the trail record file are no
+        // cell files.
+        let files = [
+            ("routes/9-1-1.json", json!({"format": 1, "routes": [route(1), {"id": 2, "kind": "hiking"}]})),
+            ("routes/9-1-2.json", json!({"format": 1, "routes": [route(1)]})),
+            ("routes/trails/7-0-0.json", json!({"format": 1, "routes": [route(3)]})),
+            ("routes/long/4.json", json!({"format": 1, "routes": [route(4)]})),
+        ];
+        let mut layer = BTreeMap::new();
+        for (i, (path, document)) in files.iter().enumerate() {
+            fs::write(dir.join(i.to_string()), document.to_string()).unwrap();
+            layer.insert(path.to_string(), dir.join(i.to_string()));
+        }
+        let catalog = catalog(&layer, ["9-1-1", "9-1-2", "9-1-3"].map(String::from)).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(catalog.routes.iter().map(|route| route.id).collect::<Vec<_>>(), [1]);
+        let cells = BTreeMap::from([("9-1-1".into(), vec![1, 2]), ("9-1-2".into(), vec![1]), ("9-1-3".into(), vec![])]);
+        assert_eq!(catalog.cells, cells);
+        assert_eq!((catalog.bytes.len(), catalog.hiking, catalog.ungraded), (2, 1, 1));
+    }
 }
