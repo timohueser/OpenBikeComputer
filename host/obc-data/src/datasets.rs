@@ -249,6 +249,8 @@ struct Item {
     error: Option<String>,
     /// The `sas` endpoint of the `stac` listing of the file.
     sas: Option<String>,
+    /// Upstream answered `HEAD` without an `ETag` and a day: only the bytes tell a new version.
+    bare: bool,
 }
 
 /// The files of `dataset`: those under `kept/<dataset>/` of `root` for a kept dataset.
@@ -262,6 +264,8 @@ fn list(http: &Http, dataset: &Dataset, root: &Path) -> Result<Vec<Item>, String
         let path = archive::mirror_path(url).ok_or_else(|| format!("`{url}` names no mirror path"))?;
         let item = Item { url: Some(url.clone()), path, ..Item::default() };
         items.push(match http.head(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.head(url) }) {
+            // The size of a bare head can be another than that of the body, as a service gives it.
+            Ok(head) if head.bare() => Item { bare: true, ..item },
             Ok(head) => Item { bytes: head.bytes, modified: head.modified, modified_at: head.modified_at, ..item },
             Err(error) => Item { error: Some(error), ..item },
         });
@@ -445,7 +449,8 @@ fn page_items(page: &str, s3: &S3) -> Result<(Vec<Item>, Option<String>), String
         let modified = modified_at.map(|seconds| date::format((seconds / 86_400) as i64));
         let etag = tag(contents, "ETag");
         let md5 = etag.as_deref().and_then(md5_of);
-        items.push(Item { url: Some(url), path, bytes, etag, md5, modified, modified_at, error: None, sas: None });
+        let item = Item { url: Some(url), path, bytes, etag, md5, modified, modified_at, ..Item::default() };
+        items.push(item);
     }
     let next = match tag(page, "IsTruncated").as_deref() {
         Some("true") => Some(tag(page, "NextContinuationToken").ok_or("a truncated page without a next token")?),
@@ -613,6 +618,7 @@ pub fn get(
                     let old = previous.get(item.path.as_str()).copied();
                     let recorded = recorded.get(item.path.as_str()).copied();
                     let result = take((http, &sas), &root, &partial, item, old, recorded);
+                    let result = result.map_err(|error| http::shown_in(&error));
                     if let Err(error) = &result {
                         eprintln!("obc data: archive {}: {}: {error}", dataset.id, item.path);
                     }
@@ -655,9 +661,11 @@ pub fn get(
 }
 
 /// Whether upstream gives for `item` what the manifest entry `old` recorded: the same size, and
-/// the same `ETag` and `Last-Modified` day where upstream gives them.
+/// the same `ETag` and `Last-Modified` day where upstream gives them. A bare item gives nothing to
+/// compare: only its bytes tell.
 fn unchanged(old: &Listed, item: &Item) -> bool {
-    item.bytes.is_none_or(|bytes| bytes == old.bytes)
+    !item.bare
+        && item.bytes.is_none_or(|bytes| bytes == old.bytes)
         && item.etag.as_ref().is_none_or(|etag| old.etag.as_ref() == Some(etag))
         && item.modified.as_ref().is_none_or(|day| old.modified.as_ref() == Some(day))
 }
@@ -689,7 +697,8 @@ fn with_lost_kept_files(dataset: &Dataset, mut items: Vec<Item>, old: &Manifest)
 ///   has no entry for it: a get never gives a kept file other bytes than the manifest records;
 /// - a file on disk whose size and modification day are the `Content-Length` and the
 ///   `Last-Modified` day of upstream, read in place once;
-/// - else downloaded.
+/// - else downloaded. The download of a bare item replaces the file in place only when its bytes
+///   differ, and is dated by the day of the get: one day names one set of bytes.
 fn take(
     (http, sas): (&Http, &Sas),
     root: &Path,
@@ -749,12 +758,30 @@ fn take(
         let opened = fs::File::options().write(true).open(&part);
         opened.and_then(|part| part.set_modified(time)).map_err(|e| format!("{}: {e}", part.display()))?;
     }
+    let leave = |result| {
+        let _ = fs::remove_file(&part);
+        let _ = fs::remove_file(part.with_extension("lock"));
+        result
+    };
+    let mut modified = item.modified.clone();
+    if item.bare {
+        let today = date::format(date::today());
+        if let Some(old) = old.filter(|old| in_place(root, old)) {
+            if old.sha256.eq_ignore_ascii_case(&got.sha256) {
+                return leave(Ok(old.clone()));
+            }
+            if old.modified.as_deref().is_some_and(|day| day >= today.as_str()) {
+                return leave(Err("upstream changed today; get again tomorrow".into()));
+            }
+        }
+        modified = Some(today);
+    }
     let parent = file.parent().ok_or("a mirror path has a directory")?;
     fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     fs::rename(&part, &file).map_err(|e| format!("{}: {e}", file.display()))?;
     let _ = fs::remove_file(part.with_extension("lock"));
-    eprintln!("obc data: archive got {url}");
-    Ok(listed(got.sha256, got.size))
+    eprintln!("obc data: archive got {}", http::shown(url));
+    Ok(Listed { modified, ..listed(got.sha256, got.size) })
 }
 
 /// The first bytes of a file of each kind whose kind its name tells. An answer of another kind,
@@ -1119,11 +1146,13 @@ mod tests {
     #[test]
     fn a_log_line_shows_no_query_of_a_signed_url() {
         let line = "GET https://a.blob.core.windows.net/m/x.tif?st=1&sig=k: HTTP 503 — retrying https://b/c?sig=k now";
+        let blob = http::shown("https://a.blob.core.windows.net/m/x.tif?st=1&sig=k");
         assert_eq!(
-            http::without_queries(line),
-            "GET https://a.blob.core.windows.net/m/x.tif: HTTP 503 — retrying https://b/c now"
+            http::shown_in(line),
+            format!("GET {blob}: HTTP 503 — retrying {} now", http::shown("https://b/c?sig=k"))
         );
-        assert_eq!(http::without_queries("no URL: here"), "no URL: here");
+        assert!(!http::shown_in(line).contains(['?', '=']), "{blob}");
+        assert_eq!(http::shown_in("no URL: here https://b/c"), "no URL: here https://b/c");
     }
 
     #[test]
@@ -1227,8 +1256,7 @@ mod tests {
             md5: Some(md5.into()),
             modified: Some("2022-05-09".into()),
             modified_at: date::seconds("2022-05-09T14:26:37Z"),
-            error: None,
-            sas: None,
+            ..Item::default()
         };
         assert_eq!(items[0], expected);
         assert_eq!((items.len(), items[1].md5.as_deref()), (2, None), "a file of more parts has no MD5");
@@ -1351,6 +1379,105 @@ mod tests {
             "the file of upstream size and day is read in place"
         );
         assert!(verify(&store, &roots, "x").unwrap().is_empty());
+    }
+
+    /// The answer of a service: a URL with a query, and a `HEAD` that the server refuses (405) or
+    /// that gives no `ETag`, no day and another size than the body. Only other bytes make a new
+    /// version, dated by the day of the get, and one day never names two contents.
+    #[test]
+    fn a_service_answer_gets_a_new_version_only_when_its_bytes_change() {
+        let scratch = Scratch::new("datasets-service");
+        // Each get sends a HEAD, then a GET.
+        let (actual, log) = serve(|index, _| {
+            let bare = |bytes: &[u8]| {
+                let mut reply = whole(bytes);
+                reply.headers.clear();
+                reply
+            };
+            let status = |code| {
+                let mut reply = not_found();
+                reply.status = code;
+                reply
+            };
+            match index {
+                0 | 2 | 6 | 10 => status(405),
+                1 | 3 => bare(b"first"),
+                4 => bare(&[0; 7079]),
+                5 => bare(b"second"),
+                7 => bare(b"third"),
+                8 | 9 => status(503),
+                _ => not_found(),
+            }
+        });
+        let actual = format!("{actual}?SERVICE=WFS&TYPENAMES=a:b");
+        let url = actual.replacen("http://", "https://", 1);
+        let registry = Registry::load(&repository()).unwrap();
+        let text = format!("name = \"x\"\nsources = [\"land-polygons\"]\ncoverage = \"World\"\nurls = [\"{url}\"]\n");
+        let dataset = parse("x", &text, &registry).unwrap();
+        let root = scratch.0.join("archive");
+        std::fs::create_dir_all(&root).unwrap();
+        let (roots, store) = (vec![root.clone()], Store::at(scratch.0.join("store")));
+        let (http, path) = (Http::loopback(&actual), archive::mirror_path(&url).unwrap());
+        let requests = || log.lock().unwrap().len();
+        let today = date::format(date::today());
+        let mut land = crate::fetch::tests::source(&url, "date");
+        land.keep = Keep::Archive;
+        let request = crate::fetch::Request { refresh: false, source: &land, version: None, params: vec![] };
+        let fetch =
+            || crate::fetch::fetch(&repository(), &store, &Http::loopback(&actual).with_archive(&root), &request);
+
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        let first = got.manifest.clone();
+        assert_eq!(
+            (first.files[0].modified.as_deref(), first.version.as_deref()),
+            (Some(today.as_str()), Some(today.as_str()))
+        );
+        assert_eq!(std::fs::read(root.join(&path)).unwrap(), b"first", "at the path of the digest of the query");
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        assert_eq!(
+            (requests(), &got.manifest.files, &got.manifest.version),
+            (4, &first.files, &first.version),
+            "same bytes"
+        );
+
+        // The first bytes as the version of an earlier day, which the store keeps.
+        let mut manifest = got.manifest;
+        (manifest.files[0].modified, manifest.version) = (Some("2026-10-01".into()), Some("2026-10-01".into()));
+        manifest.write(&root.join("manifest/x.json")).unwrap();
+        let old = fetch().unwrap();
+        assert_eq!((old.version.as_str(), old.files[0].archive.as_deref()), ("2026-10-01", Some(path.as_str())));
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        assert!(got.errors.is_empty(), "a HEAD size other than the body's checks nothing: {:?}", got.errors);
+        assert_eq!(got.manifest.version.as_deref(), Some(today.as_str()), "other bytes on a later day");
+        let new = fetch().unwrap();
+        assert_eq!(
+            (new.version.as_str(), std::fs::read(store.object(&new.files[0].sha256)).unwrap()),
+            (today.as_str(), b"second".to_vec())
+        );
+        let kept = store.snapshot("land", "2026-10-01").unwrap().unwrap();
+        assert_eq!(
+            std::fs::read(store.object(&kept.files[0].sha256)).unwrap(),
+            b"first",
+            "the store keeps the old version"
+        );
+
+        let before = Manifest::read(&root.join("manifest/x.json")).unwrap();
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        assert!(got.errors[0].error.contains("upstream changed today"), "{:?}", got.errors);
+        assert_eq!(
+            (&got.manifest.files, std::fs::read(root.join(&path)).unwrap()),
+            (&before.files, b"second".to_vec())
+        );
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        assert_eq!(
+            (requests(), got.errors.len(), &got.manifest.files),
+            (10, 0, &before.files),
+            "a failed HEAD keeps the entry"
+        );
+
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        let error = &got.errors[0].error;
+        assert!(error.ends_with("HTTP 404") && error.contains(&http::shown(&url)) && !error.contains('?'), "{error}");
     }
 
     fn time(file: &Path) -> u64 {
