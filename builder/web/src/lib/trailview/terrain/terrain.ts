@@ -45,8 +45,8 @@ const PAGE_BYTES = PAGE * PAGE * 2;
 export const SYNTH_PAGES = Math.floor((BUDGET.synth - MASK_BYTES) / PAGE_BYTES);
 /** Per mask, the snaps of its page's 64 × 64 mesh vertices, 4 bytes each, as `snaps` in features.wgsl. */
 const SNAP_BYTES = (PAGE / 4) ** 2 * 4;
-/** Portal boxes in the terrain's holes at most. */
-const MAX_HOLES = 32;
+/** Boxes in the terrain's holes at most: the portals' boxes; with `ground=plan` also the parts', several to a part. */
+const MAX_HOLES = 32, PLAN_HOLES = 64;
 /** Nodes drawn per frame at most. */
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
@@ -434,7 +434,7 @@ export class Terrain {
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
             scales: buffer('terrain', pages * 8, storage | GPUBufferUsage.COPY_SRC),
             nodes: buffer('terrain', MAX_NODES * NODE_BYTES, storage),
-            holes: buffer('terrain', (1 + 3 * MAX_HOLES) * 16, storage),
+            holes: buffer('terrain', (1 + 3 * (plan ? PLAN_HOLES : MAX_HOLES)) * 16, storage),
             cells: buffer('plan', plan ? CELLS_BYTES : 256, storage),
             synthJobs: buffer('compute', ARRIVALS * JOB_BYTES, storage),
             synthOut: buffer('compute', ARRIVALS * texels * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
@@ -1070,7 +1070,7 @@ export class Terrain {
         device.queue.writeBuffer(r.nodes, 0, instances);
         // After the structures' upload: a portal opens the ground only where its owner's bore and facade draw in this frame.
         this.structures.write();
-        device.queue.writeBuffer(r.holes, 0, holes(this.boxes, anchor, (x, y) => this.structures.holds(x, y)));
+        device.queue.writeBuffer(r.holes, 0, holes(this.boxes, anchor, (x, y) => this.structures.holds(x, y), !!this.records));
         const changed = instances.length !== this.instances.length || instances.some((v, i) => v !== this.instances[i]);
         this.instances = instances;
         this.water.write();
@@ -1229,17 +1229,22 @@ function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
 }
 
 /**
- * The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. A box
- * whose facade middle is not `drawn` is left out: without its bore and facade the ground stays closed.
+ * The boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once (by its start and its way in),
+ * MAX_HOLES at most, or with `plan` PLAN_HOLES, the nearest to the anchor first. A box whose start is not `drawn` is left
+ * out: without its bore and facade the ground stays closed.
  */
-function holes(lists: Float64Array[], anchor: Anchor, drawn: (x: number, y: number) => boolean): Float32Array<ArrayBuffer> {
-    const out = new Float32Array(4 * (1 + 3 * MAX_HOLES)), seen = new Set<string>();
+function holes(lists: Float64Array[], anchor: Anchor, drawn: (x: number, y: number) => boolean, plan: boolean): Float32Array<ArrayBuffer> {
+    const most = plan ? PLAN_HOLES : MAX_HOLES, out = new Float32Array(4 * (1 + 3 * most)), seen = new Set<string>();
+    const boxes = lists.flatMap(list => Array.from({ length: list.length / BOX }, (_, k) => list.subarray(BOX * k, BOX * (k + 1))));
+    const away = (box: Float64Array) => (box[0] - anchor.whole[0]) ** 2 + (box[1] - anchor.whole[1]) ** 2;
+    if (plan) boxes.sort((a, b) => away(a) - away(b));
     let n = 0;
-    for (const list of lists) for (let i = 0; i < list.length && n < MAX_HOLES; i += BOX) {
-        const name = `${list[i]},${list[i + 1]}`;
-        if (seen.has(name) || !drawn(list[i], list[i + 1])) continue;
+    for (const box of boxes) {
+        if (n === most) break;
+        const name = `${box[0]},${box[1]},${box[2]},${box[3]}`;
+        if (seen.has(name) || !drawn(box[0], box[1])) continue;
         seen.add(name);
-        out.set([list[i] - anchor.whole[0], list[i + 1] - anchor.whole[1], ...list.subarray(i + 2, i + BOX)], 4 + 12 * n++);
+        out.set([box[0] - anchor.whole[0], box[1] - anchor.whole[1], ...box.subarray(2)], 4 + 12 * n++);
     }
     out[0] = n;
     return out;

@@ -682,12 +682,17 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 }
                 continue;
             }
-            // A tunnel past its portals holds the ground over its bore, and paints nothing.
+            // A tunnel past its portals holds the ground over its bore, and paints nothing. A tunnel that draws as parts
+            // holds none from its openings to the start of its parts' cover: word 12 holds the decimetres of that stretch
+            // from the segment's start and from its end (`nodeStamps` of bins.ts).
             if (kind == TUNNEL && g.lateral < INF && road_shows(own, rule, level)
                 && min(real(r + 14u) + g.da, real(r + 15u) + g.db) >= PORTAL_CELLS * MESH_TEXELS * texel) {
-                let x = max(0.0, g.lateral - h - BORE_WALL_M);
-                let reach = min(COVER_REACH_M, reach_limit(texel) - h - BORE_WALL_M);
-                lo[COVER] = max(lo[COVER], g.z + f32(word(r + 5u) >> 24u) * 0.1 + COVER_M - widen(x, reach, 1.0));
+                let bare = word(r + 12u);
+                if (g.da >= f32(bare & 0xffffu) * 0.1 && g.db >= f32(bare >> 16u) * 0.1) {
+                    let x = max(0.0, g.lateral - h - BORE_WALL_M);
+                    let reach = min(COVER_REACH_M, reach_limit(texel) - h - BORE_WALL_M);
+                    lo[COVER] = max(lo[COVER], g.z + f32(word(r + 5u) >> 24u) * 0.1 + COVER_M - widen(x, reach, 1.0));
+                }
                 continue;
             }
             let paved = kind == ROAD || kind == RAIL || bridge || kind == TUNNEL;
