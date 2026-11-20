@@ -1,6 +1,6 @@
 import type { Place, Stay } from './editor';
 import { groupStops, type Proposal, type Stop } from './stops';
-import { searchPlaces, type SearchContext } from './search/types';
+import { searchPlaces, type SearchContext, type SearchPlace } from './search/types';
 
 export type NightStops = { state: 'loading' } | { state: 'ready'; stops: Stop[] } | { state: 'error'; message: string };
 
@@ -54,7 +54,9 @@ export class StopFinder {
     private search(key: string, context: SearchContext, [from, to]: [number, number]): void {
         const abort = new AbortController();
         this.aborts.set(key, abort);
-        const where = along(from, to);
+        const where = along(from, to), { from: start, to: end } = where.along;
+        // Search widens a stretch with no match; a place outside the stretch is no stop of this night.
+        const inside = (places: SearchPlace[] = []) => places.filter(p => p.position && p.position.along >= start.value - 1e-6 && p.position.along <= end.value + 1e-6);
         const settle = (answer: NightStops) => {
             if (abort.signal.aborted) return;
             this.aborts.delete(key);
@@ -63,7 +65,7 @@ export class StopFinder {
         Promise.all([
             searchPlaces('', context, 80, abort.signal, { type: 'places', what: ['sleep'], where }),
             searchPlaces('', context, 100, abort.signal, { type: 'places', what: ['food', 'resupply'], where }),
-        ]).then(([sleep, services]) => settle({ state: 'ready', stops: groupStops(sleep.results ?? [], services.results ?? []) }),
+        ]).then(([sleep, services]) => settle({ state: 'ready', stops: groupStops(inside(sleep.results), inside(services.results)) }),
             () => settle({ state: 'error', message: 'Places to sleep could not load. Check your connection and retry.' }));
     }
 }

@@ -19,15 +19,19 @@ const plan = {
 };
 const CAFE = { name: 'Linde', kind: 'cafe', lon: 8.12, lat: 47.001, precision: 'place' };
 
-test('the planner profile: a drag selects a part, a press on a day-end handle selects none, and Clear ends it', async ({ page }) => {
+test('the planner profile: a drag selects a part that is the search area, a press on a day-end handle selects none, and Clear ends it', async ({ page }) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   // The map fits the part at once, so it is at rest when the drag ends.
   await page.emulateMedia({ reducedMotion: 'reduce' });
+  const areas = [];
   await page.route(url => url.hostname !== '127.0.0.1', route => {
     const request = route.request();
     if (request.method() === 'OPTIONS') return route.fulfill(CORS_PREFLIGHT);
-    if (request.url().endsWith('/query')) return route.fulfill({ ...CORS_PREFLIGHT, status: 200, json: { type: 'places', request: { type: 'places', what: ['cafe'] }, results: [CAFE] } });
+    if (request.url().endsWith('/query')) {
+      areas.push(request.postDataJSON().pointing);
+      return route.fulfill({ ...CORS_PREFLIGHT, status: 200, json: { type: 'places', request: { type: 'places', what: ['cafe'] }, results: [CAFE] } });
+    }
     const response = respond(request);
     return response ? route.fulfill(response) : route.abort();
   });
@@ -62,6 +66,8 @@ test('the planner profile: a drag selects a part, a press on a day-end handle se
   await drag(0.4, 0.6);
   await expect(part).toContainText(/^km\s6\.1 to km\s9\.1 · 3\.0\skm · \d+\sm up/);
   await expect(profile.locator('.pale')).toHaveCount(2);
+  // The part is the search area, so the list of places along the route starts there.
+  await expect.poll(() => areas.at(-1)).toEqual({ along: { ref: 'km', from: { value: 6.1, unit: 'km' }, to: { value: 9.1, unit: 'km' } } });
   // The fit of the map to the part is no move of the map by the rider.
   const searchView = page.getByRole('button', { name: 'Search this map view' });
   await page.waitForTimeout(500);

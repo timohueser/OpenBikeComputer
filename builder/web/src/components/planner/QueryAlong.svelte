@@ -2,7 +2,16 @@
     import type { Along, Quantity } from '../../lib/planner/search/types';
     let { value, onChange }: { value: Along; onChange: (value: Along) => void } = $props();
     function number(key: 'at' | 'from' | 'to', n: number) {
-        if (Number.isFinite(n) && n >= 0) onChange({ ...value, [key]: { value: n, unit: value[key]?.unit ?? 'km' } });
+        if (!Number.isFinite(n) || n < 0) return;
+        const next = { ...value, [key]: { value: n, unit: value[key]?.unit ?? 'km' } };
+        // An end that passes the other end moves it along by the interval length, so To stays after From.
+        const { from, to } = value, tenth = (v: number) => Math.round(v * 10) / 10;
+        if (from && to && from.unit === to.unit) {
+            const length = Math.max(0, to.value - from.value);
+            if (key === 'from' && n >= to.value) next.to = { ...to, value: tenth(n + length) };
+            if (key === 'to' && n <= from.value) next.from = { ...from, value: tenth(Math.max(0, n - length)) };
+        }
+        onChange(next);
     }
 </script>
 <label>Measure from<select value={value.ref} onchange={e => onChange({ ...value, ref: e.currentTarget.value as Along['ref'] })}>
