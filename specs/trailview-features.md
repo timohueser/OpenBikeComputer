@@ -645,12 +645,15 @@ tunnel way do not change with the parts.
 The cut of an end of a chain whose two ends are built is where the ground of the ground plan lies inside a box of its
 part (`boxes` of `host/obc-trailview-parts`, made from the records as the tiles hold them): the ground with the
 stretches of the built chains open, read each 0.5 m in the frame of the opening over the boxes and 0.75 m round them,
-with its depth in the boxes; a ring runs where that depth is 0, between the points by their depths, the cut on its
-left. A point of a ring is metres in along `heading` from the opening's point (`x`) and metres to the left of that
-(`y`), as the tile holds that point; a ring leaves out the points within 2 cm of the line of the points that it keeps.
-A point lies in the cut where an odd number of rings hold it. The boxes hold the room of the part and lie at the
-middle of its wall, so ground that the cut leaves lies outside the part, in the outer half of its wall, or over it. A
-change of `BUILT` or of the sizes of a part bakes the layer again.
+with its depth in the boxes. A ring runs where that depth is 1 µm, the cut on its left: on the line between two points,
+by their depths, at whole centimetres and at least 1 cm from each point. A point of a ring is metres in along `heading`
+from the opening's point (`x`) and metres to the left of that (`y`), as the tile holds that point. A ring leaves out a
+point within 2 cm of the line of its neighbours where no edge then meets another. A ring whose ground lies nowhere
+deeper than 0.11 m in the sides and the roof of the boxes goes, with its holes: that ground lies in the part's wall.
+The rings of an end are simple and do not meet; the step's metric `cut_invalid_rings` counts those that are not, and
+is 0. A point lies in the cut where an odd number of rings hold it. The boxes hold the room of the part and lie inside
+its wall, at least 0.11 m from its faces as the part draws them, so ground that the cut leaves lies outside the part,
+in its wall, or over it. A change of `BUILT` or of the sizes of a part bakes the layer again.
 
 #### The floor of a tube
 
