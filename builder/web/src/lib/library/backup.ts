@@ -30,7 +30,8 @@ export async function saveBackup(library: Library, settings: object, photos = tr
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** The contents, the photos and the settings of a backup file. It refuses a file of another version and a damaged file. */
+/** The contents, the photos and the settings of a backup file. It refuses a file of another version and a damaged file. A
+ * state value that fails its check is left out, so a backup with an older form of a state value still loads. */
 async function readBackup(file: Blob): Promise<{ contents: Contents; photos: { record: PhotoEntry; image: Blob }[]; settings: Record<string, unknown> }> {
     const notBackup = new Error('This file is not a library backup.');
     const entries = await unzip(file).catch(() => { throw notBackup; });
@@ -43,7 +44,7 @@ async function readBackup(file: Blob): Promise<{ contents: Contents; photos: { r
     const damaged = new Error('This backup is damaged. Nothing was loaded.');
     if (!Array.isArray(routes) || !routes.every(isRouteRecord) || new Set(routes.map(r => r.id)).size !== routes.length) throw damaged;
     if (!Array.isArray(rides) || !rides.every(isRideRecord) || new Set(rides.map(r => r.key)).size !== rides.length) throw damaged;
-    if (!isObject(state) || !Object.entries(state).every(([key, value]) => Object.hasOwn(stateChecks, key) && stateChecks[key as keyof LibraryState](value))) throw damaged;
+    if (!isObject(state)) throw damaged;
     if (!isObject(settings)) throw damaged;
     if (!Array.isArray(photos) || !photos.every(isPhotoEntry) || new Set(photos.map(p => p.id)).size !== photos.length) throw damaged;
     const files = new Map<string, Blob>();
@@ -56,7 +57,8 @@ async function readBackup(file: Blob): Promise<{ contents: Contents; photos: { r
     if (!copies.every((copy): copy is { record: PhotoEntry; image: Blob } => !!copy.image)) throw damaged;
     // A route of an older file has the field `open`, the id of a version.
     const kept = routes.map(route => { const { open: _, ...rest } = route as RouteRecord & { open?: unknown }; return rest; });
-    return { contents: { routes: kept, rides, files, state: state as Partial<LibraryState> }, photos: copies, settings };
+    const checked = Object.fromEntries(Object.entries(state).filter(([key, value]) => Object.hasOwn(stateChecks, key) && stateChecks[key as keyof LibraryState](value)));
+    return { contents: { routes: kept, rides, files, state: checked as Partial<LibraryState> }, photos: copies, settings };
 }
 
 /** Adds the new records of a backup file. The routes and the rides come all or none: a route is new when its id is not

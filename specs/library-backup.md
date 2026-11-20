@@ -100,7 +100,7 @@ Each field is optional.
 | `active` | String or `null`: the id of the route that the planner opens |
 | `waiting` | Array of route ids: the routes that wait to go to the device |
 | `leaving` | Array of route ids: the routes to remove from the device |
-| `sent` | Object: for a route id, an object with `device`, the route on the device as `storeId:objectId`, and `key`, a hash of the name and the plan of the route when it was sent |
+| `sent` | Object: for a route id, an object with `card`, the `storeId` of the card that holds the route; `days`, an array with the decimal `objectId` of the route of each riding day, or an empty string for a day whose object is not on the card; `trip`, the decimal `objectId` of the trip object, or `null` for a route of one riding day or a trip object that is not on the card; `tripKey`, the trip key of the trip object in decimal, stored before its put, or `null`; and `key`, a hash of the name and the plan of the route when all its objects are on the card, else an empty string |
 | `apart` | Array of ride keys: the rides that the rider took out of their group of rides on the same route |
 | `deleted` | Array of objects with `key` and an optional `device`: the rides that the rider deleted |
 | `nextMap` | Object or `null`: the map that the rider chose for the device and that is not sent yet. `regions` is an array of region ids of the map catalog. `boxes` is an array of objects with `minLat`, `minLon`, `maxLat` and `maxLon` in whole microdegrees. `light` and `dark` are the ids of the map styles for the day and for the night. `bytes` is the size of the download of the whole map |
@@ -125,7 +125,8 @@ the sample nearest to `place`, in the first pass of the ride within 100 m of it.
 A load first checks `format`, `version`, the fields of each record, the unique ids and keys, the
 CRC-32 of each entry, the source file entry of each ride and the copy entry of each photo. It does
 not check `trip`: the planner checks a plan when it opens it. When a check fails, the load changes
-nothing.
+nothing. Only a value of `state` that fails its check does not stop the load: the load leaves that
+value out.
 
 A reader ignores an entry of the file and a field of the envelope that it does not know. So a
 reader with no photos loads the routes and the rides of a file with photos.

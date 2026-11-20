@@ -26,12 +26,12 @@ line and the day ends come from the trip's plan: the same plan object the web pl
 ([planner plan](src:specs/planner-plan.md)). The rider edits the plan in the phone's planner, and a
 save makes the line and the day ends from it again.
 
-The device does not know this line. At upload, the phone cuts the line at the day ends into one
-route per day. Each day route has the trip's bike type and a name such as "Day 2 Ulrichen". Then
-the phone writes a small trip object that lists the day routes in ride order. The navigator on the
-device sees only ordinary routes, so every route feature works on a trip day without extra code.
-The phone sends only the day routes that changed, and it sends the trip object last. An
-interrupted upload so never leaves a trip that points at nothing.
+The device does not know this line. At upload, the phone or the web planner cuts the line at the
+day ends into one route per day. Each day route has the trip's bike type and a name such as "Day 2
+Ulrichen". Then it writes a small trip object that lists the day routes in ride order. The
+navigator on the device sees only ordinary routes, so every route feature works on a trip day
+without extra code. It sends only the day routes that changed, and the trip object last.
+An interrupted upload so never leaves a trip that points at nothing.
 
 ### Day ends are places
 

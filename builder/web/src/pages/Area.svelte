@@ -8,7 +8,7 @@
     import { CoverageStore } from '../lib/coverage/store.svelte';
     import { remembered } from '../lib/device-sync/remembered.svelte';
     import { formatBytes } from '../lib/format';
-    import type { NextMap, RouteRecord } from '../lib/library/records';
+    import { allOnCard, type NextMap, type RouteRecord } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { planTitle } from '../lib/planner/editor';
     import { isPlan } from '../lib/planner/library';
@@ -91,7 +91,7 @@
             if (start) made.setArea(start);
             stored = next ?? null;
             const card = remembered.device?.storeId;
-            onDevice = new Set([...waiting ?? [], ...Object.entries(sent ?? {}).filter(([, copy]) => copy.device.startsWith(`${card}:`)).map(([id]) => id)]);
+            onDevice = new Set([...waiting ?? [], ...Object.entries(sent ?? {}).filter(([, copy]) => allOnCard(copy, card)).map(([id]) => id)]);
             routes = all;
             store = made;
         })().catch(error => { if (live) failure = error instanceof Error ? error.message : String(error); });

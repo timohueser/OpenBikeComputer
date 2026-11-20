@@ -778,8 +778,11 @@
         mapMode = { kind: 'night' };
     }
 
-    function emptyClick(coordinate: Coordinate) {
-        if (mapMode?.kind === 'transfer') {
+    // Outside the region (null), a click only clears the selection.
+    function emptyClick(coordinate: Coordinate | null) {
+        if (!coordinate) {
+            if (!picking && mapMode?.kind !== 'transfer' && selectedId) clearSelection();
+        } else if (mapMode?.kind === 'transfer') {
             void arrive(coordinate);
         } else if (picking) {
             mapMode = null;
@@ -1243,7 +1246,7 @@
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     placeKinds={placeChoice.kinds} highlightedKind={placeChoice.highlight}
-                    onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
+                    onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => coordinate ? session.previewMove(id, coordinate) : session.cancelPreview()} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
                     onVisibleRange={(range) => visibleRange = range}
                     onRiderMove={() => nightToShow = null} onRouteHover={progress => mapHover = progress}
