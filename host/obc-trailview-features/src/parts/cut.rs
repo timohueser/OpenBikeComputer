@@ -100,16 +100,30 @@ pub(crate) fn add(
             "cut_faces": faces_n, "cut_records_refused": refused, "cut_invalid_rings": invalid })
 }
 
+/// The lines across a grid from `lo` to `hi` metres in: `STEP_M` apart from the frame line, and two more in a box from
+/// `front` to the frame line: on its front and through its middle.
+fn across(lo: f64, hi: f64, front: f64) -> Vec<f64> {
+    let first = (lo / STEP_M).floor() * STEP_M;
+    let mut us: Vec<f64> = (0..=((hi - first) / STEP_M).ceil() as usize).map(|i| first + i as f64 * STEP_M).collect();
+    us.extend([front, front / 2.0]);
+    us.sort_by(f64::total_cmp);
+    us.dedup_by(|a, b| (*a - *b).abs() < EPS_M);
+    us
+}
+
 /// A world point in [0, 1], as the measure reads it.
 fn world01(p: [f64; 2]) -> [f64; 2] {
     [p[0] / WORLD, p[1] / WORLD]
 }
 
-/// The grid of an end in the frame of its opening, `STEP_M` apart over its boxes and `NEAR_M` round them, and the points
-/// whose ground it reads.
+/// The grid of an end in the frame of its opening over its boxes and `NEAR_M` round them, and the points whose ground it
+/// reads. Its lines lie `STEP_M` apart from the frame line, and two more across the opening's box, from the front of the
+/// head wall to the frame line: on its front and through its middle. The box is thinner than a step: on its planes a
+/// point lies on its edge, so only a point between them shows the ground in it.
 struct Grid {
-    /// The first grid point, in metres in the frame of the opening.
-    origin: [f64; 2],
+    /// The metres in of each line across, and the first line along.
+    us: Vec<f64>,
+    v0: f64,
     n: [usize; 2],
     /// Per point that it reads, its place in the grid and its world point.
     reads: Vec<(usize, [f64; 2])>,
@@ -137,9 +151,11 @@ impl Grid {
                 hi[k] = hi[k].max(q[k]);
             }
         }
-        let origin = lo.map(|l| ((l - NEAR_M) / STEP_M).floor() * STEP_M);
-        let n = [0, 1].map(|k| ((hi[k] + NEAR_M - origin[k]) / STEP_M).ceil() as usize + 1);
-        let mut g = Grid { origin, n, reads: Vec::new(), at: end.at, into, left, m };
+        // The opening's box is the first: its start plane is the front of the head wall.
+        let us = across(lo[0] - NEAR_M, hi[0] + NEAR_M, frame([boxes[0][0], boxes[0][1]])[0]);
+        let v0 = ((lo[1] - NEAR_M) / STEP_M).floor() * STEP_M;
+        let n = [us.len(), ((hi[1] + NEAR_M - v0) / STEP_M).ceil() as usize + 1];
+        let mut g = Grid { us, v0, n, reads: Vec::new(), at: end.at, into, left, m };
         for j in 0..n[1] {
             for i in 0..n[0] {
                 let p = g.world(g.place(i, j));
@@ -153,7 +169,7 @@ impl Grid {
 
     /// Grid point (i, j) in metres in the frame of the opening.
     fn place(&self, i: usize, j: usize) -> [f64; 2] {
-        [self.origin[0] + i as f64 * STEP_M, self.origin[1] + j as f64 * STEP_M]
+        [self.us[i], self.v0 + j as f64 * STEP_M]
     }
 
     /// The world point of metres u in and v to the left.
@@ -211,7 +227,7 @@ impl Grid {
         // An edge of the grid: from (i, j) along u (0) or along v (1).
         let point = |(i, j, axis): (usize, usize, usize)| {
             let (a, b) = if axis == 0 { (v(i, j), v(i + 1, j)) } else { (v(i, j), v(i, j + 1)) };
-            let t = a / (a - b) * STEP_M;
+            let t = a / (a - b) * if axis == 0 { self.us[i + 1] - self.us[i] } else { STEP_M };
             let base = self.place(i, j);
             if axis == 0 {
                 [base[0] + t, base[1]]
@@ -303,12 +319,15 @@ fn simple(rings: &[Ring]) -> bool {
 mod tests {
     use super::*;
 
-    /// A grid 6 m in and 6 m across from (−1, −3) m, every point read, at 46.8° N, its way in east.
-    fn grid() -> Grid {
+    /// A grid 6 m in and 6 m across from (−1, −3) m with the lines of a head wall's box from `front`, every point read,
+    /// at 46.8° N, its way in east.
+    fn grid(front: f64) -> Grid {
         let at = [0.523 * WORLD, 0.3597 * WORLD];
         let (into, left, m) = ([1.0, 0.0], [0.0, -1.0], metres_per_unit(at[1]));
-        let mut g = Grid { origin: [-1.0, -3.0], n: [13, 13], reads: Vec::new(), at, into, left, m };
-        g.reads = (0..13 * 13).map(|k| (k, g.world(g.place(k % 13, k / 13)))).collect();
+        let us = across(-1.0, 5.0, front);
+        let n = [us.len(), 13];
+        let mut g = Grid { us, v0: -3.0, n, reads: Vec::new(), at, into, left, m };
+        g.reads = (0..n[0] * n[1]).map(|k| (k, g.world(g.place(k % n[0], k / n[0])))).collect();
         g
     }
 
@@ -337,7 +356,7 @@ mod tests {
     #[test]
     fn the_cut_follows_a_face_edge_where_the_ground_steps() {
         // A road face to 1.23 m in, its ground over the box; a hill face beyond, its ground in the box.
-        let g = grid();
+        let g = grid(-1.0);
         let origin = g.world([0.0, 0.0]).map(|w| (w * FRAME).round() as i64);
         let (road, hill) = ([-1.0, 1.23, -3.0, 3.0], [1.23, 5.0, -3.0, 3.0]);
         let rings = g.cut(&[field(&g, road, 4.0), field(&g, hill, 1.0)], &[flat(&g, 0.0, 4.0)], origin);
@@ -353,11 +372,43 @@ mod tests {
 
     #[test]
     fn two_boxes_that_meet_on_a_grid_line_hold_the_ground_on_it() {
-        let g = grid();
+        let g = grid(-1.0);
         let origin = g.world([0.0, 0.0]).map(|w| (w * FRAME).round() as i64);
         let ground = [field(&g, [-1.0, 5.0, -3.0, 3.0], 1.0)];
         let rings = g.cut(&ground, &[flat(&g, 0.0, 2.0), flat(&g, 2.0, 4.0)], origin);
         assert_eq!(rings.len(), 1, "{rings:?}");
         assert!((square_metres(&g, &rings[0]) - 16.0).abs() < 0.01, "{}", square_metres(&g, &rings[0]));
+    }
+
+    #[test]
+    fn the_box_of_a_head_wall_thinner_than_a_step_holds_its_ground() {
+        let g = grid(-0.25);
+        let origin = g.world([0.0, 0.0]).map(|w| (w * FRAME).round() as i64);
+        let boxes = [flat(&g, -0.25, 0.0), flat(&g, 0.0, 4.0)];
+        // Level ground in both boxes: the cut starts at the front of the head wall.
+        let rings = g.cut(&[field(&g, [-1.0, 5.0, -3.0, 3.0], 1.0)], &boxes, origin);
+        assert_eq!(rings.len(), 1, "{rings:?}");
+        assert!((square_metres(&g, &rings[0]) - 4.25 * 4.0).abs() < 0.01, "{}", square_metres(&g, &rings[0]));
+        // Ground that rises through the roof in the head wall's box, 3.2 m a metre from 2.5 m at its front: in the cut
+        // from the front to where it meets the roof, 0.156 m in.
+        let mut rising = field(&g, [-1.0, 5.0, -3.0, 3.0], 0.0);
+        for (k, h) in &mut rising.heights {
+            *h = 2.5 + 3.2 * (g.place(g.reads[*k as usize].0 % g.n[0], 0)[0] + 0.25);
+        }
+        let rings = g.cut(&[rising], &boxes, origin);
+        let held = |u: f64| {
+            let p = g.world([u, 0.0]).map(|w| (w * FRAME).round() as i64);
+            let q = [p[0] - origin[0], p[1] - origin[1]];
+            rings
+                .iter()
+                .flat_map(|r| (0..r.len()).map(move |k| (r[k], r[(k + 1) % r.len()])))
+                .filter(|(a, b)| {
+                    (a[1] > q[1]) != (b[1] > q[1]) && turn(*a, *b, q).signum() == (b[1] - a[1]).signum() as i128
+                })
+                .count()
+                % 2
+                == 1
+        };
+        assert!(held(-0.24) && held(-0.11) && !held(-0.08) && !held(0.2), "{rings:?}");
     }
 }
