@@ -303,9 +303,13 @@
         border-radius: 6px;
         font-weight: 600;
     }
+    /* A long place scrolls the callout; its main action stays in view at the bottom, over a band of the panel. */
     .primary {
+        position: sticky;
+        bottom: 0;
         background: var(--amber);
         color: var(--on-amber);
+        box-shadow: 0 16px 0 var(--panel), 0 -8px 0 var(--panel);
     }
     .primary:hover {
         filter: brightness(.95);
