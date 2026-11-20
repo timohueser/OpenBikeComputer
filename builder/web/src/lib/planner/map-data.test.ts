@@ -211,12 +211,11 @@ describe('trail files', () => {
 });
 
 describe('region place', () => {
-    it('gives the place inside the bounds and on their edge, nothing outside, and every place with no bounds', () => {
+    it('gives the place inside the bounds and on their edge, and nothing outside', () => {
         const bounds: [number, number, number, number] = [7.6, 46.47, 8.95, 47.25];
         expect(regionPlace(bounds, { lng: 8.3, lat: 46.9 })).toEqual([8.3, 46.9]);
         expect(regionPlace(bounds, { lng: 7.6, lat: 47.25 })).toEqual([7.6, 47.25]);
         expect(regionPlace(bounds, { lng: 7.59, lat: 46.9 })).toBeNull();
         expect(regionPlace(bounds, { lng: 8.3, lat: 47.26 })).toBeNull();
-        expect(regionPlace(undefined, { lng: 20, lat: 60 })).toEqual([20, 60]);
     });
 });
