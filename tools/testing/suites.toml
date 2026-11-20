@@ -675,6 +675,13 @@ jobs = ["guards"]
 triggers = ["tools/check_data_sources.py", "data/sources.toml"]
 
 [[suite]]
+id = "ci.memory-x-guard"
+route = "required"
+command = "python3 firmware/tools/check_memory_x.py"
+jobs = ["guards"]
+triggers = ["firmware/tools/check_memory_x.py", "firmware/obc-fw-nrf54l/*"]
+
+[[suite]]
 id = "ci.fixture-policy"
 route = "required"
 command = "python3 tools/check_fixture_policy.py"

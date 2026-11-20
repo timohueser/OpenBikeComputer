@@ -1,7 +1,7 @@
-//! Board firmware for the nRF54LM20 — the shipping hardware target. It ports the shared
-//! `obc-app` onto the board: the nRF HAL wiring and the LS021 display backend. One image carries
-//! the ride loop, the BLE stack and the USB device plane; `ble::run` and `usb::run` are spawned
-//! beside the ride loop and share RRAM settings through [`SharedSettings`].
+//! Board firmware for the nRF54LM20-DK development kit. It ports the shared `obc-app` onto the
+//! board: the nRF HAL wiring and the LS021 display backend. One image carries the ride loop, the
+//! BLE stack and the USB device plane; `ble::run` and `usb::run` are spawned beside the ride loop
+//! and share RRAM settings through [`SharedSettings`].
 //!
 //! `--no-default-features` is mandatory: it swaps the critical-section implementation to MPSL's.
 //! embassy-time runs on the GRTC (`time-driver-grtc`) because the nRF54L has no legacy RTC time
