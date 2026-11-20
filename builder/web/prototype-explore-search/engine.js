@@ -41,30 +41,35 @@ const HIKES = [
     { id: 3, n: 'Hut loop over the alp', made: 1, km: 11.6, up: 680, t: 2, alt: 1620, p: 35, pn: 'Alpstrasse', asph: 6, f: 'loop hut views quiet safe', snow: [day(20, 5), day(1, 11)], x: 590, y: 545, dir: 90, c: '#c2278f' },
     { id: 4, n: 'Summit and hut loop', made: 1, km: 14.8, up: 1050, t: 3, alt: 2120, p: 25, pn: 'Talboden', asph: 4, f: 'loop peak hut ridge views quiet', snow: [day(14, 6), day(17, 10)], x: 455, y: 470, dir: 150, c: '#c8501e' },
     { id: 5, n: 'Gorge and waterfall loop', made: 0, km: 7.1, up: 380, t: 2, alt: 980, p: 40, pn: 'Schlucht', asph: 15, f: 'loop waterfall forest', snow: [day(10, 4), day(26, 11)], x: 330, y: 480, dir: 180, c: '#6a3fb0' },
-    { id: 6, n: 'Summit, there and back', made: 0, km: 9.6, up: 870, t: 3, alt: 1898, p: 80, pn: 'Passhöhe', asph: 5, f: 'peak views', snow: [day(30, 5), day(27, 10)], x: 850, y: 380, to: [1, 5], c: '#8c1d2b' },
+    { id: 6, n: 'Chalchstock summit path', made: 0, km: 9.6, up: 870, t: 3, alt: 1898, p: 80, pn: 'Passhöhe', asph: 5, f: 'peak views', snow: [day(30, 5), day(27, 10)], x: 850, y: 380, to: [1, 5], c: '#8c1d2b' },
     { id: 7, n: 'Forest loop', made: 1, km: 10.2, up: 310, t: 1, alt: 790, p: 15, pn: 'Waldrand', asph: 12, f: 'loop forest quiet safe', snow: [day(16, 3), day(11, 12)], x: 450, y: 350, dir: 190, c: '#2f7d4f' },
     { id: 8, n: 'High ridge loop', made: 0, km: 16.5, up: 1240, t: 4, alt: 2404, p: 30, pn: 'Hinterberg', asph: 2, f: 'loop peak ridge views quiet', snow: [day(29, 6), day(7, 10)], x: 650, y: 650, dir: 80, c: '#0d6e74' },
     { id: 9, n: 'Lake and hut loop', made: 1, km: 12.3, up: 560, t: 2, alt: 1340, p: 50, pn: 'Seeboden', asph: 9, f: 'loop lake hut forest safe', snow: [day(5, 5), day(11, 11)], x: 405, y: 640, dir: 170, c: '#2f62c9' },
     { id: 10, n: 'Alp and waterfall loop', made: 0, km: 6.4, up: 420, t: 2, alt: 1510, p: 20, pn: 'Alpweg', asph: 7, f: 'loop waterfall hut views safe', snow: [day(15, 5), day(1, 11)], x: 520, y: 700, dir: 90, c: '#c2278f' },
-    { id: 11, n: 'Lake shore, there and back', made: 0, km: 5.8, up: 90, t: 1, alt: 470, p: 0, asph: 41, f: 'lake safe', snow: [1, 365], x: 628, y: 338, dir: -60, c: '#6a3fb0' },
+    { id: 11, n: 'Lake shore path', made: 0, km: 5.8, up: 90, t: 1, alt: 470, p: 0, asph: 41, f: 'lake safe', snow: [1, 365], x: 628, y: 338, dir: -60, c: '#6a3fb0' },
     { id: 12, n: 'Panorama loop above the lake', made: 0, km: 9.4, up: 520, t: 2, alt: 1128, p: 90, pn: 'Aussicht', asph: 18, f: 'loop views forest safe', snow: [day(5, 4), day(1, 12)], x: 588, y: 442, dir: 10, c: '#c8501e' },
     { id: 13, n: 'Moor and forest loop', made: 1, km: 11.1, up: 260, t: 1, alt: 1040, p: 45, pn: 'Moos', asph: 10, f: 'loop forest quiet safe', snow: [day(20, 4), day(21, 11)], x: 900, y: 290, dir: -90, c: '#2f7d4f' },
     { id: 14, n: 'Village and lake loop', made: 1, km: 7.6, up: 180, t: 1, alt: 520, p: 70, pn: 'Dorf', asph: 38, f: 'loop lake safe', snow: [1, 365], x: 648, y: 262, dir: 180, c: '#8c1d2b' },
     { id: 15, n: 'Valley floor loop', made: 1, km: 6.2, up: 120, t: 1, alt: 1080, p: 80, pn: 'Engelberg village', asph: 22, f: 'loop forest safe waterfall', snow: [day(1, 4), day(30, 11)], x: 601, y: 683, dir: 0, c: '#2f7d4f', img: 13 },
     { id: 16, n: 'Alp lakes loop', made: 0, km: 9.5, up: 480, t: 2, alt: 2050, p: 0, asph: 0, f: 'loop lake hut views safe', snow: [day(20, 6), day(15, 10)], x: 603, y: 640, dir: -90, c: '#2f62c9', img: 9 },
     { id: 17, n: 'Glacier view ridge loop', made: 0, km: 11.8, up: 940, t: 4, alt: 2450, p: 0, asph: 0, f: 'loop peak ridge views quiet', snow: [day(5, 7), day(30, 9)], x: 583, y: 725, dir: 100, c: '#0d6e74', img: 8 },
-    { id: 18, n: 'Gorge walk, there and back', made: 0, km: 5.0, up: 210, t: 2, alt: 1210, p: 0, asph: 5, f: 'waterfall forest', snow: [day(15, 4), day(15, 11)], x: 612, y: 690, dir: 20, c: '#6a3fb0', img: 5 },
+    { id: 18, n: 'Gorge walk', made: 0, km: 5.0, up: 210, t: 2, alt: 1210, p: 0, asph: 5, f: 'waterfall forest', snow: [day(15, 4), day(15, 11)], x: 612, y: 690, dir: 20, c: '#6a3fb0', img: 5 },
     // Routes with a lift for one half: the path runs from the valley station to the top station. `same` shares the line of another
     // record, because one path gives two shapes with different numbers: hike up and ride down, or ride up and hike down.
-    { id: 19, n: 'Up to Alp Oberberg, cable car down', made: 1, shape: 'liftDown', lr: 'l1', km: 5.4, up: 820, down: 30, t: 2, alt: 1650, p: 60, pn: 'Oberberg valley station', asph: 6, f: 'hut views', snow: [day(10, 5), day(5, 11)], x: 468, y: 418, to: [4, 8], c: '#5a7d1e', img: 3 },
-    { id: 20, n: 'Cable car to Alp Oberberg, down on foot', made: 1, shape: 'liftUp', lr: 'l1', same: 19, km: 5.4, up: 30, down: 820, t: 2, alt: 1650, p: 0, asph: 6, f: 'hut views', snow: [day(10, 5), day(5, 11)], x: 468, y: 418, to: [4, 8], c: '#5a7d1e', img: 3 },
-    { id: 21, n: 'Up to the alp lakes, gondola down', made: 1, shape: 'liftDown', lr: 'l2', km: 6.1, up: 760, down: 20, t: 2, alt: 1840, p: 0, asph: 3, f: 'lake views', snow: [day(5, 6), day(25, 10)], x: 600, y: 674, to: [16, 0], c: '#1e6f9a', img: 9 },
-    { id: 22, n: 'Gondola to the alp lakes, down on foot', made: 1, shape: 'liftUp', lr: 'l2', same: 21, km: 6.1, up: 20, down: 760, t: 2, alt: 1840, p: 0, asph: 3, f: 'lake views', snow: [day(5, 6), day(25, 10)], x: 600, y: 674, to: [16, 0], c: '#1e6f9a', img: 9 },
-    { id: 23, n: 'Glacier view path, cable car up', made: 0, shape: 'liftUp', lr: 'l3', km: 9.2, up: 60, down: 1380, t: 3, alt: 2420, p: 0, asph: 0, f: 'views ridge waterfall quiet', snow: [day(1, 7), day(30, 9)], x: 590, y: 688, to: [17, 0], c: '#8c1d2b', img: 8 },
+    { id: 19, n: 'Alp Oberberg path', made: 1, shape: 'liftDown', lr: 'l1', km: 5.4, up: 820, down: 30, t: 2, alt: 1650, p: 60, pn: 'Oberberg valley station', asph: 6, f: 'hut views', snow: [day(10, 5), day(5, 11)], x: 468, y: 418, to: [4, 8], c: '#5a7d1e', img: 3 },
+    { id: 20, n: 'Alp Oberberg path', made: 1, shape: 'liftUp', lr: 'l1', same: 19, km: 5.4, up: 30, down: 820, t: 2, alt: 1650, p: 0, asph: 6, f: 'hut views', snow: [day(10, 5), day(5, 11)], x: 468, y: 418, to: [4, 8], c: '#5a7d1e', img: 3 },
+    { id: 21, n: 'Alp lakes path', made: 1, shape: 'liftDown', lr: 'l2', km: 6.1, up: 760, down: 20, t: 2, alt: 1840, p: 0, asph: 3, f: 'lake views', snow: [day(5, 6), day(25, 10)], x: 600, y: 674, to: [16, 0], c: '#1e6f9a', img: 9 },
+    { id: 22, n: 'Alp lakes path', made: 1, shape: 'liftUp', lr: 'l2', same: 21, km: 6.1, up: 20, down: 760, t: 2, alt: 1840, p: 0, asph: 3, f: 'lake views', snow: [day(5, 6), day(25, 10)], x: 600, y: 674, to: [16, 0], c: '#1e6f9a', img: 9 },
+    { id: 23, n: 'Glacier view path', made: 0, shape: 'liftUp', lr: 'l3', km: 9.2, up: 60, down: 1380, t: 3, alt: 2420, p: 0, asph: 0, f: 'views ridge waterfall quiet', snow: [day(1, 7), day(30, 9)], x: 590, y: 688, to: [17, 0], c: '#8c1d2b', img: 8 },
 ];
+const loopIco = size => `<svg class="i" width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19c-3-6 1-14 8-14s9 8 4 12-9 2-12 2Z"/><circle cx="5" cy="19" r="1.7" fill="currentColor"/></svg>`;
+const backIco = size => `<svg class="i" width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19c3-3 3-8 7-9s5-3 7-5"/><circle cx="5" cy="19" r="1.7" fill="currentColor"/><circle cx="19" cy="5" r="1.7"/></svg>`;
+// A lift shape: the walked half is solid, the ride is dotted, so the picture says which half the lift takes.
+const liftIco = (up, size) => `<svg class="i" width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c4-2 6-8 9-10s4-4 7-6"/><path d="M4 20 20 4" stroke-dasharray="1.5 2.5"/><path d="${up ? 'M15 4h5v5' : 'M4 15v5h5'}"/></svg>`;
+const shapeIcon = (k, size = 20) => k === 'loop' ? loopIco(size) : k === 'back' ? backIco(size) : liftIco(k === 'liftUp', size);
 // The shapes a rider can accept. The lift shapes count only while Lifts is ticked.
 const SHAPES = {
-    loop: { label: 'Loop', tag: '' },
+    loop: { label: 'Loop', tag: 'Loop' },
     back: { label: 'There and back', tag: 'There and back' },
     liftDown: { label: 'Hike up, lift down', tag: 'Lift down', lift: true },
     liftUp: { label: 'Lift up, hike down', tag: 'Lift up', lift: true },
@@ -117,7 +122,7 @@ for (const h of HIKES) {
 // ── State ───────────────────────────────────────────────────────────────────
 const fresh = () => ({ date: day(21, 6), point: null, walk: 4, car: false, road: 30, large: false, lift: 0, pin: null,
     km: [3, 8], up: [0, 15], loop: true, back: true, liftDown: true, liftUp: true, gradeMin: 1, gradeMax: 3, sort: 'match', wish: { peak: 1, hut: 1 }, selected: null, hover: null });
-const STORE = 'explore-mock-3';
+const STORE = 'explore-mock-4';
 let state = fresh();
 try { const saved = JSON.parse(localStorage.getItem(STORE) || 'null'); if (saved && saved.wish) state = { ...fresh(), ...saved, hover: null }; } catch (e) { /* The mock works without storage. */ }
 const QUERY_KEYS = ['date', 'point', 'walk', 'car', 'road', 'large', 'lift', 'pin', 'km', 'up', 'loop', 'back', 'liftDown', 'liftUp', 'gradeMin', 'gradeMax', 'wish'];
@@ -219,17 +224,16 @@ function access(h, s = state) {
 function has(h, key, s = state) {
     if (key === 'official') return !h.made;
     if (key === 'nosnow') return s.date >= h.snow[0] && s.date <= h.snow[1];
-    if (key === 'reach') return h.t >= s.gradeMin;
     if (key.startsWith('via:')) return h.via.has(key.slice(4));
     return h.f.split(' ').includes(key);
 }
-const wishLabel = (k, s = state, long) => k === 'reach' ? `Has a T${s.gradeMin} part` : k.startsWith('via:') ? `Passes ${PLACE[k.slice(4)].name}` : (!long && WISH[k].short) || WISH[k].label;
-const wishIcon = k => k === 'reach' ? 'up' : k.startsWith('via:') ? PLACE[k.slice(4)].kind : WISH[k].icon;
+const wishLabel = (k, s = state, long) => k.startsWith('via:') ? `Passes ${PLACE[k.slice(4)].name}` : (!long && WISH[k].short) || WISH[k].label;
+const wishIcon = k => k.startsWith('via:') ? PLACE[k.slice(4)].kind : WISH[k].icon;
 const shapeOk = (h, s = state) => s[h.shape] && (!SHAPES[h.shape].lift || !!s.lift);
 const shapesOn = (s = state) => Object.keys(SHAPES).filter(k => s[k] && (!SHAPES[k].lift || s.lift));
 const top = (range, scale) => range[1] >= scale.steps ? Infinity : range[1] * scale.step;
 function inLimits(h, s, skip) {
-    if (h.t > s.gradeMax || !shapeOk(h, s)) return false;
+    if (h.t > s.gradeMax || h.t < s.gradeMin || !shapeOk(h, s)) return false;
     if (skip !== 'km' && (h.km < s.km[0] * KM.step || h.km > top(s.km, KM))) return false;
     if (skip !== 'up' && (h.up < s.up[0] * UP.step || h.up > top(s.up, UP))) return false;
     return true;
@@ -299,7 +303,7 @@ function render() {
 }
 const update = change => { Object.assign(state, change); render(); };
 function setWish(key, value) { const wish = { ...state.wish }; if (value) wish[key] = value; else delete wish[key]; update({ wish }); }
-function setGradeMin(min) { const wish = { ...state.wish }; if (min > 1) wish.reach = wish.reach || 1; else delete wish.reach; update({ gradeMin: min, wish }); }
+const setGradeMin = min => update({ gradeMin: min });
 const reset = () => { state = { ...fresh(), sort: state.sort }; picking = false; render(); };
 const setPin = pin => update({ pin, selected: null });
 
@@ -329,7 +333,7 @@ document.addEventListener('click', e => {
     const wish = e.target.closest('.wish'); if (!wish) return;
     const key = wish.dataset.key, v = state.wish[key] || 0;
     if (e.target.closest('.must')) setWish(key, v === 2 ? 1 : 2);
-    else if (e.target.closest('.pick')) { if (key === 'reach') setGradeMin(1); else setWish(key, v ? 0 : 1); }
+    else if (e.target.closest('.pick')) setWish(key, v ? 0 : 1);
 });
 
 // A leg of the journey from the start point to the route. Its node sits on the line that joins the legs.
@@ -346,7 +350,7 @@ const GROUPS = {
             <li class="leg start"></li>
             ${leg('car', 'Car', 'to a car park or a lift', `<div class="rail"><input type="range" min="1" max="${ROAD_MAX / ROAD_STEP}" step="1" data-k="road" aria-label="Longest drive, one way"></div><button type="button" class="option" data-large aria-pressed="false"><span class="box">${icon('check', 12)}</span>Large car parks only</button>`)}
             <li class="leg later" data-way="train"><div class="leg-head"><span class="box node"></span>${icon('train')}<span class="lab">Train<small>Later: needs timetables</small></span></div></li>
-            ${leg('lift', 'Lifts', 'cable cars, gondolas, chairlifts', `<span class="seg" role="group" aria-label="How lifts count"><button type="button" data-lift="1">Can take me up</button><button type="button" data-lift="2">Only by lift</button></span><p class="hint">${icon('info', 14)}We do not know when a lift runs.</p>`)}
+            ${leg('lift', 'Lifts', 'cable cars, gondolas, chairlifts', `<div class="seg-row"><span id="lift-when">Use a lift</span><span class="seg" role="group" aria-labelledby="lift-when"><button type="button" data-lift="1">When it helps</button><button type="button" data-lift="2">Always</button></span></div><p class="hint">${icon('info', 14)}We do not know when a lift runs.</p>`)}
             <li class="leg walk" data-way="walk"><div class="leg-head"><span class="node" title="You always walk the last part"></span>${icon('walk')}<span class="lab">Walk<small></small></span><b class="val"></b></div>
                 <div class="leg-body"><div class="rail"><input type="range" min="0" max="${WALK.length - 1}" step="1" data-k="walk" aria-label="Longest walk to the route"></div></div></li>
             <li class="leg end"><div class="leg-head"><span class="node ring"></span><span></span><span class="lab">The route</span></div></li>
@@ -384,22 +388,18 @@ const GROUPS = {
             way('car').querySelector('.val').textContent = state.car ? `up to ${state.road} km` : '';
             const road = q('[data-k="road"]'); road.value = state.road / ROAD_STEP; rail(road.parentElement, 1, ROAD_MAX / ROAD_STEP, 1, state.road / ROAD_STEP);
             q('[data-large]').setAttribute('aria-pressed', state.large);
-            way('lift').querySelector('.val').textContent = state.lift === 2 ? 'only by lift' : '';
+            way('lift').querySelector('.val').textContent = state.lift === 2 ? 'always' : '';
             for (const b of el.querySelectorAll('[data-lift]')) b.setAttribute('aria-pressed', +b.dataset.lift === state.lift);
         };
     },
     km(el) { return rangeGroup(el, 'km', 'Length', KM, ['Shortest length', 'Longest length']); },
     up(el) { return rangeGroup(el, 'up', 'Climb', UP, ['Least climb', 'Most climb']); },
     shape(el) {
-        const loopIco = '<svg class="i" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19c-3-6 1-14 8-14s9 8 4 12-9 2-12 2Z"/><circle cx="5" cy="19" r="1.7" fill="currentColor"/></svg>';
-        const backIco = '<svg class="i" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19c3-3 3-8 7-9s5-3 7-5"/><circle cx="5" cy="19" r="1.7" fill="currentColor"/><circle cx="19" cy="5" r="1.7"/></svg>';
-        // A lift shape: the walked half is solid, the ride is dotted, so the picture says which half the lift takes.
-        const liftIco = up => `<svg class="i" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c4-2 6-8 9-10s4-4 7-6"/><path d="M4 20 20 4" stroke-dasharray="1.5 2.5"/><path d="${up ? 'M15 4h5v5' : 'M4 15v5h5'}"/></svg>`;
         el.innerHTML = head('Shape') + `<div class="tiles">
-            <button type="button" class="tile" data-shape="loop">${loopIco}Loop</button>
-            <button type="button" class="tile" data-shape="back">${backIco}There and back</button>
-            <button type="button" class="tile lift-shape" data-shape="liftDown">${liftIco(false)}Hike up, lift down</button>
-            <button type="button" class="tile lift-shape" data-shape="liftUp">${liftIco(true)}Lift up, hike down</button></div>
+            <button type="button" class="tile" data-shape="loop">${shapeIcon('loop')}Loop</button>
+            <button type="button" class="tile" data-shape="back">${shapeIcon('back')}There and back</button>
+            <button type="button" class="tile lift-shape" data-shape="liftDown">${shapeIcon('liftDown')}Hike up, lift down</button>
+            <button type="button" class="tile lift-shape" data-shape="liftUp">${shapeIcon('liftUp')}Lift up, hike down</button></div>
             <p class="hint" data-lift-hint>${icon('lift', 14)}Tick Lifts in Getting there to also see hikes that ride a lift up or down.</p>`;
         el.addEventListener('click', e => {
             const t = e.target.closest('[data-shape]'); if (!t) return;
@@ -444,9 +444,9 @@ function rangeGroup(el, id, title, scale, labels) {
 function gradeGroup(el) {
     el.classList.add('grade-group');
     el.innerHTML = head('Path difficulty', `<button type="button" class="info" aria-expanded="false" aria-label="What the grades mean">${icon('info', 16)}</button>`) + `
-        <div class="rail"><input type="range" min="0" max="5" step="1" class="wishful" aria-label="Should reach at least this grade"><input type="range" min="0" max="5" step="1" aria-label="Hardest grade allowed"></div>
+        <div class="rail"><input type="range" min="0" max="5" step="1" aria-label="Has a part of at least this grade"><input type="range" min="0" max="5" step="1" aria-label="Hardest grade allowed"></div>
         <div class="grade-labels">${GRADES.map((g, i) => `<button type="button" data-grade="${i}" style="left: ${i * 20}%" aria-label="${g[0]}, ${g[1]}">${g[0]}</button>`).join('')}</div>
-        <div class="wishes" data-reach></div><div class="grade-pop" role="tooltip" hidden></div>`;
+        <div class="grade-pop" role="tooltip" hidden></div>`;
     const [low, high] = el.querySelectorAll('input'), labels = el.querySelector('.grade-labels'), pop = el.querySelector('.grade-pop'), info = el.querySelector('.info');
     low.addEventListener('input', () => setGradeMin(Math.min(+low.value + 1, state.gradeMax)));
     high.addEventListener('input', () => update({ gradeMax: Math.max(+high.value + 1, state.gradeMin) }));
@@ -473,8 +473,7 @@ function gradeGroup(el) {
         rail(el.querySelector('.rail'), 0, 5, state.gradeMin - 1, state.gradeMax - 1); low.value = state.gradeMin - 1; high.value = state.gradeMax - 1;
         for (const b of labels.children) b.classList.toggle('in', +b.dataset.grade >= state.gradeMin - 1 && +b.dataset.grade <= state.gradeMax - 1);
         const g = GRADES[state.gradeMax - 1];
-        el.querySelector('.val').textContent = `Up to ${g[0]} · ${g[1]}`;
-        syncRows(el.querySelector('[data-reach]'), state.gradeMin > 1 ? ['reach'] : []);
+        el.querySelector('.val').textContent = state.gradeMin > 1 ? `A T${state.gradeMin} part, up to ${g[0]}` : `Up to ${g[0]} · ${g[1]}`;
     };
 }
 function gradeSketch(i) {
@@ -492,78 +491,17 @@ function mountFilters(el) {
     }
 }
 
-// ── The guide: the same filter groups, one question at a time ──────────────
-// The guide mounts its own copy of each group, so an answer sets the same state as the filter column, and the map and the
-// results change while the rider answers. A rider can skip any question, go back, or close the guide at any step.
-const STEPS = [
-    { groups: ['day'], q: 'When do you go?', why: 'The day decides which hikes are usually free of snow.' },
-    { groups: ['journey'], q: 'How do you get to the start?', why: 'Set where you start, then tick each way you are happy to travel.' },
-    { groups: ['shape'], q: 'Which shapes are fine?', why: 'Pick every shape you would walk. A there-and-back hike counts its length and climb both ways.' },
-    { groups: ['km', 'up'], q: 'How long, and how much climb?', why: 'The bars show how many hikes each step holds, inside your other answers.' },
-    { groups: ['grade'], q: 'How hard may the path be?', why: 'The right handle is the hardest grade you accept. Move the left handle to ask for a harder part. Hover or tap a grade to see it.' },
-    { groups: ['way'], q: 'What would make it a good day?', why: 'Pick what you hope to pass on the way.' },
-    { groups: ['route'], q: 'Anything about the route itself?', why: 'For example, a route that is usually free of snow on your day.' },
-];
-function mountGuide(side, filters, opener) {
-    const g = document.createElement('section');
-    g.className = 'guide'; g.hidden = true; g.setAttribute('aria-label', 'Plan your hike, one question at a time');
-    g.innerHTML = `<div class="guide-top"><span class="guide-step" aria-live="polite"></span><span class="guide-dots" aria-hidden="true">${STEPS.map(() => '<i></i>').join('')}</span><button type="button" class="close" data-guide-close aria-label="Close the guide">${icon('close', 16)}</button></div>
-        <div class="guide-body scroll">${STEPS.map((st, i) => `<div class="guide-page" data-page="${i}" hidden><h3>${st.q}</h3><p class="hint">${st.why}</p><div class="filters"></div></div>`).join('')}</div>
-        <div class="guide-foot"><button type="button" class="text-button" data-guide-back>Back</button><span class="guide-count"></span><button type="button" class="text-button" data-guide-skip>Skip</button><button type="button" class="button primary" data-guide-next></button></div>`;
-    side.append(g);
-    STEPS.forEach((st, i) => {
-        const box = g.querySelector(`[data-page="${i}"] .filters`);
-        for (const name of st.groups) { const el = document.createElement('section'); el.className = 'group'; el.dataset.group = name; box.append(el); syncs.push(GROUPS[name](el)); }
-    });
-    // The offer at the top of the column, while the filters hold nothing of the rider's own.
-    const offer = document.createElement('div');
-    offer.className = 'guide-offer';
-    offer.innerHTML = `<p><b>New search?</b> Seven short questions set the filters for you. Skip any of them.</p><button type="button" class="button small" data-guide-open>${icon('walk', 14)}Guide me</button>`;
-    filters.prepend(offer);
-    let step = -1;
-    const show = i => {
-        step = i; g.hidden = i < 0; side.classList.toggle('guided', i >= 0);
-        if (i < 0) return opener.focus();
-        for (const p of g.querySelectorAll('.guide-page')) p.hidden = +p.dataset.page !== i;
-        [...g.querySelector('.guide-dots').children].forEach((dot, j) => dot.className = j < i ? 'done' : j === i ? 'now' : '');
-        g.querySelector('.guide-step').textContent = `Question ${i + 1} of ${STEPS.length}`;
-        g.querySelector('[data-guide-back]').disabled = i === 0;
-        g.querySelector('[data-guide-skip]').hidden = i === STEPS.length - 1;
-        g.querySelector('.guide-body').scrollTop = 0;
-        sync(find());
-        g.querySelector('h3:not([hidden])') && g.querySelector(`[data-page="${i}"] h3`).focus({ preventScroll: true });
-    };
-    const sync = found => {
-        offer.hidden = !isFresh();
-        if (step < 0) return;
-        g.querySelector('.guide-count').textContent = `${countText(found.length)} fit so far`;
-        g.querySelector('[data-guide-next]').textContent = step === STEPS.length - 1 ? `Show ${countText(found.length)}` : 'Next';
-    };
-    for (const h of g.querySelectorAll('h3')) h.tabIndex = -1;
-    syncs.push(sync);
-    document.addEventListener('click', e => {
-        if (e.target.closest('[data-guide-open]')) return show(0);
-        if (step < 0 || !g.contains(e.target)) return;
-        if (e.target.closest('[data-guide-close]')) return show(-1);
-        if (e.target.closest('[data-guide-back]')) return show(Math.max(0, step - 1));
-        if (e.target.closest('[data-guide-skip]')) return show(step + 1);
-        if (e.target.closest('[data-guide-next]')) return show(step === STEPS.length - 1 ? -1 : step + 1);
-    });
-    g.addEventListener('keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented) show(-1); });
-    return { open: () => show(0) };
-}
-
 // ── One plain line that says what the search holds ─────────────────────────
 function queryHtml() {
     const parts = [];
     if (state.pin) parts.push(`From <b>${pinName(state, true)}</b>, walk ${dist(WALK[state.walk])}`);
-    else if (state.point) parts.push(`From <b>near ${townNear(state.point)}</b>: ` + [`walk ${dist(WALK[state.walk])}`, state.car && `drive ${state.road} km`, state.lift === 2 ? 'by lift only' : state.lift && 'lifts'].filter(Boolean).join(', '));
+    else if (state.point) parts.push(`From <b>near ${townNear(state.point)}</b>: ` + [`walk ${dist(WALK[state.walk])}`, state.car && `drive ${state.road} km`, state.lift === 2 ? 'always by lift' : state.lift && 'lifts'].filter(Boolean).join(', '));
     else parts.push('In the map view');
     const shapes = shapesOn();
     if (shapes.length < (state.lift ? 4 : 2)) parts.push(shapes.map(k => SHAPES[k].label.toLowerCase()).join(' or '));
     if (state.km[0] > 0 || state.km[1] < 15) parts.push(rangeText(state.km, KM).toLowerCase());
     if (state.up[0] > 0 || state.up[1] < 15) parts.push(rangeText(state.up, UP).toLowerCase() + ' up');
-    parts.push('up to T' + state.gradeMax);
+    parts.push((state.gradeMin > 1 ? `a T${state.gradeMin} part, ` : '') + 'up to T' + state.gradeMax);
     const musts = Object.keys(state.wish).filter(k => state.wish[k] === 2).map(k => `<b>${wishLabel(k).toLowerCase()}</b>`);
     return parts.join(' · ') + (musts.length ? ` · must: ${musts.join(', ')}` : '') + '.';
 }
@@ -581,7 +519,7 @@ let emptyTries = [];
 function emptyHtml() {
     const tries = [];
     for (const k of Object.keys(state.wish).filter(k => state.wish[k] === 2)) tries.push([`${wishLabel(k)} as a wish only`, { wish: { ...state.wish, [k]: 1 } }]);
-    if (state.lift === 2) tries.push(['Not only by lift', { lift: 1 }]);
+    if (state.lift === 2) tries.push(['A lift only when it helps', { lift: 1 }]);
     if (state.walk < WALK.length - 1) tries.push([`Walk up to ${dist(WALK[state.walk + 2] || WALK[WALK.length - 1])}`, { walk: Math.min(WALK.length - 1, state.walk + 2) }]);
     if (state.point && !state.pin) {
         if (state.car && state.road < ROAD_MAX) tries.push([`Drive up to ${Math.min(ROAD_MAX, state.road + 20)} km`, { road: Math.min(ROAD_MAX, state.road + 20) }]);
@@ -590,6 +528,7 @@ function emptyHtml() {
         if (!state.lift) tries.push(['Take lifts', { lift: 1 }]);
     }
     if (state.pin) tries.push(['Unpin the start', { pin: null }]);
+    if (state.gradeMin > 1) tries.push([`No T${state.gradeMin} part needed`, { gradeMin: 1 }]);
     for (const k of Object.keys(SHAPES)) if (!state[k] && (!SHAPES[k].lift || state.lift)) tries.push([`${SHAPES[k].label} too`, { [k]: true }]);
     const ways = tries.map(([text, change]) => [text, change, find({ ...state, ...change }).length]).filter(t => t[2]);
     emptyTries = ways.map(t => t[1]);
@@ -820,6 +759,6 @@ function fitMap(found, at, r) {
 
 return {
     get state() { return state; }, update, render, reset, isFresh, set page(p) { page = { ...page, ...p }; },
-    icon, fmt, shapeTag: h => SHAPES[h.shape].tag, accessSteps, wishLabel, wishIcon, niceWishes, queryHtml, countText, mountFilters, mountGuide, mountMap, detailHtml, hover, emptyHtml,
+    icon, fmt, shapeTag: h => SHAPES[h.shape].tag, shapeIcon, accessSteps, wishLabel, wishIcon, niceWishes, queryHtml, countText, mountFilters, mountMap, detailHtml, hover, emptyHtml,
 };
 })();

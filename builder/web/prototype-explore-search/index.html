@@ -16,7 +16,7 @@
 <main class="page">
     <h1 class="sr">Explore day hikes</h1>
     <section class="side" aria-labelledby="filters-title">
-        <div class="side-top"><h2 id="filters-title">Filters</h2><span class="side-acts"><button type="button" class="text-button" id="guide">Guide me</button><button type="button" class="text-button" id="reset">Reset</button></span></div>
+        <div class="side-top"><h2 id="filters-title">Filters</h2><button type="button" class="text-button" id="reset">Reset</button></div>
         <div class="scroll"><div class="filters" id="filters"></div></div>
         <button type="button" class="button primary show-results" id="show"></button>
     </section>
@@ -28,12 +28,13 @@
             <div class="scroll" id="list"><table id="table">
                 <thead><tr>
                     <th scope="col">Hike</th>
+                    <th scope="col" class="c-shape">Shape</th>
                     <th scope="col" class="num" data-col="short"><button type="button" data-sort="short">Length</button></th>
                     <th scope="col" class="num c-climb" data-col="climb"><button type="button" data-sort="climb">Climb</button></th>
                     <th scope="col" class="num c-time" data-col="time"><button type="button" data-sort="time">Time</button></th>
                     <th scope="col" class="c-grade">Grade</th>
                     <th scope="col" class="c-acc" data-col="near"><button type="button" data-sort="near">Getting there</button></th>
-                    <th scope="col" class="c-wish" data-col="match"><button type="button" data-sort="match"><span class="long">Your wishes</span><span class="short">Wishes</span></button></th>
+                    <th scope="col" class="c-wish" data-col="match"><button type="button" data-sort="match">Best fit</button></th>
                 </tr></thead>
                 <tbody id="rows"></tbody>
             </table></div>
@@ -47,8 +48,6 @@
 const $ = id => document.getElementById(id);
 const { icon, fmt } = OBC;
 OBC.mountFilters($('filters'));
-const guide = OBC.mountGuide(document.querySelector('.side'), $('filters'), $('guide'));
-$('guide').addEventListener('click', guide.open);
 OBC.mountMap($('map'));
 for (const b of document.querySelectorAll('[data-sort]')) b.insertAdjacentHTML('beforeend', icon('down', 14));
 
@@ -80,10 +79,11 @@ OBC.page = {
         $('rows').innerHTML = found.length ? found.map(r => {
             const h = r.h, open = s.selected === h.id;
             return `<tr class="hike-row${open ? ' open' : ''}" data-id="${h.id}"${s.hover === h.id ? ' data-hover' : ''}>
-                <td><button type="button" class="name" aria-expanded="${open}"><span class="swatch" style="--c:${h.c}"></span><span class="nm"><strong>${h.n}</strong>${OBC.shapeTag(h) ? `<span class="ours">${OBC.shapeTag(h)}</span>` : ''}${h.made ? `<span class="ours">${h.loop ? 'Our loop' : 'Our route'}</span>` : ''}<span class="sub"><span>T${h.t} · ${h.time}</span><span class="acc">${steps(r)}</span></span></span></button></td>
-                <td class="num">${h.km} km<span class="up">${fmt(h.up)} m up</span></td><td class="num c-climb">${fmt(h.up)} m${h.shape === 'liftUp' ? `<span class="down">${fmt(h.down)} m down</span>` : ''}</td><td class="num c-time">${h.time}</td><td class="c-grade">T${h.t}</td>
-                <td class="c-acc"><span class="acc">${steps(r)}</span></td><td class="c-wish">${wishCells(r)}</td></tr>${open ? `<tr class="more"><td colspan="7">${OBC.detailHtml(r)}</td></tr>` : ''}`;
-        }).join('') : `<tr><td colspan="7">${OBC.emptyHtml()}</td></tr>`;
+                <td><button type="button" class="name" aria-expanded="${open}"><span class="swatch" style="--c:${h.c}"></span><span class="nm"><strong>${h.n}</strong>${h.made ? '<span class="ours">Ours</span>' : ''}<span class="sub"><span>${OBC.shapeTag(h)} · T${h.t} · ${h.time}</span><span class="acc">${steps(r)}</span></span></span></button></td>
+                <td class="c-shape"><span class="shp" title="${OBC.shapeTag(h)}">${OBC.shapeIcon(h.shape, 16)}${OBC.shapeTag(h)}</span></td>
+                <td class="num">${h.km} km<span class="up">${fmt(h.up)} m up</span></td><td class="num c-climb">${fmt(h.up)} m</td><td class="num c-time">${h.time}</td><td class="c-grade">T${h.t}</td>
+                <td class="c-acc"><span class="acc">${steps(r)}</span></td><td class="c-wish">${wishCells(r)}</td></tr>${open ? `<tr class="more"><td colspan="8">${OBC.detailHtml(r)}</td></tr>` : ''}`;
+        }).join('') : `<tr><td colspan="8">${OBC.emptyHtml()}</td></tr>`;
         if (s.selected !== null) reveal(s.selected);
     },
 };

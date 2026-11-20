@@ -11,9 +11,8 @@ Without a checkout, open the hosted copy of this branch:
 https://htmlpreview.github.io/?https://github.com/timohueser/OpenBikeComputer/blob/prototype/explore-search/builder/web/prototype-explore-search/index.html
 
 Without a browser, read the screenshots in `screenshots/`: the start (1500 px wide), a row opened in
-place, every filter with a start point, the car and lifts on, a phone (390 px), the guide at the
-questions "How do you get to the start?" and "Which shapes are fine?", a row of a route that rides the
-lift up, and the guide on a phone.
+place, every filter with a start point, the car and lifts on and a T2 part asked for, a phone
+(390 px), and the open row of a route that rides the lift up.
 
 The mock is older than some decisions of #3703. Where the two differ, the issue wins; its section
 "Where the mock differs from the design" lists each difference.
@@ -36,9 +35,9 @@ The mock is older than some decisions of #3703. Where the two differ, the issue 
 | Getting there: start point, then Car, Train (later), Lifts and Walk as one journey line | `engine.js`, `GROUPS.journey` |
 | One walk limit from wherever the rider starts; the ways to reach a route | `engine.js`, `access()` |
 | Limits and wishes (off, nice, must); best-match order | `engine.js`, `find()`, `ORDER` |
-| Path difficulty as one range: upper end a limit, lower end a wish | `engine.js`, `gradeGroup()` |
+| Path difficulty as one range: the upper end is the hardest grade allowed, the lower end asks for a part of at least that grade | `engine.js`, `gradeGroup()` |
+| The results table: one shape column (picture and a short word), one "Ours" tag for made routes, "Best fit" as the order of the wishes | `index.html`, `shapeIcon()` |
 | Shapes: loop, there and back, hike up and lift down, lift up and hike down; the rider accepts several; the lift shapes show only while Lifts is ticked | `engine.js`, `SHAPES`, `GROUPS.shape`, `shapeText()` |
-| The guide: the same filter groups, one question at a time, over the filter column; offered while the filters are fresh and by "Guide me" | `engine.js`, `STEPS`, `mountGuide()` |
 | The empty list names the change that helps, with its count | `engine.js`, `emptyHtml()` |
 | Map rules: which markers show, pins, "routes that pass here" | `engine.js`, `renderMap()` |
 
