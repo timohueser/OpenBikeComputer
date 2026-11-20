@@ -206,7 +206,9 @@ describe('page address', () => {
             + '&shapes=loop,liftUp&grade=T2-T4&ungraded=0&nice=peak,via:n9,via:w7&must=hut&view=7.5,46.5,8.5,47.5';
         expect(queryParams(set, TODAY, [7.5, 46.5, 8.5, 47.5])).toBe(text);
         expect(readQuery(text, TODAY)).toEqual({ query: { ...set, start: [8.30961, 47.05017] }, view: [7.5, 46.5, 8.5, 47.5] });
-        expect(readQuery('shapes=&length=5-', TODAY).query).toMatchObject({ shapes: [], length: [5000, Infinity] });
+        expect(readQuery('shapes=&lift=helps&length=5-', TODAY).query).toMatchObject({ shapes: [], length: [5000, Infinity] });
+        // With lifts off, an address that accepts only lift shapes turns loop and there and back on.
+        expect(readQuery('shapes=liftUp', TODAY).query.shapes).toEqual(['loop', 'back', 'liftUp']);
     });
 
     it('opens with the address, else the history, else the last query; a past day becomes today', () => {

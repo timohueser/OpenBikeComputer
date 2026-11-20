@@ -145,6 +145,14 @@ test('the name of an open row opens the page of the route, and Back and "‹ Exp
   await expect(page.locator('.results tr.row.open')).toContainText('Westweg 2');
   await expect(page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Summit' })).toHaveAttribute('aria-pressed', 'false');
 
+  // So does a last search with a start point far from the route, once the answer for the view of the route has come.
+  await page.evaluate(() => localStorage.setItem('explore-day-query', 'start=10.2,49.6'));
+  await page.goto('/planner.html#/signed/9-267-177/101');
+  await page.reload();
+  await page.getByRole('link', { name: '‹ Explore' }).click();
+  await expect(page.locator('.results tr.row.open')).toContainText('Schlossberg loop');
+  await expect(page.locator('.results .query')).toHaveText('In the map view.');
+
   await page.goto('/planner.html#/signed/9-267-177/999');
   await expect(page.getByText('This route is no longer in the map data.')).toBeVisible();
   expect(errors).toEqual([]);

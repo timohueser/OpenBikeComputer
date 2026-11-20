@@ -4,7 +4,7 @@
 <script lang="ts">
     import type { FactsPlace } from '../../lib/planner/signed-routes';
     import Icon from '../../lib/ui/Icon.svelte';
-    import { DRIVE_KM, type Query } from './search';
+    import { DRIVE_KM, liftsOff, type Query } from './search';
     import { placeName, shortDistance } from './words';
 
     let { query, cap, place, onchange }: {
@@ -65,7 +65,7 @@
         {/if}
         {#if !query.pin}
             <li class="leg" class:on={!!query.lift}>
-                <button type="button" class="leg-head" aria-pressed={!!query.lift} onclick={() => onchange({ lift: query.lift ? undefined : 'helps' })}>
+                <button type="button" class="leg-head" aria-pressed={!!query.lift} onclick={() => onchange(query.lift ? { lift: undefined, shapes: liftsOff(query.shapes) } : { lift: 'helps' })}>
                     <span class="node box"><Icon name="check" size={12} /></span><Icon name="lift" />
                     <span class="label">Lifts<small>cable cars, gondolas, chairlifts</small></span>
                     {#if query.lift === 'always'}<b class="value">always</b>{/if}
