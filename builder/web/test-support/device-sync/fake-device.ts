@@ -89,5 +89,5 @@ export async function fakeDevice(): Promise<void> {
     // `open()` then gives this session, and never a WebUSB one.
     Object.assign(deviceHolder, { session, opening: Promise.resolve(session) });
     // `route`: a `sent` entry for the route on the card. Its key is not the `sentKey` of any route.
-    Object.assign(window, { deviceTest: { plug, unplug, hold, holdPut, release, map, offer, route: { key: 'old', card: STORE, days: [String(route.objectId)], trip: null, tripKey: null } } });
+    Object.assign(window, { deviceTest: { plug, unplug, hold, holdPut, release, map, offer, route: { key: 'old', card: STORE, days: [String(route.objectId)], crcs: [0], gone: [], trips: [], tripKeys: [] } } });
 }

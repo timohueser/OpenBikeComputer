@@ -102,7 +102,7 @@
         const onCard = Object.entries(sent ?? {}).filter(([, copy]) => allOnCard(copy, card));
         const fromCard = rides.filter(ride => ride.device?.startsWith(`${card}:`));
         const now = { waiting: await named(waiting ?? []), leaving: leaving?.length ?? 0, sent: await named(onCard.map(([id]) => id)),
-            objects: onCard.reduce((count, [, copy]) => count + copy.days.filter(Boolean).length, 0),
+            objects: onCard.reduce((count, [, copy]) => count + copy.days.filter(day => day && !copy.gone.includes(day)).length, 0),
             rides: fromCard.length, last: fromCard.length ? Math.max(...fromCard.map(ride => ride.summary.start)) : null, next: next ?? null };
         if (mine === reads) held = now;
     }

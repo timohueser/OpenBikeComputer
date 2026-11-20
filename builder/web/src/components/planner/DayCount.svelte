@@ -5,7 +5,12 @@
     import { fewerDays, maxRidingDays, multiDay, routeToTrip, setDays, type Trip } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
-    let { trip, line, onChange }: { trip: Trip; line: RoutingLine | undefined; onChange: (next: Trip, description: string) => void } = $props();
+    let { trip, line, onChange, onLimit }: {
+        trip: Trip; line: RoutingLine | undefined;
+        onChange: (next: Trip, description: string) => void;
+        /** A press of + at the most days. */
+        onLimit: () => void;
+    } = $props();
 
     const days = $derived(multiDay(trip) ? trip.days : 1);
     const text = (days: number) => `${days} ${days === 1 ? 'day' : 'days'}`;
@@ -19,7 +24,7 @@
     }
 
     function more() {
-        void keepFocus(moreButton, fewerButton);
+        if (days >= maxRidingDays) return onLimit();
         if (days > 1) return onChange(setDays(trip, days + 1), text(days + 1));
         const next = routeToTrip(trip, line);
         onChange(next, `Multi-day trip, ${text(next.days)}`);
@@ -35,7 +40,8 @@
 <div class="days" role="group" aria-label="Number of days">
     <button type="button" aria-label="One day fewer" bind:this={fewerButton} disabled={days === 1} onclick={fewer}><Icon path="M5 12h14" size={15} /></button>
     <span class="count"><span class:guess={days > 1 && !trip.daysSet}>{text(days)}</span></span>
-    <button type="button" aria-label="One day more" bind:this={moreButton} disabled={days >= maxRidingDays} onclick={more}><Icon name="plus" size={15} /></button>
+    <!-- At the most days the + stays in the focus order, so a press can say why it adds no day. -->
+    <button type="button" aria-label="One day more" bind:this={moreButton} aria-disabled={days >= maxRidingDays} onclick={more}><Icon name="plus" size={15} /></button>
 </div>
 
 <style>
@@ -61,9 +67,9 @@
         color: var(--ink);
         cursor: pointer;
     }
-    button:disabled { cursor: default; opacity: .4; }
+    button:disabled, button[aria-disabled='true'] { cursor: default; opacity: .4; }
     button:focus-visible { outline: 2px solid var(--ink); outline-offset: 0; }
-    button:not(:disabled):hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+    button:not(:disabled, [aria-disabled='true']):hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
     .count {
         padding: 0 4px;
         white-space: nowrap;

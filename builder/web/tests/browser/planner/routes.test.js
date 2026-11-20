@@ -32,7 +32,7 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
     const { library } = window.coverTest;
     for (const record of records) await library.saveRoute(record);
     await library.setState('waiting', ['lake']);
-    await library.setState('sent', { long: { key: 'older', card: 'card', days: ['7'], trip: null, tripKey: null } });
+    await library.setState('sent', { long: { key: 'older', card: 'card', days: ['7'], crcs: [0], gone: [], trips: [], tripKeys: [] } });
     localStorage.setItem('obc-device', JSON.stringify({ serial: '00AB', storeId: 'card', at: null, map: null, routes: 1, bytes: { map: 0, routes: 0, rides: 0, other: 0 }, came: null, skipped: [] }));
   }, routes);
 

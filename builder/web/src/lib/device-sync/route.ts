@@ -3,7 +3,7 @@
 import { lineToObcr, type LineWaypoint } from '../convert/bridge';
 import { DISPLAY_NAME_MAX } from '../device/write';
 import { truncateUtf8 } from '../format';
-import { dayStops, planTitle, planView, trainAfter, type RoutePoint } from '../planner/editor';
+import { dayStops, partDays, planTitle, planView, trainAfter, type RoutePoint } from '../planner/editor';
 import { cumulative, firstIndex, type Coordinate } from '../planner/geo';
 import type { Plan } from '../planner/library';
 import { poiKinds, type PlaceCategory } from '../planner/poi-kinds';
@@ -32,9 +32,10 @@ export interface DeviceRoute {
 
 /** The routes of `plan` along `line`, the line that `calculateLine` gave for it, in ride order. A plan of one riding day
  * is one route with the plan name. Else each riding day is a route "Day k ‹place›", with the label of its kept night as the
- * place; the last day and a day with no kept night are "Day k". A day after a train or bus starts where it arrives, as the
- * phone cuts; a transfer inside a day stays a straight segment. The waypoints are the stops of the day, at most
- * `MAX_WAYPOINTS`, with distances from the start of its route. */
+ * place; the last day and a day with no kept night are "Day k". k counts the riding days of its part (`partDays`), as the
+ * device numbers them. A day after a train or bus starts where it arrives, as the phone cuts; a transfer inside a day
+ * stays a straight segment. The waypoints are the stops of the day, at most `MAX_WAYPOINTS`, with distances from the
+ * start of its route. */
 export async function dayRoutes(plan: Plan, line: RoutingLine): Promise<DeviceRoute[]> {
     const trip = plan.trip, { days, stops, total } = planView(trip, line), last = days.length - 1;
     return Promise.all(days.map(async (day, i) => {
@@ -43,7 +44,7 @@ export async function dayRoutes(plan: Plan, line: RoutingLine): Promise<DeviceRo
         const waypoints = dayStops(trip, line, day).map(({ point, km }): LineWaypoint => ({ lon: micro(point.coordinate[0]),
             lat: micro(point.coordinate[1]), distanceM: Math.max(0, km - transfer) * 1000, category: categoryOf(point), name: point.label }));
         const place = i < last ? day.pinned?.label : undefined;
-        const name = !last ? plan.name || planTitle(trip) : truncateUtf8(place ? `Day ${i + 1} ${place}` : `Day ${i + 1}`, DISPLAY_NAME_MAX).trimEnd();
+        const name = !last ? plan.name || planTitle(trip) : truncateUtf8(place ? `Day ${i % partDays + 1} ${place}` : `Day ${i % partDays + 1}`, DISPLAY_NAME_MAX).trimEnd();
         const part = cut(line, from, day.to * total);
         const bytes = await lineToObcr({
             coordinates: Int32Array.from(part.coordinates.flatMap(([lon, lat]) => [micro(lon), micro(lat)])),
@@ -58,6 +59,13 @@ export async function dayRoutes(plan: Plan, line: RoutingLine): Promise<DeviceRo
  * at it. An end point inside a segment has the surface of that segment and a height between the two heights of it. */
 function cut(line: RoutingLine, from: number, to: number): { coordinates: Coordinate[]; heights: (number | null)[]; surfaces: (Surface | null)[] } {
     const lengths = cumulative(line.coordinates), surfaces = line.edges.surfaces;
+    // A day end comes as a share of the whole line. Within 1 mm of a point of the line, such as a kept night, it is that
+    // point, so a change elsewhere in the plan leaves the file of the day as it is.
+    const snap = (km: number) => {
+        const k = firstIndex(lengths.length, v => lengths[v] >= km);
+        return [lengths[k - 1], lengths[k]].find(near => Math.abs(near - km) < 1e-6) ?? km;
+    };
+    [from, to] = [snap(from), snap(to)];
     const segment = (km: number) => Math.min(lengths.length - 2, Math.max(0, firstIndex(lengths.length, k => lengths[k] > km) - 1));
     const at = (j: number, km: number) => {
         const t = Math.max(0, Math.min(1, (km - lengths[j]) / (lengths[j + 1] - lengths[j] || 1))), a = line.elevation[j], b = line.elevation[j + 1];
