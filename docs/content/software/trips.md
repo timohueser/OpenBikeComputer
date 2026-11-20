@@ -63,15 +63,15 @@ route's line as a drawn leg.
 
 In the web planner, one bar above the stops holds the day count, the start date and, for a trip, the
 stay kinds. Its "+" makes a route a multi-day trip, and "−" from the lowest count undoes it. With a
-start date, each day shows its weekday. The elevation profile is the timeline: the days by colour, a
-marker at each night and a column for each rest day. From 15 riding days, a strip of all days frames
-one week: the list, profile and town search show only that week.
+start date, each day shows its weekday. The elevation profile is the timeline: days by colour, night
+markers and rest-day columns. From 15 riding days, a strip of all days frames one week: the list,
+profile, map and town search show only that week; the map draws the other days thin and grey.
 
 A guessed day count is grey and dotted; a set one is dark. The planner guesses the day count from
 the riding time at the plan's pace. After each route or pace change, it guesses the count and the
-suggested nights again. Pinned nights and a set day count stay. When the guess has fewer nights,
+suggested nights again. Pinned nights and a set count stay. When the guess has fewer nights,
 what the rider set on a lost night goes with it; Undo brings it back. A riding-time bar on each day
-shows the hard days.
+shows hard days.
 
 "Choose" or "Change" on a night, or its profile marker, shows only that night in the panel. A town
 replaces its town list, also in an open day. A back row or Escape goes back one level. One button
