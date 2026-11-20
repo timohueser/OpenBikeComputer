@@ -26,3 +26,5 @@ obc-dem = { path = "../../host/obc-dem", default-features = false, features = ["
 [dev-dependencies]
 # The test PBF of the extract reader: the message types of osmpbfreader.
 protobuf = "3"
+# The gzip tiles of the test snow archive.
+flate2 = "1"

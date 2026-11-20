@@ -40,7 +40,7 @@ The store keeps only the work layer of each step and options that a run used las
 | `region`, `attribution` | Package, facts |
 | The GLO-30 tiles or the reference, or the revision of `planner/routing-roads` | Roads, costs, package, facts |
 | The OSM cut, the bounds, the router `FORMAT`, or the revision of `planner/routing-source` | All five |
-| The canopy archive, or the revision of `planner/route-facts` | Facts |
+| The canopy archive, `snow-seasons`, or the revision of `planner/route-facts` | Facts |
 
 A change of the bytes of a work layer changes its format, of its content its revision. A column
 is one file of little-endian values; `layout.json` gives its type and count (`column::Layout`).
