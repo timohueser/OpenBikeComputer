@@ -44,7 +44,7 @@ GROUND_PLAN_MARGIN = {
 
 # Measured on the build of the tunnel parts' arch and tube with wasm-pack 0.15.0 and rustc 1.99.0. The margin is
 # the ground plan's, raw by the same fraction.
-PARTS_MEASURED = {"gzipped": 115_646, "raw_wasm": 262_015}
+PARTS_MEASURED = {"gzipped": 115_942, "raw_wasm": 262_505}
 PARTS_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * PARTS_MEASURED["raw_wasm"] / PARTS_MEASURED["gzipped"]),

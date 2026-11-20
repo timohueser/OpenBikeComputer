@@ -185,8 +185,8 @@ impl<'a> Net<'a> {
         out
     }
 
-    /// The share of daylight at a world point: over the openings whose section, grown by the shell and a metre to
-    /// each side, holds the point from the front of the head wall to `daylight_m` in, `1 − smoothstep(0, daylight_m,
+    /// The share of daylight at a world point: over the openings whose section over the tube's floor, grown by the shell
+    /// and a metre to each side, holds the point from the front of the head wall to `daylight_m` in, `1 − smoothstep(0, daylight_m,
     /// m)` of the metres m in from the frame line, the largest; 0 with none.
     pub fn daylight(&self, p: [f64; 3]) -> f64 {
         let (shell, reach, front) =
@@ -199,9 +199,16 @@ impl<'a> Net<'a> {
             for q in mates.iter().flatten().map(|a| [end.at[0] + l[0] * a / m, end.at[1] + l[1] * a / m]) {
                 let (dx, dy) = (p[0] - q[0], p[1] - q[1]);
                 let (along, beside) = ((dx * d[0] + dy * d[1]) * m, (dx * l[0] + dy * l[1]) * m);
-                let up = p[2] - end.z - self.slope[e] * along;
-                let held = beside.abs() <= end.half + shell + 1.0 && up >= end.foot && up <= end.height + shell;
-                if held && along >= -front && along <= reach {
+                if beside.abs() > end.half + shell + 1.0 || along < -front || along > reach {
+                    continue;
+                }
+                // Over the tube's floor at that metre; in front of the frame line, over the frame's.
+                let floor = if along > 0.0 {
+                    self.floor_at(e, along).map_or(end.z, |f| f.1)
+                } else {
+                    end.z + self.slope[e] * along
+                };
+                if (end.foot..=end.height + shell).contains(&(p[2] - floor)) {
                     let t = (along / reach).clamp(0.0, 1.0);
                     most = most.max(1.0 - t * t * (3.0 - 2.0 * t));
                 }

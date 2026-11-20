@@ -153,6 +153,14 @@ fn the_daylight_is_one_on_the_frame_line_and_none_from_daylight_m_in() {
     // Under the floor of the opening, past its foot, it is dark too.
     let under = world(5.0, 0.0);
     assert_eq!(net.daylight([under[0], under[1], 497.0]), 0.0);
+    // In a tube that is level for a metre and then rises at 10 %, the crown 8 m in has the light of the floor there.
+    let steep =
+        [chord([0.0, 0.0, 500.0], [1.0, 0.0, 500.0], 5.0, 0.0), chord([1.0, 0.0, 500.0], [21.0, 0.0, 502.0], 5.0, 1.0)];
+    let ends = [end(0.0, 0.0, 500.0, 0.0, 6.0)];
+    let net = Net::new(&ends, &steep, rules);
+    let at8 = world(8.0, 0.0);
+    let (floor, crown) = (net.daylight([at8[0], at8[1], 500.7]), net.daylight([at8[0], at8[1], 505.69]));
+    assert!(floor > 0.0 && crown == floor, "floor {floor}, crown {crown}");
     // The mesh: the vertices on the frame line have the whole daylight.
     let mesh = meshes([X - 1.0, Y - 1.0, X + 1.0, Y + 1.0], &ends[..1], &chords, rules);
     let lit = mesh.vertices.chunks(WORDS).filter(|v| f32::from_bits(v[6]) == 1.0).count();
