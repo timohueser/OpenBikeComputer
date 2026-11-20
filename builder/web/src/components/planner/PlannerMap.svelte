@@ -122,7 +122,8 @@
     let appliedTheme: "light" | "dark";
     let fittedInitialRoute = false;
     let dragging = $state(false);
-    let hover = $state<LineHit | null>(null);
+    // Raw: a deep proxy of the hit would make each read of its coordinate in the route search a proxy call.
+    let hover = $state.raw<LineHit | null>(null);
     let overOverlay = $state(false);
     let insertDot: maplibregl.Marker;
     let hoverDot: maplibregl.Marker;
