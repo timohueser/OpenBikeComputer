@@ -30,6 +30,7 @@ The store keeps only the work layer of each step and options that a run used las
 | `planner/routing-roads` | The walks of the roads with the terrain, the turn restrictions, the topology | `roads/` |
 | `planner/routing-costs` | The way bases, the road pass, the snap bits | `costs/` |
 | `planner/routing` | The landmarks, the package, the overlay index, the route catalog, the blocks and the routes | `routing/`, `blocks/`, `routes/` |
+| `planner/route-facts` | The places of the OSM extract, the shares of the route samples, the facts of each route | `facts/` |
 
 | Change | Steps that run |
 | --- | --- |

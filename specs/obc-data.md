@@ -793,7 +793,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `device/catalog` | `device/catalog` |
 | `planner/basemap` | `planner/basemap`, `planner/assets` and their grids |
 | `planner/terrain` | `planner/reference`, `planner/terrain` and its grid |
-| `planner/places`, `planner/climate`, `planner/snow`, `planner/trailview-rules`, `planner/trailview-colour` | The step of the same name and its grids |
+| `planner/places`, `planner/route-facts`, `planner/climate`, `planner/snow`, `planner/trailview-rules`, `planner/trailview-colour` | The step of the same name and its grids |
 | `planner/trailview-features` | `planner/trailview-features`, `planner/trailview-stamps` and their grids |
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region`, `planner/trailview-ground` and its grid |
 | `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | The step of the same name. Internal, `cache`. Their files hold router types, so their format is the router `FORMAT` plus 1 |
@@ -1237,6 +1237,7 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/routing-roads` | `planner/routing-source`, the GLO-30 tiles of the bounds of the region, and `planner/reference` when there is one. The heights of the roads are those of `planner/terrain` without the OSM corrections | `bounds`; `terrain_attribution`: the credit of GLO-30 | `roads/`: the junctions, the roads in package order with their heights, the forbidden turns, the closure sets, the road topology, `roads.json` (the warnings of the manifest, the identities of the PBF and the terrain) and `layout.json` |
 | `planner/routing-costs` | `planner/routing-source`, `planner/routing-roads` | `bounds`, `profiles` | `costs/`: the cost dictionary and, for each profile `<i>` in order, `<i>.bases`, `<i>.totals`, `<i>.turns` and `<i>.snap`; `costs.json` (the profile IDs) and `layout.json` |
 | `planner/routing` | `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | `region` (the last part of the region id) and `bounds`; `attribution`: the credit of OSM. The step list checks the profiles when it is built | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline; `routes/trails/<cell>.json` and `routes/long/<id>.json`: the far files and the trail record files of [the route catalog](route-catalog.md#trail-files) |
+| `planner/route-facts` | `planner/osm/bounds`, `planner/routing-source`, `planner/routing`, the GLO-30 tiles of the bounds of the region, and `trailview-canopy.pmtiles` of `planner/trailview-canopy` when that step is in the list | `bounds`; `terrain_attribution`: the credit of GLO-30 | `facts/<cell>.json`: the [facts file](route-catalog.md#facts-files) of each grid cell, with a final newline |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
 | `planner/model` | `query-model` | None | `model/`: `model.int8.onnx`, `tokenizer.json` and `tokenizer_config.json` of the archive, and `labels.json`, the labels of the query schema |
@@ -1275,7 +1276,7 @@ The step writes the packed bytes in `objects/<transport sha256>`, and selects `o
 encoding. `source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
-The parts of the planner are `map`, `routing`, `search`, `climate`, `snow`,
+The parts of the planner are `map`, `routing`, `route-facts`, `search`, `climate`, `snow`,
 `trailview-features`, `trailview-rules`, `trailview-ground`, `trailview-colour` and
 `trailview-canopy`; the device maps are the part `device`. A planner step is in the list when a
 part that is on makes it or reads it: `map` makes the basemap, places, assets and terrain grids,
@@ -1283,12 +1284,14 @@ part that is on makes it or reads it: `map` makes the basemap, places, assets an
 parts make their own steps. The fonts, the offline grid, the index and the catalog read only the grids that stay.
 `trailview-features` makes the stamps step too.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
+`route-facts` needs `routing`.
 All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
 
 | Layer | Reads | Files |
 | --- | --- | --- |
 | `planner/routing/grid` | `planner/routing` | Packed `routing/blocks.json`, `routing/packs/<sha256>/pages.bin` and `pages.idx`, `offline/routing-cells/<cell>.json`, `routes/tiles/<cell>.json`, `routes/tiles/trails/<cell>.json` and `routes/tiles/long/<id>.json`. It does not build the routing blocks again. Its index records the source graph and cell descriptors |
+| `planner/route-facts/grid` | `planner/route-facts` | Packed `routes/tiles/facts/<cell>.json` |
 | `planner/search/pois/grid`, `planner/search/addresses/grid` | The database of its search component | `search/tiles/<component>/<cell>.sqlite`, packed. A cell retains intersecting places, addresses, their streets and contexts. The index records regional metadata and clipped cell bounds |
 | `planner/assets/grid`, `planner/model/grid`, `planner/trailview-rules/grid` | `planner/assets`, `planner/model` or `rules.json` of `planner/trailview-rules` | The input files, packed as `maps/assets/`, `search/model/` or `trailview/`. The index maps logical paths to file and transport identities |
 | `planner/fonts/grid` | `planner/basemap/grid`, `planner/places/grid`, `planner/overlays/grid` and `planner/assets/grid`: client files only. The route references are the `ref` of the overlay tiles | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
