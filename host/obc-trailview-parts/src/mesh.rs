@@ -171,6 +171,12 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
             let all = run[run.len() - 1];
             run.iter().map(|r| if all > 0.0 { r / all } else { 0.0 }).collect::<Vec<f64>>()
         };
+        // A side runs one way: no step of it turns back against the one before.
+        let folds = |c: &[Corner]| {
+            c.windows(3)
+                .any(|w| (w[1][0] - w[0][0]) * (w[2][0] - w[1][0]) + (w[1][1] - w[0][1]) * (w[2][1] - w[1][1]) < 0.0)
+        };
+        debug_assert!(!folds(a) && !folds(b), "a side of a strip folds back: {a:?} {b:?}");
         let (sa, sb) = (shares(a), shares(b));
         let va: Vec<u32> = a.iter().map(|&c| self.at(s, c, colour)).collect();
         let vb: Vec<u32> = b.iter().map(|&c| self.at(t, c, colour)).collect();
