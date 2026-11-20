@@ -83,11 +83,11 @@ test('the Explore page searches the day hikes of the map view, plans one and com
   expect([back.chips, back.query, back.selected, back.shape]).toEqual([kept.chips, kept.query, '202', 'back']);
   for (const [i, value] of kept.view.entries()) expect(back.view[i]).toBeCloseTo(value, 4);
 
-  // A bike keeps the list with chips, and the plain address. The map still shows the open row of the search.
+  // A bike keeps the list with chips, and the plain address.
   await page.locator('.chip summary', { hasText: 'Hiking' }).click();
   await page.getByRole('button', { name: 'Mountain bike' }).click();
   await expect(results).toHaveCount(0);
-  await expect(page.locator('.list .row')).toHaveText([/Rosskopf trail.*2\.5\skm · 80\sm up · S0/]);
+  await expect(page.locator('.list .row')).toHaveText([/Schlossberg trail.*1\.2\skm · 150\sm up · S1/, /Rosskopf trail.*2\.5\skm · 80\sm up · S0/]);
   await expect(page).toHaveURL(/#\/explore$/);
   expect(errors).toEqual([]);
 });
@@ -178,6 +178,17 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   await expect(rows).toHaveCount(2);
   await expect(page.locator('.routes-map')).toHaveAttribute('data-loaded', 'true');
 
+  // A row whose route the map shows opens with no move of the map, so the list keeps its rows.
+  await expect(page).toHaveURL(/view=/);
+  await page.waitForTimeout(500);
+  const shown = viewOf(page);
+  await rows.getByRole('button', { name: /Schlossberg loop/ }).click();
+  await expect(results.locator('tr.more')).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(viewOf(page)).toEqual(shown);
+  await expect(rows).toHaveCount(2);
+  await rows.getByRole('button', { name: /Schlossberg loop/ }).click();
+
   // A summit shows on the map while Summit is a wish; a click on it asks for the hikes that pass it.
   await page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Summit' }).click();
   const summit = await pointOf(page, 7.86, 47.995);
@@ -200,6 +211,8 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   await expect(page.getByText('Pinned on the map')).toBeVisible();
   await expect(rows).toHaveText([/Schlossberg loop/]);
   await expect(page).toHaveURL(/pin=w2&/);
+  // The map fits the walk and the last walk around the pin: 4 km on each side.
+  await expect.poll(() => { const [west, south, east, north] = viewOf(page); return west < 7.85 && 7.85 < east && Math.abs(south - 47.953) < 0.005 && Math.abs(north - 48.025) < 0.005; }).toBe(true);
   await page.getByRole('button', { name: 'Unpin' }).click();
   await expect(rows).toHaveCount(2);
 
@@ -215,6 +228,14 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   expect(lon).toBeCloseTo(7.9, 2);
   expect(lat).toBeCloseTo(47.985, 2);
 
+  // The start point takes no click: it asks for nothing.
+  await expect.poll(() => { const [west, south, east, north] = viewOf(page); return Math.abs((south + north) / 2 - lat) < 0.002 && west < lon && lon < east; }).toBe(true);
+  const start = await pointOf(page, lon, lat);
+  await page.mouse.click(start.x, start.y);
+  await page.waitForTimeout(300);
+  await expect(page).not.toHaveURL(/via:/);
+  await expect(rows).toHaveText([/Westweg 2/]);
+
   // "My location" asks the browser: a refusal gives a short note, a position the start point.
   await page.getByRole('button', { name: 'Remove the start point' }).click();
   await page.getByRole('button', { name: 'My location' }).click();
@@ -224,13 +245,27 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   await page.getByRole('button', { name: 'My location' }).click();
   await expect(page).toHaveURL(/start=7\.851,47\.991&/);
   await expect(rows).toHaveText([/Schlossberg loop/]);
+
+  // A row whose route runs out of the view pans or zooms the map out until the route shows, never in.
+  await page.goto('/planner.html#/explore?view=7.875,47.975,7.895,47.99');
+  await page.reload();
+  await expect(rows.filter({ hasText: 'Westweg 2' })).toHaveCount(1);
+  await expect(page.locator('.routes-map')).toHaveAttribute('data-loaded', 'true');
+  await page.waitForTimeout(500);
+  const height = ([, south, , north]) => north - south, before = height(viewOf(page));
+  await rows.getByRole('button', { name: /Westweg 2/ }).click();
+  await expect.poll(() => viewOf(page)[3]).toBeGreaterThan(48);
+  expect(height(viewOf(page))).toBeGreaterThanOrEqual(before - 1e-4);
   expect(errors).toEqual([]);
 });
+
+/** The map view in the page address. */
+const viewOf = page => new URL(page.url()).hash.match(/view=([-\d.,]+)/)[1].split(',').map(Number);
 
 /** The point of the page at `lon`, `lat` on the Explore map, from the view in the page address. */
 async function pointOf(page, lon, lat) {
   await expect(page).toHaveURL(/view=/);
-  const [west, south, east, north] = new URL(page.url()).hash.match(/view=([-\d.,]+)/)[1].split(',').map(Number);
+  const [west, south, east, north] = viewOf(page);
   const box = await page.locator('.routes-map canvas').boundingBox();
   const y = latitude => Math.log(Math.tan(Math.PI / 4 + latitude * Math.PI / 360));
   return { x: box.x + (lon - west) / (east - west) * box.width, y: box.y + (y(north) - y(lat)) / (y(north) - y(south)) * box.height };

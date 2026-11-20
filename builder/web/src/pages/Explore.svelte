@@ -28,7 +28,7 @@
     import { counts, defaultQuery, DRIVE_KM, driveCap, find, keepQuery, loadBox, openingQuery, queryParams, reachBox, storedQuery, suggestions,
         type Loaded, type Query, type Shape, type Sort } from './explore/search';
     import SearchFilters from './explore/SearchFilters.svelte';
-    import { addMarkerLayers, MARKER_LAYERS, mapData, markerClick, markerTip, rowBox, startAt } from './explore/search-map';
+    import { addMarkerLayers, MARKER_LAYERS, mapData, markerClick, markerTip, startAt } from './explore/search-map';
     import type { MapOverlay } from './routes/RoutesMap.svelte';
     import { LENGTH_TOP_M } from './explore/words';
     import { signedHref } from './explore/signed-page';
@@ -43,7 +43,7 @@
      * of a trail gives the long trails tab and the trail. `query` is the search of the day routes (`queryParams`), and `shape`
      * the shape of its open row. */
     interface Kept { chips: ChipValues; query?: string; view?: Box; tab?: Tab; selected?: string; shape?: Shape; trail?: number; stage?: string; show?: number }
-    type Place = { lon: number; lat: number; box?: Box; padding?: number };
+    type Place = { lon: number; lat: number; box?: Box };
     type Tab = 'day' | 'long';
     /** The files of a view: the records and the trails of a near view, or the trails of a far view. `trails` is null when
      * the view is too wide or the release has no trail files. The records are those of the cells of `from`, which the search
@@ -329,10 +329,7 @@
         const journey = (['start', 'walk', 'car', 'drive', 'lift', 'pin'] as const).some(key => key in change && change[key] !== query[key]);
         query = { ...query, ...change };
         const box = journey ? reachBox(query, id => catalog.place(id)) : undefined;
-        if (box) {
-            place = placeOf(box);
-            before = undefined;
-        }
+        if (box) place = placeOf(box);
     }
 
     /** The next click on the map picks the start point. */
@@ -345,24 +342,6 @@
         data: hovered => mapData(found, query, (hovered === undefined ? undefined : found.find(row => String(row.record.id) === hovered)) ?? opened, id => catalog.place(id)),
         add: addMarkerLayers, hit: MARKER_LAYERS, tip: id => markerTip(id, query, loaded), onclick: id => setQuery(markerClick(id, query, id => catalog.place(id))),
     } : undefined);
-
-    // An open row fits the map to its route and the way there; closing it brings back the view before. The view of the
-    // history already shows its open row.
-    let fitted = kept?.selected, before: Box | undefined;
-    $effect(() => {
-        const id = searching ? selected : undefined, row = opened;
-        if (id === fitted || (id !== undefined && !row)) return;
-        fitted = id;
-        untrack(() => {
-            if (row && id !== undefined) {
-                before ??= view;
-                place = { ...placeOf(rowBox(row, query, id => catalog.place(id))), padding: 48 };
-            } else if (before) {
-                place = placeOf(before);
-                before = undefined;
-            }
-        });
-    });
 
     function placeOf(box: Box): Place {
         return { lon: (box[0] + box[2]) / 2, lat: (box[1] + box[3]) / 2, box };

@@ -39,7 +39,7 @@ it('says what the search holds in one line, with the values that the rider set',
     expect(plain(queryLine(query({ start: [8, 47], walk: 1000, car: true, drive: 30, lift: 'always', shapes: ['loop', 'liftUp'], length: [6000, 16_000],
         grade: [1, 2], wishes: { peak: 'must', lake: 'nice', 'via:n4': 'must' } }), place)))
         .toBe('From <the start point>: walk 1 km, drive 30 km, always by lift · loop or lift up, hike down · 6 km to 16 km · a T2 part, up to T3'
-            + ' · must: <summit>, <passes pilatus>');
+            + ' · must: <summit>, <passes Pilatus>');
     expect(plain(queryLine(query({ pin: 'w2', walk: 500 }), place))).toBe('From <Talboden>, walk 500 m');
     // The drive of the line is the one that the search uses: at most the cap of the start point.
     expect(plain(queryLine(query({ start: [8, 47], car: true, drive: 50 }), place))).toBe('From <the start point>: walk 1 km, drive 45 km');

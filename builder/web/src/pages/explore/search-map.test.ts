@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { kmPerDegree, type Coordinate } from '../../lib/planner/geo';
 import type { CatalogFacts, CatalogRecord, FactsPlace } from '../../lib/planner/signed-routes';
 import { defaultQuery, find, type Loaded, type Query } from './search';
-import { markerClick, markers } from './search-map';
+import { MARKER_LAYERS, mapData, markerClick, markers } from './search-map';
 
 const START: Coordinate = [8, 47];
 const at = (east: number, north = 0): Coordinate => [START[0] + east / (kmPerDegree * Math.cos(47 * Math.PI / 180)), START[1] + north / kmPerDegree];
@@ -57,6 +57,18 @@ describe('markers', () => {
     });
 });
 
+describe('the layers of the markers', () => {
+    it('keeps the start point out of the click, lets places hide each other, and keeps the used car parks', () => {
+        const roles = (change: Partial<Query>) => mapData(find(query(change), loaded), query(change), undefined, id => places[id]).features
+            .map(({ properties }) => `${properties!.role} ${properties!.id ?? ''}`.trim());
+        expect(roles({ start: at(5, 2.1), car: true, wishes: { peak: 'nice', 'via:w7': 'nice' } }))
+            .toEqual(['used n1', 'places n5', 'pin w7', 'start', 'reach']);
+        expect(roles({ wishes: {} })).toEqual(['trailhead n2', 'trailhead w4', 'cable', 'valley']);
+        // A layer that takes a click holds only features with an id.
+        expect(MARKER_LAYERS.map(layer => layer.slice(8))).not.toContain('start');
+    });
+});
+
 describe('a click on a marker', () => {
     const place = (id: string) => places[id];
 
@@ -69,5 +81,7 @@ describe('a click on a marker', () => {
     it('asks for the routes that pass a place, and gives the others back', () => {
         expect(markerClick('n5', query({ wishes: { hut: 'nice' } }), place)).toEqual({ wishes: { hut: 'nice', 'via:n5': 'must' } });
         expect(markerClick('n5', query({ wishes: { 'via:n5': 'must' } }), place)).toEqual({ wishes: {} });
+        // A "Passes" wish that is nice becomes a must.
+        expect(markerClick('n5', query({ wishes: { 'via:n5': 'nice' } }), place)).toEqual({ wishes: { 'via:n5': 'must' } });
     });
 });

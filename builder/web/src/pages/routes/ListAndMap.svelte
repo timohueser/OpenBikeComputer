@@ -20,7 +20,7 @@
         selected: string[];
         marked?: string[];
         fit: number;
-        place?: { lon: number; lat: number; box?: Box; padding?: number };
+        place?: { lon: number; lat: number; box?: Box };
         look: 'route' | 'ride' | 'signed';
         /** The credits that the map shows after its own: of the pictures that the page shows, of the sources of its routes. */
         credits: string[];

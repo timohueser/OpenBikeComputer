@@ -31,8 +31,10 @@
     async function locate() {
         located = 'asking';
         onpicking(false);
-        const at = await myLocation();
-        if (typeof at === 'string') located = at;
+        const { start, pin } = query, at = await myLocation();
+        // A start or a pin that the rider set meanwhile wins over a late answer.
+        if (query.start !== start || query.pin !== pin) located = undefined;
+        else if (typeof at === 'string') located = at;
         else {
             located = undefined;
             onchange({ start: at, pin: undefined });

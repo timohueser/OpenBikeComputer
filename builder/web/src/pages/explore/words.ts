@@ -164,7 +164,9 @@ export function queryLine(query: Query, place: Place): Part[] {
     const [low, high] = query.grade;
     if (low > 0 || high < GRADE_TOP) line.push(` · ${low > 0 ? `a T${low + 1} part, ` : ''}up to T${high + 1}`);
     const musts = wishesOf(query, 'must');
-    musts.forEach((wish, i) => line.push(i ? ', ' : ' · must: ', { strong: wishLabel(wish, place, true).toLowerCase() }));
+    // A place keeps its name as it is.
+    const must = (wish: Wish) => wish.startsWith('via:') ? `passes ${placeName(place(wish.slice(4)))}` : wishLabel(wish, place, true).toLowerCase();
+    musts.forEach((wish, i) => line.push(i ? ', ' : ' · must: ', { strong: must(wish) }));
     return line;
 }
 

@@ -3,8 +3,6 @@
 import type { Feature, FeatureCollection } from 'geojson';
 import type * as maplibregl from 'maplibre-gl';
 import { kmPerDegree, type Coordinate } from '../../lib/planner/geo';
-import { decodeCoordinates } from '../../lib/planner/route-answer';
-import type { Box } from '../../lib/planner/route-catalog';
 import type { FactsPlace } from '../../lib/planner/signed-routes';
 import { formatHeight } from '../../lib/settings/format';
 import { ICON_PATHS } from '../../lib/ui/Icon.svelte';
@@ -64,7 +62,8 @@ export function mapData(rows: Row[], query: Query, hot: Row | undefined, place: 
     for (const [id, level] of markers(rows, query, hot, place)) {
         const at = place(id)!, top = point(at.at_udeg);
         // With no start point each row names a car park or a lift, so a wide view holds too many.
-        const role = level === 'quiet' && !query.start && (at.kind === 'parking' || at.kind === 'lift') ? 'trailhead' : level;
+        const used = at.kind === 'parking' || at.kind === 'lift';
+        const role = level === 'pin' ? 'pin' : !used ? 'places' : level === 'hot' ? 'hot' : query.start ? 'used' : 'trailhead';
         add(role, { type: 'Point', coordinates: top }, { id, icon: `explore-${at.kind}${level === 'pin' ? '-pin' : ''}`, level, label: level === 'quiet' ? '' : label(at) });
         if (at.kind === 'lift' && at.valley_udeg) {
             add('cable', { type: 'LineString', coordinates: [point(at.valley_udeg), top] });
@@ -72,15 +71,16 @@ export function mapData(rows: Row[], query: Query, hot: Row | undefined, place: 
         }
     }
     const pinned = query.pin ? place(query.pin) : undefined;
-    if (query.start && !pinned) add('pin', { type: 'Point', coordinates: query.start }, { icon: 'explore-start', level: 'pin', label: 'Start' });
+    if (query.start && !pinned) add('start', { type: 'Point', coordinates: query.start }, { icon: 'explore-start', level: 'pin', label: 'Start' });
     const centre = pinned ? point(pinned.at_udeg) : query.start;
     if (centre) add('reach', { type: 'LineString', coordinates: ring(centre, pinned || !query.car ? query.walk / 1000 : driveOf(query)) });
     return { type: 'FeatureCollection', features };
 }
 
-/** The layers that take a click and show a tip: a layer for each level, so that a pin draws over a lit marker, and a lit
- * one over the others; and quiet car parks and lifts with no start point. */
-export const MARKER_LAYERS = ['explore-trailhead', 'explore-quiet', 'explore-hot', 'explore-pin'];
+/** The layers that take a click and show a tip, from the bottom: the car parks and lifts of the rows with no start point and
+ * with one, the places, the lit car park or lift, and the pins. A layer for each, so that a pin draws over a lit marker and
+ * a lit one over the others. Places hide each other where they overlap; a car park or a lift that a row uses always shows. */
+export const MARKER_LAYERS = ['explore-trailhead', 'explore-used', 'explore-places', 'explore-hot', 'explore-pin'];
 /** A quiet car park or lift with no start point shows from this zoom: a wider view holds too many. */
 const TRAILHEAD_ZOOM = 11;
 
@@ -135,12 +135,16 @@ export function addMarkerLayers(map: maplibregl.Map, colour: (name: string) => s
         paint: { 'line-color': ink, 'line-width': 2, 'line-dasharray': [0.1, 2.5] } });
     map.addLayer({ id: 'explore-valley', type: 'circle', source: 'overlay', filter: role('valley'),
         paint: { 'circle-radius': 3, 'circle-color': colour('--panel'), 'circle-stroke-color': ink, 'circle-stroke-width': 1.5 } });
-    // A higher layer places its labels first.
-    for (const id of MARKER_LAYERS) {
+    // A higher layer places its labels first. The start point takes no click.
+    for (const id of [...MARKER_LAYERS, 'explore-start']) {
+        const places = id === 'explore-places';
         map.addLayer({
             id, type: 'symbol', source: 'overlay', filter: role(id.slice(8)), minzoom: id === 'explore-trailhead' ? TRAILHEAD_ZOOM : 0,
             layout: {
-                'icon-image': ['get', 'icon'], 'icon-size': ['match', ['get', 'level'], 'quiet', 0.8, 1.1], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+                'icon-image': ['get', 'icon'], 'icon-size': ['match', ['get', 'level'], 'quiet', 0.8, 1.1],
+                'icon-allow-overlap': !places, 'icon-ignore-placement': !places,
+                // Of two places that overlap, the one on the lit row shows.
+                'symbol-sort-key': ['match', ['get', 'level'], 'hot', 0, 1],
                 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Medium'], 'text-size': 12, 'text-anchor': 'left', 'text-offset': [1.2, 0], 'text-optional': true,
             },
             paint: { 'text-color': ink, 'text-halo-color': colour('--panel'), 'text-halo-width': 1.5 },
@@ -149,12 +153,12 @@ export function addMarkerLayers(map: maplibregl.Map, colour: (name: string) => s
 }
 
 /** The change of the query of a click on a marker: a car park or a top station becomes the only start, or stops being it;
- * a place becomes the must wish "Passes <name>", or stops being it. */
+ * a place becomes the must wish "Passes <name>", also from a nice one, or a must stops being it. */
 export function markerClick(id: string, query: Query, place: Place): Partial<Query> {
     const kind = place(id)?.kind;
     if (kind === 'parking' || kind === 'lift') return { pin: query.pin === id ? undefined : id };
     const wishes = { ...query.wishes }, wish: Wish = `via:${id}`;
-    if (wishes[wish]) delete wishes[wish];
+    if (wishes[wish] === 'must') delete wishes[wish];
     else wishes[wish] = 'must';
     return { wishes };
 }
@@ -168,18 +172,8 @@ export function markerTip(id: string, query: Query, loaded: Loaded): { title: st
         const what = at.kind === 'lift' ? 'Top station' : at.size === 'large' ? 'Large car park' : 'Small car park';
         return { title: placeName(at), text: `${what} · ${hikes(count)} within a ${shortDistance(query.walk)} walk`, action: query.pin === id ? 'Click: unpin' : 'Click: only hikes from here' };
     }
-    const on = !!query.wishes[`via:${id}`], count = find({ ...query, wishes: { ...query.wishes, [`via:${id}`]: 'must' } }, loaded).length;
+    const on = query.wishes[`via:${id}`] === 'must', count = find({ ...query, wishes: { ...query.wishes, [`via:${id}`]: 'must' } }, loaded).length;
     return { title: label(at), text: `${hikes(count)} ${count === 1 ? 'passes' : 'pass'} here`, action: on ? 'Click: show all hikes again' : 'Click: only hikes that pass here' };
-}
-
-/** The box of an open row: its line, and the car park, the valley station or the start point of its cheapest way. */
-export function rowBox(row: Row, query: Query, place: Place): Box {
-    const points: Coordinate[] = decodeCoordinates(row.record.line_udeg ?? []);
-    const used = usedBy(row, place), at = used ? place(used) : undefined;
-    if (at) points.push(point(at.valley_udeg && row.ways[0].kind !== 'pin' ? at.valley_udeg : at.at_udeg));
-    if (row.ways[0].kind === 'foot' && query.start) points.push(query.start);
-    const lons = points.map(([lon]) => lon), lats = points.map(([, lat]) => lat);
-    return [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)];
 }
 
 /** A start point as the page address keeps it. */

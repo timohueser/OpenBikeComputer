@@ -255,9 +255,10 @@
         };
         // A marker of the overlay lies over the lines, so it takes the click first.
         created.on('click', event => {
+            tip = undefined;
             if (pick) return pick.onpick([event.lngLat.lng, event.lngLat.lat]);
-            const marker = overlay && featureAt(event.point, overlay.hit);
-            if (marker) return overlay!.onclick(String(marker.properties.id));
+            const marker = overlay && featureAt(event.point, overlay.hit)?.properties.id;
+            if (marker !== undefined) return overlay!.onclick(String(marker));
             const line = featureAt(event.point, ['routes-hit']);
             if (line) onselect(line.properties.id);
             else if (!featureAt(event.point, ['selected-casing', 'bubbles'])) onselect(undefined);
@@ -278,12 +279,17 @@
             // A move of the map takes the line from under the pointer with no mouse event.
             created.on('movestart', () => hover());
             let onMarker = false;
+            /** The words of the last tip: a new marker or a new overlay, which a new query gives, asks for new ones. */
+            let told: { overlay: MapOverlay; id: string; about: ReturnType<MapOverlay['tip']> } | undefined;
             created.on('mousemove', event => {
-                const marker = overlay && !pick ? featureAt(event.point, overlay.hit) : undefined, about = marker && overlay!.tip(String(marker.properties.id));
+                const part = pick ? undefined : overlay, found = part && featureAt(event.point, part.hit)?.properties.id;
+                const id = found === undefined ? undefined : String(found);
+                if (id !== undefined && (told?.overlay !== part || told?.id !== id)) told = { overlay: part!, id, about: part!.tip(id) };
+                const about = id === undefined ? undefined : told!.about;
                 // The tip stays inside the map.
                 tip = about && { x: Math.min(Math.max(event.point.x, 130), container.clientWidth - 130), y: Math.max(event.point.y, 76), ...about };
                 // The lines set the cursor too: only a change of the marker under the pointer sets it.
-                if (!!marker !== onMarker) created.getCanvas().style.cursor = (onMarker = !!marker) ? 'pointer' : '';
+                if ((id !== undefined) !== onMarker) created.getCanvas().style.cursor = (onMarker = id !== undefined) ? 'pointer' : '';
             });
             for (const event of ['mouseout', 'movestart'] as const) created.on(event, () => { tip = undefined; });
         }
@@ -332,11 +338,12 @@
         if (look !== 'signed') return;
         for (const layer of ['signed-casing', 'routes']) if (map!.getLayer(layer)) map!.setPaintProperty(layer, 'line-opacity', signedOpacity(selected.length + marked.length > 0));
     });
-    // A new selection or a new card height moves the map; a reload of the same selection does not.
+    // A new selection or a new card height moves the map; a reload of the same selection does not, so a pan of the rider
+    // stays.
     let revealed = '';
     $effect(() => {
         const ids = selected, bottom = covered, key = `${ids.join()}|${bottom}`;
-        if (!ready || !ids.length || !bottom || key === revealed) return;
+        if (!ready || !ids.length || key === revealed) return;
         revealed = key;
         untrack(() => reveal(ids, bottom));
     });
