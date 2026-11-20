@@ -60,14 +60,7 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
     let (inward_, outward) = (flat(into), flat([-into[0], -into[1]]));
     let (wide_r, wide_l) = (-(edge + end.right.len() as f64), edge + end.left.len() as f64);
     let top = |t: f64| top(end, edge, t);
-    let wall = Wall {
-        top: &top,
-        foot: end.foot,
-        sill: design.lift_m,
-        coping: bake.coping_m,
-        face: look.face,
-        cope: look.coping,
-    };
+    let wall = Wall { top: &top, foot: end.foot, coping: bake.coping_m, face: look.face, cope: look.coping };
     wall.face(b, &front, &hole, (wide_r, wide_l), edge, outward);
     wall.face(b, &back, &inner, (wide_r, wide_l), edge, inward_);
     // The top over the whole wall, and its two ends.
@@ -83,15 +76,8 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
         let side = front.out([t.signum(), 0.0]);
         wall.band(b, [(&front, t), (&back, t)], [end.foot; 2], [top(t); 2], side);
     }
-    // The sill's top from the front to the frame, the reveal, and the frame round the opening.
-    let (hw, sill) = (hole[0][0].abs(), wall.sill);
-    let v = [
-        b.at(&front, [-hw, sill], look.face),
-        b.at(&front, [hw, sill], look.face),
-        b.at(&ring, [hw, sill], look.face),
-        b.at(&ring, [-hw, sill], look.face),
-    ];
-    b.quad(v, [0.0, 0.0, 1.0]);
+    // The reveal from the front to the frame, and the frame round the opening. Over the sill, the road of the ground
+    // reaches the frame line.
     for k in 0..hole.len() - 1 {
         let v = [
             b.at(&front, hole[k], look.face),
@@ -129,12 +115,10 @@ fn metres(a: f64, b: f64) -> Vec<f64> {
     out
 }
 
-/// A face of a head wall: its top, its foot and the top of its sill (over the opening's floor), the depth of its
-/// coping and its colours.
+/// A face of a head wall: its top, its foot (over the opening's floor), the depth of its coping and its colours.
 struct Wall<'a> {
     top: &'a dyn Fn(f64) -> f64,
     foot: f64,
-    sill: f64,
     coping: f64,
     face: u32,
     cope: u32,
@@ -171,7 +155,7 @@ impl Wall<'_> {
                 out,
             );
         }
-        b.plane(st, [[-hw, self.foot], [hw, self.foot], [hw, self.sill], [-hw, self.sill]], self.face, out);
+        b.plane(st, [[-hw, self.foot], [hw, self.foot], [hw, 0.0], [-hw, 0.0]], self.face, out);
     }
 
     /// The quad between two columns (a station and metres across each) from their bottoms to their tops, at least
