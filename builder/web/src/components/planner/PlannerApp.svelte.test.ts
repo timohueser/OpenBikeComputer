@@ -603,6 +603,15 @@ describe('planner app transitions', () => {
     });
 
     it('offers a place for the night the rider chose in the overview', async () => {
+        // The camp lies in the stretch that each search for places to sleep asks for.
+        const answer = fetch;
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+            const response = await answer(url, init), along = JSON.parse(String(init.body)).request?.where?.along;
+            if (!along) return response;
+            const { results, ...rest } = await response.json();
+            const middle = (along.from.value + along.to.value) / 2;
+            return { ok: true, json: async () => ({ ...rest, results: results.map((p: object) => ({ ...p, position: { along: middle, distance: .1 } })) }) };
+        }));
         await startApp();
         button('Choose night 2').click();
         await vi.waitFor(() => expect(button(`Map place: ${tilePlace.label}`)).toBeDefined());
