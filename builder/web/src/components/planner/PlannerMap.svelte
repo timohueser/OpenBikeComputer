@@ -5,6 +5,7 @@
     import type { Feature, FeatureCollection, LineString } from "geojson";
     import { ClosedAttribution, styleConfig, terrain, useMapProtocols } from "../../lib/planner/map-setup";
     import { config } from "../../lib/planner/map-data";
+    import { regionPlace } from "../../lib/planner/config";
     import { terrainRetry } from "../../lib/planner/map-terrain";
     import "maplibre-gl/dist/maplibre-gl.css";
     import { mapStyle, type Relief } from "../../lib/planner/map-style";
@@ -63,10 +64,12 @@
         /** The part of the route the profile selects, as route progress; the rest of the line is pale. */
         part?: [number, number] | null;
         center?: Coordinate; zoom?: number;
-        onEmptyClick?: (coordinate: Coordinate) => void;
+        /** A click on no point or line; null outside the region. */
+        onEmptyClick?: (coordinate: Coordinate | null) => void;
         onPointSelect?: (id: string) => void;
         onPointHover?: (id: string | null) => void;
-        onPointPreview?: (id: string, coordinate: Coordinate) => void;
+        /** A pin drag; null ends the preview. */
+        onPointPreview?: (id: string, coordinate: Coordinate | null) => void;
         onPointMove?: (id: string, coordinate: Coordinate) => void;
         onDayEndDrag?: (night: number, progress: number) => void;
         onLegClick?: (legEndId: string, coordinate: Coordinate) => void;
@@ -194,12 +197,11 @@
         else fitBounds([[west, south], [east, north]], map.getZoom(), motionDuration());
     }
 
-    /** The coordinate under a viewport point, or null outside the map. */
+    /** The coordinate under a viewport point, or null outside the map or the region. */
     export function coordinateAtScreen(x: number, y: number): Coordinate | null {
         const box = container.getBoundingClientRect();
         if (!map || x < box.left || x > box.right || y < box.top || y > box.bottom) return null;
-        const { lng, lat } = map.unproject([x - box.left, y - box.top]);
-        return [lng, lat];
+        return place(map.unproject([x - box.left, y - box.top]));
     }
 
     /** Metres on the ground per CSS pixel at a latitude: the world is 512 px wide at zoom 0. */
@@ -222,11 +224,8 @@
         const [west, south, east, north] = config.bounds, width = east - west, height = north - south;
         map.setMaxBounds([[Math.max(-180, west - width), Math.max(-85, south - height)], [Math.min(180, east + width), Math.min(85, north + height)]]);
     }
-    // The margin around the region has no data: a click there adds no point and opens no TrailView.
-    const inRegion = ({ lng, lat }: { lng: number; lat: number }) => {
-        const [west, south, east, north] = config.bounds;
-        return lng >= west && lng <= east && lat >= south && lat <= north;
-    };
+    // Every path that adds or moves something takes its place from here: nothing goes into the margin around the region.
+    const place = (at: { lng: number; lat: number }) => regionPlace(config.bounds, at);
     const boundsOf = (region: Coordinate[]) => region.reduce((bounds, coordinate) => bounds.extend(coordinate), new maplibregl.LngLatBounds());
     const padding = () => ({ ...fitPadding, bottom: fitPadding.bottom + bottomInset });
 
@@ -423,13 +422,12 @@
 
     function releaseMap(event: maplibregl.MapMouseEvent) {
         if (event.originalEvent.target !== map?.getCanvas()) { cancelGesture(); return; }
-        const coordinate: Coordinate = [event.lngLat.lng, event.lngLat.lat];
         if (sketch && drawing) {
             const drawn = sketch;
             sketch = null;
             consumedPress = true;
             setSketch([]);
-            if (drawn.length > 1) onDrawn?.(drawing, drawn);
+            if (drawn.length > 1 && drawn.every(([lng, lat]) => place({ lng, lat }))) onDrawn?.(drawing, drawn);
         } else if (press) {
             // A press without a drag stays a click, which opens the leg callout.
             const { hit, moved } = press;
@@ -438,7 +436,8 @@
             consumedPress = true;
             hover = null;
             setSketch([]);
-            onInsert?.(hit.legEndId, coordinate);
+            const at = place(event.lngLat);
+            if (at) onInsert?.(hit.legEndId, at);
         }
     }
 
@@ -505,21 +504,23 @@
             });
             map.on("click", (event) => {
                 const target = event.originalEvent.target;
-                if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target)) || !inRegion(event.lngLat)) return;
-                if (onPick) { onPick([event.lngLat.lng, event.lngLat.lat], [event.originalEvent.clientX, event.originalEvent.clientY]); return; }
+                if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target))) return;
+                const at = place(event.lngLat);
+                if (onPick) { if (at) onPick(at, [event.originalEvent.clientX, event.originalEvent.clientY]); return; }
                 const hit = pickMode ? null : lineHit(event.point);
                 const overlay = pickMode ? null : overlayLayer?.hit(event);
                 overlaySelection = null;
                 placeList = null;
                 if (overlay?.kind === 'access') overlaySelection = overlay;
                 else if (hit) onLegClick?.(hit.legEndId, hit.coordinate);
-                else onEmptyClick?.([event.lngLat.lng, event.lngLat.lat]);
+                else onEmptyClick?.(at);
             });
             // MapLibre makes its canvas focusable, and the arrow keys pan it.
             map.getCanvas().addEventListener("keydown", (event) => {
-                if (event.key !== "Enter" || !onPick || !map || !inRegion(map.getCenter())) return;
-                const box = container.getBoundingClientRect(), { lng, lat } = map.getCenter();
-                onPick([lng, lat], [box.left + box.width / 2, box.top + box.height / 2]);
+                const at = map && place(map.getCenter());
+                if (event.key !== "Enter" || !onPick || !at) return;
+                const box = container.getBoundingClientRect();
+                onPick(at, [box.left + box.width / 2, box.top + box.height / 2]);
             });
             map.on('contextmenu', inspectOverlay);
             map.on('touchstart', () => consumedPress = false);
@@ -740,8 +741,14 @@
                 marker.on("drag", () => marker.setLngLat(coordinateAt(coordinates, routeProgress(marker))));
                 marker.on("dragend", () => { onDayEndDrag?.(point.night!, routeProgress(marker)); draggingPin = false; });
             } else {
-                marker.on("drag", () => { const p = marker.getLngLat(); onPointPreview?.(point.id, [p.lng, p.lat]); });
-                marker.on("dragend", () => { const p = marker.getLngLat(); onPointMove?.(point.id, [p.lng, p.lat]); draggingPin = false; });
+                // Outside the region the preview ends, and a drop there puts the pin back.
+                marker.on("drag", () => onPointPreview?.(point.id, place(marker.getLngLat())));
+                marker.on("dragend", () => {
+                    const at = place(marker.getLngLat());
+                    if (at) onPointMove?.(point.id, at);
+                    else { marker.setLngLat(point.coordinate); onPointPreview?.(point.id, null); }
+                    draggingPin = false;
+                });
             }
             pins.set(point.id, { marker, button, key });
         }

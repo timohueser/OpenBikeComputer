@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { validateStyleMin } from '@maplibre/maplibre-gl-style-spec';
 import { testConfig } from '../../../test-support/planner/config';
-import { plannerConfig } from './config';
+import { plannerConfig, regionPlace } from './config';
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -207,5 +207,16 @@ describe('trail files', () => {
         const long = { ...record(10, ['9-267-178']), stages: [21] };
         const regional = await catalog(url, { [url]: { format: 1, routes: [long, record(21, ['9-267-178'])] } });
         expect(await regional.loadTrailRecord(10)).toEqual(long);
+    });
+});
+
+describe('region place', () => {
+    it('gives the place inside the bounds and on their edge, nothing outside, and every place with no bounds', () => {
+        const bounds: [number, number, number, number] = [7.6, 46.47, 8.95, 47.25];
+        expect(regionPlace(bounds, { lng: 8.3, lat: 46.9 })).toEqual([8.3, 46.9]);
+        expect(regionPlace(bounds, { lng: 7.6, lat: 47.25 })).toEqual([7.6, 47.25]);
+        expect(regionPlace(bounds, { lng: 7.59, lat: 46.9 })).toBeNull();
+        expect(regionPlace(bounds, { lng: 8.3, lat: 47.26 })).toBeNull();
+        expect(regionPlace(undefined, { lng: 20, lat: 60 })).toEqual([20, 60]);
     });
 });

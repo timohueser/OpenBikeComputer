@@ -2,6 +2,14 @@ import type { Archive } from './layers/data-layer';
 
 export type Bounds = [number, number, number, number];
 
+/** The place at a map position, or null outside `bounds`: the map shows a margin with no data around the region. The
+ * edge is inside; with no bounds, every place is. */
+export function regionPlace(bounds: Bounds | undefined, { lng, lat }: { lng: number; lat: number }): [number, number] | null {
+    if (!bounds) return [lng, lat];
+    const [west, south, east, north] = bounds;
+    return lng >= west && lng <= east && lat >= south && lat <= north ? [lng, lat] : null;
+}
+
 /** The planner config: the `active` entry of the planner catalogue in specs/planner-release.md, or `VITE_PLANNER_CONFIG`. */
 export interface PlannerConfig {
     /** The release ID; a `VITE_PLANNER_CONFIG` has none. */
