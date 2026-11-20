@@ -11,6 +11,7 @@ use planner_router::shape::P;
 use crate::osm::copy_tags;
 use crate::source::{Id, Tags};
 
+#[derive(Clone, Debug)]
 pub enum Shape {
     Point(P),
     /// The points of the way that the extract holds, two or more.
@@ -19,11 +20,13 @@ pub enum Shape {
 }
 
 /// The rings of an area. Each ring is closed: its last point is its first.
+#[derive(Clone, Debug)]
 pub struct Area {
     pub outer: Vec<Vec<P>>,
     pub inner: Vec<Vec<P>>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Object {
     pub id: Id,
     pub tags: Tags<'static>,
