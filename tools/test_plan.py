@@ -64,7 +64,7 @@ JOBS: dict[str, Job] = {
     "wasm": Job(needs=("selection",), packages=("obc-web-demo", "obcm-assemble")),
     "wasm-bridges": Job(
         needs=("selection",),
-        packages=("obc-builder-bridge", "obc-ground-plan-bridge"),
+        packages=("obc-builder-bridge", "obc-ground-plan-bridge", "obc-webp-bridge"),
     ),
     "docs": Job(needs=("selection",)),
     "ios-unit": Job(needs=("selection",)),
@@ -746,8 +746,9 @@ BRIDGES = (
     "builder/web/src/lib/core/pkg",
     "builder/web/test-support/flat-device/pkg",
     "builder/web/src/lib/trailview/plan/pkg",
+    "builder/web/src/lib/trailview/stream/webp",
 )
-BRIDGE_PACKAGES = ("obc-builder-bridge", "obc-ground-plan-bridge")
+BRIDGE_PACKAGES = JOBS["wasm-bridges"].packages
 NPM_STAMP = "node_modules/.obc-lock"
 
 def _lock_digest(project: Path) -> str:

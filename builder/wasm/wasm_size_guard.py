@@ -7,7 +7,13 @@ The ground-plan budget is its recorded CI size plus the owner's margin; both par
 
 from __future__ import annotations
 
-GOVERNS = ['builder/wasm/**', 'host/obcm-assemble/**', 'builder/ground-plan-wasm/**', 'host/obc-ground-plan/**']
+GOVERNS = [
+    'builder/wasm/**',
+    'host/obcm-assemble/**',
+    'builder/ground-plan-wasm/**',
+    'host/obc-ground-plan/**',
+    'builder/webp-wasm/**',
+]
 RULE = 'A wasm bridge stays inside its recorded gzip and raw size budgets.'
 
 import argparse
@@ -35,14 +41,22 @@ GROUND_PLAN_MARGIN = {
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * GROUND_PLAN_MEASURED["raw_wasm"] / GROUND_PLAN_MEASURED["gzipped"]),
 }
 
+# Measured on the build that adds the WebP bridge (rustc 1.99.0, wasm-pack 0.15.0), with the owner's margin.
+WEBP_MEASURED = {"gzipped": 69_494, "raw_wasm": 177_325}
+WEBP_MARGIN = {
+    "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
+    "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * WEBP_MEASURED["raw_wasm"] / WEBP_MEASURED["gzipped"]),
+}
+
 BUDGETS = {
     # Preserve the sum of the conversion, assembly and preview caps. Consolidation does not
     # increase the permitted production download or raw WASM size.
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
     "ground-plan": {key: GROUND_PLAN_MEASURED[key] + GROUND_PLAN_MARGIN[key] for key in GROUND_PLAN_MEASURED},
+    "webp": {key: WEBP_MEASURED[key] + WEBP_MARGIN[key] for key in WEBP_MEASURED},
 }
 # A budget made of a measured size and a margin prints both, so a reviewer sees growth inside the margin.
-BUDGET_PARTS = {"ground-plan": (GROUND_PLAN_MEASURED, GROUND_PLAN_MARGIN)}
+BUDGET_PARTS = {"ground-plan": (GROUND_PLAN_MEASURED, GROUND_PLAN_MARGIN), "webp": (WEBP_MEASURED, WEBP_MARGIN)}
 
 ADVICE = {
     "builder": (
@@ -50,12 +64,14 @@ ADVICE = {
         " --target wasm32-unknown-unknown. GEOS, obc-pack and the test device must stay out."
     ),
     "ground-plan": "Check the dependency graph with cargo tree -p obc-ground-plan-bridge --target wasm32-unknown-unknown.",
+    "webp": "Check the dependency graph with cargo tree -p obc-webp-bridge --target wasm32-unknown-unknown.",
 }
 
 PKG_DIRS = {
     "builder": Path("builder/web/src/lib/core/pkg"),
     "flat-device": Path("builder/web/test-support/flat-device/pkg"),
     "ground-plan": Path("builder/web/src/lib/trailview/plan/pkg"),
+    "webp": Path("builder/web/src/lib/trailview/stream/webp"),
 }
 UNBUDGETED = {"flat-device"}
 

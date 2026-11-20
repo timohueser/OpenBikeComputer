@@ -593,6 +593,7 @@ triggers = [
   "builder/web/package-lock.json",
   "builder/build-wasm-bridges.sh",
   "builder/wasm/wasm_size_guard.py",
+  "builder/webp-wasm/**",
   "sim/flat-device/**",
   "docs/Trunk.toml",
   "docs/index.html",

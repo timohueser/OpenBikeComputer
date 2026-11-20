@@ -19,3 +19,8 @@ wasm-pack build builder/wasm --release --target web \
 wasm-pack build builder/ground-plan-wasm --release --target web \
   --out-dir ../web/src/lib/trailview/plan/pkg \
   --out-name obc_ground_plan_bridge
+
+# The WebP decode of TrailView's ground worker where the browser decodes images premultiplied.
+wasm-pack build builder/webp-wasm --release --target web \
+  --out-dir ../web/src/lib/trailview/stream/webp \
+  --out-name obc_webp_bridge
