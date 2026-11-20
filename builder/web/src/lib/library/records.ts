@@ -140,22 +140,25 @@ export interface DeletedRide {
     device?: string;
 }
 
-/** The objects of a route on the card `card` (a store id), as decimal object ids: the route of each riding day, and the
- * trip object of a plan of several days. An empty string is a day with no object. `tripKey` is the trip key in decimal of
- * the trip object that the sync put or puts. `key` is the `sentKey` of the route when all its objects are on the card,
- * else empty. */
+/** The objects of a route on the card `card` (a store id), as decimal object ids. `days` holds the route of each riding day
+ * as last put, an empty string before its first put; a route that is gone from the card keeps its id, and `gone` lists the
+ * ids that the last listing of the card did not hold. `crcs` holds the CRC-32 of the file of each day as last put or found
+ * on the card. `trips` and `tripKeys` hold the trip object and its trip key in decimal of each part of a plan of several
+ * days, an empty string for none. `key` is the `sentKey` of the route when its last send finished, else empty. */
 export interface SentRoute {
     key: string;
     card: string;
     days: string[];
-    trip: string | null;
-    tripKey: string | null;
+    crcs: number[];
+    gone: string[];
+    trips: string[];
+    tripKeys: string[];
 }
 
-/** All objects of `copy` are on the card `card`: the route is on the device. An empty slot is an object that is not made yet,
- * or that the device lost or the rider deleted on it. */
+/** The route is on the device: its entry names the card `card`, and its last send finished. The day routes that the rider
+ * deleted on the device since then do not change it. */
 export const allOnCard = (copy: SentRoute | undefined, card: string | undefined): boolean =>
-    !!copy && copy.card === card && copy.key !== '' && copy.days.every(Boolean);
+    !!copy && copy.card === card && copy.key !== '';
 
 /** A box of a map area, in whole microdegrees. */
 export interface MapBox { minLat: number; minLon: number; maxLat: number; maxLon: number }
@@ -240,7 +243,8 @@ const isTrip = (value: unknown): value is RideTrip => isRecord(value) && isStrin
 
 const isSent = (value: unknown): value is Record<string, SentRoute> => isRecord(value)
     && Object.values(value).every(route => isRecord(route) && isString(route.key) && isString(route.card) && isStrings(route.days)
-        && (route.trip === null || isString(route.trip)) && (route.tripKey === null || isString(route.tripKey)));
+        && Array.isArray(route.crcs) && route.crcs.length === route.days.length && route.crcs.every(Number.isInteger)
+        && isStrings(route.gone) && isStrings(route.trips) && isStrings(route.tripKeys));
 
 const isDeleted = (value: unknown): value is DeletedRide =>
     isRecord(value) && isString(value.key) && rideKey.test(value.key) && optional(value.device, isString);

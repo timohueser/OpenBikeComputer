@@ -8,11 +8,13 @@
     import type { RoutingLine } from '../../lib/planner/routing';
     import { stayOptions as kinds } from '../../lib/planner/search/presentation';
 
-    let { trip, line, onChange, onDays }: {
+    let { trip, line, onChange, onDays, onLimit }: {
         trip: Trip; line: RoutingLine | undefined;
         onChange: (next: Trip, description: string) => void;
         /** A change of the day count, which can change the type of the route. */
         onDays: (next: Trip, description: string) => void;
+        /** A press of + at the most days. */
+        onLimit: () => void;
     } = $props();
 
     let dating = $state(false);
@@ -46,7 +48,7 @@
 <svelte:window onpointerdown={(event) => { if (dating && !root?.contains(event.target as Node)) dating = false; }} />
 
 <div class="trip-row" class:any-stay={!trip.stay} class:multi>
-    <DayCount {trip} {line} onChange={onDays} />
+    <DayCount {trip} {line} onChange={onDays} {onLimit} />
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="dates" bind:this={root} onkeydown={(event) => { if (event.key === 'Escape' && dating) { event.stopPropagation(); close(); } }}>
         <button type="button" class="cell date" class:unset={!trip.startDate} aria-label={`Trip dates: ${range}`} aria-expanded={dating} onclick={() => dating = !dating}>

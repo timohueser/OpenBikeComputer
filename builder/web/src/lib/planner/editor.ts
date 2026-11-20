@@ -8,8 +8,10 @@ import { formatMinutes } from '../settings/format';
 
 /** A vertex of a drawn leg; a third number is its elevation in metres. */
 export type DrawnCoordinate = Coordinate | [number, number, number];
-/** The device's trip progress record holds 32 days, and a send to it holds 32 waypoints. */
-export const maxRidingDays = 32;
+/** The device reads 32 days of a trip object (`MAX_TRIP_DAYS` of `obc-route`). */
+export const partDays = 32;
+/** A plan goes to the device as two trip objects of `partDays` days at most. */
+export const maxRidingDays = 2 * partDays;
 /** A transfer is a straight leg that the rider does not ride, such as a train; it adds no ridden distance or time. */
 export type LegMode = 'routed' | 'straight' | 'drawn' | 'transfer';
 /** A kind of place to sleep. */

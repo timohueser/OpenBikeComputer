@@ -41,7 +41,7 @@
     import { ROUTES } from '../../lib/routes';
     import {
         addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, multiDay, hasEndpoints as endpointsChosen,
-        insertPoint, planTitle, nightOrderConflicts, dragPointOut,
+        insertPoint, maxRidingDays, partDays, planTitle, nightOrderConflicts, dragPointOut,
         orderedRoutePoints, pinNight, pinNights, planView, daySegments, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, endpointLabel,
         type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
@@ -1267,7 +1267,9 @@
                     <RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />
                     <!-- The rider's trip, not `planned`: a change must not keep the suggested nights as day ends. -->
                     <div class="trip-settings"><TripRow {trip} line={session.line} onChange={changePlan}
-                        onDays={(next, description) => { changePlan(next, description); if (!multiDay(next)) statusUndo = undo; }} /></div>
+                        onDays={(next, description) => { changePlan(next, description); if (!multiDay(next)) statusUndo = undo; }}
+                        onLimit={() => message = `${maxRidingDays} riding days is the most a trip can have`} />
+                        {#if multi && trip.days > partDays}<p class="device-parts">Goes to the bike computer in 2 parts</p>{/if}</div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if itineraryShown}
@@ -1506,6 +1508,7 @@
         background: var(--panel);
     }
     .trip-settings { padding: 12px 16px; border-top: 1px solid var(--line); }
+    .device-parts { margin: 8px 0 0; font-size: 13px; color: var(--ink-soft); }
     .back-to-routes { display: flex; align-items: center; gap: 6px; min-height: 32px; margin: -4px 12px 8px; padding: 0 6px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; text-align: left; }
     .back-to-routes:hover { background: var(--parchment-2); color: var(--ink); }
     /* Clear of the map controls column, which reaches the bottom on a short map. The map reaches the clicks beside the legend. */

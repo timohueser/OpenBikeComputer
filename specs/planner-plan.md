@@ -31,7 +31,7 @@ does not require them and the web planner ignores their values. A reader ignores
 | --- | --- |
 | `points` | Array of point objects |
 | `routeOrder` | Array of point IDs in route order, as specified below |
-| `days` | Integer from 1 to 32 |
+| `days` | Integer from 1 to 64 |
 | `daysSet` | Optional `true`; the rider set `days`. Without it, the planner guessed `days`. |
 | `budget` | Optional; written as `"days"` |
 | `target` | Optional; written as the value of `days` |

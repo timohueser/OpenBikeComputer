@@ -12,8 +12,9 @@ export const stateText: Record<DeviceState, string> = {
 };
 
 /** A route that waits to go to the device; else a route on the card of the remembered device, which changed when its name
- * or its trip is not the sent one. A route sent to another card, or with an object missing on the card, is not on the
- * device. */
+ * or its trip is not the sent one. A route sent to another card, or whose last send did not finish, or whose trip object
+ * is gone while its days are there, is not on the device. The day routes that the rider deleted on the device do not
+ * change it, because a send would not put them. */
 export function deviceState(route: RouteRecord, waiting: LibraryState['waiting'] | undefined, sent: LibraryState['sent'] | undefined): DeviceState | undefined {
     if (waiting?.includes(route.id)) return 'waiting';
     const copy = sent?.[route.id];

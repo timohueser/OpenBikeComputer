@@ -1,7 +1,7 @@
 /** Writes the trip object of a plan of several days: the list of its day routes on the device (`specs/ble-interface.md` §7.7). */
 import { DISPLAY_NAME_MAX } from '../device/write';
 import { truncateUtf8 } from '../format';
-import { orderedRoutePoints, type Trip } from '../planner/editor';
+import { orderedRoutePoints, partDays, type Trip } from '../planner/editor';
 
 /** One day of a trip object: the object id of its route, and the metres along the route where it joins and leaves the main
  * line. */
@@ -30,15 +30,28 @@ export function tripObject(key: bigint, name: string, startDate: number, days: T
     return bytes;
 }
 
-/** The trip key of the plan `id`: FNV-1a 64 of "‹plan id›|‹id of route point 1›|‹id of route point 2›|1", never 0. It stays
- * while the first two route points keep their ids, so the device keeps the progress of the trip. A reversal or a new point
- * right after the start makes a new key, and the progress starts empty. */
-export function tripKey(id: string, trip: Trip): bigint {
+/** The trip key of part `part` of the plan `id`: FNV-1a 64 of "‹plan id›|‹id of route point 1›|‹id of route point 2›|‹part›",
+ * never 0. It stays while the first two route points keep their ids, so the device keeps the progress of the trip. A
+ * reversal or a new point right after the start makes a new key, and the progress starts empty. */
+export function tripKey(id: string, trip: Trip, part: number): bigint {
     const [first, second] = orderedRoutePoints(trip);
     let hash = 0xcbf29ce484222325n;
-    for (const byte of new TextEncoder().encode(`${id}|${first?.id}|${second?.id}|1`)) hash = (hash ^ BigInt(byte)) * 0x100000001b3n & 0xffffffffffffffffn;
+    for (const byte of new TextEncoder().encode(`${id}|${first?.id}|${second?.id}|${part}`)) hash = (hash ^ BigInt(byte)) * 0x100000001b3n & 0xffffffffffffffffn;
     return hash || 1n;
 }
 
-/** The start date of a trip in days since 1970-01-01, or 0 when it has none. */
-export const startDay = (trip: Trip) => trip.startDate ? Date.parse(trip.startDate) / 86_400_000 : 0;
+/** The name of part `part` of `parts`: the plan name with " 1/2" or " 2/2" at the end, inside 48 bytes; the plan name is
+ * cut, never the end. One part has the plan name. */
+export function partName(name: string, part: number, parts: number): string {
+    if (parts === 1) return name;
+    const suffix = ` ${part}/${parts}`;
+    return truncateUtf8(name, DISPLAY_NAME_MAX - suffix.length).trimEnd() + suffix;
+}
+
+/** The start date of part `part` of a trip in days since 1970-01-01, or 0 when the trip has none: the calendar day of its
+ * first riding day. */
+export function startDay(trip: Trip, part: number): number {
+    if (!trip.startDate) return 0;
+    const before = partDays * (part - 1);
+    return Date.parse(trip.startDate) / 86_400_000 + before + (trip.restAfter ?? []).filter(after => after <= before).length;
+}

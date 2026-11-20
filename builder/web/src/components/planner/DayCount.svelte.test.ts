@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Trip } from '../../lib/planner/editor';
+import { maxRidingDays, setDays, type Trip } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import DayCount from './DayCount.svelte';
 
@@ -17,7 +17,7 @@ describe('day count', () => {
         let trip = $state.raw<Trip>({ ...base, mode: 'route', daysSet: undefined });
         let said = '';
         row = mount(DayCount, { target: document.body, props: { get trip() { return trip; }, line: testLine(base),
-            onChange: (next: Trip, description: string) => { trip = next; said = description; } } });
+            onChange: (next: Trip, description: string) => { trip = next; said = description; }, onLimit: () => {} } });
         flushSync();
         expect(count().textContent).toBe('1 day');
         expect(button('One day fewer').disabled).toBe(true);
@@ -40,5 +40,17 @@ describe('day count', () => {
         expect(said).toBe('One-day route · + brings back the days');
         expect(count().textContent).toBe('1 day');
         expect(button('One day fewer').disabled).toBe(true);
+    });
+
+    it('keeps the + in the focus order at the most days, and says why it adds no day', () => {
+        const trip = setDays(testTrip(), maxRidingDays);
+        let limits = 0, changes = 0;
+        row = mount(DayCount, { target: document.body, props: { trip, line: undefined, onChange: () => changes++, onLimit: () => limits++ } });
+        flushSync();
+        expect(count().textContent).toBe(`${maxRidingDays} days`);
+        button('One day more').focus();
+        button('One day more').click(); flushSync();
+        expect([limits, changes, button('One day more').getAttribute('aria-disabled')]).toEqual([1, 0, 'true']);
+        expect(document.activeElement).toBe(button('One day more'));
     });
 });
