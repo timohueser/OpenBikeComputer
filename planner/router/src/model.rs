@@ -246,19 +246,23 @@ impl Pace {
     }
 
     pub fn segment_seconds(&self, from: Point, to: Point, walk: bool, mtb: bool) -> f64 {
-        let p = [from, to];
-        let distance = p[0].distance(p[1]);
-        let gradient = if p[0].elevation == NO_ELEVATION || p[1].elevation == NO_ELEVATION {
+        let rise = if from.elevation == NO_ELEVATION || to.elevation == NO_ELEVATION {
             0.0
         } else {
-            (p[1].elevation as f64 - p[0].elevation as f64) / distance.max(1.0)
+            to.elevation as f64 - from.elevation as f64
         };
+        self.seconds(from.distance(to), rise, walk, mtb)
+    }
+
+    /// The moving time over `distance_m` that rises by `rise_m`, a drop when negative.
+    pub fn seconds(&self, distance_m: f64, rise_m: f64, walk: bool, mtb: bool) -> f64 {
+        let gradient = rise_m / distance_m.max(1.0);
         let minutes_per_km = if walk {
             60.0 / self.walking_kmh * (3.5 * ((gradient.clamp(-0.5, 0.5) + 0.05).abs() - 0.05)).exp()
         } else {
             60.0 / self.cycling_kmh * cycling_pace(gradient, mtb) / cycling_pace(0.0, false)
         };
-        distance / 1000.0 * minutes_per_km * 60.0 * self.personal_multiplier
+        distance_m / 1000.0 * minutes_per_km * 60.0 * self.personal_multiplier
     }
 }
 
