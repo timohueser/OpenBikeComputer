@@ -86,10 +86,8 @@ pub enum Reason {
     NoStages,
     /// A long relation whose parts are separate routes, not one line.
     Apart,
-    /// A job that the records of earlier origins cover (rule 1 of the merge).
+    /// A job that the records of earlier origins cover (the merge).
     Replaced,
-    /// A record of a second source that a job of a later origin holds (rule 2 of the merge).
-    Held,
 }
 
 /// The length, first and last point of a line.
@@ -112,11 +110,6 @@ enum Built {
 /// The `id` of section `number` of a relation. It is negative, so it is no OSM relation ID.
 fn section_id(relation: i64, number: usize) -> i64 {
     -(relation * 100 + number as i64)
-}
-
-/// The records that a job can give: its own, or the sections of its cut plan (`cut`).
-fn records_of(cut: &BTreeMap<i64, usize>, job: i64) -> Vec<i64> {
-    cut.get(&job).map_or(vec![job], |&n| (1..=n).map(|k| section_id(job, k)).collect())
 }
 
 fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
@@ -393,8 +386,6 @@ pub struct Report {
     pub workers: usize,
     /// Wall time of the parallel search.
     pub search_seconds: f64,
-    /// The jobs that left and came back, because the records that stay did not cover their place.
-    pub came_back: Vec<i64>,
     pub seconds: f64,
     /// What became of the jobs of each second source, by its id; null without one.
     pub sources: Value,
@@ -457,7 +448,6 @@ impl Report {
         });
         if !self.sources.is_null() {
             report["sources"] = self.sources.clone();
-            report["came_back"] = json!(self.came_back);
         }
         report
     }
@@ -728,7 +718,7 @@ fn catalog<S: Source + Clone + Send>(
         }
     }
     let size = |(_, line): &(&SourceJob, Line)| line.runs.iter().map(Vec::len).sum();
-    let (searched, mut search_seconds) = pool(selection, workers, lined, size, |router, (job, line), calls| {
+    let (searched, search_seconds) = pool(selection, workers, lined, size, |router, (job, line), calls| {
         let built = shaped(router, line, &job.header(), &job.kind, None, section_m, calls);
         (job.id(), built.map_err(|reason| Failed { reason, line: ends(&line.runs) }))
     });
@@ -737,65 +727,23 @@ fn catalog<S: Source + Clone + Send>(
 
     Guard::exempt("merge");
     let parts: HashSet<i64> = long.iter().flat_map(|(_, _, leaves, _)| leaves.iter().map(|leaf| leaf.id)).collect();
-    let mut merge = Merge::replace(&probes, &|id| planned.kept.contains_key(&id), &|id| parts.contains(&id));
-    // A job that left keeps its record and its reason aside: it can come back.
-    let (mut aside, mut earlier) = (BTreeMap::new(), HashMap::new());
+    let merge = Merge::replace(&probes, &|id| planned.kept.contains_key(&id), &|id| parts.contains(&id));
     for &id in merge.replaced.keys() {
-        earlier.extend(drops.insert(id, Reason::Replaced).map(|reason| (id, reason)));
-        aside.extend(planned.kept.remove(&id).map(|record| (id, record)));
+        drops.insert(id, Reason::Replaced);
+        planned.kept.remove(&id);
     }
     Guard::exempt("catalog");
-    let (left, jobs): (Vec<Job>, Vec<Job>) =
-        jobs.into_iter().partition(|job| merge.replaced.contains_key(&job.relation.id));
-    let mut left: HashMap<i64, Job> = left.into_iter().map(|job| (job.relation.id, job)).collect();
+    jobs.retain(|job| !merge.replaced.contains_key(&job.relation.id));
     let size = |job: &Job| job.members.iter().map(|m| m.nodes.len()).sum();
-    let plan = |jobs: Vec<Job>| {
-        pool(selection, workers, jobs, size, |router, job, calls| {
-            (job.relation.id, route(router, job, &points, section_m, calls))
-        })
-    };
-    let (searched, seconds) = plan(jobs);
-    search_seconds += seconds;
+    let (searched, seconds) = pool(selection, workers, jobs, size, |router, job, calls| {
+        (job.relation.id, route(router, job, &points, section_m, calls))
+    });
     planned.take(searched, &mut report, &mut drops);
-
-    Guard::exempt("merge");
-    merge.hold(&|id| planned.kept.contains_key(&id) || planned.cut.contains_key(&id));
-    for &id in merge.held.keys() {
-        drops.insert(id, Reason::Held);
-        aside.extend(planned.kept.remove(&id).map(|record| (id, record)));
-    }
-    // Each job that left and whose place the lines of the records that stay do not cover comes back,
-    // until none does. `named` can drop an unnamed stage later, so such a stage shows nothing.
-    loop {
-        let shown = |job: i64| -> Vec<Vec<P>> {
-            let ids = records_of(&planned.cut, job).into_iter().filter(|_| !unnamed.contains_key(&job));
-            ids.filter_map(|id| planned.kept.get(&id)?.record.get("line_udeg").map(decode)).collect()
-        };
-        let back = merge.uncovered(&probes, &shown, &|id| parts.contains(&id));
-        if back.is_empty() {
-            break;
-        }
-        let mut again = Vec::new();
-        for id in back {
-            merge.replaced.remove(&id);
-            merge.held.remove(&id);
-            drops.remove(&id);
-            report.came_back.push(id);
-            if let Some(record) = aside.remove(&id) {
-                planned.kept.insert(id, record);
-            } else if let Some(job) = left.remove(&id) {
-                again.push(job);
-            } else if let Some(reason) = earlier.remove(&id) {
-                drops.insert(id, reason);
-            }
-        }
-        let (searched, seconds) = plan(again);
-        search_seconds += seconds;
-        planned.take(searched, &mut report, &mut drops);
-    }
     let Planned { mut kept, lines, cut } = planned;
     report.workers = workers.max(1);
-    report.search_seconds = search_seconds;
+    report.search_seconds = search_seconds + seconds;
+
+    Guard::exempt("merge");
     let successors: BTreeMap<i64, Vec<i64>> = merge
         .replaced
         .keys()
@@ -823,7 +771,7 @@ fn catalog<S: Source + Clone + Send>(
     // The parts of a relation in a long record: the relation itself, or its sections.
     let parts_of = |id: i64, stage: Option<usize>| -> Vec<long::Part> {
         let name = relations.get(id).map_or(String::new(), |r| tag(&r.tags, "name").to_string());
-        let ids = records_of(&cut, id);
+        let ids: Vec<i64> = cut.get(&id).map_or(vec![id], |&n| (1..=n).map(|k| section_id(id, k)).collect());
         let last = ids.len() - 1;
         let part = |(i, id)| long::Part {
             id,

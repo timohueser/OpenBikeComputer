@@ -744,7 +744,7 @@ fn a_source_line_joins_its_members_and_patches_a_cut_off_the_roads_of_its_kind()
 }
 
 #[test]
-fn the_merge_keeps_the_official_record_of_a_route_and_each_route_once() -> Result<(), String> {
+fn the_merge_keeps_the_official_record_of_a_route() -> Result<(), String> {
     let sources = sources_of(vec![
         vec![
             official(561, "hiking", 1, "561", "Rigi Panoramaweg", &[at(&[0, 1, 2, 3])]),
@@ -767,7 +767,7 @@ fn the_merge_keeps_the_official_record_of_a_route_and_each_route_once() -> Resul
         route(101, &[hiking("SM 561"), marked.to_vec()].concat(), path(&[0, 1, 2, 3])),
         // Inside the loop of route 7.
         route(107, &hiking("7"), path(&[40, 41, 42, 52])),
-        // Three times the line of route 9.
+        // Three times the line of route 9: it stays beside it.
         route(109, &hiking("9"), path(&[6, 16, 26, 36, 46, 56, 66, 65, 64, 63])),
         // Another ref along half of route 11.
         route(111, &[("route", "hiking"), ("ref", "12"), ("network", "rwn")], path(&[20, 21, 22, 23])),
@@ -787,10 +787,10 @@ fn the_merge_keeps_the_official_record_of_a_route_and_each_route_once() -> Resul
     let by_id = by_id(&records);
     let dropped = |reason: &str| report.dropped.get(reason).cloned().unwrap_or_default();
     assert_eq!(dropped("Replaced"), [source_id(2, 5, 0), 101, 107, 121, 131, 132], "{:?}", report.dropped);
-    assert_eq!((dropped("Held"), dropped("Gap")), (vec![source_id(1, 9, 0)], vec![source_id(1, 41, 0)]));
+    assert_eq!(dropped("Gap"), [source_id(1, 41, 0)]);
     for id in [109, 111, 113, 103, 122, 141]
         .into_iter()
-        .chain([(11, 0), (13, 0), (3, 2), (21, 0), (31, 0)].map(|(key, stage)| source_id(1, key, stage)))
+        .chain([(9, 0), (11, 0), (13, 0), (3, 2), (21, 0), (31, 0)].map(|(key, stage)| source_id(1, key, stage)))
     {
         assert!(by_id.contains_key(&id), "{id}");
     }
@@ -805,7 +805,7 @@ fn the_merge_keeps_the_official_record_of_a_route_and_each_route_once() -> Resul
     let new = by_id[&source_id(1, 11, 0)];
     assert_eq!((&new["name"], &new["rank"], &new["hardest"]), (&json!("Eleven"), &json!(2), &json!(4)));
     assert!(new["moving_s"].as_u64() > Some(0) && new.get("description").is_none());
-    assert_eq!(report.sources["source-1"]["dropped"], json!({"Gap": 1, "Held": 1}));
+    assert_eq!(report.sources["source-1"]["dropped"], json!({"Gap": 1}));
     Ok(())
 }
 
@@ -971,7 +971,7 @@ fn a_job_that_leaves_still_shows_and_no_route_takes_the_place_of_another() -> Re
     let (package, osm) = grid(vec![
         // Inside route 3: it leaves for it.
         route(30, &national("3"), path(&[1, 2, 3])),
-        // Half of route 3 lies along it: a pair by its ref, which does not hold route 3.
+        // Half of route 3 lies along it: a pair by its ref, which stays beside route 3.
         route(31, &[("route", "hiking"), ("ref", "3")], path(&[2, 3, 4, 14, 24, 34, 44])),
         (
             80,
@@ -987,19 +987,16 @@ fn a_job_that_leaves_still_shows_and_no_route_takes_the_place_of_another() -> Re
     ]);
     let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
-    // Route 31 holds route 3 by rule 2, but holds too little of it, so route 3 comes back and keeps
-    // the place of route 30.
     assert_eq!(report.dropped.get("Replaced"), Some(&vec![30]), "{:?}", report.dropped);
     assert!(by_id.contains_key(&source_id(1, 3, 0)) && by_id.contains_key(&31), "the line of route 30 still shows");
-    assert_eq!(report.came_back, [source_id(1, 3, 0)]);
     // Stage 82 lies on the line of the regional route. Only a pair by its ref or name takes the place
-    // of a stage, so it stays, its trail stays complete, and it holds the regional route.
-    assert_eq!(report.dropped.get("Held"), Some(&vec![source_id(1, 20, 0)]), "{:?}", report.dropped);
+    // of a stage, so both stay, and the trail stays complete.
+    assert!(by_id.contains_key(&source_id(1, 20, 0)));
     assert_eq!(by_id[&80]["stages"], json!([81, 82]));
     Ok(())
 }
 
-/// A step of the made-up generator of `every_job_shows_and_no_two_records_of_two_origins_are_one_route`.
+/// A step of the made-up generator of `every_job_that_left_shows_in_the_records_of_earlier_origins`.
 fn next(seed: &mut u64, n: u64) -> u64 {
     *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
     (*seed >> 33) % n
@@ -1027,7 +1024,7 @@ fn walk(seed: &mut u64, start: Option<i64>, ways: usize) -> Vec<i64> {
 }
 
 #[test]
-fn every_job_that_leaves_still_shows_where_the_records_that_stay_cover_it() -> Result<(), String> {
+fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), String> {
     // Walks along the streets as official routes of two sources (some with stages), and as OSM
     // relations: copies, tails and heads of them, longer versions, routes that share only a part,
     // walks of their own, stages of trails, and a route at each edge of the extract. Few refs and
@@ -1061,6 +1058,12 @@ fn every_job_that_leaves_still_shows_where_the_records_that_stay_cover_it() -> R
         "Rand",
         &[[at(&[60, 61, 62, 63]), vec![[ORIGIN - 2_000_000, ORIGIN]]].concat()],
     ));
+    lines.insert(source_id(1, 90, 0), at(&[60, 61, 62, 63]));
+    // One route in both sources.
+    for origin in [1, 2] {
+        sources[origin - 1].push(official(91, "hiking", 1, "8", "Doppel", &[at(&[3, 13, 23, 33])]));
+        lines.insert(source_id(origin as i64, 91, 0), at(&[3, 13, 23, 33]));
+    }
     let networks = ["lwn", "rwn", ""];
     let mut relations: Vec<(i64, &str, &str, Vec<i64>)> = Vec::new();
     for id in 101..=140i64 {
@@ -1120,55 +1123,31 @@ fn every_job_that_leaves_still_shows_where_the_records_that_stay_cover_it() -> R
     lines.insert(150, at(&walks[0]));
     let (package, osm) = grid(osm);
     let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources_of(sources), 2, SECTION_M)?;
-    let kept: Vec<Vec<P>> =
-        records.iter().filter(|r| r.get("line_udeg").is_some()).map(|r| decode(&r["line_udeg"])).collect();
-    let nears: Vec<shape::Near> = kept.iter().map(|line| shape::Near::new(line)).collect();
-    let left: BTreeSet<i64> =
-        ["Replaced", "Held"].iter().flat_map(|r| report.dropped.get(*r).into_iter().flatten().copied()).collect();
+    // The invariant: each job that left shows by at least four fifths in the records of earlier origins
+    // in the catalog, so no source record leaves for an OSM job; and each source job that is not in
+    // the catalog failed its own line or plan, or left for an earlier source.
+    let origin = |id: i64| if id <= -sources::ORIGIN_ID { -id / sources::ORIGIN_ID } else { 3 };
+    let replaced = report.dropped.get("Replaced").cloned().unwrap_or_default();
     assert!(
-        left.len() >= 20 && !report.came_back.is_empty(),
-        "the made-up region tests the rules: {:?}",
+        replaced.len() >= 20 && replaced.iter().any(|&id| origin(id) == 2),
+        "the made-up region tests the merge: {:?}",
         report.dropped
     );
-    for id in left {
+    for id in replaced {
+        let earlier: Vec<Vec<P>> = records
+            .iter()
+            .filter(|r| r.get("line_udeg").is_some() && origin(r["id"].as_i64().unwrap()) < origin(id))
+            .map(|r| decode(&r["line_udeg"]))
+            .collect();
+        let nears: Vec<shape::Near> = earlier.iter().map(|line| shape::Near::new(line)).collect();
         let probe = merge::Probe::new(0, "hiking", 0, "", "", vec![lines[&id].clone()]);
         let shown = merge::share(&probe, &nears.iter().collect::<Vec<_>>());
-        assert!(shown >= 0.8, "only {shown:.2} of the line of {id} shows");
+        assert!(shown >= 0.8, "only {shown:.2} of the line of {id} shows in records of earlier origins");
     }
-    Ok(())
-}
-
-#[test]
-fn a_job_comes_back_when_the_record_that_took_its_place_leaves() -> Result<(), String> {
-    // Official route 561 of 17 streets; OSM route 30 is its last 3 streets, and OSM route 31 with its ref
-    // runs on its first 14 streets and then turns away for 5 more.
-    let line = [0, 1, 2, 3, 4, 5, 6, 16, 15, 14, 13, 12, 11, 10, 20, 21, 22, 23];
-    let sources = sources_of(vec![vec![official(561, "hiking", 1, "561", "Rundweg", &[at(&line)])]]);
-    let hiking = [("route", "hiking"), ("ref", "561")];
-    let (package, osm) = grid(vec![
-        route(30, &hiking, path(&[20, 21, 22, 23])),
-        route(31, &hiking, path(&[0, 1, 2, 3, 4, 5, 6, 16, 15, 14, 13, 12, 11, 10, 20, 30, 40, 50, 60, 61])),
-    ]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
-    // Route 31 holds the official route, so route 30 lost its place and comes back.
-    assert_eq!(report.dropped.get("Held"), Some(&vec![source_id(1, 561, 0)]), "{:?}", report.dropped);
-    assert_eq!(report.came_back, [30]);
-    let ids: Vec<i64> = records.iter().map(|r| r["id"].as_i64().unwrap()).collect();
-    assert_eq!(ids, [30, 31]);
-    Ok(())
-}
-
-#[test]
-fn a_relation_cut_into_sections_holds_only_what_its_sections_show() -> Result<(), String> {
-    // OSM route 40 of 9 streets ends on the T5 path, so its plan fails, and of its three sections the
-    // last fails too. Official route 7 is 3 streets of it, of which the sections show 2.
-    let bike = [("route", "bicycle"), ("ref", "7"), ("name", "Seeweg")];
-    let (package, osm) = grid(vec![route(40, &bike, path(&[10, 11, 12, 13, 14, 15, 16, 26, 25, 24]))]);
-    let sources = sources_of(vec![vec![official(7, "bicycle", 1, "7", "Seeweg", &[at(&[14, 15, 16, 26])])]]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, 2_000.0)?;
-    assert_eq!(report.came_back, [source_id(1, 7, 0)], "{:?}", report.dropped);
-    assert_eq!(report.dropped.get("Held"), None);
     let ids: BTreeSet<i64> = records.iter().map(|r| r["id"].as_i64().unwrap()).collect();
-    assert!(ids.is_superset(&BTreeSet::from([source_id(1, 7, 0), -4001, -4002])), "{ids:?}");
+    let dropped: BTreeSet<i64> = report.dropped.values().flatten().copied().collect();
+    for id in lines.keys().filter(|&&id| id <= -sources::ORIGIN_ID) {
+        assert!(ids.contains(id) || dropped.contains(id), "source job {id} is lost");
+    }
     Ok(())
 }

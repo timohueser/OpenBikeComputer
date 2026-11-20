@@ -1,14 +1,13 @@
-//! The merge of the routes of the origins: which jobs are pairs, which jobs and records leave, and
-//! the records that take the place of a job that left. `specs/route-catalog.md#second-sources`
-//! is the rule.
+//! The merge of the routes of the origins: which jobs are pairs, which jobs leave, and the records
+//! that take the place of a job that left. `specs/route-catalog.md#second-sources` is the rule.
 use super::dense;
 use planner_router::shape::{distance, Near, P};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// A pair by agreement needs this share of one match line along the other.
 const AGREE_SHARE: f64 = 0.2;
-/// A pair by the line alone needs this share both ways, and rule 1 this cover.
+/// A pair by the line alone needs this share both ways, and a job that leaves this cover.
 const SAME_SHARE: f64 = 0.8;
 /// The side of the coarse cells that find the jobs whose lines can meet, in microdegrees: more
 /// than `NEAR_M` in each direction.
@@ -140,19 +139,17 @@ fn pair((job, near): (&Probe, &Near), (id, record, index): &(i64, &Probe, Near))
     Some(Pair { id: *id, rule })
 }
 
-/// What the two rules decide.
+/// What the merge decides.
 #[derive(Default)]
 pub(super) struct Merge {
-    /// The pairs of each job with the kept records of earlier origins, as rule 1 found them.
+    /// The pairs of each job with the kept records of earlier origins.
     pub pairs: HashMap<i64, Vec<Pair>>,
-    /// Rule 1: each job that left, with the cover of its pairs.
+    /// Each job that left, with the cover of its pairs.
     pub replaced: BTreeMap<i64, f64>,
-    /// Rule 2: each kept record that left, with the job that holds it.
-    pub held: BTreeMap<i64, i64>,
 }
 
 impl Merge {
-    /// Rule 1 for the jobs of each origin after the first, in rank order: a job leaves when the kept
+    /// The merge of the jobs of each origin after the first, in rank order: a job leaves when the kept
     /// records of earlier origins that are its pairs cover four fifths of its match line; for a part
     /// of a long relation (`part`), only its pairs by (a) count. `kept` says whether a job of a second
     /// source kept a record.
@@ -200,71 +197,12 @@ impl Merge {
         merge
     }
 
-    /// Rule 2: a kept record leaves when one of its pairs is a job of a later origin that stays: it
-    /// did not leave by rule 1, and `stays` says that its plan kept a record or a section.
-    pub fn hold(&mut self, stays: &dyn Fn(i64) -> bool) {
-        for (&job, pairs) in &self.pairs {
-            if self.replaced.contains_key(&job) || !stays(job) {
-                continue;
-            }
-            for pair in pairs {
-                // Of two jobs that hold a record, the lower id, so the report does not depend on the
-                // order of a hash map.
-                self.held.entry(pair.id).and_modify(|holder| *holder = (*holder).min(job)).or_insert(job);
-            }
-        }
-    }
-
-    /// The jobs that left by rule 1 or 2 whose match line the records that take their place cover by
-    /// less than four fifths: for a part of a long relation (`part`), the records of its pairs by
-    /// (a); for any other job, the records of the jobs of its kind family. `shown` gives the lines of
-    /// the records of a job that show. Records that left by rule 2 come first, as they can give the
-    /// place of a job that left by rule 1.
-    pub fn uncovered(
-        &self,
-        probes: &BTreeMap<i64, Probe>,
-        shown: &dyn Fn(i64) -> Vec<Vec<P>>,
-        part: &dyn Fn(i64) -> bool,
-    ) -> Vec<i64> {
-        let gone: Vec<i64> = self.replaced.keys().chain(self.held.keys()).copied().collect();
-        let mut jobs_at = HashMap::<(i32, i32), Vec<i64>>::new();
-        for (&id, probe) in probes {
-            for &cell in &probe.cells {
-                jobs_at.entry(cell).or_default().push(id);
-            }
-        }
-        let place = |id: i64| -> BTreeSet<i64> {
-            let probe = &probes[&id];
-            match part(id) {
-                true => self.pairs.get(&id).into_iter().flatten().filter(|p| p.rule == Rule::A).map(|p| p.id).collect(),
-                false => {
-                    let next =
-                        |&(x, y): &(i32, i32)| (x - 1..=x + 1).flat_map(move |x| (y - 1..=y + 1).map(move |y| (x, y)));
-                    let jobs = probe.cells.iter().flat_map(next).filter_map(|cell| jobs_at.get(&cell)).flatten();
-                    jobs.copied().filter(|job| probes[job].family == probe.family).collect()
-                }
-            }
-        };
-        let uncovered = |&id: &i64| {
-            let lines: Vec<Vec<P>> = place(id).into_iter().flat_map(shown).collect();
-            let nears: Vec<Near> = lines.iter().map(|line| Near::new(line)).collect();
-            share(&probes[&id], &nears.iter().collect::<Vec<_>>()) < SAME_SHARE
-        };
-        // One job at a time: each builds the indexes of its own place, and many at once raise the
-        // memory peak of the catalog.
-        let back: Vec<i64> = gone.into_iter().filter(uncovered).collect();
-        match back.iter().any(|id| self.held.contains_key(id)) {
-            true => back.into_iter().filter(|id| self.held.contains_key(id)).collect(),
-            false => back,
-        }
-    }
-
-    /// The successors of a job that left by rule 1, in the order of their starts along it: its pairs
-    /// by (a) that rule 2 kept. A pair by (b) is another route on the same path. `starts` gives the
-    /// first point of each kept record.
+    /// The successors of a job that left, in the order of their starts along it: its pairs by (a). A
+    /// pair by (b) is another route on the same path. `starts` gives the first point of each kept
+    /// record.
     pub fn successors(&self, job: i64, probes: &BTreeMap<i64, Probe>, starts: &dyn Fn(i64) -> Option<P>) -> Vec<i64> {
         let pairs = self.pairs.get(&job).into_iter().flatten();
-        let pairs = pairs.filter(|pair| pair.rule == Rule::A && !self.held.contains_key(&pair.id));
+        let pairs = pairs.filter(|pair| pair.rule == Rule::A);
         let probe = &probes[&job];
         let mut placed: Vec<(usize, i64)> =
             pairs.filter_map(|pair| Some((place(probe, starts(pair.id)?), pair.id))).collect();
