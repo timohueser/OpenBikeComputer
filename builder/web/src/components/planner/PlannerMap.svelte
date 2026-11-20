@@ -213,6 +213,20 @@
         map.zoomTo(map.getZoom() + delta, { duration: motionDuration() });
     }
 
+    let grown = false;
+    // The map opens inside the region; once it has a size, it may show one region size around it, so that "Show whole
+    // route" fits a trip that fills the region. In a hidden page MapLibre fits the region to 400 × 300 instead.
+    function growBounds() {
+        if (grown || !map || !container.clientWidth || !container.clientHeight) return;
+        grown = true;
+        const [west, south, east, north] = config.bounds, width = east - west, height = north - south;
+        map.setMaxBounds([[Math.max(-180, west - width), Math.max(-85, south - height)], [Math.min(180, east + width), Math.min(85, north + height)]]);
+    }
+    // The margin around the region has no data: a click there adds no point and opens no TrailView.
+    const inRegion = ({ lng, lat }: { lng: number; lat: number }) => {
+        const [west, south, east, north] = config.bounds;
+        return lng >= west && lng <= east && lat >= south && lat <= north;
+    };
     const boundsOf = (region: Coordinate[]) => region.reduce((bounds, coordinate) => bounds.extend(coordinate), new maplibregl.LngLatBounds());
     const padding = () => ({ ...fitPadding, bottom: fitPadding.bottom + bottomInset });
 
@@ -456,10 +470,7 @@
             calloutPopup = mapCallout(map, popupContent, { offset: calloutOffset,
                 free: () => ({ left: 16, top: 16, right: container.clientWidth - controlsWidth, bottom: container.clientHeight - bottomClear }) });
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
-            // The map opens inside the region; after that, it may show one region size around it, so that "Show whole route"
-            // fits a trip that fills the region.
-            const [west, south, east, north] = config.bounds, width = east - west, height = north - south;
-            map.setMaxBounds([[Math.max(-180, west - width), Math.max(-85, south - height)], [Math.min(180, east + width), Math.min(85, north + height)]]);
+            growBounds();
             fitInitialRoute();
             map.addControl(new ClosedAttribution(), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
@@ -494,7 +505,7 @@
             });
             map.on("click", (event) => {
                 const target = event.originalEvent.target;
-                if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target))) return;
+                if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target)) || !inRegion(event.lngLat)) return;
                 if (onPick) { onPick([event.lngLat.lng, event.lngLat.lat], [event.originalEvent.clientX, event.originalEvent.clientY]); return; }
                 const hit = pickMode ? null : lineHit(event.point);
                 const overlay = pickMode ? null : overlayLayer?.hit(event);
@@ -506,7 +517,7 @@
             });
             // MapLibre makes its canvas focusable, and the arrow keys pan it.
             map.getCanvas().addEventListener("keydown", (event) => {
-                if (event.key !== "Enter" || !onPick || !map) return;
+                if (event.key !== "Enter" || !onPick || !map || !inRegion(map.getCenter())) return;
                 const box = container.getBoundingClientRect(), { lng, lat } = map.getCenter();
                 onPick([lng, lat], [box.left + box.width / 2, box.top + box.height / 2]);
             });
@@ -541,6 +552,7 @@
         let refit: ReturnType<typeof setTimeout> | undefined;
         const observer = new ResizeObserver(() => {
             map?.resize();
+            growBounds();
             if (!wholeRoute) return;
             clearTimeout(refit);
             refit = setTimeout(() => { if (wholeRoute) fitRoute(); }, 150);
