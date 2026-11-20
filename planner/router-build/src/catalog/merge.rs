@@ -4,7 +4,7 @@
 use super::dense;
 use planner_router::shape::{distance, Near, P};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// A pair by agreement needs this share of one match line along the other.
 const AGREE_SHARE: f64 = 0.2;
@@ -216,36 +216,38 @@ impl Merge {
     }
 
     /// The jobs that left by rule 1 or 2 whose match line the records that take their place cover by
-    /// less than four fifths: for a part of a long relation (`part`), its pairs by (a) in `shown`;
-    /// for any other job, the records in `shown` of its kind family. Records that left by rule 2 come
-    /// first, as they can give the place of a job that left by rule 1.
+    /// less than four fifths: for a part of a long relation (`part`), the records of its pairs by
+    /// (a); for any other job, the records of the jobs of its kind family. `shown` gives the lines of
+    /// the records of a job that show. Records that left by rule 2 come first, as they can give the
+    /// place of a job that left by rule 1.
     pub fn uncovered(
         &self,
         probes: &BTreeMap<i64, Probe>,
-        shown: &HashSet<i64>,
+        shown: &dyn Fn(i64) -> Vec<Vec<P>>,
         part: &dyn Fn(i64) -> bool,
     ) -> Vec<i64> {
         let gone: Vec<i64> = self.replaced.keys().chain(self.held.keys()).copied().collect();
-        let place = |id: i64| -> Vec<&Probe> {
+        let mut jobs_at = HashMap::<(i32, i32), Vec<i64>>::new();
+        for (&id, probe) in probes {
+            for &cell in &probe.cells {
+                jobs_at.entry(cell).or_default().push(id);
+            }
+        }
+        let place = |id: i64| -> BTreeSet<i64> {
             let probe = &probes[&id];
             match part(id) {
-                true => self
-                    .pairs
-                    .get(&id)
-                    .into_iter()
-                    .flatten()
-                    .filter(|p| p.rule == Rule::A && shown.contains(&p.id))
-                    .map(|p| &probes[&p.id])
-                    .collect(),
-                false => shown
-                    .iter()
-                    .filter_map(|other| probes.get(other))
-                    .filter(|o| o.family == probe.family && o.meets(probe))
-                    .collect(),
+                true => self.pairs.get(&id).into_iter().flatten().filter(|p| p.rule == Rule::A).map(|p| p.id).collect(),
+                false => {
+                    let next =
+                        |&(x, y): &(i32, i32)| (x - 1..=x + 1).flat_map(move |x| (y - 1..=y + 1).map(move |y| (x, y)));
+                    let jobs = probe.cells.iter().flat_map(next).filter_map(|cell| jobs_at.get(&cell)).flatten();
+                    jobs.copied().filter(|job| probes[job].family == probe.family).collect()
+                }
             }
         };
         let uncovered = |&id: &i64| {
-            let nears: Vec<Near> = place(id).into_iter().map(Probe::near).collect();
+            let lines: Vec<Vec<P>> = place(id).into_iter().flat_map(shown).collect();
+            let nears: Vec<Near> = lines.iter().map(|line| Near::new(line)).collect();
             share(&probes[&id], &nears.iter().collect::<Vec<_>>()) < SAME_SHARE
         };
         // One job at a time: each builds the indexes of its own place, and many at once raise the

@@ -114,6 +114,11 @@ fn section_id(relation: i64, number: usize) -> i64 {
     -(relation * 100 + number as i64)
 }
 
+/// The records that a job can give: its own, or the sections of its cut plan (`cut`).
+fn records_of(cut: &BTreeMap<i64, usize>, job: i64) -> Vec<i64> {
+    cut.get(&job).map_or(vec![job], |&n| (1..=n).map(|k| section_id(job, k)).collect())
+}
+
 fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
     tags.get(key).unwrap_or("")
 }
@@ -759,11 +764,14 @@ fn catalog<S: Source + Clone + Send>(
         drops.insert(id, Reason::Held);
         aside.extend(planned.kept.remove(&id).map(|record| (id, record)));
     }
-    // Each job that left and whose place the records that stay do not cover comes back, until none
-    // does. `named` can drop an unnamed stage later, so such a stage covers nothing.
+    // Each job that left and whose place the lines of the records that stay do not cover comes back,
+    // until none does. `named` can drop an unnamed stage later, so such a stage shows nothing.
     loop {
-        let shown = planned.kept.keys().chain(planned.cut.keys()).filter(|id| !unnamed.contains_key(id));
-        let back = merge.uncovered(&probes, &shown.copied().collect(), &|id| parts.contains(&id));
+        let shown = |job: i64| -> Vec<Vec<P>> {
+            let ids = records_of(&planned.cut, job).into_iter().filter(|_| !unnamed.contains_key(&job));
+            ids.filter_map(|id| planned.kept.get(&id)?.record.get("line_udeg").map(decode)).collect()
+        };
+        let back = merge.uncovered(&probes, &shown, &|id| parts.contains(&id));
         if back.is_empty() {
             break;
         }
@@ -815,7 +823,7 @@ fn catalog<S: Source + Clone + Send>(
     // The parts of a relation in a long record: the relation itself, or its sections.
     let parts_of = |id: i64, stage: Option<usize>| -> Vec<long::Part> {
         let name = relations.get(id).map_or(String::new(), |r| tag(&r.tags, "name").to_string());
-        let ids: Vec<i64> = cut.get(&id).map_or(vec![id], |&n| (1..=n).map(|k| section_id(id, k)).collect());
+        let ids = records_of(&cut, id);
         let last = ids.len() - 1;
         let part = |(i, id)| long::Part {
             id,

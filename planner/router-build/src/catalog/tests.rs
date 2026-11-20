@@ -1157,3 +1157,18 @@ fn a_job_comes_back_when_the_record_that_took_its_place_leaves() -> Result<(), S
     assert_eq!(ids, [30, 31]);
     Ok(())
 }
+
+#[test]
+fn a_relation_cut_into_sections_holds_only_what_its_sections_show() -> Result<(), String> {
+    // OSM route 40 of 9 streets ends on the T5 path, so its plan fails, and of its three sections the
+    // last fails too. Official route 7 is 3 streets of it, of which the sections show 2.
+    let bike = [("route", "bicycle"), ("ref", "7"), ("name", "Seeweg")];
+    let (package, osm) = grid(vec![route(40, &bike, path(&[10, 11, 12, 13, 14, 15, 16, 26, 25, 24]))]);
+    let sources = sources_of(vec![vec![official(7, "bicycle", 1, "7", "Seeweg", &[at(&[14, 15, 16, 26])])]]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, 2_000.0)?;
+    assert_eq!(report.came_back, [source_id(1, 7, 0)], "{:?}", report.dropped);
+    assert_eq!(report.dropped.get("Held"), None);
+    let ids: BTreeSet<i64> = records.iter().map(|r| r["id"].as_i64().unwrap()).collect();
+    assert!(ids.is_superset(&BTreeSet::from([source_id(1, 7, 0), -4001, -4002])), "{ids:?}");
+    Ok(())
+}
