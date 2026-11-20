@@ -6,6 +6,7 @@
 //! and never a connection string, because rclone splits an `https://` endpoint at its colon.
 
 use std::collections::BTreeMap;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -278,7 +279,29 @@ impl Bucket {
         args.push(list.display().to_string());
         args.extend(headers(upload));
         args.extend([staged.display().to_string(), self.root.clone()]);
-        self.checked(&args).map(drop)
+        self.copy_with_progress(&args, files.len())
+    }
+
+    /// Run the rclone copy `args` of `files` files, and write a progress line to stderr every 30
+    /// seconds and at the end.
+    fn copy_with_progress(&self, args: &[String], files: usize) -> Result<(), String> {
+        let mut child = self
+            .command(args)
+            .args(["--use-json-log", "--stats", "30s", "--stats-log-level", "NOTICE"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(rclone_missing)?;
+        let mut stderr = String::new();
+        for line in std::io::BufReader::new(child.stderr.take().expect("stderr is piped")).lines() {
+            let line = line.map_err(|e| format!("rclone: {e}"))?;
+            match serde_json::from_str::<Logged>(&line) {
+                Ok(Logged { stats: Some(stats) }) => eprintln!("obc data: upload: {}", stats.progress(files)),
+                _ => stderr += &format!("{line}\n"),
+            }
+        }
+        let status = child.wait().map_err(|e| format!("rclone: {e}"))?;
+        self.success(Output { status, stdout: Vec::new(), stderr: stderr.into_bytes() }, &args[0]).map(drop)
     }
 
     /// Prove that `key` holds the bytes of `file`: the same size, and the same MD5 when both
@@ -399,13 +422,14 @@ impl Bucket {
         serde_json::from_slice(&self.success(out, "lsjson")?.stdout).map_err(|e| format!("rclone lsjson: {e}"))
     }
 
+    fn command(&self, args: &[String]) -> Command {
+        let mut command = Command::new("rclone");
+        command.envs(self.env.iter().map(|(key, value)| (key, value))).args(args).stdin(Stdio::null());
+        command
+    }
+
     fn run(&self, args: &[String]) -> Result<Output, String> {
-        Command::new("rclone")
-            .envs(self.env.iter().map(|(key, value)| (key, value)))
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| format!("rclone: {e}; the R2 client needs rclone on PATH (https://rclone.org/install/)"))
+        self.command(args).output().map_err(rclone_missing)
     }
 
     fn checked(&self, args: &[String]) -> Result<Output, String> {
@@ -417,7 +441,9 @@ impl Bucket {
             return Ok(out);
         }
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let reason = stderr.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("no message");
+        let line = stderr.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("no message");
+        let json = serde_json::from_str::<serde_json::Value>(line).ok();
+        let reason = json.as_ref().and_then(|json| json["msg"].as_str()).unwrap_or(line);
         Err(self.redact(&format!("rclone {command} failed: {reason}")))
     }
 
@@ -427,6 +453,48 @@ impl Bucket {
             Some(secret) if !secret.is_empty() => text.replace(secret.as_str(), "***"),
             _ => text.to_string(),
         }
+    }
+}
+
+fn rclone_missing(error: std::io::Error) -> String {
+    format!("rclone: {error}; the R2 client needs rclone on PATH (https://rclone.org/install/)")
+}
+
+/// A line of rclone's JSON log.
+#[derive(Deserialize)]
+struct Logged {
+    stats: Option<Stats>,
+}
+
+/// The totals of an rclone copy so far.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Stats {
+    /// The bytes sent.
+    bytes: u64,
+    /// The files that the bucket already held: rclone compared them.
+    checks: u64,
+    /// The files sent.
+    transfers: u64,
+    /// Bytes per second.
+    speed: f64,
+    /// Seconds since the copy started.
+    elapsed_time: f64,
+}
+
+impl Stats {
+    /// The files done of `files`, the bytes sent, the rate and the time left. A key that held other
+    /// bytes counts as compared and as sent, so the count stops at `files`.
+    fn progress(&self, files: usize) -> String {
+        let files = files as u64;
+        let done = (self.checks + self.transfers).min(files);
+        let (sent, rate) = (crate::engine::runs::bytes(self.bytes), crate::engine::runs::bytes(self.speed as u64));
+        let mut line = format!("{done} of {files} files, {sent} sent at {rate}/s");
+        if done > 0 && done < files {
+            let left = self.elapsed_time * (files - done) as f64 / done as f64;
+            line += &format!(", {} left", crate::engine::runs::duration((left * 1000.0) as u64));
+        }
+        line
     }
 }
 
@@ -636,6 +704,16 @@ mod tests {
                 "obcr2:maps/a.json"
             ]
         );
+    }
+
+    #[test]
+    fn upload_progress_counts_files_and_estimates_the_time_left() {
+        let line = r#"{"level":"warning","stats":{"bytes":1200000000,"checks":3000,"transfers":4012,"speed":10200000.5,"elapsedTime":1380.0,"totalTransfers":4100}}"#;
+        let Logged { stats: Some(stats) } = serde_json::from_str(line).unwrap() else { panic!("{line}") };
+        assert_eq!(stats.progress(29_171), "7012 of 29171 files, 1.20 GB sent at 10.2 MB/s, 1h 12m left");
+        assert_eq!(stats.progress(7_000), "7000 of 7000 files, 1.20 GB sent at 10.2 MB/s");
+        let error: Logged = serde_json::from_str(r#"{"level":"error","msg":"Failed to copy"}"#).unwrap();
+        assert!(error.stats.is_none());
     }
 
     #[test]
