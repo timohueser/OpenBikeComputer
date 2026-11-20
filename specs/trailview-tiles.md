@@ -318,11 +318,17 @@ packs](planner-offline.md#grid-publication-and-selection):
 
 | Metadata | Value |
 | --- | --- |
-| `stamp_version` | 16 lowercase hex digits: the start of the SHA-256 of the bake module, which `builder/web/vite/stamp-bundle.ts` makes of the stamp code and the tables that it reads |
+| `stamp_version` | 16 lowercase hex digits: the start of the SHA-256 of the bake module, which `builder/web/vite/stamp-bundle.ts` makes of the stamp code and the tables that it reads, with each WASM module that it inlines replaced by the hash of that module's sources (below) |
 | `attribution` | Text to show with the layer |
 | `bounds` | The region bounds |
 
 A viewer reads the nodes only when `stamp_version` is the version of its own stamp code.
+
+The stamp code inlines the parts bridge (`builder/trailview-parts-wasm`). Its sources are each file of
+`host/obc-trailview-parts` and `builder/trailview-parts-wasm`, and `data/trailview/parts.json`; their hash is the
+SHA-256 of the lines `<SHA-256 of the file>  <path from the repository>`, one per file, sorted by path. The build of
+the bridge writes that hash next to the package (`sources.sha256`), and the bundle refuses a package whose hash is
+not that of the checkout's sources.
 
 The bytes of a node (`builder/web/src/lib/trailview/terrain/node-bytes.ts`) are, in this order:
 
@@ -345,3 +351,8 @@ and `indices` come first again when the viewer unpacks it. `packed` holds:
 | `v` | The distinct vertices, coded with `encodeVertexBuffer` of meshoptimizer |
 | `r` | Null when `w` is `n`; else, for each vertex, its distinct vertex, coded with `encodeIndexSequence` (4 bytes) |
 | `ni`, `i` | The number of indices, and the indices, coded with `encodeIndexSequence` (4 bytes) |
+
+A vertex of a structure mesh has 7 little-endian words (28 bytes): x, y (int32 world units), z (f32 metres),
+colour and flags (4 bytes), the metres across a road face and its half-width (two snorm16 of ±16 m), the sleepers or
+the metres along a road's stroke (f32), and the share of daylight of a part (f32 from 0 to 1; −1 where the viewer
+takes it from the boxes of the portals).
