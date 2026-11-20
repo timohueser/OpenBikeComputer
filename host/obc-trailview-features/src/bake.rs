@@ -57,7 +57,7 @@ pub struct Options {
     pub class_names: Vec<String>,
     pub widths: WidthRules,
     pub waterways: BTreeMap<String, Waterway>,
-    pub parts: parts::Rules,
+    pub parts: obc_trailview_parts::Ladder,
     pub sea: Option<PathBuf>,
 }
 
@@ -957,7 +957,7 @@ mod tests {
             class_names,
             widths: crate::kinds::widths(&roads, &finishes).unwrap(),
             waterways: crate::kinds::waterways(&crate::kinds::waterway_rows(&waterways)).unwrap(),
-            parts: parts::Rules::parse(&crate::kinds::part_rows(&table(include_str!(
+            parts: obc_trailview_parts::Ladder::parse(&crate::kinds::part_rows(&table(include_str!(
                 "../../../data/trailview/parts.json"
             ))))
             .unwrap(),

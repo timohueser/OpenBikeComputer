@@ -1,0 +1,13 @@
+[package]
+name = "obc-trailview-parts"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "The TrailView tunnel parts: their meshes, ground boxes, floors and footprints from the part records of a feature tile"
+
+[dependencies]
+# The same maths in the bake and in the viewer's WASM.
+libm = { workspace = true }
+# Every build parses the table and the records the same: the row order is kept, and floats round-trip.
+serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }

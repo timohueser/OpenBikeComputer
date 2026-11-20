@@ -219,7 +219,8 @@ pub(crate) fn floors(
         // The vertices: the curve's, and the ends of each stretch of the tube within the reach of a way that can lower
         // the floor.
         let mut runs: BTreeMap<usize, Vec<[f64; 2]>> = BTreeMap::new();
-        let mut extra: Vec<f64> = Vec::new();
+        // The ends of the reaches, each with its way.
+        let mut extra: Vec<(f64, usize)> = Vec::new();
         for j in 0..ps.len() - 1 {
             let ds = points[j + 1].s - points[j].s;
             for (o, k) in near(grown(&ps[j..j + 2], *shell_half)).filter(|&(o, _)| !overs[o].tunnel) {
@@ -230,29 +231,38 @@ pub(crate) fn floors(
                 }
             }
         }
-        for mut list in runs.into_values() {
+        for (o, mut list) in runs {
             list.sort_by(|x, y| x[0].total_cmp(&y[0]));
             let mut run = list[0];
             for r in list.into_iter().skip(1).chain([[f64::INFINITY; 2]]) {
                 if r[0] <= run[1] + MERGE_M {
                     run[1] = run[1].max(r[1]);
                 } else {
-                    extra.extend(run);
+                    extra.extend(run.map(|x| (x, o)));
                     run = r;
                 }
             }
         }
         let (s0, s1) = (points[0].s, points[points.len() - 1].s);
-        let mut s: Vec<f64> = points.iter().map(|q| q.s).collect();
-        extra.retain(|&e| e > s0 && e < s1);
-        extra.sort_by(f64::total_cmp);
-        for e in extra {
-            let at = s.partition_point(|&x| x < e);
-            let close = |k: usize| s.get(k).is_some_and(|&x| (x - e).abs() < MERGE_M);
-            if !close(at) && !(at > 0 && close(at - 1)) {
-                s.insert(at, e);
-            }
-        }
+        // The openings and the joins of the ways stay; a point of the curve, then a point of a reach, nearer than
+        // `vertex_gap_m` to a vertex is that vertex.
+        let joins = tube.curve.stretches.iter().map(|(_, ps)| ps[0].s).filter(|&x| x > s0 && x < s1);
+        let fixed: Vec<f64> = [s0, s1].into_iter().chain(joins).collect();
+        let curve: Vec<f64> = points.iter().map(|q| q.s).collect();
+        extra.retain(|&(e, _)| e > s0 && e < s1);
+        extra.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let ends: Vec<f64> = extra.iter().map(|e| e.0).collect();
+        let s = spaced(&ends, spaced(&curve, fixed, b.vertex_gap_m), b.vertex_gap_m);
+        // The vertex that took the end of a reach, and its way: the way lies over it within its reach and
+        // `vertex_gap_m`, so it keeps the cap of that end.
+        let took: Vec<(usize, usize)> = (extra.iter())
+            .filter_map(|&(e, o)| {
+                let at = s.partition_point(|&x| x < e);
+                let near = [at.checked_sub(1), (at < s.len()).then_some(at)].into_iter().flatten();
+                let i = near.min_by(|&x, &y| (s[x] - e).abs().total_cmp(&(s[y] - e).abs()))?;
+                (s[i] != e).then_some((i, o))
+            })
+            .collect();
         let (ls, lz): (Vec<f64>, Vec<f64>) = points.iter().map(|q| (q.s, q.z)).unzip();
         let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();
         let xy: Vec<[f64; 2]> = s.iter().map(|&x| tube.curve.at(x).0.p).collect();
@@ -288,7 +298,8 @@ pub(crate) fn floors(
             }
             for (o, (m, k, u)) in best {
                 let w = &overs[o];
-                if m > reach_of(w) + MERGE_M {
+                let past = if took.contains(&(i, o)) { b.vertex_gap_m } else { MERGE_M };
+                if m > reach_of(w) + past {
                     continue;
                 }
                 let (a, e) = (w.points[k], w.points[k + 1]);
@@ -379,6 +390,20 @@ pub(crate) fn floors(
         "tube_clash_places": places(tube_clashes, 1.0),
     });
     (out, metrics)
+}
+
+/// The metres of `kept`, sorted, with each of `more` in its order that lies `gap` or farther from every kept one.
+fn spaced(more: &[f64], mut kept: Vec<f64>, gap: f64) -> Vec<f64> {
+    kept.sort_by(f64::total_cmp);
+    kept.dedup();
+    for &x in more {
+        let at = kept.partition_point(|&k| k < x);
+        let far = |k: usize| kept.get(k).is_none_or(|&y| (y - x).abs() >= gap);
+        if far(at) && (at == 0 || far(at - 1)) {
+            kept.insert(at, x);
+        }
+    }
+    kept
 }
 
 /// The points of a tube from metres a to b along its chain: a point at each end and the points of its curve between,

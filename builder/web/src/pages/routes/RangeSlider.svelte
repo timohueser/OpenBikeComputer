@@ -44,6 +44,8 @@
         const value = end === 1 && at === STEPS ? Infinity : at * step;
         if (next[end] === value) return;
         next[end] = value;
+        // A stored end beyond the scale shows at its last step: the range takes that step when the other end passes it.
+        if (next[0] >= next[1]) next[1 - end] = end === 0 ? (high === STEPS ? Infinity : high * step) : low * step;
         onchange(next[0] <= 0 && next[1] === Infinity ? undefined : next);
     }
 </script>

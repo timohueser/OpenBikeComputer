@@ -8,9 +8,10 @@
     import PanelResize from '../../components/planner/PanelResize.svelte';
     import Card from '../../lib/ui/Card.svelte';
     import type { Box, Item } from './filter';
+    import type { MapOverlay } from './RoutesMap.svelte';
     import { HoverState } from './hover.svelte';
 
-    let { title, failure, items, shown, selected, marked, fit, place, look, credits, together, onselect, onview, tabs, actions, list, table, mapButtons, card }: {
+    let { title, failure, items, shown, selected, marked, fit, place, look, credits, together, onselect, onview, overlay, pick, tabs, actions, list, table, mapButtons, card }: {
         title: string;
         failure?: string;
         /** The props of the map. */
@@ -28,6 +29,8 @@
         together?: (id: string) => string[];
         onselect: (id: string | undefined) => void;
         onview: (view: Box) => void;
+        overlay?: MapOverlay;
+        pick?: { text: string; onpick: (at: [number, number]) => void };
         /** Beside the title. */
         tabs?: Snippet;
         /** The buttons at the end of the header. */
@@ -151,7 +154,7 @@
             <div class="map" style:--map-buttons={mapButtons ? `${buttonsWidth + 10}px` : null}>
                 {#await import('./RoutesMap.svelte') then { default: RoutesMap }}
                     <RoutesMap {items} {shown} {selected} {marked} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} {credits}
-                        {look} {together} hovered={lead} onhover={id => id === undefined ? hover.leave('map') : hover.point(id, 'map')} {onselect} {onview} />
+                        {look} {together} {overlay} {pick} hovered={lead} onhover={id => id === undefined ? hover.leave('map') : hover.point(id, 'map')} {onselect} {onview} />
                 {:catch error}
                     <p class="note">{error instanceof Error ? error.message : String(error)}</p>
                 {/await}
