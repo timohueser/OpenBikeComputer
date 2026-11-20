@@ -130,9 +130,9 @@ export function reachBox(query: Query): Box | undefined {
  * that start point (the cap, lifts on). So each suggestion and count of the view has its routes loaded, and the box meets
  * at most `MAX_CELLS` cells. Null when the view and the reach do not meet.
  */
-export function loadBox(query: Query, view: Box): Box | null {
-    if (!query.start) return view;
-    const reach = around(query.start, driveCap(query.start[1]) + LIFT_KM + LAST_WALK_KM);
+export function loadBox({ start }: Pick<Query, 'start'>, view: Box): Box | null {
+    if (!start) return view;
+    const reach = around(start, driveCap(start[1]) + LIFT_KM + LAST_WALK_KM);
     const box: Box = [Math.max(view[0], reach[0]), Math.max(view[1], reach[1]), Math.min(view[2], reach[2]), Math.min(view[3], reach[3])];
     return box[0] <= box[2] && box[1] <= box[3] ? box : null;
 }
@@ -472,9 +472,9 @@ export function readQuery(text: string, today: string): { query: Query; view?: B
 }
 
 /** The query that the page opens with: from its address, else from `history.state.explore`, else the last query kept in
- * the browser. Each is the text of `queryParams`. */
-export function openingQuery(address: string, kept: unknown, stored: string | null, today: string): { query: Query; view?: Box } {
-    const text = [address, kept, stored].find((one): one is string => typeof one === 'string' && one !== '');
+ * the browser. Each is the text of `queryParams`, where '' is the default query; the address has none without `?`. */
+export function openingQuery(address: string | undefined, kept: unknown, stored: string | null, today: string): { query: Query; view?: Box } {
+    const text = [address, kept, stored].find((one): one is string => typeof one === 'string');
     return readQuery(text ?? '', today);
 }
 
