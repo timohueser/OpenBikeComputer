@@ -628,26 +628,34 @@ other, whatever their refs, names and ranks.
 
 ### Who stays
 
-Two rules, in this order, each applied once:
+Two rules, in this order, each applied once, and then a pass that brings jobs back:
 
 1. A job leaves (`Replaced`) when the kept records of earlier origins that are its pairs together
-   cover at least four fifths of its match line.
+   cover at least four fifths of its match line. For a part of a long route, only its pairs by (a)
+   count: a pair by (b) is another route on the same path, which cannot take its place.
 2. A kept record of a second source leaves (`Held`) when one of its pairs is a job of a later origin
-   that stays and holds at least four fifths of the record's match line. The job stays when it did
-   not leave by rule 1, its plan kept a record or a section, and it has a `name` or a `ref` of its
-   own (an unnamed stage can leave later for want of a name). That job holds more of the route than
-   the record gives, such as an OSM route of 30 km with the number of an official route of 7 km.
+   that stays: the job did not leave by rule 1, and its plan kept a record or a section. That job
+   holds more of the route than the record gives, such as an OSM route of 30 km with the number of
+   an official route of 7 km.
+3. A job that left comes back, again and again until none does, while the records that take its
+   place cover less than four fifths of its match line: for a part of a long route its pairs by (a)
+   that stay, for any other job the records of its kind family that stay; an unnamed stage covers
+   nothing, as it can leave later for want of a name. A record that left by rule 2 comes back first,
+   and a relation that comes back gets its plan then.
 
-A job that fails removes nothing: rule 1 counts only kept records, and rule 2 only jobs that kept a
-record. So the line of each job that leaves stays in the catalog: four fifths of it in the records
-that rule 1 counted, and four fifths of each of these in a job that holds it. The builder plans all source jobs first. Then it applies rule 1 to the jobs of the second
-and later sources and to the OSM jobs, so an OSM job that leaves needs no search. Then it plans the
-OSM jobs that stay, and applies rule 2.
+So no route leaves the catalog for another one unless the records that stay cover four fifths of its
+line. A job that fails removes nothing: rule 1 counts only kept records, and rule 2 only jobs that
+kept a record. The builder plans all source jobs first. Then it applies rule 1 to the jobs of the
+second and later sources and to the OSM jobs, so an OSM job that leaves needs no search. Then it
+plans the OSM jobs that stay, and applies rule 2 and the pass.
+
+Two stagings of one route with other stage ends both stay, such as an official stage and an OSM
+stage of one trail that lie three quarters along each other: neither covers four fifths of the
+other, and to remove one could remove a stretch that shows nowhere else.
 
 ### Successors
 
-The successors of a job that left by rule 1 are its pairs by (a) of earlier origins that rule 2
-kept. A pair by (b) is another route on the same path, so it is no successor. So a regional OSM
+The successors of a job that left by rule 1 are its pairs by (a) of earlier origins that stay. A pair by (b) is another route on the same path, so it is no successor. So a regional OSM
 stage on a path that a national route shares has the regional official stage as its successor, not
 the national one, and a regional official stage never takes the place of a national stage.
 
