@@ -3,8 +3,6 @@
 //! about each endpoint and about each crossing of two segments; each segment runs through the centre of every hot pixel
 //! that it meets, in order along it. Two polylines then meet only at such centres, or run along each other.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 pub type P = [i32; 2];
 
 /// The side of a bucket of hot pixels, in units.
@@ -92,28 +90,29 @@ fn meets(a: P, b: P, h: P) -> bool {
 /// The polylines of `segments`, each from its first point to its last. Only the pairs with a segment of `movers`
 /// may cross: the others meet at most at their ends.
 pub fn snap(segments: &[[P; 2]], movers: &[usize]) -> Vec<Vec<P>> {
-    let mut hot: BTreeSet<P> = segments.iter().flatten().copied().collect();
+    let mut hot: Vec<P> = segments.iter().flatten().copied().collect();
     let boxes: Vec<[i32; 4]> =
         (segments.iter()).map(|&[a, b]| [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])]).collect();
     let overlap = |i: usize, j: usize| {
         let (p, q) = (boxes[i], boxes[j]);
         p[0] <= q[2] && q[0] <= p[2] && p[1] <= q[3] && q[1] <= p[3]
     };
-    let moving: BTreeSet<usize> = movers.iter().copied().collect();
+    let mut moving = vec![false; segments.len()];
     for &i in movers {
-        for j in (0..segments.len()).filter(|&j| j != i && !(moving.contains(&j) && j < i) && overlap(i, j)) {
+        moving[i] = true;
+    }
+    for &i in movers {
+        for j in (0..segments.len()).filter(|&j| j != i && !(moving[j] && j < i) && overlap(i, j)) {
             let ([a, b], [c, d]) = (segments[i], segments[j]);
             hot.extend(crossing(a, b, c, d));
         }
     }
+    // The hot pixels by bucket, each once.
     let bucket = |v: i64| v.div_euclid(BUCKET);
-    let mut buckets: BTreeMap<[i64; 2], Vec<P>> = BTreeMap::new();
-    for &h in &hot {
-        buckets.entry(wide(h).map(bucket)).or_default().push(h);
-    }
-    for list in buckets.values_mut() {
-        list.sort_unstable();
-    }
+    let key = |h: &P| wide(*h).map(bucket);
+    hot.sort_unstable_by_key(|h| (key(h), *h));
+    hot.dedup();
+    let in_bucket = |k: [i64; 2]| &hot[hot.partition_point(|h| key(h) < k)..hot.partition_point(|h| key(h) <= k)];
     (segments.iter())
         .map(|&[a, b]| {
             let (aw, bw) = (wide(a), wide(b));
@@ -132,7 +131,7 @@ pub fn snap(segments: &[[P; 2]], movers: &[usize]) -> Vec<Vec<P>> {
                 let (lo, hi) = (ya.min(yb).floor() as i64 - 2, ya.max(yb).ceil() as i64 + 2);
                 let (lo, hi) = (lo.max(aw[1].min(bw[1]) - 1), hi.min(aw[1].max(bw[1]) + 1));
                 for by in bucket(lo)..=bucket(hi) {
-                    for &h in buckets.get(&[bx, by]).into_iter().flatten() {
+                    for &h in in_bucket([bx, by]) {
                         if h != a && h != b && meets(a, b, h) {
                             on.push(h);
                         }

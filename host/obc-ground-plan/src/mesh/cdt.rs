@@ -4,8 +4,6 @@
 //! Every point is an integer in frame units, exact in f64, and spade's predicates are exact, so
 //! native and WASM builds give the same triangles.
 
-use std::collections::BTreeSet;
-
 use spade::handles::FixedVertexHandle;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
@@ -43,15 +41,22 @@ pub struct Segment {
 pub fn triangulate(points: &[P], segments: &[Segment], edges: usize, rings: usize) -> Result<Triangles, MeshError> {
     let vertices: Vec<Point2<f64>> = points.iter().map(|p| Point2::new(f64::from(p[0]), f64::from(p[1]))).collect();
     let pair = |a: u32, b: u32| (a.min(b), a.max(b));
-    let mut seen = BTreeSet::new();
-    let pairs: Vec<[usize; 2]> = (segments.iter())
-        .filter(|s| s.a != s.b && seen.insert(pair(s.a, s.b)))
-        .map(|s| [s.a as usize, s.b as usize])
-        .collect();
+    let sorted = |list: &[Segment]| {
+        let mut v: Vec<(u32, u32)> = list.iter().filter(|s| s.a != s.b).map(|s| pair(s.a, s.b)).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
     let parts = segments.len() - rings;
-    let walls: BTreeSet<(u32, u32)> = segments[..parts].iter().map(|s| pair(s.a, s.b)).collect();
-    let open: BTreeSet<(u32, u32)> =
-        segments[parts..].iter().map(|s| pair(s.a, s.b)).filter(|p| !walls.contains(p)).collect();
+    // Each constraint once: a ring's edge can run along a face edge.
+    let pairs: Vec<[usize; 2]> = if rings == 0 {
+        segments.iter().filter(|s| s.a != s.b).map(|s| [s.a as usize, s.b as usize]).collect()
+    } else {
+        sorted(segments).into_iter().map(|(a, b)| [a as usize, b as usize]).collect()
+    };
+    let walls = sorted(&segments[..parts]);
+    let open: Vec<(u32, u32)> =
+        sorted(&segments[parts..]).into_iter().filter(|p| walls.binary_search(p).is_err()).collect();
     let mut conflict = None;
     let cdt = Cdt::try_bulk_load_cdt(vertices, pairs, |e| {
         conflict.get_or_insert(e);
@@ -88,7 +93,7 @@ pub fn triangulate(points: &[P], segments: &[Segment], edges: usize, rings: usiz
             let c = class[f.index()];
             for e in cdt.face(f).adjacent_edges() {
                 let [a, b] = e.vertices().map(|v| v.fix().index() as u32);
-                if e.is_constraint_edge() && !open.contains(&pair(a, b)) {
+                if e.is_constraint_edge() && open.binary_search(&pair(a, b)).is_err() {
                     continue;
                 }
                 if let Some(g) = e.rev().face().as_inner() {
