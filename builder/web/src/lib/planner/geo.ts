@@ -112,25 +112,30 @@ export function nearestProgress(coordinates: Coordinate[], point: Point): number
 
 type ScreenPoint = { x: number; y: number };
 
+// Two days on one road draw at the same pixels: a day in colour wins over a quiet day at most this much nearer.
+const sharedRoad = 2;
+
 /**
  * The nearest point of the lines within `reach` screen pixels of `point`, with its line. A line that `quiet` names loses
- * to any other line in reach, so on a road that two days share the day in colour wins over a quiet day.
+ * to another line that is at most `sharedRoad` pixels farther, so on a road that two days share the day in colour wins.
  */
 export function nearestOnScreen<L extends { coordinates: Coordinate[] }>(lines: readonly L[], project: (coordinate: Coordinate) => ScreenPoint,
     point: ScreenPoint, reach: number, quiet: (line: L) => boolean): (ScreenPoint & { line: L }) | null {
-    let best: (ScreenPoint & { line: L; pixels: number; quiet: boolean }) | null = null;
+    // The nearest point of a line in colour, and of a quiet line.
+    const best: [(ScreenPoint & { line: L; pixels: number }) | null, (ScreenPoint & { line: L; pixels: number }) | null] = [null, null];
     for (const line of lines) {
-        const outside = quiet(line);
-        if (best && outside && !best.quiet) continue;
+        const kind = quiet(line) ? 1 : 0;
         const projected = line.coordinates.map(project);
         for (let i = 1; i < projected.length; i++) {
             const a = projected[i - 1], b = projected[i], dx = b.x - a.x, dy = b.y - a.y;
             const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
             const pixels = Math.hypot(point.x - a.x - dx * t, point.y - a.y - dy * t);
-            if (pixels <= reach && (!best || (best.quiet && !outside) || pixels < best.pixels)) best = { line, x: a.x + dx * t, y: a.y + dy * t, pixels, quiet: outside };
+            const found = best[kind];
+            if (pixels <= reach && (!found || pixels < found.pixels)) best[kind] = { line, x: a.x + dx * t, y: a.y + dy * t, pixels };
         }
     }
-    return best;
+    const [colour, grey] = best;
+    return colour && (!grey || colour.pixels <= grey.pixels + sharedRoad) ? colour : grey;
 }
 
 /**

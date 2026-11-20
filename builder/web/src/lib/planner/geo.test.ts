@@ -49,15 +49,14 @@ describe('route distance', () => {
 });
 
 describe('line under the pointer', () => {
-    it('takes a day in colour in reach over a quiet day, also where they share a road', () => {
+    it('takes the day in colour where it shares a road with a quiet day, else the nearest line', () => {
         const road: Coordinate[] = [[0, 0], [100, 0]];
         const lines = [{ day: 3, coordinates: road }, { day: 18, coordinates: [...road].reverse() }, { day: 19, coordinates: [[0, 8], [100, 8]] as Coordinate[] }];
         const hit = (quiet: number[], y: number) => nearestOnScreen(lines, ([x, y]) => ({ x, y }), { x: 50, y }, 10, line => quiet.includes(line.day))?.line.day;
         expect(hit([3], 1)).toBe(18);
-        // A day in colour 7 px away wins over the quiet days under the pointer.
-        expect(hit([3, 18], 1)).toBe(19);
-        // With no day in colour in reach, or no quiet day, the nearest line wins, the earlier one on a tie.
-        expect(hit([3, 18, 19], 1)).toBe(3);
+        // A quiet line under the pointer wins over a day in colour 8 px away.
+        expect(hit([3, 18], 0)).toBe(3);
+        // With no quiet line, the nearest line wins, the earlier one on a tie.
         expect(hit([], 1)).toBe(3);
     });
 });
