@@ -15,6 +15,9 @@ function scaled(image: ImageBitmap, longest: number): Promise<Blob> {
     return canvas.convertToBlob({ type: 'image/jpeg', quality: QUALITY });
 }
 
+/** A HEIC or HEIF file, by its type or its name. Safari opens one; most other browsers do not. */
+export const isHeic = (file: Pick<File, 'name' | 'type'>) => /hei[cf]/.test(file.type) || /\.hei[cf]$/i.test(file.name);
+
 /** The small picture of an image file. It throws when the browser cannot open the file. */
 export async function smallPicture(file: Blob): Promise<Blob> {
     const image = await createImageBitmap(file);
