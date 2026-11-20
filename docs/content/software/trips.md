@@ -64,7 +64,9 @@ route's line as a drawn leg.
 In the web planner, one bar above the stops holds the day count, the start date and, for a trip, the
 stay kinds. Its "+" makes a route a multi-day trip, and "−" from the lowest count undoes it. With a
 start date, each day shows its weekday. The elevation profile is the timeline: the days by colour, a
-marker at each night and a column for each rest day.
+marker at each night and a column for each rest day. From 15 riding days, a strip of all days stands
+above it, with a frame on a week of 7 days. The day list, the profile and the town search show only
+that week.
 
 A guessed day count is grey and dotted; a set one is dark. The planner guesses the day count from
 the riding time at the plan's pace. After each route or pace change, it guesses the count and the
@@ -96,7 +98,7 @@ new trip.
 
 The planner stores a route at "Save"; the first save asks for its name. Until then, changes stay
 in the browser as a draft. Before another route opens, the planner asks to save or discard
-them. "More" has "New route", "Open route…", "Save a copy…" and "Discard changes".
+them.
 
 ### Compare routes
 
@@ -124,9 +126,8 @@ to the device.
 A trip can have a start date. Dates follow the rides: when the rider rides Day 2 on Wednesday and
 not on Tuesday, Day 3 shows Thursday.
 
-Each day route carries the trip's bike type. The phone and the device show the same estimate, from
-one table for each bike type. The web planner times each bike type at its own flat speed and the
-plan's pace, so its time can differ.
+The phone and the device show the same estimate, from one table for each bike type. The web planner
+times each bike type at its own flat speed and the plan's pace, so its time can differ.
 
 ## Riding a trip on the device
 
@@ -145,9 +146,8 @@ early stop, the row first builds the joined route.
 
 ### Stopping early
 
-A rider does not always reach the planned day end. When the rider finishes 20 km before the end of
-Day 2, Day 3 is next. The device then builds the next day itself: the rest of Day 2, then Day 3. It
-uses the same splice code as detours and visits
+When the rider finishes 20 km before the end of Day 2, Day 3 is next. The device then builds the
+next day itself: the rest of Day 2, then Day 3. It uses the same splice code as detours and visits
 ([`splice.rs`](src:firmware/obc-route/src/splice.rs)), so the navigator receives an ordinary route.
 
 <figure class="fig">
@@ -188,8 +188,7 @@ card loads it. After the last day, **TRIP DONE** shows today's ledger, the trip 
 and the totals of the trip's rides.
 
 The opt-in data field **Trip to go** (tile caption TRIP KM) shows the rest of the loaded day plus
-the routes of the later days. A transfer is not ridden, so it does not count. The rider adds the
-field in the data-field editor.
+the routes of the later days. A transfer is not ridden, so it does not count.
 
 Each ride records its trip key, its day, the trip name and the bike type in its footer. So the
 device and the phone group the rides of a trip without dates, and the device's ride list shows
