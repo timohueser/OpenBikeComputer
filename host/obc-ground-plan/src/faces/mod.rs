@@ -961,26 +961,50 @@ fn prepare(rings: &Rings) -> Rings {
 /// Crossings of a cell line closer than this many units along it are one point.
 const MERGE: i32 = 4;
 
-/// The crossings of the cell's lines by candidate edges and seams, closer than `MERGE` units along
-/// a line, move to one point: a cell corner in the run, else its least. Two edges that cross each other
-/// beside a cell line then cross on it, so no cell holds a sliver of their wedge that the next cell
-/// sees as a whole patch.
+/// The crossings of the cell's lines by candidate edges and seams move to one point, a cell corner
+/// in the run, else its least, where they lie closer than `MERGE` units along a line, or where the
+/// edges of two neighbouring crossings cross each other less than `MERGE` units off it. Two edges
+/// that cross each other beside a cell line then cross on it, so no cell holds a sliver of their
+/// wedge that the next cell sees as a whole patch. Both cells of a line hold its edges on both
+/// sides, so both merge alike.
 fn merge_crossings(square: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[P; 2]>) {
     let c = CELL_UNITS as i32;
     for axis in 0..2 {
         for line in [square[axis], square[axis + 2]] {
             let on = |p: &P| p[axis] == line;
-            let mut along: Vec<i32> = (rings.iter().flat_map(|r| r.iter().flatten()))
-                .chain(seams.iter().flatten())
-                .filter(|p| on(p))
-                .map(|p| p[1 - axis])
-                .collect();
-            along.sort_unstable();
-            along.dedup();
+            // Each crossing with the far ends of its edges off the line.
+            let mut ends: BTreeMap<i32, Vec<P>> = BTreeMap::new();
+            let edges = (rings.iter().flat_map(|r| r.iter()))
+                .flat_map(|r| r.iter().zip(r.iter().cycle().skip(1)).map(|(&p, &q)| [p, q]))
+                .chain(seams.iter().copied())
+                .flat_map(|[p, q]| [[p, q], [q, p]]);
+            for [p, q] in edges.filter(|[p, _]| on(p)) {
+                let far = ends.entry(p[1 - axis]).or_default();
+                if !on(&q) {
+                    far.push(q);
+                }
+            }
+            let along: Vec<i32> = ends.keys().copied().collect();
+            // Whether `along[k + 1]` is in the run of `along[k]`.
+            let mut joined: Vec<bool> = along.windows(2).map(|w| w[1] - w[0] < MERGE).collect();
+            // Neighbours on one side suffice: an edge that starts between two edges leaves their
+            // wedge through one of them.
+            for side in [-1, 1] {
+                let far = |k: usize| ends[&along[k]].iter().filter(move |p| (p[axis] - line).signum() == side);
+                let mut last = None;
+                for k in (0..along.len()).filter(|&k| far(k).next().is_some()) {
+                    if let Some(i) = last {
+                        if far(i).any(|&p| far(k).any(|&q| cross_near(axis, line, along[i], along[k], p, q))) {
+                            joined[i..k].fill(true);
+                        }
+                    }
+                    last = Some(k);
+                }
+            }
             let mut to: BTreeMap<i32, i32> = BTreeMap::new();
             let mut start = 0;
             for k in 1..=along.len() {
-                if k < along.len() && along[k] - along[k - 1] < MERGE {
+                if k < along.len() && joined[k - 1] {
                     continue;
                 }
                 let run = &along[start..k];
@@ -1014,6 +1038,18 @@ fn merge_crossings(square: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[
         r.retain(|ring| ring.len() >= 3);
     }
     seams.retain(|s| s[0] != s[1]);
+}
+
+/// Whether the edges from `a` and `b > a` along the line `line` of `axis` to `p` and `q`, on one side
+/// of the line, cross each other less than `MERGE` units off it, by an exact test. Edges that meet
+/// at the far end of one of them do not cross: that end is a vertex, which no snap moves.
+fn cross_near(axis: usize, line: i32, a: i32, b: i32, p: P, q: P) -> bool {
+    let off = |v: P| (i128::from(v[axis]) - i128::from(line)).abs();
+    let (u1, u2) = (off(p), off(q));
+    let (v1, v2) = (i128::from(p[1 - axis]) - i128::from(a), i128::from(q[1 - axis]) - i128::from(b));
+    // The crossing lies `gap * u1 * u2 / d` units off the line.
+    let (gap, d) = (i128::from(b) - i128::from(a), v1 * u2 - v2 * u1);
+    d > 0 && gap * u1.max(u2) < d && gap * u1 * u2 < i128::from(MERGE) * d
 }
 
 /// The box within which `candidates` reads a reach of `m` metres past the cell: with `records`,
