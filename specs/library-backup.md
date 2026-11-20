@@ -70,6 +70,7 @@ A reader ignores the fields `open` and `revision` of a route record of an older 
 | `ftp` | Number or `null`: the threshold power in watts that applies to the ride |
 | `trip` | Optional object: the trip of the device that the ride belongs to, with `key`, the trip key of the device as a decimal string; `day`, the day of the trip from 1; and `name`, the name of the trip, empty when the device no longer held the trip |
 | `device` | Optional string `storeId:objectId`: the ride on the device that it came from |
+| `photo` | Optional string: the `id` of the [photo](#7-photo-record) that the cards of the ride show. A reader shows the cover when the file has no such photo. |
 
 ## 5. Summary
 
