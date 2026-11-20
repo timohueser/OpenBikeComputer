@@ -219,6 +219,14 @@ fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
     assert_eq!(west["half"], num(2.5 + foot_half + 0.6));
     assert!(!placed.tags.contains_key(&foot), "a chain with no part has no tag");
     assert_eq!(placed.tags[&a]["parts"], "pair pair");
+    // Where the nearer opening's way ends before the line of the other (a short first way), the two are no pair.
+    let mut case = Case::default();
+    let (a, _) = (case.tunnel(&ROAD, (0.0, 2.0), 0.0), case.tunnel(&ROAD, (2.0, 200.0), 0.0));
+    let b = case.tunnel(&ROAD, (5.0, 200.0), 20.0);
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, a), [(vec![Arch, Free], "hill")]);
+    assert_eq!(of(&placed, b)[0], (vec![Arch, Free], "hill"));
+    assert_eq!(placed.metrics["pairs_that_do_not_reach"].as_u64(), Some(1));
 }
 
 #[test]
@@ -242,6 +250,13 @@ fn a_moved_opening_names_the_end_vertex_of_its_way_and_the_metres_to_it() {
     // The tube starts at the opening.
     let first = placed.features.iter().find(|f| f.0 == "tunnel-tube").unwrap();
     assert!((back(first.2.points[0])[0] - 5.0).abs() < 1e-6);
+    // A through road with a vertex at the tunnel's end (a T) is two arms: the opening moves the same.
+    let mut tee = Case::default();
+    tee.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    tee.way(&[[0.0, -50.0], [0.0, 0.0], [0.0, 50.0]]);
+    let placed = tee.place(&site(&|_| 500.0, &[], false), &mut Vec::new());
+    assert!(records(&placed, "tunnel-end").iter().any(|t| t["shift"] == "5"));
+    assert_eq!(placed.metrics["t_ends"].as_u64(), Some(1));
 }
 
 #[test]

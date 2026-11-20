@@ -20,7 +20,7 @@ use crate::{metres, roads, Part, Tags, Terrain};
 pub use ladder::Kind;
 
 /// The rule values of the bake, in the order of `Bake`.
-const BAKE_FIELDS: [&str; 18] = [
+const BAKE_FIELDS: [&str; 19] = [
     "margin_m",
     "margin_narrow_m",
     "shell_m",
@@ -39,12 +39,9 @@ const BAKE_FIELDS: [&str; 18] = [
     "rock_cover_max_m",
     "free_max_m",
     "junction_shift_max_m",
+    "narrow_bore_m",
 ];
-const GROUP_FIELDS: [&str; 5] = ["classes", "look", "collar_max_m", "wing_max_m", "least_height_m"];
-/// The groups whose ends covered within `rock_cover_max_m` open in the rock.
-const ROCK_GROUPS: [&str; 2] = ["path", "minor"];
-/// A bore of this height or less takes `margin_narrow_m` past the way's half-width, as `boreHalf` of `tunnels.ts`.
-const NARROW_BORE_M: f64 = 3.0;
+const GROUP_FIELDS: [&str; 6] = ["classes", "look", "collar_max_m", "wing_max_m", "least_height_m", "rock"];
 
 /// The values of a group of road classes (`groups` of `parts.json`).
 #[derive(Clone, Debug, PartialEq)]
@@ -55,6 +52,8 @@ pub struct Group {
     pub collar_max_m: f64,
     pub wing_max_m: f64,
     pub least_height_m: f64,
+    /// An end covered within `rock_cover_max_m` opens in the rock.
+    pub rock: bool,
 }
 
 /// The rule values of the placement (`bake` of `parts.json`), metres unless named.
@@ -78,6 +77,8 @@ pub struct Bake {
     pub rock_cover_max_m: f64,
     pub free_max_m: f64,
     pub junction_shift_max_m: f64,
+    /// A bore of this height or less takes `margin_narrow_m`.
+    pub narrow_bore_m: f64,
 }
 
 /// The rules of `data/trailview/parts.json`, the option `parts` of the step.
@@ -117,6 +118,7 @@ impl Rules {
             rock_cover_max_m: v[15],
             free_max_m: v[16],
             junction_shift_max_m: v[17],
+            narrow_bore_m: v[18],
         };
         let mut groups = Vec::new();
         for (name, row) in rows["groups"].as_object().ok_or("parts groups: not an object")? {
@@ -134,6 +136,7 @@ impl Rules {
                 collar_max_m: number(row, "collar_max_m", &at)?,
                 wing_max_m: number(row, "wing_max_m", &at)?,
                 least_height_m: number(row, "least_height_m", &at)?,
+                rock: row["rock"].as_bool().ok_or(format!("parts {at}rock: not true or false"))?,
             });
         }
         let mut seen = HashSet::new();
@@ -401,7 +404,7 @@ fn tube(chain: &[Link], input: &Input) -> Option<Tube> {
     let group = input.rules.group(&class)?;
     let height = crate::structures::bore(tags);
     let b = &input.rules.bake;
-    let margin = if height <= NARROW_BORE_M { b.margin_narrow_m } else { b.margin_m };
+    let margin = if height <= b.narrow_bore_m { b.margin_narrow_m } else { b.margin_m };
     let mut ids: Vec<u32> = chain.iter().map(|l| l.0).collect();
     ids.dedup();
     Some(Tube {
@@ -422,8 +425,8 @@ fn tube(chain: &[Link], input: &Input) -> Option<Tube> {
 }
 
 /// An opening of a tube: its tube and end, the end vertex of its way and the way, the metres along the way from the
-/// vertex to it, its place on the chain, its point, its unit direction into the tube, its floor, and the ways other
-/// than its own at the vertex.
+/// vertex to it, its place on the chain, its point, its unit direction into the tube, its floor, and the arms of the
+/// other ways at the vertex (an end of a way is one arm, a vertex inside it two).
 #[derive(Clone, Debug)]
 pub(crate) struct Opening {
     pub tube: usize,
@@ -522,23 +525,32 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         .flat_map(|(_, (_, _, parts))| parts.iter().flat_map(|p| [p.points[0], p.points[p.points.len() - 1]]))
         .filter(|p| all.get(&key(*p)) == Some(&1))
         .count();
-    let mut forks = 0;
-    // The ways at the end vertices of the tubes.
-    let mut at_end: HashMap<[u64; 2], Vec<usize>> = HashMap::new();
+    // Per end vertex of a tube, the ways there with their arms: an end of a part is one arm, a vertex inside it two.
+    let mut at_end: HashMap<[u64; 2], Vec<(usize, u32)>> = HashMap::new();
     for t in &tubes {
         for p in [t.curve.at(0.0).0.p, t.curve.at(t.curve.len).0.p] {
             at_end.entry(key(p)).or_default();
         }
     }
     for (w, (_, _, parts)) in input.ways.iter().enumerate() {
-        for p in parts.iter().flat_map(|part| &part.points) {
-            if let Some(list) = at_end.get_mut(&key(*p)) {
-                if list.last() != Some(&w) {
-                    list.push(w);
+        for part in parts.iter() {
+            let n = part.points.len();
+            for (i, p) in part.points.iter().enumerate() {
+                if let Some(list) = at_end.get_mut(&key(*p)) {
+                    let arms = if i == 0 || i + 1 == n { 1 } else { 2 };
+                    match list.last_mut() {
+                        Some(last) if last.0 == w => last.1 += arms,
+                        _ => list.push((w, arms)),
+                    }
                 }
             }
         }
     }
+    let (mut forks, mut tees) = (0, 0);
+    // Parts in a ring of tunnel ways (no end), and tunnel ways with no id: no chain holds them.
+    let chained: usize = chains.iter().map(Vec::len).sum();
+    let rings = input.tunnels.values().flat_map(|(_, parts)| parts).filter(|p| p.points.len() >= 2).count() - chained;
+    let without_id = input.tunnel_ways.len() - input.tunnels.len();
     let mut openings: Vec<Opening> = Vec::new();
     for (ti, t) in tubes.iter().enumerate() {
         for e in 0..2 {
@@ -551,8 +563,10 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
                 forks += 1;
                 continue;
             }
-            let others: Vec<usize> =
-                at_end.get(&key(vertex)).into_iter().flatten().copied().filter(|&w| w != way_id as usize).collect();
+            let others: Vec<(usize, u32)> =
+                at_end.get(&key(vertex)).into_iter().flatten().copied().filter(|w| w.0 != way_id as usize).collect();
+            let arms: u32 = others.iter().map(|w| w.1).sum();
+            tees += usize::from(others.iter().any(|w| w.1 >= 2));
             let o = Opening {
                 tube: ti,
                 end: e,
@@ -566,10 +580,10 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
                 others: 0,
             };
             let mut o = o.at(t, 0.0);
-            o.others = others.len();
-            if t.heights && others.len() >= 2 {
+            o.others = arms as usize;
+            if t.heights && arms >= 2 {
                 let lines: Vec<(f64, Vec<[f64; 2]>)> = (others.iter())
-                    .flat_map(|&w| {
+                    .flat_map(|&(w, _)| {
                         let (kind, tags, parts) = input.ways[w];
                         let outer = input.widths.way(kind, tags, false).outer_m();
                         parts.iter().map(move |p| (outer, roads::polyline(p).points))
@@ -585,6 +599,9 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
     if let Value::Object(m) = &mut decided.metrics {
         m.insert("shallow_ends".into(), shallow.into());
         m.insert("fork_ends".into(), forks.into());
+        m.insert("t_ends".into(), tees.into());
+        m.insert("ring_parts".into(), rings.into());
+        m.insert("tunnel_ways_without_id".into(), without_id.into());
         m.insert("chains_without_tube".into(), lost.into());
     }
     records(&tubes, &openings, &decided, input)
