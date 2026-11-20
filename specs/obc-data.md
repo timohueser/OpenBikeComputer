@@ -214,9 +214,9 @@ Keys of `route` and `stage`:
 
 | Key | In | Meaning |
 | --- | --- | --- |
-| `layer` | both | The layer of the file |
+| `layer` | both | The layer of the file. A file of one layer needs none: a GeoJSON without a `name` has the name of its file as its layer |
 | `file` | both | Optional: the path of the file in a zip, for a source with more than one |
-| `key` | `route` | The field, or a list of fields, that gives the route of a feature. The features with one key are one route; a feature with a value in two fields of the list is a member of both routes. A value whose text is a decimal integer from 0 to 10^10 − 1 with no leading zero is the key as it is; another text, such as `007` or `-5`, has as key its SHA-256, read as an integer, modulo 10^10 |
+| `key` | `route` | The field, or a list of fields, that gives the route of a feature. The features with one key are one route; a feature with a value in two fields of the list is a member of both routes. A text with `{`, such as `"{A}: {B}"`, is a template: the filled text, with outer spaces removed, is the key text, and a feature with no value in one of its fields is no route. A value whose text is a decimal integer from 0 to 10^10 − 1 with no leading zero is the key as it is; another text, such as `007` or `-5`, has as key its SHA-256, read as an integer, modulo 10^10 |
 | `of` | `stage` | The field that holds the key of the stage's route |
 | `number` | `stage` | The field of the stage number |
 | `ref`, `name`, `description`, `operator`, `website` | both | A template of field values, such as `"{NameR}"`. `{key}` is the text of the key field that gives the route; in a stage, `{route}` is the name of its route |
@@ -455,7 +455,10 @@ Which version a fetch gets:
   version, a `HEAD` request for each URL, with one retry, gives the latest `Last-Modified` day,
   and that day is the version. A date version accepts a file that changed on or before that day; a later file
   fails the fetch before its body is read. A response without `Last-Modified` counts as changed
-  today.
+  today. A `HEAD` that the server refuses with 405 is an answer without a size, an `ETag` and a
+  day. A file of a `keep = "archive"` source whose `HEAD` gives no `ETag` and no day comes only
+  from the [archive](#archive), which dates its bytes: without the archive file, and with
+  `--refresh`, the fetch refuses and names `obc data archive get`.
 - A `release` or `commit` version of a URL without `{version}` is only a name. The fetch accepts
   it only when the record of the version has the URL, and so pins its bytes.
 - For a `digest` source, the version is the SHA-256 of its one file.
@@ -564,6 +567,7 @@ so are the versions of a prepared source. A prepared version has no other copy. 
 | Path under a root | Holds |
 | --- | --- |
 | `mirror/<host>/<path>` | The file of the URL `https://<host>/<path>` |
+| `mirror/<host>/<path>@<digest>` | The file of the URL `https://<host>/<path>?<query>`: `<digest>` is the first 16 hex digits of the SHA-256 of the query |
 | `kept/<dataset>/<path>` | A file that has no upstream URL. A person puts it there |
 | `manifest/<dataset>.json` | The [manifest](#manifest-of-a-dataset) of the dataset |
 | `prepared/<id>/` | The versions of the [prepared source](#prepared-sources) `<id>` |
@@ -583,7 +587,7 @@ One file for each dataset. The name of the file is the id of the dataset.
 | `sources` | array of strings | yes | The ids of the sources in `data/sources.toml` that read the dataset |
 | `coverage` | string | yes | Where the dataset has data, in words, such as `World` or `Europe` |
 | `version` | string | no | The version of the dataset, in the form of the `version` of its sources |
-| `urls` | array of strings | no | One file for each `https://` URL |
+| `urls` | array of strings | no | One file for each `https://` URL. A URL can have a query, such as a request to a web service |
 | `s3` | array of tables | no | `bucket`, `prefix` and `match`. See below |
 | `stac` | array of tables | no | `search`, `sas`, `collection`, `asset`, `bbox`, `days` and `names`. See below |
 | `cmr` | array of tables | no | `provider`, `short_names`, `version`, `origin`, `bbox`, `days` and `names`. See below |
@@ -608,7 +612,8 @@ data file under `origin` of each granule of the NASA CMR granule search of `prov
 and tries a page again as a bucket listing. Both list only a file whose name has one of `names`, at
 its URL without the query. A download of an Azure blob of a `stac` table adds the SAS token of its
 storage account and container from `<sas>/<account>/<container>`, renewed 15 minutes before the
-`msft:expiry` of its answer. No log line, manifest or error holds a query of a URL. A download under
+`msft:expiry` of its answer. No log line, manifest or error holds a query of a URL: they name a URL
+with a query as its mirror path does, by its path, `@` and the digest of the query. A download under
 the `origin` of a `cmr` table sends `EARTHDATA_TOKEN`, an Earthdata Login user token, as a Bearer
 token. A file whose name ends with `.hdf` or `.tif` enters `mirror/` only when it starts with the
 magic of HDF4 or TIFF, so a login page is no file; `verify` checks the magic too. SIGINT or
@@ -668,6 +673,11 @@ The version of a dataset:
 - A file of the manifest that is in place with its `bytes` stays without a download when upstream
   gives its size, its `ETag` and its `Last-Modified` day, as far as upstream gives them. Only a
   bucket listing gives the `ETag`: the `ETag` of a `HEAD` is not stable.
+- A URL whose `HEAD` gives no `ETag` and no day, such as the answer that a web service makes for
+  each request, is bare: its size checks nothing, and the get downloads it each time. The same
+  bytes keep the entry and its day. Other bytes replace the file in place and have the day of the
+  get as `modified`. Other bytes on the day of the entry fail the file and leave the file in place:
+  one day names one set of bytes.
 - A file on disk with the `Content-Length` and the `Last-Modified` day of upstream as its size and
   modification day is read in place once.
 - Each other file downloads into `.partial/<dataset>/` with the retries and the resume of
@@ -1320,8 +1330,8 @@ of a set out of the bytes. A credit that it writes comes in its options.
 
 `python -m tools.planner_route_sources --step` (group `route-sources`) reads the files of each route source by
 its [description](#dataroutesidtoml). Its options are `bounds` and `sources`: a list of `{id,
-credit, description}`, where `credit` is the `attribution` of the row and `description` the text
-of its file in `data/routes/`. It reads the snapshot of each source, in the order of `sources`, and
+credit, description}`, where `credit` is the `attribution` of the row, with `{year}` the year of
+the version that the step reads, and `description` the text of its file in `data/routes/`. It reads the snapshot of each source, in the order of `sources`, and
 writes `route-sources.json`: UTF-8 JSON, the keys of each object in byte order, written whole.
 
 ```json
@@ -1340,7 +1350,7 @@ writes `route-sources.json`: UTF-8 JSON, the keys of each object in byte order, 
   when empty; `ascent_m`: an integer, absent when the description maps no field or the value is
   empty.
 - `members`: each line of each feature of the route, in the order of the feature ids and then of
-  the parts of a multi-line: a flat list of integer microdegrees, longitude then latitude, in WGS
+  the parts of a multi-line or a collection; a point or a polygon is no member: a flat list of integer microdegrees, longitude then latitude, in WGS
   84, each line simplified within 1 m (Douglas–Peucker, so its ends stay) and with repeated points
   removed. A line with fewer than two points is left out.
 - A route with two or more stages has `stages` and no `members`: `stage` (the number), `name`,
@@ -1352,7 +1362,7 @@ writes `route-sources.json`: UTF-8 JSON, the keys of each object in byte order, 
   no row is not read.
 - The routes are in the order of `key`, the stages in the order of `stage`.
 - The program fails, with the source and the feature, when: a layer or a field of the description
-  is not in the file; two routes of one source have one key from two texts; a stage number is not
+  is not in the file; a description without `layer` reads a file of more layers; two routes of one source have one key from two texts; a stage number is not
   an integer from 1 to 99, or comes twice in one route.
 
 ### Service runtimes
