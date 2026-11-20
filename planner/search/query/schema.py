@@ -97,6 +97,8 @@ REFS = ["km", "start", "end", "here"]
 # The units of each quantity field.
 UNITS = {"along": ["km", "h"], "radius": ["km"], "every": ["km", "h"], "per_day": ["km", "h"],
          "min": ["km", "m", "%"]}
+# The most points that the route line of a request may have; a client thins a longer line.
+LINE_POINTS = 20_000
 
 # Words stripped from the front of a name before two names are compared.
 ARTICLES = {
@@ -402,7 +404,8 @@ def contract() -> dict:
     return {"types": list(FIELDS), "kinds": kinds, "data": {d: k for k in KINDS for d in own[k]},
             "categories": categories, "cuisines": CUISINES, "stretches": STRETCH_KINDS,
             "bikes": BIKES, "goals": GOALS, "parts": PARTS, "weekdays": WEEKDAYS,
-            "point_kinds": POINT_KINDS, "scopes": SCOPES, "refs": REFS, "units": UNITS}
+            "point_kinds": POINT_KINDS, "scopes": SCOPES, "refs": REFS, "units": UNITS,
+            "line_points": LINE_POINTS}
 
 
 CONTRACT = Path(__file__).with_name("contract.json")

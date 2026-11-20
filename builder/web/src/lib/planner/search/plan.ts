@@ -1,6 +1,7 @@
 import { cumulative, simplify, type Coordinate } from '../geo';
 import type { PlanView, Trip } from '../editor';
 import type { SearchContext } from './types';
+import contract from '../../../../../../planner/search/query/contract.json' with { type: 'json' };
 
 type SearchLine = { coordinates: Coordinate[]; km: number[]; hours?: number[] };
 const lines = new WeakMap<Coordinate[], { seconds?: number[]; line: SearchLine }>();
@@ -12,9 +13,13 @@ export function searchLine(coordinates: Coordinate[], km: readonly number[], sec
     const cached = lines.get(coordinates);
     if (cached && cached.seconds === seconds) return cached.line;
     // Douglas–Peucker over two errors: the distance from the kept line, and the riding time against the time
-    // interpolated by kilometre between kept points.
-    const kept = simplify(coordinates, OFFSET_KM, seconds && ((i, a, b) =>
-        (seconds[i] - seconds[a] - (seconds[b] - seconds[a]) / (km[b] - km[a] || 1) * (km[i] - km[a])) / DELAY_SECONDS));
+    // interpolated by kilometre between kept points. A line over the search limit doubles both tolerances until it fits.
+    let kept: number[];
+    for (let scale = 1; ; scale *= 2) {
+        kept = simplify(coordinates, OFFSET_KM * scale, seconds && ((i, a, b) =>
+            (seconds[i] - seconds[a] - (seconds[b] - seconds[a]) / (km[b] - km[a] || 1) * (km[i] - km[a])) / (DELAY_SECONDS * scale)));
+        if (kept.length <= contract.line_points) break;
+    }
     const line = {
         coordinates: kept.map(i => coordinates[i].map(v => round(v, 5)) as Coordinate),
         // The last kilometre stays exact: the planner sends the last day's end as the route length.
