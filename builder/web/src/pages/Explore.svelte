@@ -67,7 +67,7 @@
     /** The place that the map shows: the kept view, a place of the search field, or the reach of the search. */
     let place = $state.raw<Place | undefined>(firstView && placeOf(firstView));
     let query = $state.raw<Query>(first.query), sort = $state<Sort>('match'), shape = $state(kept?.shape);
-    /** The answer of the last load, for its bike and view. Both tabs read it, so a tab change loads nothing. */
+    /** The answer of the last load, for its bike and view. Both tabs read it, so with no start point a tab change loads nothing. */
     let answer = $state.raw<Answer>(), failed = $state(false);
     /** The selected trail of the long trails tab, and its selected stage. The trail stays through a change between the far
      * and the near view. */
@@ -339,17 +339,16 @@
     let show = kept?.show;
     $effect(() => {
         if (show === undefined || !answer || (searching && !answer.facts)) return;
-        const id = show, record = answer.records?.find(one => one.id === id);
-        // A last search that leaves the route out, also by a start point elsewhere, gives way to the default search in the
-        // view of the route; without a start point, the next answer holds the route.
-        if (searching && !(record ? find(query, { ...loaded, records: [record] }).length : !query.start && !query.pin)) {
+        const id = show, record = answer.records?.find(one => one.id === id), at = record && showAt(record, answer.all, recordOf);
+        // A last search that leaves out a day route, also by a start point elsewhere, gives way to the default search in the
+        // view of the route; without a start point, the next answer holds the route. A stage of a trail keeps the search.
+        if (searching && (at ? at.tab === 'day' && !find(query, { ...loaded, records: [record!] }).length : !!(query.start || query.pin))) {
             query = defaultQuery(day);
-            if (!record) return;
+            if (!at) return;
         }
         show = undefined;
         // By id: each cell file holds its own copy of a record.
-        if (!record) return;
-        const at = showAt(record, answer.all, recordOf);
+        if (!at) return;
         tab = at.tab;
         if (at.tab === 'day') selected = at.selected;
         else void openTrail(at.trail).then(() => { if (trail?.id === at.trail) stage = at.stage; });
