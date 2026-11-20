@@ -2,17 +2,18 @@
 //! the records that take the place of a job that left. `specs/route-catalog.md#second-sources`
 //! is the rule.
 use super::{dense, sources::Sources, Reason};
-use planner_router::{
-    geometry::METRES_PER_UDEG,
-    shape::{distance, Near, NEAR_M, P},
-};
+use planner_router::shape::{distance, Near, P};
+use rayon::prelude::*;
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// A pair by agreement needs this share of one match line along the other.
 const AGREE_SHARE: f64 = 0.2;
 /// A pair by the line alone needs this share both ways, and rule 1 this cover.
 const SAME_SHARE: f64 = 0.8;
+/// The side of the coarse cells that find the jobs whose lines can meet, in microdegrees: more
+/// than `NEAR_M` in each direction.
+const CELL_UDEG: i32 = 10_000;
 
 /// A job as the merge compares it.
 pub(super) struct Probe {
@@ -22,21 +23,28 @@ pub(super) struct Probe {
     pub rank: u8,
     pub ref_: String,
     pub name: String,
-    /// The match line: pieces with no line between them.
-    pub pieces: Vec<Vec<P>>,
-    /// The points of the match line at each 10 m.
+    /// The pieces of the match line one after another, and the first point of each piece after the
+    /// first: there is no line between two pieces.
+    line: Vec<P>,
+    breaks: Vec<usize>,
+    /// The points of the match line at each 10 m, in the order of its pieces.
     samples: Vec<P>,
-    bbox: [P; 2],
+    /// The coarse cells of the samples.
+    cells: HashSet<(i32, i32)>,
 }
 
 impl Probe {
     pub fn new(origin: usize, kind: &str, rank: u8, ref_: &str, name: &str, pieces: Vec<Vec<P>>) -> Self {
-        let samples: Vec<P> = pieces.iter().flat_map(|piece| dense(piece)).map(|(p, _)| p).collect();
-        let fold = |f: fn(i32, i32) -> i32, axis: usize, start: i32| samples.iter().fold(start, |m, p| f(m, p[axis]));
-        let bbox = [
-            [fold(i32::min, 0, i32::MAX), fold(i32::min, 1, i32::MAX)],
-            [fold(i32::max, 0, i32::MIN), fold(i32::max, 1, i32::MIN)],
-        ];
+        let pieces = pieces.into_iter().filter(|piece| piece.len() >= 2);
+        let (mut line, mut breaks) = (Vec::new(), Vec::new());
+        for piece in pieces {
+            if !line.is_empty() {
+                breaks.push(line.len());
+            }
+            line.extend(piece);
+        }
+        let samples: Vec<P> = Self::runs(&line, &breaks).flat_map(dense).map(|(p, _)| p).collect();
+        let cells = samples.iter().map(|p| (p[0].div_euclid(CELL_UDEG), p[1].div_euclid(CELL_UDEG))).collect();
         let family = if matches!(kind, "hiking" | "foot") {
             "hiking"
         } else if kind == "mtb" {
@@ -44,25 +52,34 @@ impl Probe {
         } else {
             "bicycle"
         };
-        Probe { origin, family, rank, ref_: ref_.into(), name: name.into(), pieces, samples, bbox }
+        Probe { origin, family, rank, ref_: ref_.into(), name: name.into(), line, breaks, samples, cells }
     }
 
-    /// Whether the boxes of two match lines lie within `NEAR_M` of each other.
+    fn runs<'a>(line: &'a [P], breaks: &'a [usize]) -> impl Iterator<Item = &'a [P]> {
+        let starts = std::iter::once(0).chain(breaks.iter().copied());
+        let ends = breaks.iter().copied().chain(std::iter::once(line.len()));
+        starts.zip(ends).map(move |(a, b)| &line[a..b]).filter(|run| !run.is_empty())
+    }
+
+    /// The index of the match line.
+    fn near(&self) -> Near<'_> {
+        Near::pieces(&self.line, &self.breaks)
+    }
+
+    /// Whether a sample of one match line lies in a coarse cell of the other or next to one: else
+    /// no point of one lies within `NEAR_M` of the other.
     fn meets(&self, other: &Probe) -> bool {
-        let lat = [self.bbox, other.bbox].iter().flatten().map(|p| (f64::from(p[1]) * 1e-6).abs()).fold(0.0, f64::max);
-        let margin = [NEAR_M / METRES_PER_UDEG / lat.to_radians().cos().max(0.01), NEAR_M / METRES_PER_UDEG];
-        let [a, b] = [self.bbox, other.bbox];
-        (0..2).all(|axis| {
-            let m = margin[axis].ceil() as i32;
-            a[0][axis] <= b[1][axis] + m && b[0][axis] <= a[1][axis] + m
-        })
+        let (small, large) = if self.cells.len() <= other.cells.len() { (self, other) } else { (other, self) };
+        small
+            .cells
+            .iter()
+            .any(|&(x, y)| (x - 1..=x + 1).any(|x| (y - 1..=y + 1).any(|y| large.cells.contains(&(x, y)))))
     }
 }
 
-/// The share of the points of a match line, at each 10 m, that lie within `NEAR_M` of a piece of
-/// `others`.
-pub(super) fn share(probe: &Probe, others: &[&Probe]) -> f64 {
-    let nears: Vec<Near> = others.iter().flat_map(|other| &other.pieces).map(|piece| Near::new(piece)).collect();
+/// The share of the points of a match line, at each 10 m, that lie within `NEAR_M` of a line of
+/// `nears`.
+pub(super) fn share(probe: &Probe, nears: &[&Near]) -> f64 {
     let near = probe.samples.iter().filter(|&&p| nears.iter().any(|n| n.near(p))).count();
     near as f64 / probe.samples.len().max(1) as f64
 }
@@ -111,18 +128,15 @@ pub(super) struct Pair {
     pub shares: [f64; 2],
 }
 
-/// The pair of two jobs, if they are one.
-fn pair(job: &Probe, (id, record): (i64, &Probe)) -> Option<Pair> {
-    if job.family != record.family || !job.meets(record) {
-        return None;
-    }
-    let shares = [share(job, &[record]), share(record, &[job])];
+/// The pair of a job with a record, if they are one, from the index of each.
+fn pair((job, near): (&Probe, &Near), (id, record, index): &(i64, &Probe, Near)) -> Option<Pair> {
+    let shares = [share(job, &[index]), share(record, &[near])];
     let rule = match (agree(job, record), shares) {
         (true, [a, b]) if a >= AGREE_SHARE || b >= AGREE_SHARE => Rule::A,
         (_, [a, b]) if a >= SAME_SHARE && b >= SAME_SHARE => Rule::B,
         _ => return None,
     };
-    Some(Pair { id, rule, shares })
+    Some(Pair { id: *id, rule, shares })
 }
 
 /// What the two rules decide.
@@ -140,22 +154,33 @@ impl Merge {
     /// Rule 1 for the jobs of each origin after the first, in rank order: a job leaves when the kept
     /// records of earlier origins that are its pairs cover four fifths of its match line. `kept`
     /// says whether a job of a second source kept a record.
-    pub fn replace(probes: &BTreeMap<i64, Probe>, kept: &dyn Fn(i64) -> bool) -> Self {
+    pub fn replace(probes: &BTreeMap<i64, Probe>, kept: &(dyn Fn(i64) -> bool + Sync)) -> Self {
         let mut merge = Merge::default();
         let last = probes.values().map(|probe| probe.origin).max().unwrap_or(0);
         for origin in 1..=last {
-            let records: Vec<(i64, &Probe)> = probes
+            let records: Vec<(i64, &Probe, Near)> = probes
                 .iter()
                 .filter(|(id, probe)| probe.origin < origin && kept(**id) && !merge.replaced.contains_key(id))
-                .map(|(id, probe)| (*id, probe))
+                .map(|(id, probe)| (*id, probe, probe.near()))
                 .collect();
-            for (&id, job) in probes.iter().filter(|(_, probe)| probe.origin == origin) {
-                let pairs: Vec<Pair> = records.iter().filter_map(|&record| pair(job, record)).collect();
-                if pairs.is_empty() {
-                    continue;
-                }
-                let covering: Vec<&Probe> = pairs.iter().map(|pair| &probes[&pair.id]).collect();
-                let cover = share(job, &covering);
+            let jobs: Vec<(&i64, &Probe)> = probes.iter().filter(|(_, probe)| probe.origin == origin).collect();
+            let found: Vec<(i64, Vec<Pair>, f64)> = jobs
+                .par_iter()
+                .filter_map(|&(&id, job)| {
+                    let meets = |record: &&(i64, &Probe, Near)| record.1.family == job.family && job.meets(record.1);
+                    let candidates: Vec<_> = records.iter().filter(meets).collect();
+                    if candidates.is_empty() {
+                        return None;
+                    }
+                    let near = job.near();
+                    let pairs: Vec<Pair> =
+                        candidates.into_iter().filter_map(|record| pair((job, &near), record)).collect();
+                    let covering: Vec<&Near> =
+                        records.iter().filter(|record| pairs.iter().any(|p| p.id == record.0)).map(|r| &r.2).collect();
+                    (!pairs.is_empty()).then(|| (id, pairs, share(job, &covering)))
+                })
+                .collect();
+            for (id, pairs, cover) in found {
                 if cover >= SAME_SHARE {
                     merge.replaced.insert(id, cover);
                 }
@@ -189,11 +214,11 @@ impl Merge {
         let agreeing: Vec<&Pair> = kept.iter().copied().filter(|pair| pair.rule == Rule::A).collect();
         let probe = &probes[&job];
         let covers = |pairs: &[&Pair]| {
-            let records: Vec<&Probe> = pairs.iter().map(|pair| &probes[&pair.id]).collect();
-            !pairs.is_empty() && share(probe, &records) >= SAME_SHARE
+            let records: Vec<Near> = pairs.iter().map(|pair| probes[&pair.id].near()).collect();
+            !pairs.is_empty() && share(probe, &records.iter().collect::<Vec<_>>()) >= SAME_SHARE
         };
         let chosen = if covers(&agreeing) { agreeing } else { kept };
-        let mut placed: Vec<((usize, usize), i64)> =
+        let mut placed: Vec<(usize, i64)> =
             chosen.iter().map(|pair| (place(probe, starts(pair.id).expect("a kept record")), pair.id)).collect();
         placed.sort();
         placed.into_iter().map(|(_, id)| id).collect()
@@ -204,28 +229,21 @@ impl Merge {
 /// one whose match line covers the largest share of the record's; of two, the smaller absolute `id`.
 pub(super) fn donors(successors: &BTreeMap<i64, Vec<i64>>, probes: &BTreeMap<i64, Probe>) -> BTreeMap<i64, i64> {
     let mut best = BTreeMap::<i64, (f64, i64, i64)>::new();
-    for (&job, records) in successors {
+    for (&job, records) in successors.iter().filter(|(_, records)| !records.is_empty()) {
+        let near = probes[&job].near();
         for &record in records {
-            let rank = (share(&probes[&record], &[&probes[&job]]), -job.abs(), job);
+            let rank = (share(&probes[&record], &[&near]), -job.abs(), job);
             best.entry(record).and_modify(|best| *best = if rank > *best { rank } else { *best }).or_insert(rank);
         }
     }
     best.into_iter().map(|(record, (.., job))| (record, job)).collect()
 }
 
-/// The place along a match line of its point nearest to `p`: the piece in member order, then the
-/// point along the piece.
-fn place(probe: &Probe, p: P) -> (usize, usize) {
-    let mut best = (f64::MAX, (0, 0));
-    for (i, piece) in probe.pieces.iter().enumerate() {
-        for (k, (q, _)) in dense(piece).into_iter().enumerate() {
-            let d = distance(p, q);
-            if d < best.0 {
-                best = (d, (i, k));
-            }
-        }
-    }
-    best.1
+/// The place along a match line of its point nearest to `p`: the sample in the order of the pieces,
+/// which is the member order, and then along the piece.
+fn place(probe: &Probe, p: P) -> usize {
+    let distances = probe.samples.iter().map(|&q| distance(p, q));
+    distances.enumerate().min_by(|a, b| a.1.total_cmp(&b.1)).map_or(0, |(k, _)| k)
 }
 
 /// What the report of the merge reads besides the merge.
