@@ -13,12 +13,14 @@ const KEEP_AFTER_MS = 300;
 export function keepInHistory(key: string, read: () => unknown, address?: () => string | undefined): () => void {
     // WebKit refuses many history writes in a short time, so it writes once after the last change.
     let keep: (() => void) | undefined;
+    /** The page of the component: an entry with the address of another page, such as Back or the settings window over
+     * the page, is no entry of this page. */
+    const page = parseRoute(location.hash).route;
     $effect(() => {
-        const value = $state.snapshot(read()), url = address?.(), route = parseRoute(location.hash).route;
+        const value = $state.snapshot(read()), url = address?.();
         keep = () => {
             keep = undefined;
-            // An address of another page since then, such as Back or the settings window, is no entry of this page.
-            if (parseRoute(location.hash).route === route) history.replaceState({ ...history.state, [key]: value }, '', url);
+            if (parseRoute(location.hash).route === page) history.replaceState({ ...history.state, [key]: value }, '', url);
         };
         // After a link wrote the state, `keep` is undefined: the timer must not write into the next entry.
         const timer = setTimeout(() => keep?.(), KEEP_AFTER_MS);

@@ -10,11 +10,11 @@ afterEach(async () => { if (slider) await unmount(slider); document.body.replace
 // 20 values: the value at 90 % is 79, so the scale has the step 5 and the top 80.
 const VALUES = [...Array(11).fill(1), 0, 3, 7, 12, 40, 41, 79, 79, 300];
 
-function show(values: number[], start?: Range) {
+function show(values: number[], start?: Range, fixed?: number) {
     let range = $state(start);
     const changes: (Range | undefined)[] = [];
     slider = mount(RangeSlider, { target: document.body, props: {
-        values, get range() { return range; }, label: 'Length', format: (value: number) => `${value} km`,
+        values, get range() { return range; }, fixed, label: 'Length', format: (value: number) => `${value} km`,
         onchange: (next: Range | undefined) => { changes.push(next); range = next; },
     } });
     flushSync();
@@ -33,6 +33,13 @@ function set(element: HTMLInputElement, value: number) {
 }
 
 describe('range slider', () => {
+    it('gives no inverted range when a stored end lies beyond the scale', () => {
+        // A fixed step of 5 and both ends beyond the top of 80: the handles stand at 70 and 75.
+        const { changes } = show(VALUES, [100, 120], 5);
+        set(to(), 40);
+        expect(changes.at(-1)).toEqual([70, 75]);
+    });
+
     it('counts the values of each step, and the last bar counts each value from the top up', () => {
         show(VALUES);
         // The highest bar holds 13 values; the last one holds 79, 79 and 300, and is striped for the 300 above the top.

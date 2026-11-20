@@ -338,7 +338,8 @@
     // The record of the page of a signed route: in the day routes, else a trail of the far files or a stage of one.
     let show = kept?.show;
     $effect(() => {
-        if (show === undefined || !answer || (searching && !answer.facts)) return;
+        // An answer for another view or reach, as while a reset search loads, decides nothing.
+        if (show === undefined || !answer || stale || (searching && !answer.facts)) return;
         const id = show, record = answer.records?.find(one => one.id === id), at = record && showAt(record, answer.all, recordOf);
         // A last search that leaves out a day route, also by a start point elsewhere, gives way to the default search in the
         // view of the route; without a start point, the next answer holds the route. A stage of a trail keeps the search.

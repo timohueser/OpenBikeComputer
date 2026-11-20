@@ -65,6 +65,10 @@
         limit = firstRows(untrack(() => openAt));
         if (scroller) scroller.scrollTop = 0;
     });
+    // A row opened from outside the drawn rows, as from the map, is drawn.
+    $effect.pre(() => {
+        if (openAt >= 0) limit = Math.max(untrack(() => limit), openAt + 1);
+    });
     // Only the table scrolls, not the page, to show the open row whole.
     $effect(() => {
         void [rows, opened];
@@ -177,6 +181,7 @@
             <p class="numbers">{[formatDistance(row.length_m), `${formatHeight(row.ascent_m)} up`, ...lift ? [`${formatHeight(row.descent_m)} down`] : [],
                 ...row.moving_s === undefined ? [] : [formatHours(row.moving_s)], grade(record)].join(' · ')}</p>
             <p class="kind">{shapeText(row)} · {'made' in record ? `Our ${record.loop ? 'loop' : 'route'}, made from signed hiking paths` : kindName(record)}</p>
+            {#if record.credit}<p class="kind">Route data: {record.credit}</p>{/if}
             {#if how}<p>{how}</p>{/if}
             {#if row.met.length + row.missed.length + row.unknown.length}
                 <p class="tags">
