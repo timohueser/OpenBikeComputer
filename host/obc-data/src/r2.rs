@@ -293,8 +293,8 @@ impl Bucket {
             .spawn()
             .map_err(rclone_missing)?;
         let mut stderr = String::new();
-        for line in std::io::BufReader::new(child.stderr.take().expect("stderr is piped")).lines() {
-            let line = line.map_err(|e| format!("rclone: {e}"))?;
+        for line in std::io::BufReader::new(child.stderr.take().expect("stderr is piped")).split(b'\n') {
+            let line = String::from_utf8_lossy(&line.map_err(|e| format!("rclone: {e}"))?).into_owned();
             match serde_json::from_str::<Logged>(&line) {
                 Ok(Logged { stats: Some(stats) }) => eprintln!("obc data: upload: {}", stats.progress(files)),
                 _ => stderr += &format!("{line}\n"),
