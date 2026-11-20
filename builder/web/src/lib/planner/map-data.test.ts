@@ -169,6 +169,18 @@ describe('route catalog cells', () => {
         await expect(loadRouteCell('9-268-178')).rejects.toThrow('404');
     });
 
+    it('reads a facts file, gives a covered cell without one no facts, and fails on another error', async () => {
+        const tiles = 'https://tiles.example/releases/id/routes/tiles';
+        const facts = { format: 1, places: {}, routes: { 7: { paved_pct: 3, big_road_pct: 0, water_pct: 0 } } };
+        const { fetch, loadFactsCell } = await catalog(`${tiles}/{cell}.json`, { [`${tiles}/facts/9-267-178.json`]: facts }, { facts: `${tiles}/facts/{cell}.json` });
+        expect(await loadFactsCell('9-267-178')).toEqual(facts);
+        expect(await loadFactsCell('9-268-178')).toEqual({ format: 1, places: {}, routes: {} });
+        expect(await loadFactsCell('9-269-178')).toBeNull();
+        expect(fetch).toHaveBeenCalledTimes(2);
+        fetch.mockResolvedValueOnce(new Response('', { status: 503 }));
+        await expect(loadFactsCell('9-267-178')).rejects.toThrow('503');
+    });
+
     it('reads the cells of a regional release from its one region file', async () => {
         const url = 'https://planner.example/routes/freiburg.json';
         const long = { ...record(10, ['9-267-178', '9-268-178', '9-269-178']), stages: [21, 22] };

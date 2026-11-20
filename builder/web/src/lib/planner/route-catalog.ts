@@ -1,7 +1,7 @@
-import { config, coversCell, loadRouteCell, loadTrailCell, loadTrailRecord } from './map-data';
+import { config, coversCell, loadFactsCell, loadRouteCell, loadTrailCell, loadTrailRecord } from './map-data';
 import { tileColumn, tileRow } from './place-index';
 import type { BikeType } from './riding-profiles';
-import { kinds, type CatalogRecord, type TrailEntry } from './signed-routes';
+import { kinds, type CatalogFacts, type CatalogRecord, type FactsPlace, type TrailEntry } from './signed-routes';
 
 /**
  * West, south, east and north, in degrees. The caller wraps longitudes to -180..180. A box with west above east,
@@ -95,8 +95,8 @@ function cached<K, V>(files: Map<K, Promise<V>>, key: K, load: (key: K) => Promi
 }
 
 /**
- * The cell files, far files and trail record files of the route catalog. Cell files and trail record files have no limit:
- * a session holds some tens of them; far files are larger and keep `FAR_FILES`.
+ * The cell files, facts files, far files and trail record files of the route catalog. Cell files, facts files and trail
+ * record files have no limit: a session holds some tens of them; far files are larger and keep `FAR_FILES`.
  */
 export class RouteCatalog {
     private readonly cells = new Map<string, Promise<CatalogRecord[] | null>>();
@@ -107,35 +107,53 @@ export class RouteCatalog {
     private readonly trails = new Map<number, Promise<CatalogRecord | null>>();
     private readonly loaded = new Map<string, CatalogRecord[] | null>();
     private readonly records = new Map<number, CatalogRecord>();
+    private readonly facts = new Map<number, CatalogFacts>();
+    private readonly places = new Map<string, FactsPlace>();
 
     /** A loaded record, such as the long route of a stage. */
     record(id: number): CatalogRecord | undefined {
         return this.records.get(id);
     }
 
-    /** The records of a cell, or null for a cell outside the release. A failed cell loads again on the next call. */
+    /** The facts entry of a loaded record, when the release has facts files. */
+    factsOf(id: number): CatalogFacts | undefined {
+        return this.facts.get(id);
+    }
+
+    /** A place of the loaded facts files. */
+    place(id: string): FactsPlace | undefined {
+        return this.places.get(id);
+    }
+
+    /**
+     * The records of a cell, or null for a cell outside the release. Its facts file loads with it, and a failed facts file
+     * fails the cell. A failed cell loads again on the next call.
+     */
     cell(id: string): Promise<CatalogRecord[] | null> {
-        return cached(this.cells, id, id => loadRouteCell(id).then(records => {
+        return cached(this.cells, id, id => Promise.all([loadRouteCell(id), loadFactsCell(id)]).then(([records, facts]) => {
             records?.forEach(record => this.records.set(record.id, record));
+            for (const [route, entry] of Object.entries(facts?.routes ?? {})) this.facts.set(Number(route), entry);
+            for (const [place, value] of Object.entries(facts?.places ?? {})) this.places.set(place, value);
             this.loaded.set(id, records);
             return records;
         }));
     }
 
     /**
-     * The route records for `bike` with a vertex of their line in `box`, edges included, in ascending `id` order.
-     * A long route is not one, but its stages are. Null, with no load, when the box meets more than `MAX_CELLS` cells.
+     * The route records for `bike` with a vertex of their line in `box`, edges included, in ascending `id` order, from the
+     * cells of `from`. A long route is not one, but its stages are. Null, with no load, when `from` meets more than
+     * `MAX_CELLS` cells.
      */
-    async inBox(box: Box, bike: BikeType): Promise<CatalogRecord[] | null> {
-        if (tooWide(box)) return null;
-        await Promise.all(boxCells(box).map(id => this.cell(id)));
-        return this.inBoxNow(box, bike)!;
+    async inBox(box: Box, bike: BikeType, from = box): Promise<CatalogRecord[] | null> {
+        if (tooWide(from)) return null;
+        await Promise.all(boxCells(from).map(id => this.cell(id)));
+        return this.inBoxNow(box, bike, from)!;
     }
 
-    /** The answer of `inBox` with no wait, or undefined while a cell of the box is not loaded. */
-    inBoxNow(box: Box, bike: BikeType): CatalogRecord[] | null | undefined {
-        if (tooWide(box)) return null;
-        const cells = boxCells(box);
+    /** The answer of `inBox` with no wait, or undefined while a cell of `from` is not loaded. */
+    inBoxNow(box: Box, bike: BikeType, from = box): CatalogRecord[] | null | undefined {
+        if (tooWide(from)) return null;
+        const cells = boxCells(from);
         if (!cells.every(id => this.loaded.has(id))) return undefined;
         const found = new Map<number, CatalogRecord>();
         for (const id of cells) {

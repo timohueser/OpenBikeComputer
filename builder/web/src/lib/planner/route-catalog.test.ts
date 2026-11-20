@@ -1,19 +1,21 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { BikeType } from './riding-profiles';
-import type { CatalogRecord, TrailEntry } from './signed-routes';
+import type { CatalogRecord, FactsFile, TrailEntry } from './signed-routes';
 
 const host = vi.hoisted(() => {
     Object.assign(globalThis, { window: { location: { href: 'http://localhost/' }, addEventListener: () => {} } });
     return {
         load: (_id: string): Promise<CatalogRecord[] | null> => Promise.resolve(null),
         far: (_id: string): Promise<TrailEntry[] | null> => Promise.resolve(null),
+        facts: (_id: string): Promise<FactsFile | null> => Promise.resolve(null),
     };
 });
 vi.mock('./map-data', async importActual => ({
     ...await importActual<typeof import('./map-data')>(),
     loadRouteCell: (id: string) => host.load(id),
     loadTrailCell: (id: string) => host.far(id),
+    loadFactsCell: (id: string) => host.facts(id),
 }));
 const { config } = await import('./map-data');
 const { RouteCatalog, boxCells, MAX_CELLS } = await import('./route-catalog');
@@ -100,5 +102,30 @@ describe('route catalog', () => {
         await expect(catalog.inBox([8.175, 47.86, 8.19, 47.88], 'hiking')).rejects.toThrow('offline');
         host.load = cell;
         expect((await catalog.inBox([8.175, 47.86, 8.19, 47.88], 'hiking'))?.map(route => route.id)).toEqual([101]);
+    });
+
+    it('loads the facts file with each cell, and a failed facts file fails the cell', async () => {
+        host.load = cell;
+        const box: Box = [8.175, 47.86, 8.19, 47.88], [id] = boxCells(box);
+        const catalog = new RouteCatalog();
+        host.facts = () => Promise.reject(new Error('Route facts request failed with status 500'));
+        await expect(catalog.inBox(box, 'hiking')).rejects.toThrow('500');
+        expect(catalog.inBoxNow(box, 'hiking')).toBeUndefined();
+        const peak = { kind: 'peak' as const, at_udeg: [8180000, 47870000] as [number, number] };
+        host.facts = async cell => cell === id ? { format: 1, places: { n5: peak }, routes: { 101: { places: [['n5', 20]], paved_pct: 0, big_road_pct: 0, water_pct: 0 } } } : null;
+        expect((await catalog.inBox(box, 'hiking'))?.map(route => route.id)).toEqual([101]);
+        expect([catalog.factsOf(101)?.places, catalog.place('n5')]).toEqual([[['n5', 20]], peak]);
+        host.facts = () => Promise.resolve(null);
+    });
+
+    it('lists the records of a box from the cells of another box', async () => {
+        host.load = cell;
+        asked.length = 0;
+        // The view meets more than the most cells; the records of the one cell of `from` with a vertex in the view list.
+        const view: Box = [7.1, 47.8, 15.6, 47.9], from: Box = [8.175, 47.86, 8.19, 47.88], [id] = boxCells(from);
+        const listed = (await new RouteCatalog().inBox(view, 'hiking', from))!;
+        expect(listed.length).toBeGreaterThan((await new RouteCatalog().inBox(from, 'hiking'))!.length);
+        expect(listed.every(route => route.cells.includes(id))).toBe(true);
+        expect(new Set(asked)).toEqual(new Set([id]));
     });
 });
