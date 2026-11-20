@@ -64,9 +64,8 @@ route's line as a drawn leg.
 In the web planner, one bar above the stops holds the day count, the start date and, for a trip, the
 stay kinds. Its "+" makes a route a multi-day trip, and "−" from the lowest count undoes it. With a
 start date, each day shows its weekday. The elevation profile is the timeline: the days by colour, a
-marker at each night and a column for each rest day. From 15 riding days, a strip of all days stands
-above it, with a frame on a week of 7 days. The day list, the profile and the town search show only
-that week.
+marker at each night and a column for each rest day. From 15 riding days, a strip of all days frames
+one week: the list, profile and town search show only that week.
 
 A guessed day count is grey and dotted; a set one is dark. The planner guesses the day count from
 the riding time at the plan's pace. After each route or pace change, it guesses the count and the
@@ -126,8 +125,9 @@ to the device.
 A trip can have a start date. Dates follow the rides: when the rider rides Day 2 on Wednesday and
 not on Tuesday, Day 3 shows Thursday.
 
-The phone and the device show the same estimate, from one table for each bike type. The web planner
-times each bike type at its own flat speed and the plan's pace, so its time can differ.
+Each day route carries the trip's bike type. The phone and the device show the same estimate, from
+one table for each bike type. The web planner times each bike type at its own flat speed and the
+plan's pace, so its time can differ.
 
 ## Riding a trip on the device
 
@@ -188,7 +188,8 @@ card loads it. After the last day, **TRIP DONE** shows today's ledger, the trip 
 and the totals of the trip's rides.
 
 The opt-in data field **Trip to go** (tile caption TRIP KM) shows the rest of the loaded day plus
-the routes of the later days. A transfer is not ridden, so it does not count.
+the routes of the later days. A transfer is not ridden, so it does not count. The rider adds the
+field in the data-field editor.
 
 Each ride records its trip key, its day, the trip name and the bike type in its footer. So the
 device and the phone group the rides of a trip without dates, and the device's ride list shows
