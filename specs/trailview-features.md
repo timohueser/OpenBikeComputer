@@ -620,7 +620,7 @@ The tags, numbers in metres with at most 2 decimals, the values of a row separat
 | Tag | On | Value |
 | --- | --- | --- |
 | `section` | both | `round`, or `box` for an underpass |
-| `half`, `height` | both | The inside half-width and height |
+| `half`, `height` | both | The inside half-width and height; on a tube, the height of its chord (see The floor of a tube) |
 | `look` | both | `concrete`, `masonry` or `rock`: of the group, `rock` for the part `rock` |
 | `class`, `surface` | tube | The class of `roads.json` and the `surface` tag (when it has one) of the widest way |
 | `road` | tube | The half-width of the widest way's carriageway |
@@ -638,8 +638,28 @@ The tags, numbers in metres with at most 2 decimals, the values of a row separat
 
 Each `tunnel-tube` has the two vertices of one chord of the tube from opening to opening, in the rising metres along
 the stroke of its way, so a tile that holds a piece of the tube holds whole records. A chain end with no opening
-holds its end vertex. Today's app and the ground plan read neither kind. The tag `levels` of a tunnel way does not
-change with the parts.
+holds its end vertex. Today's app and the ground plan read neither kind. The tag `levels` and the heights of a
+tunnel way do not change with the parts.
+
+#### The floor of a tube
+
+Between its openings, the floor of a tube touches no other way. The bake lowers it so that the shell of the crown
+lies under each way on top. The heights of a `tunnel-tube` are this floor; the `z` of a `tunnel-end` is the height of
+the road solver.
+
+- A way on top is a crossing of the curve of a way with heights, not of the kind `tunnel` or `gallery`, with the curve
+  of the tube between its openings. A way that has a vertex of a tunnel way at the crossing joins the tube there: it
+  is not on top. Its underside is its height there less its `deck` on a bridge, else less `slab_m`. Its window is the
+  metres along the tube within (its outer half-width + `half` + `shell_m`) / sine of the crossing from the crossing.
+  The sine is at least `cross_sin_min`. The tube gets a vertex at each end of a window.
+- The grade is the larger of the `grade` of the class of the widest way (`grade_default` for a class with none) and
+  the steepest chord of the tube.
+- The cap at a vertex is the least underside of the windows there, less `shell_m` and `height`. The floor is the
+  highest profile that is at most the road solver's height and the cap, and that keeps the grade. Then the floor
+  rises where the grade from an opening needs it: the two ends keep their heights.
+- Where the floor lies over the cap, the inside height there is `height` less that difference, at least
+  `least_height_m` of the group. A chord takes the lesser height of its two vertices.
+- Where the shell of the crown still lies over the underside of a way on top, the bake counts a clash.
 
 ### Sea
 
