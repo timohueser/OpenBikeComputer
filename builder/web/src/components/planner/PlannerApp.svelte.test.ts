@@ -429,7 +429,7 @@ describe('planner app transitions', () => {
         expect(routeRequests()).toBe(2);
     });
 
-    it('opens a tile place from both a search row and its map pin, then adds a visit', async () => {
+    it('opens a tile place from both a search row and its map pin, then adds a visit and shows it on the route', async () => {
         await startApp();
         await tick();
         await search('campsites');
@@ -466,9 +466,14 @@ describe('planner app transitions', () => {
         expect(row.isConnected).toBe(true);
         expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
         vi.useRealTimers();
+        const moved = moves.count;
         button('Add as visit').click();
         await tick();
         expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ label: tilePlace.label, kind: 'waypoint' }));
+        // The card closes so that it does not cover the new route, the map moves to it, and the new stop stays lit.
+        expect(document.querySelector('[role="dialog"]')).toBeNull();
+        expect(moves.count).toBe(moved + 1);
+        expect(button(`Map point: ${tilePlace.label}`).classList.contains('highlighted')).toBe(true);
     });
 
     it('keeps the totals of the whole plan in the title of the closed elevation drawer', async () => {
@@ -804,7 +809,7 @@ describe('planner app transitions', () => {
         expect(weekFits.count).toBe(1);
     });
 
-    it('sets the day count when the rider steps it, even back to the guess, and not when only the stay changes', async () => {
+    it('sets the day count when the rider steps it, even back to the guess, and not when only the stay changes; each step shows the whole trip', async () => {
         stored.set('trip', JSON.stringify({ ...testTrip(), daysSet: undefined }));
         const draft = () => JSON.parse(written()!);
         const count = () => Number(document.querySelector('[aria-label="Number of days"] .count')!.textContent!.split(' ')[0]);
@@ -818,9 +823,12 @@ describe('planner app transitions', () => {
         expect(stayBox('Campsites').disabled).toBe(true);
         expect(draft()).toMatchObject({ days: guessed, stay: ['camp'] });
         expect(draft().daysSet).toBeUndefined();
+        const moved = moves.count;
         button('One day more').click(); await tick();
         button('One day fewer').click(); await tick();
         expect(draft()).toMatchObject({ days: guessed, daysSet: true });
+        // Each change of days moves every day end, so the map shows the whole trip.
+        expect(moves.count).toBe(moved + 2);
     });
 
     it('opens a night of the timeline in the day list and sets the start date in the trip row', async () => {

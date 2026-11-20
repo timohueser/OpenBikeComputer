@@ -1033,12 +1033,17 @@
         void session.nameVisit(point);
     }
 
+    /** Closes the place card and shows the changed part of the route: from the point before the new stop to the point
+     * after it. The stop stays lit until the pointer lights another one or the next click. */
     function addVisit(place: Place) {
         const point = { ...newPoint(place.coordinate, 'waypoint', place.label), ...placeRef(place) };
         commit(addPointNear(trip, session.line, point), 'Visit added');
         clearSelection();
-        selectedId = point.id;
+        hoveredId = point.id;
         reveal(point.id, dayOf(point.coordinate));
+        const route = orderedRoutePoints(trip), at = route.findIndex(p => p.id === point.id);
+        // The search keeps its area: the rider chose it, not this move.
+        map?.fitCoordinates(route.slice(Math.max(0, at - 1), at + 2).map(p => p.coordinate), true);
     }
 
     function movePoint(id: string, coordinate: Coordinate) {
@@ -1267,7 +1272,7 @@
                     <RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />
                     <!-- The rider's trip, not `planned`: a change must not keep the suggested nights as day ends. -->
                     <div class="trip-settings"><TripRow {trip} line={session.line} onChange={changePlan}
-                        onDays={(next, description) => { changePlan(next, description); if (!multiDay(next)) statusUndo = undo; }}
+                        onDays={(next, description) => { changePlan(next, description); if (!multiDay(next)) statusUndo = undo; map?.fitRoute(); }}
                         onLimit={() => message = `${maxRidingDays} riding days is the most a trip can have`} />
                         {#if multi && trip.days > partDays}<p class="device-parts">Goes to the bike computer in 2 parts</p>{/if}</div>
                 {/if}
