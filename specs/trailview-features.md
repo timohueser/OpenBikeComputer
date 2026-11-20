@@ -583,9 +583,8 @@ Each opening takes the first kind of part that fits, by these rungs in order:
 2. No part where the opening lies within `half` + `same_tube_gap_m` across, `same_tube_stagger_m` along and
    `pair_max_deg` of the opening of a wider chain: the way is in that tube. The wider chain keeps its axis, and its
    `half` grows to the far edge of the other way and its margin. The widest chain takes first.
-3. A chain shorter than `underpass_max_m` with a way or a track on top: `box` at its openings. Its `height` is the
-   least room under the ways on top, less `slab_m` and `shell_m`, at least `least_height_m` and at most the bore. A
-   short chain under a building only has no part.
+3. A chain shorter than `underpass_max_m` with a way or a track on top: `box` at its openings. Its height comes from
+   the floor of the tube, as for every part. A short chain under a building only has no part.
 4. An end that meets no way and is covered at its opening: `free`.
 5. An end whose first covered metre lies within `collar_max_m`: `pair` where an opening of another chain of the same
    family (rail or not) at that rung lies within `pair_max_m` and `pair_max_deg` (the nearest pairs first, each
@@ -620,7 +619,7 @@ The tags, numbers in metres with at most 2 decimals, the values of a row separat
 | Tag | On | Value |
 | --- | --- | --- |
 | `section` | both | `round`, or `box` for an underpass |
-| `half`, `height` | both | The inside half-width and height; on a tube, the height of its chord (see The floor of a tube) |
+| `half`, `height` | both | The inside half-width and height: of a tube, the height of its chord; of an end, the height of the tube's chord there (see The floor of a tube) |
 | `look` | both | `concrete`, `masonry` or `rock`: of the group, `rock` for the part `rock` |
 | `class`, `surface` | tube | The class of `roads.json` and the `surface` tag (when it has one) of the widest way |
 | `road` | tube | The half-width of the widest way's carriageway |
@@ -644,22 +643,27 @@ tunnel way do not change with the parts.
 #### The floor of a tube
 
 Between its openings, the floor of a tube touches no other way. The bake lowers it so that the shell of the crown
-lies under each way on top. The heights of a `tunnel-tube` are this floor; the `z` of a `tunnel-end` is the height of
-the road solver.
+lies under each way on top. The heights of a `tunnel-tube` are this floor, and the `z` of a `tunnel-end` is the height
+of the road solver there. The bake sets the floor before the numbers of the openings.
 
-- A way on top is a crossing of the curve of a way with heights, not of the kind `tunnel` or `gallery`, with the curve
-  of the tube between its openings. A way that has a vertex of a tunnel way at the crossing joins the tube there: it
-  is not on top. Its underside is its height there less its `deck` on a bridge, else less `slab_m`. Its window is the
-  metres along the tube within (its outer half-width + `half` + `shell_m`) / sine of the crossing from the crossing.
-  The sine is at least `cross_sin_min`. The tube gets a vertex at each end of a window.
-- The grade is the larger of the `grade` of the class of the widest way (`grade_default` for a class with none) and
-  the steepest chord of the tube.
-- The cap at a vertex is the least underside of the windows there, less `shell_m` and `height`. The floor is the
-  highest profile that is at most the road solver's height and the cap, and that keeps the grade. Then the floor
-  rises where the grade from an opening needs it: the two ends keep their heights.
+- The curve of a way with heights, not of the kind `gallery`, lies over a vertex of the tube where the vertex is
+  within its reach: its outer half-width + `half` + `shell_m`. Its height there is that of its nearest point. It lies
+  on top where that height is more than the at-grade band over the road solver's height of the tube (the lesser
+  `snap_height_m` of the two classes, as at a crossing of the ground plan). Its underside is that height less its
+  `deck` on a bridge, else less `slab_m`.
+- The tube gets a vertex where it enters and leaves the reach of each way over it, and at the foot of each point of
+  that way's curve within its reach. A vertex within 1 cm of another is that vertex.
+- A chord may rise by the `grade` of the class of the widest way (`grade_default` for a class with none) times its
+  length, or by the rise of the road solver's chord there, the larger.
+- The cap at a vertex is the least underside of the ways on top there, less `shell_m` and `height`. The floor is the
+  highest profile that is at most the road solver's height and the cap, and that keeps the rise of each chord. Then
+  the floor rises where the rise from an opening needs it: the two ends keep their heights.
 - Where the floor lies over the cap, the inside height there is `height` less that difference, at least
-  `least_height_m` of the group. A chord takes the lesser height of its two vertices.
-- Where the shell of the crown still lies over the underside of a way on top, the bake counts a clash.
+  `least_height_m` of the group. A chord takes the lesser height of its two vertices, and an opening takes the height
+  of the chord at its vertex.
+- Where the shell of the crown still lies over the underside of a way on top, the bake counts a clash, once per way.
+  A way of the kind `tunnel` (another tube) does not lower the floor: where it lies on top and the shell of the crown
+  lies over its underside, the bake counts a tube clash.
 
 ### Sea
 
