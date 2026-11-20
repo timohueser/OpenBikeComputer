@@ -110,6 +110,29 @@ export function nearestProgress(coordinates: Coordinate[], point: Point): number
     return (lengths[index] + (lengths[index + 1] - lengths[index]) * t) / total;
 }
 
+type ScreenPoint = { x: number; y: number };
+
+/**
+ * The nearest point of the lines within `reach` screen pixels of `point`, with its line. A line that `quiet` names loses
+ * to any other line in reach, so on a road that two days share the day in colour wins over a quiet day.
+ */
+export function nearestOnScreen<L extends { coordinates: Coordinate[] }>(lines: readonly L[], project: (coordinate: Coordinate) => ScreenPoint,
+    point: ScreenPoint, reach: number, quiet: (line: L) => boolean): (ScreenPoint & { line: L }) | null {
+    let best: (ScreenPoint & { line: L; pixels: number; quiet: boolean }) | null = null;
+    for (const line of lines) {
+        const outside = quiet(line);
+        if (best && outside && !best.quiet) continue;
+        const projected = line.coordinates.map(project);
+        for (let i = 1; i < projected.length; i++) {
+            const a = projected[i - 1], b = projected[i], dx = b.x - a.x, dy = b.y - a.y;
+            const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+            const pixels = Math.hypot(point.x - a.x - dx * t, point.y - a.y - dy * t);
+            if (pixels <= reach && (!best || (best.quiet && !outside) || pixels < best.pixels)) best = { line, x: a.x + dx * t, y: a.y + dy * t, pixels, quiet: outside };
+        }
+    }
+    return best;
+}
+
 /**
  * Distance in km from a point to the line, or Infinity beyond `km`. Each piece of the line has a bounding box, so a point
  * skips far pieces at once. A one-point line is its point.

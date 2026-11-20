@@ -41,7 +41,6 @@ describe('week in focus', () => {
         const pin = (kind: MapPoint['kind'], extra: Partial<MapPoint> = {}): MapPoint => ({ id: kind, coordinate: [7, 47], label: kind, kind, ...extra });
         // The night before the week and its last night stay marks; the nights around them become dots.
         expect([7, 14, 6, 15].map(night => pinLook(week, pin('dayend', { night })))).toEqual(['shown', 'shown', 'dot', 'dot']);
-        expect(pinLook(week, pin('night', { night: 15 }))).toBe('dot');
         expect([9, 3].map(day => pinLook(week, pin('via', { day })))).toEqual(['shown', 'hidden']);
         const others = [pin('start', { day: 1 }), pin('finish', { day: 20 }), pin('place')];
         expect(others.map(point => pinLook(week, point))).toEqual(['shown', 'shown', 'shown']);

@@ -795,6 +795,9 @@ describe('planner app transitions', () => {
         weekFits.count = 0;
         button('7 days on').click(); await tick();
         await vi.waitFor(() => expect(weekFits.count).toBe(1));
+        // The map gets the week and the day under the pointer on the strip.
+        document.querySelector('[role="slider"][aria-label="Week in focus"]')!.dispatchEvent(new PointerEvent('pointermove', { clientX: 1000, bubbles: true })); await tick();
+        expect(document.querySelector('.map-week')?.textContent).toBe('8-14 20');
         button('7 days on').click(); await tick();
         dayButton(16).click(); await tick();
         await new Promise(resolve => setTimeout(resolve, 400));

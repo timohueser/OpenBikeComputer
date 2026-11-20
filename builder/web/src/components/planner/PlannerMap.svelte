@@ -14,7 +14,7 @@
     import { poiPlace } from "../../lib/planner/place-index";
     import { FIT_LEVEL, LAST_LEVEL, opens, type TilePlace } from "../../lib/planner/place-groups";
     import type { Place } from "../../lib/planner/editor";
-    import { coordinateAt, kilometres, nearestProgress, routeSlice } from "../../lib/planner/geo";
+    import { coordinateAt, kilometres, nearestOnScreen, nearestProgress, routeSlice } from "../../lib/planner/geo";
     import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection, type RouteHint } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
@@ -31,7 +31,7 @@
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         placeKinds = [], highlightedKind = null, mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
         lines = [], onPick = null, part = null, week = null, lit = null,
-        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onRouteHover, onDayClick, popup,
+        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onMoveStart, onRouteHover, onDayClick, popup,
     }: {
         /** Lines that take no edits, such as the days of two saved routes, each in its colour and width; a later line
          * draws on top. A transfer draws dashed. */
@@ -85,6 +85,8 @@
         onVisibleRange?: (range: [number, number]) => void; popup?: Snippet;
         /** The rider starts to move the map, by pointer, wheel or keyboard. */
         onRiderMove?: () => void;
+        /** The map starts to move, by the rider or by the page. */
+        onMoveStart?: () => void;
         /** The place on the route under the pointer, as route progress, or null off the route. */
         onRouteHover?: (progress: number | null) => void;
         /** A click on the line of a day outside the week. */
@@ -358,30 +360,18 @@
         if (visible.length) onVisibleRange([visible[0], visible[visible.length - 1]]);
     }
 
-    /** The nearest point on a leg within reach of a screen position. */
-    function lineHit(point: maplibregl.Point): LineHit | null {
-        if (!map || !showRoute) return null;
-        let best: { legEndId: string; day: number; x: number; y: number; pixels: number } | null = null;
-        for (const segment of segments) {
-            const projected = segment.coordinates.map((coordinate) => map!.project(coordinate));
-            for (let i = 1; i < projected.length; i++) {
-                const a = projected[i - 1];
-                const b = projected[i];
-                const dx = b.x - a.x;
-                const dy = b.y - a.y;
-                const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
-                const pixels = Math.hypot(point.x - a.x - dx * t, point.y - a.y - dy * t);
-                if (!best || pixels < best.pixels) best = { legEndId: segment.legEndId, day: segment.day, x: a.x + dx * t, y: a.y + dy * t, pixels };
-            }
-        }
-        if (!best || best.pixels > lineReach) return null;
-        const at = map.unproject([best.x, best.y]);
-        return { legEndId: best.legEndId, day: best.day, coordinate: [at.lng, at.lat] };
-    }
-
     // The line of a day outside the week takes no edits: its shaping points are hidden, and it crosses the whole map, so
     // an insert drag would catch many pans. A press on it pans the map and a click opens its day.
     const quiet = (day: number) => dayLook(week, null, day) === "quiet";
+
+    /** The nearest point on a leg within reach of a screen position. */
+    function lineHit(point: maplibregl.Point): LineHit | null {
+        if (!map || !showRoute) return null;
+        const best = nearestOnScreen(segments, coordinate => map!.project(coordinate), point, lineReach, segment => quiet(segment.day));
+        if (!best) return null;
+        const at = map.unproject([best.x, best.y]);
+        return { legEndId: best.line.legEndId, day: best.line.day, coordinate: [at.lng, at.lat] };
+    }
 
     const level = () => Math.min(LAST_LEVEL, Math.floor(map!.getZoom()));
     const asPlace = (place: TilePlace) => poiPlace(place.id, place.kind, place.name, [place.lon, place.lat])!;
@@ -567,7 +557,7 @@
             map.on("mouseout", () => {
                 if (!press) hover = null; overOverlay = false; overlayLayer?.hover();
             });
-            map.on("movestart", (event) => { if (event.originalEvent) { wholeRoute = false; onRiderMove?.(); } overOverlay = false; overlayLayer?.hover(); });
+            map.on("movestart", (event) => { onMoveStart?.(); if (event.originalEvent) { wholeRoute = false; onRiderMove?.(); } overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
             map.on("idle", () => loading = false);
             map.on("dataloading", () => loading = true);
@@ -805,7 +795,8 @@
     });
     $effect(() => {
         for (const { point, marker, button, draggable, title } of madePins) {
-            const { id } = point, look = pinLook(week, point);
+            // The selected pin stays shown, so its callout never points at a hidden pin.
+            const { id } = point, look = id === selectedId ? "shown" : pinLook(week, point);
             button.classList.toggle("selected", id === selectedId);
             button.classList.toggle('highlighted', id === hoveredId);
             button.classList.toggle("matched", highlightedPlaceIds.includes(id));

@@ -237,8 +237,9 @@
     let restedStart = $state(1);
     let stripDragging = $state(false);
     const week = $derived(weekOf(plain, weekStart));
-    // The map moves to the week when it rests after a move of the strip or of ‹ ›. An opened day, night, point or search
-    // result, and a move of the map by the rider, cancel that: the map shows what the rider chose.
+    // The map fits the week when it rests after a move of the strip or of ‹ ›. Any map move that starts before the rest,
+    // by the rider or by the page, cancels the fit, and so does an opened day or night: the fit never undoes what the
+    // rider chose. The fit clears the flag before it moves the map.
     let fitWeek = false;
     // The riding day that the pointer lights on the strip.
     let litDay = $state<number | null>(null);
@@ -1303,7 +1304,7 @@
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => coordinate ? session.previewMove(id, coordinate) : session.cancelPreview()} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
                     onVisibleRange={(range) => visibleRange = range}
-                    onRiderMove={() => { nightToShow = null; fitWeek = false; }} onRouteHover={progress => mapHover = progress}
+                    onRiderMove={() => nightToShow = null} onMoveStart={() => fitWeek = false} onRouteHover={progress => mapHover = progress}
                     {week} lit={week ? litDay : null} onDayClick={showDay}
                 >
                     {#snippet popup()}
