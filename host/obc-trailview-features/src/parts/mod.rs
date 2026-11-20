@@ -22,7 +22,7 @@ use crate::{metres, roads, Part, Tags, Terrain};
 pub use ladder::Kind;
 
 /// The rule values of the bake, in the order of `Bake`.
-const BAKE_FIELDS: [&str; 21] = [
+const BAKE_FIELDS: [&str; 20] = [
     "margin_m",
     "margin_narrow_m",
     "shell_m",
@@ -43,7 +43,6 @@ const BAKE_FIELDS: [&str; 21] = [
     "junction_shift_max_m",
     "narrow_bore_m",
     "grade_default",
-    "cross_sin_min",
 ];
 const GROUP_FIELDS: [&str; 6] = ["classes", "look", "collar_max_m", "wing_max_m", "least_height_m", "rock"];
 
@@ -83,9 +82,8 @@ pub struct Bake {
     pub junction_shift_max_m: f64,
     /// A bore of this height or less takes `margin_narrow_m`.
     pub narrow_bore_m: f64,
-    /// The floor of a tube: the steepest grade of a class with none, and the least sine of a crossing on top.
+    /// The steepest grade of the floor of a tube whose class has none.
     pub grade_default: f64,
-    pub cross_sin_min: f64,
 }
 
 /// The rules of `data/trailview/parts.json`, the option `parts` of the step.
@@ -127,7 +125,6 @@ impl Rules {
             junction_shift_max_m: v[17],
             narrow_bore_m: v[18],
             grade_default: v[19],
-            cross_sin_min: v[20],
         };
         let mut groups = Vec::new();
         for (name, row) in rows["groups"].as_object().ok_or("parts groups: not an object")? {
@@ -626,33 +623,22 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
     for (o, d) in openings.iter().zip(&decided.ends) {
         ends_of[o.tube][o.end] = d.kind;
     }
-    // The tube from opening to opening; an end with no opening holds the end vertex.
-    let spans: Vec<Option<[f64; 2]>> = (0..tubes.len())
-        .map(|ti| {
-            let s0 = openings.iter().find(|o| o.tube == ti && o.end == 0).map_or(0.0, |o| o.s);
-            let s1 = openings.iter().find(|o| o.tube == ti && o.end == 1).map_or(tubes[ti].curve.len, |o| o.s);
-            (ends_of[ti].iter().any(Option::is_some) && s1 - s0 > 1e-6).then_some([s0, s1])
-        })
-        .collect();
-    let (floors, floor_metrics) = floor::floors(tubes, &spans, (&decided.half, &decided.height), input);
     for (ti, t) in tubes.iter().enumerate() {
         let kinds = ends_of[ti];
         if kinds.iter().all(Option::is_none) {
             continue;
         }
         let group = &input.rules.groups[t.group];
-        let (half, height) = (decided.half[ti], decided.height[ti]);
+        let half = decided.half[ti];
         let section = if kinds.contains(&Some(Kind::Box)) { "box" } else { "round" };
         let (wtags, _) = &input.tunnels[&t.widest];
         let mut common = Tags::new();
         common.insert("section".into(), section.into());
         common.insert("half".into(), num(half));
-        common.insert("height".into(), num(height));
         common.insert("look".into(), group.look.clone());
-        let ([s0, s1], fl) = match (spans[ti], &floors[ti]) {
-            (Some(span), Some(fl)) => (span, Some(fl)),
-            _ => ([0.0, 0.0], None),
-        };
+        // The tube from opening to opening, as its floor.
+        let fl = decided.floors[ti].as_ref();
+        let (s0, s1) = fl.map_or((0.0, 0.0), |f| (f.s[0], f.s[f.s.len() - 1]));
         for (way, ps) in &t.curve.stretches {
             let rising = ps.last().unwrap().along >= ps[0].along;
             let order = if rising { [kinds[0], kinds[1]] } else { [kinds[1], kinds[0]] };
@@ -672,7 +658,7 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
             pts.extend(ps.iter().filter(|q| inside(q.s)).copied());
             pts.extend(fl.s.iter().filter(|&&s| inside(s)).map(|&s| t.curve.at(s).0));
             pts.push(t.curve.at(z).0);
-            // The curve's own point where a vertex of the floor is one.
+            // A floor vertex at the metres of a curve point is that point.
             pts.sort_by(|x, y| x.s.total_cmp(&y.s));
             pts.dedup_by(|later, first| later.s == first.s);
             for w in pts.windows(2) {
@@ -698,7 +684,7 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         let section = if kind == Kind::Box { "box" } else { "round" };
         t.insert("section".into(), section.into());
         t.insert("half".into(), num(decided.half[o.tube]));
-        t.insert("height".into(), num(decided.height[o.tube]));
+        t.insert("height".into(), num(n.height));
         let look = if kind == Kind::Rock { "rock" } else { input.rules.groups[tubes[o.tube].group].look.as_str() };
         t.insert("look".into(), look.into());
         t.insert("part".into(), kind.name().into());
@@ -720,14 +706,10 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         let part = Part { outer: false, points: vec![o.p], z: Some(vec![o.floor]), plan: None };
         features.push(("tunnel-end", t, part));
     }
-    let mut metrics = decided.metrics.clone();
-    if let (Value::Object(m), Value::Object(f)) = (&mut metrics, floor_metrics) {
-        m.extend(f);
-    }
     Placed {
         features,
         tags,
-        metrics,
+        metrics: decided.metrics.clone(),
         #[cfg(test)]
         ends: openings.iter().map(|o| o.way_id).zip(decided.ends.iter().cloned()).collect(),
     }

@@ -1,34 +1,34 @@
 //! The floor of a tube between its openings: the crown's shell lies a slab under each way on top, within the grade of
 //! the class, and the section gets lower where the grade does not allow that.
 
-use std::collections::HashSet;
-
+use obc_ground_plan::faces::Rules as PlanRules;
 use serde_json::{json, Value};
 
-use super::measure::meet;
-use super::{distance, Input, Point, Tube};
-use crate::geometry::{bounds, interp, key, Boxes};
-use crate::{degrees, roads};
+use super::{distance, segment_m, Input, Point, Tube};
+use crate::geometry::{bounds, interp, Boxes};
+use crate::{degrees, metres, roads};
 
-/// A way on top of a tube: the metres along the tube of its crossing and of the window where its band lies over the
-/// tube's shell, its underside there, and the crossing point.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Top {
-    pub s: f64,
-    pub window: [f64; 2],
-    pub under: f64,
-    pub p: [f64; 2],
+/// A way that can lie over a tube: its place in the ways, its curve with heights, the depth of its underside under the
+/// curve, its outer half-width and its at-grade band. A way of the kind `tunnel` is counted, and it lowers no floor.
+struct Over {
+    way: usize,
+    points: Vec<[f64; 2]>,
+    z: Vec<f64>,
+    depth: f64,
+    outer: f64,
+    band: f64,
+    tunnel: bool,
 }
 
-/// The floor of a tube: per vertex its metres, the road solver's height, the floor and the inside height; per top the
-/// metres that the shell of the crown rises over its underside (0 or less where it stays under).
+/// The floor of a tube: per vertex its metres, the road solver's height, the floor and the inside height; per way
+/// over it the most metres that the shell of the crown rises over its underside, and the vertex there.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Floor {
     pub s: Vec<f64>,
     pub z: Vec<f64>,
     pub f: Vec<f64>,
     pub h: Vec<f64>,
-    pub over: Vec<f64>,
+    pub over: Vec<Option<(f64, usize)>>,
 }
 
 impl Floor {
@@ -36,117 +36,160 @@ impl Floor {
     pub fn at(&self, s: f64) -> (f64, f64) {
         (interp(s, &self.s, &self.f), interp(s, &self.s, &self.h))
     }
+
+    /// The inside height of the chord at an end of the tube (0 its first vertex, 1 its last).
+    pub fn end_height(&self, end: usize) -> f64 {
+        let n = self.h.len();
+        if end == 0 {
+            self.h[0].min(self.h[1])
+        } else {
+            self.h[n - 1].min(self.h[n - 2])
+        }
+    }
 }
 
-/// A crossing nearer than this to a vertex of a tunnel way that the way on top shares lies at that vertex; a window
-/// end nearer than this to a vertex of the tube is that vertex.
-const JOINED_M: f64 = 0.01;
+/// A vertex nearer than this to another is that vertex, and a point this far past a reach is within it.
+const MERGE_M: f64 = 0.01;
 
-/// The ways on top of each line (the points of a tube from opening to opening, its inside half-width): each crossing
-/// of the curve of a way with heights that is not of the kind `tunnel` or `gallery`. A way that meets a tunnel way at a
-/// shared vertex joins it there and does not cross on top.
-pub(crate) fn tops(lines: &[(Vec<Point>, f64)], input: &Input) -> Vec<Vec<Top>> {
-    let b = &input.rules.bake;
-    let mut out: Vec<Vec<Top>> = vec![Vec::new(); lines.len()];
-    let boxes = Boxes::new(&lines.iter().map(|(l, _)| bounds(l.iter().map(|q| &q.p))).collect::<Vec<_>>());
-    let joined: HashSet<[u64; 2]> = input
-        .tunnels
-        .values()
-        .flat_map(|(_, parts)| parts.iter().flat_map(|p| p.points.iter().map(|&q| key(q))))
+/// The floor of a line of metres `s` and road solver's heights `z` from opening to opening: `under` holds per vertex
+/// each way on top there (its index and underside), `caps` whether that way lowers the floor; `grade` is the grade of
+/// the class, `height` and `least` the inside height and the least height of the group, `shell` the shell of the crown.
+pub(crate) fn floor(
+    (s, z): (&[f64], &[f64]),
+    (under, caps): (&[Vec<(usize, f64)>], &[bool]),
+    grade: f64,
+    (height, least): (f64, f64),
+    shell: f64,
+) -> Floor {
+    let n = s.len();
+    // The cap: the floor under which the crown's shell clears the underside of each way on top of the vertex.
+    let cap: Vec<f64> = (under.iter())
+        .map(|u| u.iter().filter(|w| caps[w.0]).map(|w| w.1).fold(f64::INFINITY, f64::min) - shell - height)
         .collect();
-    for (w, (kind, tags, parts)) in input.ways.iter().enumerate() {
-        if *kind == "tunnel" || *kind == "gallery" {
-            continue;
-        }
-        let outer = input.widths.way(kind, tags, false).outer_m();
-        let depth = input.decks.get(&w).copied().unwrap_or(b.slab_m);
-        for part in parts.iter().filter(|p| p.z.is_some()) {
-            let curve = roads::polyline(part);
-            let z = curve.z.as_ref().unwrap();
-            let shared: Vec<[f64; 2]> = part.points.iter().copied().filter(|&q| joined.contains(&key(q))).collect();
-            for t in boxes.overlapping(bounds(&curve.points)) {
-                let (line, half) = &lines[t];
-                let reach = outer + half + b.shell_m;
-                // A crossing at a vertex of either curve is found on both chords there: it is one.
-                let mut found: Vec<Top> = Vec::new();
-                for (k, w2) in curve.points.windows(2).enumerate() {
-                    for j in 0..line.len().saturating_sub(1) {
-                        let (p, q) = (line[j], line[j + 1]);
-                        let Some((u, v)) = meet(w2[0], w2[1], p.p, q.p) else { continue };
-                        let x = [w2[0][0] + u * (w2[1][0] - w2[0][0]), w2[0][1] + u * (w2[1][1] - w2[0][1])];
-                        if shared.iter().any(|&e| distance(x, e) < JOINED_M) {
-                            continue;
-                        }
-                        let under = z[k] + u * (z[k + 1] - z[k]) - depth;
-                        if !under.is_finite() {
-                            continue;
-                        }
-                        let (dw, dt) = ([w2[1][0] - w2[0][0], w2[1][1] - w2[0][1]], [q.p[0] - p.p[0], q.p[1] - p.p[1]]);
-                        let sine = (dw[0] * dt[1] - dw[1] * dt[0]).abs() / (dw[0].hypot(dw[1]) * dt[0].hypot(dt[1]));
-                        let s = p.s + v * (q.s - p.s);
-                        let half_window = reach / sine.max(b.cross_sin_min);
-                        let (lo, hi) = (line[0].s, line[line.len() - 1].s);
-                        let window = [(s - half_window).max(lo), (s + half_window).min(hi)];
-                        if !found.iter().any(|f| distance(f.p, x) < JOINED_M) {
-                            found.push(Top { s, window, under, p: x });
-                        }
-                    }
-                }
-                out[t].extend(found);
+    // A chord may rise by the grade of the class, or by as much as the road solver's chord there.
+    let rise: Vec<f64> = (1..n).map(|i| (grade * (s[i] - s[i - 1])).max((z[i] - z[i - 1]).abs())).collect();
+    let mut f: Vec<f64> = (0..n).map(|i| if i == 0 || i + 1 == n { z[i] } else { z[i].min(cap[i]) }).collect();
+    for i in 1..n {
+        f[i] = f[i].min(f[i - 1] + rise[i - 1]);
+    }
+    for i in (0..n - 1).rev() {
+        f[i] = f[i].min(f[i + 1] + rise[i]);
+    }
+    // The cones of the two openings keep the rise of each chord too, so the floor holds the heights of both.
+    let mut down = 0.0;
+    for i in 0..n {
+        down += if i > 0 { rise[i - 1] } else { 0.0 };
+        f[i] = f[i].max(z[0] - down);
+    }
+    let mut up = 0.0;
+    for i in (0..n).rev() {
+        up += if i + 1 < n { rise[i] } else { 0.0 };
+        f[i] = f[i].max(z[n - 1] - up);
+    }
+    let h: Vec<f64> =
+        (0..n).map(|i| if f[i] > cap[i] { (height - (f[i] - cap[i])).max(least).min(height) } else { height }).collect();
+    let mut over: Vec<Option<(f64, usize)>> = vec![None; caps.len()];
+    for (i, u) in under.iter().enumerate() {
+        for &(w, under) in u {
+            let m = f[i] + h[i] + shell - under;
+            if over[w].is_none_or(|o| m > o.0) {
+                over[w] = Some((m, i));
             }
         }
     }
-    for tops in &mut out {
-        tops.sort_by(|x, y| x.s.total_cmp(&y.s).then(x.under.total_cmp(&y.under)));
-    }
-    out
+    Floor { s: s.to_vec(), z: z.to_vec(), f, h, over }
 }
 
-/// The floor of a line of (metres, height) from opening to opening under its tops: `g` the steepest grade, `height`
-/// and `least` the inside height and the least height of its group, `shell` the shell of the crown.
-pub(crate) fn floor(line: &[(f64, f64)], tops: &[Top], g: f64, (height, least): (f64, f64), shell: f64) -> Floor {
-    let (ls, lz): (Vec<f64>, Vec<f64>) = line.iter().copied().unzip();
-    let mut s: Vec<f64> = ls.clone();
-    let mut ends: Vec<f64> = tops.iter().flat_map(|t| t.window).collect();
-    ends.sort_by(f64::total_cmp);
-    for e in ends {
-        let at = s.partition_point(|&x| x < e);
-        let near = |k: usize| s.get(k).is_some_and(|&x| (x - e).abs() < JOINED_M);
-        if !near(at) && !(at > 0 && near(at - 1)) {
-            s.insert(at, e);
+/// The metres from q to the segment a-b, and the share along it of the nearest point.
+fn nearest(q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> (f64, f64) {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let l2 = d[0] * d[0] + d[1] * d[1];
+    let t = if l2 > 0.0 { (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    (distance(q, [a[0] + t * d[0], a[1] + t * d[1]]), t)
+}
+
+/// The shares along p-q that lie within `reach` metres of the segment a-b: one run, because the metres to a segment
+/// are convex along a line.
+fn within(p: [f64; 2], q: [f64; 2], (a, b): ([f64; 2], [f64; 2]), reach: f64) -> Option<[f64; 2]> {
+    let at = |t: f64| segment_m([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])], a, b);
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..40 {
+        let (m1, m2) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+        if at(m1) <= at(m2) {
+            hi = m2;
+        } else {
+            lo = m1;
         }
     }
-    let n = s.len();
-    let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();
-    let holds = |t: &Top, x: f64| t.window[0] - JOINED_M <= x && x <= t.window[1] + JOINED_M;
-    // The cap: the floor under which the crown's shell clears the underside of each top whose window holds the vertex.
-    let cap: Vec<f64> = (s.iter())
-        .map(|&x| tops.iter().filter(|t| holds(t, x)).map(|t| t.under).fold(f64::INFINITY, f64::min) - shell - height)
-        .collect();
-    let mut f: Vec<f64> = (0..n).map(|i| if i == 0 || i + 1 == n { z[i] } else { z[i].min(cap[i]) }).collect();
-    for i in 1..n {
-        f[i] = f[i].min(f[i - 1] + g * (s[i] - s[i - 1]));
+    let best = (lo + hi) / 2.0;
+    if at(best) > reach {
+        return None;
     }
-    for i in (0..n.saturating_sub(1)).rev() {
-        f[i] = f[i].min(f[i + 1] + g * (s[i + 1] - s[i]));
-    }
-    // The cones of the two openings keep the grade too, so the floor holds the heights of both.
-    for i in 0..n {
-        f[i] = f[i].max(z[0] - g * (s[i] - s[0])).max(z[n - 1] - g * (s[n - 1] - s[i]));
-    }
-    let h: Vec<f64> = (0..n)
-        .map(|i| if f[i] > cap[i] { (height - (f[i] - cap[i])).max(least).min(height) } else { height })
-        .collect();
-    let over = (tops.iter())
-        .map(|t| {
-            let within = (0..n).filter(|&i| holds(t, s[i]));
-            within.map(|i| f[i] + h[i] + shell - t.under).fold(f64::NEG_INFINITY, f64::max)
-        })
-        .collect();
-    Floor { s, z, f, h, over }
+    let edge = |mut inside: f64, mut outside: f64| {
+        if at(outside) <= reach {
+            return outside;
+        }
+        for _ in 0..40 {
+            let mid = (inside + outside) / 2.0;
+            if at(mid) <= reach {
+                inside = mid;
+            } else {
+                outside = mid;
+            }
+        }
+        inside
+    };
+    Some([edge(best, 0.0), edge(best, 1.0)])
 }
 
-/// The floors of the tubes with a part (`spans`: the metres of their two openings), and their counts.
+/// The box of the points grown by `m` metres.
+fn grown(points: &[[f64; 2]], m: f64) -> [f64; 4] {
+    let b = bounds(points);
+    let u = m / metres((b[1] + b[3]) / 2.0);
+    [b[0] - u, b[1] - u, b[2] + u, b[3] + u]
+}
+
+/// Whether two boxes meet.
+fn meet(a: [f64; 4], b: [f64; 4]) -> bool {
+    a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
+}
+
+/// The ways that can lie over the lines (`reach`: the half-width of each line with its shell): every way with heights
+/// but a gallery, with its curve (`roads::polyline`), and per line the ways near it.
+fn overs(lines: &[(Vec<[f64; 2]>, f64)], input: &Input) -> (Vec<Over>, Vec<Vec<usize>>) {
+    let sections = &PlanRules::embedded().sections;
+    let index = Boxes::new(&lines.iter().map(|(ps, reach)| grown(ps, *reach)).collect::<Vec<_>>());
+    let (mut out, mut near) = (Vec::new(), vec![Vec::new(); lines.len()]);
+    for (w, (kind, tags, parts)) in input.ways.iter().enumerate() {
+        if *kind == "gallery" {
+            continue;
+        }
+        let outer = input.widths.way(kind, tags, false).outer_m();
+        for part in parts.iter().filter(|p| p.z.is_some() && p.points.len() >= 2) {
+            let curve = roads::polyline(part);
+            let lines = index.overlapping(grown(&curve.points, outer));
+            if lines.is_empty() {
+                continue;
+            }
+            for l in lines {
+                near[l].push(out.len());
+            }
+            out.push(Over {
+                way: w,
+                points: curve.points,
+                z: curve.z.unwrap(),
+                depth: input.decks.get(&w).copied().unwrap_or(input.rules.bake.slab_m),
+                outer,
+                band: sections.way(kind, tags, false).snap_height_m,
+                tunnel: *kind == "tunnel",
+            });
+        }
+    }
+    (out, near)
+}
+
+/// The floors of the tubes with a part (`spans`: the metres of their two openings; `half` and `height` their inside
+/// half-width and height), and their counts.
 pub(crate) fn floors(
     tubes: &[Tube],
     spans: &[Option<[f64; 2]>],
@@ -154,23 +197,78 @@ pub(crate) fn floors(
     input: &Input,
 ) -> (Vec<Option<Floor>>, Value) {
     let b = &input.rules.bake;
+    let sections = &PlanRules::embedded().sections;
     let with: Vec<usize> = (0..tubes.len()).filter(|&t| spans[t].is_some()).collect();
-    let lines: Vec<(Vec<Point>, f64)> = (with.iter()).map(|&t| (line(&tubes[t], spans[t].unwrap()), half[t])).collect();
-    let tops = tops(&lines, input);
+    let lines: Vec<Vec<Point>> = with.iter().map(|&t| line(&tubes[t], spans[t].unwrap())).collect();
+    let boxes: Vec<(Vec<[f64; 2]>, f64)> =
+        (with.iter().zip(&lines)).map(|(&t, l)| (l.iter().map(|q| q.p).collect(), half[t] + b.shell_m)).collect();
+    let (overs, near_of) = overs(&boxes, input);
     let mut out: Vec<Option<Floor>> = vec![None; tubes.len()];
-    let (mut lowered, mut low, mut at_least, mut lows, mut clashes) = (0, 0, 0, Vec::new(), Vec::new());
-    for ((&t, (points, _)), tops) in with.iter().zip(&lines).zip(&tops) {
+    let (mut lowered, mut low, mut at_least, mut lows) = (0, 0, 0, Vec::new());
+    let (mut tops, mut clashes, mut tube_clashes) = (0, Vec::new(), Vec::new());
+    for (((&t, points), (ps, _)), near) in with.iter().zip(&lines).zip(&boxes).zip(&near_of) {
         let tube = &tubes[t];
+        let reach_of = |o: &Over| o.outer + half[t] + b.shell_m;
+        let ids: Vec<usize> = tube.ids.iter().map(|&id| id as usize).collect();
+        let near: Vec<&Over> = near.iter().map(|&k| &overs[k]).filter(|o| !(o.tunnel && ids.contains(&o.way))).collect();
+        // The vertices: the curve's, and per way over it the ends of the stretch within its reach and the foot of
+        // each point of its curve there.
+        let mut extra: Vec<f64> = Vec::new();
+        for o in &near {
+            let reach = reach_of(o);
+            for j in 0..ps.len() - 1 {
+                let chord = grown(&ps[j..j + 2], reach);
+                let ds = points[j + 1].s - points[j].s;
+                for w in o.points.windows(2).filter(|w| meet(bounds(*w), chord)) {
+                    if let Some(run) = within(ps[j], ps[j + 1], (w[0], w[1]), reach) {
+                        extra.extend(run.iter().filter(|&&u| u > 0.0 && u < 1.0).map(|&u| points[j].s + u * ds));
+                    }
+                }
+                for &q in o.points.iter().filter(|&&q| meet([q[0], q[1], q[0], q[1]], chord)) {
+                    let (m, u) = nearest(q, ps[j], ps[j + 1]);
+                    if m <= reach && u > 0.0 && u < 1.0 {
+                        extra.push(points[j].s + u * ds);
+                    }
+                }
+            }
+        }
+        let mut s: Vec<f64> = points.iter().map(|q| q.s).collect();
+        extra.sort_by(f64::total_cmp);
+        for e in extra {
+            let at = s.partition_point(|&x| x < e);
+            let close = |k: usize| s.get(k).is_some_and(|&x| (x - e).abs() < MERGE_M);
+            if !close(at) && !(at > 0 && close(at - 1)) {
+                s.insert(at, e);
+            }
+        }
+        let (ls, lz): (Vec<f64>, Vec<f64>) = points.iter().map(|q| (q.s, q.z)).unzip();
+        let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();
+        let xy: Vec<[f64; 2]> = s.iter().map(|&x| tube.curve.at(x).0.p).collect();
+        // Per vertex each way on top: within its reach, its height at the nearest point over the road solver's height
+        // of the tube by more than the at-grade band of the two.
+        let own_band = sections.way("tunnel", &input.tunnels[&tube.widest].0, false).snap_height_m;
+        let mut under: Vec<Vec<(usize, f64)>> = vec![Vec::new(); s.len()];
+        for (c, o) in near.iter().enumerate() {
+            let reach = reach_of(o);
+            let area = grown(&o.points, reach);
+            for (i, &p) in xy.iter().enumerate().filter(|(_, p)| meet([p[0], p[1], p[0], p[1]], area)) {
+                let (m, k, u) = (0..o.points.len() - 1)
+                    .map(|k| {
+                        let (m, u) = nearest(p, o.points[k], o.points[k + 1]);
+                        (m, k, u)
+                    })
+                    .fold((f64::INFINITY, 0, 0.0), |a, x| if x.0 < a.0 { x } else { a });
+                let height_there = o.z[k] + u * (o.z[k + 1] - o.z[k]);
+                if m <= reach + MERGE_M && height_there - z[i] > o.band.min(own_band) {
+                    under[i].push((c, height_there - o.depth));
+                }
+            }
+        }
+        let caps: Vec<bool> = near.iter().map(|o| !o.tunnel).collect();
         let least = input.rules.groups[tube.group].least_height_m;
         let rank = input.class_names.iter().position(|c| *c == tube.class);
-        let class_grade =
-            rank.map(|r| input.classes.rows[r].grade).filter(|g| g.is_finite()).unwrap_or(b.grade_default);
-        let steepest = (points.windows(2))
-            .filter(|w| w[1].s > w[0].s)
-            .map(|w| (w[1].z - w[0].z).abs() / (w[1].s - w[0].s))
-            .fold(0.0, f64::max);
-        let line: Vec<(f64, f64)> = points.iter().map(|q| (q.s, q.z)).collect();
-        let fl = floor(&line, tops, class_grade.max(steepest), (height[t], least), b.shell_m);
+        let grade = rank.map(|r| input.classes.rows[r].grade).filter(|g| g.is_finite()).unwrap_or(b.grade_default);
+        let fl = floor((&s, &z), (&under, &caps), grade, (height[t], least), b.shell_m);
         lowered += usize::from(fl.f.iter().zip(&fl.z).any(|(f, z)| *f < z - 0.005));
         // A low stretch: a run of chords (the lesser height of their two vertices) under the tube's height, and its
         // lowest vertex.
@@ -183,15 +281,18 @@ pub(crate) fn floors(
                 (Some(r), None) => {
                     low += 1;
                     at_least += usize::from(fl.h[r] <= least + 0.005);
-                    lows.push((height[t] - fl.h[r], tube.curve.at(fl.s[r]).0.p, &tube.class));
+                    lows.push((height[t] - fl.h[r], xy[r], &tube.class));
                     run = None;
                 }
                 _ => {}
             }
         }
-        for (top, &over) in tops.iter().zip(&fl.over) {
-            if over > 0.005 {
-                clashes.push((over, top.p, &tube.class));
+        for (c, o) in near.iter().enumerate() {
+            let Some((m, i)) = fl.over[c] else { continue };
+            tops += usize::from(!o.tunnel);
+            if m > 0.005 {
+                let list = if o.tunnel { &mut tube_clashes } else { &mut clashes };
+                list.push((m, xy[i], &tube.class));
             }
         }
         out[t] = Some(fl);
@@ -206,13 +307,15 @@ pub(crate) fn floors(
     };
     let metrics = json!({
         "floors": with.len(),
-        "tops": tops.iter().map(Vec::len).sum::<usize>(),
+        "tops": tops,
         "tubes_lowered": lowered,
         "low_stretches": low,
         "low_stretches_at_least_height": at_least,
         "lowest_stretches": places(lows, -1.0),
         "floor_clashes": clashes.len(),
         "floor_clash_places": places(clashes, 1.0),
+        "tube_clashes": tube_clashes.len(),
+        "tube_clash_places": places(tube_clashes, 1.0),
     });
     (out, metrics)
 }
