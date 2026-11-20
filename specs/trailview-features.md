@@ -556,23 +556,28 @@ ends of two such ways meet and no other such way has a vertex. A shallow tunnel 
 and belongs to no chain. A chain end opens where no other way of the kind `tunnel` has a vertex at its end vertex;
 else the tube goes on in the hill there and that end has no opening. The tube is the curve of the chain's ways (at most 10 m between
 vertices), joined. Its section is that of its widest way: `half` is the way's half-width with its widening and
-`margin_m` (`margin_narrow_m` where the bore is 3 m or less), `height` is its bore.
+`margin_m` (`margin_narrow_m` where the bore is `narrow_bore_m` or less), `height` is its bore.
 
-An opening lies at the end vertex of its way. Where the vertex holds two or more other ways of the road solver, the
-opening moves in along the chain to the first whole metre where both ends of its frame line, `half` + `shell_m` to
+An opening lies at the end vertex of its way. Where the vertex holds two or more arms of other ways of the road solver
+(the end of a way is one arm, a vertex inside a way two), the opening moves in along the chain to the first whole metre where both ends of its frame line, `half` + `shell_m` to
 each side, lie farther from each other way's line than that way's outer half-width; at most `junction_shift_max_m`,
 half the chain and the length of its own way. The ground plan builds the stretch from the vertex to the opening as a
 way on the ground (`graph::build_open`).
 
 The bake measures each opening on the ground of the ground plan: each cell that holds a point to read is built as the
 viewer builds it, with the tags of the levels and the stretches to the openings on the ground, without the storey
-under the ground (the step's metric `ground_plan_bores` says which). The cover at a metre in is the least ground
+under the ground (the step's metric `ground_plan_bores` says which). The ladder reads a first measure with the
+stretches of all openings. The numbers read the stretches that the records open (each opening with a part, a pair's
+mate included): the openings near a stretch that the first measure opened otherwise are measured again. A way in the
+tube of a wider one has no record, so a reader keeps it a tunnel way up to its end vertex; the part of the wider tube
+holds it. The cover at a metre in is the least ground
 over the centre line and both outer walls (`half` + `shell_m` across), less the floor; the metre is covered where
 the cover is at least `height` + `shell_m` + `cover_m`.
 
 Each opening takes the first kind of part that fits, by these rungs in order:
 
-1. No part where a vertex of the chain has no height, or where the end is no end vertex of its way.
+1. No part where a vertex of the chain has no height, or where the two openings of a chain meet (its shifts reach past
+   each other): the chain is then a way on the ground.
 2. No part where the opening lies within `half` + `same_tube_gap_m` across, `same_tube_stagger_m` along and
    `pair_max_deg` of the opening of a wider chain: the way is in that tube. The wider chain keeps its axis, and its
    `half` grows to the far edge of the other way and its margin. The widest chain takes first.
@@ -581,12 +586,17 @@ Each opening takes the first kind of part that fits, by these rungs in order:
    short chain under a building only has no part.
 4. An end that meets no way and is covered at its opening: `free`.
 5. An end whose first covered metre lies within `collar_max_m`: `pair` where an opening of another chain of the same
-   family (track or not) at that rung lies within `pair_max_m` and `pair_max_deg` (the nearest pairs first, each
-   opening in one pair); else `rock` for the groups `path` and `minor` covered within `rock_cover_max_m`; else `arch`.
+   family (rail or not) at that rung lies within `pair_max_m` and `pair_max_deg` (the nearest pairs first, each
+   opening in one pair); else `rock` for a group with `rock` covered within `rock_cover_max_m`; else `arch`.
 6. Else `free`.
 
 The two openings of a pair lie on the frame line of the opening farther in: the other one moves in along its way to
-it. A pair has one `tunnel-end`, at the opening of the lower feature id.
+it. Where its way does not reach that line within `pair_max_m`, half the chain and its own way, the two are no pair
+and each takes its next kind. A pair has one `tunnel-end`, at the opening of the lower feature id.
+
+The point of a `tunnel-end` lies on its own axis at its opening. The frame of a single opening runs `half` +
+`shell_m` to each side of that point; the frame of a pair runs from the right edge of one tube to the left edge of the
+other.
 
 The numbers, in metres over the floor of the opening unless named:
 
@@ -596,11 +606,12 @@ The numbers, in metres over the floor of the opening unless named:
 - `face`: the highest ground on the frame line plus `coping_m`, at least `height` + `shell_m` + `band_m`, at most
   `height` + `shell_m` + `face_over_crown_max_m`, and at most the underside of a deck over the frame line or its wing
   walls less `coping_m`. A deck is over them where that lies over the floor: a way that goes on from the opening on a
-  deck is not.
+  deck is not. So a deck can make `face` lower than `height` + `shell_m`.
 - `left`, `right`: a row of wall tops, one per metre out from the outer edge of the frame, the ground plus
   `coping_m`, from `coping_m` up to `face`. A row ends before the first metre whose ground lies under the floor +
   `wing_ground_m`, or at `wing_max_m`, and has one value at least. `left` is to the left of the way into the tube.
-- `foot`: the lowest ground under the frame, its wing walls and its collar, less `foot_m`.
+- `foot`: the lowest ground under the frame, its wing walls and its collar, less `foot_m`. The floor counts as ground
+  there, so `foot` is at most −`foot_m`.
 
 The tags, numbers in metres with at most 2 decimals, the values of a row separated by a space:
 
