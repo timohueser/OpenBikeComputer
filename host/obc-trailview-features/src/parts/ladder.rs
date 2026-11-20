@@ -316,7 +316,9 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     // ends are built (`BUILT`) by their final kinds, at its final place. The openings near a stretch that the first
     // measure opened otherwise are measured again there. Where the ground no longer fits a kind (no cover, or cover
     // past the limit), the end drops it; a pair with an end that dropped `Pair` is no pair. Dropping kinds commutes,
-    // so the order of the ends does not matter; and it only shrinks the built chains, so the rounds end.
+    // so the order of the ends does not matter. The built chains can grow too (a broken pair's mate can become an
+    // arch), but a round goes on only where a list of kinds shrank in the round before: the rounds end within one more
+    // than the count of all kinds.
     let before: Vec<Option<Kind>> = kinds.iter().map(|k| k.first().copied()).collect();
     let (mut remeasured, mut last): (usize, Option<Vec<OpenEnd>>) = (0, None);
     loop {

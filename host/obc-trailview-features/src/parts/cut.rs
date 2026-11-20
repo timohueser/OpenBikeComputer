@@ -9,7 +9,9 @@
 use std::collections::HashMap;
 
 use obc_ground_plan::graph::OpenEnd;
-use obc_trailview_parts::{end_boxes, metres_per_unit, outside, outside_plan, outside_wall, Chord, End, Rules, BOX};
+use obc_trailview_parts::{
+    corners, end_boxes, metres_per_unit, outside, outside_plan, outside_wall, Chord, End, Rules, BOX,
+};
 use serde_json::{json, Value};
 
 use super::ladder::Measure;
@@ -146,17 +148,10 @@ impl Grid {
         // The corners of each box in plan, in the frame of the opening.
         let mut lo = [f64::INFINITY; 2];
         let mut hi = [f64::NEG_INFINITY; 2];
-        for b in boxes {
-            let bm = metres_per_unit(b[1]);
-            let (u, lu) = ([b[2], b[3]], [b[3], -b[2]]);
-            for c in [-b[5], b[5]] {
-                for along in [b[10] * c, b[4] + b[11] * c] {
-                    let q = frame([b[0] + (u[0] * along + lu[0] * c) / bm, b[1] + (u[1] * along + lu[1] * c) / bm]);
-                    for k in 0..2 {
-                        lo[k] = lo[k].min(q[k]);
-                        hi[k] = hi[k].max(q[k]);
-                    }
-                }
+        for q in boxes.iter().flat_map(corners).map(frame) {
+            for k in 0..2 {
+                lo[k] = lo[k].min(q[k]);
+                hi[k] = hi[k].max(q[k]);
             }
         }
         let origin = lo.map(|l| ((l - NEAR_M) / STEP_M).floor() as i64 * STEP_CM);
@@ -242,21 +237,30 @@ impl Grid {
         }
         // An outer ring turns left (the cut on its left), a hole right. An outer ring goes, with its holes, where no
         // ground inside it lies deeper than `WALL_M` in the sides and the roof of the boxes.
+        // A ring's parent is the smallest ring of the other turn that holds it; a hole goes with its parent.
         let outer: Vec<bool> = rings.iter().map(|r| area2(r) > 0).collect();
+        let parent = |r: usize| {
+            (0..rings.len())
+                .filter(|&o| outer[o] != outer[r] && holds(&rings[o], rings[r][0]))
+                .min_by_key(|&o| area2(&rings[o]).abs())
+        };
         let mut keep = vec![true; rings.len()];
         let mut dropped = 0;
         for o in (0..rings.len()).filter(|&o| outer[o]) {
+            // The ground of the outer ring itself: in it, and in none of its holes.
+            let holes: Vec<usize> = (0..rings.len()).filter(|&h| !outer[h] && parent(h) == Some(o)).collect();
             let deepest = (0..nv)
                 .flat_map(|j| (0..nu).map(move |i| (i, j)))
-                .filter(|&(i, j)| v(i, j) < 0.0 && holds(&rings[o], self.place(i, j)))
+                .filter(|&(i, j)| {
+                    let q = self.place(i, j);
+                    v(i, j) < 0.0 && holds(&rings[o], q) && !holes.iter().any(|&h| holds(&rings[h], q))
+                })
                 .map(|(i, j)| self.wall[j * nu + i])
                 .fold(f64::NEG_INFINITY, f64::max);
             if deepest < WALL_M {
                 keep[o] = false;
                 dropped += 1;
-                for h in (0..rings.len()).filter(|&h| !outer[h] && holds(&rings[o], rings[h][0])) {
-                    keep[h] = false;
-                }
+                holes.iter().for_each(|&h| keep[h] = false);
             }
         }
         let mut rings: Vec<Ring> = rings.into_iter().zip(keep).filter(|(_, k)| *k).map(|(r, _)| r).collect();
@@ -437,5 +441,27 @@ mod tests {
         let mut g = grid([12, 12], face);
         g.wall.iter_mut().for_each(|w| *w = WALL_M / 2.0);
         assert_eq!(g.rings(), (Vec::new(), 2));
+    }
+
+    #[test]
+    fn a_ring_in_the_wall_goes_with_its_holes_but_not_with_a_deeper_ring_in_them() {
+        // Ground in the wall round a hole, and in the hole ground deep in the room.
+        let ring = |u: i64, v: i64, lo: i64, hi: i64| (lo..=hi).contains(&u) && (lo..=hi).contains(&v);
+        let mut g = grid([14, 14], |u, v| {
+            if ring(u, v, 250, 400) || (ring(u, v, 100, 550) && !ring(u, v, 200, 450)) {
+                -0.3
+            } else {
+                0.4
+            }
+        });
+        for j in 0..14 {
+            for i in 0..14 {
+                g.wall[j * 14 + i] =
+                    if ring(i as i64 * STEP_CM, j as i64 * STEP_CM, 250, 400) { 1.0 } else { WALL_M / 2.0 };
+            }
+        }
+        let (rings, dropped) = g.rings();
+        assert_eq!((rings.len(), dropped), (1, 1), "{rings:?}");
+        assert!(simple(&rings) && area2(&rings[0]) > 0 && holds(&rings[0], [300, 300]));
     }
 }
