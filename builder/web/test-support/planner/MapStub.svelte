@@ -7,6 +7,8 @@
     export const nightCalls: [Coordinate, Coordinate[][]][] = [];
     /** How often the view moved to a route, coordinates or a place. */
     export const moves = { count: 0 };
+    /** How often the page asked the map to show the week. */
+    export const weekFits = { count: 0 };
 </script>
 
 <script lang="ts">
@@ -18,6 +20,7 @@
     export function fitRoute() { moves.count++; }
     export function fitCoordinates() { moves.count++; }
     export function showNight(spot: Coordinate, towns: Coordinate[][]) { nightCalls.push([spot, towns]); }
+    export function showWeek() { weekFits.count++; }
     export function showPlace() { moves.count++; }
     export function zoomBy() {}
     export function underTrees() { return false; }

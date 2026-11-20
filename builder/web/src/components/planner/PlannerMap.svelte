@@ -20,6 +20,7 @@
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
     import { nightView } from "../../lib/planner/view-change";
     import { mapCallout, type MapCallout } from "../../lib/planner/map-callout";
+    import { dayLook, pinLook, type Week } from "../../lib/planner/week";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
     import PlaceMarks from './PlaceMarks.svelte';
     import PlaceList from './PlaceList.svelte';
@@ -29,8 +30,8 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         placeKinds = [], highlightedKind = null, mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        lines = [], onPick = null, part = null,
-        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onRouteHover, popup,
+        lines = [], onPick = null, part = null, week = null, lit = null,
+        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onRouteHover, onDayClick, popup,
     }: {
         /** Lines that take no edits, such as the days of two saved routes, each in its colour and width; a later line
          * draws on top. A transfer draws dashed. */
@@ -63,6 +64,10 @@
         hoverProgress?: number | null;
         /** The part of the route the profile selects, as route progress; the rest of the line is pale. */
         part?: [number, number] | null;
+        /** The week in focus of a long trip: the map draws its days in their colours and the other days quiet. */
+        week?: Week | null;
+        /** The riding day that the strip lights. */
+        lit?: number | null;
         center?: Coordinate; zoom?: number;
         /** A click on no point or line; null outside the region. */
         onEmptyClick?: (coordinate: Coordinate | null) => void;
@@ -82,9 +87,11 @@
         onRiderMove?: () => void;
         /** The place on the route under the pointer, as route progress, or null off the route. */
         onRouteHover?: (progress: number | null) => void;
+        /** A click on the line of a day outside the week. */
+        onDayClick?: (day: number) => void;
     } = $props();
 
-    type LineHit = { legEndId: string; coordinate: Coordinate };
+    type LineHit = { legEndId: string; day: number; coordinate: Coordinate };
     const lineReach = 10;
     const sketchStep = 3;
     // The right inset keeps the route and callouts clear of the map controls.
@@ -104,8 +111,9 @@
     let loading = $state(true);
     let failure = $state("");
     let errorDetail = $state("");
-    const pins = new Map<string, { marker: maplibregl.Marker; button: HTMLButtonElement; key: string }>();
-    let pinButtons = $state.raw(new Map<string, HTMLButtonElement>());
+    type Pin = { marker: maplibregl.Marker; button: HTMLButtonElement; key: string; point: MapPoint; draggable: boolean; title: string };
+    const pins = new Map<string, Pin>();
+    let madePins = $state.raw<Pin[]>([]);
     let draggingPin = $state(false);
     let calloutPopup: MapCallout | undefined;
     let relief: Relief;
@@ -185,16 +193,27 @@
     /** Shows the end of a day and the places of the towns listed for its night, nearest first, as `nightView` says. */
     export function showNight(spot: Coordinate, towns: Coordinate[][]) {
         if (!map) return;
-        // Inside the view means inside the fit padding, clear of the controls and of a bar over the bottom.
-        const { clientWidth: width, clientHeight: height } = map.getContainer(), bottom = fitPadding.bottom + bottomInset;
-        const northWest = map.unproject([fitPadding.left, fitPadding.top]), southEast = map.unproject([width - fitPadding.right, height - bottom]);
-        const shown = nightView([northWest.lng, southEast.lat, southEast.lng, northWest.lat], spot, towns);
+        const shown = nightView(paddedView(), spot, towns);
         if (shown.action === 'stay') return;
         wholeRoute = false;
-        const [west, south, east, north] = shown.box;
+        const [west, south, east, north] = shown.box, { top, right, bottom, left } = padding();
         // The centre of the box goes to the centre of the padded view.
-        if (shown.action === 'pan') map.panTo([(west + east) / 2, (south + north) / 2], { offset: [(fitPadding.left - fitPadding.right) / 2, (fitPadding.top - bottom) / 2], duration: motionDuration() });
+        if (shown.action === 'pan') map.panTo([(west + east) / 2, (south + north) / 2], { offset: [(left - right) / 2, (top - bottom) / 2], duration: motionDuration() });
         else fitBounds([[west, south], [east, north]], map.getZoom(), motionDuration());
+    }
+
+    /** Fits the line of a week, unless the padded view shows all of it. */
+    export function showWeek(line: Coordinate[]) {
+        if (!map || !line.length) return;
+        const [west, south, east, north] = paddedView();
+        if (!line.every(([lng, lat]) => lng >= west && lng <= east && lat >= south && lat <= north)) fitCoordinates(line);
+    }
+
+    /** The view inside the fit padding, clear of the controls and of a bar over the bottom, as [west, south, east, north]. */
+    function paddedView(): [number, number, number, number] {
+        const { clientWidth: width, clientHeight: height } = map!.getContainer(), { top, right, bottom, left } = padding();
+        const northWest = map!.unproject([left, top]), southEast = map!.unproject([width - right, height - bottom]);
+        return [northWest.lng, southEast.lat, southEast.lng, northWest.lat];
     }
 
     /** The coordinate under a viewport point, or null outside the map or the region. */
@@ -237,7 +256,7 @@
         return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 400;
     }
 
-    function lineFeature(input: Coordinate[], properties: Record<string, string> = {}): Feature<LineString> {
+    function lineFeature(input: Coordinate[], properties: Record<string, string | number> = {}): Feature<LineString> {
         // Svelte may proxy nested point arrays; worker messages require plain coordinate values.
         const plain = input.map(([longitude, latitude]) => [longitude, latitude]);
         return { type: "Feature", properties, geometry: { type: "LineString", coordinates: plain } };
@@ -248,7 +267,7 @@
     }
 
     function tripData() {
-        return lineData([...segments.map(({ coordinates, color, legEndId, leg }) => lineFeature(coordinates, { color, legEndId, leg })),
+        return lineData([...segments.map(({ coordinates, color, legEndId, leg, day }) => lineFeature(coordinates, { color, legEndId, leg, day })),
             ...gaps.map(gap => lineFeature(gap, { leg: "gap" }))]);
     }
 
@@ -275,18 +294,25 @@
         fitRoute();
     }
 
+    // The look of each riding day that is set as a feature state of `trip`; a day with none is in its colour.
+    const looks = new Map<number, ReturnType<typeof dayLook>>();
+
     function installRoute() {
         if (!map || map.getSource("trip")) return;
         const dark = theme === "dark";
         const casing = dark ? "#201f17" : "#ffffff";
         const round = { "line-cap": "round", "line-join": "round" } as const;
+        // A feature state changes the paint of the loaded tiles; a new paint expression would load the whole line again.
+        const look = (colour: unknown, quiet: unknown, lit = colour) => ["match", ["feature-state", "look"], "quiet", quiet, "lit", lit, colour] as maplibregl.ExpressionSpecification;
+        const casingWidth = look(8, 5.5, 9);
         map.addSource("trip-highlight", { type: "geojson", data: highlightData() });
         map.addLayer({ id: "trip-highlight", type: "line", source: "trip-highlight", layout: round, paint: { "line-color": dark ? "#5a4622" : "#fbe6b8", "line-width": 14 } });
-        map.addSource("trip", { type: "geojson", data: tripData() });
-        map.addLayer({ id: "trip-casing", type: "line", source: "trip", filter: ["==", ["get", "leg"], "routed"], layout: round, paint: { "line-color": casing, "line-width": 8 } });
-        map.addLayer({ id: "trip-casing-drawn", type: "line", source: "trip", filter: ["==", ["get", "leg"], "drawn"], layout: { "line-join": "round" }, paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 8, "line-dasharray": [1, 0.8] } });
+        map.addSource("trip", { type: "geojson", data: tripData(), promoteId: "day" });
+        looks.clear();
+        map.addLayer({ id: "trip-casing", type: "line", source: "trip", filter: ["==", ["get", "leg"], "routed"], layout: round, paint: { "line-color": casing, "line-width": casingWidth } });
+        map.addLayer({ id: "trip-casing-drawn", type: "line", source: "trip", filter: ["==", ["get", "leg"], "drawn"], layout: { "line-join": "round" }, paint: { "line-color": look(dark ? "#bdb47e" : "#5c5a2e", casing), "line-width": casingWidth, "line-dasharray": [1, 0.8] } });
         map.addLayer({ id: "trip-gap", type: "line", source: "trip", filter: ["==", ["get", "leg"], "gap"], paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 3, "line-dasharray": [1, 0.8] } });
-        map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!", ["in", ["get", "leg"], ["literal", ["gap", "transfer"]]]], layout: round, paint: { "line-color": ["get", "color"], "line-width": 4 } });
+        map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!", ["in", ["get", "leg"], ["literal", ["gap", "transfer"]]]], layout: round, paint: { "line-color": look(["get", "color"], dark ? "#6f6a55" : "#a9a593"), "line-width": look(4, 2.5, 6) } });
         // Under the transfers, so a train outside the part keeps its dashes.
         map.addSource("trip-rest", { type: "geojson", data: restData() });
         map.addLayer({ id: "trip-rest", type: "line", source: "trip-rest", layout: round, paint: { "line-color": casing, "line-width": 5, "line-opacity": .65 } });
@@ -333,7 +359,7 @@
     /** The nearest point on a leg within reach of a screen position. */
     function lineHit(point: maplibregl.Point): LineHit | null {
         if (!map || !showRoute) return null;
-        let best: { legEndId: string; x: number; y: number; pixels: number } | null = null;
+        let best: { legEndId: string; day: number; x: number; y: number; pixels: number } | null = null;
         for (const segment of segments) {
             const projected = segment.coordinates.map((coordinate) => map!.project(coordinate));
             for (let i = 1; i < projected.length; i++) {
@@ -343,13 +369,17 @@
                 const dy = b.y - a.y;
                 const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
                 const pixels = Math.hypot(point.x - a.x - dx * t, point.y - a.y - dy * t);
-                if (!best || pixels < best.pixels) best = { legEndId: segment.legEndId, x: a.x + dx * t, y: a.y + dy * t, pixels };
+                if (!best || pixels < best.pixels) best = { legEndId: segment.legEndId, day: segment.day, x: a.x + dx * t, y: a.y + dy * t, pixels };
             }
         }
         if (!best || best.pixels > lineReach) return null;
         const at = map.unproject([best.x, best.y]);
-        return { legEndId: best.legEndId, coordinate: [at.lng, at.lat] };
+        return { legEndId: best.legEndId, day: best.day, coordinate: [at.lng, at.lat] };
     }
+
+    // The line of a day outside the week takes no edits: its shaping points are hidden, and it crosses the whole map, so
+    // an insert drag would catch many pans. A press on it pans the map and a click opens its day.
+    const quiet = (day: number) => dayLook(week, null, day) === "quiet";
 
     const level = () => Math.min(LAST_LEVEL, Math.floor(map!.getZoom()));
     const asPlace = (place: TilePlace) => poiPlace(place.id, place.kind, place.name, [place.lon, place.lat])!;
@@ -392,7 +422,7 @@
         if (drawing) {
             sketch = [coordinate];
             sketchEnd = event.point;
-        } else if (!picking && (hover = lineHit(event.point))) {
+        } else if (!picking && (hover = lineHit(event.point)) && !quiet(hover.day)) {
             // Stops the map from panning: this press may drag a new point out of the line.
             event.preventDefault();
             press = { hit: hover, start: event.point, moved: false };
@@ -512,6 +542,7 @@
                 overlaySelection = null;
                 placeList = null;
                 if (overlay?.kind === 'access') overlaySelection = overlay;
+                else if (hit && quiet(hit.day)) onDayClick?.(hit.day);
                 else if (hit) onLegClick?.(hit.legEndId, hit.coordinate);
                 else onEmptyClick?.(at);
             });
@@ -589,6 +620,22 @@
             reportView();
         }
     });
+    const lastDay = $derived(segments.at(-1)?.day ?? 0);
+    // A week step changes the looks of a few days and sends no line to the map.
+    $effect(() => {
+        const shown = Array.from({ length: lastDay }, (_, i) => dayLook(week, lit, i + 1));
+        if (!map || !ready) return;
+        if (shown.every(look => look === "colour")) {
+            if (looks.size) map.removeFeatureState({ source: "trip" });
+            looks.clear();
+            return;
+        }
+        shown.forEach((look, i) => {
+            if ((looks.get(i + 1) ?? "colour") === look) return;
+            looks.set(i + 1, look);
+            map!.setFeatureState({ source: "trip", id: i + 1 }, { look });
+        });
+    });
     $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { void showRoute; if (ready) syncRouteVisibility(); });
@@ -641,7 +688,7 @@
     });
     $effect(() => {
         if (!map) return;
-        if (hover) insertDot.setLngLat(hover.coordinate).addTo(map);
+        if (hover && !quiet(hover.day)) insertDot.setLngLat(hover.coordinate).addTo(map);
         else insertDot.remove();
     });
     $effect(() => {
@@ -711,7 +758,7 @@
             button.className = `planner-map-pin ${point.kind} ${point.appearance ?? ""}${draggable ? " draggable" : ""}`;
             if (point.color) button.style.setProperty("--pin-color", point.color);
             button.setAttribute("aria-label", point.kind === "start" ? `Start: ${point.label}` : point.kind === "finish" ? `Finish: ${point.label}` : point.label);
-            button.title = dayEnd ? `${point.appearance === "moved" ? "Day end you moved" : "Day end suggested"} · drag along the route` : point.label + (draggable ? " · drag to move" : "");
+            const title = dayEnd ? `${point.appearance === "moved" ? "Day end you moved" : "Day end suggested"} · drag along the route` : point.label + (draggable ? " · drag to move" : "");
             if ((point.kind === "place" || point.kind === "night") && point.category) {
                 button.append(markerIcon(placeCategories[point.category].icon));
             } else if (point.kind === "waypoint" || point.kind === "detour") {
@@ -750,16 +797,21 @@
                     draggingPin = false;
                 });
             }
-            pins.set(point.id, { marker, button, key });
+            pins.set(point.id, { marker, button, key, point, draggable, title });
         }
-        pinButtons = new Map([...pins].map(([id, pin]) => [id, pin.button]));
+        madePins = [...pins.values()];
     });
     $effect(() => {
-        for (const [id, button] of pinButtons) {
+        for (const { point, marker, button, draggable, title } of madePins) {
+            const { id } = point, look = pinLook(week, point);
             button.classList.toggle("selected", id === selectedId);
             button.classList.toggle('highlighted', id === hoveredId);
             button.classList.toggle("matched", highlightedPlaceIds.includes(id));
             button.setAttribute("aria-pressed", String(id === selectedId));
+            button.classList.toggle("dot", look === "dot");
+            button.classList.toggle("off", look === "hidden");
+            marker.setDraggable(draggable && look === "shown");
+            button.title = look === "dot" ? point.label : title;
         }
     });
     $effect(() => {
@@ -853,6 +905,10 @@
     :global(.planner-map-pin.dayend.moved) { border-style: dotted; }
     :global(.planner-map-pin.dayend.moved)::after { content: ""; position: absolute; bottom: 2px; width: 3px; height: 3px; border-radius: 50%; background: currentColor; }
     :global(.planner-map-pin.dayend.draggable) { cursor: ew-resize; }
+    /* Outside the week a night mark is a small dot, and a shaping point is hidden. */
+    :global(.planner-map-pin.dot:is(.night, .dayend)) { width: 10px; height: 10px; border: 2px solid color-mix(in srgb, var(--ink-faint) 70%, var(--panel)); background: var(--panel); box-shadow: none; font-size: 0; cursor: pointer; }
+    :global(.planner-map-pin.dot > *), :global(.planner-map-pin.dot)::after { display: none; }
+    :global(.planner-map-pin.off) { display: none; }
     :global(.planner-map-pin.matched) { border: 3px solid var(--amber, #f4a81d); }
     :global(.planner-map-pin.selected) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
     :global(.planner-map-pin.highlighted) { outline: 3px solid var(--ink, #1c1b14); outline-offset: 3px; }

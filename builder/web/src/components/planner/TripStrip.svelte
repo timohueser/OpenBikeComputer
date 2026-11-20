@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { untrack } from 'svelte';
     import type { Attachment } from 'svelte/attachments';
     import { dayColor } from '../../lib/planner/day-colors';
     import { duration, type ItineraryDay } from '../../lib/planner/editor';
@@ -6,7 +7,7 @@
     import { centredOn, end, home, step, type Week } from '../../lib/planner/week';
     import { formatDistance, formatHeight } from '../../lib/settings/format';
 
-    let { itinerary, week, theme, startDate, onMove, dragging = $bindable(false) }: {
+    let { itinerary, week, theme, startDate, onMove, onHover, dragging = $bindable(false) }: {
         /** The shown days, one for each calendar day. */
         itinerary: ItineraryDay[];
         week: Week;
@@ -14,6 +15,8 @@
         startDate?: string;
         /** Moves the week to start at this calendar day. */
         onMove: (start: number) => void;
+        /** The riding number of the day that the pointer lights, or null. */
+        onHover?: (riding: number | null) => void;
         /** True while the pointer is down on the strip. */
         dragging?: boolean;
     } = $props();
@@ -29,6 +32,10 @@
     let hovered = $state<number | null>(null);
     // The day outside the week under the pointer, while the pointer is up.
     const lit = $derived(hovered !== null && !dragging && !inside(hovered) ? itinerary[hovered - 1] : undefined);
+    $effect(() => {
+        const riding = lit && !lit.rest ? lit.ridingNumber : null;
+        untrack(() => onHover?.(riding));
+    });
     // The days from the start of the week to the day under the pointer while it is down.
     let held = 0;
     let wheeled = 0;
@@ -66,8 +73,8 @@
         go(start);
     }
 
-    // A strip that goes during a drag, as at an Undo to fewer days, ends the drag.
-    $effect(() => () => { dragging = false; });
+    // A strip that goes during a drag or under the pointer, as at an Undo to fewer days, ends the drag and the lit day.
+    $effect(() => () => { dragging = false; onHover?.(null); });
 
     // A non-passive listener, so the page does not scroll under the strip.
     const wheel: Attachment<HTMLElement> = node => {

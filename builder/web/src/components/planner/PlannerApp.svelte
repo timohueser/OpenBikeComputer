@@ -237,14 +237,29 @@
     let restedStart = $state(1);
     let stripDragging = $state(false);
     const week = $derived(weekOf(plain, weekStart));
+    // The map moves to the week when it rests after a move of the strip or of ‹ ›. An opened day, night, point or search
+    // result, and a move of the map by the rider, cancel that: the map shows what the rider chose.
+    let fitWeek = false;
+    // The riding day that the pointer lights on the strip.
+    let litDay = $state<number | null>(null);
     $effect(() => {
         const start = weekStart;
         if (stripDragging) return;
-        const timer = setTimeout(() => restedStart = start, 300);
+        const timer = setTimeout(() => {
+            restedStart = start;
+            if (!fitWeek) return;
+            fitWeek = false;
+            if (weekShown?.ridingDays.length) map?.showWeek(routeSlice(coordinates, weekShown.from, weekShown.to));
+        }, 300);
         return () => clearTimeout(timer);
     });
+    function moveWeek(start: number) {
+        weekStart = start;
+        fitWeek = true;
+    }
     /** Moves the week the least that puts calendar day `day` inside it. */
     function showInWeek(day: number | undefined) {
+        fitWeek = false;
         if (week && day !== undefined) weekStart = containing(plain.length, week.start, day);
     }
     // The page of the night the rider opened replaces the day list. It stays while the route is recalculated.
@@ -403,9 +418,15 @@
             details[point.placeId]) : undefined;
     });
     const previewCoordinate = $derived(selectedId === 'pending' ? pending : selectedPlace?.coordinate ?? null);
+    // The riding day of each route point, by its place on the line.
+    const pointDays = $derived.by(() => {
+        const length = visualStops.at(-1)?.distance || 1;
+        return new Map(visualStops.map(stop => [stop.point.id, days.find(day => stop.distance / length <= day.to)?.number]));
+    });
     const mapPoints = $derived.by(() => {
         const pins: MapPoint[] = trip.points.map(p => ({
             ...p,
+            day: pointDays.get(p.id),
             kind: !multi && p.kind === 'night' ? 'waypoint' : p.kind,
             color: multi && p.kind === 'night' ? dayColor(p.night!, theme) : undefined,
             markerLabel: multi && p.kind === 'night' ? String(dayLabels[p.night!]) : undefined,
@@ -506,6 +527,7 @@
         hoverProgress = null;
         part = null;
         restedStart = weekStart = 1;
+        fitWeek = false;
         fitPlan = true;
         nameVisits(session.trip);
     }
@@ -749,6 +771,7 @@
 
     /** Opens a night in the day list, with its towns. */
     function openNight(number: number) {
+        fitWeek = false;
         // The night before the week stands at the left edge of the profile: it is one of the week's nights already.
         if (!week?.nights.includes(number)) showInWeek(dayLabels[number]);
         expandedDay = null;
@@ -1099,7 +1122,7 @@
         try {
             const next = await applyQueryChanges(before, session.line, answer.changes, plan => session.calculate(plan, new AbortController().signal));
             if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The route changed. Review the search again.');
-            if (answer.changes.some(change => change.op === 'route')) { exploreBack = undefined; restedStart = weekStart = 1; }
+            if (answer.changes.some(change => change.op === 'route')) { exploreBack = undefined; restedStart = weekStart = 1; fitWeek = false; }
             session.commit(next.trip, next.line);
             showInWeek(answer.changes.find(change => change.day !== undefined)?.day);
             afterEdit(answer.description ?? 'Query applied');
@@ -1249,7 +1272,7 @@
                     {#if itineraryShown}
                         <Itinerary
                             trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nightPage} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
-                            week={weekShown} onWeek={start => weekStart = start}
+                            week={weekShown} onWeek={moveWeek}
                             onToggle={showDay} onOverview={showAllDays}
                             onInspect={inspectPoint}
                             onShowEnd={showDayEnd}
@@ -1280,7 +1303,8 @@
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => coordinate ? session.previewMove(id, coordinate) : session.cancelPreview()} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
                     onVisibleRange={(range) => visibleRange = range}
-                    onRiderMove={() => nightToShow = null} onRouteHover={progress => mapHover = progress}
+                    onRiderMove={() => { nightToShow = null; fitWeek = false; }} onRouteHover={progress => mapHover = progress}
+                    {week} lit={week ? litDay : null} onDayClick={showDay}
                 >
                     {#snippet popup()}
                         {#if calloutKind}
@@ -1365,7 +1389,7 @@
                 {part} onPart={next => { if (active) part = next; }} marker={mapHover} bind:surface={litSurface} week={weekShown}
             >
                 {#snippet tripStrip()}
-                    {#if week}<TripStrip {itinerary} {week} {theme} startDate={trip.startDate} onMove={start => weekStart = start} bind:dragging={stripDragging} />{/if}
+                    {#if week}<TripStrip {itinerary} {week} {theme} startDate={trip.startDate} onMove={moveWeek} onHover={riding => litDay = riding} bind:dragging={stripDragging} />{/if}
                 {/snippet}
                 {#snippet strip(from, to, rests, onHover)}
                     {#if dataLayer?.strip}<LayerStrip layer={dataLayer} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {rests} {onHover} />{/if}
