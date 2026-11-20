@@ -7,17 +7,21 @@
     export const nightCalls: [Coordinate, Coordinate[][]][] = [];
     /** How often the view moved to a route, coordinates or a place. */
     export const moves = { count: 0 };
+    /** How often the page asked the map to show the week. */
+    export const weekFits = { count: 0 };
 </script>
 
 <script lang="ts">
     import type { Snippet } from 'svelte';
     import type { MapPoint } from '../../src/lib/planner/map-types';
+    import type { Week } from '../../src/lib/planner/week';
 
-    let { accessMode = 'cycling', popup, points = [], onPointSelect, onPointMove, onPointHover, hoveredId, onEmptyClick, onBounds }: { accessMode?: 'cycling' | 'walking'; onPointMove?: (id: string, coordinate: Coordinate) => void; onBounds?: (bounds: [number, number, number, number], preserveSearch: boolean) => void; hoveredId?: string | null; onPointHover?: (id: string | null) => void; popup?: Snippet; points?: MapPoint[]; onPointSelect?: (id: string) => void; onEmptyClick?: (coordinate: Coordinate) => void } = $props();
+    let { accessMode = 'cycling', popup, points = [], week = null, lit = null, onPointSelect, onPointMove, onPointHover, hoveredId, onEmptyClick, onBounds }: { accessMode?: 'cycling' | 'walking'; onPointMove?: (id: string, coordinate: Coordinate) => void; onBounds?: (bounds: [number, number, number, number], preserveSearch: boolean) => void; hoveredId?: string | null; onPointHover?: (id: string | null) => void; popup?: Snippet; points?: MapPoint[]; week?: Week | null; lit?: number | null; onPointSelect?: (id: string) => void; onEmptyClick?: (coordinate: Coordinate) => void } = $props();
     export function fitSearchResults() {}
     export function fitRoute() { moves.count++; }
     export function fitCoordinates() { moves.count++; }
     export function showNight(spot: Coordinate, towns: Coordinate[][]) { nightCalls.push([spot, towns]); }
+    export function showWeek() { weekFits.count++; }
     export function showPlace() { moves.count++; }
     export function zoomBy() {}
     export function underTrees() { return false; }
@@ -30,4 +34,5 @@
 {#each points as point (point.id)}
     <button type="button" aria-label={`Map ${point.kind === 'place' ? 'place' : 'point'}: ${point.label}`} class:highlighted={hoveredId === point.id} onmouseenter={() => onPointHover?.(point.id)} onmouseleave={() => onPointHover?.(null)} onclick={() => onPointSelect?.(point.id)}>{point.label}</button>
 {/each}
+<output class="map-week">{week ? `${week.start}-${week.end}` : ''} {lit ?? ''}</output>
 {@render popup?.()}

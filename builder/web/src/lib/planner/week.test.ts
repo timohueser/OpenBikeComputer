@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { planView, type Trip } from './editor';
-import { centredOn, containing, end, step, weekOf } from './week';
+import { centredOn, containing, dayLook, end, pinLook, step, weekOf } from './week';
+import type { MapPoint } from './map-types';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 
 const itinerary = (days: number, restAfter: number[] = []) => {
@@ -30,5 +31,19 @@ describe('week in focus', () => {
 
     it('holds a start past the end inside a trip that has fewer days now', () => {
         expect(weekOf(itinerary(20), 26)).toMatchObject({ start: 14, end: 20 });
+    });
+
+    it('draws the days and pins of the week on the map, and the rest quiet', () => {
+        const week = weekOf(itinerary(20), 8)!;
+        expect([8, 14, 7, 15].map(day => dayLook(week, null, day))).toEqual(['colour', 'colour', 'quiet', 'quiet']);
+        expect(dayLook(week, 3, 3)).toBe('lit');
+        expect(range(1, 20).every(day => dayLook(null, null, day) === 'colour')).toBe(true);
+        const pin = (kind: MapPoint['kind'], extra: Partial<MapPoint> = {}): MapPoint => ({ id: kind, coordinate: [7, 47], label: kind, kind, ...extra });
+        // The night before the week and its last night stay marks; the nights around them become dots.
+        expect([7, 14, 6, 15].map(night => pinLook(week, pin('dayend', { night })))).toEqual(['shown', 'shown', 'dot', 'dot']);
+        expect([9, 3].map(day => pinLook(week, pin('via', { day })))).toEqual(['shown', 'hidden']);
+        const others = [pin('start', { day: 1 }), pin('finish', { day: 20 }), pin('place')];
+        expect(others.map(point => pinLook(week, point))).toEqual(['shown', 'shown', 'shown']);
+        expect([...others, pin('dayend', { night: 2 }), pin('via', { day: 3 })].every(point => pinLook(null, point) === 'shown')).toBe(true);
     });
 });
