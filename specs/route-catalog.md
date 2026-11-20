@@ -649,8 +649,8 @@ stage of one trail that lie three quarters along each other, and a long OSM rout
 of a short official route. To remove one could remove a stretch that shows nowhere else.
 
 A name can show nowhere: a job that is no part of a long route can leave for an official record of
-another name on the same path, a pair by (b), such as a EuroVelo stage on the line of a national
-route with another number.
+another name on the same path, a pair by (b), such as a EuroVelo route that is a relation of its
+own, listed by no long route of the extract, on the line of a national route with another number.
 
 ### Successors
 
