@@ -1,7 +1,7 @@
 import { config, coversCell, loadFactsCell, loadRouteCell, loadTrailCell, loadTrailRecord } from './map-data';
 import { tileColumn, tileRow } from './place-index';
 import type { BikeType } from './riding-profiles';
-import { kinds, type CatalogFacts, type CatalogRecord, type FactsPlace, type TrailEntry } from './signed-routes';
+import { kinds, type CatalogFacts, type CatalogRecord, type FactsFile, type FactsPlace, type TrailEntry } from './signed-routes';
 
 /**
  * West, south, east and north, in degrees. The caller wraps longitudes to -180..180. A box with west above east,
@@ -107,6 +107,7 @@ export class RouteCatalog {
     private readonly trails = new Map<number, Promise<CatalogRecord | null>>();
     private readonly loaded = new Map<string, CatalogRecord[] | null>();
     private readonly records = new Map<number, CatalogRecord>();
+    private readonly factsFiles = new Map<string, Promise<FactsFile | null>>();
     private readonly facts = new Map<number, CatalogFacts>();
     private readonly places = new Map<string, FactsPlace>();
 
@@ -115,7 +116,7 @@ export class RouteCatalog {
         return this.records.get(id);
     }
 
-    /** The facts entry of a loaded record, when the release has facts files. */
+    /** The facts entry of a record of a loaded facts file. */
     factsOf(id: number): CatalogFacts | undefined {
         return this.facts.get(id);
     }
@@ -125,17 +126,24 @@ export class RouteCatalog {
         return this.places.get(id);
     }
 
-    /**
-     * The records of a cell, or null for a cell outside the release. Its facts file loads with it, and a failed facts file
-     * fails the cell. A failed cell loads again on the next call.
-     */
+    /** The records of a cell, or null for a cell outside the release. A failed cell loads again on the next call. */
     cell(id: string): Promise<CatalogRecord[] | null> {
-        return cached(this.cells, id, id => Promise.all([loadRouteCell(id), loadFactsCell(id)]).then(([records, facts]) => {
+        return cached(this.cells, id, id => loadRouteCell(id).then(records => {
             records?.forEach(record => this.records.set(record.id, record));
-            for (const [route, entry] of Object.entries(facts?.routes ?? {})) this.facts.set(Number(route), entry);
-            for (const [place, value] of Object.entries(facts?.places ?? {})) this.places.set(place, value);
             this.loaded.set(id, records);
             return records;
+        }));
+    }
+
+    /**
+     * The facts file of a cell, for `factsOf` and `place`; null for a cell outside the release and for a release with no
+     * facts files. Only the search reads facts, so a cell file does not load it. A failed file loads again on the next call.
+     */
+    factsCell(id: string): Promise<FactsFile | null> {
+        return cached(this.factsFiles, id, id => loadFactsCell(id).then(file => {
+            for (const [route, entry] of Object.entries(file?.routes ?? {})) this.facts.set(Number(route), entry);
+            for (const [place, value] of Object.entries(file?.places ?? {})) this.places.set(place, value);
+            return file;
         }));
     }
 

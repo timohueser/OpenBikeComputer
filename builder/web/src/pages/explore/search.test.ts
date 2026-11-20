@@ -58,11 +58,12 @@ describe('reach', () => {
 });
 
 describe('rows', () => {
-    // A lift from its valley 0.9 km east of the start to its top 3 km east, with a car park; car parks 2 km and 29 km north.
+    // A lift from its valley 0.9 km east of the start to its top 3 km east, with a car park 300 m beyond the valley; car parks
+    // 2 km and 29 km north.
     const places: Record<string, FactsPlace> = {
         n1: { kind: 'parking', size: 'small', at_udeg: udeg(at(0, 2)) },
         n2: { kind: 'parking', size: 'large', at_udeg: udeg(at(0, 29)) },
-        n3: { kind: 'parking', size: 'small', at_udeg: udeg(at(1)) },
+        n3: { kind: 'parking', size: 'small', at_udeg: udeg(at(1.2)) },
         w4: { kind: 'lift', at_udeg: udeg(at(3)), valley_udeg: udeg(at(0.9)), parking: 'n3' },
         n5: { kind: 'peak', name: 'Gipfel', at_udeg: udeg(at(3)) },
     };
@@ -99,11 +100,13 @@ describe('rows', () => {
         expect(ways({ car: true, drive: 20, walk: 3000 })).toEqual({ '1 loop': ['foot 2.0', 'car 10.4'], '2 back': ['foot 4.2'] });
         expect(ways({ car: true, drive: 30 })).toEqual({ '1 loop': ['foot 2.0'], '3 loop': ['car 32.6'] });
         expect(ways({ lift: 'helps' })).toEqual({ '1 loop': ['foot 2.0'], '2 back': ['lift 4.6'], '2 liftDown': ['valley 4.6'], '2 liftUp': ['valley 4.6'] });
-        // Always a lift: no walk to a route; the valley is beyond the walk, its car park 1 km away by car.
-        expect(ways({ lift: 'always', car: true, walk: 500 })).toEqual({ '2 back': ['lift 2.0'], '2 liftDown': ['valley 2.0'], '2 liftUp': ['valley 2.0'] });
+        // Always a lift: no walk to a route. The valley is beyond the walk: a drive of 1.2 km to its car park, then 300 m.
+        expect(ways({ lift: 'always', car: true, walk: 500 })).toEqual({ '2 back': ['lift 3.4'], '2 liftDown': ['valley 3.4'], '2 liftUp': ['valley 3.4'] });
+        expect(ways({ lift: 'always', car: true, walk: 200 })).toEqual({});
         // A pinned car park is the only start; the car park of a lift reaches its lift shapes, its top station none.
         expect(ways({ pin: 'n2' })).toEqual({ '3 loop': ['pin 3.6'] });
-        expect(ways({ pin: 'n3', lift: 'helps' })).toEqual({ '2 liftDown': ['pin 1.0'], '2 liftUp': ['pin 1.0'] });
+        expect(ways({ pin: 'n3', lift: 'helps' })).toEqual({ '2 liftDown': ['pin 2.2'], '2 liftUp': ['pin 2.2'] });
+        expect(ways({ pin: 'n3', lift: 'helps', walk: 200 })).toEqual({});
         expect(ways({ pin: 'w4', lift: 'helps' })).toEqual({ '2 back': ['pin 0.0'] });
     });
 
@@ -211,5 +214,6 @@ describe('page address', () => {
         expect(openingQuery('', 'walk=700', 'walk=900', TODAY).query.walk).toBe(700);
         expect(openingQuery('', undefined, 'walk=900&date=2026-06-30', TODAY).query).toMatchObject({ walk: 900, date: TODAY });
         expect(openingQuery('', undefined, 'walk=99999&grade=T4-T2&pin=x', TODAY).query).toEqual(query());
+        for (const date of ['2026-13-01', '2026-00-10', '2026-02-30', 'soon']) expect(readQuery(`date=${date}`, TODAY).query.date).toBe(TODAY);
     });
 });

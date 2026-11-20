@@ -67,14 +67,13 @@ export async function loadTrailCell(id: string): Promise<TrailEntry[] | null> {
 const isObject = (value: unknown) => !!value && typeof value === "object" && !Array.isArray(value);
 
 /**
- * The facts file of the zoom 9 cell `9-X-Y`. A covered cell without a file (404) has no facts. A cell outside the release
- * bounds, or a release with no facts files, gives null and is not fetched.
+ * The facts file of the zoom 9 cell `9-X-Y`. Each covered cell has one, so a missing file is an error. A cell outside the
+ * release bounds, or a release with no facts files, gives null and is not fetched.
  */
 export async function loadFactsCell(id: string): Promise<FactsFile | null> {
     const url = config.facts;
     if (!url || !coversCell(config.bounds, id)) return null;
     const response = await releaseFetch(url.replace("{cell}", id));
-    if (response.status === 404) return { format: 1, places: {}, routes: {} };
     if (!response.ok) throw new Error(`Route facts request failed with status ${response.status}`);
     const document = await response.json();
     if (document?.format !== 1 || !isObject(document.places) || !isObject(document.routes)) throw new Error("Unsupported route facts");

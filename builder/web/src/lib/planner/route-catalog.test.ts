@@ -104,16 +104,16 @@ describe('route catalog', () => {
         expect((await catalog.inBox([8.175, 47.86, 8.19, 47.88], 'hiking'))?.map(route => route.id)).toEqual([101]);
     });
 
-    it('loads the facts file with each cell, and a failed facts file fails the cell', async () => {
+    it('loads a facts file on its own: a cell needs none, and a failed one loads again', async () => {
         host.load = cell;
         const box: Box = [8.175, 47.86, 8.19, 47.88], [id] = boxCells(box);
         const catalog = new RouteCatalog();
         host.facts = () => Promise.reject(new Error('Route facts request failed with status 500'));
-        await expect(catalog.inBox(box, 'hiking')).rejects.toThrow('500');
-        expect(catalog.inBoxNow(box, 'hiking')).toBeUndefined();
-        const peak = { kind: 'peak' as const, at_udeg: [8180000, 47870000] as [number, number] };
-        host.facts = async cell => cell === id ? { format: 1, places: { n5: peak }, routes: { 101: { places: [['n5', 20]], paved_pct: 0, big_road_pct: 0, water_pct: 0 } } } : null;
         expect((await catalog.inBox(box, 'hiking'))?.map(route => route.id)).toEqual([101]);
+        await expect(catalog.factsCell(id)).rejects.toThrow('500');
+        const peak = { kind: 'peak' as const, at_udeg: [8180000, 47870000] as [number, number] };
+        host.facts = async () => ({ format: 1, places: { n5: peak }, routes: { 101: { places: [['n5', 20]], paved_pct: 0, big_road_pct: 0, water_pct: 0 } } });
+        await catalog.factsCell(id);
         expect([catalog.factsOf(101)?.places, catalog.place('n5')]).toEqual([[['n5', 20]], peak]);
         host.facts = () => Promise.resolve(null);
     });

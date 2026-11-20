@@ -64,14 +64,15 @@ export interface Loaded {
 }
 
 /** A way to reach a row. Distances are straight lines in metres; the cost is the drive in km plus four times the walks in
- * km, plus 1 for a lift. `valley` reaches a lift shape at its valley station. */
+ * km, plus 1 for a lift. `before` is the walk to the valley station of a lift: from the start point, or from the car park
+ * of the lift after `drive`. `valley` reaches a lift shape at its valley station. */
 export type Way = { cost: number } & (
     | { kind: 'any' }
     | { kind: 'foot'; walk: number }
     | { kind: 'car'; park: string; drive: number; walk: number }
     | { kind: 'pin'; place: string; walk: number }
-    | { kind: 'lift'; lift: string; before?: number; drive?: number; walk: number }
-    | { kind: 'valley'; lift: string; before?: number; drive?: number });
+    | { kind: 'lift'; lift: string; before: number; drive?: number; walk: number }
+    | { kind: 'valley'; lift: string; before: number; drive?: number });
 
 /** A route in one shape, with the numbers of that shape. */
 export interface Row {
@@ -100,8 +101,8 @@ function around([lon, lat]: Coordinate, km: number): Box {
 
 /**
  * The largest drive limit, a multiple of 5 km and at most 50 km, whose box of the reach with lifts on meets at most
- * `MAX_CELLS` cells of zoom 9 wherever a start point at `lat` lies. So the cap stays when the start point or the lifts
- * change.
+ * `MAX_CELLS` cells of zoom 9 wherever a start point at `lat` lies. It depends on the latitude only: it stays when the
+ * start point moves along a parallel or the lifts change, and never jumps for a small move.
  */
 export function driveCap(lat: number): number {
     for (let drive = DRIVE_KM.max; drive > DRIVE_KM.min; drive -= DRIVE_KM.step) {
@@ -156,15 +157,22 @@ function liftOf(id: string, loaded: Loaded): FactsPlace | undefined {
     return place?.kind === 'lift' && valley && kilometres(point(place.at_udeg), point(valley)) <= LIFT_KM ? place : undefined;
 }
 
-/** The ways from the start point to the valley station of `lift`: a walk, or a drive to its car park. The cost holds the 1
- * of the lift. */
-function toValley(lift: string, { query, loaded, driveKm }: Search): { before?: number; drive?: number; cost: number }[] {
+/** The walk in km from the car park of a lift to its valley station; Infinity for a lift with no car park. */
+function parkWalk(place: FactsPlace, loaded: Loaded): number {
+    const park = place.parking ? loaded.place(place.parking) : undefined;
+    return park ? kilometres(point(park.at_udeg), point(place.valley_udeg!)) : Infinity;
+}
+
+/** The ways from the start point to the valley station of `lift`: a walk, or a drive to its car park and the walk from
+ * there. The cost holds the 1 of the lift. */
+function toValley(lift: string, { query, loaded, driveKm }: Search): { before: number; drive?: number; cost: number }[] {
     const place = liftOf(lift, loaded), start = query.start;
     if (!place || !start) return [];
-    const park = place.parking ? loaded.place(place.parking) : undefined;
-    const ways = [], walk = kilometres(start, point(place.valley_udeg!)), drive = park ? kilometres(start, point(park.at_udeg)) : Infinity;
+    const park = place.parking ? loaded.place(place.parking) : undefined, ways = [];
+    const walk = kilometres(start, point(place.valley_udeg!)), fromPark = parkWalk(place, loaded);
     if (walk * 1000 <= query.walk) ways.push({ before: walk * 1000, cost: 4 * walk + 1 });
-    if (query.car && drive <= driveKm) ways.push({ drive: drive * 1000, cost: drive + 1 });
+    const drive = park ? kilometres(start, point(park.at_udeg)) : Infinity;
+    if (query.car && drive <= driveKm && fromPark * 1000 <= query.walk) ways.push({ drive: drive * 1000, before: fromPark * 1000, cost: drive + 4 * fromPark + 1 });
     return ways;
 }
 
@@ -201,7 +209,10 @@ function routeWays(record: CatalogRecord, facts: CatalogFacts | undefined, searc
 function valleyWays(lift: string, search: Search): Way[] {
     const { query } = search, place = liftOf(lift, search.loaded);
     if (!place) return [];
-    if (query.pin) return place.parking === query.pin ? [{ kind: 'pin', place: query.pin, walk: 0, cost: 1 }] : [];
+    if (query.pin) {
+        const walk = parkWalk(place, search.loaded);
+        return place.parking === query.pin && walk * 1000 <= query.walk ? [{ kind: 'pin', place: query.pin, walk: walk * 1000, cost: 4 * walk + 1 }] : [];
+    }
     if (!query.start) return [{ kind: 'any', cost: 0 }];
     return byCost(toValley(lift, search).map(way => ({ kind: 'valley', lift, ...way })));
 }
@@ -412,7 +423,10 @@ export function queryParams(query: Query, today: string, view?: Box): string {
     return params.filter(([, value]) => typeof value === 'string').map(([key, value]) => `${key}=${value}`).join('&');
 }
 
-const isDay = (text: string) => /^\d{4}-\d{2}-\d{2}$/.test(text) && new Date(`${text}T00:00:00Z`).toISOString().startsWith(text);
+function isDay(text: string): boolean {
+    const time = Date.parse(`${text}T00:00:00Z`);
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) && Number.isFinite(time) && new Date(time).toISOString().startsWith(text);
+}
 
 function readRange(text: string | null, unit: number): Range | undefined {
     const match = text && /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)?$/.exec(text);
