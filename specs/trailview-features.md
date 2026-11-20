@@ -561,14 +561,17 @@ vertices), joined. Its section is that of its widest way: `half` is the way's ha
 An opening lies at the end vertex of its way. Where the vertex holds two or more arms of other ways of the road solver
 (the end of a way is one arm, a vertex inside a way two), the opening moves in along the chain to the first whole metre where both ends of its frame line, `half` + `shell_m` to
 each side, lie farther from each other way's line than that way's outer half-width; at most `junction_shift_max_m`,
-half the chain and the length of its own way. The ground plan builds the stretch from the vertex to the opening as a
+half the chain and the length of its own way. Where the two openings of a chain would meet, both stay at the ends
+of the chain (`shift` 0). The ground plan builds the stretch from the vertex to the opening as a
 way on the ground (`graph::build_open`).
 
 The bake measures each opening on the ground of the ground plan: each cell that holds a point to read is built as the
 viewer builds it, with the tags of the levels and the stretches to the openings on the ground, without the storey
 under the ground (the step's metric `ground_plan_bores` says which). The ladder reads a first measure with the
 stretches of all openings. The numbers read the stretches that the records open (each opening with a part, a pair's
-mate included): the openings near a stretch that the first measure opened otherwise are measured again. A way in the
+mate included): the openings near a stretch that the first measure opened otherwise are measured again. Where that
+ground no longer fits the kind (no cover, or cover past the limit), the end takes its next kind, and a pair with such
+an end is no pair. A way in the
 tube of a wider one has no record, so a reader keeps it a tunnel way up to its end vertex; the part of the wider tube
 holds it. The cover at a metre in is the least ground
 over the centre line and both outer walls (`half` + `shell_m` across), less the floor; the metre is covered where
@@ -576,8 +579,7 @@ the cover is at least `height` + `shell_m` + `cover_m`.
 
 Each opening takes the first kind of part that fits, by these rungs in order:
 
-1. No part where a vertex of the chain has no height, or where the two openings of a chain meet (its shifts reach past
-   each other): the chain is then a way on the ground.
+1. No part where a vertex of the chain has no height.
 2. No part where the opening lies within `half` + `same_tube_gap_m` across, `same_tube_stagger_m` along and
    `pair_max_deg` of the opening of a wider chain: the way is in that tube. The wider chain keeps its axis, and its
    `half` grows to the far edge of the other way and its margin. The widest chain takes first.

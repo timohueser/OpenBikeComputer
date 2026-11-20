@@ -107,7 +107,10 @@ fn near(openings: &[Opening], input: &Input) -> Vec<Near> {
     out
 }
 
-/// A changed open stretch can change the ground this far from its end vertex for an opening's reads.
+/// An opening is measured again where a changed open stretch lies this near: its reads reach about 100 m (the stations
+/// in, up to `free_max_m` and the longest stagger of a pair, and the row across, up to `pair_max_m` and two tubes with
+/// their wings), and a stretch changes the ground up to about 100 m from its end vertex (its length, at most
+/// `junction_shift_max_m` or `pair_max_m`, and the cut and fill of its road beyond it).
 const AGAIN_M: f64 = 200.0;
 const SQUARE: f64 = (1u64 << obc_ground_plan::frame::FRAME_BITS) as f64;
 
@@ -147,15 +150,22 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     let mut rung: Vec<Option<&'static str>> = vec![None; n];
     let mut half: Vec<f64> = tubes.iter().map(|t| t.half).collect();
     let mut height: Vec<f64> = tubes.iter().map(|t| t.height).collect();
-    for (i, o) in openings.iter().enumerate() {
-        let t = &tubes[o.tube];
-        if !t.heights {
-            rung[i] = Some("a vertex of unknown height");
+    // The two openings of a chain shorter than their shifts would meet: they stay at the ends of the chain.
+    let mut met = 0;
+    for i in 0..n {
+        let Some(k) = (i + 1..n).find(|&k| openings[k].tube == openings[i].tube) else { continue };
+        let (a, c) = if openings[i].end == 0 { (i, k) } else { (k, i) };
+        if openings[a].s >= openings[c].s {
+            let t = &tubes[openings[i].tube];
+            for j in [a, c] {
+                openings[j] = Opening { others: openings[j].others, ..openings[j].at(t, 0.0) };
+            }
+            met += 1;
         }
-        // The two openings of a chain shorter than their shifts meet: the chain is a way on the ground, with no part.
-        let other = openings.iter().find(|q| q.tube == o.tube && q.end != o.end);
-        if other.is_some_and(|q| (o.s - q.s) * if o.end == 0 { 1.0 } else { -1.0 } >= 0.0) {
-            rung[i] = Some("the openings meet");
+    }
+    for (i, o) in openings.iter().enumerate() {
+        if !tubes[o.tube].heights {
+            rung[i] = Some("a vertex of unknown height");
         }
     }
     let near = near(openings, input);
@@ -346,6 +356,28 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             (sites[i], rights[i], moved[i]) = (Some(site), a.right, 0.0);
         }
     }
+    // Where the ground of the second measure no longer fits the kind (no cover, or cover past the limit), the end takes
+    // its next kind; a pair with such an end is no pair.
+    let mut refitted = 0;
+    for &i in &again {
+        let g = &input.rules.groups[tubes[openings[i].tube].group];
+        let d = cover[i];
+        let fits = |k: &Kind| match k {
+            Kind::Pair | Kind::Arch => d.is_some_and(|d| d <= g.collar_max_m),
+            Kind::Rock => d.is_some_and(|d| d <= g.collar_max_m.min(b.rock_cover_max_m)),
+            Kind::Box | Kind::Free => true,
+        };
+        if kinds[i].first().is_none_or(fits) {
+            continue;
+        }
+        refitted += 1;
+        kinds[i].retain(|k| fits(k));
+        if let Some(m) = mate[i].take() {
+            mate[m] = None;
+            kinds[m].retain(|&k| k != Kind::Pair);
+            (far_of[i], far_of[m]) = (i, m);
+        }
+    }
     // The numbers of each drawn opening.
     let mut ends: Vec<End> = Vec::with_capacity(n);
     for i in 0..n {
@@ -370,6 +402,8 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         "cells": cells,
         "measured_again": again.len(),
         "pairs_that_do_not_reach": unpaired,
+        "kinds_changed_by_the_second_measure": refitted,
+        "chains_whose_openings_would_meet": met,
     });
     Decided { ends, half, height, metrics }
 }
@@ -452,7 +486,7 @@ fn numbers(
     let half_chain = t.curve.len / 2.0;
     let collar = match kind {
         Kind::Pair => members.iter().filter_map(|&k| collar_of(k)).fold(0.0, f64::max),
-        Kind::Arch | Kind::Rock => collar_of(i).unwrap_or(0.0),
+        Kind::Arch | Kind::Rock => collar_of(i).expect("an arch is covered within its collar"),
         Kind::Box => collar_of(i).unwrap_or(f64::INFINITY).min(half_chain),
         Kind::Free => collar_of(i).unwrap_or(f64::INFINITY).min(b.free_max_m).min(half_chain),
     };

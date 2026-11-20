@@ -258,6 +258,15 @@ fn a_moved_opening_names_the_end_vertex_of_its_way_and_the_metres_to_it() {
     let placed = tee.place(&site(&|_| 500.0, &[], false), &mut Vec::new());
     assert!(records(&placed, "tunnel-end").iter().any(|t| t["shift"] == "5"));
     assert_eq!(placed.metrics["t_ends"].as_u64(), Some(1));
+    // A tunnel 6 m long between two through roads: its openings would meet, so both stay at its ends.
+    let mut short = Case::default();
+    let id = short.tunnel(&ROAD, (0.0, 6.0), 0.0);
+    short.way(&[[0.0, -50.0], [0.0, 0.0], [0.0, 50.0]]);
+    short.way(&[[6.0, -50.0], [6.0, 0.0], [6.0, 50.0]]);
+    let placed = short.place(&site(&|_| 500.0, &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, id), vec![(vec![Kind::Free], "free: never covered"); 2]);
+    assert!(records(&placed, "tunnel-end").iter().all(|t| t["shift"] == "0"));
+    assert_eq!(placed.metrics["chains_whose_openings_would_meet"].as_u64(), Some(1));
 }
 
 #[test]
