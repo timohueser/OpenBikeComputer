@@ -637,11 +637,12 @@ Two rules, in this order, each applied once, and then a pass that brings jobs ba
    that stays: the job did not leave by rule 1, and its plan kept a record or a section. That job
    holds more of the route than the record gives, such as an OSM route of 30 km with the number of
    an official route of 7 km.
-3. A job that left comes back, again and again until none does, while the records that take its
-   place cover less than four fifths of its match line: for a part of a long route its pairs by (a)
-   that stay, for any other job the records of its kind family that stay; an unnamed stage covers
-   nothing, as it can leave later for want of a name. A record that left by rule 2 comes back first,
-   and a relation that comes back gets its plan then.
+3. A job that left comes back, again and again until none does, while the lines of the records that
+   take its place cover less than four fifths of its match line: for a part of a long route the
+   records of its pairs by (a) that stay, for any other job the records of its kind family that
+   stay. A cut relation gives only its sections, and an unnamed stage gives nothing, as it can
+   leave later for want of a name. A record that left by rule 2 comes back first, and a relation
+   that comes back gets its plan then.
 
 So no route leaves the catalog for another one unless the records that stay cover four fifths of its
 line. A job that fails removes nothing: rule 1 counts only kept records, and rule 2 only jobs that
