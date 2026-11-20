@@ -25,19 +25,19 @@ export function stripCells(parts: TrailPart[], numbered: boolean): StripCell[] {
     }));
 }
 
-/** The count of the stages of `parts` that the catalog holds: the highest stage number, less the numbers that only parts
- * not in the catalog have. A number can have two parts, or none when one part stands for several stages. */
-export function heldStages(parts: TrailPart[]): number {
-    const numbers = (missing: boolean) => new Set(parts.filter(part => !!part.missing === missing).map(part => part.stage ?? 0));
-    const held = numbers(false);
-    return Math.max(0, ...parts.map(part => part.stage ?? 0)) - [...numbers(true)].filter(stage => stage > 0 && !held.has(stage)).length;
+/** The count of the `count` stages of a trail that the catalog holds: `count` less the stage numbers that only parts not in
+ * the catalog have, or 0 when it holds no part. A number can have two parts, or none when one part stands for several stages. */
+export function heldStages(parts: TrailPart[], count: number): number {
+    const held = new Set(parts.filter(part => !part.missing).map(part => part.stage));
+    const lacking = new Set(parts.filter(part => part.missing && part.stage !== undefined && !held.has(part.stage)).map(part => part.stage));
+    return held.size ? count - lacking.size : 0;
 }
 
 /** "N stages", or "K of N stages" when the catalog holds K of the N stages of `parts`, or "N stages, none listed" when it
  * holds none; nothing under two stages. */
 export function stageCount(count: number | undefined, parts?: TrailPart[]): string | false {
     if (count === undefined || count < 2) return false;
-    const held = parts && heldStages(parts);
+    const held = parts && heldStages(parts, count);
     if (held === 0) return `${count} stages, none listed`;
     return held !== undefined && held < count ? `${held} of ${count} stages` : `${count} stages`;
 }

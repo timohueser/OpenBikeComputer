@@ -38,7 +38,6 @@ pub(super) struct SourceJob {
     /// `description`, `operator` and `website`.
     pub words: Map<String, Value>,
     pub credit: String,
-    pub ascent_m: Option<u64>,
     pub members: Vec<Vec<P>>,
 }
 
@@ -116,7 +115,6 @@ pub(super) fn jobs(file: &Value) -> Result<Sources, String> {
                     route: text(route, "name"),
                     words,
                     credit: text(source, "credit"),
-                    ascent_m: part["ascent_m"].as_u64(),
                     members: members.filter(|line| line.len() >= 2).collect(),
                 }
             };

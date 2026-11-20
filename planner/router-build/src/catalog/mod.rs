@@ -389,10 +389,8 @@ pub struct Report {
     /// Wall time of the parallel search.
     pub search_seconds: f64,
     pub seconds: f64,
-    /// The merge of each second source, by its id; null without one.
+    /// What became of the jobs of each second source, by its id; null without one.
     pub sources: Value,
-    /// The searches and the seconds of the merge.
-    pub cost: Map<String, Value>,
 }
 
 /// The median, the 90th percentile and the maximum.
@@ -440,6 +438,7 @@ impl Report {
             "search": {
                 "seconds": spread(self.searches.iter().map(|s| s.1).collect()),
                 "calls": spread(self.searches.iter().map(|s| s.2 as f64).collect()),
+                "count": self.searches.len(),
                 "slowest": slowest.iter().take(10).map(|s| json!([s.0, s.1, s.2])).collect::<Vec<_>>(),
                 "workers": self.workers,
                 "utilisation": busy / (self.workers as f64 * self.search_seconds).max(f64::MIN_POSITIVE),
@@ -451,7 +450,6 @@ impl Report {
         });
         if !self.sources.is_null() {
             report["sources"] = self.sources.clone();
-            report["cost"] = Value::Object(self.cost.clone());
         }
         report
     }
@@ -573,26 +571,18 @@ fn source_lines<S: Source>(
     selection: &Selection<S>,
     osm: &Data,
     jobs: &[SourceJob],
-    cost: &mut Map<String, Value>,
 ) -> Result<Vec<SourceLine>, String> {
     if jobs.is_empty() {
         return Ok(Vec::new());
     }
-    let mut clock = Instant::now();
     // Each stage of the guard prints its time and memory peak.
-    let mut lap = |name: &str, next: &'static str| {
-        cost.insert(name.into(), json!((clock.elapsed().as_secs_f64() * 10.0).round() / 10.0));
-        Guard::exempt(next);
-        clock = Instant::now();
-    };
     Guard::exempt("usable ways");
     let usable = sources::usable_ways(selection.package())?;
-    lap("usable_ways_s", "road index");
-    let roads = Roads::new(osm);
-    lap("roads_s", "off-road cut");
+    Guard::exempt("road index");
+    let roads = Roads::ways(osm);
+    Guard::exempt("off-road cut");
     let lines = jobs.iter().map(|job| sources::line(job, selection.bounds(), &roads, &usable)).collect();
-    drop((roads, usable));
-    lap("cut_s", "catalog");
+    Guard::exempt("catalog");
     Ok(lines)
 }
 
@@ -639,7 +629,7 @@ fn catalog<S: Source + Clone + Send>(
 ) -> Result<(Vec<Value>, Report), String> {
     let mut report = Report::default();
     let mut drops = BTreeMap::<i64, Reason>::new();
-    let source_lines = source_lines(selection, &osm, &sources.jobs, &mut report.cost)?;
+    let source_lines = source_lines(selection, &osm, &sources.jobs)?;
     let Data { ways, relations, .. } = osm;
     let mut long = Vec::new();
     let mut jobs = Vec::new();
@@ -714,11 +704,13 @@ fn catalog<S: Source + Clone + Send>(
 
     // The source jobs come first, so that an OSM job that leaves for them needs no search.
     let source_jobs: HashMap<i64, &SourceJob> = sources.jobs.iter().map(|job| (job.id(), job)).collect();
-    let (mut lined, mut cuts) = (Vec::new(), HashMap::new());
+    let (mut lined, mut cut_jobs) = (Vec::new(), HashSet::new());
     for (job, line) in sources.jobs.iter().zip(source_lines) {
         match line {
-            Ok((line, main, lengths)) => {
-                cuts.insert(job.id(), lengths);
+            Ok((line, main, cuts)) => {
+                if !cuts.is_empty() {
+                    cut_jobs.insert(job.id());
+                }
                 probes.insert(job.id(), Probe::new(job.source, &job.kind, job.rank, &job.ref_, &job.route, main));
                 lined.push((job, line));
             }
@@ -735,14 +727,13 @@ fn catalog<S: Source + Clone + Send>(
     let mut planned = Planned::default();
     planned.take(searched, &mut report, &mut drops);
 
-    let matching = Instant::now();
+    Guard::exempt("merge");
     let mut merge = Merge::replace(&probes, &|id| planned.kept.contains_key(&id));
     for &id in merge.replaced.keys() {
         drops.insert(id, Reason::Replaced);
         planned.kept.remove(&id);
     }
-    let mut match_seconds = matching.elapsed().as_secs_f64();
-    let unsearched = jobs.iter().filter(|job| merge.replaced.contains_key(&job.relation.id)).count();
+    Guard::exempt("catalog");
     jobs.retain(|job| !merge.replaced.contains_key(&job.relation.id));
     let size = |job: &Job| job.members.iter().map(|m| m.nodes.len()).sum();
     (searched, search_seconds) = {
@@ -756,8 +747,9 @@ fn catalog<S: Source + Clone + Send>(
     report.workers = workers.max(1);
     report.search_seconds = search_seconds;
 
-    let matching = Instant::now();
-    merge.hold(&|id| kept.contains_key(&id) || cut.contains_key(&id));
+    Guard::exempt("merge");
+    // `named` can drop an unnamed stage later, so such a stage holds no record.
+    merge.hold(&|id| (kept.contains_key(&id) || cut.contains_key(&id)) && !unnamed.contains_key(&id));
     for &id in merge.held.keys() {
         drops.insert(id, Reason::Held);
         kept.remove(&id);
@@ -767,7 +759,6 @@ fn catalog<S: Source + Clone + Send>(
         .keys()
         .map(|&id| (id, merge.successors(id, &probes, &|id| kept.get(&id).map(|k| k.start))))
         .collect();
-    let mut taken = BTreeMap::<(usize, &str), usize>::new();
     for (record, job) in merge::donors(&successors, &probes) {
         let words = match source_jobs.get(&job) {
             Some(source) => source.header(),
@@ -777,17 +768,15 @@ fn catalog<S: Source + Clone + Send>(
             }
         };
         let route = kept.get_mut(&record).expect("a successor is kept");
-        for field in ["description", "operator", "website", "symbol"] {
+        // No `description`: an OSM description often tells how the relation is mapped.
+        for field in ["operator", "website", "symbol"] {
             let french = field == "symbol" && route.french;
-            if !route.record.contains_key(field) && !french {
-                if let Some(value) = words.get(field) {
-                    route.record.insert(field.into(), value.clone());
-                    *taken.entry((source_jobs[&record].source, field)).or_default() += 1;
-                }
+            if let Some(value) = words.get(field).filter(|_| !route.record.contains_key(field) && !french) {
+                route.record.insert(field.into(), value.clone());
             }
         }
     }
-    match_seconds += matching.elapsed().as_secs_f64();
+    Guard::exempt("catalog");
 
     // The parts of a relation in a long record: the relation itself, or its sections.
     let parts_of = |id: i64, stage: Option<usize>| -> Vec<long::Part> {
@@ -809,7 +798,7 @@ fn catalog<S: Source + Clone + Send>(
         let relation = relations.get(id).expect("a cut route is in the data");
         let kind = route_kind(&relation.tags).expect("a cut route has a kind");
         let (mut record, points) =
-            long::record(&relation, kind, &parts_of(id, None), false).expect("a cut route keeps a section");
+            long::record(&relation, kind, &parts_of(id, None), false, 0).expect("a cut route keeps a section");
         if let Some(trail) = unnamed.get(&id).and_then(|listers| relations.get(listers[0])) {
             named_after(&mut record, &trail);
         }
@@ -863,7 +852,7 @@ fn catalog<S: Source + Clone + Send>(
             apart.insert(relation.id);
             continue;
         }
-        let Some((record, points)) = long::record(&relation, &kind, &parts, connector) else {
+        let Some((record, points)) = long::record(&relation, &kind, &parts, connector, leaves.len()) else {
             drops.insert(relation.id, Reason::NoStages);
             continue;
         };
@@ -906,14 +895,7 @@ fn catalog<S: Source + Clone + Send>(
         in_trail(&mut record, id);
         records.push(Value::Object(record));
     }
-    let ascents: Vec<(usize, f64)> = kept
-        .iter()
-        .filter_map(|(id, route)| {
-            let job = source_jobs.get(id)?;
-            Some((job.source, route.record["ascent_m"].as_f64()? / job.ascent_m.filter(|&a| a > 0)? as f64))
-        })
-        .collect();
-    let in_catalog: BTreeSet<i64> = kept.keys().copied().collect();
+    let in_catalog: HashSet<i64> = kept.keys().copied().collect();
     for (id, mut route) in kept {
         if !named(&mut route.record, id) {
             continue;
@@ -932,19 +914,21 @@ fn catalog<S: Source + Clone + Send>(
     }
     records.sort_by_key(|record| record["id"].as_i64());
     if !sources.jobs.is_empty() {
-        let name = |id: i64| match source_jobs.get(&id) {
-            Some(job) => json!([job.key, job.stage, job.name]),
-            None => json!([id, 0, relations.get(id).map_or(String::new(), |r| tag(&r.tags, "name").to_string())]),
-        };
-        let facts =
-            merge::Facts { merge: &merge, successors: &successors, drops: &drops, kept: &in_catalog, cuts: &cuts };
-        report.sources = facts.report(&sources, &name, &taken, &ascents);
-        report.cost.insert("match_s".into(), json!((match_seconds * 10.0).round() / 10.0));
-        let searches = |source: bool| report.searches.iter().filter(|s| (s.0 <= -sources::ORIGIN_ID) == source).count();
-        report.cost.insert(
-            "searches".into(),
-            json!({"sources": searches(true), "osm": searches(false), "osm_replaced": unsearched}),
-        );
+        // The jobs of each source, the records that it kept, of them those with a cut, and why the
+        // others left.
+        let mut counts = Map::new();
+        for (place, name) in sources.ids.iter().enumerate() {
+            let ids: Vec<i64> = sources.jobs.iter().filter(|job| job.source == place).map(SourceJob::id).collect();
+            let mut dropped = BTreeMap::<String, usize>::new();
+            for reason in ids.iter().filter_map(|id| drops.get(id)) {
+                *dropped.entry(format!("{reason:?}")).or_default() += 1;
+            }
+            let kept = ids.iter().filter(|id| in_catalog.contains(id));
+            let cut = kept.clone().filter(|id| cut_jobs.contains(id)).count();
+            counts
+                .insert(name.clone(), json!({"jobs": ids.len(), "kept": kept.count(), "cut": cut, "dropped": dropped}));
+        }
+        report.sources = Value::Object(counts);
     }
     for (id, reason) in drops {
         report.dropped.entry(format!("{reason:?}")).or_default().push(id);

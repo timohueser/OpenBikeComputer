@@ -133,8 +133,8 @@ pub(super) fn apart(parts: &[Part]) -> bool {
     ends.len() >= 2 && 3 * largest < ends.len()
 }
 
-/// The record of a long relation from its parts, and the plan points of its kept parts joined.
-/// `None` when no part is kept. A relation that opens a connector leg is never complete: the leg
+/// The record of a long relation of `stage_count` stages from its parts, and the plan points of its
+/// kept parts joined. `None` when no part is kept. A relation that opens a connector leg is never complete: the leg
 /// leaves a gap between its parts. It has no `symbol` when a kept part is in France, and the
 /// credits of its kept parts.
 pub(super) fn record(
@@ -142,6 +142,7 @@ pub(super) fn record(
     kind: &str,
     parts: &[Part],
     connector: bool,
+    stage_count: usize,
 ) -> Option<(Map<String, Value>, usize)> {
     let kept: Vec<&Kept> = parts.iter().filter_map(|part| part.kept).collect();
     if kept.is_empty() {
@@ -184,7 +185,7 @@ pub(super) fn record(
         })
         .collect();
     record.insert("parts".into(), json!(entries));
-    record.insert("stage_count".into(), json!(parts.iter().filter_map(|part| part.stage).max().unwrap_or(0)));
+    record.insert("stage_count".into(), json!(stage_count));
     let mut credits: Vec<&str> = Vec::new();
     for credit in kept.iter().filter_map(|k| k.record.get("credit").and_then(Value::as_str)) {
         if !credits.contains(&credit) {

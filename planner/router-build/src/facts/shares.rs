@@ -105,14 +105,20 @@ fn big_way(tags: &Tags) -> bool {
         && tags.get("tunnel").is_none_or(|value| value == "no")
 }
 
+/// A grid of the segments of the ways that `keep` takes.
+fn grid(osm: &Data, cell_m: f64, keep: fn(&Tags) -> bool) -> Grid {
+    let rows = osm.ways.iter().enumerate().filter(move |(_, way)| keep(&way.tags));
+    Grid::new(cell_m, rows.flat_map(|(row, way)| way_boxes(way.points).map(move |bounds| (bounds, row as u32))))
+}
+
 impl<'a> Roads<'a> {
     pub fn new(osm: &'a Data) -> Self {
-        let rows = |keep: fn(&Tags) -> bool| {
-            let rows = osm.ways.iter().enumerate().filter(move |(_, way)| keep(&way.tags));
-            rows.flat_map(|(row, way)| way_boxes(way.points).map(move |bounds| (bounds, row as u32)))
-        };
-        let ways = Grid::new(250.0, rows(|tags| road(tags).is_some()));
-        Roads { osm, ways, big: Grid::new(1_000.0, rows(big_way)) }
+        Roads { big: grid(osm, 1_000.0, big_way), ..Self::ways(osm) }
+    }
+
+    /// The roads and paths only, for `within`: no grid of the big roads.
+    pub fn ways(osm: &'a Data) -> Self {
+        Roads { osm, ways: grid(osm, 250.0, |tags| road(tags).is_some()), big: Grid::new(1_000.0, []) }
     }
 
     pub fn paved(&self, p: P) -> Paved {

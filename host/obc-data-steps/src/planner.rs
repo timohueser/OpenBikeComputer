@@ -53,7 +53,7 @@ pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
 pub static PLANNER_ROUTING_COSTS: Layer = Layer { revision: 2, ..work(step::COSTS) };
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
-    revision: 23,
+    revision: 22,
     ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
 };
 /// The facts of the catalog routes for the search of the Explore page, `specs/route-catalog.md`,
@@ -255,6 +255,7 @@ impl Product for Planner {
             "map",
             "routing",
             "route-facts",
+            "route-sources",
             "search",
             "climate",
             "snow",
@@ -462,7 +463,9 @@ impl Planner {
             json!({"bounds": bounds, "profiles": config.routing.profiles}),
             &functions::ROUTING_COSTS,
         );
-        let route_sources = match on("routing") {
+        // The part `route-sources` adds the routes of the second sources to the catalog.
+        let route_sources = match on("route-sources") {
+            true if !on("routing") => return Err(invalid("the layer route-sources reads routing: name both".into())),
             true => route_source_step(root, inputs, store, (countries.as_slice(), bounds), &mut wanted)?,
             false => None,
         };
@@ -1805,8 +1808,9 @@ mod tests {
         assert!(!get("planner/routing").layer.cache);
     }
 
-    /// A region reads the route sources of its countries whose extent meets its bounds, in the order
-    /// of `data/sources.toml`, and the catalog reads them. A region of another country reads none.
+    /// With the part `route-sources`, a region reads the route sources of its countries whose extent
+    /// meets its bounds, in the order of `data/sources.toml`, and the catalog reads them. A region of
+    /// another country reads none, and so does a region without the part.
     #[test]
     fn the_routing_reads_the_route_sources_of_the_countries_of_its_region() {
         let temp = temp("planner-route-sources");
@@ -1827,8 +1831,8 @@ mod tests {
         };
         let regions = Regions::new(vec![region("swiss", "CH"), region("tyrol", "AT")]).unwrap();
         let ids = ["schweizmobil-hiking", "schweizmobil-cycling", "schweizmobil-mtb"];
-        let steps = |region: &str| {
-            let mut inputs = inputs(region, &[]);
+        let steps = |region: &str, parts: &[&str]| {
+            let mut inputs = inputs(region, parts);
             for id in ids {
                 inputs.resolved.insert((id.into(), Vec::new()), "2026-02-25".into());
             }
@@ -1841,7 +1845,7 @@ mod tests {
             };
             inputs.iter().map(name).collect()
         };
-        let swiss = steps("swiss");
+        let swiss = steps("swiss", &["route-sources"]);
         let read = swiss.iter().find(|step| step.name == step::ROUTE_SOURCES).unwrap();
         assert_eq!(names(&read.inputs), ids);
         let options: Vec<&str> =
@@ -1849,10 +1853,11 @@ mod tests {
         assert_eq!(options, ids);
         let routing = swiss.iter().find(|step| step.name == "planner/routing").unwrap();
         assert_eq!(names(&routing.inputs), [step::SOURCE, step::ROADS, step::COSTS, step::ROUTE_SOURCES]);
-        let tyrol = steps("tyrol");
-        assert!(!tyrol.iter().any(|step| step.name == step::ROUTE_SOURCES));
-        let routing = tyrol.iter().find(|step| step.name == "planner/routing").unwrap();
-        assert_eq!(names(&routing.inputs), [step::SOURCE, step::ROADS, step::COSTS]);
+        for steps in [steps("tyrol", &["route-sources"]), steps("swiss", &[])] {
+            assert!(!steps.iter().any(|step| step.name == step::ROUTE_SOURCES));
+            let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
+            assert_eq!(names(&routing.inputs), [step::SOURCE, step::ROADS, step::COSTS]);
+        }
     }
 
     /// A version of `terrain` with `paths` and an `index.json` whose tile 4825/4218 is of `ch`, with

@@ -626,12 +626,12 @@ fn route_sources_give_a_job_for_each_route_and_each_stage_with_members() {
     assert_eq!(ids, ["schweizmobil-hiking"]);
     // Stage 1 has no members.
     let fields: Vec<_> =
-        jobs.iter().map(|j| (j.id(), j.kind.as_str(), j.rank, j.ref_.as_str(), j.name.as_str(), j.ascent_m)).collect();
+        jobs.iter().map(|j| (j.id(), j.kind.as_str(), j.rank, j.ref_.as_str(), j.name.as_str())).collect();
     assert_eq!(
         fields,
         [
-            (-1_000_000_000_311, "hiking", 3, "3", "Alpenpanorama-Weg, Luzern – Malters", Some(444)),
-            (-1_000_000_056_100, "hiking", 1, "561", "Rigi Panoramaweg", Some(620)),
+            (-1_000_000_000_311, "hiking", 3, "3", "Alpenpanorama-Weg, Luzern – Malters"),
+            (-1_000_000_056_100, "hiking", 1, "561", "Rigi Panoramaweg"),
         ]
     );
     assert_eq!(
@@ -798,16 +798,14 @@ fn the_merge_keeps_the_official_record_of_a_route_and_each_route_once() -> Resul
         !report.searches.iter().any(|search| [101, 107, 121, 131].contains(&search.0)),
         "a replaced relation needs no search"
     );
+    // The record takes the mark of OSM, not its description.
     let rigi = by_id[&source_id(1, 561, 0)];
-    assert_eq!(
-        (&rigi["description"], &rigi["symbol"], &rigi["credit"]),
-        (&json!("Ein Weg mit Aussicht"), &json!("yellow:white:yellow_bar"), &json!("Credit 1"))
-    );
+    assert_eq!((&rigi["symbol"], &rigi["credit"]), (&json!("yellow:white:yellow_bar"), &json!("Credit 1")));
+    assert!(rigi.get("description").is_none());
     let new = by_id[&source_id(1, 11, 0)];
     assert_eq!((&new["name"], &new["rank"], &new["hardest"]), (&json!("Eleven"), &json!(2), &json!(4)));
     assert!(new["moving_s"].as_u64() > Some(0) && new.get("description").is_none());
-    let held = &report.sources["source-1"]["held"][0];
-    assert_eq!((&held["record"], &held["by"][0]), (&json!([9, 0, "Nine"]), &json!(109)));
+    assert_eq!(report.sources["source-1"]["dropped"], json!({"Gap": 1, "Held": 1}));
     Ok(())
 }
 
@@ -874,7 +872,7 @@ fn by_id_of(records: &[Value], id: i64) -> Value {
 }
 
 #[test]
-fn one_official_route_stands_for_three_osm_stages_and_a_regional_stage_takes_the_regional_one() -> Result<(), String> {
+fn one_official_route_stands_for_osm_stages_and_a_regional_stage_takes_the_regional_one() -> Result<(), String> {
     let long = |id, name, reference, children: &[i64]| -> Route {
         let tags =
             vec![("type", "superroute"), ("route", "hiking"), ("name", name), ("ref", reference), ("network", "rwn")];
@@ -885,6 +883,9 @@ fn one_official_route_stands_for_three_osm_stages_and_a_regional_stage_takes_the
         official(70, "hiking", 2, "S6", "Sechs", &[at(&[6, 16, 26, 36])]),
         official(80, "hiking", 3, "N8", "National", &[at(&[21, 22, 23, 24])]),
         official(85, "hiking", 2, "R5", "Regio", &[at(&[21, 22, 23, 24])]),
+        // Stages 3 and 4 of the trail 600, and both stages of the trail 700.
+        official(90, "hiking", 2, "V4", "Vier", &[at(&[63, 64, 65, 66])]),
+        official(95, "hiking", 2, "Z2", "Zwei", &[at(&[10, 11, 12, 13])]),
     ]]);
     let (package, osm) = grid(vec![
         long(400, "Sechs", "S6", &[401, 402, 403, 404, 405, 406]),
@@ -902,10 +903,19 @@ fn one_official_route_stands_for_three_osm_stages_and_a_regional_stage_takes_the
                 ("name", "Regio 1"),
                 ("network", "rwn"),
                 ("description", "Words of the regional stage"),
+                ("website", "https://regio.example"),
             ],
             path(&[21, 22, 23, 24]),
         ),
         stage(502, "Regio 2", path(&[24, 34, 44, 54])),
+        long(600, "Vier", "V4", &[601, 602, 603, 604]),
+        stage(601, "Vier 1", path(&[30, 40, 50, 60])),
+        stage(602, "Vier 2", path(&[60, 61, 62, 63])),
+        stage(603, "Vier 3", path(&[63, 64])),
+        stage(604, "Vier 4", path(&[64, 65, 66])),
+        long(700, "Zwei", "Z2", &[701, 702]),
+        stage(701, "Zwei 1", path(&[10, 11])),
+        stage(702, "Zwei 2", path(&[11, 12, 13])),
     ]);
     let (records, _) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
@@ -921,9 +931,174 @@ fn one_official_route_stands_for_three_osm_stages_and_a_regional_stage_takes_the
     assert_eq!((&by_id[&six]["trail_stage"], &by_id[&six]["stage"]), (&json!(3), &json!(3)));
     // The national route on the same line is a pair of stage 501 too, by its line alone.
     assert_eq!(
-        (&by_id[&regional]["trail"], &by_id[&regional]["description"]),
-        (&json!(500), &json!("Words of the regional stage"))
+        (&by_id[&regional]["trail"], &by_id[&regional]["website"]),
+        (&json!(500), &json!("https://regio.example"))
     );
-    assert!(by_id[&national].get("trail").is_none() && by_id[&national].get("description").is_none());
+    assert!(by_id[&regional].get("description").is_none());
+    assert!(by_id[&national].get("trail").is_none() && by_id[&national].get("website").is_none());
+    // N of "Stage n of N" is the number of stages of the trail, also when one route stands for its last
+    // stages or for all of them; so a trail of two stages stays a trail.
+    let parts = |id: i64| -> Vec<(i64, u64)> {
+        let parts = by_id[&id]["parts"].as_array().unwrap().iter();
+        parts.map(|p| (p["id"].as_i64().unwrap(), p["stage"].as_u64().unwrap())).collect()
+    };
+    let (four, two) = (source_id(1, 90, 0), source_id(1, 95, 0));
+    assert_eq!((parts(600), &by_id[&600]["stage_count"]), (vec![(601, 1), (602, 2), (four, 3)], &json!(4)));
+    assert_eq!((parts(700), &by_id[&700]["stage_count"]), (vec![(two, 1)], &json!(2)));
+    assert!(trails::trails(&records).iter().any(|(entry, _)| entry["id"] == 700));
     Ok(())
+}
+
+#[test]
+fn a_job_that_leaves_still_shows_and_no_route_takes_the_place_of_another() -> Result<(), String> {
+    for (a, b, agree) in [("SM 561", "561", true), ("1;EV17", "1", true), ("007", "7", true), ("4.1", "4.1", true)]
+        .into_iter()
+        .chain([("4.1", "4", false), ("4.1", "1", false), ("12", "1", false)])
+    {
+        assert_eq!(merge::refs_agree(a, b), agree, "{a} {b}");
+    }
+    let national = |reference| vec![("route", "hiking"), ("ref", reference), ("network", "nwn")];
+    let sources = sources_of(vec![vec![
+        official(3, "hiking", 3, "3", "Drei", &[at(&[0, 1, 2, 3, 4])]),
+        // The national stage 2 leaves the bounds, so it fails; the regional route lies on its line.
+        staged(
+            official(7, "hiking", 3, "N7", "Sieben", &[]),
+            &[(2, &[[at(&[63, 64, 65, 66]), vec![[ORIGIN - 2_000_000, ORIGIN]]].concat()])],
+        ),
+        official(20, "hiking", 2, "R2", "Regio", &[at(&[63, 64, 65, 66])]),
+    ]]);
+    let marked = [("website", "https://n7.example"), ("osmc:symbol", "red:white:red_bar")];
+    let (package, osm) = grid(vec![
+        // Inside route 3: it leaves for it.
+        route(30, &national("3"), path(&[1, 2, 3])),
+        // Half of route 3 lies along it: a pair by its ref, which does not hold route 3.
+        route(31, &[("route", "hiking"), ("ref", "3")], path(&[2, 3, 4, 14, 24, 34, 44])),
+        (
+            80,
+            [vec![("type", "superroute"), ("name", "Sieben")], national("N7")].concat(),
+            members(&[81, 82], Id::Relation),
+        ),
+        route(81, &[("route", "hiking"), ("name", "Sieben 1")], path(&[60, 61, 62, 63])),
+        route(
+            82,
+            &[vec![("route", "hiking"), ("name", "Sieben 2")], marked.to_vec()].concat(),
+            path(&[63, 64, 65, 66]),
+        ),
+    ]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let by_id = by_id(&records);
+    assert_eq!(report.dropped.get("Replaced"), Some(&vec![30, 82]), "{:?}", report.dropped);
+    assert!(by_id.contains_key(&source_id(1, 3, 0)) && by_id.contains_key(&31), "the line of route 30 still shows");
+    // Route 82 lies on the line of the regional route: it leaves, but the regional route takes no place
+    // in the national trail and no word of it.
+    let regional = by_id[&source_id(1, 20, 0)];
+    assert!(["trail", "website", "symbol"].iter().all(|field| regional.get(*field).is_none()), "{regional}");
+    assert_eq!(by_id[&80]["parts"][1]["missing"], true);
+    Ok(())
+}
+
+/// A step of the made-up generator of `every_job_shows_and_no_two_records_of_two_origins_are_one_route`.
+fn next(seed: &mut u64, n: u64) -> u64 {
+    *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+    (*seed >> 33) % n
+}
+
+/// A walk of up to `ways` streets that visits no node twice, from `start`, or from a node of the
+/// generator when it is `None`, of 3 to 7 streets then.
+fn walk(seed: &mut u64, start: Option<i64>, ways: usize) -> Vec<i64> {
+    let start = start.unwrap_or_else(|| next(seed, 7) as i64 * 10 + next(seed, 7) as i64);
+    let ways = if ways == 0 { 3 + next(seed, 5) as usize } else { ways };
+    let mut nodes = vec![start];
+    for _ in 0..ways {
+        let at = nodes[nodes.len() - 1];
+        let mut steps: Vec<i64> = [at - 10, at + 10, at - 1, at + 1]
+            .into_iter()
+            .filter(|&b| (0..70).contains(&b) && b % 10 < 7 && (b / 10 == at / 10 || b % 10 == at % 10))
+            .filter(|&b| way(at, b) != way(15, 25) && !nodes.contains(&b))
+            .collect();
+        if steps.is_empty() {
+            break;
+        }
+        nodes.push(steps.swap_remove(next(seed, steps.len() as u64) as usize));
+    }
+    nodes
+}
+
+#[test]
+fn every_job_shows_and_no_two_records_of_two_origins_are_one_route() -> Result<(), String> {
+    // Walks along the streets as OSM relations and official routes, many of them on one line or along
+    // another, with few refs and levels, so many of them are pairs.
+    let mut seed = 7;
+    let refs = ["1", "2", "SM 2", "", "3"];
+    let mut lines = BTreeMap::new();
+    let mut routes = Vec::new();
+    for key in 1..=14u64 {
+        let nodes = walk(&mut seed, None, 0);
+        let reference = refs[next(&mut seed, 5) as usize];
+        routes.push(official(
+            key,
+            "hiking",
+            next(&mut seed, 3) as u8,
+            reference,
+            &format!("Weg {reference}"),
+            &[at(&nodes)],
+        ));
+        lines.insert(source_id(1, key as i64, 0), at(&nodes));
+    }
+    let mut relations = Vec::new();
+    let networks = ["lwn", "rwn", ""];
+    for id in 101..=130i64 {
+        // A copy, a piece, or a longer version of an official line, or a walk of its own.
+        let base = &routes[next(&mut seed, routes.len() as u64) as usize];
+        let base: Vec<i64> = decode_nodes(base);
+        let nodes = match next(&mut seed, 4) {
+            0 => base.clone(),
+            1 if base.len() > 3 => base[1..].to_vec(),
+            2 => {
+                let more = walk(&mut seed, Some(base[base.len() - 1]), 3);
+                let more = more[1..].iter().take_while(|n| !base.contains(n));
+                base.iter().chain(more).copied().collect()
+            }
+            _ => walk(&mut seed, None, 0),
+        };
+        lines.insert(id, at(&nodes));
+        relations.push((id, refs[next(&mut seed, 5) as usize], networks[next(&mut seed, 3) as usize], nodes));
+    }
+    let tags: Vec<Vec<(&str, &str)>> = relations
+        .iter()
+        .map(|&(_, reference, network, _)| {
+            [("route", "hiking"), ("ref", reference), ("network", network), ("name", "Weg")].to_vec()
+        })
+        .collect();
+    let osm_routes =
+        relations.iter().zip(&tags).map(|((id, _, _, nodes), tags)| route(*id, tags, path(nodes))).collect();
+    let (package, osm) = grid(osm_routes);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources_of(vec![routes]), 2, SECTION_M)?;
+    let kept: Vec<(i64, Vec<P>)> =
+        records.iter().map(|r| (r["id"].as_i64().unwrap(), decode(&r["line_udeg"]))).collect();
+    let probe = |line: &Vec<P>| merge::Probe::new(0, "hiking", 0, "", "", vec![line.clone()]);
+    let left: BTreeSet<i64> =
+        ["Replaced", "Held"].iter().flat_map(|r| report.dropped.get(*r).into_iter().flatten().copied()).collect();
+    assert!(left.len() >= 10, "the made-up region tests the rules: {:?}", report.dropped);
+    for id in left {
+        let nears: Vec<shape::Near> = kept.iter().map(|(_, line)| shape::Near::new(line)).collect();
+        let shown = merge::share(&probe(&lines[&id]), &nears.iter().collect::<Vec<_>>());
+        assert!(shown >= 0.5, "only {shown:.2} of the line of {id} shows");
+    }
+    for (a, line_a) in kept.iter().filter(|(id, _)| *id > 0) {
+        for (b, line_b) in kept.iter().filter(|(id, _)| *id <= -sources::ORIGIN_ID) {
+            let shares = [
+                merge::share(&probe(line_a), &[&shape::Near::new(line_b)]),
+                merge::share(&probe(line_b), &[&shape::Near::new(line_a)]),
+            ];
+            assert!(shares.iter().any(|&share| share < 0.8), "{a} and {b} are one route: {shares:?}");
+        }
+    }
+    Ok(())
+}
+
+/// The grid nodes of the line of a route of `official`.
+fn decode_nodes(route: &Value) -> Vec<i64> {
+    let flat: Vec<i64> = route["members"][0].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+    flat.chunks(2).map(|p| ((p[1] - ORIGIN as i64) / 4_000) * 10 + (p[0] - ORIGIN as i64) / 4_000).collect()
 }
