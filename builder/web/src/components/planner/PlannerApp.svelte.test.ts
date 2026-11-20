@@ -763,6 +763,9 @@ describe('planner app transitions', () => {
         await startApp();
         await tick();
         await setRidingDays(maxRidingDays);
+        // The list shows the week in focus; End on the strip moves it to the last days.
+        document.querySelector('[role="slider"][aria-label="Week in focus"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+        await tick();
         button(`Open day ${maxRidingDays}: Day ${maxRidingDays - 1} overnight to Thun`).click();
         await tick();
         await search(`campsites day ${maxRidingDays}`);
@@ -773,6 +776,17 @@ describe('planner app transitions', () => {
         expect(button('Stay here', dialog).disabled).toBe(true);
         expect(dialog.querySelector<HTMLOptionElement>(`option[value="${maxRidingDays}"]`)?.disabled).toBe(true);
         expect(dialog.textContent).toContain(`up to ${maxRidingDays} riding days`);
+    });
+
+    it('keeps the week when the rider opens the night before it, at the left edge of the profile', async () => {
+        await startApp();
+        await setRidingDays(20);
+        const strip = document.querySelector('[role="slider"][aria-label="Week in focus"]')!;
+        strip.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true })); await tick();
+        expect(strip.getAttribute('aria-valuetext')).toBe('Days 8 to 14');
+        button('Day 7 ends here, suggested. Show the day.').click(); await tick();
+        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 7');
+        expect(strip.getAttribute('aria-valuetext')).toBe('Days 8 to 14');
     });
 
     it('sets the day count when the rider steps it, even back to the guess, and not when only the stay changes', async () => {

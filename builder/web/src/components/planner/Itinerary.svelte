@@ -10,11 +10,13 @@
     import { proposalTitle } from '../../lib/planner/stops';
     import { trainNightText } from '../../lib/planner/search/presentation';
     import type { RoutingLine } from '../../lib/planner/routing';
+    import { step } from '../../lib/planner/week';
+    import { formatDistance, formatHeight } from '../../lib/settings/format';
 
     let {
         trip, line, itinerary, days, theme, expandedDay, nightPage, nights, conflicts, selectedId, revealId, hoveredId = null, onHover,
         onToggle, onOverview, onInspect, onShowEnd, onShowConflict,
-        onAddRest, onTransfer, onRemoveRest, onNameRest,
+        onAddRest, onTransfer, onRemoveRest, onNameRest, week = null, onWeek,
     }: {
         trip: Trip;
         /** The line of the trip, once it is calculated. */
@@ -43,6 +45,10 @@
         onTransfer: (night: number) => void;
         onRemoveRest: (index: number) => void;
         onNameRest: (index: number, name: string) => void;
+        /** The week in focus of a long trip, by its first and last calendar day: the list shows only its days. */
+        week?: { start: number; end: number } | null;
+        /** Moves the week to start at this calendar day. */
+        onWeek?: (start: number) => void;
     } = $props();
 
     let root = $state<HTMLDivElement>();
@@ -52,7 +58,8 @@
     // The night whose row between it and the next day shows its buttons: under the pointer, focused or tapped.
     let gap = $state<number | null>(null);
     const focused = $derived(itinerary.find(day => !day.rest && day.ridingNumber === expandedDay));
-    const visible = $derived(focused ? itinerary.filter(day => day.ridingNumber === focused.ridingNumber) : itinerary);
+    const weekDays = $derived(week ? itinerary.slice(week.start - 1, week.end) : itinerary);
+    const visible = $derived(focused ? itinerary.filter(day => day.ridingNumber === focused.ridingNumber) : weekDays);
     const ridingDays = $derived(itinerary.filter(day => !day.rest));
     const scale = $derived(Math.max(0, ...days.map(day => day.hours)) || 1);
     const total = $derived(planView(trip, line).total);
@@ -63,8 +70,10 @@
         return around ? [[day.number, proposalTitle(around)]] : [];
     })));
 
+    // A number, so that a new week object with the same days does not scroll the list.
+    const weekStart = $derived(week?.start);
     $effect(() => {
-        expandedDay;
+        void [expandedDay, weekStart];
         tick().then(() => {
             const scroll = root?.closest('.pane-scroll');
             if (scroll) scroll.scrollTop = 0;
@@ -120,8 +129,16 @@
     }
 </script>
 
+{#if week && nightPage === null}
+    <nav class="week" aria-label="Week">
+        <button type="button" class="icon" aria-label="7 days back" disabled={week.start === 1} onclick={() => onWeek?.(step(itinerary.length, week.start, -7))}><Icon path="m15 5-7 7 7 7" size={16} /></button>
+        <strong>Days {week.start}–{week.end}</strong>
+        <span>{formatDistance(weekDays.reduce((sum, day) => sum + day.distance, 0) * 1000)}{line?.unknownElevationKm === 0 ? ` · ↑ ${formatHeight(weekDays.reduce((sum, day) => sum + day.ascent, 0))}` : ''}</span>
+        <button type="button" class="icon" aria-label="7 days on" disabled={week.end === itinerary.length} onclick={() => onWeek?.(step(itinerary.length, week.start, 7))}><Icon name="chevron" size={16} /></button>
+    </nav>
+{/if}
 {#if focused}
-    <nav class="day-nav" aria-label="Day navigation">
+    <nav class="day-nav" aria-label="Day navigation" style:top={week ? '36px' : undefined}>
         <button type="button" class="overview" onclick={overview}><Icon name="back" size={16} />All days</button>
         <div class="day-picker">
             <button type="button" class="icon" aria-label="Previous riding day" disabled={focused.ridingNumber === 1} onclick={() => onToggle(focused.ridingNumber - 1)}><Icon name="back" size={16} /></button>
@@ -181,8 +198,8 @@
         <button type="button" class="keep-all" aria-describedby="keep-campsites" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
     </div>
 {/if}
-<div class="itinerary" class:ladder={!focused} bind:this={root}>
-    {#if !focused}
+<div class="itinerary" class:ladder={!focused} class:from-start={!week || week.start === 1} class:to-finish={!week || week.end === itinerary.length} bind:this={root}>
+    {#if !focused && (!week || week.start === 1)}
         <div class="endpoint"><span class="end-mark" aria-hidden="true"><Icon path="M8 5v14l11-7z" size={11} /></span><div><strong>{ends[0]?.label}</strong><small>Start</small></div></div>
     {/if}
     {#key expandedDay}
@@ -210,7 +227,7 @@
             </div>
         {:else}
             {@const conflict = conflictOf(day.ridingNumber)}
-            {#if !focused && day.ridingNumber > 1}{@render between(day.ridingNumber - 1)}{/if}
+            {#if !focused && day.number > (week?.start ?? 1)}{@render between(day.ridingNumber - 1)}{/if}
             <DayRow
                 {trip} {line} {day} {days} {theme} {scale} {selectedId} {revealId} {hoveredId} {onHover} {calendar} {suggested}
                 expanded={expandedDay === day.ridingNumber}
@@ -230,7 +247,7 @@
         {/if}
     {/each}
     {/key}
-    {#if !focused}
+    {#if !focused && (!week || week.end === itinerary.length)}
         <div class="endpoint"><span class="end-mark" aria-hidden="true"><Icon name="flag" size={12} /></span><div><strong>{trip.loop ? ends[0]?.label : ends.at(-1)?.label}</strong><small>Finish</small></div></div>
     {/if}
 </div>
@@ -249,6 +266,23 @@
         border-bottom: 1px solid var(--line);
         background: var(--panel);
     }
+    .week {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 36px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+        font-size: 13px;
+    }
+    .week strong { font: 600 14px var(--sans); }
+    .week span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-soft); }
+    .week .icon { width: 28px; height: 28px; border: 1px solid var(--line-strong); }
+    .week .icon:disabled { opacity: .4; cursor: default; }
     .overview, .day-picker { display: flex; align-items: center; gap: 8px; }
     .overview { min-height: 36px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--ink); font-size: 13px; font-weight: 600; }
     .overview:hover { background: var(--parchment-2); }
@@ -271,7 +305,8 @@
         gap: 4px;
         padding: 4px 8px 16px;
     }
-    /* One rail joins start, days, nights and finish, through the centre of their marks. */
+    /* One rail joins start, days, nights and finish, through the centre of their marks. Without the start or the finish
+     * row, it runs from the edge of the first or the last row shown. */
     .ladder {
         position: relative;
         gap: 0;
@@ -279,13 +314,15 @@
     .ladder::before {
         content: "";
         position: absolute;
-        top: 26px;
-        bottom: 38px;
+        top: 4px;
+        bottom: 16px;
         left: 27px;
         width: 2px;
         border-radius: 1px;
         background: var(--line);
     }
+    .ladder.from-start::before { top: 26px; }
+    .ladder.to-finish::before { bottom: 38px; }
     .ladder :global(.day:not(.expanded)) {
         border-bottom: 0;
     }

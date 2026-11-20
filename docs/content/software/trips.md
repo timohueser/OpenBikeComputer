@@ -64,7 +64,8 @@ route's line as a drawn leg.
 In the web planner, one bar above the stops holds the day count, the start date and, for a trip, the
 stay kinds. Its "+" makes a route a multi-day trip, and "−" from the lowest count undoes it. With a
 start date, each day shows its weekday. The elevation profile is the timeline: the days by colour, a
-marker at each night and a column for each rest day.
+marker at each night and a column for each rest day. From 15 riding days, a strip of all days frames
+one week: the list, profile and town search show only that week.
 
 A guessed day count is grey and dotted; a set one is dark. The planner guesses the day count from
 the riding time at the plan's pace. After each route or pace change, it guesses the count and the
@@ -96,7 +97,7 @@ new trip.
 
 The planner stores a route at "Save"; the first save asks for its name. Until then, changes stay
 in the browser as a draft. Before another route opens, the planner asks to save or discard
-them. "More" has "New route", "Open route…", "Save a copy…" and "Discard changes".
+them.
 
 ### Compare routes
 
@@ -145,9 +146,8 @@ early stop, the row first builds the joined route.
 
 ### Stopping early
 
-A rider does not always reach the planned day end. When the rider finishes 20 km before the end of
-Day 2, Day 3 is next. The device then builds the next day itself: the rest of Day 2, then Day 3. It
-uses the same splice code as detours and visits
+When the rider finishes 20 km before the end of Day 2, Day 3 is next. The device then builds the
+next day itself: the rest of Day 2, then Day 3. It uses the same splice code as detours and visits
 ([`splice.rs`](src:firmware/obc-route/src/splice.rs)), so the navigator receives an ordinary route.
 
 <figure class="fig">

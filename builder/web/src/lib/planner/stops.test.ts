@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { groupStops, stopWindow, daysAround, evenStop, proposeNights, proposalTitle, stopCounts, stopKm, suitable } from './stops';
-import { allStay, type Stay, type Trip } from './editor';
+import { groupStops, stopWindow, daysAround, evenStop, nightWindows, proposeNights, proposalTitle, stopCounts, stopKm, suitable } from './stops';
+import { allStay, planView, type Stay, type Trip } from './editor';
+import { weekOf } from './week';
 import type { SearchPlace } from './search/types';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 
@@ -53,6 +54,17 @@ describe('stops', () => {
         expect([before.distance / total, after.distance / total]).toEqual([expect.closeTo(.4, 6), expect.closeTo(.6, 6)]);
         const stops = groupStops([place('Early', 'hotel', 'A', total * .3), place('Middle', 'campsite', 'B', total * .52)], []);
         expect(evenStop(stops, trip, line, 1)?.name).toBe('B');
+    });
+
+    it('searches and suggests only the nights of the week', () => {
+        const trip = { ...testTrip(), days: 21 }, line = testLine(trip);
+        // The nights that the page asks for with the week on days 8 to 14: those days and the night before them.
+        const nights = weekOf(planView(trip, line).itinerary, 8)!.nights, windows = nightWindows(trip, line, null, nights);
+        expect(Object.keys(windows).map(Number)).toEqual([7, 8, 9, 10, 11, 12, 13, 14]);
+        expect(Object.keys(nightWindows(trip, line, 3, nights)).map(Number)).toEqual([3, 7, 8, 9, 10, 11, 12, 13, 14]);
+        // Each searched night finds a town near the middle of its stretch; the other nights keep their even day end.
+        const town = ([from, to]: [number, number]) => groupStops([place('Inn', 'hotel', 'Town', (from + to) / 2 + .3)], []);
+        expect([...proposeNights(trip, line, night => windows[night] ? town(windows[night]) : []).keys()]).toEqual(nights);
     });
 
     it('proposes each open night at the nearest stop with a kind of place of that night, evening out the days left after it', () => {

@@ -10,6 +10,7 @@
     import RoutePreferences from './RoutePreferences.svelte';
     import SaveWindow, { type SaveAnswer, type SaveMode } from './SaveWindow.svelte';
     import Itinerary from './Itinerary.svelte';
+    import TripStrip from './TripStrip.svelte';
     import TripRow from './TripRow.svelte';
     import RouteList from './RouteList.svelte';
     import CompareScreen from './CompareScreen.svelte';
@@ -55,6 +56,7 @@
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
     import { nightKinds, nightWindows, proposal, proposeNights, suitable, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlan } from '../../lib/planner/search/plan';
+    import { containing, weekOf } from '../../lib/planner/week';
     import { placeDetails, withDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { placeSource } from '../../lib/planner/place-index';
     import { asPlace, category, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
@@ -227,6 +229,24 @@
     // The days of the trip without its suggested nights. The towns are searched around their ends, and the suggestions
     // then move them. A drag preview changes the line but not the trip, so they follow the line of the trip.
     const evenDays = $derived(planView(trip, session.line).days);
+    // The calendar days of the trip without its suggested nights: the week never reads the suggestions.
+    const plain = $derived(planView(trip, session.line).itinerary);
+    // The week in focus of a long trip, by its first calendar day. The week rests 300 ms after its last move, or after the
+    // end of a drag on the strip; the night search reads only the rested week.
+    let weekStart = $state(1);
+    let restedStart = $state(1);
+    let stripDragging = $state(false);
+    const week = $derived(weekOf(plain, weekStart));
+    $effect(() => {
+        const start = weekStart;
+        if (stripDragging) return;
+        const timer = setTimeout(() => restedStart = start, 300);
+        return () => clearTimeout(timer);
+    });
+    /** Moves the week the least that puts calendar day `day` inside it. */
+    function showInWeek(day: number | undefined) {
+        if (week && day !== undefined) weekStart = containing(plain.length, week.start, day);
+    }
     // The page of the night the rider opened replaces the day list. It stays while the route is recalculated.
     const nightPage = $derived(multi && !searching && expandedDay === null && choosingNight !== null && choosingNight < evenDays.length ? choosingNight : null);
     // An open day lists the towns of its night until that night is pinned; a night page lists its own night.
@@ -238,8 +258,9 @@
     $effect(() => {
         if (currentRoute && choosingNight !== null && choosingNight >= evenDays.length) untrack(stopChoosing);
     });
-    // Towns are searched for every night still to choose, so the ladder can suggest a place for each.
-    const stopWindows = $derived(multi ? nightWindows(trip, session.line, pickerNight) : {});
+    // Towns are searched for every night still to choose, of the rested week on a long trip, so the ladder can suggest a
+    // place for each.
+    const stopWindows = $derived(multi ? nightWindows(trip, session.line, pickerNight, weekOf(plain, restedStart)?.nights) : {});
     const routeKey = $derived(routingKey(trip));
     $effect(() => {
         const stretches = Object.values(stopWindows), route = routeKey, context = searchContext;
@@ -274,10 +295,12 @@
     // A suggested night is not a day end the rider moved.
     const days = $derived(view.days.map(day => day.split && trip.splits?.[day.number] === undefined ? { ...day, split: false } : day));
     const itinerary = $derived(view.itinerary);
+    // The stretch of the week on the shown line, with the suggested nights.
+    const weekShown = $derived(week && { ...week, from: itinerary[week.start - 1]?.from ?? 0, to: itinerary[week.end - 1]?.to ?? 1 });
     const focusedDay = $derived(multi && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const itineraryShown = $derived(multi && !!visualRoute && (!!currentRoute || routingStatus === 'Calculating route…'));
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
-    const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
+    const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ day: d.number, after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
     const queryPlan = $derived(searchPlan(trip, view));
     // The rider moves, so a position older than five minutes is left out and the search asks for a new one.
     // A getter, because time passing changes no dependency of the context.
@@ -482,6 +505,7 @@
         visibleRange = null;
         hoverProgress = null;
         part = null;
+        restedStart = weekStart = 1;
         fitPlan = true;
         nameVisits(session.trip);
     }
@@ -674,6 +698,7 @@
     /** Opens the day a point lies in and lights its row for a moment. */
     function reveal(id: string, ridingDay: number | null) {
         if (ridingDay !== null && multi) {
+            showInWeek(dayLabels[ridingDay]);
             night = ridingDay;
             expandedDay = ridingDay;
             stopChoosing();
@@ -712,6 +737,7 @@
 
     /** Opens a riding day and fits its route on the map. */
     function showDay(riding: number) {
+        showInWeek(dayLabels[riding]);
         night = riding;
         expandedDay = riding;
         stopChoosing();
@@ -723,6 +749,8 @@
 
     /** Opens a night in the day list, with its towns. */
     function openNight(number: number) {
+        // The night before the week stands at the left edge of the profile: it is one of the week's nights already.
+        if (!week?.nights.includes(number)) showInWeek(dayLabels[number]);
         expandedDay = null;
         exitSearch();
         nights.choose(number);
@@ -761,6 +789,7 @@
         selectedId = id;
         const number = id.startsWith('dayend-') ? Number(id.slice('dayend-'.length)) : trip.points.find(p => p.id === id)?.night;
         if (number && multi) {
+            showInWeek(dayLabels[number]);
             night = number;
             expandedDay = number;
             stopChoosing();
@@ -1070,8 +1099,9 @@
         try {
             const next = await applyQueryChanges(before, session.line, answer.changes, plan => session.calculate(plan, new AbortController().signal));
             if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The route changed. Review the search again.');
-            if (answer.changes.some(change => change.op === 'route')) exploreBack = undefined;
+            if (answer.changes.some(change => change.op === 'route')) { exploreBack = undefined; restedStart = weekStart = 1; }
             session.commit(next.trip, next.line);
+            showInWeek(answer.changes.find(change => change.day !== undefined)?.day);
             afterEdit(answer.description ?? 'Query applied');
             exitSearch(); clearSelection();
         } catch (error) { queryApplyError = (error as Error).message; }
@@ -1219,6 +1249,7 @@
                     {#if itineraryShown}
                         <Itinerary
                             trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nightPage} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
+                            week={weekShown} onWeek={start => weekStart = start}
                             onToggle={showDay} onOverview={showAllDays}
                             onInspect={inspectPoint}
                             onShowEnd={showDayEnd}
@@ -1331,8 +1362,11 @@
                 activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {rests} {totals}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
-                {part} onPart={next => { if (active) part = next; }} marker={mapHover} bind:surface={litSurface}
+                {part} onPart={next => { if (active) part = next; }} marker={mapHover} bind:surface={litSurface} week={weekShown}
             >
+                {#snippet tripStrip()}
+                    {#if week}<TripStrip {itinerary} {week} {theme} startDate={trip.startDate} onMove={start => weekStart = start} bind:dragging={stripDragging} />{/if}
+                {/snippet}
                 {#snippet strip(from, to, rests, onHover)}
                     {#if dataLayer?.strip}<LayerStrip layer={dataLayer} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {rests} {onHover} />{/if}
                 {/snippet}

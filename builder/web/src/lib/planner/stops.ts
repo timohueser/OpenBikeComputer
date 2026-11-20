@@ -95,11 +95,12 @@ export function stopWindow(trip: Trip, line: RoutingLine | undefined, night: num
     return window.blocked || !total ? null : [window.from * total, window.to * total];
 }
 
-/** The `stopWindow` of each night without a kept point, and of night `also`. */
-export function nightWindows(trip: Trip, line: RoutingLine | undefined, also: number | null = null): Record<number, [number, number]> {
+/** The `stopWindow` of each night without a kept point, of only those in `nights` when given, and of night `also`. */
+export function nightWindows(trip: Trip, line: RoutingLine | undefined, also: number | null = null, nights?: number[]): Record<number, [number, number]> {
     if (!line) return {};
     return Object.fromEntries(planView(trip, line).days.slice(0, -1).flatMap(day => {
-        const window = !day.pinned || day.number === also ? stopWindow(trip, line, day.number) : null;
+        const wanted = day.number === also || (!day.pinned && (!nights || nights.includes(day.number)));
+        const window = wanted ? stopWindow(trip, line, day.number) : null;
         return window ? [[day.number, window]] : [];
     }));
 }
