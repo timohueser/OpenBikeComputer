@@ -1591,7 +1591,7 @@ dependencies = [
  "embedded-io-async",
  "futures-core",
  "futures-sink",
- "heapless 0.9.3",
+ "heapless 0.9.4",
 ]
 
 [[package]]
@@ -2561,9 +2561,9 @@ dependencies = [
 
 [[package]]
 name = "heapless"
-version = "0.9.3"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+checksum = "411fdef4df93751117bd9ef8caa0e7f99c65dafec5bd84313eb8e2fdd75e32f2"
 dependencies = [
  "hash32 0.3.1",
  "stable_deref_trait",
@@ -3623,7 +3623,7 @@ name = "obc-app"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "libm",
  "obc-crc",
  "obc-data",
@@ -3646,7 +3646,7 @@ name = "obc-bake"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "image",
  "obc-data",
  "obc-dem",
@@ -3677,7 +3677,7 @@ name = "obc-bench"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "obc-app",
  "obc-display",
  "obc-formats",
@@ -3875,7 +3875,7 @@ dependencies = [
 name = "obc-formats"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "obc-ports",
 ]
 
@@ -3908,7 +3908,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-graphics",
  "getrandom 0.2.17",
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "obc-app",
  "obc-bake",
  "obc-crc",
@@ -3999,7 +3999,7 @@ dependencies = [
 name = "obc-map-scene"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "libm",
 ]
 
@@ -4099,7 +4099,7 @@ dependencies = [
  "embassy-sync",
  "embedded-hal",
  "embedded-hal-async",
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "obc-ports",
 ]
 
@@ -4111,7 +4111,7 @@ version = "0.1.0"
 name = "obc-reader"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "libm",
  "miniz_oxide",
  "obc-fixtures",
@@ -4127,7 +4127,7 @@ name = "obc-render"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "libm",
  "obc-formats",
  "obc-map-scene",
@@ -4148,7 +4148,7 @@ dependencies = [
 name = "obc-route"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "libm",
  "obc-bake",
  "obc-crc",
@@ -4200,7 +4200,7 @@ dependencies = [
  "cpal",
  "eframe",
  "embedded-graphics",
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "image",
  "obc-app",
  "obc-dfu",
@@ -4226,7 +4226,7 @@ dependencies = [
 name = "obc-storage"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "obc-crc",
  "obc-formats",
  "obc-link",
@@ -4289,7 +4289,7 @@ dependencies = [
 name = "obc-vectors"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "obc-dfu",
  "obc-elevation",
  "obc-formats",
@@ -4322,7 +4322,7 @@ name = "obcm-assemble"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
- "heapless 0.8.0",
+ "heapless 0.9.4",
  "obc-app",
  "obc-bake",
  "obc-dem",

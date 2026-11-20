@@ -109,7 +109,7 @@ planner-router-build = { path = "planner/router-build" }
 planner-router = { path = "planner/router" }
 
 embedded-graphics = "0.8"
-heapless = "0.8"
+heapless = "0.9"
 libm = { version = "0.2", default-features = false }
 miniz_oxide = { version = "0.8.9", default-features = false }
 pollster = "0.3"
