@@ -174,7 +174,11 @@ fn each_rung_gives_its_kinds_in_the_order_of_the_rungs() {
     // under it) less the shell allows, 2.5 m of the bore's 2.6 m. Under a building only: no part.
     let mut case = Case::default();
     case.tunnel(&FOOT, (0.0, 6.0), 0.0);
-    case.ways.push(("road", tags(&[("highway", "residential")]), vec![part(&[[3.0, -50.0], [3.0, 50.0]], &[503.5; 2])]));
+    case.ways.push((
+        "road",
+        tags(&[("highway", "residential")]),
+        vec![part(&[[3.0, -50.0], [3.0, 50.0]], &[503.5; 2])],
+    ));
     let placed = case.place(&site(&|_| 500.0, &[3.2], false), &mut Vec::new());
     assert_eq!(of(&placed, 0), vec![(vec![Box, Free], "underpass"); 2]);
     let ends = records(&placed, "tunnel-end");
@@ -370,9 +374,27 @@ fn the_floor_keeps_the_crown_a_slab_under_a_way_on_top_within_the_grade_and_the_
     let placed = under(&[[100.0, -50.0], [100.0, 50.0]], 500.5, None);
     assert!(self::chords(&placed).iter().all(|c| c.1 == [500.0, 500.0]));
     assert_eq!(placed.metrics["tops"].as_u64(), Some(0));
+    // A road that goes on from an opening climbs over the tube's floor near it, but it lies beyond the opening: the
+    // tube under it is its end, at its height.
+    let mut case = Case::default();
+    case.ways.push((
+        "tunnel",
+        tags(&ROAD),
+        vec![part(&[[0.0, 0.0], [100.0, 0.0], [200.0, 0.0]], &[510.0, 500.0, 490.0])],
+    ));
+    case.ways.push((
+        "road",
+        tags(&[("highway", "residential")]),
+        vec![part(&[[-50.0, 0.0], [0.0, 0.0]], &[515.0, 510.0])],
+    ));
+    let placed = case.place(&site(&|_| 400.0, &[], false), &mut Vec::new());
+    assert_eq!((placed.metrics["tops"].as_u64(), placed.metrics["tubes_lowered"].as_u64()), (Some(0), Some(0)));
     // A bridge at 507 m with a deck 2 m deep: its underside is 505 m, so the floor goes to 499.5 m. On the ground, its
     // underside would be a slab under it, and the floor would stay.
-    assert!((floor_at(&self::chords(&under(&[[100.0, -50.0], [100.0, 50.0]], 507.0, Some(2.0))), 100.0) - 499.5).abs() < 1e-9);
+    assert!(
+        (floor_at(&self::chords(&under(&[[100.0, -50.0], [100.0, 50.0]], 507.0, Some(2.0))), 100.0) - 499.5).abs()
+            < 1e-9
+    );
     assert_eq!(floor_at(&self::chords(&under(&[[100.0, -50.0], [100.0, 50.0]], 507.0, None)), 100.0), 500.0);
 }
 
