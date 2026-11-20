@@ -7,6 +7,15 @@ A clickable mock of the search that issue #3703 designs. It is a throwaway proto
 
 Open `index.html` in a browser. It needs no build and no server: `file://` works.
 
+Without a checkout, open the hosted copy of this branch:
+https://raw.githack.com/timohueser/OpenBikeComputer/prototype/explore-search/builder/web/prototype-explore-search/index.html
+
+Without a browser, read the screenshots in `screenshots/`: the start (1500 px wide), a row opened in
+place, every filter with a start point and the car on, and a phone (390 px).
+
+The mock is older than some decisions of #3703. Where the two differ, the issue wins; its section
+"Where the mock differs from the design" lists each difference.
+
 ## What is real and what is not
 
 - The hikes, car parks, lifts, places and numbers are invented, around Lucerne and Engelberg.
