@@ -38,6 +38,11 @@ triggers = ["specs/**"]
 name = "obc-trailview-features"
 triggers = ["data/trailview/kinds.json", "data/trailview/roads.json", "data/trailview/finishes.json", "data/trailview/waterways.json", "data/trailview/parts.json", "specs/vectors/trailview-features.*", "builder/web/tests/browser/trailview/fixture/**"]
 
+# The parts embed the table of the tunnel parts: Cargo cannot see it.
+[[package]]
+name = "obc-trailview-parts"
+triggers = ["data/trailview/parts.json"]
+
 # The ground plan embeds the cross-section tables, and its tests read the shared vectors, the
 # TrailView fixture and the viewer's mask reach: Cargo cannot see these inputs.
 [[package]]

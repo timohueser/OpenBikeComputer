@@ -83,7 +83,7 @@ impl Case {
         let (class_names, classes) = crate::kinds::classes(&roads).unwrap();
         let widths = widths();
         let rules =
-            Rules::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))))
+            Ladder::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))))
                 .unwrap();
         let tunnels: HashMap<u32, (Tags, Vec<Part>)> = (self.ways.iter().enumerate())
             .filter(|(_, w)| w.0 == "tunnel")
@@ -304,7 +304,7 @@ fn a_tube_record_keeps_its_two_vertices_and_its_tags_after_a_tile_cut() {
 
 #[test]
 fn every_road_class_has_one_group() {
-    let rules = Rules::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))));
+    let rules = Ladder::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))));
     let rules = rules.unwrap();
     let roads = table(include_str!("../../../../data/trailview/roads.json"));
     for class in roads.as_object().unwrap().keys() {
@@ -393,6 +393,37 @@ fn the_floor_keeps_the_crown_a_slab_under_a_way_on_top_within_the_grade_and_the_
             < 1e-9
     );
     assert_eq!(floor_at(&self::chords(&under(&[[100.0, -50.0], [100.0, 50.0]], 507.0, None)), 100.0), 500.0);
+}
+
+#[test]
+fn a_way_whose_short_reach_lies_next_to_a_curve_point_holds_the_floor_down() {
+    // A road ends beside the tube: the tube is within its reach only from 100.65 m to 100.95 m east. Both ends of that
+    // reach lie within `vertex_gap_m` of the curve point at 100 m, so neither is a vertex; that point takes the cap.
+    let reach = widths().way("road", &tags(&[("highway", "residential")]), false).outer_m()
+        + widths().way("tunnel", &tags(&ROAD), false).half_m
+        + 0.6
+        + 0.5;
+    let beside = (reach * reach - 0.15 * 0.15).sqrt();
+    let placed = under(&[[100.8, 50.0], [100.8, beside]], 504.0, None);
+    let chords = chords(&placed);
+    assert!(chords.iter().all(|c| c.0[0] != 100.65 && c.0[1] != 100.95), "{chords:?}");
+    assert_eq!(placed.metrics["tops"].as_u64(), Some(1));
+    assert!((floor_at(&chords, 100.0) - 498.0).abs() < 1e-6, "{}", floor_at(&chords, 100.0));
+}
+
+#[test]
+fn a_way_half_a_metre_beside_the_reach_cuts_nothing() {
+    // A road runs beside the tube 0.5 m outside its reach from 60 m to 140 m east, then crosses it near 141 m. Only the
+    // crossing holds the floor down, from about 134 m, with the grade on to 118 m; beside it, the floor stays.
+    let reach = widths().way("road", &tags(&[("highway", "residential")]), false).outer_m()
+        + widths().way("tunnel", &tags(&ROAD), false).half_m
+        + 0.6
+        + 0.5;
+    let placed = under(&[[60.0, reach + 0.5], [140.0, reach + 0.5], [150.0, -50.0]], 504.0, None);
+    let chords = chords(&placed);
+    assert!((floor_at(&chords, 141.4) - 498.0).abs() < 0.5, "{}", floor_at(&chords, 141.4));
+    assert!([60.0, 80.0, 100.0, 110.0].iter().all(|&e| floor_at(&chords, e) == 500.0), "{chords:?}");
+    assert!(chords.iter().filter(|c| c.0[1] <= 118.0).all(|c| c.2 == 5.0));
 }
 
 #[test]

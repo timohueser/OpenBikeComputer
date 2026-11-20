@@ -2,12 +2,19 @@
 """Gate each production wasm bridge on raw WASM and gzipped WASM plus glue.
 
 The test-device variant is measured but does not ship. Raising a cap needs a reason in the PR.
-The ground-plan budget is its recorded CI size plus the owner's margin; both parts print.
+The ground-plan and parts budgets are their recorded CI sizes plus the owner's margin; both parts print.
 """
 
 from __future__ import annotations
 
-GOVERNS = ['builder/wasm/**', 'host/obcm-assemble/**', 'builder/ground-plan-wasm/**', 'host/obc-ground-plan/**']
+GOVERNS = [
+    'builder/wasm/**',
+    'host/obcm-assemble/**',
+    'builder/ground-plan-wasm/**',
+    'host/obc-ground-plan/**',
+    'builder/trailview-parts-wasm/**',
+    'host/obc-trailview-parts/**',
+]
 RULE = 'A wasm bridge stays inside its recorded gzip and raw size budgets.'
 
 import argparse
@@ -35,14 +42,23 @@ GROUND_PLAN_MARGIN = {
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * GROUND_PLAN_MEASURED["raw_wasm"] / GROUND_PLAN_MEASURED["gzipped"]),
 }
 
+# Measured on the build of the tunnel parts' arch and tube with wasm-pack 0.15.0 and rustc 1.99.0. The margin is
+# the ground plan's, raw by the same fraction.
+PARTS_MEASURED = {"gzipped": 120_782, "raw_wasm": 274_409}
+PARTS_MARGIN = {
+    "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
+    "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * PARTS_MEASURED["raw_wasm"] / PARTS_MEASURED["gzipped"]),
+}
+
 BUDGETS = {
     # Preserve the sum of the conversion, assembly and preview caps. Consolidation does not
     # increase the permitted production download or raw WASM size.
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
     "ground-plan": {key: GROUND_PLAN_MEASURED[key] + GROUND_PLAN_MARGIN[key] for key in GROUND_PLAN_MEASURED},
+    "parts": {key: PARTS_MEASURED[key] + PARTS_MARGIN[key] for key in PARTS_MEASURED},
 }
 # A budget made of a measured size and a margin prints both, so a reviewer sees growth inside the margin.
-BUDGET_PARTS = {"ground-plan": (GROUND_PLAN_MEASURED, GROUND_PLAN_MARGIN)}
+BUDGET_PARTS = {"ground-plan": (GROUND_PLAN_MEASURED, GROUND_PLAN_MARGIN), "parts": (PARTS_MEASURED, PARTS_MARGIN)}
 
 ADVICE = {
     "builder": (
@@ -50,12 +66,14 @@ ADVICE = {
         " --target wasm32-unknown-unknown. GEOS, obc-pack and the test device must stay out."
     ),
     "ground-plan": "Check the dependency graph with cargo tree -p obc-ground-plan-bridge --target wasm32-unknown-unknown.",
+    "parts": "Check the dependency graph with cargo tree -p obc-trailview-parts-bridge --target wasm32-unknown-unknown.",
 }
 
 PKG_DIRS = {
     "builder": Path("builder/web/src/lib/core/pkg"),
     "flat-device": Path("builder/web/test-support/flat-device/pkg"),
     "ground-plan": Path("builder/web/src/lib/trailview/plan/pkg"),
+    "parts": Path("builder/web/src/lib/trailview/structures/pkg"),
 }
 UNBUDGETED = {"flat-device"}
 

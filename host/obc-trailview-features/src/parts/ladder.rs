@@ -11,27 +11,8 @@ use super::floor::{self, Floor};
 use super::measure::{self, Ask, Site};
 use super::{along_dir, counts, distance, first_way_m, left_of, open_ends, Input, Opening, Tube};
 
-/// A kind of part at an opening.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Kind {
-    Pair,
-    Rock,
-    Arch,
-    Box,
-    Free,
-}
-
-impl Kind {
-    pub fn name(self) -> &'static str {
-        match self {
-            Kind::Pair => "pair",
-            Kind::Rock => "rock",
-            Kind::Arch => "arch",
-            Kind::Box => "box",
-            Kind::Free => "free",
-        }
-    }
-}
+/// The kind of part at an opening.
+pub use obc_trailview_parts::Part as Kind;
 
 /// The numbers of a drawn opening (Plan 8 of the design): metres, `left` and `right` per metre out from the frame's
 /// outer edge, and in a pair the mate's opening and the metres to its axis to the left; `height` is the inside height
