@@ -206,13 +206,6 @@
     <!-- Scrolls when the strips do not fit, so they never cover the line below the drawer. -->
     <div class="body" class:more style:height={`${bodyHeight}px`} bind:this={body} onscroll={measure}><div class="content" bind:this={content}>
     {#if !known.length}<p class="unavailable">Elevation unavailable</p>{/if}
-    {#if restColumns.length}
-        <div class="rests" aria-hidden="true">
-            {#each restColumns as rest, i (i)}
-                <div class="rest" style:left={axisRest(axis, i)} style:width={axisColumn(axis)}><Icon name="pause" size={15} /><strong>{rest.name || 'Rest'}</strong><span>{rest.town}</span></div>
-            {/each}
-        </div>
-    {/if}
     {#snippet profile()}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="plot" bind:this={plot} onpointermove={track} onpointerup={release} onpointercancel={() => drag = null}>
@@ -248,6 +241,9 @@
                 <line x1={day.to * 1000} x2={day.to * 1000} y1="0" y2="112" class:pinned={day.pinned} />
             {/each}
         </svg>
+        {/each}
+        {#each restColumns as rest, i (i)}
+            <div class="rest" aria-hidden="true" style:left={axisRest(axis, i)} style:width={axisColumn(axis)}><Icon name="pause" size={15} /><strong>{rest.name || 'Rest'}</strong><span>{rest.town}</span></div>
         {/each}
         {#each handles as { day, left } (day.number)}
             <button
@@ -388,16 +384,12 @@
         stroke: var(--ink);
         stroke-dasharray: none;
     }
-    .rests {
-        position: absolute;
-        inset: 0 12px 0 48px;
-        pointer-events: none;
-    }
     .rest {
         position: absolute;
         z-index: 1;
         top: 0;
-        bottom: 8px;
+        bottom: 0;
+        pointer-events: none;
         box-sizing: border-box;
         overflow: hidden;
         display: flex;

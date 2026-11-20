@@ -456,6 +456,10 @@
             calloutPopup = mapCallout(map, popupContent, { offset: calloutOffset,
                 free: () => ({ left: 16, top: 16, right: container.clientWidth - controlsWidth, bottom: container.clientHeight - bottomClear }) });
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
+            // The map opens inside the region; after that, it may show one region size around it, so that "Show whole route"
+            // fits a trip that fills the region.
+            const [west, south, east, north] = config.bounds, width = east - west, height = north - south;
+            map.setMaxBounds([[Math.max(-180, west - width), Math.max(-85, south - height)], [Math.min(180, east + width), Math.min(85, north + height)]]);
             fitInitialRoute();
             map.addControl(new ClosedAttribution(), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");

@@ -395,8 +395,11 @@ describe('trip timeline', () => {
         await tick();
         button('Whole route').click(); await tick();
 
-        // profile-axis.test.ts measures where the column sits; here it is the one column, of the night after day 2.
-        expect([...document.querySelectorAll('.rest')].map(rest => rest.textContent)).toEqual(['Spa dayOlten']);
+        // profile-axis.test.ts measures where the column sits; here it is the one column, of the night after day 2. It
+        // stands over the plot only, and the rest night gets no badge.
+        expect([...document.querySelectorAll('.plot .rest')].map(rest => rest.textContent)).toEqual(['Spa dayOlten']);
+        expect(document.querySelectorAll('.rest')).toHaveLength(1);
+        expect([...document.querySelectorAll('.plot .handle')].map(handle => handle.textContent)).toEqual(['1', '2']);
     });
 });
 
