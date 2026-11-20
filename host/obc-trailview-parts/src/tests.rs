@@ -128,7 +128,7 @@ fn boxes_fit(ends: &[End], chords: &[Chord]) -> (usize, usize) {
         let list = boxes::boxes(&net, e);
         let inside = |p: [f64; 3]| list.iter().map(|b| outside(b, p)).fold(f64::INFINITY, f64::min) <= tol;
         let reach = boxes::reach(&net, e).boxes;
-        let foot = ends[e].z + ends[e].foot;
+        let foot = boxes::foot(&net, e);
         let (c0, _) = net.opening(e).unwrap();
         let first = &net.chords[c0];
         let sp = tube::spring(&net, first.section, first.height);
@@ -398,7 +398,7 @@ fn open_edges(mesh: &Mesh) -> (Edges, Edges) {
 fn not_closed(ends: &[End], chords: &[Chord]) -> (Edges, Edges) {
     let rules = Rules::embedded();
     let net = Net::new(ends, chords, rules);
-    let feet: Vec<f64> = ends.iter().map(|e| e.z + e.foot).collect();
+    let feet: Vec<f64> = (0..ends.len()).filter(|&e| net.built_end(e)).map(|e| boxes::foot(&net, e)).collect();
     // Per end whose shell a face closes, the station of that face.
     let faces: Vec<mesh::Station> = (0..ends.len())
         .filter(|&e| net.built_end(e))
@@ -483,5 +483,5 @@ fn a_part_is_closed_but_at_its_foot() {
         "{r0:?} {r1:?}"
     );
     assert_eq!((r0.then.lower, r1.then.lower), (Some((4.6, Section::Round)), None));
-    assert_eq!((r0.then.foot, r1.then.foot), (Some(ends[1].z + ends[1].foot), Some(ends[0].z + ends[0].foot)));
+    assert_eq!((r0.then.foot, r1.then.foot), (Some(boxes::foot(&net, 1)), Some(boxes::foot(&net, 0))));
 }

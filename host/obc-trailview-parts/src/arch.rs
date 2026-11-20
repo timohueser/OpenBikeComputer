@@ -46,8 +46,7 @@ fn top(end: &crate::End, edge: f64, t: f64) -> f64 {
 }
 
 /// The faces of the arch at end e: its head wall, the sill, the reveal and the frame round the opening, the dark face
-/// in it, and the shell of its collar. The head wall and the shell go down to one level, `foot` under the opening's
-/// floor; the sill lies `lift_m` under the floor, under the road of the tube and of the ground. Faces that meet share
+/// in it, and the shell of its collar. The head wall and the shell go down to one level (`boxes::foot`); the sill lies `lift_m` under the floor, under the road of the tube and of the ground. Faces that meet share
 /// the corners of their edges.
 pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
     let end = &net.ends[e];
@@ -55,7 +54,7 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
     let chord = &net.chords[c];
     let look = &net.rules.looks[&end.look];
     let (design, bake) = (&net.rules.design, &net.rules.ladder.bake);
-    let (n, sill, foot) = (design.arch_segments, -design.lift_m, end.z + end.foot);
+    let (n, sill, foot) = (design.arch_segments, -design.lift_m, boxes::foot(net, e));
     let (half, edge) = (chord.half, chord.half + bake.shell_m);
     let sp = spring(net, chord.section, chord.height);
     let pieces = tube::floor_pieces(net, chord);

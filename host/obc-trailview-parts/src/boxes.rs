@@ -78,8 +78,18 @@ pub fn reach(net: &Net, e: usize) -> Reach {
     let Some(mid) = mid else { return alone };
     let (here, there) = (&net.chords[walk[mid - 1].0], &net.chords[walk[mid].0]);
     let lower = (there.height < here.height && there.section == here.section).then_some((there.height, there.section));
-    let foot = Some(net.ends[o].z + net.ends[o].foot);
+    let foot = Some(foot(net, o));
     Reach { boxes: own, shell: at[mid], closed: false, then: Meets { foot, lower } }
+}
+
+/// The level that end e's head wall and shell go down to, a world height: its `foot`, or `foot_m` under the lowest
+/// floor of the chords that its part runs over, the lower.
+pub fn foot(net: &Net, e: usize) -> f64 {
+    let end = &net.ends[e];
+    let own = at_or_past(&stops(net, e), need(net, e));
+    let walk = net.walk(e, own);
+    let low = walk.iter().map(|&(c, ..)| net.chords[c].a[2].min(net.chords[c].b[2])).fold(f64::INFINITY, f64::min);
+    (end.z + end.foot).min(low - net.rules.ladder.bake.foot_m)
 }
 
 /// The slope of a plane through a point, in the vertical plane of station `ring` (across it), as the slope of a box
@@ -186,18 +196,19 @@ pub fn boxes(net: &Net, e: usize) -> Vec<[f64; BOX]> {
         let l = libm::hypot(d[0], d[1]).max(f64::MIN_POSITIVE);
         let (u, depth) = ([d[0] / l, d[1] / l], l * m);
         let rise = (b.z - a.z) / depth.max(f64::MIN_POSITIVE);
-        // The floors of the vertices between against the piece's line.
-        let off = (w[0] + 1..w[1]).map(|k| {
-            let q = &axis[k];
+        // The floors of the vertices between against the piece's line: the roof takes their middle. A ring that is not
+        // square to the piece meets the floor's line farther along at its side, so the floor of the room lies under
+        // that line by the rise there: the box's floor goes down by that too.
+        let tilt = |ring: &Station| rise.abs() * half * slope(u, ring).abs();
+        let (mut low, mut high, mut under) = (0.0f64, 0.0f64, tilt(&a.ring).max(tilt(&b.ring)));
+        for q in &axis[w[0] + 1..w[1]] {
             let along = ((q.p[0] - a.p[0]) * u[0] + (q.p[1] - a.p[1]) * u[1]) * m;
-            q.z - (a.z + rise * along)
-        });
-        let (low, high) = off.fold((0.0f64, 0.0f64), |(lo, hi), x| (lo.min(x), hi.max(x)));
+            let off = q.z - (a.z + rise * along);
+            (low, high, under) = (low.min(off), high.max(off), under.max(tilt(&q.ring) - off));
+        }
         let mid = a.z + (low + high) / 2.0;
-        // A ring that is not square to the piece tilts the floor across it: the floor of the room lies that much
-        // under the piece's line at its side.
         let (start, end) = (slope(u, &a.ring), slope(u, &b.ring));
-        let low = low - rise.abs() * half * start.abs().max(end.abs());
+        let low = low.min(-under);
         let sp = spring(net, section, h);
         let (roof, spring_at) = roof_of(mid, h, sp, section, wall);
         out.push([a.p[0], a.p[1], u[0], u[1], depth, half + wall, roof, a.z + low + lift, rise, spring_at, start, end]);
