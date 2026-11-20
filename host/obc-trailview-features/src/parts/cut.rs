@@ -1,39 +1,41 @@
 //! The cut of each built end: where the ground of the ground plan, with the stretches to the openings of the built
 //! chains on the ground, lies inside a box of its part. The device's ground plan leaves a hole in its mesh there.
+//!
+//! The rings are simple and apart by construction: a point counts as inside the boxes only deeper than `EPS_M`, so a
+//! value of about 0 on a grid line is outside; each crossing lies on its grid edge at whole centimetres, at least a
+//! centimetre from both ends, so no two crossings meet; and a ring leaves out only a point whose removal moves no edge
+//! onto another.
 
 use std::collections::HashMap;
 
 use obc_ground_plan::graph::OpenEnd;
-use obc_trailview_parts::{end_boxes, metres_per_unit, outside, Chord, End, Rules, BOX};
+use obc_trailview_parts::{end_boxes, metres_per_unit, outside, outside_plan, outside_wall, Chord, End, Rules, BOX};
 use serde_json::{json, Value};
 
 use super::ladder::Measure;
 use super::measure::Ask;
 use super::num;
+use crate::tiles::{frame_point, height_code};
 use crate::{Part, Tags};
 
-/// The step of the grid of ground points over the boxes (m).
-const STEP_M: f64 = 0.5;
+/// The step of the grid of ground points over the boxes, in centimetres.
+const STEP_CM: i64 = 50;
+const STEP_M: f64 = STEP_CM as f64 / 100.0;
 /// The grid reads the ground where a point lies this near a box in plan (m); farther, it is outside every box.
 const NEAR_M: f64 = 0.75;
-/// A ring of the cut keeps a point that lies farther than this from the line of its neighbours (m).
-const KEEP_M: f64 = 0.02;
-/// World units per unit of [0, 1].
+/// A point counts as inside the boxes where it lies deeper than this (m).
+const EPS_M: f64 = 1e-6;
+/// A ring leaves out a point that lies nearer than this to the line of its neighbours (cm).
+const KEEP_CM: f64 = 2.0;
+/// The least margin of a box to the faces of its part (m): ground that lies no deeper than this in the sides and the
+/// roof of the boxes lies in the part's wall, so a ring of only such ground goes.
+const WALL_M: f64 = 0.11;
+/// World units per unit of [0, 1], and frame units of the ground plan per world unit.
 const WORLD: f64 = (1u64 << 30) as f64;
-/// The tiles round a point of a part to whole units of zoom 13, and a height to centimetres.
-const TILE_UNITS: f64 = 8192.0 * 16384.0;
+const FRAME: f64 = 16.0;
 
-/// A point of a part as the tiles hold it, in world units.
-fn held(p: [f64; 2]) -> [f64; 2] {
-    p.map(|c| (c * TILE_UNITS).round() / TILE_UNITS * WORLD)
-}
-
-fn cm(z: f64) -> f64 {
-    (z * 100.0).round() / 100.0
-}
-
-/// A ring of the cut: points in metres in along the opening's heading and to the left of it.
-type Ring = Vec<[f64; 2]>;
+/// A ring of the cut: points in centimetres in along the opening's heading and to the left of it.
+type Ring = Vec<[i64; 2]>;
 
 /// Adds the tag `cut` to each `tunnel-end` of a built chain whose ground lies in its part, with the stretches of
 /// `opened` on the ground; gives its counts.
@@ -48,9 +50,10 @@ pub(crate) fn add(
     let mut chords = Vec::new();
     let mut refused = 0;
     for (i, (kind, tags, part)) in features.iter().enumerate() {
-        let z = |k: usize| part.z.as_ref().map_or(0.0, |z| cm(z[k]));
+        let held = |k: usize| frame_point(std::slice::from_ref(part), 0, k).map(|v| v as f64 / FRAME);
+        let z = |k: usize| part.z.as_ref().map_or(0.0, |z| height_code(z[k]) as f64 / 100.0);
         match *kind {
-            "tunnel-end" => match End::from_tags(held(part.points[0]), z(0), tags, rules) {
+            "tunnel-end" => match End::from_tags(held(0), z(0), tags, rules) {
                 Ok(e) => {
                     ends.push(e);
                     at.push(i);
@@ -58,7 +61,7 @@ pub(crate) fn add(
                 Err(_) => refused += 1,
             },
             "tunnel-tube" => {
-                let (a, b) = (held(part.points[0]), held(part.points[1]));
+                let (a, b) = (held(0), held(1));
                 match Chord::from_tags([a[0], a[1], z(0)], [b[0], b[1], z(1)], tags, rules) {
                     Ok(c) => chords.push(c),
                     Err(_) => refused += 1,
@@ -68,8 +71,6 @@ pub(crate) fn add(
         }
     }
     let boxes = end_boxes(&ends, &chords, rules);
-    // Per end with boxes, its grid: the points whose ground it reads, and the least distance in plan to a box of the
-    // others.
     let grids: Vec<(usize, Grid)> =
         (0..ends.len()).filter(|&e| !boxes[e].is_empty()).map(|e| (e, Grid::new(&ends[e], &boxes[e]))).collect();
     let asks: Vec<Ask> = (grids.iter())
@@ -80,31 +81,36 @@ pub(crate) fn add(
         })
         .collect();
     let (sites, cells) = if asks.is_empty() { (Vec::new(), 0) } else { measure(&asks, opened) };
-    let (mut cut, mut rings_n, mut points_n, mut unknown) = (0, 0, 0, 0);
+    let (mut cut, mut rings_n, mut points_n, mut unknown, mut walls, mut invalid) = (0, 0, 0, 0, 0, 0);
     for ((e, mut g), site) in grids.into_iter().zip(sites) {
         for (&(k, p), h) in g.reads.iter().zip(&site.points) {
-            g.value[k] = match h {
-                Some(h) => boxes[e].iter().map(|b| outside(b, [p[0], p[1], *h])).fold(f64::INFINITY, f64::min),
-                None => {
-                    unknown += 1;
-                    g.value[k].max(STEP_M)
-                }
+            let Some(h) = h else {
+                unknown += 1;
+                g.value[k] = g.value[k].max(STEP_M);
+                continue;
             };
+            let q = [p[0], p[1], *h];
+            let best = boxes[e].iter().min_by(|a, b| outside(a, q).total_cmp(&outside(b, q))).unwrap();
+            (g.value[k], g.wall[k]) = (outside(best, q), -outside_wall(best, q));
         }
-        let rings = g.rings();
+        let (rings, dropped) = g.rings();
+        walls += dropped;
+        invalid += usize::from(!simple(&rings));
         if rings.is_empty() {
             continue;
         }
         cut += 1;
         rings_n += rings.len();
         points_n += rings.iter().map(Vec::len).sum::<usize>();
+        let cm = |v: i64| num(v as f64 / 100.0);
         let text: Vec<String> = (rings.iter())
-            .map(|r| r.iter().map(|p| format!("{} {}", num(p[0]), num(p[1]))).collect::<Vec<_>>().join(","))
+            .map(|r| r.iter().map(|p| format!("{} {}", cm(p[0]), cm(p[1]))).collect::<Vec<_>>().join(","))
             .collect();
         features[at[e]].1.insert("cut".into(), text.join(";"));
     }
     json!({ "cut_ends": cut, "cut_rings": rings_n, "cut_points": points_n, "cut_cells": cells,
-            "cut_unknown_ground": unknown, "cut_records_refused": refused })
+            "cut_unknown_ground": unknown, "cut_records_refused": refused, "cut_rings_in_the_wall": walls,
+            "cut_invalid_rings": invalid })
 }
 
 /// A world point in [0, 1], as the measure reads it.
@@ -112,12 +118,15 @@ fn world01(p: [f64; 2]) -> [f64; 2] {
     [p[0] / WORLD, p[1] / WORLD]
 }
 
-/// The grid of an end in the frame of its opening, `STEP_M` apart over its boxes and `NEAR_M` round them: per point
-/// its value, how far its ground lies outside the boxes (negative inside); the points whose ground it reads.
+/// The grid of an end in the frame of its opening, `STEP_CM` apart over its boxes and `NEAR_M` round them: per point
+/// how far its ground lies outside the boxes (negative inside) and how deep it lies inside the sides and the roof of
+/// the box that holds it best; the points whose ground it reads.
 struct Grid {
-    origin: [f64; 2],
+    /// The first grid point, in centimetres in the frame of the opening.
+    origin: [i64; 2],
     n: [usize; 2],
     value: Vec<f64>,
+    wall: Vec<f64>,
     reads: Vec<(usize, [f64; 2])>,
     /// The end's point, unit way in and its left, and metres per world unit.
     at: [f64; 2],
@@ -150,14 +159,16 @@ impl Grid {
                 }
             }
         }
-        let origin = lo.map(|l| ((l - NEAR_M) / STEP_M).floor() * STEP_M);
-        let n = [0, 1].map(|k| ((hi[k] + NEAR_M - origin[k]) / STEP_M).ceil() as usize + 1);
-        let mut g = Grid { origin, n, value: vec![0.0; n[0] * n[1]], reads: Vec::new(), at: end.at, into, left, m };
+        let origin = lo.map(|l| ((l - NEAR_M) / STEP_M).floor() as i64 * STEP_CM);
+        let n = [0, 1].map(|k| ((hi[k] + NEAR_M - origin[k] as f64 / 100.0) / STEP_M).ceil() as usize + 1);
+        let cells = n[0] * n[1];
+        let (value, wall) = (vec![0.0; cells], vec![0.0; cells]);
+        let mut g = Grid { origin, n, value, wall, reads: Vec::new(), at: end.at, into, left, m };
         for j in 0..n[1] {
             for i in 0..n[0] {
-                let p = g.world(i as f64, j as f64);
-                // In plan alone: the least of the plan terms of `outside`, at a height inside every box.
-                let plan = boxes.iter().map(|b| plan_outside(b, p)).fold(f64::INFINITY, f64::min);
+                let p = g.world(i, j);
+                // In plan alone: a lower bound of `outside`.
+                let plan = boxes.iter().map(|b| outside_plan(b, p)).fold(f64::INFINITY, f64::min);
                 g.value[j * n[0] + i] = plan;
                 if plan <= NEAR_M {
                     g.reads.push((j * n[0] + i, p));
@@ -167,25 +178,35 @@ impl Grid {
         g
     }
 
-    /// The world point of grid place (i, j), which may lie between grid points.
-    fn world(&self, i: f64, j: f64) -> [f64; 2] {
-        let (u, v) = (self.origin[0] + i * STEP_M, self.origin[1] + j * STEP_M);
+    /// Grid point (i, j) in centimetres in the frame of the opening.
+    fn place(&self, i: usize, j: usize) -> [i64; 2] {
+        [self.origin[0] + i as i64 * STEP_CM, self.origin[1] + j as i64 * STEP_CM]
+    }
+
+    /// The world point of grid point (i, j).
+    fn world(&self, i: usize, j: usize) -> [f64; 2] {
+        let [u, v] = self.place(i, j).map(|c| c as f64 / 100.0);
         let d = [self.into[0] * u + self.left[0] * v, self.into[1] * u + self.left[1] * v];
         [self.at[0] + d[0] / self.m, self.at[1] + d[1] / self.m]
     }
 
-    /// The rings where the value is under 0, by marching squares with the crossings between the grid points at the
-    /// share of their values; the cut on the left of each ring's way. A cell whose diagonal corners alone are inside
-    /// joins them where the mean of its corners is inside.
-    fn rings(&self) -> Vec<Ring> {
+    /// The rings of the cut, and the count of rings that go because all their ground lies in the wall. Marching
+    /// squares where the value is under −`EPS_M`, the cut on the left of each ring's way; a cell whose diagonal corners
+    /// alone are inside joins them where the mean of its corners is inside. A crossing lies at the share of the values
+    /// on its edge, in whole centimetres from 1 to `STEP_CM` − 1.
+    fn rings(&self) -> (Vec<Ring>, usize) {
         let [nu, nv] = self.n;
-        let v = |i: usize, j: usize| self.value[j * nu + i];
+        let v = |i: usize, j: usize| self.value[j * nu + i] + EPS_M;
         // An edge of the grid: from (i, j) along u (0) or along v (1).
         let point = |(i, j, axis): (usize, usize, usize)| {
             let (a, b) = if axis == 0 { (v(i, j), v(i + 1, j)) } else { (v(i, j), v(i, j + 1)) };
-            let t = a / (a - b);
-            let (u, w) = if axis == 0 { (i as f64 + t, j as f64) } else { (i as f64, j as f64 + t) };
-            [self.origin[0] + u * STEP_M, self.origin[1] + w * STEP_M]
+            let t = ((a / (a - b) * STEP_CM as f64).round() as i64).clamp(1, STEP_CM - 1);
+            let base = self.place(i, j);
+            if axis == 0 {
+                [base[0] + t, base[1]]
+            } else {
+                [base[0], base[1] + t]
+            }
         };
         let mut next: HashMap<(usize, usize, usize), (usize, usize, usize)> = HashMap::new();
         for j in 0..nv - 1 {
@@ -197,9 +218,6 @@ impl Grid {
                 // Each crossing: an exit where the way round leaves the inside, else an entry.
                 let crossings: Vec<(usize, bool)> =
                     (0..4).filter(|&k| inside[k] != inside[(k + 1) % 4]).map(|k| (k, inside[k])).collect();
-                if crossings.is_empty() {
-                    continue;
-                }
                 let joined = crossings.len() == 4 && corners.iter().sum::<f64>() < 0.0;
                 for (x, &(k, exit)) in crossings.iter().enumerate() {
                     if !exit {
@@ -212,7 +230,7 @@ impl Grid {
                 }
             }
         }
-        let mut out = Vec::new();
+        let mut rings = Vec::new();
         while let Some(&start) = next.keys().min() {
             let mut ring = Vec::new();
             let mut at = start;
@@ -220,54 +238,204 @@ impl Grid {
                 ring.push(point(at));
                 at = to;
             }
-            out.push(thin(ring));
+            rings.push(ring);
         }
-        out.retain(|r: &Ring| r.len() >= 3);
-        out
+        // An outer ring turns left (the cut on its left), a hole right. An outer ring goes, with its holes, where no
+        // ground inside it lies deeper than `WALL_M` in the sides and the roof of the boxes.
+        let outer: Vec<bool> = rings.iter().map(|r| area2(r) > 0).collect();
+        let mut keep = vec![true; rings.len()];
+        let mut dropped = 0;
+        for o in (0..rings.len()).filter(|&o| outer[o]) {
+            let deepest = (0..nv)
+                .flat_map(|j| (0..nu).map(move |i| (i, j)))
+                .filter(|&(i, j)| v(i, j) < 0.0 && holds(&rings[o], self.place(i, j)))
+                .map(|(i, j)| self.wall[j * nu + i])
+                .fold(f64::NEG_INFINITY, f64::max);
+            if deepest < WALL_M {
+                keep[o] = false;
+                dropped += 1;
+                for h in (0..rings.len()).filter(|&h| !outer[h] && holds(&rings[o], rings[h][0])) {
+                    keep[h] = false;
+                }
+            }
+        }
+        let mut rings: Vec<Ring> = rings.into_iter().zip(keep).filter(|(_, k)| *k).map(|(r, _)| r).collect();
+        thin(&mut rings);
+        (rings, dropped)
     }
 }
 
-/// The plan terms of `outside`: how far a world point lies outside a box in plan.
-fn plan_outside(b: &[f64; BOX], p: [f64; 2]) -> f64 {
-    let m = metres_per_unit(b[1]);
-    let d = [(p[0] - b[0]) * m, (p[1] - b[1]) * m];
-    let (along, left) = (d[0] * b[2] + d[1] * b[3], d[0] * b[3] - d[1] * b[2]);
-    (b[10] * left - along).max(along - b[4] - b[11] * left).max(left.abs() - b[5])
+/// Twice the signed area of a ring, positive where it turns left.
+fn area2(r: &Ring) -> i128 {
+    (0..r.len()).map(|k| cross(r[k], r[(k + 1) % r.len()])).sum()
 }
 
-/// A ring with the points that keep it within `KEEP_M` of the ring of all its points (Douglas-Peucker on its two halves
-/// from its first point and the point farthest from it).
-fn thin(ring: Ring) -> Ring {
-    fn keep(ring: &Ring, a: usize, b: usize, out: &mut Vec<usize>) {
-        let (p, q) = (ring[a], ring[b % ring.len()]);
-        let d = [q[0] - p[0], q[1] - p[1]];
-        let l = f64::hypot(d[0], d[1]);
-        let off = |k: usize| {
-            let r = ring[k];
-            if l > 0.0 {
-                ((r[0] - p[0]) * d[1] - (r[1] - p[1]) * d[0]).abs() / l
+fn cross(a: [i64; 2], b: [i64; 2]) -> i128 {
+    i128::from(a[0]) * i128::from(b[1]) - i128::from(a[1]) * i128::from(b[0])
+}
+
+/// The side of c of the line from a to b: positive left, 0 on it.
+fn turn(a: [i64; 2], b: [i64; 2], c: [i64; 2]) -> i128 {
+    cross([b[0] - a[0], b[1] - a[1]], [c[0] - a[0], c[1] - a[1]])
+}
+
+/// Whether c lies in the box of the segment from a to b.
+fn within(a: [i64; 2], b: [i64; 2], c: [i64; 2]) -> bool {
+    (a[0].min(b[0])..=a[0].max(b[0])).contains(&c[0]) && (a[1].min(b[1])..=a[1].max(b[1])).contains(&c[1])
+}
+
+/// Whether a ring holds a point, even-odd; a point on an edge counts as held.
+fn holds(r: &Ring, p: [i64; 2]) -> bool {
+    let mut odd = false;
+    for k in 0..r.len() {
+        let (a, b) = (r[k], r[(k + 1) % r.len()]);
+        if turn(a, b, p) == 0 && within(a, b, p) {
+            return true;
+        }
+        if (a[1] > p[1]) != (b[1] > p[1]) && (turn(a, b, p) > 0) == (b[1] > a[1]) {
+            odd = !odd;
+        }
+    }
+    odd
+}
+
+/// Whether two closed segments meet.
+fn meet(a: [i64; 2], b: [i64; 2], c: [i64; 2], d: [i64; 2]) -> bool {
+    let (d1, d2, d3, d4) = (turn(c, d, a), turn(c, d, b), turn(a, b, c), turn(a, b, d));
+    (d1.signum() * d2.signum() < 0 && d3.signum() * d4.signum() < 0)
+        || (d1 == 0 && within(c, d, a))
+        || (d2 == 0 && within(c, d, b))
+        || (d3 == 0 && within(a, b, c))
+        || (d4 == 0 && within(a, b, d))
+}
+
+/// Whether the way p → q → o turns back along one line at q.
+fn folds(p: [i64; 2], q: [i64; 2], o: [i64; 2]) -> bool {
+    turn(p, q, o) == 0 && (p[0] - q[0]) * (o[0] - q[0]) + (p[1] - q[1]) * (o[1] - q[1]) > 0
+}
+
+/// The edges of rings: per edge its ring, its first point's place, and its two ends.
+fn edges(rings: &[Ring]) -> Vec<(usize, usize, [i64; 2], [i64; 2])> {
+    (rings.iter().enumerate())
+        .flat_map(|(r, ring)| (0..ring.len()).map(move |k| (r, k, ring[k], ring[(k + 1) % ring.len()])))
+        .collect()
+}
+
+/// Whether rings are simple and apart: each has at least 3 points and an area, two edges of one ring that follow each
+/// other meet only at their shared point, and no other two edges meet.
+fn simple(rings: &[Ring]) -> bool {
+    if rings.iter().any(|r| r.len() < 3 || area2(r) == 0) {
+        return false;
+    }
+    let all = edges(rings);
+    all.iter().enumerate().all(|(x, &(r, k, a, b))| {
+        all[x + 1..].iter().all(|&(s, l, c, d)| {
+            let n = rings[r].len();
+            if r == s && l == (k + 1) % n {
+                !folds(a, b, d)
+            } else if r == s && k == (l + 1) % n {
+                !folds(c, d, b)
             } else {
-                f64::hypot(r[0] - p[0], r[1] - p[1])
+                !meet(a, b, c, d)
+            }
+        })
+    })
+}
+
+/// Leaves out of the rings the points within `KEEP_CM` of the line of their neighbours, one at a time, the nearest
+/// first, while each removal keeps the rings simple and apart (`removable`).
+fn thin(rings: &mut [Ring]) {
+    loop {
+        let mut best: Option<(f64, usize, usize)> = None;
+        for (r, ring) in rings.iter().enumerate() {
+            let n = ring.len();
+            for k in 0..n {
+                let (a, p, b) = (ring[(k + n - 1) % n], ring[k], ring[(k + 1) % n]);
+                let l = ((b[0] - a[0]) as f64).hypot((b[1] - a[1]) as f64);
+                let off = if l > 0.0 { turn(a, b, p).abs() as f64 / l } else { f64::INFINITY };
+                if off < KEEP_CM && best.is_none_or(|x| off < x.0) && removable(rings, r, k) {
+                    best = Some((off, r, k));
+                }
+            }
+        }
+        let Some((_, r, k)) = best else { return };
+        rings[r].remove(k);
+    }
+}
+
+/// Whether point k of ring r can go: the ring keeps more than 3 points and its turn, the triangle that goes holds no
+/// other point, and the new edge from its neighbour before to its neighbour after meets no other edge but the two
+/// beside it, at its ends, and folds onto neither.
+fn removable(rings: &[Ring], r: usize, k: usize) -> bool {
+    let ring = &rings[r];
+    let n = ring.len();
+    let (i, j) = ((k + n - 1) % n, (k + 1) % n);
+    let (a, p, b) = (ring[i], ring[k], ring[j]);
+    let mut kept = ring.clone();
+    kept.remove(k);
+    if n <= 3 || area2(&kept) == 0 || (area2(&kept) > 0) != (area2(ring) > 0) {
+        return false;
+    }
+    let triangle = vec![a, p, b];
+    let others = (rings.iter().enumerate())
+        .flat_map(|(s, o)| o.iter().enumerate().map(move |(l, &q)| (s, l, q)))
+        .filter(|&(s, l, _)| !(s == r && [i, k, j].contains(&l)));
+    if area2(&triangle) != 0 && others.into_iter().any(|(_, _, q)| holds(&triangle, q)) {
+        return false;
+    }
+    let before = (i + n - 1) % n;
+    edges(rings).into_iter().all(|(s, l, c, d)| match (s == r, l) {
+        (true, l) if l == i || l == k => true,
+        (true, l) if l == before => !folds(c, a, b),
+        (true, l) if l == j => !folds(a, b, d),
+        _ => !meet(a, b, c, d),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A grid of `n` points along u and v with a value from the centimetres of each, its first point at the origin.
+    fn grid(n: [usize; 2], value: impl Fn(i64, i64) -> f64) -> Grid {
+        let (mut values, mut wall) = (Vec::new(), Vec::new());
+        for j in 0..n[1] {
+            for i in 0..n[0] {
+                values.push(value(i as i64 * STEP_CM, j as i64 * STEP_CM));
+                wall.push(1.0);
+            }
+        }
+        let (at, into, left, m) = ([0.0, 0.0], [1.0, 0.0], [0.0, -1.0], 1.0);
+        Grid { origin: [0, 0], n, value: values, wall, reads: Vec::new(), at, into, left, m }
+    }
+
+    #[test]
+    fn the_rings_are_simple_and_apart_where_a_box_face_lies_on_a_grid_line() {
+        // A box face on the grid line u = 100 cm, its value about 0 there and of each sign by turns, as the rounding of
+        // two boxes that meet there gives; and a second region that meets the first at a corner of a cell.
+        let face = |u: i64, v: i64| {
+            if u == 100 {
+                if (u / STEP_CM + v / STEP_CM) % 2 == 0 {
+                    1e-16
+                } else {
+                    -1e-16
+                }
+            } else if ((100..=300).contains(&u) && (50..=300).contains(&v))
+                || ((350..=450).contains(&u) && (350..=450).contains(&v))
+            {
+                -0.3
+            } else {
+                0.4
             }
         };
-        if let Some(k) = (a + 1..b).max_by(|&i, &j| off(i).total_cmp(&off(j))).filter(|&k| off(k) > KEEP_M) {
-            keep(ring, a, k, out);
-            out.push(k);
-            keep(ring, k, b, out);
-        }
+        let (rings, dropped) = grid([12, 12], face).rings();
+        assert!(simple(&rings), "{rings:?}");
+        assert_eq!((rings.len(), dropped), (2, 0));
+        // No point of a ring is a grid point.
+        assert!(rings.iter().flatten().all(|p| p[0] % STEP_CM != 0 || p[1] % STEP_CM != 0), "{rings:?}");
+        // Ground that lies in the wall alone goes.
+        let mut g = grid([12, 12], face);
+        g.wall.iter_mut().for_each(|w| *w = WALL_M / 2.0);
+        assert_eq!(g.rings(), (Vec::new(), 2));
     }
-    if ring.len() < 4 {
-        return ring;
-    }
-    let far = (1..ring.len())
-        .max_by(|&i, &j| {
-            let d = |k: usize| f64::hypot(ring[k][0] - ring[0][0], ring[k][1] - ring[0][1]);
-            d(i).total_cmp(&d(j))
-        })
-        .unwrap();
-    let mut kept = vec![0];
-    keep(&ring, 0, far, &mut kept);
-    kept.push(far);
-    keep(&ring, far, ring.len(), &mut kept);
-    kept.iter().map(|&k| ring[k]).collect()
 }

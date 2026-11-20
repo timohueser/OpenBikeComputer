@@ -481,6 +481,7 @@ fn the_cut_holds_the_ground_inside_the_part_and_leaves_the_hill_over_it() {
     let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
     let ends = records(&placed, "tunnel-end");
     assert_eq!(placed.metrics["cut_ends"].as_u64(), Some(2));
+    assert_eq!(placed.metrics["cut_invalid_rings"].as_u64(), Some(0));
     for end in ends {
         let cut = end["cut"].as_str();
         for (p, held) in [([1.0, 0.0], true), ([3.0, 2.0], true), ([4.5, -1.5], true), ([-1.0, 0.0], false)] {
