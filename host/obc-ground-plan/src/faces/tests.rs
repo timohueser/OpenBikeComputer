@@ -824,6 +824,16 @@ fn two_cells_give_one_side_to_their_line_where_two_edges_cross_each_other_beside
     }
 }
 
+#[test]
+fn two_edges_that_meet_at_a_vertex_beside_a_cell_line_keep_their_crossings_apart() {
+    // The tip 2 units off the line is a vertex, which no snap moves onto the line.
+    let (c, y) = (CELL_UNITS as i32, 3 * slice::TILE as i32 + 1000);
+    let spike = vec![vec![[c - 300, y], [c, y], [c + 2, y + 50], [c, y + 100], [c - 300, y + 100]]];
+    let mut rings = prepare(&spike);
+    merge_crossings([0, 0, c, c], &mut [&mut rings], &mut Vec::new());
+    assert_eq!(rings, spike);
+}
+
 /// A residential road through a bore of 120 m under ground 3.1 m over the road: storey 0 and the floor are one map,
 /// the bore is the prism under storey 0's triangles, and the cover holds the least room over the floor (its lift lies
 /// within `lift_max_m`).

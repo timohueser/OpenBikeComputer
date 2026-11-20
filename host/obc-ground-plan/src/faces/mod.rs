@@ -1041,14 +1041,15 @@ fn merge_crossings(square: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[
 }
 
 /// Whether the edges from `a` and `b > a` along the line `line` of `axis` to `p` and `q`, on one side
-/// of the line, cross each other less than `MERGE` units off it, by an exact test.
+/// of the line, cross each other less than `MERGE` units off it, by an exact test. Edges that meet
+/// at the far end of one of them do not cross: that end is a vertex, which no snap moves.
 fn cross_near(axis: usize, line: i32, a: i32, b: i32, p: P, q: P) -> bool {
     let off = |v: P| (i128::from(v[axis]) - i128::from(line)).abs();
     let (u1, u2) = (off(p), off(q));
     let (v1, v2) = (i128::from(p[1 - axis]) - i128::from(a), i128::from(q[1 - axis]) - i128::from(b));
     // The crossing lies `gap * u1 * u2 / d` units off the line.
     let (gap, d) = (i128::from(b) - i128::from(a), v1 * u2 - v2 * u1);
-    d > 0 && gap * u1.max(u2) <= d && gap * u1 * u2 < i128::from(MERGE) * d
+    d > 0 && gap * u1.max(u2) < d && gap * u1 * u2 < i128::from(MERGE) * d
 }
 
 /// The box within which `candidates` reads a reach of `m` metres past the cell: with `records`,
