@@ -647,12 +647,13 @@ lies under each way on top. The heights of a `tunnel-tube` are this floor, and t
 of the road solver there. The bake sets the floor before the numbers of the openings.
 
 - The curve of a way with heights, not of the kind `gallery`, lies over a vertex of the tube where the vertex is
-  within its reach (its outer half-width + `half` + `shell_m`) and the foot of its nearest point on the tube lies
-  between the openings. It lies on top where its height at that point is more than the at-grade band over the road
-  solver's height of the tube at the foot (the lesser `snap_height_m` of the two classes, as at a crossing of the
-  ground plan). Its underside is that height less its `deck` on a bridge, else less `slab_m`.
-- The tube gets a vertex where it enters and leaves the reach of each way over it. A vertex within 1 cm of another is
-  that vertex.
+  within its reach (its outer half-width + `half` + `shell_m`) and the foot of its nearest point on the whole chain
+  lies between the openings, each grown by the way's outer half-width. It lies on top where its height at that point
+  is more than the at-grade band over the road solver's height of the chain at the foot (the lesser `snap_height_m`
+  of the two classes, as at a crossing of the ground plan). A way that goes on from the chain's end meets it at the
+  chain's height, so it lies at grade. Its underside is its height less its `deck` on a bridge, else less `slab_m`.
+- The tube gets a vertex where it enters and leaves the reach of each way within reach that is not of the kind
+  `tunnel`, at grade or not. A vertex within 1 cm of another is that vertex.
 - A chord may rise by the `grade` of the class of the widest way (`grade_default` for a class with none) times its
   length, or by the rise of the road solver's chord there, the larger.
 - The cap at a vertex is the least underside of the ways on top there, less `shell_m` and `height`. The floor is the
@@ -661,8 +662,9 @@ of the road solver there. The bake sets the floor before the numbers of the open
 - Where the floor lies over the cap, the inside height there is `height` less that difference, at least
   `least_height_m` of the group. A chord takes the lesser height of its two vertices, and an opening takes the height
   of the chord at its vertex.
-- The bake counts a clash, once per way, where a way lies over the floor by more than the at-grade band and the shell
-  of the crown lies over its underside. This holds the ways on top that the floor could not clear, and a way that was
+- The bake counts a clash, once per way, where a way lies over the floor (past an opening, the chain) by more than
+  the at-grade band and the shell of the crown lies over its underside: the metres of the crown's top over the
+  underside, not the depth of a cut beside the tube. This holds the ways on top that the floor could not clear, and a way that was
   at grade with the road solver's height where the floor went down under it. A way of the kind `tunnel` (another
   tube) does not lower the floor; its clashes are counted apart, as tube clashes.
 
