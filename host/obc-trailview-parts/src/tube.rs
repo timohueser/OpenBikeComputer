@@ -223,6 +223,14 @@ impl<'a> Net<'a> {
         ladder.group(&c.class).map_or(Bore::Road, |g| ladder.groups[g].bore)
     }
 
+    /// The height of the one other chord at vertex k of chord c, not at an opening, where it is lower than c and of its
+    /// section: a step in the crown goes down to it there.
+    pub fn lower(&self, c: usize, k: usize) -> Option<f64> {
+        let chord = &self.chords[c];
+        let other = &self.chords[self.other(c, k).filter(|_| !self.opening_at(c, k))?];
+        (other.height < chord.height && other.section == chord.section).then_some(other.height)
+    }
+
     /// The chord and vertex at end e's opening, where its chain is built.
     pub fn opening(&self, e: usize) -> Option<(usize, usize)> {
         self.opening[e]
@@ -231,7 +239,7 @@ impl<'a> Net<'a> {
 
 /// The floor of a tube across: per piece from the right, its metres across and the height of its top. A road or a
 /// track has a walk on each side.
-fn floor_pieces(net: &Net, c: &Chord) -> Vec<(f64, f64, f64)> {
+pub fn floor_pieces(net: &Net, c: &Chord) -> Vec<(f64, f64, f64)> {
     let (half, road, lift, kerb) = (c.half, c.road, net.rules.design.lift_m, net.rules.design.kerb_m);
     match net.bore(c) {
         Bore::Rock => vec![(-half, half, lift)],
@@ -253,9 +261,28 @@ fn inside_outline(net: &Net, c: &Chord) -> Vec<Corner> {
     outline(c.section, c.half, c.height, spring(net, c.section, c.height), net.rules.design.arch_segments)
 }
 
+/// The outside of the shell of a section of height `h` round the inside half-width `half`, its walls down to `foot`
+/// over its station.
+pub fn shell_outline(net: &Net, section: Section, half: f64, h: f64, foot: f64) -> Vec<Corner> {
+    let shell = net.rules.ladder.bake.shell_m;
+    let mut o = outline(section, half + shell, h + shell, spring(net, section, h), net.rules.design.arch_segments);
+    let last = o.len() - 1;
+    (o[0][1], o[last][1]) = (foot, foot);
+    o
+}
+
 /// The direction [across, up] from the middle of an outline's segment to the axis, at the spring height.
 pub fn inward(a: Corner, b: Corner, spring: f64) -> Corner {
     [-(a[0] + b[0]), -(a[1] + b[1] - 2.0 * spring)]
+}
+
+/// The corners of a wall from its foot to its spring at `x`, with the spring of a lower section that goes on at that
+/// ring between: the step face there meets the wall at it.
+fn wall_side(x: f64, foot: f64, spring: f64, lower: Option<f64>) -> Vec<Corner> {
+    let mut out = vec![[x, foot]];
+    out.extend(lower.filter(|&l| l > foot && l < spring).map(|l| [x, l]));
+    out.push([x, spring]);
+    out
 }
 
 /// The inside of chord c from its ring at a to its ring at b, seen from inside: the floor by its bore, the walls from
@@ -270,6 +297,7 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     let (half, road, lift, kerb) = (chord.half, chord.road, design.lift_m, design.kerb_m);
     let sp = spring(net, chord.section, chord.height);
     let bore = |colour: u32| flagged(colour, BORE);
+    let across = |c: Corner| s.mix(&t, 0.5).out(c);
     let (wall, vault) = match bore_of {
         Bore::Road => (inside.tiles, inside.arch_lining),
         Bore::Track => (inside.lining, inside.lining),
@@ -277,7 +305,12 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     };
     let pieces = floor_pieces(net, chord);
     if bore_of == Bore::Rock {
-        b.strip(&s, &t, [half, lift], [-half, lift], bore(inside.rock_floor), [0.0, 1.0]);
+        b.strip(
+            (&s, &[[half, lift], [-half, lift]]),
+            (&t, &[[half, lift], [-half, lift]]),
+            bore(inside.rock_floor),
+            across([0.0, 1.0]),
+        );
     } else {
         // The road or the track: in its colour the surface code and the lines; along it, the metres of its stroke or
         // its sleepers.
@@ -293,28 +326,42 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
             corner(b, &t, road, length),
             corner(b, &t, -road, length),
         ];
-        b.quad(v, s.mix(&t, 0.5).out([0.0, 1.0]));
+        b.quad(v, across([0.0, 1.0]));
         for side in [1.0, -1.0] {
-            b.strip(&s, &t, [side * road, lift], [side * road, kerb], bore(inside.walk), [-side, 0.0]);
-            b.strip(&s, &t, [side * road, kerb], [side * half, kerb], bore(inside.walk), [0.0, 1.0]);
+            let (kerb_face, walk) =
+                ([[side * road, lift], [side * road, kerb]], [[side * road, kerb], [side * half, kerb]]);
+            b.strip((&s, &kerb_face), (&t, &kerb_face), bore(inside.walk), across([-side, 0.0]));
+            b.strip((&s, &walk), (&t, &walk), bore(inside.walk), across([0.0, 1.0]));
         }
     }
-    // The walls stand on the floor at its sides.
+    // The walls stand on the floor at its sides, the vault on the walls.
     let mut o = inside_outline(net, chord);
     let n = o.len();
     (o[0][1], o[n - 1][1]) = (pieces[0].2, pieces[pieces.len() - 1].2);
-    for j in 0..n - 1 {
-        let colour = if j == 0 || j == n - 2 { wall } else { vault };
-        b.strip(&s, &t, o[j], o[j + 1], bore(colour), inward(o[j], o[j + 1], sp));
+    let lower = |k: usize| net.lower(c, k).map(|l| spring(net, chord.section, l));
+    for (x, foot, j) in [(-half, o[0][1], 0), (half, o[n - 1][1], n - 2)] {
+        let (a, z) = (wall_side(x, foot, sp, lower(0)), wall_side(x, foot, sp, lower(1)));
+        b.strip((&s, &a), (&t, &z), bore(wall), across(inward(o[j], o[j + 1], sp)));
+    }
+    for j in 1..n - 2 {
+        b.strip((&s, &o[j..j + 2]), (&t, &o[j..j + 2]), bore(vault), across(inward(o[j], o[j + 1], sp)));
     }
     for k in 0..2 {
         step(b, net, c, k, &o, vault);
     }
-    // At an opening, the front of the floor goes down to the sill, `lift_m` under the floor.
+    // At an opening, the front of the floor goes down to the sill, `lift_m` under the floor. Each side of a piece has
+    // a corner at the top of each piece beside it, which is the corner of a face there.
     for (k, r) in [(0, &s), (1, &t)].into_iter().filter(|(k, _)| net.opening_at(c, *k)) {
         let out = flat(if k == 0 { [-d[0], -d[1]] } else { d });
         for &(a0, a1, top) in &pieces {
-            b.plane(r, [[a0, -lift], [a1, -lift], [a1, top], [a0, top]], bore(inside.walk), out);
+            let side = |x: f64| {
+                let mut ups: Vec<f64> =
+                    (pieces.iter()).filter(|p| (p.0 == x || p.1 == x) && p.2 <= top).map(|p| p.2).collect();
+                ups.sort_by(f64::total_cmp);
+                ups.dedup();
+                [[x, -lift]].into_iter().chain(ups.into_iter().map(|u| [x, u])).collect::<Vec<Corner>>()
+            };
+            b.strip((r, &side(a0)), (r, &side(a1)), bore(inside.walk), out);
         }
     }
     if bore_of != Bore::Road {
@@ -343,23 +390,13 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
 /// into chord c.
 fn step<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize, k: usize, o: &[Corner], colour: u32) {
     let chord = &net.chords[c];
-    let Some(other) = net.other(c, k).filter(|_| !net.opening_at(c, k)) else { return };
-    let lower = &net.chords[other];
-    if lower.height >= chord.height || lower.section != chord.section {
-        return;
-    }
+    let Some(h) = net.lower(c, k) else { return };
     let r = net.ring(c, k);
-    let low = outline(
-        chord.section,
-        chord.half,
-        lower.height,
-        spring(net, chord.section, lower.height),
-        net.rules.design.arch_segments,
-    );
+    let low = outline(chord.section, chord.half, h, spring(net, chord.section, h), net.rules.design.arch_segments);
     let (d, _) = direction(chord);
     let into = flat(if k == 0 { d } else { [-d[0], -d[1]] });
     for j in 1..o.len() - 2 {
-        b.plane(&r, [o[j], o[j + 1], low[j + 1], low[j]], flagged(colour, BORE), into);
+        b.strip((&r, &o[j..j + 2]), (&r, &low[j..j + 2]), flagged(colour, BORE), into);
     }
 }
 
@@ -374,38 +411,38 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
     foot: f64,
     colour: u32,
 ) {
-    let (shell_m, segments) = (net.rules.ladder.bake.shell_m, net.rules.design.arch_segments);
-    let outer = |st: &Station, h: f64, section: Section| {
-        let sp = spring(net, section, h);
-        let mut o = outline(section, half + shell_m, h + shell_m, sp, segments);
-        let n = o.len();
-        o[0][1] = foot - st.z;
-        o[n - 1][1] = foot - st.z;
-        (o, sp)
-    };
+    let outer = |st: &Station, h: f64, section: Section| shell_outline(net, section, half, h, foot - st.z);
     for (i, (s, t, h, section)) in pieces.iter().enumerate() {
-        let ((os, sp), (ot, _)) = (outer(s, *h, *section), outer(t, *h, *section));
-        for j in 0..os.len() - 1 {
-            let v = [
-                b.at(s, os[j], colour),
-                b.at(s, os[j + 1], colour),
-                b.at(t, ot[j + 1], colour),
-                b.at(t, ot[j], colour),
-            ];
+        let sp = spring(net, *section, *h);
+        let (os, ot) = (outer(s, *h, *section), outer(t, *h, *section));
+        let n = os.len();
+        let away = |j: usize| {
             let o = inward(os[j], os[j + 1], sp);
-            b.quad(v, s.mix(t, 0.5).out([-o[0], -o[1]]));
+            s.mix(t, 0.5).out([-o[0], -o[1]])
+        };
+        // The spring of a lower piece that goes on before or after it: a step face meets its walls there.
+        let lower = |p: Option<&(Station, Station, f64, Section)>| {
+            p.filter(|p| p.2 < *h && p.3 == *section).map(|p| spring(net, *section, p.2))
+        };
+        let (before, after) = (lower(i.checked_sub(1).map(|k| &pieces[k])), lower(pieces.get(i + 1)));
+        for (j, x) in [(0, os[0][0]), (n - 2, os[n - 1][0])] {
+            let (a, z) = (wall_side(x, os[0][1], sp, before), wall_side(x, ot[0][1], sp, after));
+            b.strip((s, &a), (t, &z), colour, away(j));
+        }
+        for j in 1..n - 2 {
+            b.strip((s, &os[j..j + 2]), (t, &ot[j..j + 2]), colour, away(j));
         }
         let Some((_, _, next, next_section)) = pieces.get(i + 1) else { continue };
         if next == h || next_section != section {
             continue;
         }
         // The step at t: from the taller outline to the lower, facing the lower piece.
-        let ((tall, _), (low, _)) = (outer(t, h.max(*next), *section), outer(t, h.min(*next), *section));
+        let (tall, low) = (outer(t, h.max(*next), *section), outer(t, h.min(*next), *section));
         let ahead = s.mix(t, 0.5);
         let d = [t.x - ahead.x, t.y - ahead.y];
         let toward = if next < h { flat(d) } else { flat([-d[0], -d[1]]) };
         for j in 1..tall.len() - 2 {
-            b.plane(t, [tall[j], tall[j + 1], low[j + 1], low[j]], colour, toward);
+            b.strip((t, &tall[j..j + 2]), (t, &low[j..j + 2]), colour, toward);
         }
     }
 }

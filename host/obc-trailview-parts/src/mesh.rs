@@ -148,23 +148,42 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         });
     }
 
+    /// A triangle turned to face `out`. A triangle of no area makes no face.
     pub fn triangle(&mut self, a: u32, b: u32, c: u32, out: [f64; 3]) {
         let n = self.normal(a, b, c, c);
+        if n.iter().all(|c| c.abs() < 1e-12) {
+            return;
+        }
         let facing = n[0] * out[0] + n[1] * out[1] + n[2] * out[2] >= 0.0;
         self.indices.extend(if facing { [a, b, c] } else { [a, c, b] });
     }
 
-    /// The quad between two stations from corner a to corner b, facing `out` in the cross-section's plane.
-    pub fn strip(&mut self, s: &Station, t: &Station, a: Corner, b: Corner, colour: u32, out: Corner) {
-        let o = s.mix(t, 0.5).out(out);
-        let v = [self.at(s, a, colour), self.at(s, b, colour), self.at(t, b, colour), self.at(t, a, colour)];
-        self.quad(v, o);
-    }
-
-    /// The quad of corners a, b, c, d of one station's plane, facing `out`.
-    pub fn plane(&mut self, s: &Station, corners: [Corner; 4], colour: u32, out: [f64; 3]) {
-        let v = corners.map(|c| self.at(s, c, colour));
-        self.quad(v, out);
+    /// The faces between two polylines that run side by side from a common start to a common end: the corners `a` at
+    /// station `s` and the corners `b` at station `t`. The triangles go in the order of the share of the way along
+    /// each, so every corner of both is a vertex of the faces beside it, and no face meets another in the middle of
+    /// an edge. Two corners on each side make one quad.
+    pub fn strip(&mut self, (s, a): (&Station, &[Corner]), (t, b): (&Station, &[Corner]), colour: u32, out: [f64; 3]) {
+        let shares = |c: &[Corner]| {
+            let mut run = vec![0.0];
+            for w in c.windows(2) {
+                run.push(run[run.len() - 1] + libm::hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]));
+            }
+            let all = run[run.len() - 1];
+            run.iter().map(|r| if all > 0.0 { r / all } else { 0.0 }).collect::<Vec<f64>>()
+        };
+        let (sa, sb) = (shares(a), shares(b));
+        let va: Vec<u32> = a.iter().map(|&c| self.at(s, c, colour)).collect();
+        let vb: Vec<u32> = b.iter().map(|&c| self.at(t, c, colour)).collect();
+        let (mut i, mut j) = (0, 0);
+        while i + 1 < va.len() || j + 1 < vb.len() {
+            if i + 1 < va.len() && (j + 1 == vb.len() || sa[i + 1] <= sb[j + 1]) {
+                self.triangle(va[i], va[i + 1], vb[j], out);
+                i += 1;
+            } else {
+                self.triangle(va[i], vb[j + 1], vb[j], out);
+                j += 1;
+            }
+        }
     }
 
     pub fn mesh(self) -> Mesh {

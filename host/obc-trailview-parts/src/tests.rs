@@ -229,83 +229,79 @@ fn a_footprint_holds_the_head_wall_and_the_collar() {
     }
 }
 
-/// The edges that one face of a mesh has alone, the void and the lamps left out, in metres east, north and up: an
-/// edge is shared where each of three points along it lies on another face (a T-junction is shared).
-fn open_edges(mesh: &Mesh) -> Vec<[[f64; 3]; 2]> {
-    let m = metres_per_unit(Y);
-    let point = |i: u32| {
+/// The edges that one face of a mesh has alone, and those that more than two faces share; the void and the lamps
+/// left out. Two faces share an edge where they have its two corners: the same words of position.
+fn open_edges(mesh: &Mesh) -> (Vec<[[f64; 3]; 2]>, usize) {
+    let key = |i: u32| {
         let w = &mesh.vertices[i as usize * WORDS..];
-        [(w[0] as i32 as f64 - X) * m, -(w[1] as i32 as f64 - Y) * m, f32::from_bits(w[2]) as f64]
+        [w[0], w[1], w[2]]
     };
     let solid = |i: u32| (mesh.vertices[i as usize * WORDS + 3] >> 24) & (mesh::VOID | mesh::LAMP) == 0;
-    let tris: Vec<[[f64; 3]; 3]> =
-        mesh.indices.chunks(3).filter(|t| solid(t[0])).map(|t| [point(t[0]), point(t[1]), point(t[2])]).collect();
-    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    // Whether p lies on triangle t, within a millimetre (the closest point of a triangle, as Ericson's).
-    let on = |p: [f64; 3], [a, b, c]: [[f64; 3]; 3]| {
-        let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
-        let (d1, d2) = (dot(ab, ap), dot(ac, ap));
-        let bp = sub(p, b);
-        let (d3, d4) = (dot(ab, bp), dot(ac, bp));
-        let cp = sub(p, c);
-        let (d5, d6) = (dot(ab, cp), dot(ac, cp));
-        let q = if d1 <= 0.0 && d2 <= 0.0 {
-            a
-        } else if d3 >= 0.0 && d4 <= d3 {
-            b
-        } else if d6 >= 0.0 && d5 <= d6 {
-            c
-        } else {
-            let (va, vb, vc) = (d3 * d6 - d5 * d4, d5 * d2 - d1 * d6, d1 * d4 - d3 * d2);
-            let along = |u: [f64; 3], f: f64, o: [f64; 3]| [o[0] + u[0] * f, o[1] + u[1] * f, o[2] + u[2] * f];
-            if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-                along(ab, d1 / (d1 - d3), a)
-            } else if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-                along(ac, d2 / (d2 - d6), a)
-            } else if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
-                along(sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6)), b)
-            } else {
-                let den = 1.0 / (va + vb + vc);
-                let (v, w) = (vb * den, vc * den);
-                [a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w]
-            }
-        };
-        let d = sub(p, q);
-        dot(d, d) < 1e-6
-    };
-    let mut out = Vec::new();
-    for (i, t) in tris.iter().enumerate() {
+    let mut count: BTreeMap<([u32; 3], [u32; 3]), usize> = BTreeMap::new();
+    for t in mesh.indices.chunks(3).filter(|t| solid(t[0])) {
         for k in 0..3 {
-            let (a, b) = (t[k], t[(k + 1) % 3]);
-            let shared = [0.25, 0.5, 0.75].iter().all(|&f| {
-                let p = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
-                tris.iter().enumerate().any(|(j, u)| j != i && on(p, *u))
-            });
-            if !shared {
-                out.push([a, b]);
-            }
+            let (p, q) = (key(t[k]), key(t[(k + 1) % 3]));
+            *count.entry(if p < q { (p, q) } else { (q, p) }).or_default() += 1;
         }
     }
-    out
+    let point = |w: [u32; 3]| [w[0] as i32 as f64, w[1] as i32 as f64, f32::from_bits(w[2]) as f64];
+    let open = count.iter().filter(|(_, &n)| n == 1).map(|((p, q), _)| [point(*p), point(*q)]).collect();
+    (open, count.values().filter(|&&n| n > 2).count())
+}
+
+/// The open edges of the parts of a tube that lie neither at the foot of an end nor on the last ring of its collar,
+/// and the edges that more than two faces share.
+fn not_closed(ends: &[End], chords: &[Chord]) -> (Vec<[[f64; 3]; 2]>, usize) {
+    let rules = Rules::embedded();
+    let net = Net::new(ends, chords, rules);
+    let back = rules.design.face_m - rules.design.recess_m;
+    // Per end: its foot, and the last station of its collar's shell.
+    let limits: Vec<(f64, mesh::Station)> = (0..ends.len())
+        .map(|e| {
+            let last = arch::collar(&net, e).last().map_or(net.frame(e, back), |p| p.1);
+            (ends[e].z + ends[e].foot, last)
+        })
+        .collect();
+    let allowed = |p: [f64; 3]| {
+        limits.iter().any(|(foot, t)| {
+            let m = metres_per_unit(t.y);
+            let l = libm::hypot(t.ax, t.ay);
+            let (dx, dy) = ((p[0] - t.x) * m, (p[1] - t.y) * m);
+            let (along, beside) = ((dx * t.ay - dy * t.ax) / l, (dx * t.ax + dy * t.ay) / l);
+            // Within the rounding of a vertex to whole world units.
+            (p[2] - foot).abs() < 1e-3 || (along.abs() < 0.03 && beside.abs() < 10.0)
+        })
+    };
+    let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], ends, chords, rules);
+    let (open, crowded) = open_edges(&mesh);
+    (open.into_iter().filter(|e| !(allowed(e[0]) && allowed(e[1]))).collect(), crowded)
+}
+
+/// A tube that runs at `turn` degrees north of east from the origin, bends `bend` degrees to the left 4 m in, inside
+/// the collar of its first end, and goes on 36 m: a lower chord in the collar and one further in, the floor rising.
+fn bent(turn: f64, bend: f64) -> (Vec<End>, Vec<Chord>) {
+    let (a0, a1) = (turn.to_radians(), (turn + bend).to_radians());
+    let mut points = vec![([0.0, 0.0], 500.0), ([4.0 * libm::cos(a0), 4.0 * libm::sin(a0)], 500.1)];
+    for k in 1..=6 {
+        let (p, l) = (points[1].0, 6.0 * k as f64);
+        points.push(([p[0] + l * libm::cos(a1), p[1] + l * libm::sin(a1)], 500.1 + 0.03 * l));
+    }
+    let heights = [5.0, 4.6, 5.0, 5.4, 4.8, 5.0, 5.0];
+    let chords = (points.windows(2).zip(heights))
+        .map(|(w, h)| chord([w[0].0[0], w[0].0[1], w[0].1], [w[1].0[0], w[1].0[1], w[1].1], h, 0.0))
+        .collect();
+    let (last, pi) = (points[points.len() - 1], std::f64::consts::PI);
+    (vec![end(0.0, 0.0, 500.0, -a0, 6.0), end(last.0[0], last.0[1], last.1, -(a1 + pi), 3.0)], chords)
 }
 
 #[test]
 fn a_part_is_closed_but_at_its_foot_and_at_the_end_of_its_collar() {
-    let (ends, chords) = tube();
-    let rules = Rules::embedded();
-    let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);
-    let back = rules.design.face_m - rules.design.recess_m;
-    // Per end: its point, its way in, its foot and the end of its collar's shell.
-    let limits: Vec<([f64; 2], [f64; 2], f64, f64)> = (ends.iter())
-        .map(|e| (metric(e.at), [libm::cos(e.heading), -libm::sin(e.heading)], e.z + e.foot, e.collar.max(back)))
-        .collect();
-    let allowed = |p: [f64; 3]| {
-        limits.iter().any(|&(at, d, foot, collar)| {
-            let s = (p[0] - at[0]) * d[0] + (p[1] - at[1]) * d[1];
-            (p[2] - foot).abs() < 1e-3 || ((s - collar).abs() < 1e-2 && s < 20.0)
-        })
-    };
-    let open: Vec<_> = open_edges(&mesh).into_iter().filter(|e| !(allowed(e[0]) && allowed(e[1]))).collect();
-    assert!(open.is_empty(), "{} open edges, the first {:?}", open.len(), &open[..open.len().min(4)]);
+    let (ends, mut rock) = bent(30.0, 20.0);
+    rock.iter_mut().for_each(|c| c.class = "footway".into());
+    for (name, (ends, chords)) in [("straight", tube()), ("turned and bent", bent(30.0, 20.0)), ("rock", (ends, rock))]
+    {
+        let (open, crowded) = not_closed(&ends, &chords);
+        assert!(open.is_empty(), "{name}: {} open edges, the first {:?}", open.len(), &open[..open.len().min(4)]);
+        assert_eq!(crowded, 0, "{name}: edges of more than two faces");
+    }
 }
