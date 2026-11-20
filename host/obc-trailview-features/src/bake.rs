@@ -239,6 +239,8 @@ pub fn bake(
     // The ways of kind `tunnel` as the tiles hold them, by id: the parts place their openings.
     let mut tunnels: HashMap<u32, (Tags, Vec<Part>)> = HashMap::new();
     let mut tunnel_ways: HashSet<usize> = HashSet::new();
+    // The deck depth of each bridge way, by its place in `ways`: the floors of the tubes under them read it.
+    let mut deck_depths: HashMap<usize, f64> = HashMap::new();
     if !(waters.is_empty() && ways.is_empty() && stations.is_empty()) {
         metrics.insert("water".into(), water);
         let is_river = |e: usize| RIVERS.contains(&kinds[e].kind.as_str());
@@ -317,6 +319,7 @@ pub fn bake(
             let (added, piers, bridge_metrics) = structures::bridges(&deck_ways, &waterways, &areas, terrain, &under);
             let mut extra: HashMap<usize, Tags> =
                 decks.iter().zip(added).map(|(&n, tags)| (n, tags.unwrap_or_default())).collect();
+            deck_depths.extend(extra.iter().filter_map(|(&n, t)| Some((n, t.get("deck")?.parse().ok()?))));
             let (mut floating, mut shallow) = (None, None);
             // The vertices of the decks: a way on the ground that meets a deck there takes its height.
             let on_deck: HashSet<[u64; 2]> =
@@ -423,6 +426,7 @@ pub fn bake(
     let input = parts::Input {
         tunnels: &tunnels,
         ways: ways.iter().map(|(e, tags, parts)| (kinds[*e].kind.as_str(), tags, parts.as_slice())).collect(),
+        decks: &deck_depths,
         tunnel_ways: &tunnel_ways,
         tiles: &placer.tiles,
         levels: &levels,
@@ -430,6 +434,7 @@ pub fn bake(
         rules: &options.parts,
         widths: &options.widths,
         class_names: &options.class_names,
+        classes: &options.classes,
     };
     let placed = parts::place(&input, memory.saturating_sub(crate::step::resident()));
     drop(input);
