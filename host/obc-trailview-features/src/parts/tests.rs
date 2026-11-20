@@ -374,20 +374,17 @@ fn the_floor_keeps_the_crown_a_slab_under_a_way_on_top_within_the_grade_and_the_
     let placed = under(&[[100.0, -50.0], [100.0, 50.0]], 500.5, None);
     assert!(self::chords(&placed).iter().all(|c| c.1 == [500.0, 500.0]));
     assert_eq!(placed.metrics["tops"].as_u64(), Some(0));
-    // A road that goes on from an opening climbs over the tube's floor near it, but it lies beyond the opening: the
-    // tube under it is its end, at its height.
+    // A tube that falls into the hill from a junction of two roads: its opening moves 5 m in. The road that goes on
+    // from the junction climbs; near the opening it lies 0.75 m over the tube there, but its nearest point is the
+    // chain's end vertex, at the chain's height: it lies at grade.
     let mut case = Case::default();
-    case.ways.push((
-        "tunnel",
-        tags(&ROAD),
-        vec![part(&[[0.0, 0.0], [100.0, 0.0], [200.0, 0.0]], &[510.0, 500.0, 490.0])],
-    ));
-    case.ways.push((
-        "road",
-        tags(&[("highway", "residential")]),
-        vec![part(&[[-50.0, 0.0], [0.0, 0.0]], &[515.0, 510.0])],
-    ));
+    let falls = part(&[[0.0, 0.0], [5.0, 0.0], [100.0, 0.0], [200.0, 0.0]], &[515.0, 514.25, 500.0, 485.0]);
+    case.ways.push(("tunnel", tags(&ROAD), vec![falls]));
+    let residential = tags(&[("highway", "residential")]);
+    case.ways.push(("road", residential.clone(), vec![part(&[[-50.0, 0.0], [0.0, 0.0]], &[520.0, 515.0])]));
+    case.ways.push(("road", residential, vec![part(&[[0.0, 50.0], [0.0, 0.0]], &[515.0, 515.0])]));
     let placed = case.place(&site(&|_| 400.0, &[], false), &mut Vec::new());
+    assert!(records(&placed, "tunnel-end").iter().any(|t| t["shift"] == "5"));
     assert_eq!((placed.metrics["tops"].as_u64(), placed.metrics["tubes_lowered"].as_u64()), (Some(0), Some(0)));
     // A bridge at 507 m with a deck 2 m deep: its underside is 505 m, so the floor goes to 499.5 m. On the ground, its
     // underside would be a slab under it, and the floor would stay.

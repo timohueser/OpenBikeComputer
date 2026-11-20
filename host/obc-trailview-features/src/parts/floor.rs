@@ -23,12 +23,14 @@ struct Over {
 }
 
 /// A way over a vertex of a tube: its number among the ways over the tube, its height and underside at its nearest
-/// point, the metres along the tube of that point's foot, and the at-grade band of the way and the tube.
+/// point, the metres along the chain of that point's foot and the road solver's height of the chain there, and the
+/// at-grade band of the way and the tube.
 struct Above {
     way: usize,
     height: f64,
     under: f64,
     along: f64,
+    base: f64,
     band: f64,
 }
 
@@ -254,21 +256,23 @@ pub(crate) fn floors(
         let (ls, lz): (Vec<f64>, Vec<f64>) = points.iter().map(|q| (q.s, q.z)).unzip();
         let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();
         let xy: Vec<[f64; 2]> = s.iter().map(|&x| tube.curve.at(x).0.p).collect();
-        // The metres along the tube of the foot of a point on it, which lies within twice the reach of the vertex that
-        // the point is near.
+        // The foot of a point on the whole chain, past the openings to its ends: its metres and the road solver's
+        // height there. It lies within twice the reach of the vertex that the point is near.
+        let chain = line(tube, [0.0, tube.curve.len]);
         let foot = |q: [f64; 2], (at, reach): (f64, f64)| {
-            let first = points.partition_point(|v| v.s < at - 2.0 * reach).saturating_sub(1);
-            let last = points.partition_point(|v| v.s <= at + 2.0 * reach).min(ps.len() - 1);
+            let first = chain.partition_point(|v| v.s < at - 2.0 * reach).saturating_sub(1);
+            let last = chain.partition_point(|v| v.s <= at + 2.0 * reach).min(chain.len() - 1);
             let (_, j, u) = (first..last.max(first + 1))
                 .map(|j| {
-                    let (m, u) = nearest(q, ps[j], ps[j + 1]);
+                    let (m, u) = nearest(q, chain[j].p, chain[j + 1].p);
                     (m, j, u)
                 })
                 .fold((f64::INFINITY, 0, 0.0), |a, x| if x.0 < a.0 { x } else { a });
-            points[j].s + u * (points[j + 1].s - points[j].s)
+            let (c, d) = (chain[j], chain[j + 1]);
+            (c.s + u * (d.s - c.s), c.z + u * (d.z - c.z))
         };
-        // Per vertex each way over it: within its reach, with its nearest point over the tube between the openings;
-        // its height and underside there, the metres of the foot and the at-grade band of the two.
+        // Per vertex each way over it: within its reach, with the foot of its nearest point within the openings
+        // grown by its outer half-width; its height and underside there, the foot and the at-grade band of the two.
         let own_band = sections.way("tunnel", &input.tunnels[&tube.widest].0, false).snap_height_m;
         let mut local: BTreeMap<usize, usize> = BTreeMap::new();
         let mut above: Vec<Vec<Above>> = (0..s.len()).map(|_| Vec::new()).collect();
@@ -288,12 +292,12 @@ pub(crate) fn floors(
                     continue;
                 }
                 let (a, e) = (w.points[k], w.points[k + 1]);
-                let along = foot([a[0] + u * (e[0] - a[0]), a[1] + u * (e[1] - a[1])], (s[i], reach_of(w)));
-                if along > s0 + MERGE_M && along < s1 - MERGE_M {
+                let (along, base) = foot([a[0] + u * (e[0] - a[0]), a[1] + u * (e[1] - a[1])], (s[i], reach_of(w)));
+                if along >= s0 - w.outer - MERGE_M && along <= s1 + w.outer + MERGE_M {
                     let c = local.len();
                     let height = w.z[k] + u * (w.z[k + 1] - w.z[k]);
                     let (way, under, band) = (*local.entry(o).or_insert(c), height - w.depth, w.band.min(own_band));
-                    above[i].push(Above { way, height, under, along, band });
+                    above[i].push(Above { way, height, under, along, base, band });
                 }
             }
         }
@@ -309,16 +313,17 @@ pub(crate) fn floors(
         // a way of the kind `tunnel` lowers no floor.
         let caps: Vec<Vec<f64>> = (above.iter())
             .map(|v| {
-                let on_top = v.iter().filter(|a| !ways[a.way].tunnel && a.height - interp(a.along, &s, &z) > a.band);
+                let on_top = v.iter().filter(|a| !ways[a.way].tunnel && a.height - a.base > a.band);
                 on_top.map(|a| a.under).collect()
             })
             .collect();
         let fl = floor((&s, &z), &caps, grade, (height[t], least), b.shell_m);
-        // Over the floor as it is, per way the most metres that the shell of the crown rises over its underside where
-        // it lies over the floor by more than the band, and the vertex there.
+        // Over the floor as it is (past an opening, the chain), per way the most metres that the shell of the crown
+        // rises over its underside where it lies over the floor by more than the band, and the vertex there.
+        let ground = |a: &Above| if a.along >= s0 && a.along <= s1 { interp(a.along, &fl.s, &fl.f) } else { a.base };
         let mut over: Vec<Option<(f64, usize)>> = vec![None; ways.len()];
         for (i, v) in above.iter().enumerate() {
-            for a in v.iter().filter(|a| a.height - interp(a.along, &fl.s, &fl.f) > a.band) {
+            for a in v.iter().filter(|a| a.height - ground(a) > a.band) {
                 let m = fl.f[i] + fl.h[i] + b.shell_m - a.under;
                 if over[a.way].is_none_or(|o| m > o.0) {
                     over[a.way] = Some((m, i));
