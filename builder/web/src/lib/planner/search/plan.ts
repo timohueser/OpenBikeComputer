@@ -1,6 +1,7 @@
 import { cumulative, simplify, type Coordinate } from '../geo';
 import type { PlanView, Trip } from '../editor';
 import type { SearchContext } from './types';
+import contract from '../../../../../../planner/search/query/contract.json' with { type: 'json' };
 
 type SearchLine = { coordinates: Coordinate[]; km: number[]; hours?: number[] };
 const lines = new WeakMap<Coordinate[], { seconds?: number[]; line: SearchLine }>();
@@ -17,7 +18,7 @@ export function searchLine(coordinates: Coordinate[], km: readonly number[], sec
     for (let scale = 1; ; scale *= 2) {
         kept = simplify(coordinates, OFFSET_KM * scale, seconds && ((i, a, b) =>
             (seconds[i] - seconds[a] - (seconds[b] - seconds[a]) / (km[b] - km[a] || 1) * (km[i] - km[a])) / (DELAY_SECONDS * scale)));
-        if (kept.length <= MAX_POINTS) break;
+        if (kept.length <= contract.line_points) break;
     }
     const line = {
         coordinates: kept.map(i => coordinates[i].map(v => round(v, 5)) as Coordinate),
@@ -33,8 +34,6 @@ export function searchLine(coordinates: Coordinate[], km: readonly number[], sec
 const round = (value: number, digits: number) => Math.round(value * 10 ** digits) / 10 ** digits;
 // A larger offset cuts the corners of hairpins, and places beside them move along the route.
 const OFFSET_KM = .01;
-// The search service refuses a longer line (`planner/search/validation.mjs`).
-const MAX_POINTS = 20_000;
 // Search places hour marks between kept points by kilometre. Ten seconds of riding is about as
 // far as the offset moves a place along the route.
 const DELAY_SECONDS = 10;
