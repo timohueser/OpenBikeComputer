@@ -68,12 +68,14 @@ const walked = (metres: number) => shortDistance(Math.max(100, Math.round(metres
 /** One step of the way to a row: an icon, or the car park mark, and a few words. */
 export type Step = { icon?: string; park?: true; text: string };
 
-/** The car park that a row with no start point names: a large one within 300 m of the route, else the nearest. */
-function parkAt(facts: CatalogFacts | undefined, place: Place): FactsPlace | undefined {
-    const near = (facts?.parking ?? []).filter(([, metres]) => metres <= 300).map(([id]) => place(id)).filter(park => park !== undefined);
-    return near.find(park => park.size === 'large') ?? near[0];
+/** The place id of the car park that a row with no start point names: a large one within 300 m of the route, else the
+ * nearest. */
+export function parkAt(facts: CatalogFacts | undefined, place: Place): string | undefined {
+    const near = (facts?.parking ?? []).filter(([id, metres]) => metres <= 300 && place(id)).map(([id]) => id);
+    return near.find(id => place(id)!.size === 'large') ?? near[0];
 }
-const liftAt = (facts: CatalogFacts | undefined, place: Place) => place((facts?.lifts ?? []).find(([, metres]) => metres <= 300)?.[0] ?? '');
+/** The place id of the lift whose top station is within 300 m of the route. */
+export const liftAt = (facts: CatalogFacts | undefined) => (facts?.lifts ?? []).find(([, metres]) => metres <= 300)?.[0];
 const size = (park: FactsPlace | undefined) => park?.size === 'large' ? 'large' : 'small';
 
 /** The steps of the cheapest way to a row, as the column "Getting there" shows them. */
@@ -83,9 +85,9 @@ export function accessSteps(row: Row, place: Place): Step[] {
     switch (way.kind) {
         case 'any': {
             if (row.shape === 'liftDown' || row.shape === 'liftUp') return [{ icon: 'lift', text: 'Lift' }];
-            const park = parkAt(row.facts, place);
+            const park = place(parkAt(row.facts, place) ?? '');
             if (park) return [{ park: true, text: `${size(park) === 'large' ? 'Large' : 'Small'} car park` }];
-            if (liftAt(row.facts, place)) return [{ icon: 'lift', text: 'Lift' }];
+            if (liftAt(row.facts)) return [{ icon: 'lift', text: 'Lift' }];
             return row.facts ? [{ text: 'No car park' }] : [];
         }
         case 'foot': return [{ icon: 'walk', text: walked(way.walk) }];
@@ -106,7 +108,7 @@ export function accessText(row: Row, place: Place): string {
     switch (way.kind) {
         case 'any': {
             if (row.shape === 'liftDown' || row.shape === 'liftUp') return '';
-            const park = parkAt(row.facts, place), lift = liftAt(row.facts, place);
+            const park = place(parkAt(row.facts, place) ?? ''), lift = place(liftAt(row.facts) ?? '');
             if (park) return `${park.name ?? 'A car park'} (${size(park)}) is at the route.`;
             if (lift) return `${lift.name ?? 'A lift'} stops on the route.`;
             return row.facts ? 'No car park at the route.' : '';
@@ -162,7 +164,9 @@ export function queryLine(query: Query, place: Place): Part[] {
     const [low, high] = query.grade;
     if (low > 0 || high < GRADE_TOP) line.push(` · ${low > 0 ? `a T${low + 1} part, ` : ''}up to T${high + 1}`);
     const musts = wishesOf(query, 'must');
-    musts.forEach((wish, i) => line.push(i ? ', ' : ' · must: ', { strong: wishLabel(wish, place, true).toLowerCase() }));
+    // A place keeps its name as it is.
+    const must = (wish: Wish) => wish.startsWith('via:') ? `passes ${placeName(place(wish.slice(4)))}` : wishLabel(wish, place, true).toLowerCase();
+    musts.forEach((wish, i) => line.push(i ? ', ' : ' · must: ', { strong: must(wish) }));
     return line;
 }
 

@@ -2,6 +2,23 @@
      below it, and the selected ones wide at each zoom. Signed routes and trails show their lines at each zoom, with no
      bubble. The lines of the hovered row draw over the others, and the hovered and the selected route show where they
      start and which way they go. -->
+<script lang="ts" module>
+    import type { FeatureCollection as Features } from 'geojson';
+    import type * as gl from 'maplibre-gl';
+
+    /** The points and lines that a page draws over the routes, from its own data, and the tip and the click of its markers. */
+    export interface MapOverlay {
+        /** The features of the source `overlay`, for the lead line of the lit row. */
+        data(hovered: string | undefined): Features;
+        /** Adds the layers of the source `overlay` and their images to a new style. `colour` reads a colour of the theme. */
+        add(map: gl.Map, colour: (name: string) => string): void;
+        /** The layers whose features have an `id` that takes a click and shows a tip. */
+        hit: string[];
+        tip(id: string): { title: string; text: string; action: string } | undefined;
+        onclick(id: string): void;
+    }
+</script>
+
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import * as maplibregl from 'maplibre-gl';
@@ -16,7 +33,7 @@
     import { lineColor, type Box, type Item } from './filter';
     import { chevronImage, startOf } from './start';
 
-    let { items, shown, selected, marked = [], look = 'route', covered = 0, credits = [], together = id => [id], hovered, onhover, onselect, onview, fit, place, borders }: {
+    let { items, shown, selected, marked = [], look = 'route', covered = 0, credits = [], together = id => [id], hovered, onhover, onselect, onview, fit, place, borders, overlay, pick }: {
         items: Item[];
         /** The items of the list. The map draws only these, and the bubbles count only these. */
         shown: Item[];
@@ -51,6 +68,9 @@
         /** A white dot with a ring in `colour` at each point, over the lines, such as the stage borders of a trail. The map
          * reads them when it adds its layers. A map with them shows no start mark: the dots mark where the lines start. */
         borders?: { points: Coordinate[]; colour: string };
+        overlay?: MapOverlay;
+        /** While set, a click on the map gives its point and selects nothing; `text` says so over the map. */
+        pick?: { text: string; onpick: (at: Coordinate) => void };
     } = $props();
 
     const LINE_ZOOM = 8;
@@ -60,6 +80,8 @@
     const STILL_MS = 100;
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>(), ready = $state(false), loaded = $state(false);
+    /** The tip of the marker under the pointer, at its point in the map. */
+    let tip = $state.raw<{ x: number; y: number; title: string; text: string; action: string }>();
     const theme = $derived(appearance.dark ? 'dark' : 'light');
     let styled: typeof theme, styledLook: typeof look, fitted = 0, relief: Relief;
     /** The credits of the terrain and `credits`, which open with the credit of the map. */
@@ -163,6 +185,8 @@
                 layout: { 'text-field': ['coalesce', ['get', 'point_count_abbreviated'], '1'], 'text-font': ['Noto Sans Regular'], 'text-size': 12, 'text-allow-overlap': true },
                 paint: { 'text-color': '#fff' } });
         }
+        // The overlay adds its layers to this source when it comes.
+        map.addSource('overlay', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
         ready = true;
     }
 
@@ -224,12 +248,25 @@
             clearTimeout(still);
             still = setTimeout(() => onview(view()), STILL_MS);
         });
-        created.on('click', 'routes-hit', event => { const id = event.features?.[0]?.properties.id; if (id) onselect(id); });
-        created.on('click', 'bubbles', event => void zoomIn(event));
+        /** The first feature of `layers` at a point. */
+        const featureAt = (at: maplibregl.PointLike, layers: string[]) => {
+            const present = layers.filter(layer => created.getLayer(layer));
+            return present.length ? created.queryRenderedFeatures(at, { layers: present })[0] : undefined;
+        };
+        /** The words of the last tip, for the marker under the pointer. A click, a move or the pointer leaving forgets them, and
+         * so does a new overlay, which a new query gives. */
+        let told: { overlay: MapOverlay; id: string; about: ReturnType<MapOverlay['tip']> } | undefined;
+        // A marker of the overlay lies over the lines, so it takes the click first.
         created.on('click', event => {
-            const layers = ['routes-hit', 'selected-casing', 'bubbles'].filter(layer => created.getLayer(layer));
-            if (!layers.length || !created.queryRenderedFeatures(event.point, { layers }).length) onselect(undefined);
+            tip = told = undefined;
+            if (pick) return pick.onpick([event.lngLat.lng, event.lngLat.lat]);
+            const marker = overlay && featureAt(event.point, overlay.hit)?.properties.id;
+            if (marker !== undefined) return overlay!.onclick(String(marker));
+            const line = featureAt(event.point, ['routes-hit']);
+            if (line) onselect(line.properties.id);
+            else if (!featureAt(event.point, ['selected-casing', 'bubbles'])) onselect(undefined);
         });
+        created.on('click', 'bubbles', event => void zoomIn(event));
         for (const layer of ['routes-hit', 'bubbles']) {
             created.on('mouseenter', layer, () => { created.getCanvas().style.cursor = 'pointer'; });
             created.on('mouseleave', layer, () => { created.getCanvas().style.cursor = ''; });
@@ -244,6 +281,18 @@
             created.on('mouseleave', 'routes-hit', () => hover());
             // A move of the map takes the line from under the pointer with no mouse event.
             created.on('movestart', () => hover());
+            let onMarker = false;
+            created.on('mousemove', event => {
+                const part = pick ? undefined : overlay, found = part && featureAt(event.point, part.hit)?.properties.id;
+                const id = found === undefined ? undefined : String(found);
+                if (id !== undefined && (told?.overlay !== part || told?.id !== id)) told = { overlay: part!, id, about: part!.tip(id) };
+                const about = id === undefined ? undefined : told!.about;
+                // The tip stays inside the map.
+                tip = about && { x: Math.min(Math.max(event.point.x, 130), container.clientWidth - 130), y: Math.max(event.point.y, 76), ...about };
+                // The lines set the cursor too: only a change of the marker under the pointer sets it.
+                if ((id !== undefined) !== onMarker) created.getCanvas().style.cursor = (onMarker = id !== undefined) ? 'pointer' : '';
+            });
+            for (const event of ['mouseout', 'movestart'] as const) created.on(event, () => { tip = told = undefined; });
         }
         const terrainError = terrainRetry(created);
         created.on('error', event => {
@@ -272,6 +321,15 @@
     });
     $effect(() => {
         if (!ready) return;
+        const part = overlay;
+        if (part && !map!.getLayer(part.hit[0])) {
+            const style = getComputedStyle(container);
+            part.add(map!, name => style.getPropertyValue(name).trim());
+        }
+        map!.getSource<maplibregl.GeoJSONSource>('overlay')?.setData(part?.data(hovered) ?? { type: 'FeatureCollection', features: [] });
+    });
+    $effect(() => {
+        if (!ready) return;
         if (look !== 'signed') map!.getSource<maplibregl.GeoJSONSource>('middles')?.setData(middles);
         for (const layer of LINE_LAYERS) if (map!.getLayer(layer)) map!.setFilter(layer, shownFilter);
     });
@@ -281,11 +339,12 @@
         if (look !== 'signed') return;
         for (const layer of ['signed-casing', 'routes']) if (map!.getLayer(layer)) map!.setPaintProperty(layer, 'line-opacity', signedOpacity(selected.length + marked.length > 0));
     });
-    // A new selection or a new card height moves the map; a reload of the same selection does not.
+    // A new selection or a new card height moves the map; a reload of the same selection does not, so a pan of the rider
+    // stays.
     let revealed = '';
     $effect(() => {
         const ids = selected, bottom = covered, key = `${ids.join()}|${bottom}`;
-        if (!ready || !ids.length || !bottom || key === revealed) return;
+        if (!ready || !ids.length || key === revealed) return;
         revealed = key;
         untrack(() => reveal(ids, bottom));
     });
@@ -304,7 +363,11 @@
     });
 </script>
 
-<div class="routes-map" data-loaded={loaded} bind:this={container}></div>
+<div class="routes-map" class:picking={!!pick} data-loaded={loaded} bind:this={container}></div>
+{#if pick}<p class="pick">{pick.text}</p>{/if}
+{#if tip}
+    <p class="tip" style:left="{tip.x}px" style:top="{tip.y}px"><b>{tip.title}</b>{tip.text}<em>{tip.action}</em></p>
+{/if}
 <!-- The map takes this box as a control, after its own credit. The credits of the terrain and `credits` open with the
      credit of the map, at its button. -->
 <div class="maplibregl-ctrl more-credits" bind:this={moreCredits}>
@@ -345,6 +408,47 @@
     }
     :global(.maplibregl-compact-show) + .more-credits p {
         display: block;
+    }
+    .picking :global(canvas) {
+        cursor: crosshair !important;
+    }
+    .pick, .tip {
+        position: absolute;
+        z-index: 2;
+        margin: 0;
+        font-size: 13px;
+        pointer-events: none;
+    }
+    .pick {
+        top: 12px;
+        left: 50%;
+        padding: 6px 12px;
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--ink);
+        white-space: nowrap;
+        box-shadow: var(--planner-shadow);
+        transform: translateX(-50%);
+    }
+    /* Over the point, in the dark look of the tips of the page in both themes. */
+    .tip {
+        padding: 5px 10px;
+        border-radius: 7px;
+        background: rgb(28 27 20 / 0.92);
+        color: #fff;
+        line-height: 1.35;
+        white-space: nowrap;
+        transform: translate(-50%, calc(-100% - 14px));
+    }
+    .tip b, .tip em {
+        display: block;
+    }
+    .tip b {
+        font-weight: 600;
+    }
+    .tip em {
+        color: #f4d58d;
+        font-style: normal;
     }
     :global(:root[data-theme="dark"]) .routes-map :global(.maplibregl-ctrl-attrib-button) {
         filter: invert(1);

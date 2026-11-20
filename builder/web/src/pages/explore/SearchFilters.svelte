@@ -15,7 +15,7 @@
     import Wishes from './Wishes.svelte';
     import { CLIMB_TOP_M, LENGTH_TOP_M } from './words';
 
-    let { query, today, cap, counts, ungraded, lengths, climbs, place, fresh, top, onchange, onreset }: {
+    let { query, today, cap, counts, ungraded, lengths, climbs, place, fresh, top, picking, onpicking, onchange, onreset }: {
         query: Query;
         today: string;
         cap: number;
@@ -29,6 +29,9 @@
         fresh: boolean;
         /** Beside the title. */
         top?: Snippet;
+        /** The next click on the map picks the start point. */
+        picking: boolean;
+        onpicking: (on: boolean) => void;
         onchange: (change: Partial<Query>) => void;
         onreset: () => void;
     } = $props();
@@ -53,7 +56,7 @@
                 </label>
             </div>
         </section>
-        <Journey {query} {cap} {place} {onchange} />
+        <Journey {query} {cap} {place} {picking} {onpicking} {onchange} />
         <!-- The sliders keep one scale while the loaded hikes change. -->
         <section>
             <div class="head"><h3>Length</h3><span class="value">{reading(query.length, distanceIn, () => settings.units)}</span></div>
