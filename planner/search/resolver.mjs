@@ -377,7 +377,8 @@ export function findPlaces(db, request, context, { all = false } = {}) {
     }
   }
   // A route area with no match widens along the route until it holds a match before and after it.
-  if (!results.length && sc.range && !sc.w.near && !all) {
+  // A request with a typed limit ("before X", "after X") keeps that limit.
+  if (!results.length && sc.range && !sc.w.near && !sc.w.before && !sc.w.after && !all) {
     const route = lineOf(context),
       ds = planKm(context),
       total = ds.at(-1),

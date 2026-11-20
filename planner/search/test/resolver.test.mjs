@@ -34,6 +34,9 @@ test('a route area with no match widens along the route to the nearest matches b
   assert.deepEqual(section.results.map(p=>p.source),['n1','n2']);assert.match(section.note,/widened to km 0\.0–6\.0/);
   const end=findPlaces(db,{type:'places',what:['bakery'],where:{scope:'route',part:'end'},radius:{value:1,unit:'km'}},context);
   assert.deepEqual(end.results.map(p=>p.source),['n2','n1']);assert.match(end.area,/^Route km 1\.0–6\.0$/);
+
+  const after=findPlaces(db,{type:'places',what:['bakery'],where:{after:{along:{ref:'km',at:{value:4.5,unit:'km'}}}}},context);
+  assert.equal(after.results.length,0);assert.doesNotMatch(after.note,/widened/);
 });
 test('opening filters exclude unknown tags and require a dated trip for day filters',()=>{
   const {openingState}=openingHours('Europe/Berlin'), opening={...context,openingState};
