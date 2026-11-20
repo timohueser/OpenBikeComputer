@@ -5,6 +5,7 @@
 
 pub mod geometry;
 pub mod places;
+pub mod shares;
 
 use planner_router::shape::P;
 
