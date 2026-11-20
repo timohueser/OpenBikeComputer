@@ -205,14 +205,16 @@
     /** Fits the line of a week, unless the padded view shows all of it. */
     export function showWeek(line: Coordinate[]) {
         if (!map || !line.length) return;
-        const [west, south, east, north] = paddedView();
+        // One pixel of slack: after "Show whole route" the route touches the padded view.
+        const [west, south, east, north] = paddedView(1);
         if (!line.every(([lng, lat]) => lng >= west && lng <= east && lat >= south && lat <= north)) fitCoordinates(line);
     }
 
-    /** The view inside the fit padding, clear of the controls and of a bar over the bottom, as [west, south, east, north]. */
-    function paddedView(): [number, number, number, number] {
+    /** The view inside the fit padding less `slack` pixels, clear of the controls and of a bar over the bottom, as
+     * [west, south, east, north]. */
+    function paddedView(slack = 0): [number, number, number, number] {
         const { clientWidth: width, clientHeight: height } = map!.getContainer(), { top, right, bottom, left } = padding();
-        const northWest = map!.unproject([left, top]), southEast = map!.unproject([width - right, height - bottom]);
+        const northWest = map!.unproject([left - slack, top - slack]), southEast = map!.unproject([width - right + slack, height - bottom + slack]);
         return [northWest.lng, southEast.lat, southEast.lng, northWest.lat];
     }
 
