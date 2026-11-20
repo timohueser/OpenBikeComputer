@@ -93,13 +93,23 @@ def listed(value):
     return value if isinstance(value, list) else [value]
 
 
+def template(key):
+    """Whether the route key `key` is a template of field values, such as `"{A}: {B}"`, and not fields."""
+    return isinstance(key, str) and "{" in key
+
+
+def named(text):
+    """The fields of the template `text`, but `{route}` and `{key}`."""
+    return {field for _, field, _, _ in string.Formatter().parse(text) if field and field not in ("route", "key")}
+
+
 def fields(table, kind=None):
     """The fields of the file that `table` reads."""
-    names = {field for key in TEMPLATES if key in table
-             for _, field, _, _ in string.Formatter().parse(table[key]) if field and field not in ("route", "key")}
+    names = {field for key in TEMPLATES if key in table for field in named(table[key])}
     names |= set(table.get("keep", {})) | set(table.get("drop", {}))
     names |= {value for key in ("ascent", "of", "number") if (value := table.get(key))}
-    names |= set(listed(table.get("key", [])))
+    key = table.get("key", [])
+    names |= named(key) if template(key) else set(listed(key))
     names |= {table[key]["field"] for key in ("rank",) if key in table}
     return names | ({kind["field"]} if isinstance(kind, dict) else set())
 
@@ -113,12 +123,16 @@ def passes(row, table):
 
 def lines(wkb, to_wgs84):
     """Each line of the geometry `wkb` in microdegrees, an array of points, simplified within 1 m and
-    without repeated points. A line of fewer than two points is left out."""
+    without repeated points. Only a line or a part of a multi-line or a collection is one: a start
+    point or the ring of a polygon is not. A line of fewer than two points is left out."""
     import numpy as np
     import shapely
 
-    parts = [] if wkb is None else shapely.get_parts(shapely.from_wkb(wkb))
-    parts = parts[shapely.get_num_coordinates(parts) >= 2] if len(parts) else parts
+    # Two levels: a collection can hold a multi-line.
+    parts = [] if wkb is None else shapely.get_parts(shapely.get_parts(shapely.from_wkb(wkb)))
+    if len(parts):
+        line = np.isin(shapely.get_type_id(parts), [shapely.GeometryType.LINESTRING, shapely.GeometryType.LINEARRING])
+        parts = parts[line & (shapely.get_num_coordinates(parts) >= 2)]
     if not len(parts):
         return []
     # All parts of a feature at once: a route can have thousands of them.
@@ -192,9 +206,15 @@ def read(source, files, bounds):
     box = [round(value * 1e6) for value in bounds]
     seen = {}
 
-    def keys(row, names, where):
-        """`(key, text)` of each field of `names` that has a value in `row`."""
-        texts = [str(row[field]) for field in names if row[field] not in (None, "")]
+    def keys(row, key, where):
+        """`(key, text)` of each field of `key` that has a value in `row`, or of the template `key`
+        filled when each of its fields has one."""
+        if template(key):
+            values = {field: row[field] for field in named(key)}
+            text = "" if "" in values.values() or None in values.values() else key.format_map(values).strip()
+            texts = [text] if text else []
+        else:
+            texts = [str(row[field]) for field in listed(key) if row[field] not in (None, "")]
         return [(key_of(text, seen, where), text) for text in texts]
 
     routes = {}
@@ -202,12 +222,12 @@ def read(source, files, bounds):
         kind_of = kind if isinstance(kind, str) else kind["values"].get(str(row[kind["field"]]))
         if kind_of is None:
             continue
-        for key, text in keys(row, listed(route["key"]), f"{name}: {route['layer']} feature {fid}"):
+        for key, text in keys(row, route["key"], f"{name}: {route['layer']} feature {fid}"):
             routes.setdefault(key, {"row": row, "text": text, "kind": kind_of, "members": []})["members"] += found
     stages = {}
     for fid, row, found in features(name, files, stage, fields(stage)) if stage else []:
         where = f"{name}: {stage['layer']} feature {fid}"
-        for key, _ in keys(row, [stage["of"]], where):
+        for key, _ in keys(row, stage["of"], where):
             if key in routes:
                 stages.setdefault(key, []).append((where, row, found))
 

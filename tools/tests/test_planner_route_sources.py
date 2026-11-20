@@ -1,6 +1,7 @@
 """A route source reads into the common form of specs/obc-data.md, by its description alone."""
 
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -116,6 +117,24 @@ class RouteSourceTest(unittest.TestCase):
                    description=description, route_fields=["N1", "N2", "Level", "Up", "Way"])
         named = {route["name"]: len(route["members"]) for route in got["routes"]}
         self.assertEqual(named, {"Altmuehl": 1, "Jurasteig": 2})
+
+    def test_a_template_key_joins_its_fields_and_only_lines_are_members(self):
+        description = DESCRIPTION.split("[route]")[0] + '[route]\nlayer = "Walks"\nkey = "{Place}: {Name}: {Km}"\nname = "{Name}"\n'
+        line = {"type": "LineString", "coordinates": [[8.01, 47.01], [8.02, 47.02]]}
+        ring = [[8.04, 47.04], [8.05, 47.04], [8.05, 47.05], [8.04, 47.04]]
+        mixed = {"type": "GeometryCollection", "geometries": [
+            {"type": "Point", "coordinates": [8.03, 47.03]}, line, {"type": "Polygon", "coordinates": [ring]}]}
+        rows = [("Au", "324", 3.7, line), ("Au", "324", 2.9, mixed), ("Au", "", 1.5, line), (None, "Ring", 2.5, line)]
+        walks = {"type": "FeatureCollection", "name": "Walks", "features": [
+            {"type": "Feature", "properties": {"Place": place, "Name": name, "Km": km}, "geometry": geometry}
+            for place, name, km, geometry in rows]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "walks.geojson"
+            path.write_text(json.dumps(walks))
+            got = sources.read({"id": "test", "credit": "Test", "description": description}, {"walks.geojson": path}, BOUNDS)
+        member = [[8010000, 47010000, 8020000, 47020000]]
+        routes = {route["key"]: (route["name"], route["members"]) for route in got["routes"]}
+        self.assertEqual(routes, {sources.text_key(f"Au: 324: {km}"): ("324", member) for km in (3.7, 2.9)})
 
     def test_two_texts_with_one_key_fail(self):
         line = multiline([(8.01, 47.01), (8.02, 47.02)])
