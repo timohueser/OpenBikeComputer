@@ -647,7 +647,8 @@ part (`boxes` of `host/obc-trailview-parts`, made from the records as the tiles 
 built chains open. A box holds its faces: a point on the plane where two boxes meet lies in both. The ground is smooth
 inside a face of the ground plan and steps only at a face's edge, so the cut is the union over the faces about the part
 of the region of each face where its own ground (by the face's rule) lies in the boxes: that ground is read each 0.5 m
-in the frame of the opening over the boxes and 0.75 m round them, contoured where its depth in the boxes is 1 µm or
+in the frame of the opening from the frame line, and on two more lines across the opening's box, which is thinner than
+a step (on the front of the head wall and through its middle), over the boxes and 0.75 m round them, contoured where its depth in the boxes is 1 µm or
 less (on the line between two points, by their depths), and clipped to the face. Where the ground steps, the cut's edge
 is the face's edge. A point of a ring is `x y` in whole units of the frame of the ground plan (2^34 units per side)
 from the opening's point as the tile holds it. The rings of an end are simple and do not cross; the step's metric
