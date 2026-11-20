@@ -12,9 +12,13 @@ export function searchLine(coordinates: Coordinate[], km: readonly number[], sec
     const cached = lines.get(coordinates);
     if (cached && cached.seconds === seconds) return cached.line;
     // Douglas–Peucker over two errors: the distance from the kept line, and the riding time against the time
-    // interpolated by kilometre between kept points.
-    const kept = simplify(coordinates, OFFSET_KM, seconds && ((i, a, b) =>
-        (seconds[i] - seconds[a] - (seconds[b] - seconds[a]) / (km[b] - km[a] || 1) * (km[i] - km[a])) / DELAY_SECONDS));
+    // interpolated by kilometre between kept points. A line over the search limit doubles both tolerances until it fits.
+    let kept: number[];
+    for (let scale = 1; ; scale *= 2) {
+        kept = simplify(coordinates, OFFSET_KM * scale, seconds && ((i, a, b) =>
+            (seconds[i] - seconds[a] - (seconds[b] - seconds[a]) / (km[b] - km[a] || 1) * (km[i] - km[a])) / (DELAY_SECONDS * scale)));
+        if (kept.length <= MAX_POINTS) break;
+    }
     const line = {
         coordinates: kept.map(i => coordinates[i].map(v => round(v, 5)) as Coordinate),
         // The last kilometre stays exact: the planner sends the last day's end as the route length.
@@ -29,6 +33,8 @@ export function searchLine(coordinates: Coordinate[], km: readonly number[], sec
 const round = (value: number, digits: number) => Math.round(value * 10 ** digits) / 10 ** digits;
 // A larger offset cuts the corners of hairpins, and places beside them move along the route.
 const OFFSET_KM = .01;
+// The search service refuses a longer line (`planner/search/validation.mjs`).
+const MAX_POINTS = 20_000;
 // Search places hour marks between kept points by kilometre. Ten seconds of riding is about as
 // far as the offset moves a place along the route.
 const DELAY_SECONDS = 10;

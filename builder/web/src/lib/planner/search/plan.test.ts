@@ -22,4 +22,13 @@ describe('search line', () => {
         const line: Coordinate[] = [[8, 48], [8.01, 48], [8.0100039, 48]];
         expect(searchLine(line, [0, .7446, .74489], [0, 100, 160]).km).toEqual([0, .74489, .74489]);
     });
+    it('thins a line over the search limit of 20,000 points until it fits, and keeps a line at the limit', () => {
+        // Zigzags of 20 to 120 m, which the first tolerance keeps; uneven, so the split points are spread.
+        const zigzag = (n: number): Coordinate[] => Array.from({ length: n }, (_, i) => [8 + i * .001, 48 + (i % 2 ? 1 : -1) * (.0002 + (i * 7919 % 101) * 1e-5)]);
+        const atLimit = zigzag(20_000), over = zigzag(20_001), km = (line: Coordinate[]) => line.map((_, i) => i * .1);
+        expect(searchLine(atLimit, km(atLimit)).coordinates).toHaveLength(20_000);
+        const thinned = searchLine(over, km(over));
+        expect(thinned.coordinates.length).toBeLessThanOrEqual(20_000);
+        expect([thinned.km[0], thinned.km.at(-1)]).toEqual([0, km(over)[20_000]]);
+    });
 });
