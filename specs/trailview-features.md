@@ -568,8 +568,9 @@ way on the ground (`graph::build_open`).
 The bake measures each opening on the ground of the ground plan: each cell that holds a point to read is built as the
 viewer builds it, with the tags of the levels and the stretches to the openings on the ground, without the storey
 under the ground (the step's metric `ground_plan_bores` says which). The ladder reads a first measure with the
-stretches of all openings. The numbers read the stretches that the records open (each opening with a part, a pair's
-mate included): the openings near a stretch that the first measure opened otherwise are measured again. Where that
+stretches of all openings. The numbers read the stretches that the device opens: of each opening of a chain whose two
+ends are of the kinds that the viewer builds (`BUILT` of `host/obc-trailview-parts`); the openings near a stretch that
+the first measure opened otherwise are measured again. Where that
 ground no longer fits the kind (no cover, or cover past the limit), the end takes its next kind, and a pair with such
 an end is no pair. A way in the
 tube of a wider one has no record, so a reader keeps it a tunnel way up to its end vertex; the part of the wider tube
@@ -634,11 +635,22 @@ The tags, numbers in metres with at most 2 decimals, the values of a row separat
 | `shift` | end | The metres along that way from `way` to the opening; 0 where it did not move |
 | `mate` | `pair` | The metres to the left from its axis to the axis of the other tube |
 | `mate_way`, `mate_shift` | `pair` | `way` and `shift` of the other opening |
+| `cut` | end of a built chain | The rings where the ground lies in the part (below), each ring its points `x y` separated by `,`, the rings separated by `;`; none where no ground lies in it |
 
 Each `tunnel-tube` has the two vertices of one chord of the tube from opening to opening, in the rising metres along
 the stroke of its way, so a tile that holds a piece of the tube holds whole records. A chain end with no opening
 holds its end vertex. Today's app and the ground plan read neither kind. The tag `levels` and the heights of a
 tunnel way do not change with the parts.
+
+The cut of an end of a chain whose two ends are built is where the ground of the ground plan lies inside a box of its
+part (`boxes` of `host/obc-trailview-parts`, made from the records as the tiles hold them): the ground with the
+stretches of the built chains open, read each 0.5 m in the frame of the opening over the boxes and 0.75 m round them,
+with its depth in the boxes; a ring runs where that depth is 0, between the points by their depths, the cut on its
+left. A point of a ring is metres in along `heading` from the opening's point (`x`) and metres to the left of that
+(`y`), as the tile holds that point; a ring leaves out the points within 2 cm of the line of the points that it keeps.
+A point lies in the cut where an odd number of rings hold it. The boxes hold the room of the part and lie at the
+middle of its wall, so ground that the cut leaves lies outside the part, in the outer half of its wall, or over it. A
+change of `BUILT` or of the sizes of a part bakes the layer again.
 
 #### The floor of a tube
 
