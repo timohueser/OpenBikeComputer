@@ -643,18 +643,18 @@ holds its end vertex. Today's app and the ground plan read neither kind. The tag
 tunnel way do not change with the parts.
 
 The cut of an end of a chain whose two ends are built is where the ground of the ground plan lies inside a box of its
-part (`boxes` of `host/obc-trailview-parts`, made from the records as the tiles hold them): the ground with the
-stretches of the built chains open, read each 0.5 m in the frame of the opening over the boxes and 0.75 m round them,
-with its depth in the boxes. A ring runs where that depth is 1 µm, the cut on its left: on the line between two points,
-by their depths, at whole centimetres and at least 1 cm from each point. A point of a ring is metres in along `heading`
-from the opening's point (`x`) and metres to the left of that (`y`), as the tile holds that point. A ring leaves out a
-point within 2 cm of the line of its neighbours where no edge then meets another. A ring whose ground lies nowhere
-deeper than 0.11 m in the sides and the roof of the boxes goes, with its holes: that ground lies in the part's wall.
-The rings of an end are simple and do not meet; the step's metric `cut_invalid_rings` counts those that are not, and
-is 0. A point lies in the cut where an odd number of rings hold it. The boxes hold the room of the part and lie inside
-its wall, at least 0.11 m from its inside faces as the part draws them, so ground that the cut leaves lies outside the
-part, in its wall, or over it. The band of 0.11 m is inward: toward the outside faces the margin can be less, about
-3 cm to 6 cm at the shoulders of a wide arch. A change of `BUILT` or of the sizes of a part bakes the layer again.
+part (`boxes` of `host/obc-trailview-parts`, made from the records as the tiles hold them), with the stretches of the
+built chains open. A box holds its faces: a point on the plane where two boxes meet lies in both. The ground is smooth
+inside a face of the ground plan and steps only at a face's edge, so the cut is the union over the faces about the part
+of the region of each face where its own ground (by the face's rule) lies in the boxes: that ground is read each 0.5 m
+in the frame of the opening over the boxes and 0.75 m round them, contoured where its depth in the boxes is 1 µm or
+less (on the line between two points, by their depths), and clipped to the face. Where the ground steps, the cut's edge
+is the face's edge. A point of a ring is `x y` in whole units of the frame of the ground plan (2^34 units per side)
+from the opening's point as the tile holds it. The rings of an end are simple and do not cross; the step's metric
+`cut_invalid_rings` counts those that are not, and is 0. A point lies in the cut where an odd number of rings hold it.
+The boxes hold the room of the part and lie inside its wall, at least 0.11 m from its inside faces as the part draws
+them, so ground that the cut leaves lies outside the part, in its wall, or over it. The band of 0.11 m is inward: toward
+the outside faces the margin can be less, about 3 cm to 6 cm at the shoulders of a wide arch. A change of `BUILT` or of the sizes of a part bakes the layer again.
 
 #### The floor of a tube
 

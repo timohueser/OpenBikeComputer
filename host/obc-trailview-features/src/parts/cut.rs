@@ -1,42 +1,38 @@
 //! The cut of each built end: where the ground of the ground plan, with the stretches to the openings of the built
 //! chains on the ground, lies inside a box of its part. The device's ground plan leaves a hole in its mesh there.
 //!
-//! The rings are simple and apart by construction: a point counts as inside the boxes only deeper than `EPS_M`, so a
-//! value of about 0 on a grid line is outside; each crossing lies on its grid edge at whole centimetres, at least a
-//! centimetre from both ends, so no two crossings meet; and a ring leaves out only a point whose removal moves no edge
-//! onto another.
+//! The ground is smooth inside a face of the ground plan and steps only at a face's edge. So the cut is the union, over
+//! the faces about the part, of the region of each face where its own ground lies in the boxes: contoured on a grid in
+//! the face's own ground, then clipped to the face. Where the ground steps, the cut's edge is the face's edge. A box
+//! holds its faces: a point on the plane where two boxes meet lies in both.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
+use i_overlay::core::fill_rule::FillRule;
+use i_overlay::core::overlay::{ContourDirection, IntOverlayOptions, Overlay};
+use i_overlay::core::overlay_rule::OverlayRule;
+use i_overlay::core::solver::{Precision, Solver, Strategy};
+use i_overlay::i_float::int::point::IntPoint;
 use obc_ground_plan::graph::OpenEnd;
-use obc_trailview_parts::{
-    corners, end_boxes, metres_per_unit, outside, outside_plan, outside_wall, Chord, End, Rules, BOX,
-};
+use obc_trailview_parts::{corners, end_boxes, metres_per_unit, outside, outside_plan, Chord, End, Rules, BOX};
 use serde_json::{json, Value};
 
 use super::ladder::Measure;
-use super::measure::Ask;
-use super::num;
+use super::measure::{Ask, Field};
 use crate::tiles::{frame_point, height_code};
 use crate::{Part, Tags};
 
-/// The step of the grid of ground points over the boxes, in centimetres.
-const STEP_CM: i64 = 50;
-const STEP_M: f64 = STEP_CM as f64 / 100.0;
+/// The step of the grid of ground points over the boxes (m).
+const STEP_M: f64 = 0.5;
 /// The grid reads the ground where a point lies this near a box in plan (m); farther, it is outside every box.
 const NEAR_M: f64 = 0.75;
-/// A point counts as inside the boxes where it lies deeper than this (m).
+/// A point counts as inside the boxes where it lies no farther outside than this (m): a point on a box's face is in it.
 const EPS_M: f64 = 1e-6;
-/// A ring leaves out a point that lies nearer than this to the line of its neighbours (cm).
-const KEEP_CM: f64 = 2.0;
-/// The least margin of a box to the faces of its part (m): ground that lies no deeper than this in the sides and the
-/// roof of the boxes lies in the part's wall, so a ring of only such ground goes.
-const WALL_M: f64 = 0.11;
 /// World units per unit of [0, 1], and frame units of the ground plan per world unit.
 const WORLD: f64 = (1u64 << 30) as f64;
 const FRAME: f64 = 16.0;
 
-/// A ring of the cut: points in centimetres in along the opening's heading and to the left of it.
+/// A ring of the cut: frame points of the ground plan less the end's point.
 type Ring = Vec<[i64; 2]>;
 
 /// Adds the tag `cut` to each `tunnel-end` of a built chain whose ground lies in its part, with the stretches of
@@ -47,8 +43,8 @@ pub(crate) fn add(
     rules: &Rules,
     measure: &Measure,
 ) -> Value {
-    // The ends and the chords as the device reads them from the tiles.
-    let (mut ends, mut at) = (Vec::new(), Vec::new());
+    // The ends and the chords as the device reads them from the tiles, and each end's frame point.
+    let (mut ends, mut at, mut origins) = (Vec::new(), Vec::new(), Vec::new());
     let mut chords = Vec::new();
     let mut refused = 0;
     for (i, (kind, tags, part)) in features.iter().enumerate() {
@@ -59,6 +55,7 @@ pub(crate) fn add(
                 Ok(e) => {
                     ends.push(e);
                     at.push(i);
+                    origins.push(frame_point(std::slice::from_ref(part), 0, 0));
                 }
                 Err(_) => refused += 1,
             },
@@ -83,20 +80,10 @@ pub(crate) fn add(
         })
         .collect();
     let (sites, cells) = if asks.is_empty() { (Vec::new(), 0) } else { measure(&asks, opened) };
-    let (mut cut, mut rings_n, mut points_n, mut unknown, mut walls, mut invalid) = (0, 0, 0, 0, 0, 0);
-    for ((e, mut g), site) in grids.into_iter().zip(sites) {
-        for (&(k, p), h) in g.reads.iter().zip(&site.points) {
-            let Some(h) = h else {
-                unknown += 1;
-                g.value[k] = g.value[k].max(STEP_M);
-                continue;
-            };
-            let q = [p[0], p[1], *h];
-            let best = boxes[e].iter().min_by(|a, b| outside(a, q).total_cmp(&outside(b, q))).unwrap();
-            (g.value[k], g.wall[k]) = (outside(best, q), -outside_wall(best, q));
-        }
-        let (rings, dropped) = g.rings();
-        walls += dropped;
+    let (mut cut, mut rings_n, mut points_n, mut faces_n, mut invalid) = (0, 0, 0, 0, 0);
+    for ((e, g), site) in grids.into_iter().zip(sites) {
+        let rings = g.cut(&site.fields, &boxes[e], origins[e]);
+        faces_n += site.fields.len();
         invalid += usize::from(!simple(&rings));
         if rings.is_empty() {
             continue;
@@ -104,15 +91,13 @@ pub(crate) fn add(
         cut += 1;
         rings_n += rings.len();
         points_n += rings.iter().map(Vec::len).sum::<usize>();
-        let cm = |v: i64| num(v as f64 / 100.0);
         let text: Vec<String> = (rings.iter())
-            .map(|r| r.iter().map(|p| format!("{} {}", cm(p[0]), cm(p[1]))).collect::<Vec<_>>().join(","))
+            .map(|r| r.iter().map(|p| format!("{} {}", p[0], p[1])).collect::<Vec<_>>().join(","))
             .collect();
         features[at[e]].1.insert("cut".into(), text.join(";"));
     }
     json!({ "cut_ends": cut, "cut_rings": rings_n, "cut_points": points_n, "cut_cells": cells,
-            "cut_unknown_ground": unknown, "cut_records_refused": refused, "cut_rings_in_the_wall": walls,
-            "cut_invalid_rings": invalid })
+            "cut_faces": faces_n, "cut_records_refused": refused, "cut_invalid_rings": invalid })
 }
 
 /// A world point in [0, 1], as the measure reads it.
@@ -120,15 +105,13 @@ fn world01(p: [f64; 2]) -> [f64; 2] {
     [p[0] / WORLD, p[1] / WORLD]
 }
 
-/// The grid of an end in the frame of its opening, `STEP_CM` apart over its boxes and `NEAR_M` round them: per point
-/// how far its ground lies outside the boxes (negative inside) and how deep it lies inside the sides and the roof of
-/// the box that holds it best; the points whose ground it reads.
+/// The grid of an end in the frame of its opening, `STEP_M` apart over its boxes and `NEAR_M` round them, and the points
+/// whose ground it reads.
 struct Grid {
-    /// The first grid point, in centimetres in the frame of the opening.
-    origin: [i64; 2],
+    /// The first grid point, in metres in the frame of the opening.
+    origin: [f64; 2],
     n: [usize; 2],
-    value: Vec<f64>,
-    wall: Vec<f64>,
+    /// Per point that it reads, its place in the grid and its world point.
     reads: Vec<(usize, [f64; 2])>,
     /// The end's point, unit way in and its left, and metres per world unit.
     at: [f64; 2],
@@ -154,18 +137,13 @@ impl Grid {
                 hi[k] = hi[k].max(q[k]);
             }
         }
-        let origin = lo.map(|l| ((l - NEAR_M) / STEP_M).floor() as i64 * STEP_CM);
-        let n = [0, 1].map(|k| ((hi[k] + NEAR_M - origin[k] as f64 / 100.0) / STEP_M).ceil() as usize + 1);
-        let cells = n[0] * n[1];
-        let (value, wall) = (vec![0.0; cells], vec![0.0; cells]);
-        let mut g = Grid { origin, n, value, wall, reads: Vec::new(), at: end.at, into, left, m };
+        let origin = lo.map(|l| ((l - NEAR_M) / STEP_M).floor() * STEP_M);
+        let n = [0, 1].map(|k| ((hi[k] + NEAR_M - origin[k]) / STEP_M).ceil() as usize + 1);
+        let mut g = Grid { origin, n, reads: Vec::new(), at: end.at, into, left, m };
         for j in 0..n[1] {
             for i in 0..n[0] {
-                let p = g.world(i, j);
-                // In plan alone: a lower bound of `outside`.
-                let plan = boxes.iter().map(|b| outside_plan(b, p)).fold(f64::INFINITY, f64::min);
-                g.value[j * n[0] + i] = plan;
-                if plan <= NEAR_M {
+                let p = g.world(g.place(i, j));
+                if boxes.iter().map(|b| outside_plan(b, p)).fold(f64::INFINITY, f64::min) <= NEAR_M {
                     g.reads.push((j * n[0] + i, p));
                 }
             }
@@ -173,29 +151,67 @@ impl Grid {
         g
     }
 
-    /// Grid point (i, j) in centimetres in the frame of the opening.
-    fn place(&self, i: usize, j: usize) -> [i64; 2] {
-        [self.origin[0] + i as i64 * STEP_CM, self.origin[1] + j as i64 * STEP_CM]
+    /// Grid point (i, j) in metres in the frame of the opening.
+    fn place(&self, i: usize, j: usize) -> [f64; 2] {
+        [self.origin[0] + i as f64 * STEP_M, self.origin[1] + j as f64 * STEP_M]
     }
 
-    /// The world point of grid point (i, j).
-    fn world(&self, i: usize, j: usize) -> [f64; 2] {
-        let [u, v] = self.place(i, j).map(|c| c as f64 / 100.0);
+    /// The world point of metres u in and v to the left.
+    fn world(&self, [u, v]: [f64; 2]) -> [f64; 2] {
         let d = [self.into[0] * u + self.left[0] * v, self.into[1] * u + self.left[1] * v];
         [self.at[0] + d[0] / self.m, self.at[1] + d[1] / self.m]
     }
 
-    /// The rings of the cut, and the count of rings that go because all their ground lies in the wall. Marching
-    /// squares where the value is under −`EPS_M`, the cut on the left of each ring's way; a cell whose diagonal corners
-    /// alone are inside joins them where the mean of its corners is inside. A crossing lies at the share of the values
-    /// on its edge, in whole centimetres from 1 to `STEP_CM` − 1.
-    fn rings(&self) -> (Vec<Ring>, usize) {
+    /// The rings of the cut, frame points less `origin`: per face, the region where its own ground lies in the boxes,
+    /// clipped to the face; then the union of those.
+    fn cut(&self, fields: &[Field], boxes: &[[f64; BOX]], origin: [i64; 2]) -> Vec<Ring> {
+        let to_frame = |q: [f64; 2]| {
+            let w = self.world(q);
+            let f = [0, 1].map(|k| ((w[k] * FRAME).round() as i64 - origin[k]) as i32);
+            IntPoint::new(f[0], f[1])
+        };
+        let mut pieces: Vec<Vec<IntPoint>> = Vec::new();
+        for field in fields {
+            // A point whose ground the face does not read lies outside.
+            let mut value = vec![STEP_M; self.n[0] * self.n[1]];
+            for &(k, h) in &field.heights {
+                let (cell, p) = self.reads[k as usize];
+                let q = [p[0], p[1], h];
+                value[cell] = boxes.iter().map(|b| outside(b, q)).fold(f64::INFINITY, f64::min);
+            }
+            let contours = self.contours(&value);
+            if contours.is_empty() {
+                continue;
+            }
+            let subject: Vec<Vec<IntPoint>> =
+                contours.into_iter().map(|r| r.into_iter().map(to_frame).collect()).collect();
+            let face: Vec<Vec<IntPoint>> = (field.rings.iter())
+                .map(|r| {
+                    r.iter().map(|q| IntPoint::new((q[0] - origin[0]) as i32, (q[1] - origin[1]) as i32)).collect()
+                })
+                .collect();
+            let inside = Overlay::from_subj_and_clip_custom(&subject, &face, options(), solver())
+                .overlay(OverlayRule::Intersect, FillRule::EvenOdd);
+            pieces.extend(inside.into_iter().flatten());
+        }
+        if pieces.is_empty() {
+            return Vec::new();
+        }
+        let union = Overlay::from_subj_and_clip_custom(&pieces, &Vec::<Vec<IntPoint>>::new(), options(), solver())
+            .overlay(OverlayRule::Subject, FillRule::NonZero);
+        union.into_iter().flatten().map(|r| r.into_iter().map(|q| [i64::from(q.x), i64::from(q.y)]).collect()).collect()
+    }
+
+    /// The rings where `value` is under `EPS_M`, in metres in the frame of the opening, the region on the left of each:
+    /// marching squares, a crossing on each grid edge at the share of its two values; a cell whose diagonal corners
+    /// alone are inside joins them where the mean of its corners is inside.
+    fn contours(&self, value: &[f64]) -> Vec<Vec<[f64; 2]>> {
         let [nu, nv] = self.n;
-        let v = |i: usize, j: usize| self.value[j * nu + i] + EPS_M;
+        let v = |i: usize, j: usize| value[j * nu + i] - EPS_M;
         // An edge of the grid: from (i, j) along u (0) or along v (1).
         let point = |(i, j, axis): (usize, usize, usize)| {
             let (a, b) = if axis == 0 { (v(i, j), v(i + 1, j)) } else { (v(i, j), v(i, j + 1)) };
-            let t = ((a / (a - b) * STEP_CM as f64).round() as i64).clamp(1, STEP_CM - 1);
+            let t = a / (a - b) * STEP_M;
             let base = self.place(i, j);
             if axis == 0 {
                 [base[0] + t, base[1]]
@@ -203,7 +219,7 @@ impl Grid {
                 [base[0], base[1] + t]
             }
         };
-        let mut next: HashMap<(usize, usize, usize), (usize, usize, usize)> = HashMap::new();
+        let mut next = BTreeMap::new();
         for j in 0..nv - 1 {
             for i in 0..nu - 1 {
                 // The corners and the edges counter-clockwise from (i, j), u east and v north.
@@ -226,7 +242,7 @@ impl Grid {
             }
         }
         let mut rings = Vec::new();
-        while let Some(&start) = next.keys().min() {
+        while let Some((&start, _)) = next.first_key_value() {
             let mut ring = Vec::new();
             let mut at = start;
             while let Some(to) = next.remove(&at) {
@@ -235,41 +251,25 @@ impl Grid {
             }
             rings.push(ring);
         }
-        // An outer ring turns left (the cut on its left), a hole right. An outer ring goes, with its holes, where no
-        // ground inside it lies deeper than `WALL_M` in the sides and the roof of the boxes.
-        // A ring's parent is the smallest ring of the other turn that holds it; a hole goes with its parent.
-        let outer: Vec<bool> = rings.iter().map(|r| area2(r) > 0).collect();
-        let parent = |r: usize| {
-            (0..rings.len())
-                .filter(|&o| outer[o] != outer[r] && holds(&rings[o], rings[r][0]))
-                .min_by_key(|&o| area2(&rings[o]).abs())
-        };
-        let mut keep = vec![true; rings.len()];
-        let mut dropped = 0;
-        for o in (0..rings.len()).filter(|&o| outer[o]) {
-            // The ground of the outer ring itself: in it, and in none of its holes.
-            let holes: Vec<usize> = (0..rings.len()).filter(|&h| !outer[h] && parent(h) == Some(o)).collect();
-            let deepest = (0..nv)
-                .flat_map(|j| (0..nu).map(move |i| (i, j)))
-                .filter(|&(i, j)| {
-                    let q = self.place(i, j);
-                    v(i, j) < 0.0 && holds(&rings[o], q) && !holes.iter().any(|&h| holds(&rings[h], q))
-                })
-                .map(|(i, j)| self.wall[j * nu + i])
-                .fold(f64::NEG_INFINITY, f64::max);
-            if deepest < WALL_M {
-                keep[o] = false;
-                dropped += 1;
-                holes.iter().for_each(|&h| keep[h] = false);
-            }
-        }
-        let mut rings: Vec<Ring> = rings.into_iter().zip(keep).filter(|(_, k)| *k).map(|(r, _)| r).collect();
-        thin(&mut rings);
-        (rings, dropped)
+        rings
     }
 }
 
-/// Twice the signed area of a ring, positive where it turns left.
+fn solver() -> Solver {
+    Solver { strategy: Strategy::Frag, precision: Precision::ABSOLUTE, multithreading: None }
+}
+
+fn options() -> IntOverlayOptions<u64> {
+    IntOverlayOptions {
+        preserve_input_collinear: false,
+        output_direction: ContourDirection::CounterClockwise,
+        preserve_output_collinear: false,
+        min_output_area: 0,
+        ogc: false,
+    }
+}
+
+/// Twice the signed area of a ring.
 fn area2(r: &Ring) -> i128 {
     (0..r.len()).map(|k| cross(r[k], r[(k + 1) % r.len()])).sum()
 }
@@ -283,116 +283,19 @@ fn turn(a: [i64; 2], b: [i64; 2], c: [i64; 2]) -> i128 {
     cross([b[0] - a[0], b[1] - a[1]], [c[0] - a[0], c[1] - a[1]])
 }
 
-/// Whether c lies in the box of the segment from a to b.
-fn within(a: [i64; 2], b: [i64; 2], c: [i64; 2]) -> bool {
-    (a[0].min(b[0])..=a[0].max(b[0])).contains(&c[0]) && (a[1].min(b[1])..=a[1].max(b[1])).contains(&c[1])
-}
-
-/// Whether a ring holds a point, even-odd; a point on an edge counts as held.
-fn holds(r: &Ring, p: [i64; 2]) -> bool {
-    let mut odd = false;
-    for k in 0..r.len() {
-        let (a, b) = (r[k], r[(k + 1) % r.len()]);
-        if turn(a, b, p) == 0 && within(a, b, p) {
-            return true;
-        }
-        if (a[1] > p[1]) != (b[1] > p[1]) && (turn(a, b, p) > 0) == (b[1] > a[1]) {
-            odd = !odd;
-        }
-    }
-    odd
-}
-
-/// Whether two closed segments meet.
-fn meet(a: [i64; 2], b: [i64; 2], c: [i64; 2], d: [i64; 2]) -> bool {
-    let (d1, d2, d3, d4) = (turn(c, d, a), turn(c, d, b), turn(a, b, c), turn(a, b, d));
-    (d1.signum() * d2.signum() < 0 && d3.signum() * d4.signum() < 0)
-        || (d1 == 0 && within(c, d, a))
-        || (d2 == 0 && within(c, d, b))
-        || (d3 == 0 && within(a, b, c))
-        || (d4 == 0 && within(a, b, d))
-}
-
-/// Whether the way p → q → o turns back along one line at q.
-fn folds(p: [i64; 2], q: [i64; 2], o: [i64; 2]) -> bool {
-    turn(p, q, o) == 0 && (p[0] - q[0]) * (o[0] - q[0]) + (p[1] - q[1]) * (o[1] - q[1]) > 0
-}
-
-/// The edges of rings: per edge its ring, its first point's place, and its two ends.
-fn edges(rings: &[Ring]) -> Vec<(usize, usize, [i64; 2], [i64; 2])> {
-    (rings.iter().enumerate())
-        .flat_map(|(r, ring)| (0..ring.len()).map(move |k| (r, k, ring[k], ring[(k + 1) % ring.len()])))
-        .collect()
-}
-
-/// Whether rings are simple and apart: each has at least 3 points and an area, two edges of one ring that follow each
-/// other meet only at their shared point, and no other two edges meet.
+/// Whether rings are simple and apart: each has at least 3 points and an area, and no two of their edges cross inside
+/// both.
 fn simple(rings: &[Ring]) -> bool {
     if rings.iter().any(|r| r.len() < 3 || area2(r) == 0) {
         return false;
     }
-    let all = edges(rings);
-    all.iter().enumerate().all(|(x, &(r, k, a, b))| {
-        all[x + 1..].iter().all(|&(s, l, c, d)| {
-            let n = rings[r].len();
-            if r == s && l == (k + 1) % n {
-                !folds(a, b, d)
-            } else if r == s && k == (l + 1) % n {
-                !folds(c, d, b)
-            } else {
-                !meet(a, b, c, d)
-            }
+    let edges: Vec<([i64; 2], [i64; 2])> =
+        rings.iter().flat_map(|r| (0..r.len()).map(move |k| (r[k], r[(k + 1) % r.len()]))).collect();
+    edges.iter().enumerate().all(|(x, &(a, b))| {
+        edges[x + 1..].iter().all(|&(c, d)| {
+            let (d1, d2, d3, d4) = (turn(c, d, a), turn(c, d, b), turn(a, b, c), turn(a, b, d));
+            !(d1.signum() * d2.signum() < 0 && d3.signum() * d4.signum() < 0)
         })
-    })
-}
-
-/// Leaves out of the rings the points within `KEEP_CM` of the line of their neighbours, one at a time, the nearest
-/// first, while each removal keeps the rings simple and apart (`removable`).
-fn thin(rings: &mut [Ring]) {
-    loop {
-        let mut best: Option<(f64, usize, usize)> = None;
-        for (r, ring) in rings.iter().enumerate() {
-            let n = ring.len();
-            for k in 0..n {
-                let (a, p, b) = (ring[(k + n - 1) % n], ring[k], ring[(k + 1) % n]);
-                let l = ((b[0] - a[0]) as f64).hypot((b[1] - a[1]) as f64);
-                let off = if l > 0.0 { turn(a, b, p).abs() as f64 / l } else { f64::INFINITY };
-                if off < KEEP_CM && best.is_none_or(|x| off < x.0) && removable(rings, r, k) {
-                    best = Some((off, r, k));
-                }
-            }
-        }
-        let Some((_, r, k)) = best else { return };
-        rings[r].remove(k);
-    }
-}
-
-/// Whether point k of ring r can go: the ring keeps more than 3 points and its turn, the triangle that goes holds no
-/// other point, and the new edge from its neighbour before to its neighbour after meets no other edge but the two
-/// beside it, at its ends, and folds onto neither.
-fn removable(rings: &[Ring], r: usize, k: usize) -> bool {
-    let ring = &rings[r];
-    let n = ring.len();
-    let (i, j) = ((k + n - 1) % n, (k + 1) % n);
-    let (a, p, b) = (ring[i], ring[k], ring[j]);
-    let mut kept = ring.clone();
-    kept.remove(k);
-    if n <= 3 || area2(&kept) == 0 || (area2(&kept) > 0) != (area2(ring) > 0) {
-        return false;
-    }
-    let triangle = vec![a, p, b];
-    let others = (rings.iter().enumerate())
-        .flat_map(|(s, o)| o.iter().enumerate().map(move |(l, &q)| (s, l, q)))
-        .filter(|&(s, l, _)| !(s == r && [i, k, j].contains(&l)));
-    if area2(&triangle) != 0 && others.into_iter().any(|(_, _, q)| holds(&triangle, q)) {
-        return false;
-    }
-    let before = (i + n - 1) % n;
-    edges(rings).into_iter().all(|(s, l, c, d)| match (s == r, l) {
-        (true, l) if l == i || l == k => true,
-        (true, l) if l == before => !folds(c, a, b),
-        (true, l) if l == j => !folds(a, b, d),
-        _ => !meet(a, b, c, d),
     })
 }
 
@@ -400,68 +303,61 @@ fn removable(rings: &[Ring], r: usize, k: usize) -> bool {
 mod tests {
     use super::*;
 
-    /// A grid of `n` points along u and v with a value from the centimetres of each, its first point at the origin.
-    fn grid(n: [usize; 2], value: impl Fn(i64, i64) -> f64) -> Grid {
-        let (mut values, mut wall) = (Vec::new(), Vec::new());
-        for j in 0..n[1] {
-            for i in 0..n[0] {
-                values.push(value(i as i64 * STEP_CM, j as i64 * STEP_CM));
-                wall.push(1.0);
-            }
-        }
-        let (at, into, left, m) = ([0.0, 0.0], [1.0, 0.0], [0.0, -1.0], 1.0);
-        Grid { origin: [0, 0], n, value: values, wall, reads: Vec::new(), at, into, left, m }
+    /// A grid 6 m in and 6 m across from (−1, −3) m, every point read, at 46.8° N, its way in east.
+    fn grid() -> Grid {
+        let at = [0.523 * WORLD, 0.3597 * WORLD];
+        let (into, left, m) = ([1.0, 0.0], [0.0, -1.0], metres_per_unit(at[1]));
+        let mut g = Grid { origin: [-1.0, -3.0], n: [13, 13], reads: Vec::new(), at, into, left, m };
+        g.reads = (0..13 * 13).map(|k| (k, g.world(g.place(k % 13, k / 13)))).collect();
+        g
+    }
+
+    /// A flat box from u0 to u1 metres in, 2 m to each side, from 0 m to 3 m up.
+    fn flat(g: &Grid, u0: f64, u1: f64) -> [f64; BOX] {
+        let s = g.world([u0, 0.0]);
+        [s[0], s[1], 1.0, 0.0, u1 - u0, 2.0, 3.0, 0.0, 0.0, 3.0, 0.0, 0.0]
+    }
+
+    /// The frame points of a rectangle from u0 to u1 in and v0 to v1 to the left: a face.
+    fn face(g: &Grid, [u0, u1, v0, v1]: [f64; 4]) -> Vec<Vec<[i64; 2]>> {
+        let f = |u, v| g.world([u, v]).map(|w| (w * FRAME).round() as i64);
+        vec![vec![f(u0, v1), f(u0, v0), f(u1, v0), f(u1, v1)]]
+    }
+
+    /// A face's field with its ground at height h at every point.
+    fn field(g: &Grid, rect: [f64; 4], h: f64) -> Field {
+        Field { rings: face(g, rect), heights: (0..g.reads.len() as u32).map(|k| (k, h)).collect() }
+    }
+
+    fn square_metres(g: &Grid, r: &Ring) -> f64 {
+        let m = g.m / FRAME;
+        area2(r).unsigned_abs() as f64 / 2.0 * m * m
     }
 
     #[test]
-    fn the_rings_are_simple_and_apart_where_a_box_face_lies_on_a_grid_line() {
-        // A box face on the grid line u = 100 cm, its value about 0 there and of each sign by turns, as the rounding of
-        // two boxes that meet there gives; and a second region that meets the first at a corner of a cell.
-        let face = |u: i64, v: i64| {
-            if u == 100 {
-                if (u / STEP_CM + v / STEP_CM) % 2 == 0 {
-                    1e-16
-                } else {
-                    -1e-16
-                }
-            } else if ((100..=300).contains(&u) && (50..=300).contains(&v))
-                || ((350..=450).contains(&u) && (350..=450).contains(&v))
-            {
-                -0.3
-            } else {
-                0.4
-            }
-        };
-        let (rings, dropped) = grid([12, 12], face).rings();
-        assert!(simple(&rings), "{rings:?}");
-        assert_eq!((rings.len(), dropped), (2, 0));
-        // No point of a ring is a grid point.
-        assert!(rings.iter().flatten().all(|p| p[0] % STEP_CM != 0 || p[1] % STEP_CM != 0), "{rings:?}");
-        // Ground that lies in the wall alone goes.
-        let mut g = grid([12, 12], face);
-        g.wall.iter_mut().for_each(|w| *w = WALL_M / 2.0);
-        assert_eq!(g.rings(), (Vec::new(), 2));
+    fn the_cut_follows_a_face_edge_where_the_ground_steps() {
+        // A road face to 1.23 m in, its ground over the box; a hill face beyond, its ground in the box.
+        let g = grid();
+        let origin = g.world([0.0, 0.0]).map(|w| (w * FRAME).round() as i64);
+        let (road, hill) = ([-1.0, 1.23, -3.0, 3.0], [1.23, 5.0, -3.0, 3.0]);
+        let rings = g.cut(&[field(&g, road, 4.0), field(&g, hill, 1.0)], &[flat(&g, 0.0, 4.0)], origin);
+        assert!(simple(&rings) && rings.len() == 1, "{rings:?}");
+        // The ring's edge at the step is the face's edge: both of its ends lie on the face's own edge line.
+        let edge: Vec<[i64; 2]> = face(&g, hill)[0][..2].iter().map(|p| [p[0] - origin[0], p[1] - origin[1]]).collect();
+        let on = |p: [i64; 2]| turn(edge[0], edge[1], p) == 0;
+        let r = &rings[0];
+        assert!((0..r.len()).any(|k| on(r[k]) && on(r[(k + 1) % r.len()])), "{r:?}");
+        // 2.77 m in by 4 m across.
+        assert!((square_metres(&g, r) - 2.77 * 4.0).abs() < 0.01, "{}", square_metres(&g, r));
     }
 
     #[test]
-    fn a_ring_in_the_wall_goes_with_its_holes_but_not_with_a_deeper_ring_in_them() {
-        // Ground in the wall round a hole, and in the hole ground deep in the room.
-        let ring = |u: i64, v: i64, lo: i64, hi: i64| (lo..=hi).contains(&u) && (lo..=hi).contains(&v);
-        let mut g = grid([14, 14], |u, v| {
-            if ring(u, v, 250, 400) || (ring(u, v, 100, 550) && !ring(u, v, 200, 450)) {
-                -0.3
-            } else {
-                0.4
-            }
-        });
-        for j in 0..14 {
-            for i in 0..14 {
-                g.wall[j * 14 + i] =
-                    if ring(i as i64 * STEP_CM, j as i64 * STEP_CM, 250, 400) { 1.0 } else { WALL_M / 2.0 };
-            }
-        }
-        let (rings, dropped) = g.rings();
-        assert_eq!((rings.len(), dropped), (1, 1), "{rings:?}");
-        assert!(simple(&rings) && area2(&rings[0]) > 0 && holds(&rings[0], [300, 300]));
+    fn two_boxes_that_meet_on_a_grid_line_hold_the_ground_on_it() {
+        let g = grid();
+        let origin = g.world([0.0, 0.0]).map(|w| (w * FRAME).round() as i64);
+        let ground = [field(&g, [-1.0, 5.0, -3.0, 3.0], 1.0)];
+        let rings = g.cut(&ground, &[flat(&g, 0.0, 2.0), flat(&g, 2.0, 4.0)], origin);
+        assert_eq!(rings.len(), 1, "{rings:?}");
+        assert!((square_metres(&g, &rings[0]) - 16.0).abs() < 0.01, "{}", square_metres(&g, &rings[0]));
     }
 }

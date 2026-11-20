@@ -72,6 +72,11 @@ pub fn terrain_at(terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option<f64> 
     terrain.height(GlobalPoint { x: o.x + q[0].round() as i64, y: o.y + q[1].round() as i64 })
 }
 
+/// The height at q by the rule of `label` (None: the terrain's), wherever q lies.
+pub fn at_rule(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2], label: Option<u32>) -> Option<Height> {
+    Some(height_at(words, q, label, terrain_at(terrain, cell, q)?))
+}
+
 /// The height at q with the label of `find` there.
 pub fn at(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option<(Height, Option<u32>)> {
     let t = terrain_at(terrain, cell, q)?;

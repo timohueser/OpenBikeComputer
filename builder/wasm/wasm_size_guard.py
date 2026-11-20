@@ -34,7 +34,7 @@ from pathlib import Path
 # The built tunnel ends (obc-trailview-parts) with their open stretches and the cut in the mesh, with its snap
 # rounding, add about 68 kB gzipped; measured on that build with wasm-pack 0.15.0 and rustc 1.99.0, which gives the
 # build before it about 5 kB more than CI.
-GROUND_PLAN_MEASURED = {"gzipped": 856_024, "raw_wasm": 2_205_022}
+GROUND_PLAN_MEASURED = {"gzipped": 856_552, "raw_wasm": 2_206_089}
 # The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
 # unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
 # A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain

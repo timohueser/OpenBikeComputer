@@ -1,7 +1,7 @@
 //! The built tunnel ends of a cell's input (`obc-trailview-parts`): the openings that its ground reaches, and the cut of
 //! each end, where the bake found ground inside its part: the mesh leaves the cut open.
 
-use obc_trailview_parts::{built_ends, metres_per_unit, Chord, End, Rules};
+use obc_trailview_parts::{built_ends, Chord, End, Rules};
 
 use crate::frame::{CellKey, GlobalPoint};
 use crate::graph::OpenEnd;
@@ -28,7 +28,7 @@ pub fn built(input: &CellInput) -> (Vec<OpenEnd>, Vec<Cut>) {
             ("tunnel-end", Geometry::Point, &[p]) => {
                 if let Ok(end) = End::from_tags(world(p), z(0), &f.tags, rules) {
                     ends.push(end);
-                    cuts.push(f.tags.get("cut"));
+                    cuts.push(f.tags.get("cut").map(|text| (text, p)));
                 }
             }
             ("tunnel-tube", Geometry::Line, &[a, b]) => {
@@ -51,23 +51,20 @@ pub fn built(input: &CellInput) -> (Vec<OpenEnd>, Vec<Cut>) {
                 open.push(OpenEnd { way: GlobalPoint { x: way[0], y: way[1] }, shift_m });
             }
         }
-        if let Some(rings) = cut.and_then(|text| rings(text, end, input.key)) {
+        if let Some(rings) = cut.and_then(|(text, p)| rings(text, p, input.key)) {
             out.push(rings);
         }
     }
     (open, out)
 }
 
-/// The rings of a tag `cut` of an end in frame units from the cell's origin, each point at the nearest whole unit; None
-/// where the tag does not read.
-fn rings(text: &str, end: &End, cell: CellKey) -> Option<Cut> {
-    let (into, m, o) = (end.way_in(), metres_per_unit(end.at[1]), cell.origin());
-    let left = [into[1], -into[0]];
-    let point = |p: &str| -> Option<[i64; 2]> {
-        let (u, v) = p.split_once(' ')?;
-        let (u, v): (f64, f64) = (u.parse().ok()?, v.parse().ok()?);
-        let world = [0, 1].map(|k| end.at[k] + (into[k] * u + left[k] * v) / m);
-        Some([libm::round(world[0] * FRAME) as i64 - o.x, libm::round(world[1] * FRAME) as i64 - o.y])
+/// The rings of a tag `cut` of an end at frame point `p`, in frame units from the cell's origin; None where the tag
+/// does not read.
+fn rings(text: &str, p: GlobalPoint, cell: CellKey) -> Option<Cut> {
+    let o = cell.origin();
+    let point = |q: &str| -> Option<[i64; 2]> {
+        let (x, y) = q.split_once(' ')?;
+        Some([p.x + x.parse::<i64>().ok()? - o.x, p.y + y.parse::<i64>().ok()? - o.y])
     };
     text.split(';').map(|ring| ring.split(',').map(point).collect::<Option<Vec<_>>>()).collect()
 }
@@ -100,6 +97,14 @@ mod tests {
         Feature { index: 0, kind: kind.into(), tags, geometry, parts: vec![part] }
     }
 
+    /// The tag `cut` of one ring of points in metres in and to the left from an end 6 m east of the cell's centre,
+    /// heading east: frame units from its point.
+    fn cut(ring: [[f64; 2]; 4]) -> String {
+        let m = crate::faces::tests::mpu();
+        let point = |[u, v]: [f64; 2]| format!("{} {}", libm::round(u / m), libm::round(-v / m));
+        ring.map(point).join(",")
+    }
+
     /// A residential road from the west into a tunnel at the cell's centre that runs 100 m east, under a hill; with
     /// `ends`, its chain's part records: an arch 6 m in, whose cut runs from 2 m before its opening to 3 m in and 4 m to
     /// each side, across the road.
@@ -129,7 +134,7 @@ mod tests {
             ("foot", s("-2")),
             ("way", format!("{} {}", way.x, way.y)),
             ("shift", s("6")),
-            ("cut", s("-2 -4,3 -4,3 4,-2 4")),
+            ("cut", cut([[-2.0, -4.0], [3.0, -4.0], [3.0, 4.0], [-2.0, 4.0]])),
         ];
         input.features.push(record("tunnel-end", &[6.0], &end));
         for (a, b) in [(6.0, 50.0), (50.0, 100.0)] {
