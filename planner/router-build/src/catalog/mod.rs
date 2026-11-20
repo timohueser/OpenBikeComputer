@@ -728,12 +728,12 @@ fn catalog<S: Source + Clone + Send>(
     Guard::exempt("merge");
     let parts: HashSet<i64> = long.iter().flat_map(|(_, _, leaves, _)| leaves.iter().map(|leaf| leaf.id)).collect();
     let merge = Merge::replace(&probes, &|id| planned.kept.contains_key(&id), &|id| parts.contains(&id));
-    for &id in merge.replaced.keys() {
+    for &id in &merge.replaced {
         drops.insert(id, Reason::Replaced);
         planned.kept.remove(&id);
     }
     Guard::exempt("catalog");
-    jobs.retain(|job| !merge.replaced.contains_key(&job.relation.id));
+    jobs.retain(|job| !merge.replaced.contains(&job.relation.id));
     let size = |job: &Job| job.members.iter().map(|m| m.nodes.len()).sum();
     let (searched, seconds) = pool(selection, workers, jobs, size, |router, job, calls| {
         (job.relation.id, route(router, job, &points, section_m, calls))
@@ -746,7 +746,7 @@ fn catalog<S: Source + Clone + Send>(
     Guard::exempt("merge");
     let successors: BTreeMap<i64, Vec<i64>> = merge
         .replaced
-        .keys()
+        .iter()
         .map(|&id| (id, merge.successors(id, &probes, &|id| kept.get(&id).map(|k| k.start))))
         .collect();
     for (record, job) in merge::donors(&successors, &probes) {

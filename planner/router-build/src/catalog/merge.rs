@@ -3,7 +3,7 @@
 use super::dense;
 use planner_router::shape::{distance, Near, P};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// A pair by agreement needs this share of one match line along the other.
 const AGREE_SHARE: f64 = 0.2;
@@ -144,8 +144,8 @@ fn pair((job, near): (&Probe, &Near), (id, record, index): &(i64, &Probe, Near))
 pub(super) struct Merge {
     /// The pairs of each job with the kept records of earlier origins.
     pub pairs: HashMap<i64, Vec<Pair>>,
-    /// Each job that left, with the cover of its pairs.
-    pub replaced: BTreeMap<i64, f64>,
+    /// Each job that left.
+    pub replaced: BTreeSet<i64>,
 }
 
 impl Merge {
@@ -163,7 +163,7 @@ impl Merge {
         for origin in 1..=last {
             let records: Vec<(i64, &Probe, Near)> = probes
                 .iter()
-                .filter(|(id, probe)| probe.origin < origin && kept(**id) && !merge.replaced.contains_key(id))
+                .filter(|(id, probe)| probe.origin < origin && kept(**id) && !merge.replaced.contains(id))
                 .map(|(id, probe)| (*id, probe, probe.near()))
                 .collect();
             let jobs: Vec<(&i64, &Probe)> = probes.iter().filter(|(_, probe)| probe.origin == origin).collect();
@@ -189,7 +189,7 @@ impl Merge {
                 .collect();
             for (id, pairs, cover) in found {
                 if cover >= SAME_SHARE {
-                    merge.replaced.insert(id, cover);
+                    merge.replaced.insert(id);
                 }
                 merge.pairs.insert(id, pairs);
             }

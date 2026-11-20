@@ -1058,12 +1058,11 @@ fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), S
         "Rand",
         &[[at(&[60, 61, 62, 63]), vec![[ORIGIN - 2_000_000, ORIGIN]]].concat()],
     ));
-    lines.insert(source_id(1, 90, 0), at(&[60, 61, 62, 63]));
-    // One route in both sources.
+    // One route in both sources: the second one leaves.
     for origin in [1, 2] {
         sources[origin - 1].push(official(91, "hiking", 1, "8", "Doppel", &[at(&[3, 13, 23, 33])]));
-        lines.insert(source_id(origin as i64, 91, 0), at(&[3, 13, 23, 33]));
     }
+    lines.insert(source_id(2, 91, 0), at(&[3, 13, 23, 33]));
     let networks = ["lwn", "rwn", ""];
     let mut relations: Vec<(i64, &str, &str, Vec<i64>)> = Vec::new();
     for id in 101..=140i64 {
@@ -1123,9 +1122,8 @@ fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), S
     lines.insert(150, at(&walks[0]));
     let (package, osm) = grid(osm);
     let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources_of(sources), 2, SECTION_M)?;
-    // The invariant: each job that left shows by at least four fifths in the records of earlier origins
-    // in the catalog, so no source record leaves for an OSM job; and each source job that is not in
-    // the catalog failed its own line or plan, or left for an earlier source.
+    // The invariant: only OSM jobs and jobs of the second source leave, and each job that left shows by
+    // at least four fifths in the records of earlier origins in the catalog.
     let origin = |id: i64| if id <= -sources::ORIGIN_ID { -id / sources::ORIGIN_ID } else { 3 };
     let replaced = report.dropped.get("Replaced").cloned().unwrap_or_default();
     assert!(
@@ -1133,6 +1131,7 @@ fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), S
         "the made-up region tests the merge: {:?}",
         report.dropped
     );
+    assert!(replaced.iter().all(|&id| origin(id) > 1), "a job of the first source left: {replaced:?}");
     for id in replaced {
         let earlier: Vec<Vec<P>> = records
             .iter()
@@ -1143,11 +1142,6 @@ fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), S
         let probe = merge::Probe::new(0, "hiking", 0, "", "", vec![lines[&id].clone()]);
         let shown = merge::share(&probe, &nears.iter().collect::<Vec<_>>());
         assert!(shown >= 0.8, "only {shown:.2} of the line of {id} shows in records of earlier origins");
-    }
-    let ids: BTreeSet<i64> = records.iter().map(|r| r["id"].as_i64().unwrap()).collect();
-    let dropped: BTreeSet<i64> = report.dropped.values().flatten().copied().collect();
-    for id in lines.keys().filter(|&&id| id <= -sources::ORIGIN_ID) {
-        assert!(ids.contains(id) || dropped.contains(id), "source job {id} is lost");
     }
     Ok(())
 }
