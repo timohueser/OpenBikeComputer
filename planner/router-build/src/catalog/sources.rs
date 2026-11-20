@@ -1,7 +1,7 @@
 //! The jobs of the second route sources: their routes and stages from `route-sources.json`, and the
 //! line of each, with the stretches away from the roads of its kind cut out.
 //! `specs/route-catalog.md#second-sources` is the rule.
-use super::{dense, ends, profiles, runs, Failed, Line, Reason, MAX_GAP_M, ROUNDTRIP_M};
+use super::{dense, ends, profiles, runs, Failed, Line, Reason, SourceLine, MAX_GAP_M, ROUNDTRIP_M};
 use crate::facts::shares::Roads;
 use planner_router::{
     package::{Package, Source},
@@ -162,12 +162,7 @@ pub(super) fn usable_ways<S: Source>(package: &Package<S>) -> Result<HashMap<i64
 /// The line of a source job, its match line (the runs of its main line before the cut) and the
 /// length of each cut. The points of the members are nodes, one for each microdegree point, so
 /// members that meet at a point join there. A point outside `bounds` drops the job.
-pub(super) fn line(
-    job: &SourceJob,
-    bounds: [f64; 4],
-    roads: &Roads,
-    usable: &HashMap<i64, u8>,
-) -> Result<(Line, Vec<Vec<P>>, Vec<u64>), Failed> {
+pub(super) fn line(job: &SourceJob, bounds: [f64; 4], roads: &Roads, usable: &HashMap<i64, u8>) -> SourceLine {
     let [west, south, east, north] = bounds.map(|degrees| (degrees * 1e6).round() as i32);
     let (mut nodes, mut points) = (HashMap::<P, i64>::new(), HashMap::new());
     let mut members = Vec::new();
