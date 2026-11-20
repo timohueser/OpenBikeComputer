@@ -647,12 +647,13 @@ lies under each way on top. The heights of a `tunnel-tube` are this floor, and t
 of the road solver there. The bake sets the floor before the numbers of the openings.
 
 - The curve of a way with heights, not of the kind `gallery`, lies over a vertex of the tube where the vertex is
-  within its reach: its outer half-width + `half` + `shell_m`. Its height there is that of its nearest point. It lies
-  on top where that height is more than the at-grade band over the road solver's height of the tube (the lesser
-  `snap_height_m` of the two classes, as at a crossing of the ground plan). Its underside is that height less its
-  `deck` on a bridge, else less `slab_m`.
-- The tube gets a vertex where it enters and leaves the reach of each way over it, and at the foot of each point of
-  that way's curve within its reach. A vertex within 1 cm of another is that vertex.
+  within its reach (its outer half-width + `half` + `shell_m`) and the foot of its nearest point on the tube lies
+  between the openings. It lies on top where its height at that point is more than the at-grade band over the floor
+  at the foot (the lesser `snap_height_m` of the two classes, as at a crossing of the ground plan). Its underside is
+  that height less its `deck` on a bridge, else less `slab_m`. The floor starts at the road solver's height. Where
+  the floor goes down, more ways can lie on top; the bake sets the floor again until no more do.
+- The tube gets a vertex where it enters and leaves the reach of each way over it. A vertex within 1 cm of another is
+  that vertex.
 - A chord may rise by the `grade` of the class of the widest way (`grade_default` for a class with none) times its
   length, or by the rise of the road solver's chord there, the larger.
 - The cap at a vertex is the least underside of the ways on top there, less `shell_m` and `height`. The floor is the
