@@ -763,6 +763,9 @@ describe('planner app transitions', () => {
         await startApp();
         await tick();
         await setRidingDays(maxRidingDays);
+        // The list shows the week in focus; End on the strip moves it to the last days.
+        document.querySelector('[role="slider"][aria-label="Week in focus"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+        await tick();
         button(`Open day ${maxRidingDays}: Day ${maxRidingDays - 1} overnight to Thun`).click();
         await tick();
         await search(`campsites day ${maxRidingDays}`);

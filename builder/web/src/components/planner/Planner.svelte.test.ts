@@ -390,7 +390,7 @@ describe('trip timeline', () => {
         const trip = { ...testTrip(), restAfter: [2] };
         mounted.push(mount(Profile, { target: document.body, props: {
             total: 89, days: planView(trip, testLine(trip)).days, dayLabels: { 1: 1, 2: 2, 3: 4 }, singleRoute: false,
-            rests: [{ after: 2, name: 'Spa day', town: 'Olten' }], activeNight: 0, band: null, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+            rests: [{ day: 3, after: 2, name: 'Spa day', town: 'Olten' }], activeNight: 0, band: null, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
         } }));
         await tick();
         button('Whole route').click(); await tick();

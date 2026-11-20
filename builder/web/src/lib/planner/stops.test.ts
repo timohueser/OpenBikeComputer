@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groupStops, stopWindow, daysAround, evenStop, proposeNights, proposalTitle, stopCounts, stopKm, suitable } from './stops';
+import { groupStops, stopWindow, daysAround, evenStop, nightWindows, proposeNights, proposalTitle, stopCounts, stopKm, suitable, type Stop } from './stops';
 import { allStay, type Stay, type Trip } from './editor';
 import type { SearchPlace } from './search/types';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
@@ -53,6 +53,25 @@ describe('stops', () => {
         expect([before.distance / total, after.distance / total]).toEqual([expect.closeTo(.4, 6), expect.closeTo(.6, 6)]);
         const stops = groupStops([place('Early', 'hotel', 'A', total * .3), place('Middle', 'campsite', 'B', total * .52)], []);
         expect(evenStop(stops, trip, line, 1)?.name).toBe('B');
+    });
+
+    it('searches only the nights of the week, and its suggestions do not depend on the weeks shown before', () => {
+        const trip = { ...testTrip(), days: 21 }, line = testLine(trip);
+        const second = [7, 8, 9, 10, 11, 12, 13, 14], third = [14, 15, 16, 17, 18, 19, 20, 21];
+        expect(Object.keys(nightWindows(trip, line, null, second)).map(Number)).toEqual(second);
+        expect(Object.keys(nightWindows(trip, line, 3, second)).map(Number)).toEqual([3, ...second]);
+        // As the finder, the page keeps each answer by its window: here one town near the middle of each window.
+        const found = new Map<string, Stop[]>();
+        const propose = (nights: number[]) => {
+            const windows = nightWindows(trip, line, null, nights);
+            for (const [night, [from, to]] of Object.entries(windows))
+                found.set(`${from}-${to}`, groupStops([place(`Inn ${night}`, 'hotel', `Town ${night}`, (from + to) / 2 + .3)], []));
+            return [...proposeNights(trip, line, night => windows[night] ? found.get(windows[night].join('-')) ?? [] : [])];
+        };
+        const week = propose(second);
+        expect(week.map(([night]) => night)).toEqual(second);
+        propose(third);
+        expect(propose(second)).toEqual(week);
     });
 
     it('proposes each open night at the nearest stop with a kind of place of that night, evening out the days left after it', () => {
