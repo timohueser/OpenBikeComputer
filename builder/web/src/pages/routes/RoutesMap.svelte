@@ -253,9 +253,12 @@
             const present = layers.filter(layer => created.getLayer(layer));
             return present.length ? created.queryRenderedFeatures(at, { layers: present })[0] : undefined;
         };
+        /** The words of the last tip, for the marker under the pointer. A click, a move or the pointer leaving forgets them, and
+         * so does a new overlay, which a new query gives. */
+        let told: { overlay: MapOverlay; id: string; about: ReturnType<MapOverlay['tip']> } | undefined;
         // A marker of the overlay lies over the lines, so it takes the click first.
         created.on('click', event => {
-            tip = undefined;
+            tip = told = undefined;
             if (pick) return pick.onpick([event.lngLat.lng, event.lngLat.lat]);
             const marker = overlay && featureAt(event.point, overlay.hit)?.properties.id;
             if (marker !== undefined) return overlay!.onclick(String(marker));
@@ -279,8 +282,6 @@
             // A move of the map takes the line from under the pointer with no mouse event.
             created.on('movestart', () => hover());
             let onMarker = false;
-            /** The words of the last tip: a new marker or a new overlay, which a new query gives, asks for new ones. */
-            let told: { overlay: MapOverlay; id: string; about: ReturnType<MapOverlay['tip']> } | undefined;
             created.on('mousemove', event => {
                 const part = pick ? undefined : overlay, found = part && featureAt(event.point, part.hit)?.properties.id;
                 const id = found === undefined ? undefined : String(found);
@@ -291,7 +292,7 @@
                 // The lines set the cursor too: only a change of the marker under the pointer sets it.
                 if ((id !== undefined) !== onMarker) created.getCanvas().style.cursor = (onMarker = id !== undefined) ? 'pointer' : '';
             });
-            for (const event of ['mouseout', 'movestart'] as const) created.on(event, () => { tip = undefined; });
+            for (const event of ['mouseout', 'movestart'] as const) created.on(event, () => { tip = told = undefined; });
         }
         const terrainError = terrainRetry(created);
         created.on('error', event => {

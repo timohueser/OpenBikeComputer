@@ -337,11 +337,16 @@
     const pick = $derived(searching && picking
         ? { text: 'Click the map where you start. Esc cancels.', onpick: (at: [number, number]) => { picking = false; setQuery({ start: startAt(at), pin: undefined }); } }
         : undefined);
-    /** The markers of the search: the row under the pointer, else the open row, shows its places. */
-    const overlay = $derived<MapOverlay | undefined>(searching ? {
-        data: hovered => mapData(found, query, (hovered === undefined ? undefined : found.find(row => String(row.record.id) === hovered)) ?? opened, id => catalog.place(id)),
-        add: addMarkerLayers, hit: MARKER_LAYERS, tip: id => markerTip(id, query, loaded), onclick: id => setQuery(markerClick(id, query, id => catalog.place(id))),
-    } : undefined);
+    /** The markers of the search: the row under the pointer, else the open row, shows its places. A new query or new loaded
+     * routes give a new value, so the map asks for new tips. */
+    const overlay = $derived.by<MapOverlay | undefined>(() => {
+        if (!searching) return undefined;
+        const [now, files, rows, open] = [query, loaded, found, opened];
+        return {
+            data: hovered => mapData(rows, now, (hovered === undefined ? undefined : rows.find(row => String(row.record.id) === hovered)) ?? open, id => catalog.place(id)),
+            add: addMarkerLayers, hit: MARKER_LAYERS, tip: id => markerTip(id, now, files), onclick: id => setQuery(markerClick(id, now, id => catalog.place(id))),
+        };
+    });
 
     function placeOf(box: Box): Place {
         return { lon: (box[0] + box[2]) / 2, lat: (box[1] + box[3]) / 2, box };

@@ -202,6 +202,12 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   await expect(rows).toHaveText([/Schlossberg loop/]);
   await expect(page.locator('.wish', { hasText: 'Passes Schlossberg' }).getByRole('button', { name: 'Must' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page).toHaveURL(/must=via:n1&/);
+  // The tip after the click says what the next click does.
+  await expect(async () => {
+    await page.mouse.move(summit.x, summit.y + 1);
+    await page.mouse.move(summit.x, summit.y);
+    await expect(page.locator('.tip')).toHaveText(/1 hike passes here\s*Click: show all hikes again$/, { timeout: 500 });
+  }).toPass();
   await page.mouse.click(summit.x, summit.y);
   await expect(rows).toHaveCount(2);
 
