@@ -82,7 +82,8 @@ fn point_at(st: &mesh::Station, across: f64, up: f64) -> [f64; 3] {
 
 /// Whether a world point lies inside the outer shell of a chord as the part draws it: between the planes of its two
 /// rings, and inside the outline of its shell (`tube::shell_outline`, the polygon of the faces) over the floor there,
-/// from its foot `foot` (a world height) up.
+/// from its foot `foot` (a world height) up. The floor at a point rises by its share between the rings, as the faces
+/// run straight from ring to ring.
 fn in_shell(net: &Net, c: usize, foot: f64, p: [f64; 3]) -> bool {
     let chord = &net.chords[c];
     let (s, t) = (net.ring(c, 0), net.ring(c, 1));
@@ -98,10 +99,11 @@ fn in_shell(net: &Net, c: usize, foot: f64, p: [f64; 3]) -> bool {
         return false;
     }
     let (dx, dy) = ((p[0] - s.x) * m, (p[1] - s.y) * m);
-    let along = (dx * d[0] + dy * d[1]).clamp(0.0, len);
     let left = mesh::left_of(d);
-    let across = dx * left[0] + dy * left[1];
-    let floor = s.z + (t.z - s.z) * along / len;
+    let (along, across) = (dx * d[0] + dy * d[1], dx * left[0] + dy * left[1]);
+    // The shell's faces run straight from ring to ring: at `across`, the floor rises by the share between them.
+    let share = boxes::share(along, across, len, [boxes::slope(d, &s), boxes::slope(d, &t)]).clamp(0.0, 1.0);
+    let floor = s.z + (t.z - s.z) * share;
     let o = tube::shell_outline(net, chord.section, chord.half, chord.height, foot - floor);
     let q = [across, p[2] - floor];
     let mut odd = false;
@@ -114,19 +116,34 @@ fn in_shell(net: &Net, c: usize, foot: f64, p: [f64; 3]) -> bool {
     odd
 }
 
-/// Checks the boxes of each built end of a tube: each point of the room (the inside of the opening's hole and of each
-/// chord up to the reach of the boxes) lies in a box, and each point of a box lies inside the part: the opening's box
-/// inside the head wall, a tube's box inside the outer shell of a chord. Gives the count of each kind of sample.
-fn boxes_fit(ends: &[End], chords: &[Chord]) -> (usize, usize) {
+/// The least margin of a box to the faces of its part (the spec).
+const MARGIN_M: f64 = 0.11;
+
+/// A box shrunk by `g` metres in its sides and its roof.
+fn shrunk(b: &[f64; BOX], g: f64) -> [f64; BOX] {
+    let mut s = *b;
+    (s[5], s[6]) = (b[5] - g, b[6] - g);
+    s[9] = s[9].min(s[6]);
+    s
+}
+
+/// Checks the boxes of each built end of a tube, with the margin `MARGIN_M`: each point of the room (the inside of the
+/// opening's hole and of each chord up to the reach of the boxes) lies in a box, and over the floor in a box shrunk by
+/// the margin; each point of a tube's box, grown by the margin in its sides and its roof, lies inside the outer shell
+/// of a chord as the faces draw it. Gives the count of each kind of sample.
+fn boxes_fit(name: &str, ends: &[End], chords: &[Chord]) -> (usize, usize) {
     let rules = Rules::embedded();
     let net = Net::new(ends, chords, rules);
-    let (shell, design) = (rules.ladder.bake.shell_m, &rules.design);
+    let design = &rules.design;
     // Within the rounding of a box's words and of a sample: a millimetre.
     let tol = 1e-3;
     let (mut room, mut solid) = (0, 0);
     for e in (0..ends.len()).filter(|&e| net.built_end(e)) {
         let list = boxes::boxes(&net, e);
-        let inside = |p: [f64; 3]| list.iter().map(|b| outside(b, p)).fold(f64::INFINITY, f64::min) <= tol;
+        let small: Vec<[f64; BOX]> = list.iter().map(|b| shrunk(b, MARGIN_M)).collect();
+        let held = |boxes: &[[f64; BOX]], p: [f64; 3]| {
+            boxes.iter().map(|b| outside(b, p)).fold(f64::INFINITY, f64::min) <= tol
+        };
         let reach = boxes::reach(&net, e).boxes;
         let foot = boxes::foot(&net, e);
         let (c0, _) = net.opening(e).unwrap();
@@ -138,15 +155,13 @@ fn boxes_fit(ends: &[End], chords: &[Chord]) -> (usize, usize) {
             for a in [-1.0, -0.5, 0.0, 0.5, 1.0] {
                 let hw = first.half + design.frame_m;
                 for up in [design.lift_m + 0.01, 1.0, sp, first.height] {
-                    let x = a
-                        * hw
-                        * if up > sp {
-                            libm::sqrt(1.0 - ((up - sp) / (first.height + design.frame_m - sp)).powi(2))
-                        } else {
-                            1.0
-                        };
-                    let p = point_at(&st, x, up);
-                    assert!(inside(p), "end {e}: the hole at {x} across, {up} up, {k}/4 of the reveal");
+                    let r = if up > sp {
+                        libm::sqrt(1.0 - ((up - sp) / (first.height + design.frame_m - sp)).powi(2))
+                    } else {
+                        1.0
+                    };
+                    let p = point_at(&st, a * hw * r, up);
+                    assert!(held(&list, p), "{name}, end {e}: the hole at {a} across, {up} up, {k}/4 of the reveal");
                     room += 1;
                 }
             }
@@ -171,40 +186,41 @@ fn boxes_fit(ends: &[End], chords: &[Chord]) -> (usize, usize) {
                             1.0
                         };
                         let p = point_at(&st, a * chord.half * r, up);
-                        assert!(inside(p), "end {e}, chord {c} at {u}: the room at {a} across, {up} up");
+                        assert!(held(&list, p), "{name}, end {e}, chord {c} at {u}: the room at {a} across, {up} up");
+                        let over = up > design.lift_m + 0.02;
+                        assert!(
+                            !over || held(&small, p),
+                            "{name}, end {e}, chord {c} at {u}: the room at {a} across, {up} up, within the margin"
+                        );
                         room += 1;
                     }
                 }
             }
         }
-        // Each box: its corners and the points of its walls and roof, inside the part.
+        // Each box of the tube, grown by the margin: points of its sides, its floor and its roof, at shares 0 to 1
+        // between its end planes, inside the drawn shell.
         let m = metres_per_unit(ends[e].at[1]);
-        for (i, b) in list.iter().enumerate() {
+        for (i, b) in list.iter().enumerate().skip(1) {
             let lu = mesh::left_of([b[2], b[3]]);
-            let p = |along: f64, left: f64, z: f64| {
-                [b[0] + (b[2] * along + lu[0] * left) / m, b[1] + (b[3] * along + lu[1] * left) / m, z + b[8] * along]
-            };
-            let (depth, half, roof, floor, spring) = (b[4], b[5], b[6], b[7], b[9]);
+            let (depth, half, roof, floor, spring) = (b[4], b[5] + MARGIN_M, b[6] + MARGIN_M, b[7], b[9]);
             for k in 0..=4 {
+                let f = k as f64 / 4.0;
                 for a in [-1.0, -0.5, 0.0, 0.5, 1.0] {
                     let left = a * half;
-                    let along = b[10] * left + (depth + b[11] * left - b[10] * left) * k as f64 / 4.0;
+                    let along = b[10] * left + (depth + (b[11] - b[10]) * left) * f;
                     let top = if roof > spring && left.abs() < half {
                         spring + (roof - spring) * libm::sqrt(1.0 - (left / half).powi(2))
-                    } else if roof > spring {
-                        spring
                     } else {
-                        roof
+                        spring.min(roof)
                     };
                     for z in [floor, (floor + top) / 2.0, top] {
-                        let q = p(along, left, z);
-                        if i == 0 {
-                            // The opening's box: inside the head wall, round its hole grown by half the wall.
-                            assert!(half <= first.half + shell + 1.0 && roof <= ends[e].z + ends[e].face);
-                        } else {
-                            let held = (0..net.chords.len()).any(|c| in_shell(&net, c, foot, q));
-                            assert!(held, "end {e}, box {i}: {k}/4 in, {left} left, {z} up lies outside the shell");
-                        }
+                        let q = [
+                            b[0] + (b[2] * along + lu[0] * left) / m,
+                            b[1] + (b[3] * along + lu[1] * left) / m,
+                            z + b[8] * depth * f,
+                        ];
+                        let held = (0..net.chords.len()).any(|c| in_shell(&net, c, foot, q));
+                        assert!(held, "{name}, end {e}, box {i}: {k}/4 in, {left} left, {z} up lies outside the shell");
                         solid += 1;
                     }
                 }
@@ -214,34 +230,39 @@ fn boxes_fit(ends: &[End], chords: &[Chord]) -> (usize, usize) {
     (room, solid)
 }
 
+/// A tube with a bend of `bend` degrees, 4 m in, on a grade `grade`, of one height.
+fn graded(bend: f64, grade: f64) -> (Vec<End>, Vec<Chord>) {
+    let (mut ends, mut chords) = bent(-10.0, bend);
+    let mut z = 500.0;
+    for c in chords.iter_mut() {
+        let len = tube::direction(c).1;
+        (c.a[2], c.b[2], c.height, z) = (z, z + grade * len, 5.0, z + grade * len);
+    }
+    ends[1].z = z;
+    (ends, chords)
+}
+
 #[test]
 fn the_boxes_hold_the_room_and_lie_inside_the_part() {
     let rules = Rules::embedded();
     let (straight, lower) = tube();
     let (bent20, chords20) = bent(30.0, 20.0);
-    let (bent60, mut chords60) = bent(-10.0, 60.0);
-    // A bend of 60° on a level floor of one height.
-    chords60.iter_mut().for_each(|c| {
-        (c.a[2], c.b[2], c.height) = (500.0, 500.0, 5.0);
-    });
+    let (bent60, chords60) = graded(60.0, 0.0);
     let mut boxed = lower.clone();
     boxed.iter_mut().for_each(|c| c.section = Section::Box);
-    // A bend of 30° on a grade of 15 %: the slanted ends of the boxes there tilt their roofs.
-    let (mut steep, mut chords30) = bent(-10.0, 30.0);
-    let mut z = 500.0;
-    for c in chords30.iter_mut() {
-        let len = tube::direction(c).1;
-        (c.a[2], c.b[2], c.height, z) = (z, z + 0.15 * len, 5.0, z + 0.15 * len);
+    let mut cases = vec![
+        ("straight with a lower chord".to_string(), straight.clone(), lower.clone()),
+        ("bent 20° in the collar".to_string(), bent20, chords20),
+        ("bent 60° on a level floor".to_string(), bent60, chords60),
+        ("a box section".to_string(), straight.clone(), boxed),
+    ];
+    // Sharp bends on grades: the ends of the boxes there slant, and the boxes rise between them as the shell does.
+    for (bend, grade) in [(30.0, 0.15), (45.0, 0.15), (60.0, 0.15), (60.0, 0.25)] {
+        let (ends, chords) = graded(bend, grade);
+        cases.push((format!("bent {bend}° on a grade of {grade}"), ends, chords));
     }
-    steep[1].z = z;
-    for (name, ends, chords) in [
-        ("straight with a lower chord", &straight, &lower),
-        ("bent 20° in the collar", &bent20, &chords20),
-        ("bent 60°", &bent60, &chords60),
-        ("bent 30° on a grade of 15 %", &steep, &chords30),
-        ("a box section", &straight, &boxed),
-    ] {
-        let (room, solid) = boxes_fit(ends, chords);
+    for (name, ends, chords) in &cases {
+        let (room, solid) = boxes_fit(name, ends, chords);
         assert!(room > 200 && solid > 100, "{name}: {room} room samples, {solid} box samples");
     }
     // The opening's box starts at the front of the head wall, each other box at a vertex of the axis, the first on the

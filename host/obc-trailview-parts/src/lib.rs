@@ -16,7 +16,7 @@ mod tube;
 
 use std::collections::BTreeMap;
 
-pub use boxes::{outside, outside_plan, outside_wall, BOX};
+pub use boxes::{corners, outside, outside_plan, outside_wall, BOX};
 pub use mesh::WORDS;
 pub use rules::{Bake, Bore, Design, Group, Inside, Ladder, Look, Rules};
 
@@ -274,19 +274,7 @@ pub fn volumes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) 
     let mut out = Volumes::default();
     for e in (0..ends.len()).filter(|&e| net.built_end(e)) {
         for words in boxes::boxes(&net, e) {
-            let m = metres_per_unit(words[1]);
-            let (into, left) = ([words[2], words[3]], mesh::left_of([words[2], words[3]]));
-            let corner = |s: f64, a: f64| {
-                [words[0] + (into[0] * s + left[0] * a) / m, words[1] + (into[1] * s + left[1] * a) / m]
-            };
-            let (depth, half, [start, end]) = (words[4], words[5], [words[10], words[11]]);
-            let corners = [
-                corner(start * half, half),
-                corner(-start * half, -half),
-                corner(depth + end * half, half),
-                corner(depth - end * half, -half),
-            ];
-            if near(square, &corners, reach) {
+            if near(square, &corners(&words), reach) {
                 out.boxes.extend(words);
             }
         }
