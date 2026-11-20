@@ -9,7 +9,7 @@ import * as routing from '../../lib/planner/routing';
 import { newPlan, type Plan } from '../../lib/planner/library';
 import type { RoutingLine } from '../../lib/planner/routing';
 
-import { moves, nightCalls, tiles } from '../../../test-support/planner/MapStub.svelte';
+import { moves, nightCalls, tiles, weekFits } from '../../../test-support/planner/MapStub.svelte';
 import { routeService } from '../../../test-support/planner/route-service';
 import { testTrip } from '../../../test-support/planner/trip';
 import { testConfig } from '../../../test-support/planner/config';
@@ -787,6 +787,21 @@ describe('planner app transitions', () => {
         button('Day 7 ends here, suggested. Show the day.').click(); await tick();
         expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 7');
         expect(strip.getAttribute('aria-valuetext')).toBe('Days 8 to 14');
+    });
+
+    it('shows the week on the map when it rests after ›, and not when a day opens before it rests', async () => {
+        await startApp();
+        await setRidingDays(20);
+        weekFits.count = 0;
+        button('7 days on').click(); await tick();
+        await vi.waitFor(() => expect(weekFits.count).toBe(1));
+        // The map gets the week and the day under the pointer on the strip.
+        document.querySelector('[role="slider"][aria-label="Week in focus"]')!.dispatchEvent(new PointerEvent('pointermove', { clientX: 1000, bubbles: true })); await tick();
+        expect(document.querySelector('.map-week')?.textContent).toBe('8-14 20');
+        button('7 days on').click(); await tick();
+        dayButton(16).click(); await tick();
+        await new Promise(resolve => setTimeout(resolve, 400));
+        expect(weekFits.count).toBe(1);
     });
 
     it('sets the day count when the rider steps it, even back to the guess, and not when only the stay changes', async () => {
