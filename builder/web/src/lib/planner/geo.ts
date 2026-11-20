@@ -115,15 +115,40 @@ type ScreenPoint = { x: number; y: number };
 // Two days on one road draw at the same pixels: a day in colour wins over a quiet day at most this much nearer.
 const sharedRoad = 2;
 
+// The longitude and latitude box of each line, [west, south, east, north].
+const lineBoxes = new WeakMap<Coordinate[], number[]>();
+
+function lineBox(coordinates: Coordinate[]): number[] {
+    const known = lineBoxes.get(coordinates);
+    if (known) return known;
+    let west = Infinity, south = Infinity, east = -Infinity, north = -Infinity;
+    for (const [lon, lat] of coordinates) {
+        west = Math.min(west, lon); south = Math.min(south, lat); east = Math.max(east, lon); north = Math.max(north, lat);
+    }
+    const box = [west, south, east, north];
+    lineBoxes.set(coordinates, box);
+    return box;
+}
+
 /**
  * The nearest point of the lines within `reach` screen pixels of `point`, with its line. A line that `quiet` names loses
  * to another line that is at most `sharedRoad` pixels farther, so on a road that two days share the day in colour wins.
+ * `project` and `unproject` must be a Web Mercator view without pitch (any zoom and bearing).
  */
 export function nearestOnScreen<L extends { coordinates: Coordinate[] }>(lines: readonly L[], project: (coordinate: Coordinate) => ScreenPoint,
-    point: ScreenPoint, reach: number, quiet: (line: L) => boolean): (ScreenPoint & { line: L }) | null {
+    unproject: (point: ScreenPoint) => Coordinate, point: ScreenPoint, reach: number, quiet: (line: L) => boolean): (ScreenPoint & { line: L }) | null {
+    // Such a view maps Mercator to the screen by scale, rotation and shift, and Mercator to longitude and latitude axis by
+    // axis and monotonically. So every position within reach lies in the box of the unprojected corners of the reach
+    // square, and every screen segment between two projected points lies in the box of its line. One pixel more covers rounding.
+    const r = reach + 1;
+    const corners = [[-r, -r], [r, -r], [-r, r], [r, r]].map(([x, y]) => unproject({ x: point.x + x, y: point.y + y }));
+    const lons = corners.map(c => c[0]), lats = corners.map(c => c[1]);
+    const west = Math.min(...lons), east = Math.max(...lons), south = Math.min(...lats), north = Math.max(...lats);
     // The nearest point of a line in colour, and of a quiet line.
     const best: [(ScreenPoint & { line: L; pixels: number }) | null, (ScreenPoint & { line: L; pixels: number }) | null] = [null, null];
     for (const line of lines) {
+        const box = lineBox(line.coordinates);
+        if (box[2] < west || east < box[0] || box[3] < south || north < box[1]) continue;
         const kind = quiet(line) ? 1 : 0;
         const projected = line.coordinates.map(project);
         for (let i = 1; i < projected.length; i++) {
