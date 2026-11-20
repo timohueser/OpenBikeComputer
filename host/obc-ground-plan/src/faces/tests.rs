@@ -752,31 +752,35 @@ fn a_stop_mouth_between_two_widths_widens_the_narrow_arm_without_a_step() {
     assert_eq!(keeps_route(&words, jr, [0.2, narrow + 0.1]), None);
 }
 
+/// The segments on the cell line x = `CELL_UNITS` after the slice of `window` and the snap rounding,
+/// each with the winding of `rings` in its patch. The rings get their tile-line points first, as
+/// `candidates` gives them.
+fn sides_on_cell_line(window: [i32; 4], rings: &Rings) -> Vec<([P; 2], i32)> {
+    let c = CELL_UNITS as i32;
+    let rings: Rings = rings.iter().map(|r| geom::with_grid_lines(r, slice::TILE)).collect();
+    let (patches, _) = slice(window, &rings, &[]);
+    let snapped = snap_round(&patches);
+    let at = |i: u32| snapped.verts[i as usize];
+    let mut on: Vec<([P; 2], i32)> = (patches.iter().zip(&snapped.patches))
+        .flat_map(|(patch, segs)| {
+            let winding = inner_point(patch).map_or(0, |q| geom::winding(&rings, q));
+            segs.iter().map(move |&[a, b]| ([at(a), at(b)], winding))
+        })
+        .filter(|([a, b], _)| a[0] == c && b[0] == c)
+        .map(|([a, b], winding)| (if a < b { [a, b] } else { [b, a] }, winding))
+        .collect();
+    on.sort_unstable();
+    on
+}
+
 #[test]
 fn two_cells_give_one_side_to_their_line_where_an_edge_passes_a_tile_corner_on_it() {
     // A ring's edge leaves the cell line x = C at y = t + 27 or t + 15 and crosses the tile line y = t
     // 0.53 or 0.30 units off the cell line, beside the tile corner (C, t); or it crosses the cell line
-    // at that corner. Each also mirrored and reversed. Per window, the segments on the cell line after
-    // the snap rounding, each with whether its patch lies in the ring, which goes through `prepare`
-    // twice (as `split_legs` does) and then gets its tile-line points, as `candidates` gives them.
+    // at that corner. Each also mirrored and reversed. The ring goes through `prepare` twice, as
+    // `split_legs` does.
     let (c, t) = (CELL_UNITS as i32, 7 * slice::TILE as i32);
-    let sides = |window: [i32; 4], ring: &[P]| {
-        let rings: Rings =
-            prepare(&prepare(&vec![ring.to_vec()])).iter().map(|r| geom::with_grid_lines(r, slice::TILE)).collect();
-        let (patches, _) = slice(window, &rings, &[]);
-        let snapped = snap_round(&patches);
-        let at = |i: u32| snapped.verts[i as usize];
-        let mut on: Vec<([P; 2], bool)> = (patches.iter().zip(&snapped.patches))
-            .flat_map(|(patch, segs)| {
-                let inside = inner_point(patch).is_some_and(|q| geom::winding(&rings, q) != 0);
-                segs.iter().map(move |&[a, b]| ([at(a), at(b)], inside))
-            })
-            .filter(|([a, b], _)| a[0] == c && b[0] == c)
-            .map(|([a, b], inside)| (if a < b { [a, b] } else { [b, a] }, inside))
-            .collect();
-        on.sort_unstable();
-        on
-    };
+    let sides = |window: [i32; 4], ring: &[P]| sides_on_cell_line(window, &prepare(&prepare(&vec![ring.to_vec()])));
     let wedge = |on: [P; 2], low: P| {
         vec![[c - 40, t + 300], on[0], on[1], low, [c + 300, t - 379], [c + 300, t + 300], [c, t + 300]]
     };
@@ -795,6 +799,28 @@ fn two_cells_give_one_side_to_their_line_where_an_edge_passes_a_tile_corner_on_i
         let east = sides([c, t - 400, c + 400, t + 400], &ring);
         assert!(west.len() >= 3, "{west:?}");
         assert_eq!(west, east, "ring {ring:?}");
+    }
+}
+
+#[test]
+fn two_cells_give_one_side_to_their_line_where_two_edges_cross_each_other_beside_it() {
+    // Two rings' edges leave the cell line x = C at y and y + 4 and cross each other at (C + 0.04,
+    // y + 2); also mirrored. Only the cell on that side computes the crossing, and its snap rounding
+    // puts the crossing on the cell line.
+    let (c, y) = (CELL_UNITS as i32, 3 * slice::TILE as i32 + 1000);
+    let a = vec![[c - 300, y], [c, y], [c + 68, y + 3450], [c - 300, y + 3450]];
+    let b = vec![[c - 300, y - 3446], [c + 68, y - 3446], [c, y + 4], [c - 300, y + 4]];
+    let sides = |square: [i32; 4], window: [i32; 4], rings: &Rings| {
+        let mut rings = prepare(rings);
+        merge_crossings(square, &mut [&mut rings], &mut Vec::new());
+        sides_on_cell_line(window, &rings)
+    };
+    let mirror = |r: &Vec<P>| r.iter().map(|p| [2 * c - p[0], p[1]]).collect::<Vec<P>>();
+    for rings in [vec![a.clone(), b.clone()], vec![mirror(&a), mirror(&b)]] {
+        let west = sides([0, 0, c, c], [c - 400, y - 400, c, y + 400], &rings);
+        let east = sides([c, 0, 2 * c, c], [c, y - 400, c + 400, y + 400], &rings);
+        assert!(!west.is_empty());
+        assert_eq!(west, east, "rings {rings:?}");
     }
 }
 
