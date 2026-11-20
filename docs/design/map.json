@@ -30,7 +30,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 17099,
+   "lines": 17098,
    "problems": [
     {
      "rule": "R1",
@@ -74,10 +74,14 @@
    "area": "Shells",
    "purpose": "Runs the iPhone app that plans routes, sends them to the device and gets rides back.",
    "status": "approved",
-   "depends_on": [],
+   "depends_on": [
+    "routing",
+    "search",
+    "simulators"
+   ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 48453,
+   "lines": 47985,
    "problems": []
   },
   {
@@ -125,7 +129,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 33274,
+   "lines": 33299,
    "problems": [
     {
      "rule": "R4",
@@ -164,7 +168,7 @@
    ],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 13694,
+   "lines": 13693,
    "problems": [
     {
      "rule": "R1",
@@ -421,7 +425,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 2851,
+   "lines": 2951,
    "problems": []
   },
   {
@@ -537,7 +541,7 @@
     "repository-tooling"
    ],
    "violations": 1,
-   "lines": 25679,
+   "lines": 25727,
    "problems": [
     {
      "rule": "R1",
@@ -568,7 +572,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 10055,
+   "lines": 10058,
    "problems": [
     {
      "rule": "R1",
@@ -597,7 +601,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 2,
-   "lines": 6121,
+   "lines": 6374,
    "problems": [
     {
      "rule": "R1",
@@ -605,7 +609,7 @@
     },
     {
      "rule": "R4",
-     "message": "planner-map-baking (Data and services) has 18 file(s) under tools/"
+     "message": "planner-map-baking (Data and services) has 19 file(s) under tools/"
     }
    ]
   },
@@ -618,7 +622,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 715,
+   "lines": 723,
    "problems": []
   },
   {
@@ -652,7 +656,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 33564,
+   "lines": 33750,
    "problems": []
   },
   {
@@ -701,7 +705,7 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 27753,
+   "lines": 30204,
    "problems": [
     {
      "rule": "cycle",
@@ -717,7 +721,7 @@
     },
     {
      "rule": "cycle",
-     "message": "route-planning -> trailview closes a cycle: builder/web/src/components/planner/TrailViewConditions.svelte -> builder/web/src/lib/trailview/view.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/engine.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/frame/camera.ts, and 12 more"
+     "message": "route-planning -> trailview closes a cycle: builder/web/src/components/planner/TrailViewConditions.svelte -> builder/web/src/lib/trailview/view.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/engine.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/frame/camera.ts, and 17 more"
     },
     {
      "rule": "cycle",
@@ -737,7 +741,7 @@
    ],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 17022,
+   "lines": 18178,
    "problems": [
     {
      "rule": "R4",
@@ -760,7 +764,7 @@
     "device-map-baking"
    ],
    "violations": 1,
-   "lines": 11477,
+   "lines": 11506,
    "problems": [
     {
      "rule": "R4",
@@ -841,11 +845,11 @@
     "web-planner"
    ],
    "violations": 3,
-   "lines": 111796,
+   "lines": 115148,
    "problems": [
     {
      "rule": "cycle",
-     "message": "route-planning -> trailview closes a cycle: builder/web/src/components/planner/TrailViewConditions.svelte -> builder/web/src/lib/trailview/view.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/engine.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/frame/camera.ts, and 12 more"
+     "message": "route-planning -> trailview closes a cycle: builder/web/src/components/planner/TrailViewConditions.svelte -> builder/web/src/lib/trailview/view.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/engine.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/frame/camera.ts, and 17 more"
     },
     {
      "rule": "cycle",
@@ -910,7 +914,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 1518,
+   "lines": 2096,
    "problems": []
   },
   {
@@ -933,7 +937,7 @@
     "repository-tooling"
    ],
    "violations": 0,
-   "lines": 17512,
+   "lines": 22640,
    "problems": []
   },
   {
