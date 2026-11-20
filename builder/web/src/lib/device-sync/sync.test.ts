@@ -528,7 +528,7 @@ describe('syncDevice', () => {
         rememberCard(SERIAL, CARD);
         const own = Array.from({ length: 28 }, (_, i) => rig.device.seed({ kind: ObjectKind.Route, displayName: `Ride ${i}`, bytes: new Uint8Array(64).fill(i) }));
         const kept = [...own, ...seedPhoneTrip(rig)], put = vi.spyOn(rig.client, 'put'), remove = vi.spyOn(rig.client, 'remove');
-        let alps = longTrip(40, undefined, [5, 35]);
+        let alps = longTrip(40, undefined, [3, 5, 35]);
         const entry = async () => (await library.state('sent'))![alps.id];
         /** Sends `plan`, and gives the problem of the sync and its puts: the name of each object, and whether it replaced one. */
         const step = async (plan: Plan) => {
@@ -566,11 +566,37 @@ describe('syncDevice', () => {
         expect([await step(alps), remove.mock.calls, allOnCard(await entry(), CARD), (await entry()).key === sentKey(alps)]).toEqual([{ problem: null, puts: [] }, [], true, true]);
         expect(routes().length).toBe(51);
 
+        // The rider deletes "2/2" with its routes on the device. A change of day 3 then puts day 3 and part 1, and part 2 not.
+        const { days: sent, trips: [, second] } = await entry();
+        for (const id of [second, ...sent.slice(32)]) await rig.client.remove(rig.device.entries.find(object => `${object.objectId}` === id)!);
+        await sync();
+        expect(await step(changed(alps, 'stop-3', { label: 'Well' }))).toEqual({ problem: null, puts: [['Day 3 Camp 3', false], ['Alps north 1/2', true]] });
+        expect([trips().map(trip => trip.displayName), routes().length, allOnCard(await entry(), CARD)]).toEqual([['Alps', 'Alps north 1/2'], 44, true]);
+
         // On another bike computer the entry counts as no entry: all 40 days go.
         await send(alps);
         expect(await syncDevice(other.rig.client, SERIAL, library, new AbortController().signal)).toMatchObject({ trips: 1, problem: null });
         expect([other.routes().length, other.trips().map(trip => trip.displayName)]).toEqual([40, ['Alps north 1/2', 'Alps north 2/2']]);
         await Promise.all([rig.close(), other.rig.close()]);
+    });
+
+    it('sends all of a plan again when nothing of it is left on the card, also after a rename before the sync', async () => {
+        const { rig, library, sync, send } = setup(CARD, 256);
+        rememberCard(SERIAL, CARD);
+        const phone = seedPhoneTrip(rig), alps = longTrip(40);
+        await send(alps);
+        await sync();
+        // The rider deletes both trips with their routes on the device, then renames the plan and sends it before the next sync.
+        for (const entry of mine(rig, phone)) await rig.client.remove(entry);
+        await library.renameRoute(alps.id, 'Alps north');
+        await send({ ...alps, name: 'Alps north' });
+        const put = vi.spyOn(rig.client, 'put');
+        expect(await sync()).toMatchObject({ trips: 1, problem: null });
+        expect([put.mock.calls.length, mine(rig, phone).filter(entry => entry.kind === ObjectKind.Trip).map(entry => entry.displayName)])
+            .toEqual([42, ['Alps north 1/2', 'Alps north 2/2']]);
+        expect(allOnCard((await library.state('sent'))![alps.id], CARD)).toBe(true);
+        expectUntouched(rig, phone);
+        await rig.close();
     });
 
     it('takes a plan from 40 to 30 days: part 2 goes first, part 1 names 30 days, then days 40 to 31 go', async () => {

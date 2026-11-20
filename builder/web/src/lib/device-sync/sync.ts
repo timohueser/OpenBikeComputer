@@ -210,14 +210,16 @@ function tripsOf(card: Card): Promise<Map<string, { key: string; days: string[] 
  * The entry of route `id` on the card, with no key while the steps change it, and the objects that it may not take: those
  * of the other entries on the card, and the routes that a foreign trip object lists. A day route that a foreign trip object
  * lists is not this library's to change, and a trip object that the card does not hold is gone: both read as no object. A
- * day route that is gone keeps its id. An entry of another card counts as no entry. A trip object is this library's when an
+ * day route that is gone keeps its id. An entry of another card, or with no object left on the card, counts as no entry:
+ * a send then puts all of the route. A trip object is this library's when an
  * entry on the card names it, or when its trip key is one that an entry stores (on any card) or one of `current`, the keys
  * of the parts of the route now; else it is foreign, such as a trip of the phone, which takes routes into its trips by their
  * content. A part with no trip object takes the trip object with its key in `current` or with the key that the entry
  * stored on this card, so neither a lost answer nor a send to another card in between leaves a second trip.
  */
 async function entryOn(card: Card, id: string, current: string[] = []): Promise<{ copy: SentRoute; taken: Set<string> }> {
-    const sent = await card.library.state('sent') ?? {}, stored = sent[id]?.card === card.id ? sent[id] : undefined, trips = await tripsOf(card);
+    const sent = await card.library.state('sent') ?? {}, trips = await tripsOf(card);
+    const stored = sent[id]?.card === card.id && [...sent[id].days, ...sent[id].trips].some(object => card.objects.has(object)) ? sent[id] : undefined;
     const ids = new Set(Object.values(sent).flatMap(them => them.card === card.id ? them.trips : []));
     const keys = new Set([...Object.values(sent).flatMap(them => them.tripKeys), ...current]);
     const foreign = new Set([...trips].flatMap(([trip, { key, days }]) => ids.has(trip) || keys.has(key) ? [] : days));

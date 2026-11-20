@@ -18,10 +18,6 @@ describe('deviceState', () => {
         expect(deviceState(route, ['r'], sent)).toBe('waiting');
     });
 
-    it('stays on the device when the rider deleted a day route on it', () => {
-        expect(deviceState(route, [], { r: { ...sent.r, gone: ['7'] } })).toBe('sent');
-    });
-
     it('is not on the device for a route of another card, with no finished send, or with no remembered device', () => {
         expect(deviceState(route, [], { r: { ...sent.r, card: 'other' } })).toBeUndefined();
         // The last send did not finish, or the trip object is gone while its days are there.

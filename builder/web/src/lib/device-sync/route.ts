@@ -57,13 +57,14 @@ export async function dayRoutes(plan: Plan, line: RoutingLine): Promise<DeviceRo
 
 /** The part of `line` from `from` to `to` kilometres. Each point has its height, and the surface of the segment that ends
  * at it. An end point inside a segment has the surface of that segment and a height between the two heights of it. */
-function cut(line: RoutingLine, from: number, to: number): { coordinates: Coordinate[]; heights: (number | null)[]; surfaces: (Surface | null)[] } {
+export function cut(line: RoutingLine, from: number, to: number): { coordinates: Coordinate[]; heights: (number | null)[]; surfaces: (Surface | null)[] } {
     const lengths = cumulative(line.coordinates), surfaces = line.edges.surfaces;
-    // A day end comes as a share of the whole line. Within 1 mm of a point of the line, such as a kept night, it is that
-    // point, so a change elsewhere in the plan leaves the file of the day as it is.
+    // A day end comes as a share of the whole line. Within 1 mm of a point of the line, such as a kept night, it is the
+    // nearest point, so a change elsewhere in the plan leaves the file of the day as it is.
     const snap = (km: number) => {
-        const k = firstIndex(lengths.length, v => lengths[v] >= km);
-        return [lengths[k - 1], lengths[k]].find(near => Math.abs(near - km) < 1e-6) ?? km;
+        const k = firstIndex(lengths.length, v => lengths[v] >= km), gap = (v: number) => Math.abs((lengths[v] ?? Infinity) - km);
+        const near = gap(k - 1) <= gap(k) ? k - 1 : k;
+        return gap(near) < 1e-6 ? lengths[near] : km;
     };
     [from, to] = [snap(from), snap(to)];
     const segment = (km: number) => Math.min(lengths.length - 2, Math.max(0, firstIndex(lengths.length, k => lengths[k] > km) - 1));
