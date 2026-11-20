@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use serde_json::Value;
 
 /// The rule values of the bake, in the order of `Bake`.
-const BAKE_FIELDS: [&str; 20] = [
+const BAKE_FIELDS: [&str; 21] = [
     "margin_m",
     "margin_narrow_m",
     "shell_m",
@@ -28,8 +28,9 @@ const BAKE_FIELDS: [&str; 20] = [
     "junction_shift_max_m",
     "narrow_bore_m",
     "grade_default",
+    "vertex_gap_m",
 ];
-const GROUP_FIELDS: [&str; 6] = ["classes", "look", "collar_max_m", "wing_max_m", "least_height_m", "rock"];
+const GROUP_FIELDS: [&str; 7] = ["classes", "look", "collar_max_m", "wing_max_m", "least_height_m", "rock", "bore"];
 /// The values of the design, in the order of `Design`.
 const DESIGN_FIELDS: [&str; 16] = [
     "frame_m",
@@ -49,7 +50,7 @@ const DESIGN_FIELDS: [&str; 16] = [
     "lift_m",
     "mitre_max",
 ];
-const LOOK_FIELDS: [&str; 5] = ["face", "frame", "coping", "wall", "shell"];
+const LOOK_FIELDS: [&str; 4] = ["face", "frame", "coping", "shell"];
 const INSIDE_FIELDS: [&str; 8] = ["tiles", "arch_lining", "lining", "walk", "rock", "rock_floor", "lamp", "void"];
 
 /// The values of a group of road classes (`groups`).
@@ -63,6 +64,16 @@ pub struct Group {
     pub least_height_m: f64,
     /// An end covered within `rock_cover_max_m` opens in the rock.
     pub rock: bool,
+    pub bore: Bore,
+}
+
+/// The inside of a group's tubes: a road with kerbs, walks, tiles and lamps; a track in a lining; a floor and walls of
+/// rock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bore {
+    Road,
+    Track,
+    Rock,
 }
 
 /// The rule values of the placement (`bake`), metres unless named.
@@ -90,6 +101,8 @@ pub struct Bake {
     pub narrow_bore_m: f64,
     /// The steepest grade of the floor of a tube whose class has none.
     pub grade_default: f64,
+    /// The vertices of a tube lie this far apart at least, but at its openings and at the joins of its ways.
+    pub vertex_gap_m: f64,
 }
 
 /// The rules of the feature bake: `groups` and `bake`, its option `parts`.
@@ -134,7 +147,6 @@ pub struct Look {
     pub face: u32,
     pub frame: u32,
     pub coping: u32,
-    pub wall: u32,
     pub shell: u32,
 }
 
@@ -208,6 +220,7 @@ impl Ladder {
             junction_shift_max_m: v[17],
             narrow_bore_m: v[18],
             grade_default: v[19],
+            vertex_gap_m: v[20],
         };
         let mut groups = Vec::new();
         for (name, row) in rows["groups"].as_object().ok_or("parts groups: not an object")? {
@@ -227,6 +240,12 @@ impl Ladder {
                 wing_max_m: number("wing_max_m")?,
                 least_height_m: number("least_height_m")?,
                 rock: row["rock"].as_bool().ok_or(format!("parts {at}.rock: not true or false"))?,
+                bore: match row["bore"].as_str() {
+                    Some("road") => Bore::Road,
+                    Some("track") => Bore::Track,
+                    Some("rock") => Bore::Rock,
+                    _ => return Err(format!("parts {at}.bore: not road, track or rock")),
+                },
             });
         }
         let mut seen = HashSet::new();
@@ -278,7 +297,7 @@ impl Rules {
         let mut looks = BTreeMap::new();
         for (name, row) in table["looks"].as_object().ok_or("parts looks: not an object")? {
             let c = colours(row, &LOOK_FIELDS, &format!("looks.{name}"))?;
-            looks.insert(name.clone(), Look { face: c[0], frame: c[1], coping: c[2], wall: c[3], shell: c[4] });
+            looks.insert(name.clone(), Look { face: c[0], frame: c[1], coping: c[2], shell: c[3] });
         }
         if let Some(g) = ladder.groups.iter().find(|g| !looks.contains_key(&g.look)) {
             return Err(format!("parts groups.{}.look: no look {}", g.name, g.look));

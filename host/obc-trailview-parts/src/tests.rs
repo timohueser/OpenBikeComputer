@@ -34,7 +34,7 @@ fn end(east: f64, north: f64, z: f64, heading: f64, collar: f64) -> End {
         ("way", "0 0".into()),
         ("shift", "0".into()),
     ]);
-    End::from_tags(world(east, north), z, &t).unwrap()
+    End::from_tags(world(east, north), z, &t, Rules::embedded()).unwrap()
 }
 
 /// A chord of a road tube from a to b, metres east, north and floor z, of `height`.
@@ -50,7 +50,7 @@ fn chord(a: [f64; 3], b: [f64; 3], height: f64, along: f64) -> Chord {
         ("ends", "arch arch".into()),
     ]);
     let (pa, pb) = (world(a[0], a[1]), world(b[0], b[1]));
-    let mut c = Chord::from_tags([pa[0], pa[1], a[2]], [pb[0], pb[1], b[2]], &t).unwrap();
+    let mut c = Chord::from_tags([pa[0], pa[1], a[2]], [pb[0], pb[1], b[2]], &t, Rules::embedded()).unwrap();
     c.code = 2;
     c
 }
@@ -83,14 +83,16 @@ fn the_box_of_an_arch_holds_its_section_and_clears_the_crown_at_each_chord_verte
     let boxes = volumes(square, &ends[..1], &chords, rules).boxes;
     assert_eq!(boxes.len(), BOX);
     let [x, y, ux, uy, depth, half, roof, floor, rise] = boxes[..] else { unreachable!() };
-    assert_eq!([x, y, ux, uy], [ends[0].at[0], ends[0].at[1], 1.0, 0.0]);
+    // The box starts at the front of the head wall, as the footprint does.
+    let recess = rules.design.recess_m;
+    assert_eq!([x, y, ux, uy], [world(-recess, 0.0)[0], world(-recess, 0.0)[1], 1.0, 0.0]);
     let shell = rules.ladder.bake.shell_m;
     assert!(depth >= ends[0].collar + 2.0 && depth < 40.0, "depth {depth}");
     assert!(half >= 4.5 + shell);
     let mut tested = 0;
     for c in &chords {
         for v in [c.a, c.b] {
-            let s = metric([v[0], v[1]])[0];
+            let s = metric([v[0], v[1]])[0] + recess;
             if s > depth {
                 continue;
             }
@@ -144,6 +146,13 @@ fn the_daylight_is_one_on_the_frame_line_and_none_from_daylight_m_in() {
     assert!((at(rules.design.daylight_m / 2.0, 0.0) - 0.5).abs() < 1e-9);
     assert_eq!(at(rules.design.daylight_m, 0.0), 0.0);
     assert_eq!(at(5.0, 4.5 + rules.ladder.bake.shell_m + 1.5), 0.0, "beside the opening's line");
+    // Behind the head wall it is dark: in a second tunnel 50 m behind this exit, and 300 m behind and 40 m under it.
+    assert_eq!(at(-70.0, 0.0), 0.0);
+    let deep = world(-300.0, 0.0);
+    assert_eq!(net.daylight([deep[0], deep[1], 460.0]), 0.0);
+    // Under the floor of the opening, past its foot, it is dark too.
+    let under = world(5.0, 0.0);
+    assert_eq!(net.daylight([under[0], under[1], 497.0]), 0.0);
     // The mesh: the vertices on the frame line have the whole daylight.
     let mesh = meshes([X - 1.0, Y - 1.0, X + 1.0, Y + 1.0], &ends[..1], &chords, rules);
     let lit = mesh.vertices.chunks(WORDS).filter(|v| f32::from_bits(v[6]) == 1.0).count();
@@ -210,4 +219,85 @@ fn a_footprint_holds_the_head_wall_and_the_collar() {
     for p in [[6.1, 0.0], [-d.recess_m - 0.01, 0.0], [3.0, edge + 0.01], [0.0, edge + 3.1]] {
         assert!(!inside(p), "{p:?} outside");
     }
+}
+
+/// The edges that one face of a mesh has alone, the void and the lamps left out, in metres east, north and up: an
+/// edge is shared where each of three points along it lies on another face (a T-junction is shared).
+fn open_edges(mesh: &Mesh) -> Vec<[[f64; 3]; 2]> {
+    let m = metres_per_unit(Y);
+    let point = |i: u32| {
+        let w = &mesh.vertices[i as usize * WORDS..];
+        [(w[0] as i32 as f64 - X) * m, -(w[1] as i32 as f64 - Y) * m, f32::from_bits(w[2]) as f64]
+    };
+    let solid = |i: u32| (mesh.vertices[i as usize * WORDS + 3] >> 24) & (mesh::VOID | mesh::LAMP) == 0;
+    let tris: Vec<[[f64; 3]; 3]> =
+        mesh.indices.chunks(3).filter(|t| solid(t[0])).map(|t| [point(t[0]), point(t[1]), point(t[2])]).collect();
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    // Whether p lies on triangle t, within a millimetre (the closest point of a triangle, as Ericson's).
+    let on = |p: [f64; 3], [a, b, c]: [[f64; 3]; 3]| {
+        let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
+        let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+        let bp = sub(p, b);
+        let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+        let cp = sub(p, c);
+        let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+        let q = if d1 <= 0.0 && d2 <= 0.0 {
+            a
+        } else if d3 >= 0.0 && d4 <= d3 {
+            b
+        } else if d6 >= 0.0 && d5 <= d6 {
+            c
+        } else {
+            let (va, vb, vc) = (d3 * d6 - d5 * d4, d5 * d2 - d1 * d6, d1 * d4 - d3 * d2);
+            let along = |u: [f64; 3], f: f64, o: [f64; 3]| [o[0] + u[0] * f, o[1] + u[1] * f, o[2] + u[2] * f];
+            if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+                along(ab, d1 / (d1 - d3), a)
+            } else if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+                along(ac, d2 / (d2 - d6), a)
+            } else if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+                along(sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6)), b)
+            } else {
+                let den = 1.0 / (va + vb + vc);
+                let (v, w) = (vb * den, vc * den);
+                [a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w]
+            }
+        };
+        let d = sub(p, q);
+        dot(d, d) < 1e-6
+    };
+    let mut out = Vec::new();
+    for (i, t) in tris.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            let shared = [0.25, 0.5, 0.75].iter().all(|&f| {
+                let p = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+                tris.iter().enumerate().any(|(j, u)| j != i && on(p, *u))
+            });
+            if !shared {
+                out.push([a, b]);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_part_is_closed_but_at_its_foot_and_at_the_end_of_its_collar() {
+    let (ends, chords) = tube();
+    let rules = Rules::embedded();
+    let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);
+    let back = rules.design.face_m - rules.design.recess_m;
+    // Per end: its point, its way in, its foot and the end of its collar's shell.
+    let limits: Vec<([f64; 2], [f64; 2], f64, f64)> = (ends.iter())
+        .map(|e| (metric(e.at), [libm::cos(e.heading), -libm::sin(e.heading)], e.z + e.foot, e.collar.max(back)))
+        .collect();
+    let allowed = |p: [f64; 3]| {
+        limits.iter().any(|&(at, d, foot, collar)| {
+            let s = (p[0] - at[0]) * d[0] + (p[1] - at[1]) * d[1];
+            (p[2] - foot).abs() < 1e-3 || ((s - collar).abs() < 1e-2 && s < 20.0)
+        })
+    };
+    let open: Vec<_> = open_edges(&mesh).into_iter().filter(|e| !(allowed(e[0]) && allowed(e[1]))).collect();
+    assert!(open.is_empty(), "{} open edges, the first {:?}", open.len(), &open[..open.len().min(4)]);
 }

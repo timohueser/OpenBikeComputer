@@ -52,16 +52,23 @@ fn tags(v: &Value) -> Result<Tags, String> {
 }
 
 fn input(text: &str) -> Result<Input, String> {
+    let rules = Rules::embedded();
     let v: Value = serde_json::from_str(text).map_err(|e| format!("input: {e}"))?;
     let list = |name: &str| v[name].as_array().cloned().unwrap_or_default();
     let ends = (list("ends").iter())
         .map(|e| {
-            End::from_tags(numbers(&e["at"], "at")?, e["z"].as_f64().ok_or("z: not a number")?, &tags(&e["tags"])?)
+            End::from_tags(
+                numbers(&e["at"], "at")?,
+                e["z"].as_f64().ok_or("z: not a number")?,
+                &tags(&e["tags"])?,
+                rules,
+            )
         })
         .collect::<Result<_, String>>()?;
     let chords = (list("chords").iter())
         .map(|c| {
-            let mut chord = Chord::from_tags(numbers(&c["a"], "a")?, numbers(&c["b"], "b")?, &tags(&c["tags"])?)?;
+            let mut chord =
+                Chord::from_tags(numbers(&c["a"], "a")?, numbers(&c["b"], "b")?, &tags(&c["tags"])?, rules)?;
             chord.code = c["code"].as_u64().ok_or("code: not a count")? as u32;
             chord.marked = c["marked"].as_bool().ok_or("marked: not true or false")?;
             Ok(chord)

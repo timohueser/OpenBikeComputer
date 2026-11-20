@@ -16,7 +16,7 @@ mod tube;
 use std::collections::BTreeMap;
 
 pub use mesh::WORDS;
-pub use rules::{Bake, Design, Group, Inside, Ladder, Look, Rules};
+pub use rules::{Bake, Bore, Design, Group, Inside, Ladder, Look, Rules};
 
 use tube::Net;
 
@@ -130,9 +130,14 @@ pub struct End {
 }
 
 impl End {
-    pub fn from_tags(at: [f64; 2], z: f64, tags: &Tags) -> Result<End, String> {
+    /// The end of a record; its `look` is one of `rules`.
+    pub fn from_tags(at: [f64; 2], z: f64, tags: &Tags, rules: &Rules) -> Result<End, String> {
         let name = tag(tags, "part")?;
         let part = Part::parse(name).ok_or(format!("tag part: {name}"))?;
+        let look = tag(tags, "look")?;
+        if !rules.looks.contains_key(look) {
+            return Err(format!("tag look: no look {look}"));
+        }
         let walls = part != Part::Free;
         let pair = part == Part::Pair;
         Ok(End {
@@ -143,7 +148,7 @@ impl End {
             section: section(tags)?,
             half: number(tags, "half")?,
             height: number(tags, "height")?,
-            look: tag(tags, "look")?.to_string(),
+            look: look.to_string(),
             collar: number(tags, "collar")?,
             face: if walls { number(tags, "face")? } else { 0.0 },
             left: if walls { row(tags, "left")? } else { Vec::new() },
@@ -177,7 +182,7 @@ pub struct Chord {
     /// The half-width of the carriageway.
     pub road: f64,
     /// The metres along the stroke of its way at `a`.
-    pub along: Option<f64>,
+    pub along: f64,
     /// The parts of the chain's two ends; None for an end with no part of its own.
     pub ends: [Option<Part>; 2],
     pub code: u32,
@@ -185,8 +190,12 @@ pub struct Chord {
 }
 
 impl Chord {
-    /// The chord of a record; `code` and `marked` are the caller's.
-    pub fn from_tags(a: [f64; 3], b: [f64; 3], tags: &Tags) -> Result<Chord, String> {
+    /// The chord of a record, whose `class` is in a group of `rules`; `code` and `marked` are the caller's.
+    pub fn from_tags(a: [f64; 3], b: [f64; 3], tags: &Tags, rules: &Rules) -> Result<Chord, String> {
+        let class = tag(tags, "class")?;
+        if rules.ladder.group(class).is_none() {
+            return Err(format!("tag class: {class} is in no group"));
+        }
         let ends: Vec<&str> = tag(tags, "ends")?.split(' ').collect();
         let [e0, e1] = ends[..] else { return Err(format!("tag ends: {}", ends.join(" "))) };
         Ok(Chord {
@@ -196,9 +205,9 @@ impl Chord {
             half: number(tags, "half")?,
             height: number(tags, "height")?,
             look: tag(tags, "look")?.to_string(),
-            class: tag(tags, "class")?.to_string(),
+            class: class.to_string(),
             road: number(tags, "road")?,
-            along: tags.contains_key("along").then(|| number(tags, "along")).transpose()?,
+            along: number(tags, "along")?,
             ends: [Part::parse(e0), Part::parse(e1)],
             code: 0,
             marked: false,

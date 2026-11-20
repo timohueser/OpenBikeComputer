@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 
-use crate::mesh::{flagged, flat, left_of, outline, Builder, Corner, Paint, Station, BORE, LAMP, NO_SLEEPERS, PAINT};
-use crate::{built, metres_per_unit, Chord, End, Rules, Section};
+use crate::mesh::{flagged, flat, left_of, outline, Builder, Corner, Paint, Station, BORE, LAMP, PAINT};
+use crate::{built, metres_per_unit, Bore, Chord, End, Rules, Section};
 
 /// An end's point lies within this of the vertex of its tube's chord.
 const END_M: f64 = 0.5;
@@ -33,14 +33,6 @@ pub fn direction(c: &Chord) -> ([f64; 2], f64) {
     ([d[0] / l, d[1] / l], l * metres_per_unit((c.a[1] + c.b[1]) / 2.0))
 }
 
-/// The inside of a tube by the group of its class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Use {
-    Road,
-    Rail,
-    Path,
-}
-
 /// The chords of a tile by their vertices, and per end the chord vertex at its opening.
 pub struct Net<'a> {
     pub ends: &'a [End],
@@ -51,7 +43,7 @@ pub struct Net<'a> {
     opening: Vec<Option<(usize, usize)>>,
     /// The end at each opening's chord vertex.
     end_at: HashMap<(usize, usize), usize>,
-    /// Per end, the rise of its first chord per metre in.
+    /// Per end, the rise of its floor per metre in, over its first `face_m`.
     slope: Vec<f64>,
 }
 
@@ -65,7 +57,6 @@ impl<'a> Net<'a> {
         }
         let mut opening = vec![None; ends.len()];
         let mut end_at = HashMap::new();
-        let mut slope = vec![0.0; ends.len()];
         for (e, end) in ends.iter().enumerate() {
             let m = metres_per_unit(end.at[1]);
             let gap = |c: usize, k: usize| {
@@ -78,12 +69,29 @@ impl<'a> Net<'a> {
                 if built(&[Some(end.part)]) && built(&chords[c].ends) {
                     opening[e] = Some((c, k));
                     end_at.insert((c, k), e);
-                    let (near, far) = (vertex(&chords[c], k), vertex(&chords[c], 1 - k));
-                    slope[e] = (far[2] - near[2]) / direction(&chords[c]).1.max(1e-3);
                 }
             }
         }
-        Net { ends, chords, rules, at, opening, end_at, slope }
+        let mut net = Net { ends, chords, rules, at, opening, end_at, slope: vec![0.0; ends.len()] };
+        let run = rules.design.face_m;
+        net.slope = (0..ends.len()).map(|e| net.floor_at(e, run).map_or(0.0, |(s, z)| (z - ends[e].z) / s)).collect();
+        net
+    }
+
+    /// The metres in and the floor of end e's tube at `s` metres in along its chords, or at the end of the walk where
+    /// it is shorter; None at no length.
+    pub fn floor_at(&self, e: usize, s: f64) -> Option<(f64, f64)> {
+        let mut last = None;
+        for (c, forward, start) in self.walk(e, s) {
+            let chord = &self.chords[c];
+            let len = direction(chord).1;
+            let (near, far) = if forward { (chord.a[2], chord.b[2]) } else { (chord.b[2], chord.a[2]) };
+            if len > 0.0 {
+                let at = s.min(start + len);
+                last = Some((at, near + (far - near) * (at - start) / len));
+            }
+        }
+        last.filter(|l| l.0 > 0.0)
     }
 
     pub fn built_end(&self, e: usize) -> bool {
@@ -177,20 +185,23 @@ impl<'a> Net<'a> {
         out
     }
 
-    /// The share of daylight at a world point: over the openings whose heading line passes within the half-width of
-    /// the tube, the shell and a metre beside it, `1 − smoothstep(0, daylight_m, m)` of the metres m in from its frame
-    /// line, the largest; 0 with none.
+    /// The share of daylight at a world point: over the openings whose section, grown by the shell and a metre to
+    /// each side, holds the point from the front of the head wall to `daylight_m` in, `1 − smoothstep(0, daylight_m,
+    /// m)` of the metres m in from the frame line, the largest; 0 with none.
     pub fn daylight(&self, p: [f64; 3]) -> f64 {
-        let (shell, reach) = (self.rules.ladder.bake.shell_m, self.rules.design.daylight_m);
+        let (shell, reach, front) =
+            (self.rules.ladder.bake.shell_m, self.rules.design.daylight_m, self.rules.design.recess_m);
         let mut most: f64 = 0.0;
-        for end in self.ends {
+        for (e, end) in self.ends.iter().enumerate() {
             let (d, m) = (end.way_in(), metres_per_unit(end.at[1]));
             let l = left_of(d);
             let mates = [Some(0.0), end.mate];
             for q in mates.iter().flatten().map(|a| [end.at[0] + l[0] * a / m, end.at[1] + l[1] * a / m]) {
                 let (dx, dy) = (p[0] - q[0], p[1] - q[1]);
                 let (along, beside) = ((dx * d[0] + dy * d[1]) * m, (dx * l[0] + dy * l[1]) * m);
-                if beside.abs() <= end.half + shell + 1.0 {
+                let up = p[2] - end.z - self.slope[e] * along;
+                let held = beside.abs() <= end.half + shell + 1.0 && up >= end.foot && up <= end.height + shell;
+                if held && along >= -front && along <= reach {
                     let t = (along / reach).clamp(0.0, 1.0);
                     most = most.max(1.0 - t * t * (3.0 - 2.0 * t));
                 }
@@ -199,14 +210,25 @@ impl<'a> Net<'a> {
         most
     }
 
-    /// The inside of a chord's class: its group's use.
-    fn use_of(&self, c: &Chord) -> Use {
+    /// The inside of a chord: of its class's group.
+    fn bore(&self, c: &Chord) -> Bore {
         let ladder = &self.rules.ladder;
-        match ladder.group(&c.class).map(|g| ladder.groups[g].name.as_str()) {
-            Some("rail") => Use::Rail,
-            Some("path") => Use::Path,
-            _ => Use::Road,
-        }
+        ladder.group(&c.class).map_or(Bore::Road, |g| ladder.groups[g].bore)
+    }
+
+    /// The chord and vertex at end e's opening, where its chain is built.
+    pub fn opening(&self, e: usize) -> Option<(usize, usize)> {
+        self.opening[e]
+    }
+}
+
+/// The floor of a tube across: per piece from the right, its metres across and the height of its top. A road or a
+/// track has a walk on each side.
+fn floor_pieces(net: &Net, c: &Chord) -> Vec<(f64, f64, f64)> {
+    let (half, road, lift, kerb) = (c.half, c.road, net.rules.design.lift_m, net.rules.design.kerb_m);
+    match net.bore(c) {
+        Bore::Rock => vec![(-half, half, lift)],
+        Bore::Road | Bore::Track => vec![(-half, -road, kerb), (-road, road, lift), (road, half, kerb)],
     }
 }
 
@@ -229,34 +251,32 @@ pub fn inward(a: Corner, b: Corner, spring: f64) -> Corner {
     [-(a[0] + b[0]), -(a[1] + b[1] - 2.0 * spring)]
 }
 
-/// The inside of chord c from its ring at a to its ring at b, seen from inside: the floor, the walls and the vault by
-/// its use, its lamps, and at a vertex where a lower chord goes on, the face that closes the step in the crown.
+/// The inside of chord c from its ring at a to its ring at b, seen from inside: the floor by its bore, the walls from
+/// the floor up and the vault, its lamps, at a vertex where a lower chord goes on the face that closes the step in the
+/// crown, and at an opening the front of the floor down to the sill under it.
 pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     let chord = &net.chords[c];
     let (design, inside) = (&net.rules.design, &net.rules.inside);
     let (s, t) = (net.ring(c, 0), net.ring(c, 1));
-    let (_, length) = direction(chord);
-    let use_ = net.use_of(chord);
+    let (d, length) = direction(chord);
+    let bore_of = net.bore(chord);
     let (half, road, lift, kerb) = (chord.half, chord.road, design.lift_m, design.kerb_m);
     let sp = spring(net, chord.section, chord.height);
-    let o = inside_outline(net, chord);
     let bore = |colour: u32| flagged(colour, BORE);
-    let (wall, vault) = match use_ {
-        Use::Road => (inside.tiles, inside.arch_lining),
-        Use::Rail => (inside.lining, inside.lining),
-        Use::Path => (inside.rock, inside.rock),
+    let (wall, vault) = match bore_of {
+        Bore::Road => (inside.tiles, inside.arch_lining),
+        Bore::Track => (inside.lining, inside.lining),
+        Bore::Rock => (inside.rock, inside.rock),
     };
-    if use_ == Use::Path {
+    let pieces = floor_pieces(net, chord);
+    if bore_of == Bore::Rock {
         b.strip(&s, &t, [half, lift], [-half, lift], bore(inside.rock_floor), [0.0, 1.0]);
     } else {
         // The road or the track: in its colour the surface code and the lines; along it, the metres of its stroke or
         // its sleepers.
         let paint = flagged(chord.code | (u32::from(chord.marked) << 8), PAINT | BORE);
-        let count = |m: f64| match (use_, chord.along) {
-            (_, None) => NO_SLEEPERS,
-            (Use::Rail, Some(a)) => (a + m) / design.sleeper_m,
-            (_, Some(a)) => a + m,
-        };
+        let count =
+            |m: f64| if bore_of == Bore::Track { (chord.along + m) / design.sleeper_m } else { chord.along + m };
         let corner = |b: &mut Builder<L>, st: &Station, across: f64, m: f64| {
             b.vertex(st.at([across, lift]), paint, Paint { across, half: road, sleepers: count(m) })
         };
@@ -271,21 +291,11 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
             b.strip(&s, &t, [side * road, lift], [side * road, kerb], bore(inside.walk), [-side, 0.0]);
             b.strip(&s, &t, [side * road, kerb], [side * half, kerb], bore(inside.walk), [0.0, 1.0]);
         }
-        // At an opening, the walks end in a face.
-        let (d, _) = direction(chord);
-        for (k, r) in [(0, &s), (1, &t)].into_iter().filter(|(k, _)| net.opening_at(c, *k)) {
-            let out = flat(if k == 0 { [-d[0], -d[1]] } else { d });
-            for side in [1.0, -1.0] {
-                b.plane(
-                    r,
-                    [[side * road, lift], [side * half, lift], [side * half, kerb], [side * road, kerb]],
-                    bore(inside.walk),
-                    out,
-                );
-            }
-        }
     }
+    // The walls stand on the floor at its sides.
+    let mut o = inside_outline(net, chord);
     let n = o.len();
+    (o[0][1], o[n - 1][1]) = (pieces[0].2, pieces[pieces.len() - 1].2);
     for j in 0..n - 1 {
         let colour = if j == 0 || j == n - 2 { wall } else { vault };
         b.strip(&s, &t, o[j], o[j + 1], bore(colour), inward(o[j], o[j + 1], sp));
@@ -293,14 +303,20 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     for k in 0..2 {
         step(b, net, c, k, &o, vault);
     }
-    if use_ != Use::Road {
+    // At an opening, the front of the floor goes down to the sill, `lift_m` under the floor.
+    for (k, r) in [(0, &s), (1, &t)].into_iter().filter(|(k, _)| net.opening_at(c, *k)) {
+        let out = flat(if k == 0 { [-d[0], -d[1]] } else { d });
+        for &(a0, a1, top) in &pieces {
+            b.plane(r, [[a0, -lift], [a1, -lift], [a1, top], [a0, top]], bore(inside.walk), out);
+        }
+    }
+    if bore_of != Bore::Road {
         return;
     }
     // A lamp under the crown where the metres along pass a multiple of the spacing.
-    let start = chord.along.unwrap_or(0.0);
-    let mut at = (start / design.lamp_spacing_m).ceil() * design.lamp_spacing_m;
-    while at < start + length {
-        let m = at - start;
+    let mut at = (chord.along / design.lamp_spacing_m).ceil() * design.lamp_spacing_m;
+    while at < chord.along + length {
+        let m = at - chord.along;
         let (p, q) = (((m - design.lamp_m / 2.0) / length).max(0.0), ((m + design.lamp_m / 2.0) / length).min(1.0));
         let (sp, sq) = (s.mix(&t, p), s.mix(&t, q));
         let up = chord.height - LAMP_DROP_M;
