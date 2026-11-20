@@ -619,7 +619,7 @@ fn aligned(plan: &[Plan], indices: &[usize]) -> Aligned {
 /// Parts in integer tile units, or in quarters of them in a feature with an alignment. A part without
 /// enough distinct points goes, and the holes of an outer ring that goes go with it.
 fn quantized(geometry: Geometry, parts: &[Part], left: i64, top: i64) -> Vec<Quantized> {
-    let unit = if parts.iter().any(|part| part.plan.is_some()) { FINE } else { 1 };
+    let unit = unit_of(parts);
     let (mut result, mut kept) = (Vec::new(), false);
     for part in parts {
         // A part with no heights, or an empty list of them, has none.
@@ -627,12 +627,8 @@ fn quantized(geometry: Geometry, parts: &[Part], left: i64, top: i64) -> Vec<Qua
         let (mut xy, mut heights): (Vec<[i64; 2]>, Vec<f64>) = (Vec::new(), Vec::new());
         let mut indices = Vec::new();
         for (n, &[x, y]) in part.points.iter().enumerate() {
-            let whole = part.plan.as_ref().is_some_and(|plan| plan[n].whole);
-            let round = |value: f64| {
-                let fine = if whole { value.round_ties_even() * unit as f64 } else { value * unit as f64 };
-                fine.round_ties_even() as i64
-            };
-            let point = [round(x) - left * unit, round(y) - top * unit];
+            let [x, y] = rounded(part, n, [x, y], unit);
+            let point = [x - left * unit, y - top * unit];
             if xy.last() != Some(&point) {
                 xy.push(point);
                 heights.push(z.map_or(f64::NAN, |z| z[n]));
@@ -661,6 +657,35 @@ fn quantized(geometry: Geometry, parts: &[Part], left: i64, top: i64) -> Vec<Qua
         result.push(Quantized { outer: part.outer, xy, z: z.map(|_| heights), plan });
     }
     result
+}
+
+/// The units of a feature's coordinates per tile unit: quarters with an alignment.
+fn unit_of(parts: &[Part]) -> i64 {
+    if parts.iter().any(|part| part.plan.is_some()) {
+        FINE
+    } else {
+        1
+    }
+}
+
+/// Vertex n of a part at `[x, y]` tile units of the whole zoom, in `unit`s per tile unit: a vertex that a river
+/// shares lies on a whole tile unit. The rounding of a point does not depend on its tile.
+fn rounded(part: &Part, n: usize, [x, y]: [f64; 2], unit: i64) -> [i64; 2] {
+    let whole = part.plan.as_ref().is_some_and(|plan| plan[n].whole);
+    let round = |value: f64| {
+        let fine = if whole { value.round_ties_even() * unit as f64 } else { value * unit as f64 };
+        fine.round_ties_even() as i64
+    };
+    [round(x), round(y)]
+}
+
+/// Vertex n of part `part` of a feature in the frame of the ground plan (2^34 units per side): the point that every
+/// zoom-13 tile stores for it and the ground plan reads (`obc_ground_plan::frame::tile_point`), exactly.
+pub fn frame_point(parts: &[Part], part: usize, n: usize) -> [i64; 2] {
+    let (unit, scale) = (unit_of(parts), (1u64 << MAX_ZOOM) as f64 * EXTENT_F);
+    let [x, y] = parts[part].points[n];
+    let per = (1i64 << (obc_ground_plan::frame::FRAME_BITS - u32::from(MAX_ZOOM))) / i64::from(EXTENT) / unit;
+    rounded(&parts[part], n, [x * scale, y * scale], unit).map(|v| v * per)
 }
 
 /// Douglas-Peucker on each part, with no alignment: its vertices stay on the curve, and a chord of a low
@@ -1034,6 +1059,41 @@ mod tests {
         assert_eq!(west_plan.along & 1, east_plan.along & 1);
         let low = simplified(Geometry::Line, std::slice::from_ref(&line), &[vec![]], TOLERANCE / (n * EXTENT_F));
         assert!(low[0].plan.is_none());
+    }
+
+    #[test]
+    fn the_frame_point_of_a_vertex_is_the_point_that_the_ground_plan_reads_from_each_tile() {
+        let n = (1u64 << MAX_ZOOM) as f64;
+        let (column, row) = (4286.0, 2889.0);
+        let lon = |x: f64| x / n * 360.0 - 180.0;
+        let lat = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan().to_degrees();
+        // Lines over the border of two tiles; some vertices lie on a tie of the rounding, of a quarter unit and of a
+        // whole one, and one of the aligned line is `whole`.
+        let quarter = 1.0 / (n * EXTENT_F * FINE as f64);
+        let points: Vec<[f64; 2]> = (0..12)
+            .map(|k| {
+                let k = k as f64;
+                let tie = if (k as u32).is_multiple_of(3) { 0.5 } else { 0.37 * k };
+                [(column + 0.97 + k * 0.006) / n + tie * quarter, (row + 0.5) / n + (2.0 * tie + k) * quarter]
+            })
+            .collect();
+        let plan: Vec<Plan> = (0..points.len()).map(|k| Plan { whole: k == 4, ..Plan::default() }).collect();
+        let aligned = Part { points: points.clone(), z: Some(vec![500.0; 12]), plan: Some(plan), ..Part::default() };
+        let plain = Part { points, z: None, ..Part::default() };
+        for line in [aligned, plain] {
+            let mut tiles = Tiles::new([lon(column), lat(row + 1.0), lon(column + 2.0), lat(row)]);
+            let parts = std::slice::from_ref(&line);
+            assert!(tiles.add(MAX_ZOOM, "tunnel", Geometry::Line, &Tags::new(), parts, None));
+            let want: Vec<[i64; 2]> = (0..line.points.len()).map(|k| frame_point(parts, 0, k)).collect();
+            for c in [column as u32, column as u32 + 1] {
+                let bytes = tiles.tiles[&(MAX_ZOOM, c, row as u32)].bytes();
+                let read = obc_ground_plan::tile::features(&bytes, c, row as u32).unwrap();
+                let got: Vec<[i64; 2]> = read[0].parts[0].points.iter().map(|p| [p.x, p.y]).collect();
+                let first = want.iter().position(|w| *w == got[0]).expect("a vertex of the line");
+                assert_eq!(got, want[first..first + got.len()], "tile {c}, aligned {}", line.plan.is_some());
+                assert!(c == column as u32 + 1 || first == 0, "the west tile holds the first vertex");
+            }
+        }
     }
 
     #[test]

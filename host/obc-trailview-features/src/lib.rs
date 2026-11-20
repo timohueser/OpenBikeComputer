@@ -15,6 +15,7 @@ pub mod kinds;
 mod levels;
 mod lifts;
 mod osm;
+pub mod parts;
 mod pmtiles;
 mod rails;
 mod roads;

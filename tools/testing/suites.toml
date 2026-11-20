@@ -36,7 +36,7 @@ triggers = ["specs/**"]
 # the census test reads the TrailView fixture.
 [[package]]
 name = "obc-trailview-features"
-triggers = ["data/trailview/kinds.json", "data/trailview/roads.json", "data/trailview/finishes.json", "data/trailview/waterways.json", "specs/vectors/trailview-features.*", "builder/web/tests/browser/trailview/fixture/**"]
+triggers = ["data/trailview/kinds.json", "data/trailview/roads.json", "data/trailview/finishes.json", "data/trailview/waterways.json", "data/trailview/parts.json", "specs/vectors/trailview-features.*", "builder/web/tests/browser/trailview/fixture/**"]
 
 # The ground plan embeds the cross-section tables, and its tests read the shared vectors, the
 # TrailView fixture and the viewer's mask reach: Cargo cannot see these inputs.

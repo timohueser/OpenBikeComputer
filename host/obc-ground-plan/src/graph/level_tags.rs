@@ -667,22 +667,35 @@ pub(crate) fn split(
         }
         cuts.extend(inner.into_iter().filter(|c| key(&c.0) > key(&piece.from) && key(&c.0) < key(&piece.to)));
         cuts.push((piece.to, a1));
-        for c in cuts.windows(2) {
-            let level = match state_at((c[0].1 + c[1].1) / 2.0) {
-                State::Deck => Level::Deck,
-                State::Open => Level::Ground,
-                State::Bore => part.level,
-                State::Hidden => continue,
-            };
-            match out.last_mut() {
-                Some(p) if p.part == piece.part && p.to == c[0].0 && p.level == level && p.link == piece.link => {
-                    p.to = c[1].0
-                }
-                _ => out.push(Piece { from: c[0].0, to: c[1].0, level, ..piece.clone() }),
-            }
-        }
+        let level = |m: f64| match state_at(m) {
+            State::Deck => Some(Level::Deck),
+            State::Open => Some(Level::Ground),
+            State::Bore => Some(part.level),
+            State::Hidden => None,
+        };
+        assemble(piece, &cuts, level, &mut out);
     }
     Plan { pieces: out, ..plan }
+}
+
+/// The stretches of a piece between its cuts (its `from`, the stations inside it in order, its `to`, each with a
+/// measure that runs monotone along the piece), each with the level that `level` gives at the mean measure of its two
+/// ends (None: not drawn), onto `out`: a stretch that goes on from the last piece at its level joins it.
+pub(super) fn assemble(
+    piece: &Piece,
+    cuts: &[(Station, f64)],
+    level: impl Fn(f64) -> Option<Level>,
+    out: &mut Vec<Piece>,
+) {
+    for c in cuts.windows(2) {
+        let Some(level) = level((c[0].1 + c[1].1) / 2.0) else { continue };
+        match out.last_mut() {
+            Some(p) if p.part == piece.part && p.to == c[0].0 && p.level == level && p.link == piece.link => {
+                p.to = c[1].0
+            }
+            _ => out.push(Piece { from: c[0].0, to: c[1].0, level, ..piece.clone() }),
+        }
+    }
 }
 
 /// A junction with arms on the ground and on a structure (a deck, or with the bores a bore) lies on the ground: its

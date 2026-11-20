@@ -18,7 +18,7 @@ use crate::roads::{self, Classes, River, Surroundings};
 use crate::structures::{self, is_bridge, GROUND};
 use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
-use crate::{levels, lifts, metres, rails, sea, world, Part, Tags, Terrain};
+use crate::{levels, lifts, metres, parts, rails, sea, world, Part, Tags, Terrain};
 
 const EARTH_RADIUS_KM: f64 = 6371.0088;
 /// The waterways and lakes that the water solver sets, and the falls, weirs and dams that keep the
@@ -56,6 +56,7 @@ pub struct Options {
     pub class_names: Vec<String>,
     pub widths: WidthRules,
     pub waterways: BTreeMap<String, Waterway>,
+    pub parts: parts::Rules,
     pub sea: Option<PathBuf>,
 }
 
@@ -235,6 +236,9 @@ pub fn bake(
     eprintln!("placed: {:.1} s", started.elapsed().as_secs_f64());
 
     let (mut ground_census, mut water_census) = (Census::default(), Census::default());
+    // The ways of kind `tunnel` as the tiles hold them, by id: the parts place their openings.
+    let mut tunnels: HashMap<u32, (Tags, Vec<Part>)> = HashMap::new();
+    let mut tunnel_ways: HashSet<usize> = HashSet::new();
     if !(waters.is_empty() && ways.is_empty() && stations.is_empty()) {
         metrics.insert("water".into(), water);
         let is_river = |e: usize| RIVERS.contains(&kinds[e].kind.as_str());
@@ -357,6 +361,12 @@ pub fn bake(
                 }
                 // A way whose parts all have an alignment takes the tags of the levels: its metres along run on.
                 let id = parts.iter().all(|p| p.plan.is_some()).then_some(n as u32);
+                if entry.kind == "tunnel" {
+                    tunnel_ways.insert(n);
+                    if let Some(id) = id {
+                        tunnels.insert(id, (tags.clone(), parts.clone()));
+                    }
+                }
                 placer.place_with(&entry.kind, entry.geometry, entry.min_zoom, all, parts, id);
             }
             for (point, z, way) in piers {
@@ -405,9 +415,35 @@ pub fn bake(
     metrics.insert("census".into(), json!({"ground": ground_census.metrics(), "water": water_census.metrics()}));
     let pass = Instant::now();
     crate::step::release();
-    let (levels, cells) = levels::tags(&placer.tiles, terrain, memory.saturating_sub(crate::step::resident()));
+    let (mut levels, cells) = levels::tags(&placer.tiles, terrain, memory.saturating_sub(crate::step::resident()));
     eprintln!("levels: {cells} cells, {} ways tagged in {:.1} s", levels.len(), pass.elapsed().as_secs_f64());
     metrics.insert("levels".into(), json!({"cells": cells, "ways": levels.len()}));
+    // The tunnel parts read the tiles with the tags of the levels, and come after the sea.
+    let pass = Instant::now();
+    let input = parts::Input {
+        tunnels: &tunnels,
+        ways: ways.iter().map(|(e, tags, parts)| (kinds[*e].kind.as_str(), tags, parts.as_slice())).collect(),
+        tunnel_ways: &tunnel_ways,
+        tiles: &placer.tiles,
+        levels: &levels,
+        terrain,
+        rules: &options.parts,
+        widths: &options.widths,
+        class_names: &options.class_names,
+    };
+    let placed = parts::place(&input, memory.saturating_sub(crate::step::resident()));
+    drop(input);
+    eprintln!("parts: {} features in {:.1} s", placed.features.len(), pass.elapsed().as_secs_f64());
+    for (kind, tags, part) in placed.features {
+        let geometry = if part.points.len() == 1 { Geometry::Point } else { Geometry::Line };
+        placer.place(kind, geometry, MAX_ZOOM, tags, vec![part]);
+    }
+    for (id, tags) in placed.tags {
+        levels.entry(id).or_default().extend(tags);
+    }
+    metrics.insert("parts".into(), placed.metrics);
+    // The parts read the ground plan with or without its bores: a release names which.
+    metrics.insert("ground_plan_bores".into(), obc_ground_plan::graph::BORES.into());
     low_zooms(&mut placer);
     let size = write(&placer, &levels, options, output)?;
     eprintln!("tiles: {:.1} s", started.elapsed().as_secs_f64());
@@ -915,6 +951,10 @@ mod tests {
             class_names,
             widths: crate::kinds::widths(&roads, &finishes).unwrap(),
             waterways: crate::kinds::waterways(&crate::kinds::waterway_rows(&waterways)).unwrap(),
+            parts: parts::Rules::parse(&crate::kinds::part_rows(&table(include_str!(
+                "../../../data/trailview/parts.json"
+            ))))
+            .unwrap(),
             sea: None,
         }
     }
