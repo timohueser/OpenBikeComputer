@@ -367,7 +367,7 @@
     /** The nearest point on a leg within reach of a screen position. */
     function lineHit(point: maplibregl.Point): LineHit | null {
         if (!map || !showRoute) return null;
-        const best = nearestOnScreen(segments, coordinate => map!.project(coordinate), point, lineReach, segment => quiet(segment.day));
+        const best = nearestOnScreen(segments, coordinate => map!.project(coordinate), at => map!.unproject([at.x, at.y]).toArray(), point, lineReach, segment => quiet(segment.day));
         if (!best) return null;
         const at = map.unproject([best.x, best.y]);
         return { legEndId: best.line.legEndId, day: best.line.day, coordinate: [at.lng, at.lat] };
