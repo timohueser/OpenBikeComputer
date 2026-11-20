@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use obc_data::pmtiles::tile_id;
 use obc_ground_plan::sections::{is_track, leading_number, water_width_m, WidthRules};
 use rstar::primitives::Rectangle;
 use serde_json::{json, Map, Value};
@@ -876,7 +877,7 @@ fn write(placer: &Placer, levels: &HashMap<u32, Tags>, options: &Options, output
         .tiles
         .tiles
         .iter()
-        .map(|(&(z, x, y), tile)| (pmtiles::tile_id(z, x, y), pmtiles::gzip(&tile.bytes_with(&|id| levels.get(&id)))))
+        .map(|(&(z, x, y), tile)| (tile_id(z, x, y), pmtiles::gzip(&tile.bytes_with(&|id| levels.get(&id)))))
         .collect();
     if tiles.is_empty() {
         return Err("The region has no TrailView features".into());

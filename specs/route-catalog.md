@@ -7,7 +7,8 @@ relation with a member outside the extract leaves the catalog.
 - Version: `format` `1`. A new field does not change the format. A reader ignores a field that it
   does not know.
 - Writers: the region prepare step, `planner/router-build` (`src/catalog/mod.rs`,
-  `src/catalog/connector.rs`, `src/catalog/trails.rs`, `src/grid.rs`).
+  `src/catalog/connector.rs`, `src/catalog/trails.rs`, `src/grid.rs`); the facts files:
+  `src/facts/`.
 - Readers: the planner search, online and offline: the web planner
   (`builder/web/src/lib/planner/route-catalog.ts`) and its Explore page
   (`builder/web/src/pages/Explore.svelte`), the companion app (`OBCPlanner/SignedRoutes.swift`).
@@ -25,6 +26,7 @@ relation with a member outside the extract leaves the catalog.
 | Grid | `routes/tiles/9-X-Y.json` | One file for each grid cell |
 | Grid | `routes/tiles/trails/7-X-Y.json` | Far file: the trails of one zoom 7 cell (see [Trail files](#trail-files)) |
 | Grid | `routes/tiles/long/ID.json` | Trail record file: the whole record of one trail (see [Trail files](#trail-files)) |
+| Grid | `routes/tiles/facts/9-X-Y.json` | Facts file: the facts of the routes of one grid cell, only with the layer `route-facts` (see [Facts files](#facts-files)) |
 
 A region file, a cell file and a trail record file are UTF-8 JSON: `{"format": 1, "routes": [...]}`.
 The records are in ascending `id` order. A far file has its own form (see [Trail files](#trail-files)). A
@@ -409,6 +411,91 @@ file is larger than 400,000 bytes. When the file is larger with each piece reduc
 segments, the build fails. So no far file is larger than 400,000 bytes, and a far line is within
 `tolerance_m` + 10 m of the plan route. A reader draws each piece as a line of its own; the pieces
 of one `id` meet on their shared segments.
+
+### Facts files
+
+A facts file holds the facts of the route records of one grid cell for the search of the Explore
+page: the car parks, the lifts and the places near each route, and the shares of its length. The
+optional layer `route-facts` writes them; a release without it has no facts files. The facts come
+from the OSM extract of the region bounds with their margin, the routing source, GLO-30 and, when
+the release has it, the [canopy archive](trailview-tiles.md#canopy). They do not change a record.
+
+Each grid cell has a facts file `{"format": 1, "places": {...}, "routes": {...}}`, also a cell with
+no routes:
+
+- `routes` maps the `id` of each record of the cell file that has `line_udeg`, as a decimal string,
+  to its entry. A negative `id` is a key too. A long route has no entry.
+- `places` maps a place id to its place, for each place that an entry of the file names and for the
+  car park of each such lift. A place can lie in another cell.
+
+A place id names the OSM element: `n`, `w` or `r` for a node, a way or a relation, and its ID, such
+as `n123`. A place has the same id in each file. Place ids sort by element (nodes, ways, then
+relations), then by ID. An area is a closed way or a multipolygon relation. A place:
+
+| Field | Value |
+| --- | --- |
+| `kind` | `parking`, `lift`, `peak`, `hut` (a hut with food), `lake` or `waterfall` |
+| `name` | The OSM `name` |
+| `ele_m` | The OSM `ele`, a number with or without `m`, rounded to whole metres |
+| `at_udeg` | `[longitude, latitude]` in microdegrees: the node; the top station of a lift; for an area, the centroid of its largest outer ring when it lies inside that ring, else the vertex of that ring nearest to the centroid |
+| `size` | Car park only: `large` or `small` |
+| `valley_udeg` | Lift only: `[longitude, latitude]` of the valley station |
+| `parking` | Lift only: the place id of the nearest car park within 300 m of the valley station |
+
+| Kind | OSM object; an object that fits more than one row takes the first |
+| --- | --- |
+| `parking` | A node or an area with `amenity=parking`, without `access` `private` or `customers`. It is `large` when `capacity` is a whole number of 50 or more, or, when `capacity` is no whole number, when the area has 1,250 m² or more; else `small` |
+| `lift` | A way with `aerialway` `cable_car`, `gondola`, `chair_lift` or `mixed_lift`, without `access` `private` or `no`. Its ends are the stations. The top station is the end with the greater height: the `ele` of a node with `aerialway=station` at the end, else the GLO-30 height. A lift without a height at an end, or with two equal heights, is no place |
+| `peak` | A node with `natural=peak` |
+| `hut` | A node or an area with `tourism=alpine_hut`, or with `amenity` `restaurant`, `cafe` or `biergarten` whose `at_udeg` is not inside an area with `landuse` `residential`, `commercial` or `retail` |
+| `lake` | An area with `natural=water` and `water` `lake` or `pond`, with a `name` or with 10,000 m² or more |
+| `waterfall` | A node with `waterway=waterfall` |
+
+An entry:
+
+| Field | Value |
+| --- | --- |
+| `parking` | The 5 nearest `large` and the 5 nearest `small` car parks within 3,000 m of the route |
+| `lifts` | The 5 nearest lifts whose top station is within 3,000 m of the route, by the distance of the top station |
+| `places` | Each peak, hut, lake and waterfall within 150 m of the route |
+| `paved_pct`, `big_road_pct`, `water_pct` | The shares of the samples that are paved, near a big road and by water |
+| `canopy_pct` | The share of the samples with a canopy value that are in forest. Absent when fewer than 90 % of the samples have a canopy value, or without a canopy archive |
+| `lift_ends` | Route that is not a loop only: `[place id, "start"]` or `[place id, "end"]` (see below) |
+| `back_s` | Route that is not a loop only: the moving time in the other direction, in whole seconds (see below) |
+
+An item of a list is `[place id, metres]`: the straight-line distance between the place and the
+nearest point of `line_udeg`, in whole metres. The distance of an area is to its nearest edge, and 0
+when the line enters the area. A list is in the order of the distance, then of the place id. An
+empty list is absent. A share is a whole percent of the samples, rounded to the nearest.
+
+The samples of a route are the points of `line_udeg` at each entry of `profile_m`: at `i × 100` m,
+with the line scaled to `length_m`, and at its end. A sample is:
+
+- Paved when the nearest way of the routing source within 15 m that has a `highway` class of the
+  router and no `area=yes` has a `surface` that the router counts as paved (`asphalt`, `paved`,
+  `concrete`, `concrete:plates`, `concrete:lanes`, `paving_stones`), or has no `surface` and is a
+  `motorway`, `trunk`, `primary`, `secondary`, `tertiary` (each also `_link`), `unclassified` or
+  `residential` way.
+- Near a big road when a `motorway`, `trunk` or `primary` way of the routing source without
+  `tunnel` (or with `tunnel=no`) is within 200 m. The routing source holds no node outside the
+  region bounds.
+- By water within 100 m of the edge of an area with `natural=water` and `water` `lake`, `pond`,
+  `reservoir` or `river`, or of a way with `waterway` `river` or `canal`.
+- In forest when the cell of the canopy archive that holds it is a forest cell with a cover of 5 or
+  more (50 %). A cell with the code 65535, or a cell of a tile that the archive does not hold, has no
+  canopy value.
+
+A route that is not a loop has `lift_ends` when one end of `line_udeg` lies within 300 m of the
+valley station of a lift and the other end within 300 m of its top station. The second value names
+the end at the valley. Of several lifts, the entry takes the one with the smallest sum of the two
+distances, then the smallest place id.
+
+`back_s` is `moving_s` × T(backward) ÷ T(forward), rounded to whole seconds. T(forward) is the sum
+over the steps between the entries of `profile_m` of the moving time of the pace model of `moving_s`
+at its default pace for the kind: walking for `hiking` and `foot`, cycling for `bicycle` and
+`mtb`, with the pace of `mtb` for `mtb`. A step is 100 m, the last step the rest of `length_m`; its
+rise is the difference of its two entries, and 0 when one of them is `null`. T(backward) uses the
+negative rises. A flat route has `back_s` = `moving_s`, and so has a route without `profile_m`.
 
 ### Map view
 

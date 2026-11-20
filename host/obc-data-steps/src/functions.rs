@@ -23,6 +23,8 @@ pub static ROUTING_ROADS: Function =
 pub static ROUTING_COSTS: Function =
     Function { name: "planner-router-build/routing-costs", run: planner_router_build::step::costs };
 pub static ROUTING: Function = Function { name: "planner-router-build/routing", run: planner_router_build::step::step };
+pub static ROUTE_FACTS: Function =
+    Function { name: "planner-router-build/route-facts", run: planner_router_build::step::facts };
 pub static SEARCH: Function = Function { name: "obc-search-bake/search", run: obc_search_bake::step::step };
 pub static TRAILVIEW_FEATURES: Function =
     Function { name: "obc-trailview-features/features", run: obc_trailview_features::step::step };
@@ -48,6 +50,7 @@ pub const FUNCTIONS: &[&Function] = &[
     &ROUTING_ROADS,
     &ROUTING_COSTS,
     &ROUTING,
+    &ROUTE_FACTS,
     &SEARCH,
     &TRAILVIEW_FEATURES,
     &TRAILVIEW_STAMPS,

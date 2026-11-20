@@ -18,5 +18,11 @@ memmap2 = "0.9.11"
 rayon = "1"
 # The request of the planner routing step.
 obc-data = { path = "../../host/obc-data" }
+# The canopy tiles of the route facts.
+image = { workspace = true, features = ["webp"] }
 # The heights of the roads, and the planner routing step of `obc data`.
 obc-dem = { path = "../../host/obc-dem", default-features = false, features = ["geotiff", "fetch"] }
+
+[dev-dependencies]
+# The test PBF of the extract reader: the message types of osmpbfreader.
+protobuf = "3"

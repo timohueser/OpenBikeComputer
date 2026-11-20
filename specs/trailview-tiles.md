@@ -9,7 +9,8 @@ the stamp worker makes of the feature tiles for some terrain nodes.
   of `rules.json`; `stamp_version` of the stamp layer. A reader reads only the format that it knows.
 - Writers: `tools/trailview/rules.py`, `tools/trailview/ground.py`, `tools/trailview/colour.py`,
   `tools/planner_trailview_canopy.py`, `host/obc-trailview-features/src/stamps.rs`.
-- Readers: the TrailView engine (`builder/web/src/lib/trailview/`), `tools/planner_verify.py`.
+- Readers: the TrailView engine (`builder/web/src/lib/trailview/`), `tools/planner_verify.py`; the
+  canopy: also the route facts (`planner/router-build/src/facts/shares.rs`).
 - Related: the optional planner layers `trailview-*` of [obc-data.md](obc-data.md),
   [the planner snow tiles](planner-snow-tiles.md), [TrailView feature tiles](trailview-features.md).
 

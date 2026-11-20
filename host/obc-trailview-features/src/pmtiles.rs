@@ -1,10 +1,11 @@
-//! PMTiles v3 archives: the reader of the terrain grid and the writer of the feature tiles.
+//! Writes the PMTiles v3 archives of the feature tiles; `obc_data::pmtiles` reads them.
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Write};
-use std::os::unix::fs::FileExt;
+use std::io::Write;
 use std::path::Path;
+
+use obc_data::pmtiles::{zoom, Entry};
 
 /// The header fields of an archive that its writer does not derive from the tiles.
 pub struct Header {
@@ -19,30 +20,6 @@ pub struct Header {
     pub center_e7: [i32; 2],
 }
 
-/// The tile id of a tile: the tiles of lower zooms, then its place on the Hilbert curve.
-pub fn tile_id(z: u8, x: u32, y: u32) -> u64 {
-    let (mut x, mut y) = (u64::from(x), u64::from(y));
-    let mut id = ((1u64 << (2 * z)) - 1) / 3;
-    for a in (0..z).rev() {
-        let s = 1u64 << a;
-        let (rx, ry) = (s & x, s & y);
-        id += ((3 * rx) ^ ry) << a;
-        if ry == 0 {
-            if rx != 0 {
-                x = (s - 1).wrapping_sub(x);
-                y = (s - 1).wrapping_sub(y);
-            }
-            std::mem::swap(&mut x, &mut y);
-        }
-    }
-    id
-}
-
-/// The zoom of a tile id.
-fn zoom(id: u64) -> u8 {
-    ((u64::BITS - (3 * id + 1).leading_zeros() - 1) / 2) as u8
-}
-
 /// gzip of `data` at level 9, with no file name and no time, as `zlib.compress(data, 9, wbits=31)`
 /// heads it.
 pub fn gzip(data: &[u8]) -> Vec<u8> {
@@ -55,14 +32,6 @@ pub fn gzip(data: &[u8]) -> Vec<u8> {
     out.extend(crc.sum().to_le_bytes());
     out.extend((data.len() as u32).to_le_bytes());
     out
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Entry {
-    pub tile_id: u64,
-    pub offset: u64,
-    pub length: u64,
-    pub run_length: u64,
 }
 
 fn varint(out: &mut Vec<u8>, mut value: u64) {
@@ -191,120 +160,11 @@ pub fn write(path: &Path, tiles: &[(u64, Vec<u8>)], header: &Header, metadata: &
     Ok(data_offset + length)
 }
 
-/// A PMTiles v3 archive, read on demand.
-pub struct Archive {
-    file: File,
-    gzip: bool,
-    pub(crate) tile_compression: u8,
-    leaves: u64,
-    data: u64,
-    pub(crate) root: Vec<Entry>,
-}
-
-impl Archive {
-    pub fn open(path: &Path) -> Result<Self, String> {
-        let file = File::open(path).map_err(|e| e.to_string())?;
-        let mut header = [0u8; 127];
-        file.read_exact_at(&mut header, 0).map_err(|e| e.to_string())?;
-        if &header[..7] != b"PMTiles" || header[7] != 3 {
-            return Err("not a PMTiles v3 archive".into());
-        }
-        let word = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
-        let gzip = match header[97] {
-            1 => false,
-            2 => true,
-            other => return Err(format!("directory compression {other}")),
-        };
-        let mut archive =
-            Self { file, gzip, tile_compression: header[98], leaves: word(40), data: word(56), root: Vec::new() };
-        archive.root = archive.directory(word(8), word(16))?;
-        Ok(archive)
-    }
-
-    pub(crate) fn bytes(&self, offset: u64, length: u64) -> Result<Vec<u8>, String> {
-        let mut out = vec![0; length as usize];
-        self.file.read_exact_at(&mut out, offset).map_err(|e| e.to_string())?;
-        Ok(out)
-    }
-
-    pub(crate) fn directory(&self, offset: u64, length: u64) -> Result<Vec<Entry>, String> {
-        let mut raw = self.bytes(offset, length)?;
-        if self.gzip {
-            let mut out = Vec::new();
-            flate2::read::GzDecoder::new(&raw[..]).read_to_end(&mut out).map_err(|e| e.to_string())?;
-            raw = out;
-        }
-        let mut at = 0;
-        let mut varint = || -> Result<u64, String> {
-            let mut value = 0u64;
-            for shift in (0..64).step_by(7) {
-                let byte = *raw.get(at).ok_or("a directory ends inside a varint")?;
-                at += 1;
-                value |= u64::from(byte & 0x7f) << shift;
-                if byte & 0x80 == 0 {
-                    return Ok(value);
-                }
-            }
-            Err("a varint is too long".into())
-        };
-        let count = varint()? as usize;
-        let mut entries: Vec<Entry> = Vec::with_capacity(count);
-        let mut last = 0;
-        for _ in 0..count {
-            last += varint()?;
-            entries.push(Entry { tile_id: last, offset: 0, length: 0, run_length: 0 });
-        }
-        for entry in &mut entries {
-            entry.run_length = varint()?;
-        }
-        for entry in &mut entries {
-            entry.length = varint()?;
-        }
-        for i in 0..count {
-            let value = varint()?;
-            entries[i].offset =
-                if i > 0 && value == 0 { entries[i - 1].offset + entries[i - 1].length } else { value - 1 };
-        }
-        Ok(entries)
-    }
-
-    /// The bytes of a tile as the archive stores them, None where it has none.
-    pub fn get(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, String> {
-        let id = tile_id(z, x, y);
-        let mut leaf;
-        let mut entries = &self.root[..];
-        for _ in 0..4 {
-            let Some(entry) = find(entries, id) else { return Ok(None) };
-            let (offset, length) = (entry.offset, entry.length);
-            if entry.run_length > 0 {
-                return self.bytes(self.data + offset, length).map(Some);
-            }
-            leaf = self.directory(self.leaves + offset, length)?;
-            entries = &leaf;
-        }
-        Ok(None)
-    }
-}
-
-/// The entry that holds tile `id`: a run of tiles, or the leaf directory that it lies in.
-fn find(entries: &[Entry], id: u64) -> Option<&Entry> {
-    let at = entries.partition_point(|entry| entry.tile_id <= id);
-    let entry = entries.get(at.checked_sub(1)?)?;
-    (entry.tile_id == id || entry.run_length == 0 || id - entry.tile_id < entry.run_length).then_some(entry)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn tile_ids_follow_the_hilbert_curve_of_pmtiles() {
-        let tiles =
-            [(0, 0, 0), (1, 0, 0), (1, 0, 1), (1, 1, 1), (1, 1, 0), (2, 3, 0), (13, 4260, 2880), (12, 2131, 1439)];
-        let ids = tiles.map(|(z, x, y)| tile_id(z, x, y));
-        assert_eq!(ids, [0, 1, 2, 3, 4, 20, 79377413, 19843151]);
-        assert_eq!(tiles.map(|(z, x, y)| zoom(tile_id(z, x, y))), tiles.map(|t| t.0));
-    }
+    use obc_data::pmtiles::{tile_id, Archive};
+    use std::io::Read;
 
     #[test]
     fn an_archive_reads_back_its_tiles_with_equal_ones_shared_and_runs_in_one_entry() {
@@ -324,7 +184,7 @@ mod tests {
         let entry =
             |tile_id, offset, length: usize, run_length| Entry { tile_id, offset, length: length as u64, run_length };
         let (al, bl) = (a.len(), b.len());
-        assert_eq!(archive.root, [entry(5, 0, al, 2), entry(7, al as u64, bl, 2), entry(9, 0, al, 1)]);
+        assert_eq!(archive.root(), [entry(5, 0, al, 2), entry(7, al as u64, bl, 2), entry(9, 0, al, 1)]);
         let unzip = |data: Vec<u8>| {
             let mut out = Vec::new();
             flate2::read::GzDecoder::new(&data[..]).read_to_end(&mut out).unwrap();
@@ -379,9 +239,9 @@ mod tests {
             Header { tile_type: 0, tile_compression: 1, bounds_e7: [0; 4], center_zoom: 12, center_e7: [0; 2] };
         write(&path, &tiles, &header, "{}").unwrap();
         let archive = Archive::open(&path).unwrap();
-        assert!(archive.root.iter().all(|entry| entry.run_length == 0));
-        let leaf = archive.directory(archive.leaves + archive.root[1].offset, archive.root[1].length).unwrap();
-        assert_eq!(leaf[0], entries[4096]);
+        assert!(archive.root().iter().all(|entry| entry.run_length == 0));
+        assert_eq!(archive.root()[1].tile_id, entries[4096].tile_id);
+        assert_eq!(archive.tile(tiles[4096].0).unwrap().as_ref(), Some(&tiles[4096].1));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

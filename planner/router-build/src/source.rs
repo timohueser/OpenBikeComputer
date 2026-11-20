@@ -593,11 +593,23 @@ pub struct Way<'a> {
     pub facts: WayFacts,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// An OSM element. Its order is nodes, then ways, then relations, each by OSM ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Id {
     Node(i64),
     Way(i64),
     Relation(i64),
+}
+
+/// `n123`, `w456` or `r789`.
+impl std::fmt::Display for Id {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Id::Node(id) => write!(f, "n{id}"),
+            Id::Way(id) => write!(f, "w{id}"),
+            Id::Relation(id) => write!(f, "r{id}"),
+        }
+    }
 }
 
 impl Id {

@@ -104,6 +104,9 @@ pub fn pointer(request: &Request) -> Result<(), String> {
     if files.contains_key("trailview/rules.json") {
         active["trailview_rules"] = json!(format!("{tiles}/trailview/rules.json"));
     }
+    if files.keys().any(|name| name.starts_with("routes/tiles/facts/")) {
+        active["facts"] = json!(format!("{tiles}/routes/tiles/facts/{{cell}}.json"));
+    }
     if files.keys().any(|name| name.starts_with("routes/tiles/trails/")) {
         active["trails"] = json!(format!("{tiles}/routes/tiles/trails/{{cell}}.json"));
         active["trail"] = json!(format!("{tiles}/routes/tiles/long/{{id}}.json"));

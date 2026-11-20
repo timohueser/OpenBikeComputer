@@ -33,6 +33,19 @@ struct Attributes {
     structure: bool,
 }
 
+/// The surface class of a `surface` value: the one definition of a paved way for the router and the
+/// route facts.
+pub fn surface_class(value: &str) -> Surface {
+    match value {
+        "asphalt" | "paved" | "concrete" | "concrete:plates" | "concrete:lanes" | "paving_stones" => Surface::Paved,
+        "compacted" | "fine_gravel" => Surface::Compacted,
+        "gravel" | "pebblestone" => Surface::Gravel,
+        "ground" | "dirt" | "earth" | "grass" | "unpaved" => Surface::Dirt,
+        "sand" | "mud" | "rock" | "stone" | "cobblestone" | "sett" => Surface::Rough,
+        _ => Surface::Unknown,
+    }
+}
+
 /// Conditional restrictions do not count: the router keeps them open, and the route reports them.
 fn access(tags: &Tags, defaults: u8, direction: &str) -> u8 {
     source::access(|key| tags.get(key), defaults, direction, true)
@@ -62,14 +75,7 @@ fn attributes(tags: &Tags, country: Country, counts: &mut Counts) -> Option<Attr
     if modes == [0, 0] {
         return None;
     }
-    let surface = match tags.get("surface").unwrap_or("") {
-        "asphalt" | "paved" | "concrete" | "concrete:plates" | "concrete:lanes" | "paving_stones" => Surface::Paved,
-        "compacted" | "fine_gravel" => Surface::Compacted,
-        "gravel" | "pebblestone" => Surface::Gravel,
-        "ground" | "dirt" | "earth" | "grass" | "unpaved" => Surface::Dirt,
-        "sand" | "mud" | "rock" | "stone" | "cobblestone" | "sett" => Surface::Rough,
-        _ => Surface::Unknown,
-    };
+    let surface = surface_class(tags.get("surface").unwrap_or(""));
     let difficulty = tags
         .get("mtb:scale")
         .and_then(|v| v.trim_end_matches(['+', '-']).parse::<u8>().ok())
@@ -226,7 +232,7 @@ fn read(paths: &[PathBuf], mut visit: impl FnMut(OsmObj)) -> Result<(), String> 
     Ok(())
 }
 
-fn copy_tags(tags: &osmpbfreader::Tags) -> Tags<'static> {
+pub(crate) fn copy_tags(tags: &osmpbfreader::Tags) -> Tags<'static> {
     Tags::from_pairs(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
 }
 

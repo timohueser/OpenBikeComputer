@@ -1,4 +1,4 @@
-"""Pack planner routing, assets, model or joined fonts without rebuilding their inputs."""
+"""Pack planner routing, route facts, assets, model or joined fonts without rebuilding their inputs."""
 
 import argparse
 import json
@@ -47,7 +47,7 @@ def step(request):
         files, extra = routing(request["layers"])
     else:
         layer, = request["layers"].values()
-        prefix = {"assets": "maps/", "model": "search/", "trailview-rules": "trailview/"}[kind]
+        prefix = {"assets": "maps/", "model": "search/", "trailview-rules": "trailview/", "facts": "routes/tiles/"}[kind]
         files, extra = {prefix + name: source for name, source in layer.items()}, {}
     pack_index(request, kind, files, **extra)
 
