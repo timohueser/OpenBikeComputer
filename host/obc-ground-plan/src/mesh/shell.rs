@@ -646,7 +646,7 @@ pub fn mesh_storeys_with(
         let at = |p: P| keyed.binary_search(&(yx(p), 0)).unwrap() as u32;
         let segments: Vec<Segment> =
             pieces.iter().map(|&(a, c, left, right, _)| Segment { a: at(a), b: at(c), left, right }).collect();
-        let (tris, _) = cdt::triangulate(&points, &segments, segments.len())?;
+        let (tris, _) = cdt::triangulate(&points, &segments, segments.len(), 0)?;
         for (t, class) in tris.iter().filter(|(_, c)| sheet(*c) && labels[*c as usize].is_some()) {
             let l = label(*class);
             let top = t.map(|v| b.corner(points[v as usize], l, 0.0));

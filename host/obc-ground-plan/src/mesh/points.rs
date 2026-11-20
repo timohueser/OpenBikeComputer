@@ -5,14 +5,18 @@
 //!   point). A span of the cell line also holds the plan vertices that either cell has on it, and its
 //!   middle only where that lies farther than `GRID_CLEARANCE_M` from them, so both cells give it the
 //!   same points;
-//! - the grid points inside D farther than `GRID_CLEARANCE_M` from every face edge, in every face.
+//! - the grid points inside D farther than `GRID_CLEARANCE_M` from every face edge, in every face;
+//! - the edges of the cut's rings in the cell (`cut`), which part no faces. Where a cell has a cut, every constraint is
+//!   snap rounded (`snap`), so the rings' edges cross none.
 //!
 //! Every point is an integer of the cell's frame. Ground faces' edges are no constraints: the ground
 //! is one continuous field, so a triangle may span two ground faces.
 
 use super::cdt::{Segment, INSIDE};
+use super::cut::{self, Ring};
 use super::params::{l_max_m, GRID, GRID_CLEARANCE_M, SIDE};
 use super::region::Region;
+use super::snap::snap;
 use crate::faces::{Edge, EdgeKind, FacePlan, OUTSIDE};
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
 
@@ -22,8 +26,11 @@ pub struct Input {
     /// Sorted by (y, x), each once.
     pub points: Vec<P>,
     pub segments: Vec<Segment>,
-    /// `segments[..edges]` are face edges, the rest D's border.
+    /// `segments[..edges]` are face edges, then D's border, then the last `rings` the edges of the cut's rings.
     pub edges: usize,
+    pub rings: usize,
+    /// The rings of each end's cut, their edges in the cell as the segments run.
+    pub cut: Vec<Vec<Ring>>,
     /// Per face edge piece, the kind of its edge: on a deck end line (`EdgeKind::DeckEdge`) its slot is an end face; on
     /// a portal line (`EdgeKind::Portal`) it has none, as the bore's shell stands there (`mesh::shell`).
     pub kinds: Vec<EdgeKind>,
@@ -110,11 +117,18 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
             kinds.push(e.kind);
         }
     }
-    let edges = ends.len();
-    // Grid points within the clearance of a face edge stay out.
+    let mut edges = ends.len();
+    let mut rings = cut::rings(plan);
+    let pieces = cut::pieces(&rings);
+    let piece = |&(e, r, k): &(usize, usize, usize)| {
+        let ring = &rings[e][r];
+        [ring[k], ring[(k + 1) % ring.len()]].map(|p| p.map(|v| v as i32))
+    };
+    let cuts: Vec<[P; 2]> = pieces.iter().map(piece).collect();
+    // Grid points within the clearance of a face edge or a ring's edge stay out.
     let n = SIDE as usize;
     let mut blocked = vec![false; n * n];
-    for &(a, b, _, _) in &ends {
+    for (a, b) in ends.iter().map(|&(a, b, _, _)| (a, b)).chain(cuts.iter().map(|&[a, b]| (a, b))) {
         let clear = GRID_CLEARANCE_M / mpu(f64::from(a[1] + b[1]) / 2.0);
         let range = |lo: i32, hi: i32| {
             let first = ((f64::from(lo) - clear) / f64::from(GRID)).ceil().max(0.0) as i32;
@@ -155,6 +169,40 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
             ends.push((w[0], w[1], INSIDE, OUTSIDE));
         }
     }
+    // With a cut: every segment snap rounded, so that the rings' edges cross none.
+    let mut ring_count = 0;
+    if !cuts.is_empty() {
+        let first = ends.len();
+        let all: Vec<[P; 2]> = ends.iter().map(|&(a, b, _, _)| [a, b]).chain(cuts.iter().copied()).collect();
+        let lines = snap(&all, &(first..all.len()).collect::<Vec<_>>());
+        let (mut snapped, mut snapped_kinds) = (Vec::new(), Vec::new());
+        let faces = edges;
+        for (i, &(_, _, left, right)) in ends.iter().enumerate() {
+            if i == faces {
+                edges = snapped.len();
+            }
+            for w in lines[i].windows(2) {
+                snapped.push((w[0], w[1], left, right));
+                if i < faces {
+                    snapped_kinds.push(kinds[i]);
+                }
+            }
+        }
+        if faces == ends.len() {
+            edges = snapped.len();
+        }
+        for (j, &(e, r, k)) in pieces.iter().enumerate().rev() {
+            let line = &lines[first + j];
+            for w in line.windows(2) {
+                snapped.push((w[0], w[1], INSIDE, INSIDE));
+            }
+            ring_count += line.len() - 1;
+            // The ring runs as its edge's segments do.
+            let ring = &mut rings[e][r];
+            ring.splice(k + 1..k + 1, line[1..line.len() - 1].iter().map(|p| p.map(i64::from)));
+        }
+        (ends, kinds) = (snapped, snapped_kinds);
+    }
     let mut points: Vec<P> = ends.iter().flat_map(|e| [e.0, e.1]).collect();
     let mut grid_points = 0;
     for j in 0..SIDE {
@@ -169,7 +217,7 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
     points.dedup();
     let at = |p: P| points.binary_search_by_key(&(p[1], p[0]), |q| (q[1], q[0])).unwrap() as u32;
     let segments = ends.iter().map(|&(a, b, left, right)| Segment { a: at(a), b: at(b), left, right }).collect();
-    Input { segments, edges, kinds, grid_points, outside_d, points }
+    Input { segments, edges, rings: ring_count, cut: rings, kinds, grid_points, outside_d, points }
 }
 
 /// The face of the plan at each grid point of the cell, index j × `SIDE` + i, by scan lines half a
@@ -236,6 +284,7 @@ mod tests {
                 edges,
                 corners: Vec::new(),
                 mouths: Vec::new(),
+                cuts: Vec::new(),
                 stats: Default::default(),
             };
             let row = &grid_faces(&plan)[10 * SIDE as usize..];

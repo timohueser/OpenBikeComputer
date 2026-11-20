@@ -4,6 +4,7 @@ use crate::faces::{records, EdgeKind, FacePlan, Portal, Rules, Storeys, FRONT_LE
 use crate::frame::CellKey;
 use crate::graph::{self, WayGraph};
 use crate::mesh;
+use crate::openings;
 use crate::tile::TileCache;
 use crate::transport::{fnv, Request};
 use crate::CellInput;
@@ -133,13 +134,11 @@ pub fn far_request(request: Request, cache: &mut TileCache, rules: &Rules) -> Re
     records::far_block(&cell_graph(key, &input, rules), &input, rules, key)
 }
 
-/// The way graph of a cell: with the storeys, its ways follow the levels that the tiles carry.
+/// The way graph of a cell: with the storeys, its ways follow the levels that the tiles carry. The ways of the built
+/// tunnel ends lie on the ground up to their openings (`openings::built`).
 pub fn cell_graph(key: CellKey, input: &CellInput, rules: &Rules) -> WayGraph {
-    if cfg!(feature = "storeys") {
-        graph::build_levelled(key, input, &rules.sections, rules.structures.edge_band_m)
-    } else {
-        graph::build(key, input, &rules.sections)
-    }
+    let levelled = cfg!(feature = "storeys").then_some(rules.structures.edge_band_m);
+    graph::build_open(key, input, &rules.sections, levelled, &openings::built(input).0)
 }
 
 fn stages(
@@ -168,7 +167,8 @@ fn level_0(
     let key = input.key;
     let graph = cell_graph(key, input, rules);
     let built = now();
-    let (faces, records, far, under) = records::near_under(&graph, input, rules, key);
+    let (mut faces, records, far, under) = records::near_under(&graph, input, rules, key);
+    faces.cuts = openings::built(input).1;
     let times = vec![0.0, built - read, now() - built];
     let records = records.words;
     let (storeys, storey_time) = (Storeys::default(), 0.0);

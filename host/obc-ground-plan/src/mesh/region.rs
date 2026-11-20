@@ -166,19 +166,23 @@ pub fn grid_of(p: [i32; 2]) -> Option<[i32; 2]> {
 }
 
 /// The cell's sharp marks: bit i + `CELLS` · j where region cell (i, j) of the cell's open square
-/// meets the inside of a sharp face.
+/// meets the inside of a sharp face or of a cut (`FacePlan::cuts`), so R holds the cut and the strip lies outside it.
 pub fn sharp_cells(plan: &FacePlan) -> Vec<u64> {
     let mut out = vec![0u64; MARK_WORDS];
+    let mut set = |i: i32, j: i32| {
+        let k = (j * CELLS + i) as usize;
+        out[k / 64] |= 1 << (k % 64);
+    };
     for face in (plan.faces.iter()).filter(|f| {
         f.level == 0 && (super::params::sharp_face(f) || (crate::graph::BORES && f.under != crate::faces::NO_UNDER))
     }) {
         let rings: Vec<Vec<[i64; 2]>> = (face.rings.iter())
             .map(|r| r.iter().map(|&v| plan.vertices[v as usize].map(i64::from)).collect())
             .collect();
-        mark(&rings, &mut |i, j| {
-            let k = (j * CELLS + i) as usize;
-            out[k / 64] |= 1 << (k % 64);
-        });
+        mark(&rings, &mut set);
+    }
+    for cut in &plan.cuts {
+        mark(cut, &mut set);
     }
     out
 }
