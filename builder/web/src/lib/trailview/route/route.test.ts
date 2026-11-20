@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { frameAt } from '../frame/frame';
 import { viewProjection } from '../frame/camera';
 import { nearestRoute, onScreen } from './pick';
+import { worldPixel } from '../../planner/layers/mercator';
+import { UNITS } from '../frame/space';
 import { pickPoints, POINT_WORDS, Route, routePoints, type RouteLine } from './route';
 
 /** The words of each point: x, y, the colour and the number of the route. */
@@ -106,6 +108,29 @@ describe('pickPoints', () => {
         expect(at(40, 10)).toBe(1);
         // Between the entries at 25 m and 100 m, 20 m from the line.
         expect(at(20, 22.5)).toBeNull();
+    });
+
+    it('gives a route with no profile the drawn heights at each 100 m of its line and at its end', async () => {
+        const route = new Route(), colours = ['#ff0000', '#ff0000'], profiled = { line, colours, profile: { step: 100, heights: [0, 0, 0, 0] } };
+        let asked: Float64Array | undefined;
+        await route.set([profiled, { line, colours }], frame, async points => {
+            asked = points;
+            return new Float32Array([1000, 1010, NaN, 1025]);
+        });
+        const spots = [[0, 0], [100, 0], [150, 50], [150, 100]].map(([east, north]) => worldPixel(frame.lonLat(east, north), UNITS));
+        Array.from(asked!).forEach((value, k) => expect(value).toBeCloseTo(spots[k >> 1][k & 1], 3));
+        expect(route.picks[0]).toEqual(pickPoints(profiled, frame));
+        close(triples(route.picks[1]!), [[0, 0, 1000], [100, 0, 1010], [150, 0, NaN], [150, 50, NaN], [150, 100, 1025]]);
+    });
+
+    it('keeps the routes of a later set when the drawn heights of an earlier one arrive', async () => {
+        const route = new Route();
+        let resolve!: (heights: Float32Array) => void;
+        const first = route.set([{ line, colours: ['#ff0000', '#ff0000'] }], frame, () => new Promise(done => { resolve = done; }));
+        void route.set([], frame);
+        resolve(new Float32Array(4));
+        await first;
+        expect(route.picks).toEqual([]);
     });
 });
 

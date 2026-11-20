@@ -306,10 +306,14 @@ export class TrailView {
 
     /**
      * Draws the routes on the surface in place of the ones before, numbered from 1 in their order. A route of fewer
-     * than two points draws none. No route of the new list is bold.
+     * than two points draws none. No route of the new list is bold. A route with no profile has pick points
+     * once the view is idle, from the heights that the view draws.
      */
     showRoutes(routes: readonly RouteLine[]): void {
-        this.route.set(routes, this.frame);
+        this.route.set(routes, this.frame, async points => {
+            await this.waitForIdle();
+            return this.destroyed ? undefined : this.terrain.probeAt(points);
+        }).catch((error: unknown) => console.error('TrailView:', error));
         this.request();
     }
 

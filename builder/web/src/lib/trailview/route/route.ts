@@ -15,6 +15,8 @@ export const POINT_WORDS = 4;
 const STEP_M = 5;
 /** The side of a badge image in image pixels, as BADGE_PIXELS of route.wgsl: twice its output pixels. */
 export const BADGE_SIZE = 64;
+/** The metres between two heights that a route with no profile takes from the drawn surface: the step of `profile_m`. */
+const SURFACE_STEP_M = 100;
 /** Words of a pin, as `Pin` of route.wgsl. */
 const PIN_WORDS = 4;
 /** The share of its light that a pin shows where something hides it. */
@@ -27,7 +29,7 @@ export interface RoutePin { coordinate: Coordinate; colour: string; badge?: GPUC
 export interface RouteLine {
     line: readonly Coordinate[];
     colours: readonly string[];
-    /** The heights along the route (`Profile`). Only a route with a profile has pick points. Without `length`, the length of the line stands for the route's length. */
+    /** The heights along the route (`Profile`). Without `length`, the length of the line stands for the route's length. */
     profile?: Omit<Profile, 'length'> & { length?: number };
 }
 
@@ -78,9 +80,7 @@ export function routePoints(routes: readonly RouteLine[]): Uint32Array<ArrayBuff
  */
 export function pickPoints({ line, profile }: RouteLine, frame: Frame): Float64Array | undefined {
     if (!profile || line.length < 2 || profile.heights.length < 2) return undefined;
-    const { step, heights } = profile, n = heights.length, at = line.map(point => frame.local(...point)), along = [0];
-    for (let i = 1; i < at.length; i++) along.push(along[i - 1] + Math.hypot(at[i][0] - at[i - 1][0], at[i][1] - at[i - 1][1]));
-    const total = along.at(-1)!;
+    const { step, heights } = profile, n = heights.length, { at, along } = alongLine(line, frame), total = along.at(-1)!;
     if (!total) return undefined;
     const route = { step, heights, length: profile.length ?? Math.min(Math.max(total, (n - 2) * step), (n - 1) * step) };
     // Metres along the line of entry e, and the height at d metres along the line; the last entries can share the end.
@@ -95,6 +95,29 @@ export function pickPoints({ line, profile }: RouteLine, frame: Frame): Float64A
         points.push([d, at[i - 1][0] + t * (at[i][0] - at[i - 1][0]), at[i - 1][1] + t * (at[i][1] - at[i - 1][1]), heights[e]]);
     }
     return new Float64Array(points.sort((p, q) => p[0] - q[0]).flatMap(([, x, y, height]) => [x, y, height ?? NaN]));
+}
+
+/**
+ * Where a line takes its heights from the drawn surface, as the entries of a profile: at each SURFACE_STEP_M
+ * of its length in the frame and at its end, as world units x and y. Undefined for a line with no length.
+ */
+export function surfaceSpots(line: readonly Coordinate[], frame: Frame): { spots: number[]; length: number } | undefined {
+    const { at, along } = alongLine(line, frame), length = along.at(-1) ?? 0, spots: number[] = [];
+    if (!length) return undefined;
+    for (let e = 0, i = 1; e <= Math.floor(length / SURFACE_STEP_M) + 1; e++) {
+        const d = Math.min(e * SURFACE_STEP_M, length);
+        while (i < at.length - 1 && along[i] < d) i++;
+        const t = along[i] > along[i - 1] ? (d - along[i - 1]) / (along[i] - along[i - 1]) : 1;
+        spots.push(...worldPixel(frame.lonLat(at[i - 1][0] + t * (at[i][0] - at[i - 1][0]), at[i - 1][1] + t * (at[i][1] - at[i - 1][1])), UNITS));
+    }
+    return { spots, length };
+}
+
+/** The vertices of a line in frame metres east and north, and the metres along the line to each. */
+function alongLine(line: readonly Coordinate[], frame: Frame): { at: [number, number][]; along: number[] } {
+    const at = line.map(point => frame.local(...point)), along = [0];
+    for (let i = 1; i < at.length; i++) along.push(along[i - 1] + Math.hypot(at[i][0] - at[i - 1][0], at[i][1] - at[i - 1][1]));
+    return { at, along };
 }
 
 /** '#rrggbb' as the bytes of WGSL's unpack4x8unorm: red lowest. */
@@ -135,12 +158,27 @@ export class Route {
     /** What is not on the GPU yet. */
     private fresh = { points: true, pins: true, badges: true, bold: true };
 
-    /** The routes in place of the ones before, numbered from 1 in their order, with no bold route; `frame` places their pick points. */
-    set(routes: readonly RouteLine[], frame: Frame): void {
+    /**
+     * The routes in place of the ones before, numbered from 1 in their order, with no bold route; `frame` places
+     * their pick points. A route with no profile takes one from `surface`, the drawn heights at world points
+     * (`surfaceSpots`), and has pick points when it resolves, unless other routes took their place.
+     */
+    async set(routes: readonly RouteLine[], frame: Frame, surface?: (points: Float64Array) => Promise<Float32Array | undefined>): Promise<void> {
         this.points = routePoints(routes);
-        this.picks = routes.map(route => pickPoints(route, frame));
+        const picks = this.picks = routes.map(route => pickPoints(route, frame));
         this.bold = null;
         this.fresh.points = this.fresh.bold = this.newContent = true;
+        const spots = routes.map(route => (route.profile ? undefined : surfaceSpots(route.line, frame)));
+        if (!surface || !spots.some(Boolean)) return;
+        const heights = await surface(new Float64Array(spots.flatMap(s => s?.spots ?? [])));
+        if (!heights || this.picks !== picks) return;
+        let next = 0;
+        this.picks = routes.map((route, k) => {
+            const s = spots[k];
+            if (!s) return picks[k];
+            const entries = Array.from(heights.subarray(next, next += s.spots.length / 2), h => (Number.isNaN(h) ? null : h));
+            return pickPoints({ ...route, profile: { step: SURFACE_STEP_M, heights: entries, length: s.length } }, frame);
+        });
     }
 
     setBold(route: number | null): void {
