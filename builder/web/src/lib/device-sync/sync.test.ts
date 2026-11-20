@@ -507,17 +507,19 @@ describe('syncDevice', () => {
     });
 
     it('sends a plan of 40 days as two trips: days 1 to 32, and days 33 to 40 numbered from 1, each with its key and start date', async () => {
-        const { rig, sync, routes, trips, send } = setup(CARD, 256);
+        const { rig, sync, send } = setup(CARD, 256);
         rememberCard(SERIAL, CARD);
-        const plan = longTrip(40), alps = { ...plan, trip: { ...plan.trip, startDate: '2026-07-01', restAfter: [10] } };
+        const phone = seedPhoneTrip(rig), plan = longTrip(40), alps = { ...plan, trip: { ...plan.trip, startDate: '2026-07-01', restAfter: [10] } };
         await send(alps);
         expect(await sync()).toMatchObject({ trips: 1, problem: null });
-        const days = routes(), [first, second] = trips().map(entry => tripOf(rig.device.payloadOf(entry.objectId)!)), start = Date.parse('2026-07-01') / 86_400_000;
+        const days = mine(rig, phone).filter(entry => entry.kind === ObjectKind.Route), start = Date.parse('2026-07-01') / 86_400_000;
+        const [first, second] = mine(rig, phone).filter(entry => entry.kind === ObjectKind.Trip).map(entry => tripOf(rig.device.payloadOf(entry.objectId)!));
         expect([days[31].displayName, days[32].displayName, days[39].displayName]).toEqual(['Day 32 Camp 32', 'Day 1 Camp 33', 'Day 8']);
         expect([first.name, first.days, first.key, first.start]).toEqual(['Alps 1/2', days.slice(0, 32).map(day => day.objectId), tripKey(alps.id, alps.trip, 1), start]);
         // Day 33 rides after the rest day that follows day 10.
         expect([second.name, second.days, second.key, second.start]).toEqual(['Alps 2/2', days.slice(32).map(day => day.objectId), tripKey(alps.id, alps.trip, 2), start + 33]);
         expect(first.key).not.toBe(second.key);
+        expectUntouched(rig, phone);
         await rig.close();
     });
 
@@ -592,9 +594,9 @@ describe('syncDevice', () => {
     });
 
     it('takes a plan from 30 to 40 days: its trip becomes part 1 with the same object and key, and part 2 is new', async () => {
-        const { rig, sync, trips, send } = setup(CARD, 256);
+        const { rig, sync, send } = setup(CARD, 256);
         rememberCard(SERIAL, CARD);
-        const alps = longTrip(30);
+        const phone = seedPhoneTrip(rig), alps = longTrip(30), trips = () => mine(rig, phone).filter(entry => entry.kind === ObjectKind.Trip);
         await send(alps);
         await sync();
         const [trip] = trips();
@@ -604,6 +606,7 @@ describe('syncDevice', () => {
         expect([first.objectId, first.displayName, second.displayName]).toEqual([trip.objectId, 'Alps 1/2', 'Alps 2/2']);
         expect([first, second].map(entry => tripOf(rig.device.payloadOf(entry.objectId)!)).map(({ key, days }) => [key, days.length]))
             .toEqual([[tripKey(alps.id, alps.trip, 1), 32], [tripKey(alps.id, alps.trip, 2), 8]]);
+        expectUntouched(rig, phone);
         await rig.close();
     });
 
