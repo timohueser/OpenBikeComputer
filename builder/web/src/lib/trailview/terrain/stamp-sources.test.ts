@@ -30,5 +30,6 @@ describe('stamp sources', () => {
         expect(versionOf(code('AGFzbQ=='), `${sources}\n`, sources)).toBe(versionOf(code('AGFzbQE='), sources, sources));
         expect(() => versionOf(code('AGFzbQ=='), '0'.repeat(64), sources)).toThrow(/names other sources/);
         expect(() => versionOf(code('AGFzbQ=='), undefined, sources)).toThrow(/is missing/);
+        expect(() => versionOf(code('AGFzbQ==') + code('AGFzbQE='), sources, sources)).toThrow(/2 inlined WASM modules/);
     });
 });

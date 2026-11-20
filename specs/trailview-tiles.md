@@ -324,9 +324,10 @@ packs](planner-offline.md#grid-publication-and-selection):
 
 A viewer reads the nodes only when `stamp_version` is the version of its own stamp code.
 
-The stamp code inlines the parts bridge (`builder/trailview-parts-wasm`). Its sources are each file of
-`host/obc-trailview-parts` and `builder/trailview-parts-wasm`, and `data/trailview/parts.json`; their hash is the
-SHA-256 of the lines `<SHA-256 of the file>  <path from the repository>`, one per file, sorted by path. The build of
+The stamp code inlines the parts bridge (`builder/trailview-parts-wasm`). Its sources are the files that git tracks
+in `host/obc-trailview-parts` and `builder/trailview-parts-wasm` but the Markdown, and `data/trailview/parts.json`;
+their hash is the SHA-256 of the lines `<SHA-256 of the file>  <path from the repository>`, one per file, sorted by
+path. The build of
 the bridge writes that hash next to the package (`sources.sha256`), and the bundle refuses a package whose hash is
 not that of the checkout's sources.
 

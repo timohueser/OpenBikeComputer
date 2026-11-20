@@ -27,8 +27,9 @@ An input is JSON: `{"square": [x0, y0, x1, y1], "ends": [{"at": [x, y], "z": z, 
 
 ## Pitfalls
 
-- The stamp version takes the hash of the sources of the crate, the bridge and `data/trailview/parts.json`, not the
-  bytes. The build script writes that hash to `pkg/sources.sha256`. `stampBundle` refuses a package whose hash is
-  not the checkout's: build the bridges again after a change of these sources.
+- The stamp version takes the hash of the tracked sources of the crate, the bridge and `data/trailview/parts.json`
+  but their Markdown, not the bytes of the package. The build script writes that hash to `pkg/sources.sha256`.
+  `stampBundle` refuses a package whose hash is not the checkout's: build the bridges again after a change of these
+  sources. `.gitattributes` keeps their line endings `lf`.
 - Two builds of the same sources with another toolchain or other locked dependencies give one version and other
   bytes. A baked node can then draw a part a little differently than the stamp worker.
