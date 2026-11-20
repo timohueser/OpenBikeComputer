@@ -108,6 +108,8 @@ export class RouteCatalog {
     private readonly loaded = new Map<string, CatalogRecord[] | null>();
     private readonly records = new Map<number, CatalogRecord>();
     private readonly factsFiles = new Map<string, Promise<FactsFile | null>>();
+    /** The cells whose facts file has loaded. */
+    private readonly factsLoaded = new Set<string>();
     private readonly facts = new Map<number, CatalogFacts>();
     private readonly places = new Map<string, FactsPlace>();
 
@@ -143,8 +145,19 @@ export class RouteCatalog {
         return cached(this.factsFiles, id, id => loadFactsCell(id).then(file => {
             for (const [route, entry] of Object.entries(file?.routes ?? {})) this.facts.set(Number(route), entry);
             for (const [place, value] of Object.entries(file?.places ?? {})) this.places.set(place, value);
+            this.factsLoaded.add(id);
             return file;
         }));
+    }
+
+    /** The facts files of the cells of `box`; a box that meets more than `MAX_CELLS` cells loads none. */
+    async factsInBox(box: Box): Promise<void> {
+        if (!tooWide(box)) await Promise.all(boxCells(box).map(id => this.factsCell(id)));
+    }
+
+    /** True when each facts file that `factsInBox` loads for `box` has loaded, so that `factsOf` and `place` hold them. */
+    factsInBoxNow(box: Box): boolean {
+        return tooWide(box) || boxCells(box).every(id => this.factsLoaded.has(id));
     }
 
     /**

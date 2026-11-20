@@ -1,14 +1,16 @@
 <!-- The frame of a page with a list beside a map: the header with the title, the list in a card, the map, and the card
-     of the selected item over the map. On a phone the map is under the list, and the card is at the bottom of the screen.
-     A row and the lines of its row light together: under the pointer on either side, or when a key focuses the row. -->
+     of the selected item over the map, or a table under the map. On a phone the map is under the list, and the card is at
+     the bottom of the screen. A row and the lines of its row light together: under the pointer on either side, or when a
+     key focuses the row. -->
 <script lang="ts">
     import { tick, type Snippet } from 'svelte';
     import { on } from 'svelte/events';
+    import PanelResize from '../../components/planner/PanelResize.svelte';
     import Card from '../../lib/ui/Card.svelte';
     import type { Box, Item } from './filter';
     import { HoverState } from './hover.svelte';
 
-    let { title, failure, items, shown, selected, marked, fit, place, look, credits, together, onselect, onview, tabs, actions, list, mapButtons, card }: {
+    let { title, failure, items, shown, selected, marked, fit, place, look, credits, together, onselect, onview, tabs, actions, list, table, mapButtons, card }: {
         title: string;
         failure?: string;
         /** The props of the map. */
@@ -32,6 +34,8 @@
         actions?: Snippet;
         /** The content of the list card. Each row has the id of its lead line in `data-line`. */
         list: Snippet;
+        /** Under the map, with a handle that sets its height. Its rows have `data-line` too. */
+        table?: Snippet;
         /** At the top right of the map, left of its zoom buttons. */
         mapButtons?: Snippet;
         /** The card of the selected item. The page gives it only while an item is selected. It gets a function that
@@ -44,7 +48,14 @@
     let cardHeight = $state(0);
     /** The width of the buttons of the page on the map: the credits of the map end before them. */
     let buttonsWidth = $state(0);
-    let listBox = $state<HTMLElement>();
+    let listBox = $state<HTMLElement | null>(), tableBox = $state<HTMLElement | null>();
+    // A box that goes is null.
+    const boxes = $derived([listBox, tableBox].filter(box => !!box));
+    /** The table opens at 46 % of the height of the map and the table; the map keeps at least `MAP_MIN`. */
+    const TABLE_MIN = 120, MAP_MIN = 160, HANDLE = 8;
+    let geoHeight = $state(0), wanted = $state<number>();
+    const tableMax = $derived(Math.max(TABLE_MIN, geoHeight - HANDLE - MAP_MIN));
+    const tableHeight = $derived(Math.round(Math.min(tableMax, Math.max(TABLE_MIN, wanted ?? geoHeight * 0.46))));
     const hover = new HoverState();
     /** The lead line of the lit row: another line of the same row changes nothing on the map or in the list. */
     const lead = $derived(hover.id === undefined ? undefined : (together?.(hover.id) ?? [hover.id])[0]);
@@ -53,7 +64,7 @@
     // With no scroll: on a phone the list is above the map, and the rider who closes the card looks at the map.
     function toRow() {
         quiet = true;
-        listBox?.querySelector<HTMLElement>('[aria-current="true"]')?.focus({ preventScroll: true });
+        for (const box of boxes) box.querySelector<HTMLElement>('[aria-current="true"]')?.focus({ preventScroll: true });
         quiet = false;
     }
 
@@ -91,12 +102,10 @@
         void shown;
         void tick().then(lookup);
     });
-    // The listeners only watch the rows: the list box is no control, so they are not attributes that ask for a role.
+    // The listeners only watch the rows: a box of rows is no control, so they are not attributes that ask for a role.
     $effect(() => {
-        const box = listBox;
-        if (!box) return;
-        const stops = [on(box, 'pointerover', onpointerover), on(box, 'pointermove', onpointermove), on(box, 'pointerleave', onpointerleave),
-            on(box, 'scroll', onscroll, { capture: true }), on(box, 'focusin', onfocusin), on(box, 'focusout', () => hover.blur())];
+        const stops = boxes.flatMap(box => [on(box, 'pointerover', onpointerover), on(box, 'pointermove', onpointermove), on(box, 'pointerleave', onpointerleave),
+            on(box, 'scroll', onscroll, { capture: true }), on(box, 'focusin', onfocusin), on(box, 'focusout', () => hover.blur())]);
         return () => { for (const stop of stops) stop(); cancelAnimationFrame(frame); };
     });
 
@@ -106,7 +115,7 @@
     $effect(() => {
         const line = lead;
         for (const row of lit) row.removeAttribute('data-hover');
-        lit = line === undefined || !listBox ? [] : [...listBox.querySelectorAll(`[data-line="${CSS.escape(line)}"]`)];
+        lit = line === undefined ? [] : boxes.flatMap(box => [...box.querySelectorAll(`[data-line="${CSS.escape(line)}"]`)]);
         for (const row of lit) row.setAttribute('data-hover', '');
     });
 
@@ -133,20 +142,27 @@
     </header>
     {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
 
-    <div class="cards">
+    <div class="cards" class:below={!!table}>
         <div class="list" bind:this={listBox}>
             <Card>{@render list()}</Card>
         </div>
-        <div class="map" style:--map-buttons={mapButtons ? `${buttonsWidth + 10}px` : null}>
-            {#await import('./RoutesMap.svelte') then { default: RoutesMap }}
-                <RoutesMap {items} {shown} {selected} {marked} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} {credits}
-                    {look} {together} hovered={lead} onhover={id => id === undefined ? hover.leave('map') : hover.point(id, 'map')} {onselect} {onview} />
-            {:catch error}
-                <p class="note">{error instanceof Error ? error.message : String(error)}</p>
-            {/await}
-            {#if mapButtons}<div class="map-buttons" bind:clientWidth={buttonsWidth}>{@render mapButtons()}</div>{/if}
-            {#if card}
-                <div class="selected" bind:offsetHeight={cardHeight}>{@render card(toRow)}</div>
+        <!-- One element in both forms, so that a new form keeps the map. -->
+        <div class="geo" bind:clientHeight={geoHeight} style:--table-height={table ? `${tableHeight}px` : null}>
+            <div class="map" style:--map-buttons={mapButtons ? `${buttonsWidth + 10}px` : null}>
+                {#await import('./RoutesMap.svelte') then { default: RoutesMap }}
+                    <RoutesMap {items} {shown} {selected} {marked} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} {credits}
+                        {look} {together} hovered={lead} onhover={id => id === undefined ? hover.leave('map') : hover.point(id, 'map')} {onselect} {onview} />
+                {:catch error}
+                    <p class="note">{error instanceof Error ? error.message : String(error)}</p>
+                {/await}
+                {#if mapButtons}<div class="map-buttons" bind:clientWidth={buttonsWidth}>{@render mapButtons()}</div>{/if}
+                {#if card}
+                    <div class="selected" bind:offsetHeight={cardHeight}>{@render card(toRow)}</div>
+                {/if}
+            </div>
+            {#if table}
+                <PanelResize value={tableHeight} min={TABLE_MIN} max={tableMax} axis="y" label="Height of the list" onResize={value => wanted = value} />
+                <div class="table" bind:this={tableBox}>{@render table()}</div>
             {/if}
         </div>
     </div>
@@ -193,6 +209,9 @@
         gap: 14px;
         min-height: 0;
     }
+    .below {
+        grid-template-columns: 340px 1fr;
+    }
     .list > :global(section) {
         display: flex;
         flex-direction: column;
@@ -200,14 +219,32 @@
         height: 100%;
         min-height: 0;
     }
+    /* The map, and the table under it, in one panel. */
+    .geo {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel);
+    }
     /* A size container, so the height limit of the card over it follows its height. */
     .map {
         position: relative;
+        flex: 1;
+        min-height: 160px;
         overflow: hidden;
         container-type: size;
-        border: 1px solid var(--line);
-        border-radius: 10px;
         background: var(--parchment);
+    }
+    .table {
+        display: flex;
+        flex: none;
+        flex-direction: column;
+        height: var(--table-height);
+        min-height: 0;
     }
     .note {
         margin: 32px 16px;
@@ -239,6 +276,11 @@
         left: 12px;
         --card-height: calc(100cqh - 24px);
     }
+    @media (max-width: 1180px) {
+        .below {
+            grid-template-columns: 312px 1fr;
+        }
+    }
     @media (max-width: 760px) {
         .routes-page {
             height: auto;
@@ -248,11 +290,21 @@
             grid-template-columns: 1fr;
             grid-template-rows: auto;
         }
+        .geo > :global([role="separator"]) {
+            display: none;
+        }
+        .table {
+            height: auto;
+        }
         .map {
+            flex: none;
             height: 70vh;
             /* Some browsers give a size container layout containment, which makes the map the containing block of the
                fixed card. */
             container-type: normal;
+        }
+        .below .map {
+            height: min(56vh, 440px);
         }
         /* The map is under the list, so a card over the map is below the screen after a tap on a row. */
         .selected {

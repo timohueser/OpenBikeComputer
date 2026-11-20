@@ -12,3 +12,8 @@ it("compares whole segments and takes the rest of the hash as the id", () => {
     expect(parseRoute("#/device/area")).toEqual({ route: "area" });
     expect(parseRoute("#/signed/9-268-180/11680539")).toEqual({ route: "signed", id: "9-268-180/11680539" });
 });
+
+it("leaves the parameters after ? to the page", () => {
+    expect(parseRoute("#/explore?walk=500&car=1")).toEqual({ route: "explore" });
+    expect(parseRoute("#/explore/?car=1")).toEqual({ route: "explore" });
+});

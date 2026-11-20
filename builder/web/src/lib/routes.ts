@@ -20,7 +20,8 @@ export const ROUTES = {
 
 export type Route = keyof typeof ROUTES;
 
-const segments = (hash: string) => hash.replace(/^#?\/?/, "").split("/").filter(Boolean);
+// The parameters after `?` are a page's own, such as the query of the Explore page: they name no route.
+const segments = (hash: string) => hash.replace(/^#?\/?/, "").replace(/\?.*$/, "").split("/").filter(Boolean);
 const ROUTE_SEGMENTS = Object.entries(ROUTES).map(([route, hash]) => [route as Route, segments(hash)] as const);
 
 /** The route with the most whole segments at the start of the hash, and the rest of the hash as its id. */

@@ -77,7 +77,7 @@ const ROUTE_CELL = '9-267-177';
 const udeg = points => points.map(point => point.map(value => Math.round(value * 1e6)))
   .flatMap((point, i, all) => i ? [point[0] - all[i - 1][0], point[1] - all[i - 1][1]] : point);
 /** A loop with a profile, a description of a few lines and an official page, stage 2 of a long route with a long description and no profile, the
- * long route, and a cycle route. */
+ * long route, a cycle route, and two mountain bike routes like the loop and the stage. */
 const CATALOG = [
   { id: 101, kind: 'hiking', name: 'Schlossberg loop', rank: 1, loop: true, length_m: 1200, ascent_m: 150, descent_m: 150, hardest: 1,
     description: 'Over the castle hill and through the old town. '.repeat(12), operator: 'Test club', website: 'https://example.test/schlossberg', symbol: 'red:white:red_bar',
@@ -91,6 +91,21 @@ const CATALOG = [
   { id: 303, kind: 'bicycle', name: 'Dreisam path', rank: 2, loop: false, length_m: 3000, ascent_m: 10, descent_m: 10, cells: [ROUTE_CELL],
     line_udeg: udeg([[7.83, 47.99], [7.87, 47.99]]), via: [] },
 ];
+CATALOG.push({ ...CATALOG[0], id: 111, kind: 'mtb', name: 'Schlossberg trail' },
+  { ...CATALOG[1], id: 212, kind: 'mtb', name: 'Rosskopf trail', ref: undefined, parent: undefined, stage: undefined });
+/** The facts file of `ROUTE_CELL` (`specs/route-catalog.md`, "Facts files"): the loop passes a summit and has a large car park
+ * beside it; the stage has the larger paved share. */
+const FACTS = {
+  format: 1,
+  places: {
+    n1: { kind: 'peak', name: 'Schlossberg', ele_m: 460, at_udeg: [7_860_000, 47_995_000] },
+    w2: { kind: 'parking', size: 'large', at_udeg: [7_850_000, 47_989_000] },
+  },
+  routes: {
+    101: { parking: [['w2', 100]], places: [['n1', 0]], paved_pct: 10, big_road_pct: 0, water_pct: 0, canopy_pct: 70 },
+    202: { paved_pct: 30, big_road_pct: 0, water_pct: 0, back_s: 4800 },
+  },
+};
 /** The trail record file of "Westweg": stage 1 is a gap, stage 2 is in the catalog, and stage 3 is outside the release. */
 const WESTWEG = {
   ...CATALOG[2], stage_count: 3, trail_profile_m: Array.from({ length: 201 }, (_, i) => i < 100 ? null : 300 + i),
@@ -170,6 +185,7 @@ export function respond(request) {
     }
     case 'routes':
       if (url.pathname.startsWith('/routes/tiles/long/')) return url.pathname.endsWith(`/${WESTWEG.id}.json`) ? json({ format: 1, routes: [WESTWEG] }) : { headers: CORS, status: 404 };
+      if (url.pathname.startsWith('/routes/tiles/facts/')) return json(url.pathname.endsWith(`/${ROUTE_CELL}.json`) ? FACTS : { format: 1, places: {}, routes: {} });
       return json({ format: 1, routes: url.pathname.endsWith(`/${ROUTE_CELL}.json`) ? CATALOG : [] });
     case 'route': {
       const { points, profile } = request.postDataJSON();

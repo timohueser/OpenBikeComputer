@@ -3,9 +3,11 @@
     import { untrack } from 'svelte';
     import { rangeText, scale, STEPS, type Range } from './filter';
 
-    let { values, range, onchange, label, format }: {
+    let { values, range, onchange, label, format, fixed }: {
         /** The value of each item, in the units of the rider. */
         values: number[];
+        /** A step that does not follow `values`, for a slider that always shows. */
+        fixed?: number;
         range: Range | undefined;
         /** `undefined` when both handles are at the ends. */
         onchange: (range: Range | undefined) => void;
@@ -14,7 +16,7 @@
     } = $props();
 
     // The scale holds while the slider shows, so a handle never moves under the pointer.
-    const step = untrack(() => scale(values, range).step), top = STEPS * step;
+    const step = untrack(() => fixed ?? scale(values, range).step), top = STEPS * step;
     // A stored end that is off the step shows at the nearest step, and keeps its value until the rider moves its handle.
     // A set end never shows at the end of the rail, so a move to that end changes the value. With a set upper end, the
     // lower handle stops two steps before the end, so the upper one has room inside the rail.
