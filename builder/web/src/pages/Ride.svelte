@@ -203,7 +203,7 @@
     {/if}
     {#if dropping}<p class="drop">Drop to add photos</p>{/if}
     {#if chosen && samples}<AddPhotos {library} ride={key} {samples} files={chosen} onClose={() => chosen = undefined} />{/if}
-    {#if opened}<Photos {library} photos={listed} first={opened} onClose={() => opened = undefined} />{/if}
+    {#if opened}<Photos {library} ride={key} card={record?.photo} photos={listed} first={opened} onClose={() => opened = undefined} />{/if}
     {#if sharing && record}<Share {library} id={key} name={record.name} summary={record.summary} {date} onClose={() => sharing = false} />{/if}
     {#if deleting}
         <Window title="Delete this ride?" onClose={() => deleting = false}>

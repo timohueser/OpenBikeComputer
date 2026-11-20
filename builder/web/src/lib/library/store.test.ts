@@ -183,4 +183,21 @@ describe('library store', () => {
         expect(await library.photoIds()).toEqual(['p4']);
         await library.close();
     });
+
+    it('gives the cards of a ride a photo, and the cover again after a second choice or after "Remove" of that photo', async () => {
+        const library = new Library(new IDBFactory()), key = '20260801T070000Z';
+        await library.addRide(ride(key), new Blob(['ride']));
+        await library.addPhoto(photo('p1', key));
+        await library.addPhoto(photo('p2', key));
+        await library.setCardPhoto(key, 'p1');
+        expect((await library.ride(key))!.photo).toBe('p1');
+        await library.setCardPhoto(key, null);
+        expect(await library.ride(key)).not.toHaveProperty('photo');
+        await library.setCardPhoto(key, 'p2');
+        await library.removePhoto('p1');
+        expect((await library.ride(key))!.photo).toBe('p2');
+        await library.removePhoto('p2');
+        expect(await library.ride(key)).toEqual(ride(key));
+        await library.close();
+    });
 });

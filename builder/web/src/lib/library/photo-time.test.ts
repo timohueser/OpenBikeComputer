@@ -24,13 +24,37 @@ function directory(fields: Field[], at: number, big: boolean): number[] {
     return [...head, ...u32(0), ...data];
 }
 
+/** The TIFF structure of an EXIF block: the root directory points to the EXIF and the GPS directories. */
+function tiffBytes(exif: Field[], gps: Field[] = [], big = false): number[] {
+    const exifAt = 8 + 2 + 2 * 12 + 4, exifBytes = directory(exif, exifAt, big), gpsAt = exifAt + exifBytes.length;
+    return [...big ? [0x4d, 0x4d, 0, 42, 0, 0, 0, 8] : [0x49, 0x49, 42, 0, 8, 0, 0, 0],
+        ...directory([[0x8769, exifAt], [0x8825, gpsAt]], 8, big), ...exifBytes, ...directory(gps, gpsAt, big)];
+}
+
 /** A JPEG file with an EXIF block and no image data: an APP0 segment, then the block. */
 function photo(exif: Field[], gps: Field[] = [], big = false): Blob {
-    const exifAt = 8 + 2 + 2 * 12 + 4, exifBytes = directory(exif, exifAt, big), gpsAt = exifAt + exifBytes.length;
-    const tiff = [...big ? [0x4d, 0x4d, 0, 42, 0, 0, 0, 8] : [0x49, 0x49, 42, 0, 8, 0, 0, 0],
-        ...directory([[0x8769, exifAt], [0x8825, gpsAt]], 8, big), ...exifBytes, ...directory(gps, gpsAt, big)];
-    const length = tiff.length + 8;
+    const tiff = tiffBytes(exif, gps, big), length = tiff.length + 8;
     return new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xe1, length >> 8, length & 255, 0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff, 0xff, 0xd9])]);
+}
+
+/** A HEIC file as a camera writes it: the boxes `ftyp`, `meta` and `mdat`. `meta` names an image item and, with
+ * `tiff`, an EXIF item; `iloc` puts both in `mdat`, the EXIF item after the image. */
+function heic(tiff?: number[]): Blob {
+    const u16 = (v: number) => [v >> 8, v & 255], u32 = (v: number) => [v >>> 24, v >> 16 & 255, v >> 8 & 255, v & 255];
+    const ascii = (text: string) => [...text].map(letter => letter.charCodeAt(0));
+    const box = (type: string, content: number[]) => [...u32(8 + content.length), ...ascii(type), ...content];
+    const full = (type: string, version: number, content: number[]) => box(type, [version, 0, 0, 0, ...content]);
+    const image = ascii('image data'), item = tiff && [...u32(6), ...ascii('Exif'), 0, 0, ...tiff];
+    const items = [[1, 'hvc1', image.length], ...item ? [[2, 'Exif', item.length] as const] : []] as const;
+    const ftyp = box('ftyp', [...ascii('heic'), 0, 0, 0, 0, ...ascii('mif1heic')]);
+    // Version 1 of `iloc`, with 4-byte offsets and lengths, no base offset and no extent index.
+    const meta = (data: number) => full('meta', 0, [
+        ...full('iinf', 0, [...u16(items.length), ...items.flatMap(([id, type]) => full('infe', 2, [...u16(id), 0, 0, ...ascii(type), 0]))]),
+        ...full('iloc', 1, [0x44, 0, ...u16(items.length), ...items.flatMap(([id], i) => [...u16(id), 0, 0, 0, 0, 0, 1,
+            ...u32(data + (i ? image.length : 0)), ...u32(items[i][2])])]),
+    ]);
+    const data = ftyp.length + meta(0).length + 8;
+    return new Blob([new Uint8Array([...ftyp, ...meta(data), ...box('mdat', [...image, ...item ?? []])])]);
 }
 
 const clock = Date.UTC(2026, 9, 24, 10, 20, 5) / 1000;
@@ -62,5 +86,11 @@ describe('the facts of a photo', () => {
         expect(await photoFacts(new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0, 4, 0, 0, 0xff, 0xda, 0, 2])]))).toEqual({});
         expect(await photoFacts(whole.slice(0, 60))).toEqual({});
         expect(await photoFacts(new Blob(['<gpx></gpx>']))).toEqual({});
+    });
+
+    it('reads the clock time with its zone from the EXIF item of a HEIC file, and nothing from one with no time or no item', async () => {
+        expect(await photoFacts(heic(tiffBytes([[0x9003, '2026:10:24 10:20:05'], [0x9011, '+02:00']], [], true)))).toEqual({ clock, zone: 7200 });
+        expect(await photoFacts(heic(tiffBytes([[0x9011, '+02:00']])))).toEqual({ zone: 7200 });
+        expect(await photoFacts(heic())).toEqual({});
     });
 });

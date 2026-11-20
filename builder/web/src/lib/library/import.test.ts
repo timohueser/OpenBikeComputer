@@ -133,12 +133,12 @@ describe('readFiles', () => {
         await library.close();
     });
 
-    it('gives the reason for each file that it cannot read, and counts no other file', async () => {
+    it('gives the reason for each file that it cannot read, then the photos, and counts no other file', async () => {
         const library = new Library(new IDBFactory());
         const packed = file('packed.zip', zipOf([
             { name: 'bzip2.fit', data: encode({ sport: 'bike', samples: samples(t) }), method: 12 },
             { name: 'crc.fit', data: encode({ sport: 'bike', samples: samples(t) }), crc: 1 },
-            { name: 'photo.jpg', data: encode('not counted') },
+            { name: 'photo.jpg', data: encode('a photo') },
             // 1 MB of zeros that declares 1 KB.
             { name: 'bomb.fit', data: new Uint8Array(1 << 20), size: 1024 },
         ]));
@@ -151,8 +151,9 @@ describe('readFiles', () => {
         expect(found.map(f => [f.name, f.kind === 'unreadable' && f.reason])).toEqual([
             ['bad.zip', reasons.damaged], ['a.tcx', reasons.tcx], ['b.tcx.gz', reasons.tcx], ['swim.fit', reasons.sport],
             ['cut.fit', reasons.damaged], ['empty.fit', reasons.track], ['page.gpx', reasons.track], ['broken.fit.gz', reasons.damaged],
-            ['bzip2.fit', reasons.packing], ['crc.fit', reasons.damaged], ['bomb.fit', reasons.damaged],
+            ['bzip2.fit', reasons.packing], ['crc.fit', reasons.damaged], ['bomb.fit', reasons.damaged], ['photo.jpg', false],
         ]);
+        expect(found.at(-1)).toMatchObject({ file: 'packed.zip/photo.jpg', kind: 'photo' });
         await library.close();
     });
 

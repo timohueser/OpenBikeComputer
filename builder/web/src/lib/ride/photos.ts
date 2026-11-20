@@ -1,7 +1,7 @@
 /** Finds the place of a photo on a ride: from its time against the times of the samples, else from its GPS place. */
 import type { FitSample } from '../core/fit';
 import type { PhotoFacts } from '../library/photo-time';
-import type { PhotoEntry } from '../library/records';
+import type { PhotoEntry, RideSummary } from '../library/records';
 import { distanceM } from '../library/summary';
 import { firstIndex } from '../planner/geo';
 
@@ -76,3 +76,28 @@ export function placePhoto(samples: FitSample[], facts: PhotoFacts, zone = brows
 /** The sample of a stored photo, or undefined when the ride has no place for it. */
 export const photoSample = (samples: FitSample[], photo: PhotoPlace): number | undefined =>
     photo.place ? sampleNear(samples, photo.place) : sampleAtTime(samples, photo.time!);
+
+/** A ride that a photo can be of. `samples` reads its file. */
+export interface PhotoRide { summary: RideSummary; samples: () => Promise<FitSample[] | undefined> }
+
+/** The bounds of a line hold each place within NEAR_M of it when they grow by this many degrees, also far north. */
+const NEAR_DEGREES = 0.01;
+
+/** False for a ride whose times or bounds cannot give the photo a place, so that its file is not read. */
+function canHold({ start, seconds, bounds: [west, south, east, north] }: RideSummary, { clock, gpsTime, place }: PhotoFacts): boolean {
+    if (seconds <= 0 || (clock === undefined && gpsTime === undefined)) {
+        return !!place && place[0] >= west - NEAR_DEGREES && place[0] <= east + NEAR_DEGREES && place[1] >= south - NEAR_DEGREES && place[1] <= north + NEAR_DEGREES;
+    }
+    const slack = clock === undefined ? 0 : ZONE_HOURS * 3600, time = clock ?? gpsTime!;
+    return time >= start - slack && time <= start + seconds + slack;
+}
+
+/** The ride of a photo and its place on it by `placePhoto`, or undefined for a photo that fits no ride. Of two rides
+ * that fit, the earlier one wins. */
+export async function photoRide<R extends PhotoRide>(rides: R[], facts: PhotoFacts, zone = browserZone): Promise<{ ride: R; at: PhotoPlace } | undefined> {
+    for (const ride of rides.filter(ride => canHold(ride.summary, facts)).sort((a, b) => a.summary.start - b.summary.start)) {
+        const samples = await ride.samples(), at = samples?.length ? placePhoto(samples, facts, zone) : undefined;
+        if (at) return { ride, at };
+    }
+    return undefined;
+}
