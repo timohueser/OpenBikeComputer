@@ -628,37 +628,30 @@ other, whatever their refs, names and ranks.
 
 ### Who stays
 
-Two rules, in this order, each applied once, and then a pass that brings jobs back:
-
-1. A job leaves (`Replaced`) when the kept records of earlier origins that are its pairs together
-   cover at least four fifths of its match line. For a part of a long route, only its pairs by (a)
-   count: a pair by (b) is another route on the same path, which cannot take its place.
-2. A kept record of a second source leaves (`Held`) when one of its pairs is a job of a later origin
-   that stays: the job did not leave by rule 1, and its plan kept a record or a section. That job
-   holds more of the route than the record gives, such as an OSM route of 30 km with the number of
-   an official route of 7 km.
-3. A job that left comes back, again and again until none does, while the lines of the records that
-   take its place cover less than four fifths of its match line: for a part of a long route the
-   records of its pairs by (a) that stay, for any other job the records of its kind family that
-   stay. A cut relation gives only its sections, and an unnamed stage gives nothing, as it can
-   leave later for want of a name. A record that left by rule 2 comes back first, and a relation
-   that comes back gets its plan then.
+A job of a later origin leaves (`Replaced`) when the kept records of earlier origins that are its
+pairs together cover at least four fifths of its match line. For a part of a long route, only its
+pairs by (a) count: a pair by (b) is another route on the same path, which cannot take its place.
+A kept record never leaves for a job of a later origin, so an official record never leaves for an
+OSM job.
 
 So no route leaves the catalog for another one unless the records that stay cover four fifths of its
-line. A job that fails removes nothing: rule 1 counts only kept records, and rule 2 only jobs that
-kept a record. The builder plans all source jobs first. Then it applies rule 1 to the jobs of the
-second and later sources and to the OSM jobs, so an OSM job that leaves needs no search. Then it
-plans the OSM jobs that stay, and applies rule 2 and the pass.
+line: the rule counts only kept records of earlier origins, and nothing removes such a record later,
+as `named` drops only unnamed OSM stages and the builder cuts no source line into sections. A job
+that fails removes nothing. The builder plans all source jobs first. Then it applies the rule to the
+jobs of the second and later sources, in their order, and to the OSM jobs, so an OSM job that
+leaves needs no search. Then it plans the OSM jobs that stay.
 
-Two stagings of one route with other stage ends both stay, such as an official stage and an OSM
-stage of one trail that lie three quarters along each other: neither covers four fifths of the
-other, and to remove one could remove a stretch that shows nowhere else.
+A route can show twice: an OSM job that its pairs cover by less than four fifths stays beside them.
+Examples are two stagings of one route with other stage ends, such as an official stage and an OSM
+stage of one trail that lie three quarters along each other, and a long OSM route with the number
+of a short official route. To remove one could remove a stretch that shows nowhere else.
 
 ### Successors
 
-The successors of a job that left by rule 1 are its pairs by (a) of earlier origins that stay. A pair by (b) is another route on the same path, so it is no successor. So a regional OSM
-stage on a path that a national route shares has the regional official stage as its successor, not
-the national one, and a regional official stage never takes the place of a national stage.
+The successors of a job that left are its pairs by (a). A pair by (b) is another route on the same
+path, so it is no successor. So a regional OSM stage on a path that a national route shares has the
+regional official stage as its successor, not the national one, and a regional official stage never
+takes the place of a national stage.
 
 ### Words
 
@@ -671,7 +664,7 @@ no `symbol`.
 
 ### Parts
 
-A part of an OSM long route whose job left by rule 1 points to its successors, in the order of
+A part of an OSM long route whose job left points to its successors, in the order of
 their starts along it: the place of the point of its match line nearest to the start of each
 successor, by the member order of its pieces, then along the piece. Each successor is a part with
 the stage number of the part that left. A record appears once in a long route, at its first place,
