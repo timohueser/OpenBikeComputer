@@ -20,8 +20,8 @@ files of a set of covers, the key of a cover, and how a reader finds the cover o
 - Each clock time is the wall clock of Europe/Zurich, which is the clock of TrailView, as `HH:MM`.
 - A route record is a record of the route catalog with `line_udeg`, also a section of a cut line.
   A long route has no cover.
-- `<id>` is the `id` of a route record in decimal. A section has a negative `id`, as in
-  `covers/-345678902/`.
+- `<id>` is the `id` of a route record in decimal. A section and a record of a second source have
+  a negative `id`, as in `covers/-345678902/`.
 - A hash is the start of a SHA-256 as 16 lowercase hexadecimal digits.
 
 ## 1. Keys

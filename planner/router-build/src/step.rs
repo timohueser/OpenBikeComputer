@@ -29,6 +29,7 @@ pub const SOURCE: &str = "planner/routing-source";
 pub const ROADS: &str = "planner/routing-roads";
 pub const COSTS: &str = "planner/routing-costs";
 pub const FACTS: &str = "planner/route-facts";
+pub const ROUTE_SOURCES: &str = "planner/route-sources";
 
 fn text(options: &Value, name: &str) -> Result<String, String> {
     options[name].as_str().map(str::to_string).ok_or(format!("option `{name}` is not a string"))
@@ -187,8 +188,9 @@ pub fn costs(request: &Request) -> Result<(), String> {
     layout.finish()
 }
 
-/// The package step. It reads the three work layers and the options `region`, `bounds` and
-/// `attribution`, the credit of the OSM data. The layer:
+/// The package step. It reads the three work layers, the options `region`, `bounds` and
+/// `attribution`, the credit of the OSM data, and, when the request has it, `route-sources.json` of
+/// the layer `planner/route-sources`: the routes of the second sources. The layer:
 ///
 /// - `routing/`: the package, `overlays.sqlite` and `route-catalog.json`;
 /// - `blocks/`: the routing blocks of the grid cells (`blocks::publish`);
@@ -219,7 +221,8 @@ pub fn step(request: &Request) -> Result<(), String> {
     overlays::write(&routing.join(overlays::FILE), &package::digest(&manifest), bounds, &osm)?;
     Guard::exempt("catalog");
     eprintln!("Writing the route catalog");
-    let (trails, report) = catalog::write(&routing, osm)?;
+    let sources = request.layers.get(ROUTE_SOURCES).and_then(|files| files.get(catalog::sources::FILE));
+    let (trails, report) = catalog::write(&routing, osm, sources.map(PathBuf::as_path))?;
 
     let cells = grid::cells(bounds);
     Guard::exempt("blocks");

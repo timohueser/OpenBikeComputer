@@ -70,15 +70,18 @@ export function shownDescription(record: CatalogRecord, recordOf: (id: number) =
 export function stagePart(record: CatalogRecord, recordOf: (id: number) => CatalogRecord | undefined) {
     const inner = record.trail === undefined ? undefined : recordOf(record.trail);
     const byParent = record.parent !== undefined && record.trail !== undefined && record.trail !== record.parent
-        && (inner?.stages?.length ?? inner?.stage_count ?? 0) < 2;
+        && (inner?.stage_count ?? inner?.stages?.length ?? 0) < 2;
     const longId = byParent ? record.parent : record.trail ?? record.parent, long = longId === undefined ? undefined : recordOf(longId);
-    const number = record.trail !== undefined && !byParent ? record.trail_stage : record.stage, of = long?.stages?.length ?? long?.stage_count;
+    const number = record.trail !== undefined && !byParent ? record.trail_stage : record.stage, of = long?.stage_count ?? long?.stages?.length;
     const part: string | false = record.section !== undefined ? `Section ${record.section}` : number === undefined ? false : of ? `Stage ${number} of ${of}` : `Stage ${number}`;
     return { part, long, byParent, trailId: byParent ? record.parent : longTrailId(record, recordOf) };
 }
 
-/** The number of a section in its cut line: a section has it in its id, −(relation × 100 + section). */
-export const partSection = (part: Pick<TrailPart, 'id'>) => part.id < 0 ? -part.id % 100 : undefined;
+/** The `id` of a record of a second source is −10¹² or lower. */
+const SOURCE_ID = -1e12;
+
+/** The number of a section in its cut line: a section has it in its id, −(relation × 100 + section), above `SOURCE_ID`. */
+export const partSection = (part: Pick<TrailPart, 'id'>) => part.id < 0 && part.id > SOURCE_ID ? -part.id % 100 : undefined;
 
 /** The name of a part of a trail: "Stage 8 · Section 2", "Section 2", "Stage 8", else `name`. */
 export function partLabel(stage?: number, section?: number, name?: string): string | false {

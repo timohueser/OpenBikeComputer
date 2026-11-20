@@ -3,9 +3,14 @@
 mod assemble;
 mod connector;
 mod long;
+mod merge;
+pub mod sources;
 pub mod trails;
 
+use crate::facts::shares::Roads;
 use crate::source::{Data, Id, Relation, Relations, Table, Tags};
+use crate::work::Guard;
+use merge::{Merge, Probe};
 use planner_router::{
     data::{RoutingData, Selection},
     directory::Directory,
@@ -16,10 +21,12 @@ use planner_router::{
     Control, Router,
 };
 use serde_json::{json, Map, Value};
+use sources::{SourceJob, Sources};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::Path,
     sync::Mutex,
+    time::Instant,
 };
 
 pub const FILE: &str = "route-catalog.json";
@@ -53,6 +60,8 @@ const SEARCH_BYTES: usize = 768 << 20;
 const SECTION_M: f64 = 60_000.0;
 /// The `id` of a section holds its number in two decimal digits.
 const MAX_SECTIONS: usize = 99;
+/// The step of the points of a line that the off-road cut and the match test.
+const STEP_M: f64 = 10.0;
 
 /// The router control of the catalog: a fixed search space, so that a router limit does not
 /// depend on the order of the routes.
@@ -77,14 +86,19 @@ pub enum Reason {
     NoStages,
     /// A long relation whose parts are separate routes, not one line.
     Apart,
+    /// A job that the records of earlier origins cover (the merge).
+    Replaced,
 }
+
+/// The length, first and last point of a line.
+type LineEnds = (f64, P, P);
 
 /// A route that `route` did not keep, with the length, first and last point of its main line when
 /// it built one.
 #[derive(Clone, Copy)]
 struct Failed {
     reason: Reason,
-    line: Option<(f64, P, P)>,
+    line: Option<LineEnds>,
 }
 
 /// What `route` builds: one route, or the sections of a long line whose plan failed.
@@ -373,6 +387,8 @@ pub struct Report {
     /// Wall time of the parallel search.
     pub search_seconds: f64,
     pub seconds: f64,
+    /// What became of the jobs of each second source, by its id; null without one.
+    pub sources: Value,
 }
 
 /// The median, the 90th percentile and the maximum.
@@ -409,7 +425,7 @@ impl Report {
         let mut slowest = self.searches.clone();
         slowest.sort_by(|a, b| b.1.total_cmp(&a.1));
         let busy: f64 = self.searches.iter().map(|s| s.1).sum();
-        json!({
+        let mut report = json!({
             "tag_selected": self.tag_selected, "dropped": self.dropped, "kept": self.kept, "loops": self.loops,
             "long_routes": self.long_routes, "partial_long_routes": self.partial_long_routes,
             "broken_long_routes": self.broken_long_routes, "cut_long_routes": self.cut_long_routes,
@@ -420,6 +436,7 @@ impl Report {
             "search": {
                 "seconds": spread(self.searches.iter().map(|s| s.1).collect()),
                 "calls": spread(self.searches.iter().map(|s| s.2 as f64).collect()),
+                "count": self.searches.len(),
                 "slowest": slowest.iter().take(10).map(|s| json!([s.0, s.1, s.2])).collect::<Vec<_>>(),
                 "workers": self.workers,
                 "utilisation": busy / (self.workers as f64 * self.search_seconds).max(f64::MIN_POSITIVE),
@@ -428,7 +445,11 @@ impl Report {
             "long_routes_over_64_points": self.long_points.iter().filter(|(_, n)| *n > 64).count(),
             "trails_by_hours": self.trails_by_hours,
             "seconds": self.seconds,
-        })
+        });
+        if !self.sources.is_null() {
+            report["sources"] = self.sources.clone();
+        }
+        report
     }
 }
 
@@ -441,9 +462,11 @@ pub fn check(profiles: &[Profile]) -> Result<(), String> {
 }
 
 /// Writes `route-catalog.json` into the routing package in `directory`, from the source OSM
-/// objects of its import. Returns each trail, as `trails::trails` gives it, and the report.
-pub fn write(directory: &Path, osm: Data) -> Result<(Vec<(Value, Value)>, Report), String> {
-    let started = std::time::Instant::now();
+/// objects of its import and the `route-sources.json` at `sources`. Returns each trail, as
+/// `trails::trails` gives it, and the report.
+pub fn write(directory: &Path, osm: Data, sources: Option<&Path>) -> Result<(Vec<(Value, Value)>, Report), String> {
+    let started = Instant::now();
+    let sources = sources.map(sources::read).transpose()?.unwrap_or_default();
     let package = Directory::open(directory).map_err(|e| e.to_string())?;
     // The routers share one graph, one junction mapping and the five prepared profiles; each
     // adds its own label blocks and a search space of `SEARCH_BYTES`.
@@ -451,7 +474,7 @@ pub fn write(directory: &Path, osm: Data) -> Result<(Vec<(Value, Value)>, Report
     let shared = routing.shared_bytes(PROFILES).map_err(|e| e.to_string())?;
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
     let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
-    let (records, mut report) = catalog(&routing, osm, workers, SECTION_M)?;
+    let (records, mut report) = catalog(&routing, osm, sources, workers, SECTION_M)?;
     let trails = trails::trails(&records);
     report.trails_by_hours =
         trails.iter().filter(|(_, record)| record["stage_count"].as_u64().is_none_or(|count| count < 2)).count();
@@ -461,15 +484,151 @@ pub fn write(directory: &Path, osm: Data) -> Result<(Vec<(Value, Value)>, Report
     Ok((trails, Report { seconds: started.elapsed().as_secs_f64(), ..report }))
 }
 
+/// The search of a job, its id, seconds and router calls, with its result.
+type Searched = ((i64, f64, usize), Result<Built, Failed>);
+
+/// Plans `jobs` in a pool of `workers` routers, the largest by `size` first, so that the long
+/// searches run side by side. Gives each result and the wall time.
+fn pool<S: Source + Clone + Send, T: Send>(
+    selection: &Selection<S>,
+    workers: usize,
+    mut jobs: Vec<T>,
+    size: impl Fn(&T) -> usize,
+    plan: impl Fn(&mut Router<Selection<S>>, &T, &mut usize) -> (i64, Result<Built, Failed>) + Sync,
+) -> (Vec<Searched>, f64) {
+    jobs.sort_by_key(size);
+    let queue = Mutex::new(jobs);
+    let started = Instant::now();
+    let results = Mutex::new(Vec::new());
+    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| selection.fork()).collect();
+    std::thread::scope(|scope| {
+        for routing in forks.drain(..) {
+            let (queue, results, plan) = (&queue, &results, &plan);
+            scope.spawn(move || {
+                // The search space is capped by `control`, not by the budget, so that it
+                // does not depend on the cost tables in the cache.
+                let mut router = Router::new(routing, usize::MAX);
+                loop {
+                    // The guard must drop before the work, so the job is taken in its own statement.
+                    let job = queue.lock().unwrap().pop();
+                    let Some(job) = job else { break };
+                    let begun = Instant::now();
+                    let mut calls = 0;
+                    let (id, result) = plan(&mut router, &job, &mut calls);
+                    results.lock().unwrap().push(((id, begun.elapsed().as_secs_f64(), calls), result));
+                }
+            });
+        }
+    });
+    (results.into_inner().unwrap(), started.elapsed().as_secs_f64())
+}
+
+/// The routes that the plans kept, the main line of each route that failed, and the number of
+/// sections of each cut relation.
+#[derive(Default)]
+struct Planned {
+    kept: BTreeMap<i64, Kept>,
+    lines: HashMap<i64, (f64, P, P)>,
+    cut: BTreeMap<i64, usize>,
+}
+
+impl Planned {
+    fn take(&mut self, searched: Vec<Searched>, report: &mut Report, drops: &mut BTreeMap<i64, Reason>) {
+        for (search, result) in searched {
+            let id = search.0;
+            report.searches.push(search);
+            let routes = match result {
+                Ok(Built::Route(route)) => vec![(id, Ok(route))],
+                Ok(Built::Sections(sections)) => {
+                    self.cut.insert(id, sections.len());
+                    sections.into_iter().enumerate().map(|(i, section)| (section_id(id, i + 1), section)).collect()
+                }
+                Err(failed) => vec![(id, Err(failed))],
+            };
+            for (id, route) in routes {
+                match route {
+                    Ok(route) => {
+                        self.kept.insert(id, route);
+                    }
+                    Err(Failed { reason, line }) => {
+                        drops.insert(id, reason);
+                        self.lines.extend(line.map(|line| (id, line)));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The line of a source job, its match line and the length of each cut, or why it leaves.
+type SourceLine = Result<(Line, Vec<Vec<P>>, Vec<u64>), Failed>;
+
+/// The lines of the source jobs: the off-road cut tests against the ways of the routing source
+/// that the first plan profile of each kind may use.
+fn source_lines<S: Source>(
+    selection: &Selection<S>,
+    osm: &Data,
+    jobs: &[SourceJob],
+) -> Result<Vec<SourceLine>, String> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Each stage of the guard prints its time and memory peak.
+    Guard::exempt("usable ways");
+    let usable = sources::usable_ways(selection.package())?;
+    Guard::exempt("road index");
+    let roads = Roads::ways(osm);
+    Guard::exempt("off-road cut");
+    let lines = jobs.iter().map(|job| sources::line(job, selection.bounds(), &roads, &usable)).collect();
+    Guard::exempt("catalog");
+    Ok(lines)
+}
+
+/// The match line of each OSM job, with the `ref` and the name that its pairs compare: for a part of
+/// a long relation, its own `ref` or else that of its innermost long relation, and the name of that.
+fn osm_probes(
+    jobs: &[Job],
+    long: &[(Relation, String, Vec<long::Leaf>, bool)],
+    (relations, ways, points): (&Table<Relations>, &Table<crate::source::Ways>, &HashMap<i64, P>),
+    origin: usize,
+) -> BTreeMap<i64, Probe> {
+    let mut trail_of = BTreeMap::<i64, (usize, i64)>::new();
+    for (relation, _, leaves, _) in long {
+        for leaf in leaves {
+            let trail = (leaf.depth, relation.id);
+            trail_of.entry(leaf.id).and_modify(|t| *t = (*t).min(trail)).or_insert(trail);
+        }
+    }
+    let way_points = |id: &i64| -> Vec<P> {
+        ways.get(*id).map_or(Vec::new(), |way| way.nodes.iter().filter_map(|n| points.get(n).copied()).collect())
+    };
+    let probe = |job: &Job| {
+        let tags = &job.relation.tags;
+        let trail = trail_of.get(&job.relation.id).and_then(|&(_, id)| relations.get(id));
+        let (reference, name) = match &trail {
+            Some(trail) => {
+                let own = Some(tag(tags, "ref")).filter(|r| !r.is_empty());
+                (own.unwrap_or(tag(&trail.tags, "ref")), tag(&trail.tags, "name"))
+            }
+            None => (tag(tags, "ref"), tag(tags, "name")),
+        };
+        let pieces = job.member_ways.iter().map(|(id, _)| way_points(id)).filter(|piece| !piece.is_empty());
+        Probe::new(origin, &job.kind, rank(tag(tags, "network")), reference, name, pieces.collect())
+    };
+    jobs.iter().map(|job| (job.relation.id, probe(job))).collect()
+}
+
 fn catalog<S: Source + Clone + Send>(
     selection: &Selection<S>,
     osm: Data,
+    sources: Sources,
     workers: usize,
     section_m: f64,
 ) -> Result<(Vec<Value>, Report), String> {
-    let Data { ways, relations, .. } = osm;
     let mut report = Report::default();
     let mut drops = BTreeMap::<i64, Reason>::new();
+    let source_lines = source_lines(selection, &osm, &sources.jobs)?;
+    let Data { ways, relations, .. } = osm;
     let mut long = Vec::new();
     let mut jobs = Vec::new();
     // Each unnamed stage that is no connector leg, with the long relations that list it in ascending
@@ -487,7 +646,8 @@ fn catalog<S: Source + Clone + Send>(
             for id in children(&relation).into_iter().filter(|&id| unnamed_stage(&relations, id)) {
                 unnamed.entry(id).or_default().push(relation.id);
             }
-            long.push((relation, kind));
+            let (leaves, connector) = long::leaves(&relation, &relations);
+            long.push((relation, kind, leaves, connector));
         }
     }
     for (&id, listers) in &unnamed {
@@ -503,6 +663,11 @@ fn catalog<S: Source + Clone + Send>(
         .filter(|(_, point)| point.present())
         .map(|(id, point)| (id, [point.lon, point.lat]))
         .collect();
+    // The match line of each job, also of one that leaves at the edge of the extract.
+    let mut probes = match sources.jobs.is_empty() {
+        true => BTreeMap::new(),
+        false => osm_probes(&jobs, &long, (&relations, &ways, &points), sources.ids.len()),
+    };
     jobs.retain_mut(|job| {
         // The import does not hold a way outside the region either, so only a way between two held
         // ways is skipped.
@@ -534,61 +699,75 @@ fn catalog<S: Source + Clone + Send>(
         true
     });
     drop(ways);
-    // The largest routes go first, so that the long searches run side by side.
-    jobs.sort_by_key(|job| job.members.iter().map(|m| m.nodes.len()).sum::<usize>());
-    let queue = Mutex::new(jobs);
-    let started = std::time::Instant::now();
-    let results = Mutex::new(Vec::new());
-    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| selection.fork()).collect();
-    std::thread::scope(|scope| {
-        for routing in forks.drain(..) {
-            let (queue, results, points) = (&queue, &results, &points);
-            scope.spawn(move || {
-                // The search space is capped by `control`, not by the budget, so that it
-                // does not depend on the cost tables in the cache.
-                let mut router = Router::new(routing, usize::MAX);
-                loop {
-                    // The guard must drop before the work, so the job is taken in its own statement.
-                    let job = queue.lock().unwrap().pop();
-                    let Some(job) = job else { break };
-                    let begun = std::time::Instant::now();
-                    let mut calls = 0;
-                    let result = route(&mut router, &job, points, section_m, &mut calls);
-                    let search = (job.relation.id, begun.elapsed().as_secs_f64(), calls);
-                    results.lock().unwrap().push((search, result));
+
+    // The source jobs come first, so that an OSM job that leaves for them needs no search.
+    let source_jobs: HashMap<i64, &SourceJob> = sources.jobs.iter().map(|job| (job.id(), job)).collect();
+    let (mut lined, mut cut_jobs) = (Vec::new(), HashSet::new());
+    for (job, line) in sources.jobs.iter().zip(source_lines) {
+        match line {
+            Ok((line, main, cuts)) => {
+                if !cuts.is_empty() {
+                    cut_jobs.insert(job.id());
                 }
-            });
-        }
-    });
-    let mut kept = BTreeMap::new();
-    let mut lines = HashMap::new();
-    report.workers = workers.max(1);
-    report.search_seconds = started.elapsed().as_secs_f64();
-    // The number of sections of each cut relation.
-    let mut cut = BTreeMap::new();
-    for (search, result) in results.into_inner().unwrap() {
-        let id = search.0;
-        report.searches.push(search);
-        let routes = match result {
-            Ok(Built::Route(route)) => vec![(id, Ok(route))],
-            Ok(Built::Sections(sections)) => {
-                cut.insert(id, sections.len());
-                sections.into_iter().enumerate().map(|(i, section)| (section_id(id, i + 1), section)).collect()
+                probes.insert(job.id(), Probe::new(job.source, &job.kind, job.rank, &job.ref_, &job.route, main));
+                lined.push((job, line));
             }
-            Err(failed) => vec![(id, Err(failed))],
-        };
-        for (id, route) in routes {
-            match route {
-                Ok(route) => {
-                    kept.insert(id, route);
-                }
-                Err(Failed { reason, line }) => {
-                    drops.insert(id, reason);
-                    lines.extend(line.map(|line| (id, line)));
-                }
+            Err(failed) => {
+                drops.insert(job.id(), failed.reason);
             }
         }
     }
+    let size = |(_, line): &(&SourceJob, Line)| line.runs.iter().map(Vec::len).sum();
+    let (searched, search_seconds) = pool(selection, workers, lined, size, |router, (job, line), calls| {
+        let built = shaped(router, line, &job.header(), &job.kind, None, section_m, calls);
+        (job.id(), built.map_err(|reason| Failed { reason, line: ends(&line.runs) }))
+    });
+    let mut planned = Planned::default();
+    planned.take(searched, &mut report, &mut drops);
+
+    Guard::exempt("merge");
+    let parts: HashSet<i64> = long.iter().flat_map(|(_, _, leaves, _)| leaves.iter().map(|leaf| leaf.id)).collect();
+    let merge = Merge::replace(&probes, &|id| planned.kept.contains_key(&id), &|id| parts.contains(&id));
+    for &id in &merge.replaced {
+        drops.insert(id, Reason::Replaced);
+        planned.kept.remove(&id);
+    }
+    Guard::exempt("catalog");
+    jobs.retain(|job| !merge.replaced.contains(&job.relation.id));
+    let size = |job: &Job| job.members.iter().map(|m| m.nodes.len()).sum();
+    let (searched, seconds) = pool(selection, workers, jobs, size, |router, job, calls| {
+        (job.relation.id, route(router, job, &points, section_m, calls))
+    });
+    planned.take(searched, &mut report, &mut drops);
+    let Planned { mut kept, lines, cut } = planned;
+    report.workers = workers.max(1);
+    report.search_seconds = search_seconds + seconds;
+
+    Guard::exempt("merge");
+    let successors: BTreeMap<i64, Vec<i64>> = merge
+        .replaced
+        .iter()
+        .map(|&id| (id, merge.successors(id, &probes, &|id| kept.get(&id).map(|k| k.start))))
+        .collect();
+    for (record, job) in merge::donors(&successors, &probes) {
+        let words = match source_jobs.get(&job) {
+            Some(source) => source.header(),
+            None => {
+                let relation = relations.get(job).expect("an OSM job is in the data");
+                header(&relation, route_kind(&relation.tags).unwrap_or(""), false)
+            }
+        };
+        let route = kept.get_mut(&record).expect("a successor is kept");
+        // No `description`: an OSM description often tells how the relation is mapped.
+        for field in ["operator", "website", "symbol"] {
+            let french = field == "symbol" && route.french;
+            if let Some(value) = words.get(field).filter(|_| !route.record.contains_key(field) && !french) {
+                route.record.insert(field.into(), value.clone());
+            }
+        }
+    }
+    Guard::exempt("catalog");
+
     // The parts of a relation in a long record: the relation itself, or its sections.
     let parts_of = |id: i64, stage: Option<usize>| -> Vec<long::Part> {
         let name = relations.get(id).map_or(String::new(), |r| tag(&r.tags, "name").to_string());
@@ -609,16 +788,16 @@ fn catalog<S: Source + Clone + Send>(
         let relation = relations.get(id).expect("a cut route is in the data");
         let kind = route_kind(&relation.tags).expect("a cut route has a kind");
         let (mut record, points) =
-            long::record(&relation, kind, &parts_of(id, None), false).expect("a cut route keeps a section");
+            long::record(&relation, kind, &parts_of(id, None), false, 0).expect("a cut route keeps a section");
         if let Some(trail) = unnamed.get(&id).and_then(|listers| relations.get(listers[0])) {
             named_after(&mut record, &trail);
         }
         report.add_long(&record, points);
         cut_records.insert(id, record);
     }
-    // Each kept part gets the innermost long record that lists it as its trail, and a stage of a
-    // complete long record the innermost complete one as its parent; of two at the same level, the
-    // lower relation ID.
+    // Each record of a part gets the innermost long record that lists it as its trail, and a stage
+    // of a complete long record the innermost complete one as its parent; of two at the same level,
+    // the lower relation ID.
     let mut trails = BTreeMap::<i64, (usize, i64, usize)>::new();
     let mut parents = BTreeMap::<i64, (usize, i64, usize)>::new();
     let innermost = |map: &mut BTreeMap<i64, (usize, i64, usize)>, id: i64, trail| {
@@ -626,26 +805,53 @@ fn catalog<S: Source + Clone + Send>(
     };
     let mut records = Vec::new();
     let mut apart = HashSet::new();
-    for (relation, kind) in long {
-        let (leaves, connector) = long::leaves(&relation, &relations);
-        let parts: Vec<long::Part> =
-            leaves.iter().enumerate().flat_map(|(i, leaf)| parts_of(leaf.id, Some(i + 1))).collect();
+    for (relation, kind, leaves, connector) in long {
+        let built = |id| kept.contains_key(id) || cut_records.contains_key(id);
+        // The parts, and the record of each part with its level and stage number.
+        let (mut parts, mut listed) = (Vec::new(), Vec::<(i64, usize, usize)>::new());
+        for (i, leaf) in leaves.iter().enumerate() {
+            let number = i + 1;
+            match successors.get(&leaf.id).filter(|next| !next.is_empty()) {
+                Some(next) => {
+                    for &id in next {
+                        if listed.iter().any(|&(other, ..)| other == id) {
+                            continue;
+                        }
+                        let name = kept[&id].record.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                        parts.push(long::Part {
+                            id,
+                            name,
+                            stage: Some(number),
+                            cut: false,
+                            kept: kept.get(&id),
+                            line: None,
+                        });
+                        listed.push((id, leaf.depth, number));
+                    }
+                }
+                None => {
+                    parts.extend(parts_of(leaf.id, Some(number)));
+                    if built(&leaf.id) {
+                        listed.push((leaf.id, leaf.depth, number));
+                    }
+                }
+            }
+        }
         if long::apart(&parts) {
             drops.insert(relation.id, Reason::Apart);
             apart.insert(relation.id);
             continue;
         }
-        let Some((record, points)) = long::record(&relation, &kind, &parts, connector) else {
+        let Some((record, points)) = long::record(&relation, &kind, &parts, connector, leaves.len()) else {
             drops.insert(relation.id, Reason::NoStages);
             continue;
         };
         let complete = record.contains_key("stages");
-        let built = |id| kept.contains_key(id) || cut_records.contains_key(id);
-        for (number, leaf) in leaves.iter().enumerate().filter(|(_, leaf)| built(&leaf.id)) {
-            let trail = (leaf.depth, relation.id, number + 1);
-            innermost(&mut trails, leaf.id, trail);
+        for (id, depth, number) in listed {
+            let trail = (depth, relation.id, number);
+            innermost(&mut trails, id, trail);
             if complete {
-                innermost(&mut parents, leaf.id, trail);
+                innermost(&mut parents, id, trail);
             }
         }
         report.add_long(&record, points);
@@ -661,7 +867,7 @@ fn catalog<S: Source + Clone + Send>(
     // separate routes, or else of its trail. With neither, it leaves, as any unnamed route.
     let named = |record: &mut Map<String, Value>, id: i64| -> bool {
         // A section holds the ID of its relation (`section_id`).
-        let relation = if id < 0 { -id / 100 } else { id };
+        let relation = if (-sources::ORIGIN_ID + 1..0).contains(&id) { -id / 100 } else { id };
         let Some(listers) = unnamed.get(&relation) else { return true };
         let namer = listers.iter().copied().find(|id| !apart.contains(id)).or(trails.get(&relation).map(|t| t.1));
         let Some(namer) = namer else { return false };
@@ -679,6 +885,7 @@ fn catalog<S: Source + Clone + Send>(
         in_trail(&mut record, id);
         records.push(Value::Object(record));
     }
+    let in_catalog: HashSet<i64> = kept.keys().copied().collect();
     for (id, mut route) in kept {
         if !named(&mut route.record, id) {
             continue;
@@ -696,13 +903,30 @@ fn catalog<S: Source + Clone + Send>(
         records.push(Value::Object(route.record));
     }
     records.sort_by_key(|record| record["id"].as_i64());
+    if !sources.jobs.is_empty() {
+        // The jobs of each source, the records that it kept, of them those with a cut, and why the
+        // others left.
+        let mut counts = Map::new();
+        for (place, name) in sources.ids.iter().enumerate() {
+            let ids: Vec<i64> = sources.jobs.iter().filter(|job| job.source == place).map(SourceJob::id).collect();
+            let mut dropped = BTreeMap::<String, usize>::new();
+            for reason in ids.iter().filter_map(|id| drops.get(id)) {
+                *dropped.entry(format!("{reason:?}")).or_default() += 1;
+            }
+            let kept = ids.iter().filter(|id| in_catalog.contains(id));
+            let cut = kept.clone().filter(|id| cut_jobs.contains(id)).count();
+            counts
+                .insert(name.clone(), json!({"jobs": ids.len(), "kept": kept.count(), "cut": cut, "dropped": dropped}));
+        }
+        report.sources = Value::Object(counts);
+    }
     for (id, reason) in drops {
         report.dropped.entry(format!("{reason:?}")).or_default().push(id);
     }
     Ok((records, report))
 }
 
-/// Builds the record of one route, or the reason it leaves the catalog.
+/// Builds the record of one route relation, or the reason it leaves the catalog.
 fn route<D: RoutingData>(
     router: &mut Router<D>,
     job: &Job,
@@ -710,10 +934,25 @@ fn route<D: RoutingData>(
     section_m: f64,
     calls: &mut usize,
 ) -> Result<Built, Failed> {
+    let (runs, line) = runs(&job.members, points)?;
+    let roundtrip = tag(&job.relation.tags, "roundtrip") == "yes";
+    let own = runs.concat();
+    let main = Line { runs, own, close_m: roundtrip.then_some(ROUNDTRIP_M) };
+    let mut header = header(&job.relation, &job.kind, false);
+    if let Some(trail) = &job.named_by {
+        named_after(&mut header, trail);
+    }
+    shaped(router, &main, &header, &job.kind, Some(job.relation.id), section_m, calls)
+        .map_err(|reason| Failed { reason, line })
+}
+
+/// The runs of the main line of `members` in order (see `specs/route-catalog.md#plan`), and the
+/// length, first and last point of the line before its side branches are taken out.
+fn runs(members: &[assemble::Member], points: &HashMap<i64, P>) -> Result<(Vec<Vec<P>>, Option<LineEnds>), Failed> {
     let apart = |a: i64, b: i64| distance(points[&a], points[&b]);
     let located =
         |runs: &[Vec<i64>]| -> Vec<Vec<P>> { runs.iter().map(|run| run.iter().map(|n| points[n]).collect()).collect() };
-    let runs = assemble::main_line(&job.members, &apart);
+    let runs = assemble::main_line(members, &apart);
     // A shuffled member order with small jumps would retrace itself; the nearest-end chain does not.
     let chained = if runs.len() > 1 { assemble::chain(&runs, &apart, MAX_GAP_M) } else { None };
     let in_order = chained.is_some() || runs.windows(2).all(|w| apart(w[0][w[0].len() - 1], w[1][0]) <= MAX_GAP_M);
@@ -726,7 +965,32 @@ fn route<D: RoutingData>(
         runs = assemble::chain(&parts, &apart, MAX_GAP_M).ok_or(failed(Reason::Gap))?;
         assemble::side_trips(&mut runs, &branches, ends, &apart);
     }
-    shaped(router, job, &located(&runs), section_m, calls).map_err(failed)
+    Ok((located(&runs), line))
+}
+
+/// The line that a job plans: the runs of its main line in order; `own`, the line that a patch is
+/// measured against; and the largest distance of the two ends that a closing patch joins, for a
+/// line that is a loop by its tags or its source. Without it, only a closed ring is a loop.
+struct Line {
+    runs: Vec<Vec<P>>,
+    own: Vec<P>,
+    close_m: Option<f64>,
+}
+
+/// The line with points put in so that no two points are more than `STEP_M` apart, each with
+/// whether it is a vertex of the line.
+fn dense(line: &[P]) -> Vec<(P, bool)> {
+    let mut points = Vec::with_capacity(line.len());
+    for w in line.windows(2) {
+        let steps = (distance(w[0], w[1]) / STEP_M).ceil().max(1.0) as usize;
+        points.extend((0..steps).map(|s| {
+            let t = s as f64 / steps as f64;
+            let at = |axis: usize| w[0][axis] + (f64::from(w[1][axis] - w[0][axis]) * t).round() as i32;
+            ([at(0), at(1)], s == 0)
+        }));
+    }
+    points.extend(line.last().map(|&p| (p, true)));
+    points
 }
 
 /// The length, first and last point of a line in runs.
@@ -735,22 +999,24 @@ fn ends(runs: &[Vec<P>]) -> Option<(f64, P, P)> {
     Some((runs.iter().map(|run| shape::length(run)).sum(), first, last))
 }
 
-/// Builds the record of one route from the runs of its main line in order, or the sections of a
-/// line longer than `section_m` whose plan fails, when one of them passes.
+/// Builds the record of one route from its line and the fields of `header`, or, for a relation
+/// `cut`, the sections of a line longer than `section_m` whose plan fails, when one of them passes.
 fn shaped<D: RoutingData>(
     router: &mut Router<D>,
-    job: &Job,
-    runs: &[Vec<P>],
+    main: &Line,
+    header: &Map<String, Value>,
+    kind: &str,
+    cut: Option<i64>,
     section_m: f64,
     calls: &mut usize,
 ) -> Result<Built, Reason> {
-    let own = runs.concat();
-    let own = shape::Near::new(&own);
+    let runs = &main.runs;
+    let own = shape::Near::new(&main.own);
     let length: f64 = runs.iter().map(|run| shape::length(run)).sum();
     if length < MIN_LENGTH_M {
         return Err(Reason::Short);
     }
-    let profiles = profiles(&job.kind);
+    let profiles = profiles(kind);
     let mut patch = |line: &mut Vec<P>, to: P| -> Result<(), Reason> {
         let from = line[line.len() - 1];
         if from == to {
@@ -784,12 +1050,10 @@ fn shaped<D: RoutingData>(
     }
     let (start, end) = (line[0], line[line.len() - 1]);
     let closed = start == end
-        || tag(&job.relation.tags, "roundtrip") == "yes" && distance(start, end) <= ROUNDTRIP_M && {
-            patch(&mut line, start).is_ok()
-        };
-    let reason = match planned(router, job, &line, length, closed, calls) {
-        Err(reason) if length > section_m => reason,
-        whole => return whole.map(Built::Route),
+        || main.close_m.is_some_and(|close_m| distance(start, end) <= close_m) && patch(&mut line, start).is_ok();
+    let (reason, relation) = match (planned(router, header, kind, &line, length, closed, calls), cut) {
+        (Err(reason), Some(relation)) if length > section_m => (reason, relation),
+        (whole, _) => return whole.map(Built::Route),
     };
     let sections = sections(&line, section_m);
     if sections.len() > MAX_SECTIONS {
@@ -801,10 +1065,10 @@ fn shaped<D: RoutingData>(
         if length < MIN_LENGTH_M {
             return Err(failed(Reason::Short));
         }
-        let mut kept = planned(router, job, line, length, false, calls).map_err(failed)?;
-        kept.record.insert("id".into(), json!(section_id(job.relation.id, i + 1)));
+        let mut kept = planned(router, header, kind, line, length, false, calls).map_err(failed)?;
+        kept.record.insert("id".into(), json!(section_id(relation, i + 1)));
         kept.record.insert("section".into(), json!(i + 1));
-        kept.record.insert("trail".into(), json!(job.relation.id));
+        kept.record.insert("trail".into(), json!(relation));
         Ok(kept)
     });
     let built: Vec<_> = built.collect();
@@ -836,16 +1100,18 @@ fn sections(line: &[P], section_m: f64) -> Vec<Vec<P>> {
     cuts.windows(2).map(|w| line[w[0]..=w[1]].to_vec()).collect()
 }
 
-/// Plans a line and builds its record.
+/// Plans a line and builds its record from the fields of `header`. A record in France has no
+/// `symbol`: the marks of the French networks belong to their federation.
 fn planned<D: RoutingData>(
     router: &mut Router<D>,
-    job: &Job,
+    header: &Map<String, Value>,
+    kind: &str,
     line: &[P],
     length: f64,
     closed: bool,
     calls: &mut usize,
 ) -> Result<Kept, Reason> {
-    let profiles = profiles(&job.kind);
+    let profiles = profiles(kind);
     // An out-and-back spur retraces its nodes; its tip is a turnaround.
     let tips: Vec<usize> = (1..line.len().saturating_sub(1)).filter(|&k| line[k - 1] == line[k + 1]).collect();
     let mut limits = Limits { control: control(), max_calls: SEARCH_CALLS * profiles.len(), calls: 0 };
@@ -870,9 +1136,9 @@ fn planned<D: RoutingData>(
     cells(&geometry, &mut cover);
     // Every vertex of the plan route: a simple line can cut across a small piece of France.
     let french = crate::country::in_france(&geometry);
-    let mut record = header(&job.relation, &job.kind, french);
-    if let Some(trail) = &job.named_by {
-        named_after(&mut record, trail);
+    let mut record = header.clone();
+    if french {
+        record.remove("symbol");
     }
     let totals = plan.route.totals();
     record.insert("loop".into(), json!(closed));
@@ -881,8 +1147,8 @@ fn planned<D: RoutingData>(
     record.insert("descent_m".into(), json!(totals.descent_m));
     record.insert("moving_s".into(), json!(totals.seconds.round() as u64));
     let mut grades = None;
-    if graded(&job.kind) {
-        let (lengths, hardest) = grade_lengths(&plan.route, &geometry, job.kind == "mtb");
+    if graded(kind) {
+        let (lengths, hardest) = grade_lengths(&plan.route, &geometry, kind == "mtb");
         record.insert("grades_m".into(), json!(lengths));
         if let Some(hardest) = hardest {
             record.insert("hardest".into(), json!(hardest));

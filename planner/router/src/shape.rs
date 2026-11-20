@@ -99,12 +99,18 @@ pub struct Near<'a> {
 
 impl<'a> Near<'a> {
     pub fn new(line: &'a [P]) -> Self {
+        Self::pieces(line, &[])
+    }
+
+    /// The index of the pieces of `line` that start at the sorted points `breaks`: no segment joins
+    /// two pieces.
+    pub fn pieces(line: &'a [P], breaks: &[usize]) -> Self {
         // A degree of longitude is shortest at the latitude farthest from the equator.
         let lat = line.iter().map(|p| (p[1] as f64 * 1e-6).abs()).fold(0.0, f64::max);
         let cell_lat = 2.0 * NEAR_M / METRES_PER_UDEG;
         let cell = [cell_lat / lat.to_radians().cos().max(0.01), cell_lat];
         let mut cells = HashMap::<_, Vec<u32>>::new();
-        for k in 0..line.len() {
+        for k in (0..line.len()).filter(|k| breaks.binary_search(&(k + 1)).is_err()) {
             let (a, b) = (line[k], line[(k + 1).min(line.len() - 1)]);
             let span = |axis: usize| (b[axis] - a[axis]) as f64 / cell[axis];
             let steps = (2.0 * span(0).abs().max(span(1).abs())).ceil().max(1.0);
@@ -121,7 +127,7 @@ impl<'a> Near<'a> {
         Self { line, cell, cells }
     }
 
-    fn near(&self, p: P) -> bool {
+    pub fn near(&self, p: P) -> bool {
         let (x, y) = ((p[0] as f64 / self.cell[0]).floor() as i32, (p[1] as f64 / self.cell[1]).floor() as i32);
         (x - 1..=x + 1).any(|x| {
             (y - 1..=y + 1).any(|y| {

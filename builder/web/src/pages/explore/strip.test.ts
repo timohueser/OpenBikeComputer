@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TrailPart } from '../../lib/planner/signed-routes';
-import { stageCount, stripCells } from './strip';
+import { heldStages, stageCount, stripCells } from './strip';
 
 describe('stripCells', () => {
     it('makes each part as wide as its length, and a part with no length as wide as the mean', () => {
@@ -17,6 +17,15 @@ describe('stripCells', () => {
         ]);
         expect([stageCount(5, parts), stageCount(2, parts.slice(2, 4)), stageCount(3, parts.slice(0, 2)), stageCount(5), stageCount(1)])
             .toEqual(['2 of 5 stages', '2 stages', '3 stages, none listed', '5 stages', false]);
+    });
+
+    it('counts the stages of a trail by its stage count, also when one part stands for several stages', () => {
+        // One official route stands for the stages 3 to 5 of a trail of six; another one for the stages 3 and 4 of four.
+        const parts: TrailPart[] = [{ id: 1, stage: 1, end_m: 1 }, { id: 2, stage: 2, end_m: 2 }, { id: -1000000056100, stage: 3, end_m: 3 },
+            { id: 6, stage: 6, end_m: 4 }];
+        const missing = parts.map((part): TrailPart => part.id === 6 ? { ...part, missing: true } : part);
+        expect([heldStages(parts, 6), stageCount(6, parts), stageCount(6, missing), stageCount(4, parts.slice(0, 3))])
+            .toEqual([6, '6 stages', '5 of 6 stages', '4 stages']);
     });
 
     it('numbers no part of a trail with fewer than two stages, and marks a jump', () => {

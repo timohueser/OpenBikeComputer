@@ -72,7 +72,8 @@ pub(super) struct Part<'a> {
     pub id: i64,
     /// The OSM `name`, or empty.
     pub name: String,
-    /// The official number; `None` for a section of a one-line trail.
+    /// The official number; `None` for a section of a one-line trail. Two parts can have one number,
+    /// and a number can have no part.
     pub stage: Option<usize>,
     /// The builder cut the line at the end of this part.
     pub cut: bool,
@@ -132,14 +133,16 @@ pub(super) fn apart(parts: &[Part]) -> bool {
     ends.len() >= 2 && 3 * largest < ends.len()
 }
 
-/// The record of a long relation from its parts, and the plan points of its kept parts joined.
-/// `None` when no part is kept. A relation that opens a connector leg is never complete: the leg
-/// leaves a gap between its parts. It has no `symbol` when a kept part is in France.
+/// The record of a long relation of `stage_count` stages from its parts, and the plan points of its
+/// kept parts joined. `None` when no part is kept. A relation that opens a connector leg is never complete: the leg
+/// leaves a gap between its parts. It has no `symbol` when a kept part is in France, and the
+/// credits of its kept parts.
 pub(super) fn record(
     relation: &Relation,
     kind: &str,
     parts: &[Part],
     connector: bool,
+    stage_count: usize,
 ) -> Option<(Map<String, Value>, usize)> {
     let kept: Vec<&Kept> = parts.iter().filter_map(|part| part.kept).collect();
     if kept.is_empty() {
@@ -182,8 +185,16 @@ pub(super) fn record(
         })
         .collect();
     record.insert("parts".into(), json!(entries));
-    let stages: BTreeSet<usize> = parts.iter().filter_map(|part| part.stage).collect();
-    record.insert("stage_count".into(), json!(stages.len()));
+    record.insert("stage_count".into(), json!(stage_count));
+    let mut credits: Vec<&str> = Vec::new();
+    for credit in kept.iter().filter_map(|k| k.record.get("credit").and_then(Value::as_str)) {
+        if !credits.contains(&credit) {
+            credits.push(credit);
+        }
+    }
+    if !credits.is_empty() {
+        record.insert("credit".into(), json!(credits.join("; ")));
+    }
     record.insert("trail_profile_m".into(), json!(trail_profile(parts, &flags)));
     let whole = parts.iter().all(|part| !part.cut);
     if !connector && whole && kept.len() == parts.len() && flags.iter().all(|&(backwards, jump)| !backwards && !jump) {

@@ -24,7 +24,7 @@
         ...record.kind !== 'bicycle' && record.hardest !== undefined ? [gradeName(record.kind, record.hardest)] : []].join(' · '));
     // As the count in the title: a trail of fewer than two stages shows none.
     const stages = $derived.by(() => {
-        const count = record.stage_count ?? 0, held = heldStages(record.parts ?? []);
+        const count = record.stage_count ?? 0, held = heldStages(record.parts ?? [], count);
         return count < 2 ? undefined : held < count ? `${held} of ${count}` : String(count);
     });
     const description = $derived(shownDescription(record, id => catalog.record(id)));
