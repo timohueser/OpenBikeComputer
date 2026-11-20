@@ -9,7 +9,7 @@
     import SelectedPart from '../../lib/ui/SelectedPart.svelte';
     import { formatGrade, gradeBands, gradePaths, profileGrades } from '../../lib/planner/grade-data';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { formatPart, heightRange, profileAscent, profileHeightAt, profilePaths, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
+    import { formatPart, heightRange, profileAscent, profileHeightAt, profilePaths, profileSamples, sampleIndex, sampleSlice } from '../../lib/planner/profile-data';
     import type { RoutingLine, Surface as SurfaceKind } from '../../lib/planner/routing';
     import type { Day } from '../../lib/planner/editor';
     import { axisColumn, axisLeft, axisPieces, axisRest, axisProgress, axisWidth, type ProfileAxis } from '../../lib/planner/profile-axis';
@@ -65,7 +65,9 @@
     const samples = $derived(profileSamples(lineData));
     const known = $derived(samples.flatMap(s => s.height === null ? [] : [s.height]));
     const { low, high } = $derived(heightRange(samples));
-    const { line, area } = $derived(profilePaths(samples, low, high));
+    const area = $derived(singleRoute ? profilePaths(samples, low, high).area : '');
+    // Each day draws only its own samples; its svg clips them to the day.
+    const dayPaths = $derived(days.map(day => profilePaths(sampleSlice(samples, day.from, day.to), low, high)));
     let pointer = $state<number | null>(null);
     let gradeChoice = $state<boolean | null>(null);
     const showGrade = $derived(gradeChoice ?? singleRoute);
@@ -94,6 +96,7 @@
     const shown = $derived(range === 'map' ? focus ?? (part && held ? held : view) : { from: 0, to: 1 });
     const origin = $derived(range === 'map' && focus ? focus.from : 0);
     const span = $derived(Math.max(1e-6, shown.to - shown.from));
+    const shownDays = $derived(days.flatMap((day, i) => day.to > shown.from && day.from < shown.to ? [{ day, paths: dayPaths[i] }] : []));
     // The pointer in the profile, else the pointer on the map while it is in the shown stretch.
     const hover = $derived(pointer ?? (marker !== null && marker >= shown.from && marker <= shown.to ? marker : null));
     const hoverHeight = $derived(hover === null ? null : profileHeightAt(hover, samples));
@@ -224,9 +227,9 @@
             {#if singleRoute}
                 <path d={area} class="terrain-fill" />
             {:else}
-                {#each days as day (day.number)}
+                {#each shownDays as { day, paths } (day.number)}
                     <svg x={day.from * 1000} width={Math.max(0, day.to - day.from) * 1000} height="112" viewBox={`${day.from * 1000} 0 ${Math.max(0, day.to - day.from) * 1000} 112`} preserveAspectRatio="none" overflow="hidden">
-                        <path d={area} style:--day-color={dayColor(day.number, theme)} class="day-fill" />
+                        <path d={paths.area} style:--day-color={dayColor(day.number, theme)} class="day-fill" />
                     </svg>
                 {/each}
             {/if}
@@ -238,9 +241,9 @@
                     <path d={path} style:stroke={color(i)} class="grade-line" />
                 {/each}
             {:else}
-                {#each days as day (day.number)}
+                {#each shownDays as { day, paths } (day.number)}
                     <svg x={day.from * 1000} width={Math.max(0, day.to - day.from) * 1000} height="112" viewBox={`${day.from * 1000} 0 ${Math.max(0, day.to - day.from) * 1000} 112`} preserveAspectRatio="none" overflow="hidden">
-                        <path d={line} fill="none" style:stroke={dayColor(day.number, theme)} />
+                        <path d={paths.line} fill="none" style:stroke={dayColor(day.number, theme)} />
                     </svg>
                 {/each}
             {/if}
