@@ -38,6 +38,8 @@ export interface PlannerConfig {
     trails?: string;
     /** The trail record file template with `{id}`; present with `trails`. */
     trail?: string;
+    /** The facts file template with `{cell}` of specs/route-catalog.md#facts-files; a release with no facts files has none. */
+    facts?: string;
     /** The data layer archives of the region, by name. */
     layers: Partial<Record<Archive, string>>;
     /** TrailView's ruleset `rules.json` (specs/trailview-tiles.md#rules); older releases have none. */
@@ -45,7 +47,7 @@ export interface PlannerConfig {
 }
 
 const URLS = ['basemap', 'places', 'overlays', 'terrain', 'glyphs', 'sprites', 'routing', 'search'] as const;
-const OPTIONAL_URLS = ['routes', 'trailview_rules', 'trails', 'trail'] as const;
+const OPTIONAL_URLS = ['routes', 'trailview_rules', 'trails', 'trail', 'facts'] as const;
 
 /** `value` when it is an absolute URL, such as a URL template; else undefined. */
 export function configUrl(value: unknown): string | undefined {

@@ -1,6 +1,6 @@
 import { plannerConfig, type Bounds } from "./config";
 import { activeRelease, pageRelease, releaseFetch } from "./release";
-import type { CatalogRecord, TrailEntry } from "./signed-routes";
+import type { CatalogRecord, FactsFile, TrailEntry } from "./signed-routes";
 
 const preview: string | undefined = import.meta.env.VITE_PLANNER_CONFIG;
 
@@ -62,6 +62,22 @@ export async function loadTrailCell(id: string): Promise<TrailEntry[] | null> {
     const url = config.trails;
     if (!url || !coversCell(config.bounds, id)) return null;
     return catalogFile<TrailEntry>(url.replace("{cell}", id), "trails");
+}
+
+const isObject = (value: unknown) => !!value && typeof value === "object" && !Array.isArray(value);
+
+/**
+ * The facts file of the zoom 9 cell `9-X-Y`. Each covered cell has one, so a missing file is an error. A cell outside the
+ * release bounds, or a release with no facts files, gives null and is not fetched.
+ */
+export async function loadFactsCell(id: string): Promise<FactsFile | null> {
+    const url = config.facts;
+    if (!url || !coversCell(config.bounds, id)) return null;
+    const response = await releaseFetch(url.replace("{cell}", id));
+    if (!response.ok) throw new Error(`Route facts request failed with status ${response.status}`);
+    const document = await response.json();
+    if (document?.format !== 1 || !isObject(document.places) || !isObject(document.routes)) throw new Error("Unsupported route facts");
+    return document;
 }
 
 /** The whole record of the trail `id`: its trail record file, or the record of the region file of a regional release. Null

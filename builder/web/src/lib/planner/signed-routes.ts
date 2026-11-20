@@ -69,6 +69,48 @@ export type TrailEntry = Pick<CatalogRecord, 'id' | 'kind' | 'name' | 'ref' | 's
     far_udeg: number[][];
 };
 
+/** A place of a facts file (`specs/route-catalog.md`, "Facts files"). Positions are `[longitude, latitude]` in microdegrees. */
+export interface FactsPlace {
+    kind: 'parking' | 'lift' | 'peak' | 'hut' | 'lake' | 'waterfall';
+    name?: string;
+    ele_m?: number;
+    /** The node; the top station of a lift; the point of an area nearest to the route. */
+    at_udeg: [number, number];
+    size?: 'large' | 'small';
+    valley_udeg?: [number, number];
+    /** Lift only: the place id of the nearest car park within 300 m of the valley station. */
+    parking?: string;
+}
+
+/** A place id and the straight-line distance in metres between the place and the nearest point of the route. */
+export type NearPlace = [place: string, metres: number];
+
+/** The entry of a route record in a facts file. Shares are whole percents of its samples. A list with no item is absent.
+ * (`RouteFacts` of `route-facts.ts` is the facts of a planned trip.) */
+export interface CatalogFacts {
+    parking?: NearPlace[];
+    lifts?: NearPlace[];
+    places?: NearPlace[];
+    paved_pct: number;
+    big_road_pct: number;
+    water_pct: number;
+    canopy_pct?: number;
+    /** A lift whose valley station is at one end of the route and whose top station is at the other, and the end at the valley. */
+    lift_ends?: [lift: string, valley: 'start' | 'end'];
+    /** The moving time in the other direction, in seconds. */
+    back_s?: number;
+    /** The first and the last day step of the longest run of steps on which the route is usually free of snow; `first` is
+     * greater than `last` for a run across 1 September. Empty with no free step; absent with no data. */
+    snow_free?: [first: number, last: number] | [];
+}
+
+/** A facts file of one grid cell. `routes` maps a record `id`, as a decimal string, to its entry. */
+export interface FactsFile {
+    format: 1;
+    places: Record<string, FactsPlace>;
+    routes: Record<string, CatalogFacts>;
+}
+
 /** A record with a line, not a long route. */
 export type RouteRecord = CatalogRecord & Required<Pick<CatalogRecord, 'line_udeg' | 'via'>>;
 
