@@ -44,6 +44,7 @@ pub struct Archive {
     file: File,
     gzip: bool,
     tile_compression: u8,
+    metadata: [u64; 2],
     leaves: u64,
     data: u64,
     root: Vec<Entry>,
@@ -63,8 +64,15 @@ impl Archive {
             2 => true,
             other => return Err(format!("directory compression {other}")),
         };
-        let mut archive =
-            Self { file, gzip, tile_compression: header[98], leaves: word(40), data: word(56), root: Vec::new() };
+        let mut archive = Self {
+            file,
+            gzip,
+            tile_compression: header[98],
+            metadata: [word(24), word(32)],
+            leaves: word(40),
+            data: word(56),
+            root: Vec::new(),
+        };
         archive.root = archive.directory(word(8), word(16))?;
         Ok(archive)
     }
@@ -72,6 +80,16 @@ impl Archive {
     /// `tile_compression` of the header: 1 none, 2 gzip.
     pub fn tile_compression(&self) -> u8 {
         self.tile_compression
+    }
+
+    /// The JSON metadata.
+    pub fn metadata(&self) -> Result<serde_json::Value, String> {
+        let [offset, length] = self.metadata;
+        let mut raw = self.bytes(offset, length)?;
+        if self.gzip {
+            raw = gunzip(&raw)?;
+        }
+        serde_json::from_slice(&raw).map_err(|e| format!("the metadata: {e}"))
     }
 
     pub fn root(&self) -> &[Entry] {
@@ -216,17 +234,22 @@ mod tests {
         out
     }
 
-    /// An archive with no directory compression, written to a temporary file.
+    /// An archive with no directory compression and the metadata `{"name": name}`, written to a
+    /// temporary file.
     fn write(name: &str, root: &[u8], leaf: &[u8], data: &[u8], tile_compression: u8) -> std::path::PathBuf {
-        let (root_at, leaves_at) = (127u64, 127 + root.len() as u64);
+        let metadata = format!("{{\"name\": \"{name}\"}}");
+        let (root_at, metadata_at) = (127u64, 127 + root.len() as u64);
+        let leaves_at = metadata_at + metadata.len() as u64;
         let data_at = leaves_at + leaf.len() as u64;
         let mut file = b"PMTiles\x03".to_vec();
-        let words = [root_at, root.len() as u64, 0, 0, leaves_at, leaf.len() as u64, data_at, data.len() as u64];
+        let lengths = [root.len(), metadata.len(), leaf.len(), data.len()].map(|length| length as u64);
+        let words = [root_at, lengths[0], metadata_at, lengths[1], leaves_at, lengths[2], data_at, lengths[3]];
         words.iter().for_each(|word| file.extend(word.to_le_bytes()));
         file.resize(97, 0);
         file.extend([1, tile_compression, 0]);
         file.resize(127, 0);
         file.extend(root);
+        file.extend(metadata.as_bytes());
         file.extend(leaf);
         file.extend(data);
         let path = std::env::temp_dir().join(format!("obc-data-pmtiles-{name}-{}", std::process::id()));
@@ -264,5 +287,6 @@ mod tests {
         assert_eq!(archive.get(1, 0, 1).unwrap(), Some(data));
         assert_eq!(archive.tile(1, 0, 1).unwrap(), Some(b"snow".to_vec()));
         assert_eq!(archive.tile(1, 1, 1).unwrap(), None);
+        assert_eq!(archive.metadata().unwrap(), serde_json::json!({"name": "gzip"}));
     }
 }

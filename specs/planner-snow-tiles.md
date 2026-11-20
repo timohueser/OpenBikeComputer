@@ -10,7 +10,8 @@ region and makes the three archives.
 - Version: `snow_format` 1 of each archive. A reader reads only `snow_format` 1.
 - Writers: `tools/planner_snow.py`.
 - Readers: the web planner snow layer (`builder/web/src/lib/planner/layers/`), the TrailView ground
-  stream (`builder/web/src/lib/trailview/stream/ground.ts`), `tools/planner_verify.py`.
+  stream (`builder/web/src/lib/trailview/stream/ground.ts`), `tools/planner_verify.py`, the route
+  facts (`planner/router-build/src/facts/snow.rs`).
 - Related: [planner release](planner-release.md), [planner climate tiles](planner-climate-tiles.md).
 
 ## Seasons
@@ -156,6 +157,10 @@ The metadata of each archive is a JSON object:
   which the samples fall in at most 25 tiles; else zoom 2. A tile of zoom 11 to 14 that the
   archive lacks then reads its ancestor of zoom 10. A point on the route uses the route samples.
 - A pin on the map samples one point, so it reads one tile at the max zoom of `snow-seasons`.
+- The route facts read `snow-seasons` at each sample of a route, in the deepest tile that the
+  archive holds there, as the [facts files](route-catalog.md#facts-files) say. The planner reads a
+  coarser zoom with the worst case of its pixels, so its profile can show snow on a day that
+  `snow_free` calls free.
 
 ## Sources
 

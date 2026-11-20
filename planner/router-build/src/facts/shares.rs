@@ -308,7 +308,7 @@ pub(crate) mod tests {
             .encode(&rgb, 256, 256, image::ExtendedColorType::Rgb8)
             .unwrap();
         let path = std::env::temp_dir().join(format!("obc-canopy-{}.pmtiles", std::process::id()));
-        std::fs::write(&path, archive(obc_data::pmtiles::tile_id(CANOPY_ZOOM, x, y), &tile)).unwrap();
+        std::fs::write(&path, archive(&[(obc_data::pmtiles::tile_id(CANOPY_ZOOM, x, y), tile)], 1, "{}")).unwrap();
         let archive = Archive::open(&path).unwrap();
         let n = f64::from(1u32 << CANOPY_ZOOM);
         let centre = |column: f64, row: f64| {
@@ -325,26 +325,35 @@ pub(crate) mod tests {
         assert_eq!((shares(9).canopy_pct(), shares(8).canopy_pct()), (Some(33), None));
     }
 
-    /// A PMTiles archive of one tile, with no compression.
-    pub(crate) fn archive(id: u64, tile: &[u8]) -> Vec<u8> {
+    /// A PMTiles archive of `tiles`, sorted by id, as stored, with `metadata`.
+    pub(crate) fn archive(tiles: &[(u64, Vec<u8>)], tile_compression: u8, metadata: &str) -> Vec<u8> {
+        let mut values = vec![tiles.len() as u64];
+        values.extend(tiles.iter().scan(0, |last, (id, _)| Some(id - std::mem::replace(last, *id))));
+        values.extend(tiles.iter().map(|_| 1));
+        values.extend(tiles.iter().map(|(_, tile)| tile.len() as u64));
+        values.extend(tiles.iter().enumerate().map(|(i, _)| u64::from(i == 0)));
         let mut root = Vec::new();
-        for mut value in [1, id, 1, tile.len() as u64, 1] {
+        for mut value in values {
             while value >= 0x80 {
                 root.push(value as u8 | 0x80);
                 value >>= 7;
             }
             root.push(value as u8);
         }
-        let data_at = 127 + root.len() as u64;
+        let metadata_at = 127 + root.len() as u64;
+        let data_at = metadata_at + metadata.len() as u64;
+        let data: Vec<u8> = tiles.iter().flat_map(|(_, tile)| tile.iter().copied()).collect();
         let mut file = b"PMTiles\x03".to_vec();
-        for word in [127, root.len() as u64, 0, 0, data_at, 0, data_at, tile.len() as u64] {
+        for word in [127, root.len() as u64, metadata_at, metadata.len() as u64, data_at, 0, data_at, data.len() as u64]
+        {
             file.extend(word.to_le_bytes());
         }
         file.resize(97, 0);
-        file.extend([1, 1, 4]);
+        file.extend([1, tile_compression]);
         file.resize(127, 0);
         file.extend(root);
-        file.extend(tile);
+        file.extend(metadata.as_bytes());
+        file.extend(data);
         file
     }
 }

@@ -117,7 +117,12 @@ fn longest(snowy: Steps) -> Window {
 
 /// The snowy steps of each point, from its pixel in the deepest tile that the archive holds
 /// there; None where no tile holds it or with too few seasons with data. Each tile reads once.
+/// An archive of another `snow_format` or `step_days` refuses.
 pub fn read(archive: &Archive, points: &[P]) -> Result<Vec<Option<Steps>>, String> {
+    let metadata = archive.metadata()?;
+    if metadata["snow_format"] != 1 || metadata["step_days"] != 2 {
+        return Err("snow-seasons is not of snow_format 1 with step_days 2".into());
+    }
     let [top, deepest] = ZOOMS;
     let last = (PIXELS << deepest) - 1;
     let pixels: Vec<(u32, u32)> = points
@@ -223,19 +228,33 @@ mod tests {
 
     #[test]
     fn read_takes_the_pixel_of_the_deepest_tile() {
-        // A tile of zoom 13 and none of zoom 14: a point reads its pixel of zoom 13. Its five seasons
-        // have snow from 10 to 20 at pixel (3, 2), and none elsewhere.
+        // Tile 13/x/y has snow from 10 to 20 at pixel (3, 2) and from 30 to 40 at pixel (35, 2). Of
+        // its four tiles of zoom 14, the archive holds only the north-west one, with snow from 50
+        // to 60 at pixel (6, 4), which lies in pixel (3, 2) of zoom 13. Five seasons, gzip.
         let (x, y) = (4288, 2888);
-        let mut body = vec![NO_SNOW; 5 * SEASON];
-        for season in body.as_chunks_mut::<SEASON>().0 {
-            let pixel = 2 * PIXELS as usize + 3;
-            (season[pixel], season[PLANE + pixel]) = (10, 20);
-        }
-        let id = obc_data::pmtiles::tile_id(13, x, y);
-        let path = std::env::temp_dir().join(format!("obc-snow-{}.pmtiles", std::process::id()));
-        std::fs::write(&path, crate::facts::shares::tests::archive(id, &body)).unwrap();
-        let archive = Archive::open(&path).unwrap();
-        // The centre of a pixel of zoom 14 that lies in pixel (3, 2) of the tile of zoom 13.
+        let body = |pixels: &[(u32, u8, u8)]| {
+            let mut body = vec![NO_SNOW; 5 * SEASON];
+            for season in body.as_chunks_mut::<SEASON>().0 {
+                for &(pixel, onset, melt_out) in pixels {
+                    (season[pixel as usize], season[PLANE + pixel as usize]) = (onset, melt_out);
+                }
+            }
+            let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            std::io::Write::write_all(&mut gzip, &body).unwrap();
+            gzip.finish().unwrap()
+        };
+        let tiles = [
+            (obc_data::pmtiles::tile_id(13, x, y), body(&[(2 * PIXELS + 3, 10, 20), (2 * PIXELS + 35, 30, 40)])),
+            (obc_data::pmtiles::tile_id(14, 2 * x, 2 * y), body(&[(4 * PIXELS + 6, 50, 60)])),
+        ];
+        let write = |metadata: &str| {
+            let path = std::env::temp_dir().join(format!("obc-snow-{}.pmtiles", std::process::id()));
+            std::fs::write(&path, crate::facts::shares::tests::archive(&tiles, 2, metadata)).unwrap();
+            let archive = Archive::open(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            archive
+        };
+        // The centre of pixel (x, y) of zoom 14, counted from the north-west corner of the world.
         let point = |x: u32, y: u32| {
             let n = f64::from(PIXELS << 14);
             let (x, y) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
@@ -243,8 +262,11 @@ mod tests {
             [((x / n * 360.0 - 180.0) * 1e6).round() as i32, (lat * 1e6).round() as i32]
         };
         let deep = |column: u32, row: u32| point(2 * (x * PIXELS + column), 2 * (y * PIXELS + row));
-        let read = read(&archive, &[deep(3, 2), deep(4, 2), point(0, 0)]).unwrap();
-        std::fs::remove_file(path).unwrap();
-        assert_eq!(read, [Some(steps(&[(10, 20)])), Some(Steps::default()), None]);
+        let points = [deep(3, 2), deep(35, 2), deep(4, 2), point(0, 0)];
+        let read = |metadata: &str| read(&write(metadata), &points);
+        let expected = [Some(steps(&[(50, 60)])), Some(steps(&[(30, 40)])), Some(Steps::default()), None];
+        assert_eq!(read(r#"{"snow_format": 1, "step_days": 2}"#).unwrap(), expected);
+        assert!(read(r#"{"snow_format": 2, "step_days": 2}"#).is_err());
+        assert!(read(r#"{"snow_format": 1}"#).is_err());
     }
 }
