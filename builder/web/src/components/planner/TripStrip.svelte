@@ -53,9 +53,8 @@
     }
 
     function move(event: PointerEvent) {
-        const day = dayAt(event);
+        const day = hovered = dayAt(event);
         if (dragging) go(step(count, week.start, day - held - week.start));
-        else hovered = day;
     }
 
     function key(event: KeyboardEvent) {
@@ -86,7 +85,7 @@
     onpointerleave={() => hovered = null} onkeydown={key}>
     {#each itinerary as day (day.number)}
         <span class="slot" class:lit={lit === day} aria-hidden="true">
-            {#if day.rest}<i class="rest"></i>
+            {#if day.rest}<i class="rest-mark"></i>
             {:else}<i class="bar" style:height={`${4 + (longest ? 22 * day.hours / longest : 0)}px`}
                 style:--day-color={inside(day.number) || lit === day ? dayColor(day.ridingNumber, theme) : undefined}></i>{/if}
             {#if day.number % 7 === 1}<small>{label(day.number)}</small>{/if}
@@ -128,7 +127,7 @@
         background: var(--day-color, color-mix(in srgb, var(--ink-faint) 45%, var(--panel)));
     }
     .lit .bar { outline: 2px solid var(--ink); }
-    .rest {
+    .rest-mark {
         width: 6px;
         height: 6px;
         margin-bottom: 1px;
