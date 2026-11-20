@@ -22,6 +22,16 @@ struct Over {
     tunnel: bool,
 }
 
+/// A way over a vertex of a tube: its number among the ways over the tube, its height and underside at its nearest
+/// point, the metres along the tube of that point's foot, and the at-grade band of the way and the tube.
+struct Above {
+    way: usize,
+    height: f64,
+    under: f64,
+    along: f64,
+    band: f64,
+}
+
 /// The floor of a tube: per vertex its metres, the road solver's height, the floor and the inside height; per way
 /// over it the most metres that the shell of the crown rises over its underside, and the vertex there.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -58,7 +68,8 @@ const MERGE_M: f64 = 0.01;
 /// the class, `height` and `least` the inside height and the least height of the group, `shell` the shell of the crown.
 pub(crate) fn floor(
     (s, z): (&[f64], &[f64]),
-    (under, caps): (&[Vec<(usize, f64)>], &[bool]),
+    under: &[Vec<(usize, f64)>],
+    caps: &[bool],
     grade: f64,
     (height, least): (f64, f64),
     shell: f64,
@@ -216,19 +227,20 @@ pub(crate) fn floors(
                 .map(|i| segments[i])
                 .filter(|&(o, _)| !(overs[o].tunnel && ids.contains(&overs[o].way)))
         };
-        // The vertices: the curve's, and the ends of each stretch of the tube within the reach of a way that can
-        // lower the floor.
+        // The vertices: the curve's, and the ends of each stretch of the tube within the reach of a way that can lower
+        // the floor.
         let mut runs: BTreeMap<usize, Vec<[f64; 2]>> = BTreeMap::new();
+        let mut extra: Vec<f64> = Vec::new();
         for j in 0..ps.len() - 1 {
             let ds = points[j + 1].s - points[j].s;
             for (o, k) in near(grown(&ps[j..j + 2], *shell_half)).filter(|&(o, _)| !overs[o].tunnel) {
                 let w = &overs[o];
-                if let Some([a, e]) = within(ps[j], ps[j + 1], (w.points[k], w.points[k + 1]), reach_of(w)) {
+                let reach = reach_of(w);
+                if let Some([a, e]) = within(ps[j], ps[j + 1], (w.points[k], w.points[k + 1]), reach) {
                     runs.entry(o).or_default().push([points[j].s + a * ds, points[j].s + e * ds]);
                 }
             }
         }
-        let mut extra: Vec<f64> = Vec::new();
         for mut list in runs.into_values() {
             list.sort_by(|x, y| x[0].total_cmp(&y[0]));
             let mut run = list[0];
@@ -255,8 +267,8 @@ pub(crate) fn floors(
         let (ls, lz): (Vec<f64>, Vec<f64>) = points.iter().map(|q| (q.s, q.z)).unzip();
         let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();
         let xy: Vec<[f64; 2]> = s.iter().map(|&x| tube.curve.at(x).0.p).collect();
-        // The metres along the tube and the road solver's height at the foot of a point on it, which lies within
-        // twice the reach of the vertex that the point is near.
+        // The metres along the tube of the foot of a point on it, which lies within twice the reach of the vertex that
+        // the point is near.
         let foot = |q: [f64; 2], (at, reach): (f64, f64)| {
             let first = points.partition_point(|v| v.s < at - 2.0 * reach).saturating_sub(1);
             let last = points.partition_point(|v| v.s <= at + 2.0 * reach).min(ps.len() - 1);
@@ -266,13 +278,13 @@ pub(crate) fn floors(
                     (m, j, u)
                 })
                 .fold((f64::INFINITY, 0, 0.0), |a, x| if x.0 < a.0 { x } else { a });
-            (points[j].s + u * (points[j + 1].s - points[j].s), points[j].z + u * (points[j + 1].z - points[j].z))
+            points[j].s + u * (points[j + 1].s - points[j].s)
         };
-        // Per vertex each way on top: within its reach, its nearest point over the tube between the openings, and
-        // there over the road solver's height of the tube by more than the at-grade band of the two.
+        // Per vertex each way over it: within its reach, with its nearest point over the tube between the openings;
+        // its height and underside there, the metres of the foot and the at-grade band of the two.
         let own_band = sections.way("tunnel", &input.tunnels[&tube.widest].0, false).snap_height_m;
         let mut local: BTreeMap<usize, usize> = BTreeMap::new();
-        let mut under: Vec<Vec<(usize, f64)>> = vec![Vec::new(); s.len()];
+        let mut over: Vec<Vec<Above>> = (0..s.len()).map(|_| Vec::new()).collect();
         for (i, &p) in xy.iter().enumerate() {
             // Per way its nearest segment: metres, segment and share along it.
             let mut best: BTreeMap<usize, (f64, usize, f64)> = BTreeMap::new();
@@ -289,11 +301,12 @@ pub(crate) fn floors(
                     continue;
                 }
                 let (a, e) = (w.points[k], w.points[k + 1]);
-                let (along, below) = foot([a[0] + u * (e[0] - a[0]), a[1] + u * (e[1] - a[1])], (s[i], reach_of(w)));
-                let height_there = w.z[k] + u * (w.z[k + 1] - w.z[k]);
-                if along > s0 + MERGE_M && along < s1 - MERGE_M && height_there - below > w.band.min(own_band) {
+                let along = foot([a[0] + u * (e[0] - a[0]), a[1] + u * (e[1] - a[1])], (s[i], reach_of(w)));
+                if along > s0 + MERGE_M && along < s1 - MERGE_M {
                     let c = local.len();
-                    under[i].push((*local.entry(o).or_insert(c), height_there - w.depth));
+                    let height = w.z[k] + u * (w.z[k + 1] - w.z[k]);
+                    let (way, under, band) = (*local.entry(o).or_insert(c), height - w.depth, w.band.min(own_band));
+                    over[i].push(Above { way, height, under, along, band });
                 }
             }
         }
@@ -306,7 +319,25 @@ pub(crate) fn floors(
         let least = input.rules.groups[tube.group].least_height_m;
         let rank = input.class_names.iter().position(|c| *c == tube.class);
         let grade = rank.map(|r| input.classes.rows[r].grade).filter(|g| g.is_finite()).unwrap_or(b.grade_default);
-        let fl = floor((&s, &z), (&under, &caps), grade, (height[t], least), b.shell_m);
+        // A way lies on top where it lies over the floor under it by more than the at-grade band. The floor starts at
+        // the road solver's height and only goes down as ways come on top, so the set of ways on top only grows.
+        let on_top = |(fs, ff): (&[f64], &[f64])| -> Vec<Vec<(usize, f64)>> {
+            (over.iter())
+                .map(|v| {
+                    v.iter().filter(|a| a.height - interp(a.along, fs, ff) > a.band).map(|a| (a.way, a.under)).collect()
+                })
+                .collect()
+        };
+        let mut under = on_top((&s, &z));
+        let mut fl = floor((&s, &z), &under, &caps, grade, (height[t], least), b.shell_m);
+        loop {
+            let more = on_top((&fl.s, &fl.f));
+            if more == under {
+                break;
+            }
+            under = more;
+            fl = floor((&s, &z), &under, &caps, grade, (height[t], least), b.shell_m);
+        }
         lowered += usize::from(fl.f.iter().zip(&fl.z).any(|(f, z)| *f < z - 0.005));
         // A low stretch: a run of chords (the lesser height of their two vertices) under the tube's height, and its
         // lowest vertex.
