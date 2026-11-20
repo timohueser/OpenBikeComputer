@@ -64,6 +64,8 @@ export interface RideRecord {
     /** `storeId:objectId` of the ride on the device: a card gets a new `StoreId` when it is initialized, and it never
      * gives an `ObjectId` again. */
     device?: string;
+    /** The id of the photo that the rider chose for the cards of the ride. With no such photo, the cards show the cover. */
+    photo?: string;
 }
 
 /** `key` is the trip key of the device in decimal; `day` counts from 1. */
@@ -231,7 +233,7 @@ export function isRideRecord(value: unknown): value is RideRecord {
     return isRecord(value) && isString(value.key) && rideKey.test(value.key) && isString(value.name)
         && ['device', 'file'].includes(value.source as string) && ['obcride', 'fit', 'gpx'].includes(value.format as string)
         && isRideSummary(value.summary) && (value.maxHr === null || isNumber(value.maxHr)) && (value.ftp === null || isNumber(value.ftp))
-        && optional(value.trip, isTrip) && optional(value.device, isString);
+        && optional(value.trip, isTrip) && optional(value.device, isString) && optional(value.photo, isString);
 }
 
 export const isPhotoEntry = (value: unknown): value is PhotoEntry => isRecord(value) && isString(value.id) && /^[\w-]+$/.test(value.id)

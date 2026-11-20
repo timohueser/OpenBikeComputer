@@ -6,10 +6,15 @@
 
     /** The window of the photos of a ride: one photo large, with the list of all photos beside it, so a rider with many
      * photos goes to one with one click. The arrows and the arrow keys go to the next and the last photo. Under the
-     * photo are its place, its time of day and "Remove", which asks no question. The frame of the photo has one size, so
-     * no part of the window moves from one photo to the next; an upright photo and a wide one stand in its middle. */
-    let { library, photos, first, onClose }: {
+     * photo are its place, its time of day, "Use for the card", which a second click undoes, and "Remove", which asks no
+     * question. The frame of the photo has one size, so no part of the window moves from one photo to the next; an
+     * upright photo and a wide one stand in its middle. */
+    let { library, ride, card, photos, first, onClose }: {
         library: Library;
+        /** The key of the ride. */
+        ride: string;
+        /** The photo that the cards of the ride show. */
+        card?: string;
         /** The photos in the order of the ride: the address of the small picture, and the place with the time of day. */
         photos: { id: string; url: string; text: string }[];
         /** The photo that shows first. */
@@ -52,9 +57,9 @@
         go(at + step);
     }
 
-    async function remove() {
+    async function act(work: () => Promise<void>) {
         failure = '';
-        try { await library.removePhoto(shown!.id); } catch (reason) { failure = reason instanceof Error ? reason.message : String(reason); }
+        try { await work(); } catch (reason) { failure = reason instanceof Error ? reason.message : String(reason); }
     }
 </script>
 
@@ -75,7 +80,11 @@
             <div class="foot">
                 <span>{shown.text}</span>
                 {#if failure}<span class="failure" role="alert">{failure}</span>{/if}
-                <button type="button" class="remove" onclick={remove}>Remove</button>
+                <button type="button" class="use" aria-pressed={shown.id === card}
+                    onclick={() => act(() => library.setCardPhoto(ride, shown.id === card ? null : shown.id))}>
+                    {#if shown.id === card}<Icon name="check" size={14} />{/if}Use for the card
+                </button>
+                <button type="button" class="remove" onclick={() => act(() => library.removePhoto(shown.id))}>Remove</button>
             </div>
         </div>
     </Window>
@@ -180,17 +189,30 @@
     .failure {
         color: var(--coral);
     }
-    /* Coral text with no line, at the far end. */
-    .remove {
-        margin: -4px -8px -4px auto;
+    /* Text with no line, at the far end; "Remove" is coral. */
+    .use, .remove {
+        display: flex;
+        gap: 4px;
+        align-items: center;
         padding: 4px 8px;
         border: 0;
         border-radius: 6px;
         background: none;
-        color: var(--coral);
+        color: var(--ink-soft);
         font-size: 13px;
     }
-    .remove:hover {
+    .use {
+        margin: -4px 0 -4px auto;
+    }
+    .use[aria-pressed="true"] {
+        color: var(--ink);
+    }
+    /* The two buttons touch: their text is 16 px apart. */
+    .remove {
+        margin: -4px -8px -4px -12px;
+        color: var(--coral);
+    }
+    .use:hover, .remove:hover {
         background: var(--parchment-2);
     }
     /* On a phone the photo has the width of the screen, and the list is a row under the foot: the row replaces the arrows. */

@@ -26,4 +26,14 @@ describe('StopFinder', () => {
         finder.want('other', context, [first]);
         expect([signal.aborted, finder.found[stretchKey('route', second)], finder.found[stretchKey('route', first)]?.state]).toEqual([true, undefined, 'ready']);
     });
+
+    it('keeps only the places inside the stretch, also when search widened it', async () => {
+        const hotel = (along: number) => ({ source: `n${along}`, name: 'Hotel', kind: 'hotel', lon: 8, lat: 47, city: 'Town', region: '', distance: 0, precision: 'place', position: { along, distance: 0 } });
+        search.mockReset().mockResolvedValue({ results: [hotel(5), hotel(20)] } as never);
+        const finder = new StopFinder(), stretch: [number, number] = [10, 30];
+        finder.want('route', context, [stretch]);
+        await settled();
+        const found = finder.found[stretchKey('route', stretch)];
+        expect(found.state === 'ready' && found.stops.flatMap(stop => stop.sleep.map(p => p.km))).toEqual([20]);
+    });
 });

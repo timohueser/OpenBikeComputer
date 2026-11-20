@@ -3,9 +3,13 @@
     import { untrack } from 'svelte';
     import { rangeText, scale, STEPS, type Range } from './filter';
 
-    let { values, range, onchange, label, format }: {
+    let { values, range, onchange, label, format, fixed, reading = true }: {
         /** The value of each item, in the units of the rider. */
         values: number[];
+        /** A step that does not follow `values`, for a slider that always shows. */
+        fixed?: number;
+        /** Without it, the slider shows no reading of its range: the page shows it. */
+        reading?: boolean;
         range: Range | undefined;
         /** `undefined` when both handles are at the ends. */
         onchange: (range: Range | undefined) => void;
@@ -14,7 +18,7 @@
     } = $props();
 
     // The scale holds while the slider shows, so a handle never moves under the pointer.
-    const step = untrack(() => scale(values, range).step), top = STEPS * step;
+    const step = untrack(() => fixed ?? scale(values, range).step), top = STEPS * step;
     // A stored end that is off the step shows at the nearest step, and keeps its value until the rider moves its handle.
     // A set end never shows at the end of the rail, so a move to that end changes the value. With a set upper end, the
     // lower handle stops two steps before the end, so the upper one has room inside the rail.
@@ -45,7 +49,7 @@
 </script>
 
 <div class="slider">
-    <p class="reading">{range ? rangeText(range, format) : 'Any'}</p>
+    {#if reading}<p class="reading">{range ? rangeText(range, format) : 'Any'}</p>{/if}
     <div class="bars" aria-hidden="true">
         {#each counts as count, i (i)}<span class:on={i >= low && i < high} class:more={over && i === STEPS - 1} class:empty={!count} style:--share={count / most}></span>{/each}
     </div>

@@ -1,12 +1,18 @@
-<!-- The window "Add files": it reads GPX and FIT files, folders and ZIP exports, counts the rides and the planned routes
-     in them, and adds them to the library. -->
+<!-- The window "Add files": it reads GPX and FIT files, photos, folders and ZIP exports, counts the rides, the planned
+     routes and the photos in them, and adds them to the library. A photo goes to the ride of its time, a stored ride or
+     one of the files. -->
 <script lang="ts">
     import { onDestroy } from 'svelte';
-    import { readFit } from '../lib/core/fit';
+    import { readFit, type FitSample } from '../lib/core/fit';
     import { readGpx } from '../lib/core/gpx';
-    import { readFiles, type Found, type Item, type Readers } from '../lib/library/import';
+    import { readFiles, reasons, type Found, type Item, type Readers } from '../lib/library/import';
+    import { photoFacts } from '../lib/library/photo-time';
+    import { addPhoto, isHeic, smallPicture } from '../lib/library/photos';
+    import type { RideRecord } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { planFromFile } from '../lib/planner/gpx-import';
+    import { photoRide, type PhotoRide } from '../lib/ride/photos';
+    import { rideSamples } from '../lib/ride/samples';
     import { formatDistance } from '../lib/settings/format';
     import Segmented from '../lib/ui/Segmented.svelte';
     import Window from '../lib/ui/Window.svelte';
@@ -17,6 +23,7 @@
     const KINDS = [
         { kind: 'ride', one: 'ride', label: 'rides' },
         { kind: 'route', one: 'planned route', label: 'planned routes' },
+        { kind: 'photo', one: 'photo', label: 'photos' },
         { kind: 'known', one: 'is in your library already', label: 'are in your library already' },
         { kind: 'unreadable', one: 'not readable', label: 'not readable' },
     ] as const;
@@ -26,10 +33,12 @@
     /** The files that are added, so that "Add" after an error goes on with the others. */
     const done = new Set<Found>();
     let version = $state(0);
-    let counts = $state({ ride: 0, route: 0, known: 0, unreadable: 0 });
+    let counts = $state({ ride: 0, route: 0, photo: 0, known: 0, unreadable: 0 });
+    /** The names of the photos that fit no ride. */
+    let unplaced = $state<string[]>([]);
     let source = $state('');
     let phase = $state<'empty' | 'reading' | 'read' | 'adding' | 'added'>('empty');
-    let added = $state({ ride: 0, route: 0 });
+    let added = $state({ ride: 0, route: 0, photo: 0 });
     let message = $state('');
     let expanded = $state(false);
     /** A file that can be a ride or a planned route is in the list. */
@@ -38,8 +47,8 @@
     let input: HTMLInputElement;
     let controller = new AbortController();
 
-    const total = $derived(counts.ride + counts.route + counts.known + counts.unreadable);
-    const toAdd = $derived(counts.ride + counts.route - added.ride - added.route);
+    const total = $derived(counts.ride + counts.route + counts.photo + counts.known + counts.unreadable + unplaced.length);
+    const toAdd = $derived(counts.ride + counts.route + counts.photo - added.ride - added.route - added.photo);
     const shown = $derived((void version, expanded ? found.slice() : found.slice(0, 4)));
     const hidden = $derived((void version, found.length - shown.length));
 
@@ -51,17 +60,22 @@
         const current = controller = new AbortController();
         found.length = 0;
         done.clear();
-        counts ={ ride: 0, route: 0, known: 0, unreadable: 0 };
-        added = { ride: 0, route: 0 };
+        counts = { ride: 0, route: 0, photo: 0, known: 0, unreadable: 0 };
+        added = { ride: 0, route: 0, photo: 0 };
+        unplaced = [];
         source = items.length === 1 ? items[0].name : '';
         message = '';
         expanded = choice = false;
         phase = 'reading';
         version++;
+        // The rides that a photo can be of, made at the first photo of this read.
+        let rides: ReturnType<typeof photoRides> | undefined;
         try {
-            for await (const file of readFiles(items, library, readers, current.signal)) {
+            for await (const read of readFiles(items, library, readers, current.signal)) {
+                const file = read.kind === 'photo' ? await place(read, () => rides ??= photoRides()) : read;
                 // A file of a run that a new drop or Cancel stopped.
                 if (current.signal.aborted) return;
+                if (!file) { unplaced.push(read.name); continue; }
                 found.push(file);
                 counts[file.kind]++;
                 if ('other' in file && file.other) choice = true;
@@ -72,6 +86,28 @@
             message = error instanceof Error ? error.message : String(error);
         }
         phase = 'read';
+    }
+
+    /** The stored rides and the rides of the files, which come before the photos. Each file is read at most once. */
+    async function photoRides(): Promise<(PhotoRide & { record: RideRecord })[]> {
+        const ride = (record: RideRecord, file: () => Promise<Blob | undefined>) => {
+            let samples: Promise<FitSample[] | undefined> | undefined;
+            return { record, summary: record.summary, samples: () => samples ??= file().then(blob => blob && rideSamples(record, blob)).catch(() => undefined) };
+        };
+        return [...(await library.rides()).map(record => ride(record, () => library.rideFile(record.key))),
+            ...found.flatMap(file => file.kind === 'ride' ? [ride(file.ride, file.open)] : [])];
+    }
+
+    /** A photo with its ride, a file that the browser cannot open, or undefined for a photo that fits no ride. */
+    async function place(file: Found & { kind: 'photo' }, rides: () => ReturnType<typeof photoRides>): Promise<Found | undefined> {
+        const unreadable = (reason: string): Found => ({ file: file.file, name: file.name, kind: 'unreadable', reason });
+        const blob = await file.open().catch(() => undefined);
+        if (!blob) return unreadable(reasons.damaged);
+        const match = await photoRide(await rides(), await photoFacts(blob));
+        if (!match) return undefined;
+        // The browser opens each photo of a ride now, so that "Add" fails on none.
+        if (!await smallPicture(blob).then(() => true, () => false)) return unreadable(isHeic({ name: file.name, type: blob.type }) ? reasons.heic : reasons.damaged);
+        return { ...file, ride: { key: match.ride.record.key, name: match.ride.record.name, at: match.at } };
     }
 
     function drop(event: DragEvent): void {
@@ -93,11 +129,12 @@
         const { signal } = controller;
         for (let i = 0; i < found.length && !signal.aborted; i++) {
             const file = found[i];
-            if (file.kind !== 'ride' && file.kind !== 'route' || done.has(file)) continue;
+            if (file.kind !== 'ride' && file.kind !== 'route' && file.kind !== 'photo' || done.has(file)) continue;
             let ok: boolean;
             try {
                 ok = file.kind === 'ride' ? await library.addRide(file.ride, await file.open())
-                    : await library.addRoute(await planFromFile(await file.open(), file.id, file.bike));
+                    : file.kind === 'route' ? await library.addRoute(await planFromFile(await file.open(), file.id, file.bike))
+                    : await addPhoto(library, file.ride!.key, await file.open(), file.ride!.at);
             } catch (error) {
                 message = error instanceof Error ? error.message : String(error);
                 phase = 'read';
@@ -128,6 +165,8 @@
     }
 
     const plural = (n: number, one: string, many: string) => `${n.toLocaleString('en')} ${n === 1 ? one : many}`;
+    const and = (parts: string[]) => parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0];
+    const unplacedNames = $derived(and(unplaced.length > 3 ? [...unplaced.slice(0, 2), `${unplaced.length - 2} more`] : unplaced));
 
     const NAMES = { ride: 'ride', route: 'planned route' };
     const lengthOf = (file: Found & { kind: 'ride' | 'route' }) => formatDistance(file.kind === 'ride' ? file.ride.summary.lengthM : file.lengthM);
@@ -146,7 +185,7 @@
             ondrop={drop}
         >
             <strong>Drop files or a folder here</strong>
-            {#if phase === 'empty'}<p>GPX and FIT files, or the ZIP file with all your data from Strava, Komoot or Garmin.</p>{/if}
+            {#if phase === 'empty'}<p>GPX and FIT files, photos of your rides, or the ZIP file with all your data from Strava, Komoot or Garmin.</p>{/if}
             <button type="button" onclick={() => input.click()} disabled={phase === 'adding'}>Choose files</button>
             <input bind:this={input} type="file" multiple hidden aria-label="Choose files"
                 onchange={() => { void read([...input.files ?? []]); input.value = ''; }} />
@@ -164,6 +203,7 @@
                     {/each}
                 </dl>
                 {#if choice}<p class="rule">A file with times comes in as a ride. You can change it to a planned route.</p>{/if}
+                {#if unplaced.length}<p class="rule">{unplacedNames} {unplaced.length === 1 ? 'fits no ride. It is' : 'fit no ride. They are'} not added.</p>{/if}
                 {#if shown.length}
                     <ul class:expanded>
                         {#each shown as file, i (i)}
@@ -173,6 +213,8 @@
                                     <span class="detail">in your library already</span>
                                 {:else if file.kind === 'unreadable'}
                                     <span class="detail unreadable">not readable: {file.reason}</span>
+                                {:else if file.kind === 'photo'}
+                                    <span class="detail">photo of {file.ride?.name}</span>
                                 {:else}
                                     {#if file.other && (phase === 'reading' || phase === 'read') && !done.has(file)}
                                         <Segmented compact label={`${file.name}: ride or planned route`} options={[...FORMS]} value={file.kind} onChange={() => swap(i)} />
@@ -193,7 +235,8 @@
 
         {#if message}<p class="message" role="alert">{message}</p>{/if}
         {#if phase === 'added'}
-            <p class="message" role="status">Added {plural(added.ride, 'ride', 'rides')} and {plural(added.route, 'planned route', 'planned routes')}.</p>
+            <p class="message" role="status">Added {and([plural(added.ride, 'ride', 'rides'), plural(added.route, 'planned route', 'planned routes'),
+                ...counts.photo ? [plural(added.photo, 'photo', 'photos')] : []])}.</p>
         {/if}
 
         <footer>
@@ -270,6 +313,7 @@
     .bar span { flex-basis: 0; background: var(--kind); }
     .ride { --kind: var(--ride); }
     .route { --kind: var(--route); }
+    .photo { --kind: var(--amber); }
     .known { --kind: var(--parchment-3); }
     .unreadable { --kind: var(--ink-faint); }
     /* One line under the bar: the colour, the number, the kind. A term comes before its value in the markup. */
