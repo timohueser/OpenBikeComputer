@@ -1,0 +1,8 @@
+name = "Certified walks of Saarland (GDI-SL), one WFS answer as GeoJSON"
+sources = ["saarland-premiumwanderwege"]
+coverage = "Saarland"
+urls = [
+  "https://geoportal.saarland.de/arcgis/services/Internet/Verkehr_WFS/MapServer/WFSServer?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=Verkehr_WFS:Premiumwanderwege&OUTPUTFORMAT=GEOJSON",
+]
+bytes_estimate = 1_150_000
+notes = "The whole layer in WGS 84 in one answer. Its HEAD gives no ETag, no day and not the size of the answer: a get downloads it again and keeps it while its bytes stay."
