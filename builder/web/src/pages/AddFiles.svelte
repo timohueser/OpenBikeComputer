@@ -36,8 +36,6 @@
     let counts = $state({ ride: 0, route: 0, photo: 0, known: 0, unreadable: 0 });
     /** The names of the photos that fit no ride. */
     let unplaced = $state<string[]>([]);
-    /** The rides that a photo can be of, made at the first photo of a read. */
-    let rides: Promise<(PhotoRide & { record: RideRecord })[]> | undefined;
     let source = $state('');
     let phase = $state<'empty' | 'reading' | 'read' | 'adding' | 'added'>('empty');
     let added = $state({ ride: 0, route: 0, photo: 0 });
@@ -65,15 +63,16 @@
         counts = { ride: 0, route: 0, photo: 0, known: 0, unreadable: 0 };
         added = { ride: 0, route: 0, photo: 0 };
         unplaced = [];
-        rides = undefined;
         source = items.length === 1 ? items[0].name : '';
         message = '';
         expanded = choice = false;
         phase = 'reading';
         version++;
+        // The rides that a photo can be of, made at the first photo of this read.
+        let rides: ReturnType<typeof photoRides> | undefined;
         try {
             for await (const read of readFiles(items, library, readers, current.signal)) {
-                const file = read.kind === 'photo' ? await place(read) : read;
+                const file = read.kind === 'photo' ? await place(read, () => rides ??= photoRides()) : read;
                 // A file of a run that a new drop or Cancel stopped.
                 if (current.signal.aborted) return;
                 if (!file) { unplaced.push(read.name); continue; }
@@ -100,11 +99,11 @@
     }
 
     /** A photo with its ride, a file that the browser cannot open, or undefined for a photo that fits no ride. */
-    async function place(file: Found & { kind: 'photo' }): Promise<Found | undefined> {
+    async function place(file: Found & { kind: 'photo' }, rides: () => ReturnType<typeof photoRides>): Promise<Found | undefined> {
         const unreadable = (reason: string): Found => ({ file: file.file, name: file.name, kind: 'unreadable', reason });
         const blob = await file.open().catch(() => undefined);
         if (!blob) return unreadable(reasons.damaged);
-        const match = await photoRide(await (rides ??= photoRides()), await photoFacts(blob));
+        const match = await photoRide(await rides(), await photoFacts(blob));
         if (!match) return undefined;
         // The browser opens each photo of a ride now, so that "Add" fails on none.
         if (!await smallPicture(blob).then(() => true, () => false)) return unreadable(isHeic({ name: file.name, type: blob.type }) ? reasons.heic : reasons.damaged);
