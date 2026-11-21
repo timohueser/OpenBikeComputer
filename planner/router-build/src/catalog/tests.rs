@@ -122,6 +122,80 @@ fn grid_at(origin: [i32; 2], routes: Vec<Route>) -> (Package<Memory>, Data) {
     (Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap(), graph.osm)
 }
 
+/// A package of `ways` on flat ground: each a highway value, a road class and its points in metres
+/// east and north of grid node 0. Ways meet where they share a point.
+fn streets(ways: &[(&str, u8, &[[f64; 2]])]) -> Package<Memory> {
+    let mut graph = Graph::default();
+    let mut nodes = HashMap::new();
+    let mut builder = Builder::<Ways>::default();
+    for (id, &(highway, class, points)) in (1..).zip(ways) {
+        let ids: Vec<i64> = points
+            .iter()
+            .map(|&[east, north]| {
+                let [lon, lat] = off(0, east, north);
+                *nodes.entry([lon, lat]).or_insert_with(|| {
+                    graph.points.push(Point { lat, lon, elevation: 0.0 });
+                    graph.node_ids.push(graph.node_ids.len() as i64);
+                    graph.node_access.push(BIKE | FOOT | PUSH);
+                    graph.node_ids.len() as i64 - 1
+                })
+            })
+            .collect();
+        builder.push(id, &ids, &tags(&[("highway", highway)]));
+        for pair in ids.windows(2) {
+            for (from, to) in [(pair[0], pair[1]), (pair[1], pair[0])] {
+                let shape = vec![graph.points.values()[from as usize], graph.points.values()[to as usize]];
+                let road = Road {
+                    from: from as u32,
+                    to: to as u32,
+                    way: id,
+                    reversed: from > to,
+                    length_m: shape[0].distance(shape[1]).round() as u32,
+                    surface: Surface::Paved,
+                    class,
+                    access: BIKE | FOOT | PUSH,
+                    difficulty: 255,
+                    shape,
+                    ..Road::default()
+                };
+                graph.roads.push(road, Default::default());
+            }
+        }
+    }
+    let mut ways = builder.finish().0;
+    let point = |id: i64| graph.points.values()[id as usize];
+    let node =
+        |id| NodeRef { lat: point(id).lat, lon: point(id).lon, flags: NodeRef::PRESENT, ..NodeRef::missing(false) };
+    ways.set_points(ways.references().iter().map(|&id| node(id)).collect());
+    graph.osm = Data { ways, ..Data::default() };
+    graph.link_ways();
+    let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| PROFILES.contains(&p.name.as_str())).collect();
+    let mut objects = HashMap::new();
+    let [lon, lat] = [ORIGIN as f64 * 1e-6; 2];
+    let manifest = crate::prepare(
+        &graph,
+        "test".into(),
+        [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0],
+        &profiles,
+        vec![],
+        "test".into(),
+        |bytes| {
+            objects.insert(digest(bytes), bytes.to_vec());
+            Ok(digest(bytes))
+        },
+    )
+    .unwrap();
+    Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap()
+}
+
+/// The hiking plan of `line` in `package`, and the deviation of its route.
+fn hiking_plan(package: &Package<Memory>, line: &[P], closed: bool) -> Result<f64, Failure> {
+    let mut router = Router::new(Selection::whole(package.fork()), 768 << 20);
+    let mut limits = Limits { control: control(), max_calls: SEARCH_CALLS, calls: 0 };
+    let plan = shape::shape(&mut router, &["hiking/alpine"], line, &[], shape::length(line), closed, &mut limits)?;
+    Ok(shape::deviation(&shape::vertices(&plan.route), line))
+}
+
 fn route<'a>(id: i64, pairs: &[(&'a str, &'a str)], ways: impl IntoIterator<Item = i64>) -> Route<'a> {
     (id, [&[("type", "route")], pairs].concat(), ways.into_iter().map(|way| (Id::Way(way), "")).collect())
 }
@@ -254,7 +328,9 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     }
 
     let trail = by_id[&1];
-    assert_eq!((&trail["loop"], &trail["length_m"]), (&json!(false), &json!(8 * 445)));
+    assert_eq!(trail["loop"], json!(false));
+    // A shaping point can split a street, and each leg rounds its length.
+    assert!(trail["length_m"].as_u64().is_some_and(|m| m.abs_diff(8 * 445) <= 1), "{trail}");
     assert_eq!((&trail["grades_m"][2], &trail["hardest"]), (&json!(445), &json!(2)));
     assert_eq!((&trail["parent"], &trail["stage"]), (&json!(22), &json!(1)), "the innermost complete trail");
     assert_eq!((&trail["symbol"], &trail["website"]), (&json!("red"), &json!("https://t.example")));
@@ -315,7 +391,8 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     assert_eq!(&jumping["line_udeg"].as_array().unwrap()[..2], [json!(ORIGIN), json!(ORIGIN + 2 * 4_000)]);
 
     let whole = by_id[&22];
-    assert_eq!((&whole["stages"], &whole["length_m"]), (&json!([1, 2]), &json!(16 * 445)));
+    assert_eq!(whole["stages"], json!([1, 2]));
+    assert_eq!(whole["length_m"], by_id[&1]["length_m"].as_u64().unwrap() + 8 * 445);
     assert_eq!(whole["start_udeg"], json!([ORIGIN, ORIGIN]));
     assert!(whole.get("line_udeg").is_none() && whole.get("profile_m").is_none());
     // A long relation inside another opens in its place, and its stages keep the inner one.
@@ -1151,6 +1228,32 @@ fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), S
         assert!(shown >= 0.8, "only {shown:.2} of the line of {id} shows in records of earlier origins");
     }
     Ok(())
+}
+
+#[test]
+fn a_shaping_point_holds_a_straight_line_on_a_road_that_hikers_avoid() {
+    // A main road 1.2 km east, and a lane 100 m north of it between the same ends. The line is one
+    // straight segment along the main road; alone, the hiking route takes the lane.
+    let package = streets(&[
+        ("secondary", 2, &[[0.0, 0.0], [1200.0, 0.0]]),
+        ("residential", 1, &[[0.0, 0.0], [0.0, 100.0], [1200.0, 100.0], [1200.0, 0.0]]),
+    ]);
+    let line = [off(0, 0.0, 0.0), off(0, 1200.0, 0.0)];
+    assert_eq!(hiking_plan(&package, &line, false), Ok(0.0));
+}
+
+#[test]
+fn shaping_points_that_do_not_help_leave_before_the_whole_plan_decides() {
+    // A block of streets, and a dead end from its south-east corner that loops out east and ends
+    // 1 m from the line, which runs 5 m from the street there. The vertex at that end is the first
+    // plan point of the loop and attaches to the dead end, so every leg to or from it runs out east.
+    let package = streets(&[
+        ("residential", 1, &[[0.0, 0.0], [300.0, 0.0], [300.0, 290.0], [0.0, 290.0], [0.0, 0.0]]),
+        ("service", 1, &[[300.0, 0.0], [500.0, -100.0], [500.0, 105.0], [306.0, 105.0], [306.0, 95.0]]),
+    ]);
+    let corners = [[0.0, 0.0], [300.0, 0.0], [305.0, 20.0], [305.0, 100.0], [305.0, 290.0], [0.0, 290.0], [0.0, 0.0]];
+    let line: Vec<P> = corners.iter().map(|&[east, north]| off(0, east, north)).collect();
+    assert_eq!(hiking_plan(&package, &line, true), Ok(0.0));
 }
 
 /// The `id`, the stage number and the name of each part of a long record.

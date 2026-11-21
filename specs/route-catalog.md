@@ -169,11 +169,17 @@ The route's own line is its pieces joined straight across their gaps. A route le
 when more than 500 m of a routed patch is farther than 30 m from its own line. To reproduce the
 route, the router's route for the plan with each profile has a deviation of at most 2 % of the main-line length. The deviation is the length of
 the routed line that is more than 30 m from the main line, plus the length of the main line that is
-more than 30 m from the routed line. The plan route is the route that the router gives for the plan
-with one of these profiles: `touring` for `bicycle`, else the only one. The plan runs in the member
-order of the relation, also for a loop. A route is a loop when its main line is a closed ring, or
-when it has `roundtrip=yes` and its ends are within 200 m. A loop plan ends at its start, so the
-last vertex equals vertex 0.
+more than 30 m from the routed line. The shaping points are points of the main line. The builder
+first adds a point to the main line at least every 60 m, so that a shaping point can go near the
+middle of each stretch that a route leaves, also on a long straight segment. The builder routes each
+leg of the plan alone and adds shaping points while they make the deviation of the legs smaller.
+When 8 points in a row for each profile do not make it smaller by 2 %, or when no new point is
+left, it removes each point that does not help, and the route of the whole plan decides; when it
+fails, the point of its worst leg is added, up to 6 times. The plan route is the route that the
+router gives for the plan with one of these profiles: `touring` for `bicycle`, else the only one.
+The plan runs in the member order of the relation, also for a loop. A route is a loop when its main
+line is a closed ring, or when it has `roundtrip=yes` and its ends are within 200 m. A loop plan
+ends at its start, so the last vertex equals vertex 0.
 
 `length_m`, `ascent_m` and `descent_m` are the totals of the route engine for the plan route. The
 router smooths the heights of each leg first. Each height becomes the mean, over 100 m of the leg
