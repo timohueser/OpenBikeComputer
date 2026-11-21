@@ -425,7 +425,7 @@ The bake adds these to the features of the road solver:
 | tag `slab` | each way of a deck whose room gives less than its full depth (ladder step 2), at zoom 13 | The depth of its slab in metres |
 | line `tunnel-tube` | each chord of the curve of a chain of tunnel ways with a part, at zoom 13 | Two vertices; the heights are the floor. See Tunnel parts |
 | point `tunnel-end` | each opening with a part of its own, at zoom 13 | The middle of its frame line; the height is the floor there. See Tunnel parts |
-| tag `parts` | each tunnel way of a chain with a part, at zoom 13 | The parts of the two ends of its chain, as `ends` of its `tunnel-tube` |
+| tag `parts` | each tunnel way of a chain with a part, at zoom 13 | The parts of the two ends of its chain, as `ends` of its `tunnel-tube`; `in in` for a chain in the tube of a wider one (rung 2) where that one has a part at both ends |
 
 The bake decides `levels`, `storey` and `slab` by the levels of the ground plan (`graph::levels` of
 `host/obc-ground-plan`, and `graph::level_tags` for the tags) with the rule tables of its own build. The options
@@ -581,21 +581,24 @@ the cover is at least `height` + `shell_m` + `cover_m`.
 Each opening takes the first kind of part that fits, by these rungs in order:
 
 1. No part where a vertex of the chain has no height.
-2. No part where the opening lies within `half` + `same_tube_gap_m` across, `same_tube_stagger_m` along and
-   `pair_max_deg` of the opening of a wider chain: the way is in that tube. The wider chain keeps its axis, and its
-   `half` grows to the far edge of the other way and its margin. The widest chain takes first.
+2. No part where the chain is mostly inside a wider one (see Overlapping tubes): the way is in that tube. The wider
+   chain keeps its axis, and its `half` grows to the far edge of the other way and its margin. The widest chain takes
+   first.
 3. A chain shorter than `underpass_max_m` with a way or a track on top: `box` at its openings. Its height comes from
    the floor of the tube, as for every part. A short chain under a building only has no part.
 4. An end that meets no way and is covered at its opening: `free`.
 5. An end whose first covered metre lies within `collar_max_m`: `pair` where an opening of another chain of the same
    family (rail or not) at that rung lies within `pair_max_m` and `pair_max_deg`, and each of the two chains has a
    part at both of its ends (the nearest pairs first, each opening in one pair); else `rock` for a group with `rock`
-   covered within `rock_cover_max_m`; else `arch`.
+   covered within `rock_cover_max_m`; else `arch`. Two openings of any kinds within `pair_max_m` and `pair_max_deg`
+   whose chains meet at the opening farther in (see Overlapping tubes) are a `pair` too.
 6. Else `free`.
 
 The two openings of a pair lie on the frame line of the opening farther in: the other one moves in along its way to
 it. Where its way does not reach that line within `pair_max_m`, half the chain and its own way, the two are no pair
-and each takes its next kind. A pair has one `tunnel-end`, at the opening of the lower feature id.
+and each takes its next kind. A pair has one `tunnel-end`, at the opening of the lower feature id. The kind that each
+of its openings takes without the pair gives its collar and its section; the head is a wall where one of them is
+`arch` or `box`, else a rim round both.
 
 The point of a `tunnel-end` lies on its own axis at its opening. The frame of a single opening runs `half` +
 `shell_m` to each side of that point; the frame of a pair runs from the right edge of one tube to the left edge of the
@@ -607,8 +610,9 @@ The numbers, in metres over the floor of the opening unless named:
   `free_max_m` and half the chain, and that limit where no metre is covered. Each tube of a pair has its own.
 - `face`: the highest ground on the frame line plus `coping_m`, at least `height` + `shell_m` + `band_m`, at most
   `height` + `shell_m` + `face_over_crown_max_m`, and at most the underside of a deck over the frame line or its wing
-  walls less `coping_m`. In a pair, the least is over the higher crown of the two tubes and the most over the lower. A deck is over them where that lies over the floor: a way that goes on from the opening on a
-  deck is not. So a deck can make `face` lower than `height` + `shell_m`.
+  walls less `coping_m`. In a pair, the least is over the higher crown of the two tubes and the most over the lower;
+  where the least lies over the most, the least holds. A deck is over them where that lies over the floor: a way that
+  goes on from the opening on a deck is not. So a deck can make `face` lower than `height` + `shell_m`.
 - `left`, `right`: a row of wall tops, one per metre out from the outer edge of the frame, the ground plus
   `coping_m`, from `coping_m` up to `face`. A row ends before the first metre whose ground lies under the floor +
   `wing_ground_m`, or at `wing_max_m`, and has one value at least. `left` is to the left of the way into the tube.
@@ -629,7 +633,7 @@ The tags, numbers in metres with at most 2 decimals, the values of a row separat
 | `part` | end | `arch`, `pair`, `rock`, `box` or `free` |
 | `heading` | end | Radians from x to y of world coordinates, into the tube, three decimals; of `pair`, into the tube of the opening farther in, square to the frame line |
 | `collar` | end | The collar; of `free`, the length of its shell |
-| `face`, `left`, `right` | end | Not on `free` |
+| `face`, `left`, `right` | end | Not on `free`, nor on a pair whose head is a rim |
 | `foot` | end | |
 | `way` | end | The end vertex of the way of the opening, `x y` in the frame of the ground plan (2^34 units per side): the point that each zoom-13 tile holds, a quarter unit times 32, or a whole unit times 128 on a way with no alignment |
 | `shift` | end | The metres along that way from `way` to the opening; 0 where it did not move |
@@ -645,6 +649,21 @@ A way that ends at an opening of a chain whose two ends are built widens its sho
 its core's edge (where its wall or bank stands) reaches the opening's jamb lines (`half` of the end), and narrows back
 to its own width over `approach_m` of `design` in `data/trailview/parts.json`, or over the way where it is shorter. A
 change of `BUILT` bakes the layer again.
+
+#### Overlapping tubes
+
+Where the rooms of two tubes overlap, they are one room. For two tubes at a point of one's axis, `d` is the distance to
+the other's axis, square to its chord, with the foot between the other's two ends. They are at one level where their
+floors lie at most half their two heights apart; at one level they meet where `d` is less than their two halves and
+two `shell_m`, and the point lies inside the other where `d` is at most the other's `half`.
+
+- A chain is mostly inside a wider one (the larger `half`, then the lower id) where its axis lies inside it at more
+  than half of the metres from opening to opening (from a chain end where an end has no opening), read every metre:
+  rung 2. The wider `half` grows to the largest `d` there plus the other way's half-width and the wider margin.
+- Two openings whose chains meet at the opening farther in are a pair (rung 5).
+- Where the shells of two chains with a part at both ends start or stop meeting between their openings, each chain has
+  a vertex there, found to a centimetre. The device cuts a chord at the middle only where both its ends meet the
+  other tube.
 
 #### The floor of a tube
 
