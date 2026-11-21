@@ -60,6 +60,7 @@ async function bundle() {
     }
 }
 
+const SPIKE = ['today', 'today-low'].flatMap(v => ['walk', 'valley-drive', 'zoom-out', 'bridge-tunnel'].map(s => `${v}:${s}`)).concat('new:walk').join(',');
 const WORKER = /\/(ground|decode)-worker-[\w-]+\.js$/;
 const inject = html => html.replace('<head>', '<head><script src="/phone/measure.js"></script><script src="/phone/diagnose.js"></script>');
 
@@ -95,6 +96,8 @@ function serve() {
         const bridge = /^\/phone\/webp\/(obc_webp_bridge(?:_bg\.wasm|\.js))$/.exec(path), bridgeFile = bridge && join(WEB, 'src/lib/trailview/stream/webp', bridge[1]);
         if (bridgeFile) return existsSync(bridgeFile) ? send(response, 200, TYPES[extname(bridgeFile)], readFileSync(bridgeFile)) : send(response, 404, 'text/plain', '');
         if (path === '/phone/compile') return send(response, 200, 'text/html', page('compile'));
+        // Prototype #3765: the runs of the app's spike in Safari (companion-ios/TrailViewPrototype/Sources/App.swift).
+        if (path === '/phone/spike') return response.writeHead(302, { location: `/phone/?runs=${SPIKE}&host=safari` }).end();
         if (path === '/phone/memory') return send(response, 200, 'text/html', page('memory'));
         if (path === '/phone/memory.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-memory.js')));
         const page_ = /^\/phone\/(diagnos(?:e|is)|compile|cold)\/?$/i.exec(path);
