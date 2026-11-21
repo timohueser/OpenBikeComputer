@@ -25,15 +25,15 @@
         { id: 'new-low', name: 'new roads, lighter', query: '&ground=plan&scale=0.5&pool=0.5' },
     ];
     /**
-     * Prototype #3765: the phone preset P, and P with one lever changed. Each runs the headroom probe after its flight, but the
-     * ballast run, whose 400 MiB filled before the load test whether the load's peak stays under about 1 GB.
+     * Prototype #3765: P, now the engine's phone tier (#3656), and P with one lever changed. Each runs the headroom probe after
+     * its flight, but the ballast run, whose 400 MiB filled before the load test whether the load's peak stays under about 1 GB.
      */
     function levers() {
-        const P = { scale: 0.5, pool: 0.5, gpool: 0.33, shadows: 1, trees: 0.5, objects: 0, loads: 0.5, fps: 30 };
+        const P = { tier: 'phone' };
         const v = (id, name, change, probe = { headroom: 1 }) => ({ id, name, query: `&${new URLSearchParams({ ...P, ...change, ...probe })}` });
         return [
             v('p', 'phone preset', {}), v('p-shadows2', 'P, far shadows on', { shadows: 2 }), v('p-shadows0', 'P, no shadows', { shadows: 0 }),
-            v('p-trees1', 'P, full tree range', { trees: 1 }), v('p-gpool1', 'P, full ground pool', { gpool: 1 }), v('p-pool1', 'P, full terrain pool', { pool: 1 }),
+            v('p-trees1', 'P, full tree range', { trees: 1 }),
             v('p-objects1', 'P, small objects on', { objects: 1 }), v('p-loads1', 'P, all loads at once', { loads: 1 }), v('p-scale07', 'P, scale 0.7', { scale: 0.7 }),
             v('p-terrain08', 'P, coarser terrain', { terrain: 0.8 }), v('p-finest17', 'P, finest level 17', { finest: 17 }), v('p-fps60', 'P at 60 fps', { fps: 60 }),
             v('p-ballast', 'P with 400 MiB ballast', {}, { ballast: 400 }),
@@ -60,7 +60,7 @@
         ];
     }
     const TAIL = '&date=2026-08-15&time=15:00&weather=sunny';
-    // The first three are the walk, valley-drive and zoom-out of flights.json; the last drives over the viaduct into the motorway tunnel north of Stans.
+    // The first three are the walk, valley-drive and zoom-out of flights.json (its start 300 m above the slope); the last drives over the viaduct into the motorway tunnel north of Stans.
     const WALK = `?lat=46.820500&lon=8.403000&heading=160.0&pitch=0.0&eye=1.6${TAIL}`;
     /** Prototype #3656: 30° right, back, 30° left, back, at 45° a second, twice: the heading offset at `s` seconds. */
     const LOOK = [0, 30, 0, -30, 0, 30, 0, -30, 0], LEG_S = 30 / 45;
@@ -68,7 +68,7 @@
     const SCENES = [
         { id: 'walk', name: 'village walk', from: WALK, to: { lat: 46.817, lon: 8.405, heading: 200, pitch: 5, height: 1.6 } },
         { id: 'valley-drive', name: 'valley drive', from: `?lat=46.818000&lon=8.380000&heading=80.0&pitch=0.0&eye=3.0${TAIL}`, to: { lat: 46.821, lon: 8.445, heading: 100, pitch: 0, height: 3 } },
-        { id: 'zoom-out', name: 'rising above the valley', from: `?lat=46.790000&lon=8.415000&heading=0.0&pitch=-20.0&alt=1500.0${TAIL}`, to: { lat: 46.56, lon: 8.415, heading: 0, pitch: -66, height: 60000 } },
+        { id: 'zoom-out', name: 'rising above the valley', from: `?lat=46.790000&lon=8.415000&heading=0.0&pitch=-20.0&alt=2600.0${TAIL}`, to: { lat: 46.56, lon: 8.415, heading: 0, pitch: -66, height: 60000 } },
         // Prototype #3765: a place without data, for the engine's fixed memory.
         { id: 'nowhere', name: 'no data', from: `?lat=45.000000&lon=2.000000&heading=0.0&pitch=0.0&eye=1.6${TAIL}`, to: { lat: 45, lon: 2, heading: 0, pitch: 0, height: 1.6 } },
         // Prototype #3656: the eye stands at the start of the walk. It turns once round in 8 s, looks about, or only loads for 15 s.

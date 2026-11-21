@@ -17,7 +17,7 @@ struct KitPage: Identifiable {
 private let spikeRuns = ["today", "today-low"].flatMap { v in ["walk", "valley-drive", "zoom-out", "bridge-tunnel"].map { "\(v):\($0)" } } + ["new:walk"]
 
 /// The lever sessions: the phone preset P on the walk, then P with one lever changed (phone-measure.js `levers()`).
-private let leversA = ["p", "p-shadows2", "p-shadows0", "p-trees1", "p-gpool1", "p-pool1", "p-objects1", "p-ballast"].map { "\($0):walk" }
+private let leversA = ["p", "p-shadows2", "p-shadows0", "p-trees1", "p-objects1", "p-ballast"].map { "\($0):walk" }
 private let leversB = ["p", "p-loads1", "p-scale07", "p-terrain08", "p-finest17", "p-fps60"].map { "\($0):walk" } + ["p:valley-drive"]
 
 /// Prototype #3656: where the memory of P goes. P as the base, then P with a wait, with its workers ended, with the engine ended, and no data with the workers ended.
@@ -30,13 +30,17 @@ private let workerKinds = ["p-end-ground", "p-end-stamp", "p-end-road", "p-end-r
 /// with a small margin ahead of the turn, and last with the wide one, which heats the phone most; both at 15 scene frames a second.
 private let turnReuse = ["p:load", "p-hold:load", "p:load", "p-hold:load"] + ["p", "p-small", "p-lead15"].flatMap { v in ["turn", "look"].map { "\(v):\($0)" } }
 
+/// #3778 at `tier=phone`: what each kind of worker gives back after the walk, one full turn, then the 10-minute soak.
+private let phoneCaches = workerKinds + ["p:turn", "p-soak:valley-drive"]
+
 private let pages = [
+    KitPage(name: "Phone tier: caches and soak (6 runs)", path: "/phone/?runs=\(phoneCaches.joined(separator: ","))"),
     KitPage(name: "Turn reuse, second run (10 runs)", path: "/phone/?runs=\(turnReuse.joined(separator: ","))"),
     KitPage(name: "Soak: P, then P for 10 minutes (2 runs)", path: "/phone/?runs=p:valley-drive,p-soak:valley-drive"),
     KitPage(name: "Workers one kind at a time (4 runs)", path: "/phone/?runs=\(workerKinds.joined(separator: ","))"),
     KitPage(name: "Memory placement (5 runs)", path: "/phone/?runs=\(placement.joined(separator: ","))"),
     KitPage(name: "Memory map: no data, then the walk (2 runs)", path: "/phone/?runs=p-empty:nowhere,p:walk"),
-    KitPage(name: "Levers A (8 runs)", path: "/phone/?runs=\(leversA.joined(separator: ","))"),
+    KitPage(name: "Levers A (6 runs)", path: "/phone/?runs=\(leversA.joined(separator: ","))"),
     KitPage(name: "Levers B (7 runs)", path: "/phone/?runs=\(leversB.joined(separator: ","))"),
     KitPage(name: "Measure: the spike runs (9)", path: "/phone/?runs=\(spikeRuns.joined(separator: ","))"),
     // The lighter settings: today's app at its default settings does not survive its load on the iPhone 13.
