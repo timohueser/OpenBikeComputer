@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EMPTY_MESHES } from './node-bytes';
 import { Stamps, type BakedNodes } from './stamps';
+import { stampRank } from './terrain';
 import type { Node } from './lod';
 import type { Request } from './stamp-worker';
 
@@ -96,26 +97,31 @@ describe('the structure meshes of an owner node', () => {
         return { stamps, jobs: worker.jobs, wish, answer };
     };
 
-    it('go one at a time in the rank of the stamp wishes: before those of a higher rank, after those of a lower one', async () => {
-        // The owner nodes hold the eye, so they rank first; twelve wishes of the far field follow, more than go out at once.
-        const far = Array.from({ length: 12 }, (_, i) => near(i)), stampsOf = (nodes: Node[]) => nodes.map(node => `stamps ${name(node)}`);
-        const { stamps, jobs, wish, answer } = await frame([...owners, ...far], node => (node.level === 15 ? node.x - L15.x : 10));
+    it('go one at a time after the wishes about the eye and before the farther ones, and pass no wish of a lower rank on its way', async () => {
+        // In the terrain's rank: the owner nodes hold the eye, so their stamps are first, and their structure jobs come
+        // after every first wish. Twelve far wishes follow, more than go out at once; then nine wishes about the eye.
+        const far = Array.from({ length: 12 }, (_, i) => near(i)), eye = Array.from({ length: 9 }, (_, i) => near(20 + i)), about = new Set(eye.map(name));
+        const stampsOf = (nodes: Node[]) => nodes.map(node => `stamps ${name(node)}`), meshesOf = (node: Node) => `meshes ${name(node)}`;
+        const rank = (owner: (node: Node) => number) => (node: Node, meshes?: boolean) =>
+            node.level === 15 ? stampRank(true, owner(node), meshes) : stampRank(about.has(name(node)), about.has(name(node)) ? 5 : 10, meshes);
+        const { stamps, jobs, wish, answer } = await frame([...owners, ...far], rank(node => node.x - L15.x));
         expect(jobs).toEqual(stampsOf([...owners, ...far.slice(0, 5)]));
-        // The owner nodes' stamps came: the structure job of the first goes before the four far wishes that still wait.
+        // The owner nodes' stamps came: the structure job of the first goes before the far wishes that it outranks.
         await answer(3);
-        expect(jobs.slice(8).sort()).toEqual([`meshes ${name(owners[0])}`, ...stampsOf(far.slice(5, 8))].sort());
-        // The camera moves: nine new wishes rank before the owner nodes, of which the last now ranks first. No other
-        // structure job goes while one is on its way, nor while a wish of a lower rank waits.
-        const eye = Array.from({ length: 9 }, (_, i) => near(20 + i));
-        await wish(eye, node => (node.level === 15 ? L15.x + 2 - node.x : node.x >= 8 * L15.x + 20 ? -1 : 10));
+        expect(jobs.slice(8)).toEqual([meshesOf(owners[0]), ...stampsOf(far.slice(5, 8))]);
+        // The camera moves: the wishes about the eye come, and the last owner node ranks first. No other structure job
+        // goes while one is on its way, nor while a wish about the eye waits or is on its way.
+        await wish(eye, rank(node => L15.x + 2 - node.x));
         expect(jobs.length).toBe(12);
         await answer();
         expect(stamps.known(owners[0])?.meshes).toBe(WORKER);
         expect(jobs.slice(12)).toEqual(stampsOf(eye.slice(0, 8)));
         await answer(1);
-        expect(jobs.slice(20).sort()).toEqual([`meshes ${name(owners[2])}`, ...stampsOf(eye.slice(8))]);
+        expect(jobs.slice(20)).toEqual(stampsOf(eye.slice(8)));
         await answer();
-        expect(jobs.slice(22)).toEqual([`meshes ${name(owners[1])}`]);
+        expect(jobs.slice(21)).toEqual([meshesOf(owners[2])]);
+        await answer();
+        expect(jobs.slice(22)).toEqual([meshesOf(owners[1])]);
         await answer();
         expect(stamps.loading).toBe(false);
         expect(owners.map(node => stamps.known(node)?.meshes)).toEqual([WORKER, WORKER, WORKER]);

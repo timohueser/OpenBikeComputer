@@ -188,6 +188,13 @@ interface Resources extends Pipelines {
 }
 
 /**
+ * The rank of a stamp wish in the order of the stamp worker (Stamps.send), and with `meshes` of an owner node's structure
+ * job: the `first` wishes, then the others, each by its metres from the eye. A structure job is never first: the view
+ * about the eye does not wait for it.
+ */
+export const stampRank = (first: boolean, metres: number, meshes = false): number => (first && !meshes ? 0 : NO_LIMIT) + metres;
+
+/**
  * The terrain: CDLOD by distance over pages of the stored terrain and of
  * levels synthesized below it, in fixed pools. One instanced grid mesh draws every node.
  */
@@ -604,7 +611,7 @@ export class Terrain {
             }
         }
         const first = (name: string, node: Node) => shown.has(name) || (!hidden.has(name) && distances(level, node)[0] <= EYE_M);
-        this.stamps.send((node, meshes) => (!meshes && first(key(node), node) ? 0 : NO_LIMIT) + distances(eye, node)[0]);
+        this.stamps.send((node, meshes) => stampRank(first(key(node), node), distances(eye, node)[0], meshes));
     }
 
     /**
