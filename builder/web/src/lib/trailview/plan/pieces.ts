@@ -690,29 +690,46 @@ export function splitMouths(mesh: CellMesh, mouths: Set<number>): number[] {
  * north-west corner in world units.
  */
 export function splitTails(mesh: CellMesh, mouths: number[], origin: [number, number], boxes: Float64Array[]): Tails {
-    const n = mesh.steps.length / 4, faces = n - mesh.endFaces;
-    if (!boxes.length) return { own: mouths.map(() => 0), mouth: mouths.map(() => 0), slots: [0, 0] };
-    const plans = boxes.map(box => boxPlan(box, GRID_STEP * metresPerUnit(box[1])));
-    const point = (k: number): [number, number] => [origin[0] + (mesh.corners[2 * k] & 0x7ffff) / 16, origin[1] + (mesh.corners[2 * k + 1] & 0x7ffff) / 16];
-    const near = (points: [number, number][]) => plans.some(plan => plan.meets(points));
-    const own: number[] = [], mouth: number[] = [];
+    const n = mesh.steps.length / 4, faces = n - mesh.endFaces, xy = new Float64Array(mesh.corners.length);
+    for (let i = 0; i < xy.length; i++) xy[i] = origin[i & 1] + (mesh.corners[i] & 0x7ffff) / 16;
+    const min = [Infinity, Infinity], max = [-Infinity, -Infinity];
+    for (let i = 0; i < xy.length; i++) {
+        min[i & 1] = Math.min(min[i & 1], xy[i]);
+        max[i & 1] = Math.max(max[i & 1], xy[i]);
+    }
+    const plans = boxes.map(box => boxPlan(box, GRID_STEP * metresPerUnit(box[1]))).filter(({ lo, hi }) => lo[0] <= max[0] && hi[0] >= min[0] && lo[1] <= max[1] && hi[1] >= min[1]);
+    if (!plans.length) return { own: mouths.map(() => 0), mouth: mouths.map(() => 0), slots: [0, 0] };
+    // A triangle's bounds first, against all plans and then each: most miss every plan. A slot is the triangle a, b, b.
+    const bounds = new Float64Array(plans.flatMap(({ lo, hi }) => [...lo, ...hi]));
+    const union = [0, 1].map(i => Math.min(...plans.map(({ lo }) => lo[i]))).concat([0, 1].map(i => Math.max(...plans.map(({ hi }) => hi[i]))));
+    const near = (a: number, b: number, c: number) => {
+        const x0 = Math.min(xy[2 * a], xy[2 * b], xy[2 * c]), x1 = Math.max(xy[2 * a], xy[2 * b], xy[2 * c]);
+        const y0 = Math.min(xy[2 * a + 1], xy[2 * b + 1], xy[2 * c + 1]), y1 = Math.max(xy[2 * a + 1], xy[2 * b + 1], xy[2 * c + 1]);
+        if (x0 > union[2] || x1 < union[0] || y0 > union[3] || y1 < union[1]) return false;
+        for (let p = 0; p < plans.length; p++) {
+            if (x0 <= bounds[4 * p + 2] && x1 >= bounds[4 * p] && y0 <= bounds[4 * p + 3] && y1 >= bounds[4 * p + 1] && plans[p].meets([a, b, c], xy)) return true;
+        }
+        return false;
+    };
+    const tri = mesh.triangles, near3 = new Uint8Array(tri.length / 3), own: number[] = [], mouth: number[] = [];
     let first = 0;
     mesh.runs.forEach(({ count, base }, r) => {
-        const meets = (t: number) => near([0, 1, 2].map(j => point(mesh.triangles[3 * t + j] + base)));
-        own.push(gather(mesh.triangles, 3, first, first + count - mouths[r], meets));
-        mouth.push(gather(mesh.triangles, 3, first + count - mouths[r], first + count, meets, true));
+        for (let t = first; t < first + count; t++) near3[t] = +near(tri[3 * t] + base, tri[3 * t + 1] + base, tri[3 * t + 2] + base);
+        own.push(gather(tri, 3, first, first + count - mouths[r], t => near3[t] === 1));
+        mouth.push(gather(tri, 3, first + count - mouths[r], first + count, t => near3[t] === 1, true));
         first += count;
     });
     // A slot stands on the edge from its a_p to its a_q.
-    const slot = (i: number) => near([point(mesh.steps[4 * i]), point(mesh.steps[4 * i + 1])]);
+    const slot = (i: number) => near(mesh.steps[4 * i], mesh.steps[4 * i + 1], mesh.steps[4 * i + 1]);
     return { own, mouth, slots: [gather(mesh.steps, 4, 0, faces, slot), gather(mesh.steps, 4, faces, n, slot)] };
 }
 
 /**
- * The plan of a box (BOX words) grown by `grow` metres: whether a polygon of world points meets it. A point's metres in
- * and to the left are those of `box_point` in portal-box.wgsl; the plan is where `box_plan` is at most `grow`.
+ * The plan of a box (BOX words) grown by `grow` metres: its bounds in world units, and whether the polygon of corners
+ * `ks` (world points at 2k, 2k + 1 of `xy`) within them meets it. A point's metres in and to the left are those of `box_point` in
+ * portal-box.wgsl; the plan is where `box_plan` is at most `grow`.
  */
-function boxPlan(box: Float64Array, grow: number): { meets: (points: [number, number][]) => boolean } {
+function boxPlan(box: Float64Array, grow: number): { lo: number[]; hi: number[]; meets: (ks: number[], xy: Float64Array) => boolean } {
     const [x, y, dx, dy, depth, half, , , , , slope0, slope1] = box, m = metresPerUnit(y), side = half + grow;
     // Half-planes a · in + b · left <= c: past the start, before the end, and the two sides.
     const grown = [grow * Math.hypot(1, slope0), grow * Math.hypot(1, slope1)];
@@ -721,10 +738,11 @@ function boxPlan(box: Float64Array, grow: number): { meets: (points: [number, nu
     const corners = [-side, side].flatMap(left => [slope0 * left - grown[0], depth + slope1 * left + grown[1]].map(along => [x + (along * dx + left * dy) / m, y + (along * dy - left * dx) / m]));
     const lo = [0, 1].map(i => Math.min(...corners.map(c => c[i]))), hi = [0, 1].map(i => Math.max(...corners.map(c => c[i])));
     return {
-        meets(points) {
-            if ([0, 1].some(i => points.every(p => p[i] < lo[i]) || points.every(p => p[i] > hi[i]))) return false;
-            let polygon = points.map(([px, py]) => {
-                const ex = (px - x) * m, ey = (py - y) * m;
+        lo,
+        hi,
+        meets(ks, xy) {
+            let polygon = ks.map(k => {
+                const ex = (xy[2 * k] - x) * m, ey = (xy[2 * k + 1] - y) * m;
                 return [ex * dx + ey * dy, dy * ex - dx * ey];
             });
             // The polygon clipped to each half-plane in turn; it meets the plan where some of it is left.
@@ -745,8 +763,19 @@ function boxPlan(box: Float64Array, grow: number): { meets: (points: [number, nu
 
 /** Moves the items of `size` words in [from, to) that `take` takes to the end of that span (to its start with `start`), in place, each whole and in its order; returns their count. */
 function gather(items: Uint16Array | Uint32Array, size: number, from: number, to: number, take: (item: number) => boolean, start = false): number {
-    const kept: number[] = [], taken: number[] = [];
-    for (let i = from; i < to; i++) (take(i) ? taken : kept).push(...items.subarray(size * i, size * (i + 1)));
-    items.set(start ? [...taken, ...kept] : [...kept, ...taken], size * from);
-    return taken.length / size;
+    const taken = new Uint8Array(to - from);
+    let count = 0;
+    for (let i = from; i < to; i++) {
+        if (!take(i)) continue;
+        taken[i - from] = 1;
+        count++;
+    }
+    if (!count) return 0;
+    const span = items.slice(size * from, size * to);
+    let kept = start ? count : 0, moved = start ? 0 : to - from - count;
+    for (let i = 0; i < to - from; i++) {
+        const at = size * (from + (taken[i] ? moved++ : kept++));
+        for (let w = 0; w < size; w++) items[at + w] = span[size * i + w];
+    }
+    return count;
 }
