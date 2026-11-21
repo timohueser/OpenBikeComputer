@@ -443,7 +443,7 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
     let next_of = |i: usize| pieces.get(i + 1).map(|p| (p.2, p.3)).or(meets.lower.filter(|_| last(i)));
     let outer = |st: &Station, h: f64, section: Section| shell_outline(net, section, half, h, foot - st.z);
     for (i, (s, t, h, section)) in pieces.iter().enumerate() {
-        let sp = shell_spring(net, *section, *h);
+        let (sp, top) = (spring(net, *section, *h), shell_spring(net, *section, *h));
         let (os, ot) = (outer(s, *h, *section), outer(t, *h, *section));
         let n = os.len();
         let away = |j: usize| {
@@ -457,7 +457,7 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
         let (before, after) = (lower(i.checked_sub(1).map(|k| (pieces[k].2, pieces[k].3))), lower(next_of(i)));
         let other = meets.foot.filter(|_| last(i)).map(|f| f - t.z);
         for (j, x) in [(0, os[0][0]), (n - 2, os[n - 1][0])] {
-            let (a, mut z) = (wall_side(x, os[0][1], sp, before), wall_side(x, ot[0][1], sp, after));
+            let (a, mut z) = (wall_side(x, os[0][1], top, before), wall_side(x, ot[0][1], top, after));
             if let Some(f) = other.filter(|&f| f > z[0][1] && f < z[1][1]) {
                 z.insert(1, [x, f]);
             }

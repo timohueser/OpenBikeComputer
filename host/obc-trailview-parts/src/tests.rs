@@ -564,3 +564,36 @@ fn a_wing_ends_as_high_as_its_coping() {
         assert!((top(north) - want).abs() < 0.02, "{north} m to the left: the top at {} m, not {want} m", top(north));
     }
 }
+
+#[test]
+fn the_shell_faces_out() {
+    // The tubes run east along the line 0 m north: a face of the outer shell along a tube faces away from its axis.
+    let rules = Rules::embedded();
+    let colour = rules.looks["concrete"].shell;
+    for (name, (ends, chords)) in [("round", tube()), ("box", underpass(tube(), "primary"))] {
+        let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);
+        let point = |i: u32| {
+            let w = &mesh.vertices[i as usize * WORDS..];
+            let p = metric([w[0] as i32 as f64, w[1] as i32 as f64]);
+            ([p[0], p[1], f32::from_bits(w[2]) as f64], w[3])
+        };
+        let mut along = 0;
+        for t in mesh.indices.chunks(3) {
+            let [(a, c), (b, _), (d, _)] = [point(t[0]), point(t[1]), point(t[2])];
+            if c != colour {
+                continue;
+            }
+            let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+            let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+            let size = libm::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if n[0].abs() > 0.5 * size {
+                continue;
+            }
+            // Out from the axis, 2.5 m over the floor at about 500.7 m.
+            let mid = [(a[1] + b[1] + d[1]) / 3.0, (a[2] + b[2] + d[2]) / 3.0 - 502.5];
+            assert!(n[1] * mid[0] + n[2] * mid[1] > 0.0, "{name}: a face of the shell at {a:?} faces in");
+            along += 1;
+        }
+        assert!(along > 20, "{name}: {along} faces");
+    }
+}
