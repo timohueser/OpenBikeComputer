@@ -46,9 +46,10 @@ GROUND_PLAN_MARGIN = {
 }
 
 # Measured in CI on the build of the tunnel parts' arch, tube, boxes and underpasses, with a tile's volumes built once
-# and selected per node, and the pair, the rim, the closed free end and the cut of two tubes that meet, with wasm-pack
-# 0.15.0 and rustc 1.100.0. The margin is the ground plan's, raw by the same fraction.
-PARTS_MEASURED = {"gzipped": 140_824, "raw_wasm": 321_998}
+# and selected per node, and the pair, the rim, the closed free end and the cut of two tubes that meet only where both
+# are, with the closed cut of a head, with wasm-pack 0.15.0 and rustc 1.100.0. The margin is the ground plan's, raw by
+# the same fraction.
+PARTS_MEASURED = {"gzipped": 148_615, "raw_wasm": 335_534}
 PARTS_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * PARTS_MEASURED["raw_wasm"] / PARTS_MEASURED["gzipped"]),
