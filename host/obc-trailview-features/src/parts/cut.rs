@@ -4,7 +4,9 @@
 //! The ground is smooth inside a face of the ground plan and steps only at a face's edge. So the cut is the union, over
 //! the faces about the part, of the region of each face where its own ground lies in the boxes: contoured on a grid in
 //! the face's own ground, then clipped to the face. Where the ground steps, the cut's edge is the face's edge. A box
-//! holds its faces: a point on the plane where two boxes meet lies in both.
+//! holds its faces: a point on the plane where two boxes meet lies in both. Steep ground passes through a box between
+//! a point under its floor and a point over its roof: so per box the region over its floor and the region under its
+//! roof are contoured apart, and the cut holds where both meet too.
 //!
 //! A step's wall stands on the edge between two faces, from the lower ground to the higher. Where it passes through a
 //! box, the cut takes it too (its walls), even where neither ground lies in the box.
@@ -17,7 +19,9 @@ use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::core::solver::{Precision, Solver, Strategy};
 use i_overlay::i_float::int::point::IntPoint;
 use obc_ground_plan::graph::OpenEnd;
-use obc_trailview_parts::{corners, end_boxes, metres_per_unit, outside, outside_plan, Chord, End, Rules, BOX};
+use obc_trailview_parts::{
+    corners, end_boxes, metres_per_unit, outside, outside_floor, outside_plan, outside_roof, Chord, End, Rules, BOX,
+};
 use serde_json::{json, Value};
 
 use super::ladder::Measure;
@@ -309,34 +313,45 @@ impl Grid {
         };
         let mut pieces: Vec<Vec<IntPoint>> = Vec::new();
         for field in fields {
-            // A point whose ground the face does not read lies outside.
-            let mut value = vec![STEP_M; self.n[0] * self.n[1]];
-            for &(k, h) in &field.heights {
-                let (cell, p) = self.reads[k as usize];
-                let q = [p[0], p[1], h];
-                value[cell] = boxes.iter().map(|b| outside(b, q)).fold(f64::INFINITY, f64::min);
+            // The region where `depth` of the face's own ground is under `EPS_M`; a point whose ground the face does not
+            // read lies outside, and so does the grid's rim, so each ring closes.
+            let region = |depth: &dyn Fn([f64; 3]) -> f64| -> Vec<Vec<IntPoint>> {
+                let [nu, nv] = self.n;
+                let mut value = vec![STEP_M; nu * nv];
+                for &(k, h) in &field.heights {
+                    let (cell, p) = self.reads[k as usize];
+                    let rim = cell % nu == 0 || cell % nu == nu - 1 || cell < nu || cell >= nu * (nv - 1);
+                    value[cell] = if rim { STEP_M } else { depth([p[0], p[1], h]) };
+                }
+                self.contours(&value).into_iter().map(|r| r.into_iter().map(to_frame).collect()).collect()
+            };
+            let held = region(&|q| boxes.iter().map(|b| outside(b, q)).fold(f64::INFINITY, f64::min));
+            let mut parts = overlay(&held, &[], OverlayRule::Subject, FillRule::EvenOdd);
+            for b in boxes {
+                // Its plan, over its floor and under its roof, each its own field, so that each crossing lies where
+                // that one bound is met.
+                let plan = region(&|q| outside_plan(b, [q[0], q[1]]));
+                let over = region(&|q| outside_floor(b, q));
+                let under = region(&|q| outside_roof(b, q));
+                let both = overlay(&over, &under, OverlayRule::Intersect, FillRule::EvenOdd);
+                parts.extend(overlay(&both, &plan, OverlayRule::Intersect, FillRule::EvenOdd));
             }
-            let contours = self.contours(&value);
-            if contours.is_empty() {
+            if parts.is_empty() {
                 continue;
             }
-            let subject: Vec<Vec<IntPoint>> =
-                contours.into_iter().map(|r| r.into_iter().map(to_frame).collect()).collect();
             let face: Vec<Vec<IntPoint>> = (field.rings.iter())
                 .map(|r| {
                     r.iter().map(|q| IntPoint::new((q[0] - origin[0]) as i32, (q[1] - origin[1]) as i32)).collect()
                 })
                 .collect();
-            let inside = Overlay::from_subj_and_clip_custom(&subject, &face, options(), solver())
-                .overlay(OverlayRule::Intersect, FillRule::EvenOdd);
-            pieces.extend(inside.into_iter().flatten());
+            let ground = overlay(&parts, &[], OverlayRule::Subject, FillRule::NonZero);
+            pieces.extend(overlay(&ground, &face, OverlayRule::Intersect, FillRule::EvenOdd));
         }
         if pieces.is_empty() {
             return Vec::new();
         }
-        let union = Overlay::from_subj_and_clip_custom(&pieces, &Vec::<Vec<IntPoint>>::new(), options(), solver())
-            .overlay(OverlayRule::Subject, FillRule::NonZero);
-        union.into_iter().flatten().map(|r| r.into_iter().map(|q| [i64::from(q.x), i64::from(q.y)]).collect()).collect()
+        let union = overlay(&pieces, &[], OverlayRule::Subject, FillRule::NonZero);
+        union.into_iter().map(|r| r.into_iter().map(|q| [i64::from(q.x), i64::from(q.y)]).collect()).collect()
     }
 
     /// The rings where `value` is under `EPS_M`, in metres in the frame of the opening, the region on the left of each:
@@ -390,6 +405,18 @@ impl Grid {
         }
         rings
     }
+}
+
+/// The rings of an overlay of two sets of rings, outer rings counter-clockwise.
+fn overlay(subject: &[Vec<IntPoint>], clip: &[Vec<IntPoint>], rule: OverlayRule, fill: FillRule) -> Vec<Vec<IntPoint>> {
+    if subject.is_empty() {
+        return Vec::new();
+    }
+    Overlay::from_subj_and_clip_custom(subject, clip, options(), solver())
+        .overlay(rule, fill)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 fn solver() -> Solver {
@@ -532,6 +559,22 @@ mod tests {
         assert!(ends.iter().all(|p| (p[1] - 1.0).abs() < 0.01), "{ends:?}");
         // A step under the floor is none.
         assert!(walls(&ground(-0.5, -0.2), &boxes, origin).is_empty());
+    }
+
+    #[test]
+    fn steep_ground_that_passes_through_a_box_between_two_points_lies_in_the_cut() {
+        // Ground that rises 20 m a metre to the left: under the floor at v = 0, over the roof at v = 0.5; it lies in
+        // the boxes from 0.225 m to 0.375 m left, from the front of the head wall to the boxes' end.
+        let g = grid(-0.25);
+        let origin = g.world([0.0, 0.0]).map(|w| (w * FRAME).round() as i64);
+        let boxes = [flat(&g, -0.25, 0.0), flat(&g, 0.0, 4.0)];
+        let mut steep = field(&g, [-1.0, 5.0, -3.0, 3.0], 0.0);
+        for (k, h) in &mut steep.heights {
+            *h = 20.0 * (g.place(0, g.reads[*k as usize].0 / g.n[0])[1] - 0.225);
+        }
+        let rings = g.cut(&[steep], &boxes, origin);
+        assert_eq!(rings.len(), 1, "{rings:?}");
+        assert!((square_metres(&g, &rings[0]) - 0.15 * 4.25).abs() < 0.01, "{}", square_metres(&g, &rings[0]));
     }
 
     #[test]
