@@ -668,7 +668,8 @@ fn pair(apart: f64, dz: f64) -> (Vec<End>, Vec<Chord>) {
     let mut ends = vec![end(0.0, 0.0, 500.0, 0.0, 6.0), end(40.0, 0.0, 500.2, pi, 3.0)];
     // Into the tubes from the west the second lies to the left, from the east to the right.
     for (e, mate) in ends.iter_mut().zip([apart, -apart]) {
-        (e.part, e.mate, e.mate_way, e.mate_shift) = (Part::Pair, Some(mate), Some([1, 1]), Some(0.0));
+        e.part = Part::Pair;
+        e.mate = Some(Mate { across: mate, way: [1, 1], shift: 0.0, collar: e.collar });
     }
     let mut chords = [lane(0.0, 500.0), lane(apart, 500.0 + dz)].concat();
     chords.iter_mut().for_each(|c| c.ends = [Some(Part::Pair); 2]);
@@ -860,4 +861,72 @@ fn a_rim_hugs_its_opening_and_a_covered_free_end_is_closed() {
             assert!(wide <= half + frame + shell + 1e-6, "{name}: the ring reaches {wide} m across");
         }
     }
+}
+
+/// Arches at both ends of road tubes along polylines of metres east and north at the floor 500 m: an end at the first
+/// vertex leads along the first chord, one at the last vertex back along the last.
+fn tubes(lines: &[&[[f64; 2]]]) -> (Vec<End>, Vec<Chord>) {
+    let (mut ends, mut chords) = (Vec::new(), Vec::new());
+    for line in lines {
+        let n = line.len();
+        let heading = |a: [f64; 2], b: [f64; 2]| libm::atan2(-(b[1] - a[1]), b[0] - a[0]);
+        ends.push(end(line[0][0], line[0][1], 500.0, heading(line[0], line[1]), 6.0));
+        ends.push(end(line[n - 1][0], line[n - 1][1], 500.0, heading(line[n - 1], line[n - 2]), 6.0));
+        let mut along = 0.0;
+        for w in line.windows(2) {
+            chords.push(chord([w[0][0], w[0][1], 500.0], [w[1][0], w[1][1], 500.0], 5.0, along));
+            along += libm::hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]);
+        }
+    }
+    (ends, chords)
+}
+
+#[test]
+fn two_tubes_meet_only_where_both_are_and_a_cut_head_is_closed() {
+    let rules = Rules::embedded();
+    let faces_of =
+        |(ends, chords): &(Vec<End>, Vec<Chord>)| solid(&meshes([0.0, 0.0, 1.07e9, 1.07e9], ends, chords, rules));
+    let north = [0.0, 1.0, 0.0];
+    // Staggered openings: a tube 7 m north starts 3 m after the first, so their rooms overlap from there on. Before
+    // it, the first tube keeps its wall; after it, a way north meets the second's far wall; a way west in the first's
+    // wall, from the second's room, meets the face that closes the first's shell where its cut begins.
+    let staggered = tubes(&[&[[0.0, 0.0], [10.0, 0.0], [40.0, 0.0]], &[[3.0, 7.0], [10.0, 7.0], [40.0, 7.0]]]);
+    let faces = faces_of(&staggered);
+    for east in [0.5, 1.5, 2.5, 2.95] {
+        let got = hit(&faces, [east, 0.0, 502.5], north, 30.0);
+        assert!(got.is_some_and(|h| h.1 && h.0 < 5.1), "staggered, {east} m east: {got:?}");
+    }
+    for east in [5.0, 15.0] {
+        let got = hit(&faces, [east, 0.0, 502.5], north, 30.0);
+        assert!(got.is_some_and(|h| h.1 && h.0 > 11.0), "staggered, {east} m east: {got:?}");
+    }
+    for up in [1.0, 2.0] {
+        let got = hit(&faces, [6.0, 4.7, 500.0 + up], [-1.0, 0.0, 0.0], 30.0);
+        assert!(got.is_some_and(|h| h.1 && h.0 < 3.2), "staggered, the first's shell {up} m up: {got:?}");
+    }
+    // A tube beside the first for 20 m that turns away north: past the turn, the first keeps its wall.
+    let away = tubes(&[&[[0.0, 0.0], [100.0, 0.0]], &[[0.0, 7.0], [20.0, 7.0], [50.0, 40.0]]]);
+    let faces = faces_of(&away);
+    for east in [30.0, 60.0, 90.0] {
+        let got = hit(&faces, [east, 0.0, 502.5], north, 30.0);
+        assert!(got.is_some_and(|h| h.1 && h.0 < 5.1), "turns away, {east} m east: {got:?}");
+    }
+    assert!(hit(&faces, [10.0, 0.0, 502.5], north, 30.0).is_some_and(|h| h.1 && h.0 > 11.0), "turns away, 10 m east");
+    // Two arches on one frame line, the first's head wall 2 m taller: over the lower wall, a way to the taller one
+    // meets the face that closes it at the middle.
+    let mut taller = row(&[0.0, 7.0]);
+    taller.0[0].face = 9.1;
+    let faces = faces_of(&taller);
+    for up in [7.6, 8.6] {
+        let got = hit(&faces, [0.15, 7.0, 500.0 + up], [0.0, -1.0, 0.0], 30.0);
+        assert!(got.is_some_and(|h| h.1 && (h.0 - 3.5).abs() < 0.2), "taller, {up} m up: {got:?}");
+    }
+    // Two arches whose frame lines lie 3 m apart: the first's tube crosses the second's line, so the second's head
+    // ends at the middle, closed over the first's tube; the second does not cross the first's line, so the first's
+    // head wall stays whole.
+    let faces = faces_of(&staggered);
+    let got = hit(&faces, [3.15, 0.0, 506.2], north, 30.0);
+    assert!(got.is_some_and(|h| h.1 && (h.0 - 3.5).abs() < 0.2), "frame lines apart, the second's head: {got:?}");
+    let got = hit(&faces, [-5.0, 5.0, 506.2], [1.0, 0.0, 0.0], 30.0);
+    assert!(got.is_some_and(|h| h.1 && h.0 < 5.1), "frame lines apart, the first's head: {got:?}");
 }

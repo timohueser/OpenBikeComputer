@@ -123,12 +123,20 @@ pub struct End {
     pub left: Vec<f64>,
     pub right: Vec<f64>,
     pub foot: f64,
-    /// The metres to the left from its axis to the other tube of a pair.
-    pub mate: Option<f64>,
+    /// The other tube of a pair.
+    pub mate: Option<Mate>,
     pub way: [i64; 2],
     pub shift: f64,
-    pub mate_way: Option<[i64; 2]>,
-    pub mate_shift: Option<f64>,
+}
+
+/// The other tube of a pair: the metres to the left from the end's axis to its axis, and its `way`, `shift` and
+/// `collar`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mate {
+    pub across: f64,
+    pub way: [i64; 2],
+    pub shift: f64,
+    pub collar: f64,
 }
 
 impl End {
@@ -156,11 +164,18 @@ impl End {
             left: if walls { row(tags, "left")? } else { Vec::new() },
             right: if walls { row(tags, "right")? } else { Vec::new() },
             foot: number(tags, "foot")?,
-            mate: pair.then(|| number(tags, "mate")).transpose()?,
+            mate: pair
+                .then(|| -> Result<Mate, String> {
+                    Ok(Mate {
+                        across: number(tags, "mate")?,
+                        way: vertex(tags, "mate_way")?,
+                        shift: number(tags, "mate_shift")?,
+                        collar: number(tags, "mate_collar")?,
+                    })
+                })
+                .transpose()?,
             way: vertex(tags, "way")?,
             shift: number(tags, "shift")?,
-            mate_way: pair.then(|| vertex(tags, "mate_way")).transpose()?,
-            mate_shift: pair.then(|| number(tags, "mate_shift")).transpose()?,
         })
     }
 
@@ -251,7 +266,7 @@ fn near(square: [f64; 4], points: &[[f64; 2]], reach: f64) -> bool {
 /// The faces of the parts that a square draws: of each built end whose point it holds, and of each chord of a built
 /// chain whose `a` it holds, so each face draws in one square.
 pub fn meshes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -> Mesh {
-    let net = Net::new(ends, chords, rules);
+    let net = Net::new(ends, chords, rules).meeting();
     let mut b = mesh::Builder::new(|p| net.daylight(p));
     for (e, end) in net.ends.iter().enumerate() {
         if net.built_end(e) && holds(square, end.at) {

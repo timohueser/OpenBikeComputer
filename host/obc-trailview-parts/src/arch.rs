@@ -5,7 +5,7 @@
 
 use crate::boxes;
 use crate::mesh::{flagged, flat, outline, Builder, Clip, Corner, Station, VOID};
-use crate::tube::{self, cut_face, direction, inward, spring, steps, top_at, Net};
+use crate::tube::{self, cut_face, direction, inward, spring, top_at, Net};
 use crate::{Part, Section};
 
 /// A piece of the shell: its start and end station across to the left of the way in, its chord's height and section,
@@ -43,7 +43,7 @@ fn rim(net: &Net, e: usize) -> bool {
 fn edges(net: &Net, e: usize) -> (f64, f64) {
     let shell = net.rules.ladder.bake.shell_m;
     let edge = half_at(net, e) + shell;
-    match (net.mate[e], net.ends[e].mate) {
+    match (net.mate[e], net.ends[e].mate.map(|m| m.across)) {
         (Some(m), Some(a)) => {
             let other = half_at(net, m) + shell;
             ((-edge).min(a - other), edge.max(a + other))
@@ -114,38 +114,14 @@ fn grown(net: &Net, e: usize, grow: f64) -> Vec<Corner> {
     out
 }
 
-/// Where end e's head ends at the openings near it, on each side at most one: the metres to the left of its axis of
-/// the middle between its tube's wall and the other's, the side of the other (1 to the left), the other end, and
-/// whether the two lie on one frame line. On its side, the mate of a pair; else the nearest built end that leads the
-/// same way within `pair_max_m` and `pair_max_deg`, at its floor's height, whose axis passes within reach of e's head.
-fn head_cuts(net: &Net, e: usize) -> Vec<(f64, f64, usize, bool)> {
-    let middle = |a: f64, m: usize| (a + a.signum() * (half_at(net, e) - half_at(net, m))) / 2.0;
-    let (end, bake) = (&net.ends[e], &net.rules.ladder.bake);
-    let (into, k) = (end.way_in(), crate::metres_per_unit(end.at[1]));
-    let left = crate::mesh::left_of(into);
-    let (right_end, left_end) = wide(net, e);
-    let near = (0..net.ends.len()).filter(|&m| m != e && net.built_end(m) && !net.closed(m)).filter_map(|m| {
-        let other = &net.ends[m];
-        let (d, o) = (other.way_in(), [(other.at[0] - end.at[0]) * k, (other.at[1] - end.at[1]) * k]);
-        let (along, across) = (o[0] * into[0] + o[1] * into[1], o[0] * left[0] + o[1] * left[1]);
-        if net.mate[e] == Some(m) {
-            return end.mate.map(|a| (m, 0.0, a, true));
-        }
-        let reach = if across > 0.0 { left_end } else { -right_end } + half_at(net, m) + bake.shell_m;
-        let same_way = d[0] * into[0] + d[1] * into[1] >= libm::cos(bake.pair_max_deg.to_radians());
-        let level = (other.z - end.z).abs() <= (end.height + other.height) / 2.0;
-        (same_way && level && along.abs() <= bake.pair_max_m && across.abs() < reach)
-            .then_some((m, along, across, false))
-    });
-    let mut sides: [Option<(usize, f64, f64, bool)>; 2] = [None, None];
-    for n in near {
-        let side = &mut sides[usize::from(n.2 > 0.0)];
-        // The mate first, then the nearest across.
-        if side.is_none_or(|s| !s.3 && (n.3 || n.2.abs() < s.2.abs())) {
-            *side = Some(n);
-        }
-    }
-    sides.into_iter().flatten().map(|(m, along, a, _)| (middle(a, m), a.signum(), m, along.abs() < 0.5)).collect()
+/// Where end e's head ends at another part: on each side, the nearest built tube that crosses its frame line within
+/// reach of the head (`Net::meets` with the head's metres across): the metres across to the middle between the two
+/// tubes' walls, and the side (1 to the left). The mate of a pair crosses it at its opening.
+fn head_cuts(net: &Net, e: usize) -> Vec<(f64, f64)> {
+    let Some((c, _)) = net.opening(e) else { return Vec::new() };
+    let (right, left) = wide(net, e);
+    let cuts = net.meets(c, &net.frame(e, 0.0), [-right, left], tube::MEET_PAST_M);
+    cuts.into_iter().flatten().map(|cut| (cut.x, cut.axis.signum())).collect()
 }
 
 /// The faces of the head at end e: its head wall or rim, the sill, the reveal and the frame round the opening, the dark
@@ -177,10 +153,10 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
         let cuts = head_cuts(net, e);
         b.clip(
             (cuts.iter())
-                .map(|&(x, side, ..)| {
+                .map(|&(x, side)| {
                     let x = x + side * tube::OVERLAP_M;
                     let (p, q, r) = (front.at([x, 0.0]), back.at([x, 0.0]), front.at([x + side, 0.0]));
-                    Clip { a: [p[0], p[1]], b: [q[0], q[1]], away: [r[0] - p[0], r[1] - p[1]] }
+                    Clip { a: [p[0], p[1]], b: [q[0], q[1]], away: [r[0] - p[0], r[1] - p[1]], bound: None }
                 })
                 .collect(),
         );
@@ -237,27 +213,24 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
             b.triangle(centre, rim_v[k], rim_v[(k + 1) % rim_v.len()], outward);
         }
         b.clip(Vec::new());
-        // Where two holes on one frame line differ at the middle, the reveal closes the step, from the front to the
-        // frame line: under the higher sill and over the lower top.
-        for &(x, side, m, _) in cuts.iter().filter(|c| c.3) {
-            let other = grown(net, m, design.frame_m);
-            let a = 2.0 * x - side * (half - half_at(net, m));
-            let span = |st: &Station, s: f64| {
-                let df = net.frame(m, s).z - st.z;
-                let own = (sill, top_at(&hole, x)?);
-                let them = top_at(&other, x - a).map(|t| (sill + df, t + df));
-                Some(steps(own, them))
+        // At a cut, a face closes the head's section, facing the other part: from the foot to the top, but the hole
+        // from the front to the frame line and the room from there to the back. Where the other part's head stands
+        // on the same line, it lies in that head's wall.
+        for &(x, side) in &cuts {
+            let solid = |st: &Station, (lo, hi): (Option<f64>, Option<f64>)| {
+                let (foot, top) = (foot - st.z, top(x).max(foot - st.z));
+                match lo.zip(hi).filter(|(l, h)| h > l) {
+                    Some((l, h)) => [(foot, l.clamp(foot, top)), (h.clamp(foot, top), top)],
+                    None => [(foot, top), (top, top)],
+                }
             };
-            if let (Some(a), Some(z)) = (span(&front, -design.recess_m), span(&ring, 0.0)) {
+            let floor = pieces.iter().find(|p| x >= p.0 - 1e-9 && x <= p.1 + 1e-9).map(|p| p.2);
+            let hole_span = (top_at(&hole, x).map(|_| sill), top_at(&hole, x));
+            let room_span = (floor, top_at(&inner, x));
+            for (s0, s1, span) in [(&front, &ring, hole_span), (&ring, &back, room_span)] {
+                let (a, z) = (solid(s0, span), solid(s1, span));
                 for i in 0..2 {
-                    cut_face(
-                        b,
-                        (&front, &ring),
-                        (x, a[i].0, a[i].1),
-                        (x, z[i].0, z[i].1),
-                        look.face,
-                        front.out([-side, 0.0]),
-                    );
+                    cut_face(b, (s0, s1), (x, a[i].0, a[i].1), (x, z[i].0, z[i].1), look.face, front.out([side, 0.0]));
                 }
             }
         }
@@ -265,7 +238,7 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
     let run: Vec<_> = shell.iter().map(|p| (p.0, p.1, p.2, p.3, p.4)).collect();
     tube::shell(b, net, &run, half, foot, look.shell, reach.then);
     if let Some(&(s, t, _, _, c, k)) = shell.last().filter(|_| reach.closed) {
-        b.clip(net.clips(c, (&s, &t)).iter().map(|c| c.0).collect());
+        b.clip(net.clips(c, (&s, &t)).iter().map(|m| m.clip).collect());
         end_face(b, net, (c, k), &t, foot, look.shell, flat([t.x - s.x, t.y - s.y]));
         b.clip(Vec::new());
     }
