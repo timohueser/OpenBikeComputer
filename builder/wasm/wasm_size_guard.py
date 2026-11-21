@@ -32,9 +32,9 @@ from pathlib import Path
 # the sidewalks' slabs with their ends, rings and kerbs, and the portal line's levels with the cover's sides.
 # The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
 # The built tunnel ends (obc-trailview-parts) with their open stretches and the cut in the mesh, with its snap
-# rounding, add about 68 kB gzipped; measured on that build with wasm-pack 0.15.0 and rustc 1.99.0, which gives the
-# build before it about 5 kB more than CI.
-GROUND_PLAN_MEASURED = {"gzipped": 856_552, "raw_wasm": 2_206_089}
+# rounding and its walls, add about 69 kB gzipped; measured on that build with wasm-pack 0.15.0 and rustc 1.99.0, which
+# gives the build before it about 5 kB more than CI.
+GROUND_PLAN_MEASURED = {"gzipped": 857_197, "raw_wasm": 2_209_591}
 # The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
 # unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
 # A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain

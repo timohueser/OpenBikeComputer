@@ -182,7 +182,7 @@ pub fn sharp_cells(plan: &FacePlan) -> Vec<u64> {
         mark(&rings, &mut set);
     }
     for cut in &plan.cuts {
-        mark(cut, &mut set);
+        mark(&cut.rings, &mut set);
     }
     out
 }

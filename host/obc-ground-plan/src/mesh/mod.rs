@@ -547,9 +547,10 @@ pub fn mesh_cell(
         };
         let (la, lb) = (side(s.left, s.a, &mut ground), side(s.left, s.b, &mut ground));
         let (ra, rb) = (side(s.right, s.a, &mut ground), side(s.right, s.b, &mut ground));
-        // A slot stands between two drawn faces: none beside a triangle in the cut.
+        // A slot stands between two drawn faces: none beside a triangle in the cut, and none on a wall of the cut.
         let beside_cut = cut_at((s.a, s.b)) || cut_at((s.b, s.a));
-        if (la != ra || lb != rb) && !beside_cut {
+        let on_wall = cut::on_wall(&input.walls, input.points[s.a as usize], input.points[s.b as usize]);
+        if (la != ra || lb != rb) && !beside_cut && !on_wall {
             let slot = [corners.get(s.a, la), corners.get(s.b, lb), corners.get(s.b, rb), corners.get(s.a, ra)];
             if end {
                 faces.push(slot);

@@ -87,10 +87,10 @@ fn meets(a: P, b: P, h: P) -> bool {
     }
 }
 
-/// The polylines of `segments`, each from its first point to its last. Only the pairs with a segment of `movers`
-/// may cross: the others meet at most at their ends.
-pub fn snap(segments: &[[P; 2]], movers: &[usize]) -> Vec<Vec<P>> {
-    let mut hot: Vec<P> = segments.iter().flatten().copied().collect();
+/// The polylines of `segments`, each from its first point to its last, with hot pixels about `points` too. Only the
+/// pairs with a segment of `movers` may cross: the others meet at most at their ends.
+pub fn snap(segments: &[[P; 2]], movers: &[usize], points: &[P]) -> Vec<Vec<P>> {
+    let mut hot: Vec<P> = segments.iter().flatten().chain(points).copied().collect();
     let boxes: Vec<[i32; 4]> =
         (segments.iter()).map(|&[a, b]| [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])]).collect();
     let overlap = |i: usize, j: usize| {
@@ -171,7 +171,7 @@ mod tests {
             [[5, 1], [990, 2]],
             [[3, -50], [7, 60]],
         ];
-        let out = snap(&segments, &[4, 5]);
+        let out = snap(&segments, &[4, 5], &[]);
         let pieces: Vec<[P; 2]> = out.iter().flat_map(|l| l.windows(2).map(|w| [w[0], w[1]])).collect();
         for (i, p) in pieces.iter().enumerate() {
             for q in &pieces[i + 1..] {

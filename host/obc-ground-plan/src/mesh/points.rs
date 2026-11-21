@@ -7,7 +7,7 @@
 //!   same points;
 //! - the grid points inside D farther than `GRID_CLEARANCE_M` from every face edge, in every face;
 //! - the edges of the cut's rings in the cell (`cut`), which part no faces. Where a cell has a cut, every constraint is
-//!   snap rounded (`snap`), so the rings' edges cross none.
+//!   snap rounded (`snap`), so the rings' edges cross none, and runs through the ends of the cut's walls.
 //!
 //! Every point is an integer of the cell's frame. Ground faces' edges are no constraints: the ground
 //! is one continuous field, so a triangle may span two ground faces.
@@ -31,6 +31,8 @@ pub struct Input {
     pub rings: usize,
     /// The rings of each end's cut, their edges in the cell as the segments run.
     pub cut: Vec<Vec<Ring>>,
+    /// The walls of the cuts: a step slot on one goes (`cut::on_wall`).
+    pub walls: Vec<[[i64; 2]; 2]>,
     /// Per face edge piece, the kind of its edge: on a deck end line (`EdgeKind::DeckEdge`) its slot is an end face; on
     /// a portal line (`EdgeKind::Portal`) it has none, as the bore's shell stands there (`mesh::shell`).
     pub kinds: Vec<EdgeKind>,
@@ -169,12 +171,15 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
             ends.push((w[0], w[1], INSIDE, OUTSIDE));
         }
     }
-    // With a cut: every segment snap rounded, so that the rings' edges cross none.
+    // With a cut: every segment snap rounded, so that the rings' edges cross none and a face edge splits at each end of
+    // a wall on it.
     let mut ring_count = 0;
-    if !cuts.is_empty() {
+    let walls = cut::walls(plan);
+    let wall_ends = cut::wall_ends(&walls);
+    if !cuts.is_empty() || !wall_ends.is_empty() {
         let first = ends.len();
         let all: Vec<[P; 2]> = ends.iter().map(|&(a, b, _, _)| [a, b]).chain(cuts.iter().copied()).collect();
-        let lines = snap(&all, &(first..all.len()).collect::<Vec<_>>());
+        let lines = snap(&all, &(first..all.len()).collect::<Vec<_>>(), &wall_ends);
         let (mut snapped, mut snapped_kinds) = (Vec::new(), Vec::new());
         let faces = edges;
         for (i, &(_, _, left, right)) in ends.iter().enumerate() {
@@ -217,7 +222,7 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
     points.dedup();
     let at = |p: P| points.binary_search_by_key(&(p[1], p[0]), |q| (q[1], q[0])).unwrap() as u32;
     let segments = ends.iter().map(|&(a, b, left, right)| Segment { a: at(a), b: at(b), left, right }).collect();
-    Input { segments, edges, rings: ring_count, cut: rings, kinds, grid_points, outside_d, points }
+    Input { segments, edges, rings: ring_count, cut: rings, walls, kinds, grid_points, outside_d, points }
 }
 
 /// The face of the plan at each grid point of the cell, index j × `SIDE` + i, by scan lines half a

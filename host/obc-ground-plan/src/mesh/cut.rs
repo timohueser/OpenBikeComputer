@@ -16,7 +16,7 @@ pub fn rings(plan: &FacePlan) -> Vec<Vec<Ring>> {
     let lines = [(0, 0), (0, c), (1, 0), (1, c)];
     (plan.cuts.iter())
         .map(|cut| {
-            (cut.iter())
+            (cut.rings.iter())
                 .map(|ring| {
                     let mut out = Vec::with_capacity(ring.len());
                     for (k, &a) in ring.iter().enumerate() {
@@ -43,6 +43,32 @@ pub fn rings(plan: &FacePlan) -> Vec<Vec<Ring>> {
                 .collect()
         })
         .collect()
+}
+
+/// A face edge piece lies on a wall where its middle lies this near the wall's line (units): a wall's ends are whole
+/// points off the edge, and the snap moves an edge through them.
+const ON_WALL: i128 = 2;
+
+/// The walls of the cuts.
+pub fn walls(plan: &FacePlan) -> Vec<[[i64; 2]; 2]> {
+    plan.cuts.iter().flat_map(|cut| cut.walls.iter().copied()).collect()
+}
+
+/// The ends of the walls inside the cell, off its lines: the mesh splits its face edges there.
+pub fn wall_ends(walls: &[[[i64; 2]; 2]]) -> Vec<P> {
+    let inside = |p: &[i64; 2]| p.iter().all(|&v| v > 0 && v < CELL_UNITS);
+    walls.iter().flatten().filter(|p| inside(p)).map(|p| p.map(|v| v as i32)).collect()
+}
+
+/// Whether the face edge piece p-q lies on a wall: its middle within `ON_WALL` of the wall's line, between its ends.
+pub fn on_wall(walls: &[[[i64; 2]; 2]], p: P, q: P) -> bool {
+    let m = [i64::from(p[0]) + i64::from(q[0]), i64::from(p[1]) + i64::from(q[1])];
+    walls.iter().any(|&[a, b]| {
+        // In doubled units, from a.
+        let (d, v) = ([b[0] - a[0], b[1] - a[1]].map(i128::from), [m[0] - 2 * a[0], m[1] - 2 * a[1]].map(i128::from));
+        let (cross, dot, len2) = (d[0] * v[1] - d[1] * v[0], d[0] * v[0] + d[1] * v[1], d[0] * d[0] + d[1] * d[1]);
+        len2 > 0 && cross * cross <= 4 * ON_WALL * ON_WALL * len2 && dot > 0 && dot < 2 * len2
+    })
 }
 
 /// The nearest whole number to n / d, a half up.
@@ -148,7 +174,7 @@ mod tests {
             edges: Vec::new(),
             corners: Vec::new(),
             mouths: Vec::new(),
-            cuts,
+            cuts: cuts.into_iter().map(|rings| crate::openings::Cut { rings, walls: Vec::new() }).collect(),
             stats: Default::default(),
         }
     }
