@@ -30,11 +30,13 @@
 
 // A node coarser than level 16 that its distance keeps from splitting (terrain.ts) draws without the
 // road paint, the blades and the bushes' dots: the compiler drops them, and with them the registers
-// that they take from every pixel. Such a node lies at least RANGE.least nodes of level 16 from the
-// eye (lod.ts). At 71° N on a canvas 2880 pixels tall, an output pixel there spans 0.37 m or more at
-// the screen's centre, and 0.22 m at a corner of a 16:9 frame. That is past the fade of the blades
-// (0.18 m). The dots of a patch fade at 0.1 × size_m: the 3 m that rules.py allows fade before such a
-// node up to 64° N. Blotches do not fade: rules.py keeps them two such pixels across.
+// that they take from every pixel. Such a node lies at least the least range of the tier from the
+// eye (`lod` of budget.ts): 4.6 nodes of level 16 on the desktop. At 71° N on a canvas 2880 pixels
+// tall, an output pixel there spans 0.37 m or more at the screen's centre, and 0.22 m at a corner of a
+// 16:9 frame. That is past the fade of the blades (0.18 m). The dots of a patch fade at 0.1 × size_m:
+// the 3 m that rules.py allows fade before such a node up to 64° N. The phone's 3.7 nodes keep both:
+// its largest frame, an iPad of 2752 pixels in portrait (3:4), gives about 0.22 m at a corner.
+// Blotches do not fade: rules.py keeps them two such pixels across.
 override DETAIL: bool = true;
 // A corridor's band: the ground beside a road, shaped by it, under no paint and with facets of its own.
 override BAND: bool = false;

@@ -365,7 +365,7 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     // corners' triangles reach and the terrain takes no snap (PLAN_TRIANGLE_UNITS of cells.wgsl); gone
     // where level 18 ends. In metres, so the same at the finest level 17.
     if (PIECE && CUT) {
-        let sink = surface.range * exp2(-18.0 - MORPH);
+        let sink = surface.range * exp2(-18.0 - surface.morph);
         let d = length(vec3f(lod_space(in.u), surface.above));
         if (dither(in.clip.xy + DETAIL_DITHER) >= 1.0 - smoothstep(sink + 256.0 * surface.unit, surface.range * exp2(-18.0), d)) {
             discard;
