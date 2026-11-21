@@ -302,8 +302,9 @@ export class Terrain {
         this.pages = new Pages(source, { stored: Math.round(budget.terrainShare * (pages - SYNTH_PAGES)), synth: Math.round(budget.terrainShare * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS, budget);
     }
 
+    /** No page loads, and the meshes are not waiting out the CALM frames that follow a rest (`Pieces.returning`). */
     get idle(): boolean {
-        return this.pages.idle && this.calm > 0 && this.probing === 0;
+        return this.pages.idle && this.calm > 0 && this.probing === 0 && !this.pieces?.returning;
     }
 
     /** The feature tiles and road meshes that failed. */
