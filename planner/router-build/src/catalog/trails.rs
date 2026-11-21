@@ -15,8 +15,8 @@ pub const FAR_TOLERANCE_M: f64 = 100.0;
 pub const TRAIL_FILE_BYTES: usize = 400_000;
 
 /// The fields of a far entry that are as in the record.
-const ENTRY_FIELDS: [&str; 10] =
-    ["id", "kind", "name", "ref", "symbol", "rank", "loop", "length_m", "ascent_m", "hardest"];
+const ENTRY_FIELDS: [&str; 11] =
+    ["id", "kind", "name", "ref", "symbol", "rank", "loop", "length_m", "ascent_m", "hardest", "credit"];
 
 /// Each trail of `records`, in their order: its far entry with its whole far line in `far_udeg`,
 /// and its whole record.

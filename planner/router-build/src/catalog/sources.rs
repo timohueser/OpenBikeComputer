@@ -65,11 +65,27 @@ impl SourceJob {
     }
 }
 
-/// The ids of the sources of a `route-sources.json`, in its order, and their jobs.
+/// A route of a second source with stages: the long record of its stages.
+pub(super) struct SourceTrail {
+    /// The route as a job of stage 0 with no members, with its own words: the `id` and the fields of its long record.
+    pub route: SourceJob,
+    /// The number and the `name` of each stage row, with or without members, in the order of the numbers.
+    pub stages: Vec<(u64, String)>,
+}
+
+impl SourceTrail {
+    /// The `id` of the record of stage `number`.
+    pub fn stage_id(&self, number: u64) -> i64 {
+        self.route.id() - number as i64
+    }
+}
+
+/// The ids of the sources of a `route-sources.json`, in its order, their jobs and their routes with stages.
 #[derive(Default)]
 pub struct Sources {
     pub(super) ids: Vec<String>,
     pub(super) jobs: Vec<SourceJob>,
+    pub(super) trails: Vec<SourceTrail>,
 }
 
 /// The sources and jobs of the `route-sources.json` at `path`.
@@ -82,7 +98,8 @@ fn text(value: &Value, field: &str) -> String {
     value[field].as_str().unwrap_or("").to_string()
 }
 
-/// The jobs of a `route-sources.json`: each route without stages, and each stage with members.
+/// The jobs of a `route-sources.json`: each route without stages, and each stage with members; and each route with
+/// stages.
 pub(super) fn jobs(file: &Value) -> Result<Sources, String> {
     if file["format"] != 1 {
         return Err(format!("{FILE} has the format {}, which this builder does not read", file["format"]));
@@ -120,8 +137,11 @@ pub(super) fn jobs(file: &Value) -> Result<Sources, String> {
             };
             match route["stages"].as_array() {
                 Some(stages) => {
-                    let stages = stages.iter().map(|stage| job(stage, stage["stage"].as_u64().unwrap_or(0)));
-                    sources.jobs.extend(stages.filter(|job| !job.members.is_empty()));
+                    let stages: Vec<SourceJob> =
+                        stages.iter().map(|stage| job(stage, stage["stage"].as_u64().unwrap_or(0))).collect();
+                    let rows = stages.iter().map(|stage| (stage.stage, stage.name.clone())).collect();
+                    sources.trails.push(SourceTrail { route: job(route, 0), stages: rows });
+                    sources.jobs.extend(stages.into_iter().filter(|job| !job.members.is_empty()));
                 }
                 None => sources.jobs.push(job(route, 0)),
             }
@@ -157,16 +177,16 @@ pub(super) fn usable_ways<S: Source>(package: &Package<S>) -> Result<HashMap<i64
     Ok(usable)
 }
 
-/// The line of a source job, its match line (the runs of its main line before the cut) and the
-/// length of each cut. The points of the members are nodes, one for each microdegree point, so
-/// members that meet at a point join there. A point outside `bounds` drops the job.
+/// The match line of a source job (the runs of its main line before the cut, also when the cut drops the job), and its
+/// line with the length of each cut. The points of the members are nodes, one for each microdegree point, so members
+/// that meet at a point join there. A point outside `bounds` drops the job.
 pub(super) fn line(job: &SourceJob, bounds: [f64; 4], roads: &Roads, usable: &HashMap<i64, u8>) -> SourceLine {
     let [west, south, east, north] = bounds.map(|degrees| (degrees * 1e6).round() as i32);
     let (mut nodes, mut points) = (HashMap::<P, i64>::new(), HashMap::new());
     let mut members = Vec::new();
     for member in &job.members {
         if member.iter().any(|p| p[0] < west || p[0] > east || p[1] < south || p[1] > north) {
-            return Err(Failed { reason: Reason::ExtractEdge, line: None });
+            return (Vec::new(), Err(Failed { reason: Reason::ExtractEdge, line: None }));
         }
         let ids = member.iter().map(|&p| {
             let next = nodes.len() as i64;
@@ -176,16 +196,19 @@ pub(super) fn line(job: &SourceJob, bounds: [f64; 4], roads: &Roads, usable: &Ha
         });
         members.push(super::assemble::Member { nodes: ids.collect(), role: String::new(), roundabout: false });
     }
-    let (main, _) = runs(&members, &points)?;
-    if main.is_empty() {
-        return Err(Failed { reason: Reason::Short, line: None });
-    }
+    let main = match runs(&members, &points) {
+        Ok((main, _)) if !main.is_empty() => main,
+        Ok(_) => return (Vec::new(), Err(Failed { reason: Reason::Short, line: None })),
+        Err(failed) => return (Vec::new(), Err(failed)),
+    };
     let closed = distance(main[0][0], *main[main.len() - 1].last().unwrap()) <= ROUNDTRIP_M;
     let bit = bit(&job.kind);
     let near = |p: P| roads.within(p, NEAR_M, |way| usable.get(&way).is_some_and(|bits| bits & bit != 0));
-    let (kept, cuts) = cut(&main, closed, &near).map_err(|reason| Failed { reason, line: ends(&main) })?;
-    let line = Line { runs: kept, own: main.concat(), close_m: closed.then_some(MAX_GAP_M) };
-    Ok((line, main, cuts))
+    let line = match cut(&main, closed, &near) {
+        Ok((kept, cuts)) => Ok((Line { runs: kept, own: main.concat(), close_m: closed.then_some(MAX_GAP_M) }, cuts)),
+        Err(reason) => Err(Failed { reason, line: ends(&main) }),
+    };
+    (main, line)
 }
 
 /// The runs of `main` without its cuts, and the length of each cut: a cut is a stretch of points at

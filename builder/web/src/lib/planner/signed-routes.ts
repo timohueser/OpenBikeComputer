@@ -64,7 +64,7 @@ export interface TrailPart {
 }
 
 /** A trail of a far file (`specs/route-catalog.md`, "Trail files"). */
-export type TrailEntry = Pick<CatalogRecord, 'id' | 'kind' | 'name' | 'ref' | 'symbol' | 'rank' | 'loop' | 'length_m' | 'ascent_m' | 'hardest' | 'stage_count'> & {
+export type TrailEntry = Pick<CatalogRecord, 'id' | 'kind' | 'name' | 'ref' | 'symbol' | 'rank' | 'loop' | 'length_m' | 'ascent_m' | 'hardest' | 'stage_count' | 'credit'> & {
     /** Pieces of the far line, each encoded as `line_udeg`. */
     far_udeg: number[][];
 };

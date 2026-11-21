@@ -622,7 +622,7 @@ fn route_sources_give_a_job_for_each_route_and_each_stage_with_members() {
     let spec = include_str!("../../../../specs/obc-data.md");
     let example = spec.split("##### Route sources").nth(1).unwrap().split("```json").nth(1).unwrap();
     let mut file: Value = serde_json::from_str(example.split("```").next().unwrap()).unwrap();
-    let Sources { ids, jobs } = sources::jobs(&file).unwrap();
+    let Sources { ids, jobs, trails } = sources::jobs(&file).unwrap();
     assert_eq!(ids, ["schweizmobil-hiking"]);
     // Stage 1 has no members.
     let fields: Vec<_> =
@@ -639,6 +639,10 @@ fn route_sources_give_a_job_for_each_route_and_each_stage_with_members() {
         ("Alpenpanorama-Weg", "Bundesamt für Strassen, Kanton, Stiftung SchweizMobil")
     );
     assert_eq!(jobs[1].members, [vec![[8461200, 47052310], [8461350, 47052400]]]);
+    // A route with stages keeps each stage row, also one with no members.
+    let rows: Vec<_> =
+        trails.iter().map(|t| (t.route.id(), t.stages.iter().map(|s| s.0).collect::<Vec<_>>())).collect();
+    assert_eq!(rows, [(-1_000_000_000_300, vec![1, 11])]);
     file["format"] = json!(2);
     assert!(sources::jobs(&file).is_err());
 }
@@ -853,10 +857,11 @@ fn official_stages_take_the_places_of_the_stages_of_an_osm_trail() -> Result<(),
     };
     assert_eq!(parts(200), [(201, 1), (official, 2), (203, 3)]);
     assert_eq!((&by_id[&200]["stages"], &by_id[&200]["credit"]), (&json!([201, official, 203]), &json!("Credit 1")));
-    let stage = by_id[&official];
+    // The official trail of one stage lists it at the level of trail 200, and it has the lower `id`.
+    let (stage, trail) = (by_id[&official], source_id(1, 50, 0));
     assert_eq!(
         [&stage["trail"], &stage["trail_stage"], &stage["parent"], &stage["stage"]],
-        [&json!(200), &json!(2), &json!(200), &json!(2)]
+        [&json!(trail), &json!(2), &json!(trail), &json!(2)]
     );
     assert_eq!(parts(300), [(301, 1), (first, 2), (second, 2)]);
     assert_eq!((&by_id[&300]["stage_count"], &by_id[&300]["stages"]), (&json!(2), &json!([301, first, second])));
@@ -1125,7 +1130,9 @@ fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), S
     // The invariant: only OSM jobs and jobs of the second source leave, and each job that left shows by
     // at least four fifths in the records of earlier origins in the catalog.
     let origin = |id: i64| if id <= -sources::ORIGIN_ID { -id / sources::ORIGIN_ID } else { 3 };
-    let replaced = report.dropped.get("Replaced").cloned().unwrap_or_default();
+    // A long record that leaves takes no record out of the catalog: the invariant holds for the jobs.
+    let replaced: Vec<i64> =
+        report.dropped.get("Replaced").into_iter().flatten().copied().filter(|id| lines.contains_key(id)).collect();
     assert!(
         replaced.len() >= 20 && replaced.iter().any(|&id| origin(id) == 2),
         "the made-up region tests the merge: {:?}",
@@ -1144,4 +1151,211 @@ fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), S
         assert!(shown >= 0.8, "only {shown:.2} of the line of {id} shows in records of earlier origins");
     }
     Ok(())
+}
+
+/// The `id`, the stage number and the name of each part of a long record.
+fn parts_of(record: &Value) -> Vec<(i64, u64, &str)> {
+    let parts = record["parts"].as_array().unwrap().iter();
+    parts.map(|p| (p["id"].as_i64().unwrap(), p["stage"].as_u64().unwrap(), p["name"].as_str().unwrap_or(""))).collect()
+}
+
+#[test]
+fn a_source_route_with_stages_is_a_trail_with_the_official_numbers() -> Result<(), String> {
+    let run = |stages: &[(u64, &[Vec<P>])]| {
+        let route = staged(official(70, "hiking", 2, "70", "Drei Etappen", &[]), stages);
+        let (package, osm) = grid(vec![]);
+        catalog(&Selection::whole(package.fork()), osm, sources_of(vec![vec![route]]), 2, SECTION_M)
+    };
+    let (first, second, last) = ([at(&[0, 1, 2, 3])], [at(&[3, 4, 5, 6])], [at(&[6, 16, 26, 36])]);
+    let (trail, stage) = (source_id(1, 70, 0), |number| source_id(1, 70, number));
+    // A route that OSM lacks.
+    let (records, _) = run(&[(1, &first), (2, &second), (3, &last)])?;
+    let by_id = by_id(&records);
+    let long = by_id[&trail];
+    assert_eq!((&long["stages"], &long["stage_count"]), (&json!([stage(1), stage(2), stage(3)]), &json!(3)));
+    assert_eq!(long["credit"], "Credit 1");
+    for number in 1..=3 {
+        let record = by_id[&stage(number)];
+        let fields = [&record["trail"], &record["trail_stage"], &record["parent"], &record["stage"]];
+        assert_eq!(fields, [&json!(trail), &json!(number), &json!(trail), &json!(number)]);
+    }
+    let far = trails::trails(&records);
+    assert_eq!(far.iter().find(|(entry, _)| entry["id"] == trail).unwrap().0["credit"], "Credit 1");
+
+    // A number with no stage row has no part, and N of "Stage n of N" is the highest number.
+    let (records, _) = run(&[(1, &first), (2, &second), (4, &last)])?;
+    let long = by_id_of(&records, trail);
+    let numbers = [(stage(1), 1, "Stage 1"), (stage(2), 2, "Stage 2"), (stage(4), 4, "Stage 4")];
+    assert_eq!((parts_of(&long), &long["stage_count"]), (numbers.to_vec(), &json!(4)));
+    assert!(long.get("stages").is_some());
+    // A stage with no members is a part not in the catalog, without ends.
+    let (records, _) = run(&[(1, &first), (2, &[]), (4, &last)])?;
+    let long = by_id_of(&records, trail);
+    assert_eq!(parts_of(&long), numbers);
+    let missing = &long["parts"][1];
+    assert!(missing["missing"] == true && missing.get("start_udeg").is_none() && long.get("stages").is_none());
+    Ok(())
+}
+
+#[test]
+fn an_official_trail_takes_the_place_of_the_osm_trail_of_its_route_and_not_of_another_rank() -> Result<(), String> {
+    let sources = sources_of(vec![vec![
+        staged(
+            official(50, "hiking", 2, "HW", "Höhenweg", &[]),
+            &[
+                (1, &[at(&[0, 1, 2, 3, 4, 5, 6])]),
+                (2, &[at(&[6, 16, 26, 36, 46, 56, 66])]),
+                (3, &[at(&[66, 65, 64, 63, 62, 61, 60])]),
+            ],
+        ),
+        staged(
+            official(80, "bicycle", 3, "8", "Acht", &[]),
+            &[(1, &[at(&[11, 12, 13, 14])]), (2, &[at(&[14, 24, 34, 44])])],
+        ),
+    ]]);
+    let hiking = |id, name, nodes: &[i64]| route(id, &[("route", "hiking"), ("name", name)], path(nodes));
+    let bike = |id, name, nodes: &[i64]| route(id, &[("route", "bicycle"), ("name", name)], path(nodes));
+    let marked = [("osmc:symbol", "red:white:red_bar"), ("description", "Ein Weg")];
+    let (package, osm) = grid(vec![
+        (
+            200,
+            [
+                &[("type", "superroute"), ("route", "hiking"), ("name", "Höhenweg"), ("ref", "HW"), ("network", "rwn")]
+                    [..],
+                &marked,
+            ]
+            .concat(),
+            members(&[201, 202, 203, 204], Id::Relation),
+        ),
+        hiking(201, "Etappe 1", &[0, 1, 2, 3, 4, 5, 6]),
+        hiking(202, "Etappe 2", &[6, 16, 26, 36, 46, 56, 66]),
+        hiking(203, "Etappe 3", &[66, 65, 64, 63, 62, 61, 60]),
+        // A variant that no official stage replaces: a seventh of the trail.
+        hiking(204, "Etappe 4", &[60, 50, 40, 30]),
+        // The same trail at the international level.
+        (
+            800,
+            vec![("type", "superroute"), ("route", "bicycle"), ("name", "Acht"), ("ref", "8"), ("network", "icn")],
+            members(&[801, 802], Id::Relation),
+        ),
+        bike(801, "Acht 1", &[11, 12, 13, 14]),
+        bike(802, "Acht 2", &[14, 24, 34, 44]),
+    ]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let by_id = by_id(&records);
+    let (trail, acht) = (source_id(1, 50, 0), source_id(1, 80, 0));
+    assert_eq!(report.dropped.get("Replaced"), Some(&vec![200, 201, 202, 203, 801, 802]), "{:?}", report.dropped);
+    // The official trail takes the mark of the OSM trail that left for it, not its description.
+    assert_eq!(by_id[&trail]["symbol"], "red:white:red_bar");
+    assert!(by_id[&trail].get("description").is_none());
+    let variant = by_id[&204];
+    assert!(["trail", "trail_stage", "parent", "stage"].iter().all(|field| variant.get(*field).is_none()));
+    // A trail of another rank stays, with the official stages as its parts, and they belong to the official trail.
+    assert_eq!(parts_of(by_id[&800]), [(source_id(1, 80, 1), 1, "Stage 1"), (source_id(1, 80, 2), 2, "Stage 2")]);
+    let first = by_id[&source_id(1, 80, 1)];
+    assert_eq!((&first["trail"], &first["parent"]), (&json!(acht), &json!(acht)));
+    let far: Vec<i64> = trails::trails(&records).iter().map(|(entry, _)| entry["id"].as_i64().unwrap()).collect();
+    assert_eq!(far, [acht, trail, 800]);
+    Ok(())
+}
+
+#[test]
+fn a_failed_official_stage_takes_the_osm_stage_that_lies_along_it_both_ways() -> Result<(), String> {
+    // It ends 560 m west of the grid, away from each road: a cut of more than 500 m. Stage 3 fails on the same path.
+    let failing = [[at(&[6, 16, 26, 36, 46, 56, 66, 65, 64, 63, 62, 61, 60]), vec![off(60, -560.0, 0.0)]].concat()];
+    let sources = sources_of(vec![vec![staged(
+        official(60, "hiking", 2, "PR", "Panorama", &[]),
+        &[(1, &[at(&[0, 1, 2, 3, 4, 5, 6])]), (2, &failing), (3, &failing)],
+    )]]);
+    let hiking = |id, name, nodes: &[i64]| route(id, &[("route", "hiking"), ("name", name)], path(nodes));
+    let long = |id, name, children: &[i64]| -> Route {
+        let tags = vec![("type", "superroute"), ("route", "hiking"), ("name", name), ("ref", "PR"), ("network", "rwn")];
+        (id, tags, members(children, Id::Relation))
+    };
+    let (package, osm) = grid(vec![
+        long(300, "Panorama", &[301, 302]),
+        hiking(301, "Etappe 1", &[0, 1, 2, 3, 4, 5, 6]),
+        hiking(302, "Etappe 2", &[6, 16, 26, 36, 46, 56, 66, 65, 64, 63, 62, 61, 60]),
+        // A loop over the same path and back to its start: the stage lies along it, but it lies only half along the
+        // stage.
+        long(400, "Rundwege", &[299]),
+        hiking(
+            299,
+            "Rundweg",
+            &[6, 16, 26, 36, 46, 56, 66, 65, 64, 63, 62, 61, 60, 50, 40, 30, 20, 10, 0, 1, 2, 3, 4, 5, 6],
+        ),
+    ]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let by_id = by_id(&records);
+    let trail = source_id(1, 60, 0);
+    let gaps = vec![source_id(1, 60, 3), source_id(1, 60, 2)];
+    assert_eq!(report.dropped.get("Gap"), Some(&gaps), "{:?}", report.dropped);
+    // A record stands once in a trail: stage 3 does not take record 302 again.
+    let numbers = [(source_id(1, 60, 1), 1, "Stage 1"), (302, 2, "Stage 2"), (source_id(1, 60, 3), 3, "Stage 3")];
+    assert_eq!(parts_of(by_id[&trail]), numbers);
+    assert!(by_id[&trail]["parts"][2]["missing"] == true && by_id[&trail].get("stages").is_none());
+    let fill = by_id[&302];
+    let fields = [&fill["trail"], &fill["trail_stage"], &fill["name"]];
+    assert_eq!(fields, [&json!(trail), &json!(2), &json!("Etappe 2")]);
+    assert_eq!(by_id[&299]["trail"], 400);
+    Ok(())
+}
+
+#[test]
+fn an_unnamed_stage_keeps_the_name_of_a_trail_that_leaves() -> Result<(), String> {
+    let sources = sources_of(vec![vec![staged(
+        official(50, "hiking", 2, "HW", "Höhenweg", &[]),
+        &[(1, &[at(&[0, 1, 2, 3])]), (2, &[at(&[3, 4, 5, 6])]), (3, &[at(&[6, 16, 26, 36])])],
+    )]]);
+    let hiking = |id, name, nodes: &[i64]| route(id, &[("route", "hiking"), ("name", name)], path(nodes));
+    // Two pieces 1.3 km apart: the route fails, with the ends of its main line.
+    let broken =
+        |id, name, a: &[i64], b: &[i64]| route(id, &[("route", "hiking"), ("name", name)], [path(a), path(b)].concat());
+    let (package, osm) = grid(vec![
+        (
+            200,
+            vec![("type", "superroute"), ("route", "hiking"), ("name", "Höhenweg"), ("ref", "HW"), ("network", "rwn")],
+            members(&[201, 210, 203], Id::Relation),
+        ),
+        hiking(201, "Etappe 1", &[0, 1, 2, 3]),
+        // The unnamed second stage, with a mark of its own (no connector leg), whose only parent is a set of
+        // separate routes.
+        route(202, &[("route", "hiking"), ("osmc:symbol", "red")], path(&[3, 4, 5, 6])),
+        hiking(203, "Etappe 3", &[6, 16, 26, 36]),
+        (
+            210,
+            vec![("type", "route"), ("route", "hiking"), ("name", "Rundwege"), ("ref", "R9")],
+            members(&[202, 211, 212, 213], Id::Relation),
+        ),
+        broken(211, "Rund 1", &[60, 61], &[64, 65]),
+        broken(212, "Rund 2", &[40, 41], &[44, 45]),
+        broken(213, "Rund 3", &[20, 21], &[24, 25]),
+    ]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let by_id = by_id(&records);
+    assert_eq!(report.dropped.get("Apart"), Some(&vec![210]), "{:?}", report.dropped);
+    assert!(report.dropped["Replaced"].contains(&200), "{:?}", report.dropped);
+    // Trail 200 left for the official trail; its stage still shows, with its name.
+    let stage = by_id[&202];
+    assert_eq!((&stage["name"], &stage["ref"], stage.get("trail")), (&json!("Höhenweg"), &json!("HW"), None));
+    Ok(())
+}
+
+#[test]
+fn a_long_record_joins_the_distinct_credits_of_its_origin_and_its_parts() {
+    let record =
+        json!({"length_m": 1_000, "ascent_m": 0, "descent_m": 0, "moving_s": 900, "loop": false, "credit": "A; B"});
+    let kept = Kept {
+        record: record.as_object().unwrap().clone(),
+        start: [0, 0],
+        finish: [0, 9_000],
+        points: 2,
+        cells: BTreeSet::new(),
+        grades: None,
+        french: false,
+    };
+    let part = long::Part { id: 1, name: String::new(), stage: Some(1), cut: false, kept: Some(&kept), line: None };
+    let header = json!({"id": -100, "kind": "bicycle", "rank": 3, "credit": "A"}).as_object().unwrap().clone();
+    let (record, _) = long::record(header, true, "bicycle", &[part], false, 1).unwrap();
+    assert_eq!(record["credit"], "A; B");
 }

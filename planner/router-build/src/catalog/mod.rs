@@ -280,10 +280,26 @@ fn header(relation: &Relation, kind: &str, french: bool) -> Map<String, Value> {
     record
 }
 
-/// Gives the record of an unnamed stage the `name` and `ref` of the long relation that names it.
-fn named_after(record: &mut Map<String, Value>, trail: &Relation) {
-    for field in ["name", "ref"].into_iter().filter(|field| !tag(&trail.tags, field).is_empty()) {
-        record.insert(field.into(), json!(tag(&trail.tags, field)));
+/// The `name` and the `ref` of a relation.
+fn name_and_ref<'a>(relation: &'a Relation) -> (&'a str, &'a str) {
+    (tag(&relation.tags, "name"), tag(&relation.tags, "ref"))
+}
+
+/// Gives the record of an unnamed stage the `name` and `ref` of the long route that names it.
+fn named_after(record: &mut Map<String, Value>, (name, reference): (&str, &str)) {
+    for (field, value) in [("name", name), ("ref", reference)].into_iter().filter(|(_, value)| !value.is_empty()) {
+        record.insert(field.into(), json!(value));
+    }
+}
+
+/// Gives a record each of `operator`, `website` and `symbol` of `words` that it lacks, and no `symbol` when a vertex of
+/// it is in France. No `description`: an OSM description often tells how the relation is mapped.
+fn take_words(record: &mut Map<String, Value>, words: &Map<String, Value>, french: bool) {
+    for field in ["operator", "website", "symbol"] {
+        if let Some(value) = words.get(field).filter(|_| !record.contains_key(field) && !(french && field == "symbol"))
+        {
+            record.insert(field.into(), value.clone());
+        }
     }
 }
 
@@ -560,8 +576,57 @@ impl Planned {
     }
 }
 
-/// The line of a source job, its match line and the length of each cut, or why it leaves.
-type SourceLine = Result<(Line, Vec<Vec<P>>, Vec<u64>), Failed>;
+/// A long record before the merge of long records.
+struct Long {
+    /// The rank of its origin.
+    origin: usize,
+    record: Map<String, Value>,
+    /// The plan points of its kept parts joined.
+    points: usize,
+    /// A kept part is in France.
+    french: bool,
+    /// The record of each part in the catalog, with the level of long routes that lists it and its stage number.
+    listed: Vec<(i64, usize, usize)>,
+}
+
+/// Whether a kept part is in France.
+fn french(parts: &[long::Part]) -> bool {
+    parts.iter().filter_map(|part| part.kept).any(|kept| kept.french)
+}
+
+/// The merge of the long records (`specs/route-catalog.md#the-same-trail`): a long record leaves when its pairs by (a)
+/// of earlier origins cover four fifths of its trail line, the lines of its parts in `kept`. Each long record that
+/// stays takes the words that it lacks from the long record that left for it and whose trail line lies along most of
+/// its own. Gives the long records that left.
+fn merge_long(longs: &mut Vec<Long>, kept: &BTreeMap<i64, Kept>) -> BTreeSet<i64> {
+    let id = |long: &Long| long.record["id"].as_i64().expect("a record has an id");
+    let probe = |long: &Long| {
+        let text = |field: &str| long.record.get(field).and_then(Value::as_str).unwrap_or("");
+        let parts = long.record["parts"].as_array().expect("a long record has parts");
+        let line = parts.iter().filter(|part| part.get("missing").is_none());
+        let pieces = line.map(|part| decode(&kept[&part["id"].as_i64().unwrap()].record["line_udeg"])).collect();
+        let rank = long.record["rank"].as_u64().unwrap_or(0) as u8;
+        Probe::new(long.origin, text("kind"), rank, text("ref"), text("name"), pieces)
+    };
+    let probes: BTreeMap<i64, Probe> = longs.iter().map(|long| (id(long), probe(long))).collect();
+    let merge = Merge::replace(&probes, &|_| true, &|_| true);
+    let pairs = |left: &i64| merge.pairs[left].iter().filter(|pair| pair.rule == merge::Rule::A).map(|pair| pair.id);
+    let successors: BTreeMap<i64, Vec<i64>> =
+        merge.replaced.iter().map(|left| (*left, pairs(left).collect())).collect();
+    let record = |left: i64| longs.iter().find(|long| id(long) == left).expect("a long record left").record.clone();
+    let donors: Vec<_> =
+        merge::donors(&successors, &probes).into_iter().map(|(stays, left)| (stays, record(left))).collect();
+    for (stays, words) in donors {
+        let long = longs.iter_mut().find(|long| id(long) == stays).expect("a successor stays");
+        take_words(&mut long.record, &words, long.french);
+    }
+    longs.retain(|long| !merge.replaced.contains(&id(long)));
+    merge.replaced
+}
+
+/// The match line of a source job (empty when the builder made no main line), and its line with the length of each
+/// cut, or why it leaves.
+type SourceLine = (Vec<Vec<P>>, Result<(Line, Vec<u64>), Failed>);
 
 /// The lines of the source jobs: the off-road cut tests against the ways of the routing source
 /// that the first plan profile of each kind may use.
@@ -703,17 +768,26 @@ fn catalog<S: Source + Clone + Send>(
     // The source jobs come first, so that an OSM job that leaves for them needs no search.
     let source_jobs: HashMap<i64, &SourceJob> = sources.jobs.iter().map(|job| (job.id(), job)).collect();
     let (mut lined, mut cut_jobs) = (Vec::new(), HashSet::new());
-    for (job, line) in sources.jobs.iter().zip(source_lines) {
+    let mut planned = Planned::default();
+    // The match line of each source job that the cut drops: not a probe of the merge, so it has no pairs, but a stage
+    // that a record of OSM can fill.
+    let mut unlined = BTreeMap::new();
+    for (job, (main, line)) in sources.jobs.iter().zip(source_lines) {
+        let probe = |main| Probe::new(job.source, &job.kind, job.rank, &job.ref_, &job.route, main);
         match line {
-            Ok((line, main, cuts)) => {
+            Ok((line, cuts)) => {
                 if !cuts.is_empty() {
                     cut_jobs.insert(job.id());
                 }
-                probes.insert(job.id(), Probe::new(job.source, &job.kind, job.rank, &job.ref_, &job.route, main));
+                probes.insert(job.id(), probe(main));
                 lined.push((job, line));
             }
             Err(failed) => {
                 drops.insert(job.id(), failed.reason);
+                planned.lines.extend(failed.line.map(|line| (job.id(), line)));
+                if !main.is_empty() {
+                    unlined.insert(job.id(), probe(main));
+                }
             }
         }
     }
@@ -722,7 +796,6 @@ fn catalog<S: Source + Clone + Send>(
         let built = shaped(router, line, &job.header(), &job.kind, None, section_m, calls);
         (job.id(), built.map_err(|reason| Failed { reason, line: ends(&line.runs) }))
     });
-    let mut planned = Planned::default();
     planned.take(searched, &mut report, &mut drops);
 
     Guard::exempt("merge");
@@ -758,13 +831,7 @@ fn catalog<S: Source + Clone + Send>(
             }
         };
         let route = kept.get_mut(&record).expect("a successor is kept");
-        // No `description`: an OSM description often tells how the relation is mapped.
-        for field in ["operator", "website", "symbol"] {
-            let french = field == "symbol" && route.french;
-            if let Some(value) = words.get(field).filter(|_| !route.record.contains_key(field) && !french) {
-                route.record.insert(field.into(), value.clone());
-            }
-        }
+        take_words(&mut route.record, &words, route.french);
     }
     Guard::exempt("catalog");
 
@@ -787,23 +854,18 @@ fn catalog<S: Source + Clone + Send>(
     for &id in cut.keys() {
         let relation = relations.get(id).expect("a cut route is in the data");
         let kind = route_kind(&relation.tags).expect("a cut route has a kind");
+        let roundtrip = tag(&relation.tags, "roundtrip") == "yes";
         let (mut record, points) =
-            long::record(&relation, kind, &parts_of(id, None), false, 0).expect("a cut route keeps a section");
+            long::record(header(&relation, kind, false), roundtrip, kind, &parts_of(id, None), false, 0)
+                .expect("a cut route keeps a section");
         if let Some(trail) = unnamed.get(&id).and_then(|listers| relations.get(listers[0])) {
-            named_after(&mut record, &trail);
+            named_after(&mut record, name_and_ref(&trail));
         }
         report.add_long(&record, points);
         cut_records.insert(id, record);
     }
-    // Each record of a part gets the innermost long record that lists it as its trail, and a stage
-    // of a complete long record the innermost complete one as its parent; of two at the same level,
-    // the lower relation ID.
-    let mut trails = BTreeMap::<i64, (usize, i64, usize)>::new();
-    let mut parents = BTreeMap::<i64, (usize, i64, usize)>::new();
-    let innermost = |map: &mut BTreeMap<i64, (usize, i64, usize)>, id: i64, trail| {
-        map.entry(id).and_modify(|t| *t = (*t).min(trail)).or_insert(trail);
-    };
-    let mut records = Vec::new();
+    let osm_origin = sources.ids.len();
+    let mut longs = Vec::new();
     let mut apart = HashSet::new();
     for (relation, kind, leaves, connector) in long {
         let built = |id| kept.contains_key(id) || cut_records.contains_key(id);
@@ -842,16 +904,91 @@ fn catalog<S: Source + Clone + Send>(
             apart.insert(relation.id);
             continue;
         }
-        let Some((record, points)) = long::record(&relation, &kind, &parts, connector, leaves.len()) else {
+        let roundtrip = tag(&relation.tags, "roundtrip") == "yes";
+        let header = header(&relation, &kind, false);
+        let Some((record, points)) = long::record(header, roundtrip, &kind, &parts, connector, leaves.len()) else {
             drops.insert(relation.id, Reason::NoStages);
             continue;
         };
-        let complete = record.contains_key("stages");
+        longs.push(Long { origin: osm_origin, french: french(&parts), record, points, listed });
+    }
+    // A kept OSM record that is a stage of an OSM long route can take the place of a failed official stage.
+    let candidates: Vec<(i64, &Probe)> =
+        parts.iter().filter(|id| kept.contains_key(id)).filter_map(|id| Some((*id, probes.get(id)?))).collect();
+    for trail in &sources.trails {
+        let (mut parts, mut listed) = (Vec::new(), Vec::<(i64, usize, usize)>::new());
+        for (number, name) in &trail.stages {
+            let mut id = trail.stage_id(*number);
+            // A stage that failed, not one that left for a record of an earlier source.
+            if !kept.contains_key(&id) && !matches!(drops.get(&id), Some(Reason::Replaced)) {
+                let free = candidates.iter().filter(|(fill, _)| listed.iter().all(|&(other, ..)| other != *fill));
+                let stage = probes.get(&id).or(unlined.get(&id));
+                id = stage.and_then(|stage| merge::fill(stage, free.copied())).unwrap_or(id);
+            }
+            let stage = *number as usize;
+            if kept.contains_key(&id) {
+                listed.push((id, 1, stage));
+            }
+            let line = lines.get(&id).copied();
+            parts.push(long::Part {
+                id,
+                name: name.clone(),
+                stage: Some(stage),
+                cut: false,
+                kept: kept.get(&id),
+                line,
+            });
+        }
+        let id = trail.route.id();
+        if long::apart(&parts) {
+            drops.insert(id, Reason::Apart);
+            continue;
+        }
+        let stage_count = trail.stages.iter().map(|&(number, _)| number as usize).max().unwrap_or(0);
+        let Some((record, points)) =
+            long::record(trail.route.header(), true, &trail.route.kind, &parts, false, stage_count)
+        else {
+            drops.insert(id, Reason::NoStages);
+            continue;
+        };
+        longs.push(Long { origin: trail.route.source, french: french(&parts), record, points, listed });
+    }
+    // The innermost long record that lists each unnamed stage, of two at one level the lower `id`, with its `name` and
+    // `ref`, before the merge of the long records: an unnamed stage keeps the name of a trail that leaves.
+    let mut namers = BTreeMap::<i64, ((usize, i64), (String, String))>::new();
+    for long in &longs {
+        let text = |field: &str| long.record.get(field).and_then(Value::as_str).unwrap_or("").to_string();
+        let id = long.record["id"].as_i64().expect("a record has an id");
+        for &(part, depth, _) in long.listed.iter().filter(|(part, ..)| unnamed.contains_key(part)) {
+            if namers.get(&part).is_none_or(|(at, _)| (depth, id) < *at) {
+                namers.insert(part, ((depth, id), (text("name"), text("ref"))));
+            }
+        }
+    }
+    // The merge of the long records builds its own probes: the memory of the job probes goes first.
+    drop((probes, unlined));
+    if longs.iter().any(|long| long.origin < osm_origin) {
+        Guard::exempt("merge");
+        for id in merge_long(&mut longs, &kept) {
+            drops.insert(id, Reason::Replaced);
+        }
+        Guard::exempt("catalog");
+    }
+    // Each record of a part gets the innermost long record that lists it as its trail, and a stage
+    // of a complete long record the innermost complete one as its parent; of two at the same level,
+    // the lower `id`.
+    let mut trails = BTreeMap::<i64, (usize, i64, usize)>::new();
+    let mut parents = BTreeMap::<i64, (usize, i64, usize)>::new();
+    let innermost = |map: &mut BTreeMap<i64, (usize, i64, usize)>, id: i64, trail| {
+        map.entry(id).and_modify(|t| *t = (*t).min(trail)).or_insert(trail);
+    };
+    let mut records = Vec::new();
+    for Long { record, points, listed, .. } in longs {
+        let (trail, complete) = (record["id"].as_i64().expect("a record has an id"), record.contains_key("stages"));
         for (id, depth, number) in listed {
-            let trail = (depth, relation.id, number);
-            innermost(&mut trails, id, trail);
+            innermost(&mut trails, id, (depth, trail, number));
             if complete {
-                innermost(&mut parents, id, trail);
+                innermost(&mut parents, id, (depth, trail, number));
             }
         }
         report.add_long(&record, points);
@@ -864,17 +1001,26 @@ fn catalog<S: Source + Clone + Send>(
         }
     };
     // An unnamed stage takes the name of the lowest long relation that lists it and is no set of
-    // separate routes, or else of its trail. With neither, it leaves, as any unnamed route.
+    // separate routes, or else of the innermost long record that lists it, also one that left. With
+    // neither, it leaves, as any unnamed route.
     let named = |record: &mut Map<String, Value>, id: i64| -> bool {
         // A section holds the ID of its relation (`section_id`).
         let relation = if (-sources::ORIGIN_ID + 1..0).contains(&id) { -id / 100 } else { id };
         let Some(listers) = unnamed.get(&relation) else { return true };
-        let namer = listers.iter().copied().find(|id| !apart.contains(id)).or(trails.get(&relation).map(|t| t.1));
-        let Some(namer) = namer else { return false };
+        let lister = listers.iter().copied().find(|id| !apart.contains(id));
+        let Some(namer) = lister.or(namers.get(&relation).map(|((_, id), _)| *id)) else { return false };
         if namer != listers[0] {
             record.remove("name");
             record.remove("ref");
-            named_after(record, &relations.get(namer).expect("a long relation is in the data"));
+            match lister {
+                Some(lister) => {
+                    named_after(record, name_and_ref(&relations.get(lister).expect("a lister is in the data")))
+                }
+                None => {
+                    let (name, reference) = &namers[&relation].1;
+                    named_after(record, (name, reference));
+                }
+            }
         }
         true
     };
@@ -940,7 +1086,7 @@ fn route<D: RoutingData>(
     let main = Line { runs, own, close_m: roundtrip.then_some(ROUNDTRIP_M) };
     let mut header = header(&job.relation, &job.kind, false);
     if let Some(trail) = &job.named_by {
-        named_after(&mut header, trail);
+        named_after(&mut header, name_and_ref(trail));
     }
     shaped(router, &main, &header, &job.kind, Some(job.relation.id), section_m, calls)
         .map_err(|reason| Failed { reason, line })

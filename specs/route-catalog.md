@@ -110,17 +110,17 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 | `profile_m` | Route record only: the height of the plan route in metres at each 100 m from its start, and at its end |
 | `via` | Route record only: ascending indices of the shaping vertices in `line_udeg` |
 | `turnarounds` | Route record only: the entries of `via` where the plan route turns back, and `0` for a loop that turns back at its start |
-| `parent` | Stage of a complete long route only: relation ID of that long route |
+| `parent` | Stage of a complete long route only: the `id` of that long route |
 | `stage` | Stage of a complete long route only: the stage number of its part in `parent` |
-| `trail` | Part of a long route only: relation ID of the long route that lists it at the lowest level; for a section, relation ID of its cut line |
+| `trail` | Part of a long route only: the `id` of the long route that lists it at the lowest level (see [Stage fields](#stage-fields)); for a section, relation ID of its cut line |
 | `trail_stage` | Part of a long route only, not a section: the stage number of its part in `trail` |
 | `section` | Section only: its number in `trail`, from `1` |
 | `stages` | Complete long route only: the `id` of each of its parts, in order; two parts can have one stage number |
 | `start_udeg` | Complete long route only: `[longitude, latitude]` of its start |
 | `parts` | Long route only: each of its parts, in order (see [Long routes](#long-routes)) |
-| `stage_count` | Long route only: the number of its stages, the parts of its relation by the table of [Long routes](#long-routes) before any part leaves for a second source; `0` for a cut line |
+| `stage_count` | Long route only: the number of its stages, the parts of its relation by the table of [Long routes](#long-routes) before any part leaves for a second source; `0` for a cut line; for a source trail, the highest stage number of its route (see [Source trails](#source-trails)) |
 | `trail_profile_m` | Long route only: 201 heights of the whole trail (see [Long routes](#long-routes)) |
-| `credit` | The `attribution` in `data/sources.toml` of the second route source of the record's line; on a long route, the distinct credits of its own line and of its parts, joined by `; `; absent otherwise |
+| `credit` | The `attribution` in `data/sources.toml` of the second route source of the record's line; on a long route, the distinct credits of its own origin and of its parts in the catalog (see [Record](#record)); absent otherwise |
 
 Each record has a `name` or a `ref`, or both. The builder cuts a longer `description` at a word
 boundary. `symbol` is absent when a vertex of the route's full planned line, before the
@@ -262,9 +262,11 @@ records of a second source has these records as its parts (see [Parts](#parts)).
 its place in `parts`, each with its stage number (see [Sections](#sections)). A long route inside another one
 is also a long route of its own. A child route with no `name` and no `ref` that is a part gets a
 route record with the `name` and the `ref` of the long route that has it as a child relation and
-is in the catalog; of two, the one with the lower relation ID. When no such long route has it as a
-child relation, it takes the `name` and the `ref` of its `trail`, and with no `trail` it is not in
-the catalog, as any route with no `name` and no `ref`. A long route is in the catalog when at least
+whose parts are not separate routes (see below); of two, the one with the lower relation ID. When no
+such long route has it as a child relation, it takes the `name` and the `ref` of the long route in
+the catalog that lists it at the lowest level, of two the one with the lower `id`, also when that
+long route leaves for a second source (see [The same trail](#the-same-trail)). With none, it is not
+in the catalog, as any route with no `name` and no `ref`. A long route is in the catalog when at least
 one of its parts is, unless its parts are separate routes (see below).
 
 The ends of a part in the catalog are the first and the last vertex of its `line_udeg`. A part that
@@ -303,7 +305,7 @@ place, is never complete, because the leg leaves a gap between its parts. Only a
 route has `stages` and `start_udeg`, and only its stages have `parent` and `stage`: `stages` lists
 its parts, and `start_udeg` is the start of its first part. When a route is a stage of two complete
 long routes, `parent` is the one that lists it at the lower level (see `trail`); of two at the same
-level, the one with the lower relation ID. A reader that knows only
+level, the one with the lower `id`. A reader that knows only
 these fields shows the parts of every other long route as single routes.
 
 A long route has no `line_udeg`, `via`, `turnarounds` or `profile_m`. `length_m`, `ascent_m`,
@@ -315,15 +317,16 @@ it has `roundtrip=yes` and these two points are within 200 m.
 
 Each part in the catalog has `trail` and `trail_stage`; a section has `trail` only. `trail` is the
 long route that lists it at the lowest level of long routes inside each other, 1 for a child
-relation of the long route itself; of two at the same level, the one with the lower relation ID.
+relation of the long route itself; of two at the same level, the one with the lower `id`. Only a
+long route that stays gives these fields (see [Stage fields](#stage-fields)).
 
 An object of `parts` has these fields. A field with no value is absent.
 
 | Field | Value |
 | --- | --- |
-| `id` | The `id` of the part's record: a relation ID, the `id` of a section or of a record of a second source |
+| `id` | The `id` of the part's record: a relation ID, the `id` of a section or of a record of a second source; for a part of a source trail that is not in the catalog, the `id` that the record of its stage would have |
 | `stage` | Stage number of the part; absent for a section of a cut line that is no stage |
-| `name` | The OSM `name` of the part's relation; for a record of a second source, its `name` |
+| `name` | The OSM `name` of the part's relation; for a record of a second source, its `name`; for a part of a source trail, the `name` of its stage row, also for a part that an OSM record fills |
 | `length_m` | The `length_m` of the part's record; for a part not in the catalog, the length of its main line |
 | `ascent_m` | The `ascent_m` of the part's record |
 | `moving_s` | The `moving_s` of the part's record |
@@ -401,7 +404,7 @@ touches the cell, in ascending `id` order. A cell with no trails has an empty li
 
 | Field | Value |
 | --- | --- |
-| `id`, `kind`, `name`, `ref`, `symbol`, `rank`, `loop`, `length_m`, `ascent_m`, `hardest` | As in the record |
+| `id`, `kind`, `name`, `ref`, `symbol`, `rank`, `loop`, `length_m`, `ascent_m`, `hardest`, `credit` | As in the record |
 | `stage_count` | As in the record, when it is positive; absent for a route record |
 | `far_udeg` | A list of pieces of the far line in this cell, each encoded as `line_udeg` |
 
@@ -536,8 +539,9 @@ A second source is an official source of signed routes, such as SchweizMobil, wi
 in `data/routes/`. The step `planner/route-sources` reads the sources of the region into
 `route-sources.json` ([obc-data.md](obc-data.md#route-sources)). The builder makes a record of a
 source route as it makes one of an OSM relation, and merges the routes of all origins so that each
-route shows once. The official route takes the place of the OSM relation of the same route. A
-region with no second source, or a target without the part `route-sources`, has the catalog of its
+route shows once. The official route takes the place of the OSM relation of the same route, and
+an official route with stages, its source trail, takes the place of the OSM long route of the same
+trail. A region with no second source, or a target without the part `route-sources`, has the catalog of its
 OSM relations only.
 
 ### Origins
@@ -553,14 +557,17 @@ below 10¹⁰. A record of a second source has the `id` −(origin × 10¹² + k
 origin from 1 to 9006, the key of its route below 10¹⁰ and the stage from 0 (a route) to 99. So
 −(9007 × 10¹²) < `id` ≤ −10¹², and the two ranges do not meet. A reader that needs the number of a
 section reads `-id % 100` of an `id` in the first range only. A record has the `id` of the origin
-of its line, so it keeps its `id` when an OSM relation of its route comes, goes or splits.
+of its line, so it keeps its `id` when an OSM relation of its route comes, goes or splits. A source
+trail has the `id` of stage 0 of its route, −(origin × 10¹² + key × 100): a route with stages has no
+record of its own.
 
 ### Jobs
 
 A job is one OSM relation, as the builder plans it today; one source route without `stages`; or
 one stage of a source route. A stage job takes the `ref`, the `rank` and the `kind` of its route,
 its own `name` and `ascent_m`, and the `description`, `operator` and `website` of its route when it
-has none of its own. A stage with no members is no job.
+has none of its own. A stage with no members is no job; it is a part not in the catalog of its
+source trail (see [Source trails](#source-trails)).
 
 ### Line of a source job
 
@@ -685,14 +692,81 @@ A reader shows "Stage n of N" with n the stage number of the part and N the `sta
 long route, and "K of N stages", with K = N less the stage numbers that only parts not in the
 catalog have, or 0 when no part is in the catalog.
 
+### Source trails
+
+Each source route with stages gives a long route, its source trail. Its parts are its stage rows, in
+the order of their numbers. The stage number of a part is the number of its row, so a number with
+no stage row has no part.
+
+- A stage that the builder kept is a part with its record.
+- A stage that failed and has a match line takes as its part a kept OSM record that is a stage of an
+  OSM long route (a part of it, not a section, not a route of its own), agrees with the stage (see
+  [Pairs](#pairs)), and whose match line and the match line of the stage each lie at least four
+  fifths along the other. Of two such records, it takes the one with the lower `id`. A record
+  stands once in a trail, at its first place, so a later stage does not take it again. This part
+  has the `id` of the OSM record, and the `name` and the number of the official stage.
+- Another stage that failed, or a stage that left for a record of an earlier source (see [Who
+  stays](#who-stays)), is a part not in the catalog; a stage that failed has the ends of its main
+  line when the builder made one.
+- A stage with no members is a part not in the catalog, without ends.
+
+A stage that the cut drops (see [Line of a source job](#line-of-a-source-job)) keeps its match line
+and the ends of its main line. Its match line takes no part in [Who stays](#who-stays), so it has no
+pairs. A part not in the catalog has the `id` that the record of its stage would have, and the
+`name` of its stage row.
+
+The record of a source trail has its `id` by [Ids](#ids); the `kind`, `rank`, `name` and `ref` of
+its route; the `description` (cut as for OSM), `operator` and `website` of its route when it has
+them; and `credit`. `stage_count` is the highest stage number of its route, so a stage page shows
+"Stage 35 of 35" also when two numbers have no stage row. A source has no `roundtrip` field: a
+source trail is a loop by the rule of [Long routes](#long-routes) as a relation with
+`roundtrip=yes`, as the builder takes a source route as a loop when the ends of its line are within
+200 m. The other rules of [Long routes](#long-routes) (separate routes, `backwards`, `jump`,
+complete) apply to it as to an OSM long route.
+
+### The same trail
+
+Only the long records of long routes take part: the OSM long routes and the source trails. A cut
+line, and a route record that is a trail by its moving time, stay as [Who stays](#who-stays) left
+them. The trail line of a long record is the `line_udeg` of each of its parts in the catalog, each
+part a piece. Two long records of different origins are a pair by rule (a) of [Pairs](#pairs) only,
+on their trail lines, so a long record of another rank is another trail.
+
+A long record leaves (`Replaced`) when the long records of earlier origins that are its pairs cover
+at least four fifths of its trail line. A source trail never leaves for an OSM long record, so where
+neither covers four fifths of the other, both trails stay. A long record that leaves takes no record
+out of the catalog. The long record that stays takes each of `operator`, `website` and `symbol` that
+it lacks, not `description`, from the long record that left for it and whose trail line lies along
+the largest share of its own, by the rule of [Words](#words). It takes no `symbol` when a part in
+the catalog is in France.
+
+So a trail can show twice: an OSM long record that the source trails cover by less than four fifths
+stays beside them, and so do a trail of another rank, a cut line and a route record that is a trail
+by its moving time.
+
+### Stage fields
+
+`trail`, `trail_stage`, `parent` and `stage` come only from the long records that stay. A source
+trail lists its parts at level 1. Of two long records that list a part, the part takes the fields
+of the one at the lowest level, and of two at one level of the one with the lower `id`. A source
+trail has a lower `id` than each OSM long record, so at one level the source trail gives the fields:
+the stage page shows "Stage n of N" of the official trail, and the stage line has its colour. The
+OSM long record that stays still lists the part in its `parts`, with the OSM number. A record that
+is a part only of long records that left has none of these fields and shows as a route of its own.
+An unnamed OSM stage takes its name by the rule of [Long routes](#long-routes), also from a long
+route that left, so it never leaves the catalog because a trail left. The long route that names it
+can be a source trail.
+
 ### Record
 
 A record of a second source has the fields of a route record from its plan, `moving_s`, `hardest`
 and `profile_m` included; its `id` by [Ids](#ids); its `kind`; `rank`, `name` and `ref` from the
 source; `description` from the source; `operator` and `website` from the source, else by
-[Words](#words); `symbol` by [Words](#words); and `credit`. It has `trail` and `trail_stage` only from an OSM long route that
-lists it, and `parent` and `stage` only from a complete one. A long route with a part that has
-`credit` has the distinct credits of its parts in the catalog, in part order, joined by `; `.
+[Words](#words); `symbol` by [Words](#words); and `credit`. It has `trail` and `trail_stage` from a
+long route that lists it, and `parent` and `stage` only from a complete one, by [Stage
+fields](#stage-fields). A long route has `credit` when its own origin or one of its parts in the
+catalog has one. The builder splits each credit on `; `, and joins the distinct ones with `; `: its
+own first, then those of its parts in part order.
 `planner/route-facts` gives a record of a second source its facts entry as any record, under its
 `id`.
 
