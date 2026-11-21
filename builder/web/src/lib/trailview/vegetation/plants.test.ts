@@ -1,10 +1,13 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { Instances, ModelSpec } from '../instances/instances';
+import type { ModelFiles } from '../instances/model-files';
+import { PLANTS } from '../models/plant-library';
 import type { GroundRule, Region, Rules, TreeRule, Vocabulary } from '../rules/regions';
 import { CLUMPED, groundList, groundRules, materialWord, Plants, SEEDS, SLOTS } from './plants';
 import type { TreeModels } from './tree-models';
 
 const region = (ground: GroundRule[]) => ({ ground }) as unknown as Region;
+const plants = Object.fromEntries(Object.entries(PLANTS).map(([id, { ground }]) => [id, { ground, seasons: {} }]));
 const vocabulary: Vocabulary = {
     materials: [{ id: 'none', cover: 'grass' }, { id: 'heath', cover: 'grass', tags: ['moor'] }, { id: 'scrub', cover: 'shrub' }],
     lithologies: [{ id: 'unknown', hardness: 0.5 }],
@@ -19,18 +22,18 @@ describe('the ground plants of a region', () => {
     });
 
     it('take a pack\'s clumped: false over the model\'s stands, and the salt of their stands from the species alone', () => {
-        const [own, plain] = groundRules(region([{ id: 'bilberry', model: 'bilberry' }, { id: 'blaeberry', model: 'bilberry', clumped: false, share: 0.5 }]), vocabulary)
+        const [own, plain] = groundRules(region([{ id: 'bilberry', model: 'bilberry' }, { id: 'blaeberry', model: 'bilberry', clumped: false, share: 0.5 }]), vocabulary, plants)
             .sort((a, b) => a.id.localeCompare(b.id));
         expect(own.word & CLUMPED).toBe(CLUMPED);
         expect(plain.word & CLUMPED).toBe(0);
-        const alone = groundRules(region([{ id: 'blaeberry', model: 'bilberry', share: 0.9 }]), vocabulary)[0];
+        const alone = groundRules(region([{ id: 'blaeberry', model: 'bilberry', share: 0.9 }]), vocabulary, plants)[0];
         expect(alone.word >>> 16).toBe(plain.word >>> 16);
         expect(own.word >>> 16).not.toBe(plain.word >>> 16);
     });
 
     it('grow on the materials that their on names but their off does not', () => {
-        const [heather] = groundRules(region([{ id: 'heather', model: 'heather', on: ['#moor', 'shrub'] }]), vocabulary);
-        const [grass] = groundRules(region([{ id: 'grass', model: 'grass', off: ['#moor'] }]), vocabulary);
+        const [heather] = groundRules(region([{ id: 'heather', model: 'heather', on: ['#moor', 'shrub'] }]), vocabulary, plants);
+        const [grass] = groundRules(region([{ id: 'grass', model: 'grass', off: ['#moor'] }]), vocabulary, plants);
         expect(heather.materials).toEqual([0b110, 0]);
         expect(grass.materials).toEqual([0b001, 0]);
     });
@@ -45,19 +48,16 @@ describe('the materials of the plants', () => {
 });
 
 describe('the plant models', () => {
-    afterEach(() => vi.unstubAllGlobals());
-
     it('give a plant in rows a run of its own, the same each time, not a shrub of the same plant', () => {
-        vi.stubGlobal('Worker', class { postMessage() {} });
         const specs: ModelSpec[] = [];
         const instances = { produce: () => {}, add: (...added: ModelSpec[]) => specs.push(...added) - added.length };
         const shrub: TreeRule = { model: 'grapevine', leaf: 'broadleaved', cover: 'shrub', elevation: [0, 1000], weight: 1 };
         const rules = { vocabulary, regions: [{ ground: [], trees: [shrub] }], styles: [] } as unknown as Rules;
-        const plants = new Plants(rules, {} as TreeModels, instances as unknown as Instances, () => {}, new AbortController().signal);
+        const models = new Plants(rules, {} as TreeModels, instances as unknown as Instances, () => {}, { models: { plants, trees: {} } } as unknown as ModelFiles);
         expect(specs).toHaveLength(1);
-        const first = plants.rowModel(0, 'grapevine');
+        const first = models.rowModel(0, 'grapevine');
         expect(first).toBe(1);
-        expect(plants.rowModel(0, 'grapevine')).toBe(first);
+        expect(models.rowModel(0, 'grapevine')).toBe(first);
         expect(specs).toHaveLength(1 + SEEDS);
     });
 });

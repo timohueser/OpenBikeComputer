@@ -16,6 +16,7 @@ owns:
   - builder/web/vite/stamp-bundle.ts
   - builder/web/vite/stamp-version.d.ts
   - builder/web/vite/bundle-version.ts
+  - builder/web/vite/model-files.ts
   - builder/web/vite/versions.d.ts
   - builder/web/test-support/trailview/**
   - builder/web/test-support/fake-caches.ts

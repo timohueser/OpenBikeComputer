@@ -4,8 +4,7 @@ import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { Instances, VIEWS, type Producer, type Surfaces } from '../instances/instances';
-import { TREES } from '../models/library';
-import { PLANTS } from '../models/plant-library';
+import type { Models } from '../models/model-file';
 import type { Region, Rules } from '../rules/regions';
 import { SEEDS, type Plants } from './plants';
 import type { TreeModels } from './tree-models';
@@ -29,7 +28,7 @@ export class Rows implements Producer {
     private readonly reach: number;
     private side = 0;
 
-    constructor(rules: Rules, trees: TreeModels, plants: Plants, private readonly instances: Instances) {
+    constructor(rules: Rules, trees: TreeModels, plants: Plants, private readonly instances: Instances, models: Models) {
         instances.produce(this);
         // tools/trailview/rules.py checks that CROPS materials at most have rows.
         const crops = rules.vocabulary.materials.flatMap(({ rows }, code) => (rows ? [{ code, rows }] : [])).slice(0, CROPS);
@@ -41,12 +40,12 @@ export class Rows implements Producer {
         });
         const evergreen = (region: Region, model: string) => (region.trees.find(rule => rule.model === model) ?? rules.regions.flatMap(r => r.trees).find(rule => rule.model === model))?.evergreen;
         const word = (region: Region, r: number, model: string | undefined) => {
-            if (model && model in PLANTS) {
+            if (model && model in models.plants) {
                 const first = plants.rowModel(r, model);
                 return first === undefined ? NO_MODEL : first | ALONG | (SEEDS << SHAPES);
             }
-            const index = model && model in TREES ? trees.index(r, model, evergreen(region, model)) : undefined;
-            return index === undefined ? NO_MODEL : index | (TREES[model!].keepsHeading ? WINDWARD : 0);
+            const index = model && model in models.trees ? trees.index(r, model, evergreen(region, model)) : undefined;
+            return index === undefined ? NO_MODEL : index | (models.trees[model!].keepsHeading ? WINDWARD : 0);
         };
         rules.regions.forEach((region, r) => crops.forEach(({ code, rows }, c) => {
             data[MODELS_AT + 4 * r + c] = word(region, r, region.rows[rules.vocabulary.materials[code].id] ?? rows.model);

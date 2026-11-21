@@ -5,11 +5,10 @@ import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { COVER_ORDER } from '../ground/rules';
 import { EYE, Instances, VIEWS, type ModelSpec, type Producer, type Surfaces } from '../instances/instances';
+import type { ModelFiles } from '../instances/model-files';
 import { f16 } from '../instances/points';
-import { TREES } from '../models/library';
-import { PLANTS } from '../models/plant-library';
+import type { Models, Packed } from '../models/model-file';
 import { bits, named, seasonOf, type Region, type Rules, type Season, type Vocabulary } from '../rules/regions';
-import type { BuiltMesh, PlantJob } from './plant-worker';
 import { meets, type Reach, type TreeModels } from './tree-models';
 
 /** As plants.wgsl: the units of a cell of each grid, the reaches in metres, the list slots per region, vec4 per region and shapes per ground plant. */
@@ -34,12 +33,12 @@ export function materialWord({ cover, shrubs = 1 }: Vocabulary['materials'][numb
 
 /**
  * The ground plants of a region that its list holds, what the pack says of each over its plant
- * model's `ground`, with their words of plants.wgsl: CLUMPED and at bit 16 the salt of its stands, and
+ * model's `ground` (of `plants`), with their words of plants.wgsl: CLUMPED and at bit 16 the salt of its stands, and
  * the bits of the materials that it grows on. The salt comes from the species, so its stands stay put
  * whatever the shares of the other plants.
  */
-export function groundRules(region: Region, vocabulary: Vocabulary) {
-    return groundList(region.ground.filter(rule => rule.model in PLANTS).map(rule => ({ ...PLANTS[rule.model].ground, ...rule }))).map(rule => {
+export function groundRules(region: Region, vocabulary: Vocabulary, plants: Models['plants']) {
+    return groundList(region.ground.filter(rule => rule.model in plants).map(rule => ({ ...plants[rule.model].ground, ...rule }))).map(rule => {
         const salt = [...rule.id].reduce((h, c) => (31 * h + c.charCodeAt(0)) % 997, 7), off = named(vocabulary, rule.off);
         return { ...rule, word: (rule.clumped ? CLUMPED : 0) | (salt << 16), materials: bits(named(vocabulary, rule.on).filter(code => !off.includes(code))) };
     });
@@ -57,8 +56,8 @@ export function groundList<T extends { share: number }>(plants: T[]): T[] {
 
 /**
  * The ground plants and the shrubs about the eye (plants.wgsl): a producer of instances whose models
- * come from the packs of the regions, built for the date's season once their region is in reach. A tree that stands as a shrub is
- * a model of the forest's (tree-models.ts).
+ * come from the packs of the regions, loaded for the date's season once their region is in reach (models/model-file.ts).
+ * A tree that stands as a shrub is a model of the forest's (tree-models.ts).
  */
 export class Plants implements Producer {
     private resources?: Resources;
@@ -69,28 +68,25 @@ export class Plants implements Producer {
     private readonly asked: (Season | undefined)[] = [];
     private readonly built: (Season | undefined)[] = [];
     private readonly data: Uint32Array<ArrayBuffer>;
-    private readonly worker = new Worker(new URL('./plant-worker.ts', import.meta.url), { type: 'module' });
-    /** The jobs in the worker by id: their season and their models of the list. */
-    private readonly jobs = new Map<number, { season: Season; models: number[] }>();
+    /** The files that load. */
+    private loading = 0;
     private season?: Season;
     private reach: Reach = { reach: new Set(), near: new Set() };
-    private next = 0;
     private surface?: GPUBindGroup;
     private features?: GPUBindGroup;
     private sides: [number, number] = [0, 0];
     /** Whether the last update changed what the plants draw, other than by the camera. */
     newContent = false;
 
-    /** An abort of `stop` ends the worker. */
-    constructor(rules: Rules, trees: TreeModels, private readonly instances: Instances, private readonly wake: () => void, stop: AbortSignal) {
-        stop.addEventListener('abort', () => this.worker.terminate());
+    constructor(rules: Rules, trees: TreeModels, private readonly instances: Instances, private readonly wake: () => void, private readonly files: ModelFiles) {
         instances.produce(this);
+        const { plants } = files.models;
         const { materials } = rules.vocabulary;
         const data = new Uint32Array(64 + rules.regions.length * REGION_WORDS * 4).fill(NONE), floats = new Float32Array(data.buffer);
         materials.forEach((material, code) => (data[code] = materialWord(material)));
         rules.regions.forEach((region, r) => {
             const at = 64 + r * REGION_WORDS * 4;
-            const ground = groundRules(region, rules.vocabulary).flatMap(rule => {
+            const ground = groundRules(region, rules.vocabulary, plants).flatMap(rule => {
                 const tie = rule.own ? OWN_TIE : TIE;
                 const first = this.models(r, Array.from({ length: SEEDS }, (_, k) => ({ model: rule.model, seed: k + 1, evergreen: false, shrub: false, tie })));
                 return first === undefined ? [] : [{ ...rule, first }];
@@ -101,10 +97,10 @@ export class Plants implements Producer {
                 floats[w + 2] = rule.share;
                 data.set([...rule.materials, 0, 0], w + 4);
             });
-            const shrubs = region.trees.filter(rule => rule.cover === 'shrub' && (rule.model in PLANTS || rule.model in TREES)).sort((a, b) => b.weight - a.weight).slice(0, SLOTS).flatMap(rule => {
-                const plant = rule.model in PLANTS;
+            const shrubs = region.trees.filter(rule => rule.cover === 'shrub' && (rule.model in plants || rule.model in files.models.trees)).sort((a, b) => b.weight - a.weight).slice(0, SLOTS).flatMap(rule => {
+                const plant = rule.model in plants;
                 const model = plant ? this.models(r, [{ model: rule.model, seed: 1, evergreen: !!rule.evergreen, shrub: true, tie: OWN_TIE }]) : trees.index(r, rule.model, rule.evergreen, OWN_TIE);
-                return model === undefined ? [] : [{ ...rule, index: model, height: plant ? PLANTS[rule.model].ground.height : SHRUB_HEIGHT_M }];
+                return model === undefined ? [] : [{ ...rule, index: model, height: plant ? plants[rule.model].ground.height : SHRUB_HEIGHT_M }];
             });
             shrubs.forEach((rule, k) => {
                 const w = at + 4 * (2 * SLOTS + k);
@@ -113,27 +109,15 @@ export class Plants implements Producer {
             });
         });
         this.data = data;
-        this.worker.onmessage = ({ data: message }: MessageEvent<{ id: number; built?: BuiltMesh[]; error?: string }>) => {
-            const job = this.jobs.get(message.id)!;
-            this.jobs.delete(message.id);
-            if (message.error || !message.built) return void console.warn(`Plant models: ${message.error}`);
-            if (job.season !== this.season) return;
-            job.models.forEach((i, k) => {
-                this.instances.replace(this.indexes[i], spec(this.list[i], message.built![k]));
-                this.built[i] = job.season;
-            });
-            this.newContent = true;
-            this.wake();
-        };
     }
 
     get idle(): boolean {
-        return this.jobs.size === 0 && this.list.every((_, i) => this.asked[i] === this.season || !this.plants(i, this.reach.reach));
+        return this.loading === 0 && this.list.every((_, i) => this.asked[i] === this.season || !this.plants(i, this.reach.reach));
     }
 
-    /** Whether the models of the near regions hold their meshes of the season. */
+    /** Whether the models of the near regions hold their meshes of the season; a file that failed counts as done. */
     get nearIdle(): boolean {
-        return this.list.every((_, i) => this.built[i] === this.season || !this.plants(i, this.reach.near));
+        return this.list.every((_, i) => this.built[i] === this.season || !this.plants(i, this.reach.near) || (this.asked[i] === this.season && this.loading === 0));
     }
 
     /** The first of SEEDS models of a plant that stands in rows (rows.ts) of region `region`, in its own colour; ask before the first update. */
@@ -186,14 +170,15 @@ export class Plants implements Producer {
         const season = seasonOf(date), asking = season !== this.season || reach !== this.reach;
         this.season = season;
         this.reach = reach;
-        // A job for the near regions' models first, then one for the others in reach, each in the season.
+        // The near regions' models first, then the others in reach, each in the season.
         for (const regions of asking ? [reach.near, reach.reach] : []) {
-            const models = this.list.flatMap((_, i) => (this.asked[i] !== season && this.plants(i, regions) ? [i] : []));
-            if (!models.length) continue;
-            models.forEach(i => (this.asked[i] = season));
-            const id = this.next++;
-            this.jobs.set(id, { season, models });
-            this.worker.postMessage({ id, models: models.map(i => ({ model: this.list[i].model, seed: this.list[i].seed, season: this.list[i].evergreen ? 'summer' : season })) } satisfies PlantJob);
+            for (const [i, entry] of this.list.entries()) {
+                if (this.asked[i] === season || !this.plants(i, regions)) continue;
+                this.asked[i] = season;
+                const url = this.files.models.plants[entry.model]?.seasons[entry.evergreen ? 'summer' : season];
+                this.loading++;
+                void (url ? this.files.load(url) : Promise.resolve(undefined)).then(models => this.land(i, season, models?.[entry.seed - 1]));
+            }
         }
         const [ux, uy] = worldPixel(lonLat, UNITS), unit = anchorAt(...lonLat).unit;
         // An eye higher over the ground than a grid's reach dispatches none of it.
@@ -205,6 +190,16 @@ export class Plants implements Producer {
         new Float32Array(params.buffer)[8] = Math.max(0, above);
         this.sides = [params[2], params[6]];
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
+    }
+
+    /** Gives a model of the list its mesh of a season, while the season lasts. */
+    private land(i: number, season: Season, model: Packed | undefined): void {
+        this.loading--;
+        if (!model || season !== this.season) return;
+        this.instances.replace(this.indexes[i], spec(this.list[i], model));
+        this.built[i] = season;
+        this.newContent = true;
+        this.wake();
     }
 
     encode(pass: GPUComputePassEncoder, ground: GPUBindGroup, view: number): void {
@@ -226,9 +221,9 @@ export class Plants implements Producer {
 }
 
 /** The tiers of a plant model. */
-function spec({ shrub, tie }: Model, mesh: BuiltMesh): ModelSpec {
-    if (shrub) return { tiers: [{ mesh, until: SHRUB_MESH_M }], impostor: { from: 0, until: SHRUB_M }, tie };
-    return { tiers: [{ mesh, until: GROUND_M }], tie };
+function spec({ shrub, tie }: Model, { tiers: [mesh], shape }: Packed): ModelSpec {
+    if (shrub) return { tiers: [{ mesh, until: SHRUB_MESH_M }], shape, impostor: { until: SHRUB_M }, tie };
+    return { tiers: [{ mesh, until: GROUND_M }], shape, tie };
 }
 
 /** The ground plants and the shrubs about the eye. */

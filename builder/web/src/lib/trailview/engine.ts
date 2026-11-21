@@ -20,6 +20,7 @@ import { Resolve, resolvePipeline } from './resolve/resolve';
 import { MAX_SCALE, Targets } from './resolve/targets';
 import { jitter, STILL_FRAMES, Temporal, type Step } from './resolve/temporal';
 import { EYE, Instances, SUN, type InstanceStats, type LastFrame } from './instances/instances';
+import { ModelFiles } from './instances/model-files';
 import { GroundSource } from './stream/ground';
 import { eyeTiles, pageDecoder, type EyeTiles } from './stream/terrain';
 import { Terrain, terrainPipelines, type Audit, type TerrainStats } from './terrain/terrain';
@@ -27,7 +28,7 @@ import { piecePipelines } from './plan/pieces';
 import HOUSE_VERSION from 'virtual:house-version';
 import PLAN_VERSION from 'virtual:plan-version';
 import STAMP_VERSION from 'virtual:stamp-version';
-import TREE_VERSION from 'virtual:tree-version';
+import MODELS from 'virtual:models';
 import { FINEST, NEAR_M } from './terrain/lod';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
@@ -129,6 +130,7 @@ export class TrailView {
     private readonly groundLook: Ground;
     private readonly houses: Houses;
     private readonly instances = new Instances();
+    private readonly models: ModelFiles;
     private readonly trees: TreeModels;
     /** The last regions in reach, where they were read from and at which change of the ground pages. */
     private reached?: Reach & { east: number; north: number; changes: number };
@@ -203,12 +205,13 @@ export class TrailView {
         this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, budget, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION });
         this.groundLook = new Ground(ground, budget, () => this.request());
         this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, budget.loads.houses, { release, version: HOUSE_VERSION });
-        this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal, TREE_VERSION);
+        this.models = new ModelFiles(MODELS, signal);
+        this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), this.models, budget.loads.models);
         this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal, budget);
-        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
-        this.rows = new Rows(this.groundLook.rules, this.trees, this.plants, this.instances);
-        this.kindPoints = new KindPoints(this.instances);
-        this.dressing = new Dressing(this.groundLook.rules, this.instances);
+        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request(), this.models);
+        this.rows = new Rows(this.groundLook.rules, this.trees, this.plants, this.instances, MODELS);
+        this.kindPoints = new KindPoints(this.instances, this.models, () => this.request());
+        this.dressing = new Dressing(this.groundLook.rules, this.instances, this.models, () => this.request());
         // A still has a size of its own and no input: the controls listen for keys on the whole window.
         if (output) return;
         this.controls = new Controls(canvas, {
@@ -449,7 +452,7 @@ export class TrailView {
 
     private idle(): boolean {
         return this.complete && this.terrain.idle && this.groundLook.idle && this.houses.idle && this.trees.idle && this.forest.idle && this.plants.idle && this.instances.idle
-            && this.sky.idle && !this.shadow.pending && this.settled() && !this.converging;
+            && this.kindPoints.idle && this.dressing.idle            && this.sky.idle && !this.shadow.pending && this.settled() && !this.converging;
     }
 
     /**
@@ -496,7 +499,7 @@ export class TrailView {
 
     private near(): boolean {
         return this.drawing && this.complete && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.nearIdle && this.forest.idle
-            && this.plants.nearIdle && this.instances.idle && this.shadow.nearDrawn;
+            && this.plants.nearIdle && this.kindPoints.idle && this.dressing.idle && this.instances.idle && this.shadow.nearDrawn;
     }
 
     /**
@@ -714,13 +717,13 @@ export class TrailView {
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify([this.extras, this.skyMagnitude]);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || extras !== this.drawnExtras;
+            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.kindPoints.newContent || this.dressing.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             if (moved) this.sight = { viewProj, eye: [eye.east, eye.north, eye.z] };
             this.drawnExtras = extras;
             this.completed = false;
             lights = this.lights();
-            const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent;
+            const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.kindPoints.newContent || this.dressing.newContent;
             if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, light, { casters, reshaped: this.terrain.reshaped }, moved);
             this.shadow.write(gpu, [eye.east, eye.north, eye.z], light);
             // A new map changes the frame as new content does.
@@ -802,8 +805,8 @@ export class TrailView {
         cast();
         this.cpu = performance.now() - start;
         this.drawn = eye ? this.terrain.drawn : 0;
-        // The tree models that the workers built go to the device cache once the view is idle, so a load never waits for the writes.
-        if (this.trees.unsaved && this.idle()) this.trees.save();
+        // The model files from the network go to the device cache once the view is idle, so a load never waits for the writes.
+        if (this.models.unsaved && this.idle()) this.models.save();
         // Frames go on while the eye moves or settles on the ground, while the terrain or the ground has
         // work that no load waits for, and until a still view has all its jittered frames.
         if (steer || !settled || this.terrain.working || this.groundLook.working || this.houses.working || this.shadow.pending || this.converging) this.request();

@@ -11,8 +11,8 @@ export interface Budget {
     terrainShare: number;
     /** The ground look's pages: whole layers of 16. */
     groundPages: number;
-    /** Loads in flight at most: terrain tiles, ground tiles, house tiles, stamp jobs of the worker, canopy tiles. */
-    loads: { terrain: number; ground: number; houses: number; stamps: number; canopy: number };
+    /** Loads in flight at most: terrain tiles, ground tiles, house tiles, stamp jobs of the worker, canopy tiles, tree model files. */
+    loads: { terrain: number; ground: number; houses: number; stamps: number; canopy: number; models: number };
 }
 
 /**
@@ -20,6 +20,6 @@ export interface Budget {
  * than 64 ground pages.
  */
 export const BUDGETS: Record<Tier, Budget> = {
-    desktop: { frameRate: 60, terrainShare: 1, groundPages: 192, loads: { terrain: 6, ground: 4, houses: 6, stamps: 8, canopy: 9 } },
-    phone: { frameRate: 30, terrainShare: 0.5, groundPages: 64, loads: { terrain: 3, ground: 2, houses: 3, stamps: 4, canopy: 5 } },
+    desktop: { frameRate: 60, terrainShare: 1, groundPages: 192, loads: { terrain: 6, ground: 4, houses: 6, stamps: 8, canopy: 9, models: 6 } },
+    phone: { frameRate: 30, terrainShare: 0.5, groundPages: 64, loads: { terrain: 3, ground: 2, houses: 3, stamps: 4, canopy: 5, models: 3 } },
 };

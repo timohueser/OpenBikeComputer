@@ -1,14 +1,14 @@
 // The device cache: what a worker makes of the release's tiles, kept in Cache Storage under the release and a
 // build version, the hash of the code that makes it (model.ts: the plan's cells with `ground=plan`, stamps.ts:
-// the stamp worker's nodes, houses.ts: the house records of a tile, tree-models.ts: the tree models, which no
-// tile changes). That code is a pure function of its input, so an entry is byte-equal to what the worker makes.
-// The least recently used entries leave past the cap.
+// the stamp worker's nodes, houses.ts: the house records of a tile). That code is a pure function of its input, so
+// an entry is byte-equal to what the worker makes. It also keeps the model files of the build (instances/model-files.ts),
+// whose names change with their content. The least recently used entries leave past the cap.
 
 /**
  * The device storage of each kind: past its cap, the least recently used entries of the kind go. Together
- * 296 MiB; a view writes more cell bytes than stamp bytes. The cap of the trees holds the models of every species.
+ * 280 MiB; a view writes more cell bytes than stamp bytes. The cap of the models holds the model files of many regions.
  */
-export const CAPS = { cells: 192 * 2 ** 20, stamps: 64 * 2 ** 20, houses: 16 * 2 ** 20, trees: 24 * 2 ** 20 };
+export const CAPS = { cells: 192 * 2 ** 20, stamps: 64 * 2 ** 20, houses: 16 * 2 ** 20, models: 8 * 2 ** 20 };
 /** The entry's first word, then the count of parts, their lengths in words and the SHA-256 of the parts. */
 const MAGIC = 0x4f424343;
 const DIGEST_WORDS = 8;
