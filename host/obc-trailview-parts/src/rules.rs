@@ -32,7 +32,7 @@ const BAKE_FIELDS: [&str; 21] = [
 ];
 const GROUP_FIELDS: [&str; 7] = ["classes", "look", "collar_max_m", "wing_max_m", "least_height_m", "rock", "bore"];
 /// The values of the design, in the order of `Design`.
-const DESIGN_FIELDS: [&str; 17] = [
+const DESIGN_FIELDS: [&str; 18] = [
     "frame_m",
     "recess_m",
     "face_m",
@@ -50,6 +50,7 @@ const DESIGN_FIELDS: [&str; 17] = [
     "lift_m",
     "mitre_max",
     "approach_m",
+    "wing_slope",
 ];
 const LOOK_FIELDS: [&str; 4] = ["face", "frame", "coping", "shell"];
 const INSIDE_FIELDS: [&str; 8] = ["tiles", "arch_lining", "lining", "walk", "rock", "rock_floor", "lamp", "void"];
@@ -142,6 +143,9 @@ pub struct Design {
     pub mitre_max: f64,
     /// The ground way before an opening widens to the opening's inner width and back over this length.
     pub approach_m: f64,
+    /// Toward its end, the top of a wing wall falls this many metres per metre to its coping, or more steeply where its
+    /// row is too short to fall from the head wall's top.
+    pub wing_slope: f64,
 }
 
 /// The colours of a look, as the viewer's `rgb` packs them (red in the low byte).
@@ -297,6 +301,7 @@ impl Rules {
             lift_m: v[14],
             mitre_max: v[15],
             approach_m: v[16],
+            wing_slope: v[17],
         };
         let mut looks = BTreeMap::new();
         for (name, row) in table["looks"].as_object().ok_or("parts looks: not an object")? {

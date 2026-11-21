@@ -50,7 +50,7 @@ impl Part {
 }
 
 /// The kinds of part that the builder makes. A chain draws as parts only where both of its ends are of these kinds.
-pub const BUILT: &[Part] = &[Part::Arch];
+pub const BUILT: &[Part] = &[Part::Arch, Part::Box];
 
 /// Whether all ends of a chain are built; `None` is an end with no part of its own.
 pub fn built(ends: &[Option<Part>]) -> bool {

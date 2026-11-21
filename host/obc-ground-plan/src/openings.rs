@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn a_chain_with_an_end_that_is_not_built_keeps_its_tunnel_way() {
-        let (graph, mesh) = build(&input(Some("arch box")));
+        let (graph, mesh) = build(&input(Some("arch free")));
         let (develop_graph, develop) = build(&input(None));
         assert_eq!((&graph.ways, &graph.samples), (&develop_graph.ways, &develop_graph.samples));
         assert_eq!(mesh.to_bytes(), develop.to_bytes());
