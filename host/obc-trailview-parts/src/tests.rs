@@ -912,6 +912,27 @@ fn two_tubes_meet_only_where_both_are_and_a_cut_head_is_closed() {
         assert!(got.is_some_and(|h| h.1 && h.0 < 5.1), "turns away, {east} m east: {got:?}");
     }
     assert!(hit(&faces, [10.0, 0.0, 502.5], north, 30.0).is_some_and(|h| h.1 && h.0 > 11.0), "turns away, 10 m east");
+    // A pair whose tubes run 25 degrees apart from one frame line, their rooms overlapping there: both find one plane,
+    // so a way north from the first meets the second's far wall, and a way up anywhere between their axes meets a
+    // vault.
+    let t = libm::tan(25f64.to_radians());
+    let mut angled = tubes(&[
+        &[[0.0, 0.0], [10.0, 0.0], [40.0, 0.0]],
+        &[[0.0, 7.0], [10.0, 7.0 + 10.0 * t], [40.0, 7.0 + 40.0 * t]],
+    ]);
+    angled.0.remove(2);
+    angled.0[0].part = Part::Pair;
+    angled.0[0].mate = Some(Mate { across: 7.0, way: [1, 1], shift: 0.0, collar: 6.0 });
+    angled.1.iter_mut().for_each(|c| c.ends = [Some(Part::Pair), Some(Part::Arch)]);
+    let faces = faces_of(&angled);
+    for east in [1.0, 2.0, 3.0] {
+        let got = hit(&faces, [east, 0.0, 502.5], north, 30.0);
+        assert!(got.is_some_and(|h| h.1 && h.0 > 11.0), "angled, {east} m east: {got:?}");
+        for k in 0..=20 {
+            let p = [east, 2.0 + 0.2 * f64::from(k), 500.5];
+            assert!(hit(&faces, p, [0.0, 0.0, 1.0], 30.0).is_some_and(|h| h.1), "angled: a way up at {p:?}");
+        }
+    }
     // Two arches on one frame line, the first's head wall 2 m taller: over the lower wall, a way to the taller one
     // meets the face that closes it at the middle.
     let mut taller = row(&[0.0, 7.0]);
