@@ -75,13 +75,18 @@ describe('the tree models', () => {
         expect([models.nearIdle, specs[specs[beech].phases![0].model].shape?.crown]).toEqual([true, 0.2]);
     });
 
-    it('counts a file that failed as done, and asks for it again when the date\'s phases change', async () => {
-        const { models, reach } = trees({ beech: species(true) });
+    it('counts a file that failed as done, and draws the bare crowns of the others once it fails', async () => {
+        const { models, specs, reach, beech } = trees({ beech: species(true), oak: species(false) });
+        models.index(0, 'oak');
         models.update('2026-01-20', reach);
-        await loads[0].answer(undefined);
+        await loads[0].answer(built(0.1));
+        await loads[2].answer(built(0.2));
         models.update('2026-01-20', reach);
-        expect([loads.length, models.idle, models.nearIdle]).toEqual([1, true, true]);
+        expect(specs[beech].phases![0].model).toBe(beech);
+        await loads[1].answer(undefined);
+        models.update('2026-01-20', reach);
         models.update('2026-07-01', reach);
-        expect(loads.map(({ file }) => file)).toEqual(['beech/summer', 'beech/summer']);
+        models.update('2026-01-20', reach);
+        expect([loads.length, models.idle, models.nearIdle, specs[specs[beech].phases![0].model].shape?.crown]).toEqual([3, true, true, 0.2]);
     });
 });

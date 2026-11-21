@@ -65,7 +65,7 @@ export class Plants implements Producer {
     private readonly indexes: number[] = [];
     /**
      * Per model of the list: the regions that plant it, and the seasons that its mesh was asked for, that it holds and whose
-     * file failed. A failed file counts as done, and is asked for again when the season or the regions in reach change.
+     * file failed. A failed file (ModelFiles tried it again where that can help) counts as done.
      */
     private readonly users: Set<number>[] = [];
     private readonly asked: (Season | undefined)[] = [];
@@ -79,8 +79,6 @@ export class Plants implements Producer {
     private surface?: GPUBindGroup;
     private features?: GPUBindGroup;
     private sides: [number, number] = [0, 0];
-    /** Whether the last update changed what the plants draw, other than by the camera. */
-    newContent = false;
 
     constructor(rules: Rules, trees: TreeModels, private readonly instances: Instances, private readonly files: ModelFiles) {
         instances.produce(this);
@@ -116,7 +114,7 @@ export class Plants implements Producer {
     }
 
     get idle(): boolean {
-        return this.loading === 0 && this.list.every((_, i) => this.asked[i] === this.season || this.failed[i] === this.season || !this.plants(i, this.reach.reach));
+        return this.loading === 0 && this.list.every((_, i) => this.asked[i] === this.season || !this.plants(i, this.reach.reach));
     }
 
     /** Whether the models of the near regions hold their meshes of the season; a file that failed counts as done. */
@@ -168,7 +166,6 @@ export class Plants implements Producer {
      * metres over the ground.
      */
     update(lonLat: [number, number], date: string, above: number, reach: Reach): void {
-        this.newContent = false;
         const season = seasonOf(date), asking = season !== this.season || reach !== this.reach;
         this.season = season;
         this.reach = reach;
@@ -177,7 +174,6 @@ export class Plants implements Producer {
             for (const [i, entry] of this.list.entries()) {
                 if (this.asked[i] === season || !this.plants(i, regions)) continue;
                 this.asked[i] = season;
-                this.failed[i] = undefined;
                 const url = this.files.models.plants[entry.model]?.seasons[entry.evergreen ? 'summer' : season];
                 this.loading++;
                 void (url ? this.files.load(url) : Promise.resolve(undefined)).then(models => this.land(i, season, models?.[entry.seed - 1]));
@@ -201,14 +197,9 @@ export class Plants implements Producer {
     private land(i: number, season: Season, model: Packed | undefined): void {
         this.loading--;
         if (season !== this.season) return;
-        if (!model) {
-            this.asked[i] = undefined;
-            this.failed[i] = season;
-            return;
-        }
+        if (!model) return void (this.failed[i] = season);
         this.instances.replace(this.indexes[i], spec(this.list[i], model));
         this.built[i] = season;
-        this.newContent = true;
     }
 
     encode(pass: GPUComputePassEncoder, ground: GPUBindGroup, view: number): void {

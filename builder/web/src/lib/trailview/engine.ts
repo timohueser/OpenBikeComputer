@@ -718,13 +718,13 @@ export class TrailView {
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify([this.extras, this.skyMagnitude]);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.models.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || extras !== this.drawnExtras;
+            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.models.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             if (moved) this.sight = { viewProj, eye: [eye.east, eye.north, eye.z] };
             this.drawnExtras = extras;
             this.completed = false;
             lights = this.lights();
-            const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.models.newContent;
+            const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.models.newContent;
             if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, light, { casters, reshaped: this.terrain.reshaped }, moved);
             this.shadow.write(gpu, [eye.east, eye.north, eye.z], light);
             // A new map changes the frame as new content does.
