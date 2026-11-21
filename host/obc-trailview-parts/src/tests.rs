@@ -912,6 +912,24 @@ fn two_tubes_meet_only_where_both_are_and_a_cut_head_is_closed() {
         assert!(got.is_some_and(|h| h.1 && h.0 < 5.1), "turns away, {east} m east: {got:?}");
     }
     assert!(hit(&faces, [10.0, 0.0, 502.5], north, 30.0).is_some_and(|h| h.1 && h.0 > 11.0), "turns away, 10 m east");
+    // A path tube whose axis lies 3 m from a road tube's, in the road's room: the middle lies past the path's axis. A
+    // way up from either room meets a vault, and a way north from the path's axis meets its far wall.
+    let mut inner = tubes(&[&[[0.0, 0.0], [10.0, 0.0], [40.0, 0.0]], &[[0.0, 3.0], [10.0, 3.0], [40.0, 3.0]]]);
+    for e in &mut inner.0[2..] {
+        (e.half, e.height) = (0.9, 2.6);
+    }
+    for c in &mut inner.1[2..] {
+        (c.half, c.height) = (0.9, 2.6);
+    }
+    let faces = faces_of(&inner);
+    for east in [2.0, 10.0, 30.0] {
+        for y in [-2.0, 0.0, 2.0, 3.0] {
+            let p = [east, y, 501.0];
+            assert!(hit(&faces, p, [0.0, 0.0, 1.0], 30.0).is_some_and(|h| h.1), "a path in a road's room: up at {p:?}");
+        }
+        let got = hit(&faces, [east, 3.0, 501.0], north, 30.0);
+        assert!(got.is_some_and(|h| h.1 && h.0 < 1.0), "a path in a road's room: north at {east} m: {got:?}");
+    }
     // A pair whose tubes run 25 degrees apart from one frame line, their rooms overlapping there: both find one plane,
     // so a way north from the first meets the second's far wall, and a way up anywhere between their axes meets a
     // vault.

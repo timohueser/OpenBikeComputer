@@ -486,8 +486,9 @@ impl<'a> Net<'a> {
                     (first, last, Some(last.0))
                 }
             };
-            let (far, near) = (from.0.at([from.1.axis, 0.0]), from.0.at([from.1.x, 0.0]));
-            let away = [far[0] - near[0], far[1] - near[1]];
+            // Toward the other's side of the own axis: where a narrow tube lies in a wide one's room, the middle lies
+            // past the narrow one's axis.
+            let away = [from.0.ax * from.1.axis.signum(), from.0.ay * from.1.axis.signum()];
             // The two tubes overlap by `OVERLAP_M` at the plane, so the rounding of their vertices opens no gap there.
             let l = libm::hypot(away[0], away[1]).max(f64::MIN_POSITIVE);
             let d = OVERLAP_M / metres_per_unit(s.y) / l;
