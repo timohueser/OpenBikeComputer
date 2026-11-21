@@ -4,6 +4,7 @@
 //   node phone.mjs build --origin https://IP:PORT                  # the page and the timing page, into dist/trailview-phone
 //   node phone.mjs serve --host IP [--port 8770] [--data http://127.0.0.1:8710] [--results DIR] [--cert DIR] [--requests DIR]
 //   node phone.mjs summarize RESULT.json
+//   node phone.mjs bundle --origin http://127.0.0.1:8771 --out DIR       # prototype #3765: the page for the iOS app's loopback server
 //
 // The phone opens https://IP:PORT/phone/ to measure, or https://IP:PORT/phone/diagnose for the fault check of
 // phone-diagnose.js, whose pictures and page bytes land in RESULTS/<session>/, or https://IP:PORT/phone/cold for its cold
@@ -13,7 +14,7 @@
 // `requests` tool: the session then ends with the timing page on those cells. Every answer is `no-store`, so each run
 // loads cold over the network.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { createServer } from 'node:https';
 import { extname, join, normalize, resolve } from 'node:path';
@@ -28,11 +29,12 @@ const { values: a, positionals: [command, file] } = parseArgs({
     options: {
         origin: { type: 'string' }, host: { type: 'string' }, port: { type: 'string', default: '8770' },
         data: { type: 'string', default: 'http://127.0.0.1:8710' }, results: { type: 'string', default: join(WEB, '.artifacts/phone') },
-        cert: { type: 'string', default: join(WEB, '.artifacts/phone/cert') }, requests: { type: 'string' },
+        cert: { type: 'string', default: join(WEB, '.artifacts/phone/cert') }, requests: { type: 'string' }, out: { type: 'string' },
     },
 });
 
 if (command === 'build') build();
+else if (command === 'bundle') bundle();
 else if (command === 'serve') serve();
 else if (command === 'summarize') summarize(JSON.parse(readFileSync(file, 'utf8')));
 else throw new Error('Give build, serve or summarize.');
@@ -43,8 +45,23 @@ async function build() {
     process.env.VITE_PLANNER_CATALOG = `${a.origin}/planner/catalog.json`;
     const { build: vite } = await import(join(WEB, 'node_modules/vite/dist/node/index.js'));
     // The inline config merges into vite.config.ts: the input list adds the timing page to trailview.html.
-    await vite({ root: WEB, configFile: join(WEB, 'vite.config.ts'), mode: 'trailview', build: { outDir: DIST, rollupOptions: { input: ['plan-timing.html'] } } });
+    await vite({ root: WEB, configFile: join(WEB, 'vite.config.ts'), mode: 'trailview', build: { outDir: a.out ?? DIST, emptyOutDir: true, rollupOptions: { input: ['plan-timing.html'] } } });
 }
+
+/** The page for the app's loopback origin, with the scripts that serve() adds, so the app serves it as files. */
+async function bundle() {
+    if (!a.out) throw new Error('Give --out DIR');
+    await build();
+    const walk = dir => readdirSync(dir, { withFileTypes: true }).flatMap(e => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
+    for (const file of walk(resolve(a.out))) {
+        const body = readFileSync(file);
+        if (file.endsWith('.html')) writeFileSync(file, inject(body.toString()));
+        if (WORKER.test(file)) writeFileSync(file, Buffer.concat([readFileSync(join(HERE, 'phone-worker.js')), body]));
+    }
+}
+
+const WORKER = /\/(ground|decode)-worker-[\w-]+\.js$/;
+const inject = html => html.replace('<head>', '<head><script src="/phone/measure.js"></script><script src="/phone/diagnose.js"></script>');
 
 /** A self-signed certificate for the LAN address; iOS trusts it only as a CA with serverAuth and at most 825 days. */
 function certificate(dir, host) {
@@ -78,6 +95,8 @@ function serve() {
         const bridge = /^\/phone\/webp\/(obc_webp_bridge(?:_bg\.wasm|\.js))$/.exec(path), bridgeFile = bridge && join(WEB, 'src/lib/trailview/stream/webp', bridge[1]);
         if (bridgeFile) return existsSync(bridgeFile) ? send(response, 200, TYPES[extname(bridgeFile)], readFileSync(bridgeFile)) : send(response, 404, 'text/plain', '');
         if (path === '/phone/compile') return send(response, 200, 'text/html', page('compile'));
+        if (path === '/phone/memory') return send(response, 200, 'text/html', page('memory'));
+        if (path === '/phone/memory.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-memory.js')));
         const page_ = /^\/phone\/(diagnos(?:e|is)|compile|cold)\/?$/i.exec(path);
         const name = page_?.[1].toLowerCase();
         if (name) return response.writeHead(302, { location: `/phone/${name.startsWith('diagnos') ? 'diagnose' : name}` }).end();
@@ -97,10 +116,10 @@ function serve() {
             let body = readFileSync(local);
             const type = TYPES[extname(local)] ?? 'application/octet-stream';
             // The ground worker's jobs carry their time split (phone-worker.js).
-            if (/\/(ground|decode)-worker-[\w-]+\.js$/.test(local)) body = Buffer.concat([readFileSync(join(HERE, 'phone-worker.js')), body]);
+            if (WORKER.test(local)) body = Buffer.concat([readFileSync(join(HERE, 'phone-worker.js')), body]);
             // The scripts run before the page's module, so they see the WebGPU device as the page asks for it. Each acts only
             // while a session of its own runs in the tab.
-            return send(response, 200, type, type === 'text/html' ? body.toString().replace('<head>', '<head><script src="/phone/measure.js"></script><script src="/phone/diagnose.js"></script>') : body);
+            return send(response, 200, type, type === 'text/html' ? inject(body.toString()) : body);
         }
         proxy(request, response);
     }).listen(+a.port, a.host, () => console.log(`${origin}/phone/ · data ${a.data} · results ${a.results}`));

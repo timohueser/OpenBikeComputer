@@ -1,0 +1,47 @@
+# Prototype #3765: TrailView in a WKWebView on the iPhone. It never merges.
+# From the repository root, with the kit serving on this Mac (builder/web/tests/browser/trailview/README.md):
+#   node builder/web/tests/browser/trailview/phone.mjs bundle --origin http://127.0.0.1:8771 --out $PWD/companion-ios/TrailViewPrototype/www
+#   cd companion-ios/TrailViewPrototype && xcodegen generate
+#   xcodebuild -project TrailViewPrototype.xcodeproj -scheme TrailViewPrototype -configuration Release \
+#     -destination generic/platform=iOS -derivedDataPath DerivedData -allowProvisioningUpdates build
+name: TrailViewPrototype
+
+include:
+  - ../project.local.yml
+
+options:
+  bundleIdPrefix: com.openbikecomputer
+  deploymentTarget:
+    iOS: "26.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  TrailViewPrototype:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - path: www
+        type: folder
+        buildPhase: resources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: TrailView Proto
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSLocalNetworkUsageDescription: The prototype loads TrailView data from the measuring kit on this network and sends it the results.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.openbikecomputer.trailviewprototype
+        TARGETED_DEVICE_FAMILY: "1"

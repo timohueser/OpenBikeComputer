@@ -15,6 +15,8 @@
     const TIMING_MS = 180_000;
     const VARIANTS = [
         { id: 'today', name: "today's app", query: '' },
+        // Prototype #3765: today's app at the lighter settings, nearer to the phone display.
+        { id: 'today-low', name: "today's app, lighter", query: '&scale=0.5&pool=0.5' },
         { id: 'new', name: 'new roads', query: '&ground=plan' },
         // Half the render pixels of the default 0.7 per axis, and half the terrain page pools. The finest level stays, so the meshes can draw.
         { id: 'new-low', name: 'new roads, lighter', query: '&ground=plan&scale=0.5&pool=0.5' },
@@ -230,7 +232,9 @@
         let last, lastTimes, n = 0, posted = performance.now();
         const t0 = performance.now();
         for (;;) {
-            const t = Math.min(1, (performance.now() - t0) / (FLIGHT_S * 1000)), mix = (a, b) => a + (b - a) * t;
+            // A soak (state.seconds over FLIGHT_S) flies the path to and fro until its time is over.
+            const elapsed = (performance.now() - t0) / (FLIGHT_S * 1000), seconds = state.seconds ?? FLIGHT_S, over = elapsed * FLIGHT_S >= seconds;
+            const t = seconds > FLIGHT_S ? (elapsed % 2 < 1 ? elapsed % 1 : 1 - (elapsed % 1)) : Math.min(1, elapsed), mix = (a, b) => a + (b - a) * t;
             const height = start.mode === 'fly' ? start.height * (end.height / start.height) ** t : mix(start.height, end.height);
             tv.view = { ...start, lat: mix(start.lat, end.lat), lon: mix(start.lon, end.lon), heading: mix(start.heading, end.heading), pitch: mix(start.pitch, end.pitch), height };
             const drawn = await Promise.race([tv.nextFrame().then(() => true), sleep(FRAME_MS)]);
@@ -266,12 +270,13 @@
                 look.piecesInView = range(look.piecesInView, pieces?.inView);
                 look.recordCells = range(look.recordCells, s.terrain.records?.cells);
             }
-            say(`${label} … ${Math.round(t * 100)} %`);
-            if (performance.now() - posted > 5000) {
+            const done_ = Math.min(100, Math.round((100 * elapsed * FLIGHT_S) / seconds));
+            say(`${label} … ${done_} %`);
+            if (performance.now() - posted > (seconds > FLIGHT_S ? 30_000 : 5000)) {
                 posted = performance.now();
-                post(key, { stage: `flight ${Math.round(t * 100)} %`, flight: { seconds: FLIGHT_S, intervals, cpu, look } });
+                post(key, { stage: `flight ${done_} %`, flight: { seconds, intervals, cpu, look } });
             }
-            if (t >= 1) break;
+            if (seconds > FLIGHT_S ? over : t >= 1) break;
         }
         // The last submits' readbacks.
         await sleep(300);
@@ -284,7 +289,7 @@
             done: { median: quantile(done, 0.5), p95: quantile(done, 0.95), samples: done.length },
             gpu: gpu.length ? { median: quantile(gpu, 0.5), p95: quantile(gpu, 0.95), samples: gpu.length, passes: Object.fromEntries(Object.entries(passes).map(([p, l]) => [p, round(quantile(l, 0.5))])) } : null,
         };
-        return { seconds: FLIGHT_S, summary, look, intervals, cpu, done };
+        return { seconds: state.seconds ?? FLIGHT_S, summary, look, intervals, cpu, done };
     }
 
     async function timing() {
@@ -315,14 +320,22 @@
         }
         const button = Object.assign(document.createElement('button'), { textContent: 'Start' });
         button.style.cssText = 'display:block;width:100%;padding:32px;font:700 32px system-ui;border-radius:16px;border:0;background:#1a7f37;color:#fff';
-        document.body.replaceChildren(big('TrailView test on this phone. It takes about 8 minutes.'), big('Tap Start, put the phone on the table and do not touch it until it says "Done".'), button);
+        document.body.replaceChildren(big(`TrailView test on this phone: ${new URLSearchParams(location.search).get('runs')?.split(',').length ?? SCENES.length * VARIANTS.length} runs.`), big('Tap Start, put the phone on the table and do not touch it until it says "Done".'), button);
         button.onclick = async () => {
             button.disabled = true;
             state = { session: `${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}-${Math.random().toString(36).slice(2, 6)}`, index: -1, plan: [], results: {} };
-            for (const scene of SCENES.keys()) for (const variant of VARIANTS.keys()) state.plan.push({ variant, scene });
+            // Prototype #3765: ?runs=variant:scene,… picks the runs, ?seconds=N flies each run N seconds, ?host=NAME labels the session.
+            const query = new URLSearchParams(location.search), pick = query.get('runs');
+            if (pick) for (const run of pick.split(',')) {
+                const [v, sc] = run.split(':'), variant = VARIANTS.findIndex(x => x.id === v), scene = SCENES.findIndex(x => x.id === sc);
+                if (variant >= 0 && scene >= 0) state.plan.push({ variant, scene });
+            }
+            else for (const scene of SCENES.keys()) for (const variant of VARIANTS.keys()) state.plan.push({ variant, scene });
+            if (query.get('seconds')) state.seconds = Number(query.get('seconds'));
+            if (query.get('host')) state.session = `${query.get('host')}-${state.session}`;
             save();
             const wake = await wakeLock();
-            await post('device', { ...(await facts()), wakeLock: wake, plan: state.plan.map(p => `${VARIANTS[p.variant].id} ${SCENES[p.scene].id}`), flightSeconds: FLIGHT_S });
+            await post('device', { ...(await facts()), wakeLock: wake, plan: state.plan.map(p => `${VARIANTS[p.variant].id} ${SCENES[p.scene].id}`), flightSeconds: state.seconds ?? FLIGHT_S });
             next();
         };
     }
