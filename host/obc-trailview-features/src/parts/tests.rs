@@ -169,6 +169,10 @@ fn each_rung_gives_its_kinds_in_the_order_of_the_rungs() {
     case.tunnel(&FOOT, (0.0, 200.0), 0.0);
     let placed = case.place(&site(&ridge(200.0, 2.0), &[], false), &mut Vec::new());
     assert_eq!(of(&placed, 0), vec![(vec![Rock, Arch, Free], "hill"); 2]);
+    assert!(
+        records(&placed, "tunnel-end").iter().all(|t| t.contains_key("face")),
+        "a rock end holds its wall's numbers"
+    );
     // A footway 6 m long under a road on top at 503.5 m: an underpass at both ends. Its openings keep the floor's
     // height, so the floor of the tube cannot go down there: their section is as high as the road's underside (0.5 m
     // under it) less the shell allows, 2.5 m of the bore's 2.6 m. Under a building only: no part.

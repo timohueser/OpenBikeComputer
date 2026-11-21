@@ -18,7 +18,7 @@ pub use obc_trailview_parts::Part as Kind;
 /// The numbers of a drawn opening (Plan 8 of the design): metres, `left` and `right` per metre out from the frame's
 /// outer edge, and in a pair the mate's opening, the metres to its axis to the left and its collar; `height` is the
 /// inside height of the tube's chord there; `heading` is square to its frame line, into the tube of the opening farther
-/// in; `walls` whether the head is a wall (not a rim).
+/// in; `walls` whether the record holds `face`, `left` and `right`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Numbers {
     pub heading: f64,
@@ -581,8 +581,11 @@ fn numbers(
             }
         })
         .collect();
-    // A rim where no opening of the head has a wall.
-    let walls = members.iter().any(|&k| !matches!(own(k), Kind::Rock | Kind::Free));
+    // The record holds the wall's numbers but on a free end and on a pair of two rims.
+    let walls = match kind {
+        Kind::Pair => members.iter().any(|&k| !matches!(own(k), Kind::Rock | Kind::Free)),
+        _ => kind != Kind::Free,
+    };
     // The lowest ground under the frame, its wing walls and the collars, and the floors.
     let (from, to) = (lo - right.len() as f64, hi + left.len() as f64);
     let under = (from.ceil() as i64..=to.floor() as i64).filter_map(|x| ground(x as f64));
