@@ -121,16 +121,16 @@ impl Clip {
 }
 
 /// Collects faces. Each face is wound counter-clockwise seen from the side that `out` points to (east, north, up),
-/// so the back faces cull. With a clip, the part of a face past its plane is not drawn.
+/// so the back faces cull. The part of a face past the plane of a clip is not drawn.
 pub struct Builder<L: Fn([f64; 3]) -> f64> {
     words: Vec<u32>,
     indices: Vec<u32>,
     points: Vec<[f64; 3]>,
     looks: Vec<(u32, Paint)>,
     daylight: L,
-    clip: Option<Clip>,
-    /// The vertex where the clip's plane cuts the edge between two vertices.
-    cuts: HashMap<(u32, u32), u32>,
+    clips: Vec<Clip>,
+    /// The vertex where the plane of a clip cuts the edge between two vertices.
+    cuts: HashMap<(usize, u32, u32), u32>,
 }
 
 impl<L: Fn([f64; 3]) -> f64> Builder<L> {
@@ -142,15 +142,15 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
             points: Vec::new(),
             looks: Vec::new(),
             daylight,
-            clip: None,
+            clips: Vec::new(),
             cuts: HashMap::new(),
         }
     }
 
-    /// The clip of the faces from now on.
-    pub fn clip(&mut self, clip: Option<Clip>) {
-        if clip != self.clip {
-            (self.clip, self.cuts) = (clip, HashMap::new());
+    /// The clips of the faces from now on.
+    pub fn clip(&mut self, clips: Vec<Clip>) {
+        if clips != self.clips {
+            (self.clips, self.cuts) = (clips, HashMap::new());
         }
     }
 
@@ -171,9 +171,9 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         (self.points.len() - 1) as u32
     }
 
-    /// The vertex where the clip's plane cuts the edge from vertex i to j, which lie at `di` and `dj` from it.
-    fn cut(&mut self, (i, di): (u32, f64), (j, dj): (u32, f64)) -> u32 {
-        let key = (i.min(j), i.max(j));
+    /// The vertex where the plane of clip k cuts the edge from vertex i to j, which lie at `di` and `dj` from it.
+    fn cut(&mut self, k: usize, (i, di): (u32, f64), (j, dj): (u32, f64)) -> u32 {
+        let key = (k, i.min(j), i.max(j));
         if let Some(&v) = self.cuts.get(&key) {
             return v;
         }
@@ -186,32 +186,32 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         v
     }
 
-    /// A triangle in its winding, without its part past the clip's plane.
+    /// A triangle in its winding, without its parts past the planes of the clips.
     fn emit(&mut self, t: [u32; 3]) {
-        let Some(clip) = self.clip else {
-            self.indices.extend(t);
-            return;
-        };
-        let d = t.map(|v| clip.side(self.points[v as usize]));
-        // Within a hundredth of a world unit of the plane, a point lies on it.
-        let off = |x: f64| x > 0.01;
-        if !d.iter().any(|&x| off(x)) {
-            self.indices.extend(t);
-            return;
-        }
-        // The corners on the near side, and the points where an edge crosses the plane, in the winding.
-        let mut keep = Vec::with_capacity(4);
-        for k in 0..3 {
-            let (i, j) = (k, (k + 1) % 3);
-            if !off(d[i]) {
-                keep.push(t[i]);
+        let mut poly = t.to_vec();
+        for k in 0..self.clips.len() {
+            let clip = self.clips[k];
+            let d: Vec<f64> = poly.iter().map(|&v| clip.side(self.points[v as usize])).collect();
+            // Within a hundredth of a world unit of the plane, a point lies on it.
+            let off = |x: f64| x > 0.01;
+            if !d.iter().any(|&x| off(x)) {
+                continue;
             }
-            if off(d[i]) != off(d[j]) {
-                keep.push(self.cut((t[i], d[i]), (t[j], d[j])));
+            // The corners on the near side, and the points where an edge crosses the plane, in the winding.
+            let mut keep = Vec::with_capacity(poly.len() + 1);
+            for i in 0..poly.len() {
+                let j = (i + 1) % poly.len();
+                if !off(d[i]) {
+                    keep.push(poly[i]);
+                }
+                if off(d[i]) != off(d[j]) {
+                    keep.push(self.cut(k, (poly[i], d[i]), (poly[j], d[j])));
+                }
             }
+            poly = keep;
         }
-        for k in 1..keep.len().saturating_sub(1) {
-            self.indices.extend([keep[0], keep[k], keep[k + 1]]);
+        for k in 1..poly.len().saturating_sub(1) {
+            self.indices.extend([poly[0], poly[k], poly[k + 1]]);
         }
     }
 

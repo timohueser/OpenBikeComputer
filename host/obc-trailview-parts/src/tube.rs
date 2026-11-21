@@ -337,13 +337,13 @@ impl<'a> Net<'a> {
         self.ends[e].part == Part::Free && self.ends[e].collar <= 0.0
     }
 
-    /// Where a station across chord c meets another built tube whose shell overlaps its own there: the middle between
-    /// their walls on the station's line; the nearest. A tube that lies over or under it by more than half their heights
-    /// does not meet it.
-    pub fn cut(&self, c: usize, st: &Station) -> Option<Cut> {
+    /// Where a station across chord c meets other built tubes whose shells overlap its own there: on each side (to the
+    /// right, to the left) the nearest, at the middle between their walls on the station's line. A tube that lies over
+    /// or under it by more than half their heights does not meet it.
+    pub fn cuts(&self, c: usize, st: &Station) -> [Option<Cut>; 2] {
         let (own, shell) = (&self.chords[c], self.rules.ladder.bake.shell_m);
         let key = [libm::floor(st.x / self.cell) as i64, libm::floor(st.y / self.cell) as i64];
-        let mut best: Option<Cut> = None;
+        let mut best: [Option<Cut>; 2] = [None, None];
         for &o in self.cells.get(&key).into_iter().flatten().filter(|&&o| self.tube[o] != self.tube[c]) {
             let other = &self.chords[o];
             // The station's line meets the chord: st + x·across = a + u·(b − a).
@@ -364,36 +364,43 @@ impl<'a> Net<'a> {
             {
                 continue;
             }
-            if best.is_none_or(|b| x.abs() < b.axis.abs()) {
+            let side = &mut best[usize::from(x > 0.0)];
+            if side.is_none_or(|b| x.abs() < b.axis.abs()) {
                 let middle = (x + x.signum() * (own.half - other.half)) / 2.0;
-                best = Some(Cut { x: middle, axis: x, other: o, floor });
+                *side = Some(Cut { x: middle, axis: x, other: o, floor });
             }
         }
         best
     }
 
-    /// The clip of chord c from station s to t at its cuts: the plane through them that takes off the other tube's
-    /// side, and the cuts; where one station has none, the plane through the other's along the chord.
-    pub fn clip(&self, c: usize, (s, t): (&Station, &Station)) -> Option<(Clip, Option<Cut>, Option<Cut>)> {
-        let (cs, ct) = (self.cut(c, s), self.cut(c, t));
-        let (a, z, cut) = match (cs, ct) {
-            (Some(x), Some(y)) => (s.at([x.x, 0.0]), t.at([y.x, 0.0]), x),
-            (Some(x), None) => {
-                (s.at([x.x, 0.0]), [s.at([x.x, 0.0])[0] + t.x - s.x, s.at([x.x, 0.0])[1] + t.y - s.y, 0.0], x)
-            }
-            (None, Some(y)) => {
-                (t.at([y.x, 0.0]), [t.at([y.x, 0.0])[0] + t.x - s.x, t.at([y.x, 0.0])[1] + t.y - s.y, 0.0], y)
-            }
-            (None, None) => return None,
-        };
-        let st = if cs.is_some() { s } else { t };
-        let (far, near) = (st.at([cut.axis, 0.0]), st.at([cut.x, 0.0]));
-        let away = [far[0] - near[0], far[1] - near[1]];
-        // The two tubes overlap by `OVERLAP_M` at the plane, so the rounding of their vertices opens no gap there.
-        let l = libm::hypot(away[0], away[1]).max(f64::MIN_POSITIVE);
-        let d = OVERLAP_M / metres_per_unit(st.y) / l;
-        let (a, z) = ([a[0] + away[0] * d, a[1] + away[1] * d], [z[0] + away[0] * d, z[1] + away[1] * d]);
-        Some((Clip { a, b: z, away }, cs, ct))
+    /// The clips of chord c from station s to t at its cuts, on each side where it has one: the plane through them
+    /// that takes off the other tube's side, and the cuts; where one station has none, the plane through the other's
+    /// along the chord.
+    pub fn clips(&self, c: usize, (s, t): (&Station, &Station)) -> Vec<(Clip, Option<Cut>, Option<Cut>)> {
+        let (at_s, at_t) = (self.cuts(c, s), self.cuts(c, t));
+        let mut out = Vec::new();
+        for (cs, ct) in at_s.into_iter().zip(at_t) {
+            let (st, cut) = match (cs, ct) {
+                (Some(x), _) => (s, x),
+                (None, Some(y)) => (t, y),
+                (None, None) => continue,
+            };
+            let (far, near) = (st.at([cut.axis, 0.0]), st.at([cut.x, 0.0]));
+            let away = [far[0] - near[0], far[1] - near[1]];
+            // The two tubes overlap by `OVERLAP_M` at the plane, so the rounding of their vertices opens no gap there.
+            let l = libm::hypot(away[0], away[1]).max(f64::MIN_POSITIVE);
+            let d = OVERLAP_M / metres_per_unit(st.y) / l;
+            let shift = |p: [f64; 3]| [p[0] + away[0] * d, p[1] + away[1] * d];
+            let (a, z) = match (cs, ct) {
+                (Some(x), Some(y)) => (shift(s.at([x.x, 0.0])), shift(t.at([y.x, 0.0]))),
+                _ => {
+                    let a = shift(near);
+                    (a, [a[0] + t.x - s.x, a[1] + t.y - s.y])
+                }
+            };
+            out.push((Clip { a, b: z, away }, cs, ct));
+        }
+        out
     }
 }
 
@@ -518,9 +525,9 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     let sp = spring(net, chord.section, chord.height);
     let bore = |colour: u32| flagged(colour, BORE);
     let across = |c: Corner| s.mix(&t, 0.5).out(c);
-    // Of two tubes of a pair, each draws its side of the middle between their walls.
-    let cut = net.clip(c, (&s, &t));
-    b.clip(cut.map(|c| c.0));
+    // Of two tubes that meet, each draws its side of the middle between their walls.
+    let cuts = net.clips(c, (&s, &t));
+    b.clip(cuts.iter().map(|c| c.0).collect());
     // A box section is cast: its rock bore is lined.
     let cast = chord.section == Section::Box;
     let (wall, vault) = match bore_of {
@@ -596,9 +603,8 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     if bore_of == Bore::Road {
         lamps(b, net, c, (&s, &t));
     }
-    b.clip(None);
-    // At the cut, a face closes the room where the other tube's floor is higher or its roof lower.
-    let Some((_, Some(cs), Some(ct))) = cut else { return };
+    b.clip(Vec::new());
+    // At a cut, a face closes the room where the other tube's floor is higher or its roof lower.
     let span = |st: &Station, cut: &Cut| {
         let f = |p: &[(f64, f64, f64)], x: f64| p.iter().find(|q| x >= q.0 - 1e-9 && x <= q.1 + 1e-9).map(|q| q.2);
         let own = f(&pieces, cut.x).zip(top_at(&o, cut.x))?;
@@ -609,10 +615,12 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
         let (xl, df) = (cut.x - cut.axis, cut.floor - st.z);
         Some(steps(own, f(&op, xl).zip(top_at(&oo, xl)).map(|(lo, hi)| (lo + df, hi + df))))
     };
-    if let (Some([ls, us]), Some([lt, ut])) = (span(&s, &cs), span(&t, &ct)) {
-        let out = across([-cs.axis.signum(), 0.0]);
-        cut_face(b, (&s, &t), (cs.x, ls.0, ls.1), (ct.x, lt.0, lt.1), bore(inside.walk), out);
-        cut_face(b, (&s, &t), (cs.x, us.0, us.1), (ct.x, ut.0, ut.1), bore(vault), out);
+    for (cs, ct) in cuts.iter().filter_map(|c| c.1.zip(c.2)) {
+        if let (Some([ls, us]), Some([lt, ut])) = (span(&s, &cs), span(&t, &ct)) {
+            let out = across([-cs.axis.signum(), 0.0]);
+            cut_face(b, (&s, &t), (cs.x, ls.0, ls.1), (ct.x, lt.0, lt.1), bore(inside.walk), out);
+            cut_face(b, (&s, &t), (cs.x, us.0, us.1), (ct.x, ut.0, ut.1), bore(vault), out);
+        }
     }
 }
 
@@ -682,9 +690,9 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
     let next_of = |i: usize| pieces.get(i + 1).map(|p| (p.2, p.3)).or(meets.lower.filter(|_| last(i)));
     let outer = |st: &Station, h: f64, section: Section| shell_outline(net, section, half, h, foot - st.z);
     for (i, &(ref s, ref t, ref h, ref section, c)) in pieces.iter().enumerate() {
-        let cut = net.clip(c, (s, t));
-        b.clip(cut.map(|c| c.0));
-        if let Some((_, Some(cs), Some(ct))) = cut {
+        let cuts = net.clips(c, (s, t));
+        b.clip(cuts.iter().map(|c| c.0).collect());
+        for (cs, ct) in cuts.iter().filter_map(|c| c.1.zip(c.2)) {
             // The other tube's shell top at the cut, over this station's floor.
             let top = |st: &Station, cut: &Cut| {
                 let own = top_at(&outer(st, *h, *section), cut.x)?;
@@ -733,7 +741,7 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
             b.strip((t, &tall[j..j + 2]), (t, &low[j..j + 2]), colour, toward);
         }
     }
-    b.clip(None);
+    b.clip(Vec::new());
 }
 
 #[cfg(test)]

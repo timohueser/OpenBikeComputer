@@ -670,24 +670,27 @@ fn pair(apart: f64, dz: f64) -> (Vec<End>, Vec<Chord>) {
     for (e, mate) in ends.iter_mut().zip([apart, -apart]) {
         (e.part, e.mate, e.mate_way, e.mate_shift) = (Part::Pair, Some(mate), Some([1, 1]), Some(0.0));
     }
-    let mut chords = Vec::new();
-    for (north, z) in [(0.0, 500.0), (apart, 500.0 + dz)] {
-        for (a, b) in [(0.0, 20.0), (20.0, 40.0)] {
-            let mut c = chord([a, north, z + a * 0.005], [b, north, z + b * 0.005], 5.0, a);
-            c.ends = [Some(Part::Pair); 2];
-            chords.push(c);
-        }
-    }
+    let mut chords = [lane(0.0, 500.0), lane(apart, 500.0 + dz)].concat();
+    chords.iter_mut().for_each(|c| c.ends = [Some(Part::Pair); 2]);
     (ends, chords)
 }
 
-/// The two road tubes of `pair` as four arches: no end has a mate.
-fn side_by_side(apart: f64) -> (Vec<End>, Vec<Chord>) {
-    let (mut ends, mut chords) = pair(apart, 0.0);
-    let pi = std::f64::consts::PI;
-    ends.extend([end(0.0, apart, 500.0, 0.0, 6.0), end(40.0, apart, 500.2, pi, 3.0)]);
+/// The two chords of a road tube 40 m east on the line `north` metres north, its floor from z rising 0.5 %.
+fn lane(north: f64, z: f64) -> Vec<Chord> {
+    [(0.0, 20.0), (20.0, 40.0)]
+        .map(|(a, b)| chord([a, north, z + a * 0.005], [b, north, z + b * 0.005], 5.0, a))
+        .to_vec()
+}
+
+/// Road tubes as those of `pair`, on the lines `norths` metres north, with an arch at each end: no end has a mate.
+fn row(norths: &[f64]) -> (Vec<End>, Vec<Chord>) {
+    let (mut ends, mut chords) = (Vec::new(), Vec::new());
+    for &north in norths {
+        ends.extend([end(0.0, north, 500.0, 0.0, 6.0), end(40.0, north, 500.2, std::f64::consts::PI, 3.0)]);
+        chords.extend(lane(north, 500.0));
+    }
     for e in &mut ends {
-        (e.part, e.mate, e.mate_way, e.mate_shift) = (Part::Arch, None, None, None);
+        e.part = Part::Arch;
     }
     for c in &mut chords {
         c.ends = [Some(Part::Arch); 2];
@@ -738,30 +741,41 @@ fn hit(faces: &[[[f64; 3]; 3]], o: [f64; 3], d: [f64; 3], far: f64) -> Option<(f
 }
 
 #[test]
-fn the_two_tubes_of_a_pair_are_one_room_and_one_head_wall_and_two_near_heads_end_between() {
+fn the_tubes_of_a_pair_or_side_by_side_are_one_room_and_their_heads_end_between() {
     let rules = Rules::embedded();
     let frame = rules.design.frame_m;
     // Tubes 7 m apart, 4.5 m wide each: their rooms overlap by 2 m, so they are cut in the middle; with the second's
-    // floor 0.8 m higher, faces close the steps there. Tubes 10.5 m apart do not overlap. Two arches that are no pair
-    // end their head walls at the middle too.
-    for (apart, dz, paired) in [(7.0, 0.0, true), (7.0, 0.8, true), (10.5, 0.0, true), (10.5, 0.0, false)] {
-        let name = format!("{apart} m apart, {dz} m higher, a pair: {paired}");
-        let (ends, chords) = if paired { pair(apart, dz) } else { side_by_side(apart) };
+    // floor 0.8 m higher, faces close the steps there. Tubes 10.5 m apart do not overlap. Arches that are no pair end
+    // their head walls at the middle too, the middle tube of three on both sides.
+    let cases: [(&[f64], f64, bool); 5] = [
+        (&[0.0, 7.0], 0.0, true),
+        (&[0.0, 7.0], 0.8, true),
+        (&[0.0, 10.5], 0.0, true),
+        (&[0.0, 10.5], 0.0, false),
+        (&[0.0, 7.0, 14.0], 0.0, false),
+    ];
+    for (norths, dz, paired) in cases {
+        let name = format!("tubes at {norths:?} m north, the second {dz} m higher, a pair: {paired}");
+        let (ends, chords) = if paired { pair(norths[1], dz) } else { row(norths) };
         let (room, box_points) = boxes_fit(&name, &ends, &chords);
         assert!(room > 200 && box_points > 100, "{name}: {room} room samples, {box_points} box samples");
         let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);
         let faces = solid(&mesh);
         let o = tube::outline_of(&Net::new(&ends, &chords, rules), 0);
-        // Each tube's room on its side of the middle: no face lies in it. A face in the middle lies within the rounding
-        // of its vertices to world units.
-        let mid = apart / 2.0;
+        // A point's tube, the nearest; and its floor at the opening.
+        let of = |north: f64| {
+            let i = (0..norths.len()).min_by(|&i, &j| (north - norths[i]).abs().total_cmp(&(north - norths[j]).abs()));
+            let i = i.unwrap();
+            (norths[i], if i == 1 { 500.0 + dz } else { 500.0 })
+        };
+        let middles: Vec<f64> = norths.windows(2).map(|w| (w[0] + w[1]) / 2.0).collect();
+        // Each tube's room up to the middles: no face lies in it. A face in a middle lies within the rounding of its
+        // vertices to world units.
         let inside = |p: [f64; 3]| {
-            let (axis, z) = if p[1] < mid { (0.0, 500.0) } else { (apart, 500.0 + dz) };
-            if (p[1] - mid).abs() < 0.05 {
-                return false;
-            }
+            let (axis, z) = of(p[1]);
             let (x, up) = (p[1] - axis, p[2] - z - p[0] * 0.005);
-            p[0] > 0.5
+            middles.iter().all(|m| (p[1] - m).abs() >= 0.05)
+                && p[0] > 0.5
                 && p[0] < 39.5
                 && x.abs() < 4.45
                 && up > 0.25
@@ -771,9 +785,14 @@ fn the_two_tubes_of_a_pair_are_one_room_and_one_head_wall_and_two_near_heads_end
             let c = [0, 1, 2].map(|k| (f[0][k] + f[1][k] + f[2][k]) / 3.0);
             assert!(!inside(c), "{name}: a face in the room at {c:?}");
         }
-        // From inside the room, every way across meets the front of a face: the room is closed at the middle.
-        for (north, up) in [(-3.0, 1.0), (0.0, 2.5), (2.5, 4.0), (apart - 2.5, 4.0), (apart, 2.5), (apart + 3.0, 1.0)] {
-            let z = if north < mid { 500.0 } else { 500.0 + dz };
+        // From inside the room, every way across meets the front of a face: the room is closed at the middles.
+        let (first, last) = (norths[0], norths[norths.len() - 1]);
+        let mut from = vec![(first - 3.0, 1.0), (last + 3.0, 1.0)];
+        for &n in norths {
+            from.extend([(n - 2.5, 4.0), (n, 2.5), (n + 2.5, 4.0)]);
+        }
+        for (north, up) in from {
+            let z = of(north).1;
             for k in 0..24 {
                 let a = (k as f64 * 15.0 + 7.0).to_radians();
                 let d = [0.0, libm::cos(a), libm::sin(a)];
@@ -781,19 +800,17 @@ fn the_two_tubes_of_a_pair_are_one_room_and_one_head_wall_and_two_near_heads_end
                 assert!(got.is_some_and(|h| h.1), "{name}: from {north} m north, {up} m up, at {a} rad: {got:?}");
             }
         }
-        // One head wall: in front of the frame line, a ray east meets its front between the two holes, but none in a
-        // hole; where the holes overlap, they are one opening.
-        let holes_meet = apart < 2.0 * (4.5 + frame);
-        {
-            let north = mid;
+        // One head wall: in front of the frame line, a ray east meets its front between two holes, but none in a hole;
+        // where the holes overlap, they are one opening.
+        for &north in &middles {
             let got = hit(&faces, [-3.0, north, 501.0], [1.0, 0.0, 0.0], 10.0);
-            if holes_meet {
+            if norths[1] - norths[0] < 2.0 * (4.5 + frame) {
                 assert!(got.is_none_or(|h| h.0 > 3.5), "{name}: the middle of one opening: {got:?}");
             } else {
                 assert!(got.is_some_and(|h| h.1 && h.0 < 3.0), "{name}: the head wall between the holes: {got:?}");
             }
         }
-        for north in [0.0, apart] {
+        for &north in norths {
             let got = hit(&faces, [-3.0, north, 502.5], [1.0, 0.0, 0.0], 10.0);
             assert!(got.is_none_or(|h| h.0 > 3.5), "{name}: the hole at {north} m north: {got:?}");
         }
