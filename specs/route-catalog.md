@@ -706,8 +706,8 @@ no stage row has no part.
   stands once in a trail, at its first place, so a later stage does not take it again. This part
   has the `id` of the OSM record, and the `name` and the number of the official stage.
 - Another stage that failed, or a stage that left for a record of an earlier source (see [Who
-  stays](#who-stays)), is a part not in the catalog, with the ends of its main line when the builder
-  made one.
+  stays](#who-stays)), is a part not in the catalog; a stage that failed has the ends of its main
+  line when the builder made one.
 - A stage with no members is a part not in the catalog, without ends.
 
 A stage that the cut drops (see [Line of a source job](#line-of-a-source-job)) keeps its match line
