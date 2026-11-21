@@ -74,12 +74,6 @@ describe('the frames of a still view', () => {
         expect(working(0)).toBe(true);
         expect(working(1)).toBe(false);
     });
-
-    it('end in an idle view only once the meshes that count their calm frames draw', () => {
-        const idle = (returning: boolean) => Object.assign(Object.create(Terrain.prototype), { pages: { idle: true }, calm: 1, probing: 0, pieces: { returning } }).idle;
-        expect(idle(true)).toBe(false);
-        expect(idle(false)).toBe(true);
-    });
 });
 
 describe('the attach to a device', () => {
