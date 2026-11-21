@@ -15,6 +15,8 @@ export const TREE_REACH_M = 4500;
 const TIERS_M = [60, 300, 700], TREE_SIZE_M = 25;
 /** Workers that build the models side by side, a species or a crown per job: the trees show as each job lands. */
 const WORKERS = 3;
+/** A worker ends after this long with no job, and the next build starts one again: a still view keeps no worker. */
+export const IDLE_MS = 10_000;
 
 /** An instance model of a species, the models of its phases that draw a crown of their own, and the regions whose trees take it. */
 interface Entry { index: number; own: (number | undefined)[]; regions: Set<number> }
@@ -43,8 +45,9 @@ interface Build { leafy: { model: string; evergreen: boolean }[]; crowns: { mode
 export class TreeModels {
     /** Instance models by `model|evergreen|tie`. */
     private readonly entries = new Map<string, Entry>();
-    private readonly workers = Array.from({ length: WORKERS }, () => new Worker(new URL('./model-worker.ts', import.meta.url), { type: 'module' }));
-    private readonly free = [...this.workers];
+    /** The live workers, and the free ones among them with the timer that ends each. */
+    private readonly workers = new Set<Worker>();
+    private readonly free = new Map<Worker, ReturnType<typeof setTimeout>>();
     /** The jobs that run, by id. */
     private readonly jobs = new Map<number, Build>();
     /** The built summer crowns by `model|evergreen`, the built crowns of a phase by `model|phase`, what is asked for (`leafy:` or `crown:` and the key), and the builds that wait for a worker. */
@@ -72,8 +75,10 @@ export class TreeModels {
 
     /** `near` gives the models about the eye, each with its share of the trees there. An abort of `stop` ends the workers. */
     constructor(private readonly instances: Instances, private readonly wake: () => void, private readonly near: () => Map<string, number>, private readonly stop: AbortSignal, version?: string) {
-        stop.addEventListener('abort', () => this.workers.forEach(worker => worker.terminate()));
-        for (const worker of this.workers) worker.onmessage = ({ data }: MessageEvent<ModelAnswer>) => this.land(worker, data);
+        stop.addEventListener('abort', () => {
+            this.free.forEach(timer => clearTimeout(timer));
+            this.workers.forEach(worker => worker.terminate());
+        });
         if (version) this.cache = DeviceCache.open('trees', '', version, CAPS.trees).catch(() => undefined);
     }
 
@@ -141,7 +146,7 @@ export class TreeModels {
     private land(worker: Worker, { id, leafy, crowns, error }: ModelAnswer): void {
         const job = this.jobs.get(id)!;
         this.jobs.delete(id);
-        this.free.push(worker);
+        this.rest(worker);
         if (error || !leafy || !crowns) {
             for (const key of [...job.leafy.map(({ model, evergreen }) => `leafy:${model}|${evergreen ? 1 : 0}`), ...job.crowns.map(({ model, phase }) => `crown:${model}|${phase}`)]) {
                 this.asked.delete(key);
@@ -221,18 +226,40 @@ export class TreeModels {
      * those that have the most trees about the eye.
      */
     private post(): void {
-        if (!this.free.length || !this.waiting.length) return;
+        if (this.stop.aborted || this.jobs.size >= WORKERS || !this.waiting.length) return;
         // Crowns of phases that the date lost: `ask()` queues them again if the date comes back.
         for (const { model, phase } of this.waiting.flatMap(job => job.crowns)) if (!this.phases.has(phase)) this.asked.delete(`crown:${model}|${phase}`);
         this.waiting = this.waiting.filter(job => job.crowns.every(({ phase }) => this.phases.has(phase)));
         const near = this.near(), close = new Set(this.builds(this.wanted.near).map(build => build.split('|')[0]));
         const share = (job: Build) => near.get((job.leafy[0] ?? job.crowns[0]).model) ?? 0, first = (job: Build) => +close.has((job.leafy[0] ?? job.crowns[0]).model);
         this.waiting.sort((a, b) => b.leafy.length - a.leafy.length || first(b) - first(a) || share(b) - share(a));
-        for (const job of this.waiting.splice(0, this.free.length)) {
+        for (const job of this.waiting.splice(0, WORKERS - this.jobs.size)) {
             const id = this.next++;
             this.jobs.set(id, job);
-            this.free.pop()!.postMessage({ id, leafy: job.leafy.map(({ model }) => ({ model })), crowns: job.crowns } satisfies ModelJob);
+            this.worker().postMessage({ id, leafy: job.leafy.map(({ model }) => ({ model })), crowns: job.crowns } satisfies ModelJob);
         }
+    }
+
+    /** A free worker, or a new one. */
+    private worker(): Worker {
+        for (const [worker, timer] of this.free) {
+            clearTimeout(timer);
+            this.free.delete(worker);
+            return worker;
+        }
+        const worker = new Worker(new URL('./model-worker.ts', import.meta.url), { type: 'module' });
+        worker.onmessage = ({ data }: MessageEvent<ModelAnswer>) => this.land(worker, data);
+        this.workers.add(worker);
+        return worker;
+    }
+
+    /** Frees a worker, which ends after IDLE_MS unless a job takes it. */
+    private rest(worker: Worker): void {
+        this.free.set(worker, setTimeout(() => {
+            this.free.delete(worker);
+            this.workers.delete(worker);
+            worker.terminate();
+        }, IDLE_MS));
     }
 
     /**

@@ -1,4 +1,4 @@
-import { BUDGETS } from '../budget';
+import { BUDGETS, MiB, type Budget } from '../budget';
 import { EARTH_RADIUS } from '../frame/frame';
 import type { Anchor } from '../frame/space';
 import { PAGE, type PageData } from '../stream/heights';
@@ -10,8 +10,6 @@ import { CELL_LEVEL, COARSEST, distances, FINEST, key, MAP, size, type Node } fr
 const FILL = 7;
 /** Pages that arrive or are synthesized per frame at most. */
 export const ARRIVALS = 16;
-/** Encoded tile bodies kept, so a new device gets the pages again without a request. */
-const BODIES = 64 * 2 ** 20;
 /** The modes of a stamp job, as in stamp.wgsl. */
 export const MODE = { HEIGHTS: 1, MASK: 4 } as const;
 /**
@@ -163,7 +161,7 @@ export class Pages {
     private touched: Node[] = [];
 
     constructor(private readonly source: TerrainSource, readonly capacity: Record<Kind, number>, private readonly bounds: [number, number, number, number], private readonly changed: () => void,
-        private readonly stamps: StampSource = NO_STAMPS, readonly maskCapacity = 0, private readonly maxLoads = BUDGETS.desktop.loads.terrain) {
+        private readonly stamps: StampSource = NO_STAMPS, readonly maskCapacity = 0, private readonly budget: Budget = BUDGETS.desktop) {
         this.free = { stored: range(0, capacity.stored), synth: range(capacity.stored, capacity.stored + capacity.synth) };
         this.maskFree = range(0, maskCapacity);
     }
@@ -515,12 +513,12 @@ export class Pages {
 
     /** Starts the wished tiles in the order of `priority`, of the most valuable page that each holds; the finer tile first at a tie. */
     private start(anchor: Anchor): void {
-        if (this.loads >= this.maxLoads) return;
+        if (this.loads >= this.budget.loads.terrain) return;
         const eye = { anchor, above: 0 };
         const order = [...this.wishes.values()].map(({ tile, pages }) => ({
             tile, value: Math.max(...[...pages.values()].map(page => priority(page.level, this.coming(page), distances(eye, page)[0]))),
         })).sort((a, b) => b.value - a.value || b.tile.level - a.tile.level);
-        for (const { tile } of order.slice(0, this.maxLoads - this.loads)) this.fetch(tile.level, tile.x, tile.y);
+        for (const { tile } of order.slice(0, this.budget.loads.terrain - this.loads)) this.fetch(tile.level, tile.x, tile.y);
     }
 
     /**
@@ -598,11 +596,15 @@ export class Pages {
         });
     }
 
+    /**
+     * Keeps encoded tile bodies within `caps.terrainBodies`, so a new device gets the pages again without a request. The
+     * plan's records and cells read their tiles from them (`body`): a body that is gone loads again.
+     */
     private keep(name: string, body: ArrayBuffer): void {
         this.bodies.set(name, body);
         this.bodyBytes += body.byteLength;
         for (const [old, kept] of this.bodies) {
-            if (this.bodyBytes <= BODIES) break;
+            if (this.bodyBytes <= this.budget.caps.terrainBodies * MiB) break;
             this.bodies.delete(old);
             this.bodyBytes -= kept.byteLength;
         }
