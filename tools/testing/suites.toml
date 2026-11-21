@@ -43,11 +43,11 @@ triggers = ["data/trailview/kinds.json", "data/trailview/roads.json", "data/trai
 name = "obc-trailview-parts"
 triggers = ["data/trailview/parts.json"]
 
-# The ground plan embeds the cross-section tables, and its tests read the shared vectors, the
-# TrailView fixture and the viewer's mask reach: Cargo cannot see these inputs.
+# The ground plan embeds the cross-section tables and, through the parts, their table; its tests read the shared
+# vectors, the TrailView fixture and the viewer's mask reach: Cargo cannot see these inputs.
 [[package]]
 name = "obc-ground-plan"
-triggers = ["data/trailview/plan.json", "data/trailview/roads.json", "data/trailview/finishes.json", "data/trailview/waterways.json", "specs/vectors/trailview-features.*", "builder/web/tests/browser/trailview/fixture/**", "builder/web/src/lib/trailview/terrain/features.wgsl"]
+triggers = ["data/trailview/plan.json", "data/trailview/parts.json", "data/trailview/roads.json", "data/trailview/finishes.json", "data/trailview/waterways.json", "specs/vectors/trailview-features.*", "builder/web/tests/browser/trailview/fixture/**", "builder/web/src/lib/trailview/terrain/features.wgsl"]
 
 [[package]]
 name = "obc-link"
@@ -615,6 +615,7 @@ targets = ["faces", "records", "heights_fixture", "mesh", "graph"]
 foundation = true
 triggers = [
   "host/obc-ground-plan/**",
+  "host/obc-trailview-parts/**",
   "data/trailview/**",
   "specs/vectors/trailview-features.*",
   "builder/web/tests/browser/trailview/fixture/**",
@@ -630,6 +631,7 @@ rust_packages = ["obc-ground-plan-bridge"]
 triggers = [
   "builder/ground-plan-wasm/**",
   "host/obc-ground-plan/**",
+  "host/obc-trailview-parts/**",
   "data/trailview/**",
   "builder/web/tests/browser/trailview/fixture/**",
 ]

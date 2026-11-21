@@ -18,7 +18,7 @@ obc exec cargo clippy -p obc-trailview-parts-bridge --target wasm32-unknown-unkn
 | Function | Gives |
 | --- | --- |
 | `meshes(input)` | The count of vertex words, the vertex words (7 per vertex, each word's bits), then the indices |
-| `volumes(input)` | The count of box words, the boxes (9 words each), then the floor segments (7 words each) |
+| `volumes(input)` | The count of box words, the boxes (12 words each), then the floor segments (7 words each) |
 | `footprints(input)` | The count of rings, then per ring its count of points and their x, y |
 | `built(parts)` | Whether all kinds of a tag `parts` or `ends` are built |
 

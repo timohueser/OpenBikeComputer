@@ -30,7 +30,7 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmdd}.osm.pbf" }
+fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}/{area:last}-{yymmdd}.osm.pbf" }
 version = "date"
 refresh = 7
 keep = "store"
@@ -46,7 +46,7 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmdd}.osm.pbf" }
+fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}/{area:last}-{yymmdd}.osm.pbf" }
 version = "date"
 # The extracts of `geofabrik-extracts`, kept until an operator fetches a newer one, so that the
 # weekly extract does not bake the terrain again.
@@ -80,7 +80,7 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}.poly" }
+fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}/{area:last}.poly" }
 version = "date"
 refresh = 90
 keep = "store"

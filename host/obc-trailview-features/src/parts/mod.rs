@@ -2,7 +2,6 @@
 //! numbers from the ground of the ground plan there, written as the features `tunnel-tube` and `tunnel-end` and the
 //! tag `parts` of the tunnel ways (`specs/trailview-features.md`, Tunnel parts).
 
-mod cut;
 mod floor;
 mod ladder;
 mod measure;
@@ -11,7 +10,7 @@ mod tests;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use obc_trailview_parts::{Bake, Ladder, Rules};
+use obc_trailview_parts::{Bake, Ladder};
 
 use obc_ground_plan::graph::OpenEnd;
 use obc_ground_plan::sections::{is_track, WidthRules};
@@ -478,15 +477,7 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         m.insert("tunnel_ways_without_id".into(), without_id.into());
         m.insert("chains_without_tube".into(), lost.into());
     }
-    let mut placed = records(&tubes, &openings, &decided, input);
-    // The cut of each built end, on the ground with the stretches of the built chains open, as the device builds it.
-    let kinds: Vec<Option<Kind>> = decided.ends.iter().map(|d| d.kind).collect();
-    let rules = Rules { ladder: input.rules.clone(), ..Rules::embedded().clone() };
-    let cut = cut::add(&mut placed.features, &open_ends(&built_openings(&openings, &kinds)), &rules, measure);
-    if let (Value::Object(m), Value::Object(c)) = (&mut placed.metrics, cut) {
-        m.extend(c);
-    }
-    placed
+    records(&tubes, &openings, &decided, input)
 }
 
 /// The features of the placement and the tag `parts` of the tunnel ways.

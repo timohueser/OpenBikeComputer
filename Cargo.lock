@@ -3855,6 +3855,7 @@ dependencies = [
  "i_overlay 9.1.0",
  "image",
  "libm",
+ "obc-trailview-parts",
  "serde_json",
  "spade",
  "tiny-skia",

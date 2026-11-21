@@ -15,7 +15,7 @@
   "design": {
     "frame_m": 0.45, "recess_m": 0.25, "face_m": 0.8, "arch_segments": 8, "spring": 0.6, "lamp_spacing_m": 10, "lamp_m": 1.2,
     "kerb_m": 0.15, "daylight_m": 20, "void_m": 0.7, "portal_cells": 2, "mesh_texels": 4, "sleeper_m": 0.6, "reach_m": 20,
-    "lift_m": 0.03, "mitre_max": 3
+    "lift_m": 0.03, "mitre_max": 3, "approach_m": 10
   },
   "looks": {
     "concrete": {"face": "#a9a69d", "frame": "#cbc8bf", "coping": "#d2cfc7", "shell": "#9a978e"},

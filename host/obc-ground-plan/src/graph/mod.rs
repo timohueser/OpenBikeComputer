@@ -388,6 +388,9 @@ pub struct WayGraph {
     /// The graph of the storeys (`build_levelled`): its ways are the stretches of the states that the tiles carry, so
     /// a tunnel way here is a BORE stretch; in the graph of `build` it is a whole tunnel, whose states it does not know.
     pub levelled: bool,
+    /// The openings of the built tunnel ends about the cell, which the ways that end there widen to
+    /// (`faces::approach`); empty from `build`, the caller sets them.
+    pub mouths: Vec<crate::openings::Mouth>,
 }
 
 /// A sample of a walk along a way: its place (cell units) and its way.

@@ -4,6 +4,7 @@
 //! cell by all their outlines, and a label per patch by key. Every point of the cell lies in exactly
 //! one face.
 
+mod approach;
 pub mod check;
 mod cover;
 pub mod culverts;
@@ -87,6 +88,8 @@ pub(crate) struct WayLine<'a> {
 /// The band layers about a carriageway, inner to outer: paved shoulder, shoulder, verge, bank, slope.
 /// Read a layer by its name, never by its number. A way's bank and water's shoulders and verge are 0 wide.
 pub(crate) const LAYERS: usize = 5;
+/// The shoulder, at the carriageway's height.
+pub(crate) const SHOULDER: usize = 1;
 /// The verge, the outer edge of a line's core.
 pub(crate) const VERGE: usize = 2;
 /// The slope, the outermost layer.
@@ -476,6 +479,7 @@ fn lines_with<'a>(
         out.push(line);
     }
     taper(ctx, &mut out, &of_way);
+    approach::widen(ctx, &mut out);
     // A bore's end on a portal takes the offsets of the ground way that ends there as storey 0 builds that way (its
     // own tapers included): one computation, so both strokes end on the same corners.
     if BORES && out.iter().any(|l| l.end_dir.iter().any(Option::is_some) && in_bore(g, l.way)) {
