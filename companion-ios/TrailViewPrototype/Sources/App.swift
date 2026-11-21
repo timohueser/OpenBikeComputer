@@ -53,14 +53,19 @@ struct RootView: View {
                         Section("Open") { ForEach(pages) { page in Button(page.name) { open = page } } }
                         Section("This phone") {
                             Text("Thermal state: \(report.thermal)")
-                            Button("Memory limit of a native app (the app stops)") { NativeMemoryProbe.run() }
+                            Button("Memory limit of a native app (the app stops)") { NativeMemoryProbe.run(report) }
+                            if !report.probe.isEmpty { Text(report.probe) }
                         }
                     }
                     .navigationTitle("TrailView prototype")
                 }
             }
         }
-        .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
+        .onAppear {
+            UIApplication.shared.isIdleTimerDisabled = true
+            Loopback.shared.kit = URL(string: kit)
+        }
+        .onChange(of: kit) { Loopback.shared.kit = URL(string: kit) }
     }
 
     /// The kit's pages get a host label, so the session files say which host ran them.
@@ -78,6 +83,7 @@ struct RootView: View {
 @MainActor final class NativeReport: ObservableObject {
     static let shared = NativeReport()
     @Published var thermal = NativeReport.name(ProcessInfo.processInfo.thermalState)
+    @Published var probe = ""
     private let session = "native-" + ISO8601DateFormatter().string(from: Date()).filter { $0.isNumber }
     private var timer: Timer?
 
@@ -118,8 +124,8 @@ struct RootView: View {
 /// The native counterpart of the kit's memory probe: it fills memory with random bytes in steps of 64 MiB until iOS stops
 /// the app, and posts each step with the memory that iOS says is left, so the last post is the limit.
 enum NativeMemoryProbe {
-    static func run() {
-        guard let kit = Loopback.shared.kit else { return }
+    @MainActor static func run(_ report: NativeReport) {
+        guard let kit = Loopback.shared.kit else { return report.probe = "No kit address" }
         let session = "memory-app-native-" + ISO8601DateFormatter().string(from: Date()).filter { $0.isNumber }
         Thread.detachNewThread {
             let step = 64 << 20
@@ -132,6 +138,8 @@ enum NativeMemoryProbe {
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 let value: [String: Any] = ["mib": keep.count * 64, "availableMiB": os_proc_available_memory() >> 20]
+                let shown = "Native probe: \(keep.count * 64) MiB, \(os_proc_available_memory() >> 20) MiB left"
+                Task { @MainActor in report.probe = shown }
                 request.httpBody = try? JSONSerialization.data(withJSONObject: ["session": session, "key": "event", "value": value])
                 let posted = DispatchSemaphore(value: 0)
                 Loopback.shared.session.dataTask(with: request) { _, _, _ in posted.signal() }.resume()
