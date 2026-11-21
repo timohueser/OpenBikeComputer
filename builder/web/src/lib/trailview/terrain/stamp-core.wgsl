@@ -683,7 +683,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 continue;
             }
             // A tunnel that draws as parts stamps nothing from its openings to the start of its parts' cover: the ground
-            // there is the ground that the bake read for the parts' cut. Word 12 holds the decimetres of that stretch from
+            // there is the ground that the bake's measure read to fit the parts. Word 12 holds the decimetres of that stretch from
             // the segment's start and from its end (`nodeStamps` of bins.ts).
             let bare = word(r + 12u);
             if (kind == TUNNEL && bare != 0u && g.lateral < INF && (g.da < f32(bare & 0xffffu) * 0.1 || g.db < f32(bare >> 16u) * 0.1)) {

@@ -23,7 +23,7 @@ libm = { workspace = true }
 spade = { version = "=2.15.1", default-features = false }
 # Every build parses the tables the same: the row order is the rank, and floats round-trip.
 serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }
-# The tunnel parts: which ends are built, so the ground reaches their openings and the mesh leaves their cut open.
+# The tunnel parts: which ends are built, so the ground reaches their openings and widens to them.
 obc-trailview-parts = { workspace = true }
 
 [dev-dependencies]

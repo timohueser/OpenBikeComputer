@@ -87,7 +87,7 @@ const lengthOf = (line: Line) => line.z.slice(1).reduce((sum, _, v) => sum + Mat
  * What the parts of a tile stamp with the ground plan (`PartStamps` of bins.ts), made once. A tunnel line of a chain that
  * draws as parts stamps nothing from each end vertex of the ways of its openings (`shift` metres before the opening) to
  * the start of its part's cover, `collar` + COVER_START_M past the opening, along the chain into its next line: there the
- * ground is the ground of the ground plan that the bake read for the parts' cut.
+ * ground is the ground of the ground plan that the bake's measure read to fit the parts.
  */
 export function partStamps(list: Feature[], tile: Node, lines: Line[]): PartStamps {
     const known = stamped.get(list);
