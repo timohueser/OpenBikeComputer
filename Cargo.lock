@@ -4210,7 +4210,6 @@ version = "0.1.0"
 dependencies = [
  "faer",
  "flate2",
- "i_overlay 9.1.0",
  "image",
  "libc",
  "obc-data",

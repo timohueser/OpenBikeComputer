@@ -16,7 +16,7 @@ mod tube;
 
 use std::collections::BTreeMap;
 
-pub use boxes::{corners, outside, outside_floor, outside_plan, outside_roof, outside_wall, BOX};
+pub use boxes::{corners, outside, outside_plan, outside_wall, BOX};
 pub use mesh::WORDS;
 pub use rules::{Bake, Bore, Design, Group, Inside, Ladder, Look, Rules};
 
@@ -293,12 +293,6 @@ pub fn volumes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) 
 pub fn built_ends(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<bool> {
     let net = Net::new(ends, chords, rules);
     (0..ends.len()).map(|e| net.built_end(e)).collect()
-}
-
-/// Per end, the boxes of its part (`BOX` words each, the opening's first); none for an end that is not built.
-pub fn end_boxes(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<Vec<[f64; BOX]>> {
-    let net = Net::new(ends, chords, rules);
-    (0..ends.len()).map(|e| boxes::boxes(&net, e)).collect()
 }
 
 /// Per built end, the ring that its part takes from the ground: round its head wall and wings, from front to back,

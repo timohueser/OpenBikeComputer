@@ -32,8 +32,6 @@ serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"
 obc-data = { workspace = true }
 # The cross-section rules that the ground plan shares, and the reader of the tiles for the codec tests.
 obc-ground-plan = { workspace = true }
-# The cut of a part: the region of each face of the ground plan where its ground lies in the part, joined.
-i_overlay = { version = "9.1.0", default-features = false }
 # The table of the tunnel parts and their kinds.
 obc-trailview-parts = { workspace = true }
 # The cut of the OSM of a bake.

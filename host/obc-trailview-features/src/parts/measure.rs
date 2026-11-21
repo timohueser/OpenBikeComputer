@@ -7,7 +7,6 @@ use obc_ground_plan::faces::heights::check;
 use obc_ground_plan::faces::{records, Rules};
 use obc_ground_plan::frame::{CellKey, GlobalPoint, FRAME_BITS};
 use obc_ground_plan::graph::{self, CrossingKind, Family, Level, OpenEnd};
-use obc_ground_plan::openings::Mouth;
 use obc_ground_plan::terrain::Terrain as Pages;
 use obc_ground_plan::tile::Geometry;
 
@@ -16,8 +15,8 @@ use crate::levels::{run, Reader};
 use crate::tiles::{Tile, MAX_ZOOM};
 
 /// What to read about one opening: its point and unit direction into the tube, the metres across its frame row to the
-/// right and to the left, per metre in from it the points of the centre line and of both outer walls, the ids of its
-/// chain's ways, and other points whose ground it needs.
+/// right and to the left, per metre in from it the points of the centre line and of both outer walls, and the ids of
+/// its chain's ways.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Ask {
     pub p: [f64; 2],
@@ -26,14 +25,12 @@ pub(crate) struct Ask {
     pub left: u32,
     pub stations: Vec<[[f64; 2]; 3]>,
     pub ids: Vec<u32>,
-    pub points: Vec<[f64; 2]>,
 }
 
 /// What the ground plan gives about an opening: the ground at each station point (centre, left wall, right wall); the
 /// ground each metre along the frame row, from `right` metres right to `left` metres left; per deck way over the row
 /// its metres to the left and its underside; the room of each crossing where a way of the chain is the lower way;
-/// whether a building ring holds a station of the centre line; the ground at the ask's other points; and the faces of
-/// the ground plan about those points (`Field`).
+/// whether a building ring holds a station of the centre line.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Site {
     pub stations: Vec<[Option<f64>; 3]>,
@@ -41,37 +38,7 @@ pub(crate) struct Site {
     pub decks: Vec<(f64, f64)>,
     pub rooms: Vec<f64>,
     pub building: bool,
-    pub points: Vec<Option<f64>>,
-    pub fields: Vec<Field>,
 }
-
-/// A face of the ground plan near an ask's other points: its cell, its rings (frame points of the ground plan, the outer
-/// ring first), the height of its own ground, by its rule, at each of those points within `FIELD_M` of its box, by
-/// index, and the stretches of its edges there. The ground is smooth inside a face; it steps only at a face's edge.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Field {
-    pub cell: [u32; 2],
-    pub rings: Vec<Vec<[i64; 2]>>,
-    pub heights: Vec<(u32, f64)>,
-    pub edges: Vec<Edge>,
-}
-
-/// The stretch of an edge of a face's ring from share `t[0]` to share `t[1]` of the way from `a` to `b` (frame points),
-/// and the face's own ground at even steps of at most `EDGE_M` along it, both ends included.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Edge {
-    pub a: [i64; 2],
-    pub b: [i64; 2],
-    pub t: [f64; 2],
-    pub heights: Vec<f64>,
-}
-
-/// The step of the ground along a face's edge (m).
-const EDGE_M: f64 = 0.25;
-
-/// A face reads its ground this far past its box (m): a sample step and a half, so each grid cell that meets the face
-/// has its four corners.
-const FIELD_M: f64 = 1.0;
 
 impl Site {
     /// The ground at metres `m` to the left of the axis on the row (negative: right), linear between its metres.
@@ -98,14 +65,7 @@ struct Cell {
     rooms: Vec<(u32, f64)>,
     decks: Vec<([f64; 2], [f64; 2], f64, f64)>,
     buildings: Vec<Vec<Vec<[i64; 2]>>>,
-    faces: Vec<Face>,
 }
-
-/// A face of level 0 of a cell: its rings in frame points, and its label.
-type Face = (Vec<Vec<[i64; 2]>>, Option<u32>);
-
-/// A job's cell: its key, its reads and the asks that read its faces.
-type Job = (CellKey, Reads, Vec<usize>);
 
 const SQUARE: f64 = (1u64 << FRAME_BITS) as f64;
 
@@ -117,14 +77,8 @@ fn key_of(q: [f64; 2]) -> CellKey {
     CellKey::of(GlobalPoint { x: q[0].floor() as i64, y: q[1].floor() as i64 })
 }
 
-/// The cell built as the device builds it, with the open stretches of `ends` near it and the approaches to `mouths`,
-/// and what the measure reads.
-fn cell(
-    key: CellKey,
-    reader: &mut Reader,
-    (ends, mouths): (&[OpenEnd], &[Mouth]),
-    id: &dyn Fn(u32, u32, u32) -> Option<u32>,
-) -> Cell {
+/// The cell built as the device builds it, with the open stretches of `ends` near it, and what the measure reads.
+fn cell(key: CellKey, reader: &mut Reader, ends: &[OpenEnd], id: &dyn Fn(u32, u32, u32) -> Option<u32>) -> Cell {
     let rules = Rules::embedded();
     let input = reader.input(key);
     let [x0, y0, x1, y1] = key.grown();
@@ -132,22 +86,8 @@ fn cell(
         (ends.iter().copied()).filter(|e| (x0..=x1).contains(&e.way.x) && (y0..=y1).contains(&e.way.y)).collect();
     let band = rules.structures.edge_band_m;
     let mut g = graph::build_open(key, &input, &rules.sections, Some(band), &near);
-    g.mouths = mouths.to_vec();
-    let (plan, near_records, _, _) = records::near_under(&g, &input, rules, key);
+    let (_, near_records, _, _) = records::near_under(&g, &input, rules, key);
     let o = key.origin();
-    let labels = obc_ground_plan::mesh::face_labels(&plan.faces, &near_records.words);
-    let faces = (plan.faces.iter().zip(labels))
-        .filter(|(f, _)| f.level == 0)
-        .map(|(f, label)| {
-            let ring = |r: &Vec<u32>| {
-                r.iter()
-                    .map(|&v| plan.vertices[v as usize])
-                    .map(|p| [o.x + i64::from(p[0]), o.y + i64::from(p[1])])
-                    .collect()
-            };
-            (f.rings.iter().map(ring).collect(), label)
-        })
-        .collect();
     let global = |pos: [i32; 2]| [(o.x + i64::from(pos[0])) as f64, (o.y + i64::from(pos[1])) as f64];
     let feature =
         |g: &graph::WayGraph, w: u32| &input.features[g.parts[g.ways[w as usize].part as usize].feature.0 as usize];
@@ -181,7 +121,7 @@ fn cell(
         .filter(|f| f.kind == "building" && f.geometry == Geometry::Area)
         .map(|f| f.parts.iter().map(|p| p.points.iter().map(|q| [q.x, q.y]).collect()).collect())
         .collect();
-    Cell { words: near_records.words, terrain: input.terrain, rooms, decks, buildings, faces }
+    Cell { words: near_records.words, terrain: input.terrain, rooms, decks, buildings }
 }
 
 /// Whether the rings of a polygon (outer and holes) hold frame point q, even-odd.
@@ -198,36 +138,6 @@ fn holds(rings: &[Vec<[i64; 2]>], q: [f64; 2]) -> bool {
     inside
 }
 
-/// The stretch of edge a-b in the box `area` (frame points), with the ground by `at` along it; None where it leaves the
-/// box or the ground is not known.
-fn edge(a: [i64; 2], b: [i64; 2], area: [f64; 4], at: &dyn Fn([f64; 2]) -> Option<f64>) -> Option<Edge> {
-    let (p, d) = ([a[0] as f64, a[1] as f64], [(b[0] - a[0]) as f64, (b[1] - a[1]) as f64]);
-    let (mut t0, mut t1) = (0.0f64, 1.0f64);
-    for k in 0..2 {
-        if d[k] == 0.0 {
-            if p[k] < area[k] || p[k] > area[k + 2] {
-                return None;
-            }
-            continue;
-        }
-        let (u, v) = ((area[k] - p[k]) / d[k], (area[k + 2] - p[k]) / d[k]);
-        t0 = t0.max(u.min(v));
-        t1 = t1.min(u.max(v));
-    }
-    if t0 >= t1 {
-        return None;
-    }
-    let metres = d[0].hypot(d[1]) * (t1 - t0) * obc_ground_plan::frame::metres_per_unit_at(p[1]);
-    let n = (metres / EDGE_M).ceil().max(1.0) as usize;
-    let heights = (0..=n)
-        .map(|i| {
-            let t = t0 + (t1 - t0) * i as f64 / n as f64;
-            at([p[0] + t * d[0], p[1] + t * d[1]])
-        })
-        .collect::<Option<Vec<f64>>>()?;
-    Some(Edge { a, b, t: [t0, t1], heights })
-}
-
 /// Where segment p-q meets segment a-b: the share along p-q and along a-b.
 pub(crate) fn meet(p: [f64; 2], q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> Option<(f64, f64)> {
     let (r, s) = ([q[0] - p[0], q[1] - p[1]], [b[0] - a[0], b[1] - a[1]]);
@@ -240,13 +150,12 @@ pub(crate) fn meet(p: [f64; 2], q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> Option
     ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some((t, u))
 }
 
-/// A point that an ask reads: the ask, its station and the point there (centre, left wall, right wall), its place on
-/// the row, or one of its other points.
+/// A point that an ask reads: the ask, its station and the point there (centre, left wall, right wall), or its place
+/// on the row.
 #[derive(Clone, Copy)]
 enum Read {
     Station(usize, usize, usize),
     Row(usize, usize),
-    Point(usize, usize),
 }
 
 /// The reads in one cell, each with its world point.
@@ -254,35 +163,17 @@ type Reads = Vec<(Read, [f64; 2])>;
 
 /// What a cell answers: the ground at its points, and per ask that reads in it the decks over its row, the rooms of the
 /// ways on top of its chain and whether a building holds a station of its centre line in the cell.
-type Answers = (Vec<(Read, Option<f64>)>, Vec<(usize, Vec<(f64, f64)>, Vec<f64>, bool)>, Vec<(usize, Field)>);
-
-/// The box [x0, y0, x1, y1] of frame points, grown by `by` frame units.
-fn frame_box(points: impl Iterator<Item = [f64; 2]>, by: f64) -> [f64; 4] {
-    let b = points.fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, q| {
-        [b[0].min(q[0]), b[1].min(q[1]), b[2].max(q[0]), b[3].max(q[1])]
-    });
-    [b[0] - by, b[1] - by, b[2] + by, b[3] + by]
-}
-
-fn boxes_meet(a: [f64; 4], b: [f64; 4]) -> bool {
-    a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
-}
+type Answers = (Vec<(Read, Option<f64>)>, Vec<(usize, Vec<(f64, f64)>, Vec<f64>, bool)>);
 
 /// The sites of the asks. Each cell that holds a point to read is built once: a job takes the cells of one zoom-13
 /// tile, one at a time; as many jobs run at once as `memory` holds.
-pub(crate) fn sites(
-    asks: &[Ask],
-    input: &Input,
-    (ends, mouths): (&[OpenEnd], &[Mouth]),
-    memory: usize,
-) -> (Vec<Site>, usize) {
+pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize) -> (Vec<Site>, usize) {
     let z13 = |c: u32, r: u32| input.tiles.tiles.get(&(MAX_ZOOM, c, r));
     let id = |c: u32, r: u32, index: u32| z13(c, r).and_then(|t: &Tile| t.id(index));
     let mut sites: Vec<Site> = (asks.iter())
         .map(|a| Site {
             stations: vec![[None; 3]; a.stations.len()],
             row: vec![None; (a.right + a.left + 1) as usize],
-            points: vec![None; a.points.len()],
             ..Site::default()
         })
         .collect();
@@ -299,39 +190,19 @@ pub(crate) fn sites(
             let p = offset(a.p, left, f64::from(j) - f64::from(a.right));
             by_cell.entry(key_of(frame(p))).or_default().push((Read::Row(k, j as usize), p));
         }
-        for (i, &p) in a.points.iter().enumerate() {
-            by_cell.entry(key_of(frame(p))).or_default().push((Read::Point(k, i), p));
-        }
-    }
-    // The faces of each cell that the box of an ask's other points meets, grown by FIELD_M.
-    let grow = |p: [f64; 2]| FIELD_M / obc_ground_plan::frame::metres_per_unit_at(p[1]);
-    let areas: Vec<Option<[f64; 4]>> = (asks.iter())
-        .map(|a| a.points.first().map(|&p| frame_box(a.points.iter().map(|&q| frame(q)), grow(frame(p)))))
-        .collect();
-    let mut fielded: BTreeMap<CellKey, Vec<usize>> = BTreeMap::new();
-    for (k, area) in areas.iter().enumerate() {
-        let Some(b) = *area else { continue };
-        let (lo, hi) = (key_of([b[0], b[1]]), key_of([b[2], b[3]]));
-        for y in lo.y..=hi.y {
-            for x in lo.x..=hi.x {
-                fielded.entry(CellKey { x, y }).or_default().push(k);
-                by_cell.entry(CellKey { x, y }).or_default();
-            }
-        }
     }
     let cells = by_cell.len();
     let shift = obc_ground_plan::frame::CELL_ZOOM - u32::from(MAX_ZOOM);
-    let mut jobs: BTreeMap<(u32, u32), Vec<Job>> = BTreeMap::new();
+    let mut jobs: BTreeMap<(u32, u32), Vec<(CellKey, Reads)>> = BTreeMap::new();
     for (key, reads) in by_cell {
-        let fields = fielded.remove(&key).unwrap_or_default();
-        jobs.entry((key.x >> shift, key.y >> shift)).or_default().push((key, reads, fields));
+        jobs.entry((key.x >> shift, key.y >> shift)).or_default().push((key, reads));
     }
     let jobs: Vec<_> = jobs.into_values().collect();
     let done: Vec<Vec<Answers>> = run(&jobs, memory, |job| {
         let mut reader = Reader::new(&z13, input.terrain, Some(input.levels));
         job.iter()
-            .map(|(key, reads, fielded)| {
-                let c = cell(*key, &mut reader, (ends, mouths), &id);
+            .map(|(key, reads)| {
+                let c = cell(*key, &mut reader, ends, &id);
                 let o = key.origin();
                 let ground = |p: [f64; 2]| {
                     let q = frame(p);
@@ -340,7 +211,7 @@ pub(crate) fn sites(
                 let heights: Vec<(Read, Option<f64>)> = reads.iter().map(|&(r, p)| (r, ground(p))).collect();
                 let mut readers: Vec<usize> = (reads.iter())
                     .map(|(r, _)| match *r {
-                        Read::Station(k, ..) | Read::Row(k, _) | Read::Point(k, _) => k,
+                        Read::Station(k, ..) | Read::Row(k, _) => k,
                     })
                     .collect();
                 readers.dedup();
@@ -368,47 +239,15 @@ pub(crate) fn sites(
                         (k, decks, rooms, building)
                     })
                     .collect();
-                // The faces about each ask's other points, and the ground of each by its own rule there.
-                let mut fields = Vec::new();
-                for &k in fielded {
-                    let area = areas[k].expect("an ask with points");
-                    let points: Vec<[f64; 2]> = asks[k].points.iter().map(|&p| frame(p)).collect();
-                    for (rings, label) in &c.faces {
-                        let near = frame_box(rings[0].iter().map(|q| [q[0] as f64, q[1] as f64]), grow(points[0]));
-                        if !boxes_meet(near, area) {
-                            continue;
-                        }
-                        let heights: Vec<(u32, f64)> = (points.iter().enumerate())
-                            .filter(|(_, q)| boxes_meet(near, [q[0], q[1], q[0], q[1]]))
-                            .filter_map(|(i, q)| {
-                                let local = [q[0] - o.x as f64, q[1] - o.y as f64];
-                                check::at_rule(&c.words, &c.terrain, *key, local, *label).map(|h| (i as u32, h.h))
-                            })
-                            .collect();
-                        let at = |q: [f64; 2]| {
-                            let local = [q[0] - o.x as f64, q[1] - o.y as f64];
-                            check::at_rule(&c.words, &c.terrain, *key, local, *label).map(|h| h.h)
-                        };
-                        let edges = (rings.iter())
-                            .flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
-                            .filter_map(|(a, b)| edge(a, b, area, &at))
-                            .collect();
-                        fields.push((k, Field { cell: [key.x, key.y], rings: rings.clone(), heights, edges }));
-                    }
-                }
-                (heights, per_ask, fields)
+                (heights, per_ask)
             })
             .collect()
     });
-    for (heights, per_ask, fields) in done.into_iter().flatten() {
-        for (k, field) in fields {
-            sites[k].fields.push(field);
-        }
+    for (heights, per_ask) in done.into_iter().flatten() {
         for (r, h) in heights {
             match r {
                 Read::Station(k, i, w) => sites[k].stations[i][w] = h,
                 Read::Row(k, j) => sites[k].row[j] = h,
-                Read::Point(k, i) => sites[k].points[i] = h,
             }
         }
         for (k, decks, rooms, building) in per_ask {
@@ -450,5 +289,5 @@ pub(crate) fn ask(
         stations.push([c, offset(c, l, wall), offset(c, l, -wall)]);
         k += 1.0;
     }
-    Ask { p, dir, right, left, stations, ids, points: Vec::new() }
+    Ask { p, dir, right, left, stations, ids }
 }

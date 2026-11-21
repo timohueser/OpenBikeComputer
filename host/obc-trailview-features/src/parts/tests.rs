@@ -4,7 +4,7 @@ use obc_ground_plan::graph::OpenEnd;
 use serde_json::Value;
 
 use super::ladder::Kind;
-use super::measure::{Ask, Field, Site};
+use super::measure::{Ask, Site};
 use super::*;
 use crate::tiles::{decode, Geometry, Tiles, MAX_ZOOM};
 use crate::{world, Plan};
@@ -105,7 +105,7 @@ impl Case {
             classes: &classes,
         };
         let opened = std::cell::RefCell::new(opened);
-        place_with(&input, &|asks, ends, _| {
+        place_with(&input, &|asks, ends| {
             opened.borrow_mut().extend_from_slice(ends);
             (asks.iter().map(site).collect(), 0)
         })
@@ -123,24 +123,8 @@ fn site<'a>(ground: &'a dyn Fn([f64; 2]) -> f64, rooms: &[f64], building: bool) 
             decks: Vec::new(),
             rooms: rooms.clone(),
             building,
-            points: a.points.iter().map(|&p| Some(ground(back(p)))).collect(),
-            fields: fields(a, ground),
         }
     }
-}
-
-/// One face of the ground plan over an ask's other points, 100 m round them, its ground `ground`.
-fn fields(a: &Ask, ground: &dyn Fn([f64; 2]) -> f64) -> Vec<Field> {
-    if a.points.is_empty() {
-        return Vec::new();
-    }
-    let frame = |v: f64| (v * (1u64 << 34) as f64).round() as i64;
-    let pad = frame(100.0 / metres(a.p[1]));
-    let (x0, x1) = a.points.iter().fold((i64::MAX, i64::MIN), |(lo, hi), p| (lo.min(frame(p[0])), hi.max(frame(p[0]))));
-    let (y0, y1) = a.points.iter().fold((i64::MAX, i64::MIN), |(lo, hi), p| (lo.min(frame(p[1])), hi.max(frame(p[1]))));
-    let ring = vec![[x0 - pad, y0 - pad], [x1 + pad, y0 - pad], [x1 + pad, y1 + pad], [x0 - pad, y1 + pad]];
-    let heights = a.points.iter().enumerate().map(|(k, &p)| (k as u32, ground(back(p)))).collect();
-    vec![Field { rings: vec![ring], heights, ..Field::default() }]
 }
 
 /// The kinds and the rung of each opening of way `id`.
@@ -463,54 +447,4 @@ fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height
     assert_eq!(chords(&placed)[0].2, 4.0);
     assert_eq!(placed.metrics["low_stretches_at_least_height"].as_u64(), Some(1));
     assert_eq!(placed.metrics["floor_clashes"].as_u64(), Some(1));
-}
-
-/// Whether the rings of a tag `cut` of an end with `heading` hold a point, metres in and to the left: an odd number.
-fn in_cut(cut: &str, heading: &str, p: [f64; 2]) -> bool {
-    let rings: Vec<Vec<[f64; 2]>> = (cut.split(';'))
-        .map(|r| {
-            r.split(',')
-                .map(|q| q.split(' ').map(|v| v.parse().unwrap()).collect::<Vec<f64>>())
-                .map(|v| [v[0], v[1]])
-                .collect()
-        })
-        .collect();
-    // The point in frame units from the end's point.
-    let h: f64 = heading.parse().unwrap();
-    let (into, per) = ([h.cos(), h.sin()], metres(world(8.4, 46.8)[1]) / (1u64 << 34) as f64);
-    let p = [(into[0] * p[0] + into[1] * p[1]) / per, (into[1] * p[0] - into[0] * p[1]) / per];
-    let mut odd = false;
-    for ring in &rings {
-        for (i, a) in ring.iter().enumerate() {
-            let b = ring[(i + 1) % ring.len()];
-            if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
-                odd = !odd;
-            }
-        }
-    }
-    odd
-}
-
-#[test]
-fn the_cut_holds_the_ground_inside_the_part_and_leaves_the_hill_over_it() {
-    // A road tunnel whose ridge rises 1 m per metre from each opening: an arch at both ends. In the first metres the
-    // ground lies in the room; from about 5.5 m in it lies over the shell. Before the head wall it is the floor.
-    let mut case = Case::default();
-    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
-    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
-    let ends = records(&placed, "tunnel-end");
-    assert_eq!(placed.metrics["cut_ends"].as_u64(), Some(2));
-    assert_eq!(placed.metrics["cut_invalid_rings"].as_u64(), Some(0));
-    for end in ends {
-        let (cut, heading) = (end["cut"].as_str(), end["heading"].as_str());
-        for (p, held) in [([1.0, 0.0], true), ([3.0, 2.0], true), ([4.5, -1.5], true), ([-1.0, 0.0], false)] {
-            assert_eq!(in_cut(cut, heading, p), held, "{p:?} in {cut}");
-        }
-        for p in [[8.0, 0.0], [20.0, 0.0], [2.0, 6.0], [2.0, -6.0]] {
-            assert!(!in_cut(cut, heading, p), "{p:?} in {cut}");
-        }
-    }
-    // Where no end is built, no end has a cut.
-    let placed = case.place(&site(&|_| 520.0, &[], false), &mut Vec::new());
-    assert!(records(&placed, "tunnel-end").iter().all(|t| !t.contains_key("cut")));
 }

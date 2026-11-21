@@ -280,32 +280,22 @@ fn box_frame(b: &[f64; BOX], p: [f64; 2]) -> (f64, f64) {
     (d[0] * b[2] + d[1] * b[3], d[0] * lu[0] + d[1] * lu[1])
 }
 
-/// How far a world point lies over the roof of a box (round over its spring), in about metres; negative under it.
-pub fn outside_roof(b: &[f64; BOX], p: [f64; 3]) -> f64 {
+/// How far a world point lies outside the sides and the roof of a box, in about metres; negative inside.
+pub fn outside_wall(b: &[f64; BOX], p: [f64; 3]) -> f64 {
     let (along, left) = box_frame(b, [p[0], p[1]]);
     let z = p[2] - risen(b, along, left);
     let [half, roof, spring] = [b[5], b[6], b[9]];
-    if z > spring && roof > spring {
+    let top = if z > spring && roof > spring {
         let r = roof - spring;
         (libm::hypot(left / half, (z - spring) / r) - 1.0) * half.min(r)
     } else {
         z - roof
-    }
-}
-
-/// How far a world point lies outside the sides and the roof of a box, in about metres; negative inside.
-pub fn outside_wall(b: &[f64; BOX], p: [f64; 3]) -> f64 {
-    let (_, left) = box_frame(b, [p[0], p[1]]);
-    (left.abs() - b[5]).max(outside_roof(b, p))
-}
-
-/// How far a world point lies under a box's floor, in metres; negative over it.
-pub fn outside_floor(b: &[f64; BOX], p: [f64; 3]) -> f64 {
-    let (along, left) = box_frame(b, [p[0], p[1]]);
-    b[7] - (p[2] - risen(b, along, left))
+    };
+    (left.abs() - half).max(top)
 }
 
 /// How far a world point lies outside a box, in about metres; negative inside.
 pub fn outside(b: &[f64; BOX], p: [f64; 3]) -> f64 {
-    outside_plan(b, [p[0], p[1]]).max(outside_floor(b, p)).max(outside_wall(b, p))
+    let (along, left) = box_frame(b, [p[0], p[1]]);
+    outside_plan(b, [p[0], p[1]]).max(b[7] - (p[2] - risen(b, along, left))).max(outside_wall(b, p))
 }
