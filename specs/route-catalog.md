@@ -624,20 +624,35 @@ each piece, that lie within 30 m of a piece of the set.
 
 Two jobs of different origins agree when they have the same kind family (`hiking` and `foot` are
 one), the same `rank` when both are above 0, and either both have a `ref` and the refs agree, or
-one has no `ref`, both have a name, and the names agree. Two refs agree when they share a number (a
-run of digits and dots, read as the whole numbers between its dots: `SM 561` and `561`, `1;EV17`
-and `1`; `4.1` agrees with neither `4` nor `1`), or, when neither has a digit, when their letters
-and digits are equal in lower case. Two names agree when their letters and
-digits are equal in lower case.
+one has no `ref` and a name of one agrees with a name of the other. Two refs agree when they share a
+number (a run of digits and dots, read as the whole numbers between its dots: `SM 561` and `561`,
+`1;EV17` and `1`; `4.1` agrees with neither `4` nor `1`), or, when neither has a digit, when their
+letters and digits are equal in lower case.
 
-For an OSM relation that is a part of a long route, the `ref` is its own or else that of its long
-route, and the name is that of its long route. Its long route is the one that lists it at the
-lowest level, of two the one with the lower relation ID. For a source stage, the `ref` and the name
-are those of its route.
+Two names agree when their letters and digits are equal in lower case, or by their words: the words
+of one name are all words of the other, and both names have the same digit words. A word is a run of
+letters and digits (`char::is_alphanumeric`) in lower case, and a digit word is a word with an ASCII
+digit 0 to 9. A name with no word agrees with no name. So "Eigertrail" and "Eiger Trail" agree (equal
+letters), "Cloefpfad" and "Traumschleife Cloefpfad" agree by their words, "Bliessteig" and
+"Bliessteig - Etappe 4" do not (only the second has the digit word "4"), and an empty name agrees
+with no name.
+
+A job has one name, the name of its route, with one exception. For an OSM relation that is a part of
+a long route, the `ref` is its own or else that of its long route, and the name is that of its long
+route. When the part has a name and the name of its long route has a word, the part has a second
+name: the name of its long route and its own name, joined with a space, such as "Bliessteig
+Bliessteig - Etappe 4". So a part never compares a bare stage name such as "Etappe 4" alone, which
+agrees with the stage 4 of each trail. Its long route is the one that lists it at the lowest level,
+of two the one with the lower relation ID. For a source stage, the `ref` and the name are those of
+its route. A long record of [The same trail](#the-same-trail) has its own name.
 
 Two jobs are a pair when (a) they agree and the match line of one lies at least a fifth along the
 other, or (b) they have the same kind family and each match line lies at least 80 % along the
-other, whatever their refs, names and ranks.
+other, whatever their refs, names and ranks. Two jobs that agree only by the words of their names
+(their refs do not decide, and no two of their names have equal letters and digits) are a pair by
+(a) only when the match line of one lies at least four fifths along the other, and the other at
+least half along the first. A village name agrees by its words with the name of each route of the
+village, and only the same route on the ground lies so far along it.
 
 ### Who stays
 
@@ -647,19 +662,27 @@ pairs by (a) count: a pair by (b) is another route on the same path, which canno
 A kept record never leaves for a job of a later origin, so an official record never leaves for an
 OSM job.
 
-So no route leaves the catalog for another one unless the match lines of the records that stay cover
-four fifths of its match line: the rule counts only kept records of earlier origins, and nothing
-removes such a record later, as `named` drops only unnamed OSM stages and the builder cuts no source
-line into sections. The line that a record shows can differ from its match line where its plan goes
-around a cut of [Line of a source job](#line-of-a-source-job). A job that fails removes nothing. The
-builder plans all source jobs first. Then it applies the rule to the jobs of the second and later
-sources, in their order, and to the OSM jobs, so an OSM job that leaves needs no search. Then it
-plans the OSM jobs that stay.
+When each of these pairs is a pair by (a) whose names agree with the names of the job (equal letters
+and digits, or words at the shares of a pair by words), the job leaves when they cover at least a
+half of its match line. A pair whose refs agree and whose names do not keeps four fifths. So where an
+OSM route and an official route have the same name and their lines differ in part, the rider sees the
+official route only. At most half of the match line of such a job shows nowhere. A long record keeps
+four fifths (see [The same trail](#the-same-trail)).
 
-A route can show twice: an OSM job that its pairs cover by less than four fifths stays beside them.
-Examples are two stagings of one route with other stage ends, such as an official stage and an OSM
-stage of one trail that lie three quarters along each other, and a long OSM route with the number
-of a short official route. To remove one could remove a stretch that shows nowhere else.
+So no route leaves the catalog for another one unless the match lines of the records that stay cover
+four fifths of its match line, or a half for a job whose pairs agree with it by name: the rule
+counts only kept records of earlier origins, and nothing removes such a record later, as `named`
+drops only unnamed OSM stages and the builder cuts no source line into sections. The line that a
+record shows can differ from its match line where its plan goes around a cut of [Line of a source
+job](#line-of-a-source-job). A job that fails removes nothing. The builder plans all source jobs
+first. Then it applies the rule to the jobs of the second and later sources, in their order, and to
+the OSM jobs, so an OSM job that leaves needs no search. Then it plans the OSM jobs that stay.
+
+A route can show twice: an OSM job that its pairs cover by less than four fifths stays beside them,
+or by less than a half when they agree with it by name. Examples are a long OSM route with the number
+of a short official route, two stagings of one route whose stage names do not agree, and two circuits
+whose names agree by their words and whose lines lie less than four fifths along each other both
+ways. To remove one could remove a stretch that shows nowhere else.
 
 A name can show nowhere: a job that is no part of a long route can leave for an official record of
 another name on the same path, a pair by (b), such as a EuroVelo route that is a relation of its
@@ -739,12 +762,13 @@ part a piece. Two long records of different origins are a pair by rule (a) of [P
 on their trail lines, so a long record of another rank is another trail.
 
 A long record leaves (`Replaced`) when the long records of earlier origins that are its pairs cover
-at least four fifths of its trail line. A source trail never leaves for an OSM long record, so where
-neither covers four fifths of the other, both trails stay. A long record that leaves takes no record
-out of the catalog. The long record that stays takes each of `operator`, `website` and `symbol` that
-it lacks, not `description`, from the long record that left for it and whose trail line lies along
-the largest share of its own, by the rule of [Words](#words). It takes no `symbol` when a part in
-the catalog is in France.
+at least four fifths of its trail line, also when their names agree: a complete OSM trail does not
+give way to an official trail whose stages in the catalog cover only half of it. A source trail
+never leaves for an OSM long record, so where neither covers four fifths of the other, both trails
+stay. A long record that leaves takes no record out of the catalog. The long record that stays takes
+each of `operator`, `website` and `symbol` that it lacks, not `description`, from the long record
+that left for it and whose trail line lies along the largest share of its own, by the rule of
+[Words](#words). It takes no `symbol` when a part in the catalog is in France.
 
 So a trail can show twice: an OSM long record that the source trails cover by less than four fifths
 stays beside them, and so do a trail of another rank, a cut line and a route record that is a trail

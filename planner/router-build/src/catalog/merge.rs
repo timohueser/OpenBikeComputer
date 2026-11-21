@@ -9,6 +9,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 const AGREE_SHARE: f64 = 0.2;
 /// A pair by the line alone needs this share both ways, and a job that leaves this cover.
 const SAME_SHARE: f64 = 0.8;
+/// A pair by the words of the names needs `SAME_SHARE` of one match line along the other, and this
+/// share of the other along the first.
+const WORDS_SHARE: f64 = 0.5;
+/// A job whose counted pairs all agree with it by name leaves at this cover: where the names agree
+/// and the lines differ in part, the official route shows.
+const NAME_COVER: f64 = 0.5;
 /// The side of the coarse cells that find the jobs whose lines can meet, in microdegrees: more
 /// than `NEAR_M` in each direction.
 const CELL_UDEG: i32 = 10_000;
@@ -20,7 +26,8 @@ pub(super) struct Probe {
     pub family: &'static str,
     pub rank: u8,
     pub ref_: String,
-    pub name: String,
+    /// The names that its pairs compare, each with a word.
+    names: Vec<Name>,
     /// The pieces of the match line one after another, and the first point of each piece after the
     /// first: there is no line between two pieces.
     line: Vec<P>,
@@ -32,7 +39,7 @@ pub(super) struct Probe {
 }
 
 impl Probe {
-    pub fn new(origin: usize, kind: &str, rank: u8, ref_: &str, name: &str, pieces: Vec<Vec<P>>) -> Self {
+    pub fn new(origin: usize, kind: &str, rank: u8, ref_: &str, names: &[&str], pieces: Vec<Vec<P>>) -> Self {
         let pieces = pieces.into_iter().filter(|piece| piece.len() >= 2);
         let (mut line, mut breaks) = (Vec::new(), Vec::new());
         for piece in pieces {
@@ -50,7 +57,8 @@ impl Probe {
         } else {
             "bicycle"
         };
-        Probe { origin, family, rank, ref_: ref_.into(), name: name.into(), line, breaks, samples, cells }
+        let names = names.iter().filter_map(|name| Name::new(name)).collect();
+        Probe { origin, family, rank, ref_: ref_.into(), names, line, breaks, samples, cells }
     }
 
     fn runs<'a>(line: &'a [P], breaks: &'a [usize]) -> impl Iterator<Item = &'a [P]> {
@@ -104,14 +112,83 @@ pub(super) fn refs_agree(a: &str, b: &str) -> bool {
     }
 }
 
-/// Whether two jobs agree: one kind family, the same `rank` when both have one, and refs that agree,
-/// or, when one has no `ref`, names that agree.
-pub(super) fn agree(a: &Probe, b: &Probe) -> bool {
-    let words = match a.ref_.is_empty() || b.ref_.is_empty() {
-        false => refs_agree(&a.ref_, &b.ref_),
-        true => !plain(&a.name).is_empty() && plain(&a.name) == plain(&b.name),
-    };
-    a.family == b.family && (a.rank == 0 || b.rank == 0 || a.rank == b.rank) && words
+/// How two jobs or two names agree, from no to the most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Agree {
+    No,
+    /// Only by the words of their names.
+    Words,
+    /// By their refs, or by names with equal letters and digits.
+    Same,
+}
+
+/// A name as a pair compares it: its letters and digits, and its words, in lower case. A word is a
+/// run of letters and digits.
+struct Name {
+    plain: String,
+    words: BTreeSet<String>,
+}
+
+impl Name {
+    /// `None` for a name with no word, which agrees with no name.
+    fn new(text: &str) -> Option<Self> {
+        let words: BTreeSet<String> =
+            text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(plain).collect();
+        (!words.is_empty()).then(|| Name { plain: plain(text), words })
+    }
+
+    /// The words with an ASCII digit.
+    fn digits(&self) -> impl Iterator<Item = &String> {
+        self.words.iter().filter(|w| w.bytes().any(|b| b.is_ascii_digit()))
+    }
+
+    /// `Same` for equal letters and digits; `Words` when the words of one are all words of the other
+    /// and both have the same digit words.
+    fn agree(&self, other: &Name) -> Agree {
+        let within = self.words.is_subset(&other.words) || other.words.is_subset(&self.words);
+        if self.plain == other.plain {
+            Agree::Same
+        } else if within && self.digits().eq(other.digits()) {
+            Agree::Words
+        } else {
+            Agree::No
+        }
+    }
+}
+
+/// Whether two names agree, by either rule.
+#[cfg(test)]
+pub(super) fn names_agree(a: &str, b: &str) -> bool {
+    Name::new(a).zip(Name::new(b)).is_some_and(|(a, b)| a.agree(&b) != Agree::No)
+}
+
+/// How the names of two jobs agree: the most of each name of one against each name of the other.
+fn names(a: &Probe, b: &Probe) -> Agree {
+    let each = a.names.iter().flat_map(|x| b.names.iter().map(|y| x.agree(y)));
+    each.max().unwrap_or(Agree::No)
+}
+
+/// How two jobs agree: not at all when their kind families differ, or both have a `rank` and the
+/// ranks differ; else by their refs when both have one, or by their names.
+fn agree(a: &Probe, b: &Probe) -> Agree {
+    if a.family != b.family || (a.rank != 0 && b.rank != 0 && a.rank != b.rank) {
+        return Agree::No;
+    }
+    match a.ref_.is_empty() || b.ref_.is_empty() {
+        false if refs_agree(&a.ref_, &b.ref_) => Agree::Same,
+        false => Agree::No,
+        true => names(a, b),
+    }
+}
+
+/// Whether two jobs that agree so are a pair by (a) at their shares, each of one match line along
+/// the other.
+fn close(agree: Agree, [a, b]: [f64; 2]) -> bool {
+    match agree {
+        Agree::Same => a >= AGREE_SHARE || b >= AGREE_SHARE,
+        Agree::Words => a.max(b) >= SAME_SHARE && a.min(b) >= WORDS_SHARE,
+        Agree::No => false,
+    }
 }
 
 /// How two jobs are a pair: (a) they agree, (b) they have the same line.
@@ -121,22 +198,25 @@ pub(super) enum Rule {
     B,
 }
 
-/// A pair of a job with a record: the record's id and the rule.
+/// A pair of a job with a record: the record's id, the rule, and whether it is a pair by (a) whose
+/// names agree at its shares, whatever the refs.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Pair {
     pub id: i64,
     pub rule: Rule,
+    named: bool,
 }
 
 /// The pair of a job with a record, if they are one, from the index of each.
 fn pair((job, near): (&Probe, &Near), (id, record, index): &(i64, &Probe, Near)) -> Option<Pair> {
     let shares = [share(job, &[index]), share(record, &[near])];
-    let rule = match (agree(job, record), shares) {
-        (true, [a, b]) if a >= AGREE_SHARE || b >= AGREE_SHARE => Rule::A,
-        (_, [a, b]) if a >= SAME_SHARE && b >= SAME_SHARE => Rule::B,
-        _ => return None,
+    let rule = match close(agree(job, record), shares) {
+        true => Rule::A,
+        false if shares.iter().all(|&s| s >= SAME_SHARE) => Rule::B,
+        false => return None,
     };
-    Some(Pair { id: *id, rule })
+    let named = rule == Rule::A && close(names(job, record), shares);
+    Some(Pair { id: *id, rule, named })
 }
 
 /// What the merge decides.
@@ -150,13 +230,15 @@ pub(super) struct Merge {
 
 impl Merge {
     /// The merge of the jobs of each origin after the first, in rank order: a job leaves when the kept
-    /// records of earlier origins that are its pairs cover four fifths of its match line; for a part
-    /// of a long relation (`part`), only its pairs by (a) count. `kept` says whether a job of a second
-    /// source kept a record.
+    /// records of earlier origins that are its pairs cover four fifths of its match line, or, with
+    /// `by_name`, a half when they are all pairs by (a) whose names agree with it; for a part of a long
+    /// relation (`part`), only its pairs by (a) count. `kept` says whether a job of a second source
+    /// kept a record.
     pub fn replace(
         probes: &BTreeMap<i64, Probe>,
         kept: &(dyn Fn(i64) -> bool + Sync),
         part: &(dyn Fn(i64) -> bool + Sync),
+        by_name: bool,
     ) -> Self {
         let mut merge = Merge::default();
         let last = probes.values().map(|probe| probe.origin).max().unwrap_or(0);
@@ -167,7 +249,7 @@ impl Merge {
                 .map(|(id, probe)| (*id, probe, probe.near()))
                 .collect();
             let jobs: Vec<(&i64, &Probe)> = probes.iter().filter(|(_, probe)| probe.origin == origin).collect();
-            let found: Vec<(i64, Vec<Pair>, f64)> = jobs
+            let found: Vec<(i64, Vec<Pair>, bool)> = jobs
                 .par_iter()
                 .filter_map(|&(&id, job)| {
                     let meets = |record: &&(i64, &Probe, Near)| record.1.family == job.family && job.meets(record.1);
@@ -178,17 +260,18 @@ impl Merge {
                     let near = job.near();
                     let pairs: Vec<Pair> =
                         candidates.into_iter().filter_map(|record| pair((job, &near), record)).collect();
-                    let counts = |p: &&Pair| p.rule == Rule::A || !part(id);
+                    let counted: Vec<&Pair> = pairs.iter().filter(|p| p.rule == Rule::A || !part(id)).collect();
                     let covering: Vec<&Near> = records
                         .iter()
-                        .filter(|record| pairs.iter().filter(counts).any(|p| p.id == record.0))
+                        .filter(|record| counted.iter().any(|p| p.id == record.0))
                         .map(|r| &r.2)
                         .collect();
-                    (!pairs.is_empty()).then(|| (id, pairs, share(job, &covering)))
+                    let limit = if by_name && counted.iter().all(|p| p.named) { NAME_COVER } else { SAME_SHARE };
+                    (!pairs.is_empty()).then(|| (id, pairs, share(job, &covering) >= limit))
                 })
                 .collect();
-            for (id, pairs, cover) in found {
-                if cover >= SAME_SHARE {
+            for (id, pairs, leaves) in found {
+                if leaves {
                     merge.replaced.insert(id);
                 }
                 merge.pairs.insert(id, pairs);
@@ -230,7 +313,8 @@ pub(super) fn donors(successors: &BTreeMap<i64, Vec<i64>>, probes: &BTreeMap<i64
 pub(super) fn fill<'a>(stage: &Probe, candidates: impl IntoIterator<Item = (i64, &'a Probe)>) -> Option<i64> {
     let near = stage.near();
     let both = |probe: &Probe| share(probe, &[&near]) >= SAME_SHARE && share(stage, &[&probe.near()]) >= SAME_SHARE;
-    let fills = candidates.into_iter().filter(|(_, probe)| agree(stage, probe) && stage.meets(probe) && both(probe));
+    let agrees = |probe: &Probe| agree(stage, probe) != Agree::No;
+    let fills = candidates.into_iter().filter(|(_, probe)| agrees(probe) && stage.meets(probe) && both(probe));
     fills.map(|(id, _)| id).min()
 }
 
