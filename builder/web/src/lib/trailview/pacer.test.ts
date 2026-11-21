@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Pacer } from './pacer';
+import { LOAD_RATE, Pacer } from './pacer';
 
 /** The display frames of one second that draw, at `hz` with a timestamp noise of ±`noise` ms. */
 function drawn(hz: number, rate = 60, noise = 0): number[] {
@@ -30,6 +30,16 @@ describe('Pacer', () => {
         expect(steps(drawn(144, 30, 0.5))).toEqual(new Set([5]));
         expect(steps(drawn(90, 60, 0.5)).size).toBe(1);
         expect(steps(drawn(165, 30, 0.5)).size).toBe(1);
+    });
+
+    it('draws LOAD_RATE frames a second of a view at rest that loads, and at once for input or the end of the load', () => {
+        const pacer = new Pacer(60), at = (i: number) => 1000 + (i * 1000) / 60 + 0.5 * Math.sin(i * 7.1);
+        const shown = [...Array(60).keys()].filter(i => pacer.due(at(i)) && !pacer.holds(at(i), true, true));
+        expect(shown).toHaveLength(LOAD_RATE);
+        expect(steps(shown)).toEqual(new Set([60 / LOAD_RATE]));
+        expect(pacer.holds(at(59), true, true)).toBe(true);
+        expect(pacer.holds(at(59), false, true)).toBe(false);
+        expect(pacer.holds(at(60), true, false)).toBe(false);
     });
 
     it('draws a lone frame at once', () => {

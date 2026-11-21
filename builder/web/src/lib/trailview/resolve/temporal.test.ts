@@ -46,6 +46,15 @@ describe('the accumulation', () => {
         expect(temporal.next(true, false)?.weight).toBe(MOVING_WEIGHT);
     });
 
+    it('starts again on the next frame for a change that frames which drew nothing saw', () => {
+        const temporal = new Temporal();
+        for (let k = 0; k < STILL_FRAMES; k++) still(temporal);
+        temporal.hold(true);
+        temporal.hold(false);
+        expect(temporal.converging).toBe(true);
+        expect(still(temporal)).toEqual({ weight: 1, sample: 1, clip: false });
+    });
+
     it('takes one frame in a view without jitter', () => {
         const temporal = new Temporal();
         expect(temporal.next(false, false, 1)?.weight).toBe(1);

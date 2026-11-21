@@ -35,21 +35,30 @@ export class Temporal {
     private moving = 0;
     private valid = false;
     private frames = STILL_FRAMES;
+    /** A change that a frame which drew nothing saw: the next `next()` takes it in. */
+    held = false;
 
     /** Whether a still view needs more frames. */
     get converging(): boolean {
-        return this.k < this.frames;
+        return this.held || this.k < this.frames;
     }
 
-    /** The history is lost: the next frame starts it again. */
+    /** The history is lost: the next frame starts it again. A held change stays: the instances still need it. */
     reset(): void {
         this.valid = false;
         this.k = 0;
     }
 
+    /** A frame draws nothing: the next frame that draws takes in its change. */
+    hold(changed: boolean): void {
+        this.held ||= changed;
+    }
+
     /** The step of the next frame, or undefined when the still view has all its frames. `frames` is the number that a still view takes. */
     next(moved: boolean, changed: boolean, frames = STILL_FRAMES): Step | undefined {
         this.frames = frames;
+        changed ||= this.held;
+        this.held = false;
         if (moved) {
             this.k = 0;
             this.moving = this.moving % STILL_FRAMES + 1;
