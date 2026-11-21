@@ -1,6 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { tree } from '../models/library';
-import { outlines } from './instances';
+import { firepit } from './amenities';
+import { geometry } from './flat';
+import { tree } from './library';
+import { decodeModels } from './model-file';
+import { encodeModels, outlines, pack } from './pack';
+import type { Lod } from './trees';
+
+describe('the model files', () => {
+    it('give back the packed models bit for bit: tiers with trunks, a crown and a shadow proxy, and a model that glows', async () => {
+        const spruce = ([0, 1, 2] as Lod[]).map(lod => tree('norway-spruce', 'summer', lod));
+        const models = [pack(spruce, Math.min(...spruce.map(tier => tier.crown))), pack([geometry(firepit())])];
+        expect(models[0].shape.proxy).toBeDefined();
+        // toStrictEqual compares the classes of the typed arrays too.
+        expect(await decodeModels(await encodeModels(models))).toStrictEqual(models);
+    });
+});
 
 describe('the impostor outlines', () => {
     it('hold the mesh seen along every frame', () => {
