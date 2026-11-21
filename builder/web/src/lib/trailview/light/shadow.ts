@@ -1,5 +1,6 @@
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
+import { lever } from '../prototype-levers';
 
 /** Texels a side of each cascade's map (SHADOW_SIDE of shadow.wgsl), and its mip levels. */
 const SIDE = 2048, LEVELS = Math.log2(SIDE) + 1;
@@ -144,7 +145,7 @@ export class Shadow {
         CASCADES.forEach((c, k) => {
             const state = this.states[k], fade = 1 - smoothstep(c.above / 2, c.above, above);
             state.frames++;
-            state.active = fade > 0 && sun[2] > LOW_SUN;
+            state.active = fade > 0 && sun[2] > LOW_SUN && k < lever('shadows', CASCADES.length);
             if (!state.active) {
                 state.centre = undefined;
                 state.waiting = false;

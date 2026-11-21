@@ -9,6 +9,7 @@ import { canRenderStills, credits, still, type StillJob } from './lib/trailview/
 import { coverView } from './lib/trailview/still-view';
 import { BUDGETS } from './lib/trailview/budget';
 import { defaultView, finestOf, formatView, groundPlanOf, parseView, tierOf } from './lib/trailview/view';
+import { lever } from './lib/trailview/prototype-levers';
 
 /** The address follows the view at most this often. */
 const ADDRESS_MS = 200;
@@ -69,6 +70,7 @@ async function main(): Promise<void> {
     const view = parseView(location.search, defaultView(release.bounds));
     const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search), { plan, finest: finestOf(location.search), tier: tierOf(location.search) });
 
+    engine.pacer.rate = lever('fps', engine.pacer.rate);
     const address = () => `${location.origin}${location.pathname}${formatView(engine.view, location.search)}`;
     let writing: ReturnType<typeof setTimeout> | undefined;
     engine.onView = () => {

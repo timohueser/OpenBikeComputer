@@ -9,6 +9,7 @@ owns:
   - builder/ground-plan-wasm/**
   - host/obc-trailview-parts/**
   - builder/trailview-parts-wasm/**
+  - builder/webp-wasm/**
   - builder/web/src/lib/trailview/**
   - builder/web/src/plan-timing.ts
   - builder/web/plan-timing.html

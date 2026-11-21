@@ -9,7 +9,7 @@ struct Resolve {
     last_view_proj: mat4x4f,
     // xyz: the eye minus the last frame's eye, in metres. w: metres of drop per square metre of distance.
     moved: vec4f,
-    // xy: this frame's render size in pixels. zw: unused.
+    // xy: this frame's render size in pixels. zw: the size of the history that it writes.
     render: vec4f,
     // xy: this frame's jitter in render pixels, y down. z: the near plane in metres. w: the sharpening.
     jitter: vec4f,
@@ -27,6 +27,21 @@ struct Resolve {
 @group(0) @binding(5) var nearest_texel: sampler;
 // The nearest depth about each pixel of the last frame, times DEPTH_SCALE.
 @group(0) @binding(6) var last_depth: texture_2d<f32>;
+
+// The present of a display frame: the history of the last frame, turned to this view. The eye stays, so
+// the turn is exact for every depth.
+struct Present {
+    // The last frame's view projection, without its jitter.
+    last_view_proj: mat4x4f,
+    // The view ray of clip point (x, y) is forward + x right + y up.
+    forward: vec4f,
+    right: vec4f,
+    up: vec4f,
+    // xy: the canvas in pixels. z: the sharpening. w: unused.
+    canvas: vec4f,
+}
+
+@group(0) @binding(7) var<uniform> present: Present;
 
 struct Out {
     @location(0) canvas: vec4f,
@@ -117,7 +132,7 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
         let c = textureLoad(scene, min(vec2i(at.xy), last), 0).rgb;
         return Out(vec4f(c, 1.0), vec4f(encode(compress(c)), 1.0), vec4f(0.0));
     }
-    let output = vec2f(textureDimensions(history));
+    let output = resolve.render.zw;
     // Render pixel i holds the point at i + 0.5 - jitter: the pixel about this pixel's point and its
     // four neighbours, weighed by their distance (a Gaussian a quarter of a pixel wide), give this
     // frame's colour and its neighbourhood.
@@ -181,7 +196,7 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
     // not clipped: a stale colour widens the range and can leave a faint halo at a moving edge.
     var shown = blended;
     if (weight < 1.0 && resolve.jitter.w > 0.0) {
-        let texel = 1.0 / output;
+        let texel = 1.0 / vec2f(textureDimensions(history));
         let a = decode(textureSampleLevel(history, bilinear, uv + vec2f(texel.x, 0.0), 0.0).rgb);
         let b = decode(textureSampleLevel(history, bilinear, uv - vec2f(texel.x, 0.0), 0.0).rgb);
         let e = decode(textureSampleLevel(history, bilinear, uv + vec2f(0.0, texel.y), 0.0).rgb);
@@ -194,4 +209,24 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
     // slow gradients of a dark sky show no bands.
     let step = dither(at.xy) - 0.5;
     return Out(vec4f(finish(expand(shown)) + step / 255.0, 1.0), vec4f(encode(blended) + step / 1023.0, 1.0), vec4f(nearest * DEPTH_SCALE));
+}
+
+@fragment
+fn present_fragment(@builtin(position) at: vec4f) -> @location(0) vec4f {
+    let output = present.canvas.xy;
+    let ndc = vec2f(at.x / output.x * 2.0 - 1.0, 1.0 - at.y / output.y * 2.0);
+    let was = present.last_view_proj * vec4f(present.forward.xyz + ndc.x * present.right.xyz + ndc.y * present.up.xyz, 0.0);
+    let n = was.xy / max(was.w, 1e-9);
+    let uv = vec2f(0.5 + 0.5 * n.x, 0.5 - 0.5 * n.y);
+    let c = history_at(uv);
+    // The sharpening of the resolve, against the history about the point.
+    let texel = 1.0 / vec2f(textureDimensions(history));
+    let a = decode(textureSampleLevel(history, bilinear, uv + vec2f(texel.x, 0.0), 0.0).rgb);
+    let b = decode(textureSampleLevel(history, bilinear, uv - vec2f(texel.x, 0.0), 0.0).rgb);
+    let e = decode(textureSampleLevel(history, bilinear, uv + vec2f(0.0, texel.y), 0.0).rgb);
+    let f = decode(textureSampleLevel(history, bilinear, uv - vec2f(0.0, texel.y), 0.0).rgb);
+    let low = min(c, min(min(a, b), min(e, f)));
+    let high = max(c, max(max(a, b), max(e, f)));
+    let shown = clamp(c + present.canvas.z * (c - 0.25 * (a + b + e + f)), low, high);
+    return vec4f(finish(expand(shown)) + (dither(at.xy) - 0.5) / 255.0, 1.0);
 }

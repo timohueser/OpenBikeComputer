@@ -25,6 +25,7 @@ import { CELLS_BYTES, COARSEST_MESH, meshCells, Pieces, stampNodes, type PiecesS
 import { CLIFF_JOB_BYTES, cliffJobs, packCliffJobs, type CliffJob } from './cliff';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
+import { lever } from '../prototype-levers';
 
 /**
  * GPU memory for pages: the stored and the synthesized budgets of the desktop, in MiB. The feature masks
@@ -954,7 +955,7 @@ export class Terrain {
 
     /** The rule at a quality: each step makes the range a quarter step smaller, down to the least. No step lowers the finest level. */
     private rule(eye: { anchor: Anchor; above: number }, pixels: number, quality = this.quality): Rule {
-        return cdlod(eye, Math.max(RANGE.least, bestRange(pixels) * 2 ** (-quality / 4)), this.finest);
+        return cdlod(eye, Math.max(RANGE.least, bestRange(pixels) * 2 ** (-quality / 4)) * lever('terrain', 1), this.finest);
     }
 
     /** Whether a node's box can show: render space corners at its range of heights, against the frustum. */

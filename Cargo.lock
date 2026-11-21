@@ -4306,6 +4306,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-webp-bridge"
+version = "0.1.0"
+dependencies = [
+ "image-webp",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "obcm-assemble"
 version = "0.1.0"
 dependencies = [
