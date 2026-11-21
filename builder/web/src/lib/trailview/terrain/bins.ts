@@ -224,6 +224,8 @@ export interface Line {
     sideWays?: number[];
     /** The `surface` tag of its way. */
     surface?: string;
+    /** A tunnel's tag `parts`: the parts of the two ends of its chain. */
+    parts?: string;
 }
 /** An OSM guardrail or retaining wall beside a road, in world units, with a wall's `height` tag. */
 export interface Barrier { xy: number[]; wall: boolean; height?: number }
@@ -518,6 +520,7 @@ function addLines(lines: Line[], bridges: Shapes['bridges'], feature: number, { 
                         kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1), plan: shape.plan && planPart(shape.plan, from, to + 1),
                         h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
                         gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1), surface: tags.surface, roundabout: tags.junction === 'roundabout' || undefined, oneway: onewayOf(tags), stroke,
+                        parts: bore ? tags.parts : undefined,
                     };
                     if (type === RAIL) line.sleepers = sleepers(line);
                     lines.push(line);
@@ -1135,6 +1138,13 @@ export interface NodeStamps {
     limits?: number;
 }
 
+/**
+ * What the tunnel parts of a tile stamp with the ground plan (`partStamps` of structures/parts.ts): the tunnel lines of the
+ * chains that draw as parts, the metres from each end of such a line in which it stamps nothing, and the rings that the
+ * parts take from the ground.
+ */
+export interface PartStamps { built: Set<Line>; stops: Map<Line, [number, number]>; taken: number[][] }
+
 /** Words of stamp data per frame at most: the nodes of the frame's stamps. A node holds no more. */
 export const STAMP_WORDS = 2 ** 20;
 
@@ -1143,10 +1153,11 @@ export const STAMP_WORDS = 2 ** 20;
  * that it can act on, so the shader sees every primitive that can reach a texel. A cell keeps the
  * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together. With `plan`
  * the records shape and paint the roads, paths and rail lines (model.wgsl): their records stay out,
- * and the node stamps and holds a mask where they would. Without `areas` the river areas and the
- * buildings stay out, as they do where the node would pass STAMP_WORDS with them.
+ * and the node stamps and holds a mask where they would; and `parts` holds what the tile's tunnel parts stamp. Without
+ * `areas` the river areas, the buildings and the parts' rings stay out, as they do where the node would pass STAMP_WORDS
+ * with them.
  */
-export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false, areas = true): NodeStamps {
+export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false, areas = true, parts?: PartStamps): NodeStamps {
     const shapes = features(list, tile), { lines, lakes, seas, pads, buildings } = shapes, index = tileIndex(shapes);
     const shift = 22 - node.level, cell = CELL * 2 ** shift;
     const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, span = GRID * cell, square = [x0, y0, x0 + span, y0 + span];
@@ -1228,10 +1239,13 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             // The surface code in the low 4 bits, the sides with a sidewalk above it. Beside the line's index, in
             // steps of 2 cm, how far its edge lies out at the start and the end, where it tapers to a partner's.
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
-            // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
+            // The mitres of the two ends, then the rise of the bank to the right at each. On a tunnel that draws as parts,
+            // the decimetres from the segment's start and from its end in which it stamps nothing.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
+            const stop = parts?.stops.get(line), dm = (m: number) => Math.min(0xffff, Math.round(10 * Math.max(0, m)));
+            const bare = stop ? dm(stop[0] - along[v]) | (dm(stop[1] - (along[n - 1] - along[v + 1])) << 16) : 0;
             const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
-                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, number | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
+                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), bare, number | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
         }
     }
@@ -1267,10 +1281,12 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             : { level: 0, ...(k < outlines.buildingsFrom ? shapes.areas[k - outlines.areasFrom] : buildings[k - outlines.buildingsFrom]) };
         return item(kind, box, lake);
     });
-    // With `plan` the records draw each deck over the ground: its ring takes the ground under it, as an area does.
+    // With `plan` the records draw each deck over the ground: its ring takes the ground under it, as an area does; and so
+    // does the ring of each part.
     if (plan && areas && node.level >= NEAR) {
         const decks = deckIndex(shapes);
         for (const k of nearBoxes(decks.grid, square, 1)) near.push(...item(AREA, decks.grid.boxes[k], { level: 0, ...decks.rings[k] }));
+        for (const ring of parts?.taken ?? []) near.push(...item(AREA, ringsBox([ring]), { level: 0, rings: [ring], outer: [true] }));
     }
     // The origin of the lake crossings of a cell: its centre, held inside the node, as stamp-core.wgsl
     // has it, and moved a few units off every lake edge of the cell, so that no rule of a point on a
@@ -1311,7 +1327,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     const count = entries.reduce((sum, list) => sum + list.length, 0);
     if (HEAD + OFFSETS + count + RECORD * records.length > STAMP_WORDS) {
         // The areas only take their insides out of the mask. Without them a node that still passes the limit stamps nothing.
-        const dropped = areas ? near.filter(({ kind }) => kind === AREA).length : 0, lean = dropped ? nodeStamps(list, tile, node, plan, false) : { data: null, heights: false, mask: false, limits };
+        const dropped = areas ? near.filter(({ kind }) => kind === AREA).length : 0, lean = dropped ? nodeStamps(list, tile, node, plan, false, parts) : { data: null, heights: false, mask: false, limits };
         return { ...lean, limits: (lean.limits ?? 0) + (dropped || 1) };
     }
     const data = new Uint32Array(HEAD + OFFSETS + count + RECORD * records.length);

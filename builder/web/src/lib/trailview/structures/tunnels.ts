@@ -129,11 +129,11 @@ function along(line: Line, from: number, to: number, s: number): Station {
     }
 }
 
-/** The tunnels of a node. A bore follows the curve of the road that runs into it. */
-export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
+/** The tunnels of a node, of the lines that `keep` takes. A bore follows the curve of the road that runs into it. */
+export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns, keep: (line: Line) => boolean = () => true): void {
     const twin = twins(lines);
     for (const line of lines) {
-        if (line.kind !== TUNNEL || !line.abut) continue;
+        if (line.kind !== TUNNEL || !line.abut || !keep(line)) continue;
         const n = line.z.length, road = line.deck! > 3, size = road ? ROAD_PORTAL : PATH_PORTAL;
         const stops = curveStops(line);
         for (let k = 0; k + 1 < stops.length; k++) if (owns(stops[k].x, stops[k].y)) bore(b, stops[k], stops[k + 1], line, boreHalf(line), road, stops[k + 1].along - stops[k].along);
