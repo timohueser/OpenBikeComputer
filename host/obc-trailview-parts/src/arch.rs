@@ -149,6 +149,7 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
         let (h, section) = shell.first().map_or((chord.height, chord.section), |p| (p.2, p.3));
         let cut = pair_cut(net, e);
         b.clip(cut.map(|(x, side)| {
+            let x = x + side * tube::OVERLAP_M;
             let (p, q, r) = (front.at([x, 0.0]), back.at([x, 0.0]), front.at([x + side, 0.0]));
             Clip { a: [p[0], p[1]], b: [q[0], q[1]], away: [r[0] - p[0], r[1] - p[1]] }
         }));
