@@ -206,7 +206,7 @@ export class TrailView {
         this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal, TREE_VERSION);
         this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal, budget);
         this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
-        this.rows = new Rows(this.groundLook.rules, this.trees, this.plants, this.instances);
+        this.rows = new Rows(config, this.groundLook.rules, this.trees, this.plants, this.instances);
         this.kindPoints = new KindPoints(this.instances);
         this.dressing = new Dressing(this.groundLook.rules, this.instances);
         // A still has a size of its own and no input: the controls listen for keys on the whole window.
