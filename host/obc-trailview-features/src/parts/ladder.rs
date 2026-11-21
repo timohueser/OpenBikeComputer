@@ -15,8 +15,9 @@ use super::{along_dir, built_openings, counts, distance, first_way_m, left_of, o
 pub use obc_trailview_parts::Part as Kind;
 
 /// The numbers of a drawn opening (Plan 8 of the design): metres, `left` and `right` per metre out from the frame's
-/// outer edge, and in a pair the mate's opening and the metres to its axis to the left; `height` is the inside height
-/// of the tube's chord there; `heading` is square to its frame line, into the tube of the opening farther in.
+/// outer edge, and in a pair the mate's opening, the metres to its axis to the left and its collar; `height` is the
+/// inside height of the tube's chord there; `heading` is square to its frame line, into the tube of the opening farther
+/// in.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Numbers {
     pub heading: f64,
@@ -26,7 +27,7 @@ pub(crate) struct Numbers {
     pub left: Vec<f64>,
     pub right: Vec<f64>,
     pub foot: f64,
-    pub mate: Option<(usize, f64)>,
+    pub mate: Option<(usize, f64, f64)>,
 }
 
 /// An opening's decision: every kind that fits in the order of the rungs, the part of the end (the first; also the
@@ -265,12 +266,12 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     // has a part at both of its ends.
     let mut mate: Vec<Option<usize>> = vec![None; n];
     let is_hill = |i: usize| hill.contains(&i);
-    let whole: Vec<bool> = (0..tubes.len())
-        .map(|t| {
-            let at = |end: usize| openings.iter().position(|o| o.tube == t && o.end == end);
-            (0..2).all(|end| at(end).is_some_and(|i| !kinds[i].is_empty()))
-        })
-        .collect();
+    // The opening at each end of each tube.
+    let mut at_end: Vec<[Option<usize>; 2]> = vec![[None; 2]; tubes.len()];
+    for (i, o) in openings.iter().enumerate() {
+        at_end[o.tube][o.end].get_or_insert(i);
+    }
+    let whole: Vec<bool> = at_end.iter().map(|e| e.iter().all(|i| i.is_some_and(|i| !kinds[i].is_empty()))).collect();
     for x in &near {
         let (a, c) = (x.a, x.b);
         if !is_hill(a) || !is_hill(c) || mate[a].is_some() || mate[c].is_some() {
@@ -378,17 +379,17 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     let refitted = (0..n).filter(|&i| kinds[i].first().copied() != before[i]).count();
     // The floor of each tube with a part, from opening to opening; an end with no opening holds the end vertex. Its
     // chord at an opening gives the opening its inside height.
-    let spans: Vec<Option<[f64; 2]>> = (0..tubes.len())
-        .map(|t| {
-            let at = |end: usize| openings.iter().position(|o| o.tube == t && o.end == end);
-            let with = [at(0), at(1)].into_iter().flatten().any(|i| !kinds[i].is_empty());
-            let s0 = at(0).map_or(0.0, |i| openings[i].s);
-            let s1 = at(1).map_or(tubes[t].curve.len, |i| openings[i].s);
+    let spans: Vec<Option<[f64; 2]>> = (tubes.iter().zip(&at_end))
+        .map(|(t, &[a, z])| {
+            let with = [a, z].into_iter().flatten().any(|i| !kinds[i].is_empty());
+            let s0 = a.map_or(0.0, |i| openings[i].s);
+            let s1 = z.map_or(t.curve.len, |i| openings[i].s);
             (with && s1 - s0 > 1e-6).then_some([s0, s1])
         })
         .collect();
     let (floors, floor_metrics) = floor::floors(tubes, &spans, (&half, &height), input);
     let end_height = |o: &Opening| floors[o.tube].as_ref().map_or(height[o.tube], |f| f.end_height(o.end));
+    let heights: Vec<f64> = openings.iter().map(end_height).collect();
     // The numbers of each drawn opening.
     let mut ends: Vec<End> = Vec::with_capacity(n);
     for i in 0..n {
@@ -396,9 +397,8 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         // A pair has one record, at the opening of the lower feature id.
         let drawn = mate[i].is_none_or(|m| (openings[i].way_id, i) < (openings[m].way_id, m));
         let m = Measured { sites: &sites, rights: &rights, cover: &cover, moved: &moved };
-        let h = end_height(&openings[i]);
         let numbers = (kind.filter(|_| drawn))
-            .map(|kind| numbers(i, kind, (mate[i], far_of[i]), &m, (openings, tubes), (&half, h), input));
+            .map(|kind| numbers(i, kind, (mate[i], far_of[i]), &m, (openings, tubes), (&half, &heights), input));
         ends.push(End { kinds: kinds[i].clone(), kind, rung: rung[i].unwrap_or_default(), numbers });
     }
     let shown = |e: &End| match e.kind {
@@ -433,15 +433,15 @@ struct Measured<'a> {
     moved: &'a [f64],
 }
 
-/// The numbers of drawn opening i of `kind` (Plan 8) with the inside height `h` there: its frame is its own, or in a
-/// pair the frame line of the opening farther in, which holds both.
+/// The numbers of drawn opening i of `kind` (Plan 8), with the inside height of each opening: its frame is its own, or
+/// in a pair the frame line of the opening farther in, which holds both.
 fn numbers(
     i: usize,
     kind: Kind,
     (mate, far): (Option<usize>, usize),
     m: &Measured,
     (openings, tubes): (&[Opening], &[Tube]),
-    (half, h): (&[f64], f64),
+    (half, heights): (&[f64], &[f64]),
     input: &Input,
 ) -> Numbers {
     let Measured { sites, rights, cover, moved } = *m;
@@ -465,8 +465,11 @@ fn numbers(
         .filter_map(ground)
         .collect();
     let highest = frame.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let mut face = (h + b.shell_m + b.band_m).max(highest - floor + b.coping_m);
-    face = face.min(h + b.shell_m + b.face_over_crown_max_m);
+    // The wall holds its band over the higher crown of the frame's tubes, and fits the ground up to its cap over the
+    // lower.
+    let crowns = members.iter().map(|&k| openings[k].floor - floor + heights[k] + b.shell_m);
+    let (low, high) = crowns.fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), c| (l.min(c), h.max(c)));
+    let mut face = (high + b.band_m).max((highest - floor + b.coping_m).min(low + b.face_over_crown_max_m));
     // A deck over the frame line or its wing walls: its underside lies over the floor (a way that goes on from the
     // opening on a deck lies at the floor, not over it).
     for &(x, under) in &site.decks {
@@ -498,28 +501,33 @@ fn numbers(
     let (left, right) = (wing(hi, 1.0), wing(lo, -1.0));
     let collar_of = |k: usize| cover[k].map(|d| (d - moved[k]).max(0.0));
     let half_chain = t.curve.len / 2.0;
-    let collar = match kind {
-        Kind::Pair => members.iter().filter_map(|&k| collar_of(k)).fold(0.0, f64::max),
-        Kind::Arch | Kind::Rock => collar_of(i).expect("an arch is covered within its collar"),
-        Kind::Box => collar_of(i).unwrap_or(f64::INFINITY).min(half_chain),
-        Kind::Free => collar_of(i).unwrap_or(f64::INFINITY).min(b.free_max_m).min(half_chain),
-    };
-    // The lowest ground under the frame, its wing walls and the collar.
-    let own = sites[i].as_ref().expect("a measured opening");
+    // Each tube of a pair has its own collar.
+    let collars: Vec<f64> = (members.iter())
+        .map(|&k| match kind {
+            Kind::Pair | Kind::Arch | Kind::Rock => collar_of(k).expect("an arch is covered within its collar"),
+            Kind::Box => collar_of(k).unwrap_or(f64::INFINITY).min(half_chain),
+            Kind::Free => collar_of(k).unwrap_or(f64::INFINITY).min(b.free_max_m).min(half_chain),
+        })
+        .collect();
+    // The lowest ground under the frame, its wing walls and the collars, and the floors.
     let (from, to) = (lo - right.len() as f64, hi + left.len() as f64);
     let under = (from.ceil() as i64..=to.floor() as i64).filter_map(|x| ground(x as f64));
-    let collar_ground = (own.stations.iter())
-        .skip(moved[i].round() as usize)
-        .take(collar.ceil() as usize + 1)
-        .flat_map(|st| st.iter().flatten().copied());
-    let lowest = under.chain(collar_ground).fold(floor, f64::min);
-    let mate = mate.map(|m| (m, axis(m) - axis(i)));
+    let collar_ground = members.iter().zip(&collars).flat_map(|(&k, collar)| {
+        let site = sites[k].as_ref().expect("a measured opening");
+        (site.stations.iter())
+            .skip(moved[k].round() as usize)
+            .take(collar.ceil() as usize + 1)
+            .flat_map(|st| st.iter().flatten().copied())
+    });
+    let floors = members.iter().map(|&k| openings[k].floor);
+    let lowest = under.chain(collar_ground).chain(floors).fold(floor, f64::min);
+    let mate = mate.map(|m| (m, axis(m) - axis(i), collars[1]));
     let numbers = if kind == Kind::Free { (Vec::new(), Vec::new()) } else { (left, right) };
     let heading = openings[far].heading();
     Numbers {
         heading,
-        height: h,
-        collar,
+        height: heights[i],
+        collar: collars[0],
         face,
         left: numbers.0,
         right: numbers.1,
