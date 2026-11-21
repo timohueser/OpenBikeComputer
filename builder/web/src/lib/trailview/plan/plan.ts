@@ -10,6 +10,7 @@ import { cellInputs, type StoredTiles } from './inputs';
 import { bridge, planWorker } from './bridge';
 import { feature_tiles, wanted } from './pkg/obc_ground_plan_bridge.js';
 import type { Built, Failed, PlanRequest } from './plan-worker';
+import { BUDGETS, MiB, type Budget } from '../budget';
 
 /** The level of the nodes that are cells: zoom 16. */
 export const CELL_LEVEL = 16;
@@ -21,10 +22,6 @@ export const AHEAD_M = 300;
 const AHEAD_COS = 0.5;
 /** A cell drops past this: 100 m past BUILD_M + AHEAD_M, so a cell at the edge does not build again when the eye moves to and fro. */
 const KEEP_M = 1000;
-/** The CPU bytes of the records: as MESH_BYTES of the roads. */
-const KEPT_BYTES = 32 * 2 ** 20;
-/** The epic's worker heap. WASM memory never shrinks, so a worker past it ends after its job and a new one starts. */
-export const HEAP_LIMIT = 55 * 2 ** 20;
 /** Jobs that the worker holds: one runs and one waits, so it does not idle while the main thread collects inputs. */
 const JOBS = 2;
 /** The builds that the build times cover. */
@@ -122,8 +119,11 @@ export class Plan {
     private readyMs = 0;
     private eye?: PlanEye;
 
-    /** `stored` gives the stored terrain tiles; an abort of `stop` ends the worker. */
-    constructor(private readonly features: FeatureTiles | undefined, private readonly stored: StoredTiles, private readonly bounds: [number, number, number, number], private readonly changed: () => void, private readonly stop: AbortSignal) {
+    /**
+     * `stored` gives the stored terrain tiles; an abort of `stop` ends the worker. `budget` gives the CPU bytes of the
+     * records and the worker's heap: WASM memory never shrinks, so a worker past it ends after its job and a new one starts.
+     */
+    constructor(private readonly features: FeatureTiles | undefined, private readonly stored: StoredTiles, private readonly bounds: [number, number, number, number], private readonly changed: () => void, private readonly stop: AbortSignal, private readonly budget: Budget = BUDGETS.desktop) {
         stop.addEventListener('abort', () => this.worker?.terminate());
         if (!features) this.error = 'the release has no feature tiles';
     }
@@ -177,7 +177,7 @@ export class Plan {
             this.heap = Math.max(this.heap, data.heap);
         }
         // A trapped instance or a full heap ends the worker, whatever happens to the result.
-        if (data.ok ? data.heap > HEAP_LIMIT : data.trapped) this.restart();
+        if (data.ok ? data.heap > this.budget.caps.planHeap * MiB : data.trapped) this.restart();
         if (!this.eye || distance(this.eye, node) > KEEP_M) return this.changed();
         if (data.ok) {
             const request = (JSON.parse(data.stats) as { inputs: { request: string } }).inputs.request;
@@ -221,7 +221,7 @@ export class Plan {
         for (const name of [...wantedNames, ...others]) {
             const record = this.records.get(name);
             if (!record) continue;
-            if (full || bytes + record.bytes > KEPT_BYTES) {
+            if (full || bytes + record.bytes > this.budget.caps.records * MiB) {
                 full = true;
                 this.records.delete(name);
                 this.dirty = true;
@@ -233,7 +233,7 @@ export class Plan {
             const name = key(node), record = this.records.get(name);
             if (this.serves(record)) continue;
             // A cell asks only while its last size fits: else it would build, go and build again every frame.
-            if (bytes + (this.sizes.get(name) ?? RECORD_BYTES) > KEPT_BYTES) {
+            if (bytes + (this.sizes.get(name) ?? RECORD_BYTES) > this.budget.caps.records * MiB) {
                 full = true;
                 break;
             }

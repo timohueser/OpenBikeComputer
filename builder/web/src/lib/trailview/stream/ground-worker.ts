@@ -16,7 +16,8 @@ export interface GroundJob {
 /** Decoded images by key, and the bytes of each that has arrived; a coarse tile serves the pages of many ground tiles. */
 const decoded = new Map<string, Promise<Raster>>();
 const sizes = new Map<string, number>();
-const BUDGET = 96 * 2 ** 20;
+/** The bytes of the decoded images kept, from the first message. */
+let cap = 0;
 let held = 0;
 
 let gl: WebGL2RenderingContext | null | undefined;
@@ -114,7 +115,7 @@ function raster(body: Body | undefined): Promise<Raster | undefined> {
         held += out.data.byteLength;
         // A decode in flight has no size yet and stays.
         for (const old of decoded.keys()) {
-            if (held <= BUDGET) break;
+            if (held <= cap) break;
             const bytes = sizes.get(old);
             if (bytes === undefined) continue;
             decoded.delete(old);
@@ -125,10 +126,11 @@ function raster(body: Body | undefined): Promise<Raster | undefined> {
     return entry;
 }
 
-/** A message without a job asks for the probe. */
-self.onmessage = async ({ data: { id, job } }: MessageEvent<{ id: number; job?: GroundJob }>) => {
+/** The first message carries the cap and asks for the probe; every other carries a job. */
+self.onmessage = async ({ data: { id, job, bytes } }: MessageEvent<{ id: number; job?: GroundJob; bytes?: number }>) => {
     try {
         if (!job) {
+            cap = bytes!;
             await probe();
             return void self.postMessage({ id });
         }
