@@ -899,16 +899,27 @@ fn route_source_step(
         return Ok(None);
     }
     let snapshots = sources.iter().map(|source| snapshot(inputs, store, &source.id, Vec::new(), wanted));
-    let options = sources
+    let snapshots: Vec<Input> = snapshots.collect::<Result<_, _>>()?;
+    let options: Vec<_> = sources
         .iter()
-        .map(|source| json!({"id": source.id, "credit": attribution(&source.id), "description": source.text}));
+        .zip(&snapshots)
+        .map(|(source, input)| {
+            // `{year}` is the year of the version that the step reads.
+            let year = match input {
+                Input::Snapshot { version, .. } => version.get(..4).unwrap_or_default(),
+                Input::Step { .. } => "",
+            };
+            let credit = attribution(&source.id).replace("{year}", year);
+            json!({"id": source.id, "credit": credit, "description": source.text})
+        })
+        .collect();
     Ok(Some(Step {
         client: Client::None,
         ..python(
             &PLANNER_ROUTING,
             step::ROUTE_SOURCES,
-            snapshots.collect::<Result<_, _>>()?,
-            json!({"bounds": bounds, "sources": options.collect::<Vec<_>>()}),
+            snapshots,
+            json!({"bounds": bounds, "sources": options}),
             ("tools.planner_route_sources", Some("route-sources")),
             &[planner_router_build::catalog::sources::FILE],
         )
@@ -1825,32 +1836,44 @@ mod tests {
 
     /// With the part `route-sources`, a region reads the route sources of its countries whose extent
     /// meets its bounds, in the order of `data/sources.toml`, and the catalog reads them. A region of
-    /// another country reads none, and so does a region without the part.
+    /// another country reads none, and so does a region without the part. `{year}` of a credit is
+    /// the year of the version that the step reads.
     #[test]
     fn the_routing_reads_the_route_sources_of_the_countries_of_its_region() {
         let temp = temp("planner-route-sources");
         let store = store(&temp, &["2026-10-01"]);
-        // A box in Switzerland, south of the box of `AREA`.
-        let area = [("area".to_string(), "europe/swiss".to_string())];
-        let poly = "swiss\n1\n 7.79 47.80\n 7.82 47.80\n 7.82 47.83\n 7.79 47.83\n 7.79 47.80\nEND\nEND\n";
-        fetched(&store, "geofabrik-poly", "2026-10-01", &area, &[("europe/swiss.poly".into(), poly.into())]);
-        let name = "europe/swiss-2026-10-01.osm.pbf";
-        crate::device::tests::extracted(&store, "2026-10-01", &area, name);
-        let pbf = include_bytes!("../tests/data/planner.osm.pbf").to_vec();
-        crate::device::tests::stored(&store, TERRAIN_OSM, "2026-10-01", &area, &[(name.into(), pbf)]);
-        let region = |id: &str, country: &str| {
+        // A box in Switzerland, south of the box of `AREA`, and one in Saarland.
+        for (area, [west, south]) in [("swiss", [7.79, 47.80]), ("saar", [6.95, 49.25])] {
+            let (east, north) = (west + 0.03, south + 0.03);
+            let poly = format!(
+                "{area}\n1\n {west} {south}\n {east} {south}\n {east} {north}\n {west} {north}\n {west} {south}\nEND\nEND\n"
+            );
+            let params = [("area".to_string(), format!("europe/{area}"))];
+            fetched(&store, "geofabrik-poly", "2026-10-01", &params, &[(format!("europe/{area}.poly"), poly)]);
+            let name = format!("europe/{area}-2026-10-01.osm.pbf");
+            crate::device::tests::extracted(&store, "2026-10-01", &params, &name);
+            let pbf = include_bytes!("../tests/data/planner.osm.pbf").to_vec();
+            crate::device::tests::stored(&store, TERRAIN_OSM, "2026-10-01", &params, &[(name, pbf)]);
+        }
+        let region = |id: &str, area: &str, country: &str| {
             let text = format!(
-                "name = \"{id}\"\nkind = \"geofabrik\"\nareas = [\"europe/swiss\"]\ncountries = [\"{country}\"]\n"
+                "name = \"{id}\"\nkind = \"geofabrik\"\nareas = [\"europe/{area}\"]\ncountries = [\"{country}\"]\n"
             );
             parse_region(id, &text).unwrap()
         };
-        let regions = Regions::new(vec![region("swiss", "CH"), region("tyrol", "AT")]).unwrap();
+        let regions = Regions::new(vec![
+            region("swiss", "swiss", "CH"),
+            region("tyrol", "swiss", "AT"),
+            region("saar", "saar", "DE"),
+        ])
+        .unwrap();
         let ids = ["schweizmobil-hiking", "schweizmobil-cycling", "schweizmobil-mtb"];
         let steps = |region: &str, parts: &[&str]| {
             let mut inputs = inputs(region, parts);
             for id in ids {
                 inputs.resolved.insert((id.into(), Vec::new()), "2026-02-25".into());
             }
+            inputs.resolved.insert(("saarland-premiumwanderwege".into(), Vec::new()), "2026-11-20".into());
             Planner.steps_with_tool(&root(), &inputs, &regions, &store, Ok(())).unwrap().steps
         };
         let names = |inputs: &[Input]| -> Vec<String> {
@@ -1873,6 +1896,10 @@ mod tests {
             let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
             assert_eq!(names(&routing.inputs), [step::SOURCE, step::ROADS, step::COSTS]);
         }
+        let saar = steps("saar", &["route-sources"]);
+        let read = saar.iter().find(|step| step.name == step::ROUTE_SOURCES).unwrap();
+        assert_eq!(names(&read.inputs), ["saarland-premiumwanderwege"]);
+        assert_eq!(read.options["sources"][0]["credit"], "© GDI-SL (2026)");
     }
 
     /// A version of `terrain` with `paths` and an `index.json` whose tile 4825/4218 is of `ch`, with

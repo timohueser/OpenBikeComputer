@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use self::archive::Archive;
 use self::http::{Expect, Http};
 use crate::date;
-use crate::sources::{FetchKind, Registry, Source, VersionScheme, WIKI_INPUTS};
+use crate::sources::{FetchKind, Keep, Registry, Source, VersionScheme, WIKI_INPUTS};
 use crate::store::{FileRecord, Requested, Snapshot, Store};
 
 pub struct Request<'a> {
@@ -67,8 +67,10 @@ fn fetch_files(
     let source = request.source;
     match source.fetch.kind {
         FetchKind::Github if source.id == "protomaps-basemaps" => tools::basemap(root, store, http, request),
-        FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => files(store, http, request),
-        FetchKind::Geofabrik => osm::extract(store, http, request),
+        FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => {
+            files(root, store, http, request).map_err(|error| http::shown_in(&error))
+        }
+        FetchKind::Geofabrik => osm::extract(root, store, http, request),
         // Only the producer of `terrain` reads a national model, through its adapter.
         FetchKind::Dtm | FetchKind::ByHand if source.id.starts_with("dtm-") => Err(format!(
             "source `{}` is read through `terrain`: obc data source prepare terrain --region REGION",
@@ -227,10 +229,18 @@ pub(crate) fn check_version(source: &Source, version: &str) -> Result<(), String
     Err(format!("source `{}`: the version `{version}` is not {form}", source.id))
 }
 
+/// The dataset of `data/archive/` that lists the source `id`, or a placeholder when none does.
+fn dataset_of(root: &Path, id: &str) -> String {
+    let datasets = Registry::load(root).and_then(|registry| crate::datasets::load(root, &registry));
+    let found = datasets.ok().and_then(|all| all.into_iter().find(|dataset| dataset.sources.iter().any(|s| s == id)));
+    found.map_or_else(|| "DATASET".to_string(), |dataset| dataset.id)
+}
+
 /// One file per URL. A URL without `{version}` or `{yymmdd}` gives only upstream's newest file: a
 /// date version `V` is that file when it was last modified on or before `V`. A release or commit
-/// version of such a URL is only a name, so it needs a record that pins the bytes.
-fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
+/// version of such a URL is only a name, so it needs a record that pins the bytes. A file that
+/// upstream gives without an `ETag` and a day comes only from the archive, which dates its bytes.
+fn files(root: &Path, store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     let template = source.fetch.url.as_deref().unwrap_or_default();
     let named = names_version(template);
@@ -258,8 +268,17 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
                 .map(|url| match archive.and_then(|archive| archive.find(url)).and_then(|held| held.day) {
                     Some(day) => Ok(Some(day)),
                     None => {
-                        let modified = |url| http.head(url).map(|head| head.modified);
-                        modified(url).or_else(|e| if http::not_found(&e) { Err(e) } else { modified(url) })
+                        let head = |url| http.head(url);
+                        let head = head(url).or_else(|e| if http::not_found(&e) { Err(e) } else { head(url) })?;
+                        if head.bare() && source.keep == Keep::Archive {
+                            return Err(format!(
+                                "source `{}`: upstream gives no day of {}, so only the archive gives it: run `obc data archive get {}`, then fetch it without --refresh",
+                                source.id,
+                                http::shown(url),
+                                dataset_of(root, &source.id)
+                            ));
+                        }
+                        Ok(head.modified)
                     }
                 })
                 .collect();
@@ -324,11 +343,11 @@ fn get(
     };
     let (got, archive) = match archived {
         Some((got, path)) => {
-            eprintln!("obc data: took {url} from the archive");
+            eprintln!("obc data: took {} from the archive", http::shown(url));
             (got, Some(path))
         }
         None => {
-            eprintln!("obc data: fetching {url}");
+            eprintln!("obc data: fetching {}", http::shown(url));
             (http.download(store, url, &expect)?, None)
         }
     };
@@ -516,7 +535,7 @@ pub(crate) mod tests {
     /// What the test server answers: the status, the headers, the body it sends, and a
     /// `Content-Length` that may promise more than it sends.
     pub(crate) struct Reply {
-        status: u16,
+        pub(crate) status: u16,
         pub(crate) headers: Vec<(&'static str, String)>,
         body: Vec<u8>,
         length: usize,
@@ -1280,6 +1299,36 @@ pub(crate) mod tests {
             assert_eq!(file.archive, None, "{scheme}: newer than the version, or other bytes");
             assert_eq!(std::fs::read(store.object(&file.sha256)).unwrap(), b"upstream");
         }
+    }
+
+    /// A server that does not answer `HEAD` gives a bare head. Of a `keep = "archive"` source, such a
+    /// file comes only from the archive, with the day of its manifest: also not with `--refresh`.
+    #[test]
+    fn a_file_without_a_day_upstream_comes_only_from_the_archive() {
+        let scratch = Scratch::new("archive-bare");
+        let (actual, _) = serve(|_, _| Reply { status: 405, ..not_found() });
+        assert!(quick().head(&actual).unwrap().bare(), "a 405 tells nothing");
+        let url = actual.replacen("http://", "https://", 1);
+        let mut land = source(&url, "date");
+        land.keep = crate::sources::Keep::Archive;
+        let request = Request { refresh: false, source: &land, version: None, params: vec![] };
+        let (store, root) = (Store::at(scratch.0.join("store")), scratch.0.join("archive"));
+        let http = || Http::loopback(&actual).with_archive(&root);
+        let err = fetch(&tooling_root(), &store, &http(), &request).unwrap_err();
+        assert!(err.contains("only the archive gives it"), "{err}");
+        let path = archive::mirror_path(&url).unwrap();
+        archive(&root, &[(&path, b"land")], r#""version": "2026-11-02", "#, "2026-11-02");
+        let snapshot = fetch(&tooling_root(), &store, &http(), &request).unwrap();
+        assert_eq!(
+            (snapshot.version.as_str(), snapshot.files[0].archive.as_deref()),
+            ("2026-11-02", Some(path.as_str()))
+        );
+        let err = fetch(&tooling_root(), &store, &http(), &Request { refresh: true, ..request }).unwrap_err();
+        assert!(err.contains("only the archive gives it"), "{err}");
+        let lu = Source { id: "lu-vtt".into(), ..land.clone() };
+        let request = Request { refresh: true, source: &lu, version: None, params: vec![] };
+        let err = fetch(&tooling_root(), &store, &http(), &request).unwrap_err();
+        assert!(err.contains("run `obc data archive get lu-sentiers`"), "{err}");
     }
 
     #[test]

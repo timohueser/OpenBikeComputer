@@ -1,0 +1,6 @@
+name = "Municipal walks of Upper Austria (Land Oberösterreich), shapefile in a zip"
+sources = ["ooe-gemeindewanderwege"]
+coverage = "Upper Austria"
+urls = ["https://e-gov.ooe.gv.at/at.gv.ooe.dorisdaten/DORIS_SG/GEMEINDEWANDERWEGE.zip"]
+bytes_estimate = 2_300_000
+notes = "One shapefile in EPSG:31255. The state exports it again from its database; the zip has an ETag and a day."
