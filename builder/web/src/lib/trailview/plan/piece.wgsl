@@ -373,7 +373,8 @@ fn storey_caster(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f 
 }
 
 // Whether a point `u` units about the anchor at height `h` lies in a box of the cell, as the terrain's fragment tests
-// its boxes.
+// its boxes. A pixel of a piece's tail, which draws with CUT, drops there (`corridor_dropped`): the drawn point itself
+// is tested, at the heights of the drawn corners, so no ground of the mesh shows in a tunnel's room.
 fn in_box(u: vec2f, h: f32) -> bool {
     let origin = vec2f(params.origin - surface.anchor);
     for (var i = 0u; i < u32(boxes[0].x); i++) {
@@ -386,15 +387,4 @@ fn in_box(u: vec2f, h: f32) -> bool {
         }
     }
     return false;
-}
-
-// A pixel of a piece's tail (the triangles and slots near a box, pieces.ts) drops where it lies in a box: the drawn
-// point itself is tested, at the heights of the drawn corners, so no ground of the mesh shows in a tunnel's room. The
-// tail draws with CUT, the pipelines that may discard; a piece that fades draws its other pixels with them too, untested.
-@fragment
-fn piece_fragment(raw: CorridorOut) -> @location(0) vec4f {
-    if (CUT && tail_of(raw) == 1u && in_box(raw.u, raw.altitude)) {
-        discard;
-    }
-    return corridor_shade(raw);
 }

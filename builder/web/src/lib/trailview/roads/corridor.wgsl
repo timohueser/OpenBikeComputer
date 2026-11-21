@@ -78,7 +78,7 @@ override PIECE: bool = false;
 override MOUTH: bool = false;
 // A piece that reaches past the level-18 plateau of the LOD fades out by a dither across the band where the
 // terrain morphs to level 17, and the terrain's far look shows through: the frames resolve the two. A piece's
-// triangles near a box draw with it too, and drop their pixels in a box (piece_fragment of plan/piece.wgsl).
+// triangles near a box draw with it too, and drop their pixels in a box (`corridor_dropped`).
 override CUT: bool = false;
 // A piece's edge looks (lines, fray, grass) lie within this of its frame's edge. Its edge opens by how much farther
 // the paved area goes on past the frame's edge, from the first to the second.
@@ -351,10 +351,9 @@ fn wall_rock(in: CorridorOut, su: vec2f) -> WallRock {
 
 @fragment
 fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
-    return corridor_shade(raw);
-}
-
-fn corridor_shade(raw: CorridorOut) -> vec4f {
+    if (PIECE && CUT && corridor_dropped(raw)) {
+        discard;
+    }
     var in = raw;
     if (PIECE) {
         in = corridor_in(raw);

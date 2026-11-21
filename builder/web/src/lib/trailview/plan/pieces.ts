@@ -529,7 +529,7 @@ export class Pieces {
         pass.setBindGroup(2, ground);
         pass.setBindGroup(3, features);
         // A run's triangles lie in four groups (splitTails): its own, its own near a box, its mouth's near a box, its
-        // mouth's. A draw of the tail is instance 1: its pixels test the boxes (piece_fragment of plan/piece.wgsl).
+        // mouth's. A draw of the tail is instance 1: its pixels test the boxes (`corridor_dropped`).
         [r.triangles, r.mouthTriangles, r.cutTriangles, r.cutMouthTriangles].forEach((pipeline, p) => {
             pass.setPipeline(pipeline);
             for (const piece of this.inView) {
@@ -655,7 +655,7 @@ export async function piecePipelines(gpu: Gpu) {
         label: `plan ${entryPoint}${mouth ? ' mouth' : ''}${cut ? ' cut' : ''}`, layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout, surface, ground, features] }),
         vertex: { module: modules[+mouth], entryPoint, constants: { MOUTH: +mouth } },
         // The ground without the road paint, as the corridors' band.
-        fragment: { module: modules[+mouth], entryPoint: 'piece_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1, PIECE: 1, MODEL: 1, CUT: cut ? 1 : 0, MOUTH: +mouth } },
+        fragment: { module: modules[+mouth], entryPoint: 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1, PIECE: 1, MODEL: 1, CUT: cut ? 1 : 0, MOUTH: +mouth } },
         primitive: { topology: 'triangle-list', cullMode },
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
     });

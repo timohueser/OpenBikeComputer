@@ -50,11 +50,12 @@ fn corridor_label(out: ptr<function, CorridorOut>, label: u32) {
     (*out).label = label;
 }
 
-// A piece's triangle or slot of its tail, near a box (pieces.ts): 1 from its draw's first instance.
+// A piece's triangle or slot of its tail, near a box (pieces.ts): 1 from its draw's first instance. Its pixel drops
+// where it lies in a box (in_box of plan/piece.wgsl).
 fn corridor_tail(out: ptr<function, CorridorOut>, tail: u32) {
     (*out).tail = tail;
 }
 
-fn tail_of(in: CorridorOut) -> u32 {
-    return in.tail;
+fn corridor_dropped(in: CorridorOut) -> bool {
+    return in.tail == 1u && in_box(in.u, in.altitude);
 }
