@@ -50,7 +50,7 @@ impl Part {
 }
 
 /// The kinds of part that the builder makes. A chain draws as parts only where both of its ends are of these kinds.
-pub const BUILT: &[Part] = &[Part::Arch, Part::Box];
+pub const BUILT: &[Part] = &[Part::Arch, Part::Pair, Part::Rock, Part::Box, Part::Free];
 
 /// Whether all ends of a chain are built; `None` is an end with no part of its own.
 pub fn built(ends: &[Option<Part>]) -> bool {
@@ -123,12 +123,20 @@ pub struct End {
     pub left: Vec<f64>,
     pub right: Vec<f64>,
     pub foot: f64,
-    /// The metres to the left from its axis to the other tube of a pair.
-    pub mate: Option<f64>,
+    /// The other tube of a pair.
+    pub mate: Option<Mate>,
     pub way: [i64; 2],
     pub shift: f64,
-    pub mate_way: Option<[i64; 2]>,
-    pub mate_shift: Option<f64>,
+}
+
+/// The other tube of a pair: the metres to the left from the end's axis to its axis, and its `way`, `shift` and
+/// `collar`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mate {
+    pub across: f64,
+    pub way: [i64; 2],
+    pub shift: f64,
+    pub collar: f64,
 }
 
 impl End {
@@ -156,11 +164,18 @@ impl End {
             left: if walls { row(tags, "left")? } else { Vec::new() },
             right: if walls { row(tags, "right")? } else { Vec::new() },
             foot: number(tags, "foot")?,
-            mate: pair.then(|| number(tags, "mate")).transpose()?,
+            mate: pair
+                .then(|| -> Result<Mate, String> {
+                    Ok(Mate {
+                        across: number(tags, "mate")?,
+                        way: vertex(tags, "mate_way")?,
+                        shift: number(tags, "mate_shift")?,
+                        collar: number(tags, "mate_collar")?,
+                    })
+                })
+                .transpose()?,
             way: vertex(tags, "way")?,
             shift: number(tags, "shift")?,
-            mate_way: pair.then(|| vertex(tags, "mate_way")).transpose()?,
-            mate_shift: pair.then(|| number(tags, "mate_shift")).transpose()?,
         })
     }
 
@@ -251,9 +266,9 @@ fn near(square: [f64; 4], points: &[[f64; 2]], reach: f64) -> bool {
 /// The faces of the parts that a square draws: of each built end whose point it holds, and of each chord of a built
 /// chain whose `a` it holds, so each face draws in one square.
 pub fn meshes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -> Mesh {
-    let net = Net::new(ends, chords, rules);
+    let net = Net::new(ends, chords, rules).meeting();
     let mut b = mesh::Builder::new(|p| net.daylight(p));
-    for (e, end) in ends.iter().enumerate() {
+    for (e, end) in net.ends.iter().enumerate() {
         if net.built_end(e) && holds(square, end.at) {
             arch::faces(&mut b, &net, e);
         }
@@ -272,7 +287,7 @@ pub fn volumes(ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
     let net = Net::new(ends, chords, rules);
     let lift = rules.design.lift_m;
     let mut out = Volumes::default();
-    for e in (0..ends.len()).filter(|&e| net.built_end(e)) {
+    for e in (0..net.ends.len()).filter(|&e| net.built_end(e)) {
         for words in boxes::boxes(&net, e) {
             out.boxes.extend(words);
         }
@@ -302,15 +317,29 @@ pub fn near_volumes(square: [f64; 4], boxes: &[f64], floors: &[f64], rules: &Rul
     Volumes { boxes: boxes.flatten().copied().collect(), floors: floors.flatten().copied().collect() }
 }
 
-/// Per end, whether it is built: its part and the chain of the chord at its opening are built.
-pub fn built_ends(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<bool> {
-    let net = Net::new(ends, chords, rules);
-    (0..ends.len()).map(|e| net.built_end(e)).collect()
+/// An opening of a built end, two of a pair: its point, its unit way into the tube and its inside half-width, and the
+/// end vertex of its way and the metres along that way to it (`way`, `shift`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mouth {
+    pub at: [f64; 2],
+    pub into: [f64; 2],
+    pub half: f64,
+    pub way: [i64; 2],
+    pub shift: f64,
 }
 
-/// Per built end, the ring that its part takes from the ground: round its head wall and wings, from front to back,
+/// The openings of the built ends.
+pub fn mouths(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<Mouth> {
+    let net = Net::new(ends, chords, rules);
+    (net.ends.iter().enumerate())
+        .filter(|&(e, _)| net.built_end(e))
+        .map(|(_, end)| Mouth { at: end.at, into: end.way_in(), half: end.half, way: end.way, shift: end.shift })
+        .collect()
+}
+
+/// Per built end with an opening, the ring that its part takes from the ground: round its head, from front to back,
 /// and its collar.
 pub fn footprints(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<Vec<[f64; 2]>> {
     let net = Net::new(ends, chords, rules);
-    (0..ends.len()).filter(|&e| net.built_end(e)).map(|e| footprint::ring(&net, e)).collect()
+    (0..net.ends.len()).filter(|&e| net.built_end(e) && !net.closed(e)).map(|e| footprint::ring(&net, e)).collect()
 }

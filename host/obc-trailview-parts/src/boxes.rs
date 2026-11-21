@@ -191,8 +191,8 @@ impl Line {
 }
 
 /// The boxes of built end e: the opening's, from the front of the head wall to the frame line, its outline grown to
-/// the middle of the wall round it; then one per straight piece of the tube's axis out to its reach, each at the
-/// middle of the wall of its section, its ends in the planes of the tube's rings there.
+/// the middle of the wall round it, but at a closed end; then one per straight piece of the tube's axis out to its
+/// reach, each at the middle of the wall of its section, its ends in the planes of the tube's rings there.
 pub fn boxes(net: &Net, e: usize) -> Vec<[f64; BOX]> {
     let Some((c0, _)) = net.opening(e) else { return Vec::new() };
     let (end, design, bake) = (&net.ends[e], &net.rules.design, &net.rules.ladder.bake);
@@ -207,20 +207,10 @@ pub fn boxes(net: &Net, e: usize) -> Vec<[f64; BOX]> {
     let sp = spring(net, first.section, first.height);
     let (roof, spring_at) = roof_of(front.z, first.height, sp, first.section, design.frame_m + wall);
     let (half, rise) = (first.half + design.frame_m + wall, (ring.z - front.z) / design.recess_m);
-    let mut out = vec![[
-        front.x,
-        front.y,
-        into[0],
-        into[1],
-        design.recess_m,
-        half,
-        roof,
-        front.z + lift,
-        rise,
-        spring_at,
-        0.0,
-        0.0,
-    ]];
+    let opening =
+        [front.x, front.y, into[0], into[1], design.recess_m, half, roof, front.z + lift, rise, spring_at, 0.0, 0.0];
+    // A closed end has no opening.
+    let mut out = if net.closed(e) { Vec::new() } else { vec![opening] };
     // The axis from the frame line: per chord of the walk its far vertex, with the height and section that end there.
     let reach = reach(net, e).boxes;
     let mut axis = vec![Axis { p: end.at, z: end.z, ring }];

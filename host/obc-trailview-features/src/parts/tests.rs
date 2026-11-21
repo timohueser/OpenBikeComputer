@@ -207,13 +207,15 @@ fn each_rung_gives_its_kinds_in_the_order_of_the_rungs() {
 #[test]
 fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
     use Kind::*;
-    // Two road tunnels 20 m apart under one ridge; the second starts 3 m farther in. A footway 2.5 m beside the first
-    // lies in its tube.
+    // Two road tunnels 20 m apart under one ridge, which rises half as fast over the second; the second starts 3 m
+    // farther in. A footway 2.5 m beside the first lies in its tube.
     let mut case = Case::default();
     let a = case.tunnel(&ROAD, (0.0, 200.0), 0.0);
     let b = case.tunnel(&ROAD, (3.0, 200.0), 20.0);
     let foot = case.tunnel(&FOOT, (0.0, 200.0), 2.5);
-    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    let (steep, gentle) = (ridge(200.0, 1.0), ridge(200.0, 0.5));
+    let ground = |p: [f64; 2]| if p[1] < 10.0 { steep(p) } else { gentle(p) };
+    let placed = case.place(&site(&ground, &[], false), &mut Vec::new());
     assert_eq!(of(&placed, a), vec![(vec![Pair, Arch, Free], "hill"); 2]);
     assert_eq!(of(&placed, b), vec![(vec![Pair, Arch, Free], "hill"); 2]);
     assert_eq!(of(&placed, foot), vec![(vec![], "same tube"); 2]);
@@ -223,9 +225,12 @@ fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
     assert_eq!(ends.len(), 2);
     let west = ends.iter().find(|t| t["mate"] == "20").expect("the west pair");
     assert_eq!((west["part"].as_str(), west["shift"].as_str(), west["mate_shift"].as_str()), ("pair", "3", "0"));
-    assert!(ends.iter().any(|t| t["mate"] == "-20" && t["shift"] == "0"));
-    // A pair is not built yet: the device keeps the moved stretch a tunnel, and so does the measure of the numbers.
-    assert_eq!(placed.metrics["measured_again"].as_u64(), Some(0));
+    let east = ends.iter().find(|t| t["mate"] == "-20" && t["shift"] == "0").expect("the east pair");
+    // Each tube has its own collar: the hill over the second comes later, and the first moved 3 m in.
+    assert_eq!((west["collar"].as_str(), west["mate_collar"].as_str()), ("4", "9"));
+    assert_eq!((east["collar"].as_str(), east["mate_collar"].as_str()), ("7", "12"));
+    // A pair is built: the device opens the moved stretch, so the measure reads the four openings near it again.
+    assert_eq!(placed.metrics["measured_again"].as_u64(), Some(4));
     // The first tube widens to the far edge of the footway and its margin.
     let foot_half = widths().way("tunnel", &tags(&FOOT), false).half_m;
     assert_eq!(west["half"], num(2.5 + foot_half + 0.6));
@@ -239,6 +244,18 @@ fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
     assert_eq!(of(&placed, a), [(vec![Arch, Free], "hill")]);
     assert_eq!(of(&placed, b)[0], (vec![Arch, Free], "hill"));
     assert_eq!(placed.metrics["pairs_that_do_not_reach"].as_u64(), Some(1));
+    // A pair is one part of two chains: where the second chain forks in the hill, so that its end there has no part,
+    // the two are no pair.
+    let mut case = Case::default();
+    let a = case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let b = case.tunnel(&ROAD, (3.0, 200.0), 20.0);
+    for n in [60.0, -20.0] {
+        case.ways.push(("tunnel", tags(&ROAD), vec![part(&[[200.0, 20.0], [210.0, n]], &[500.0; 2])]));
+    }
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, a)[0], (vec![Arch, Free], "hill"));
+    assert_eq!(of(&placed, b)[0], (vec![Arch, Free], "hill"));
+    assert_eq!(placed.tags[&b]["parts"], "arch none");
 }
 
 #[test]

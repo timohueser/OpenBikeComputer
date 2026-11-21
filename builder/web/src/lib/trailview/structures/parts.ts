@@ -136,10 +136,10 @@ export function partStamps(list: Feature[], tile: Node, lines: Line[]): PartStam
     };
     for (const { kind, tags } of list) {
         if (kind !== 'tunnel-end') continue;
-        for (const [way, shift] of [[tags.way, tags.shift], [tags.mate_way, tags.mate_shift]]) {
+        for (const [way, shift, collar] of [[tags.way, tags.shift, tags.collar], [tags.mate_way, tags.mate_shift, tags.mate_collar]]) {
             // `way` is in the frame of the ground plan, 16 units to a world unit.
             const [x, y] = way?.split(' ').map(Number) ?? [];
-            for (const [line, end] of at.get(`${x / 16},${y / 16}`) ?? []) stop(line, end, Number(shift) + Number(tags.collar) + COVER_START_M);
+            for (const [line, end] of at.get(`${x / 16},${y / 16}`) ?? []) stop(line, end, Number(shift) + Number(collar) + COVER_START_M);
         }
     }
     return out;

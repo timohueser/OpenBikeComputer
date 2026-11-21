@@ -548,7 +548,7 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         let look = if kind == Kind::Rock { "rock" } else { input.rules.groups[tubes[o.tube].group].look.as_str() };
         t.insert("look".into(), look.into());
         t.insert("part".into(), kind.name().into());
-        t.insert("heading".into(), format!("{}", (o.heading() * 1000.0).round() / 1000.0));
+        t.insert("heading".into(), format!("{}", (n.heading * 1000.0).round() / 1000.0));
         t.insert("collar".into(), num(n.collar));
         if kind != Kind::Free {
             t.insert("face".into(), num(n.face));
@@ -558,10 +558,11 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         t.insert("foot".into(), num(n.foot));
         t.insert("way".into(), format!("{} {}", o.way[0], o.way[1]));
         t.insert("shift".into(), num(o.shift));
-        if let Some((mate, m)) = n.mate.as_ref().map(|(i, m)| (&openings[*i], *m)) {
+        if let Some((mate, m, collar)) = n.mate.map(|(i, m, collar)| (&openings[i], m, collar)) {
             t.insert("mate".into(), num(m));
             t.insert("mate_way".into(), format!("{} {}", mate.way[0], mate.way[1]));
             t.insert("mate_shift".into(), num(mate.shift));
+            t.insert("mate_collar".into(), num(collar));
         }
         let part = Part { outer: false, points: vec![o.p], z: Some(vec![o.floor]), plan: None };
         features.push(("tunnel-end", t, part));

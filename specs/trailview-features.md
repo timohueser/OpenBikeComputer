@@ -588,8 +588,9 @@ Each opening takes the first kind of part that fits, by these rungs in order:
    the floor of the tube, as for every part. A short chain under a building only has no part.
 4. An end that meets no way and is covered at its opening: `free`.
 5. An end whose first covered metre lies within `collar_max_m`: `pair` where an opening of another chain of the same
-   family (rail or not) at that rung lies within `pair_max_m` and `pair_max_deg` (the nearest pairs first, each
-   opening in one pair); else `rock` for a group with `rock` covered within `rock_cover_max_m`; else `arch`.
+   family (rail or not) at that rung lies within `pair_max_m` and `pair_max_deg`, and each of the two chains has a
+   part at both of its ends (the nearest pairs first, each opening in one pair); else `rock` for a group with `rock`
+   covered within `rock_cover_max_m`; else `arch`.
 6. Else `free`.
 
 The two openings of a pair lie on the frame line of the opening farther in: the other one moves in along its way to
@@ -603,17 +604,16 @@ other.
 The numbers, in metres over the floor of the opening unless named:
 
 - `collar`: the metres to the first covered metre. For `box` it is at most half the chain. For `free` it is at most
-  `free_max_m` and half the chain, and that limit where no metre is covered. For `pair` it is the larger of the
-  two tubes.
+  `free_max_m` and half the chain, and that limit where no metre is covered. Each tube of a pair has its own.
 - `face`: the highest ground on the frame line plus `coping_m`, at least `height` + `shell_m` + `band_m`, at most
   `height` + `shell_m` + `face_over_crown_max_m`, and at most the underside of a deck over the frame line or its wing
-  walls less `coping_m`. A deck is over them where that lies over the floor: a way that goes on from the opening on a
+  walls less `coping_m`. In a pair, the least is over the higher crown of the two tubes and the most over the lower. A deck is over them where that lies over the floor: a way that goes on from the opening on a
   deck is not. So a deck can make `face` lower than `height` + `shell_m`.
 - `left`, `right`: a row of wall tops, one per metre out from the outer edge of the frame, the ground plus
   `coping_m`, from `coping_m` up to `face`. A row ends before the first metre whose ground lies under the floor +
   `wing_ground_m`, or at `wing_max_m`, and has one value at least. `left` is to the left of the way into the tube.
-- `foot`: the lowest ground under the frame, its wing walls and its collar, less `foot_m`. The floor counts as ground
-  there, so `foot` is at most −`foot_m`.
+- `foot`: the lowest ground under the frame, its wing walls and its collars, less `foot_m`. The floors count as
+  ground there, so `foot` is at most −`foot_m`.
 
 The tags, numbers in metres with at most 2 decimals, the values of a row separated by a space:
 
@@ -627,14 +627,14 @@ The tags, numbers in metres with at most 2 decimals, the values of a row separat
 | `along` | tube | The metres along the stroke of its way at the first vertex |
 | `ends` | tube | The parts of the chain's two ends, the end behind the first vertex first: `arch`, `pair`, `rock`, `box`, `free`, or `none` for an end with no part of its own |
 | `part` | end | `arch`, `pair`, `rock`, `box` or `free` |
-| `heading` | end | Radians from x to y of world coordinates, into the tube, three decimals |
+| `heading` | end | Radians from x to y of world coordinates, into the tube, three decimals; of `pair`, into the tube of the opening farther in, square to the frame line |
 | `collar` | end | The collar; of `free`, the length of its shell |
 | `face`, `left`, `right` | end | Not on `free` |
 | `foot` | end | |
 | `way` | end | The end vertex of the way of the opening, `x y` in the frame of the ground plan (2^34 units per side): the point that each zoom-13 tile holds, a quarter unit times 32, or a whole unit times 128 on a way with no alignment |
 | `shift` | end | The metres along that way from `way` to the opening; 0 where it did not move |
 | `mate` | `pair` | The metres to the left from its axis to the axis of the other tube |
-| `mate_way`, `mate_shift` | `pair` | `way` and `shift` of the other opening |
+| `mate_way`, `mate_shift`, `mate_collar` | `pair` | `way`, `shift` and `collar` of the other opening |
 
 Each `tunnel-tube` has the two vertices of one chord of the tube from opening to opening, in the rising metres along
 the stroke of its way, so a tile that holds a piece of the tube holds whole records. A chain end with no opening
