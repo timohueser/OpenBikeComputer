@@ -952,6 +952,8 @@ fn catalog<S: Source + Clone + Send>(
         };
         longs.push(Long { origin: trail.route.source, french: french(&parts), record, points, listed });
     }
+    // The merge of the long records builds its own probes: the memory of the job probes goes first.
+    drop((probes, unlined));
     if longs.iter().any(|long| long.origin < osm_origin) {
         Guard::exempt("merge");
         for id in merge_long(&mut longs, &kept) {
