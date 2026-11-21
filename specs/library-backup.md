@@ -1,6 +1,6 @@
 # Library backup file
 
-A library backup file is a ZIP file that holds the routes, their versions, the rides, the source
+A library backup file is a ZIP file that holds the routes, the rides, the source
 file of each ride, the library state and the settings of one browser. It can hold the photos of the
 rides. It holds no covers: the browser renders them again.
 
@@ -38,25 +38,24 @@ no `photos` field and no photo entry.
 | `format` | `"openbikecomputer-library"` |
 | `version` | `1` |
 | `routes` | Array of [route records](#3-route-record), each with a unique `id` |
-| `versions` | Object: for a route id, the array of the versions of that route, newest first |
 | `rides` | Array of [ride records](#4-ride-record), each with a unique `key` |
 | `state` | [State](#6-state) object |
 | `settings` | Object: the settings of the app |
 | `photos` | Optional array of [photo records](#7-photo-record), each with a unique `id`. Without it, the file has no photos. |
 
-A version is a version object of [planner-plan.md](planner-plan.md).
+A reader ignores the field `versions` of an older file.
 
 ## 3. Route record
 
 | Field | Value |
 | --- | --- |
 | `id` | Non-empty string |
-| `revision` | Integer, 0 or more |
 | `name` | String |
 | `updatedAt` | Unix time in milliseconds of the last edit |
-| `open` | Optional string: the id of the version that `trip` belongs to |
 | `summary` | [Summary](#5-summary) with `days`, or `null` when the plan never had a calculated line |
 | `trip` | Plan object of [planner-plan.md](planner-plan.md) |
+
+A reader ignores the fields `open` and `revision` of a route record of an older file.
 
 ## 4. Ride record
 
@@ -71,6 +70,7 @@ A version is a version object of [planner-plan.md](planner-plan.md).
 | `ftp` | Number or `null`: the threshold power in watts that applies to the ride |
 | `trip` | Optional object: the trip of the device that the ride belongs to, with `key`, the trip key of the device as a decimal string; `day`, the day of the trip from 1; and `name`, the name of the trip, empty when the device no longer held the trip |
 | `device` | Optional string `storeId:objectId`: the ride on the device that it came from |
+| `photo` | Optional string: the `id` of the [photo](#7-photo-record) that the cards of the ride show. A reader shows the cover when the file has no such photo. |
 
 ## 5. Summary
 
@@ -101,7 +101,7 @@ Each field is optional.
 | `active` | String or `null`: the id of the route that the planner opens |
 | `waiting` | Array of route ids: the routes that wait to go to the device |
 | `leaving` | Array of route ids: the routes to remove from the device |
-| `sent` | Object: for a route id, an object with `device`, the route on the device as `storeId:objectId`, and `key`, a hash of the name and the plan of the route when it was sent |
+| `sent` | Object: for a route id, an object with `card`, the `storeId` of the card that holds the route; `days`, an array with the decimal `objectId` of the route of each riding day as last put, or an empty string before its first put; `crcs`, an array of the same length with the CRC-32 of the file of each day as last put or found on the card; `gone`, an array of the ids of `days` that the last listing of the card did not hold; `trips`, an array with the decimal `objectId` of the trip object of each part of 32 days, or an empty string for none; `tripKeys`, an array with the trip key in decimal of each part, stored before the put of its trip object, or an empty string; and `key`, a hash of the name and the plan of the route when its last send finished, else an empty string |
 | `apart` | Array of ride keys: the rides that the rider took out of their group of rides on the same route |
 | `deleted` | Array of objects with `key` and an optional `device`: the rides that the rider deleted |
 | `nextMap` | Object or `null`: the map that the rider chose for the device and that is not sent yet. `regions` is an array of region ids of the map catalog. `boxes` is an array of objects with `minLat`, `minLon`, `maxLat` and `maxLon` in whole microdegrees. `light` and `dark` are the ids of the map styles for the day and for the night. `bytes` is the size of the download of the whole map |
@@ -126,14 +126,15 @@ the sample nearest to `place`, in the first pass of the ride within 100 m of it.
 A load first checks `format`, `version`, the fields of each record, the unique ids and keys, the
 CRC-32 of each entry, the source file entry of each ride and the copy entry of each photo. It does
 not check `trip`: the planner checks a plan when it opens it. When a check fails, the load changes
-nothing.
+nothing. Only a value of `state` that fails its check does not stop the load: the load leaves that
+value out.
 
 A reader ignores an entry of the file and a field of the envelope that it does not know. So a
 reader with no photos loads the routes and the rides of a file with photos.
 
 Then one transaction adds:
 
-- each route whose `id` is not stored, with its versions;
+- each route whose `id` is not stored;
 - each ride whose `key` is not stored and is not a key of the deleted rides, with its source file.
 
 The load takes `state` and `settings` only when the library is empty: no route, no ride and no

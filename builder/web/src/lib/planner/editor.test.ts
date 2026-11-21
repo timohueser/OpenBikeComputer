@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { addTransfer, releaseNight, reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, guessedTrip, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routeToTrip, setDrawnLeg, setDays, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
+import { addTransfer, releaseNight, reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, guessDays, guessedTrip, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, fewerDays, multiDay, routeToTrip, setDrawnLeg, setDays, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, kilometres, type Coordinate } from './geo';
 import { calculateLine, routingKey, type RoutingLine } from './routing';
 import { LegCache } from './route-legs';
@@ -164,16 +164,27 @@ describe('nights between days', () => {
 });
 
 describe('planning modes', () => {
-    it('keeps the route and day decisions when switching to a single route and back', () => {
-        const trip = addRestDay(pin(testTrip(), 1, along(.35), 'Camp'), 1);
-        const single: Trip = { ...trip, mode: 'route' };
+    it('steps down one day, and at the lowest count makes a route that keeps its days, nights and rest days', () => {
+        expect(fewerDays(setDays(testTrip(), 4))).toMatchObject({ mode: 'trip', days: 3 });
+        expect(fewerDays(testTrip())).toMatchObject({ mode: 'trip', days: 2 });
+        expect(fewerDays({ ...testTrip(), days: 2 })).toMatchObject({ mode: 'route', days: 2 });
+        const trip = addRestDay(pin(setDays(testTrip(), 4), 3, along(.7), 'Camp'), 1);
+        const single = fewerDays(trip);
+        expect(single).toEqual({ ...trip, mode: 'route' });
         expect(view(single).coordinates).toEqual(view(trip).coordinates);
         expect(view(single).itinerary).toHaveLength(1);
         expect(view(single).days[0].distance).toBeCloseTo(view(trip).total);
-        const restored: Trip = { ...single, mode: 'trip' };
-        expect(view(restored).itinerary).toEqual(view(trip).itinerary);
-        expect(restored.points).toEqual(trip.points);
-        expect(routeToTrip(single, testLine(single))).toEqual(restored);
+        expect(routeToTrip(single, testLine(single))).toEqual(trip);
+    });
+
+    it('never changes the type with a guess', () => {
+        const short: Trip = { ...testTrip(), mode: 'route', daysSet: undefined };
+        expect(guessDays(short, testLine(short))).toBe(1);
+        expect(routeToTrip(short, testLine(short))).toMatchObject({ mode: 'trip', days: 2 });
+        expect(guessedTrip({ ...short, days: 5 }, testLine(short)).days).toBe(5);
+        const oneDay: Trip = { ...short, mode: 'trip', days: 1 };
+        expect(multiDay(oneDay)).toBe(false);
+        expect(guessedTrip(oneDay, testLine(oneDay))).toBe(oneDay);
     });
 
     it('guesses the day count from the riding time until the rider sets it', () => {
@@ -341,6 +352,8 @@ describe('legs', () => {
         expect(orderedRoutePoints(appended).map(p => p.id)).toEqual(['start', 'visit', 'early', 'finish']);
         const pinned = pin(appended, 1, along(.3), 'Camp');
         expect(orderedRoutePoints(pinned).map(p => p.id)).toEqual(['start', 'night-1', 'visit', 'early', 'finish']);
+        const oneDay = addClickedPoint(withVisit({ ...testTrip(), days: 1 }), undefined, { ...visit(.1), id: 'early' });
+        expect(orderedRoutePoints(oneDay).map(p => p.id)).toEqual(['start', 'visit', 'early', 'finish']);
     });
 
     it('adds a point behind the start to the first leg', () => {
@@ -489,6 +502,25 @@ describe('route endpoints', () => {
         expect(next.points.find(p => p.kind === 'night')).toEqual(original.points.find(p => p.kind === 'night'));
     });
 
+    it('lets the planner name an endpoint only when the rider gave it no name', () => {
+        const start = setEndpoint(emptyTrip(), 'start', [7.8, 48]);
+        expect(start.points).toEqual([expect.objectContaining({ kind: 'start', label: 'Start', autoLabel: true })]);
+        const finish = setEndpoint(start, 'finish', [8, 48]);
+        expect(finish.points[1]).toMatchObject({ kind: 'finish', label: 'Finish', autoLabel: true });
+        const named = setEndpoint(finish, 'start', [7.9, 48], 'Origin');
+        expect(named.points[0]).toMatchObject({ label: 'Origin' });
+        expect(named.points[0].autoLabel).toBeUndefined();
+    });
+
+    it('keeps a promoted visit a visit when the loop start moves away from it', () => {
+        const point = (id: string, kind: RoutePoint['kind'], lon: number, label = id): RoutePoint => ({ id, kind, label, coordinate: [lon, 48] });
+        const trip: Trip = { ...emptyTrip(), routeOrder: ['v'], points: [point('a', 'start', 8),
+            { ...point('v', 'waypoint', 8.1, 'Bahnhofstrasse 1, Sempach'), autoLabel: true }, point('f', 'finish', 8.2)] };
+        const promoted = removeRoutePoint(trip, 'a');
+        expect(promoted.points.find(p => p.id === 'v')).toMatchObject({ kind: 'start', label: 'Bahnhofstrasse 1, Sempach', autoLabel: undefined });
+        expect(startLoopHere(closeLoop(promoted), 'f', [8.15, 48]).points.find(p => p.id === 'v')?.kind).toBe('waypoint');
+    });
+
     it('gives a pinned overnight its explicit name when it comes from an automatically named visit', () => {
         const visit: RoutePoint = { id: 'visit', kind: 'waypoint', autoLabel: true, label: '48.00000, 7.84000', coordinate: [7.84, 48] };
         const trip = addPointNear(testTrip(), undefined, visit);
@@ -553,6 +585,9 @@ describe('loops', () => {
         const next = again.points.find(p => p.kind === 'start')!.id;
         expect(ids(again)).toEqual([next, 'finish', 'start', 'a', start.id, 'b', 'shape', next]);
         expect(again.points.find(p => p.id === start.id)?.kind).toBe('via');
+        // So does a start that the planner named after its town.
+        const town = { ...loop, points: loop.points.map(p => p.id === 'start' ? { ...p, label: 'Sempach', autoLabel: true } : p) };
+        expect(startLoopHere(town, 'b', [7.815, 48.005]).points.find(p => p.id === 'start')?.kind).toBe('via');
         expect(startLoopHere(plan(), 'a', [7.81, 48])).toEqual(plan());
         // Day ends follow the route order, so a pinned night keeps the start.
         const nights = pinNight({ ...loop, mode: 'trip' }, undefined, 1, at(loop, 'b'), 'Camp', 'b');
@@ -625,7 +660,7 @@ describe('Trip structural edits', () => {
         expect(repartitionDays(next, line, [0, total], []).days).toBe(1);
         expect(trip).toEqual(before);
         expect(() => repartitionDays(trip, line, [0, total], Array.from({ length: maxRidingDays }, (_, i) => total * (i + 1) / (maxRidingDays + 1))))
-            .toThrow('at most');
+            .toThrow('A trip can have up to');
     });
     it('keeps pinned nights and rest days out of repartition and refuses a reversal with a final rest day', () => {
         const trip = testTrip(), line = testLine(trip), total = planView(trip, line).total;

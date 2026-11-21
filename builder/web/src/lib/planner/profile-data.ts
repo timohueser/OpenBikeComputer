@@ -50,6 +50,11 @@ export function profilePaths(samples: readonly ProfileSample[], low: number, hig
     return { line: runs.map(run => run.line).join(' '), area: runs.map(run => run.area).join(' ') };
 }
 
+/** The samples from `from` to `to` and one more on each side, so that the paths of neighbouring stretches join. */
+export function sampleSlice(samples: readonly ProfileSample[], from: number, to: number): readonly ProfileSample[] {
+    return samples.slice(Math.max(0, sampleIndex(samples, from) - 1), sampleIndex(samples, to) + 1);
+}
+
 function profileChange(from: number, to: number, line: ProfileLine | undefined, direction: number): number {
     const samples = profileSamples(line);
     let ascent = 0;

@@ -5,9 +5,10 @@ import { stationsOf, strokeMetres, type Station as CurveStation } from '../roads
 
 /**
  * Words of a vertex, as `StructureIn` of structures.wgsl: x, y (int32 world units), z, colour and flags
- * (unorm8x4), across and half-width (snorm16x2 of ±ROAD_RANGE_M), and a track's sleepers from its start.
+ * (unorm8x4), across and half-width (snorm16x2 of ±ROAD_RANGE_M), a track's sleepers from its start, and a
+ * part's share of daylight (-1: the boxes of the portals give it).
  */
-export const STRUCTURE_VERTEX = 6;
+export const STRUCTURE_VERTEX = 7;
 const ROAD_RANGE_M = 16;
 /** As NO_SLEEPERS of roads.wgsl: a face without a count of sleepers. */
 export const NO_SLEEPERS = -1e9;
@@ -23,7 +24,12 @@ export const GROUND = 1, PAINT = 2, VOID = 4, INSIDE = 8, LAMP = 16, BORE = 128;
 export interface StructureMesh {
     vertices: ArrayBuffer;
     indices: Uint32Array<ArrayBuffer>;
-    /** The count of the last indices, which the ground plan does not draw: a bridge's abutments, where its end faces stand. None: 0. */
+    /** The count of the first indices, which only the ground plan draws: the tunnel parts. None: 0. */
+    planOnly?: number;
+    /**
+     * The count of the last indices, which the ground plan does not draw: a bridge's abutments, where its end faces stand, and
+     * today's tunnels of the chains that draw as parts. None: 0.
+     */
     offPlan?: number;
     /** The count of the indices before those: a bridge's other faces, which the ground plan's storeys draw where its meshes draw. None: 0. */
     decks?: number;
@@ -87,15 +93,16 @@ export function curveStops(line: Line): (Station & { along: number })[] {
  */
 export class MeshBuilder {
     private readonly words: number[] = [];
+    private readonly plan: number[] = [];
     private readonly onPlan: number[] = [];
     private readonly decks: number[] = [];
     private readonly late: number[] = [];
     private indices = this.onPlan;
 
     /** A vertex at a station's corner, or at a point. */
-    vertex(x: number, y: number, z: number, colour: number, across = 0, half = 0, sleepers = NO_SLEEPERS): number {
+    vertex(x: number, y: number, z: number, colour: number, across = 0, half = 0, sleepers = NO_SLEEPERS, daylight = -1): number {
         const snorm = (metres: number) => Math.round(Math.max(-1, Math.min(1, metres / ROAD_RANGE_M)) * 32767) & 0xffff;
-        this.words.push(Math.round(x), Math.round(y), z, colour, (snorm(across) | (snorm(half) << 16)) >>> 0, sleepers);
+        this.words.push(Math.round(x), Math.round(y), z, colour, (snorm(across) | (snorm(half) << 16)) >>> 0, sleepers, daylight);
         return this.words.length / STRUCTURE_VERTEX - 1;
     }
 
@@ -124,6 +131,25 @@ export class MeshBuilder {
         this.within(this.late, make);
     }
 
+    /** Builds the faces of `make` as faces that only the ground plan draws (StructureMesh.planOnly). */
+    planOnly(make: () => void): void {
+        this.within(this.plan, make);
+    }
+
+    /**
+     * Adds a mesh of STRUCTURE_VERTEX words a vertex, each word's bits (the parts bridge's): each word kept as `mesh`
+     * writes it back, each index after the vertices before it.
+     */
+    append(words: Uint32Array, indices: Uint32Array): void {
+        const first = this.words.length / STRUCTURE_VERTEX, ints = new Int32Array(words.buffer, words.byteOffset, words.length);
+        const floats = new Float32Array(words.buffer, words.byteOffset, words.length);
+        words.forEach((word, i) => {
+            const k = i % STRUCTURE_VERTEX;
+            this.words.push(k < 2 ? ints[i] : k === 3 || k === 4 ? word : floats[i]);
+        });
+        for (const index of indices) this.indices.push(first + index);
+    }
+
     /** Builds the faces of `make` as a bridge's, which the ground plan's storeys draw where its meshes draw (StructureMesh.decks). */
     bridge(make: () => void): void {
         this.within(this.decks, make);
@@ -142,7 +168,7 @@ export class MeshBuilder {
     }
 
     mesh(): StructureMesh | null {
-        if (!this.onPlan.length && !this.decks.length && !this.late.length) return null;
+        if (!this.plan.length && !this.onPlan.length && !this.decks.length && !this.late.length) return null;
         const vertices = new ArrayBuffer(this.words.length * 4), floats = new Float32Array(vertices), ints = new Int32Array(vertices), uints = new Uint32Array(vertices);
         this.words.forEach((word, i) => {
             const k = i % STRUCTURE_VERTEX;
@@ -150,7 +176,8 @@ export class MeshBuilder {
             else if (k === 3 || k === 4) uints[i] = word;
             else floats[i] = word;
         });
-        return { vertices, indices: new Uint32Array([...this.onPlan, ...this.decks, ...this.late]), offPlan: this.late.length, decks: this.decks.length };
+        const indices = new Uint32Array([...this.plan, ...this.onPlan, ...this.decks, ...this.late]);
+        return { vertices, indices, ...(this.plan.length ? { planOnly: this.plan.length } : {}), offPlan: this.late.length, decks: this.decks.length };
     }
 
     /** The direction east, north, up of a direction [across, up] at the middle of two stations. */

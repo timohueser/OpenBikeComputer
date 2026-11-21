@@ -1,3 +1,4 @@
+import type { Place } from '../editor';
 import type { Coordinate } from '../geo';
 import type { RoutingLine } from '../routing';
 import { config } from '../map-data';
@@ -48,6 +49,8 @@ export interface SearchAnswer {
     results?: SearchPlace[]; changes?: QueryChange[]; description?: string;
     stretches?: { from: number; to: number; label: string; coordinates: Coordinate[] }[];
     hasMore?: boolean; canRetry?: boolean; area?: string; note?: string; notice?: string;
+    /** `location`: the request needs the position of the rider, and the context has none. */
+    code?: 'location';
 }
 export type SearchState = { loading: boolean; error: string; answer: SearchAnswer | null };
 export async function placeDetails(source: string, coordinate: Coordinate, signal: AbortSignal): Promise<SearchPlace | undefined> {
@@ -57,6 +60,11 @@ export async function placeDetails(source: string, coordinate: Coordinate, signa
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Place details are unavailable.');
     return result.results?.find((place: SearchPlace) => place.source === source);
+}
+/** The place with the details that search found for it. */
+export function withDetails(place: Place, found: SearchPlace | null | undefined): Place {
+    return found ? { ...place, website: found.website, phone: found.phone, content: found.content, description: found.description || place.description,
+        openingHours: found.opening_hours, hoursStatus: found.hoursStatus, locality: found.city } : place;
 }
 /** The route is simplified and its segments are found here, at most once per route (see `searchLine` and `routeSegments`),
  * and never on a route change alone. */

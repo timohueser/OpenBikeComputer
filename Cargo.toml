@@ -42,6 +42,7 @@ members = [
     "host/obc-vectors",
     "host/obc-trailview-features",
     "host/obc-ground-plan",
+    "host/obc-trailview-parts",
     "host/obc-tree-walk",
     "host/obcm-assemble",
     "host/obcm-testkit",
@@ -61,6 +62,7 @@ members = [
     "planner/service",
     "builder/wasm",
     "builder/ground-plan-wasm",
+    "builder/trailview-parts-wasm",
     "builder/webp-wasm",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
@@ -79,6 +81,7 @@ obc-fixtures = { path = "host/obc-fixtures" }
 obc-flat-device = { path = "sim/flat-device" }
 obc-formats = { path = "firmware/obc-formats" }
 obc-ground-plan = { path = "host/obc-ground-plan", default-features = false }
+obc-trailview-parts = { path = "host/obc-trailview-parts" }
 obc-link = { path = "firmware/obc-link" }
 obc-map-scene = { path = "firmware/obc-map-scene" }
 obc-pack = { path = "host/obc-pack" }
@@ -110,7 +113,7 @@ planner-router-build = { path = "planner/router-build" }
 planner-router = { path = "planner/router" }
 
 embedded-graphics = "0.8"
-heapless = "0.8"
+heapless = "0.9"
 libm = { version = "0.2", default-features = false }
 miniz_oxide = { version = "0.8.9", default-features = false }
 pollster = "0.3"
@@ -125,7 +128,7 @@ image = { version = "0.25", default-features = false }
 image-webp = "0.2"
 js-sys = "0.3"
 osmpbfreader = "0.19"
-postcard = "1"
+postcard = { version = "1", default-features = false }
 rfd = "0.14"
 rusqlite = "0.41"
 schemars = "1"

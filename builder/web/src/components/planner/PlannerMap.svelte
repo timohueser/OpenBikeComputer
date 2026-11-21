@@ -5,6 +5,7 @@
     import type { Feature, FeatureCollection, LineString } from "geojson";
     import { ClosedAttribution, styleConfig, terrain, useMapProtocols } from "../../lib/planner/map-setup";
     import { config } from "../../lib/planner/map-data";
+    import { regionPlace } from "../../lib/planner/config";
     import { terrainRetry } from "../../lib/planner/map-terrain";
     import "maplibre-gl/dist/maplibre-gl.css";
     import { mapStyle, type Relief } from "../../lib/planner/map-style";
@@ -13,28 +14,26 @@
     import { poiPlace } from "../../lib/planner/place-index";
     import { FIT_LEVEL, LAST_LEVEL, opens, type TilePlace } from "../../lib/planner/place-groups";
     import type { Place } from "../../lib/planner/editor";
-    import { coordinateAt, kilometres, nearestProgress, routeSlice } from "../../lib/planner/geo";
+    import { coordinateAt, kilometres, nearestOnScreen, nearestProgress, routeSlice } from "../../lib/planner/geo";
     import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection, type RouteHint } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
-    import { placeCallout } from "../../lib/planner/callout-placement";
+    import { nightView } from "../../lib/planner/view-change";
+    import { mapCallout, type MapCallout } from "../../lib/planner/map-callout";
+    import { dayLook, pinLook, type Week } from "../../lib/planner/week";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
     import PlaceMarks from './PlaceMarks.svelte';
     import PlaceList from './PlaceList.svelte';
-    import { divergence } from "../../lib/planner/route-options";
 
     let {
-        segments = [], gaps = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
+        segments = [], gaps = [], coordinates = [], highlightedLines = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         placeKinds = [], highlightedKind = null, mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        compare = null, lines = [], onPick = null, part = null,
-        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
+        lines = [], onPick = null, part = null, week = null, lit = null,
+        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onMoveStart, onRouteHover, onDayClick, popup,
     }: {
-        /** A previewed route option and its letter. It draws in ink over the plan, which draws as a dotted line without day
-         * colours; a letter marks each line where they part. */
-        compare?: { line: Coordinate[]; letter: string } | null;
-        /** Lines that take no edits, such as the days of two saved versions, each in its colour and width; a later line
+        /** Lines that take no edits, such as the days of two saved routes, each in its colour and width; a later line
          * draws on top. A transfer draws dashed. */
         lines?: { coordinates: Coordinate[]; color: string; width: number; transfer: boolean }[];
         /**
@@ -45,7 +44,7 @@
         segments?: MapSegment[];
         /** Dashed connectors from the route to points that it does not reach. */
         gaps?: Coordinate[][];
-        coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
+        coordinates?: Coordinate[]; highlightedLines?: Coordinate[][]; points?: MapPoint[];
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
         hoveredId?: string | null;
         /** While picking, any map click places the overnight; the line takes no edits. */
@@ -65,11 +64,17 @@
         hoverProgress?: number | null;
         /** The part of the route the profile selects, as route progress; the rest of the line is pale. */
         part?: [number, number] | null;
+        /** The week in focus of a long trip: the map draws its days in their colours and the other days quiet. */
+        week?: Week | null;
+        /** The riding day that the strip lights. */
+        lit?: number | null;
         center?: Coordinate; zoom?: number;
-        onEmptyClick?: (coordinate: Coordinate) => void;
+        /** A click on no point or line; null outside the region. */
+        onEmptyClick?: (coordinate: Coordinate | null) => void;
         onPointSelect?: (id: string) => void;
         onPointHover?: (id: string | null) => void;
-        onPointPreview?: (id: string, coordinate: Coordinate) => void;
+        /** A pin drag; null ends the preview. */
+        onPointPreview?: (id: string, coordinate: Coordinate | null) => void;
         onPointMove?: (id: string, coordinate: Coordinate) => void;
         onDayEndDrag?: (night: number, progress: number) => void;
         onLegClick?: (legEndId: string, coordinate: Coordinate) => void;
@@ -78,9 +83,17 @@
         onPlaceClick?: (place: Place) => void;
         onBounds?: (bounds: [number, number, number, number], preserveSearch: boolean) => void;
         onVisibleRange?: (range: [number, number]) => void; popup?: Snippet;
+        /** The rider starts to move the map, by pointer, wheel or keyboard. */
+        onRiderMove?: () => void;
+        /** The map starts to move, by the rider or by the page. */
+        onMoveStart?: () => void;
+        /** The place on the route under the pointer, as route progress, or null off the route. */
+        onRouteHover?: (progress: number | null) => void;
+        /** A click on the line of a day outside the week. */
+        onDayClick?: (day: number) => void;
     } = $props();
 
-    type LineHit = { legEndId: string; coordinate: Coordinate };
+    type LineHit = { legEndId: string; day: number; coordinate: Coordinate };
     const lineReach = 10;
     const sketchStep = 3;
     // The right inset keeps the route and callouts clear of the map controls.
@@ -100,15 +113,17 @@
     let loading = $state(true);
     let failure = $state("");
     let errorDetail = $state("");
-    const pins = new Map<string, { marker: maplibregl.Marker; button: HTMLButtonElement; key: string }>();
-    let pinButtons = $state.raw(new Map<string, HTMLButtonElement>());
+    type Pin = { marker: maplibregl.Marker; button: HTMLButtonElement; key: string; point: MapPoint; draggable: boolean; title: string };
+    const pins = new Map<string, Pin>();
+    let madePins = $state.raw<Pin[]>([]);
     let draggingPin = $state(false);
-    let calloutPopup: maplibregl.Popup | undefined;
+    let calloutPopup: MapCallout | undefined;
     let relief: Relief;
     let appliedTheme: "light" | "dark";
     let fittedInitialRoute = false;
     let dragging = $state(false);
-    let hover = $state<LineHit | null>(null);
+    // Raw: a deep proxy of the hit would make each read of its coordinate in the route search a proxy call.
+    let hover = $state.raw<LineHit | null>(null);
     let overOverlay = $state(false);
     let insertDot: maplibregl.Marker;
     let hoverDot: maplibregl.Marker;
@@ -178,19 +193,39 @@
         fitBounds(region, 13, motionDuration(), preserveSearch);
     }
 
-    export function fitSearchResults(region: Coordinate[]) {
-        if (!map || !region.length) return;
-        fittedInitialRoute = true;
+    /** Shows the end of a day and the places of the towns listed for its night, nearest first, as `nightView` says. */
+    export function showNight(spot: Coordinate, towns: Coordinate[][]) {
+        if (!map) return;
+        const shown = nightView(paddedView(), spot, towns);
+        if (shown.action === 'stay') return;
         wholeRoute = false;
-        fitBounds(region, 14, motionDuration(), true);
+        const [west, south, east, north] = shown.box, { top, right, bottom, left } = padding();
+        // The centre of the box goes to the centre of the padded view.
+        if (shown.action === 'pan') map.panTo([(west + east) / 2, (south + north) / 2], { offset: [(left - right) / 2, (top - bottom) / 2], duration: motionDuration() });
+        else fitBounds([[west, south], [east, north]], map.getZoom(), motionDuration());
     }
 
-    /** The coordinate under a viewport point, or null outside the map. */
+    /** Fits the line of a week, unless the padded view shows all of it. */
+    export function showWeek(line: Coordinate[]) {
+        if (!map || !line.length) return;
+        // One pixel of slack: after "Show whole route" the route touches the padded view.
+        const [west, south, east, north] = paddedView(1);
+        if (!line.every(([lng, lat]) => lng >= west && lng <= east && lat >= south && lat <= north)) fitCoordinates(line);
+    }
+
+    /** The view inside the fit padding less `slack` pixels, clear of the controls and of a bar over the bottom, as
+     * [west, south, east, north]. */
+    function paddedView(slack = 0): [number, number, number, number] {
+        const { clientWidth: width, clientHeight: height } = map!.getContainer(), { top, right, bottom, left } = padding();
+        const northWest = map!.unproject([left - slack, top - slack]), southEast = map!.unproject([width - right + slack, height - bottom + slack]);
+        return [northWest.lng, southEast.lat, southEast.lng, northWest.lat];
+    }
+
+    /** The coordinate under a viewport point, or null outside the map or the region. */
     export function coordinateAtScreen(x: number, y: number): Coordinate | null {
         const box = container.getBoundingClientRect();
         if (!map || x < box.left || x > box.right || y < box.top || y > box.bottom) return null;
-        const { lng, lat } = map.unproject([x - box.left, y - box.top]);
-        return [lng, lat];
+        return place(map.unproject([x - box.left, y - box.top]));
     }
 
     /** Metres on the ground per CSS pixel at a latitude: the world is 512 px wide at zoom 0. */
@@ -204,6 +239,17 @@
         map.zoomTo(map.getZoom() + delta, { duration: motionDuration() });
     }
 
+    let grown = false;
+    // The map opens inside the region; once it has a size, it may show one region size around it, so that "Show whole
+    // route" fits a trip that fills the region. In a hidden page MapLibre fits the region to 400 × 300 instead.
+    function growBounds() {
+        if (grown || !map || !container.clientWidth || !container.clientHeight) return;
+        grown = true;
+        const [west, south, east, north] = config.bounds, width = east - west, height = north - south;
+        map.setMaxBounds([[Math.max(-180, west - width), Math.max(-85, south - height)], [Math.min(180, east + width), Math.min(85, north + height)]]);
+    }
+    // Every path that adds or moves something takes its place from here: nothing goes into the margin around the region.
+    const place = (at: { lng: number; lat: number }) => regionPlace(config.bounds, at);
     const boundsOf = (region: Coordinate[]) => region.reduce((bounds, coordinate) => bounds.extend(coordinate), new maplibregl.LngLatBounds());
     const padding = () => ({ ...fitPadding, bottom: fitPadding.bottom + bottomInset });
 
@@ -215,23 +261,7 @@
         return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 400;
     }
 
-    /**
-     * Anchors the open callout where it fits clear of the controls column and the bottom strip.
-     * With `pan`, a callout that fits nowhere pans the map the least distance. A map move only re-anchors, so it never starts another pan.
-     */
-    function fitCallout(pan: boolean) {
-        if (!map || !calloutPopup || !calloutAt) return;
-        const free = { left: 16, top: 16, right: container.clientWidth - controlsWidth, bottom: container.clientHeight - bottomClear };
-        const { x, y } = map.project(calloutAt);
-        const placed = placeCallout([x, y], [popupContent.offsetWidth, popupContent.offsetHeight], free, calloutOffset);
-        if (calloutPopup.options.anchor !== placed.anchor) {
-            calloutPopup.options.anchor = placed.anchor;
-            calloutPopup.setOffset(calloutOffset);
-        }
-        if (pan && (placed.pan[0] || placed.pan[1])) map.panBy(placed.pan, { duration: motionDuration() }, { preserveSearch: true });
-    }
-
-    function lineFeature(input: Coordinate[], properties: Record<string, string> = {}): Feature<LineString> {
+    function lineFeature(input: Coordinate[], properties: Record<string, string | number> = {}): Feature<LineString> {
         // Svelte may proxy nested point arrays; worker messages require plain coordinate values.
         const plain = input.map(([longitude, latitude]) => [longitude, latitude]);
         return { type: "Feature", properties, geometry: { type: "LineString", coordinates: plain } };
@@ -242,12 +272,8 @@
     }
 
     function tripData() {
-        return lineData([...segments.map(({ coordinates, color, legEndId, leg }) => lineFeature(coordinates, { color, legEndId, leg })),
+        return lineData([...segments.map(({ coordinates, color, legEndId, leg, day }) => lineFeature(coordinates, { color, legEndId, leg, day })),
             ...gaps.map(gap => lineFeature(gap, { leg: "gap" }))]);
-    }
-
-    function compareData() {
-        return lineData(compare ? [lineFeature(compare.line)] : []);
     }
 
     function linesData() {
@@ -255,7 +281,7 @@
     }
 
     function highlightData() {
-        return lineData(highlightedCoordinates.length < 2 ? [] : [lineFeature(highlightedCoordinates)]);
+        return lineData(highlightedLines.filter(line => line.length >= 2).map(line => lineFeature(line)));
     }
 
     function restData() {
@@ -273,25 +299,29 @@
         fitRoute();
     }
 
+    // The look of each riding day that is set as a feature state of `trip`; a day with none is in its colour.
+    const looks = new Map<number, ReturnType<typeof dayLook>>();
+
     function installRoute() {
         if (!map || map.getSource("trip")) return;
         const dark = theme === "dark";
         const casing = dark ? "#201f17" : "#ffffff";
         const round = { "line-cap": "round", "line-join": "round" } as const;
+        // A feature state changes the paint of the loaded tiles; a new paint expression would load the whole line again.
+        const look = (colour: unknown, quiet: unknown, lit = colour) => ["match", ["feature-state", "look"], "quiet", quiet, "lit", lit, colour] as maplibregl.ExpressionSpecification;
+        const casingWidth = look(8, 5.5, 9);
         map.addSource("trip-highlight", { type: "geojson", data: highlightData() });
         map.addLayer({ id: "trip-highlight", type: "line", source: "trip-highlight", layout: round, paint: { "line-color": dark ? "#5a4622" : "#fbe6b8", "line-width": 14 } });
-        map.addSource("trip", { type: "geojson", data: tripData() });
-        map.addLayer({ id: "trip-casing", type: "line", source: "trip", filter: ["==", ["get", "leg"], "routed"], layout: round, paint: { "line-color": casing, "line-width": 8 } });
-        map.addLayer({ id: "trip-casing-drawn", type: "line", source: "trip", filter: ["==", ["get", "leg"], "drawn"], layout: { "line-join": "round" }, paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 8, "line-dasharray": [1, 0.8] } });
+        map.addSource("trip", { type: "geojson", data: tripData(), promoteId: "day" });
+        looks.clear();
+        map.addLayer({ id: "trip-casing", type: "line", source: "trip", filter: ["==", ["get", "leg"], "routed"], layout: round, paint: { "line-color": casing, "line-width": casingWidth } });
+        map.addLayer({ id: "trip-casing-drawn", type: "line", source: "trip", filter: ["==", ["get", "leg"], "drawn"], layout: { "line-join": "round" }, paint: { "line-color": look(dark ? "#bdb47e" : "#5c5a2e", casing), "line-width": casingWidth, "line-dasharray": [1, 0.8] } });
         map.addLayer({ id: "trip-gap", type: "line", source: "trip", filter: ["==", ["get", "leg"], "gap"], paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 3, "line-dasharray": [1, 0.8] } });
-        map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!", ["in", ["get", "leg"], ["literal", ["gap", "transfer"]]]], layout: round, paint: { "line-color": ["get", "color"], "line-width": 4 } });
+        map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!", ["in", ["get", "leg"], ["literal", ["gap", "transfer"]]]], layout: round, paint: { "line-color": look(["get", "color"], dark ? "#6f6a55" : "#a9a593"), "line-width": look(4, 2.5, 6) } });
         // Under the transfers, so a train outside the part keeps its dashes.
         map.addSource("trip-rest", { type: "geojson", data: restData() });
         map.addLayer({ id: "trip-rest", type: "line", source: "trip-rest", layout: round, paint: { "line-color": casing, "line-width": 5, "line-opacity": .65 } });
         map.addLayer({ id: "trip-transfer", type: "line", source: "trip", filter: ["==", ["get", "leg"], "transfer"], paint: { "line-color": dark ? "#8f8a6e" : "#9a9681", "line-width": 3, "line-dasharray": [2, 2] } });
-        map.addSource("compare", { type: "geojson", data: compareData() });
-        map.addLayer({ id: "compare-casing", type: "line", source: "compare", layout: round, paint: { "line-color": casing, "line-width": 9 } });
-        map.addLayer({ id: "compare-line", type: "line", source: "compare", layout: round, paint: { "line-color": dark ? "#f2efe3" : "#1c1b14", "line-width": 4.5 } });
         map.addSource("lines", { type: "geojson", data: linesData() });
         const ridden: maplibregl.FilterSpecification = ["!", ["get", "transfer"]];
         const sorted: maplibregl.LineLayerSpecification["layout"] = { ...round, "line-sort-key": ["get", "order"] };
@@ -305,14 +335,9 @@
 
     function syncRouteVisibility() {
         if (!map?.getLayer("trip-line")) return;
-        const quiet = !!compare;
         for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-transfer", "trip-rest", "trip-highlight"]) {
-            map.setLayoutProperty(id, "visibility", showRoute && (!quiet || id === "trip-line") ? "visible" : "none");
+            map.setLayoutProperty(id, "visibility", showRoute ? "visible" : "none");
         }
-        const token = (name: string, fallback: string) => getComputedStyle(container).getPropertyValue(name).trim() || fallback;
-        map.setPaintProperty("trip-line", "line-color", compare ? token("--route", "#cc2a93") : ["get", "color"]);
-        map.setPaintProperty("trip-line", "line-width", compare ? 3 : 4);
-        map.setPaintProperty("trip-line", "line-dasharray", compare ? [0, 2] : undefined);
     }
 
     function syncTerrainAndOverlays() {
@@ -336,25 +361,17 @@
         if (visible.length) onVisibleRange([visible[0], visible[visible.length - 1]]);
     }
 
+    // The line of a day outside the week takes no edits: its shaping points are hidden, and it crosses the whole map, so
+    // an insert drag would catch many pans. A press on it pans the map and a click opens its day.
+    const quiet = (day: number) => dayLook(week, null, day) === "quiet";
+
     /** The nearest point on a leg within reach of a screen position. */
     function lineHit(point: maplibregl.Point): LineHit | null {
         if (!map || !showRoute) return null;
-        let best: { legEndId: string; x: number; y: number; pixels: number } | null = null;
-        for (const segment of segments) {
-            const projected = segment.coordinates.map((coordinate) => map!.project(coordinate));
-            for (let i = 1; i < projected.length; i++) {
-                const a = projected[i - 1];
-                const b = projected[i];
-                const dx = b.x - a.x;
-                const dy = b.y - a.y;
-                const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
-                const pixels = Math.hypot(point.x - a.x - dx * t, point.y - a.y - dy * t);
-                if (!best || pixels < best.pixels) best = { legEndId: segment.legEndId, x: a.x + dx * t, y: a.y + dy * t, pixels };
-            }
-        }
-        if (!best || best.pixels > lineReach) return null;
+        const best = nearestOnScreen(segments, coordinate => map!.project(coordinate), at => map!.unproject([at.x, at.y]).toArray(), point, lineReach, segment => quiet(segment.day));
+        if (!best) return null;
         const at = map.unproject([best.x, best.y]);
-        return { legEndId: best.legEndId, coordinate: [at.lng, at.lat] };
+        return { legEndId: best.line.legEndId, day: best.line.day, coordinate: [at.lng, at.lat] };
     }
 
     const level = () => Math.min(LAST_LEVEL, Math.floor(map!.getZoom()));
@@ -377,8 +394,10 @@
     }
 
     /** Closes the list and gives the focus back to its opener, or to the map when the opener is gone. */
+    // Escape reaches the window listener before the list's own: the second call must not move the focus again.
     function closeList() {
-        const opener = placeList?.opener;
+        if (!placeList) return;
+        const opener = placeList.opener;
         placeList = null;
         // A popup of the page that comes back focuses itself in its first frame; the opener takes the focus after it.
         tick().then(() => requestAnimationFrame(() => (opener?.isConnected ? opener : map?.getCanvas())?.focus({ preventScroll: true })));
@@ -396,7 +415,7 @@
         if (drawing) {
             sketch = [coordinate];
             sketchEnd = event.point;
-        } else if (!picking && (hover = lineHit(event.point))) {
+        } else if (!picking && (hover = lineHit(event.point)) && !quiet(hover.day)) {
             // Stops the map from panning: this press may drag a new point out of the line.
             event.preventDefault();
             press = { hit: hover, start: event.point, moved: false };
@@ -426,13 +445,12 @@
 
     function releaseMap(event: maplibregl.MapMouseEvent) {
         if (event.originalEvent.target !== map?.getCanvas()) { cancelGesture(); return; }
-        const coordinate: Coordinate = [event.lngLat.lng, event.lngLat.lat];
         if (sketch && drawing) {
             const drawn = sketch;
             sketch = null;
             consumedPress = true;
             setSketch([]);
-            if (drawn.length > 1) onDrawn?.(drawing, drawn);
+            if (drawn.length > 1 && drawn.every(([lng, lat]) => place({ lng, lat }))) onDrawn?.(drawing, drawn);
         } else if (press) {
             // A press without a drag stays a click, which opens the leg callout.
             const { hit, moved } = press;
@@ -441,7 +459,8 @@
             consumedPress = true;
             hover = null;
             setSketch([]);
-            onInsert?.(hit.legEndId, coordinate);
+            const at = place(event.lngLat);
+            if (at) onInsert?.(hit.legEndId, at);
         }
     }
 
@@ -469,7 +488,11 @@
             map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, relief), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
             // The script of the tile pictures moves the map.
             if (import.meta.env.DEV) Object.assign(window, { plannerMap: map });
+            // The callout fits clear of the controls column and the bottom strip.
+            calloutPopup = mapCallout(map, popupContent, { offset: calloutOffset,
+                free: () => ({ left: 16, top: 16, right: container.clientWidth - controlsWidth, bottom: container.clientHeight - bottomClear }) });
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
+            growBounds();
             fitInitialRoute();
             map.addControl(new ClosedAttribution(), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
@@ -505,20 +528,23 @@
             map.on("click", (event) => {
                 const target = event.originalEvent.target;
                 if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target))) return;
-                if (onPick) { onPick([event.lngLat.lng, event.lngLat.lat], [event.originalEvent.clientX, event.originalEvent.clientY]); return; }
+                const at = place(event.lngLat);
+                if (onPick) { if (at) onPick(at, [event.originalEvent.clientX, event.originalEvent.clientY]); return; }
                 const hit = pickMode ? null : lineHit(event.point);
                 const overlay = pickMode ? null : overlayLayer?.hit(event);
                 overlaySelection = null;
                 placeList = null;
                 if (overlay?.kind === 'access') overlaySelection = overlay;
+                else if (hit && quiet(hit.day)) onDayClick?.(hit.day);
                 else if (hit) onLegClick?.(hit.legEndId, hit.coordinate);
-                else onEmptyClick?.([event.lngLat.lng, event.lngLat.lat]);
+                else onEmptyClick?.(at);
             });
             // MapLibre makes its canvas focusable, and the arrow keys pan it.
             map.getCanvas().addEventListener("keydown", (event) => {
-                if (event.key !== "Enter" || !onPick || !map) return;
-                const box = container.getBoundingClientRect(), { lng, lat } = map.getCenter();
-                onPick([lng, lat], [box.left + box.width / 2, box.top + box.height / 2]);
+                const at = map && place(map.getCenter());
+                if (event.key !== "Enter" || !onPick || !at) return;
+                const box = container.getBoundingClientRect();
+                onPick(at, [box.left + box.width / 2, box.top + box.height / 2]);
             });
             map.on('contextmenu', inspectOverlay);
             map.on('touchstart', () => consumedPress = false);
@@ -532,12 +558,11 @@
             map.on("mouseout", () => {
                 if (!press) hover = null; overOverlay = false; overlayLayer?.hover();
             });
-            map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; overOverlay = false; overlayLayer?.hover(); });
+            map.on("movestart", (event) => { onMoveStart?.(); if (event.originalEvent) { wholeRoute = false; onRiderMove?.(); } overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
             map.on("idle", () => loading = false);
             map.on("dataloading", () => loading = true);
             map.on("movestart", () => loading = true);
-            map.on("move", () => fitCallout(false));
             map.on("zoom", () => {
                 if (!placeList || placeList.level === level()) return;
                 if (popupContent.contains(document.activeElement)) closeList();
@@ -552,6 +577,7 @@
         let refit: ReturnType<typeof setTimeout> | undefined;
         const observer = new ResizeObserver(() => {
             map?.resize();
+            growBounds();
             if (!wholeRoute) return;
             clearTimeout(refit);
             refit = setTimeout(() => { if (wholeRoute) fitRoute(); }, 150);
@@ -559,11 +585,8 @@
         observer.observe(container);
         const preventDrag = (event: DragEvent) => event.preventDefault();
         container.addEventListener('dragstart', preventDrag);
-        const popupObserver = new ResizeObserver(() => { requestAnimationFrame(() => fitCallout(true)); });
-        popupObserver.observe(popupContent);
         return () => {
             container.removeEventListener('dragstart', preventDrag);
-            popupObserver.disconnect();
             observer.disconnect();
             clearTimeout(refit);
             pins.forEach(({ marker }) => marker.remove());
@@ -590,22 +613,26 @@
             reportView();
         }
     });
+    const lastDay = $derived(segments.at(-1)?.day ?? 0);
+    // A week step changes the looks of a few days and sends no line to the map.
+    $effect(() => {
+        const shown = Array.from({ length: lastDay }, (_, i) => dayLook(week, lit, i + 1));
+        if (!map || !ready) return;
+        if (shown.every(look => look === "colour")) {
+            if (looks.size) map.removeFeatureState({ source: "trip" });
+            looks.clear();
+            return;
+        }
+        shown.forEach((look, i) => {
+            if ((looks.get(i + 1) ?? "colour") === look) return;
+            looks.set(i + 1, look);
+            map!.setFeatureState({ source: "trip", id: i + 1 }, { look });
+        });
+    });
     $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { void showRoute; if (ready) syncRouteVisibility(); });
-    $effect(() => { void compare; if (ready) (map?.getSource("compare") as GeoJSONSource | undefined)?.setData(compareData()); });
     $effect(() => { void lines; if (ready) (map?.getSource("lines") as GeoJSONSource | undefined)?.setData(linesData()); });
-    const letters: maplibregl.Marker[] = [];
-    $effect(() => {
-        const marks = compare ? [{ text: compare.letter, at: divergence(compare.line, coordinates) }, { text: "A", at: divergence(coordinates, compare.line) }] : [];
-        if (!map) return;
-        for (const marker of letters.splice(0)) marker.remove();
-        for (const { text, at } of marks) {
-            if (!at) continue;
-            const element = Object.assign(document.createElement("div"), { className: `planner-map-letter${text === "A" ? " current" : ""}`, textContent: text });
-            letters.push(new maplibregl.Marker({ element }).setLngLat(at).addTo(map));
-        }
-    });
     function syncDataLayer() {
         if (!map || !dataLayer) return;
         const { layers, shown, date } = dataLayer;
@@ -630,8 +657,17 @@
         if (map && ready) (map.getSource("trip-rest") as GeoJSONSource | undefined)?.setData(data);
     });
     $effect(() => {
-        highlightedCoordinates;
+        highlightedLines;
         if (map && ready) (map.getSource("trip-highlight") as GeoJSONSource | undefined)?.setData(highlightData());
+    });
+    // A hit belongs to the line it was found on: a new line clears the place until the pointer moves again.
+    $effect(() => {
+        const hit = hover;
+        untrack(() => onRouteHover?.(hit && coordinates.length > 1 ? nearestProgress(coordinates, hit.coordinate) : null));
+    });
+    $effect(() => {
+        void coordinates;
+        untrack(() => onRouteHover?.(null));
     });
     $effect(() => {
         if (picking) hover = null;
@@ -645,7 +681,7 @@
     });
     $effect(() => {
         if (!map) return;
-        if (hover) insertDot.setLngLat(hover.coordinate).addTo(map);
+        if (hover && !quiet(hover.day)) insertDot.setLngLat(hover.coordinate).addTo(map);
         else insertDot.remove();
     });
     $effect(() => {
@@ -715,7 +751,7 @@
             button.className = `planner-map-pin ${point.kind} ${point.appearance ?? ""}${draggable ? " draggable" : ""}`;
             if (point.color) button.style.setProperty("--pin-color", point.color);
             button.setAttribute("aria-label", point.kind === "start" ? `Start: ${point.label}` : point.kind === "finish" ? `Finish: ${point.label}` : point.label);
-            button.title = dayEnd ? `${point.appearance === "moved" ? "Day end you moved" : "Day end suggested"} · drag along the route` : point.label + (draggable ? " · drag to move" : "");
+            const title = dayEnd ? `${point.appearance === "moved" ? "Day end you moved" : "Day end suggested"} · drag along the route` : point.label + (draggable ? " · drag to move" : "");
             if ((point.kind === "place" || point.kind === "night") && point.category) {
                 button.append(markerIcon(placeCategories[point.category].icon));
             } else if (point.kind === "waypoint" || point.kind === "detour") {
@@ -745,52 +781,60 @@
                 marker.on("drag", () => marker.setLngLat(coordinateAt(coordinates, routeProgress(marker))));
                 marker.on("dragend", () => { onDayEndDrag?.(point.night!, routeProgress(marker)); draggingPin = false; });
             } else {
-                marker.on("drag", () => { const p = marker.getLngLat(); onPointPreview?.(point.id, [p.lng, p.lat]); });
-                marker.on("dragend", () => { const p = marker.getLngLat(); onPointMove?.(point.id, [p.lng, p.lat]); draggingPin = false; });
+                // Outside the region the preview ends, and a drop there puts the pin back.
+                marker.on("drag", () => onPointPreview?.(point.id, place(marker.getLngLat())));
+                marker.on("dragend", () => {
+                    const at = place(marker.getLngLat());
+                    if (at) onPointMove?.(point.id, at);
+                    else { marker.setLngLat(point.coordinate); onPointPreview?.(point.id, null); }
+                    draggingPin = false;
+                });
             }
-            pins.set(point.id, { marker, button, key });
+            pins.set(point.id, { marker, button, key, point, draggable, title });
         }
-        pinButtons = new Map([...pins].map(([id, pin]) => [id, pin.button]));
+        madePins = [...pins.values()];
     });
     $effect(() => {
-        for (const [id, button] of pinButtons) {
+        for (const { point, marker, button, draggable, title } of madePins) {
+            // The selected pin stays shown, so its callout never points at a hidden pin.
+            const { id } = point, look = id === selectedId ? "shown" : pinLook(week, point);
             button.classList.toggle("selected", id === selectedId);
             button.classList.toggle('highlighted', id === hoveredId);
             button.classList.toggle("matched", highlightedPlaceIds.includes(id));
             button.setAttribute("aria-pressed", String(id === selectedId));
+            button.classList.toggle("dot", look === "dot");
+            button.classList.toggle("off", look === "hidden");
+            marker.setDraggable(draggable && look === "shown");
+            button.title = look === "dot" ? point.label : title;
         }
     });
     $effect(() => {
         void bottomClear;
         untrack(() => {
             if (wholeRoute) fitRoute();
-            fitCallout(true);
+            calloutPopup?.refit(true);
         });
     });
     $effect(() => {
-        if (!map || !popupContent) return;
-        if (!calloutAt) {
-            calloutPopup?.remove();
-            calloutPopup = undefined;
-            return;
-        }
-        calloutPopup ??= new maplibregl.Popup({
-            closeButton: false, closeOnClick: false, offset: calloutOffset, maxWidth: "340px", anchor: "bottom",
-        }).setDOMContent(popupContent);
-        calloutPopup.setLngLat(calloutAt).addTo(map);
-        fitCallout(false);
-        const settle = () => requestAnimationFrame(() => fitCallout(true));
-        if (map.isMoving()) map.once("moveend", settle);
-        else settle();
+        const at = calloutAt;
+        if (map) untrack(() => calloutPopup?.show(at));
     });
+
+    // In the capture phase, so that Escape closes the route details or the place list before the page goes back a level.
+    function escape(event: KeyboardEvent) {
+        if (event.key !== 'Escape') return;
+        cancelGesture();
+        if (!overlaySelection && !placeList) return;
+        event.preventDefault();
+        overlaySelection = null;
+        if (placeList) closeList();
+    }
 </script>
 
 <svelte:window onmouseup={(event) => { if (event.target !== map?.getCanvas()) cancelGesture(); }}
-    onblur={cancelGesture} onkeydown={(event) => { if (event.key === 'Escape') { cancelGesture(); if (overlaySelection || placeList) event.preventDefault(); overlaySelection = null; if (placeList) closeList(); } }} />
+    onblur={cancelGesture} onkeydowncapture={escape} />
 
-<!-- The callout always fits the free map area: inside the margins, clear of the controls and the bottom strip, less its offset and tip. -->
-<div class="map-frame" data-map-theme={theme} bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}
-    style:--callout-width={`${frameWidth - 16 - controlsWidth}px`} style:--callout-room={`${frameHeight - 16 - bottomClear - calloutOffset - 10}px`}>
+<div class="map-frame" data-map-theme={theme} bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}>
     <div class="map-canvas" bind:this={container} aria-label="Route map" aria-busy={loading && !failure}></div>
     {#if map}
         <PlaceMarks {map} {ready} {theme} url={config.places} kinds={placeKinds} highlight={highlightedKind} still={!!drawing || !!onPick} onOpen={openMark} />
@@ -802,12 +846,6 @@
             <MapOverlayDetails selection={overlaySelection} {theme} onclose={() => overlaySelection = null} />
         {:else if popup}{@render popup()}{/if}
     </div></div>
-    {#if compare}
-        <div class="compare-key" aria-hidden="true">
-            <span><svg width="26" height="6"><path d="M2 3H24" class="option" /></svg>{compare.letter} · Preview</span>
-            <span><svg width="26" height="6"><path d="M2 3H24" class="current" /></svg>A · Your route</span>
-        </div>
-    {/if}
     {#if routeHint && !overlaySelection}
         <!-- The note starts from the pointer, or from the edge of the free area when the pointer is beyond it. -->
         {@const right = frameWidth - controlsWidth}
@@ -835,16 +873,9 @@
 <style>
     .map-frame { position: relative; min-height: 240px; height: 100%; isolation: isolate; background: var(--parchment, #f4f2eb); }
     .map-canvas { user-select: none; -webkit-user-select: none; width: 100%; height: 100%; min-height: 240px; }
-    /* MapLibre puts the callout inside the map container, which would pass on its user-select: none. */
-    .map-canvas :global(.maplibregl-popup) { user-select: text; -webkit-user-select: text; }
     .popup-storage { display: none; }
     .overlay-status { position: absolute; left: 12px; bottom: 34px; max-width: calc(100% - 80px); padding: 7px 10px; border-radius: 6px; color: var(--ink); background: var(--panel); font-size: 12px; }
     .overlay-status button { margin-left: 8px; border: 0; background: none; color: var(--link); font: inherit; text-decoration: underline; cursor: pointer; }
-    .compare-key { position: absolute; left: 12px; top: 12px; display: flex; gap: 14px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink); background: var(--panel); font: 600 12px var(--sans); }
-    .compare-key span { display: flex; align-items: center; gap: 6px; }
-    .compare-key path { stroke-width: 4; stroke-linecap: round; }
-    .compare-key .option { stroke: var(--ink); }
-    .compare-key .current { stroke: var(--route); stroke-width: 3; stroke-dasharray: 0 6; }
     .map-status { position: absolute; bottom: 32px; left: 12px; right: 12px; padding: 10px 12px; background: var(--panel, white); color: var(--ink, #1c1b14); border: 1px solid var(--line-strong, #bcb9aa); font-size: 13px; }
     .map-status button { color: inherit; background: transparent; border: 0; text-decoration: underline; cursor: pointer; font: inherit; }
     :global(.planner-map-pin) { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 2px solid var(--panel, #fff); border-radius: 50%; background: #a4501e; color: #fff; font: 700 13px var(--sans, sans-serif); cursor: pointer; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }
@@ -868,13 +899,15 @@
     :global(.planner-map-pin.dayend.moved) { border-style: dotted; }
     :global(.planner-map-pin.dayend.moved)::after { content: ""; position: absolute; bottom: 2px; width: 3px; height: 3px; border-radius: 50%; background: currentColor; }
     :global(.planner-map-pin.dayend.draggable) { cursor: ew-resize; }
+    /* Outside the week a night mark is a small dot, and a shaping point is hidden. */
+    :global(.planner-map-pin.dot:is(.night, .dayend)) { width: 10px; height: 10px; border: 2px solid color-mix(in srgb, var(--ink-faint) 70%, var(--panel)); background: var(--panel); box-shadow: none; font-size: 0; cursor: pointer; }
+    :global(.planner-map-pin.dot > *), :global(.planner-map-pin.dot)::after { display: none; }
+    :global(.planner-map-pin.off) { display: none; }
     :global(.planner-map-pin.matched) { border: 3px solid var(--amber, #f4a81d); }
     :global(.planner-map-pin.selected) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
     :global(.planner-map-pin.highlighted) { outline: 3px solid var(--ink, #1c1b14); outline-offset: 3px; }
     :global(.planner-map-pin:hover) { filter: brightness(1.08); }
     :global(.planner-map-pin:focus-visible) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
-    :global(.planner-map-letter) { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; color: var(--panel, #fff); background: var(--ink, #1c1b14); font: 700 12px var(--sans, sans-serif); box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }
-    :global(.planner-map-letter.current) { background: var(--route, #cc2a93); }
     :global(.planner-map-note) { padding: 2px 8px; border-radius: 6px; color: var(--ink, #1c1b14); background: var(--panel, #fff); font: 600 12px/20px var(--sans, sans-serif); font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }
     .route-hint { position: absolute; display: flex; gap: 8px; box-sizing: border-box; }
     .route-hint :is(b, span) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -883,15 +916,9 @@
     .route-hint span { color: var(--ink-soft, #5c5a2e); font-weight: 400; }
     :global(.planner-hover-dot) { width: 12px; height: 12px; border: 3px solid var(--panel, #fff); border-radius: 50%; background: var(--ink, #1c1b14); pointer-events: none; }
     :global(.planner-insert-dot) { width: 14px; height: 14px; border: 2.5px solid var(--route, #cc2a93); border-radius: 50%; background: var(--panel, #fff); pointer-events: none; }
-    .map-frame :global(.maplibregl-popup-content) { padding: 0; border-radius: 8px; color: var(--ink, #1c1b14); background: var(--panel, white); font-family: var(--sans, sans-serif); box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }
     .map-frame :global(.maplibregl-ctrl-scale) { padding: 0 6px; border: 1px solid var(--line-strong, #bcb9aa); border-top: 0; background: var(--panel, white); font: 11px/18px var(--sans, sans-serif); color: var(--ink, #1c1b14); }
     .map-frame :global(.maplibregl-ctrl-attrib) { background: var(--panel, white); font: 11px var(--sans, sans-serif); color: var(--ink-soft, #5c5a2e); }
     .map-frame :global(.maplibregl-ctrl-attrib a) { color: var(--link, var(--ink-soft, #5c5a2e)); }
     .map-frame :global(.maplibregl-ctrl-attrib.maplibregl-compact-show .maplibregl-ctrl-attrib-button) { background-color: var(--parchment-2, #e7ecdf); }
     .map-frame[data-map-theme="dark"] :global(.maplibregl-ctrl-attrib-button) { background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' fill-rule='evenodd' viewBox='0 0 20 20'%3E%3Cpath d='M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0' fill='%23f2efe3'/%3E%3C/svg%3E"); }
-    /* The tip takes the panel colour on whichever side MapLibre draws it for each anchor. */
-    .map-frame :global(:is(.maplibregl-popup-anchor-bottom, .maplibregl-popup-anchor-bottom-left, .maplibregl-popup-anchor-bottom-right) .maplibregl-popup-tip) { border-top-color: var(--panel, white); }
-    .map-frame :global(:is(.maplibregl-popup-anchor-top, .maplibregl-popup-anchor-top-left, .maplibregl-popup-anchor-top-right) .maplibregl-popup-tip) { border-bottom-color: var(--panel, white); }
-    .map-frame :global(.maplibregl-popup-anchor-left .maplibregl-popup-tip) { border-right-color: var(--panel, white); }
-    .map-frame :global(.maplibregl-popup-anchor-right .maplibregl-popup-tip) { border-left-color: var(--panel, white); }
 </style>

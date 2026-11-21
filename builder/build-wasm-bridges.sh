@@ -20,6 +20,15 @@ wasm-pack build builder/ground-plan-wasm --release --target web \
   --out-dir ../web/src/lib/trailview/plan/pkg \
   --out-name obc_ground_plan_bridge
 
+# The TrailView tunnel parts: the stamp code inlines it, and its stamp version takes the hash of the tracked sources
+# that built it but their Markdown (`partsSources` of builder/web/vite/stamp-bundle.ts), which sources.sha256 records.
+parts_pkg=builder/web/src/lib/trailview/structures/pkg
+wasm-pack build builder/trailview-parts-wasm --release --target web \
+  --out-dir ../web/src/lib/trailview/structures/pkg \
+  --out-name obc_trailview_parts_bridge
+git ls-files -z -- host/obc-trailview-parts builder/trailview-parts-wasm data/trailview/parts.json ':(exclude)*.md' \
+  | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1 > "$parts_pkg/sources.sha256"
+
 # The WebP decode of TrailView's ground worker where the browser decodes images premultiplied.
 wasm-pack build builder/webp-wasm --release --target web \
   --out-dir ../web/src/lib/trailview/stream/webp \

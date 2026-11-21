@@ -1,6 +1,6 @@
-import { coordinateAt, cumulative, kilometres, type Coordinate } from './geo';
+import { coordinateAt, cumulative, kilometres, routeSlice, type Coordinate } from './geo';
 import type { RoutePoint } from './editor';
-import { noteDistance } from './route-closures';
+import { noteDistance, type Stretch } from './route-closures';
 
 /** A shorter gap is a coarse click, or a building set back from its road: a map pixel at zoom 10 is about 100 m. */
 const shortestKm = 0.1;
@@ -10,6 +10,8 @@ export interface RouteGap {
     /** From the route to the point, where the rider put it. */
     coordinates: [Coordinate, Coordinate];
     km: number;
+    /** The km along the route of the point's stop. */
+    at: number;
 }
 
 /** The points that the route does not reach, because no accessible road is nearer. The router attaches such a point to
@@ -17,23 +19,33 @@ export interface RouteGap {
 export function routeGaps(stops: { point: RoutePoint; distance: number }[], coordinates: Coordinate[]): RouteGap[] {
     const total = cumulative(coordinates).at(-1) ?? 0;
     if (!total) return [];
+    // A loop lists its start again as the closing stop.
+    const seen = new Set<string>();
     return stops.flatMap(({ point, distance }, i) => {
-        // A manual leg from the point already joins the route to it.
-        if ((stops[i + 1]?.point.leg ?? 'routed') !== 'routed') return [];
+        // A manual leg from the point already joins the route to it; after a detour, it starts at the anchor.
+        if ((point.kind !== 'detour' && (stops[i + 1]?.point.leg ?? 'routed') !== 'routed') || seen.has(point.id)) return [];
         const attached = coordinateAt(coordinates, distance / total);
         const km = kilometres(attached, point.coordinate);
-        return km > shortestKm ? [{ point, coordinates: [attached, point.coordinate], km }] : [];
+        if (km <= shortestKm) return [];
+        seen.add(point.id);
+        return [{ point, coordinates: [attached, point.coordinate], km, at: distance }];
     });
 }
 
-/** One quiet line, such as "Route ends 180 m before the selected point — no accessible path". */
-export function gapNote(gaps: RouteGap[]): string {
-    const km = Math.max(...gaps.map(gap => gap.km));
-    const distance = noteDistance(km, 10);
-    const kind = gaps[0].point.kind;
-    const route = gaps.length > 1 ? `Route misses ${gaps.length} selected points by up to ${distance}`
-        : kind === 'start' ? `Route starts ${distance} from the selected point`
-        : kind === 'finish' ? `Route ends ${distance} before the selected point`
-        : `Route passes ${distance} from the selected point`;
-    return `${route} — no accessible path`;
+/** Such as "Ends 180 m before your point". */
+export function gapLabel(gap: RouteGap): string {
+    const distance = noteDistance(gap.km, 10);
+    const kind = gap.point.kind;
+    return kind === 'start' ? `Starts ${distance} from your point`
+        : kind === 'finish' ? `Ends ${distance} before your point`
+        : `Passes ${distance} from your point`;
+}
+
+/** The legs with no legal path, by the ids of the points at which they end (`RoutingLine.gapLegs`): each from the stop
+ * before it to its own stop. */
+export function legGaps(stops: { point: RoutePoint; distance: number }[], coordinates: Coordinate[], ids: string[]): Stretch[] {
+    const total = cumulative(coordinates).at(-1) ?? 0;
+    if (!total) return [];
+    return stops.flatMap((stop, i) => i && ids.includes(stop.point.id)
+        ? [{ coordinates: routeSlice(coordinates, stops[i - 1].distance / total, stop.distance / total), km: stop.distance - stops[i - 1].distance, at: stops[i - 1].distance }] : []);
 }

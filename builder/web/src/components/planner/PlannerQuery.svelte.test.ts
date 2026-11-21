@@ -8,11 +8,11 @@ import type { SearchContext, QueryRequest } from '../../lib/planner/search/types
 const context: SearchContext = {view:[7.8,47.9,8,48.1],plan:{coordinates:[[7.8,48],[7.9,48]],km:[0,7.44],days:[{number:1,from:0,to:7,rest:false}],points:[]}};
 const reply = (request: QueryRequest) => ({ok:true,json:async()=>({type:'places',request,results:[]})}) as Response;
 const mounted: ReturnType<typeof mount>[] = [];
-afterEach(async()=>{ for(const component of mounted.splice(0))await unmount(component); vi.unstubAllGlobals(); vi.useRealTimers(); document.body.replaceChildren(); });
+afterEach(async()=>{ for(const component of mounted.splice(0))await unmount(component); vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); document.body.replaceChildren(); });
 async function setup(extra: Record<string, unknown> = {}) {
     vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
     const target=document.createElement('div');document.body.append(target);
-    const component=mount(Query,{target,props:{context,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onPointing:()=>{},...extra}});
+    const component=mount(Query,{target,props:{context,onSearch:()=>{},onClear:()=>{},onLocation:async()=>undefined,onPointing:()=>{},...extra}});
     mounted.push(component);await tick();
     const input=target.querySelector('input')!;
     const type=async(text:string)=>{input.value=text;input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);};
@@ -56,8 +56,28 @@ describe('planner query requests',()=>{
         expect(target.querySelector('.meaning')?.textContent).not.toContain('campsite');
         await type('third sentence');await type('');
         pending[2](reply({type:'places',what:['campsite']}));await vi.advanceTimersByTimeAsync(0);await tick();
-        expect(target.querySelector('.meaning-label')).toBeNull();
-        expect(target.querySelector('.chip')?.textContent).toContain('In this map view');
+        // An empty search shows the search area only while it has the focus.
+        expect(target.querySelectorAll('.chip')).toHaveLength(0);
+        target.querySelector('input')!.focus();await tick();
+        expect([...target.querySelectorAll('.chip')].map(chip=>chip.textContent)).toEqual(['In this map view']);
+    });
+    it('asks for the position of the rider once and searches again when the context has it',async()=>{
+        const near:QueryRequest={type:'places',what:['bakery'],where:{scope:'here'}};
+        const fetch=vi.fn(async(_url:string,init:RequestInit)=>({ok:true,json:async()=>JSON.parse(String(init.body)).here
+            ?{type:'places',request:near,results:[]}:{type:'unresolved',code:'location',request:near,results:[]}}) as Response);
+        vi.stubGlobal('fetch',fetch);
+        const view=fromStore(writable(context)), revision=fromStore(writable(0));
+        const onLocation=vi.fn(async()=>{ view.current={...context,here:[7.85,48]}; revision.current++; return undefined; });
+        vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
+        const target=document.createElement('div');document.body.append(target);
+        mounted.push(mount(Query,{target,props:{get context(){return view.current;},get revision(){return revision.current;},onLocation,onSearch:()=>{},onClear:()=>{},onPointing:()=>{}}}));
+        await tick();
+        const input=target.querySelector('input')!;input.value='bakery near me';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();
+        await vi.advanceTimersByTimeAsync(351);await tick();await vi.advanceTimersByTimeAsync(250);await tick();
+        expect(onLocation).toHaveBeenCalledOnce();
+        expect(fetch).toHaveBeenCalledTimes(2);
+        const sent=JSON.parse(String(fetch.mock.lastCall![1].body));
+        expect(sent.here).toEqual([7.85,48]);expect(sent.request).toEqual(near);
     });
     it('retries interpretation after a temporary model failure instead of keeping the fallback',async()=>{
         const fetch=vi.fn(async()=>reply({type:'place',name:'hotels near day two'}));
@@ -81,7 +101,7 @@ describe('planner query requests',()=>{
         await vi.advanceTimersByTimeAsync(0);await tick();
         const input=JSON.parse(String(fetch.mock.lastCall![1].body));
         expect(input.request.what).toEqual(['campsite']);expect(input.q).toBe('hotels nearby');
-        expect(target.textContent).toContain('Edited request');
+        expect(target.querySelector('.query-input.edited')).not.toBeNull();
         expect(target.querySelector('.picker')).toBeNull();
     });
     it('keeps one editor open and discards an unapplied area edit on Escape', async()=>{
@@ -103,15 +123,13 @@ describe('planner query requests',()=>{
     });
     it('keeps searches stable through map movement until the rider requests the new view',async()=>{
         const view=fromStore(writable(context)), viewRevision=fromStore(writable(0));
-        const onResults=vi.fn();
         const fetch=vi.fn(async()=>({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12},{lon:7.85,lat:48.14}]})}));
         vi.stubGlobal('fetch',fetch);
         vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
         const target=document.createElement('div');document.body.append(target);
-        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onPointing:()=>{}}});
+        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onSearch:()=>{},onClear:()=>{},onLocation:async()=>undefined,onPointing:()=>{}}});
         mounted.push(component);await tick();
         const input=target.querySelector('input')!;input.value='pharmacies';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);
-        expect(onResults).toHaveBeenCalledExactlyOnceWith([[7.81,48.12],[7.85,48.14]]);
         const fitted: SearchContext={...context,view:[7.8,48.1,7.9,48.2]};
         view.current=fitted;await tick();await vi.advanceTimersByTimeAsync(250);
         expect(fetch).toHaveBeenCalledTimes(1);
@@ -123,7 +141,6 @@ describe('planner query requests',()=>{
         component.retry();await vi.advanceTimersByTimeAsync(0);await tick();
         expect(sent().view).toEqual(context.view);
         expect(fetch).toHaveBeenCalledTimes(3);
-        expect(onResults).toHaveBeenCalledTimes(2);
         const panned: SearchContext={...context,view:[7.9,48.1,8,48.2]};
         view.current=panned;viewRevision.current=1;await tick();await vi.advanceTimersByTimeAsync(250);
         expect(fetch).toHaveBeenCalledTimes(3);
@@ -131,27 +148,27 @@ describe('planner query requests',()=>{
         await vi.advanceTimersByTimeAsync(0);await tick();
         expect(fetch).toHaveBeenCalledTimes(4);
         expect(target.querySelector('.search-view')).toBeNull();
-        expect(onResults).toHaveBeenCalledTimes(2);
         expect(sent().view).toEqual(panned.view);
         view.current=fitted;await tick();
         component.more();await vi.advanceTimersByTimeAsync(0);await tick();
         expect(sent().view).toEqual(panned.view);
         expect(sent().limit).toBe(46);
     });
-    it('keeps the initial request and result framing when map bounds arrive',async()=>{
+    it('keeps the initial request when map bounds arrive',async()=>{
         const view=fromStore(writable(context)), viewRevision=fromStore(writable(0));
-        const onResults=vi.fn();
         let resolve!: (response: unknown) => void;
         const fetch=vi.fn(()=>new Promise(done=>resolve=done));
         vi.stubGlobal('fetch',fetch);vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
         const target=document.createElement('div');document.body.append(target);
-        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onPointing:()=>{}}});
+        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onSearch:()=>{},onClear:()=>{},onLocation:async()=>undefined,onPointing:()=>{}}});
         mounted.push(component);await tick();
         const input=target.querySelector('input')!;input.value='pharmacies';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);
         view.current={...context,view:[7,47,9,49]};viewRevision.current=1;await tick();await vi.advanceTimersByTimeAsync(250);
         expect(fetch).toHaveBeenCalledTimes(1);
         resolve({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12}]})});
         await vi.advanceTimersByTimeAsync(0);await tick();
-        expect(onResults).toHaveBeenCalledExactlyOnceWith([[7.81,48.12]]);
+        expect(fetch).toHaveBeenCalledTimes(1);
+        // The answer is kept: the understood request comes from it.
+        expect(target.querySelector('[aria-label="Understood request"]')).not.toBeNull();
     });
 });

@@ -97,7 +97,8 @@ finds the runs of that field. A stream has no length: the streams before it give
 sorted by key. `geometry` is 0 for a point, 1 for a line and 2 for an area. The features of a tile
 come in a fixed order: first the kinds that no solver sets, in the order of the OSM file, the points
 and the lines before the areas; then the buildings, the lifts, the rivers and lakes, the roads,
-paths and tracks, the bridge piers, the catenary masts, the platforms and the sea. So the bytes of a
+paths and tracks, the bridge piers, the catenary masts, the platforms, the sea, the tunnel tubes and the tunnel
+ends. So the bytes of a
 tile do not depend on how much of the file lies outside the region.
 
 ### Coordinates
@@ -422,6 +423,9 @@ The bake adds these to the features of the road solver:
 | tag `levels` | each way of the road solver with a state (see below), at zoom 13 | `S` then `m K S` per end line: the state where the way's metres along begin, then per end line in rising metres its metres along, its kind (`A` a deck's end, `P` a portal, `C` a closed end) and the state past it. A state is `D` on a deck, `B` in a bore, `O` on the ground, `H` not drawn |
 | tag `storey` | each way of a deck that lies over another deck, at zoom 13 | Its storey over the ground, 2 or more. A deck without the tag lies on storey 1 |
 | tag `slab` | each way of a deck whose room gives less than its full depth (ladder step 2), at zoom 13 | The depth of its slab in metres |
+| line `tunnel-tube` | each chord of the curve of a chain of tunnel ways with a part, at zoom 13 | Two vertices; the heights are the floor. See Tunnel parts |
+| point `tunnel-end` | each opening with a part of its own, at zoom 13 | The middle of its frame line; the height is the floor there. See Tunnel parts |
+| tag `parts` | each tunnel way of a chain with a part, at zoom 13 | The parts of the two ends of its chain, as `ends` of its `tunnel-tube` |
 
 The bake decides `levels`, `storey` and `slab` by the levels of the ground plan (`graph::levels` of
 `host/obc-ground-plan`, and `graph::level_tags` for the tags) with the rule tables of its own build. The options
@@ -446,7 +450,7 @@ is the lid of the bore. A stretch over the body of a way that the tunnel ends at
 only where one tunnel way goes on. A cell reads no chain, so the open stretch takes none of a cell's reach. The A lines of one deck group that cross or lie within
 `edge_band_m` of each other move in together: each A moves in along its way to where its centre line meets the line
 normal to their mean direction into the decks through the farthest one in, and each end line stays square to its own
-way. One pass merges them; a cell merges the A lines that it sees. The storey is one per deck group, the deck ways that share a
+way. An A does not move onto or past a way that passes below its deck with room. One pass merges them; a cell merges the A lines that it sees. The storey is one per deck group, the deck ways that share a
 point, joined over all cells: 1, and one more than each group under it at a crossing that a cell owns and whose
 ladder gives a deck (full or thin). A crossing of a group over itself lifts nothing. The metres along of a way are
 those of its stroke (see Alignment): `along_code` at the first vertex of each part, and the length of the ground
@@ -539,6 +543,139 @@ With `has_z` 1, each vertex has a `z_code`. `z_code` 0 means not solved: the hei
 never 0 m. Otherwise `z_code − 1` is the zigzag difference in centimetres from the last solved
 height of the feature, which starts at 0. A height is in metres in the vertical datum of
 `planner/terrain`.
+
+### Tunnel parts
+
+The bake selects a part for each opening of a tunnel and writes it as the kinds `tunnel-tube` and `tunnel-end`
+(`parts` of `host/obc-trailview-features`). The rule values come from `data/trailview/parts.json`, the option `parts`
+of the step: per group of road classes `look`, `collar_max_m`, `wing_max_m` and `least_height_m`, and the values of
+`bake`. The values below are those names.
+
+A chain is a run of the ways of the kind `tunnel` that meet end to end: it goes on through each vertex where the
+ends of two such ways meet and no other such way has a vertex. A shallow tunnel lies on the ground in the ground plan
+and belongs to no chain. A chain end opens where no other way of the kind `tunnel` has a vertex at its end vertex;
+else the tube goes on in the hill there and that end has no opening. The tube is the curve of the chain's ways (at most 10 m between
+vertices), joined. Its section is that of its widest way: `half` is the way's half-width with its widening and
+`margin_m` (`margin_narrow_m` where the bore is `narrow_bore_m` or less), `height` is its bore.
+
+An opening lies at the end vertex of its way. Where the vertex holds two or more arms of other ways of the road solver
+(the end of a way is one arm, a vertex inside a way two), the opening moves in along the chain to the first whole metre where both ends of its frame line, `half` + `shell_m` to
+each side, lie farther from each other way's line than that way's outer half-width; at most `junction_shift_max_m`,
+half the chain and the length of its own way. Where the two openings of a chain would meet, both stay at the ends
+of the chain (`shift` 0). The ground plan builds the stretch from the vertex to the opening as a
+way on the ground (`graph::build_open`).
+
+The bake measures each opening on the ground of the ground plan: each cell that holds a point to read is built as the
+viewer builds it, with the tags of the levels and the stretches to the openings on the ground, without the storey
+under the ground (the step's metric `ground_plan_bores` says which). The ladder reads a first measure with the
+stretches of all openings. The numbers read the stretches that the device opens: of each opening of a chain whose two
+ends are of the kinds that the viewer builds (`BUILT` of `host/obc-trailview-parts`); the openings near a stretch that
+the first measure opened otherwise are measured again. Where that
+ground no longer fits the kind (no cover, or cover past the limit), the end takes its next kind, and a pair with such
+an end is no pair. A way in the
+tube of a wider one has no record, so a reader keeps it a tunnel way up to its end vertex; the part of the wider tube
+holds it. The cover at a metre in is the least ground
+over the centre line and both outer walls (`half` + `shell_m` across), less the floor; the metre is covered where
+the cover is at least `height` + `shell_m` + `cover_m`.
+
+Each opening takes the first kind of part that fits, by these rungs in order:
+
+1. No part where a vertex of the chain has no height.
+2. No part where the opening lies within `half` + `same_tube_gap_m` across, `same_tube_stagger_m` along and
+   `pair_max_deg` of the opening of a wider chain: the way is in that tube. The wider chain keeps its axis, and its
+   `half` grows to the far edge of the other way and its margin. The widest chain takes first.
+3. A chain shorter than `underpass_max_m` with a way or a track on top: `box` at its openings. Its height comes from
+   the floor of the tube, as for every part. A short chain under a building only has no part.
+4. An end that meets no way and is covered at its opening: `free`.
+5. An end whose first covered metre lies within `collar_max_m`: `pair` where an opening of another chain of the same
+   family (rail or not) at that rung lies within `pair_max_m` and `pair_max_deg` (the nearest pairs first, each
+   opening in one pair); else `rock` for a group with `rock` covered within `rock_cover_max_m`; else `arch`.
+6. Else `free`.
+
+The two openings of a pair lie on the frame line of the opening farther in: the other one moves in along its way to
+it. Where its way does not reach that line within `pair_max_m`, half the chain and its own way, the two are no pair
+and each takes its next kind. A pair has one `tunnel-end`, at the opening of the lower feature id.
+
+The point of a `tunnel-end` lies on its own axis at its opening. The frame of a single opening runs `half` +
+`shell_m` to each side of that point; the frame of a pair runs from the right edge of one tube to the left edge of the
+other.
+
+The numbers, in metres over the floor of the opening unless named:
+
+- `collar`: the metres to the first covered metre. For `box` it is at most half the chain. For `free` it is at most
+  `free_max_m` and half the chain, and that limit where no metre is covered. For `pair` it is the larger of the
+  two tubes.
+- `face`: the highest ground on the frame line plus `coping_m`, at least `height` + `shell_m` + `band_m`, at most
+  `height` + `shell_m` + `face_over_crown_max_m`, and at most the underside of a deck over the frame line or its wing
+  walls less `coping_m`. A deck is over them where that lies over the floor: a way that goes on from the opening on a
+  deck is not. So a deck can make `face` lower than `height` + `shell_m`.
+- `left`, `right`: a row of wall tops, one per metre out from the outer edge of the frame, the ground plus
+  `coping_m`, from `coping_m` up to `face`. A row ends before the first metre whose ground lies under the floor +
+  `wing_ground_m`, or at `wing_max_m`, and has one value at least. `left` is to the left of the way into the tube.
+- `foot`: the lowest ground under the frame, its wing walls and its collar, less `foot_m`. The floor counts as ground
+  there, so `foot` is at most −`foot_m`.
+
+The tags, numbers in metres with at most 2 decimals, the values of a row separated by a space:
+
+| Tag | On | Value |
+| --- | --- | --- |
+| `section` | both | `round`, or `box` for an underpass |
+| `half`, `height` | both | The inside half-width and height: of a tube, the height of its chord; of an end, the height of the tube's chord there (see The floor of a tube) |
+| `look` | both | `concrete`, `masonry` or `rock`: of the group, `rock` for the part `rock` |
+| `class`, `surface` | tube | The class of `roads.json` and the `surface` tag (when it has one) of the widest way |
+| `road` | tube | The half-width of the widest way's carriageway |
+| `along` | tube | The metres along the stroke of its way at the first vertex |
+| `ends` | tube | The parts of the chain's two ends, the end behind the first vertex first: `arch`, `pair`, `rock`, `box`, `free`, or `none` for an end with no part of its own |
+| `part` | end | `arch`, `pair`, `rock`, `box` or `free` |
+| `heading` | end | Radians from x to y of world coordinates, into the tube, three decimals |
+| `collar` | end | The collar; of `free`, the length of its shell |
+| `face`, `left`, `right` | end | Not on `free` |
+| `foot` | end | |
+| `way` | end | The end vertex of the way of the opening, `x y` in the frame of the ground plan (2^34 units per side): the point that each zoom-13 tile holds, a quarter unit times 32, or a whole unit times 128 on a way with no alignment |
+| `shift` | end | The metres along that way from `way` to the opening; 0 where it did not move |
+| `mate` | `pair` | The metres to the left from its axis to the axis of the other tube |
+| `mate_way`, `mate_shift` | `pair` | `way` and `shift` of the other opening |
+
+Each `tunnel-tube` has the two vertices of one chord of the tube from opening to opening, in the rising metres along
+the stroke of its way, so a tile that holds a piece of the tube holds whole records. A chain end with no opening
+holds its end vertex. Today's app reads neither kind. The tag `levels` and the heights of a
+tunnel way do not change with the parts.
+
+A way that ends at an opening of a chain whose two ends are built widens its shoulder and the layers out of it, so
+its core's edge (where its wall or bank stands) reaches the opening's jamb lines (`half` of the end), and narrows back
+to its own width over `approach_m` of `design` in `data/trailview/parts.json`, or over the way where it is shorter. A
+change of `BUILT` bakes the layer again.
+
+#### The floor of a tube
+
+Between its openings, the floor of a tube touches no other way. The bake lowers it so that the shell of the crown
+lies under each way on top. The heights of a `tunnel-tube` are this floor, and the `z` of a `tunnel-end` is the height
+of the road solver there. The bake sets the floor before the numbers of the openings.
+
+- The curve of a way with heights, not of the kind `gallery`, lies over a vertex of the tube where the vertex is
+  within its reach (its outer half-width + `half` + `shell_m`; at a vertex that took an end of the way's reach,
+  its reach + `vertex_gap_m`, so that vertex keeps the cap of that end) and the foot of its nearest point on the whole chain
+  lies between the openings, each grown by the way's outer half-width. It lies on top where its height at that point
+  is more than the at-grade band over the road solver's height of the chain at the foot (the lesser `snap_height_m`
+  of the two classes, as at a crossing of the ground plan). A way that goes on from the chain's end meets it at the
+  chain's height, so it lies at grade. Its underside is its height less its `deck` on a bridge, else less `slab_m`.
+- The tube gets a vertex where it enters and leaves the reach of each way within reach that is not of the kind
+  `tunnel`, at grade or not. Its vertices lie at least `vertex_gap_m` apart, so each chord keeps its direction in
+  the units of a tile: the openings and the joins of its ways stay, and a point of the curve, then a point of a
+  reach, nearer than that to a vertex is that vertex.
+- A chord may rise by the `grade` of the class of the widest way (`grade_default` for a class with none) times its
+  length, or by the rise of the road solver's chord there, the larger.
+- The cap at a vertex is the least underside of the ways on top there, less `shell_m` and `height`. The floor is the
+  highest profile that is at most the road solver's height and the cap, and that keeps the rise of each chord. Then
+  the floor rises where the rise from an opening needs it: the two ends keep their heights.
+- Where the floor lies over the cap, the inside height there is `height` less that difference, at least
+  `least_height_m` of the group. A chord takes the lesser height of its two vertices, and an opening takes the height
+  of the chord at its vertex.
+- The bake counts a clash, once per way, where a way lies over the floor (past an opening, the chain) by more than
+  the at-grade band and the shell of the crown lies over its underside: the metres of the crown's top over the
+  underside, not the depth of a cut beside the tube. This holds the ways on top that the floor could not clear, and a way that was
+  at grade with the road solver's height where the floor went down under it. A way of the kind `tunnel` (another
+  tube) does not lower the floor; its clashes are counted apart, as tube clashes.
 
 ### Sea
 

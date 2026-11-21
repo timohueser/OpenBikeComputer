@@ -13,8 +13,8 @@ export const MANIFEST = address('manifest.json');
 /** The manifest is read again at most once in this time: after a cover file answers 404, as the set can have changed,
  * and after a read that failed for another reason, such as no signal. */
 const REREAD_MS = 60_000;
-/** A small image is a quarter of the full image in width and height, and the points are in the frame of the full image. */
-const SMALL = 4;
+/** A row image is half the full image in width and height, and the points are in the frame of the full image. */
+const ROW = 2;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -90,9 +90,9 @@ function readPoints(value: unknown, vertices: number, scale: number): CoverPoint
     return { x: place(x as unknown[]), y: place(y as unknown[]), eye: Uint8Array.from(eye as number[]) };
 }
 
-/** The cover of a record in the live set, with the small image for a list row, or undefined, also after `signal` aborts.
+/** The cover of a record in the live set, with the row image for a list row, or undefined, also after `signal` aborts.
  * The caller owns the bitmap. */
-export async function coverOf(record: CatalogRecord, small = false, signal?: AbortSignal): Promise<RouteCover | undefined> {
+export async function coverOf(record: CatalogRecord, row = false, signal?: AbortSignal): Promise<RouteCover | undefined> {
     const line = record.line_udeg, cell = record.cells[0];
     try {
         const set = await routePictures();
@@ -100,8 +100,8 @@ export async function coverOf(record: CatalogRecord, small = false, signal?: Abo
         const [held, key] = await Promise.all([coverKey(cell, record.id), keyOf(set.look, line)]);
         if (held !== key || signal?.aborted) return undefined;
         const [image, points] = await Promise.all([
-            file(`covers/${record.id}/${key}-${set.light}${small ? '-small' : ''}.webp`, signal).then(response => response.blob()),
-            file(`covers/${record.id}/${key}.json`, signal).then(response => response.json()).then(value => readPoints(value, line.length / 2, small ? 1 / SMALL : 1)),
+            file(`covers/${record.id}/${key}-${set.light}${row ? '-row' : ''}.webp`, signal).then(response => response.blob()),
+            file(`covers/${record.id}/${key}.json`, signal).then(response => response.json()).then(value => readPoints(value, line.length / 2, row ? 1 / ROW : 1)),
         ]);
         if (!points || signal?.aborted) return undefined;
         const bitmap = await createImageBitmap(image);
@@ -115,15 +115,15 @@ export async function coverOf(record: CatalogRecord, small = false, signal?: Abo
 
 type Hold = { cover: Promise<RouteCover | undefined>; users: number; stop: AbortController };
 /** The covers that pictures hold now, by size and record: two pictures of one route and one size share one load and one bitmap. */
-const holds = { small: new Map<CatalogRecord, Hold>(), full: new Map<CatalogRecord, Hold>() };
+const holds = { row: new Map<CatalogRecord, Hold>(), full: new Map<CatalogRecord, Hold>() };
 
-/** Holds the cover of a record, small for a list row, until `release`. The last release stops the load and closes the bitmap. */
-export function holdCover(record: CatalogRecord, small = false): { cover: Promise<RouteCover | undefined>; release: () => void } {
-    const held = holds[small ? 'small' : 'full'];
+/** Holds the cover of a record, the row image for a list row, until `release`. The last release stops the load and closes the bitmap. */
+export function holdCover(record: CatalogRecord, row = false): { cover: Promise<RouteCover | undefined>; release: () => void } {
+    const held = holds[row ? 'row' : 'full'];
     let entry = held.get(record);
     if (!entry) {
         const stop = new AbortController();
-        held.set(record, entry = { cover: coverOf(record, small, stop.signal), users: 0, stop });
+        held.set(record, entry = { cover: coverOf(record, row, stop.signal), users: 0, stop });
     }
     entry.users++;
     const mine = entry;

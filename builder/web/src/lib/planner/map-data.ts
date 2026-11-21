@@ -1,6 +1,6 @@
 import { plannerConfig, type Bounds } from "./config";
 import { activeRelease, pageRelease, releaseFetch } from "./release";
-import type { CatalogRecord, TrailEntry } from "./signed-routes";
+import type { CatalogRecord, FactsFile, TrailEntry } from "./signed-routes";
 
 const preview: string | undefined = import.meta.env.VITE_PLANNER_CONFIG;
 
@@ -21,9 +21,10 @@ export function coversCell(bounds: Bounds, id: string): boolean {
         && Math.min(bounds[3], latitude(y)) - Math.max(bounds[1], latitude(y + 1)) > margin;
 }
 
-/** The list `key` of a route catalog file. */
-async function catalogFile<T>(url: string, key: "routes" | "trails"): Promise<T[]> {
+/** The list `key` of a route catalog file; with `absent`, a missing file (404) gives it. */
+async function catalogFile<T>(url: string, key: "routes" | "trails", absent?: T[]): Promise<T[]> {
     const response = await releaseFetch(url);
+    if (response.status === 404 && absent) return absent;
     if (!response.ok) throw new Error(`Route catalog request failed with status ${response.status}`);
     const document = await response.json();
     if (document?.format !== 1 || !Array.isArray(document[key])) throw new Error("Unsupported route catalog");
@@ -63,10 +64,27 @@ export async function loadTrailCell(id: string): Promise<TrailEntry[] | null> {
     return catalogFile<TrailEntry>(url.replace("{cell}", id), "trails");
 }
 
-/** The whole record of the trail `id`: its trail record file, or the record of the region file of a regional release. */
+const isObject = (value: unknown) => !!value && typeof value === "object" && !Array.isArray(value);
+
+/**
+ * The facts file of the zoom 9 cell `9-X-Y`. Each covered cell has one, so a missing file is an error. A cell outside the
+ * release bounds, or a release with no facts files, gives null and is not fetched.
+ */
+export async function loadFactsCell(id: string): Promise<FactsFile | null> {
+    const url = config.facts;
+    if (!url || !coversCell(config.bounds, id)) return null;
+    const response = await releaseFetch(url.replace("{cell}", id));
+    if (!response.ok) throw new Error(`Route facts request failed with status ${response.status}`);
+    const document = await response.json();
+    if (document?.format !== 1 || !isObject(document.places) || !isObject(document.routes)) throw new Error("Unsupported route facts");
+    return document;
+}
+
+/** The whole record of the trail `id`: its trail record file, or the record of the region file of a regional release. Null
+ * when the release has no such trail. */
 export async function loadTrailRecord(id: number): Promise<CatalogRecord | null> {
     const { trail, routes } = config;
-    const records = trail ? await routeFile(trail.replace("{id}", String(id)))
+    const records = trail ? await catalogFile<CatalogRecord>(trail.replace("{id}", String(id)), "routes", [])
         : routes && !routes.includes("{cell}") ? await regionFile(routes) : null;
     return records?.find((record) => record.id === id) ?? null;
 }

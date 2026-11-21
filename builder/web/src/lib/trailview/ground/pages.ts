@@ -7,14 +7,14 @@ import { PAGE } from '../stream/heights';
 import { COARSEST, distances, EYE_M, key, MAP, NEAR_M, size, type Node } from '../terrain/lod';
 import { dayOfYear, mosaicsAt } from './rules';
 import { stopped } from '../stream/terrain';
-import { loads } from '../prototype-levers';
+import { BUDGETS } from '../budget';
 
 /**
- * Pages taken in per frame at most, ground tiles in flight, pages whose openness follows new heights
+ * Pages taken in per frame at most, pages whose openness follows new heights
  * per frame, and pages whose horizons alone follow them: old horizons draw until then, so a small
  * budget holds down the cost of a frame.
  */
-const ARRIVALS = 8, LOADS = loads(4), REFRESHES = 8, MARCHES = 2;
+const ARRIVALS = 8, REFRESHES = 8, MARCHES = 2;
 /** HORIZON_M of ground.wgsl: how far a horizon's march reaches. */
 const HORIZON_M = 50_000;
 /** Levels that every view keeps: the ground under every other page while its own loads. */
@@ -118,6 +118,8 @@ export class GroundPages {
     constructor(
         private readonly source: GroundTiles | undefined, readonly capacity: number, readonly finest: number,
         private readonly world: number, private readonly changed: () => void,
+        /** Ground tiles in flight at most. */
+        private readonly maxLoads = BUDGETS.desktop.loads.ground,
     ) {
         this.free = range(capacity);
     }
@@ -315,7 +317,7 @@ export class GroundPages {
     /** Requests the four pages of the ground tile of a node, on the current date. */
     private load(node: Node): void {
         const z = node.level - 1, x = node.x >> 1, y = node.y >> 1, name = tileOf(node, this.date);
-        if (!this.source || this.loading.has(name) || this.loads >= LOADS) return;
+        if (!this.source || this.loading.has(name) || this.loads >= this.maxLoads) return;
         const date = this.date, { quarters, weight, band } = this.today;
         const quarter = (q: number) => ({ level: z + 1, x: 2 * x + (q & 1), y: 2 * y + (q >> 1) });
         this.loads++;

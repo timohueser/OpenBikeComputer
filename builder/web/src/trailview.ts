@@ -8,7 +8,7 @@ import { WORKERS } from './lib/trailview/terrain/model';
 import { scaleOf } from './lib/trailview/resolve/targets';
 import { canRenderStills, credits, still, type StillJob } from './lib/trailview/still';
 import { coverView } from './lib/trailview/still-view';
-import { defaultView, finestOf, formatView, groundPlanOf, parseView, poolOf } from './lib/trailview/view';
+import { defaultView, finestOf, formatView, groundPlanOf, parseView, tierOf } from './lib/trailview/view';
 import { lever } from './lib/trailview/prototype-levers';
 
 /** The address follows the view at most this often. */
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     if (!opened) return;
     const { gpu, release } = opened;
     const view = parseView(location.search, defaultView(release.bounds));
-    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search), { plan, finest: finestOf(location.search), pool: poolOf(location.search) });
+    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search), { plan, finest: finestOf(location.search), tier: tierOf(location.search) });
 
     engine.pacer.rate = lever('fps', engine.pacer.rate);
     const address = () => `${location.origin}${location.pathname}${formatView(engine.view, location.search)}`;

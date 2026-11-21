@@ -30,7 +30,7 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmdd}.osm.pbf" }
+fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}/{area:last}-{yymmdd}.osm.pbf" }
 version = "date"
 refresh = 7
 keep = "store"
@@ -46,7 +46,7 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmdd}.osm.pbf" }
+fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}/{area:last}-{yymmdd}.osm.pbf" }
 version = "date"
 # The extracts of `geofabrik-extracts`, kept until an operator fetches a newer one, so that the
 # weekly extract does not bake the terrain again.
@@ -80,7 +80,7 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}.poly" }
+fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}/{area:last}.poly" }
 version = "date"
 refresh = 90
 keep = "store"
@@ -920,6 +920,220 @@ fetch = { kind = "http", url = "https://data.geo.admin.ch/ch.astra.mountainbikel
 extent = [5.9, 45.8, 10.5, 47.9]
 areas = ["europe/switzerland", "europe/liechtenstein"]
 version = "date"
+keep = "archive"
+redistribute = true
+
+# The municipal walks of Upper Austria: the DORIS metadata record 8041391A-3CF8-4C94-9B11-7181D133F451 gives the
+# licence.
+[[source]]
+id = "ooe-gemeindewanderwege"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Municipal walks of Upper Austria for the route catalog"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "Land Oberösterreich – data.ooe.gv.at"
+obligations = "Credit the source; name the licence"
+fetch = { kind = "http", url = "https://e-gov.ooe.gv.at/at.gv.ooe.dorisdaten/DORIS_SG/GEMEINDEWANDERWEGE.zip" }
+extent = [12.7, 47.4, 15.1, 48.8]
+areas = ["europe/austria"]
+version = "date"
+refresh = "manual"
+keep = "archive"
+redistribute = true
+
+# The trail layers of the Luxembourg tourism ministry: the dataset page of each layer on data.public.lu gives the
+# licence. Its link redirects to the service of data.geoportail.lu, which makes the GeoJSON of the layer.
+[[source]]
+id = "lu-sentiers-communaux"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Communal walks of Luxembourg for the route catalog"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+attribution = "Ministère de l'Économie – Direction générale du tourisme, Luxembourg"
+obligations = "none"
+fetch = { kind = "http", url = "https://data.public.lu/fr/datasets/r/a0e3dbe3-47c4-4feb-b4b2-c49982a59139" }
+hosts = ["data.geoportail.lu"]
+extent = [5.6, 49.3, 6.7, 50.3]
+areas = ["europe/luxembourg"]
+version = "date"
+refresh = "manual"
+keep = "archive"
+redistribute = true
+
+[[source]]
+id = "lu-sentiers-syndicats"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Walks of the local tourist offices of Luxembourg for the route catalog"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+attribution = "Ministère de l'Économie – Direction générale du tourisme, Luxembourg"
+obligations = "none"
+fetch = { kind = "http", url = "https://data.public.lu/fr/datasets/r/d22a27c7-ded3-4b60-add7-9d0a0cafb935" }
+hosts = ["data.geoportail.lu"]
+extent = [5.6, 49.3, 6.7, 50.3]
+areas = ["europe/luxembourg"]
+version = "date"
+refresh = "manual"
+keep = "archive"
+redistribute = true
+
+[[source]]
+id = "lu-auto-pedestres"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Auto-pédestre walks of Luxembourg for the route catalog"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+attribution = "Ministère de l'Économie – Direction générale du tourisme, Luxembourg"
+obligations = "none"
+fetch = { kind = "http", url = "https://data.public.lu/fr/datasets/r/9e2af977-407a-4800-981c-7214750f8f27" }
+hosts = ["data.geoportail.lu"]
+extent = [5.6, 49.3, 6.7, 50.3]
+areas = ["europe/luxembourg"]
+version = "date"
+refresh = "manual"
+keep = "archive"
+redistribute = true
+
+[[source]]
+id = "lu-sentiers-cfl"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Walks from the railway stations (CFL) of Luxembourg for the route catalog"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+attribution = "Ministère de l'Économie – Direction générale du tourisme, Luxembourg"
+obligations = "none"
+# The GeoJSON link of its dataset page leads to a retired address of the geoportal (HTTP 404): the row
+# asks the geoportal for the layer as the links of the other layers do.
+fetch = { kind = "http", url = "https://data.geoportail.lu/mymaps?category=12&format=geojson" }
+extent = [5.6, 49.3, 6.7, 50.3]
+areas = ["europe/luxembourg"]
+version = "date"
+refresh = "manual"
+keep = "archive"
+redistribute = true
+
+[[source]]
+id = "lu-ivv-permanents"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Permanent IVV walks of Luxembourg for the route catalog"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+attribution = "Ministère de l'Économie – Direction générale du tourisme, Luxembourg"
+obligations = "none"
+fetch = { kind = "http", url = "https://data.public.lu/fr/datasets/r/978e0a6d-a01c-4bb7-80d6-583606296ef1" }
+hosts = ["data.geoportail.lu"]
+extent = [5.6, 49.3, 6.7, 50.3]
+areas = ["europe/luxembourg"]
+version = "date"
+refresh = "manual"
+keep = "archive"
+redistribute = true
+
+[[source]]
+id = "lu-naturwanderpark"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Walks of the NaturWanderPark delux for the route catalog"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+attribution = "Ministère de l'Économie – Direction générale du tourisme, Luxembourg"
+obligations = "none"
+fetch = { kind = "http", url = "https://data.public.lu/fr/datasets/r/f87b4e8f-7207-4565-9b79-f9f7d2a2d8dd" }
+hosts = ["data.geoportail.lu"]
+extent = [5.6, 49.3, 6.7, 50.3]
+areas = ["europe/luxembourg"]
+version = "date"
+refresh = "manual"
+keep = "archive"
+redistribute = true
+
+[[source]]
+id = "lu-traumschleifen"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Traumschleifen walks of Luxembourg for the route catalog"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+attribution = "Ministère de l'Économie – Direction générale du tourisme, Luxembourg"
+obligations = "none"
+fetch = { kind = "http", url = "https://data.public.lu/fr/datasets/r/5372b99e-2b91-4418-8ab5-0368f25b295b" }
+hosts = ["data.geoportail.lu"]
+extent = [5.6, 49.3, 6.7, 50.3]
+areas = ["europe/luxembourg"]
+version = "date"
+refresh = "manual"
+keep = "archive"
+redistribute = true
+
+[[source]]
+id = "lu-vtt"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Mountain bike circuits of Luxembourg for the route catalog"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+attribution = "Ministère de l'Économie – Direction générale du tourisme, Luxembourg"
+obligations = "none"
+fetch = { kind = "http", url = "https://data.public.lu/fr/datasets/r/699cef85-6fcd-498e-a499-7d97e294be8a" }
+hosts = ["data.geoportail.lu"]
+extent = [5.6, 49.3, 6.7, 50.3]
+areas = ["europe/luxembourg"]
+version = "date"
+refresh = "manual"
+keep = "archive"
+redistribute = true
+
+[[source]]
+id = "lu-velo-course"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Road bike tours of Luxembourg for the route catalog"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+attribution = "Ministère de l'Économie – Direction générale du tourisme, Luxembourg"
+obligations = "none"
+fetch = { kind = "http", url = "https://data.public.lu/fr/datasets/r/e4cf1f84-61a2-4ed6-bb2e-b1fae3cdea40" }
+hosts = ["data.geoportail.lu"]
+extent = [5.6, 49.3, 6.7, 50.3]
+areas = ["europe/luxembourg"]
+version = "date"
+refresh = "manual"
+keep = "archive"
+redistribute = true
+
+# The certified walks of Saarland: the geoportal metadata of layer 38170 gives the licence and the credit
+# "© GDI-SL (Jahr)". The URL asks the WFS for the whole layer in one answer.
+[[source]]
+id = "saarland-premiumwanderwege"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Certified walks (Premiumwanderwege) of Saarland for the route catalog"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "© GDI-SL ({year})"
+obligations = "Credit the source; name the licence"
+fetch = { kind = "http", url = "https://geoportal.saarland.de/arcgis/services/Internet/Verkehr_WFS/MapServer/WFSServer?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=Verkehr_WFS:Premiumwanderwege&OUTPUTFORMAT=GEOJSON" }
+extent = [6.3, 49.0, 7.5, 49.7]
+areas = ["europe/germany/saarland"]
+version = "date"
+refresh = "manual"
 keep = "archive"
 redistribute = true
 

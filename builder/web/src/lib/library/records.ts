@@ -33,14 +33,20 @@ export interface RideSummary extends Summary {
 
 export interface RouteRecord {
     id: string;
-    revision: number;
     name: string;
     updatedAt: number;
-    /** The id of the saved version that `trip` belongs to. */
-    open?: string;
     /** Null only while the plan never had a calculated line. */
     summary: RouteSummary | null;
     /** The planner checks a plan when it opens it. */
+    trip: unknown;
+}
+
+/** The open state of a route that the rider did not save, by the id of the route. A route that is not stored has only
+ * its draft. */
+export interface DraftRecord {
+    id: string;
+    updatedAt: number;
+    /** The planner checks a trip when it opens it. */
     trip: unknown;
 }
 
@@ -58,6 +64,8 @@ export interface RideRecord {
     /** `storeId:objectId` of the ride on the device: a card gets a new `StoreId` when it is initialized, and it never
      * gives an `ObjectId` again. */
     device?: string;
+    /** The id of the photo that the rider chose for the cards of the ride. With no such photo, the cards show the cover. */
+    photo?: string;
 }
 
 /** `key` is the trip key of the device in decimal; `day` counts from 1. */
@@ -134,12 +142,25 @@ export interface DeletedRide {
     device?: string;
 }
 
-/** A route on a device: `storeId:objectId` of its object, as the `device` of a ride, and the `sentKey` of the route when it
- * was sent. */
+/** The objects of a route on the card `card` (a store id), as decimal object ids. `days` holds the route of each riding day
+ * as last put, an empty string before its first put; a route that is gone from the card keeps its id, and `gone` lists the
+ * ids that the last listing of the card did not hold. `crcs` holds the CRC-32 of the file of each day as last put or found
+ * on the card. `trips` and `tripKeys` hold the trip object and its trip key in decimal of each part of a plan of several
+ * days, an empty string for none. `key` is the `sentKey` of the route when its last send finished, else empty. */
 export interface SentRoute {
-    device: string;
     key: string;
+    card: string;
+    days: string[];
+    crcs: number[];
+    gone: string[];
+    trips: string[];
+    tripKeys: string[];
 }
+
+/** The route is on the device: its entry names the card `card`, and its last send finished. The day routes that the rider
+ * deleted on the device since then do not change it. */
+export const allOnCard = (copy: SentRoute | undefined, card: string | undefined): boolean =>
+    !!copy && copy.card === card && copy.key !== '';
 
 /** A box of a map area, in whole microdegrees. */
 export interface MapBox { minLat: number; minLon: number; maxLat: number; maxLon: number }
@@ -201,16 +222,18 @@ export const isRideSummary = (value: unknown): value is RideSummary =>
     isSummary(value) && isNumber((value as RideSummary).start) && isNumber((value as RideSummary).movingS);
 
 export function isRouteRecord(value: unknown): value is RouteRecord {
-    return isRecord(value) && isString(value.id) && !!value.id && Number.isInteger(value.revision) && (value.revision as number) >= 0
-        && isString(value.name) && isNumber(value.updatedAt) && optional(value.open, isString)
+    return isRecord(value) && isString(value.id) && !!value.id && isString(value.name) && isNumber(value.updatedAt)
         && (value.summary === null || isRouteSummary(value.summary)) && value.trip !== undefined;
 }
+
+export const isDraftRecord = (value: unknown): value is DraftRecord =>
+    isRecord(value) && isString(value.id) && !!value.id && isNumber(value.updatedAt) && value.trip !== undefined;
 
 export function isRideRecord(value: unknown): value is RideRecord {
     return isRecord(value) && isString(value.key) && rideKey.test(value.key) && isString(value.name)
         && ['device', 'file'].includes(value.source as string) && ['obcride', 'fit', 'gpx'].includes(value.format as string)
         && isRideSummary(value.summary) && (value.maxHr === null || isNumber(value.maxHr)) && (value.ftp === null || isNumber(value.ftp))
-        && optional(value.trip, isTrip) && optional(value.device, isString);
+        && optional(value.trip, isTrip) && optional(value.device, isString) && optional(value.photo, isString);
 }
 
 export const isPhotoEntry = (value: unknown): value is PhotoEntry => isRecord(value) && isString(value.id) && /^[\w-]+$/.test(value.id)
@@ -221,7 +244,9 @@ const isTrip = (value: unknown): value is RideTrip => isRecord(value) && isStrin
     && Number.isInteger(value.day) && (value.day as number) >= 1 && isString(value.name);
 
 const isSent = (value: unknown): value is Record<string, SentRoute> => isRecord(value)
-    && Object.values(value).every(route => isRecord(route) && isString(route.device) && isString(route.key));
+    && Object.values(value).every(route => isRecord(route) && isString(route.key) && isString(route.card) && isStrings(route.days)
+        && Array.isArray(route.crcs) && route.crcs.length === route.days.length && route.crcs.every(Number.isInteger)
+        && isStrings(route.gone) && isStrings(route.trips) && isStrings(route.tripKeys));
 
 const isDeleted = (value: unknown): value is DeletedRide =>
     isRecord(value) && isString(value.key) && rideKey.test(value.key) && optional(value.device, isString);

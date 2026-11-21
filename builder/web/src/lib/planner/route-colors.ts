@@ -6,8 +6,8 @@ const LAVENDER = ROUTE_COLORS[6];
 /** The light ground under signed lines and their plain pictures in the dark theme: the dark map is too dark for the set. */
 export const SIGNED_GROUND = '#f4f2eb';
 
-/** The colour of a signed route. A hash of its OSM relation ID, not its place in a list, keeps the colour of a route
- * in every view and after a rebake of the catalog. */
+/** The colour of a signed route. A hash of its record `id`, not its place in a list, keeps the colour of a route in
+ * every view and after a rebake of the catalog. */
 export function routeColor(id: string | number): string {
     let hash = 0x811c9dc5;
     for (const char of String(id)) hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193);

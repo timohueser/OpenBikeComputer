@@ -19,7 +19,8 @@ const boxDepth = (y: number) => (RULES.PORTAL_CELLS + Math.SQRT2) * RULES.MESH_T
 /** A road's bore: the kerb's height, and its lamps' length and spacing. */
 const KERB_M = 0.15, LAMP_M = 1.2, LAMPS_M = 10;
 /** The arch springs at this share of the bore's height; the void stands this far in. */
-const SPRING = 0.6, VOID_M = 0.7;
+const SPRING = 0.6;
+export const VOID_M = 0.7;
 /**
  * The facade's thickness, the box's walls and roof, and how deep the facade stands in the ground. The
  * facade's top is flush with the roof, under COVER_M of the road solver: a road over a tunnel hides both.
@@ -128,11 +129,11 @@ function along(line: Line, from: number, to: number, s: number): Station {
     }
 }
 
-/** The tunnels of a node. A bore follows the curve of the road that runs into it. */
-export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
+/** The tunnels of a node, of the lines that `keep` takes. A bore follows the curve of the road that runs into it. */
+export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns, keep: (line: Line) => boolean = () => true): void {
     const twin = twins(lines);
     for (const line of lines) {
-        if (line.kind !== TUNNEL || !line.abut) continue;
+        if (line.kind !== TUNNEL || !line.abut || !keep(line)) continue;
         const n = line.z.length, road = line.deck! > 3, size = road ? ROAD_PORTAL : PATH_PORTAL;
         const stops = curveStops(line);
         for (let k = 0; k + 1 < stops.length; k++) if (owns(stops[k].x, stops[k].y)) bore(b, stops[k], stops[k + 1], line, boreHalf(line), road, stops[k + 1].along - stops[k].along);

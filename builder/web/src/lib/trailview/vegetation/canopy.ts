@@ -3,12 +3,11 @@ import { openSource, requestSignal, type Source } from '../../planner/layers/arc
 import { imagePixels } from '../../planner/layers/terrain';
 import type { Gpu } from '../gpu/device';
 import { stopped } from '../stream/terrain';
-import { loads } from '../prototype-levers';
 
 /** The canopy layer's zoom and cells a side (specs/trailview-tiles.md#canopy). */
 export const CANOPY_ZOOM = 12, CELLS = 256;
-/** Tiles on the GPU, tiles along a side of the window about the eye that the map indexes, and tile loads in flight: the 3 × 3 tiles about the eye at once. */
-const SLOTS = 32, WINDOW = 8, LOADS = loads(9);
+/** Tiles on the GPU, and tiles along a side of the window about the eye that the map indexes. */
+const SLOTS = 32, WINDOW = 8;
 /** Mip levels of a tile, 256 cells a side to 1. */
 const MIPS = 9;
 /** A view wants the tiles within this many tiles of the eye's at most: 5 × 5 fit the slots and the window. */
@@ -39,8 +38,8 @@ export class Canopy {
     private frame = 0;
     private origin: [number, number] = [0, 0];
 
-    /** An abort of `stop` ends the tile requests. */
-    constructor(config: PlannerConfig, private readonly wake: () => void, private readonly stop: AbortSignal) {
+    /** An abort of `stop` ends the tile requests; `maxLoads` are the tile loads in flight at most. */
+    constructor(config: PlannerConfig, private readonly wake: () => void, private readonly stop: AbortSignal, private readonly maxLoads: number) {
         const url = (config.layers as Partial<Record<string, string>>)['trailview-canopy'];
         if (url) openSource(url).then(source => {
             this.source = source;
@@ -106,7 +105,7 @@ export class Canopy {
 
     private load(x: number, y: number): void {
         const key = `${x}/${y}`, source = this.source;
-        if (!source || this.loading.has(key) || this.absent.has(key) || this.loading.size >= LOADS || this.arrived.some(a => a.x === x && a.y === y)) return;
+        if (!source || this.loading.has(key) || this.absent.has(key) || this.loading.size >= this.maxLoads || this.arrived.some(a => a.x === x && a.y === y)) return;
         this.loading.add(key);
         source.get(CANOPY_ZOOM, x, y, AbortSignal.any([requestSignal(), this.stop])).then(async body => {
             this.requests++;

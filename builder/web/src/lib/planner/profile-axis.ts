@@ -50,6 +50,13 @@ export function axisPieces({ from, to, rests }: ProfileAxis): [number, number][]
     return ends.slice(1).map((end, i) => [ends[i], end]);
 }
 
+/** The rest days that a week of calendar days `start` to `end` shows as columns: each rest day inside it, also one that
+ * starts or ends it, but none after the last riding day `last`. A rest is found by its calendar day, because a rest
+ * before the week and one that starts it stand at the same progress. */
+export function weekRests<T extends { day: number; after: number }>(rests: readonly T[], { start, end }: { start: number; end: number }, last: number): T[] {
+    return rests.filter(rest => rest.day >= start && rest.day <= end && rest.after < last);
+}
+
 /** The progress `x` px into a drawer track `width` px wide; a point in a rest column is at its rest. The columns of a
  * `moving` rest follow the pointer, as when the rider drags its day end, so they take no width before it. */
 export function axisProgress(axis: ProfileAxis, x: number, width: number, moving?: number): number {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { groupStops, stopWindow, daysAround, evenStop, proposeNights, proposalTitle } from './stops';
-import type { Stay, Trip } from './editor';
+import { groupStops, stopWindow, daysAround, evenStop, nightWindows, proposeNights, proposalTitle, stopCounts, stopKm, suitable } from './stops';
+import { allStay, planView, type Stay, type Trip } from './editor';
+import { weekOf } from './week';
 import type { SearchPlace } from './search/types';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 
@@ -30,6 +31,21 @@ describe('stops', () => {
         expect(stops[2].food.map(p => p.place.label)).toEqual(['Restaurant am Riedsee']);
     });
 
+    it('counts and places a stop by the places of the kinds of a night only', () => {
+        const [stop] = groupStops([
+            place('Rigi', 'hotel', 'Arth', 42.4), place('Alp', 'hut', 'Arth', 43), place('Seecamping', 'campsite', 'Arth', 44.2),
+            place('Adler', 'guest_house', 'Arth', 45.6), place('Waldhütte', 'shelter', 'Arth', 46),
+        ], []);
+        expect(suitable(stop, ['camp']).map(p => p.place.label)).toEqual(['Seecamping']);
+        expect(suitable(stop, ['hostel'])).toEqual([]);
+        expect(stopCounts(stop, allStay)).toBe('1 campsite · 1 hut · 2 hotels · 1 shelter');
+        expect(stopCounts(stop, ['camp', 'shelter'])).toBe('1 campsite · 1 shelter');
+        expect(stopCounts(stop, allStay, true)).toBe('5 places to sleep');
+        expect(stopCounts(stop, ['camp', 'shelter'], true)).toBe('1 campsite · 1 shelter');
+        expect(stopKm(stop, allStay)).toBe('km 42–46');
+        expect(stopKm(stop, ['camp'])).toBe('km 44');
+    });
+
     it('offers stops half a day either side of the even day end, with both days around each', () => {
         const trip = { ...testTrip(), days: 2 }, line = testLine(trip), total = line.coordinates.length && line.stops.at(-1)!.distance;
         const [from, to] = stopWindow(trip, line, 1)!;
@@ -38,6 +54,17 @@ describe('stops', () => {
         expect([before.distance / total, after.distance / total]).toEqual([expect.closeTo(.4, 6), expect.closeTo(.6, 6)]);
         const stops = groupStops([place('Early', 'hotel', 'A', total * .3), place('Middle', 'campsite', 'B', total * .52)], []);
         expect(evenStop(stops, trip, line, 1)?.name).toBe('B');
+    });
+
+    it('searches and suggests only the nights of the week', () => {
+        const trip = { ...testTrip(), days: 21 }, line = testLine(trip);
+        // The nights that the page asks for with the week on days 8 to 14: those days and the night before them.
+        const nights = weekOf(planView(trip, line).itinerary, 8)!.nights, windows = nightWindows(trip, line, null, nights);
+        expect(Object.keys(windows).map(Number)).toEqual([7, 8, 9, 10, 11, 12, 13, 14]);
+        expect(Object.keys(nightWindows(trip, line, 3, nights)).map(Number)).toEqual([3, 7, 8, 9, 10, 11, 12, 13, 14]);
+        // Each searched night finds a town near the middle of its stretch; the other nights keep their even day end.
+        const town = ([from, to]: [number, number]) => groupStops([place('Inn', 'hotel', 'Town', (from + to) / 2 + .3)], []);
+        expect([...proposeNights(trip, line, night => windows[night] ? town(windows[night]) : []).keys()]).toEqual(nights);
     });
 
     it('proposes each open night at the nearest stop with a kind of place of that night, evening out the days left after it', () => {

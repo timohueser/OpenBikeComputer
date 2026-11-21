@@ -30,7 +30,7 @@ A study lets an LLM (the participant) try the core tasks of the web route planne
 
 The study writes `report.md`, one `steps.jsonl` and one JPEG for each screen to `.artifacts/ux-study/<UTC time>/`. The map, the routing and the search come from the public hosts of the release, and the model calls go to the Anthropic API with the key `OBC_UX_API_KEY`.
 
-A task's `success` reads the route records of the library (the IndexedDB database `obc-library`, with the record shape of [`records.ts`](../../builder/web/src/lib/library/records.ts)). The task `lunch-stop` also reads the points of the plan in the record ([`editor.ts`](../../builder/web/src/lib/planner/editor.ts)), and uses the food kinds of the place search ([`place-kinds.json`](../../planner/search/place-kinds.json)). No test reads the first two files, so a change to the record shape shows only in a study: a walkthrough then never ends as `done`.
+A task's `success` reads the route records of the library (the IndexedDB database `obc-library`, with the record shape of [`records.ts`](../../builder/web/src/lib/library/records.ts)). The planner stores a route only when the rider saves it, so each goal ends with "Keep it in your routes.": the task still measures the planning, and not only the search for Save. The task `lunch-stop` also reads the points of the plan in the record ([`editor.ts`](../../builder/web/src/lib/planner/editor.ts)), and uses the food kinds of the place search ([`place-kinds.json`](../../planner/search/place-kinds.json)). No test reads the first two files, so a change to the record shape shows only in a study: a walkthrough then never ends as `done`.
 
 ## Rules that must hold
 

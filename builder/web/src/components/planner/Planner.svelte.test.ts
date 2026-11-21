@@ -2,25 +2,27 @@
 
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { addRestDay, allStay, planView, type Place, type Trip } from '../../lib/planner/editor';
+import { addRestDay, allStay, planView, type Place, type Stay, type Trip } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 import { proposal, type Stop } from '../../lib/planner/stops';
 import Itinerary from './Itinerary.svelte';
 import Profile from './PlannerProfile.svelte';
 import MapCallout from './MapCallout.svelte';
-import VersionsMenu from './VersionsMenu.svelte';
 import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
 import RouteStats from './RouteStats.svelte';
 import TripBar from './TripBar.svelte';
+import RoutePreferences from './RoutePreferences.svelte';
+import { coordinateName } from '../../lib/planner/point-names';
+import SaveWindow, { type SaveMode } from './SaveWindow.svelte';
 import type { RoutingLine } from '../../lib/planner/routing';
-import { newVersion } from '../../lib/planner/versions';
 import { settings } from '../../lib/settings/settings.svelte';
 
 const places: Place[] = [{id:'test-camp',kind:'place',label:'Test camp',category:'camp',description:'',coordinate:[7.5,47.5]}];
 
 const mounted: ReturnType<typeof mount>[] = [];
+const saveProps = { stored: false, changed: false, canSave: false, onSave: vi.fn(), onRename: vi.fn(), more: [] };
 
 beforeEach(() => {
     const values = new Map<string, string>();
@@ -124,19 +126,19 @@ describe('route stop handles', () => {
 });
 
 function nightChoices(choices: Partial<NightChoices> = {}): NightChoices {
-    return { choosing: null, stopId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
+    return { choosing: null, stopId: null, shownId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
         campsites: 0, keepCampsites: vi.fn(),
         date: () => undefined, elevationAt: () => null, choose: vi.fn(), open: vi.fn(), step: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
         selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), setKinds: vi.fn(), release: vi.fn(), ...choices };
 }
 
-const town = (name: string, km: number): Stop => ({ id: name, name, km, from: km, to: km, food: [], shop: [], water: [],
+const town = (name: string, km: number): Stop => ({ id: name, name, km, from: km, to: km, food: [], shop: [],
     sleep: [{ place: { id: `${name}-camp`, kind: 'place', category: 'camp', placeKind: 'campsite', label: `${name} camping`, description: '', coordinate: [7.6, 47.2], locality: name }, km, off: .2 }] });
 
 function itineraryProps(expandedDay: number | null) {
     const trip = addRestDay(testTrip(), 1), line = testLine(trip);
     return {
-        trip, line, expandedDay, itinerary: planView(trip, line).itinerary, days: planView(trip, line).days, theme: 'light' as const,
+        trip, line, expandedDay, nightPage: null as number | null, itinerary: planView(trip, line).itinerary, days: planView(trip, line).days, theme: 'light' as const,
         nights: nightChoices(), conflicts: [], selectedId: null, revealId: null,
         onToggle: vi.fn(), onOverview: vi.fn(), onInspect: vi.fn(), onShowEnd: vi.fn(),
         onShowConflict: vi.fn(), onAddRest: vi.fn(), onTransfer: vi.fn(), onRemoveRest: vi.fn(), onNameRest: vi.fn(),
@@ -157,21 +159,100 @@ describe('planner day views', () => {
         expect(props.onToggle).toHaveBeenCalledWith(2);
     });
 
-    it('names the town at a suggested night and lists its towns with both days when the night is chosen', async () => {
+    it('lists the towns of a night on its own page, by the kinds of place of the night, and goes back one level', async () => {
         const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
-        const stops = [town('Laufen', total * .2), town('Bern', total * .45)];
-        const open = vi.fn();
-        props.nights = nightChoices({ choosing: 1, around: () => proposal(stops[1], allStay), found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open });
-        mounted.push(mount(Itinerary, { target: document.body, props }));
-        await tick();
+        const [laufen, olten, bern] = [town('Laufen', total * .2), town('Olten', total * .3), town('Bern', total * .45)];
+        Object.assign(olten.sleep[0].place, { placeKind: 'hotel', category: 'hotel' });
+        bern.sleep.push({ ...olten.sleep[0], km: bern.km });
+        const stops = [laufen, olten, bern];
+        const nights: NightChoices = $state(nightChoices({ choosing: 1, campsites: 2, kinds: () => ['camp'], around: () => proposal(bern, ['camp']),
+            found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open: id => { nights.stopId = id; },
+            choose: night => { nights.choosing = page = night; } }));
+        let page = $state<number | null>(1);
+        props.nights = nights;
+        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get nightPage() { return page; } } }));
+        await tick(); await tick();
 
-        const towns = [...document.querySelectorAll<HTMLButtonElement>('ul[aria-label="Towns for night 1"] button.town')];
+        expect(document.querySelector('[data-day]')).toBeNull();
+        expect(document.querySelector('.keep')).toBeNull();
+        expect(document.activeElement).toBe(button('All days'));
+        const rows = () => [...document.querySelectorAll<HTMLButtonElement>('ul[aria-label="Towns for night 1"] button.town')];
+        const towns = rows();
         expect(towns.map(b => b.querySelector('strong')?.textContent)).toEqual(['Laufen', 'BernEven days']);
         expect(towns[1].getAttribute('aria-label')).toMatch(/^Bern, 1 campsite\. Day 1 \d+h \d\dm, day 3 \d+h \d\dm\. Even days$/);
-        towns[0].click();
-        expect(open).toHaveBeenCalledWith('Laufen');
-        expect(document.body.textContent).toContain('Start');
-        expect(document.body.textContent).toContain('Finish');
+        expect(document.querySelector('.tools')!.compareDocumentPosition(towns[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(document.querySelectorAll('ul[aria-label="Towns for night 1"] li button')).toHaveLength(towns.length);
+
+        towns[0].click(); await tick();
+        expect(document.querySelector('h2')).toBeNull();
+        button('Night 1').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await tick();
+        expect(nights.stopId).toBeNull();
+        expect(document.activeElement).toBe(rows()[0]);
+
+        button('All days').click();
+        await tick(); await tick();
+        expect(document.querySelectorAll('[data-day]')).toHaveLength(3);
+        expect(document.querySelector('.keep')).not.toBeNull();
+        expect(document.activeElement).toBe(button('Choose night 1'));
+    });
+
+    it('selects where to sleep in a town, and one button ends the day there', async () => {
+        const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
+        const bern = town('Bern', total * .45);
+        const hotel: Place = { id: 'Bern-hotel', kind: 'place', category: 'hotel', placeKind: 'hotel', label: 'Hotel Bären', description: '', coordinate: [7.6, 47.2], locality: 'Bern' };
+        bern.sleep.push({ place: hotel, km: bern.km, off: 1 }, { place: { ...bern.sleep[0].place, id: 'Bern-unnamed', label: 'campsite' }, km: bern.km, off: .5 });
+        let kinds = $state<Stay[]>(['camp', 'hotel']);
+        const endHere = vi.fn(), stay = vi.fn(), selectPlace = vi.fn();
+        props.nights = nightChoices({ choosing: 1, stopId: 'Bern', kinds: () => kinds, found: () => ({ state: 'ready', stops: [bern] }),
+            window: () => [0, total * .6], endHere, stay, selectPlace });
+        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, nightPage: 1 } }));
+        await tick();
+        const confirm = () => document.querySelector<HTMLButtonElement>('.confirm button')!;
+        const radio = (name: string) => [...document.querySelectorAll('label')].find(row => row.textContent?.includes(name))!.querySelector('input')!;
+
+        expect(document.querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('Where you sleep on night 1');
+        expect(radio('Somewhere in Bern').checked).toBe(true);
+        expect(document.body.textContent).not.toContain('Water');
+        expect(confirm().textContent?.trim()).toBe('End day 1 in Bern');
+        confirm().click();
+        expect(endHere).toHaveBeenCalledWith(1, bern);
+
+        radio('Hotel Bären').click(); await tick();
+        expect(selectPlace).toHaveBeenCalledExactlyOnceWith(hotel);
+        expect(confirm().textContent?.trim()).toBe('End day 1 at Hotel Bären');
+        confirm().click();
+        expect(stay).toHaveBeenCalledWith(1, hotel);
+        // A click on the checked place shows it on the map again.
+        radio('Hotel Bären').click(); await tick();
+        expect(selectPlace).toHaveBeenCalledTimes(2);
+        radio('Somewhere in Bern').click(); await tick();
+        expect(selectPlace).toHaveBeenLastCalledWith(null);
+        radio('Unnamed campsite').click(); await tick();
+        expect(confirm().textContent?.trim()).toBe('End day 1 at this campsite');
+
+        radio('Hotel Bären').click(); await tick();
+        kinds = ['camp']; await tick(); await tick();
+        expect(radio('Somewhere in Bern').checked).toBe(true);
+        expect(confirm().textContent?.trim()).toBe('End day 1 in Bern');
+    });
+
+    it('keeps the scroll position of the day list under a night page, but not of an open day', async () => {
+        const pane = document.body.appendChild(Object.assign(document.createElement('div'), { className: 'pane-scroll' }));
+        Object.defineProperty(pane, 'scrollTop', { value: 0, writable: true });
+        let page = $state<number | null>(null), day = $state<number | null>(null);
+        mounted.push(mount(Itinerary, { target: pane, props: { ...itineraryProps(null), get nightPage() { return page; }, get expandedDay() { return day; } } }));
+        const settle = async () => { await tick(); await tick(); };
+        await settle();
+        pane.scrollTop = 400;
+        page = 1; await settle();
+        expect(pane.scrollTop).toBe(0);
+        page = null; await settle();
+        expect(pane.scrollTop).toBe(400);
+        day = 2; await settle();
+        pane.scrollTop = 300;
+        day = null; page = 1; await settle();
+        page = null; await settle();
+        expect(pane.scrollTop).toBe(0);
     });
 
     it('adds a rest day or a train after a night, and sets the kinds of place of one night', async () => {
@@ -180,7 +261,8 @@ describe('planner day views', () => {
         props.trip = { ...props.trip, nightStay: { 2: ['camp'] } };
         props.days = props.days.map(day => day.number === 2 ? { ...day, pinned: kept } : day);
         props.nights = nightChoices({ choosing: 2, kinds: () => ['camp'], window: () => [0, 50], found: () => ({ state: 'ready', stops: [] }), setKinds, release });
-        mounted.push(mount(Itinerary, { target: document.body, props }));
+        let page = $state<number | null>(null);
+        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get nightPage() { return page; } } }));
         await tick();
 
         // Night 1 has a rest day after it already.
@@ -190,8 +272,13 @@ describe('planner day views', () => {
         button('Rest day after night 3').click();
         expect(props.onAddRest).toHaveBeenCalledWith(2);
 
-        expect(button('Campsites').disabled).toBe(true);
-        button('Huts').click();
+        page = 2; await tick();
+        expect(document.querySelector('h2')?.textContent).toBe('Night 3');
+        expect(document.querySelector('h2 + p')?.textContent).toBe('Where day 3 ends and day 4 starts');
+        expect(document.querySelector('[role="status"]')?.textContent).toBe('No campsite between km 0 and 50.');
+        button('Places to sleep on night 3: Campsites').click(); await tick();
+        const huts = [...document.querySelectorAll('label')].find(row => row.textContent === 'Huts')!.querySelector('input')!;
+        huts.click();
         expect(setKinds).toHaveBeenCalledWith(2, ['camp', 'hut']);
         button('Same as the trip').click();
         expect(setKinds).toHaveBeenLastCalledWith(2, null);
@@ -241,11 +328,9 @@ describe('planner day views', () => {
 
         const axis = () => [...document.querySelectorAll('.ticks span')].map(tick => tick.textContent);
         expect(axis()).toEqual(['0 km', '12 km', '24 km', '36 km', '48 km']);
-        expect(document.querySelector('.distance')?.textContent).toBe('48.0 km');
         button('Whole route').click();
         await tick();
         expect(axis()).toEqual(['0 km', '36 km', '72 km', '108 km', '144 km']);
-        expect(document.querySelector('.distance')?.textContent).toBe('144.0 km');
     });
 
     it('writes miles and feet for a rider on miles, and a missing ascent as a dash', async () => {
@@ -276,14 +361,14 @@ describe('trip pace', () => {
         const props = itineraryProps(null);
         let trip = $state.raw<Trip>(props.trip);
         const onChange = vi.fn((change: Partial<Trip>) => { trip = { ...trip, ...change }; });
-        mounted.push(mount(TripBar, { target: document.body, props: { get trip() { return trip; }, line: props.line, name: '', versions: [], ready: true,
-            canUndo: false, canRedo: false, draftSavedAt: null, draftError: '', onChange, onUndo: vi.fn(), onRedo: vi.fn(),
-            onOpen: vi.fn(), onSaveNew: vi.fn(), onVersions: vi.fn(), onCompare: vi.fn(), onNew: vi.fn(), onLibrary: vi.fn() } }));
+        mounted.push(mount(RoutePreferences, { target: document.body, props: { get trip() { return trip; }, onChange } }));
         mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get trip() { return trip; },
             get itinerary() { return planView(trip, props.line).itinerary; }, get days() { return planView(trip, props.line).days; } } }));
         await tick();
         const firstDay = () => document.querySelector('[data-day="1"]')!.textContent;
         const moderate = firstDay();
+        document.querySelector<HTMLButtonElement>('button[aria-expanded="false"][title$="Moderate pace"]')!.click();
+        await tick();
         button('Pace').click();
         await tick();
         [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent?.includes('Fast'))!.click();
@@ -301,19 +386,20 @@ describe('trip pace', () => {
 });
 
 describe('trip timeline', () => {
-    it('puts a rest column after its night and moves the days after it right', async () => {
+    it('puts a rest column after its night', async () => {
         const trip = { ...testTrip(), restAfter: [2] };
         mounted.push(mount(Profile, { target: document.body, props: {
             total: 89, days: planView(trip, testLine(trip)).days, dayLabels: { 1: 1, 2: 2, 3: 4 }, singleRoute: false,
-            rests: [{ after: 2, name: 'Spa day', town: 'Olten' }], activeNight: 0, band: null, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+            rests: [{ day: 3, after: 2, name: 'Spa day', town: 'Olten' }], activeNight: 0, band: null, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
         } }));
         await tick();
         button('Whole route').click(); await tick();
 
-        const labels = [...document.querySelectorAll<HTMLElement>('.labels .label')];
-        expect(labels.map(label => label.querySelector('strong')!.textContent)).toEqual(['Day 1', 'Day 2', 'Day 4']);
-        // profile-axis.test.ts measures where the column sits; here it is the one column, of the night after day 2.
-        expect([...document.querySelectorAll('.rest')].map(rest => rest.textContent)).toEqual(['Spa dayOlten']);
+        // profile-axis.test.ts measures where the column sits; here it is the one column, of the night after day 2. It
+        // stands over the plot only, and the rest night gets no badge.
+        expect([...document.querySelectorAll('.plot .rest')].map(rest => rest.textContent)).toEqual(['Spa dayOlten']);
+        expect(document.querySelectorAll('.rest')).toHaveLength(1);
+        expect([...document.querySelectorAll('.plot .handle')].map(handle => handle.textContent)).toEqual(['1', '2']);
     });
 });
 
@@ -321,7 +407,7 @@ describe('profile part', () => {
     it('selects a part with Shift and an arrow key, shows its numbers with Clear, keeps its stretch while the map window changes, and clears at Escape, at Clear and at another range', async () => {
         const line: RoutingLine = {
             profile: 'touring', coordinates: [[8, 46], [8, 46.5], [8, 47]], elevation: [100, 600, 100], elapsed: [0, 1, 2], edges: {},
-            stops: [], seconds: 2, unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
+            stops: [], seconds: 2, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
         };
         let view = $state({ from: 0, to: .5 });
         let part = $state<[number, number] | null>(null);
@@ -361,7 +447,7 @@ describe('profile part', () => {
     it('counts the part of an open day from its start, keeps it when the day end moves, and clears it at another day', async () => {
         const line: RoutingLine = {
             profile: 'touring', coordinates: [[8, 46], [8, 46.5], [8, 47]], elevation: [100, 600, 100], elapsed: [0, 1, 2], edges: {},
-            stops: [], seconds: 2, unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
+            stops: [], seconds: 2, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
         };
         let part = $state<[number, number] | null>(null);
         let focus = $state({ from: .4, to: .6, label: 'Day 2' });
@@ -390,7 +476,7 @@ describe('profile access', () => {
         const line: RoutingLine = {
             profile: 'road', coordinates: [[8,48], [8.001,48], [8.002,48]],
             elevation: [100, 90, 110], elapsed: [0, 20, 80], edges: { surfaces: ['Paved', 'Paved'], pushing: [false, true] },
-            stops: [], seconds: 80, unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: .075, unroutedKm: 0, unknownElevationKm: 0,
+            stops: [], seconds: 80, unknownSurfaceKm: 0, pushingKm: .075, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
         };
         const onHover = vi.fn();
         mounted.push(mount(Profile, { target: document.body, props: {
@@ -416,7 +502,7 @@ describe('profile access', () => {
         const line: RoutingLine = {
             profile: 'gravel', coordinates: [[8,48], [8.001,48], [8.002,48], [8.003,48]],
             elevation: [100, 90, 110, 100], elapsed: [0, 20, 40, 60], edges: { surfaces: ['Paved', 'Gravel', 'Gravel'], pushing: [false, false, false] },
-            stops: [], seconds: 60, unknownSurfaceKm: 0, unpavedKm: .15, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
+            stops: [], seconds: 60, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
         };
         mounted.push(mount(Profile, { target: document.body, props: {
             lineData: line, total: .225, days: [], dayLabels: {}, activeNight: 0, band: null, window: { from: 0, to: .5 },
@@ -469,58 +555,74 @@ describe('planner recovery', () => {
         expect(onClose).toHaveBeenCalledOnce();
         expect(document.activeElement).toBe(opener);
     });
+});
 
-    it('names the open version, opens another, and compares only two or more', async () => {
-        const onOpen = vi.fn(), onCompare = vi.fn(), onChange = vi.fn().mockResolvedValue(undefined);
-        const coast = newVersion(testTrip(), undefined, 'Coast'), hills = newVersion(testTrip(), undefined, 'Hills');
-        let versions = $state.raw([coast]), openId = $state<string | undefined>(coast.id);
-        mounted.push(mount(VersionsMenu, { target: document.body, props: { trip: testTrip(), get versions() { return versions; }, get openId() { return openId; },
-            draftSavedAt: null, draftError: '', onOpen, onSaveNew: vi.fn(), onChange, onCompare } }));
+describe('save', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+        HTMLElement.prototype.showPopover ??= () => {};
+        HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) { this.open = true; };
+    });
+    const bar = (props: { stored: boolean; changed: boolean; canSave: boolean; more?: { label: string; disabled?: boolean; run: () => void }[] }) =>
+        mounted.push(mount(TripBar, { target: document.body, props: { ...saveProps, ...props, trip: testTrip(), name: 'Lake loop', ready: true,
+            canUndo: false, canRedo: false, onUndo: vi.fn(), onRedo: vi.fn() } }));
+    const saveButton = () => document.querySelector<HTMLButtonElement>('.trip-bar .save > button')!;
+
+    it.each([
+        ['a new empty route', { stored: false, changed: false, canSave: false }, 'Save', true],
+        ['a new route with points', { stored: false, changed: false, canSave: true }, 'Save', false],
+        ['a stored route with no changes', { stored: true, changed: false, canSave: false }, 'Saved', true],
+        ['a stored route with changes', { stored: true, changed: true, canSave: true }, 'Save', false],
+    ])('shows the Save button of %s', async (_, props, label, disabled) => {
+        bar(props);
         await tick();
-        button('Version Coast').click();
-        await tick();
-        expect(button('Compare versions').disabled).toBe(true);
-        versions = [hills, coast];
-        await tick();
-        expect(document.querySelector('[aria-current="true"]')?.textContent).toContain('Coast');
-        button('Compare versions').click();
-        expect(onCompare).toHaveBeenCalledOnce();
-        button('Version Coast').click();
-        await tick();
-        document.querySelector<HTMLButtonElement>('[aria-current="false"]')!.click();
-        expect(onOpen).toHaveBeenCalledWith(hills.id, 'Hills');
-        button('Version Coast').click();
-        await tick();
-        button('Rename this version…').click();
-        await tick();
-        const input = document.querySelector('input')!;
-        input.value = 'Coast road';
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        expect(onChange).toHaveBeenCalledWith([hills, { ...coast, name: 'Coast road' }]);
-        openId = undefined;
-        await tick();
-        expect(button('Save version')).toBeDefined();
+        expect([saveButton().textContent?.trim(), saveButton().getAttribute('aria-disabled')]).toEqual([label, String(disabled)]);
+        // Only a stored route has a title that renames it.
+        expect(!!document.querySelector('.trip-bar h1 button')).toBe(props.stored);
     });
 
-    it('keeps a failed version save editable and lets the rider retry', async () => {
-        const onSaveNew = vi.fn().mockRejectedValueOnce(new Error('Storage full')).mockResolvedValue(undefined);
-        mounted.push(mount(VersionsMenu, {
-            target: document.body,
-            props: { trip: testTrip(), versions: [], draftSavedAt: null, draftError: '', onOpen: vi.fn(), onSaveNew, onChange: vi.fn(), onCompare: vi.fn() },
-        }));
+    it('lists "Save a copy…", "Discard changes" and "Compare routes…" in the "More" menu', async () => {
+        const compare = vi.fn();
+        bar({ stored: true, changed: false, canSave: false, more: [{ label: 'Save a copy…', run: vi.fn() },
+            { label: 'Discard changes', disabled: true, run: vi.fn() }, { label: 'Compare routes…', run: compare }] });
         await tick();
-        button('Save version').click();
+        button('More ▾').click();
         await tick();
-        document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        expect([...document.querySelectorAll('menu button')].map(item => [item.textContent?.trim(), (item as HTMLButtonElement).disabled]))
+            .toEqual([['Save a copy…', false], ['Discard changes', true], ['Compare routes…', false]]);
+        button('Compare routes…').click();
         await tick();
-        expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not save');
-        expect(document.querySelector('input')).not.toBeNull();
-        expect(onSaveNew).toHaveBeenCalledTimes(1);
+        expect([compare.mock.calls.length, document.querySelector('menu')]).toEqual([1, null]);
+    });
 
-        document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    /** The name field and the buttons of the save window for `trip`. */
+    async function saveWindow(mode: SaveMode, trip: Trip, stored = false) {
+        const onAnswer = vi.fn();
+        mounted.push(mount(SaveWindow, { target: document.body, props: { mode, name: stored ? 'Lake loop' : '', stored, trip, onAnswer } }));
         await tick();
-        expect(onSaveNew).toHaveBeenCalledTimes(2);
-        expect(document.querySelector('[role="alert"]')).toBeNull();
+        const input = document.querySelector<HTMLInputElement>('dialog input');
+        return { onAnswer, input, title: document.querySelector('dialog h2')!.textContent,
+            buttons: [...document.querySelectorAll<HTMLButtonElement>('dialog .window-buttons button')].map(b => [b.textContent, b.disabled]) };
+    }
+    // A finish with no label keeps its coordinates as its label.
+    const named = (start: string, finish?: string): Trip => ({ ...testTrip(), points: testTrip().points.map(p => p.kind === 'start' ? { ...p, label: start }
+        : p.kind === 'finish' ? { ...p, label: finish ?? coordinateName(p.coordinate) } : p) });
+
+    it('offers the title of the route as its name, and an empty field while the start or the finish has no place name', async () => {
+        const first = await saveWindow('save', named('Basel', 'Bern'));
+        expect([first.title, first.input?.value, first.buttons]).toEqual(['Save route', 'Basel → Bern', [['Cancel', false], ['Save', false]]]);
+        document.body.replaceChildren();
+        const unnamed = await saveWindow('save', named('Basel'));
+        expect([unnamed.input?.value, unnamed.input?.placeholder, unnamed.buttons[1]]).toEqual(['', 'Name of the route', ['Save', true]]);
+        unnamed.input!.value = 'Jura';
+        unnamed.input!.dispatchEvent(new Event('input', { bubbles: true }));
+        await tick();
+        expect(document.querySelector<HTMLButtonElement>('dialog button[type="submit"]')!.disabled).toBe(false);
+        document.body.replaceChildren();
+        const question = await saveWindow('leave', named('Basel', 'Bern'), true);
+        expect([question.title, question.input, question.buttons.map(([label]) => label)]).toEqual(['Save changes to ‘Lake loop’?', null, ['Cancel', 'Discard', 'Save']]);
+        document.body.replaceChildren();
+        const copy = await saveWindow('copy', named('Basel', 'Bern'), true);
+        expect([copy.title, copy.input?.value]).toEqual(['Save a copy', 'Lake loop (copy)']);
     });
 });

@@ -8,7 +8,7 @@ import { coverKey, settled, startCoverJob, wantCover, type Renderer } from './jo
 import type { MapPictureMaker, MapPictureResult } from './map-picture';
 
 const route = (id: string, name = id, line = [8.38, 46.82, 8.42, 46.81]): RouteRecord => ({
-    id, revision: 0, name, updatedAt: Date.UTC(2026, 7, 15), trip: {},
+    id, name, updatedAt: Date.UTC(2026, 7, 15), trip: {},
     summary: { line, heights: [null, null], bounds: [8.38, 46.81, 8.42, 46.82], lengthM: 3000, climbM: 0, highestM: null, seconds: 600, bike: 'road', days: 1 },
 });
 const result: Still = {

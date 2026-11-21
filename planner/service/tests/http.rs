@@ -97,8 +97,6 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         points: vec![[0.002, 0.0], [0.008, 0.0]],
         profile: "touring".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -126,6 +124,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         if let Some(code) = code {
             assert_eq!(value["code"], code);
         } else {
+            assert_eq!(value["routes"].as_array().unwrap().len(), 1);
             assert_eq!(value["routes"][0]["package"].as_str().unwrap().len(), 64);
             assert!(value["routes"][0]["totals"]["distance_m"].as_u64().unwrap() > 600);
             assert_eq!(value["routes"][0]["edges"]["pushing"], serde_json::json!([[false, 1]]));

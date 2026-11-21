@@ -1,6 +1,7 @@
-/** Finds the rides and the planned routes in GPX and FIT files, in folders and in the ZIP exports of services. */
+/** Finds the rides, the planned routes and the photos in GPX, FIT, JPEG and HEIC files, in folders and in the ZIP
+ * exports of services. */
 import { settings } from '../settings/settings.svelte';
-import type { Bike, RideRecord } from './records';
+import type { Bike, PhotoEntry, RideRecord } from './records';
 import type { Library } from './store';
 import { rideSummary, type RideSample } from './summary';
 import { entries, open, UnsupportedPacking } from './zip';
@@ -32,6 +33,8 @@ export type Item = File | FileSystemEntry;
 export type Found = { file: string; name: string } & (
     | { kind: 'ride'; ride: RideRecord; open: () => Promise<Blob>; other?: Found }
     | { kind: 'route'; id: string; lengthM: number; bike: Bike; open: () => Promise<Track>; other?: Found }
+    /** The caller finds the ride of a photo. */
+    | { kind: 'photo'; open: () => Promise<Blob>; ride?: { key: string; name: string; at: Pick<PhotoEntry, 'time' | 'place'> } }
     | { kind: 'known' }
     | { kind: 'unreadable'; reason: string });
 
@@ -41,12 +44,13 @@ export const reasons = {
     sport: 'not a ride by bike or on foot',
     packing: 'this packing is not supported',
     damaged: 'the file is damaged',
+    heic: 'this browser cannot open HEIC files',
 };
 
 interface Source { path: string; get: () => Promise<Blob> }
 
 const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1);
-const counted = /\.(gpx|fit|tcx)(\.gz)?$/i;
+const counted = /\.(gpx|fit|tcx)(\.gz)?$/i, photo = /\.(jpe?g|hei[cf])$/i;
 
 /** An error whose message is the reason that the rider sees. */
 class Unreadable extends Error {}
@@ -58,7 +62,7 @@ const failure = (path: string, error: unknown): Found => ({ file: path, name: ba
 const gunzip = (blob: Blob) => new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).blob();
 
 // A macOS copy keeps the attributes of each file in a file whose name starts with `._`.
-const wanted = (name: string) => !name.startsWith('._') && (counted.test(name) || /\.(csv|zip)$/i.test(name));
+const wanted = (name: string) => !name.startsWith('._') && (counted.test(name) || photo.test(name) || /\.(csv|zip)$/i.test(name));
 const isZip = (name: string) => /\.zip$/i.test(name);
 
 /** Lists the files to read and the CSV files of `item`. It inflates each ZIP in a ZIP, one level deep, and keeps it. */
@@ -174,7 +178,7 @@ export async function lineId(line: number[]): Promise<string> {
 
 /**
  * Reads each GPX and FIT file of `items`, also inside folders, ZIP files, a ZIP in a ZIP and `.gz` files, one file at a
- * time, and gives one `Found` for each. Other files are not counted. A GPX file with a time at each point and a FIT
+ * time, and gives one `Found` for each, then one for each JPEG and HEIC file. Other files are not counted. A GPX file with a time at each point and a FIT
  * activity are rides, except a GPX file whose first time is later than now; another file is a route. A ride is known when
  * its key is stored or deleted, a route when its id is stored, a timed GPX file when either is, and each when an
  * earlier file of `items` had the same key or id. The names and types of Strava's
@@ -244,4 +248,5 @@ export async function* readFiles(items: Item[], library: Library, readers: Reade
         // A timed file that starts later than now is a planned tour.
         yield route && (!ride || summary.start > Date.now() / 1000) ? route : ride!;
     }
+    for (const source of sources) if (photo.test(source.path)) yield { file: source.path, name: baseName(source.path), kind: 'photo', open: source.get };
 }

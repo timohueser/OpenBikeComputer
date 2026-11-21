@@ -1,4 +1,5 @@
 import type { Bounds } from '../../planner/config';
+import type { Budget } from '../budget';
 import { worldPixel } from '../../planner/layers/mercator';
 import { VFOV } from '../frame/camera';
 import { CURVATURE, type Frame } from '../frame/frame';
@@ -27,10 +28,10 @@ import { BOX } from '../structures/node';
 import { lever } from '../prototype-levers';
 
 /**
- * GPU memory for pages: the stored and the synthesized budgets for a laptop, in MiB. The feature masks
- * take their share of the synthesized budget. A shortage of synthesized pages leaves out the farthest
- * pages of the finest level, and their parents draw in their place: the pool holds what a frame wants at
- * the least range, whichever way it looks.
+ * GPU memory for pages: the stored and the synthesized budgets of the desktop, in MiB. The feature masks
+ * take their share of the synthesized budget; a tier holds its share of the pages (`terrainShare`). A shortage of
+ * synthesized pages leaves out the farthest pages of the finest level, and their parents draw in their place: the
+ * desktop's pool holds what a frame wants at the least range, whichever way it looks.
  */
 const BUDGET: Record<Kind, number> = { stored: 104 * 2 ** 20, synth: 67 * 2 ** 20 };
 /**
@@ -46,8 +47,8 @@ const PAGE_BYTES = PAGE * PAGE * 2;
 export const SYNTH_PAGES = Math.floor((BUDGET.synth - MASK_BYTES) / PAGE_BYTES);
 /** Per mask, the snaps of its page's 64 × 64 mesh vertices, 4 bytes each, as `snaps` in features.wgsl. */
 const SNAP_BYTES = (PAGE / 4) ** 2 * 4;
-/** Portal boxes in the terrain's holes at most. */
-const MAX_HOLES = 32;
+/** Boxes in the terrain's holes at most: the portals' boxes; with `ground=plan` also the parts', several to a part. */
+const MAX_HOLES = 32, PLAN_HOLES = 64;
 /** Nodes drawn per frame at most. */
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
@@ -189,6 +190,13 @@ interface Resources extends Pipelines {
 }
 
 /**
+ * The rank of a stamp wish in the order of the stamp worker (Stamps.send), and with `meshes` of an owner node's structure
+ * job: the `first` wishes, then the others, each by its metres from the eye. A structure job is never first: the view
+ * about the eye does not wait for it.
+ */
+export const stampRank = (first: boolean, metres: number, meshes = false): number => (first && !meshes ? 0 : NO_LIMIT) + metres;
+
+/**
  * The terrain: CDLOD by distance over pages of the stored terrain and of
  * levels synthesized below it, in fixed pools. One instanced grid mesh draws every node.
  */
@@ -262,24 +270,24 @@ export class Terrain {
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
     /**
-     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level and `pool` scales
-     * the page pools (debug options). The stamps read the nodes that `baked` holds. `cache` names the data of the tiles and the
-     * versions of the stamp code and of the plan's input preparation, under which the nodes' stamps and the plan's cells are
-     * cached on the device.
+     * An abort of `stop` ends the stamp worker; `budget` sizes the page pools and the loads. `plan` builds the ground plan;
+     * `finest` caps the finest level (a debug option). The stamps read the nodes that `baked` holds. `cache` names the data of
+     * the tiles and the versions of the stamp code and of the plan's input preparation, under which the nodes' stamps and the
+     * plan's cells are cached on the device.
      */
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }, pool = 1) {
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, budget: Budget, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / PAGE_BYTES / LAYER_PAGES) * LAYER_PAGES;
         this.profileTable = profileTable();
-        this.stamps = new Stamps(features, changed, stop, plan, baked, plan ? cache : undefined);
+        this.stamps = new Stamps(features, changed, stop, plan, baked, plan ? cache : undefined, budget.loads.stamps);
         // With the ground plan the records draw the ways: no corridor holds one.
         this.roads = new Roads(plan ? undefined : features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
         if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
-        const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node)?.data) : undefined;
+        const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node), (x, y) => this.structures.holds(x, y)) : undefined;
         const records = this.records = plan
             ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node), cache && { release: cache.release, version: cache.plan })
             : undefined;
@@ -287,7 +295,7 @@ export class Terrain {
         // to hold its heights: until then the coarser page draws, never the far look up close.
         const waits = (node: Node) => records!.waits(node) || (node.level === pieces!.level && (records!.meshComing(cellOf(node)) || pieces!.ready(cellOf(node)) === false));
         const stamps = records ? { get: (node: Node) => (waits(node) ? undefined : this.stamps.get(node)), known: (node: Node) => (waits(node) ? undefined : this.stamps.known(node)) } : this.stamps;
-        this.pages = new Pages(source, { stored: Math.round(pool * (pages - SYNTH_PAGES)), synth: Math.round(pool * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS);
+        this.pages = new Pages(source, { stored: Math.round(budget.terrainShare * (pages - SYNTH_PAGES)), synth: Math.round(budget.terrainShare * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS, budget.loads.terrain);
     }
 
     get idle(): boolean {
@@ -435,7 +443,7 @@ export class Terrain {
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
             scales: buffer('terrain', pages * 8, storage | GPUBufferUsage.COPY_SRC),
             nodes: buffer('terrain', MAX_NODES * NODE_BYTES, storage),
-            holes: buffer('terrain', (1 + 3 * MAX_HOLES) * 16, storage),
+            holes: buffer('terrain', (1 + 3 * (plan ? PLAN_HOLES : MAX_HOLES)) * 16, storage),
             cells: buffer('plan', plan ? CELLS_BYTES : 256, storage),
             synthJobs: buffer('compute', ARRIVALS * JOB_BYTES, storage),
             synthOut: buffer('compute', ARRIVALS * texels * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
@@ -590,8 +598,9 @@ export class Terrain {
 
     /**
      * One near-first order for the stamp worker: every wish within EYE_M and the nodes that the meshes in view read, then every
-     * other wish, each by its distance from the eye. The coarse pages over the eye count, as they draw until the eye's own do. A
-     * mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view wait their turn.
+     * other wish and the structure jobs, each by its distance from the eye. The coarse pages over the eye count, as they draw until
+     * the eye's own do. A mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view
+     * wait their turn.
      */
     private sendStamps(meshes: { node: Node }[], eye: { anchor: Anchor; above: number }, forward: Float64Array, view: View): void {
         const shown = new Set<string>(), hidden = new Set<string>(), level = { anchor: eye.anchor, above: 0 };
@@ -604,7 +613,7 @@ export class Terrain {
             }
         }
         const first = (name: string, node: Node) => shown.has(name) || (!hidden.has(name) && distances(level, node)[0] <= EYE_M);
-        this.stamps.send(node => (first(key(node), node) ? 0 : NO_LIMIT) + distances(eye, node)[0]);
+        this.stamps.send((node, meshes) => stampRank(first(key(node), node), distances(eye, node)[0], meshes));
     }
 
     /**
@@ -1071,7 +1080,7 @@ export class Terrain {
         device.queue.writeBuffer(r.nodes, 0, instances);
         // After the structures' upload: a portal opens the ground only where its owner's bore and facade draw in this frame.
         this.structures.write();
-        device.queue.writeBuffer(r.holes, 0, holes(this.boxes, anchor, (x, y) => this.structures.holds(x, y)));
+        device.queue.writeBuffer(r.holes, 0, holes(this.boxes, anchor, (x, y) => this.structures.holds(x, y), !!this.records));
         const changed = instances.length !== this.instances.length || instances.some((v, i) => v !== this.instances[i]);
         this.instances = instances;
         this.water.write();
@@ -1230,17 +1239,22 @@ function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
 }
 
 /**
- * The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. A box
- * whose facade middle is not `drawn` is left out: without its bore and facade the ground stays closed.
+ * The boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once (by its start and its way in),
+ * MAX_HOLES at most, or with `plan` PLAN_HOLES, the nearest to the anchor first. A box whose start is not `drawn` is left
+ * out: without its bore and facade the ground stays closed.
  */
-function holes(lists: Float64Array[], anchor: Anchor, drawn: (x: number, y: number) => boolean): Float32Array<ArrayBuffer> {
-    const out = new Float32Array(4 * (1 + 3 * MAX_HOLES)), seen = new Set<string>();
+function holes(lists: Float64Array[], anchor: Anchor, drawn: (x: number, y: number) => boolean, plan: boolean): Float32Array<ArrayBuffer> {
+    const most = plan ? PLAN_HOLES : MAX_HOLES, out = new Float32Array(4 * (1 + 3 * most)), seen = new Set<string>();
+    const boxes = lists.flatMap(list => Array.from({ length: list.length / BOX }, (_, k) => list.subarray(BOX * k, BOX * (k + 1))));
+    const away = (box: Float64Array) => (box[0] - anchor.whole[0]) ** 2 + (box[1] - anchor.whole[1]) ** 2;
+    if (plan) boxes.sort((a, b) => away(a) - away(b));
     let n = 0;
-    for (const list of lists) for (let i = 0; i < list.length && n < MAX_HOLES; i += BOX) {
-        const name = `${list[i]},${list[i + 1]}`;
-        if (seen.has(name) || !drawn(list[i], list[i + 1])) continue;
+    for (const box of boxes) {
+        if (n === most) break;
+        const name = `${box[0]},${box[1]},${box[2]},${box[3]}`;
+        if (seen.has(name) || !drawn(box[0], box[1])) continue;
         seen.add(name);
-        out.set([list[i] - anchor.whole[0], list[i + 1] - anchor.whole[1], ...list.subarray(i + 2, i + BOX)], 4 + 12 * n++);
+        out.set([box[0] - anchor.whole[0], box[1] - anchor.whole[1], ...box.subarray(2)], 4 + 12 * n++);
     }
     out[0] = n;
     return out;

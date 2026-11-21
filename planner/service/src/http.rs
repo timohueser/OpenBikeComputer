@@ -35,8 +35,8 @@ struct Workers {
     metadata: Value,
 }
 
-/// Two classes of calls share the workers. A heavy call, a route with alternatives or a shape,
-/// takes one of `max(1, workers / 2)` heavy permits and then a worker; a light call takes only a
+/// Two classes of calls share the workers. A heavy call, a shape, takes one of
+/// `max(1, workers / 2)` heavy permits and then a worker; a light call, a route, takes only a
 /// worker. So heavy calls never hold every worker while there are two or more.
 struct Gate {
     workers: Arc<Semaphore>,
@@ -65,13 +65,6 @@ impl Gate {
         };
         tokio::time::timeout(self.wait, permits).await.ok().flatten()
     }
-}
-
-/// Classifies with the decoder of the worker, so that the class agrees with the request in each
-/// JSON form. A body that does not decode is light: its worker answers `invalid_request` at once.
-fn heavy(call: &str, body: &[u8]) -> bool {
-    call == "shape"
-        || serde_json::from_slice::<planner_router::Request>(body).is_ok_and(|r| r.alternatives || r.alternatives_only)
 }
 
 pub fn app(directory: &std::path::Path, workers: usize) -> Result<axum::Router, Error> {
@@ -124,7 +117,7 @@ async fn call(
         return reply(encode(not_found(&call)));
     }
     let Ok(body) = body else { return reply(encode(error_body(too_large()))) };
-    let Some(permits) = workers.gate.enter(heavy(&call, &body)).await else {
+    let Some(permits) = workers.gate.enter(call == "shape").await else {
         return reply(encode(busy()));
     };
     let cancel = Cancel(Arc::new(AtomicBool::new(false)));
@@ -158,16 +151,5 @@ mod tests {
         let _light = gate.enter(false).await.unwrap();
         // The heavy call holds a worker too, so both workers are busy.
         assert!(gate.enter(false).await.is_none());
-    }
-
-    #[test]
-    fn a_route_with_alternatives_is_heavy_in_each_json_form_and_a_bad_body_is_light() {
-        let pace = r#"{"cycling_kmh":19,"walking_kmh":4.5,"personal_multiplier":1}"#;
-        let array = format!(r#"[[[0.002,0],[0.008,0]],"touring",{pace},true]"#);
-        assert!(heavy("route", array.as_bytes()));
-        assert!(heavy("route", br#"{"points":[[0.002,0],[0.008,0]],"profile":"touring","alternatives_only":true}"#));
-        assert!(!heavy("route", br#"{"points":[[0.002,0],[0.008,0]],"profile":"touring"}"#));
-        assert!(!heavy("route", br#"{"alternatives":true}"#));
-        assert!(heavy("shape", b"not json"));
     }
 }

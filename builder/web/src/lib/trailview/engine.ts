@@ -42,6 +42,7 @@ import { Route, type RouteLine, type RoutePin } from './route/route';
 import type { PlanStats } from './plan/plan';
 import { sampleDistances, terrainHides } from './sight';
 import { Pacer } from './pacer';
+import { BUDGETS, type Budget, type Tier } from './budget';
 import type { StillPoints } from './still';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
@@ -124,7 +125,7 @@ const first = (plan: boolean): ((gpu: Gpu) => Promise<unknown>)[] => [terrainPip
 const REST_WAIT_MS = 5000;
 
 /** The options of `TrailView.start`. */
-interface StartOptions extends Pointer { plan?: boolean; finest?: number; pool?: number; size?: [number, number] }
+interface StartOptions extends Pointer { plan?: boolean; finest?: number; tier?: Tier; size?: [number, number] }
 
 /** Where the eye stands: a height, and whether it lies in a tunnel. */
 interface Feet { z: number; tunnel: boolean; floor: boolean }
@@ -140,7 +141,7 @@ export class TrailView {
     onView?: (view: View) => void;
     recoveries = 0;
     /** Picks the display frames that draw: `pacer.rate` is the frame rate. */
-    readonly pacer = new Pacer();
+    readonly pacer: Pacer;
     private readonly context: GPUCanvasContext;
     private readonly frame: Frame;
     private readonly terrain: Terrain;
@@ -212,21 +213,22 @@ export class TrailView {
      */
     private skyMagnitude = DARK_SKY;
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, readonly groundPlan: boolean, finest: number, pool: number, pointer: Pointer, private readonly output?: [number, number]) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, readonly groundPlan: boolean, finest: number, budget: Budget, pointer: Pointer, private readonly output?: [number, number]) {
         // `destroy()` aborts it: it ends the tile requests, the workers and the listeners.
         const { signal } = stop;
         this.context = canvas.getContext('webgpu')!;
+        this.pacer = new Pacer(budget.frameRate);
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug, plan: view.plan };
         const { features } = tiles;
         // The release ID, and the tile URLs for a config without one.
         const release = JSON.stringify([config.id, config.manifest, config.terrain, config.layers]);
-        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION }, pool);
-        this.groundLook = new Ground(ground, () => this.request());
-        this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, { release, version: HOUSE_VERSION });
+        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, budget, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION });
+        this.groundLook = new Ground(ground, budget, () => this.request());
+        this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, budget.loads.houses, { release, version: HOUSE_VERSION });
         this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal, TREE_VERSION);
-        this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
+        this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal, budget);
         this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
         this.rows = new Rows(this.groundLook.rules, this.trees, this.plants, this.instances);
         this.kindPoints = new KindPoints(this.instances);
@@ -258,15 +260,15 @@ export class TrailView {
      * attaches what the first frame draws, then starts the other tile loads once the tiles under the eye
      * are in, or after EYE_WAIT_MS: on a slow link the other loads would share it with them. The other
      * passes draw once they attach after the view about the eye. `scale` is the render scale; `plan` builds the
-     * ground plan beside the old ground (`ground=plan`); `finest` caps the terrain's finest level (`finest=`), and `pool`
-     * scales its page pools (`pool=`). `size` is the output of a still in pixels, in place of the element's size on the
-     * screen. `onclick` and `onhover` get a click and a move with no button on the canvas, in CSS pixels (`Pointer`).
+     * ground plan beside the old ground (`ground=plan`); `finest` caps the terrain's finest level (`finest=`), and `tier`
+     * chooses the budget: the pools, the loads and the frame rate (`tier=`). `size` is the output of a still in pixels,
+     * in place of the element's size on the screen. `onclick` and `onhover` get a click and a move with no button on the canvas, in CSS pixels (`Pointer`).
      * All but the attach run while `gpu` comes: the frames before it ask for the view's records and stamps.
      */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu | Promise<Gpu>, config: PlannerConfig, view: View, scale: number, { plan = false, finest = FINEST, pool = 1, size, onclick, onhover }: StartOptions = {}): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu | Promise<Gpu>, config: PlannerConfig, view: View, scale: number, { plan = false, finest = FINEST, tier = 'desktop', size, onclick, onhover }: StartOptions = {}): Promise<TrailView> {
         const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
         const ground = await GroundSource.open(config, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest, pool, { onclick, onhover }, size);
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest, BUDGETS[tier], { onclick, onhover }, size);
         engine.request();
         // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
         await Promise.resolve(gpu).then(device => engine.attach(device)).catch(error => {

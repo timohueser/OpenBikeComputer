@@ -10,7 +10,7 @@ planner-router = { path = "../router" }
 osmpbfreader = "0.19"
 country-boundaries = "1.2"
 serde_json = "1"
-postcard = { version = "1", features = ["alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
 sha2 = "0.10"
 memmap2 = "0.9.11"
@@ -18,5 +18,13 @@ memmap2 = "0.9.11"
 rayon = "1"
 # The request of the planner routing step.
 obc-data = { path = "../../host/obc-data" }
+# The canopy tiles of the route facts.
+image = { workspace = true, features = ["webp"] }
 # The heights of the roads, and the planner routing step of `obc data`.
 obc-dem = { path = "../../host/obc-dem", default-features = false, features = ["geotiff", "fetch"] }
+
+[dev-dependencies]
+# The test PBF of the extract reader: the message types of osmpbfreader.
+protobuf = "3"
+# The gzip tiles of the test snow archive.
+flate2 = "1"

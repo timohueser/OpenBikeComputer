@@ -51,6 +51,7 @@ code editor. Add an R2 binding named `BUCKET` for `obc-maps`. Add the custom dom
 | `/releases/ID/LAYER.json` | TileJSON of a data layer of the release, such as `snow` |
 | `/releases/ID/LAYER/Z/X/Y` | Data layer tile; `application/octet-stream` for a type other than MVT or WebP |
 | `/releases/ID/routes/tiles/9-X-Y.json` | Route catalog cell of a grid release; 404 for a cell outside the grid |
+| `/releases/ID/routes/tiles/facts/9-X-Y.json` | Route facts of a cell; 404 for a release with no facts files |
 | `/releases/ID/routes/tiles/trails/7-X-Y.json` | Far file of a zoom 7 cell; 404 for a release with no trail files |
 | `/releases/ID/routes/tiles/long/T.json` | Trail record file of the trail `T` |
 

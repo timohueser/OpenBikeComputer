@@ -1,13 +1,11 @@
 /** Keeps the routes, the rides, their source files, their photos, the covers and the library state in the browser database `obc-library`. */
-import { isRideRecord, isRouteRecord, stateChecks, type CoverRecord, type LibraryState, type PhotoRecord, type RideRecord, type RouteRecord } from './records';
+import { isDraftRecord, isRideRecord, isRouteRecord, stateChecks, type CoverRecord, type DraftRecord, type LibraryState, type PhotoRecord, type RideRecord, type RouteRecord, type RouteSummary } from './records';
 
-export type StoreName = 'routes' | 'versions' | 'rides' | 'ride-files' | 'covers' | 'state' | 'photos';
+export type StoreName = 'routes' | 'drafts' | 'rides' | 'ride-files' | 'covers' | 'state' | 'photos';
 
 /** All records of the library except the covers and the photos: the content of a backup with no photos. */
 export interface Contents {
     routes: RouteRecord[];
-    /** The versions of each route, by route id. */
-    versions: Record<string, unknown[]>;
     rides: RideRecord[];
     /** The source file of each ride, by ride key. */
     files: Map<string, Blob>;
@@ -16,16 +14,16 @@ export interface Contents {
 
 type Fail = (error: unknown) => void;
 
-const conflict = () => new Error('This route changed in another tab. Download your edits before reopening it.');
-const STORES: StoreName[] = ['routes', 'versions', 'rides', 'ride-files', 'covers', 'state', 'photos'];
+/** The error of each call after a newer app in another tab upgraded the database. */
+export const OUTDATED = 'OutdatedError';
+const STORES: StoreName[] = ['routes', 'drafts', 'rides', 'ride-files', 'covers', 'state', 'photos'];
 /** The field of a record that is its key. The other stores get the key with each write. */
-const KEYS: Partial<Record<StoreName, string>> = { routes: 'id', rides: 'key', covers: 'id', photos: 'id' };
+const KEYS: Partial<Record<StoreName, string>> = { routes: 'id', drafts: 'id', rides: 'key', covers: 'id', photos: 'id' };
 
-/** Writes are ordered within a tab; revisions prevent a second tab from replacing unseen edits of a route. */
+/** Writes are ordered within a tab. Between tabs, the later write wins. */
 export class Library {
     private database?: Promise<IDBDatabase>;
     private pending: Promise<unknown> = Promise.resolve();
-    private revisions = new Map<string, number>();
     private listeners = new Set<(store: StoreName, key: string) => void>();
     private written = false;
     private cleared = false;
@@ -36,12 +34,27 @@ export class Library {
     constructor(private factory?: IDBFactory) {}
 
     private open(): Promise<IDBDatabase> {
-        if (this.outdated) return Promise.reject(new Error('The app was updated in another tab. Reload the page.'));
+        if (this.outdated) return Promise.reject(Object.assign(new Error('The app was updated in another tab. Reload the page.'), { name: OUTDATED }));
         return this.database ??= new Promise<IDBDatabase>((resolve, reject) => {
-            const request = (this.factory ?? indexedDB).open('obc-library', 2);
-            // Only the stores that are missing: a database of an earlier version keeps its records.
-            request.onupgradeneeded = () => {
+            const request = (this.factory ?? indexedDB).open('obc-library', 4);
+            // A database of an earlier version keeps the records of each store that is still in `STORES`.
+            request.onupgradeneeded = event => {
                 const db = request.result;
+                for (const name of [...db.objectStoreNames]) if (!STORES.includes(name as StoreName)) db.deleteObjectStore(name);
+                // A route of an earlier version can have the field `open`, the id of a version, and the field
+                // `revision`.
+                if (event.oldVersion) {
+                    const cursor = request.transaction!.objectStore('routes').openCursor();
+                    cursor.onsuccess = () => {
+                        const at = cursor.result;
+                        if (!at) return;
+                        if (at.value && typeof at.value === 'object' && ('open' in at.value || 'revision' in at.value)) {
+                            const { open: _, revision: __, ...route } = at.value;
+                            at.update(route);
+                        }
+                        at.continue();
+                    };
+                }
                 for (const name of STORES) {
                     if (db.objectStoreNames.contains(name)) continue;
                     const store = db.createObjectStore(name, KEYS[name] ? { keyPath: KEYS[name] } : undefined);
@@ -125,35 +138,79 @@ export class Library {
         const route = await this.read('routes', id);
         if (route === undefined) return undefined;
         if (!isRouteRecord(route)) throw new Error('This saved route cannot be read.');
-        this.revisions.set(id, route.revision);
         return route;
     }
 
-    /** The saved versions of a route, newest first. The planner checks them. */
-    async versions(id: string): Promise<unknown[]> {
-        const versions = await this.read('versions', id);
-        return Array.isArray(versions) ? versions : [];
-    }
-
-    /** Saves the route with the next revision, and its versions when they are given. It refuses a route that another tab
-     * saved after this tab read it. A stored route keeps its stored name: only `renameRoute` changes it, so a save that
-     * was queued before a rename does not write the old name. */
-    saveRoute<R extends RouteRecord>(route: R, versions?: unknown[]): Promise<R> {
-        const snapshot = structuredClone(route), kept = versions && structuredClone(versions);
-        return this.write(kept ? ['routes', 'versions'] : ['routes'], (tx, fail, changed) => {
-            const store = tx.objectStore('routes'), request = store.get(snapshot.id);
-            const expected = Math.max(this.revisions.get(snapshot.id) ?? 0, snapshot.revision);
-            const next = { ...snapshot, revision: expected + 1 };
+    /** Stores the route and deletes its draft. A stored route keeps its stored name: only `renameRoute` changes it, so a
+     * save that was queued before a rename does not write the old name. */
+    saveRoute<R extends RouteRecord>(route: R): Promise<R> {
+        const next = structuredClone(route);
+        return this.write(['routes', 'drafts'], (tx, fail, changed) => {
+            const store = tx.objectStore('routes'), request = store.get(next.id);
             request.onsuccess = () => {
-                if ((request.result?.revision ?? 0) !== expected) return fail(conflict());
                 if (request.result) next.name = request.result.name;
                 try {
                     store.put(next);
-                    if (kept) tx.objectStore('versions').put(kept, next.id);
+                    tx.objectStore('drafts').delete(next.id);
                     changed('routes', next.id);
                 } catch (error) { fail(error); }
             };
-            return () => { this.revisions.set(next.id, next.revision); return next; };
+            return () => next;
+        });
+    }
+
+    /** Writes only the summary of a stored route, with no new `updatedAt`: the summary is data that the route lacked, not
+     * an edit. It writes only while the stored trip is `trip`, the one that the summary was made for, so a save of another
+     * tab keeps its own trip and summary. A stored trip is a structured clone of the trip that was put, so equal trips
+     * give equal JSON. */
+    setSummary(id: string, summary: RouteSummary, trip: unknown): Promise<void> {
+        const made = JSON.stringify(trip);
+        return this.write(['routes'], (tx, _, changed) => {
+            const store = tx.objectStore('routes'), request = store.get(id);
+            request.onsuccess = () => {
+                if (!isRouteRecord(request.result) || JSON.stringify(request.result.trip) !== made) return;
+                store.put({ ...request.result, summary });
+                changed('routes', id);
+            };
+            return () => {};
+        });
+    }
+
+    async draft(id: string): Promise<DraftRecord | undefined> {
+        const draft = await this.read('drafts', id);
+        return isDraftRecord(draft) ? draft : undefined;
+    }
+
+    /** The newest draft of a route that is not stored whose trip is `usable`, other than the draft of `except`. */
+    async newestUnstoredDraft(usable: (trip: unknown) => boolean, except?: string): Promise<DraftRecord | undefined> {
+        await this.pending;
+        return this.run(['routes', 'drafts'], 'readonly', tx => {
+            const routes = tx.objectStore('routes').getAllKeys(), drafts = tx.objectStore('drafts').getAll();
+            return () => (drafts.result as unknown[]).filter(isDraftRecord)
+                .filter(draft => draft.id !== except && !(routes.result as IDBValidKey[]).includes(draft.id) && usable(draft.trip))
+                .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+        });
+    }
+
+    saveDraft(draft: DraftRecord): Promise<void> {
+        const record = structuredClone(draft);
+        return this.write(['drafts'], tx => {
+            tx.objectStore('drafts').put(record);
+            return () => {};
+        });
+    }
+
+    /** Deletes the draft of `id`; with `updatedAt`, only while the draft is still that write. True when it deleted. */
+    removeDraft(id: string, updatedAt?: number): Promise<boolean> {
+        return this.write(['drafts'], tx => {
+            const store = tx.objectStore('drafts'), request = store.get(id);
+            let removed = false;
+            request.onsuccess = () => {
+                if (updatedAt !== undefined && request.result?.updatedAt !== updatedAt) return;
+                store.delete(id);
+                removed = true;
+            };
+            return () => removed;
         });
     }
 
@@ -171,36 +228,30 @@ export class Library {
         });
     }
 
-    /** Gives a stored route a new name and the next revision. This tab then knows the new revision only when it knew the
-     * stored one, so a rename does not hide a save of another tab from a later save or removal of this tab. */
+    /** Gives a stored route a new name. */
     renameRoute(id: string, name: string): Promise<RouteRecord> {
         return this.write(['routes'], (tx, fail, changed) => {
             const store = tx.objectStore('routes'), request = store.get(id);
-            let next: RouteRecord, current = false;
+            let next: RouteRecord;
             request.onsuccess = () => {
                 if (!isRouteRecord(request.result)) return fail(new Error('This route is not in the library.'));
-                current = this.revisions.get(id) === request.result.revision;
-                next = { ...request.result, name, revision: request.result.revision + 1, updatedAt: Date.now() };
+                next = { ...request.result, name, updatedAt: Date.now() };
                 store.put(next);
                 changed('routes', id);
             };
-            return () => { if (current) this.revisions.set(id, next.revision); return next; };
+            return () => next;
         });
     }
 
-    /** Removes a route with its versions and its cover, and takes it out of the routes that wait for the device. A route
-     * on the device goes into `leaving`, so the next sync removes it there. With `revision`, it refuses a route that
-     * changed since then, or since the newest revision that this tab knows, as `saveRoute` does. */
-    removeRoute(id: string, revision?: number): Promise<void> {
-        return this.write(['routes', 'versions', 'covers', 'state'], (tx, fail, changed) => {
-            const store = tx.objectStore('routes'), request = store.get(id), state = tx.objectStore('state');
-            request.onsuccess = () => {
-                if (revision !== undefined && request.result && request.result.revision !== Math.max(this.revisions.get(id) ?? 0, revision)) return fail(conflict());
-                store.delete(id);
-                tx.objectStore('versions').delete(id);
-                tx.objectStore('covers').delete(id);
-                changed('routes', id);
-            };
+    /** Removes a route with its draft and its cover, and takes it out of the routes that wait for the device. A route on
+     * the device goes into `leaving`, so the next sync removes it there. */
+    removeRoute(id: string): Promise<void> {
+        return this.write(['routes', 'drafts', 'covers', 'state'], (tx, _, changed) => {
+            const store = tx.objectStore('routes'), state = tx.objectStore('state');
+            store.delete(id);
+            tx.objectStore('drafts').delete(id);
+            tx.objectStore('covers').delete(id);
+            changed('routes', id);
             const active = state.get('active'), waiting = state.get('waiting'), sent = state.get('sent'), leaving = state.get('leaving');
             active.onsuccess = () => { if (active.result === id) state.put(null, 'active'); };
             waiting.onsuccess = () => {
@@ -218,8 +269,7 @@ export class Library {
         });
     }
 
-    /** A route or a ride by its id or key. It does not record the revision as `route` does, so a reader such as the cover
-     * job does not hide the edits of another tab from the planner. */
+    /** A route or a ride by its id or key. */
     async item(id: string): Promise<RouteRecord | RideRecord | undefined> {
         const route = await this.read('routes', id);
         return isRouteRecord(route) ? route : this.ride(id);
@@ -341,10 +391,35 @@ export class Library {
         });
     }
 
+    /** Removes a photo. A ride whose cards show it gets its cover back. */
     removePhoto(id: string): Promise<void> {
-        return this.write(['photos'], (tx, _, changed) => {
-            tx.objectStore('photos').delete(id);
-            changed('photos', id);
+        return this.write(['photos', 'rides'], (tx, _, changed) => {
+            const photos = tx.objectStore('photos'), rides = tx.objectStore('rides'), photo = photos.get(id);
+            photo.onsuccess = () => {
+                photos.delete(id);
+                changed('photos', id);
+                const ride = photo.result && rides.get(photo.result.ride);
+                if (ride) ride.onsuccess = () => {
+                    if (ride.result?.photo !== id) return;
+                    const { photo: _, ...rest } = ride.result;
+                    rides.put(rest);
+                    changed('rides', rest.key);
+                };
+            };
+            return () => {};
+        });
+    }
+
+    /** Gives the cards of a stored ride the photo `id`, or with null their cover again. */
+    setCardPhoto(key: string, id: string | null): Promise<void> {
+        return this.write(['rides'], (tx, _, changed) => {
+            const rides = tx.objectStore('rides'), ride = rides.get(key);
+            ride.onsuccess = () => {
+                if (!isRideRecord(ride.result)) return;
+                const { photo: _, ...rest } = ride.result;
+                rides.put(id === null ? rest : { ...rest, photo: id });
+                changed('rides', key);
+            };
             return () => {};
         });
     }
@@ -398,14 +473,13 @@ export class Library {
 
     /** All records except the covers and the photos, read in one transaction. */
     contents(): Promise<Contents> {
-        return this.run(['routes', 'versions', 'rides', 'ride-files', 'state'], 'readonly', tx => {
+        return this.run(['routes', 'rides', 'ride-files', 'state'], 'readonly', tx => {
             const all = (store: StoreName) => ({ keys: tx.objectStore(store).getAllKeys(), values: tx.objectStore(store).getAll() });
             const routes = tx.objectStore('routes').getAll(), rides = tx.objectStore('rides').getAll();
-            const versions = all('versions'), files = all('ride-files'), state = all('state');
+            const files = all('ride-files'), state = all('state');
             const pairs = ({ keys, values }: ReturnType<typeof all>) => keys.result.map((key, i) => [key as string, values.result[i]] as const);
             return () => ({
                 routes: routes.result.filter(isRouteRecord),
-                versions: Object.fromEntries(pairs(versions).filter(([, value]) => Array.isArray(value))) as Record<string, unknown[]>,
                 rides: rides.result.filter(isRideRecord),
                 files: new Map(pairs(files).filter((pair): pair is readonly [string, Blob] => pair[1] instanceof Blob)),
                 state: Object.fromEntries(pairs(state).filter(([key, value]) => Object.hasOwn(stateChecks, key) && stateChecks[key as keyof LibraryState](value))),
@@ -417,7 +491,7 @@ export class Library {
      * the state of `contents` only when the library is empty: no route, no ride and no deleted ride. */
     merge(contents: Contents): Promise<{ routes: number; rides: number; empty: boolean }> {
         // Strict, as in `addRide`: the device sync can mark a restored device ride as taken after this commit.
-        return this.write(['routes', 'versions', 'rides', 'ride-files', 'state'], (tx, _, changed) => {
+        return this.write(['routes', 'rides', 'ride-files', 'state'], (tx, _, changed) => {
             const routes = tx.objectStore('routes'), rides = tx.objectStore('rides'), state = tx.objectStore('state');
             const routeIds = routes.getAllKeys(), rideKeys = rides.getAllKeys(), list = state.get('deleted');
             const result = { routes: 0, rides: 0, empty: false };
@@ -430,7 +504,6 @@ export class Library {
                 for (const route of contents.routes) {
                     if (known.has(route.id)) continue;
                     routes.put(route);
-                    if (contents.versions[route.id]) tx.objectStore('versions').put(contents.versions[route.id], route.id);
                     changed('routes', route.id);
                     result.routes++;
                 }

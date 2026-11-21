@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, DEEPEST, type Feature, type FeaturePart } from '../stream/features';
 import { features, metresPerUnit, ROAD, TUNNEL, type Line } from '../terrain/bins';
 import { OWNER } from '../terrain/lod';
-import { BORE, curveStops, PAINT, paintOf } from '../structures/mesh';
+import { BORE, curveStops, PAINT, paintOf, STRUCTURE_VERTEX } from '../structures/mesh';
 import { structureMeshes } from '../structures/node';
 import { decksOf, isDeck } from './decks';
 import { planOf } from './mesh';
@@ -94,7 +94,7 @@ describe('a road tunnel', () => {
         expect(runs.find(r => r.line === road)!.caps.map(({ j }) => j)).toEqual([0]);
         const { far: { structures } } = structureMeshes(list, tile, owner), words = new Int32Array(structures!.vertices), floats = new Float32Array(structures!.vertices);
         const paint = paintOf(tunnel, PAINT | BORE);
-        const counts = Array.from({ length: words.length / 6 }, (_, k) => k).filter(k => words[6 * k + 3] >>> 0 === paint).map(k => floats[6 * k + 5]);
+        const n = STRUCTURE_VERTEX, counts = Array.from({ length: words.length / n }, (_, k) => k).filter(k => words[n * k + 3] >>> 0 === paint).map(k => floats[n * k + 5]);
         expect(Math.min(...counts)).toBe(tunnel.stroke!.at);
         expect(Math.max(...counts)).toBeGreaterThan(tunnel.stroke!.at);
     });

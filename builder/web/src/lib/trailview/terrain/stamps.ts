@@ -7,12 +7,10 @@ import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
 import type { WaterMesh } from './water-mesh';
 import { stopped } from '../stream/terrain';
-import { loads } from '../prototype-levers';
+import { BUDGETS } from '../budget';
 
 /** The bytes of the binned nodes and their water meshes kept; an entry costs ENTRY_BYTES more. */
 const NODE_BYTES = 64 * 2 ** 20, ENTRY_BYTES = 64;
-/** Requests to the worker in flight at most. */
-const REQUESTS = loads(8);
 
 /**
  * What a node stamps, its water, the floors of its structures and the boxes of its tunnels' portals, from the worker;
@@ -60,8 +58,8 @@ const NO_SAMPLES: NodeSamples = { samples: new Uint32Array(0), lakes: 0, mixed: 
 export class Stamps implements StampSource {
     private readonly nodes = new Map<string, NodeFeatures>();
     private nodeBytes = 0;
-    /** The nodes on their way, and the feature tile of each. */
-    private readonly pending = new Map<string, string>();
+    /** The nodes on their way. */
+    private readonly pending = new Map<string, Node>();
     private readonly masks = new Map<string, Promise<number | undefined>>();
     /** The nodes that the frame asked for and that are not on their way. */
     private readonly wishes = new Map<string, Node>();
@@ -70,7 +68,7 @@ export class Stamps implements StampSource {
     /** The owner nodes that are known without their structure meshes, whether one's meshes are on their way, and the last frame's rank. */
     private readonly unbuilt = new Map<string, Node>();
     private building = false;
-    private rank: (node: Node) => number = () => 0;
+    private rank: (node: Node, meshes?: boolean) => number = () => 0;
     /** The feature tiles of the frame's wishes, and of the near levels' nodes that the frame read and the frame before. */
     private queued = new Set<string>();
     private nearRead = new Set<string>();
@@ -88,9 +86,10 @@ export class Stamps implements StampSource {
     /**
      * An abort of `stop` ends the worker. With `plan` the records draw the ways (nodeStamps of bins.ts). A node
      * that `baked` holds comes from it, with the same bytes as from the worker. With `cache`, the release and the
-     * version of the stamp code (`virtual:stamp-version`), the nodes go to the device cache.
+     * version of the stamp code (`virtual:stamp-version`), the nodes go to the device cache. `maxRequests` are the requests
+     * to the worker in flight at most.
      */
-    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, readonly plan = false, private readonly baked?: BakedNodes, cache?: { release: string; version: string }) {
+    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, readonly plan = false, private readonly baked?: BakedNodes, cache?: { release: string; version: string }, private readonly maxRequests = BUDGETS.desktop.loads.stamps) {
         if (!tiles) return;
         if (cache) this.cache = DeviceCache.open('stamps', cache.release, `${cache.version}/${plan}`, CAPS.stamps).catch(error => {
             console.warn(`The stamps' device cache did not open: ${error}`);
@@ -106,7 +105,7 @@ export class Stamps implements StampSource {
         };
     }
 
-    /** Whether features are on their way: each wakes the engine when it arrives. A wish waits only while REQUESTS are. */
+    /** Whether features are on their way: each wakes the engine when it arrives. A wish waits only while `maxRequests` are. */
     get loading(): boolean {
         return this.pending.size > 0 || this.unbuilt.size > 0;
     }
@@ -123,10 +122,11 @@ export class Stamps implements StampSource {
     }
 
     /**
-     * Asks the worker for the frame's wishes, the lowest `rank` first, while it has fewer than REQUESTS
-     * on their way. The rest go as answers come, until the next frame states its wishes again.
+     * Asks the worker for the frame's wishes, the lowest `rank` first, while it has fewer than `maxRequests`
+     * on their way. The rest go as answers come, until the next frame states its wishes again. With `meshes`,
+     * `rank` ranks the structure job of an owner node.
      */
-    send(rank: (node: Node) => number): void {
+    send(rank: (node: Node, meshes?: boolean) => number): void {
         const ranks = new Map([...this.wishes.values()].map(node => [node, rank(node)]));
         this.queue = [...ranks.keys()].sort((a, b) => ranks.get(a)! - ranks.get(b)!);
         this.queued = new Set(this.queue.map(node => key(featureTile(node)!)));
@@ -137,25 +137,29 @@ export class Stamps implements StampSource {
     }
 
     /**
-     * The stamps first: the structure meshes of an owner node are a job of their own, which goes to the worker only
-     * while no stamp request is on its way, and one at a time. The worker takes its jobs in turn, so a stamp wish
-     * waits for one structure job at most, whenever it comes. Of the owner nodes without meshes, the next is the
-     * lowest in the last frame's rank.
+     * The stamp wishes and the structure meshes of the owner nodes go in one order, the last frame's rank. The structure
+     * meshes of a node are a job of their own, one at a time, which goes once no stamp wish of a lower rank waits or is on
+     * its way: the tunnels and parts about the eye wait only for the far stamps already on their way, `maxRequests` at most,
+     * and the stamps of a lower rank wait for no structure job of their frame. The worker takes its jobs in turn, so a
+     * stamp wish of a later frame waits for one structure job at most.
      */
     private refill(): void {
-        while (this.pending.size < REQUESTS && this.queue.length) {
+        while (this.pending.size < this.maxRequests && this.queue.length) {
             const node = this.queue.shift()!;
             if (!this.pending.has(key(node)) && !this.nodes.has(key(node))) this.request(node);
         }
-        if (this.pending.size || this.building) return;
+        if (this.building) return;
         let next: Node | undefined;
-        for (const node of this.unbuilt.values()) if (!next || this.rank(node) < this.rank(next)) next = node;
-        if (next) this.build(next);
+        for (const node of this.unbuilt.values()) if (!next || this.rank(node, true) < this.rank(next, true)) next = node;
+        if (!next) return;
+        // A request reaches the worker only after its device cache read, and a job at once: one sent with it would pass it.
+        const rank = this.rank(next, true);
+        if ([...this.pending.values(), ...this.queue.slice(0, 1)].every(node => rank < this.rank(node))) this.build(next);
     }
 
     private request(node: Node): void {
         const tile = featureTile(node)!, name = key(node);
-        this.pending.set(name, key(tile));
+        this.pending.set(name, node);
         this.stamps(tile, node).then(stamps => {
             this.limits += stamps.limits ?? 0;
             this.keep(name, stamps);
@@ -310,7 +314,7 @@ export class Stamps implements StampSource {
      * nodes that the last frame read: the worker keeps them. The eye's own tile has no wish for seconds between its waves of levels.
      */
     private wanted(): string[] {
-        const tiles = new Set([...this.pending.values(), ...this.queued, ...this.nearTiles, ...[...this.unbuilt.values()].map(node => key(featureTile(node)!))]);
+        const tiles = new Set([...this.queued, ...this.nearTiles, ...[...this.pending.values(), ...this.unbuilt.values()].map(node => key(featureTile(node)!))]);
         // A tile that no job reads now sends its body again when one does: the worker may have let it go.
         for (const name of this.sent) if (!tiles.has(name)) this.sent.delete(name);
         return [...tiles];
