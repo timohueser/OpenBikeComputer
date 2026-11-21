@@ -220,6 +220,7 @@ Keys of `route` and `stage`:
 | `of` | `stage` | The field that holds the key of the stage's route |
 | `number` | `stage` | The field of the stage number |
 | `ref`, `name`, `description`, `operator`, `website` | both | A template of field values, such as `"{NameR}"`. `{key}` is the text of the key field that gives the route; in a stage, `{route}` is the name of its route |
+| `name_strip` | both | Optional: a regular expression (Python `re`) that removes a prefix or junk from the filled `name`. Each match is removed, each run of spaces becomes one space, and outer spaces are removed. When nothing is left, the name stays as filled |
 | `rank` | `route` | `{ field, values }`: the value maps to a level 0 to 4 as the catalog's `rank`; another value or none: 0 |
 | `ascent` | both | The field of the source's own climb in metres. The catalog does not read it: it is there to compare the climb of the catalog with that of the source |
 | `keep` | both | `{ FIELD = [values] }`: a feature is read only when each field has one of its values |
@@ -458,7 +459,8 @@ Which version a fetch gets:
   today. A `HEAD` that the server refuses with 405 is an answer without a size, an `ETag` and a
   day. A file of a `keep = "archive"` source whose `HEAD` gives no `ETag` and no day comes only
   from the [archive](#archive), which dates its bytes: without the archive file, and with
-  `--refresh`, the fetch refuses and names `obc data archive get`.
+  `--refresh`, the fetch refuses and names `obc data archive get` with the dataset that lists
+  the source.
 - A `release` or `commit` version of a URL without `{version}` is only a name. The fetch accepts
   it only when the record of the version has the URL, and so pins its bytes.
 - For a `digest` source, the version is the SHA-256 of its one file.
