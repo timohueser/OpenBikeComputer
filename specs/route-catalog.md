@@ -262,9 +262,11 @@ records of a second source has these records as its parts (see [Parts](#parts)).
 its place in `parts`, each with its stage number (see [Sections](#sections)). A long route inside another one
 is also a long route of its own. A child route with no `name` and no `ref` that is a part gets a
 route record with the `name` and the `ref` of the long route that has it as a child relation and
-is in the catalog; of two, the one with the lower relation ID. When no such long route has it as a
-child relation, it takes the `name` and the `ref` of its `trail`, and with no `trail` it is not in
-the catalog, as any route with no `name` and no `ref`. A long route is in the catalog when at least
+whose parts are not separate routes (see below); of two, the one with the lower relation ID. When no
+such long route has it as a child relation, it takes the `name` and the `ref` of the long route in
+the catalog that lists it at the lowest level, of two the one with the lower `id`, also when that
+long route leaves for a second source (see [The same trail](#the-same-trail)). With none, it is not
+in the catalog, as any route with no `name` and no `ref`. A long route is in the catalog when at least
 one of its parts is, unless its parts are separate routes (see below).
 
 The ends of a part in the catalog are the first and the last vertex of its `line_udeg`. A part that
@@ -703,8 +705,9 @@ no stage row has no part.
   fifths along the other. Of two such records, it takes the one with the lower `id`. A record
   stands once in a trail, at its first place, so a later stage does not take it again. This part
   has the `id` of the OSM record, and the `name` and the number of the official stage.
-- Another stage that failed is a part not in the catalog, with the ends of its main line when the
-  builder made one.
+- Another stage that failed, or a stage that left for a record of an earlier source (see [Who
+  stays](#who-stays)), is a part not in the catalog, with the ends of its main line when the builder
+  made one.
 - A stage with no members is a part not in the catalog, without ends.
 
 A stage that the cut drops (see [Line of a source job](#line-of-a-source-job)) keeps its match line
@@ -750,9 +753,9 @@ trail has a lower `id` than each OSM long record, so at one level the source tra
 the stage page shows "Stage n of N" of the official trail, and the stage line has its colour. The
 OSM long record that stays still lists the part in its `parts`, with the OSM number. A record that
 is a part only of long records that left has none of these fields and shows as a route of its own.
-An unnamed OSM stage takes its name by the rule of [Long routes](#long-routes), also from a lister
-that left; with no such lister, it takes the `name` and the `ref` of its `trail`, which can be a
-source trail.
+An unnamed OSM stage takes its name by the rule of [Long routes](#long-routes), also from a long
+route that left, so it never leaves the catalog because a trail left. The long route that names it
+can be a source trail.
 
 ### Record
 

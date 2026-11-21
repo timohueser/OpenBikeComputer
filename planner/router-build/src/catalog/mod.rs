@@ -919,7 +919,8 @@ fn catalog<S: Source + Clone + Send>(
         let (mut parts, mut listed) = (Vec::new(), Vec::<(i64, usize, usize)>::new());
         for (number, name) in &trail.stages {
             let mut id = trail.stage_id(*number);
-            if !kept.contains_key(&id) {
+            // A stage that failed, not one that left for a record of an earlier source.
+            if !kept.contains_key(&id) && !matches!(drops.get(&id), Some(Reason::Replaced)) {
                 let free = candidates.iter().filter(|(fill, _)| listed.iter().all(|&(other, ..)| other != *fill));
                 let stage = probes.get(&id).or(unlined.get(&id));
                 id = stage.and_then(|stage| merge::fill(stage, free.copied())).unwrap_or(id);
@@ -951,6 +952,18 @@ fn catalog<S: Source + Clone + Send>(
             continue;
         };
         longs.push(Long { origin: trail.route.source, french: french(&parts), record, points, listed });
+    }
+    // The innermost long record that lists each unnamed stage, of two at one level the lower `id`, with its `name` and
+    // `ref`, before the merge of the long records: an unnamed stage keeps the name of a trail that leaves.
+    let mut namers = BTreeMap::<i64, ((usize, i64), (String, String))>::new();
+    for long in &longs {
+        let text = |field: &str| long.record.get(field).and_then(Value::as_str).unwrap_or("").to_string();
+        let id = long.record["id"].as_i64().expect("a record has an id");
+        for &(part, depth, _) in long.listed.iter().filter(|(part, ..)| unnamed.contains_key(part)) {
+            if namers.get(&part).is_none_or(|(at, _)| (depth, id) < *at) {
+                namers.insert(part, ((depth, id), (text("name"), text("ref"))));
+            }
+        }
     }
     // The merge of the long records builds its own probes: the memory of the job probes goes first.
     drop((probes, unlined));
@@ -988,22 +1001,24 @@ fn catalog<S: Source + Clone + Send>(
         }
     };
     // An unnamed stage takes the name of the lowest long relation that lists it and is no set of
-    // separate routes, or else of its trail. With neither, it leaves, as any unnamed route.
+    // separate routes, or else of the innermost long record that lists it, also one that left. With
+    // neither, it leaves, as any unnamed route.
     let named = |record: &mut Map<String, Value>, id: i64| -> bool {
         // A section holds the ID of its relation (`section_id`).
         let relation = if (-sources::ORIGIN_ID + 1..0).contains(&id) { -id / 100 } else { id };
         let Some(listers) = unnamed.get(&relation) else { return true };
-        let namer = listers.iter().copied().find(|id| !apart.contains(id)).or(trails.get(&relation).map(|t| t.1));
-        let Some(namer) = namer else { return false };
+        let lister = listers.iter().copied().find(|id| !apart.contains(id));
+        let Some(namer) = lister.or(namers.get(&relation).map(|((_, id), _)| *id)) else { return false };
         if namer != listers[0] {
             record.remove("name");
             record.remove("ref");
-            match relations.get(namer) {
-                Some(trail) => named_after(record, name_and_ref(&trail)),
+            match lister {
+                Some(lister) => {
+                    named_after(record, name_and_ref(&relations.get(lister).expect("a lister is in the data")))
+                }
                 None => {
-                    let trail = sources.trails.iter().find(|trail| trail.route.id() == namer);
-                    let route = &trail.expect("a trail is a long relation or a source trail").route;
-                    named_after(record, (&route.name, &route.ref_));
+                    let (name, reference) = &namers[&relation].1;
+                    named_after(record, (name, reference));
                 }
             }
         }
