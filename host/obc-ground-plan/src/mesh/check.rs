@@ -20,10 +20,8 @@ fn area(p: [[i32; 2]; 3]) -> i64 {
 
 /// The faults of a mesh's topology: a triangle that does not turn as `gridIndices` or has no area, a
 /// directed edge used twice, an edge with one triangle off the cell's lines that is not an edge of
-/// the terrain grid between two terrain vertices (on ∂R, or the diagonal of a terrain ear) or of a cut's ring.
+/// the terrain grid between two terrain vertices (on ∂R, or the diagonal of a terrain ear).
 pub fn validity(mesh: &CellMesh) -> Vec<String> {
-    let cut: std::collections::BTreeSet<([i32; 2], [i32; 2])> =
-        mesh.cut.iter().flat_map(|&[a, b]| [(a, b), (b, a)]).collect();
     let mut faults = Vec::new();
     let mut edges: BTreeMap<([i32; 2], [i32; 2]), u32> = BTreeMap::new();
     for (k, t) in mesh.triangles.iter().enumerate() {
@@ -50,11 +48,7 @@ pub fn validity(mesh: &CellMesh) -> Vec<String> {
         if n > 1 {
             faults.push(format!("edge {a:?}-{b:?} used {n} times"));
         }
-        if !edges.contains_key(&(b, a))
-            && !on_line(a, b)
-            && !(on_boundary(&a) && on_boundary(&b) && grid_edge(a, b))
-            && !cut.contains(&(a, b))
-        {
+        if !edges.contains_key(&(b, a)) && !on_line(a, b) && !(on_boundary(&a) && on_boundary(&b) && grid_edge(a, b)) {
             faults.push(format!("edge {a:?}-{b:?} has one triangle"));
         }
     }

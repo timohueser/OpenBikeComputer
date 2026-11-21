@@ -1,23 +1,14 @@
-//! The built tunnel ends of a cell's input (`obc-trailview-parts`): the openings that its ground reaches, and the cut of
-//! each end, where the bake found ground inside its part: the mesh leaves the cut open and draws no wall of its steps.
+//! The built tunnel ends of a cell's input (`obc-trailview-parts`): the openings that its ground reaches.
 
 use obc_trailview_parts::{built_ends, Chord, End, Rules};
 
-use crate::frame::{CellKey, GlobalPoint};
+use crate::frame::GlobalPoint;
 use crate::graph::OpenEnd;
 use crate::tile::Geometry;
 use crate::CellInput;
 
 /// Frame units per world unit of the viewer (2^30 per side).
 const FRAME: f64 = 16.0;
-
-/// The cut of one end, in frame units from the cell's origin: its rings (a point lies in the cut where an odd number of
-/// them hold it), and its walls: the stretches of face edges where the wall of a step passes through the part.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Cut {
-    pub rings: Vec<Vec<[i64; 2]>>,
-    pub walls: Vec<[[i64; 2]; 2]>,
-}
 
 /// The opening of a built end: its point in frame units, its unit way into the tube, and its inner half-width in
 /// metres, to the jamb lines of its head wall.
@@ -29,18 +20,16 @@ pub struct Mouth {
 }
 
 /// The built ends of a cell's input: their openings on the ground (`open`), where the end vertex of the opening's way
-/// lies in the cell grown by its margin, as the bake measures them; the cut of each end that has one; and the mouth of
-/// each.
+/// lies in the cell grown by its margin, as the bake measures them; and the mouth of each.
 pub struct Built {
     pub open: Vec<OpenEnd>,
-    pub cuts: Vec<Cut>,
     pub mouths: Vec<Mouth>,
 }
 
 pub fn built(input: &CellInput) -> Built {
     let rules = Rules::embedded();
     let world = |p: GlobalPoint| [p.x as f64 / FRAME, p.y as f64 / FRAME];
-    let (mut ends, mut cuts, mut chords) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut ends, mut chords) = (Vec::new(), Vec::new());
     for f in &input.features {
         let Some(part) = f.parts.first() else { continue };
         let z = |k: usize| part.heights.as_ref().and_then(|h| h.get(k).copied().flatten()).unwrap_or(0.0);
@@ -48,7 +37,6 @@ pub fn built(input: &CellInput) -> Built {
             ("tunnel-end", Geometry::Point, &[p]) => {
                 if let Ok(end) = End::from_tags(world(p), z(0), &f.tags, rules) {
                     ends.push(end);
-                    cuts.push((f.tags.get("cut"), f.tags.get("walls"), p));
                 }
             }
             ("tunnel-tube", Geometry::Line, &[a, b]) => {
@@ -62,10 +50,8 @@ pub fn built(input: &CellInput) -> Built {
     }
     let built = built_ends(&ends, &chords, rules);
     let [x0, y0, x1, y1] = input.key.grown();
-    let mut open = Vec::new();
-    let mut out = Vec::new();
-    let mut mouths = Vec::new();
-    for ((end, cut), _) in ends.iter().zip(&cuts).zip(&built).filter(|(_, &b)| b) {
+    let (mut open, mut mouths) = (Vec::new(), Vec::new());
+    for (end, _) in ends.iter().zip(&built).filter(|(_, &b)| b) {
         mouths.push(Mouth { at: end.at.map(|v| v * FRAME), into: end.way_in(), half_m: end.half });
         let ways = [Some((end.way, end.shift)), end.mate_way.zip(end.mate_shift)];
         for (way, shift_m) in ways.into_iter().flatten() {
@@ -73,37 +59,8 @@ pub fn built(input: &CellInput) -> Built {
                 open.push(OpenEnd { way: GlobalPoint { x: way[0], y: way[1] }, shift_m });
             }
         }
-        let &(rings_text, walls_text, p) = cut;
-        let rings = rings_text.map_or(Some(Vec::new()), |text| rings(text, p, input.key));
-        let walls = walls_text.map_or(Some(Vec::new()), |text| walls(text, p, input.key));
-        if let (Some(rings), Some(walls)) = (rings, walls) {
-            if !rings.is_empty() || !walls.is_empty() {
-                out.push(Cut { rings, walls });
-            }
-        }
     }
-    Built { open, cuts: out, mouths }
-}
-
-/// A point `x y` of a tag of an end at frame point `p`, in frame units from the cell's origin.
-fn point(q: &str, p: GlobalPoint, cell: CellKey) -> Option<[i64; 2]> {
-    let (o, (x, y)) = (cell.origin(), q.split_once(' ')?);
-    Some([p.x + x.parse::<i64>().ok()? - o.x, p.y + y.parse::<i64>().ok()? - o.y])
-}
-
-/// The rings of a tag `cut` of an end at frame point `p`; None where the tag does not read.
-fn rings(text: &str, p: GlobalPoint, cell: CellKey) -> Option<Vec<Vec<[i64; 2]>>> {
-    text.split(';').map(|ring| ring.split(',').map(|q| point(q, p, cell)).collect()).collect()
-}
-
-/// The walls of a tag `walls` of an end at frame point `p`; None where the tag does not read.
-fn walls(text: &str, p: GlobalPoint, cell: CellKey) -> Option<Vec<[[i64; 2]; 2]>> {
-    (text.split(';'))
-        .map(|wall| {
-            let (a, b) = wall.split_once(',')?;
-            Some([point(a, p, cell)?, point(b, p, cell)?])
-        })
-        .collect()
+    Built { open, mouths }
 }
 
 #[cfg(test)]
@@ -134,17 +91,8 @@ mod tests {
         Feature { index: 0, kind: kind.into(), tags, geometry, parts: vec![part] }
     }
 
-    /// The tag `cut` of one ring of points in metres in and to the left from an end 6 m east of the cell's centre,
-    /// heading east: frame units from its point.
-    fn cut(ring: [[f64; 2]; 4]) -> String {
-        let m = crate::faces::tests::mpu();
-        let point = |[u, v]: [f64; 2]| format!("{} {}", libm::round(u / m), libm::round(-v / m));
-        ring.map(point).join(",")
-    }
-
     /// A residential road from the west into a tunnel at the cell's centre that runs 100 m east, under a hill; with
-    /// `ends`, its chain's part records: an arch 6 m in, whose cut runs from 2 m before its opening to 3 m in and 4 m to
-    /// each side, across the road.
+    /// `ends`, its chain's part records: an arch 6 m in.
     fn input(ends: Option<&str>) -> CellInput {
         let street = [("highway", "residential")];
         let tunnel = [("highway", "residential"), ("tunnel", "yes")];
@@ -171,7 +119,6 @@ mod tests {
             ("foot", s("-2")),
             ("way", format!("{} {}", way.x, way.y)),
             ("shift", s("6")),
-            ("cut", cut([[-2.0, -4.0], [3.0, -4.0], [3.0, 4.0], [-2.0, 4.0]])),
         ];
         input.features.push(record("tunnel-end", &[6.0], &end));
         for (a, b) in [(6.0, 50.0), (50.0, 100.0)] {
@@ -197,8 +144,7 @@ mod tests {
     fn build(input: &CellInput) -> (crate::graph::WayGraph, CellMesh) {
         let rules = Rules::embedded();
         let graph = crate::cell::cell_graph(input.key, input, rules);
-        let (mut faces, near, _, _) = records::near_under(&graph, input, rules, input.key);
-        faces.cuts = built(input).cuts;
+        let (faces, near, _, _) = records::near_under(&graph, input, rules, input.key);
         let mesh = mesh_cell(&faces, &near.words, &Reads::of(&faces, &[]), &mut || 0.0).unwrap();
         (graph, mesh)
     }
@@ -215,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ground_reaches_a_built_opening_and_leaves_its_cut_open() {
+    fn the_ground_reaches_a_built_opening() {
         let (graph, mesh) = build(&input(Some("arch arch")));
         let (_, develop) = build(&input(None));
         // The tunnel way lies on the ground up to the opening, 6 m in.
@@ -226,12 +172,6 @@ mod tests {
         ways.sort_by(|a, b| a.1.total_cmp(&b.1));
         assert_eq!(ways.iter().map(|w| w.0).collect::<Vec<_>>(), [Level::Ground, Level::Tunnel], "{ways:?}");
         assert!((graph.samples.iter().any(|s| (s.along_m - 6.0).abs() < 1e-6)), "a sample at the opening");
-        // No triangle in the cut, the ring's edges in the mesh, and ground round it.
-        assert!(!mesh.cut.is_empty());
-        let cut = |p: [f64; 2]| (4.0..9.0).contains(&p[0]) && (-4.0..4.0).contains(&p[1]);
-        let centroids: Vec<[f64; 2]> = mesh.triangles.iter().map(|t| centroid(&mesh, t)).collect();
-        assert!(!centroids.iter().any(|&p| cut(p)), "a triangle in the cut");
-        assert!(centroids.iter().any(|&p| (3.0..4.0).contains(&p[0]) && p[1].abs() < 4.0), "the road up to the cut");
         assert!(crate::mesh::check::validity(&mesh).is_empty(), "{:?}", crate::mesh::check::validity(&mesh));
         // Away from the opening the cell is as without the parts; the road's edges run 6 m longer, so their equal
         // pieces move along them.
@@ -243,48 +183,6 @@ mod tests {
         };
         assert!(far(&mesh).len() > 20, "{}", far(&mesh).len());
         assert_eq!(far(&mesh), far(&develop));
-    }
-
-    #[test]
-    fn a_wall_of_the_cut_takes_the_step_slots_on_it_and_splits_its_edge_at_its_end() {
-        let input = input(Some("arch arch"));
-        let mesh = |walls: Vec<[[i64; 2]; 2]>| {
-            let rules = Rules::embedded();
-            let graph = crate::cell::cell_graph(input.key, &input, rules);
-            let (mut faces, near, _, _) = records::near_under(&graph, &input, rules, input.key);
-            faces.cuts = built(&input).cuts;
-            faces.cuts[0].walls = walls;
-            mesh_cell(&faces, &near.words, &Reads::of(&faces, &[]), &mut || 0.0).unwrap()
-        };
-        let slots = |m: &CellMesh| -> Vec<[[i32; 2]; 2]> {
-            let mut out: Vec<_> = (m.steps.iter())
-                .map(|s| {
-                    let (a, b) = (m.corner(s[0] as usize).0, m.corner(s[1] as usize).0);
-                    if a < b {
-                        [a, b]
-                    } else {
-                        [b, a]
-                    }
-                })
-                .collect();
-            out.sort_unstable();
-            out
-        };
-        let all = slots(&mesh(Vec::new()));
-        // A step slot of the road's cut into the hill, before the opening.
-        let east = |p: [i32; 2]| {
-            (f64::from(p[0]) + (cell().origin().x - at([0.0, 0.0]).x) as f64) * crate::faces::tests::mpu()
-        };
-        let &[a, b] =
-            all.iter().find(|s| (-6.0..2.0).contains(&east(s[0])) && (-6.0..2.0).contains(&east(s[1]))).unwrap();
-        let wide = |p: [i32; 2]| p.map(i64::from);
-        let one = slots(&mesh(vec![[wide(a), wide(b)]]));
-        assert_eq!(one, all.iter().copied().filter(|&s| s != [a, b]).collect::<Vec<_>>());
-        // A wall to the piece's middle: the edge splits there, the half on the wall goes and the other half stays.
-        let mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-        let half = slots(&mesh(vec![[wide(a), wide(mid)]]));
-        assert_eq!(half.len(), all.len(), "{half:?}");
-        assert!(half.contains(&if mid < b { [mid, b] } else { [b, mid] }) && !half.contains(&[a, b]), "{half:?}");
     }
 
     #[test]

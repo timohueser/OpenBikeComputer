@@ -35,28 +35,11 @@ pub struct Segment {
 
 /// The triangles of D: point indices turning as the terrain's `gridIndices` (negative signed area in
 /// x east, y south), and the class of each: the face of a face edge that bounds its region, else
-/// `INSIDE`. A face edge names the faces; D's border, given after them, only parts D from the rest; the last `rings`
-/// segments are the edges of a cut's rings, which part no faces.
+/// `INSIDE`. A face edge names the faces; D's border, given after them, only parts D from the rest.
 /// Also the count of face-edge pieces that the triangulation split at a point on them.
-pub fn triangulate(points: &[P], segments: &[Segment], edges: usize, rings: usize) -> Result<Triangles, MeshError> {
+pub fn triangulate(points: &[P], segments: &[Segment], edges: usize) -> Result<Triangles, MeshError> {
     let vertices: Vec<Point2<f64>> = points.iter().map(|p| Point2::new(f64::from(p[0]), f64::from(p[1]))).collect();
-    let pair = |a: u32, b: u32| (a.min(b), a.max(b));
-    let sorted = |list: &[Segment]| {
-        let mut v: Vec<(u32, u32)> = list.iter().filter(|s| s.a != s.b).map(|s| pair(s.a, s.b)).collect();
-        v.sort_unstable();
-        v.dedup();
-        v
-    };
-    let parts = segments.len() - rings;
-    // Each constraint once: a ring's edge can run along a face edge.
-    let pairs: Vec<[usize; 2]> = if rings == 0 {
-        segments.iter().filter(|s| s.a != s.b).map(|s| [s.a as usize, s.b as usize]).collect()
-    } else {
-        sorted(segments).into_iter().map(|(a, b)| [a as usize, b as usize]).collect()
-    };
-    let walls = sorted(&segments[..parts]);
-    let open: Vec<(u32, u32)> =
-        sorted(&segments[parts..]).into_iter().filter(|p| walls.binary_search(p).is_err()).collect();
+    let pairs: Vec<[usize; 2]> = segments.iter().filter(|s| s.a != s.b).map(|s| [s.a as usize, s.b as usize]).collect();
     let mut conflict = None;
     let cdt = Cdt::try_bulk_load_cdt(vertices, pairs, |e| {
         conflict.get_or_insert(e);
@@ -71,7 +54,7 @@ pub fn triangulate(points: &[P], segments: &[Segment], edges: usize, rings: usiz
     let mut class = vec![UNSET; cdt.num_all_faces()];
     let mut stack = Vec::new();
     let mut split = 0;
-    for (k, range) in [0..edges, edges..parts].into_iter().enumerate() {
+    for (k, range) in [0..edges, edges..segments.len()].into_iter().enumerate() {
         for s in &segments[range] {
             let Some(e) = cdt.get_edge_from_neighbors(
                 FixedVertexHandle::from_index(s.a as usize),
@@ -92,8 +75,7 @@ pub fn triangulate(points: &[P], segments: &[Segment], edges: usize, rings: usiz
         while let Some(f) = stack.pop() {
             let c = class[f.index()];
             for e in cdt.face(f).adjacent_edges() {
-                let [a, b] = e.vertices().map(|v| v.fix().index() as u32);
-                if e.is_constraint_edge() && open.binary_search(&pair(a, b)).is_err() {
+                if e.is_constraint_edge() {
                     continue;
                 }
                 if let Some(g) = e.rev().face().as_inner() {

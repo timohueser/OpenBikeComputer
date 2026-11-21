@@ -198,7 +198,5 @@ pub struct FacePlan {
     pub corners: Vec<CornerArc>,
     /// The mouths of the culverts' zones about the cell.
     pub mouths: Vec<CulvertMouth>,
-    /// The cut of each built tunnel end about the cell (`openings`): no face, but the mesh leaves it open.
-    pub cuts: Vec<crate::openings::Cut>,
     pub stats: FaceStats,
 }

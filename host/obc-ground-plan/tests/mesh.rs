@@ -28,20 +28,19 @@ fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its
     let cells: Vec<CellKey> = (fixture.cells().into_iter())
         .filter(|k| k.feature_tiles().iter().all(|&(c, r)| fixture::feature_tile(&dir, c, r).is_some()))
         .collect();
-    // As the device builds a cell: the ways of the built tunnel ends on the ground up to their openings, and the cuts.
+    // As the device builds a cell: the ways of the built tunnel ends on the ground up to their openings.
     let built = fixture.map(&cells, |key, input| {
         let ends = openings::built(&input);
         let mut graph = graph::build_open(key, &input, &rules.sections, None, &ends.open);
         graph.mouths = ends.mouths;
-        let mut built = records::build(&graph, &input, rules, key, 0, true);
-        built.faces.cuts = ends.cuts;
+        let built = records::build(&graph, &input, rules, key, 0, true);
         (key, Rim::of(&built.faces), built.faces, built.near.words, input.terrain)
     });
     let rims: BTreeMap<CellKey, Rim> = built.iter().map(|b| (b.0, b.1.clone())).collect();
     let mut faults = Vec::new();
     let mut meshes = BTreeMap::new();
     let mut labels = check::Labels::default();
-    let (mut end_faces, mut misses, mut steeps, mut cut_edges) = (0, 0, 0, 0);
+    let (mut end_faces, mut misses, mut steeps) = (0, 0, 0);
     for (key, _, plan, words, terrain) in &built {
         let around: Vec<Rim> = (-1..=1i64)
             .flat_map(|dy| {
@@ -63,7 +62,6 @@ fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its
         faults.extend(check::validity(&mesh).into_iter().map(|f| format!("{key:?}: {f}")));
         let (stray, missed, steep) = check::deck_ends(&mesh, words, terrain, *key);
         end_faces += mesh.end_faces;
-        cut_edges += mesh.cut.len();
         faults.extend(stray.into_iter().map(|f| format!("{key:?}: {f}")));
         (misses, steeps) = (misses + missed.len(), steeps + steep.len());
         let l = check::labels(&mesh, words);
@@ -88,11 +86,10 @@ fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its
         }
     }
     println!(
-        "{} cells meshed, {lines} shared lines ({sub_mm} points with a sub-mm step); labels {labels:?}; {end_faces} end face slots, {misses} slots on an end line not end faces, {steeps} steep ground triangles near an end line, {cut_edges} edges of cuts",
+        "{} cells meshed, {lines} shared lines ({sub_mm} points with a sub-mm step); labels {labels:?}; {end_faces} end face slots, {misses} slots on an end line not end faces, {steeps} steep ground triangles near an end line",
         meshes.len()
     );
     assert!(end_faces > 0, "no end face in the fixture");
-    assert!(cut_edges > 0, "no cut of a built tunnel end in the fixture");
     assert!(steeps <= STEEP_NEAR_END_MAX, "{steeps} steep ground triangles near a deck end line");
     assert!(faults.is_empty(), "{} faults: {:#?}", faults.len(), &faults[..faults.len().min(20)]);
     assert_eq!(labels.ground_wrong, 0, "{:#?}", labels.first);

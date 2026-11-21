@@ -170,8 +170,7 @@ fn level_0(
     let key = input.key;
     let graph = cell_graph(key, input, rules);
     let built = now();
-    let (mut faces, records, far, under) = records::near_under(&graph, input, rules, key);
-    faces.cuts = openings::built(input).cuts;
+    let (faces, records, far, under) = records::near_under(&graph, input, rules, key);
     let times = vec![0.0, built - read, now() - built];
     let records = records.words;
     let (storeys, storey_time) = (Storeys::default(), 0.0);

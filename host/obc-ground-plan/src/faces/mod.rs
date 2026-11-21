@@ -2816,7 +2816,6 @@ fn output(
         edges,
         corners: Vec::new(),
         mouths: Vec::new(),
-        cuts: Vec::new(),
         stats,
     }
 }

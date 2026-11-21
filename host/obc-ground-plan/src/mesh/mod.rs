@@ -73,12 +73,10 @@
 
 pub mod cdt;
 pub mod check;
-pub mod cut;
 pub mod params;
 pub mod points;
 pub mod region;
 pub mod shell;
-mod snap;
 pub mod strip;
 
 use crate::faces::records::find;
@@ -120,7 +118,7 @@ pub struct Rim {
 impl Rim {
     pub fn of(plan: &FacePlan) -> Rim {
         let c = CELL_UNITS as i32;
-        let mut lines = cut::on_lines(&cut::rings(plan));
+        let mut lines: [Vec<i32>; 4] = Default::default();
         for p in &plan.vertices {
             for (side, on, along) in
                 [(0, p[1] == 0, p[0]), (1, p[0] == c, p[1]), (2, p[1] == c, p[0]), (3, p[0] == 0, p[1])]
@@ -212,8 +210,6 @@ pub struct CellMesh {
     pub times: Vec<f64>,
     /// With the bores, per triangle before the strip's, the floor under its face (`Face::under`); not in the bytes.
     pub floors: Vec<u32>,
-    /// The edges of the cut's rings in the cell, where the mesh ends; not in the bytes.
-    pub cut: Vec<[[i32; 2]; 2]>,
 }
 
 /// Indices less a run's base, two u16 to a word, low first; a zero pads an odd count.
@@ -461,7 +457,7 @@ pub fn mesh_cell(
     let (cell, region) = (plan.cell, &reads.region);
     let input = points::input(plan, region, &reads.lines, cell.origin().y as f64);
     lap(&mut times);
-    let (tris, split_edges) = cdt::triangulate(&input.points, &input.segments, input.edges, input.rings)?;
+    let (tris, split_edges) = cdt::triangulate(&input.points, &input.segments, input.edges)?;
     lap(&mut times);
     let labels = face_labels(&plan.faces, words);
     let label_of = |f: u32| labels[f as usize].unwrap_or(NO_LABEL);
@@ -503,22 +499,9 @@ pub fn mesh_cell(
         keys: Vec::new(),
         of: Vec::new(),
     };
-    // The triangles in the cut: their centroid lies where an odd number of an end's rings hold it.
-    let in_cut = |t: &[u32; 3]| {
-        let q = [0, 1].map(|k| t.iter().map(|&v| i64::from(input.points[v as usize][k])).sum::<i64>());
-        input.cut.iter().any(|rings| cut::holds(rings, q, 3))
-    };
-    // Per directed edge of a triangle, whether the triangle lies in the cut, sorted.
-    let mut cut_sides: Vec<((u32, u32), bool)> = if input.cut.is_empty() {
-        Vec::new()
-    } else {
-        tris.iter().flat_map(|(t, _)| (0..3).map(move |i| ((t[i], t[(i + 1) % 3]), in_cut(t)))).collect()
-    };
-    cut_sides.sort_unstable();
-    let cut_at = |e: (u32, u32)| cut_sides.binary_search_by_key(&e, |s| s.0).is_ok_and(|k| cut_sides[k].1);
     let mut triangles = Vec::with_capacity(tris.len());
     let mut floors = Vec::new();
-    for (t, class) in tris.iter().filter(|(t, _)| !cut_at((t[0], t[1]))) {
+    for (t, class) in &tris {
         if crate::graph::BORES {
             floors.push(plan.faces.get(*class as usize).map_or(crate::faces::NO_UNDER, |f| f.under));
         }
@@ -547,10 +530,7 @@ pub fn mesh_cell(
         };
         let (la, lb) = (side(s.left, s.a, &mut ground), side(s.left, s.b, &mut ground));
         let (ra, rb) = (side(s.right, s.a, &mut ground), side(s.right, s.b, &mut ground));
-        // A slot stands between two drawn faces: none beside a triangle in the cut, and none on a wall of the cut.
-        let beside_cut = cut_at((s.a, s.b)) || cut_at((s.b, s.a));
-        let on_wall = cut::on_wall(&input.walls, input.points[s.a as usize], input.points[s.b as usize]);
-        if (la != ra || lb != rb) && !beside_cut && !on_wall {
+        if la != ra || lb != rb {
             let slot = [corners.get(s.a, la), corners.get(s.b, lb), corners.get(s.b, rb), corners.get(s.a, ra)];
             if end {
                 faces.push(slot);
@@ -693,9 +673,6 @@ pub fn mesh_cell(
         stats,
         times,
         floors,
-        cut: (input.segments[input.segments.len() - input.rings..].iter())
-            .map(|s| [input.points[s.a as usize], input.points[s.b as usize]])
-            .collect(),
     })
 }
 
