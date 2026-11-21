@@ -170,17 +170,33 @@ fn newest_stored(store: &Store, source: &str, params: &[(String, String)]) -> Re
         found.extend(store.paramless_snapshots(source)?);
     } else {
         for request in store.requests(source, params)? {
-            let Some(mut snapshot) = store.snapshot(source, &request.version)? else { continue };
-            let files = request.files.iter().map(|name| snapshot.files.iter().find(|file| &file.name == name).cloned());
-            let Some(files) = files.collect::<Option<Vec<_>>>() else { continue };
-            snapshot.files = files;
-            found.push(snapshot);
+            found.extend(recorded(store, source, &request.version, params)?);
         }
     }
     found.retain(|snapshot| {
         !snapshot.files.is_empty() && snapshot.files.iter().all(|f| store.object(&f.sha256).is_file())
     });
     Ok(found.into_iter().max_by_key(|snapshot| snapshot.files.iter().map(|file| file.retrieved.clone()).max()))
+}
+
+/// The files that a fetch of `source@version` with `params` recorded, when the store has the object
+/// of each. The record, not the URL, names them: upstream can move a file of a stored version.
+fn recorded(
+    store: &Store,
+    source: &str,
+    version: &str,
+    params: &[(String, String)],
+) -> Result<Option<Snapshot>, String> {
+    let Some(names) = store.requested(source, version, params)? else { return Ok(None) };
+    let Some(mut snapshot) = store.snapshot(source, version)? else { return Ok(None) };
+    let files = names.iter().map(|name| snapshot.files.iter().find(|file| &file.name == name).cloned());
+    match files.collect::<Option<Vec<_>>>() {
+        Some(files) if !files.is_empty() && files.iter().all(|f| store.object(&f.sha256).is_file()) => {
+            snapshot.files = files;
+            Ok(Some(snapshot))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// A snapshot with the object of each file, in the order of its files.
@@ -221,6 +237,9 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
     let only_a_name = !named && matches!(source.version, VersionScheme::Release | VersionScheme::Commit);
     if let Some(version) = &request.version {
         check_version(source, version)?;
+        if let Some(snapshot) = recorded(store, &source.id, version, &request.params)? {
+            return Ok(snapshot);
+        }
     } else if named || only_a_name {
         return Err(format!("source `{}` needs a version: give SOURCE@VERSION", source.id));
     }
@@ -926,6 +945,13 @@ pub(crate) mod tests {
             ("2026-10-03", "europe/monaco/monaco-261003.osm.pbf")
         );
         // Last-Modified is two days after the data, which a dated file does not ask.
+        assert_eq!(log.lock().unwrap().len(), 2);
+        // The request record names the files of a stored version, also after upstream moved them.
+        let moved = located(FetchKind::Geofabrik, &url.replace("data/file.bin", "moved/{area}-{yymmdd}.osm.pbf"));
+        let stored =
+            Request { refresh: false, source: &moved, version: Some("2026-10-03".into()), params: area.clone() };
+        let snapshot = fetch(&tooling_root(), &store, &quick(), &stored).unwrap();
+        assert_eq!(snapshot.files[0].name, "europe/monaco/monaco-261003.osm.pbf");
         assert_eq!(log.lock().unwrap().len(), 2);
         let gone = Request { refresh: false, source: &extracts, version: Some("2026-08-15".into()), params: area };
         assert!(fetch(&tooling_root(), &store, &quick(), &gone).unwrap_err().contains("first of each month"));
