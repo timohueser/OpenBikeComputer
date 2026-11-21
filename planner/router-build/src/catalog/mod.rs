@@ -79,7 +79,6 @@ pub enum Reason {
     UnroutableGap,
     TooManyPoints,
     ShapingCheck,
-    ShapingStall,
     Fork,
     RouterLimit,
     SearchBudget,
@@ -1123,7 +1122,6 @@ fn planned<D: RoutingData>(
         // The catalog control never cancels.
         Failure::Limit | Failure::Memory | Failure::Cancelled => Reason::RouterLimit,
         Failure::Budget => Reason::SearchBudget,
-        Failure::Stall => Reason::ShapingStall,
     })?;
     let geometry = shape::vertices(&plan.route);
     let keep: Vec<usize> = plan.route.legs.iter().map(|leg| leg.from_index).chain([geometry.len() - 1]).collect();
