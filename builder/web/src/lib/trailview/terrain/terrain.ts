@@ -280,21 +280,21 @@ export class Terrain {
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / PAGE_BYTES / LAYER_PAGES) * LAYER_PAGES;
         this.profileTable = profileTable();
-        this.stamps = new Stamps(features, changed, stop, plan, baked, plan ? cache : undefined, budget.loads.stamps);
+        this.stamps = new Stamps(features, changed, stop, plan, baked, plan ? cache : undefined, budget);
         // With the ground plan the records draw the ways: no corridor holds one.
         this.roads = new Roads(plan ? undefined : features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
-        if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
+        if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop, budget);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
         const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node), (x, y) => this.structures.holds(x, y)) : undefined;
         const records = this.records = plan
-            ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node), cache && { release: cache.release, version: cache.plan })
+            ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node), cache && { release: cache.release, version: cache.plan }, budget)
             : undefined;
         // A near page waits for its cell's records. A page of the level that the meshes draw over also waits for its cell's mesh
         // to hold its heights: until then the coarser page draws, never the far look up close.
         const waits = (node: Node) => records!.waits(node) || (node.level === pieces!.level && (records!.meshComing(cellOf(node)) || pieces!.ready(cellOf(node)) === false));
         const stamps = records ? { get: (node: Node) => (waits(node) ? undefined : this.stamps.get(node)), known: (node: Node) => (waits(node) ? undefined : this.stamps.known(node)) } : this.stamps;
-        this.pages = new Pages(source, { stored: Math.round(budget.terrainShare * (pages - SYNTH_PAGES)), synth: Math.round(budget.terrainShare * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS, budget.loads.terrain);
+        this.pages = new Pages(source, { stored: Math.round(budget.terrainShare * (pages - SYNTH_PAGES)), synth: Math.round(budget.terrainShare * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS, budget);
     }
 
     get idle(): boolean {

@@ -2,20 +2,28 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FakeCaches } from '../../../../test-support/fake-caches';
 import type { Instances, ModelSpec } from '../instances/instances';
 import type { ModelAnswer, ModelJob } from './model-worker';
-import { TreeModels, type Reach } from './tree-models';
+import { IDLE_MS, TreeModels, type Reach } from './tree-models';
 
 // Workers that keep their jobs, which the test answers.
 const jobs: { job: ModelJob; answer: (data: Omit<ModelAnswer, 'id'>) => void }[] = [];
 class FakeWorker {
+    static live = 0;
     onmessage?: (event: { data: ModelAnswer }) => void;
+    constructor() {
+        FakeWorker.live++;
+    }
     postMessage(job: ModelJob) {
         jobs.push({ job, answer: data => this.onmessage!({ data: { id: job.id, ...data } }) });
+    }
+    terminate() {
+        FakeWorker.live--;
     }
 }
 const built = (crown: number) => ({ tiers: [], crown });
 
 function trees(near = new Map<string, number>(), version?: string, reach: Reach = { reach: new Set([0]), near: new Set([0]) }) {
     vi.stubGlobal('Worker', FakeWorker);
+    FakeWorker.live = 0;
     jobs.length = 0;
     const specs: ModelSpec[] = [];
     const instances = { add: (spec: ModelSpec) => specs.push(spec) - 1, replace: (m: number, spec: ModelSpec) => (specs[m] = spec), day: 0 };
@@ -24,7 +32,7 @@ function trees(near = new Map<string, number>(), version?: string, reach: Reach 
 }
 
 describe('the tree models', () => {
-    afterEach(() => (vi.unstubAllGlobals(), vi.restoreAllMocks()));
+    afterEach(() => (vi.unstubAllGlobals(), vi.restoreAllMocks(), vi.useRealTimers()));
 
     it('draws a winter start bare from the summer builds', () => {
         const { models, specs, reach, beech } = trees();
@@ -37,6 +45,20 @@ describe('the tree models', () => {
         models.update('2026-01-20', reach);
         const winter = specs[beech].phases![0].model;
         expect([specs[beech].crown, winter === beech ? undefined : specs[winter].crown, jobs.length]).toEqual([0.1, 0.2, 2]);
+    });
+
+    it('ends a worker after IDLE_MS with no job, and starts one again for the next build', () => {
+        vi.useFakeTimers();
+        const { models, reach } = trees();
+        models.update('2026-07-01', reach);
+        jobs[0].answer({ leafy: [{ ...built(0.1), tones: [], own: [] }], crowns: [] });
+        vi.advanceTimersByTime(IDLE_MS - 1);
+        expect(FakeWorker.live).toBe(1);
+        vi.advanceTimersByTime(1);
+        expect(FakeWorker.live).toBe(0);
+        models.index(0, 'oak');
+        models.update('2026-07-01', { ...reach });
+        expect([FakeWorker.live, jobs[1].job.leafy[0].model]).toEqual([1, 'oak']);
     });
 
     it('gives the free workers the species with the most trees about the eye first', () => {
