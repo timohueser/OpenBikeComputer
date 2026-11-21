@@ -1,15 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BUDGETS } from '../budget';
 import { anchorAt } from '../frame/space';
 import { TILE_ZOOM } from '../stream/terrain';
-import { CALM, cdlod, GRID, RANGE, select, size } from './lod';
+import { CALM, cdlod, GRID, select, size } from './lod';
 import { MODE, type Page } from './pages';
 import { gridIndices, stampJobs, stepQuality, SYNTH_PAGES, SYNTHESIZED, Terrain } from './terrain';
+
+const { least, morph } = BUDGETS.desktop.lod;
 
 describe('the synthesized pool', () => {
     it('holds what the least range wants of the half of the world ahead, so no page is left out', () => {
         const anchor = anchorAt(8.38, 46.8), east = anchor.whole[0] + anchor.part[0];
         for (const above of [1.6, 30, 300]) {
-            const { wanted } = select(cdlod({ anchor, above }, RANGE.least), [0, 0, 2 ** 30, 2 ** 30], ({ level, x }) => (x + 1) * size(level) >= east);
+            const { wanted } = select(cdlod({ anchor, above }, least, morph), [0, 0, 2 ** 30, 2 ** 30], ({ level, x }) => (x + 1) * size(level) >= east);
             expect(wanted.filter(({ level }) => level > TILE_ZOOM + 1).length).toBeLessThanOrEqual(SYNTH_PAGES);
         }
     });

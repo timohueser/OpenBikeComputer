@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { BUDGETS } from '../budget';
 import { anchorAt } from '../frame/space';
-import { CALM, cdlod, key, RANGE, type Node } from '../terrain/lod';
+import { CALM, cdlod, key, type Node } from '../terrain/lod';
 import type { CellMesh } from './mesh';
 import { meshLevel, Pieces, splitMouths, splitTails } from './pieces';
+
+const { least, morph } = BUDGETS.desktop.lod;
 
 describe('splitMouths', () => {
     it("moves a run's mouth triangles to its end and keeps every triangle with its first corner", () => {
@@ -89,7 +92,7 @@ describe('meshLevel', () => {
 describe('Pieces', () => {
     it('draws again after a dip to 16 in a still view: it asks for the frames that bring the meshes back', () => {
         const pieces = new Pieces(() => ({ data: null, portals: null })), eye = { anchor: anchorAt(8.4048, 46.8219), above: 1.7 };
-        const frame = (finest: number) => pieces.update(cdlod(eye, RANGE.least, finest), eye, () => 0, () => '', [], () => true, () => true);
+        const frame = (finest: number) => pieces.update(cdlod(eye, least, morph, finest), eye, () => 0, () => '', [], () => true, () => true);
         for (const finest of [18, 17, 16]) frame(finest);
         expect(pieces.level).toBe(0);
         // The quality is back at 17 and nothing else moves: only the meshes keep the frames going.
@@ -115,7 +118,7 @@ describe('Pieces', () => {
             return (away = false) => {
                 const before = reads;
                 gone = away;
-                pieces.update(cdlod(eye, RANGE.least, 18), eye, () => 0, () => '', [], () => true, () => true);
+                pieces.update(cdlod(eye, least, morph, 18), eye, () => 0, () => '', [], () => true, () => true);
                 return (reads - before) / 36;
             };
         };
@@ -132,7 +135,7 @@ describe('Pieces', () => {
         words[0] = 0x4f424d05;
         pieces.add({ level: 16, x: 34_307, y: 23_107 }, words.buffer, 0, new Set());
         let reads = 0;
-        const frame = (finest: number) => pieces.update(cdlod(eye, RANGE.least, finest), eye, () => 0, () => `${reads++}`, [], () => true, () => true);
+        const frame = (finest: number) => pieces.update(cdlod(eye, least, morph, finest), eye, () => 0, () => `${reads++}`, [], () => true, () => true);
         frame(18);
         frame(16);
         const before = reads;

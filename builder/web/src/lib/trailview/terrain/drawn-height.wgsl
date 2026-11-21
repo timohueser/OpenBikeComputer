@@ -22,6 +22,8 @@ struct Surface {
     forward: array<vec4f, 5>,
     // Per level: xy the node at the origin of its LOD map window. zw is unused: a uniform array element takes 16 bytes.
     levels: array<vec4i, 19>,
+    // The morph band at the far end of each level, in levels of log2 distance (`Rule.morph` of lod.ts).
+    morph: f32,
 }
 
 @group(1) @binding(0) var<uniform> surface: Surface;
@@ -40,7 +42,6 @@ const MAP: i32 = 32;
 // Texels across a layer: 8 pages of 256.
 const LAYER: f32 = 2048.0;
 const COARSEST: u32 = 1u;
-const MORPH: f32 = 0.3;
 // As MARGIN in lod.ts.
 const MARGIN: f32 = 1e-3;
 const UNKNOWN16: u32 = 0xffffu;
@@ -232,7 +233,7 @@ fn units_ground(u: vec2i, top: u32) -> vec2f {
 fn lod(s: vec2f) -> f32 {
     let q = log2(surface.range / length(vec3f(s, surface.above)));
     let k = floor(q);
-    return clamp(k - 1.0 + min(1.0, (q - k) / MORPH), f32(COARSEST), f32(surface.finest));
+    return clamp(k - 1.0 + min(1.0, (q - k) / surface.morph), f32(COARSEST), f32(surface.finest));
 }
 
 // The weights of a point in a triangle, all ≥ 0 inside it; none for a triangle without area.
