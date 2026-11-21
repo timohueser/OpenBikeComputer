@@ -43,7 +43,10 @@ fn top(end: &crate::End, edge: f64, (coping, slope): (f64, f64), t: f64) -> f64 
     } else {
         return end.face;
     };
-    let at = |i: usize| if i == 0 || row.is_empty() { end.face } else { row[(i - 1).min(row.len() - 1)] };
+    if row.is_empty() {
+        return end.face;
+    }
+    let at = |i: usize| if i == 0 { end.face } else { row[(i - 1).min(row.len() - 1)] };
     let j = d.floor() as usize;
     let along = at(j) + (at(j + 1) - at(j)) * (d - j as f64);
     let len = row.len() as f64;
