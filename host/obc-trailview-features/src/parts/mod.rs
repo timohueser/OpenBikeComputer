@@ -380,7 +380,7 @@ pub(crate) fn num(v: f64) -> String {
 
 /// The placement of the tunnel parts, measured on the ground plan.
 pub(crate) fn place(input: &Input, memory: usize) -> Placed {
-    place_with(input, &|asks, ends| measure::sites(asks, input, ends, memory))
+    place_with(input, &|asks, ends, mouths| measure::sites(asks, input, (ends, mouths), memory))
 }
 
 /// The placement with the sites that `measure` gives of the asks, with the open ends of all openings.

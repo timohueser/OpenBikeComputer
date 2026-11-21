@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use obc_ground_plan::graph::OpenEnd;
+use obc_ground_plan::openings::Mouth;
 
 use super::floor::{self, Floor};
 use super::measure::{self, Ask, Site};
@@ -47,8 +48,9 @@ pub(crate) struct Decided {
     pub metrics: Value,
 }
 
-/// The measure of the asks, with the open ends of all openings.
-pub(crate) type Measure<'a> = dyn Fn(&[Ask], &[OpenEnd]) -> (Vec<Site>, usize) + 'a;
+/// The measure of the asks, with the open ends of all openings and the mouths of the built ends (none while the ladder
+/// decides).
+pub(crate) type Measure<'a> = dyn Fn(&[Ask], &[OpenEnd], &[Mouth]) -> (Vec<Site>, usize) + 'a;
 
 /// Two openings of other tubes that lead the same way within `pair_max_deg` and lie within `pair_max_m`: their
 /// metres apart, and b's metres to the left of a and in along a.
@@ -210,7 +212,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     };
     let asks: Vec<Ask> = asked.iter().map(|&i| ask_of(i, openings, tubes, &half, &reach, input)).collect();
     let first = open_ends(openings);
-    let (measured, mut cells) = measure(&asks, &first);
+    let (measured, mut cells) = measure(&asks, &first, &[]);
     let mut sites: Vec<Option<Site>> = vec![None; n];
     let mut rights: Vec<u32> = vec![0; n];
     for ((&i, site), a) in asked.iter().zip(measured).zip(&asks) {
@@ -336,7 +338,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             .collect();
         if !again.is_empty() {
             let asks: Vec<Ask> = again.iter().map(|&i| ask_of(i, openings, tubes, &half, &reach, input)).collect();
-            let (measured, more) = measure(&asks, &opened);
+            let (measured, more) = measure(&asks, &opened, &[]);
             cells += more;
             remeasured += again.len();
             for ((&i, site), a) in again.iter().zip(measured).zip(&asks) {

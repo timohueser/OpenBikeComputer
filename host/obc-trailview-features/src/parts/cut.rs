@@ -19,6 +19,7 @@ use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::core::solver::{Precision, Solver, Strategy};
 use i_overlay::i_float::int::point::IntPoint;
 use obc_ground_plan::graph::OpenEnd;
+use obc_ground_plan::openings::Mouth;
 use obc_trailview_parts::{
     corners, end_boxes, metres_per_unit, outside, outside_floor, outside_plan, outside_roof, Chord, End, Rules, BOX,
 };
@@ -92,7 +93,12 @@ pub(crate) fn add(
             ..Ask::default()
         })
         .collect();
-    let (sites, cells) = if asks.is_empty() { (Vec::new(), 0) } else { measure(&asks, opened) };
+    // The ways that end at a built opening widen to it, as the device builds them.
+    let mouths: Vec<Mouth> = (0..ends.len())
+        .filter(|&e| !boxes[e].is_empty())
+        .map(|e| Mouth { at: ends[e].at.map(|v| v * FRAME), into: ends[e].way_in(), half_m: ends[e].half })
+        .collect();
+    let (sites, cells) = if asks.is_empty() { (Vec::new(), 0) } else { measure(&asks, opened, &mouths) };
     let (mut cut, mut rings_n, mut points_n, mut faces_n, mut invalid) = (0, 0, 0, 0, 0);
     let (mut walled, mut walls_n) = (0, 0);
     for ((e, g), site) in grids.into_iter().zip(sites) {

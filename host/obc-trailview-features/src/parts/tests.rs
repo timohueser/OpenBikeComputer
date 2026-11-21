@@ -105,7 +105,7 @@ impl Case {
             classes: &classes,
         };
         let opened = std::cell::RefCell::new(opened);
-        place_with(&input, &|asks, ends| {
+        place_with(&input, &|asks, ends, _| {
             opened.borrow_mut().extend_from_slice(ends);
             (asks.iter().map(site).collect(), 0)
         })

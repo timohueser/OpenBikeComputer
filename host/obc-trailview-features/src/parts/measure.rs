@@ -7,6 +7,7 @@ use obc_ground_plan::faces::heights::check;
 use obc_ground_plan::faces::{records, Rules};
 use obc_ground_plan::frame::{CellKey, GlobalPoint, FRAME_BITS};
 use obc_ground_plan::graph::{self, CrossingKind, Family, Level, OpenEnd};
+use obc_ground_plan::openings::Mouth;
 use obc_ground_plan::terrain::Terrain as Pages;
 use obc_ground_plan::tile::Geometry;
 
@@ -116,8 +117,14 @@ fn key_of(q: [f64; 2]) -> CellKey {
     CellKey::of(GlobalPoint { x: q[0].floor() as i64, y: q[1].floor() as i64 })
 }
 
-/// The cell built as the device builds it, with the open stretches of `ends` near it, and what the measure reads.
-fn cell(key: CellKey, reader: &mut Reader, ends: &[OpenEnd], id: &dyn Fn(u32, u32, u32) -> Option<u32>) -> Cell {
+/// The cell built as the device builds it, with the open stretches of `ends` near it and the approaches to `mouths`,
+/// and what the measure reads.
+fn cell(
+    key: CellKey,
+    reader: &mut Reader,
+    (ends, mouths): (&[OpenEnd], &[Mouth]),
+    id: &dyn Fn(u32, u32, u32) -> Option<u32>,
+) -> Cell {
     let rules = Rules::embedded();
     let input = reader.input(key);
     let [x0, y0, x1, y1] = key.grown();
@@ -125,6 +132,7 @@ fn cell(key: CellKey, reader: &mut Reader, ends: &[OpenEnd], id: &dyn Fn(u32, u3
         (ends.iter().copied()).filter(|e| (x0..=x1).contains(&e.way.x) && (y0..=y1).contains(&e.way.y)).collect();
     let band = rules.structures.edge_band_m;
     let mut g = graph::build_open(key, &input, &rules.sections, Some(band), &near);
+    g.mouths = mouths.to_vec();
     let (plan, near_records, _, _) = records::near_under(&g, &input, rules, key);
     let o = key.origin();
     let labels = obc_ground_plan::mesh::face_labels(&plan.faces, &near_records.words);
@@ -262,7 +270,12 @@ fn boxes_meet(a: [f64; 4], b: [f64; 4]) -> bool {
 
 /// The sites of the asks. Each cell that holds a point to read is built once: a job takes the cells of one zoom-13
 /// tile, one at a time; as many jobs run at once as `memory` holds.
-pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize) -> (Vec<Site>, usize) {
+pub(crate) fn sites(
+    asks: &[Ask],
+    input: &Input,
+    (ends, mouths): (&[OpenEnd], &[Mouth]),
+    memory: usize,
+) -> (Vec<Site>, usize) {
     let z13 = |c: u32, r: u32| input.tiles.tiles.get(&(MAX_ZOOM, c, r));
     let id = |c: u32, r: u32, index: u32| z13(c, r).and_then(|t: &Tile| t.id(index));
     let mut sites: Vec<Site> = (asks.iter())
@@ -318,7 +331,7 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
         let mut reader = Reader::new(&z13, input.terrain, Some(input.levels));
         job.iter()
             .map(|(key, reads, fielded)| {
-                let c = cell(*key, &mut reader, ends, &id);
+                let c = cell(*key, &mut reader, (ends, mouths), &id);
                 let o = key.origin();
                 let ground = |p: [f64; 2]| {
                     let q = frame(p);
