@@ -41,7 +41,10 @@ export class Rows implements Producer {
     private resources?: Resources;
     private readonly data: Uint32Array<ArrayBuffer>;
     private readonly reach: number;
-    /** Base cells a side of the window at the highest latitude that the view serves: the cell list's size. */
+    /**
+     * Base cells a side of the window at the highest latitude that the view serves: the cell list's size. `plantings`
+     * dispatches one dimension, at most 65,535 workgroups: the reach of 2 km holds fewer cells up to about 79° N.
+     */
     private readonly most: number;
     private side = 0;
 
@@ -97,7 +100,8 @@ export class Rows implements Producer {
         const r = this.resources;
         if (!r) return;
         const [ux, uy] = worldPixel(lonLat, UNITS);
-        this.side = this.sideAt(lonLat[1]);
+        // An eye past the bounds' highest latitude keeps the window of the list's size, as the forest does: the list holds every cell.
+        this.side = Math.min(this.most, this.sideAt(lonLat[1]));
         // Base cell b starts at (b + 1) × BASE, half a field cell past a whole one.
         const params = new Int32Array([Math.floor(ux / BASE) - 1 - this.side / 2, Math.floor(uy / BASE) - 1 - this.side / 2, this.side, 0]);
         new Float32Array(params.buffer)[3] = this.reach;
