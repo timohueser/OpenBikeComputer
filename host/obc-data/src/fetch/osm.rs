@@ -5,8 +5,8 @@ use super::{expand, files, Request};
 use crate::date;
 use crate::store::{Snapshot, Store};
 
-/// A dated Geofabrik extract. Without a version, the day of the data in the replication state of
-/// the area names the newest extract.
+/// A dated Geofabrik extract. Without a version, the day of the data in `updates/state.txt` beside
+/// the extract names the newest extract.
 pub fn extract(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let template = request.source.fetch.url.as_deref().unwrap_or_default();
     if !template.contains("-{yymmdd}.osm.pbf") {
@@ -15,7 +15,8 @@ pub fn extract(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
     let day = match &request.version {
         Some(_) => None,
         None => {
-            let states = template.replace("-{yymmdd}.osm.pbf", "-updates/state.txt");
+            let folder = template.rsplit_once('/').map_or(template, |(folder, _)| folder);
+            let states = format!("{folder}/updates/state.txt");
             // Geofabrik makes every area each day, so the earliest of the newest days has every extract.
             let mut day = i64::MAX;
             for url in expand(&states, None, &request.params)? {
