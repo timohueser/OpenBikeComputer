@@ -941,7 +941,7 @@ fn official_stages_take_the_places_of_the_stages_of_an_osm_trail() -> Result<(),
         [&stage["trail"], &stage["trail_stage"], &stage["parent"], &stage["stage"]],
         [&json!(trail), &json!(2), &json!(trail), &json!(2)]
     );
-    assert!(by_id.contains_key(&source_id(1, 60, 0)), "both trails of one name stay");
+    assert!(by_id.contains_key(&300) && by_id.contains_key(&source_id(1, 60, 0)), "both trails of one name stay");
     assert_eq!(parts(300), [(301, 1), (first, 2), (second, 2)]);
     assert_eq!((&by_id[&300]["stage_count"], &by_id[&300]["stages"]), (&json!(2), &json!([301, first, second])));
 
