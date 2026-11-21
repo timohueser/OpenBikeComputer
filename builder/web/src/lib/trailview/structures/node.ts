@@ -34,7 +34,7 @@ export const FLOOR = 7;
 export function floorsOf(list: Feature[], tile: Node, node: Node, plan = false): Float64Array<ArrayBuffer> | null {
     if (node.level !== OWNER) return null;
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side, m = REACH_M / metresPerUnit(y0 + side / 2), out: number[] = [];
-    const { lines } = features(list, tile), parts = plan ? partStamps(list, tile, lines) : undefined, input = parts && partInput(list, tile, node);
+    const { lines } = features(list, tile), parts = plan ? partStamps(list, tile, lines) : undefined, volumes = parts && partVolumes(list, tile, node);
     for (const line of lines) {
         if ((line.kind !== BRIDGE && line.kind !== TUNNEL) || parts?.built.has(line)) continue;
         const lift = line.kind === BRIDGE ? LIFT_M : 0;
@@ -44,7 +44,7 @@ export function floorsOf(list: Feature[], tile: Node, node: Node, plan = false):
             out.push(ax, ay, bx, by, line.z[v] + lift, line.z[v + 1] + lift, line.kind === BRIDGE ? deckHalf(line) : boreHalf(line));
         }
     }
-    if (input) out.push(...partVolumes(input).floors);
+    if (volumes) out.push(...volumes.floors);
     return out.length ? new Float64Array(out) : null;
 }
 
@@ -73,8 +73,8 @@ export function portalBoxes(list: Feature[], tile: Node, node: Node, plan = fals
             out.push(x + dy / l * shift, y - dx / l * shift, dx / l, dy / l, depth, half, roof, floor, rise, roof, 0, 0);
         }
     }
-    const input = parts && partInput(list, tile, node);
-    if (input) out.push(...partVolumes(input).boxes);
+    const volumes = parts && partVolumes(list, tile, node);
+    if (volumes) out.push(...volumes.boxes);
     return out.length ? new Float64Array(out) : null;
 }
 

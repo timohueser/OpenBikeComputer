@@ -5,7 +5,7 @@
 //! An input is JSON: `{"square": [x0, y0, x1, y1], "ends": [{"at": [x, y], "z": z, "tags": {..}}],
 //! "chords": [{"a": [x, y, z], "b": [x, y, z], "tags": {..}, "code": c, "marked": m}]}`, in world units.
 
-use obc_trailview_parts::{Chord, End, Part, Rules, Tags};
+use obc_trailview_parts::{Chord, End, Part, Rules, Tags, Volumes};
 use serde_json::Value;
 
 #[cfg(target_arch = "wasm32")]
@@ -90,12 +90,26 @@ pub fn meshes(input_json: &str) -> Result<Vec<u32>, Error> {
     Ok(out)
 }
 
-/// The volumes near the input's square: the count of box words, the boxes, then the floor segments.
+/// The volumes of all built parts of the input, whatever its square: the count of box words, the boxes, then the
+/// floor segments.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn volumes(input_json: &str) -> Result<Vec<f64>, Error> {
     let i = input(input_json).map_err(error)?;
-    let v = obc_trailview_parts::volumes(i.square, &i.ends, &i.chords, Rules::embedded());
-    Ok([vec![v.boxes.len() as f64], v.boxes, v.floors].concat())
+    Ok(packed(obc_trailview_parts::volumes(&i.ends, &i.chords, Rules::embedded())))
+}
+
+/// Those of `volumes`, as it gives them, that come near the square `[x0, y0, x1, y1]`, in the same layout.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn near_volumes(square: &[f64], volumes: &[f64]) -> Result<Vec<f64>, Error> {
+    let square = square.try_into().map_err(|_| error("square: not 4 numbers".into()))?;
+    let n = (volumes.first().map(|&n| n as usize).filter(|&n| n < volumes.len()))
+        .ok_or_else(|| error("volumes: not as `volumes` gives them".into()))?;
+    let all = Volumes { boxes: volumes[1..1 + n].to_vec(), floors: volumes[1 + n..].to_vec() };
+    Ok(packed(all.near(square, Rules::embedded())))
+}
+
+fn packed(v: Volumes) -> Vec<f64> {
+    [vec![v.boxes.len() as f64], v.boxes, v.floors].concat()
 }
 
 /// The rings of the built ends of the input: their count, then per ring its count of points and their x, y.

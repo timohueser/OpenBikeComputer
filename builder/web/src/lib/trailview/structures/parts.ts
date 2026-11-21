@@ -3,7 +3,7 @@
 // host/obc-trailview-parts builds them, as WASM that this module inlines as a data: URL, so it loads the same way in a
 // stamp worker and in the Node bake.
 import wasm from './pkg/obc_trailview_parts_bridge_bg.wasm?url&inline';
-import { built as builtKinds, footprints as footprintsOf, initSync, meshes, volumes } from './pkg/obc_trailview_parts_bridge';
+import { built as builtKinds, footprints as footprintsOf, initSync, meshes, near_volumes as nearVolumes, volumes } from './pkg/obc_trailview_parts_bridge';
 import type { Feature } from '../stream/features';
 import { classPaint, metresPerUnit, TUNNEL, worldPoint, type Line, type PartStamps } from '../terrain/bins';
 import type { Node } from '../terrain/lod';
@@ -54,10 +54,22 @@ export function partMeshes(input: string): StructureMesh | null {
     return out.length > 1 ? { vertices: out.slice(1, 1 + n).buffer, indices: out.slice(1 + n) } : null;
 }
 
-/** The boxes (`BOX` of obc-trailview-parts, 12 words each) and the floor segments (`FLOOR` words) of the parts near the input's square. */
-export function partVolumes(input: string): { boxes: Float64Array<ArrayBuffer>; floors: Float64Array<ArrayBuffer> } {
+/** The volumes of each tile's built parts, as `volumes` of the bridge gives them, made once; null for a tile without an end. */
+const tileVolumes = new WeakMap<Feature[], Float64Array | null>();
+
+/**
+ * The boxes (`BOX` of obc-trailview-parts, 12 words each) and the floor segments (`FLOOR` words) of the parts near the square
+ * of `node`, from the volumes of its feature tile; null for a tile without an end.
+ */
+export function partVolumes(list: Feature[], tile: Node, node: Node): { boxes: Float64Array<ArrayBuffer>; floors: Float64Array<ArrayBuffer> } | null {
     bridge();
-    const out = volumes(input), n = out[0];
+    let all = tileVolumes.get(list);
+    if (all === undefined) {
+        const input = partInput(list, tile, tile);
+        tileVolumes.set(list, (all = input ? volumes(input) : null));
+    }
+    if (!all) return null;
+    const side = 2 ** (30 - node.level), out = nearVolumes(Float64Array.of(node.x * side, node.y * side, (node.x + 1) * side, (node.y + 1) * side), all), n = out[0];
     return { boxes: out.slice(1, 1 + n), floors: out.slice(1 + n) };
 }
 

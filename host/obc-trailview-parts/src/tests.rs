@@ -384,6 +384,51 @@ fn each_face_draws_once_over_four_squares_about_an_end() {
     assert!(parts == whole);
 }
 
+/// The volumes near a square as a build for that square alone keeps them: the reference of `Volumes::near`.
+fn volumes_for(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
+    let net = Net::new(ends, chords, rules);
+    let reach = rules.design.reach_m / metres_per_unit((square[1] + square[3]) / 2.0);
+    let mut out = Volumes::default();
+    for e in (0..ends.len()).filter(|&e| net.built_end(e)) {
+        for words in boxes::boxes(&net, e).into_iter().filter(|words| near(square, &corners(words), reach)) {
+            out.boxes.extend(words);
+        }
+    }
+    for (c, chord) in chords.iter().enumerate() {
+        let (a, b) = ([chord.a[0], chord.a[1]], [chord.b[0], chord.b[1]]);
+        if net.built_chord(c) && near(square, &[a, b], reach) {
+            let lift = rules.design.lift_m;
+            out.floors.extend([a[0], a[1], b[0], b[1], chord.a[2] + lift, chord.b[2] + lift, chord.half]);
+        }
+    }
+    out
+}
+
+#[test]
+fn the_volumes_near_each_node_are_those_that_a_build_for_its_square_keeps() {
+    let rules = Rules::embedded();
+    let (mut some, mut none) = (0, 0);
+    for (ends, chords) in [tube(), underpass(tube(), "primary"), underpass(bent(30.0, 20.0), "footway"), one_chord()] {
+        let all = volumes(&ends, &chords, rules);
+        // The nodes of zoom 15 to 18 about the test place, 5 × 5 of each.
+        for level in 15..=18 {
+            let side = 2f64.powi(30 - level);
+            let (i0, j0) = ((X / side).floor(), (Y / side).floor());
+            for (i, j) in (-2..=2).flat_map(|i| (-2..=2).map(move |j| (i0 + i as f64, j0 + j as f64))) {
+                let square = [i * side, j * side, (i + 1.0) * side, (j + 1.0) * side];
+                let near = all.near(square, rules);
+                assert_eq!(near, volumes_for(square, &ends, &chords, rules), "zoom {level}, node {i} {j}");
+                if near.boxes.is_empty() {
+                    none += 1
+                } else {
+                    some += 1
+                }
+            }
+        }
+    }
+    assert!(some > 0 && none > 0, "{some} nodes with boxes, {none} without");
+}
+
 #[test]
 fn a_footprint_holds_the_head_wall_and_the_collar() {
     let (ends, chords) = tube();
