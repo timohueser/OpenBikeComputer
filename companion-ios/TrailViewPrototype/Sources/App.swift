@@ -51,7 +51,10 @@ struct RootView: View {
                             Toggle("TrailView from the app bundle", isOn: $bundled)
                         }
                         Section("Open") { ForEach(pages) { page in Button(page.name) { open = page } } }
-                        Section("This phone") { Text("Thermal state: \(report.thermal)") }
+                        Section("This phone") {
+                            Text("Thermal state: \(report.thermal)")
+                            Button("Memory limit of a native app (the app stops)") { NativeMemoryProbe.run() }
+                        }
                     }
                     .navigationTitle("TrailView prototype")
                 }
@@ -108,6 +111,32 @@ struct RootView: View {
         case .serious: "serious"
         case .critical: "critical"
         @unknown default: "unknown"
+        }
+    }
+}
+
+/// The native counterpart of the kit's memory probe: it fills memory with random bytes in steps of 64 MiB until iOS stops
+/// the app, and posts each step with the memory that iOS says is left, so the last post is the limit.
+enum NativeMemoryProbe {
+    static func run() {
+        guard let kit = Loopback.shared.kit else { return }
+        let session = "memory-app-native-" + ISO8601DateFormatter().string(from: Date()).filter { $0.isNumber }
+        Thread.detachNewThread {
+            let step = 64 << 20
+            var keep: [UnsafeMutableRawPointer] = []
+            while keep.count < 192 {
+                let block = UnsafeMutableRawPointer.allocate(byteCount: step, alignment: 16384)
+                arc4random_buf(block, step)
+                keep.append(block)
+                var request = URLRequest(url: kit.appending(path: "result"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                let value: [String: Any] = ["mib": keep.count * 64, "availableMiB": os_proc_available_memory() >> 20]
+                request.httpBody = try? JSONSerialization.data(withJSONObject: ["session": session, "key": "event", "value": value])
+                let posted = DispatchSemaphore(value: 0)
+                Loopback.shared.session.dataTask(with: request) { _, _, _ in posted.signal() }.resume()
+                posted.wait()
+            }
         }
     }
 }
