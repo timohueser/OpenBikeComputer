@@ -278,7 +278,7 @@ export class Terrain {
         if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
-        const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node)) : undefined;
+        const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node), (x, y) => this.structures.holds(x, y)) : undefined;
         const records = this.records = plan
             ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node), cache && { release: cache.release, version: cache.plan })
             : undefined;

@@ -56,13 +56,14 @@ fn corner_at(k: u32) -> PieceVertex {
         // At the finest level 17 the mesh lies over level-17 nodes: the vertex is the terrain's level-17 vertex at
         // the even point that it slides to, by the same code, so that it lands where the terrain's does (the strip
         // at morph 1). The mesh's range lies within level 18's, so at the finest level 18 its nodes are level 18.
+        // Its `u` is the point where it draws, which the snap and the morph move off its grid point: the box test reads it.
         if (surface.finest < 18u) {
             let even = u - ((surface.anchor + u) & vec2i(64));
             let v = grid_vertex_by(even, 17u, !plan_near(even), true);
-            return PieceVertex(vec2f(u), v.s, v.h);
+            return PieceVertex(units_of(v.s), v.s, v.h);
         }
         let v = grid_vertex_by(u, 18u, !plan_near(u), true);
-        return PieceVertex(vec2f(u), v.s, v.h);
+        return PieceVertex(units_of(v.s), v.s, v.h);
     }
     let u = vec2f(params.origin - surface.anchor) + vec2f(q) / 16.0;
     return PieceVertex(u, lod_space(u), bitcast<f32>(piece[params.out + 4u * k]));

@@ -43,8 +43,10 @@ const PARAMS_BYTES = 64;
 const CULVERT_VERTICES = 6 * 48;
 /** The level-18 nodes per side of the block whose stamps a cell's corners read, NODES of corners.wgsl: the cell's four and one more on each side. */
 const NODES = 6;
-/** World units of a level-18 grid step: at the finest level 17 a strip vertex slides by up to one to its even grid point (plan/piece.wgsl `corner_at`). */
+/** World units of a level-18 grid step: at the finest level 17 a strip vertex slides by up to one on each axis to its even grid point (plan/piece.wgsl `corner_at`). */
 const GRID_STEP = 64;
+/** The clip of boxPlan: two polygons of at most 7 points, a triangle clipped by four half-planes. */
+const CLIP = [new Float64Array(14), new Float64Array(14)];
 /**
  * Per pipeline (whole, mouth, cut, cut mouth), the groups of a run's triangles that it draws (splitTails): of a piece
  * that draws whole, and of one that fades. Groups 1 and 2 are the tail.
@@ -71,6 +73,8 @@ interface Piece {
     mouths: number[];
     /** Its triangles and slots near a box, once its stamps are known: they draw with the pipelines that drop a pixel in a box. */
     tails?: Tails;
+    /** Whether its stamps came, first or again, since its last split: its `all` pass waits for the split. */
+    splitDue?: boolean;
     /** The first word of the cell's records block that its labels index. */
     block: number;
     /** Its buffers, and the compute bind group with the stamp data of the pass that it was made for (`bound`). */
@@ -201,8 +205,11 @@ export class Pieces {
     /** The frame uniform of the sun's view, for the storeys' casters. */
     private sun?: GPUBuffer;
 
-    /** `stamps` gives a node's stamp data and boxes, undefined while they are on their way, and asks for them. */
-    constructor(private readonly stamps: (node: Node) => NodeStamps | undefined) {}
+    /**
+     * `stamps` gives a node's stamp data and boxes, undefined while they are on their way, and asks for them; `holds`
+     * whether the structure at a box's start draws in this frame (Structures.holds).
+     */
+    constructor(private readonly stamps: (node: Node) => NodeStamps | undefined, private readonly holds: (x: number, y: number) => boolean = () => true) {}
 
     /** A cell's mesh arrives with the first word of its records block, and the labels of its junctions with a stop arm. */
     add(node: Node, bytes: ArrayBuffer, block: number, mouths: Set<number>): void {
@@ -271,12 +278,16 @@ export class Pieces {
         const resting = rule.finest < COARSEST_MESH;
         if (resting && !this.resting) for (const piece of this.pieces.values()) piece.plain = undefined;
         this.resting = resting;
+        // A split can take tens of milliseconds: one a frame.
+        let split = true;
         for (const piece of this.resting ? [] : this.pieces.values()) {
             // Every node is asked for at once.
             const nodes = stampNodes(piece.node).map(this.stamps), now = block(piece.node) ?? -1, ready = nodes.every(stamps => stamps !== undefined);
-            // With the nodes' stamps come their boxes: the triangles near them move to the tails before the piece draws, as its
-            // corners' pass waits for the same stamps. Each box once, as the terrain's `holes`.
-            if (ready && !piece.tails) {
+            // With the nodes' stamps come their boxes, also when they come again: the triangles near them move to the tails,
+            // and the piece's `all` pass waits for that. Each box once, as the terrain's `holes`.
+            if (ready && !piece.stamped) piece.splitDue = true;
+            if (ready && piece.splitDue && split) {
+                split = piece.splitDue = false;
                 const boxes = new Map<string, Float64Array>();
                 for (const list of nodes.map(stamps => stamps!.portals)) {
                     for (let k = 0; list && k < list.length; k += BOX) boxes.set(list.subarray(k, k + 4).join(), list.subarray(k, k + BOX));
@@ -445,7 +456,7 @@ export class Pieces {
                 continue;
             }
             // A labelled corner reads the stamp data: an `all` pass waits for it.
-            if (budget <= 0 || (piece.stale === 'all' && !piece.stamped)) continue;
+            if (budget <= 0 || (piece.stale === 'all' && (!piece.stamped || piece.splitDue))) continue;
             const share = piece.stale === 'terrain' ? TERRAIN_SHARE : 1, count = Math.min(n - piece.done, budget * share);
             budget -= Math.ceil(count / share);
             this.dispatch(r, pass, piece, piece.stale!, piece.done, count);
@@ -529,22 +540,29 @@ export class Pieces {
         pass.setBindGroup(2, ground);
         pass.setBindGroup(3, features);
         // A run's triangles lie in four groups (splitTails): its own, its own near a box, its mouth's near a box, its
-        // mouth's. A draw of the tail is instance 1: its pixels test the boxes (`corridor_dropped`).
+        // mouth's. A draw of the tail is instance 1, so its pixels drop in a box (`corridor_dropped`), but only where every
+        // structure of its boxes draws in this frame, as the terrain leaves out a box whose structure does not: else the
+        // ground stays closed.
+        const drops = new Map(this.inView.map(piece => [piece, !!piece.tails?.boxes.every(box => this.holds(box[0], box[1]))]));
         [r.triangles, r.mouthTriangles, r.cutTriangles, r.cutMouthTriangles].forEach((pipeline, p) => {
             pass.setPipeline(pipeline);
             for (const piece of this.inView) {
-                const groups = TRIANGLE_GROUPS[+this.cut.has(piece)][p], draws: number[][] = [];
+                const groups = TRIANGLE_GROUPS[+this.cut.has(piece)][p];
                 // vertex_index includes the run's base. Over level-17 nodes the last runs do not draw.
-                let first = 0;
+                let first = 0, bound = false;
                 piece.mesh.runs.slice(0, this.drawnRuns(piece)).forEach(({ count, base }, k) => {
                     const own = count - piece.mouths[k], b = [0, own - (piece.tails?.own[k] ?? 0), own, own + (piece.tails?.mouth[k] ?? 0), count];
-                    for (const g of groups) if (b[g + 1] > b[g]) draws.push([3 * (b[g + 1] - b[g]), first + 3 * b[g], base, +(g === 1 || g === 2)]);
+                    for (const g of groups) {
+                        if (b[g + 1] <= b[g]) continue;
+                        if (!bound) {
+                            pass.setBindGroup(0, piece.gpu!.draw);
+                            pass.setIndexBuffer(piece.gpu!.indices, 'uint16');
+                            bound = true;
+                        }
+                        pass.drawIndexed(3 * (b[g + 1] - b[g]), 1, first + 3 * b[g], base, +(drops.get(piece)! && (g === 1 || g === 2)));
+                    }
                     first += 3 * count;
                 });
-                if (!draws.length) continue;
-                pass.setBindGroup(0, piece.gpu!.draw);
-                pass.setIndexBuffer(piece.gpu!.indices, 'uint16');
-                for (const [n, at, base, tail] of draws) pass.drawIndexed(n, 1, at, base, tail);
             }
         });
         [r.slots, r.cutSlots].forEach((pipeline, p) => {
@@ -554,7 +572,7 @@ export class Pieces {
                 const groups = SLOT_GROUPS[+this.cut.has(piece)][p].filter(g => b[g + 1] > b[g]);
                 if (!groups.length) continue;
                 pass.setBindGroup(0, piece.gpu!.draw);
-                for (const g of groups) pass.draw(6 * (b[g + 1] - b[g]), 1, 6 * b[g], g % 2);
+                for (const g of groups) pass.draw(6 * (b[g + 1] - b[g]), 1, 6 * b[g], +drops.get(piece)! * (g % 2));
             }
         });
         for (const cut of [false, true]) {
@@ -710,7 +728,7 @@ export function splitTails(mesh: CellMesh, mouths: number[], origin: [number, nu
         min[i & 1] = Math.min(min[i & 1], xy[i]);
         max[i & 1] = Math.max(max[i & 1], xy[i]);
     }
-    const plans = boxes.map(box => boxPlan(box, GRID_STEP * metresPerUnit(box[1]))).filter(({ lo, hi }) => lo[0] <= max[0] && hi[0] >= min[0] && lo[1] <= max[1] && hi[1] >= min[1]);
+    const plans = boxes.map(box => boxPlan(box, Math.SQRT2 * GRID_STEP * metresPerUnit(box[1]))).filter(({ lo, hi }) => lo[0] <= max[0] && hi[0] >= min[0] && lo[1] <= max[1] && hi[1] >= min[1]);
     if (!plans.length) return { own: mouths.map(() => 0), mouth: mouths.map(() => 0), slots: [0, 0], boxes: [] };
     // A triangle's bounds first, against all plans and then each: most miss every plan. A slot is the triangle a, b, b.
     const bounds = new Float64Array(plans.flatMap(({ lo, hi }) => [...lo, ...hi]));
@@ -720,7 +738,7 @@ export function splitTails(mesh: CellMesh, mouths: number[], origin: [number, nu
         const y0 = Math.min(xy[2 * a + 1], xy[2 * b + 1], xy[2 * c + 1]), y1 = Math.max(xy[2 * a + 1], xy[2 * b + 1], xy[2 * c + 1]);
         if (x0 > union[2] || x1 < union[0] || y0 > union[3] || y1 < union[1]) return false;
         for (let p = 0; p < plans.length; p++) {
-            if (x0 <= bounds[4 * p + 2] && x1 >= bounds[4 * p] && y0 <= bounds[4 * p + 3] && y1 >= bounds[4 * p + 1] && plans[p].meets([a, b, c], xy)) return true;
+            if (x0 <= bounds[4 * p + 2] && x1 >= bounds[4 * p] && y0 <= bounds[4 * p + 3] && y1 >= bounds[4 * p + 1] && plans[p].meets(a, b, c, xy)) return true;
         }
         return false;
     };
@@ -738,15 +756,15 @@ export function splitTails(mesh: CellMesh, mouths: number[], origin: [number, nu
 }
 
 /**
- * The plan of a box (BOX words) grown by `grow` metres: its bounds in world units, and whether the polygon of corners
- * `ks` (world points at 2k, 2k + 1 of `xy`) within them meets it. A point's metres in and to the left are those of `box_point` in
- * portal-box.wgsl; the plan is where `box_plan` is at most `grow`.
+ * The plan of a box (BOX words) grown by `grow` metres: its bounds in world units, and whether the triangle of corners
+ * a, b, c (world points at 2k, 2k + 1 of `xy`) within them meets it. A point's metres in and to the left are those of
+ * `box_point` in portal-box.wgsl; the plan is where `box_plan` is at most `grow`.
  */
-function boxPlan(box: Float64Array, grow: number): { box: Float64Array; lo: number[]; hi: number[]; meets: (ks: number[], xy: Float64Array) => boolean } {
+function boxPlan(box: Float64Array, grow: number): { box: Float64Array; lo: number[]; hi: number[]; meets: (a: number, b: number, c: number, xy: Float64Array) => boolean } {
     const [x, y, dx, dy, depth, half, , , , , slope0, slope1] = box, m = metresPerUnit(y), side = half + grow;
     // Half-planes a · in + b · left <= c: past the start, before the end, and the two sides.
     const grown = [grow * Math.hypot(1, slope0), grow * Math.hypot(1, slope1)];
-    const planes = [[-1, slope0, grown[0]], [1, -slope1, depth + grown[1]], [0, 1, side], [0, -1, side]];
+    const planes = [-1, slope0, grown[0], 1, -slope1, depth + grown[1], 0, 1, side, 0, -1, side];
     // Its bounds in world units, from its four corners.
     const corners = [-side, side].flatMap(left => [slope0 * left - grown[0], depth + slope1 * left + grown[1]].map(along => [x + (along * dx + left * dy) / m, y + (along * dy - left * dx) / m]));
     const lo = [0, 1].map(i => Math.min(...corners.map(c => c[i]))), hi = [0, 1].map(i => Math.max(...corners.map(c => c[i])));
@@ -754,21 +772,35 @@ function boxPlan(box: Float64Array, grow: number): { box: Float64Array; lo: numb
         box,
         lo,
         hi,
-        meets(ks, xy) {
-            let polygon = ks.map(k => {
-                const ex = (xy[2 * k] - x) * m, ey = (xy[2 * k + 1] - y) * m;
-                return [ex * dx + ey * dy, dy * ex - dx * ey];
-            });
-            // The polygon clipped to each half-plane in turn; it meets the plan where some of it is left.
-            for (const [a, b, c] of planes) {
-                const kept: number[][] = [], over = (p: number[]) => a * p[0] + b * p[1] - c;
-                polygon.forEach((p, i) => {
-                    const q = polygon[(i + 1) % polygon.length], sp = over(p), sq = over(q);
-                    if (sp <= 0) kept.push(p);
-                    if (sp <= 0 !== sq <= 0) kept.push([p[0] + (sp / (sp - sq)) * (q[0] - p[0]), p[1] + (sp / (sp - sq)) * (q[1] - p[1])]);
-                });
-                if (!kept.length) return false;
-                polygon = kept;
+        meets(a, b, c, xy) {
+            // The triangle in metres in and to the left, clipped to each half-plane in turn; it meets the plan where some of
+            // it is left.
+            let from = CLIP[0], to = CLIP[1], n = 3;
+            for (let i = 0; i < 3; i++) {
+                const k = i === 0 ? a : i === 1 ? b : c, ex = (xy[2 * k] - x) * m, ey = (xy[2 * k + 1] - y) * m;
+                from[2 * i] = ex * dx + ey * dy;
+                from[2 * i + 1] = dy * ex - dx * ey;
+            }
+            for (let h = 0; h < 12; h += 3) {
+                let kept = 0;
+                for (let i = 0; i < n; i++) {
+                    const j = (i + 1) % n, sp = planes[h] * from[2 * i] + planes[h + 1] * from[2 * i + 1] - planes[h + 2];
+                    const sq = planes[h] * from[2 * j] + planes[h + 1] * from[2 * j + 1] - planes[h + 2];
+                    if (sp <= 0) {
+                        to[2 * kept] = from[2 * i];
+                        to[2 * kept++ + 1] = from[2 * i + 1];
+                    }
+                    if (sp <= 0 !== sq <= 0) {
+                        const t = sp / (sp - sq);
+                        to[2 * kept] = from[2 * i] + t * (from[2 * j] - from[2 * i]);
+                        to[2 * kept++ + 1] = from[2 * i + 1] + t * (from[2 * j + 1] - from[2 * i + 1]);
+                    }
+                }
+                if (!kept) return false;
+                const swap = from;
+                from = to;
+                to = swap;
+                n = kept;
             }
             return true;
         },

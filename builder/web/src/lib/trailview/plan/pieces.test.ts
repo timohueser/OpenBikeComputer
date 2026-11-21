@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { anchorAt } from '../frame/space';
-import { CALM, cdlod, RANGE } from '../terrain/lod';
+import { CALM, cdlod, key, RANGE, type Node } from '../terrain/lod';
 import type { CellMesh } from './mesh';
 import { meshLevel, Pieces, splitMouths, splitTails } from './pieces';
 
@@ -97,6 +97,29 @@ describe('Pieces', () => {
         for (frame(17); pieces.returning && frames < 10 * CALM; frames++) frame(17);
         expect(pieces.level).toBe(17);
         expect(frames).toBe(CALM);
+    });
+
+    it('splits one cell a frame, and a cell again when its stamps come again', () => {
+        // Each split reads the boxes of its cell's 36 nodes. A node of the first cell only goes away for a frame.
+        let reads = 0, gone = false;
+        const only = { level: 18, x: 34_307 * 4 - 1, y: 23_107 * 4 - 1 };
+        const pieces = new Pieces((node: Node) => (gone && key(node) === key(only) ? undefined : { data: null, get portals() { reads++; return null; } }));
+        const eye = { anchor: anchorAt(8.4048, 46.8219), above: 1.7 };
+        for (const x of [34_307, 34_308]) {
+            const words = new Uint32Array(12 + Math.ceil((130 * 130) / 32));
+            words[0] = 0x4f424d05;
+            pieces.add({ level: 16, x, y: 23_107 }, words.buffer, 0, new Set());
+        }
+        const splits = () => {
+            const before = reads;
+            pieces.update(cdlod(eye, RANGE.least, 18), eye, () => 0, () => '', [], () => true, () => true);
+            return (reads - before) / 36;
+        };
+        expect([splits(), splits(), splits()]).toEqual([1, 1, 0]);
+        gone = true;
+        expect(splits()).toBe(0);
+        gone = false;
+        expect([splits(), splits()]).toEqual([1, 0]);
     });
 
     it('reads its pages again after a rest below 17, as pages came and went while it rested', () => {
