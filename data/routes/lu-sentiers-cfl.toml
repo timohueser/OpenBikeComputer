@@ -8,4 +8,5 @@ kind = "hiking"
 layer = "Sentiers CFL"
 key = "map_id"
 name = "{name}"
+name_strip = '(?i)^CFL_\w+\s*NEW\s*:'
 drop = { is_label = ["True"] }

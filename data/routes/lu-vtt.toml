@@ -8,4 +8,5 @@ kind = "mtb"
 layer = "Pistes_VTT"
 key = "map_id"
 name = "{name}"
+name_strip = '^Pistes_VTT\s*:|\s+VTT(?:/MTB)?$'
 drop = { is_label = ["True"] }

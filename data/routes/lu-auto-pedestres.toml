@@ -8,4 +8,5 @@ kind = "hiking"
 layer = "Autopedestres"
 key = "map_id"
 name = "{name}"
+name_strip = '(?i)^auto-?p[ée]destres?\s*:?|\s*<\s*>'
 drop = { is_label = ["True"] }

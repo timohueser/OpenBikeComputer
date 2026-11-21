@@ -140,6 +140,14 @@ class RouteSourceTest(unittest.TestCase):
         routes = {route["key"]: (route["name"], route["members"]) for route in got["routes"]}
         self.assertEqual(routes, {sources.text_key(f"Au: 324: {km}"): ("324", member) for km in (3.7, 2.9)})
 
+    def test_name_strip_removes_a_prefix_and_junk_but_never_the_whole_name(self):
+        description = DESCRIPTION.replace('name = "{Name}"', 'name = "{Name}"\nname_strip = \'^Walks\\s*:|\\s*<\\s*>\'')
+        line = multiline([(8.01, 47.01), (8.02, 47.02)])
+        got = read([(line, "1", "Walks : Canach  < >", "local", None, "both"),
+                    (line, "2", "Walks : Kockelscheier < >   (ancien Cessange)", "local", None, "both"),
+                    (line, "3", "Walks: < >", "local", None, "both")], description=description)
+        self.assertEqual([route["name"] for route in got["routes"]], ["Canach", "Kockelscheier (ancien Cessange)", "Walks: < >"])
+
     def test_two_texts_with_one_key_fail(self):
         line = multiline([(8.01, 47.01), (8.02, 47.02)])
         with mock.patch.object(sources, "text_key", return_value=5):

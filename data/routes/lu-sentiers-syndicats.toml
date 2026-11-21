@@ -8,4 +8,5 @@ kind = "hiking"
 layer = "Sentiers syndicats"
 key = "map_id"
 name = "{name}"
+name_strip = '^Sentiers[ _](?:locaux|thématiques)[ _](?:Sud:|Moselle_|Gutt?land ?_|Guttland )?|^Lokaler Wanderweg '
 drop = { is_label = ["True"] }

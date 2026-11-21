@@ -17,7 +17,7 @@ from . import step_request
 FORMAT = 1
 KINDS = ("hiking", "bicycle", "mtb")
 TEMPLATES = ("ref", "name", "description", "operator", "website")
-SHARED = {"layer", "file", "ascent", "keep", "drop", *TEMPLATES}
+SHARED = {"layer", "file", "ascent", "keep", "drop", "name_strip", *TEMPLATES}
 KEYS = {
     "description": {"origin", "countries", "kind", "route", "stage"},
     "route": SHARED | {"key", "rank"},
@@ -52,11 +52,16 @@ def parse(text):
                                                for level in values_of(description["route"]["rank"]) or [None]):
         raise ValueError("`rank` is a table of `field` and `values` that map to the levels 0 to 4")
     for name, table in tables.items():
-        names = {key: table.get(key) for key in ("layer", "file", "of", "number", "ascent", *TEMPLATES)}
+        names = {key: table.get(key) for key in ("layer", "file", "of", "number", "ascent", "name_strip", *TEMPLATES)}
         names |= {"key": table.get("key"), "rank.field": (table.get("rank") or {}).get("field")}
         for key, value in names.items():
             if value is not None and not (texts(value) if key == "key" else texts([value])):
                 raise ValueError(f"`{name}.{key}` is a {'text or a list of texts' if key == 'key' else 'text'}")
+        if "name_strip" in table:
+            try:
+                re.compile(table["name_strip"])
+            except re.error as error:
+                raise ValueError(f"`{name}.name_strip` is no regular expression: {error}") from None
         for key in ("keep", "drop"):
             if key in table and not (isinstance(table[key], dict) and all(isinstance(v, list) for v in table[key].values())):
                 raise ValueError(f"`{name}.{key}` maps each field to a list of values")
@@ -184,9 +189,13 @@ def features(name, files, table, wanted):
 
 
 def filled(table, row, extra):
-    """The templates of `table` filled from `row`, with outer spaces removed; an empty one is absent."""
+    """The templates of `table` filled from `row`, with outer spaces removed; an empty one is absent.
+    `name_strip` removes its matches from the name and makes each run of spaces one, unless that
+    leaves it empty."""
     values = {field: "" if value is None else str(value) for field, value in row.items()} | extra
     out = {key: table[key].format_map(values).strip() for key in TEMPLATES if key in table}
+    if out.get("name") and "name_strip" in table:
+        out["name"] = " ".join(re.sub(table["name_strip"], "", out["name"]).split()) or out["name"]
     if (field := table.get("ascent")) and row[field] not in (None, ""):
         out["ascent_m"] = round(float(row[field]))
     return {key: value for key, value in out.items() if value != ""}
