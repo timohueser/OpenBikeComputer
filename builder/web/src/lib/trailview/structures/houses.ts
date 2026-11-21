@@ -12,6 +12,7 @@ import type { FeatureTiles } from '../terrain/stamps';
 import { OUTLINE_WORDS, RECORD_WORDS, type TileHouses } from './house-records';
 import { stopped } from '../stream/terrain';
 import { CAPS, DeviceCache } from '../terrain/device-cache';
+import { MiB, type Budget } from '../budget';
 
 /** Houses on the GPU at most, and the bytes of outline vertices. */
 const HOUSES = 2 ** 16, OUTLINE_BYTES = 2 * 2 ** 20;
@@ -172,10 +173,10 @@ export class Houses {
     private readonly cache?: Promise<DeviceCache | undefined>;
 
     /**
-     * An abort of `stop` ends the worker; `maxRequests` are the tile requests in flight at most. With `cache`, the release and the version of the house worker's code,
+     * An abort of `stop` ends the worker; `budget` gives the tile requests in flight at most and the worker's cap. With `cache`, the release and the version of the house worker's code,
      * a tile's records come from the device cache where it holds them, and go there once made.
      */
-    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal, private readonly maxRequests: number, cache?: { release: string; version: string }) {
+    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal, private readonly budget: Budget, cache?: { release: string; version: string }) {
         if (!features) return;
         if (cache) this.cache = DeviceCache.open('houses', cache.release, cache.version, CAPS.houses).catch(() => undefined);
         const worker = this.worker = new Worker(new URL('./house-worker.ts', import.meta.url), { type: 'module' });
@@ -265,7 +266,7 @@ export class Houses {
         }
         wanted.sort((a, b) => a.d - b.d);
         for (const { name, x, y } of wanted) {
-            if (this.tiles.has(name) || this.pending.has(name) || this.pending.size >= this.maxRequests) continue;
+            if (this.tiles.has(name) || this.pending.has(name) || this.pending.size >= this.budget.loads.houses) continue;
             this.pending.add(name);
             this.load(x, y).then(result => this.keep(name, result), error => {
                 if (!stopped(error)) console.warn(`House tile ${name}: ${error instanceof Error ? error.message : error}`);
@@ -493,7 +494,7 @@ export class Houses {
         const id = this.next++;
         const made = await new Promise<TileHouses | null>(resolve => {
             this.waiting.set(id, resolve);
-            this.worker!.postMessage({ id, tile, owned: { level: ZOOM, x, y }, body }, [body]);
+            this.worker!.postMessage({ id, tile, owned: { level: ZOOM, x, y }, body, bytes: this.budget.caps.house * MiB }, [body]);
         });
         if (made) void cache?.write(key, [made.records, made.outlines]).catch(() => {});
         return made;

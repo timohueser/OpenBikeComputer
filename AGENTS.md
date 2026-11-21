@@ -30,6 +30,7 @@ and test them from their own directories. The nearest README has the surface's s
 - Never print `tools/obc.local` or the files in `~/.config/openbikecomputer/`: they hold operator settings and secrets. List the names with `grep -oE '^\s*(export\s+)?[A-Za-z0-9_]+=' FILE`.
 - Do not run planner publications or deployments concurrently.
 - Publish to prod only with a review ID that the owner approved: `obc data update prod --yes --expect ID`.
+- After a production data update, run the route pictures steps of `builder/web/tests/browser/trailview/README.md`.
 - Test the crates you changed, never the whole workspace by default:
 
   ```sh

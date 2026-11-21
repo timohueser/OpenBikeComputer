@@ -6,6 +6,7 @@
 //   node trailview/route-pictures.mjs row [--out DIR]
 //   node trailview/route-pictures.mjs upload [--out DIR] [--without ID,ID]
 //   node trailview/route-pictures.mjs switch SET
+//   node trailview/route-pictures.mjs check [--without=ID,ID]
 //
 // render reads the catalog of the production release and writes <out>/covers/<id>/<key>-<light>.webp
 // and <key>.json, or <key>.none for a route with no view. A route whose files exist is done. A route
@@ -15,8 +16,10 @@
 // catalog and prints what all of them would take. --gpu draws on the machine's GPU, else SwiftShader
 // draws on the CPU, for minutes. --fixture reads fixture/routes.json and answers the tile hosts from
 // the fixture: build the page with `npm run pretest:trailview` first. upload --without leaves these
-// routes with no cover in the set. upload and switch call `obc data r2`. A list that starts with the
-// negative id of a section needs the form --only=-ID.
+// routes with no cover in the set. upload and switch call `obc data r2`. A list that starts with a
+// negative id needs the form --only=-ID or --without=-ID. check reads only public files and names
+// each route of the production release that has no cover in the live set, and marks the routes of
+// --without; it exits with 1 when a route with no cover is not in --without.
 
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -514,6 +517,38 @@ export async function switchTo(set, { r2 = obcR2 } = {}) {
     }
 }
 
+/** The JSON of a public file; undefined when it answers 404. */
+async function publicJson(url, fetch) {
+    const response = await fetch(url);
+    if (response.status === 404) return undefined;
+    if (response.status !== 200) throw new Error(`${url}: ${response.status}.`);
+    return JSON.parse(await response.text());
+}
+
+/**
+ * Prints the release and the live set that it reads, and each route record of the release that has no cover
+ * in that set by the rule of the reader (specs/route-pictures.md, "Reader"), with the mark of a route of
+ * `without`; gives these records. The key comes from the script's LOOK, not from the manifest: after a change
+ * of the look, each route is named, as each then needs a new render.
+ */
+export async function check({ without = [], fetch = globalThis.fetch }) {
+    const release = await productionRelease(fetch), records = await releaseRoutes(release, fetch);
+    const manifest = await publicJson(`${HOST}/${PREFIX}/manifest.json`, fetch), set = manifest?.format === 1 ? manifest.set : undefined;
+    const cells = new Map(), cellOf = cell => {
+        // As the reader, a cell file of another format holds no cover.
+        if (!cells.has(cell)) cells.set(cell, publicJson(`${HOST}/${PREFIX}/sets/${set}/cells/${cell}.json`, fetch).then(file => (file?.format === 1 ? file.routes : undefined)));
+        return cells.get(cell);
+    };
+    const missing = [];
+    for (const record of records) if (!set || (await cellOf(record.cells[0]))?.[record.id] !== keyOf(record)) missing.push(record);
+    console.log(`Release ${release.id}, live set ${set ?? 'none'}.\n${missing.length} of ${records.length} routes have no cover.`);
+    for (const record of missing) console.log(`${record.id} ${record.name ?? record.ref}${without.includes(record.id) ? ' (left out)' : ''}`);
+    return missing;
+}
+
+/** The records of `missing` that `without` does not leave out: `check` exits with 1 when there is one. */
+export const unexpected = (missing, without = []) => missing.filter(record => !without.includes(record.id));
+
 async function main() {
     const { values, positionals: [command, set] } = parseArgs({
         allowPositionals: true,
@@ -532,6 +567,11 @@ async function main() {
         if ((await rowImages(out)).broken.length) process.exitCode = 1;
         return;
     }
+    if (command === 'check') {
+        const without = ids(values.without);
+        if (unexpected(await check({ without }), without).length) process.exitCode = 1;
+        return;
+    }
     if (command === 'upload') return console.log(await upload({ out, without: ids(values.without) }));
     if (command === 'render') {
         const sample = values.sample === undefined ? undefined : Number(values.sample);
@@ -540,7 +580,7 @@ async function main() {
         if (failed.length) process.exitCode = 1;
         return;
     }
-    throw new Error('Usage: route-pictures.mjs render|row|upload|switch SET; see the head of this file.');
+    throw new Error('Usage: route-pictures.mjs render|row|upload|switch SET|check; see the head of this file.');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
