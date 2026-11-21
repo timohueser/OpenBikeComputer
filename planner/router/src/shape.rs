@@ -420,9 +420,10 @@ pub fn shape<D: RoutingData>(
         max_calls: limits.max_calls,
     };
     let mut pruned_full = false;
+    // The deviation over the budget, at its lowest so far, and the shaping points since then. It
+    // spans the rounds, so a round after a stall checks only the whole plan.
+    let mut best = (f64::MAX, 0);
     for _ in 0..ROUNDS {
-        // The deviation over the budget, at its lowest so far, and the shaping points since then.
-        let mut best = (f64::MAX, 0);
         loop {
             let mut totals = search.totals(&plan);
             if search.stopped() {
@@ -617,6 +618,21 @@ mod tests {
         let (simple, positions) = simplify(&routed, &[0, 6, 11], 50.0);
         assert_eq!(simple, [line[0], line[4], routed[5], routed[6], routed[7], line[10]]);
         assert_eq!(positions, [0, 3, 5]);
+    }
+
+    #[test]
+    fn the_dense_line_has_a_vertex_every_60_m_and_keeps_each_given_vertex() {
+        // About 9 microdegrees of latitude are 1 m: 1 km north; 130 m north, then 89 m east.
+        for (line, keep) in [(vec![[0, 0], [0, 9_000]], vec![0, 1]), (vec![[0, 0], [0, 1_170], [800, 1_170]], vec![1])]
+        {
+            let (out, positions) = dense(&line, &keep);
+            assert_eq!((out[0], out[out.len() - 1]), (line[0], line[line.len() - 1]));
+            assert!(out.windows(2).all(|w| distance(w[0], w[1]) <= VERTEX_M), "{out:?}");
+            assert_eq!(
+                positions.iter().map(|&k| out[k]).collect::<Vec<_>>(),
+                keep.iter().map(|&k| line[k]).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]
