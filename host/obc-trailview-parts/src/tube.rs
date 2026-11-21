@@ -35,7 +35,7 @@ pub fn direction(c: &Chord) -> ([f64; 2], f64) {
 
 /// The chords of a tile by their vertices, and per end the chord vertex at its opening.
 pub struct Net<'a> {
-    /// The ends of the input, then per pair an end at the opening of its mate, which has no head wall of its own.
+    /// The ends of the input, then per pair an end at the opening of its mate.
     pub ends: Vec<End>,
     pub chords: &'a [Chord],
     pub rules: &'a Rules,
@@ -284,9 +284,10 @@ impl<'a> Net<'a> {
         out
     }
 
-    /// The share of daylight at a world point: over the openings (not the closed ends) whose section over the tube's floor, grown by the shell
-    /// and a metre to each side, holds the point from the front of the head wall to `daylight_m` in, `1 − smoothstep(0,
-    /// daylight_m, m)` of the metres m in from the frame line, the largest; 0 with none.
+    /// The share of daylight at a world point: over the openings (not the closed ends) whose section over the tube's
+    /// floor, grown by the shell and a metre to each side, holds the point from the front of the head wall to
+    /// `daylight_m` in, `1 − smoothstep(0, daylight_m, m)` of the metres m in from the frame line, the largest; 0 with
+    /// none.
     pub fn daylight(&self, p: [f64; 3]) -> f64 {
         let (shell, reach, front) =
             (self.rules.ladder.bake.shell_m, self.rules.design.daylight_m, self.rules.design.recess_m);
@@ -453,8 +454,8 @@ pub fn inward(a: Corner, b: Corner, spring: f64) -> Corner {
     [-(a[0] + b[0]), -(a[1] + b[1] - 2.0 * spring)]
 }
 
-/// Where a station meets the other tube of a pair (`Net::cut`): the metres across the station to the middle between their
-/// walls, and the other tube there: its chord, the floor at that point (a world height) and its axis across the station.
+/// Where a station meets another tube (`Net::cuts`): the metres across the station to the middle between their walls,
+/// and the other tube there: its chord, the floor at that point (a world height) and its axis across the station.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cut {
     pub x: f64,
@@ -494,8 +495,8 @@ pub fn cut_face<L: Fn([f64; 3]) -> f64>(
     }
 }
 
-/// Where two spans at a cut differ: of the own span from `lo` to `hi`, the part under the other's span and the part over
-/// it, each (lo, hi); the whole own span where the other has none.
+/// Where two spans at a cut differ: of the own span from `lo` to `hi`, the part under the other's span and the part
+/// over it, each (lo, hi); the whole own span where the other has none.
 pub fn steps((lo, hi): (f64, f64), other: Option<(f64, f64)>) -> [(f64, f64); 2] {
     match other {
         Some((olo, ohi)) => [(lo, olo.clamp(lo, hi)), (ohi.clamp(lo, hi), hi)],
@@ -584,8 +585,8 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     for k in 0..2 {
         step(b, net, c, k, &o, vault);
     }
-    // At an opening (not a closed end), the front of the floor goes down to the sill, `lift_m` under the floor. Each side of a piece has
-    // a corner at the top of each piece beside it, which is the corner of a face there.
+    // At an opening (not a closed end), the front of the floor goes down to the sill, `lift_m` under the floor. Each
+    // side of a piece has a corner at the top of each piece beside it, which is the corner of a face there.
     let open = |k: usize| net.end_at(c, k).is_some_and(|e| !net.closed(e));
     for (k, r) in [(0, &s), (1, &t)].into_iter().filter(|(k, _)| open(*k)) {
         let out = flat(if k == 0 { [-d[0], -d[1]] } else { d });
@@ -675,8 +676,8 @@ pub type Run = (Station, Station, f64, Section, usize);
 /// The outer shell of a run of pieces, with the inside half-width `half`; its walls go down to the world height `foot`.
 /// Where two pieces of different height meet, a face closes the step, facing the lower one; so too after the last piece
 /// where a lower shell goes on (`meets`). There the walls have a corner at the foot of the shell that goes on. Of two
-/// tubes of a pair, each draws its side of the middle between their walls, and a face closes the step where its shell is
-/// the higher there.
+/// tubes that meet, each draws its side of the middle between their walls, and a face closes the step where its shell
+/// is the higher there.
 pub fn shell<L: Fn([f64; 3]) -> f64>(
     b: &mut Builder<L>,
     net: &Net,

@@ -191,8 +191,8 @@ impl Line {
 }
 
 /// The boxes of built end e: the opening's, from the front of the head wall to the frame line, its outline grown to
-/// the middle of the wall round it, but at a closed end; then one per straight piece of the tube's axis out to its reach, each at the
-/// middle of the wall of its section, its ends in the planes of the tube's rings there.
+/// the middle of the wall round it, but at a closed end; then one per straight piece of the tube's axis out to its
+/// reach, each at the middle of the wall of its section, its ends in the planes of the tube's rings there.
 pub fn boxes(net: &Net, e: usize) -> Vec<[f64; BOX]> {
     let Some((c0, _)) = net.opening(e) else { return Vec::new() };
     let (end, design, bake) = (&net.ends[e], &net.rules.design, &net.rules.ladder.bake);

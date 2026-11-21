@@ -98,8 +98,8 @@ fn top(end: &crate::End, (lo, hi): (f64, f64), (coping, slope): (f64, f64), t: f
     along.min(coping + slope.max((end.face - coping) / len) * (len - d))
 }
 
-/// End e's opening outline grown by `grow`, from the sill up its side to a corner at the floor's height there, where the
-/// tube's wall stands on the floor, and on over its top.
+/// End e's opening outline grown by `grow`, from the sill up its side to a corner at the floor's height there, where
+/// the tube's wall stands on the floor, and on over its top.
 fn grown(net: &Net, e: usize, grow: f64) -> Vec<Corner> {
     let Some((c, _)) = net.opening(e) else { return Vec::new() };
     let (chord, design) = (&net.chords[c], &net.rules.design);
@@ -114,10 +114,10 @@ fn grown(net: &Net, e: usize, grow: f64) -> Vec<Corner> {
     out
 }
 
-/// Where end e's head ends at the openings near it, on each side at most one: the metres to the left of its axis of the
-/// middle between its tube's wall and the other's, the side of the other (1 to the left), the other end, and whether the
-/// two lie on one frame line. On its side, the mate of a pair; else the nearest built end that leads the same way within
-/// `pair_max_m` and `pair_max_deg`, at its floor's height, whose axis passes within reach of e's head.
+/// Where end e's head ends at the openings near it, on each side at most one: the metres to the left of its axis of
+/// the middle between its tube's wall and the other's, the side of the other (1 to the left), the other end, and
+/// whether the two lie on one frame line. On its side, the mate of a pair; else the nearest built end that leads the
+/// same way within `pair_max_m` and `pair_max_deg`, at its floor's height, whose axis passes within reach of e's head.
 fn head_cuts(net: &Net, e: usize) -> Vec<(f64, f64, usize, bool)> {
     let middle = |a: f64, m: usize| (a + a.signum() * (half_at(net, e) - half_at(net, m))) / 2.0;
     let (end, bake) = (&net.ends[e], &net.rules.ladder.bake);
