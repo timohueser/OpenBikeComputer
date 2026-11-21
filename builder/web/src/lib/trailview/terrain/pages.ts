@@ -598,7 +598,7 @@ export class Pages {
 
     /**
      * Keeps encoded tile bodies within `caps.terrainBodies`, so a new device gets the pages again without a request. The
-     * plan's records and cells read their tiles from them (`body`), so the cap is never 0.
+     * plan's records and cells read their tiles from them (`body`): a body that is gone loads again.
      */
     private keep(name: string, body: ArrayBuffer): void {
         this.bodies.set(name, body);
