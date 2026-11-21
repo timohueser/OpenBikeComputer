@@ -230,14 +230,15 @@ pub(super) struct Merge {
 
 impl Merge {
     /// The merge of the jobs of each origin after the first, in rank order: a job leaves when the kept
-    /// records of earlier origins that are its pairs cover four fifths of its match line, or a half
-    /// when they are all pairs by (a) whose names agree with it; for a part of a long relation
-    /// (`part`), only its pairs by (a) count. `kept` says whether a job of a second source kept a
-    /// record.
+    /// records of earlier origins that are its pairs cover four fifths of its match line, or, with
+    /// `by_name`, a half when they are all pairs by (a) whose names agree with it; for a part of a long
+    /// relation (`part`), only its pairs by (a) count. `kept` says whether a job of a second source
+    /// kept a record.
     pub fn replace(
         probes: &BTreeMap<i64, Probe>,
         kept: &(dyn Fn(i64) -> bool + Sync),
         part: &(dyn Fn(i64) -> bool + Sync),
+        by_name: bool,
     ) -> Self {
         let mut merge = Merge::default();
         let last = probes.values().map(|probe| probe.origin).max().unwrap_or(0);
@@ -265,7 +266,7 @@ impl Merge {
                         .filter(|record| counted.iter().any(|p| p.id == record.0))
                         .map(|r| &r.2)
                         .collect();
-                    let limit = if counted.iter().all(|p| p.named) { NAME_COVER } else { SAME_SHARE };
+                    let limit = if by_name && counted.iter().all(|p| p.named) { NAME_COVER } else { SAME_SHARE };
                     (!pairs.is_empty()).then(|| (id, pairs, share(job, &covering) >= limit))
                 })
                 .collect();

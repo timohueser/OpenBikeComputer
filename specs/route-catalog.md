@@ -666,7 +666,8 @@ When each of these pairs is a pair by (a) whose names agree with the names of th
 and digits, or words at the shares of a pair by words), the job leaves when they cover at least a
 half of its match line. A pair whose refs agree and whose names do not keeps four fifths. So where an
 OSM route and an official route have the same name and their lines differ in part, the rider sees the
-official route only. At most half of the match line of such a job shows nowhere.
+official route only. At most half of the match line of such a job shows nowhere. A long record keeps
+four fifths (see [The same trail](#the-same-trail)).
 
 So no route leaves the catalog for another one unless the match lines of the records that stay cover
 four fifths of its match line, or a half for a job whose pairs agree with it by name: the rule
@@ -761,17 +762,17 @@ part a piece. Two long records of different origins are a pair by rule (a) of [P
 on their trail lines, so a long record of another rank is another trail.
 
 A long record leaves (`Replaced`) when the long records of earlier origins that are its pairs cover
-at least four fifths of its trail line, or a half when their names agree with its name by the rule
-of [Who stays](#who-stays). A source trail never leaves for an OSM long record, so where neither
-covers enough of the other, both trails stay. A long record that leaves takes no record out of the
-catalog. The long record that stays takes each of `operator`, `website` and `symbol` that it lacks,
-not `description`, from the long record that left for it and whose trail line lies along the largest
-share of its own, by the rule of [Words](#words). It takes no `symbol` when a part in the catalog is
-in France.
+at least four fifths of its trail line, also when their names agree: a complete OSM trail does not
+give way to an official trail whose stages in the catalog cover only half of it. A source trail
+never leaves for an OSM long record, so where neither covers four fifths of the other, both trails
+stay. A long record that leaves takes no record out of the catalog. The long record that stays takes
+each of `operator`, `website` and `symbol` that it lacks, not `description`, from the long record
+that left for it and whose trail line lies along the largest share of its own, by the rule of
+[Words](#words). It takes no `symbol` when a part in the catalog is in France.
 
-So a trail can show twice: an OSM long record that the source trails cover by less than four fifths,
-or by less than a half when their names agree, stays beside them, and so do a trail of another rank,
-a cut line and a route record that is a trail by its moving time.
+So a trail can show twice: an OSM long record that the source trails cover by less than four fifths
+stays beside them, and so do a trail of another rank, a cut line and a route record that is a trail
+by its moving time.
 
 ### Stage fields
 

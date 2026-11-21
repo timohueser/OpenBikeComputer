@@ -913,9 +913,9 @@ fn official_stages_take_the_places_of_the_stages_of_an_osm_trail() -> Result<(),
             stage(201, "Etappe 1")(path(&[0, 1, 2, 3])),
             stage(202, "Etappe 2")([path(&[3, 4, 5, 6]), vec![999]].concat()),
             stage(203, "Etappe 3")(path(&[6, 16, 26, 36])),
-            // Stage 2 over two official stages. The trail has another name than the official trail, which covers
-            // two thirds of it, so it stays.
-            trail(300, "Weg der Drei", "T3", &[301, 302]),
+            // Stage 2 over two official stages. The official trail of its name covers two thirds of it: a long
+            // record keeps four fifths, so both trails stay.
+            trail(300, "Dreier", "T3", &[301, 302]),
             stage(301, "Dreier 1")(path(&[60, 61, 62, 63])),
             stage(302, "Dreier 2")(path(&[63, 64, 65, 66, 56, 46, 36])),
         ]);
@@ -941,6 +941,7 @@ fn official_stages_take_the_places_of_the_stages_of_an_osm_trail() -> Result<(),
         [&stage["trail"], &stage["trail_stage"], &stage["parent"], &stage["stage"]],
         [&json!(trail), &json!(2), &json!(trail), &json!(2)]
     );
+    assert!(by_id.contains_key(&source_id(1, 60, 0)), "both trails of one name stay");
     assert_eq!(parts(300), [(301, 1), (first, 2), (second, 2)]);
     assert_eq!((&by_id[&300]["stage_count"], &by_id[&300]["stages"]), (&json!(2), &json!([301, first, second])));
 

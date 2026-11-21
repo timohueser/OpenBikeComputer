@@ -594,9 +594,9 @@ fn french(parts: &[long::Part]) -> bool {
 }
 
 /// The merge of the long records (`specs/route-catalog.md#the-same-trail`): a long record leaves when its pairs by (a)
-/// of earlier origins cover four fifths of its trail line, the lines of its parts in `kept`, or a half when their names
-/// agree with its own. Each long record that stays takes the words that it lacks from the long record that left for it
-/// and whose trail line lies along most of its own. Gives the long records that left.
+/// of earlier origins cover four fifths of its trail line, the lines of its parts in `kept`, also when their names agree.
+/// Each long record that stays takes the words that it lacks from the long record that left for it and whose trail line
+/// lies along most of its own. Gives the long records that left.
 fn merge_long(longs: &mut Vec<Long>, kept: &BTreeMap<i64, Kept>) -> BTreeSet<i64> {
     let id = |long: &Long| long.record["id"].as_i64().expect("a record has an id");
     let probe = |long: &Long| {
@@ -608,7 +608,7 @@ fn merge_long(longs: &mut Vec<Long>, kept: &BTreeMap<i64, Kept>) -> BTreeSet<i64
         Probe::new(long.origin, text("kind"), rank, text("ref"), &[text("name")], pieces)
     };
     let probes: BTreeMap<i64, Probe> = longs.iter().map(|long| (id(long), probe(long))).collect();
-    let merge = Merge::replace(&probes, &|_| true, &|_| true);
+    let merge = Merge::replace(&probes, &|_| true, &|_| true, false);
     let pairs = |left: &i64| merge.pairs[left].iter().filter(|pair| pair.rule == merge::Rule::A).map(|pair| pair.id);
     let successors: BTreeMap<i64, Vec<i64>> =
         merge.replaced.iter().map(|left| (*left, pairs(left).collect())).collect();
@@ -806,7 +806,7 @@ fn catalog<S: Source + Clone + Send>(
 
     Guard::exempt("merge");
     let parts: HashSet<i64> = long.iter().flat_map(|(_, _, leaves, _)| leaves.iter().map(|leaf| leaf.id)).collect();
-    let merge = Merge::replace(&probes, &|id| planned.kept.contains_key(&id), &|id| parts.contains(&id));
+    let merge = Merge::replace(&probes, &|id| planned.kept.contains_key(&id), &|id| parts.contains(&id), true);
     for &id in &merge.replaced {
         drops.insert(id, Reason::Replaced);
         planned.kept.remove(&id);
