@@ -23,8 +23,8 @@ export interface Budget {
 
 /**
  * The desktop's canopy loads are the 3 × 3 tiles about the eye at once. An iPhone 13 does not load a view with more
- * than 64 ground pages. The phone's range is 3.7 at every render size: at its 1,182 rows `bestRange` (terrain.ts) gives
- * 4.0, and on the iPhone 13 the range × 0.8 of the desktop's least saved 4.5 ms of GPU time per frame.
+ * than 64 ground pages. The phone's least and most range are equal: its range does not follow the render size
+ * (`bestRange` of terrain.ts), and no quality step lowers it.
  */
 export const BUDGETS: Record<Tier, Budget> = {
     desktop: { frameRate: 60, terrainShare: 1, groundPages: 192, loads: { terrain: 6, ground: 4, houses: 6, stamps: 8, canopy: 9 }, lod: { least: 4.6, most: 8, morph: 0.3 } },

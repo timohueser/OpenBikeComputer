@@ -64,10 +64,11 @@ const PROBE_STEP = 1;
 /**
  * The probe runs again when the eye's height above the ground moves more than this many metres from that of the
  * last probe. The probe's answer sets that height, and the height moves the answer through the morph of `lod`
- * (drawn-height.wgsl) by at most D / (morph · above · ln 2) per metre for a gap D between two levels. The eye's point
- * morphs only above the start of the finest level's band, range · 2^−(18 + morph): 3.3 level-18 nodes on the phone, at
- * least 166 m up to 71° N, where the bound is 0.06 D. At a walk's eye height the point lies on the finest level's
- * plateau and the answer does not move. So repeated probes converge; float rounding then leaves a last swing of one step. The band ends it: 1 cm is 20
+ * (drawn-height.wgsl) by at most D / (morph · above · ln 2) per metre for a gap D between two levels. The eye's
+ * point morphs only above the start of the finest level's band, range · 2^−(18 + morph): 3.3 level-18 nodes on
+ * the phone, at least 166 m up to 71° N, where the bound is 0.06 D. At a walk's eye height the point lies on the
+ * finest level's plateau and the answer does not move. So repeated probes converge; float rounding then leaves a
+ * last swing of one step. The band ends it: 1 cm is 20
  * times the float32 step of a ground height below 8,192 m (at most 0.5 mm), and no change that a view shows.
  */
 const PROBE_ABOVE_M = 0.01;

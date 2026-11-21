@@ -34,9 +34,9 @@
 // eye (`lod` of budget.ts): 4.6 nodes of level 16 on the desktop. At 71° N on a canvas 2880 pixels
 // tall, an output pixel there spans 0.37 m or more at the screen's centre, and 0.22 m at a corner of a
 // 16:9 frame. That is past the fade of the blades (0.18 m). The dots of a patch fade at 0.1 × size_m:
-// the 3 m that rules.py allows fade before such a node up to 64° N. The phone's 3.7 nodes on an
-// iPad's canvas of up to 2752 pixels give 0.19 m at a corner, and its dots fade before such a node up
-// to 58° N. Blotches do not fade: rules.py keeps them two such pixels across.
+// the 3 m that rules.py allows fade before such a node up to 64° N. The phone's 3.7 nodes keep both:
+// its largest frame, an iPad of 2752 pixels in portrait (3:4), gives about 0.22 m at a corner.
+// Blotches do not fade: rules.py keeps them two such pixels across.
 override DETAIL: bool = true;
 // A corridor's band: the ground beside a road, shaped by it, under no paint and with facets of its own.
 override BAND: bool = false;
