@@ -143,7 +143,8 @@ pub struct Design {
     pub mitre_max: f64,
     /// The ground way before an opening widens to the opening's inner width and back over this length.
     pub approach_m: f64,
-    /// Toward its end, the top of a wing wall falls at most this many metres per metre, to its coping.
+    /// Toward its end, the top of a wing wall falls this many metres per metre to its coping, or more steeply where its
+    /// row is too short to fall from the head wall's top.
     pub wing_slope: f64,
 }
 

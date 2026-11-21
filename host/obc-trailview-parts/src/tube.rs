@@ -357,12 +357,14 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     let n = o.len();
     (o[0][1], o[n - 1][1]) = (pieces[0].2, pieces[pieces.len() - 1].2);
     let lower = |k: usize| net.lower(c, k).map(|l| spring(net, chord.section, l));
+    // Each face faces the middle of the room: a box section's spring is its roof.
+    let to_middle = |j: usize| across(inward(o[j], o[j + 1], chord.height / 2.0));
     for (x, foot, j) in [(-half, o[0][1], 0), (half, o[n - 1][1], n - 2)] {
         let (a, z) = (wall_side(x, foot, sp, lower(0)), wall_side(x, foot, sp, lower(1)));
-        b.strip((&s, &a), (&t, &z), bore(wall), across(inward(o[j], o[j + 1], sp)));
+        b.strip((&s, &a), (&t, &z), bore(wall), to_middle(j));
     }
     for j in 1..n - 2 {
-        b.strip((&s, &o[j..j + 2]), (&t, &o[j..j + 2]), bore(vault), across(inward(o[j], o[j + 1], sp)));
+        b.strip((&s, &o[j..j + 2]), (&t, &o[j..j + 2]), bore(vault), to_middle(j));
     }
     for k in 0..2 {
         step(b, net, c, k, &o, vault);

@@ -267,9 +267,11 @@ fn the_boxes_hold_the_room_and_lie_inside_the_part() {
         ("bent 60° on a level floor".to_string(), bent60, chords60),
         ("a box section".to_string(), straight.clone(), boxed),
     ];
-    for (name, (ends, chords)) in
-        [("an underpass", underpass(tube(), "primary")), ("a path underpass", underpass(bent(30.0, 20.0), "footway"))]
-    {
+    for (name, (ends, chords)) in [
+        ("an underpass", underpass(tube(), "primary")),
+        ("a path underpass", underpass(bent(30.0, 20.0), "footway")),
+        ("an underpass of one chord", one_chord()),
+    ] {
         cases.push((name.to_string(), ends, chords));
     }
     // Sharp bends on grades: the ends of the boxes there slant, and the boxes rise between them as the shell does.
@@ -501,6 +503,12 @@ fn short() -> (Vec<End>, Vec<Chord>) {
     (vec![end(0.0, 0.0, 500.0, 0.0, 6.0), end(18.0, 0.0, 500.6, std::f64::consts::PI, 3.0)], chords)
 }
 
+/// An underpass 10 m east of one chord, under a way whose reach covers it all.
+fn one_chord() -> (Vec<End>, Vec<Chord>) {
+    let ends = vec![end(0.0, 0.0, 500.0, 0.0, 3.0), end(10.0, 0.0, 500.2, std::f64::consts::PI, 3.0)];
+    underpass((ends, vec![chord([0.0, 0.0, 500.0], [10.0, 0.0, 500.2], 5.0, 0.0)]), "primary")
+}
+
 #[test]
 fn a_part_is_closed_but_at_its_foot() {
     let (ends, mut rock) = bent(30.0, 20.0);
@@ -512,6 +520,7 @@ fn a_part_is_closed_but_at_its_foot() {
         ("two shells that meet", short()),
         ("an underpass", underpass(tube(), "primary")),
         ("a path underpass", underpass(bent(30.0, 20.0), "footway")),
+        ("an underpass of one chord", one_chord()),
     ] {
         let (open, crowded) = not_closed(&ends, &chords);
         assert!(open.is_empty(), "{name}: {} open edges, the first {:?}", open.len(), &open[..open.len().min(4)]);
@@ -533,24 +542,29 @@ fn a_part_is_closed_but_at_its_foot() {
     assert_eq!((r0.then.lower, r1.then.lower), (Some((4.6, Section::Round)), None));
     assert_eq!((r0.then.foot, r1.then.foot), (Some(boxes::foot(&net, 1)), Some(boxes::foot(&net, 0))));
     // An underpass is one part: the parts of its two ends meet at the vertex nearest the middle, 16 m and 24 m in (of
-    // two as near, the one with the least key), with their boxes. One of one chord runs to the other head wall.
+    // two as near, the one with the least key), with their boxes; those of a tube of one chord at its middle.
     let (ends, chords) = underpass(tube(), "primary");
     let net = Net::new(&ends, &chords, Rules::embedded());
     let (r0, r1) = (boxes::reach(&net, 0), boxes::reach(&net, 1));
     assert!(!r0.closed && !r1.closed, "{r0:?} {r1:?}");
     assert_eq!([r0.boxes, r0.shell, r1.boxes, r1.shell].map(|m| (m * 1e6).round() / 1e6), [16.0, 16.0, 24.0, 24.0]);
-    let ends = vec![ends[0].clone(), End { at: world(10.0, 0.0), z: 500.2, ..ends[1].clone() }];
-    let (_, chords) = underpass((Vec::new(), vec![chord([0.0, 0.0, 500.0], [10.0, 0.0, 500.2], 5.0, 0.0)]), "primary");
+    let (ends, chords) = one_chord();
     let net = Net::new(&ends, &chords, Rules::embedded());
-    let r = boxes::reach(&net, 0);
-    assert!(!r.closed && (r.shell - 10.0).abs() < 1e-6, "{r:?}");
+    let (r0, r1) = (boxes::reach(&net, 0), boxes::reach(&net, 1));
+    assert!(
+        !r0.closed && [r0.boxes, r0.shell, r1.boxes, r1.shell].iter().all(|m| (m - 5.0).abs() < 1e-6),
+        "{r0:?} {r1:?}"
+    );
 }
 
 #[test]
 fn a_wing_ends_as_high_as_its_coping() {
-    // The test end's left row `6 4 2` runs 3 m out from the frame's outer edge, at 5 m, and its right row `3` 1 m. Each
-    // wing ends at its coping, and its top falls 1 m per metre (`wing_slope`) toward its end where the row is higher.
-    let (ends, chords) = tube();
+    // With a tube 4 m wide inside, the frame's outer edge lies 4.5 m to each side, so columns of the wall stand half a
+    // metre out from it. The test end's left row `6 4 2` runs 3 m out, its right row `3` 1 m, from `face` 7.1 m. Each
+    // wing's top is at most a line from `face` at the edge to its coping at its end: 2.27 m per metre on the left, 6.8 m
+    // on the right, as neither row is long enough for `wing_slope` (1 m per metre). Under it, the row.
+    let (ends, mut chords) = tube();
+    chords.iter_mut().for_each(|c| c.half = 4.0);
     let rules = Rules::embedded();
     let mesh = meshes([X - 1.0, Y - 1.0, X + 1.0, Y + 1.0], &ends[..1], &chords, rules);
     let top = |north: f64| {
@@ -559,17 +573,20 @@ fn a_wing_ends_as_high_as_its_coping() {
         column.map(|v| f32::from_bits(v[2]) as f64 - 500.0).fold(f64::NEG_INFINITY, f64::max)
     };
     let coping = rules.ladder.bake.coping_m;
+    let left = |d: f64| coping + (7.1 - coping) / 3.0 * (3.0 - d);
     // The floor of the frame falls 2.5 cm per metre in; the head wall's front stands 0.25 m out of the frame line.
-    for (north, want) in [(5.0, 7.1), (6.0, coping + 2.0), (7.0, coping + 1.0), (8.0, coping), (-6.0, coping)] {
+    let want = [(4.5, 7.1), (5.0, left(0.5)), (6.0, left(1.5)), (7.0, 3.0f64.min(left(2.5))), (7.5, coping)];
+    for (north, want) in want.into_iter().chain([(-5.0, (7.1 + coping) / 2.0), (-5.5, coping)]) {
         assert!((top(north) - want).abs() < 0.02, "{north} m to the left: the top at {} m, not {want} m", top(north));
     }
 }
 
 #[test]
-fn the_shell_faces_out() {
-    // The tubes run east along the line 0 m north: a face of the outer shell along a tube faces away from its axis.
+fn the_faces_along_a_tube_face_out_of_its_shell_and_into_its_room() {
+    // The tubes run east along the line 0 m north, about 2.5 m over their floor at about 500.7 m: a face of the outer
+    // shell faces away from that line, a face of the inside (the walls, the vault or roof, the floor) toward it.
     let rules = Rules::embedded();
-    let colour = rules.looks["concrete"].shell;
+    let shell = rules.looks["concrete"].shell;
     for (name, (ends, chords)) in [("round", tube()), ("box", underpass(tube(), "primary"))] {
         let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);
         let point = |i: u32| {
@@ -577,23 +594,30 @@ fn the_shell_faces_out() {
             let p = metric([w[0] as i32 as f64, w[1] as i32 as f64]);
             ([p[0], p[1], f32::from_bits(w[2]) as f64], w[3])
         };
-        let mut along = 0;
+        let (mut out, mut inside) = (0, 0);
         for t in mesh.indices.chunks(3) {
             let [(a, c), (b, _), (d, _)] = [point(t[0]), point(t[1]), point(t[2])];
-            if c != colour {
+            let side = if c == shell {
+                1.0
+            } else if (c >> 24) & mesh::BORE != 0 {
+                -1.0
+            } else {
                 continue;
-            }
+            };
             let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
             let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
             let size = libm::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
             if n[0].abs() > 0.5 * size {
                 continue;
             }
-            // Out from the axis, 2.5 m over the floor at about 500.7 m.
             let mid = [(a[1] + b[1] + d[1]) / 3.0, (a[2] + b[2] + d[2]) / 3.0 - 502.5];
-            assert!(n[1] * mid[0] + n[2] * mid[1] > 0.0, "{name}: a face of the shell at {a:?} faces in");
-            along += 1;
+            assert!(side * (n[1] * mid[0] + n[2] * mid[1]) > 0.0, "{name}: a face at {a:?} faces the wrong way");
+            if side > 0.0 {
+                out += 1;
+            } else {
+                inside += 1;
+            }
         }
-        assert!(along > 20, "{name}: {along} faces");
+        assert!(out > 20 && inside > 20, "{name}: {out} faces of the shell, {inside} inside");
     }
 }

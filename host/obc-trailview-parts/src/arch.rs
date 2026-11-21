@@ -31,9 +31,10 @@ pub fn collar(net: &Net, e: usize, to: f64) -> Vec<Piece> {
 }
 
 /// The top of the head wall `t` metres across to the left of its axis, over the opening's floor: `face` over the
-/// frame, then the rows of the wings, a value per metre out from the frame's outer edge `edge`. Toward the end of its
-/// row a wing's top falls at most `slope` metres per metre, to its coping's height `coping` at the end: where the
-/// ground goes on past the row, the coping goes into it, and no high face ends the wall.
+/// frame, then the rows of the wings, a value per metre out from the frame's outer edge `edge`. A wing's top is at most
+/// a line that falls to its coping's height `coping` at the end of its row: `slope` metres per metre, or more steeply
+/// where the row is too short to fall from `face` at the frame's edge. So the top goes on from the head wall with no
+/// step, and where the ground goes on past the row, the coping goes into it and no high face ends the wall.
 fn top(end: &crate::End, edge: f64, (coping, slope): (f64, f64), t: f64) -> f64 {
     let (row, d) = if t > edge {
         (&end.left, t - edge)
@@ -45,7 +46,8 @@ fn top(end: &crate::End, edge: f64, (coping, slope): (f64, f64), t: f64) -> f64 
     let at = |i: usize| if i == 0 || row.is_empty() { end.face } else { row[(i - 1).min(row.len() - 1)] };
     let j = d.floor() as usize;
     let along = at(j) + (at(j + 1) - at(j)) * (d - j as f64);
-    along.min(coping + slope * (row.len() as f64 - d))
+    let len = row.len() as f64;
+    along.min(coping + slope.max((end.face - coping) / len) * (len - d))
 }
 
 /// The faces of the arch at end e: its head wall, the sill, the reveal and the frame round the opening, the dark face
