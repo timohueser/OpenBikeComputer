@@ -448,8 +448,13 @@ export class TrailView {
     }
 
     private idle(): boolean {
-        return this.complete && this.terrain.idle && this.groundLook.idle && this.houses.idle && this.trees.idle && this.forest.idle && this.plants.idle && this.instances.idle
-            && this.sky.idle && !this.shadow.pending && this.settled() && !this.converging;
+        return !this.loading && !this.shadow.pending && this.settled() && !this.converging;
+    }
+
+    /** Whether the late passes still attach, or a tile, a model or a page is on its way. */
+    private get loading(): boolean {
+        return !this.complete || !this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.trees.idle || !this.forest.idle || !this.plants.idle || !this.instances.idle
+            || !this.sky.idle;
     }
 
     /**
@@ -679,7 +684,8 @@ export class TrailView {
         this.last = steer || !settled ? now : 0;
         const eye = this.eye(), place = this.place();
         const { gpu, uniform, times, targets } = this.gpuState;
-        if (this.fit()) {
+        const resized = this.fit();
+        if (resized) {
             this.temporal.reset();
             this.lastFrame = undefined;
         }
@@ -709,22 +715,29 @@ export class TrailView {
             this.grab.reject(new Error(eye ? 'The still draws nothing: the ground layers are not ready.' : 'The still draws nothing: no terrain is known under the eye.'));
             this.grab = undefined;
         }
-        let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, cascade = -1;
+        let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, cascade = -1, hold = false;
         let lights: Lights | undefined, grabbed: Grabbed | undefined;
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify([this.extras, this.skyMagnitude]);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || extras !== this.drawnExtras;
+            const newExtras = extras !== this.drawnExtras;
+            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || newExtras;
+            // While a view at rest loads, its frames run the updates and the compute but draw LOAD_RATE frames a second. Input and a resize draw at once.
+            hold = !this.output && !this.grab && this.pacer.holds(now, !moved && !newExtras && !resized, this.loading || this.terrain.meshesLoading);
             this.camera = camera;
             if (moved) this.sight = { viewProj, eye: [eye.east, eye.north, eye.z] };
             this.drawnExtras = extras;
             this.completed = false;
             lights = this.lights();
             const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent;
-            if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, light, { casters, reshaped: this.terrain.reshaped }, moved);
+            const casting = { casters, reshaped: this.terrain.reshaped };
+            // A held frame keeps its changes for the next frame that draws: `due()` marks the map that it returns as drawn.
+            if (this.complete && hold) this.shadow.hold(casting);
+            else if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, light, casting, moved);
             this.shadow.write(gpu, [eye.east, eye.north, eye.z], light);
             // A new map changes the frame as new content does.
-            step = this.temporal.next(moved, changed || cascade >= 0, debug ? 1 : STILL_FRAMES);
+            if (hold) this.temporal.hold(changed);
+            else step = this.temporal.next(moved, changed || cascade >= 0, debug ? 1 : STILL_FRAMES);
             if (step && !debug) offset = jitter(step.sample);
             // The jitter in clip space: render pixels are y down.
             ndc = [2 * offset[0] / width, -2 * offset[1] / height];
@@ -805,11 +818,12 @@ export class TrailView {
         // The tree models that the workers built go to the device cache once the view is idle, so a load never waits for the writes.
         if (this.trees.unsaved && this.idle()) this.trees.save();
         // Frames go on while the eye moves or settles on the ground, while the terrain or the ground has
-        // work that no load waits for, and until a still view has all its jittered frames.
-        if (steer || !settled || this.terrain.working || this.groundLook.working || this.houses.working || this.shadow.pending || this.converging) this.request();
+        // work that no load waits for, until a still view has all its jittered frames, and up to the frame that draws after a held one.
+        if (hold || steer || !settled || this.terrain.working || this.groundLook.working || this.houses.working || this.shadow.pending || this.converging) this.request();
         if (steer || this.moved) this.onView?.(this.view);
         this.moved = false;
-        for (const resolve of this.rendered.splice(0)) resolve();
+        // The waits are for a frame that draws: a held frame shows none of what it took in.
+        if (!hold) for (const resolve of this.rendered.splice(0)) resolve();
     }
 
     /**
