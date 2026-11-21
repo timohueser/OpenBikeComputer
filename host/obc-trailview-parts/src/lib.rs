@@ -266,7 +266,7 @@ pub fn meshes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -
     b.mesh()
 }
 
-/// The boxes of the built ends and the floor segments of the chords of built chains. `Volumes::near` keeps those near a
+/// The boxes of the built ends and the floor segments of the chords of built chains. `near_volumes` keeps those near a
 /// square, so a tile's records build their volumes once.
 pub fn volumes(ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
     let net = Net::new(ends, chords, rules);
@@ -293,15 +293,13 @@ pub fn volumes(ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
     out
 }
 
-impl Volumes {
-    /// Those that come within `reach_m` of a square, in their order: a box by its corners, a floor segment by its ends.
-    pub fn near(&self, square: [f64; 4], rules: &Rules) -> Volumes {
-        let reach = rules.design.reach_m / metres_per_unit((square[1] + square[3]) / 2.0);
-        let boxes = self.boxes.as_chunks::<BOX>().0.iter().filter(|b| near(square, &corners(b), reach));
-        let floors =
-            self.floors.as_chunks::<FLOOR>().0.iter().filter(|f| near(square, &[[f[0], f[1]], [f[2], f[3]]], reach));
-        Volumes { boxes: boxes.flatten().copied().collect(), floors: floors.flatten().copied().collect() }
-    }
+/// The boxes (`BOX` words each) and the floor segments (`FLOOR` words each) of volumes that come within `reach_m` of a
+/// square, in their order: a box by its corners, a floor segment by its ends.
+pub fn near_volumes(square: [f64; 4], boxes: &[f64], floors: &[f64], rules: &Rules) -> Volumes {
+    let reach = rules.design.reach_m / metres_per_unit((square[1] + square[3]) / 2.0);
+    let boxes = boxes.as_chunks::<BOX>().0.iter().filter(|b| near(square, &corners(b), reach));
+    let floors = floors.as_chunks::<FLOOR>().0.iter().filter(|f| near(square, &[[f[0], f[1]], [f[2], f[3]]], reach));
+    Volumes { boxes: boxes.flatten().copied().collect(), floors: floors.flatten().copied().collect() }
 }
 
 /// Per end, whether it is built: its part and the chain of the chord at its opening are built.

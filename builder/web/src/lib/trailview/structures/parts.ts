@@ -37,15 +37,19 @@ function recordsOf(list: Feature[], tile: Node): string | null {
     return known;
 }
 
+/** A node's square [x0, y0, x1, y1] in world units, as the bridge reads it. */
+const squareOf = ({ level, x, y }: Node) => [x, y, x + 1, y + 1].map(v => v * 2 ** (30 - level));
+
 /**
  * The input of the bridge for `node` of its feature tile: the node's square and the tile's part records in world
  * units, each chord with the surface code and the lines of a way of its class and surface; null for a tile without a
  * `tunnel-end`, which has no part.
  */
 export function partInput(list: Feature[], tile: Node, node: Node): string | null {
-    const side = 2 ** (30 - node.level), parts = recordsOf(list, tile);
-    return parts && `{"square":${JSON.stringify([node.x * side, node.y * side, (node.x + 1) * side, (node.y + 1) * side])},${parts}}`;
+    const parts = recordsOf(list, tile);
+    return parts && `{"square":${JSON.stringify(squareOf(node))},${parts}}`;
 }
+
 
 /** The meshes of the parts that the input's square draws; null with none. */
 export function partMeshes(input: string): StructureMesh | null {
@@ -69,7 +73,7 @@ export function partVolumes(list: Feature[], tile: Node, node: Node): { boxes: F
         tileVolumes.set(list, (all = input ? volumes(input) : null));
     }
     if (!all) return null;
-    const side = 2 ** (30 - node.level), out = nearVolumes(Float64Array.of(node.x * side, node.y * side, (node.x + 1) * side, (node.y + 1) * side), all), n = out[0];
+    const out = nearVolumes(Float64Array.from(squareOf(node)), all), n = out[0];
     return { boxes: out.slice(1, 1 + n), floors: out.slice(1 + n) };
 }
 

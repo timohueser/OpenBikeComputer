@@ -104,8 +104,8 @@ pub fn near_volumes(square: &[f64], volumes: &[f64]) -> Result<Vec<f64>, Error> 
     let square = square.try_into().map_err(|_| error("square: not 4 numbers".into()))?;
     let n = (volumes.first().map(|&n| n as usize).filter(|&n| n < volumes.len()))
         .ok_or_else(|| error("volumes: not as `volumes` gives them".into()))?;
-    let all = Volumes { boxes: volumes[1..1 + n].to_vec(), floors: volumes[1 + n..].to_vec() };
-    Ok(packed(all.near(square, Rules::embedded())))
+    let (boxes, floors) = volumes[1..].split_at(n);
+    Ok(packed(obc_trailview_parts::near_volumes(square, boxes, floors, Rules::embedded())))
 }
 
 fn packed(v: Volumes) -> Vec<f64> {

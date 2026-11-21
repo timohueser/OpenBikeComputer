@@ -140,8 +140,8 @@ export class Stamps implements StampSource {
      * The stamp wishes and the structure meshes of the owner nodes go in one order, the last frame's rank. The structure
      * meshes of a node are a job of their own, one at a time, which goes once no stamp wish of a lower rank waits or is on
      * its way: the tunnels and parts about the eye wait only for the far stamps already on their way, REQUESTS at most,
-     * and the stamps of a lower rank wait for no structure job of their frame. The worker takes its jobs in turn, so a stamp wish of a later frame waits
-     * for one structure job at most.
+     * and the stamps of a lower rank wait for no structure job of their frame. The worker takes its jobs in turn, so a
+     * stamp wish of a later frame waits for one structure job at most.
      */
     private refill(): void {
         while (this.pending.size < REQUESTS && this.queue.length) {

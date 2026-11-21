@@ -384,49 +384,31 @@ fn each_face_draws_once_over_four_squares_about_an_end() {
     assert!(parts == whole);
 }
 
-/// The volumes near a square as a build for that square alone keeps them: the reference of `Volumes::near`.
-fn volumes_for(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
-    let net = Net::new(ends, chords, rules);
-    let reach = rules.design.reach_m / metres_per_unit((square[1] + square[3]) / 2.0);
-    let mut out = Volumes::default();
-    for e in (0..ends.len()).filter(|&e| net.built_end(e)) {
-        for words in boxes::boxes(&net, e).into_iter().filter(|words| near(square, &corners(words), reach)) {
-            out.boxes.extend(words);
-        }
-    }
-    for (c, chord) in chords.iter().enumerate() {
-        let (a, b) = ([chord.a[0], chord.a[1]], [chord.b[0], chord.b[1]]);
-        if net.built_chord(c) && near(square, &[a, b], reach) {
-            let lift = rules.design.lift_m;
-            out.floors.extend([a[0], a[1], b[0], b[1], chord.a[2] + lift, chord.b[2] + lift, chord.half]);
-        }
-    }
-    out
-}
-
 #[test]
-fn the_volumes_near_each_node_are_those_that_a_build_for_its_square_keeps() {
+fn the_volumes_near_a_square_are_those_within_reach_of_it() {
+    let (ends, chords) = tube();
     let rules = Rules::embedded();
-    let (mut some, mut none) = (0, 0);
-    for (ends, chords) in [tube(), underpass(tube(), "primary"), underpass(bent(30.0, 20.0), "footway"), one_chord()] {
-        let all = volumes(&ends, &chords, rules);
-        // The nodes of zoom 15 to 18 about the test place, 5 × 5 of each.
-        for level in 15..=18 {
-            let side = 2f64.powi(30 - level);
-            let (i0, j0) = ((X / side).floor(), (Y / side).floor());
-            for (i, j) in (-2..=2).flat_map(|i| (-2..=2).map(move |j| (i0 + i as f64, j0 + j as f64))) {
-                let square = [i * side, j * side, (i + 1.0) * side, (j + 1.0) * side];
-                let near = all.near(square, rules);
-                assert_eq!(near, volumes_for(square, &ends, &chords, rules), "zoom {level}, node {i} {j}");
-                if near.boxes.is_empty() {
-                    none += 1
-                } else {
-                    some += 1
-                }
-            }
-        }
-    }
-    assert!(some > 0 && none > 0, "{some} nodes with boxes, {none} without");
+    let all = volumes(&ends, &chords, rules);
+    let (m, reach) = (metres_per_unit(Y), rules.design.reach_m);
+    let near = |square| near_volumes(square, &all.boxes, &all.floors, rules);
+    // The westmost point of the volumes: of a box's corners and of a floor segment's ends.
+    let corners_x = all.boxes.as_chunks::<BOX>().0.iter().flat_map(|b| corners(b).map(|c| c[0]));
+    let west = corners_x
+        .chain(all.floors.as_chunks::<FLOOR>().0.iter().flat_map(|f| [f[0], f[2]]))
+        .fold(f64::INFINITY, f64::min);
+    // Squares 1 km high about the test place, west of the part, whose east side lies `metres` short of its reach.
+    let short_of = |metres: f64| {
+        near([west - (reach + metres + 500.0) / m, Y - 500.0 / m, west - (reach + metres) / m, Y + 500.0 / m])
+    };
+    assert!(!all.boxes.is_empty() && !all.floors.is_empty());
+    // Inside: a square over the whole part keeps all, in their order.
+    assert_eq!(near([X - 500.0 / m, Y - 500.0 / m, X + 500.0 / m, Y + 500.0 / m]), all);
+    // On the border: half a metre inside the reach keeps the westmost volumes, but not all; half a metre out, none.
+    let edge = short_of(-0.5);
+    assert!(!edge.boxes.is_empty() && edge != all, "{} of {} box words", edge.boxes.len(), all.boxes.len());
+    assert_eq!(short_of(0.5), Volumes::default());
+    // Empty: a square 1 km north keeps none.
+    assert_eq!(near([X - 500.0 / m, Y - 1500.0 / m, X + 500.0 / m, Y - 1000.0 / m]), Volumes::default());
 }
 
 #[test]

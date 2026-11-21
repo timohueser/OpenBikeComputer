@@ -32,7 +32,11 @@ function fakeWorker(held = false) {
     return {
         jobs,
         answer: (count = waiting.length) => waiting.splice(0, count).forEach(({ answer }) => answer()),
-        answerJob: (job: string) => waiting.splice(waiting.findIndex(held => held.job === job), 1)[0].answer(),
+        answerJob: (job: string) => {
+            const at = waiting.findIndex(held => held.job === job);
+            if (at < 0) throw new Error(`no job ${job} waits`);
+            waiting.splice(at, 1)[0].answer();
+        },
     };
 }
 
