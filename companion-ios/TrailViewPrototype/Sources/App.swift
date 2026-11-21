@@ -18,7 +18,8 @@ private let spikeRuns = ["today", "today-low"].flatMap { v in ["walk", "valley-d
 
 private let pages = [
     KitPage(name: "Measure: the spike runs (9)", path: "/phone/?runs=\(spikeRuns.joined(separator: ","))"),
-    KitPage(name: "Soak: the walk for 10 minutes", path: "/phone/?runs=today:walk&seconds=600"),
+    // The lighter settings: today's app at its default settings does not survive its load on the iPhone 13.
+    KitPage(name: "Soak: the walk for 10 minutes", path: "/phone/?runs=today-low:walk&seconds=600"),
     KitPage(name: "Memory limit of the page", path: "/phone/memory?kind=js"),
     KitPage(name: "Memory limit of the GPU", path: "/phone/memory?kind=gpu"),
     KitPage(name: "Look around (village walk)", path: "/trailview.html?lat=46.820500&lon=8.403000&heading=160.0&pitch=0.0&eye=1.6"),

@@ -6,6 +6,9 @@
     const query = new URLSearchParams(location.search), kind = query.get('kind');
     const session = `memory-${query.get('host') ?? 'web'}-${kind}-${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}`;
     const post = (key, value) => fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session, key, value }) }).catch(() => {});
+    // Random words: iOS compresses memory, and a page of zeros would cost it almost nothing.
+    let seed = 0x9e3779b9;
+    const fill = words => { for (let i = 0; i < words.length; i++) { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; words[i] = seed; } };
     const line = text => document.body.append(Object.assign(document.createElement('p'), { textContent: text }));
 
     addEventListener('DOMContentLoaded', async () => {
@@ -26,13 +29,13 @@
         }
         for (let total = STEP; total <= MAX; total += STEP) {
             if (kind === 'js') {
-                const bytes = new Uint8Array(STEP);
-                for (let i = 0; i < STEP; i += 4096) bytes[i] = 1;
-                keep.push(bytes);
+                const words = new Uint32Array(STEP / 4);
+                fill(words);
+                keep.push(words);
             } else {
                 device.pushErrorScope('out-of-memory');
                 const buffer = device.createBuffer({ size: STEP, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
-                new Uint8Array(buffer.getMappedRange()).fill(1);
+                fill(new Uint32Array(buffer.getMappedRange()));
                 buffer.unmap();
                 const error = await device.popErrorScope();
                 if (error) return void (await post('event', { error: error.message, mib: total / 2 ** 20 }), (shown.textContent = `Refused at ${total / 2 ** 20} MiB`));
