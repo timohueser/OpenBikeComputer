@@ -86,9 +86,10 @@ key of a cover. Run the commands from `builder/web/tests/browser`.
 
 ```sh
 # One minute after the update, as the public host keeps the catalog for up to 60 s. The first line
-# must name the new release. Keep the live set id that it prints, for a rollback.
-node trailview/route-pictures.mjs check
-# When check names routes: build the page (step 1), then:
+# must name the new release. Keep the live set id that it prints, for a rollback. --without takes the
+# list of the last run, from its pull request or issue.
+node trailview/route-pictures.mjs check --without=ID,ID
+# When check exits with 1: build the page (step 1), then:
 node trailview/route-pictures.mjs render --gpu --out DIR
 # --without=ID for each route that fails on each run, has no view or has a faulty cover (a cover
 # that the owner rejects); the pull request or the issue gives the reason. upload prints the set id.
