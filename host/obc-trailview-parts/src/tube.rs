@@ -434,19 +434,23 @@ impl<'a> Net<'a> {
             // The other tube runs between the planes of its two rings: at an opening its frame line, at a bend the mitre.
             let o_dir = unit([dx, dy]);
             let crossing = st.at([x, 0.0]);
-            let between = |k: usize, into: f64| {
+            // The other's rings, each with its normal along the chord.
+            let rings = [0, 1].map(|k| {
                 let r = self.ring(o, k);
                 let n = unit([r.ay, -r.ax]);
-                let n = if dot(n, o_dir) * into >= 0.0 { n } else { [-n[0], -n[1]] };
-                dot([crossing[0] - r.x, crossing[1] - r.y], n) * m >= -meet.past
+                (r, if dot(n, o_dir) >= 0.0 { n } else { [-n[0], -n[1]] })
+            });
+            let between = |(r, n): (Station, [f64; 2]), into: f64| {
+                into * dot([crossing[0] - r.x, crossing[1] - r.y], n) * m >= -meet.past
             };
             let df = floor_at(u) - st.z;
             let level = match meet.up {
                 Some([lo, hi]) => df < hi && df + other.height > lo,
                 None => df.abs() <= (own.height + other.height) / 2.0,
             };
-            // The metres from the station to the other's axis, square to it, oriented away from it.
-            let mut nb = unit(left_of(o_dir));
+            // The metres from the station to the other's axis, square to it, oriented away from it. The axis runs along
+            // the mean of its rings' normals: a short chord at an opening may lead off the tube's way.
+            let mut nb = unit(left_of(unit([rings[0].1[0] + rings[1].1[0], rings[0].1[1] + rings[1].1[1]])));
             if dot(nb, [st.x - other.a[0], st.y - other.a[1]]) < 0.0 {
                 nb = [-nb[0], -nb[1]];
             }
@@ -454,8 +458,8 @@ impl<'a> Net<'a> {
             if b0 > reach[side] + other.half + shell
                 || !level
                 || best[side].is_some_and(|b| b.axis.abs() <= x.abs())
-                || !between(0, 1.0)
-                || !between(1, -1.0)
+                || !between(rings[0], 1.0)
+                || !between(rings[1], -1.0)
             {
                 continue;
             }
