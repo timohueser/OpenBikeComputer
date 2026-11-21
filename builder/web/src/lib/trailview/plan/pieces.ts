@@ -56,8 +56,8 @@ const SLOT_GROUPS = [[[0, 2], [1, 3]], [[], [0, 1, 2, 3]]];
 /** What a node's stamp data gives the meshes: its stamps, and the boxes of the tunnels' portals and parts near it. */
 type NodeStamps = Pick<NodeFeatures, 'data' | 'portals'>;
 
-/** Per run, its own triangles and its mouth's that meet a box; per group of step slots (the steps, the end faces), those that do. */
-export interface Tails { own: number[]; mouth: number[]; slots: [number, number] }
+/** Per run, its own triangles and its mouth's that meet a box; per group of step slots (the steps, the end faces), those that do; the boxes that the cell meets. */
+export interface Tails { own: number[]; mouth: number[]; slots: [number, number]; boxes: Float64Array[] }
 
 /** What a pass makes: every corner, or only the plain terrain's corners, the ones that read the drawn page. */
 type Make = 'all' | 'terrain';
@@ -74,7 +74,7 @@ interface Piece {
     /** The first word of the cell's records block that its labels index. */
     block: number;
     /** Its buffers, and the compute bind group with the stamp data of the pass that it was made for (`bound`). */
-    gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute?: GPUBindGroup; stamps?: GPUBuffer; bound?: Make; storeys?: StoreysGpu };
+    gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute?: GPUBindGroup; stamps?: GPUBuffer; bound?: Make; storeys?: StoreysGpu; boxes?: GPUBuffer };
     /** Whether its corners hold their heights, what a pass must make, and how many corners the pass made so far. */
     computed: boolean;
     stale?: Make;
@@ -99,8 +99,8 @@ interface Resources {
     records: GPUTexture;
     /** The road and path profiles, as stamp-core.wgsl reads them. */
     profiles: GPUBuffer;
-    /** The boxes of the tunnels' portals and parts near the eye, as `holes` of terrain.wgsl. */
-    holes: GPUBuffer;
+    /** The boxes of a piece with none (as `boxes` of plan/piece.wgsl): a count of 0. */
+    noBoxes: GPUBuffer;
     /** The triangles and the step slots of a cell drawn wholly at level 18, and of one drawn in part or near a box (`cut`); the
      * triangles of a stop arm's junction, whose pixels find the mouth (plan/mouth-in.wgsl), with pipelines of their own, so that
      * no other pixel pays for it. */
@@ -229,7 +229,7 @@ export class Pieces {
 
     private release(piece: Piece): void {
         const r = this.resources;
-        if (r && piece.gpu) for (const buffer of [piece.gpu.data, piece.gpu.indices, piece.gpu.params, piece.gpu.stamps, piece.gpu.storeys?.data, piece.gpu.storeys?.params]) if (buffer) r.gpu.destroy('plan', buffer);
+        if (r && piece.gpu) for (const buffer of [piece.gpu.data, piece.gpu.indices, piece.gpu.params, piece.gpu.stamps, piece.gpu.boxes, piece.gpu.storeys?.data, piece.gpu.storeys?.params]) if (buffer) r.gpu.destroy('plan', buffer);
         piece.gpu = undefined;
         piece.computed = false;
         piece.stale = 'all';
@@ -238,13 +238,13 @@ export class Pieces {
 
     /**
      * Takes the pipelines on a device: `frame` is the frame uniform of the eye's view, `cells` the buffer of CELLS_BYTES, `records` the
-     * records' texture, `profiles` the stamps' profile table, `holes` the terrain's boxes.
+     * records' texture, `profiles` the stamps' profile table.
      */
-    async attach(gpu: Gpu, frame: GPUBuffer, cells: GPUBuffer, records: GPUTexture, profiles: GPUBuffer, holes: GPUBuffer): Promise<void> {
+    async attach(gpu: Gpu, frame: GPUBuffer, cells: GPUBuffer, records: GPUTexture, profiles: GPUBuffer): Promise<void> {
         this.resources = undefined;
         for (const piece of this.pieces.values()) Object.assign(piece, { gpu: undefined, computed: false, stale: 'all', done: 0 });
-        const made = await gpu.once(piecePipelines);
-        this.resources = { gpu, frame, cells, records, profiles, holes, ...made };
+        const made = await gpu.once(piecePipelines), noBoxes = gpu.buffer('plan', 16, GPUBufferUsage.STORAGE);
+        this.resources = { gpu, frame, cells, records, profiles, noBoxes, ...made };
         this.cellsDirty = true;
     }
 
@@ -375,12 +375,23 @@ export class Pieces {
         piece.done = 0;
     }
 
-    /** The triangles and the step slots of a piece, in their order of the draw (splitMouths, splitTails). */
+    /**
+     * The triangles and the step slots of a piece, in their order of the draw (splitMouths, splitTails), and the boxes
+     * that its tail tests, about the cell's origin, as `boxes` of plan/piece.wgsl reads them.
+     */
     private writeOrder(r: Resources, piece: Piece): void {
-        const { device } = r.gpu, { corners, triangles, steps } = piece.mesh;
-        device.queue.writeBuffer(piece.gpu!.data, 4 * 3 * corners.length, steps);
+        const { device } = r.gpu, { corners, triangles, steps } = piece.mesh, gpu = piece.gpu!, boxes = piece.tails?.boxes ?? [];
+        device.queue.writeBuffer(gpu.data, 4 * 3 * corners.length, steps);
         // A buffer write takes whole words.
-        device.queue.writeBuffer(piece.gpu!.indices, 0, triangles.buffer, triangles.byteOffset, 4 * Math.ceil(triangles.length / 2));
+        device.queue.writeBuffer(gpu.indices, 0, triangles.buffer, triangles.byteOffset, 4 * Math.ceil(triangles.length / 2));
+        if (!boxes.length) return;
+        const s = size(CELL_LEVEL), words = new Float32Array(4 + BOX * boxes.length);
+        words[0] = boxes.length;
+        boxes.forEach((box, k) => words.set([box[0] - piece.node.x * s, box[1] - piece.node.y * s, ...box.subarray(2)], 4 + BOX * k));
+        if (gpu.boxes) r.gpu.destroy('plan', gpu.boxes);
+        gpu.boxes = r.gpu.buffer('plan', words.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        device.queue.writeBuffer(gpu.boxes, 0, words);
+        gpu.draw = this.drawGroup(r, gpu.data, gpu.params, r.frame, gpu.boxes);
     }
 
     /** A cell's storeys: their corners, out words, slots, triangles and offsets in one buffer, as their parameters name them. */
@@ -395,10 +406,10 @@ export class Pieces {
         return { data, params, draw: this.drawGroup(r, data, params, r.frame), computed: false };
     }
 
-    private drawGroup(r: Resources, data: GPUBuffer, params: GPUBuffer, frame: GPUBuffer): GPUBindGroup {
+    private drawGroup(r: Resources, data: GPUBuffer, params: GPUBuffer, frame: GPUBuffer, boxes = r.noBoxes): GPUBindGroup {
         return r.gpu.device.createBindGroup({ layout: r.drawLayout, entries: [
             { binding: 0, resource: { buffer: frame } }, { binding: 1, resource: { buffer: data } }, { binding: 2, resource: { buffer: params } }, { binding: 3, resource: { buffer: r.cells } },
-            { binding: 4, resource: { buffer: r.holes } }, { binding: 8, resource: r.records.createView() },
+            { binding: 4, resource: { buffer: boxes } }, { binding: 8, resource: r.records.createView() },
         ] });
     }
 
@@ -700,7 +711,7 @@ export function splitTails(mesh: CellMesh, mouths: number[], origin: [number, nu
         max[i & 1] = Math.max(max[i & 1], xy[i]);
     }
     const plans = boxes.map(box => boxPlan(box, GRID_STEP * metresPerUnit(box[1]))).filter(({ lo, hi }) => lo[0] <= max[0] && hi[0] >= min[0] && lo[1] <= max[1] && hi[1] >= min[1]);
-    if (!plans.length) return { own: mouths.map(() => 0), mouth: mouths.map(() => 0), slots: [0, 0] };
+    if (!plans.length) return { own: mouths.map(() => 0), mouth: mouths.map(() => 0), slots: [0, 0], boxes: [] };
     // A triangle's bounds first, against all plans and then each: most miss every plan. A slot is the triangle a, b, b.
     const bounds = new Float64Array(plans.flatMap(({ lo, hi }) => [...lo, ...hi]));
     const union = [0, 1].map(i => Math.min(...plans.map(({ lo }) => lo[i]))).concat([0, 1].map(i => Math.max(...plans.map(({ hi }) => hi[i]))));
@@ -723,7 +734,7 @@ export function splitTails(mesh: CellMesh, mouths: number[], origin: [number, nu
     });
     // A slot stands on the edge from its a_p to its a_q.
     const slot = (i: number) => near(mesh.steps[4 * i], mesh.steps[4 * i + 1], mesh.steps[4 * i + 1]);
-    return { own, mouth, slots: [gather(mesh.steps, 4, 0, faces, slot), gather(mesh.steps, 4, faces, n, slot)] };
+    return { own, mouth, slots: [gather(mesh.steps, 4, 0, faces, slot), gather(mesh.steps, 4, faces, n, slot)], boxes: plans.map(({ box }) => box) };
 }
 
 /**
@@ -731,7 +742,7 @@ export function splitTails(mesh: CellMesh, mouths: number[], origin: [number, nu
  * `ks` (world points at 2k, 2k + 1 of `xy`) within them meets it. A point's metres in and to the left are those of `box_point` in
  * portal-box.wgsl; the plan is where `box_plan` is at most `grow`.
  */
-function boxPlan(box: Float64Array, grow: number): { lo: number[]; hi: number[]; meets: (ks: number[], xy: Float64Array) => boolean } {
+function boxPlan(box: Float64Array, grow: number): { box: Float64Array; lo: number[]; hi: number[]; meets: (ks: number[], xy: Float64Array) => boolean } {
     const [x, y, dx, dy, depth, half, , , , , slope0, slope1] = box, m = metresPerUnit(y), side = half + grow;
     // Half-planes a · in + b · left <= c: past the start, before the end, and the two sides.
     const grown = [grow * Math.hypot(1, slope0), grow * Math.hypot(1, slope1)];
@@ -740,6 +751,7 @@ function boxPlan(box: Float64Array, grow: number): { lo: number[]; hi: number[];
     const corners = [-side, side].flatMap(left => [slope0 * left - grown[0], depth + slope1 * left + grown[1]].map(along => [x + (along * dx + left * dy) / m, y + (along * dy - left * dx) / m]));
     const lo = [0, 1].map(i => Math.min(...corners.map(c => c[i]))), hi = [0, 1].map(i => Math.max(...corners.map(c => c[i])));
     return {
+        box,
         lo,
         hi,
         meets(ks, xy) {

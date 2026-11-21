@@ -26,8 +26,9 @@ struct Piece {
 
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
 @group(0) @binding(2) var<uniform> params: Piece;
-// The boxes of the tunnels' portals and parts near the eye, as `holes` of terrain.wgsl.
-@group(0) @binding(4) var<storage, read> holes: array<vec4f>;
+// The boxes of the tunnels' portals and parts that the cell meets (pieces.ts): x the count; then per box its words, as
+// portal-box.wgsl reads them, but the middle of its start in world units from the cell's origin.
+@group(0) @binding(4) var<storage, read> boxes: array<vec4f>;
 
 // As NO_LABEL of corners.wgsl: the plain terrain.
 const NO_LABEL: u32 = 33554431u;
@@ -371,12 +372,15 @@ fn storey_caster(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f 
     return select(vec4f(0.0, 0.0, 2.0, 1.0), frame.view_proj * vec4f(corner_point(PieceVertex(u, lod_space(u), storey_height(k))), 1.0), all);
 }
 
-// Whether a point `u` units about the anchor at height `h` lies in a box, as the terrain's fragment tests it.
+// Whether a point `u` units about the anchor at height `h` lies in a box of the cell, as the terrain's fragment tests
+// its boxes.
 fn in_box(u: vec2f, h: f32) -> bool {
-    for (var i = 0u; i < u32(holes[0].x); i++) {
-        let b = holes[2u + 3u * i];
-        let c = holes[3u + 3u * i];
-        let q = box_point(holes[1u + 3u * i], b, c, u, h);
+    let origin = vec2f(params.origin - surface.anchor);
+    for (var i = 0u; i < u32(boxes[0].x); i++) {
+        let a = boxes[1u + 3u * i];
+        let b = boxes[2u + 3u * i];
+        let c = boxes[3u + 3u * i];
+        let q = box_point(vec4f(a.xy + origin, a.zw), b, c, u, h);
         if (box_plan(b, c, q) < 0.0 && box_wall(b, c, q) < 0.0 && q.z > b.w) {
             return true;
         }

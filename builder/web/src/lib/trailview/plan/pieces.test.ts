@@ -50,13 +50,15 @@ describe('splitTails', () => {
             steps: new Uint32Array([[at(600, 0), at(600, 600)], [at(0, 0), at(300, 0)], [at(300, 300), at(600, 300)]].flatMap(([p, q]) => [p, q, q, p])),
             endFaces: 1, sunk: new Uint32Array(0), culverts: new Uint32Array(0),
         };
-        const tails = splitTails(mesh, [0, 2], [0, 2 ** 29], [box]);
-        expect(tails).toEqual({ own: [2, 0], mouth: [0, 1], slots: [1, 1] });
+        // A box 3 km east: the cell does not meet it, and its tail tests only the first.
+        const away = box.map((v, i) => (i === 0 ? v + 80_000 : v));
+        const tails = splitTails(mesh, [0, 2], [0, 2 ** 29], [box, away]);
+        expect(tails).toEqual({ own: [2, 0], mouth: [0, 1], slots: [1, 1], boxes: [box] });
         const tris = Array.from({ length: 6 }, (_, t) => Array.from(mesh.triangles.subarray(3 * t, 3 * t + 3)).map(k => k + (t < 3 ? 0 : 1)));
         expect(tris).toEqual([far, inside, across, west, inside, beside]);
         expect(Array.from(mesh.steps.filter((_, i) => i % 4 === 0))).toEqual([at(0, 0), at(600, 0), at(300, 300)]);
         // No box: nothing moves.
-        expect(splitTails(mesh, [0, 2], [0, 2 ** 29], [])).toEqual({ own: [0, 0], mouth: [0, 0], slots: [0, 0] });
+        expect(splitTails(mesh, [0, 2], [0, 2 ** 29], [])).toEqual({ own: [0, 0], mouth: [0, 0], slots: [0, 0], boxes: [] });
     });
 });
 
