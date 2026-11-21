@@ -16,7 +16,7 @@ import { LOOK_BYTES, lookUniform } from './light/look';
 import { Shadow } from './light/shadow';
 import { DARK_SKY, nightSky } from './light/night';
 import { Sky, SKY_CREDITS, skyPipeline } from './light/sky';
-import { Resolve, resolvePipeline } from './resolve/resolve';
+import { Resolve, resolvePipeline, type Present } from './resolve/resolve';
 import { MAX_SCALE, Targets } from './resolve/targets';
 import { jitter, STILL_FRAMES, Temporal, type Step } from './resolve/temporal';
 import { EYE, Instances, SUN, type InstanceStats, type LastFrame } from './instances/instances';
@@ -45,7 +45,19 @@ import { Pacer } from './pacer';
 import type { StillPoints } from './still';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
-const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'far-casters', 'far-shadow', 'mips', 'resolve', 'pieces', 'cliff'];
+const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'far-casters', 'far-shadow', 'mips', 'resolve', 'pieces', 'cliff', 'present'];
+/**
+ * The prototype of `reuse=1`. While only the view's direction turns, a display frame presents the last frame's history
+ * turned to the view, and a frame draws the scene, `margin=` wider in tangent space, `turn=` times a second or once the
+ * canvas would leave that margin. A still view whose tiles still load runs the updates of every frame but draws
+ * LOAD_RATE frames a second.
+ */
+const REUSE = typeof location !== 'undefined' ? new URLSearchParams(location.search) : undefined;
+const MARGIN = Number(REUSE?.get('margin')) > 1 ? Number(REUSE?.get('margin')) : 1.25, TURN_RATE = Number(REUSE?.get('turn')) || 15, LOAD_RATE = 10;
+/** Half a display period: a frame due a little early draws. */
+const SLACK_MS = 8;
+/** History pixels about the canvas that the present reads past its edge: the Catmull-Rom and the sharpening. */
+const PRESENT_PAD = 3;
 /** Metres to a view that is at another place. */
 const NEW_PLACE = 1000;
 /** A step of the footing this small no longer moves the view about the eye: `eyeReady` counts it as settled. */
@@ -143,6 +155,11 @@ export class TrailView {
     private readonly resolve = new Resolve();
     private readonly temporal = new Temporal();
     private readonly controls?: Controls;
+    private readonly reuse: boolean;
+    /** With `reuse`: the last frame that drew the scene, its eye and extras as a key, its direction, its view projection without the jitter, whether it was wide, and when it drew. */
+    private shot?: { key: string; heading: number; pitch: number; viewProj: Float32Array; wide: boolean; at: number };
+    /** A change that a held frame saw and did not draw. */
+    private unshown = false;
     private destroyed = false;
     private pose: Pose;
     private extras: Pick<View, 'date' | 'time' | 'weather' | 'debug' | 'plan'>;
@@ -207,6 +224,7 @@ export class TrailView {
         this.rows = new Rows(this.groundLook.rules, this.trees, this.plants, this.instances);
         this.kindPoints = new KindPoints(this.instances);
         this.dressing = new Dressing(this.groundLook.rules, this.instances);
+        this.reuse = REUSE?.get('reuse') === '1' && !output;
         // A still has a size of its own and no input: the controls listen for keys on the whole window.
         if (output) return;
         this.controls = new Controls(canvas, {
@@ -511,14 +529,14 @@ export class TrailView {
         this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | (this.output ? GPUTextureUsage.COPY_SRC : 0) });
         const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const look = gpu.buffer('uniforms', LOOK_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-        const targets = new Targets(gpu, !!this.output);
-        this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES, { resolve: 'terrain' }), targets };
+        const targets = new Targets(gpu, !!this.output, this.reuse ? MARGIN : 1);
+        this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES, { resolve: 'terrain', present: 'resolve' }), targets };
         this.temporal.reset();
         // The maps at once: the ground's group binds them.
         const shadow = this.shadow.attach(gpu), frames = [uniform, this.shadow.frame];
         await this.terrain.attach(gpu, uniform);
         const surface = this.terrain.surface!, features = this.terrain.features!;
-        await Promise.all([this.groundLook.attach(gpu, look, surface, this.shadow.entries()), this.sky.attach(gpu), this.resolve.attach(gpu)]);
+        await Promise.all([this.groundLook.attach(gpu, look, surface, this.shadow.entries()), this.sky.attach(gpu), this.resolve.attach(gpu, this.reuse)]);
         const drawn = new Promise<void>(resolve => {
             this.eyeDrawn = resolve;
             setTimeout(resolve, REST_WAIT_MS);
@@ -594,6 +612,39 @@ export class TrailView {
             : this.terrain.floorAt(at, feet - STEP_M, feet + STEP_M) ?? (this.feet?.tunnel ? feet : undefined);
         const z = floor ?? terrain;
         return { z, tunnel: z < terrain - HEADROOM_M, floor: floor !== undefined };
+    }
+
+    /** Whether a tile, a worker or a pass is still on its way. */
+    private get loading(): boolean {
+        return !this.complete || !this.terrain.idle || this.terrain.meshesLoading || !this.groundLook.idle || !this.houses.idle || !this.trees.idle || !this.forest.idle
+            || !this.plants.idle || !this.instances.idle || !this.sky.idle;
+    }
+
+    /** Whether the canvas of the view lies inside a last frame's, PRESENT_PAD history pixels in from its edge. */
+    private inside(last: Float32Array, aspect: number): boolean {
+        const { forward, right, up } = rays(this.pose, aspect), { wideWidth, wideHeight } = this.gpuState.targets;
+        for (const x of [-1, 1]) for (const y of [-1, 1]) {
+            const ray = [0, 1, 2].map(j => forward[j] + x * right[j] + y * up[j]);
+            const [cx, cy, cw] = [0, 1, 3].map(i => last[i] * ray[0] + last[4 + i] * ray[1] + last[8 + i] * ray[2]);
+            if (cw <= 0 || Math.abs(cx / cw) > 1 - 2 * PRESENT_PAD / wideWidth || Math.abs(cy / cw) > 1 - 2 * PRESENT_PAD / wideHeight) return false;
+        }
+        return true;
+    }
+
+    /** A display frame that only presents the last frame's history, turned to the view: no selection, no update and no scene. */
+    private present(start: number, shot: Float32Array, eye: Eye, viewProj: Float32Array, aspect: number, steer: unknown): void {
+        const { gpu, times, targets } = this.gpuState, encoder = gpu.device.createCommandEncoder();
+        this.resolve.present(encoder, targets, this.context.getCurrentTexture().createView(), this.groundLook.group!, { last: shot, ...rays(this.pose, aspect) }, times.writes('present'));
+        const read = times.resolve(encoder, { frame: start });
+        gpu.device.queue.submit([encoder.finish()]);
+        read();
+        this.sight = { viewProj, eye: [eye.east, eye.north, eye.z] };
+        this.cpu = performance.now() - start;
+        // The turn's next frame draws the scene: no input may come before it.
+        this.request();
+        if (steer || this.moved) this.onView?.(this.view);
+        this.moved = false;
+        for (const resolve of this.rendered.splice(0)) resolve();
     }
 
     /** Whether a still view that can draw needs more jittered frames. */
@@ -681,19 +732,34 @@ export class TrailView {
             this.temporal.reset();
             this.lastFrame = undefined;
         }
-        const debug = this.extras.debug !== 'off', scale = this.scaleNow, [width, height] = targets.viewport(scale), aspect = targets.width / targets.height;
+        const debug = this.extras.debug !== 'off', scale = this.scaleNow, aspect = targets.width / targets.height;
+        let [width, height] = targets.viewport(scale);
         // Metres per output pixel at 1 m from the eye.
         const pixel = 2 * Math.tan(VFOV * RAD / 2) / targets.height;
         const viewProj = viewProjection(this.pose.heading, this.pose.pitch, aspect);
+        // With `reuse`, a frame whose eye and extras are those of the last scene frame is still or turned.
+        const key = this.reuse && !debug && this.extras.plan !== 'faces' && !this.grab && eye && this.groundLook.group
+            ? JSON.stringify([eye.east, eye.north, eye.z, eye.above, scale, this.extras, this.skyMagnitude, targets.version]) : undefined;
+        const shot = key !== undefined && this.shot?.key === key ? this.shot : undefined;
+        const turned = !!shot && (shot.heading !== this.pose.heading || shot.pitch !== this.pose.pitch);
+        if (shot?.wide && turned && now - shot.at < 1000 / TURN_RATE - SLACK_MS && this.inside(shot.viewProj, aspect)) return this.present(start, shot.viewProj, eye!, viewProj, aspect, steer);
+        // A still view whose loads are pending runs the updates and the compute of every frame, but draws LOAD_RATE frames a second.
+        // Input changes the key or the direction, so it never holds: a turn takes the wide frames above.
+        const hold = !!shot && !turned && this.loading && now - shot.at < 1000 / LOAD_RATE - SLACK_MS;
+        // A wide frame keeps the canvas's pixel size: terrain, tiers and footprints take the canvas's pixels and `pixel`.
+        const wide = !!shot && (turned || shot.wide);
+        const widen: [number, number] = wide ? [targets.wideWidth / targets.width, targets.wideHeight / targets.height] : [1, 1];
+        const drawProj = wide ? widened(viewProj, widen) : viewProj;
+        if (wide) [width, height] = targets.viewport(scale, true);
         const lonLat = this.frame.lonLat(place.east, place.north);
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
         if (this.terrain.plan) this.terrain.plan.debug = this.extras.plan === 'faces';
-        this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1], ahead: ahead(this.pose) }, this.groundLook.reads);
+        this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj: drawProj, pixels: targets.viewport(this.scale)[1], ahead: ahead(this.pose) }, this.groundLook.reads);
         this.kindPoints.update(this.terrain.kindPoints);
         this.lightPools.set(this.kindPoints.lights);
         const { drawn, wanted, arrived, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, arrived, origins, this.extras.date, lonLat, this.forest.regionPages(lonLat));
-        this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
+        this.houses.update(lonLat, eye && { viewProj: drawProj, eye: [eye.east, eye.north, eye.z] });
         const reach = this.reach();
         this.trees.update(this.extras.date, reach);
         this.forest.update(lonLat);
@@ -710,7 +776,7 @@ export class TrailView {
         let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, cascade = -1;
         let lights: Lights | undefined, grabbed: Grabbed | undefined;
         if (eye && group) {
-            const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify([this.extras, this.skyMagnitude]);
+            const camera = [...drawProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify([this.extras, this.skyMagnitude]);
             moved = camera.some((value, i) => value !== this.camera[i]);
             changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || extras !== this.drawnExtras;
             this.camera = camera;
@@ -719,16 +785,20 @@ export class TrailView {
             this.completed = false;
             lights = this.lights();
             const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent;
-            if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, light, { casters, reshaped: this.terrain.reshaped }, moved);
+            if (this.complete && !hold) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, light, { casters, reshaped: this.terrain.reshaped }, moved);
             this.shadow.write(gpu, [eye.east, eye.north, eye.z], light);
-            // A new map changes the frame as new content does.
-            step = this.temporal.next(moved, changed || cascade >= 0, debug ? 1 : STILL_FRAMES);
+            // A new map changes the frame as new content does; a held frame keeps its change for the next frame that draws.
+            if (hold) this.unshown ||= changed;
+            else {
+                step = this.temporal.next(moved, changed || cascade >= 0 || this.unshown, debug ? 1 : STILL_FRAMES, turned);
+                this.unshown = false;
+            }
             if (step && !debug) offset = jitter(step.sample);
             // The jitter in clip space: render pixels are y down.
             ndc = [2 * offset[0] / width, -2 * offset[1] / height];
-            gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(viewProj, ndc), pixel, light));
+            gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(drawProj, ndc), pixel, light));
             const near = this.regionLook(eye);
-            gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, near, lights, aspect, ndc, scale, step?.sample ?? 0));
+            gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, near, lights, aspect, ndc, scale, step?.sample ?? 0, widen));
             const { cover } = near.weather, night = lightAt(lights.sunAltitude).night;
             this.sky.write(gpu, {
                 stars: lights.stars, moon: lights.drawnMoon, moonRadius: lights.moonRadius, moonAir: lights.moonAir, moonLight: lights.share > 0,
@@ -777,13 +847,15 @@ export class TrailView {
             pass.end();
             if (this.terrain.surface && this.terrain.features) this.lightPools.encode(encoder, targets.scene!, targets.depth!, [width, height], this.terrain.surface, group, this.terrain.features);
             const canvas = this.context.getCurrentTexture().createView();
-            this.resolve.encode(encoder, targets, canvas, group,
-                { viewProj, eye: [eye.east, eye.north, eye.z], render: [width, height], jitter: offset }, { weight: step.weight, clip: step.clip, copy: debug }, times.writes('resolve'));
+            this.resolve.encode(encoder, targets, wide ? undefined : canvas, group,
+                { viewProj: drawProj, eye: [eye.east, eye.north, eye.z], render: [width, height], jitter: offset }, { weight: step.weight, clip: step.clip, copy: debug }, times.writes('resolve'));
             if (this.extras.plan === 'faces' && this.terrain.plan && this.terrain.surface && this.terrain.features) {
                 this.terrain.plan.draw.encode(encoder, canvas, targets.depth!, [width / targets.width, height / targets.height], this.terrain.surface, this.terrain.features);
             }
-            targets.swap();
-            this.lastFrame = { depth: targets.depth!, pixels: [width, height], viewProj: jittered(viewProj, ndc), eye: [eye.east, eye.north, eye.z] };
+            targets.swap(wide);
+            if (wide) this.resolve.present(encoder, targets, canvas, group, { last: drawProj, ...rays(this.pose, aspect) }, times.writes('present'));
+            this.shot = key === undefined ? undefined : { key, heading: this.pose.heading, pitch: this.pose.pitch, viewProj: drawProj, wide, at: now };
+            this.lastFrame = { depth: targets.depth!, pixels: [width, height], viewProj: jittered(drawProj, ndc), eye: [eye.east, eye.north, eye.z] };
             if (this.grab && !this.converging) grabbed = this.copy(encoder, { viewProj, eye: [eye.east, eye.north, eye.z], pixel });
         }
         const read = times.resolve(encoder, { ...this.terrain.stats.jobs, frame: start });
@@ -804,7 +876,7 @@ export class TrailView {
         if (this.trees.unsaved && this.idle()) this.trees.save();
         // Frames go on while the eye moves or settles on the ground, while the terrain or the ground has
         // work that no load waits for, and until a still view has all its jittered frames.
-        if (steer || !settled || this.terrain.working || this.groundLook.working || this.houses.working || this.shadow.pending || this.converging) this.request();
+        if (steer || !settled || this.terrain.working || this.groundLook.working || this.houses.working || this.shadow.pending || this.converging || this.unshown) this.request();
         if (steer || this.moved) this.onView?.(this.view);
         this.moved = false;
         for (const resolve of this.rendered.splice(0)) resolve();
@@ -906,15 +978,12 @@ export class TrailView {
      * The look of shade.wgsl: the light keys at the sun's altitude under the weather, with the moon's
      * light at night, and the haze, light and grade of the regions about the eye.
      */
-    private look(eye: Eye, near: EyeLook, lights: Lights, aspect: number, jitter: [number, number], scale: number, sample: number): ArrayBuffer {
+    private look(eye: Eye, near: EyeLook, lights: Lights, aspect: number, jitter: [number, number], scale: number, sample: number, widen: [number, number]): ArrayBuffer {
         const [x, y, z, , bearing] = lights.key, light = lightAt(lights.sunAltitude);
-        const h = this.pose.heading * RAD, p = this.pose.pitch * RAD, ty = Math.tan(VFOV * RAD / 2), tx = ty * aspect;
-        const forward = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)], right = [Math.cos(h), -Math.sin(h), 0];
-        const up = [right[1] * forward[2] - right[2] * forward[1], right[2] * forward[0] - right[0] * forward[2], right[0] * forward[1] - right[1] * forward[0]];
         return lookUniform({
             sun: [x, y, z, bearing], skySun: lights.sun, light: weatherLight(lights.share > 0 ? moonlit(light, lights.share, lights.moonAir) : eclipsed(light, lights.left), near.weather),
             eye: near, altitude: eye.z, place: [eye.east, eye.north],
-            camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
+            camera: rays(this.pose, aspect, widen),
             codes: this.groundLook.codes,
             debug: DEBUG_VIEWS.indexOf(this.extras.debug), sample,
             jitter, scale, detail: this.instances.detail,
@@ -982,6 +1051,24 @@ interface Lights {
     /** The sun's activity and the seed of an eclipse's corona (light/eclipse.ts). */
     activity: number;
     seed: number;
+}
+
+/** The view ray of clip point (x, y) of a pose's camera: forward + x right + y up, its tangents `widen` wider. */
+function rays({ heading, pitch }: Pose, aspect: number, [sx, sy] = [1, 1]): Omit<Present, 'last'> {
+    const h = heading * RAD, p = pitch * RAD, ty = Math.tan(VFOV * RAD / 2) * sy, tx = Math.tan(VFOV * RAD / 2) * aspect * sx;
+    const forward = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)], right = [Math.cos(h), -Math.sin(h), 0];
+    const up = [right[1] * forward[2] - right[2] * forward[1], right[2] * forward[0] - right[0] * forward[2], right[0] * forward[1] - right[1] * forward[0]];
+    return { forward, right: right.map(v => v * tx), up: up.map(v => v * ty) };
+}
+
+/** A view projection whose tangents are `widen` wider on each axis. */
+function widened(m: Float32Array, [sx, sy]: [number, number]): Float32Array {
+    const out = m.slice();
+    for (let j = 0; j < 4; j++) {
+        out[4 * j] /= sx;
+        out[4 * j + 1] /= sy;
+    }
+    return out;
 }
 
 /** The horizontal view direction in world units (x east, y south), undefined within about 6° of straight down or up. */

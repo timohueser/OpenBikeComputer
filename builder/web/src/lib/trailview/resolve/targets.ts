@@ -36,36 +36,60 @@ export class Targets {
     history: GPUTexture[] = [];
     historyDepth: GPUTexture[] = [];
     parity = 0;
+    /** The output of a wide frame, `margin` wider in tangent space on each axis, with whole pixels about the canvas; its history pair. */
+    wideWidth = 0;
+    wideHeight = 0;
+    wideHistory: GPUTexture[] = [];
+    wideHistoryDepth: GPUTexture[] = [];
+    /** Whether the last frame wrote the wide history. */
+    lastWide = false;
 
-    /** `still`: the depth can be copied, for a still. */
-    constructor(private readonly gpu: Gpu, private readonly still = false) {
+    /** `still`: the depth can be copied, for a still. `margin` > 1 makes the wide targets. */
+    constructor(private readonly gpu: Gpu, private readonly still = false, readonly margin = 1) {
         this.format = sceneFormat(gpu);
     }
 
-    /** The render size of the frame at a scale. */
-    viewport(scale: number): [number, number] {
-        return [Math.max(1, Math.round(this.width * scale)), Math.max(1, Math.round(this.height * scale))];
+    /** The render size of the frame at a scale, of the wide frame with `wide`. */
+    viewport(scale: number, wide = false): [number, number] {
+        const [w, h] = wide ? [this.wideWidth, this.wideHeight] : [this.width, this.height];
+        return [Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale))];
+    }
+
+    /** The history and its depth that a frame writes, wide or not. */
+    written(wide: boolean): [GPUTexture, GPUTexture] {
+        return wide ? [this.wideHistory[this.parity], this.wideHistoryDepth[this.parity]] : [this.history[this.parity], this.historyDepth[this.parity]];
+    }
+
+    /** The history and its depth that the last frame wrote. */
+    last(): [GPUTexture, GPUTexture] {
+        return this.lastWide ? [this.wideHistory[1 - this.parity], this.wideHistoryDepth[1 - this.parity]] : [this.history[1 - this.parity], this.historyDepth[1 - this.parity]];
     }
 
     /** Makes the targets for an output size and a largest render scale; true when they are new. */
     fit(width: number, height: number, top: number): boolean {
         if (width === this.width && height === this.height && top === this.top) return false;
         const { gpu } = this;
-        for (const texture of [this.scene, this.depth, ...this.history, ...this.historyDepth]) if (texture) gpu.destroy('targets', texture);
-        Object.assign(this, { width, height, top });
+        for (const texture of [this.scene, this.depth, ...this.history, ...this.historyDepth, ...this.wideHistory, ...this.wideHistoryDepth]) if (texture) gpu.destroy('targets', texture);
+        const pad = (n: number) => n + 2 * Math.round(n * (this.margin - 1) / 2);
+        Object.assign(this, { width, height, top, wideWidth: pad(width), wideHeight: pad(height), lastWide: false });
         const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
         const make = (format: GPUTextureFormat, bytes: number, [w, h]: number[], extra = 0) => gpu.texture('targets', { size: [w, h], format, usage: usage | extra }, bytes * w * h);
-        const render = this.viewport(top), output = [width, height];
+        const render = this.viewport(top, this.margin > 1), output = [width, height], wide = [this.wideWidth, this.wideHeight];
         this.scene = make(this.format, this.format === 'rg11b10ufloat' ? 4 : 8, render);
         this.depth = make(DEPTH, 4, render, this.still ? GPUTextureUsage.COPY_SRC : 0);
         this.history = [make(HISTORY, 4, output), make(HISTORY, 4, output)];
         this.historyDepth = [make(HISTORY_DEPTH, 2, output), make(HISTORY_DEPTH, 2, output)];
+        if (this.margin > 1) {
+            this.wideHistory = [make(HISTORY, 4, wide), make(HISTORY, 4, wide)];
+            this.wideHistoryDepth = [make(HISTORY_DEPTH, 2, wide), make(HISTORY_DEPTH, 2, wide)];
+        }
         this.version++;
         return true;
     }
 
     /** After a frame: its history is the last one of the next frame. */
-    swap(): void {
+    swap(wide = false): void {
         this.parity ^= 1;
+        this.lastWide = wide;
     }
 }

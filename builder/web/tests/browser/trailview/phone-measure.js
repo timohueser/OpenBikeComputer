@@ -49,16 +49,27 @@
             v('p-end-road', 'P, then the road worker ends', {}, { headroom: 1, after: 'end:road-worker' }),
             v('p-soak', 'P, the path to and fro for 10 minutes', {}, { headroom: 1, soak: 600 }),
             v('p-end-rest', 'P, then the small workers end', {}, { headroom: 1, after: 'end:decode-worker|model-worker|house-worker|plant-worker' }),
+            // Prototype #3656: the turn prototype's `reuse=1`, and the same at 10 scene frames a second with a narrower margin.
+            v('p-reuse', 'P, turn reuse', { reuse: 1 }),
+            v('p-reuse10', 'P, turn reuse at 10/s, margin 1.15', { reuse: 1, turn: 10, margin: 1.15 }),
         ];
     }
     const TAIL = '&date=2026-08-15&time=15:00&weather=sunny';
     // The first three are the walk, valley-drive and zoom-out of flights.json; the last drives over the viaduct into the motorway tunnel north of Stans.
+    const WALK = `?lat=46.820500&lon=8.403000&heading=160.0&pitch=0.0&eye=1.6${TAIL}`;
+    /** Prototype #3656: 30° right, back, 30° left, back, at 45° a second, twice: the heading offset at `s` seconds. */
+    const LOOK = [0, 30, 0, -30, 0, 30, 0, -30, 0], LEG_S = 30 / 45;
+    const look = s => { const i = Math.min(LOOK.length - 2, Math.floor(s / LEG_S)), f = Math.min(1, s / LEG_S - i); return LOOK[i] + (LOOK[i + 1] - LOOK[i]) * f; };
     const SCENES = [
-        { id: 'walk', name: 'village walk', from: `?lat=46.820500&lon=8.403000&heading=160.0&pitch=0.0&eye=1.6${TAIL}`, to: { lat: 46.817, lon: 8.405, heading: 200, pitch: 5, height: 1.6 } },
+        { id: 'walk', name: 'village walk', from: WALK, to: { lat: 46.817, lon: 8.405, heading: 200, pitch: 5, height: 1.6 } },
         { id: 'valley-drive', name: 'valley drive', from: `?lat=46.818000&lon=8.380000&heading=80.0&pitch=0.0&eye=3.0${TAIL}`, to: { lat: 46.821, lon: 8.445, heading: 100, pitch: 0, height: 3 } },
         { id: 'zoom-out', name: 'rising above the valley', from: `?lat=46.790000&lon=8.415000&heading=0.0&pitch=-20.0&alt=1500.0${TAIL}`, to: { lat: 46.56, lon: 8.415, heading: 0, pitch: -66, height: 60000 } },
         // Prototype #3765: a place without data, for the engine's fixed memory.
         { id: 'nowhere', name: 'no data', from: `?lat=45.000000&lon=2.000000&heading=0.0&pitch=0.0&eye=1.6${TAIL}`, to: { lat: 45, lon: 2, heading: 0, pitch: 0, height: 1.6 } },
+        // Prototype #3656: the eye stands at the start of the walk. It turns once round in 8 s, looks about, or only loads for 15 s.
+        { id: 'turn', name: 'full turn', from: WALK, turn: s => 360 * s / 8, seconds: 8 },
+        { id: 'look', name: 'look about', from: WALK, turn: look, seconds: LOOK.length * LEG_S - LEG_S, noProbe: true },
+        { id: 'load', name: 'cold load', from: WALK, load: 15 },
         { id: 'bridge-tunnel', name: 'bridge and tunnel', from: `?lat=46.9631796&lon=8.5085956&heading=83.0&pitch=-2.0&alt=487.0${TAIL}`, to: { lat: 46.96361, lon: 8.5137562, heading: 83, pitch: -2, height: 487 } },
     ];
 
@@ -78,7 +89,7 @@
     };
 
     // The page asks for a WebGPU adapter and device itself: these wrappers report each failure and keep the device.
-    const hooks = { device: undefined, firstCanvas: undefined, lastSubmit: 0, flightStart: Infinity, ground: { open: undefined, jobs: [] }, workers: [] };
+    const hooks = { device: undefined, firstCanvas: undefined, canvas: [], frames: undefined, lastSubmit: 0, flightStart: Infinity, ground: { open: undefined, jobs: [] }, workers: [] };
     function hook() {
         const ballast = Number(new URLSearchParams(location.search).get('ballast')) || 0;
         if (ballast) window.obcBallast = Array.from({ length: ballast / 16 }, () => random(new Uint32Array(4 * 2 ** 20)));
@@ -144,7 +155,7 @@
         const submit = GPUQueue.prototype.submit;
         GPUQueue.prototype.submit = function (buffers) { hooks.lastSubmit = performance.now(); return submit.call(this, buffers); };
         const current = GPUCanvasContext.prototype.getCurrentTexture;
-        GPUCanvasContext.prototype.getCurrentTexture = function () { hooks.firstCanvas ??= performance.now(); return current.call(this); };
+        GPUCanvasContext.prototype.getCurrentTexture = function () { hooks.firstCanvas ??= performance.now(); hooks.canvas.push(performance.now()); return current.call(this); };
     }
 
     let seed = 0x9e3779b9;
@@ -288,6 +299,7 @@
             await headroom(key);
             return next();
         }
+        if (SCENES[scene].load) return loadOnly(tv, run, key, label, SCENES[scene].load * 1000);
         const marks = {};
         const mark = name => () => (marks[name] ??= round(performance.now()));
         tv.eyeReady().then(mark('eyeReady'), e => event(`eyeReady: ${e.message}`));
@@ -299,6 +311,7 @@
         let sampled = 0;
         while (performance.now() < deadline && marks.proper === undefined) {
             const now = await frame();
+            if (SCENES[scene].turn && !hooks.frames && tv.gpuState?.times) tapTimes(tv.gpuState.times);
             if (hooks.alloc && now - sampled > 1000) {
                 sampled = now;
                 series.push([Math.round(now), Math.round(hooks.alloc.buffers / 2 ** 20), Math.round(hooks.alloc.textures / 2 ** 20), hooks.alloc.pipelines]);
@@ -315,12 +328,16 @@
             await post(key, { ...run, stage: 'failed', failure: `no proper render in ${READY_MS / 1000} s`, ...final(tv, run.memory) });
             return next();
         }
+        if (SCENES[scene].turn) {
+            say(`${label} … waiting until the view is still`);
+            run.idle = await Promise.race([tv.waitForIdle().then(() => round(performance.now())), sleep(30_000).then(() => 'not in 30 s')]);
+        }
         await post(key, run);
         hooks.flightStart = performance.now();
         run.flight = await fly(tv, SCENES[scene], label, key, run.memory);
         Object.assign(run, { stage: 'done' }, final(tv, run.memory));
         await post(key, run);
-        if (new URLSearchParams(location.search).get('headroom')) {
+        if (new URLSearchParams(location.search).get('headroom') && !SCENES[scene].noProbe) {
             await after(tv, key, label);
             state.probing = i;
             save();
@@ -360,13 +377,14 @@
         const start = { ...tv.view }, end = { ...start, ...scene.to };
         const intervals = [], cpu = [], done = [], gpu = [], passes = {}, look = {};
         let last, lastTimes, n = 0, posted = performance.now();
-        const t0 = performance.now();
+        const t0 = performance.now(), base = scene.seconds ?? FLIGHT_S;
         for (;;) {
             // A soak (state.seconds over FLIGHT_S) flies the path to and fro until its time is over.
-            const elapsed = (performance.now() - t0) / (FLIGHT_S * 1000), seconds = soak() ?? state.seconds ?? FLIGHT_S, over = elapsed * FLIGHT_S >= seconds;
-            const t = seconds > FLIGHT_S ? (elapsed % 2 < 1 ? elapsed % 1 : 1 - (elapsed % 1)) : Math.min(1, elapsed), mix = (a, b) => a + (b - a) * t;
+            const elapsed = (performance.now() - t0) / (base * 1000), seconds = scene.seconds ?? soak() ?? state.seconds ?? FLIGHT_S, over = elapsed * base >= seconds;
+            const t = seconds > base ? (elapsed % 2 < 1 ? elapsed % 1 : 1 - (elapsed % 1)) : Math.min(1, elapsed), mix = (a, b) => a + (b - a) * t;
             const height = start.mode === 'fly' ? start.height * (end.height / start.height) ** t : mix(start.height, end.height);
-            tv.view = { ...start, lat: mix(start.lat, end.lat), lon: mix(start.lon, end.lon), heading: mix(start.heading, end.heading), pitch: mix(start.pitch, end.pitch), height };
+            tv.view = scene.turn ? { ...start, heading: (start.heading + scene.turn(t * base) + 360) % 360 }
+                : { ...start, lat: mix(start.lat, end.lat), lon: mix(start.lon, end.lon), heading: mix(start.heading, end.heading), pitch: mix(start.pitch, end.pitch), height };
             const drawn = await Promise.race([tv.nextFrame().then(() => true), sleep(FRAME_MS)]);
             if (!drawn) {
                 event(`a frame took over ${FRAME_MS / 1000} s; the flight stops`);
@@ -377,6 +395,7 @@
             if (last !== undefined) {
                 intervals.push(round(now - last));
                 cpu.push(round(tv.cpu));
+                if (hooks.frames?.length) hooks.frames.at(-1).cpu = tv.cpu;
             }
             last = now;
             n++;
@@ -400,14 +419,15 @@
                 look.piecesInView = range(look.piecesInView, pieces?.inView);
                 look.recordCells = range(look.recordCells, s.terrain.records?.cells);
             }
-            const done_ = Math.min(100, Math.round((100 * elapsed * FLIGHT_S) / seconds));
+            const done_ = Math.min(100, Math.round((100 * elapsed * base) / seconds));
             say(`${label} … ${done_} %`);
             if (performance.now() - posted > (seconds > FLIGHT_S ? 30_000 : 5000)) {
                 posted = performance.now();
                 post(key, { stage: `flight ${done_} %`, flight: { seconds, intervals, cpu, look } });
             }
-            if (seconds > FLIGHT_S ? over : t >= 1) break;
+            if (seconds > base ? over : t >= 1) break;
         }
+        const t1 = performance.now();
         // The last submits' readbacks.
         await sleep(300);
         const summary = {
@@ -418,8 +438,63 @@
             cpu: { median: quantile(cpu, 0.5), p95: quantile(cpu, 0.95) },
             done: { median: quantile(done, 0.5), p95: quantile(done, 0.95), samples: done.length },
             gpu: gpu.length ? { median: quantile(gpu, 0.5), p95: quantile(gpu, 0.95), samples: gpu.length, passes: Object.fromEntries(Object.entries(passes).map(([p, l]) => [p, round(quantile(l, 0.5))])) } : null,
+            reuse: hooks.frames && engineFrames(t0, t1),
         };
         return { seconds: soak() ?? state.seconds ?? FLIGHT_S, summary, look, intervals, cpu, done };
+    }
+
+    /** Prototype #3656: each engine frame of the turn prototype, with the passes it wrote and, once read back, its GPU time. */
+    function tapTimes(times) {
+        const frames = (hooks.frames = []), byStart = new Map(), { writes, resolve } = times;
+        let passes = [], tag;
+        times.writes = function (pass) { passes.push(pass); return writes.call(this, pass); };
+        times.resolve = function (encoder, frameTag) {
+            const f = { at: frameTag?.frame ?? performance.now(), passes };
+            passes = [];
+            frames.push(f);
+            byStart.set(f.at, f);
+            return resolve.call(this, encoder, frameTag);
+        };
+        Object.defineProperty(times, 'tag', {
+            configurable: true, get: () => tag,
+            set(value) {
+                tag = value;
+                const f = byStart.get(value?.frame);
+                if (f) Object.assign(f, { gpu: Object.values(times.ms).reduce((a, b) => a + b, 0), present: times.ms.present });
+            },
+        });
+    }
+    const mean = list => (list.length ? round(list.reduce((a, b) => a + b, 0) / list.length) : undefined);
+    /** Prototype #3656: the engine frames that started in [from, to): scene frames draw the terrain, present-only frames only `present`. */
+    function engineFrames(from, to) {
+        const list = hooks.frames.filter(f => f.at >= from && f.at < to), stats = l => {
+            const gpu = l.filter(f => f.gpu !== undefined).map(f => f.gpu), cpu = l.filter(f => f.cpu !== undefined).map(f => f.cpu);
+            return { frames: l.length, timed: gpu.length, gpuMean: mean(gpu), gpuMedian: round(quantile(gpu, 0.5) ?? NaN), gpuSum: round(gpu.reduce((a, b) => a + b, 0)), cpuMean: mean(cpu), cpuMedian: round(quantile(cpu, 0.5) ?? NaN) };
+        };
+        const kind = f => (f.passes.includes('terrain') ? 'scene' : f.passes.length === 1 && f.passes[0] === 'present' ? 'presentOnly' : 'other');
+        const presents = list.filter(f => f.present !== undefined).map(f => f.present);
+        return {
+            shown: hooks.canvas.filter(t => t >= from && t < to).length, all: stats(list),
+            scene: stats(list.filter(f => kind(f) === 'scene')), presentOnly: stats(list.filter(f => kind(f) === 'presentOnly')), other: stats(list.filter(f => kind(f) === 'other')),
+            presentPass: { median: round(quantile(presents, 0.5) ?? NaN), samples: presents.length },
+        };
+    }
+    /** Prototype #3656: the first `ms` of a cold load with no input, then the time until the view is idle. */
+    async function loadOnly(tv, run, key, label, ms) {
+        const idle = tv.waitForIdle().then(() => round(performance.now()), e => `failed: ${e.message}`);
+        say(`${label} … loading for ${ms / 1000} s`);
+        while (performance.now() < ms) {
+            await frame();
+            if (!hooks.frames && tv.gpuState?.times) tapTimes(tv.gpuState.times);
+        }
+        await sleep(300);
+        Object.assign(run, { stage: 'loaded', load: engineFrames(0, ms), firstEngineFrame: hooks.frames?.[0] && round(hooks.frames[0].at) });
+        await post(key, run);
+        say(`${label} … waiting until the view is still`);
+        run.idle = await Promise.race([idle, sleep(READY_MS - performance.now()).then(() => `not in ${READY_MS / 1000} s`)]);
+        Object.assign(run, { stage: 'done', untilIdle: engineFrames(0, performance.now()) }, final(tv, run.memory ?? {}));
+        await post(key, run);
+        next();
     }
 
     async function timing() {

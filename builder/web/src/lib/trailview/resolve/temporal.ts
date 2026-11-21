@@ -2,6 +2,8 @@
 export const STILL_FRAMES = 16;
 /** The weight of a new frame against the reprojected history while the camera moves. */
 export const MOVING_WEIGHT = 0.1;
+/** The weight of a frame of a turn with a fixed eye, whose history turns exactly and is not clipped. */
+export const TURN_WEIGHT = 0.2;
 
 /** Element `i` (from 1) of the Halton sequence of a base, in [0, 1). */
 export function halton(i: number, base: number): number {
@@ -47,15 +49,18 @@ export class Temporal {
         this.k = 0;
     }
 
-    /** The step of the next frame, or undefined when the still view has all its frames. `frames` is the number that a still view takes. */
-    next(moved: boolean, changed: boolean, frames = STILL_FRAMES): Step | undefined {
+    /**
+     * The step of the next frame, or undefined when the still view has all its frames. `frames` is the number that a still
+     * view takes; `turned`: the camera only turned about the eye.
+     */
+    next(moved: boolean, changed: boolean, frames = STILL_FRAMES, turned = false): Step | undefined {
         this.frames = frames;
         if (moved) {
             this.k = 0;
             this.moving = this.moving % STILL_FRAMES + 1;
-            const weight = this.valid ? MOVING_WEIGHT : 1;
+            const weight = this.valid ? (turned ? TURN_WEIGHT : MOVING_WEIGHT) : 1;
             this.valid = true;
-            return { weight, sample: this.moving, clip: true };
+            return { weight, sample: this.moving, clip: !turned };
         }
         if (changed || !this.valid) this.k = 0;
         if (this.k >= frames) return undefined;

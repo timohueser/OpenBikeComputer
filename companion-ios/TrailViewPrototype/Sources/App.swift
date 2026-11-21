@@ -26,7 +26,11 @@ private let placement = ["p:walk", "p-wait:walk", "p-workers:walk", "p-destroy:w
 /// Prototype #3656: the memory of each kind of worker: P, then one kind ends before the probe.
 private let workerKinds = ["p-end-ground", "p-end-stamp", "p-end-road", "p-end-rest"].map { "\($0):walk" }
 
+/// Prototype #3656: the turn prototype (`reuse=1`) off, on, and on at 10 scene frames a second, for a cold load, a full turn and a look about.
+private let turnReuse = ["load", "turn", "look"].flatMap { s in ["p", "p-reuse", "p-reuse10"].map { "\($0):\(s)" } }
+
 private let pages = [
+    KitPage(name: "Turn reuse (9 runs)", path: "/phone/?runs=\(turnReuse.joined(separator: ","))"),
     KitPage(name: "Soak: P, then P for 10 minutes (2 runs)", path: "/phone/?runs=p:valley-drive,p-soak:valley-drive"),
     KitPage(name: "Workers one kind at a time (4 runs)", path: "/phone/?runs=\(workerKinds.joined(separator: ","))"),
     KitPage(name: "Memory placement (5 runs)", path: "/phone/?runs=\(placement.joined(separator: ","))"),
