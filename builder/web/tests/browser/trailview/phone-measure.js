@@ -6,6 +6,8 @@
 (() => {
     const KEY = 'obc-phone';
     const FLIGHT_S = 20;
+    /** Prototype #3656: a run's own flight length in seconds (`soak=` of its variant), over the session's. */
+    const soak = () => Number(new URLSearchParams(location.search).get('soak')) || undefined;
     /** From the navigation start to the first proper render, else the run fails. */
     const READY_MS = (Number(new URLSearchParams(location.search).get('ready')) || 90) * 1000;
     /** A frame that takes longer stops the flight. */
@@ -45,6 +47,7 @@
             v('p-end-ground', 'P, then the ground workers end', {}, { headroom: 1, after: 'end:ground-worker' }),
             v('p-end-stamp', 'P, then the stamp worker ends', {}, { headroom: 1, after: 'end:stamp-worker' }),
             v('p-end-road', 'P, then the road worker ends', {}, { headroom: 1, after: 'end:road-worker' }),
+            v('p-soak', 'P, the path to and fro for 10 minutes', {}, { headroom: 1, soak: 600 }),
             v('p-end-rest', 'P, then the small workers end', {}, { headroom: 1, after: 'end:decode-worker|model-worker|house-worker|plant-worker' }),
         ];
     }
@@ -360,7 +363,7 @@
         const t0 = performance.now();
         for (;;) {
             // A soak (state.seconds over FLIGHT_S) flies the path to and fro until its time is over.
-            const elapsed = (performance.now() - t0) / (FLIGHT_S * 1000), seconds = state.seconds ?? FLIGHT_S, over = elapsed * FLIGHT_S >= seconds;
+            const elapsed = (performance.now() - t0) / (FLIGHT_S * 1000), seconds = soak() ?? state.seconds ?? FLIGHT_S, over = elapsed * FLIGHT_S >= seconds;
             const t = seconds > FLIGHT_S ? (elapsed % 2 < 1 ? elapsed % 1 : 1 - (elapsed % 1)) : Math.min(1, elapsed), mix = (a, b) => a + (b - a) * t;
             const height = start.mode === 'fly' ? start.height * (end.height / start.height) ** t : mix(start.height, end.height);
             tv.view = { ...start, lat: mix(start.lat, end.lat), lon: mix(start.lon, end.lon), heading: mix(start.heading, end.heading), pitch: mix(start.pitch, end.pitch), height };
@@ -416,7 +419,7 @@
             done: { median: quantile(done, 0.5), p95: quantile(done, 0.95), samples: done.length },
             gpu: gpu.length ? { median: quantile(gpu, 0.5), p95: quantile(gpu, 0.95), samples: gpu.length, passes: Object.fromEntries(Object.entries(passes).map(([p, l]) => [p, round(quantile(l, 0.5))])) } : null,
         };
-        return { seconds: state.seconds ?? FLIGHT_S, summary, look, intervals, cpu, done };
+        return { seconds: soak() ?? state.seconds ?? FLIGHT_S, summary, look, intervals, cpu, done };
     }
 
     async function timing() {

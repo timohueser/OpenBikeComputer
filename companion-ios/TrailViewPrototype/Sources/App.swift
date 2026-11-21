@@ -27,6 +27,7 @@ private let placement = ["p:walk", "p-wait:walk", "p-workers:walk", "p-destroy:w
 private let workerKinds = ["p-end-ground", "p-end-stamp", "p-end-road", "p-end-rest"].map { "\($0):walk" }
 
 private let pages = [
+    KitPage(name: "Soak: P, then P for 10 minutes (2 runs)", path: "/phone/?runs=p:valley-drive,p-soak:valley-drive"),
     KitPage(name: "Workers one kind at a time (4 runs)", path: "/phone/?runs=\(workerKinds.joined(separator: ","))"),
     KitPage(name: "Memory placement (5 runs)", path: "/phone/?runs=\(placement.joined(separator: ","))"),
     KitPage(name: "Memory map: no data, then the walk (2 runs)", path: "/phone/?runs=p-empty:nowhere,p:walk"),
