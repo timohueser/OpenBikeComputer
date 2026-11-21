@@ -3,6 +3,7 @@
 // on the slot's four corners; and the meshes of its storeys over the ground, their slots all plain concrete. A terrain vertex of the strip is the terrain's own
 // vertex at its level-18 grid point, made by the same code, so the strip meets the terrain without a crack.
 // #include ../roads/corridor.wgsl
+// #include ../terrain/portal-box.wgsl
 // #include cells.wgsl
 
 // As Piece of corners.wgsl.
@@ -25,6 +26,8 @@ struct Piece {
 
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
 @group(0) @binding(2) var<uniform> params: Piece;
+// The boxes of the tunnels' portals and parts near the eye, as `holes` of terrain.wgsl.
+@group(0) @binding(4) var<storage, read> holes: array<vec4f>;
 
 // As NO_LABEL of corners.wgsl: the plain terrain.
 const NO_LABEL: u32 = 33554431u;
@@ -363,4 +366,27 @@ fn storey_caster(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f 
     let u = vec2f(params.origin - surface.anchor) + vec2f(q) / 16.0;
     let all = known(storey_height(piece[t])) && known(storey_height(piece[t + 1u])) && known(storey_height(piece[t + 2u]));
     return select(vec4f(0.0, 0.0, 2.0, 1.0), frame.view_proj * vec4f(corner_point(PieceVertex(u, lod_space(u), storey_height(k))), 1.0), all);
+}
+
+// Whether a point `u` units about the anchor at height `h` lies in a box, as the terrain's fragment tests it.
+fn in_box(u: vec2f, h: f32) -> bool {
+    for (var i = 0u; i < u32(holes[0].x); i++) {
+        let b = holes[2u + 3u * i];
+        let c = holes[3u + 3u * i];
+        let q = box_point(holes[1u + 3u * i], b, c, u, h);
+        if (box_plan(b, c, q) < 0.0 && box_wall(b, c, q) < 0.0 && q.z > b.w) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// With CUT (a piece that fades, and the triangles and slots near a box, pieces.ts) a pixel in a box drops: the drawn
+// point itself is tested, at the heights of the drawn corners, so no ground of the mesh shows in a tunnel's room.
+@fragment
+fn piece_fragment(raw: CorridorOut) -> @location(0) vec4f {
+    if (CUT && in_box(raw.u, raw.altitude)) {
+        discard;
+    }
+    return corridor_shade(raw);
 }

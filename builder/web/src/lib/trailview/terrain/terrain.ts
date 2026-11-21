@@ -278,7 +278,7 @@ export class Terrain {
         if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
-        const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node)?.data) : undefined;
+        const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node)) : undefined;
         const records = this.records = plan
             ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node), cache && { release: cache.release, version: cache.plan })
             : undefined;
@@ -478,7 +478,7 @@ export class Terrain {
             probeGroup: group(L.probe, [{ buffer: r.points }, { buffer: r.probed }]),
             eyeGroup: device.createBindGroup({ layout: L.eye, entries: [{ binding: 2, resource: { buffer: frameUniform } }] }),
         };
-        this.piecesAttached = this.pieces?.attach(gpu, frameUniform, r.cells, model, r.profiles);
+        this.piecesAttached = this.pieces?.attach(gpu, frameUniform, r.cells, model, r.profiles, r.holes);
         // `attachParts` reports a failure.
         this.piecesAttached?.catch(() => {});
     }
@@ -1229,7 +1229,7 @@ function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
 }
 
 /**
- * The boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once (by its start and its way in),
+ * The boxes as `holes` of terrain.wgsl and the pieces of the ground plan read them, about the anchor; each box once (by its start and its way in),
  * MAX_HOLES at most, or with `plan` PLAN_HOLES, the nearest to the anchor first. A box whose start is not `drawn` is left
  * out: without its bore and facade the ground stays closed.
  */
