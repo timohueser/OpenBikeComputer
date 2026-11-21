@@ -11,8 +11,8 @@ export interface Budget {
     terrainShare: number;
     /** The ground look's pages: whole layers of 16. */
     groundPages: number;
-    /** Loads in flight at most: terrain tiles, ground tiles, house tiles, stamp jobs of the worker, canopy tiles. */
-    loads: { terrain: number; ground: number; houses: number; stamps: number; canopy: number };
+    /** Loads in flight at most: terrain tiles, ground tiles, house tiles, stamp jobs of the worker, canopy tiles, tree model files. */
+    loads: { terrain: number; ground: number; houses: number; stamps: number; canopy: number; models: number };
     /**
      * Byte caps in MiB. They are not hard limits: a decode in flight stays, and the stamp worker keeps the tiles that a
      * view wants past its cap. Worker caps: the decoded images of each ground worker, the feature tiles of the stamp and
@@ -43,13 +43,13 @@ export const MiB = 2 ** 20;
  */
 export const BUDGETS: Record<Tier, Budget> = {
     desktop: {
-        frameRate: 60, terrainShare: 1, groundPages: 192, loads: { terrain: 6, ground: 4, houses: 6, stamps: 8, canopy: 9 },
+        frameRate: 60, terrainShare: 1, groundPages: 192, loads: { terrain: 6, ground: 4, houses: 6, stamps: 8, canopy: 9, models: 6 },
         caps: { groundDecode: 96, stamp: 48, house: 32, planHeap: 55, nodes: 64, debugRecords: 32, terrainBodies: 64, featureBodies: 32, groundBodies: 16 },
         planWorkers: 2,
         lod: { least: 4.6, most: 8, morph: 0.3 },
     },
     phone: {
-        frameRate: 30, terrainShare: 0.5, groundPages: 64, loads: { terrain: 3, ground: 2, houses: 3, stamps: 4, canopy: 5 },
+        frameRate: 30, terrainShare: 0.5, groundPages: 64, loads: { terrain: 3, ground: 2, houses: 3, stamps: 4, canopy: 5, models: 3 },
         caps: { groundDecode: 16, stamp: 24, house: 16, planHeap: 40, nodes: 24, debugRecords: 16, terrainBodies: 16, featureBodies: 8, groundBodies: 2 },
         planWorkers: 1,
         lod: { least: 3.7, most: 3.7, morph: 0.15 },
