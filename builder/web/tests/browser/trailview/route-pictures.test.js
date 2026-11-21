@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { expect, test } from '@playwright/test';
 import { CATALOG, HOST } from './stills.mjs';
 import { launch } from './harness.js';
-import { FIXTURE_ROUTES, LOOK, check, checkMonths, checkRelease, gridCells, keyOf, lightOf, patiently, pointsOf, rowImages, sampleOf, storedCamera, switchTo, upload } from './route-pictures.mjs';
+import { FIXTURE_ROUTES, LOOK, check, checkMonths, checkRelease, gridCells, keyOf, lightOf, patiently, pointsOf, rowImages, sampleOf, storedCamera, switchTo, unexpected, upload } from './route-pictures.mjs';
 import { pack } from '../../../src/lib/covers/line.ts';
 
 const SCRIPT = new URL('./route-pictures.mjs', import.meta.url).pathname;
@@ -192,9 +192,13 @@ test('check names each route record of the production release with no cover in t
     await switchTo(await upload({ out, ...fake }), fake);
     // NO_VIEW has a mark of no view: its cell has no cell file, which answers 404.
     expect(await named()).toEqual([NO_VIEW.id]);
-    expect(await named([NO_VIEW.id])).toEqual([]);
+    // A route that --without leaves out is still named, but it does not fail the check.
+    const missing = await check({ without: [NO_VIEW.id], fetch: fake.fetch });
+    expect(missing.map(record => record.id)).toEqual([NO_VIEW.id]);
+    expect(unexpected(missing, [NO_VIEW.id])).toEqual([]);
+    expect(unexpected(missing)).toEqual(missing);
     records[0] = { ...VALLEY, line_udeg: [...VALLEY.line_udeg.slice(0, -1), -2000] };
-    expect(await named([NO_VIEW.id])).toEqual([VALLEY.id]);
+    expect(await named([NO_VIEW.id])).toEqual([VALLEY.id, NO_VIEW.id]);
 });
 
 test('row makes a 480 × 320 WebP of a full image with none, keeps a newer one, makes it again after the full image is written again, and names an image that does not decode', async () => {

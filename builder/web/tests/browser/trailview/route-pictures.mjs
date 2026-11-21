@@ -18,8 +18,8 @@
 // the fixture: build the page with `npm run pretest:trailview` first. upload --without leaves these
 // routes with no cover in the set. upload and switch call `obc data r2`. A list that starts with a
 // negative id needs the form --only=-ID or --without=-ID. check reads only public files and names
-// each route of the production release that has no cover in the live set; it exits with 1 when one
-// is not in --without.
+// each route of the production release that has no cover in the live set, and marks the routes of
+// --without; it exits with 1 when a route with no cover is not in --without.
 
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -527,24 +527,27 @@ async function publicJson(url, fetch) {
 
 /**
  * Prints the release and the live set that it reads, and each route record of the release that has no cover
- * in that set by the rule of the reader (specs/route-pictures.md, "Reader"); gives these records, except `without`.
+ * in that set by the rule of the reader (specs/route-pictures.md, "Reader"), with the mark of a route of
+ * `without`; gives these records. The key comes from the script's LOOK, not from the manifest: after a change
+ * of the look, each route is named, as each then needs a new render.
  */
 export async function check({ without = [], fetch = globalThis.fetch }) {
     const release = await productionRelease(fetch), records = await releaseRoutes(release, fetch);
     const manifest = await publicJson(`${HOST}/${PREFIX}/manifest.json`, fetch), set = manifest?.format === 1 ? manifest.set : undefined;
     const cells = new Map(), cellOf = cell => {
-        if (!cells.has(cell)) cells.set(cell, publicJson(`${HOST}/${PREFIX}/sets/${set}/cells/${cell}.json`, fetch));
+        // As the reader, a cell file of another format holds no cover.
+        if (!cells.has(cell)) cells.set(cell, publicJson(`${HOST}/${PREFIX}/sets/${set}/cells/${cell}.json`, fetch).then(file => (file?.format === 1 ? file.routes : undefined)));
         return cells.get(cell);
     };
     const missing = [];
-    for (const record of records) {
-        if (without.includes(record.id)) continue;
-        if (!set || (await cellOf(record.cells[0]))?.routes?.[record.id] !== keyOf(record)) missing.push(record);
-    }
+    for (const record of records) if (!set || (await cellOf(record.cells[0]))?.[record.id] !== keyOf(record)) missing.push(record);
     console.log(`Release ${release.id}, live set ${set ?? 'none'}.\n${missing.length} of ${records.length} routes have no cover.`);
-    for (const record of missing) console.log(`${record.id} ${record.name}`);
+    for (const record of missing) console.log(`${record.id} ${record.name ?? record.ref}${without.includes(record.id) ? ' (left out)' : ''}`);
     return missing;
 }
+
+/** The records of `missing` that `without` does not leave out: `check` exits with 1 when there is one. */
+export const unexpected = (missing, without = []) => missing.filter(record => !without.includes(record.id));
 
 async function main() {
     const { values, positionals: [command, set] } = parseArgs({
@@ -565,7 +568,8 @@ async function main() {
         return;
     }
     if (command === 'check') {
-        if ((await check({ without: ids(values.without) })).length) process.exitCode = 1;
+        const without = ids(values.without);
+        if (unexpected(await check({ without }), without).length) process.exitCode = 1;
         return;
     }
     if (command === 'upload') return console.log(await upload({ out, without: ids(values.without) }));

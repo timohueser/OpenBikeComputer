@@ -85,17 +85,21 @@ key of a cover. Run the commands from `builder/web/tests/browser`.
 ## After a production data update
 
 ```sh
+# One minute after the update, as the public host keeps the catalog for up to 60 s. The first line
+# must name the new release. Keep the live set id that it prints, for a rollback.
 node trailview/route-pictures.mjs check
 # When check names routes: build the page (step 1), then:
 node trailview/route-pictures.mjs render --gpu --out DIR
-# --without=ID for each route that fails on each run or has no view; the pull request or the
-# issue gives the reason.
+# --without=ID for each route that fails on each run, has no view or has a faulty cover (a cover
+# that the owner rejects); the pull request or the issue gives the reason. upload prints the set id.
 node trailview/route-pictures.mjs upload --out DIR --without=ID,ID
+# Show the new covers to the owner. Switch only a set id that the owner approved.
 node trailview/route-pictures.mjs switch SET
-# One minute later, as the public host keeps the manifest for up to 60 s. It prints the new set id.
+# One minute after switch, as the public host keeps the manifest for up to 60 s. Then check prints
+# the new set id, and marks the routes of --without as left out.
 node trailview/route-pictures.mjs check --without=ID,ID
 # No production data update between render and switch. After a data rollback, switch back to the
-# set that was live before the update.
+# live set id that the first check printed.
 ```
 
 Before a run, the output folder holds the points file, the full image and the row image of each
@@ -108,7 +112,7 @@ than its full image.
 | Command | Effect |
 | --- | --- |
 | `row [--out DIR]` | Makes each missing or older row image, with no render or network. A broken image gives exit code 1. |
-| `check [--without=ID,ID]` | Names each route of the production release with no cover in the live set, from public files only. Exit code 1 when a route that it names is not in `--without`. |
+| `check [--without=ID,ID]` | Prints the production release, the live set id and each route of the release with no cover in the live set, from public files only. A route of `--without` is printed and counted, with the mark `(left out)`. Exit code 1 when a route with no cover is not in `--without`. |
 
 ## Options of render
 
