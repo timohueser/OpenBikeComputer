@@ -119,7 +119,8 @@ struct KitWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
+        // On disk, as in Safari: a non-persistent store holds TrailView's device cache (up to 296 MiB) in memory.
+        configuration.websiteDataStore = .default()
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.isInspectable = true
         view.isOpaque = false
