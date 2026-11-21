@@ -20,6 +20,7 @@ import { Resolve, resolvePipeline } from './resolve/resolve';
 import { MAX_SCALE, Targets } from './resolve/targets';
 import { jitter, STILL_FRAMES, Temporal, type Step } from './resolve/temporal';
 import { EYE, Instances, SUN, type InstanceStats, type LastFrame } from './instances/instances';
+import { ModelFiles } from './instances/model-files';
 import { GroundSource } from './stream/ground';
 import { eyeTiles, pageDecoder, type EyeTiles } from './stream/terrain';
 import { Terrain, terrainPipelines, type Audit, type TerrainStats } from './terrain/terrain';
@@ -27,7 +28,7 @@ import { piecePipelines } from './plan/pieces';
 import HOUSE_VERSION from 'virtual:house-version';
 import PLAN_VERSION from 'virtual:plan-version';
 import STAMP_VERSION from 'virtual:stamp-version';
-import TREE_VERSION from 'virtual:tree-version';
+import MODELS from 'virtual:models';
 import { FINEST, NEAR_M } from './terrain/lod';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
@@ -129,6 +130,7 @@ export class TrailView {
     private readonly groundLook: Ground;
     private readonly houses: Houses;
     private readonly instances = new Instances();
+    private readonly models: ModelFiles;
     private readonly trees: TreeModels;
     /** The last regions in reach, where they were read from and at which change of the ground pages. */
     private reached?: Reach & { east: number; north: number; changes: number };
@@ -203,12 +205,13 @@ export class TrailView {
         this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, budget, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION });
         this.groundLook = new Ground(ground, budget, () => this.request());
         this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, budget, { release, version: HOUSE_VERSION });
-        this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal, TREE_VERSION);
+        this.models = new ModelFiles(MODELS, () => this.request(), signal);
+        this.trees = new TreeModels(this.instances, () => this.treesNear(), this.models, budget.loads.models);
         this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal, budget);
-        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
-        this.rows = new Rows(config, this.groundLook.rules, this.trees, this.plants, this.instances);
-        this.kindPoints = new KindPoints(this.instances);
-        this.dressing = new Dressing(this.groundLook.rules, this.instances);
+        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, this.models);
+        this.rows = new Rows(config, this.groundLook.rules, this.trees, this.plants, this.instances, MODELS);
+        this.kindPoints = new KindPoints(this.instances, this.models);
+        this.dressing = new Dressing(this.groundLook.rules, this.instances, this.models);
         // A still has a size of its own and no input: the controls listen for keys on the whole window.
         if (output) return;
         this.controls = new Controls(canvas, {
@@ -453,7 +456,7 @@ export class TrailView {
 
     /** Whether the late passes still attach, or a tile, a model or a page is on its way. */
     private get loading(): boolean {
-        return !this.complete || !this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.trees.idle || !this.forest.idle || !this.plants.idle || !this.instances.idle
+        return !this.complete || !this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.trees.idle || !this.forest.idle || !this.plants.idle || !this.models.idle || !this.instances.idle
             || !this.sky.idle;
     }
 
@@ -501,7 +504,7 @@ export class TrailView {
 
     private near(): boolean {
         return this.drawing && this.complete && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.nearIdle && this.forest.idle
-            && this.plants.nearIdle && this.instances.idle && this.shadow.nearDrawn;
+            && this.plants.nearIdle && this.kindPoints.idle && this.dressing.idle && this.instances.idle && this.shadow.nearDrawn;
     }
 
     /**
@@ -697,6 +700,7 @@ export class TrailView {
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
         if (this.terrain.plan) this.terrain.plan.debug = this.extras.plan === 'faces';
         this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1], ahead: ahead(this.pose) }, this.groundLook.reads);
+        this.models.update();
         this.kindPoints.update(this.terrain.kindPoints);
         this.lightPools.set(this.kindPoints.lights);
         const { drawn, wanted, arrived, origins } = this.terrain.selected;
@@ -721,7 +725,7 @@ export class TrailView {
             const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify([this.extras, this.skyMagnitude]);
             moved = camera.some((value, i) => value !== this.camera[i]);
             const newExtras = extras !== this.drawnExtras;
-            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || newExtras;
+            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.models.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || newExtras;
             // While a view at rest loads, its frames run the updates and the compute but draw LOAD_RATE frames a second. Input and a resize draw
             // at once; a frame that would draw nothing does not hold, so it asks for no more frames.
             hold = !this.output && !this.grab && (changed || this.temporal.converging) && this.pacer.holds(now, !moved && !newExtras && !resized, this.loading || this.terrain.meshesLoading);
@@ -732,7 +736,7 @@ export class TrailView {
             this.drawnExtras = extras;
             this.completed = false;
             lights = this.lights();
-            const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent;
+            const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.models.newContent;
             const casting = { casters, reshaped: this.terrain.reshaped };
             // A held frame keeps its changes for the next frame that draws: `due()` marks the map that it returns as drawn.
             if (this.complete && hold) this.shadow.hold(casting);
@@ -818,8 +822,8 @@ export class TrailView {
         cast();
         this.cpu = performance.now() - start;
         this.drawn = eye ? this.terrain.drawn : 0;
-        // The tree models that the workers built go to the device cache once the view is idle, so a load never waits for the writes.
-        if (this.trees.unsaved && this.idle()) this.trees.save();
+        // The model files from the network go to the device cache once the view is idle, so a load never waits for the writes.
+        if (this.models.unsaved && this.idle()) this.models.save();
         // Frames go on while the eye moves or settles on the ground, while the terrain or the ground has
         // work that no load waits for, and until a still view has all its jittered frames, which a held frame's change restarts.
         if (steer || !settled || this.terrain.working || this.groundLook.working || this.houses.working || this.shadow.pending || this.converging) this.request();

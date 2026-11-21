@@ -3,14 +3,13 @@ import { anchorAt, UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
-import { Instances, VIEWS, type Producer, type Surfaces } from '../instances/instances';
-import { animal, BREEDS } from '../models/animals';
-import { geometry, type Model } from '../models/flat';
-import { rock } from '../models/rocks';
+import { Instances, VIEWS, type ModelSpec, type Producer, type Surfaces } from '../instances/instances';
+import type { ModelFiles } from '../instances/model-files';
+import type { Packed } from '../models/model-file';
 import { bits, named, type Rules } from '../rules/regions';
 
-/** Herds stand within this many metres, rocks within this many; as HERDS and SLABS of dressing.wgsl and ROCK_REACH_M of rocks.wgsl. */
-const HERD_REACH_M = 1500, ROCK_REACH_M = 1000, HERDS = 4, SLABS = 3;
+/** Herds stand within this many metres, rocks within this many; as HERDS of dressing.wgsl and ROCK_REACH_M of rocks.wgsl. */
+const HERD_REACH_M = 1500, ROCK_REACH_M = 1000, HERDS = 4;
 /** Units along a herd cell and a rock point's cell, as HERD_SHIFT of dressing.wgsl and ROCK_SHIFT of rocks.wgsl. */
 const HERD_CELL = 2 ** 14, ROCK_CELL = 2 ** 7;
 /** Words of `Herd` and bytes of `Dressing` in dressing.wgsl. */
@@ -20,7 +19,8 @@ interface Resources { gpu: Gpu; herds: GPUComputePipeline; rocks: GPUComputePipe
 
 /**
  * The dressing of the ground (dressing.wgsl): the herds of the regions' packs on the materials that
- * they graze, and rocks on rough and rocky ground, placed on the GPU each frame.
+ * they graze, and rocks on rough and rocky ground, placed on the GPU each frame. Their models come from
+ * model files (models/model-file.ts): the rocks from the objects file, each breed from a file of its own.
  */
 export class Dressing implements Producer {
     private resources?: Resources;
@@ -28,15 +28,18 @@ export class Dressing implements Producer {
     private readonly rockModel?: number;
     private herdSide = 0;
     private rockSide = 0;
+    /** The files of the models. */
+    private readonly urls: string[] = [];
 
-    constructor(rules: Rules, private readonly instances: Instances) {
+    constructor(rules: Rules, private readonly instances: Instances, private readonly files: ModelFiles) {
         instances.produce(this);
-        const spec = (model: Model, until: number) => ({ tiers: [{ mesh: geometry(model), until }] });
+        const { objects, breeds: breedModels } = files.models;
+        const spec = ({ tiers: [mesh], shape }: Packed, until: number): ModelSpec => ({ tiers: [{ mesh, until }], shape });
         // No fade of the rocks' tier: rocks_of ends each rock at its own distance before the reach.
-        this.rockModel = instances.add(...(['slab', 'boulder'] as const).flatMap(name => Array.from({ length: SLABS }, (_, k) => ({ ...spec(rock(name, k + 1), ROCK_REACH_M), fade: 0 }))));
-        const breeds = new Map<string, number>(), used = new Set(rules.regions.flatMap(region => region.herds.map(herd => herd.model)).filter(name => name in BREEDS));
+        this.rockModel = this.load(objects.file, objects.rocks, model => ({ ...spec(model, ROCK_REACH_M), fade: 0 }));
+        const breeds = new Map<string, number>(), used = new Set(rules.regions.flatMap(region => region.herds.map(herd => herd.model)).filter(name => name in breedModels));
         for (const name of used) {
-            const first = instances.add(...BREEDS[name].coats.map((_, coat) => spec(animal(name, coat), HERD_REACH_M)));
+            const first = this.load(breedModels[name].file, breedModels[name].coats, model => spec(model, HERD_REACH_M));
             if (first !== undefined) breeds.set(name, first);
         }
         this.table = new Uint32Array(Math.max(1, rules.regions.length) * HERDS * HERD_WORDS);
@@ -44,11 +47,27 @@ export class Dressing implements Producer {
         rules.regions.forEach((region, r) => {
             region.herds.filter(herd => breeds.has(herd.model)).slice(0, HERDS).forEach((herd, k) => {
                 const at = (r * HERDS + k) * HERD_WORDS;
-                this.table.set([breeds.get(herd.model)!, BREEDS[herd.model].coats.length], at);
-                floats.set([herd.groups, BREEDS[herd.model].height, ...herd.size], at + 2);
+                this.table.set([breeds.get(herd.model)!, breedModels[herd.model].coats], at);
+                floats.set([herd.groups, breedModels[herd.model].height, ...herd.size], at + 2);
                 this.table.set(bits(named(rules.vocabulary, herd.on)), at + 6);
             });
         });
+    }
+
+    /** The first of `count` models of the instances, which take the first `count` models of a file once it arrives. */
+    private load(file: string, count: number, spec: (model: Packed) => ModelSpec): number | undefined {
+        const first = this.instances.add(...Array.from({ length: count }, () => ({ tiers: [] })));
+        this.urls.push(file);
+        void this.files.load(file).then(models => {
+            if (first === undefined || !models) return;
+            for (let k = 0; k < count; k++) this.instances.replace(first + k, spec(models[k]));
+        });
+        return first;
+    }
+
+    /** Whether the models have arrived, or failed. */
+    get idle(): boolean {
+        return this.files.done(...this.urls);
     }
 
     async attach(gpu: Gpu, { surface, features }: Surfaces): Promise<void> {

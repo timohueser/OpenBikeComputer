@@ -2,6 +2,7 @@ import { availableParallelism, loadavg } from "node:os";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig, loadEnv } from "vite";
 import { bundleVersions } from "./vite/bundle-version";
+import { modelFiles } from "./vite/model-files";
 import { stampVersion } from "./vite/stamp-bundle";
 import { thirdPartyLicenses } from "./vite/third-party-licenses";
 import { plannerConfig } from "./src/lib/planner/config";
@@ -30,7 +31,7 @@ export default defineConfig(({ mode }) => {
         // base "./" keeps every asset URL relative, so a built page works under any sub-path.
         base: "./",
         // The licence notices ride along with the bundle, which is a distribution.
-        plugins: [svelte(), thirdPartyLicenses(), stampVersion(), bundleVersions()],
+        plugins: [svelte(), thirdPartyLicenses(), stampVersion(), bundleVersions(), modelFiles()],
         // Always a string, so a build without it drops the pretend device of `planner.ts` with its wasm.
         define: { "import.meta.env.VITE_FAKE_DEVICE": JSON.stringify(process.env.VITE_FAKE_DEVICE ?? "") },
         resolve: {
