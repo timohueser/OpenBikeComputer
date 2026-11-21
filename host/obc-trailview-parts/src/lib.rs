@@ -118,7 +118,9 @@ pub struct End {
     pub height: f64,
     pub look: String,
     pub collar: f64,
-    /// `face`, `left` and `right` are 0 and empty on a free end.
+    /// Whether the record holds `face`, `left` and `right`: not a free end, nor a pair of two rims. Else they are 0 and
+    /// empty.
+    pub walls: bool,
     pub face: f64,
     pub left: Vec<f64>,
     pub right: Vec<f64>,
@@ -148,7 +150,7 @@ impl End {
         if !rules.looks.contains_key(look) {
             return Err(format!("tag look: no look {look}"));
         }
-        let walls = part != Part::Free;
+        let walls = part != Part::Free && (part != Part::Pair || tags.contains_key("face"));
         let pair = part == Part::Pair;
         Ok(End {
             at,
@@ -159,6 +161,7 @@ impl End {
             half: number(tags, "half")?,
             height: number(tags, "height")?,
             look: look.to_string(),
+            walls,
             collar: number(tags, "collar")?,
             face: if walls { number(tags, "face")? } else { 0.0 },
             left: if walls { row(tags, "left")? } else { Vec::new() },

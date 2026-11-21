@@ -882,15 +882,17 @@ fn tubes(lines: &[&[[f64; 2]]]) -> (Vec<End>, Vec<Chord>) {
 }
 
 #[test]
-fn two_tubes_meet_only_where_both_are_and_a_cut_head_is_closed() {
+fn two_tubes_meet_where_both_rings_do_and_a_cut_head_is_closed() {
     let rules = Rules::embedded();
     let faces_of =
         |(ends, chords): &(Vec<End>, Vec<Chord>)| solid(&meshes([0.0, 0.0, 1.07e9, 1.07e9], ends, chords, rules));
     let north = [0.0, 1.0, 0.0];
-    // Staggered openings: a tube 7 m north starts 3 m after the first, so their rooms overlap from there on. Before
-    // it, the first tube keeps its wall; after it, a way north meets the second's far wall; a way west in the first's
-    // wall, from the second's room, meets the face that closes the first's shell where its cut begins.
-    let staggered = tubes(&[&[[0.0, 0.0], [10.0, 0.0], [40.0, 0.0]], &[[3.0, 7.0], [10.0, 7.0], [40.0, 7.0]]]);
+    // The bake puts a vertex where two tubes start or stop meeting. A tube 7 m north starts 3 m after the first (an
+    // opening that could not move onto the first's frame line): before it the first keeps its wall; after it, a way
+    // north meets the second's far wall; a way west in the first's wall, from the second's room, meets the face that
+    // closes the first's shell where the meeting begins.
+    let staggered =
+        tubes(&[&[[0.0, 0.0], [3.0, 0.0], [10.0, 0.0], [40.0, 0.0]], &[[3.0, 7.0], [10.0, 7.0], [40.0, 7.0]]]);
     let faces = faces_of(&staggered);
     for east in [0.5, 1.5, 2.5, 2.95] {
         let got = hit(&faces, [east, 0.0, 502.5], north, 30.0);
@@ -904,14 +906,25 @@ fn two_tubes_meet_only_where_both_are_and_a_cut_head_is_closed() {
         let got = hit(&faces, [6.0, 4.7, 500.0 + up], [-1.0, 0.0, 0.0], 30.0);
         assert!(got.is_some_and(|h| h.1 && h.0 < 3.2), "staggered, the first's shell {up} m up: {got:?}");
     }
-    // A tube beside the first for 20 m that turns away north: past the turn, the first keeps its wall.
-    let away = tubes(&[&[[0.0, 0.0], [100.0, 0.0]], &[[0.0, 7.0], [20.0, 7.0], [50.0, 40.0]]]);
+    // A tube beside the first for 20 m that turns away north, with the first's vertex where their shells part (7.14 m
+    // from the bend): past it the first keeps its wall.
+    let away = tubes(&[&[[0.0, 0.0], [27.14, 0.0], [100.0, 0.0]], &[[0.0, 7.0], [20.0, 7.0], [50.0, 40.0]]]);
     let faces = faces_of(&away);
     for east in [30.0, 60.0, 90.0] {
         let got = hit(&faces, [east, 0.0, 502.5], north, 30.0);
         assert!(got.is_some_and(|h| h.1 && h.0 < 5.1), "turns away, {east} m east: {got:?}");
     }
     assert!(hit(&faces, [10.0, 0.0, 502.5], north, 30.0).is_some_and(|h| h.1 && h.0 > 11.0), "turns away, 10 m east");
+    // A short tube beside the first from 12 to 18 m east, with the first's vertices there: the first keeps its wall
+    // before and after it, and none of its shell stands in the short one's room.
+    let short = tubes(&[&[[0.0, 0.0], [12.0, 0.0], [18.0, 0.0], [40.0, 0.0]], &[[12.0, 7.0], [18.0, 7.0]]]);
+    let faces = faces_of(&short);
+    for east in [8.0, 22.0] {
+        let got = hit(&faces, [east, 0.0, 502.5], north, 30.0);
+        assert!(got.is_some_and(|h| h.1 && h.0 < 5.1), "short, {east} m east: {got:?}");
+    }
+    let got = hit(&faces, [15.0, 7.0, 502.5], [0.0, -1.0, 0.0], 30.0);
+    assert!(got.is_some_and(|h| h.1 && h.0 > 11.0), "short, from its room south: {got:?}");
     // A path tube whose axis lies 3 m from a road tube's, in the road's room: the middle lies past the path's axis. A
     // way up from either room meets a vault, and a way north from the path's axis meets its far wall.
     let mut inner = tubes(&[&[[0.0, 0.0], [10.0, 0.0], [40.0, 0.0]], &[[0.0, 3.0], [10.0, 3.0], [40.0, 3.0]]]);
@@ -930,13 +943,14 @@ fn two_tubes_meet_only_where_both_are_and_a_cut_head_is_closed() {
         let got = hit(&faces, [east, 3.0, 501.0], north, 30.0);
         assert!(got.is_some_and(|h| h.1 && h.0 < 1.0), "a path in a road's room: north at {east} m: {got:?}");
     }
-    // A pair whose tubes run 25 degrees apart from one frame line, their rooms overlapping there: both find one plane,
-    // so a way north from the first meets the second's far wall, and a way up anywhere between their axes meets a
-    // vault.
+    // A pair whose tubes run 25 degrees apart from one frame line, their rooms overlapping there, each with the bake's
+    // vertex where their shells part (10 m apart square to the other's axis): both find one plane, so a way north from
+    // the first meets the second's far wall, and a way up anywhere between their axes meets a vault.
     let t = libm::tan(25f64.to_radians());
+    let (cos, sin) = (libm::cos(25f64.to_radians()), libm::sin(25f64.to_radians()));
     let mut angled = tubes(&[
-        &[[0.0, 0.0], [10.0, 0.0], [40.0, 0.0]],
-        &[[0.0, 7.0], [10.0, 7.0 + 10.0 * t], [40.0, 7.0 + 40.0 * t]],
+        &[[0.0, 0.0], [(10.0 - 7.0 * cos) / sin, 0.0], [10.0, 0.0], [40.0, 0.0]],
+        &[[0.0, 7.0], [3.0 / t, 10.0], [10.0, 7.0 + 10.0 * t], [40.0, 7.0 + 40.0 * t]],
     ]);
     angled.0.remove(2);
     angled.0[0].part = Part::Pair;
@@ -960,14 +974,9 @@ fn two_tubes_meet_only_where_both_are_and_a_cut_head_is_closed() {
         let got = hit(&faces, [0.15, 7.0, 500.0 + up], [0.0, -1.0, 0.0], 30.0);
         assert!(got.is_some_and(|h| h.1 && (h.0 - 3.5).abs() < 0.2), "taller, {up} m up: {got:?}");
     }
-    // Two arches whose frame lines lie 3 m apart: the first's tube crosses the second's line, and the second's approach
-    // the first's, so both heads end at the middle, closed: a way over the first's tube meets the second's head, a way
-    // in the second's approach meets the first's head, both at the middle; the way into the second meets no face.
+    // Two arches whose frame lines lie 3 m apart: the first's tube crosses the second's line, so the second's head ends
+    // at the middle, closed: a way over the first's tube meets it there.
     let faces = faces_of(&staggered);
     let got = hit(&faces, [3.15, 0.0, 506.2], north, 30.0);
     assert!(got.is_some_and(|h| h.1 && (h.0 - 3.5).abs() < 0.2), "frame lines apart, the second's head: {got:?}");
-    let got = hit(&faces, [0.15, 7.0, 506.2], [0.0, -1.0, 0.0], 30.0);
-    assert!(got.is_some_and(|h| h.1 && (h.0 - 3.5).abs() < 0.2), "frame lines apart, the first's head: {got:?}");
-    let got = hit(&faces, [-5.0, 7.0, 502.0], [1.0, 0.0, 0.0], 30.0);
-    assert!(got.is_none(), "frame lines apart, the way into the second: {got:?}");
 }

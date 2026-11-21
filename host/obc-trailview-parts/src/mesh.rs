@@ -102,24 +102,15 @@ pub struct Paint {
 pub const PLAIN: Paint = Paint { across: 0.0, half: 0.0, sleepers: NO_SLEEPERS };
 
 /// A vertical plane through two world points in plan that takes off the faces on one side of it: the side of `away`,
-/// a world direction. With a bound, only on the side of a second vertical plane: the plane through a world point square
-/// to a world direction, on the side that the direction points to.
+/// a world direction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Clip {
     pub a: [f64; 2],
     pub b: [f64; 2],
     pub away: [f64; 2],
-    pub bound: Option<([f64; 2], [f64; 2])>,
 }
 
 impl Clip {
-    /// How far a world point lies outside the bound, in world units: negative where the clip holds.
-    fn outside(&self, p: [f64; 3]) -> f64 {
-        let Some((at, dir)) = self.bound else { return -1.0 };
-        let l = libm::hypot(dir[0], dir[1]).max(f64::MIN_POSITIVE);
-        -((p[0] - at[0]) * dir[0] + (p[1] - at[1]) * dir[1]) / l
-    }
-
     /// How far a world point lies on the side that the plane takes off, in world units.
     fn side(&self, p: [f64; 3]) -> f64 {
         let n = [self.b[1] - self.a[1], self.a[0] - self.b[0]];
@@ -138,7 +129,7 @@ pub struct Builder<L: Fn([f64; 3]) -> f64> {
     looks: Vec<(u32, Paint)>,
     daylight: L,
     clips: Vec<Clip>,
-    /// The vertex where the plane of clip k (one of at most four) cuts the edge between two vertices, by the lower
+    /// The vertex where the plane of clip k (one per side) cuts the edge between two vertices, by the lower
     /// vertex and k, and the higher vertex. Its key and value have the types of `Net`'s map of openings, so the WASM
     /// holds the code of one map of that type.
     cuts: HashMap<(usize, usize), usize>,
@@ -160,7 +151,7 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
 
     /// The clips of the faces from now on.
     pub fn clip(&mut self, clips: Vec<Clip>) {
-        debug_assert!(clips.len() <= 2, "a key of a cut vertex holds the planes of two clips");
+        debug_assert!(clips.len() <= 2, "a clip per side");
         if clips != self.clips {
             (self.clips, self.cuts) = (clips, HashMap::new());
         }
@@ -183,7 +174,7 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         (self.points.len() - 1) as u32
     }
 
-    /// The vertex where plane k cuts the edge from vertex i to j, which lie at `di` and `dj` past it.
+    /// The vertex where the plane of clip k cuts the edge from vertex i to j, which lie at `di` and `dj` from it.
     fn cut(&mut self, k: usize, (i, di): (u32, f64), (j, dj): (u32, f64)) -> u32 {
         let key = (i.min(j) as usize * 4 + k, i.max(j) as usize);
         if let Some(&v) = self.cuts.get(&key) {
@@ -198,47 +189,32 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         v
     }
 
-    /// A convex polygon's parts on the near side of plane k and past it (more than a hundredth of a world unit), each
-    /// in the polygon's winding; where an edge crosses the plane, a vertex of both.
-    fn halves(&mut self, k: usize, poly: &[u32], past: impl Fn([f64; 3]) -> f64) -> (Vec<u32>, Vec<u32>) {
-        let d: Vec<f64> = poly.iter().map(|&v| past(self.points[v as usize]) - 0.01).collect();
-        if d.iter().all(|&x| x <= 0.0) {
-            return (poly.to_vec(), Vec::new());
-        }
-        if d.iter().all(|&x| x > 0.0) {
-            return (Vec::new(), poly.to_vec());
-        }
-        let (mut near, mut far) = (Vec::with_capacity(poly.len() + 1), Vec::with_capacity(poly.len() + 1));
-        for i in 0..poly.len() {
-            let j = (i + 1) % poly.len();
-            if d[i] > 0.0 { &mut far } else { &mut near }.push(poly[i]);
-            if (d[i] > 0.0) != (d[j] > 0.0) {
-                let v = self.cut(k, (poly[i], d[i]), (poly[j], d[j]));
-                near.push(v);
-                far.push(v);
-            }
-        }
-        (near, far)
-    }
-
-    /// A triangle in its winding, without its parts past the planes of the clips. Plane 2k is the cut of clip k, plane
-    /// 2k + 1 its bound; `clips` holds at most one clip per side, so a key of a cut vertex holds four planes.
+    /// A triangle in its winding, without its parts past the planes of the clips.
     fn emit(&mut self, t: [u32; 3]) {
-        let mut polys = vec![t.to_vec()];
+        let mut poly = t.to_vec();
         for k in 0..self.clips.len() {
             let clip = self.clips[k];
-            let mut next = Vec::with_capacity(polys.len() + 1);
-            for poly in polys {
-                let (held, free) = self.halves(2 * k + 1, &poly, |p| clip.outside(p));
-                let (kept, _) = self.halves(2 * k, &held, |p| clip.side(p));
-                next.extend([free, kept].into_iter().filter(|p| p.len() >= 3));
+            let d: Vec<f64> = poly.iter().map(|&v| clip.side(self.points[v as usize])).collect();
+            // Within a hundredth of a world unit of the plane, a point lies on it.
+            let off = |x: f64| x > 0.01;
+            if !d.iter().any(|&x| off(x)) {
+                continue;
             }
-            polys = next;
+            // The corners on the near side, and the points where an edge crosses the plane, in the winding.
+            let mut keep = Vec::with_capacity(poly.len() + 1);
+            for i in 0..poly.len() {
+                let j = (i + 1) % poly.len();
+                if !off(d[i]) {
+                    keep.push(poly[i]);
+                }
+                if off(d[i]) != off(d[j]) {
+                    keep.push(self.cut(k, (poly[i], d[i]), (poly[j], d[j])));
+                }
+            }
+            poly = keep;
         }
-        for poly in polys {
-            for k in 1..poly.len() - 1 {
-                self.indices.extend([poly[0], poly[k], poly[k + 1]]);
-            }
+        for k in 1..poly.len().saturating_sub(1) {
+            self.indices.extend([poly[0], poly[k], poly[k + 1]]);
         }
     }
 

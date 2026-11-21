@@ -33,9 +33,11 @@ pub fn collar(net: &Net, e: usize, to: f64) -> Vec<Piece> {
     out
 }
 
-/// Whether end e's head is a rim that hugs its opening, not a head wall with wings.
+/// Whether end e's head is a rim that hugs its opening, not a head wall with wings: of an opening in the rock, a free
+/// end, and a pair of two such openings, whose record has no `face`.
 fn rim(net: &Net, e: usize) -> bool {
-    matches!(net.ends[e].part, Part::Rock | Part::Free)
+    let end = &net.ends[e];
+    matches!(end.part, Part::Rock | Part::Free) || (end.part == Part::Pair && !end.walls)
 }
 
 /// The metres to the left of end e's axis of the outer edges of its frame: of its opening, or of both openings of a
@@ -115,17 +117,16 @@ fn grown(net: &Net, e: usize, grow: f64) -> Vec<Corner> {
 }
 
 /// Where end e's head ends at another part: on each side, the nearest built tube that crosses its frame line within
-/// reach of the head, or whose opening's approach crosses it within `pair_max_m` of the opening, and whose room
-/// overlaps the head from its foot to its top (`Net::meets` with the head's metres across and heights): the metres
-/// across to the middle between the two tubes' walls, and the side (1 to the left). The mate of a pair crosses it at
-/// its opening; the approach keeps a head out of the way to an opening behind it.
+/// reach of the head and whose room overlaps the head from its foot to its top (`Net::meets` with the head's metres
+/// across and heights): the metres across to the middle between the two tubes' walls, and the side (1 to the left).
+/// The mate of a pair crosses it at its opening, also where their floors lie apart by more than half their heights.
 fn head_cuts(net: &Net, e: usize, foot: f64) -> Vec<(f64, f64)> {
     let Some((c, _)) = net.opening(e) else { return Vec::new() };
     let (end, chord, (design, bake)) = (&net.ends[e], &net.chords[c], (&net.rules.design, &net.rules.ladder.bake));
     let (right, left) = wide(net, e);
     let st = net.frame(e, 0.0);
     let up = [foot - st.z, end.face.max(chord.height + design.frame_m + bake.shell_m)];
-    let meet = tube::Meet { across: [-right, left], past: tube::MEET_PAST_M, approach: bake.pair_max_m, up: Some(up) };
+    let meet = tube::Meet { across: [-right, left], past: tube::MEET_PAST_M, up: Some(up) };
     let cuts = net.meets(c, &st, meet);
     cuts.into_iter().flatten().map(|cut| (cut.x, cut.axis.signum())).collect()
 }
@@ -162,7 +163,7 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
                 .map(|&(x, side)| {
                     let x = x + side * tube::OVERLAP_M;
                     let (p, q, r) = (front.at([x, 0.0]), back.at([x, 0.0]), front.at([x + side, 0.0]));
-                    Clip { a: [p[0], p[1]], b: [q[0], q[1]], away: [r[0] - p[0], r[1] - p[1]], bound: None }
+                    Clip { a: [p[0], p[1]], b: [q[0], q[1]], away: [r[0] - p[0], r[1] - p[1]] }
                 })
                 .collect(),
         );

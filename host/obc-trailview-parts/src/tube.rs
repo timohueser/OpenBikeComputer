@@ -69,24 +69,23 @@ pub struct Cut {
     pub across: f64,
 }
 
-/// Where a piece of a tube meets another tube on one side: the clip that takes off the other's side, the stations
-/// that bound the stretch where both meet with their cuts, and the station where the clip ends inside the piece.
+/// Where a piece of a tube meets another tube on one side: the clip that takes off the other's side, its two stations
+/// with their cuts, and per station whether the meeting ends there (the tube beyond it does not meet the other).
 #[derive(Clone, Copy, Debug)]
 pub struct Meeting {
     pub clip: Clip,
     pub from: (Station, Cut),
     pub to: (Station, Cut),
-    pub end: Option<Station>,
+    pub ends: [bool; 2],
 }
 
 /// How a part looks for other tubes from a station's line (`Net::meets`): the metres across to each side (to the right,
-/// to the left); the metres past the planes of the other's rings, and on from a ring at an opening along the line of
-/// its approach; and the heights over the station's floor that the part's faces span, or None for a room.
+/// to the left), the metres past the planes of the other's rings, and the heights over the station's floor that the
+/// part's faces span, or None for a room.
 #[derive(Clone, Copy, Debug)]
 pub struct Meet {
     pub across: [f64; 2],
     pub past: f64,
-    pub approach: f64,
     pub up: Option<[f64; 2]>,
 }
 
@@ -97,8 +96,8 @@ pub const OVERLAP_M: f64 = 0.05;
 /// A station meets a tube this far past the planes of its rings: the two openings of a pair lie on one frame line within
 /// the rounding of their record.
 pub const MEET_PAST_M: f64 = 0.1;
-/// Halvings of a piece to find where another tube starts or ends on it: to a millimetre of a 10 m chord.
-const MEET_HALVES: usize = 14;
+/// A meeting ends at a station where the tube this far beyond it does not meet the other.
+const BEYOND_M: f64 = 0.5;
 
 impl<'a> Net<'a> {
     pub fn new(inputs: &[End], chords: &'a [Chord], rules: &'a Rules) -> Net<'a> {
@@ -387,13 +386,14 @@ impl<'a> Net<'a> {
 
     /// Where the line of a station across chord c meets another built tube, on each side (to the right, to the left)
     /// the nearest, as `meet` looks: where the other's chord crosses the line between the planes of its rings (or past
-    /// them), within the own part's metres across from its axis and the other's half and shell; where the other's room
+    /// them), and the station lies within the own part's metres across and the other's half and shell of the other's
+    /// axis, square to it (as the bake measures where tubes meet); where the other's room
     /// overlaps the heights that the own faces span (a head), or where its floor lies within half their heights of the
     /// station's (a room). The cut is at the middle between the two tubes' walls, measured square to each tube's own
     /// chord, so both find one plane at any angle. A tube meets another for its inside and shell with the reach of its
-    /// shell; a head with the reach of its wall, and so where the other or the approach of its opening crosses its
-    /// frame line. Needs `meeting`.
+    /// shell; a head with the reach of its wall, and so where the other crosses its frame line. Needs `meeting`.
     pub fn meets(&self, c: usize, st: &Station, meet: Meet) -> [Option<Cut>; 2] {
+        debug_assert!(self.tube.len() == self.chords.len(), "meets needs Net::meeting");
         let reach = meet.across;
         let (own, shell) = (&self.chords[c], self.rules.ladder.bake.shell_m);
         let m = metres_per_unit(st.y);
@@ -438,15 +438,20 @@ impl<'a> Net<'a> {
                 let r = self.ring(o, k);
                 let n = unit([r.ay, -r.ax]);
                 let n = if dot(n, o_dir) * into >= 0.0 { n } else { [-n[0], -n[1]] };
-                let on = if self.end_at.contains_key(&(o, k)) { meet.approach } else { 0.0 };
-                dot([crossing[0] - r.x, crossing[1] - r.y], n) * m >= -(meet.past + on)
+                dot([crossing[0] - r.x, crossing[1] - r.y], n) * m >= -meet.past
             };
             let df = floor_at(u) - st.z;
             let level = match meet.up {
                 Some([lo, hi]) => df < hi && df + other.height > lo,
                 None => df.abs() <= (own.height + other.height) / 2.0,
             };
-            if x.abs() > reach[side] + other.half + shell
+            // The metres from the station to the other's axis, square to it, oriented away from it.
+            let mut nb = unit(left_of(o_dir));
+            if dot(nb, [st.x - other.a[0], st.y - other.a[1]]) < 0.0 {
+                nb = [-nb[0], -nb[1]];
+            }
+            let b0 = dot([st.x - other.a[0], st.y - other.a[1]], nb) * m;
+            if b0 > reach[side] + other.half + shell
                 || !level
                 || best[side].is_some_and(|b| b.axis.abs() <= x.abs())
                 || !between(0, 1.0)
@@ -459,12 +464,8 @@ impl<'a> Net<'a> {
             if dot(na, line) * x < 0.0 {
                 na = [-na[0], -na[1]];
             }
-            let mut nb = unit(left_of(o_dir));
-            if dot(nb, [st.x - other.a[0], st.y - other.a[1]]) < 0.0 {
-                nb = [-nb[0], -nb[1]];
-            }
             let (a0, ka) = (dot([st.x - own.a[0], st.y - own.a[1]], na) * m, dot(line, na) * m);
-            let (b0, kb) = (dot([st.x - other.a[0], st.y - other.a[1]], nb) * m, dot(line, nb) * m);
+            let kb = dot(line, nb) * m;
             if (ka - kb).abs() <= 1e-9 {
                 continue;
             }
@@ -478,52 +479,29 @@ impl<'a> Net<'a> {
         best
     }
 
-    /// Where station s and t across chord c meet another tube for its inside and shell (`meets` with the reach of its
-    /// shell): on each side, the clip that takes off the other's side between the two stations' cuts. Where only one
-    /// station meets it, the clip holds from that station to where the other tube starts or ends on the piece (found
-    /// by halves, with no metres past its rings), and no farther.
+    /// Where stations s and t across chord c both meet another tube for its inside and shell (`meets` with the reach of
+    /// its shell): on each side, the clip that takes off the other's side between the two stations' cuts. The bake puts
+    /// a vertex where two tubes start or stop meeting, so a piece meets another all along or not at all.
     pub fn clips(&self, c: usize, (s, t): (&Station, &Station)) -> Vec<Meeting> {
-        let reach = self.chords[c].half + self.rules.ladder.bake.shell_m;
-        let at = |u: f64, side: usize, past: f64| {
-            let st = s.mix(t, u);
-            let meet = Meet { across: [reach; 2], past, approach: 0.0, up: None };
-            self.meets(c, &st, meet)[side].map(|cut| (st, cut))
-        };
+        let meet =
+            Meet { across: [self.chords[c].half + self.rules.ladder.bake.shell_m; 2], past: MEET_PAST_M, up: None };
+        let at = |u: f64| self.meets(c, &s.mix(t, u), meet);
+        let (cs, ct) = (at(0.0), at(1.0));
+        let beyond = BEYOND_M / direction(&self.chords[c]).1.max(BEYOND_M);
+        let (before, after) = (at(-beyond), at(1.0 + beyond));
         let mut out = Vec::new();
         for side in 0..2 {
-            let ends = (at(0.0, side, MEET_PAST_M), at(1.0, side, MEET_PAST_M));
-            let (from, to, end) = match ends {
-                (Some(a), Some(z)) => (a, z, None),
-                (None, None) => continue,
-                (a, z) => {
-                    // From the station that meets, halves to the last point that still meets.
-                    let (mut lo, mut hi) = if a.is_some() { (0.0, 1.0) } else { (1.0, 0.0) };
-                    for _ in 0..MEET_HALVES {
-                        let mid = (lo + hi) / 2.0;
-                        if at(mid, side, 0.0).is_some() {
-                            lo = mid;
-                        } else {
-                            hi = mid;
-                        }
-                    }
-                    let Some(last) = at(lo, side, 0.0) else { continue };
-                    let first = a.or(z).expect("one station meets");
-                    if (lo - if a.is_some() { 0.0 } else { 1.0 }).abs() * direction(&self.chords[c]).1 < MEET_PAST_M {
-                        continue;
-                    }
-                    (first, last, Some(last.0))
-                }
-            };
+            let (Some(from), Some(to)) = (cs[side], ct[side]) else { continue };
             // Toward the other's side of the own axis: where a narrow tube lies in a wide one's room, the middle lies
             // past the narrow one's axis.
-            let away = [from.0.ax * from.1.axis.signum(), from.0.ay * from.1.axis.signum()];
+            let away = [s.ax * from.axis.signum(), s.ay * from.axis.signum()];
             // The two tubes overlap by `OVERLAP_M` at the plane, so the rounding of their vertices opens no gap there.
             let l = libm::hypot(away[0], away[1]).max(f64::MIN_POSITIVE);
             let d = OVERLAP_M / metres_per_unit(s.y) / l;
             let shift = |p: [f64; 3]| [p[0] + away[0] * d, p[1] + away[1] * d];
-            let (a, z) = (shift(from.0.at([from.1.x, 0.0])), shift(to.0.at([to.1.x, 0.0])));
-            let bound = end.map(|e| ([e.x, e.y], [from.0.x - e.x, from.0.y - e.y]));
-            out.push(Meeting { clip: Clip { a, b: z, away, bound }, from, to, end });
+            let (a, z) = (shift(s.at([from.x, 0.0])), shift(t.at([to.x, 0.0])));
+            let ends = [before[side].is_none(), after[side].is_none()];
+            out.push(Meeting { clip: Clip { a, b: z, away }, from: (*s, from), to: (*t, to), ends });
         }
         out
     }
@@ -808,13 +786,15 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
     let outer = |st: &Station, h: f64, section: Section| shell_outline(net, section, half, h, foot - st.z);
     for (i, &(ref s, ref t, ref h, ref section, c)) in pieces.iter().enumerate() {
         let meetings = net.clips(c, (s, t));
-        // Where a clip ends inside the piece, a face closes the shell past the middle, toward the clip. It lies on the
-        // clip's bound, so it draws unclipped.
+        // Where the meeting ends at a station of the piece, a face closes the shell past the middle there, toward the
+        // piece. It lies on the clip's end, so it draws unclipped.
         b.clip(Vec::new());
         for m in &meetings {
-            if let Some(e) = m.end {
-                let out = flat([m.from.0.x - e.x, m.from.0.y - e.y]);
-                end_section(b, net, c, (*h, *section, half, foot), &e, (m.to.1.x, m.from.1.axis.signum()), colour, out);
+            for ((st, cut), (other, _), end) in [(m.from, m.to, m.ends[0]), (m.to, m.from, m.ends[1])] {
+                if end {
+                    let out = flat([other.x - st.x, other.y - st.y]);
+                    end_section(b, net, c, (*h, *section, half, foot), &st, (cut.x, cut.axis.signum()), colour, out);
+                }
             }
         }
         b.clip(meetings.iter().map(|m| m.clip).collect());
@@ -871,7 +851,7 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
     b.clip(Vec::new());
 }
 
-/// The face at station `st` across chord c that closes a shell where its clip ends: the shell's section past the
+/// The face at station `st` across chord c that closes a shell where its meeting ends: the shell's section past the
 /// middle `x` on the side `side` (1 to the left), between its outside and its room, from its foot up; facing `out`.
 #[allow(clippy::too_many_arguments)]
 fn end_section<L: Fn([f64; 3]) -> f64>(
