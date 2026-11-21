@@ -149,9 +149,10 @@ fn piece_out(v: PieceVertex, word: u32, place: CornerPlace, normal: vec3f) -> Co
 }
 
 @vertex
-fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
+fn piece_vertex(@builtin(vertex_index) k: u32, @builtin(instance_index) tail: u32) -> CorridorOut {
     let o = params.out + 4u * k;
     var out = piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+    corridor_tail(&out, tail);
     if (MOUTH) {
         // The corner's label, as corners.wgsl reads it.
         let label = (piece[2u * k] >> 19u) | (((piece[2u * k + 1u] >> 19u) & 0xfffu) << 13u);
@@ -165,7 +166,7 @@ fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
 // neighbour slot is that edge exactly and no pixel falls between them at any heights. Where the step turns,
 // the diagonal joins the lower corners at p and q: the fold then hangs below both faces, hidden.
 @vertex
-fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
+fn slot_vertex(@builtin(vertex_index) index: u32, @builtin(instance_index) tail: u32) -> CorridorOut {
     let w = params.slots + 4u * (index / 6u);
     var c = array(corner_at(piece[w]), corner_at(piece[w + 1u]), corner_at(piece[w + 2u]), corner_at(piece[w + 3u]));
     let dp = c[0].h - c[3].h;
@@ -212,7 +213,9 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     if (mat == MAT_WALL || mat == MAT_CAP) {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }
-    return piece_out(v, word, place, normal);
+    var out = piece_out(v, word, place, normal);
+    corridor_tail(&out, tail);
+    return out;
 }
 
 // A culvert's mouth (the mesh's mouths, 4 words each: its corner on the water and its corner in the zone, the zone
@@ -381,11 +384,12 @@ fn in_box(u: vec2f, h: f32) -> bool {
     return false;
 }
 
-// With CUT (a piece that fades, and the triangles and slots near a box, pieces.ts) a pixel in a box drops: the drawn
-// point itself is tested, at the heights of the drawn corners, so no ground of the mesh shows in a tunnel's room.
+// A pixel of a piece's tail (the triangles and slots near a box, pieces.ts) drops where it lies in a box: the drawn
+// point itself is tested, at the heights of the drawn corners, so no ground of the mesh shows in a tunnel's room. The
+// tail draws with CUT, the pipelines that may discard; a piece that fades draws its other pixels with them too, untested.
 @fragment
 fn piece_fragment(raw: CorridorOut) -> @location(0) vec4f {
-    if (CUT && in_box(raw.u, raw.altitude)) {
+    if (CUT && tail_of(raw) == 1u && in_box(raw.u, raw.altitude)) {
         discard;
     }
     return corridor_shade(raw);

@@ -20,6 +20,7 @@ struct CorridorOut {
     @location(6) normal: vec3f,
     // The corner's label in its cell's records.
     @location(7) @interpolate(flat) label: u32,
+    @location(8) @interpolate(flat) tail: u32,
 }
 
 fn corridor_in(in: CorridorOut) -> CorridorOut {
@@ -47,4 +48,13 @@ fn corridor_in(in: CorridorOut) -> CorridorOut {
 
 fn corridor_label(out: ptr<function, CorridorOut>, label: u32) {
     (*out).label = label;
+}
+
+// A piece's triangle or slot of its tail, near a box (pieces.ts): 1 from its draw's first instance.
+fn corridor_tail(out: ptr<function, CorridorOut>, tail: u32) {
+    (*out).tail = tail;
+}
+
+fn tail_of(in: CorridorOut) -> u32 {
+    return in.tail;
 }

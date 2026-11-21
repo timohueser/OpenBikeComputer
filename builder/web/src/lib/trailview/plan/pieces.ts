@@ -47,9 +47,11 @@ const NODES = 6;
 const GRID_STEP = 64;
 /**
  * Per pipeline (whole, mouth, cut, cut mouth), the groups of a run's triangles that it draws (splitTails): of a piece
- * that draws whole, and of one that fades.
+ * that draws whole, and of one that fades. Groups 1 and 2 are the tail.
  */
-const SPANS: [number, number][][] = [[[0, 1], [3, 4], [1, 2], [2, 3]], [[0, 0], [0, 0], [0, 2], [2, 4]]];
+const TRIANGLE_GROUPS = [[[0], [3], [1], [2]], [[], [], [0, 1], [2, 3]]];
+/** Per pipeline (whole, cut), the groups of the slots that it draws: the steps, those near a box, the end faces, those near a box. */
+const SLOT_GROUPS = [[[0, 2], [1, 3]], [[], [0, 1, 2, 3]]];
 
 /** What a node's stamp data gives the meshes: its stamps, and the boxes of the tunnels' portals and parts near it. */
 type NodeStamps = Pick<NodeFeatures, 'data' | 'portals'>;
@@ -515,33 +517,33 @@ export class Pieces {
         pass.setBindGroup(1, surface);
         pass.setBindGroup(2, ground);
         pass.setBindGroup(3, features);
-        // A run's triangles lie in four groups (splitTails): its own, its own near a box, its mouth's near a box, its mouth's.
+        // A run's triangles lie in four groups (splitTails): its own, its own near a box, its mouth's near a box, its
+        // mouth's. A draw of the tail is instance 1: its pixels test the boxes (piece_fragment of plan/piece.wgsl).
         [r.triangles, r.mouthTriangles, r.cutTriangles, r.cutMouthTriangles].forEach((pipeline, p) => {
             pass.setPipeline(pipeline);
             for (const piece of this.inView) {
-                const [lo, hi] = SPANS[+this.cut.has(piece)][p], draws: [number, number, number][] = [];
+                const groups = TRIANGLE_GROUPS[+this.cut.has(piece)][p], draws: number[][] = [];
                 // vertex_index includes the run's base. Over level-17 nodes the last runs do not draw.
                 let first = 0;
                 piece.mesh.runs.slice(0, this.drawnRuns(piece)).forEach(({ count, base }, k) => {
                     const own = count - piece.mouths[k], b = [0, own - (piece.tails?.own[k] ?? 0), own, own + (piece.tails?.mouth[k] ?? 0), count];
-                    if (b[hi] > b[lo]) draws.push([3 * (b[hi] - b[lo]), first + 3 * b[lo], base]);
+                    for (const g of groups) if (b[g + 1] > b[g]) draws.push([3 * (b[g + 1] - b[g]), first + 3 * b[g], base, +(g === 1 || g === 2)]);
                     first += 3 * count;
                 });
                 if (!draws.length) continue;
                 pass.setBindGroup(0, piece.gpu!.draw);
                 pass.setIndexBuffer(piece.gpu!.indices, 'uint16');
-                for (const [n, at, base] of draws) pass.drawIndexed(n, 1, at, base);
+                for (const [n, at, base, tail] of draws) pass.drawIndexed(n, 1, at, base, tail);
             }
         });
-        // The step slots lie in two groups, the steps and the end faces: each its own, then those near a box.
-        [r.slots, r.cutSlots].forEach((pipeline, cut) => {
+        [r.slots, r.cutSlots].forEach((pipeline, p) => {
             pass.setPipeline(pipeline);
             for (const piece of this.inView) {
-                const n = piece.mesh.steps.length / 4, a = n - piece.mesh.endFaces, [ta, te] = piece.tails?.slots ?? [0, 0];
-                const spans = this.cut.has(piece) ? [[0, cut * n]] : cut ? [[a - ta, a], [n - te, n]] : [[0, a - ta], [a, n - te]];
-                if (!spans.some(([lo, hi]) => hi > lo)) continue;
+                const n = piece.mesh.steps.length / 4, a = n - piece.mesh.endFaces, [ta, te] = piece.tails?.slots ?? [0, 0], b = [0, a - ta, a, n - te, n];
+                const groups = SLOT_GROUPS[+this.cut.has(piece)][p].filter(g => b[g + 1] > b[g]);
+                if (!groups.length) continue;
                 pass.setBindGroup(0, piece.gpu!.draw);
-                for (const [lo, hi] of spans) if (hi > lo) pass.draw(6 * (hi - lo), 1, 6 * lo);
+                for (const g of groups) pass.draw(6 * (b[g + 1] - b[g]), 1, 6 * b[g], g % 2);
             }
         });
         for (const cut of [false, true]) {

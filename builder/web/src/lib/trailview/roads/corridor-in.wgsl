@@ -22,3 +22,10 @@ fn corridor_in(in: CorridorOut) -> CorridorOut {
 
 // A piece corner's label in its cell's records: here none is kept.
 fn corridor_label(out: ptr<function, CorridorOut>, label: u32) {}
+
+// A piece's tail (pieces.ts): here none is kept.
+fn corridor_tail(out: ptr<function, CorridorOut>, tail: u32) {}
+
+fn tail_of(in: CorridorOut) -> u32 {
+    return 0u;
+}

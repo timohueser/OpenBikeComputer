@@ -16,6 +16,7 @@ struct CorridorOut {
     @location(5) along: f32,
     // A piece's normal in LOD-space axes; zero on a corridor.
     @location(6) normal: vec3f,
+    @location(8) @interpolate(flat) tail: u32,
 }
 
 fn corridor_in(in: CorridorOut) -> CorridorOut {
@@ -26,3 +27,12 @@ fn corridor_in(in: CorridorOut) -> CorridorOut {
 
 // A piece corner's label in its cell's records: here none is kept.
 fn corridor_label(out: ptr<function, CorridorOut>, label: u32) {}
+
+// A piece's triangle or slot of its tail, near a box (pieces.ts): 1 from its draw's first instance.
+fn corridor_tail(out: ptr<function, CorridorOut>, tail: u32) {
+    (*out).tail = tail;
+}
+
+fn tail_of(in: CorridorOut) -> u32 {
+    return in.tail;
+}
