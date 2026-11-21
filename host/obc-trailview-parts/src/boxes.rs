@@ -3,7 +3,7 @@
 
 use crate::mesh::{left_of, Station};
 use crate::tube::{direction, spring, Meets, Net};
-use crate::{metres_per_unit, Section};
+use crate::{metres_per_unit, Part, Section};
 
 /// Words of a box: the middle of its start (world units), its unit way in, its depth and its half-width (m), the
 /// heights of its roof, its floor and its spring on its start plane, their rise per metre in, and the slopes of its
@@ -26,9 +26,13 @@ pub struct Reach {
 
 /// The metres from end e's frame line that its part must reach: as today's box of a portal, a level-17 cell's
 /// diagonal and a metre past the start of the cover over the tube, `portal_cells` cells in or a metre past the
-/// collar.
+/// collar. An underpass is one part for its chain: a `box` end reaches the other opening, as the ground can dip
+/// between two ways on top.
 fn need(net: &Net, e: usize) -> f64 {
     let (end, design) = (&net.ends[e], &net.rules.design);
+    if end.part == Part::Box {
+        return f64::INFINITY;
+    }
     let cell = design.mesh_texels * 32.0 * metres_per_unit(end.at[1]);
     (design.portal_cells * cell).max(end.collar + 1.0) + std::f64::consts::SQRT_2 * cell + 1.0
 }
@@ -48,15 +52,16 @@ fn at_or_past(stops: &[f64], metres: f64) -> f64 {
 }
 
 /// The reach of built end e. Its part runs to the first vertex of its tube at `need` or past it. Where the parts of the
-/// tube's two ends would meet, each shell ends at the vertex nearest the middle, and there the taller shell closes the
-/// step to the lower one; else a face closes each shell.
+/// tube's two ends would meet, each ends at the vertex nearest the middle, its boxes and its shell, and there the
+/// taller shell closes the step to the lower one; else a face closes each shell. A shell that runs to the other
+/// opening ends in that part's head wall, with no face: the face would lie in the plane of that frame.
 pub fn reach(net: &Net, e: usize) -> Reach {
     let walk = net.walk(e, f64::INFINITY);
     let at = stops(net, e);
     let (total, own) = (at[at.len() - 1], at_or_past(&at, need(net, e)));
-    let other = walk.last().and_then(|&(c, forward, _)| net.end_at(c, usize::from(forward)));
-    let alone = Reach { boxes: own, shell: own, closed: true, then: Meets::default() };
-    let Some(o) = other.filter(|&o| o != e) else { return alone };
+    let other = walk.last().and_then(|&(c, forward, _)| net.end_at(c, usize::from(forward))).filter(|&o| o != e);
+    let alone = Reach { boxes: own, shell: own, closed: other.is_none() || own < total, then: Meets::default() };
+    let Some(o) = other else { return alone };
     let theirs = at_or_past(&stops(net, o), need(net, o));
     if own + theirs < total {
         return alone;
@@ -81,7 +86,7 @@ pub fn reach(net: &Net, e: usize) -> Reach {
     let (here, there) = (&net.chords[walk[mid - 1].0], &net.chords[walk[mid].0]);
     let lower = (there.height < here.height && there.section == here.section).then_some((there.height, there.section));
     let foot = Some(foot(net, o));
-    Reach { boxes: own, shell: at[mid], closed: false, then: Meets { foot, lower } }
+    Reach { boxes: at[mid], shell: at[mid], closed: false, then: Meets { foot, lower } }
 }
 
 /// The level that end e's head wall and shell go down to, a world height: its `foot`, or `foot_m` under the lowest

@@ -31,8 +31,10 @@ pub fn collar(net: &Net, e: usize, to: f64) -> Vec<Piece> {
 }
 
 /// The top of the head wall `t` metres across to the left of its axis, over the opening's floor: `face` over the
-/// frame, then the rows of the wings, a value per metre out from the frame's outer edge `edge`.
-fn top(end: &crate::End, edge: f64, t: f64) -> f64 {
+/// frame, then the rows of the wings, a value per metre out from the frame's outer edge `edge`. Toward the end of its
+/// row a wing's top falls at most `slope` metres per metre, to its coping's height `coping` at the end: where the
+/// ground goes on past the row, the coping goes into it, and no high face ends the wall.
+fn top(end: &crate::End, edge: f64, (coping, slope): (f64, f64), t: f64) -> f64 {
     let (row, d) = if t > edge {
         (&end.left, t - edge)
     } else if t < -edge {
@@ -42,7 +44,8 @@ fn top(end: &crate::End, edge: f64, t: f64) -> f64 {
     };
     let at = |i: usize| if i == 0 || row.is_empty() { end.face } else { row[(i - 1).min(row.len() - 1)] };
     let j = d.floor() as usize;
-    at(j) + (at(j + 1) - at(j)) * (d - j as f64)
+    let along = at(j) + (at(j + 1) - at(j)) * (d - j as f64);
+    along.min(coping + slope * (row.len() as f64 - d))
 }
 
 /// The faces of the arch at end e: its head wall, the sill, the reveal and the frame round the opening, the dark face
@@ -78,7 +81,7 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
     let into = end.way_in();
     let (inward_, outward) = (flat(into), flat([-into[0], -into[1]]));
     let wide = (-(edge + end.right.len() as f64), edge + end.left.len() as f64);
-    let top = |t: f64| top(end, edge, t);
+    let top = |t: f64| top(end, edge, (bake.coping_m, design.wing_slope), t);
     let wall = Wall { top: &top, wide, edge, foot, coping: bake.coping_m, face: look.face, cope: look.coping };
     // The sill is split where the pieces of the floor meet the front of the tube.
     let hw = hole[0][0].abs();

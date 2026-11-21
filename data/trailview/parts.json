@@ -3,7 +3,7 @@
     "motorway": {"classes": ["motorway", "motorway_link", "trunk", "trunk_link"], "look": "concrete", "collar_max_m": 30, "wing_max_m": 8, "least_height_m": 4.5, "rock": false, "bore": "road"},
     "road": {"classes": ["primary", "primary_link", "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified", "residential", "living_street", "road"], "look": "concrete", "collar_max_m": 25, "wing_max_m": 5, "least_height_m": 4.0, "rock": false, "bore": "road"},
     "minor": {"classes": ["service", "track"], "look": "concrete", "collar_max_m": 15, "wing_max_m": 4, "least_height_m": 3.2, "rock": true, "bore": "road"},
-    "path": {"classes": ["path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"], "look": "rock", "collar_max_m": 10, "wing_max_m": 2, "least_height_m": 2.4, "rock": true, "bore": "rock"},
+    "path": {"classes": ["path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"], "look": "concrete", "collar_max_m": 10, "wing_max_m": 2, "least_height_m": 2.4, "rock": true, "bore": "rock"},
     "rail": {"classes": ["rail", "light_rail", "narrow_gauge", "rack", "funicular"], "look": "masonry", "collar_max_m": 20, "wing_max_m": 5, "least_height_m": 4.8, "rock": false, "bore": "track"}
   },
   "bake": {
@@ -15,7 +15,7 @@
   "design": {
     "frame_m": 0.45, "recess_m": 0.25, "face_m": 0.8, "arch_segments": 8, "spring": 0.6, "lamp_spacing_m": 10, "lamp_m": 1.2,
     "kerb_m": 0.15, "daylight_m": 20, "void_m": 0.7, "portal_cells": 2, "mesh_texels": 4, "sleeper_m": 0.6, "reach_m": 20,
-    "lift_m": 0.03, "mitre_max": 3, "approach_m": 10
+    "lift_m": 0.03, "mitre_max": 3, "approach_m": 10, "wing_slope": 1
   },
   "looks": {
     "concrete": {"face": "#a9a69d", "frame": "#cbc8bf", "coping": "#d2cfc7", "shell": "#9a978e"},

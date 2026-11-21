@@ -69,6 +69,17 @@ fn tube() -> (Vec<End>, Vec<Chord>) {
     (vec![end(0.0, 0.0, 500.0, 0.0, 6.0), end(40.0, 0.0, 501.5, std::f64::consts::PI, 3.0)], chords)
 }
 
+/// A tube as an underpass of a way of `class`: `box` ends and box sections.
+fn underpass((mut ends, mut chords): (Vec<End>, Vec<Chord>), class: &str) -> (Vec<End>, Vec<Chord>) {
+    for e in &mut ends {
+        (e.part, e.section) = (Part::Box, Section::Box);
+    }
+    for c in &mut chords {
+        (c.section, c.ends, c.class) = (Section::Box, [Some(Part::Box); 2], class.into());
+    }
+    (ends, chords)
+}
+
 /// Metres east and north of a world point from the test place.
 fn metric(p: [f64; 2]) -> [f64; 2] {
     let m = metres_per_unit(Y);
@@ -256,6 +267,11 @@ fn the_boxes_hold_the_room_and_lie_inside_the_part() {
         ("bent 60° on a level floor".to_string(), bent60, chords60),
         ("a box section".to_string(), straight.clone(), boxed),
     ];
+    for (name, (ends, chords)) in
+        [("an underpass", underpass(tube(), "primary")), ("a path underpass", underpass(bent(30.0, 20.0), "footway"))]
+    {
+        cases.push((name.to_string(), ends, chords));
+    }
     // Sharp bends on grades: the ends of the boxes there slant, and the boxes rise between them as the shell does.
     for (bend, grade) in [(30.0, 0.15), (45.0, 0.15), (60.0, 0.15), (60.0, 0.25)] {
         let (ends, chords) = graded(bend, grade);
@@ -494,6 +510,8 @@ fn a_part_is_closed_but_at_its_foot() {
         ("turned and bent", bent(30.0, 20.0)),
         ("rock", (ends, rock)),
         ("two shells that meet", short()),
+        ("an underpass", underpass(tube(), "primary")),
+        ("a path underpass", underpass(bent(30.0, 20.0), "footway")),
     ] {
         let (open, crowded) = not_closed(&ends, &chords);
         assert!(open.is_empty(), "{name}: {} open edges, the first {:?}", open.len(), &open[..open.len().min(4)]);
@@ -514,4 +532,35 @@ fn a_part_is_closed_but_at_its_foot() {
     );
     assert_eq!((r0.then.lower, r1.then.lower), (Some((4.6, Section::Round)), None));
     assert_eq!((r0.then.foot, r1.then.foot), (Some(boxes::foot(&net, 1)), Some(boxes::foot(&net, 0))));
+    // An underpass is one part: the parts of its two ends meet at the vertex nearest the middle, 16 m and 24 m in (of
+    // two as near, the one with the least key), with their boxes. One of one chord runs to the other head wall.
+    let (ends, chords) = underpass(tube(), "primary");
+    let net = Net::new(&ends, &chords, Rules::embedded());
+    let (r0, r1) = (boxes::reach(&net, 0), boxes::reach(&net, 1));
+    assert!(!r0.closed && !r1.closed, "{r0:?} {r1:?}");
+    assert_eq!([r0.boxes, r0.shell, r1.boxes, r1.shell].map(|m| (m * 1e6).round() / 1e6), [16.0, 16.0, 24.0, 24.0]);
+    let ends = vec![ends[0].clone(), End { at: world(10.0, 0.0), z: 500.2, ..ends[1].clone() }];
+    let (_, chords) = underpass((Vec::new(), vec![chord([0.0, 0.0, 500.0], [10.0, 0.0, 500.2], 5.0, 0.0)]), "primary");
+    let net = Net::new(&ends, &chords, Rules::embedded());
+    let r = boxes::reach(&net, 0);
+    assert!(!r.closed && (r.shell - 10.0).abs() < 1e-6, "{r:?}");
+}
+
+#[test]
+fn a_wing_ends_as_high_as_its_coping() {
+    // The test end's left row `6 4 2` runs 3 m out from the frame's outer edge, at 5 m, and its right row `3` 1 m. Each
+    // wing ends at its coping, and its top falls 1 m per metre (`wing_slope`) toward its end where the row is higher.
+    let (ends, chords) = tube();
+    let rules = Rules::embedded();
+    let mesh = meshes([X - 1.0, Y - 1.0, X + 1.0, Y + 1.0], &ends[..1], &chords, rules);
+    let top = |north: f64| {
+        let at = |v: &[u32]| metric([v[0] as i32 as f64, v[1] as i32 as f64]);
+        let column = mesh.vertices.chunks(WORDS).filter(|v| at(v)[0] < 1.0 && (at(v)[1] - north).abs() < 0.03);
+        column.map(|v| f32::from_bits(v[2]) as f64 - 500.0).fold(f64::NEG_INFINITY, f64::max)
+    };
+    let coping = rules.ladder.bake.coping_m;
+    // The floor of the frame falls 2.5 cm per metre in; the head wall's front stands 0.25 m out of the frame line.
+    for (north, want) in [(5.0, 7.1), (6.0, coping + 2.0), (7.0, coping + 1.0), (8.0, coping), (-6.0, coping)] {
+        assert!((top(north) - want).abs() < 0.02, "{north} m to the left: the top at {} m, not {want} m", top(north));
+    }
 }

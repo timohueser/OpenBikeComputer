@@ -261,6 +261,16 @@ pub fn spring(net: &Net, section: Section, h: f64) -> f64 {
     }
 }
 
+/// The height where the walls of the outer shell of a section of height `h` meet its roof: the spring, or the top of a
+/// box section's shell.
+fn shell_spring(net: &Net, section: Section, h: f64) -> f64 {
+    if section == Section::Box {
+        h + net.rules.ladder.bake.shell_m
+    } else {
+        spring(net, section, h)
+    }
+}
+
 /// The inside outline of a chord.
 fn inside_outline(net: &Net, c: &Chord) -> Vec<Corner> {
     outline(c.section, c.half, c.height, spring(net, c.section, c.height), net.rules.design.arch_segments)
@@ -303,9 +313,12 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     let sp = spring(net, chord.section, chord.height);
     let bore = |colour: u32| flagged(colour, BORE);
     let across = |c: Corner| s.mix(&t, 0.5).out(c);
+    // A box section is cast: its rock bore is lined.
+    let cast = chord.section == Section::Box;
     let (wall, vault) = match bore_of {
         Bore::Road => (inside.tiles, inside.arch_lining),
         Bore::Track => (inside.lining, inside.lining),
+        Bore::Rock if cast => (inside.lining, inside.lining),
         Bore::Rock => (inside.rock, inside.rock),
     };
     let pieces = floor_pieces(net, chord);
@@ -313,7 +326,7 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
         b.strip(
             (&s, &[[half, lift], [-half, lift]]),
             (&t, &[[half, lift], [-half, lift]]),
-            bore(inside.rock_floor),
+            bore(if cast { inside.walk } else { inside.rock_floor }),
             across([0.0, 1.0]),
         );
     } else {
@@ -430,7 +443,7 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
     let next_of = |i: usize| pieces.get(i + 1).map(|p| (p.2, p.3)).or(meets.lower.filter(|_| last(i)));
     let outer = |st: &Station, h: f64, section: Section| shell_outline(net, section, half, h, foot - st.z);
     for (i, (s, t, h, section)) in pieces.iter().enumerate() {
-        let sp = spring(net, *section, *h);
+        let sp = shell_spring(net, *section, *h);
         let (os, ot) = (outer(s, *h, *section), outer(t, *h, *section));
         let n = os.len();
         let away = |j: usize| {
@@ -438,8 +451,9 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
             s.mix(t, 0.5).out([-o[0], -o[1]])
         };
         // The spring of a lower piece that goes on before or after it: a step face meets its walls there.
-        let lower =
-            |p: Option<(f64, Section)>| p.filter(|p| p.0 < *h && p.1 == *section).map(|p| spring(net, *section, p.0));
+        let lower = |p: Option<(f64, Section)>| {
+            p.filter(|p| p.0 < *h && p.1 == *section).map(|p| shell_spring(net, *section, p.0))
+        };
         let (before, after) = (lower(i.checked_sub(1).map(|k| (pieces[k].2, pieces[k].3))), lower(next_of(i)));
         let other = meets.foot.filter(|_| last(i)).map(|f| f - t.z);
         for (j, x) in [(0, os[0][0]), (n - 2, os[n - 1][0])] {
