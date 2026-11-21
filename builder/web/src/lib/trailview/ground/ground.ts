@@ -9,9 +9,10 @@ import { PAGE } from '../stream/heights';
 import { COARSEST, key, MAP, type Node } from '../terrain/lod';
 import { GroundPages, texelMetres, type Slot } from './pages';
 import { packRulesOn, slots } from './rules';
+import { lever } from '../prototype-levers';
 
 /** Ground pages: whole layers of SIDE × SIDE pages, as GROUND_SIDE in look.wgsl. */
-const SIDE = 4, LAYER_PAGES = SIDE * SIDE, POOL = 192;
+const SIDE = 4, LAYER_PAGES = SIDE * SIDE, POOL = LAYER_PAGES * Math.max(1, Math.round(12 * lever('gpool', 1)));
 /** Compute jobs per frame at most: the pages that arrive and the pages whose heights changed, as `GroundPages` takes them. */
 const JOBS = 16, JOB_BYTES = 32;
 /** The work bits of a job, as `work` of Job in ground.wgsl. */

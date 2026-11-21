@@ -7,13 +7,14 @@ import { PAGE } from '../stream/heights';
 import { COARSEST, distances, EYE_M, key, MAP, NEAR_M, size, type Node } from '../terrain/lod';
 import { dayOfYear, mosaicsAt } from './rules';
 import { stopped } from '../stream/terrain';
+import { loads } from '../prototype-levers';
 
 /**
  * Pages taken in per frame at most, ground tiles in flight, pages whose openness follows new heights
  * per frame, and pages whose horizons alone follow them: old horizons draw until then, so a small
  * budget holds down the cost of a frame.
  */
-const ARRIVALS = 8, LOADS = 4, REFRESHES = 8, MARCHES = 2;
+const ARRIVALS = 8, LOADS = loads(4), REFRESHES = 8, MARCHES = 2;
 /** HORIZON_M of ground.wgsl: how far a horizon's march reaches. */
 const HORIZON_M = 50_000;
 /** Levels that every view keeps: the ground under every other page while its own loads. */

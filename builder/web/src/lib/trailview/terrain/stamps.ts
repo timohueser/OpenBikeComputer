@@ -7,11 +7,12 @@ import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
 import type { WaterMesh } from './water-mesh';
 import { stopped } from '../stream/terrain';
+import { loads } from '../prototype-levers';
 
 /** The bytes of the binned nodes and their water meshes kept; an entry costs ENTRY_BYTES more. */
 const NODE_BYTES = 64 * 2 ** 20, ENTRY_BYTES = 64;
 /** Requests to the worker in flight at most. */
-const REQUESTS = 8;
+const REQUESTS = loads(8);
 
 /**
  * What a node stamps, its water, the floors of its structures and the boxes of its tunnels' portals, from the worker;

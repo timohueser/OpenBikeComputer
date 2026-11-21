@@ -12,11 +12,12 @@ import type { FeatureTiles } from '../terrain/stamps';
 import { OUTLINE_WORDS, RECORD_WORDS, type TileHouses } from './house-records';
 import { stopped } from '../stream/terrain';
 import { CAPS, DeviceCache } from '../terrain/device-cache';
+import { loads } from '../prototype-levers';
 
 /** Houses on the GPU at most, and the bytes of outline vertices. */
 const HOUSES = 2 ** 16, OUTLINE_BYTES = 2 * 2 ** 20;
 /** The houses of the zoom 14 tiles within this many metres of the eye draw; tiles kept, and tile requests in flight at most. */
-const RADIUS_M = 8000, KEPT = 400, REQUESTS = 6;
+const RADIUS_M = 8000, KEPT = 400, REQUESTS = loads(6);
 /** Each zoom 14 tile takes its houses from its quarter of the zoom 13 feature tile. */
 const ZOOM = 14, EARTH_M = 40075016.686;
 /** Words of `Style` in houses.wgsl. */

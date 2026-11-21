@@ -5,6 +5,7 @@ import { CAPS, DeviceCache } from '../terrain/device-cache';
 import { modelOf, partsOf } from './model-entry';
 import type { BuiltLeafy, BuiltModel, ModelAnswer, ModelJob } from './model-worker';
 import { phasesOn } from './phenology';
+import { lever } from '../prototype-levers';
 
 /** Trees stand within this many metres of the eye: the stamps of main roads reach 4 km. */
 export const TREE_REACH_M = 4500;
@@ -12,7 +13,7 @@ export const TREE_REACH_M = 4500;
  * The mesh tiers of a tree: three levels of detail, and where each ends for a tree TREE_SIZE_M tall; a
  * tree of another height switches where it draws as large. Impostors follow to the reach.
  */
-const TIERS_M = [60, 300, 700], TREE_SIZE_M = 25;
+const TIERS_M = [60, 300, 700].map(m => m * lever('trees', 1)), TREE_SIZE_M = 25;
 /** Workers that build the models side by side, a species or a crown per job: the trees show as each job lands. */
 const WORKERS = 3;
 

@@ -4,9 +4,10 @@ import { PAGE, type PageData } from '../stream/heights';
 import { TILE_ZOOM, type TerrainSource, stopped } from '../stream/terrain';
 import { NEAR, STAMP_WORDS, type NodeStamps } from './bins';
 import { CELL_LEVEL, COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
+import { loads } from '../prototype-levers';
 
 /** Tile requests in flight at most. */
-const LOADS = 6;
+const LOADS = loads(6);
 /** The level of the pages that fill the holes: one small tile of zoom 6 spans a view, so the view's own coarse tiles can come after the near field. */
 const FILL = 7;
 /** Pages that arrive or are synthesized per frame at most. */

@@ -13,6 +13,7 @@ import { REACH_M } from './arms';
 import { groundBodies, type StoredBody } from './ground';
 import { meshBytes, type RoadMesh } from './mesh';
 import { ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
+import { loads } from '../prototype-levers';
 
 /** Roads draw as corridors this far from the eye; past it the paint draws them. The one value of the range. */
 export const RANGE_M = 600;
@@ -29,7 +30,7 @@ const VERTEX_BYTES = 27 * 2 ** 20, INDEX_BYTES = 20 * 2 ** 20;
 /** Bytes of meshes kept on the CPU: with the stamps' 64 MiB, the 96 MiB of the owner's budget. */
 const MESH_BYTES = 32 * 2 ** 20;
 /** Requests to the worker in flight at most. */
-const REQUESTS = 4;
+const REQUESTS = loads(4);
 /** Pieces that a frame draws at most: more than lie within the range, also with their split towns. */
 const DRAWS = 256;
 const NOTHING: RoadMesh = { pieces: [] }, FAILED: RoadMesh = { pieces: [] };

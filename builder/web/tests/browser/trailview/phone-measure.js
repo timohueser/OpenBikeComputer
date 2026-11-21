@@ -17,10 +17,26 @@
         { id: 'today', name: "today's app", query: '' },
         // Prototype #3765: today's app at the lighter settings, nearer to the phone display.
         { id: 'today-low', name: "today's app, lighter", query: '&scale=0.5&pool=0.5' },
+        ...levers(),
         { id: 'new', name: 'new roads', query: '&ground=plan' },
         // Half the render pixels of the default 0.7 per axis, and half the terrain page pools. The finest level stays, so the meshes can draw.
         { id: 'new-low', name: 'new roads, lighter', query: '&ground=plan&scale=0.5&pool=0.5' },
     ];
+    /**
+     * Prototype #3765: the phone preset P, and P with one lever changed. Each runs the headroom probe after its flight, but the
+     * ballast run, whose 400 MiB filled before the load test whether the load's peak stays under about 1 GB.
+     */
+    function levers() {
+        const P = { scale: 0.5, pool: 0.5, gpool: 0.33, shadows: 1, trees: 0.5, objects: 0, loads: 0.5, fps: 30 };
+        const v = (id, name, change, probe = { headroom: 1 }) => ({ id, name, query: `&${new URLSearchParams({ ...P, ...change, ...probe })}` });
+        return [
+            v('p', 'phone preset', {}), v('p-shadows2', 'P, far shadows on', { shadows: 2 }), v('p-shadows0', 'P, no shadows', { shadows: 0 }),
+            v('p-trees1', 'P, full tree range', { trees: 1 }), v('p-gpool1', 'P, full ground pool', { gpool: 1 }), v('p-pool1', 'P, full terrain pool', { pool: 1 }),
+            v('p-objects1', 'P, small objects on', { objects: 1 }), v('p-loads1', 'P, all loads at once', { loads: 1 }), v('p-scale07', 'P, scale 0.7', { scale: 0.7 }),
+            v('p-terrain08', 'P, coarser terrain', { terrain: 0.8 }), v('p-finest17', 'P, finest level 17', { finest: 17 }), v('p-fps60', 'P at 60 fps', { fps: 60 }),
+            v('p-ballast', 'P with 400 MiB ballast', {}, { ballast: 400 }),
+        ];
+    }
     const TAIL = '&date=2026-08-15&time=15:00&weather=sunny';
     // The first three are the walk, valley-drive and zoom-out of flights.json; the last drives over the viaduct into the motorway tunnel north of Stans.
     const SCENES = [
@@ -48,6 +64,8 @@
     // The page asks for a WebGPU adapter and device itself: these wrappers report each failure and keep the device.
     const hooks = { device: undefined, firstCanvas: undefined, lastSubmit: 0, flightStart: Infinity, ground: { open: undefined, jobs: [] } };
     function hook() {
+        const ballast = Number(new URLSearchParams(location.search).get('ballast')) || 0;
+        if (ballast) window.obcBallast = Array.from({ length: ballast / 16 }, () => random(new Uint32Array(4 * 2 ** 20)));
         const Base = window.Worker;
         window.Worker = class extends Base {
             constructor(url, options) {
@@ -83,6 +101,20 @@
         GPUCanvasContext.prototype.getCurrentTexture = function () { hooks.firstCanvas ??= performance.now(); return current.call(this); };
     }
 
+    let seed = 0x9e3779b9;
+    /** Random words: iOS compresses memory, and zeros would cost it almost nothing. */
+    function random(words) {
+        for (let i = 0; i < words.length; i++) { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; words[i] = seed; }
+        return words;
+    }
+    /** Fills memory in steps of 32 MiB until the system stops the tab; the last post is the headroom over the view. */
+    async function headroom(key) {
+        const keep = [];
+        for (let mib = 32; mib <= 3072; mib += 32) {
+            keep.push(random(new Uint32Array(8 * 2 ** 20)));
+            await post(key, { headroomMiB: mib });
+        }
+    }
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
     async function until(test, deadline) {
@@ -164,6 +196,10 @@
     async function measure() {
         const i = state.index, { variant, scene } = state.plan[i], key = `runs.${i}`;
         const label = `Run ${i + 1} of ${state.plan.length}: ${VARIANTS[variant].name}, ${SCENES[scene].name}`;
+        if (state.loaded === i && state.probing === i) {
+            await post(key, { headroomEnd: 'the system stopped the tab' });
+            return next();
+        }
         if (state.loaded === i) {
             event('the system reloaded the tab during this run');
             await post(key, { failure: 'the system reloaded the tab during this run' });
@@ -205,6 +241,12 @@
         run.flight = await fly(tv, SCENES[scene], label, key, run.memory);
         Object.assign(run, { stage: 'done' }, final(tv, run.memory));
         await post(key, run);
+        if (new URLSearchParams(location.search).get('headroom')) {
+            state.probing = i;
+            save();
+            say(`${label} … memory headroom`);
+            await headroom(key);
+        }
         next();
     }
 
@@ -333,11 +375,15 @@
             else for (const scene of SCENES.keys()) for (const variant of VARIANTS.keys()) state.plan.push({ variant, scene });
             if (query.get('seconds')) state.seconds = Number(query.get('seconds'));
             if (query.get('host')) state.session = `${query.get('host')}-${state.session}`;
+            // ?size=WxH fixes the canvas at W×H CSS pixels: a phone's view in a desktop browser.
+            if (query.get('size')) state.size = query.get('size').split('x').map(Number);
             save();
             const wake = await wakeLock();
             await post('device', { ...(await facts()), wakeLock: wake, plan: state.plan.map(p => `${VARIANTS[p.variant].id} ${SCENES[p.scene].id}`), flightSeconds: state.seconds ?? FLIGHT_S });
             next();
         };
+        // Prototype #3765: ?auto=1 starts at once, for runs that no one taps (the app on a Mac).
+        if (new URLSearchParams(location.search).get('auto')) button.click();
     }
 
     async function facts() {
@@ -370,6 +416,7 @@
     if (location.pathname.startsWith('/phone')) return void home();
     if (!state || state.finished || state.index < 0) return;
     hook();
+    if (state.size) document.documentElement.append(Object.assign(document.createElement('style'), { textContent: `canvas{width:${state.size[0]}px!important;height:${state.size[1]}px!important}` }));
     (location.pathname.endsWith('/plan-timing.html') ? timing() : measure()).catch(e => {
         event(`the measuring script failed: ${e.message}`);
         next();

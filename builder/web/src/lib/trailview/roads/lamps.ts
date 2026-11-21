@@ -6,6 +6,7 @@ import { LANTERN, streetLamp } from '../models/amenities';
 import { unitModel, type Build, type Kind, type Placement } from '../kinds/kind';
 import { classOf, shoulderOf } from './section';
 import { stationAt, stationsOf, type Station } from './stations';
+import { lever } from '../prototype-levers';
 
 /**
  * A lamp stands SPACING_M from the next, moved up to SEARCH_M along to a free place: on the sidewalk at
@@ -18,7 +19,7 @@ const SPACING_M = 32, SEARCH_M = 10, SIDEWALK_SHARE = 0.72, BEHIND_M = 0.5, CLEA
 /** The roads that have lamps, and how far from the eye a lamp draws. */
 const LIT = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street']);
 
-const LAMP_REACH_M = 600;
+const LAMP_REACH_M = Math.max(1, 600 * lever('objects', 1));
 const lamp = unitModel(streetLamp, LAMP_REACH_M);
 
 /** The kind of the lit roads. `streetLamps` places their lamps, from the road's stations. */

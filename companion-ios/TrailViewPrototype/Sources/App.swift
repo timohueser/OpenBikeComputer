@@ -16,7 +16,13 @@ struct KitPage: Identifiable {
 /// The spike's plan: today's app at its default and at lighter settings in the four scenes, and one load of the new roads.
 private let spikeRuns = ["today", "today-low"].flatMap { v in ["walk", "valley-drive", "zoom-out", "bridge-tunnel"].map { "\(v):\($0)" } } + ["new:walk"]
 
+/// The lever sessions: the phone preset P on the walk, then P with one lever changed (phone-measure.js `levers()`).
+private let leversA = ["p", "p-shadows2", "p-shadows0", "p-trees1", "p-gpool1", "p-pool1", "p-objects1", "p-ballast"].map { "\($0):walk" }
+private let leversB = ["p", "p-loads1", "p-scale07", "p-terrain08", "p-finest17", "p-fps60"].map { "\($0):walk" } + ["p:valley-drive"]
+
 private let pages = [
+    KitPage(name: "Levers A (8 runs)", path: "/phone/?runs=\(leversA.joined(separator: ","))"),
+    KitPage(name: "Levers B (7 runs)", path: "/phone/?runs=\(leversB.joined(separator: ","))"),
     KitPage(name: "Measure: the spike runs (9)", path: "/phone/?runs=\(spikeRuns.joined(separator: ","))"),
     // The lighter settings: today's app at its default settings does not survive its load on the iPhone 13.
     KitPage(name: "Soak: the walk for 10 minutes", path: "/phone/?runs=today-low:walk&seconds=600"),
@@ -64,6 +70,8 @@ struct RootView: View {
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             Loopback.shared.kit = URL(string: kit)
+            // `-open PATH` opens a kit page at launch, for runs that no one taps.
+            if open == nil, let path = UserDefaults.standard.string(forKey: "open") { open = KitPage(name: "launch", path: path) }
         }
         .onChange(of: kit) { Loopback.shared.kit = URL(string: kit) }
     }

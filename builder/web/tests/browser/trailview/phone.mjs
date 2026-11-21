@@ -15,7 +15,7 @@
 // loads cold over the network.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { request as httpRequest } from 'node:http';
+import { createServer as createHttpServer, request as httpRequest } from 'node:http';
 import { createServer } from 'node:https';
 import { extname, join, normalize, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -29,7 +29,7 @@ const { values: a, positionals: [command, file] } = parseArgs({
     options: {
         origin: { type: 'string' }, host: { type: 'string' }, port: { type: 'string', default: '8770' },
         data: { type: 'string', default: 'http://127.0.0.1:8710' }, results: { type: 'string', default: join(WEB, '.artifacts/phone') },
-        cert: { type: 'string', default: join(WEB, '.artifacts/phone/cert') }, requests: { type: 'string' }, out: { type: 'string' },
+        cert: { type: 'string', default: join(WEB, '.artifacts/phone/cert') }, requests: { type: 'string' }, out: { type: 'string' }, local: { type: 'string' }, 'local-dist': { type: 'string' },
     },
 });
 
@@ -82,7 +82,8 @@ function serve() {
     const requests = a.requests && resolve(a.requests);
     mkdirSync(a.results, { recursive: true });
     const send = (response, status, type, body) => response.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' }).end(body);
-    createServer(tls, (request, response) => {
+    // Prototype #3765: --local PORT also serves --local-dist over plain HTTP on 127.0.0.1, a secure context for a browser on this machine.
+    const handler = (DIST, secure) => (request, response) => {
         const path = normalize(decodeURIComponent(new URL(request.url, origin).pathname));
         if (request.method === 'POST' && path === '/result') return collect(request, response);
         if (request.method === 'POST' && path === '/blob') return keep(request, response);
@@ -124,12 +125,14 @@ function serve() {
             // while a session of its own runs in the tab.
             return send(response, 200, type, type === 'text/html' ? inject(body.toString()) : body);
         }
-        proxy(request, response);
-    }).listen(+a.port, a.host, () => console.log(`${origin}/phone/ · data ${a.data} · results ${a.results}`));
+        proxy(request, response, secure);
+    };
+    createServer(tls, handler(DIST, true)).listen(+a.port, a.host, () => console.log(`${origin}/phone/ · data ${a.data} · results ${a.results}`));
+    if (a.local) createHttpServer(handler(resolve(a['local-dist']), false)).listen(+a.local, '127.0.0.1', () => console.log(`http://127.0.0.1:${a.local}/phone/ · ${a['local-dist']}`));
 }
 
 /** Passes a read to the data origin with the phone's Host, so the catalogue names this origin; its JSON then says https. */
-function proxy(request, response) {
+function proxy(request, response, secure = true) {
     const host = request.headers.host, target = new URL(request.url, a.data);
     const out = httpRequest(target, { method: request.method, headers: { ...request.headers, host, 'accept-encoding': 'identity' } }, answer => {
         const headers = { ...answer.headers, 'cache-control': 'no-store' };
@@ -137,7 +140,7 @@ function proxy(request, response) {
         if (!String(answer.headers['content-type']).includes('json')) return response.writeHead(answer.statusCode, headers), answer.pipe(response);
         const parts = [];
         answer.on('data', part => parts.push(part)).on('end', () => {
-            const body = Buffer.concat(parts).toString().replaceAll(`http://${host}`, `https://${host}`);
+            const text = Buffer.concat(parts).toString(), body = secure ? text.replaceAll(`http://${host}`, `https://${host}`) : text;
             delete headers['content-length'];
             response.writeHead(answer.statusCode, headers).end(body);
         });
