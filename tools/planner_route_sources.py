@@ -17,13 +17,13 @@ from . import step_request
 FORMAT = 1
 KINDS = ("hiking", "bicycle", "mtb")
 TEMPLATES = ("ref", "name", "description", "operator", "website")
-SHARED = {"layer", "file", "ascent", "keep", "drop", *TEMPLATES}
+SHARED = {"layer", "file", "ascent", "keep", "drop", "name_strip", *TEMPLATES}
 KEYS = {
     "description": {"origin", "countries", "kind", "route", "stage"},
     "route": SHARED | {"key", "rank"},
     "stage": SHARED | {"of", "number"},
 }
-NEEDS = {"description": {"origin", "countries", "kind", "route"}, "route": {"layer", "key"}, "stage": {"layer", "of", "number"}}
+NEEDS = {"description": {"origin", "countries", "kind", "route"}, "route": {"key"}, "stage": {"of", "number"}}
 KEY_LIMIT = 10**10
 # One metre in degrees of latitude: the tolerance of the simplification.
 METRE = 1 / 111_320
@@ -52,11 +52,16 @@ def parse(text):
                                                for level in values_of(description["route"]["rank"]) or [None]):
         raise ValueError("`rank` is a table of `field` and `values` that map to the levels 0 to 4")
     for name, table in tables.items():
-        names = {key: table.get(key) for key in ("layer", "file", "of", "number", "ascent", *TEMPLATES)}
+        names = {key: table.get(key) for key in ("layer", "file", "of", "number", "ascent", "name_strip", *TEMPLATES)}
         names |= {"key": table.get("key"), "rank.field": (table.get("rank") or {}).get("field")}
         for key, value in names.items():
             if value is not None and not (texts(value) if key == "key" else texts([value])):
                 raise ValueError(f"`{name}.{key}` is a {'text or a list of texts' if key == 'key' else 'text'}")
+        if "name_strip" in table:
+            try:
+                re.compile(table["name_strip"])
+            except re.error as error:
+                raise ValueError(f"`{name}.name_strip` is no regular expression: {error}") from None
         for key in ("keep", "drop"):
             if key in table and not (isinstance(table[key], dict) and all(isinstance(v, list) for v in table[key].values())):
                 raise ValueError(f"`{name}.{key}` maps each field to a list of values")
@@ -93,13 +98,23 @@ def listed(value):
     return value if isinstance(value, list) else [value]
 
 
+def template(key):
+    """Whether the route key `key` is a template of field values, such as `"{A}: {B}"`, and not fields."""
+    return isinstance(key, str) and "{" in key
+
+
+def named(text):
+    """The fields of the template `text`, but `{route}` and `{key}`."""
+    return {field for _, field, _, _ in string.Formatter().parse(text) if field and field not in ("route", "key")}
+
+
 def fields(table, kind=None):
     """The fields of the file that `table` reads."""
-    names = {field for key in TEMPLATES if key in table
-             for _, field, _, _ in string.Formatter().parse(table[key]) if field and field not in ("route", "key")}
+    names = {field for key in TEMPLATES if key in table for field in named(table[key])}
     names |= set(table.get("keep", {})) | set(table.get("drop", {}))
     names |= {value for key in ("ascent", "of", "number") if (value := table.get(key))}
-    names |= set(listed(table.get("key", [])))
+    key = table.get("key", [])
+    names |= named(key) if template(key) else set(listed(key))
     names |= {table[key]["field"] for key in ("rank",) if key in table}
     return names | ({kind["field"]} if isinstance(kind, dict) else set())
 
@@ -113,12 +128,16 @@ def passes(row, table):
 
 def lines(wkb, to_wgs84):
     """Each line of the geometry `wkb` in microdegrees, an array of points, simplified within 1 m and
-    without repeated points. A line of fewer than two points is left out."""
+    without repeated points. Only a line or a part of a multi-line or a collection is one: a start
+    point or the ring of a polygon is not. A line of fewer than two points is left out."""
     import numpy as np
     import shapely
 
-    parts = [] if wkb is None else shapely.get_parts(shapely.from_wkb(wkb))
-    parts = parts[shapely.get_num_coordinates(parts) >= 2] if len(parts) else parts
+    # Two levels: a collection can hold a multi-line.
+    parts = [] if wkb is None else shapely.get_parts(shapely.get_parts(shapely.from_wkb(wkb)))
+    if len(parts):
+        line = np.isin(shapely.get_type_id(parts), [shapely.GeometryType.LINESTRING, shapely.GeometryType.LINEARRING])
+        parts = parts[line & (shapely.get_num_coordinates(parts) >= 2)]
     if not len(parts):
         return []
     # All parts of a feature at once: a route can have thousands of them.
@@ -146,10 +165,15 @@ def features(name, files, table, wanted):
     if len(files) != 1:
         raise ValueError(f"{name}: a route source has one file, not {len(files)}")
     path = str(next(iter(files.values())))
-    path = f"/vsizip/{path}/{table['file']}" if "file" in table else path
-    layer = table["layer"]
-    if layer not in {row[0] for row in pyogrio.list_layers(path)}:
-        raise ValueError(f"{name}: the file has no layer {layer}")
+    # The braces mark the zip: a store object has no `.zip` that would end it.
+    path = f"/vsizip/{{{path}}}/{table['file']}" if "file" in table else path
+    layers = [row[0] for row in pyogrio.list_layers(path)]
+    # A GeoJSON without a `name` has the name of its file as its layer, and a store object is named
+    # by its digest: a file of one layer needs no `layer`.
+    layer = table.get("layer", layers[0] if len(layers) == 1 else None)
+    if layer not in layers:
+        raise ValueError(f"{name}: the file has no layer {layer}" if "layer" in table
+                         else f"{name}: the file has {len(layers)} layers; name one with `layer`")
     if missing := wanted - set(pyogrio.read_info(path, layer=layer)["fields"]):
         raise ValueError(f"{name}: the layer {layer} has no field {', '.join(sorted(missing))}")
     meta, fids, geometry, values = pyogrio.raw.read(path, layer=layer, columns=sorted(wanted), force_2d=True, return_fids=True)
@@ -165,9 +189,13 @@ def features(name, files, table, wanted):
 
 
 def filled(table, row, extra):
-    """The templates of `table` filled from `row`, with outer spaces removed; an empty one is absent."""
+    """The templates of `table` filled from `row`, with outer spaces removed; an empty one is absent.
+    `name_strip` removes its matches from the name and makes each run of spaces one, unless that
+    leaves it empty."""
     values = {field: "" if value is None else str(value) for field, value in row.items()} | extra
     out = {key: table[key].format_map(values).strip() for key in TEMPLATES if key in table}
+    if out.get("name") and "name_strip" in table:
+        out["name"] = " ".join(re.sub(table["name_strip"], "", out["name"]).split()) or out["name"]
     if (field := table.get("ascent")) and row[field] not in (None, ""):
         out["ascent_m"] = round(float(row[field]))
     return {key: value for key, value in out.items() if value != ""}
@@ -192,9 +220,15 @@ def read(source, files, bounds):
     box = [round(value * 1e6) for value in bounds]
     seen = {}
 
-    def keys(row, names, where):
-        """`(key, text)` of each field of `names` that has a value in `row`."""
-        texts = [str(row[field]) for field in names if row[field] not in (None, "")]
+    def keys(row, key, where):
+        """`(key, text)` of each field of `key` that has a value in `row`, or of the template `key`
+        filled when each of its fields has one."""
+        if template(key):
+            values = {field: row[field] for field in named(key)}
+            text = "" if "" in values.values() or None in values.values() else key.format_map(values).strip()
+            texts = [text] if text else []
+        else:
+            texts = [str(row[field]) for field in listed(key) if row[field] not in (None, "")]
         return [(key_of(text, seen, where), text) for text in texts]
 
     routes = {}
@@ -202,12 +236,12 @@ def read(source, files, bounds):
         kind_of = kind if isinstance(kind, str) else kind["values"].get(str(row[kind["field"]]))
         if kind_of is None:
             continue
-        for key, text in keys(row, listed(route["key"]), f"{name}: {route['layer']} feature {fid}"):
+        for key, text in keys(row, route["key"], f"{name}: {route.get('layer', 'route')} feature {fid}"):
             routes.setdefault(key, {"row": row, "text": text, "kind": kind_of, "members": []})["members"] += found
     stages = {}
     for fid, row, found in features(name, files, stage, fields(stage)) if stage else []:
-        where = f"{name}: {stage['layer']} feature {fid}"
-        for key, _ in keys(row, [stage["of"]], where):
+        where = f"{name}: {stage.get('layer', 'stage')} feature {fid}"
+        for key, _ in keys(row, stage["of"], where):
             if key in routes:
                 stages.setdefault(key, []).append((where, row, found))
 
