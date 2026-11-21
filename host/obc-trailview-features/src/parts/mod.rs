@@ -548,7 +548,7 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         let look = if kind == Kind::Rock { "rock" } else { input.rules.groups[tubes[o.tube].group].look.as_str() };
         t.insert("look".into(), look.into());
         t.insert("part".into(), kind.name().into());
-        t.insert("heading".into(), format!("{}", (o.heading() * 1000.0).round() / 1000.0));
+        t.insert("heading".into(), format!("{}", (n.heading * 1000.0).round() / 1000.0));
         t.insert("collar".into(), num(n.collar));
         if kind != Kind::Free {
             t.insert("face".into(), num(n.face));

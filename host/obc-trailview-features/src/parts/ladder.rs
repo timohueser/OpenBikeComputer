@@ -16,9 +16,10 @@ pub use obc_trailview_parts::Part as Kind;
 
 /// The numbers of a drawn opening (Plan 8 of the design): metres, `left` and `right` per metre out from the frame's
 /// outer edge, and in a pair the mate's opening and the metres to its axis to the left; `height` is the inside height
-/// of the tube's chord there.
+/// of the tube's chord there; `heading` is square to its frame line, into the tube of the opening farther in.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Numbers {
+    pub heading: f64,
     pub height: f64,
     pub collar: f64,
     pub face: f64,
@@ -260,15 +261,23 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         rung[i] = Some(r);
         kinds[i] = k;
     }
-    // Rung 5: the pairs, nearest first, each end in one pair at most.
+    // Rung 5: the pairs, nearest first, each end in one pair at most. A pair is one part of two chains, so each of them
+    // has a part at both of its ends.
     let mut mate: Vec<Option<usize>> = vec![None; n];
     let is_hill = |i: usize| hill.contains(&i);
+    let whole: Vec<bool> = (0..tubes.len())
+        .map(|t| {
+            let at = |end: usize| openings.iter().position(|o| o.tube == t && o.end == end);
+            (0..2).all(|end| at(end).is_some_and(|i| !kinds[i].is_empty()))
+        })
+        .collect();
     for x in &near {
         let (a, c) = (x.a, x.b);
         if !is_hill(a) || !is_hill(c) || mate[a].is_some() || mate[c].is_some() {
             continue;
         }
-        if tubes[openings[a].tube].rail != tubes[openings[c].tube].rail {
+        let (ta, tc) = (openings[a].tube, openings[c].tube);
+        if tubes[ta].rail != tubes[tc].rail || !whole[ta] || !whole[tc] {
             continue;
         }
         mate[a] = Some(c);
@@ -506,5 +515,15 @@ fn numbers(
     let lowest = under.chain(collar_ground).fold(floor, f64::min);
     let mate = mate.map(|m| (m, axis(m) - axis(i)));
     let numbers = if kind == Kind::Free { (Vec::new(), Vec::new()) } else { (left, right) };
-    Numbers { height: h, collar, face, left: numbers.0, right: numbers.1, foot: lowest - b.foot_m - floor, mate }
+    let heading = openings[far].heading();
+    Numbers {
+        heading,
+        height: h,
+        collar,
+        face,
+        left: numbers.0,
+        right: numbers.1,
+        foot: lowest - b.foot_m - floor,
+        mate,
+    }
 }
