@@ -12,7 +12,7 @@ import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
 import { DEPTH, sceneFormat } from '../resolve/targets';
-import { CALM, CELL_LEVEL, distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
+import { CALM, CELL_LEVEL, distances, key, size, type Eye, type Node, type Rule } from '../terrain/lod';
 import { touches } from '../terrain/pages';
 import { metresPerUnit } from '../terrain/bins';
 import type { NodeFeatures } from '../terrain/stamps';
@@ -319,7 +319,7 @@ export class Pieces {
         const cells = this.meshLevel ? range : [];
         const near = (piece: Piece) => distances(eye, piece.node)[0];
         // The plateau of level 18 ends here; a triangle's reach and a little more stay whole past it.
-        const plateau = rule.range / 2 ** (18 + MORPH) - FADE_MARGIN_M;
+        const plateau = rule.range / 2 ** (18 + rule.morph) - FADE_MARGIN_M;
         this.cut.clear();
         this.drawn = cells.flatMap(cell => {
             const piece = this.pieces.get(key(cell));

@@ -26,24 +26,33 @@ export interface Budget {
     };
     /** The plan workers of the ground plan (`ground=plan`). */
     planWorkers: number;
+    /**
+     * The terrain's CDLOD range in node sizes, and its morph band in levels of log2 distance (`cdlod` of lod.ts). Below the
+     * least, a node can reach past the morph band of its parent's level, and neighbours would not meet (lod.test.ts); a
+     * narrower band lets them meet at a lower least. Above the most, a level leaves its LOD map window.
+     */
+    lod: { least: number; most: number; morph: number };
 }
 
 export const MiB = 2 ** 20;
 
 /**
  * The desktop's canopy loads are the 3 × 3 tiles about the eye at once. An iPhone 13 does not load a view with more
- * than 64 ground pages.
+ * than 64 ground pages. The phone's least and most range are equal: its range does not follow the render size
+ * (`bestRange` of terrain.ts), and no quality step lowers it.
  */
 export const BUDGETS: Record<Tier, Budget> = {
     desktop: {
         frameRate: 60, terrainShare: 1, groundPages: 192, loads: { terrain: 6, ground: 4, houses: 6, stamps: 8, canopy: 9 },
         caps: { groundDecode: 96, stamp: 48, house: 32, planHeap: 55, nodes: 64, debugRecords: 32, terrainBodies: 64, featureBodies: 32, groundBodies: 16 },
         planWorkers: 2,
+        lod: { least: 4.6, most: 8, morph: 0.3 },
     },
     phone: {
         frameRate: 30, terrainShare: 0.5, groundPages: 64, loads: { terrain: 3, ground: 2, houses: 3, stamps: 4, canopy: 5 },
         caps: { groundDecode: 16, stamp: 24, house: 16, planHeap: 40, nodes: 24, debugRecords: 16, terrainBodies: 16, featureBodies: 8, groundBodies: 2 },
         planWorkers: 1,
+        lod: { least: 3.7, most: 3.7, morph: 0.15 },
     },
 };
 
