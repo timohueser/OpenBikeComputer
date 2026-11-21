@@ -5,6 +5,9 @@
 //! the faces about the part, of the region of each face where its own ground lies in the boxes: contoured on a grid in
 //! the face's own ground, then clipped to the face. Where the ground steps, the cut's edge is the face's edge. A box
 //! holds its faces: a point on the plane where two boxes meet lies in both.
+//!
+//! A step's wall stands on the edge between two faces, from the lower ground to the higher. Where it passes through a
+//! box, the cut takes it too (its walls), even where neither ground lies in the box.
 
 use std::collections::BTreeMap;
 
@@ -18,7 +21,7 @@ use obc_trailview_parts::{corners, end_boxes, metres_per_unit, outside, outside_
 use serde_json::{json, Value};
 
 use super::ladder::Measure;
-use super::measure::{Ask, Field};
+use super::measure::{Ask, Edge, Field};
 use crate::tiles::{frame_point, height_code};
 use crate::{Part, Tags};
 
@@ -32,11 +35,17 @@ const EPS_M: f64 = 1e-6;
 const WORLD: f64 = (1u64 << 30) as f64;
 const FRAME: f64 = 16.0;
 
+/// The step along a wall at which the bake asks whether it passes through a box (m).
+const WALL_STEP_M: f64 = 0.05;
+
 /// A ring of the cut: frame points of the ground plan less the end's point.
 type Ring = Vec<[i64; 2]>;
 
-/// Adds the tag `cut` to each `tunnel-end` of a built chain whose ground lies in its part, with the stretches of
-/// `opened` on the ground; gives its counts.
+/// A wall of the cut: the ends of a stretch of a face edge, frame points of the ground plan less the end's point.
+type Wall = [[i64; 2]; 2];
+
+/// Adds the tags `cut` and `walls` to each `tunnel-end` of a built chain whose ground lies in its part, with the
+/// stretches of `opened` on the ground; gives its counts.
 pub(crate) fn add(
     features: &mut [(&'static str, Tags, Part)],
     opened: &[OpenEnd],
@@ -81,8 +90,16 @@ pub(crate) fn add(
         .collect();
     let (sites, cells) = if asks.is_empty() { (Vec::new(), 0) } else { measure(&asks, opened) };
     let (mut cut, mut rings_n, mut points_n, mut faces_n, mut invalid) = (0, 0, 0, 0, 0);
+    let (mut walled, mut walls_n) = (0, 0);
     for ((e, g), site) in grids.into_iter().zip(sites) {
         let rings = g.cut(&site.fields, &boxes[e], origins[e]);
+        let walls = walls(&site.fields, &boxes[e], origins[e]);
+        if !walls.is_empty() {
+            walled += 1;
+            walls_n += walls.len();
+            let text: Vec<String> = walls.iter().map(|[a, b]| format!("{} {},{} {}", a[0], a[1], b[0], b[1])).collect();
+            features[at[e]].1.insert("walls".into(), text.join(";"));
+        }
         faces_n += site.fields.len();
         invalid += usize::from(!simple(&rings));
         if rings.is_empty() {
@@ -97,7 +114,8 @@ pub(crate) fn add(
         features[at[e]].1.insert("cut".into(), text.join(";"));
     }
     json!({ "cut_ends": cut, "cut_rings": rings_n, "cut_points": points_n, "cut_cells": cells,
-            "cut_faces": faces_n, "cut_records_refused": refused, "cut_invalid_rings": invalid })
+            "cut_faces": faces_n, "cut_records_refused": refused, "cut_invalid_rings": invalid,
+            "cut_wall_ends": walled, "cut_walls": walls_n })
 }
 
 /// The lines across a grid from `lo` to `hi` metres in: `STEP_M` apart from the frame line, and two more in a box from
@@ -109,6 +127,109 @@ fn across(lo: f64, hi: f64, front: f64) -> Vec<f64> {
     us.sort_by(f64::total_cmp);
     us.dedup_by(|a, b| (*a - *b).abs() < EPS_M);
     us
+}
+
+/// The walls of the cut: per stretch of edge that two faces of one cell share (the edge of one runs back along the
+/// other's), where the wall between their grounds passes through a box, the ends of that stretch.
+fn walls(fields: &[Field], boxes: &[[f64; BOX]], origin: [i64; 2]) -> Vec<Wall> {
+    let edges: Vec<(usize, &Edge)> =
+        fields.iter().enumerate().flat_map(|(i, f)| f.edges.iter().map(move |e| (i, e))).collect();
+    let mut out = Vec::new();
+    for (x, &(i, e)) in edges.iter().enumerate() {
+        for &(_, f) in edges[x + 1..].iter().filter(|(j, _)| *j != i && fields[*j].cell == fields[i].cell) {
+            let Some((t, [fa, fb])) = shared(e, f) else { continue };
+            let d = [(e.b[0] - e.a[0]) as f64, (e.b[1] - e.a[1]) as f64];
+            let point = |t: f64| [e.a[0] as f64 + t * d[0], e.a[1] as f64 + t * d[1]];
+            let through = |t: f64| {
+                let (g, h) = (ground(e, t), ground(f, (t - fa) / (fb - fa)));
+                let q = point(t).map(|v| v / FRAME);
+                (g - h).abs() > EPS_M && boxes.iter().any(|b| passes(b, q, g.min(h), g.max(h)))
+            };
+            // The stretches where it does, each change found between two steps by halves.
+            let metres = d[0].hypot(d[1]) * (t[1] - t[0]) * metres_per_unit(point(t[0])[1] / FRAME);
+            let n = (metres / WALL_STEP_M).ceil().max(1.0) as usize;
+            let share = |k: usize| t[0] + (t[1] - t[0]) * k as f64 / n as f64;
+            let (mut spans, mut from) = (Vec::new(), through(t[0]).then_some(t[0]));
+            for k in 1..=n {
+                let now = through(share(k));
+                if now == from.is_some() {
+                    continue;
+                }
+                let (mut lo, mut hi) = (share(k - 1), share(k));
+                for _ in 0..30 {
+                    let m = (lo + hi) / 2.0;
+                    if through(m) == now {
+                        hi = m;
+                    } else {
+                        lo = m;
+                    }
+                }
+                match from.take() {
+                    Some(s) => spans.push([s, hi]),
+                    None => from = Some(hi),
+                }
+            }
+            spans.extend(from.map(|s| [s, t[1]]));
+            for span in spans {
+                let [a, b] =
+                    span.map(|v| point(v).map(|c| c.round() as i64)).map(|p| [p[0] - origin[0], p[1] - origin[1]]);
+                if a != b {
+                    out.push([a, b]);
+                }
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Where edges e and f lie on one line and run back along each other: the shares of e that both stretches cover, and
+/// the shares of e at f's ends.
+fn shared(e: &Edge, f: &Edge) -> Option<([f64; 2], [f64; 2])> {
+    let w = |p: [i64; 2]| [i128::from(p[0] - e.a[0]), i128::from(p[1] - e.a[1])];
+    let (d, fa, fb) = (w(e.b), w(f.a), w(f.b));
+    let cross = |v: [i128; 2]| d[0] * v[1] - d[1] * v[0];
+    let dot = |v: [i128; 2]| d[0] * v[0] + d[1] * v[1];
+    if cross(fa) != 0 || cross(fb) != 0 || dot([fb[0] - fa[0], fb[1] - fa[1]]) >= 0 {
+        return None;
+    }
+    let len2 = dot(d) as f64;
+    let ends = [dot(fa) as f64 / len2, dot(fb) as f64 / len2];
+    let (s0, s1) = (ends[0] + f.t[0] * (ends[1] - ends[0]), ends[0] + f.t[1] * (ends[1] - ends[0]));
+    let t = [e.t[0].max(s0.min(s1)), e.t[1].min(s0.max(s1))];
+    (t[0] < t[1]).then_some((t, ends))
+}
+
+/// The ground of an edge's face at share t of the edge, linear between its steps.
+fn ground(e: &Edge, t: f64) -> f64 {
+    let n = e.heights.len() - 1;
+    let x = ((t - e.t[0]) / (e.t[1] - e.t[0]) * n as f64).clamp(0.0, n as f64);
+    let k = (x.floor() as usize).min(n.saturating_sub(1));
+    let f = x - k as f64;
+    if n == 0 {
+        return e.heights[0];
+    }
+    e.heights[k] + f * (e.heights[k + 1] - e.heights[k])
+}
+
+/// Whether a wall from height lo to hi at world point q passes through box b, deeper in it than `EPS_M`. Up the wall
+/// the depth past the floor falls and the depth past the roof rises, so it has one least value: found by thirds.
+fn passes(b: &[f64; BOX], q: [f64; 2], lo: f64, hi: f64) -> bool {
+    if outside_plan(b, q) >= -EPS_M {
+        return false;
+    }
+    let depth = |z: f64| outside(b, [q[0], q[1], z]);
+    let (mut a, mut c) = (lo, hi);
+    for _ in 0..60 {
+        let (m, n) = (a + (c - a) / 3.0, c - (c - a) / 3.0);
+        if depth(m) <= depth(n) {
+            c = n;
+        } else {
+            a = m;
+        }
+    }
+    depth((a + c) / 2.0) < -EPS_M
 }
 
 /// A world point in [0, 1], as the measure reads it.
@@ -343,9 +464,17 @@ mod tests {
         vec![vec![f(u0, v1), f(u0, v0), f(u1, v0), f(u1, v1)]]
     }
 
-    /// A face's field with its ground at height h at every point.
+    /// A face's field with its ground at height h at every point and along its edges.
     fn field(g: &Grid, rect: [f64; 4], h: f64) -> Field {
-        Field { rings: face(g, rect), heights: (0..g.reads.len() as u32).map(|k| (k, h)).collect() }
+        let rings = face(g, rect);
+        let ring = &rings[0];
+        let edges = (0..4).map(|k| Edge { a: ring[k], b: ring[(k + 1) % 4], t: [0.0, 1.0], heights: vec![h; 2] });
+        Field {
+            cell: [0, 0],
+            heights: (0..g.reads.len() as u32).map(|k| (k, h)).collect(),
+            edges: edges.collect(),
+            rings,
+        }
     }
 
     fn square_metres(g: &Grid, r: &Ring) -> f64 {
@@ -378,6 +507,31 @@ mod tests {
         let rings = g.cut(&ground, &[flat(&g, 0.0, 2.0), flat(&g, 2.0, 4.0)], origin);
         assert_eq!(rings.len(), 1, "{rings:?}");
         assert!((square_metres(&g, &rings[0]) - 16.0).abs() < 0.01, "{}", square_metres(&g, &rings[0]));
+    }
+
+    #[test]
+    fn a_step_whose_wall_passes_through_the_boxes_is_a_wall_of_the_cut_where_it_does() {
+        // A road 0.5 m under the floor, and beside it, 1 m to the left, a cliff 5 m up, over the roof: neither ground
+        // lies in the boxes, but the step between them does from the front of the head wall to the boxes' end.
+        let g = grid(-0.25);
+        let origin = g.world([0.0, 0.0]).map(|w| (w * FRAME).round() as i64);
+        let boxes = [flat(&g, -0.25, 0.0), flat(&g, 0.0, 4.0)];
+        let ground =
+            |low: f64, high: f64| [field(&g, [-1.0, 5.0, -3.0, 1.0], low), field(&g, [-1.0, 5.0, 1.0, 3.0], high)];
+        assert!(g.cut(&ground(-0.5, 5.0), &boxes, origin).is_empty());
+        let uv = |p: [i64; 2]| {
+            let w = [0, 1].map(|k| (p[k] + origin[k]) as f64 / FRAME);
+            let d = [(w[0] - g.at[0]) * g.m, (w[1] - g.at[1]) * g.m];
+            [d[0] * g.into[0] + d[1] * g.into[1], d[0] * g.left[0] + d[1] * g.left[1]]
+        };
+        let found = walls(&ground(-0.5, 5.0), &boxes, origin);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let mut ends = found[0].map(uv);
+        ends.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        assert!((ends[0][0] + 0.25).abs() < 0.01 && (ends[1][0] - 4.0).abs() < 0.01, "{ends:?}");
+        assert!(ends.iter().all(|p| (p[1] - 1.0).abs() < 0.01), "{ends:?}");
+        // A step under the floor is none.
+        assert!(walls(&ground(-0.5, -0.2), &boxes, origin).is_empty());
     }
 
     #[test]

@@ -140,7 +140,7 @@ fn fields(a: &Ask, ground: &dyn Fn([f64; 2]) -> f64) -> Vec<Field> {
     let (y0, y1) = a.points.iter().fold((i64::MAX, i64::MIN), |(lo, hi), p| (lo.min(frame(p[1])), hi.max(frame(p[1]))));
     let ring = vec![[x0 - pad, y0 - pad], [x1 + pad, y0 - pad], [x1 + pad, y1 + pad], [x0 - pad, y1 + pad]];
     let heights = a.points.iter().enumerate().map(|(k, &p)| (k as u32, ground(back(p)))).collect();
-    vec![Field { rings: vec![ring], heights }]
+    vec![Field { rings: vec![ring], heights, ..Field::default() }]
 }
 
 /// The kinds and the rung of each opening of way `id`.

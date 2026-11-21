@@ -44,14 +44,29 @@ pub(crate) struct Site {
     pub fields: Vec<Field>,
 }
 
-/// A face of the ground plan near an ask's other points: its rings (frame points of the ground plan, the outer ring
-/// first) and the height of its own ground, by its rule, at each of those points within `FIELD_M` of its box, by index.
-/// The ground is smooth inside a face; it steps only at a face's edge.
+/// A face of the ground plan near an ask's other points: its cell, its rings (frame points of the ground plan, the outer
+/// ring first), the height of its own ground, by its rule, at each of those points within `FIELD_M` of its box, by
+/// index, and the stretches of its edges there. The ground is smooth inside a face; it steps only at a face's edge.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Field {
+    pub cell: [u32; 2],
     pub rings: Vec<Vec<[i64; 2]>>,
     pub heights: Vec<(u32, f64)>,
+    pub edges: Vec<Edge>,
 }
+
+/// The stretch of an edge of a face's ring from share `t[0]` to share `t[1]` of the way from `a` to `b` (frame points),
+/// and the face's own ground at even steps of at most `EDGE_M` along it, both ends included.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Edge {
+    pub a: [i64; 2],
+    pub b: [i64; 2],
+    pub t: [f64; 2],
+    pub heights: Vec<f64>,
+}
+
+/// The step of the ground along a face's edge (m).
+const EDGE_M: f64 = 0.25;
 
 /// A face reads its ground this far past its box (m): a sample step and a half, so each grid cell that meets the face
 /// has its four corners.
@@ -173,6 +188,36 @@ fn holds(rings: &[Vec<[i64; 2]>], q: [f64; 2]) -> bool {
         }
     }
     inside
+}
+
+/// The stretch of edge a-b in the box `area` (frame points), with the ground by `at` along it; None where it leaves the
+/// box or the ground is not known.
+fn edge(a: [i64; 2], b: [i64; 2], area: [f64; 4], at: &dyn Fn([f64; 2]) -> Option<f64>) -> Option<Edge> {
+    let (p, d) = ([a[0] as f64, a[1] as f64], [(b[0] - a[0]) as f64, (b[1] - a[1]) as f64]);
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for k in 0..2 {
+        if d[k] == 0.0 {
+            if p[k] < area[k] || p[k] > area[k + 2] {
+                return None;
+            }
+            continue;
+        }
+        let (u, v) = ((area[k] - p[k]) / d[k], (area[k + 2] - p[k]) / d[k]);
+        t0 = t0.max(u.min(v));
+        t1 = t1.min(u.max(v));
+    }
+    if t0 >= t1 {
+        return None;
+    }
+    let metres = d[0].hypot(d[1]) * (t1 - t0) * obc_ground_plan::frame::metres_per_unit_at(p[1]);
+    let n = (metres / EDGE_M).ceil().max(1.0) as usize;
+    let heights = (0..=n)
+        .map(|i| {
+            let t = t0 + (t1 - t0) * i as f64 / n as f64;
+            at([p[0] + t * d[0], p[1] + t * d[1]])
+        })
+        .collect::<Option<Vec<f64>>>()?;
+    Some(Edge { a, b, t: [t0, t1], heights })
 }
 
 /// Where segment p-q meets segment a-b: the share along p-q and along a-b.
@@ -327,7 +372,15 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
                                 check::at_rule(&c.words, &c.terrain, *key, local, *label).map(|h| (i as u32, h.h))
                             })
                             .collect();
-                        fields.push((k, Field { rings: rings.clone(), heights }));
+                        let at = |q: [f64; 2]| {
+                            let local = [q[0] - o.x as f64, q[1] - o.y as f64];
+                            check::at_rule(&c.words, &c.terrain, *key, local, *label).map(|h| h.h)
+                        };
+                        let edges = (rings.iter())
+                            .flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
+                            .filter_map(|(a, b)| edge(a, b, area, &at))
+                            .collect();
+                        fields.push((k, Field { cell: [key.x, key.y], rings: rings.clone(), heights, edges }));
                     }
                 }
                 (heights, per_ask, fields)
