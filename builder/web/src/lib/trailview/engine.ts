@@ -200,9 +200,9 @@ export class TrailView {
         const { features } = tiles;
         // The release ID, and the tile URLs for a config without one.
         const release = JSON.stringify([config.id, config.manifest, config.terrain, config.layers]);
-        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION }, budget);
+        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, budget, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION });
         this.groundLook = new Ground(ground, budget, () => this.request());
-        this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, budget, { release, version: HOUSE_VERSION });
+        this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, budget.loads.houses, { release, version: HOUSE_VERSION });
         this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal, TREE_VERSION);
         this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal, budget);
         this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);

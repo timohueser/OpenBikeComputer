@@ -1,4 +1,3 @@
-import type { Budget } from '../budget';
 import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
@@ -173,10 +172,10 @@ export class Houses {
     private readonly cache?: Promise<DeviceCache | undefined>;
 
     /**
-     * An abort of `stop` ends the worker. With `cache`, the release and the version of the house worker's code,
+     * An abort of `stop` ends the worker; `maxRequests` are the tile requests in flight at most. With `cache`, the release and the version of the house worker's code,
      * a tile's records come from the device cache where it holds them, and go there once made.
      */
-    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal, private readonly budget: Budget, cache?: { release: string; version: string }) {
+    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal, private readonly maxRequests: number, cache?: { release: string; version: string }) {
         if (!features) return;
         if (cache) this.cache = DeviceCache.open('houses', cache.release, cache.version, CAPS.houses).catch(() => undefined);
         const worker = this.worker = new Worker(new URL('./house-worker.ts', import.meta.url), { type: 'module' });
@@ -266,7 +265,7 @@ export class Houses {
         }
         wanted.sort((a, b) => a.d - b.d);
         for (const { name, x, y } of wanted) {
-            if (this.tiles.has(name) || this.pending.has(name) || this.pending.size >= this.budget.loads.houses) continue;
+            if (this.tiles.has(name) || this.pending.has(name) || this.pending.size >= this.maxRequests) continue;
             this.pending.add(name);
             this.load(x, y).then(result => this.keep(name, result), error => {
                 if (!stopped(error)) console.warn(`House tile ${name}: ${error instanceof Error ? error.message : error}`);
