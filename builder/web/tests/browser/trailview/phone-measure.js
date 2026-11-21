@@ -37,6 +37,15 @@
             v('p-ballast', 'P with 400 MiB ballast', {}, { ballast: 400 }),
             v('p-mac', 'P, no probe', {}, { ready: 300 }),
             v('p-empty', 'P with no data, 30 s', {}, { headroom: 1, empty: 1 }),
+            // Prototype #3656: what the probe gains when the view stands still for 60 s, when the workers end, and when the engine ends.
+            v('p-wait', 'P, then 60 s still', {}, { headroom: 1, after: 'wait' }),
+            v('p-workers', 'P, then the workers end', {}, { headroom: 1, after: 'workers' }),
+            v('p-destroy', 'P, then the engine ends', {}, { headroom: 1, after: 'destroy' }),
+            v('p-empty-workers', 'P with no data, then the workers end', {}, { headroom: 1, empty: 1, after: 'workers' }),
+            v('p-end-ground', 'P, then the ground workers end', {}, { headroom: 1, after: 'end:ground-worker' }),
+            v('p-end-stamp', 'P, then the stamp worker ends', {}, { headroom: 1, after: 'end:stamp-worker' }),
+            v('p-end-road', 'P, then the road worker ends', {}, { headroom: 1, after: 'end:road-worker' }),
+            v('p-end-rest', 'P, then the small workers end', {}, { headroom: 1, after: 'end:decode-worker|model-worker|house-worker|plant-worker' }),
         ];
     }
     const TAIL = '&date=2026-08-15&time=15:00&weather=sunny';
@@ -66,7 +75,7 @@
     };
 
     // The page asks for a WebGPU adapter and device itself: these wrappers report each failure and keep the device.
-    const hooks = { device: undefined, firstCanvas: undefined, lastSubmit: 0, flightStart: Infinity, ground: { open: undefined, jobs: [] } };
+    const hooks = { device: undefined, firstCanvas: undefined, lastSubmit: 0, flightStart: Infinity, ground: { open: undefined, jobs: [] }, workers: [] };
     function hook() {
         const ballast = Number(new URLSearchParams(location.search).get('ballast')) || 0;
         if (ballast) window.obcBallast = Array.from({ length: ballast / 16 }, () => random(new Uint32Array(4 * 2 ** 20)));
@@ -74,6 +83,7 @@
         window.Worker = class extends Base {
             constructor(url, options) {
                 super(url, options);
+                hooks.workers.push([this, String(url)]);
                 if (String(url).includes('ground-worker')) tapGround(this, hooks.ground);
             }
         };
@@ -139,6 +149,20 @@
     function random(words) {
         for (let i = 0; i < words.length; i++) { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; words[i] = seed; }
         return words;
+    }
+    /** Prototype #3656: what happens between the view and the probe (`after=`): 60 s still, the workers end, or the engine ends. */
+    async function after(tv, key, label) {
+        const what = new URLSearchParams(location.search).get('after');
+        if (!what) return;
+        // `end:a|b` ends only the workers whose script name holds a or b.
+        const names = what.startsWith('end:') ? what.slice(4).split('|') : what === 'wait' ? [] : [''];
+        const ending = hooks.workers.filter(([, url]) => names.some(name => url.includes(name)));
+        if (what === 'destroy') tv.destroy();
+        for (const [worker] of ending) worker.terminate();
+        const ms = what === 'wait' ? 60_000 : 10_000;
+        say(`${label} … ${what}, then ${ms / 1000} s`);
+        await sleep(ms);
+        await post(key, { after: what, afterMs: ms, workersEnded: ending.map(([, url]) => url.split('/').pop()) });
     }
     /** Fills memory in steps of 32 MiB until the system stops the tab; the last post is the headroom over the view. */
     async function headroom(key) {
@@ -254,6 +278,7 @@
             say(`${label} … waiting 30 s`);
             await sleep(30_000);
             await post(key, { stage: 'empty', memory: { poolsEnd: poolBytes(tv), alloc: hooks.alloc && { ...hooks.alloc, buffers: Math.round(hooks.alloc.buffers / 2 ** 20), textures: Math.round(hooks.alloc.textures / 2 ** 20) } } });
+            await after(tv, key, label);
             state.probing = i;
             save();
             say(`${label} … memory headroom`);
@@ -293,6 +318,7 @@
         Object.assign(run, { stage: 'done' }, final(tv, run.memory));
         await post(key, run);
         if (new URLSearchParams(location.search).get('headroom')) {
+            await after(tv, key, label);
             state.probing = i;
             save();
             say(`${label} … memory headroom`);

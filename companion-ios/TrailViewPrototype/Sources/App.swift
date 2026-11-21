@@ -20,7 +20,15 @@ private let spikeRuns = ["today", "today-low"].flatMap { v in ["walk", "valley-d
 private let leversA = ["p", "p-shadows2", "p-shadows0", "p-trees1", "p-gpool1", "p-pool1", "p-objects1", "p-ballast"].map { "\($0):walk" }
 private let leversB = ["p", "p-loads1", "p-scale07", "p-terrain08", "p-finest17", "p-fps60"].map { "\($0):walk" } + ["p:valley-drive"]
 
+/// Prototype #3656: where the memory of P goes. P as the base, then P with a wait, with its workers ended, with the engine ended, and no data with the workers ended.
+private let placement = ["p:walk", "p-wait:walk", "p-workers:walk", "p-destroy:walk", "p-empty-workers:nowhere"]
+
+/// Prototype #3656: the memory of each kind of worker: P, then one kind ends before the probe.
+private let workerKinds = ["p-end-ground", "p-end-stamp", "p-end-road", "p-end-rest"].map { "\($0):walk" }
+
 private let pages = [
+    KitPage(name: "Workers one kind at a time (4 runs)", path: "/phone/?runs=\(workerKinds.joined(separator: ","))"),
+    KitPage(name: "Memory placement (5 runs)", path: "/phone/?runs=\(placement.joined(separator: ","))"),
     KitPage(name: "Memory map: no data, then the walk (2 runs)", path: "/phone/?runs=p-empty:nowhere,p:walk"),
     KitPage(name: "Levers A (8 runs)", path: "/phone/?runs=\(leversA.joined(separator: ","))"),
     KitPage(name: "Levers B (7 runs)", path: "/phone/?runs=\(leversB.joined(separator: ","))"),
