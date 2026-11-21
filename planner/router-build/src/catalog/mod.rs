@@ -650,8 +650,9 @@ fn source_lines<S: Source>(
 
 /// The match line of each OSM job, with the `ref` and the names that its pairs compare: for a part of
 /// a long relation, its own `ref` or else that of its innermost long relation, the name of that, and
-/// when both have a name, the name of that with its own name after it. A bare stage name such as
-/// "Etappe 4" agrees with the stages of other trails, so a part never compares its own name alone.
+/// when that name has a word and the part has a name, the name of that with its own name after it. A
+/// bare stage name such as "Etappe 4" agrees with the stages of other trails, so a part never compares
+/// its own name alone.
 fn osm_probes(
     jobs: &[Job],
     long: &[(Relation, String, Vec<long::Leaf>, bool)],
@@ -675,7 +676,8 @@ fn osm_probes(
             Some(trail) => {
                 let own = Some(tag(tags, "ref")).filter(|r| !r.is_empty());
                 let (name, own_name) = (tag(&trail.tags, "name"), tag(tags, "name"));
-                let joined = match name.is_empty() || own_name.is_empty() {
+                // A word is a run of letters and digits, so a name with no letter or digit has no word.
+                let joined = match !name.chars().any(char::is_alphanumeric) || own_name.is_empty() {
                     true => String::new(),
                     false => format!("{name} {own_name}"),
                 };

@@ -1117,9 +1117,9 @@ fn a_stage_compares_the_name_of_its_trail_with_its_own_name_and_never_its_own_na
         numbered(901, "T - Etappe 1", &[40, 41, 42, 43]),
         route(902, &marked, path(&[43, 44, 45, 46])),
         numbered(903, "T - Etappe 3", &[46, 56, 66]),
-        // Walk 10 lies along all of stage 912, and it along three quarters of walk 10: "Etappe 2" alone
-        // would make them a pair.
-        trail(910, "U", &[911, 912]),
+        // Walk 10 lies along all of stage 912, and it along three quarters of walk 10: "Etappe 2" alone, or
+        // after a trail name with no word, would make them a pair.
+        trail(910, "—", &[911, 912]),
         stage(911, "Etappe 1", &[30, 31, 32, 33]),
         stage(912, "Etappe 2", &[33, 43, 44, 45, 46]),
     ]);

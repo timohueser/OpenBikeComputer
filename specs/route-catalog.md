@@ -639,12 +639,12 @@ with no name.
 
 A job has one name, the name of its route, with one exception. For an OSM relation that is a part of
 a long route, the `ref` is its own or else that of its long route, and the name is that of its long
-route. When the part and its long route both have a name, the part has a second name: the name of
-its long route and its own name, joined with a space, such as "Bliessteig Bliessteig - Etappe 4". So
-a part never compares a bare stage name such as "Etappe 4" alone, which agrees with the stage 4 of
-each trail. Its long route is the one that lists it at the lowest level, of two the one with the
-lower relation ID. For a source stage, the `ref` and the name are those of its route. A long record
-of [The same trail](#the-same-trail) has its own name.
+route. When the part has a name and the name of its long route has a word, the part has a second
+name: the name of its long route and its own name, joined with a space, such as "Bliessteig
+Bliessteig - Etappe 4". So a part never compares a bare stage name such as "Etappe 4" alone, which
+agrees with the stage 4 of each trail. Its long route is the one that lists it at the lowest level,
+of two the one with the lower relation ID. For a source stage, the `ref` and the name are those of
+its route. A long record of [The same trail](#the-same-trail) has its own name.
 
 Two jobs are a pair when (a) they agree and the match line of one lies at least a fifth along the
 other, or (b) they have the same kind family and each match line lies at least 80 % along the
