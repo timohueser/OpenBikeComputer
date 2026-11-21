@@ -33,7 +33,7 @@ async function countRequests(page) {
   };
 }
 
-/** One rider's session: look around, plan a trip, change bike, search, and show places along the route. */
+/** One rider's session: look around, plan a trip, change bike, search, and highlight a kind of places. */
 test('a planning session stays inside the request budget', async ({ page }) => {
   const { counts, phases, order, idle, phase } = await countRequests(page);
   await page.goto('/planner.html#/planner');
@@ -124,7 +124,7 @@ test('a planning session stays inside the request budget', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Map settings' }).click();
   await page.getByText('Places', { exact: true }).click();
-  await page.getByRole('button', { name: /^Highlight .* at every zoom$/ }).first().click();
+  await page.getByRole('button', { name: 'Highlight water at every zoom' }).click();
   await idle();
   phase('show places');
   await drag(-200, -60);

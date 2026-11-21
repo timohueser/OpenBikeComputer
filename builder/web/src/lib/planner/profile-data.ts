@@ -1,4 +1,4 @@
-import { heightIn } from '../settings/format';
+import { formatAlong, formatDistance, formatHeight, heightIn } from '../settings/format';
 import type { RoutingLine } from './routing';
 import { cumulative, firstIndex } from './geo';
 
@@ -83,4 +83,10 @@ export function profileHeightAt(progress: number, samples: readonly ProfileSampl
     const a = samples[i - 1], b = samples[i];
     if (a.height === null || b.height === null) return null;
     return a.height + (b.height - a.height) * (progress - a.progress) / (b.progress - a.progress || 1);
+}
+
+/** The numbers of a selected part, such as "km 6.1 to km 9.1 · 3.0 km · 200 m up"; a null gain is left out. */
+export function formatPart(fromM: number, toM: number, gainM: number | null, lengthM = toM - fromM): string {
+    return [`${formatAlong(fromM)} to ${formatAlong(toM)}`, formatDistance(lengthM), gainM === null ? '' : `${formatHeight(gainM)} up`]
+        .filter(Boolean).join(' · ');
 }

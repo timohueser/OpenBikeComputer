@@ -73,6 +73,17 @@ export async function placeTile(url: string, key: string): Promise<TilePlace[]> 
     return tiles.get(key)!;
 }
 
+/** Keys `z/x/y` of the tiles of the place archive that the bounds `[west, south, east, north]` touch. */
+export async function placeTileKeys(url: string, [west, south, east, north]: [number, number, number, number]): Promise<string[]> {
+    const zoom = (await placeArchive(url)).maxZoom, last = 2 ** zoom - 1;
+    const clamp = (value: number) => Math.min(last, Math.max(0, Math.floor(value)));
+    const keys: string[] = [];
+    for (let x = clamp(tileColumn(west, zoom)); x <= clamp(tileColumn(east, zoom)); x++) {
+        for (let y = clamp(tileRow(north, zoom)); y <= clamp(tileRow(south, zoom)); y++) keys.push(`${zoom}/${x}/${y}`);
+    }
+    return keys;
+}
+
 /** Rider places within `bufferKm` of the route, from the archive's most detailed tiles. */
 export async function corridorPlaces(url: string, coordinates: Coordinate[], bufferKm = 5): Promise<Place[]> {
     const archive = await placeArchive(url);
@@ -90,11 +101,11 @@ async function loadTile(source: Source, key: string): Promise<TilePlace[]> {
     const found: TilePlace[] = [];
     for (let i = 0; i < layer.length; i++) {
         const feature = layer.feature(i);
-        const { kind, name, lon, lat, ele } = feature.properties;
+        const { kind, name, lon, lat, ele } = feature.properties, label = feature.properties['name:en'] ?? name;
         const known = poiKinds[String(kind)];
         if (!known || typeof feature.id !== 'number' || feature.toGeoJSON(x, y, z).geometry.type !== 'Point') continue;
         found.push({
-            id: feature.id, kind: String(kind), category: known.category, name: String(feature.properties['name:en'] ?? name ?? known.label),
+            id: feature.id, kind: String(kind), category: known.category, ...label !== undefined && { name: String(label) },
             lon: Number(lon), lat: Number(lat), ...typeof ele === 'number' && { ele },
         });
     }

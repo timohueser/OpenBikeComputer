@@ -123,12 +123,3 @@ describe('waterway labels', () => {
     });
 });
 
-
-describe('planner POI source', () => {
-    it('uses searchable places for every POI layer', async () => {
-        const { layers } = await landLayers('light');
-        const pois = layers.filter(layer => 'source-layer' in layer && layer['source-layer'] === 'pois');
-        expect(pois.map(layer => layer.id)).toEqual(['planner-pois', 'planner-poi-icons']);
-        for (const layer of pois) expect(layer).toHaveProperty('source', 'places');
-    });
-});

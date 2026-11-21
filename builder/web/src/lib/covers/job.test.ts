@@ -289,6 +289,99 @@ describe('the cover job', () => {
         expect(await library.cover('a')).toBeUndefined();
     });
 
+    it('keeps the 12 newest asks of rows that wait, and does no work for an older one', async () => {
+        const ids = Array.from({ length: 14 }, (_, i) => `r${i}`);
+        await saved(...ids);
+        const { renderer, stills } = fake();
+        await start(renderer);
+        // The first ask goes into work at once; the 13 after it wait, and the oldest of them leaves the queue.
+        for (const id of ids) wantCover(id, 'row');
+        await settle();
+        for (let i = 0; i < stills.length; i++) {
+            stills[i].resolve(result);
+            await settle();
+        }
+        expect(stills).toHaveLength(13);
+        expect(await library.cover('r1')).toBeUndefined();
+    });
+
+    it('keeps at most 12 asks of rows that wait while another tab holds the lock', async () => {
+        const ids = Array.from({ length: 13 }, (_, i) => `r${i}`);
+        await saved(...ids);
+        const { renderer, stills } = fake();
+        await start(renderer);
+        held = true;
+        for (const id of ids) wantCover(id, 'row');
+        await settle();
+        held = false;
+        await vi.advanceTimersByTimeAsync(10_000);
+        await settle();
+        for (let i = 0; i < stills.length; i++) {
+            stills[i].resolve(result);
+            await settle();
+        }
+        expect(stills).toHaveLength(12);
+    });
+
+    it('keeps the ask of a card and of the planner route after 13 later asks of rows', async () => {
+        const rows = Array.from({ length: 13 }, (_, i) => `r${i}`);
+        await saved('busy', 'card', 'plan', ...rows);
+        const { renderer, stills } = fake();
+        await start(renderer);
+        wantCover('busy', 'row');
+        wantCover('card', 'card');
+        await library.setState('active', 'plan');
+        await library.saveRoute(route('plan'));
+        await settle();
+        await vi.advanceTimersByTimeAsync(30_000);
+        await settle();
+        for (const id of rows) wantCover(id, 'row');
+        await settle();
+        for (let i = 0; i < stills.length; i++) {
+            stills[i].resolve(result);
+            await settle();
+        }
+        expect(stills).toHaveLength(15);
+        for (const id of ['card', 'plan']) expect(await library.cover(id)).toMatchObject({ state: 'done' });
+        expect(await library.cover('r0')).toBeUndefined();
+    });
+
+    it('keeps the ask of a card in work after an ask of its row and 13 later asks of rows, while another tab holds the lock', async () => {
+        const rows = Array.from({ length: 13 }, (_, i) => `r${i}`);
+        await saved('card', ...rows);
+        const { renderer, stills } = fake();
+        await start(renderer);
+        held = true;
+        wantCover('card', 'card');
+        wantCover('card', 'row');
+        // The card comes back to the queue before the other rows ask.
+        await settle();
+        for (const id of rows) wantCover(id, 'row');
+        await settle();
+        held = false;
+        await vi.advanceTimersByTimeAsync(10_000);
+        await settle();
+        for (let i = 0; i < stills.length; i++) {
+            stills[i].resolve(result);
+            await settle();
+        }
+        expect(await library.cover('card')).toMatchObject({ state: 'done' });
+    });
+
+    it('does nothing for an ask before or after it starts when the browser saves data', async () => {
+        await saved('a', 'b');
+        (navigator as { connection?: object }).connection = { saveData: true };
+        const { renderer, stills } = fake();
+        wantCover('a', 'card');
+        await start(renderer);
+        wantCover('b', 'card');
+        await settle();
+        // A later job finds no ask that waits.
+        (navigator as { connection?: object }).connection = { saveData: false };
+        await start(renderer);
+        expect(stills).toHaveLength(0);
+    });
+
     it('keeps an ask that comes before the job starts', async () => {
         await saved('a');
         const { renderer, stills } = fake();
@@ -323,6 +416,18 @@ describe('the map picture', () => {
             state: 'waiting', tries: 0, map: { lineKey: lineKey(route('a')), tries: 0, light: expect.any(Blob), credits: ['Map test data'] },
         });
         expect(await library.cover('b')).toBeUndefined();
+    });
+
+    it('does not come for a row: with covers off, a row asks for nothing, and a card then gets the picture', async () => {
+        await saved('a');
+        const { calls } = await noGpu(), item = vi.spyOn(library, 'item');
+        wantCover('a', 'row');
+        wantCover('a', 'row');
+        await settle();
+        expect([calls.length, item.mock.calls.length]).toEqual([0, 0]);
+        wantCover('a', 'card');
+        await settle();
+        expect(calls).toHaveLength(1);
     });
 
     it('comes in place of a cover with a coarse pointer, as on a phone', async () => {
