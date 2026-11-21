@@ -41,7 +41,7 @@ describe('the parts', () => {
     });
 
     it('give the boxes and the mesh of an arch from the records of its feature tile', () => {
-        const input = partInput(records(), tile, owner)!, { boxes, floors } = partVolumes(input);
+        const list = records(), input = partInput(list, tile, owner)!, { boxes, floors } = partVolumes(list, tile, owner)!;
         // 12 words a box; the opening's first, from the front of the head wall, `recess_m` out of the frame line, round
         // its hole grown to the middle of the wall; then the tube's.
         const [x, y] = worldPoint(tile, point(0), 0);

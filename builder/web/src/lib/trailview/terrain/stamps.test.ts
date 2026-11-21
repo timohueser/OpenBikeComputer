@@ -11,24 +11,33 @@ const name = ({ level, x, y }: Node) => `${level}/${x}/${y}`;
 /**
  * A stamp worker whose structure meshes hold a 4-byte `anchors` (so they are the worker's). `jobs` are the jobs in the
  * order in which it got them, which is the order in which a worker takes them; `answer` answers the first `count` jobs
- * that wait. Without `held` each job answers at once.
+ * that wait, `answerJob` the job named `job`. Without `held` each job answers at once.
  */
 function fakeWorker(held = false) {
-    const jobs: string[] = [], waiting: (() => void)[] = [];
+    const jobs: string[] = [], waiting: { job: string; answer: () => void }[] = [];
     Object.assign(globalThis, {
         Worker: class {
             onmessage?: (event: { data: unknown }) => void;
             postMessage({ id, what, node }: { id: number; what: Request; node: Node }) {
-                jobs.push(`${what} ${name(node)}`);
+                const job = `${what} ${name(node)}`;
+                jobs.push(job);
                 const stamps = { data: null, heights: false, mask: false, water: null, meshes: null, floors: null, portals: null };
                 const answer = () => this.onmessage?.({ data: { id, result: what === 'meshes' ? WORKER : stamps } });
-                if (held) waiting.push(answer);
+                if (held) waiting.push({ job, answer });
                 else queueMicrotask(answer);
             }
             terminate() {}
         },
     });
-    return { jobs, answer: (count = waiting.length) => waiting.splice(0, count).forEach(answer => answer()) };
+    return {
+        jobs,
+        answer: (count = waiting.length) => waiting.splice(0, count).forEach(({ answer }) => answer()),
+        answerJob: (job: string) => {
+            const at = waiting.findIndex(held => held.job === job);
+            if (at < 0) throw new Error(`no job ${job} waits`);
+            waiting.splice(at, 1)[0].answer();
+        },
+    };
 }
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -93,8 +102,12 @@ describe('the structure meshes of an owner node', () => {
             worker.answer(count);
             await settle();
         };
+        const answerJob = async (job: string) => {
+            worker.answerJob(job);
+            await settle();
+        };
         await wish(nodes, rank);
-        return { stamps, jobs: worker.jobs, wish, answer };
+        return { stamps, jobs: worker.jobs, wish, answer, answerJob };
     };
 
     it('go one at a time after the wishes about the eye and before the farther ones, and pass no wish of a lower rank on its way', async () => {
@@ -125,5 +138,25 @@ describe('the structure meshes of an owner node', () => {
         await answer();
         expect(stamps.loading).toBe(false);
         expect(owners.map(node => stamps.known(node)?.meshes)).toEqual([WORKER, WORKER, WORKER]);
+    });
+
+    it('wait for a wish about the eye that waits for a free request', async () => {
+        // Two owner nodes hold the eye. Their stamps and the requests of eight far wishes fill the worker.
+        const far = Array.from({ length: 8 }, (_, i) => near(i)), eye = near(20);
+        const rank = (node: Node, meshes?: boolean) =>
+            node.level === 15 ? stampRank(true, node.x - L15.x, meshes) : stampRank(node.x === eye.x, node.x === eye.x ? 5 : 10, meshes);
+        const { jobs, wish, answer, answerJob } = await frame([...owners.slice(0, 2), ...far], rank);
+        await answer(2);
+        expect(jobs.length).toBe(11);
+        expect(jobs).toContain(`meshes ${name(owners[0])}`);
+        // A frame wishes for a node about the eye while every request is far. When the first job answers, the second
+        // waits for that wish, not only for the requests on their way.
+        await wish([eye], rank);
+        await answerJob(`meshes ${name(owners[0])}`);
+        expect(jobs.length).toBe(11);
+        await answer(1);
+        expect(jobs.slice(11)).toEqual([`stamps ${name(eye)}`]);
+        await answer();
+        expect(jobs.slice(12)).toEqual([`meshes ${name(owners[1])}`]);
     });
 });

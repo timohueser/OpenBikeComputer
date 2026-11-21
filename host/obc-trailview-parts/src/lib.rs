@@ -224,7 +224,7 @@ pub struct Mesh {
     pub indices: Vec<u32>,
 }
 
-/// The volumes near a square: the boxes in which the ground does not draw (`BOX` words each) and the floor segments
+/// The volumes of parts: the boxes in which the ground does not draw (`BOX` words each) and the floor segments
 /// (`FLOOR`, 7 words each).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Volumes {
@@ -266,27 +266,40 @@ pub fn meshes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -
     b.mesh()
 }
 
-/// The boxes of the built ends that come within `reach_m` of a square, and the floor segments of the chords of built
-/// chains within `reach_m`.
-pub fn volumes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
+/// The boxes of the built ends and the floor segments of the chords of built chains. `near_volumes` keeps those near a
+/// square, so a tile's records build their volumes once.
+pub fn volumes(ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
     let net = Net::new(ends, chords, rules);
-    let reach = rules.design.reach_m / metres_per_unit((square[1] + square[3]) / 2.0);
+    let lift = rules.design.lift_m;
     let mut out = Volumes::default();
     for e in (0..ends.len()).filter(|&e| net.built_end(e)) {
         for words in boxes::boxes(&net, e) {
-            if near(square, &corners(&words), reach) {
-                out.boxes.extend(words);
-            }
+            out.boxes.extend(words);
         }
     }
     for (c, chord) in chords.iter().enumerate() {
-        let (a, b) = ([chord.a[0], chord.a[1]], [chord.b[0], chord.b[1]]);
-        if net.built_chord(c) && near(square, &[a, b], reach) {
-            let lift = rules.design.lift_m;
-            out.floors.extend([a[0], a[1], b[0], b[1], chord.a[2] + lift, chord.b[2] + lift, chord.half]);
+        if net.built_chord(c) {
+            out.floors.extend([
+                chord.a[0],
+                chord.a[1],
+                chord.b[0],
+                chord.b[1],
+                chord.a[2] + lift,
+                chord.b[2] + lift,
+                chord.half,
+            ]);
         }
     }
     out
+}
+
+/// The boxes (`BOX` words each) and the floor segments (`FLOOR` words each) of volumes that come within `reach_m` of a
+/// square, in their order: a box by its corners, a floor segment by its ends.
+pub fn near_volumes(square: [f64; 4], boxes: &[f64], floors: &[f64], rules: &Rules) -> Volumes {
+    let reach = rules.design.reach_m / metres_per_unit((square[1] + square[3]) / 2.0);
+    let boxes = boxes.as_chunks::<BOX>().0.iter().filter(|b| near(square, &corners(b), reach));
+    let floors = floors.as_chunks::<FLOOR>().0.iter().filter(|f| near(square, &[[f[0], f[1]], [f[2], f[3]]], reach));
+    Volumes { boxes: boxes.flatten().copied().collect(), floors: floors.flatten().copied().collect() }
 }
 
 /// Per end, whether it is built: its part and the chain of the chord at its opening are built.

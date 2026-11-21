@@ -385,6 +385,33 @@ fn each_face_draws_once_over_four_squares_about_an_end() {
 }
 
 #[test]
+fn the_volumes_near_a_square_are_those_within_reach_of_it() {
+    let (ends, chords) = tube();
+    let rules = Rules::embedded();
+    let all = volumes(&ends, &chords, rules);
+    let (m, reach) = (metres_per_unit(Y), rules.design.reach_m);
+    let near = |square| near_volumes(square, &all.boxes, &all.floors, rules);
+    // The westmost point of the volumes: of a box's corners and of a floor segment's ends.
+    let corners_x = all.boxes.as_chunks::<BOX>().0.iter().flat_map(|b| corners(b).map(|c| c[0]));
+    let west = corners_x
+        .chain(all.floors.as_chunks::<FLOOR>().0.iter().flat_map(|f| [f[0], f[2]]))
+        .fold(f64::INFINITY, f64::min);
+    // Squares 1 km high about the test place, west of the part, whose east side lies `metres` short of its reach.
+    let short_of = |metres: f64| {
+        near([west - (reach + metres + 500.0) / m, Y - 500.0 / m, west - (reach + metres) / m, Y + 500.0 / m])
+    };
+    assert!(!all.boxes.is_empty() && !all.floors.is_empty());
+    // Inside: a square over the whole part keeps all, in their order.
+    assert_eq!(near([X - 500.0 / m, Y - 500.0 / m, X + 500.0 / m, Y + 500.0 / m]), all);
+    // On the border: half a metre inside the reach keeps the westmost volumes, but not all; half a metre out, none.
+    let edge = short_of(-0.5);
+    assert!(!edge.boxes.is_empty() && edge != all, "{} of {} box words", edge.boxes.len(), all.boxes.len());
+    assert_eq!(short_of(0.5), Volumes::default());
+    // Empty: a square 1 km north keeps none.
+    assert_eq!(near([X - 500.0 / m, Y - 1500.0 / m, X + 500.0 / m, Y - 1000.0 / m]), Volumes::default());
+}
+
+#[test]
 fn a_footprint_holds_the_head_wall_and_the_collar() {
     let (ends, chords) = tube();
     let rules = Rules::embedded();
