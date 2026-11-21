@@ -4,6 +4,7 @@ import { KINDS } from '../kinds';
 import { SEASONS, type Season } from '../rules/regions';
 import { SUMMER } from '../vegetation/phenology';
 import { animal, BREEDS } from './animals';
+import { CANDIDATES } from './prototype-animals';
 import { geometry } from './flat';
 import { bareIn, tree, TREES } from './library';
 import type { FloatMesh, Models, Packed } from './model-file';
@@ -75,6 +76,8 @@ export async function bake(): Promise<Baked> {
     }
 
     for (const [name, breed] of Object.entries(BREEDS)) models.breeds[name] = { height: breed.height, coats: breed.coats.length, file: await file('animal', `animal-${name}`, breed.coats.map((_, coat) => pack([geometry(animal(name, coat))]))) };
+    // Prototype #3786: the style candidates, one coat each.
+    for (const [name, { height, build }] of Object.entries(CANDIDATES)) models.breeds[name] = { height, coats: 1, file: await file('animal', `animal-${name}`, [pack([geometry(build())])]) };
 
     const rocks = (['slab', 'boulder'] as const).flatMap(name => Array.from({ length: SLABS }, (_, k) => pack([geometry(rock(name, k + 1))])));
     const points = [...KINDS].flatMap(([, kind]) => Object.values(kind.models ?? {}).map(source => source()));

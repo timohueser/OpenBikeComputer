@@ -13,7 +13,19 @@ const HERD_REACH_M = 1500, ROCK_REACH_M = 1000, HERDS = 4;
 /** Units along a herd cell and a rock point's cell, as HERD_SHIFT of dressing.wgsl and ROCK_SHIFT of rocks.wgsl. */
 const HERD_CELL = 2 ** 14, ROCK_CELL = 2 ** 7;
 /** Words of `Herd` and bytes of `Dressing` in dressing.wgsl. */
-const HERD_WORDS = 8, DRESSING_BYTES = 48;
+const HERD_WORDS = 8, DRESSING_BYTES = 64;
+
+/**
+ * Prototype #3786: `showroom=lat,lon,heading,breed|breed|…` stands the breeds in a row across a view toward `heading`
+ * (degrees from north) at (lat, lon), SHOW_SPACING_M apart, each facing right and turned SHOW_TURN toward the eye.
+ */
+const SHOW_SPACING_M = 3.2, SHOW_TURN = 0.45;
+function showroom(): { lonLat: [number, number]; heading: number; breeds: string[] } | undefined {
+    const value = globalThis.location ? new URLSearchParams(globalThis.location.search).get('showroom') : null;
+    if (!value) return undefined;
+    const [lat, lon, heading, breeds] = value.split(',');
+    return { lonLat: [Number(lon), Number(lat)], heading: (Number(heading) * Math.PI) / 180, breeds: breeds.split('|') };
+}
 
 interface Resources { gpu: Gpu; herds: GPUComputePipeline; rocks: GPUComputePipeline; groups: GPUBindGroup[]; params: GPUBuffer }
 
@@ -28,6 +40,9 @@ export class Dressing implements Producer {
     private readonly rockModel?: number;
     private herdSide = 0;
     private rockSide = 0;
+    /** Prototype #3786: the showroom, and the first of its entries in the table. */
+    private readonly show = showroom();
+    private showFirst = 0;
     /** The files of the models. */
     private readonly urls: string[] = [];
 
@@ -37,13 +52,21 @@ export class Dressing implements Producer {
         const spec = ({ tiers: [mesh], shape }: Packed, until: number): ModelSpec => ({ tiers: [{ mesh, until }], shape });
         // No fade of the rocks' tier: rocks_of ends each rock at its own distance before the reach.
         this.rockModel = this.load(objects.file, objects.rocks, model => ({ ...spec(model, ROCK_REACH_M), fade: 0 }));
-        const breeds = new Map<string, number>(), used = new Set(rules.regions.flatMap(region => region.herds.map(herd => herd.model)).filter(name => name in breedModels));
+        const breeds = new Map<string, number>(), used = new Set([...rules.regions.flatMap(region => region.herds.map(herd => herd.model)), ...(this.show?.breeds ?? [])].filter(name => name in breedModels));
         for (const name of used) {
             const first = this.load(breedModels[name].file, breedModels[name].coats, model => spec(model, HERD_REACH_M));
             if (first !== undefined) breeds.set(name, first);
         }
-        this.table = new Uint32Array(Math.max(1, rules.regions.length) * HERDS * HERD_WORDS);
+        this.showFirst = Math.max(1, rules.regions.length) * HERDS;
+        this.table = new Uint32Array((this.showFirst + (this.show?.breeds.length ?? 0)) * HERD_WORDS);
         const floats = new Float32Array(this.table.buffer);
+        // The row runs across the view to its right; each animal faces right, turned toward the eye.
+        this.show?.breeds.forEach((name, k) => {
+            const at = (this.showFirst + k) * HERD_WORDS, view = Math.PI / 2 - this.show!.heading, across = view - Math.PI / 2;
+            const offset = (k - (this.show!.breeds.length - 1) / 2) * SHOW_SPACING_M;
+            this.table.set([breeds.get(name) ?? 0, 1], at);
+            floats.set([across - Math.PI / 2 - SHOW_TURN, breedModels[name]?.height ?? 1, offset * Math.cos(across), offset * Math.sin(across)], at + 2);
+        });
         rules.regions.forEach((region, r) => {
             region.herds.filter(herd => breeds.has(herd.model)).slice(0, HERDS).forEach((herd, k) => {
                 const at = (r * HERDS + k) * HERD_WORDS;
@@ -101,6 +124,11 @@ export class Dressing implements Producer {
         ints.set([Math.floor(ux / ROCK_CELL) - this.rockSide / 2, Math.floor(uy / ROCK_CELL) - this.rockSide / 2], 4);
         words[6] = this.rockModel ?? 0;
         floats[8] = HERD_REACH_M;
+        if (this.show) {
+            const [sx, sy] = worldPixel(this.show.lonLat, UNITS);
+            ints.set([Math.round(sx), Math.round(sy)], 12);
+            words.set([this.show.breeds.length, this.showFirst], 14);
+        }
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
     }
 

@@ -24,6 +24,10 @@ struct Dressing {
     herd_reach: f32,
     unused2: f32,
     unused3: vec2f,
+    // Prototype #3786: the showroom's middle in world units, its animals, and the first of their entries in `herds`.
+    show_origin: vec2i,
+    show_count: u32,
+    show_first: u32,
 }
 
 // A herd of a region, as dressing.ts writes it: its first model and coats, its groups per eye's circle,
@@ -58,6 +62,20 @@ var<workgroup> cell_region: u32;
 
 @compute @workgroup_size(64)
 fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) lane: u32) {
+    // Prototype #3786: a showroom stands its animals in a row and no herd. An entry's groups is its yaw, its size the
+    // animal's offset from the middle in metres, east and north.
+    if (dressing.show_count > 0u) {
+        if (all(group.xy == vec2u(0u)) && lane < dressing.show_count) {
+            let h = herds[dressing.show_first + lane];
+            let at = dressing.show_origin + vec2i(round(vec2f(h.size.x, -h.size.y) / surface.unit));
+            let s = lod_space(vec2f(at - surface.anchor));
+            let ground = stand_height(s, at);
+            if (known(ground)) {
+                emit(h.model, s, ground, h.height, h.groups, 1.0, 1.0, 1.0);
+            }
+        }
+        return;
+    }
     let cell = dressing.herd_origin + vec2i(group.xy);
     let size = 1 << HERD_SHIFT;
     let corner = cell << vec2u(HERD_SHIFT);
