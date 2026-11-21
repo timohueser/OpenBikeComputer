@@ -65,7 +65,7 @@ One `[[source]]` table per source.
 
 `fetch.url` is an `https://` URL template. `{name}` stands for a value the fetcher fills:
 `{version}` is the version, `{yymmdd}` a date version as `YYMMDD`, `{area}` a Geofabrik area, `{tile}` a
-tile name. In `attribution`,
+tile name. `{name:last}` is the last `/` segment of the value of `{name}`. In `attribution`,
 `{year}` and `{month}` are the year and month of the data, which the step that writes the
 credit fills.
 
@@ -485,8 +485,8 @@ version. A file that fails it is deleted.
 | `prepared` | The manifest and the files that a step names, from the archive, see [Prepared sources](#prepared-sources) |
 
 A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. Without a version, the
-fetch reads the day from the `timestamp` of `<area>-updates/state.txt`; for more than one area,
-it takes the earliest day.
+fetch reads the day from the `timestamp` of `updates/state.txt` in the folder of the extract; for
+more than one area, it takes the earliest day.
 
 `osm-planet` is the weekly planet file of one day, an `http` URL with `{yymmdd}`. No step reads
 it: the [`wiki`](#wiki) preparation reads a planet file of it, and it gives the OSM credit.

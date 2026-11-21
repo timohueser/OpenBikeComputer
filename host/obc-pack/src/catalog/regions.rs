@@ -208,8 +208,9 @@ fn read_region(
     let poly_path = dir.join(REGION_POLY);
     let poly = std::fs::read_to_string(&poly_path).map_err(|e| {
         format!(
-            "{}: {e} — a region's outline comes from its Geofabrik `.poly` (`https://download.geofabrik.de/{id}.poly`)",
-            poly_path.display()
+            "{}: {e} — a region's outline comes from its Geofabrik `.poly` (`https://download.geofabrik.de/{id}/{}.poly`)",
+            poly_path.display(),
+            id.rsplit('/').next().unwrap_or(id)
         )
     })?;
     // One tolerance, [`boundary::DEFAULT_TOLERANCE_UDEG`], published in the document beside the

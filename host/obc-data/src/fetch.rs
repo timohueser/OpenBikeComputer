@@ -172,17 +172,33 @@ fn newest_stored(store: &Store, source: &str, params: &[(String, String)]) -> Re
         found.extend(store.paramless_snapshots(source)?);
     } else {
         for request in store.requests(source, params)? {
-            let Some(mut snapshot) = store.snapshot(source, &request.version)? else { continue };
-            let files = request.files.iter().map(|name| snapshot.files.iter().find(|file| &file.name == name).cloned());
-            let Some(files) = files.collect::<Option<Vec<_>>>() else { continue };
-            snapshot.files = files;
-            found.push(snapshot);
+            found.extend(recorded(store, source, &request.version, params)?);
         }
     }
     found.retain(|snapshot| {
         !snapshot.files.is_empty() && snapshot.files.iter().all(|f| store.object(&f.sha256).is_file())
     });
     Ok(found.into_iter().max_by_key(|snapshot| snapshot.files.iter().map(|file| file.retrieved.clone()).max()))
+}
+
+/// The files that a fetch of `source@version` with `params` recorded, when the store has the object
+/// of each. The record, not the URL, names them: upstream can move a file of a stored version.
+fn recorded(
+    store: &Store,
+    source: &str,
+    version: &str,
+    params: &[(String, String)],
+) -> Result<Option<Snapshot>, String> {
+    let Some(names) = store.requested(source, version, params)? else { return Ok(None) };
+    let Some(mut snapshot) = store.snapshot(source, version)? else { return Ok(None) };
+    let files = names.iter().map(|name| snapshot.files.iter().find(|file| &file.name == name).cloned());
+    match files.collect::<Option<Vec<_>>>() {
+        Some(files) if !files.is_empty() && files.iter().all(|f| store.object(&f.sha256).is_file()) => {
+            snapshot.files = files;
+            Ok(Some(snapshot))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// A snapshot with the object of each file, in the order of its files.
@@ -231,6 +247,9 @@ fn files(root: &Path, store: &Store, http: &Http, request: &Request) -> Result<S
     let only_a_name = !named && matches!(source.version, VersionScheme::Release | VersionScheme::Commit);
     if let Some(version) = &request.version {
         check_version(source, version)?;
+        if let Some(snapshot) = recorded(store, &source.id, version, &request.params)? {
+            return Ok(snapshot);
+        }
     } else if named || only_a_name {
         return Err(format!("source `{}` needs a version: give SOURCE@VERSION", source.id));
     }
@@ -438,11 +457,13 @@ fn fixed(name: &str) -> bool {
     name == "version" || name == "yymmdd"
 }
 
-/// Each `{name}` of `template`, once, in order.
+/// Each `{name}` of `template`, once, in order. `{name:last}` is the last `/` segment of the value
+/// of `{name}`, so it names `name`.
 fn placeholders(template: &str) -> Vec<&str> {
     let mut names: Vec<&str> = Vec::new();
     for piece in template.split('{').skip(1) {
         let name = piece.split_once('}').map_or(piece, |(name, _)| name);
+        let name = name.strip_suffix(":last").unwrap_or(name);
         if !names.contains(&name) {
             names.push(name);
         }
@@ -482,8 +503,11 @@ pub(crate) fn expand(
         if values.is_empty() {
             return Err(format!("{template} needs a value for `{{{name}}}`: give {name}=VALUE"));
         }
-        let placeholder = format!("{{{name}}}");
-        urls = urls.iter().flat_map(|url| values.iter().map(|value| url.replace(&placeholder, value))).collect();
+        let (placeholder, last) = (format!("{{{name}}}"), format!("{{{name}:last}}"));
+        let fill = &|url: &String, value: &String| {
+            url.replace(&placeholder, value).replace(&last, value.rsplit('/').next().unwrap_or_default())
+        };
+        urls = urls.iter().flat_map(|url| values.iter().map(move |value| fill(url, value))).collect();
     }
     Ok(urls)
 }
@@ -839,6 +863,11 @@ pub(crate) mod tests {
         let urls =
             expand("https://h/{tile}/{tile}-{version}.tif", Some("v1"), &params(&[("tile", "a"), ("tile", "b")]));
         assert_eq!(urls.unwrap(), ["https://h/a/a-v1.tif", "https://h/b/b-v1.tif"]);
+        let areas = params(&[("area", "europe/monaco"), ("area", "europe/germany/saarland")]);
+        assert_eq!(
+            expand("https://h/{area}/{area:last}.poly", None, &areas).unwrap(),
+            ["https://h/europe/monaco/monaco.poly", "https://h/europe/germany/saarland/saarland.poly"]
+        );
         assert!(expand("https://h/{area}.poly", None, &[]).unwrap_err().contains("area=VALUE"));
         assert!(expand("https://h/x", None, &params(&[("tile", "a")])).unwrap_err().contains("names no placeholder"));
         assert_eq!(expand("https://h/p-{yymmdd}.pbf", Some("2026-09-28"), &[]).unwrap(), ["https://h/p-260928.pbf"]);
@@ -865,10 +894,10 @@ pub(crate) mod tests {
             ),
             (
                 Geofabrik,
-                "https://h/{area}-{yymmdd}.osm.pbf",
+                "https://h/{area}/{area:last}-{yymmdd}.osm.pbf",
                 Some("2026-10-03"),
-                "https://h/europe/monaco-261003.osm.pbf",
-                "europe/monaco-261003.osm.pbf",
+                "https://h/europe/monaco/monaco-261003.osm.pbf",
+                "europe/monaco/monaco-261003.osm.pbf",
             ),
             (
                 Dtm,
@@ -919,21 +948,29 @@ pub(crate) mod tests {
     #[test]
     fn a_geofabrik_extract_is_the_file_of_the_day_of_its_data() {
         let (url, log) = serve(|_, headers| match header(headers, ":path").unwrap_or_default() {
-            "/europe/monaco-updates/state.txt" => whole(b"sequenceNumber=4928\ntimestamp=2026-10-03T20\\:20\\:50Z\n"),
-            "/europe/monaco-261003.osm.pbf" => whole(b"monaco"),
+            "/europe/monaco/updates/state.txt" => whole(b"sequenceNumber=4928\ntimestamp=2026-10-03T20\\:20\\:50Z\n"),
+            "/europe/monaco/monaco-261003.osm.pbf" => whole(b"monaco"),
             _ => not_found(),
         });
         let scratch = Scratch::new("geofabrik");
         let store = Store::at(&scratch.0);
-        let extracts = located(FetchKind::Geofabrik, &url.replace("data/file.bin", "{area}-{yymmdd}.osm.pbf"));
+        let extracts =
+            located(FetchKind::Geofabrik, &url.replace("data/file.bin", "{area}/{area:last}-{yymmdd}.osm.pbf"));
         let area = vec![("area".to_string(), "europe/monaco".to_string())];
         let newest = Request { refresh: false, source: &extracts, version: None, params: area.clone() };
         let snapshot = fetch(&tooling_root(), &store, &quick(), &newest).unwrap();
         assert_eq!(
             (snapshot.version.as_str(), snapshot.files[0].name.as_str()),
-            ("2026-10-03", "europe/monaco-261003.osm.pbf")
+            ("2026-10-03", "europe/monaco/monaco-261003.osm.pbf")
         );
         // Last-Modified is two days after the data, which a dated file does not ask.
+        assert_eq!(log.lock().unwrap().len(), 2);
+        // The request record names the files of a stored version, also after upstream moved them.
+        let moved = located(FetchKind::Geofabrik, &url.replace("data/file.bin", "moved/{area}-{yymmdd}.osm.pbf"));
+        let stored =
+            Request { refresh: false, source: &moved, version: Some("2026-10-03".into()), params: area.clone() };
+        let snapshot = fetch(&tooling_root(), &store, &quick(), &stored).unwrap();
+        assert_eq!(snapshot.files[0].name, "europe/monaco/monaco-261003.osm.pbf");
         assert_eq!(log.lock().unwrap().len(), 2);
         let gone = Request { refresh: false, source: &extracts, version: Some("2026-08-15".into()), params: area };
         assert!(fetch(&tooling_root(), &store, &quick(), &gone).unwrap_err().contains("first of each month"));
@@ -973,13 +1010,14 @@ pub(crate) mod tests {
     #[test]
     fn a_new_day_without_its_extract_takes_the_day_before() {
         let (url, _) = serve(|_, headers| match header(headers, ":path").unwrap_or_default() {
-            "/europe/monaco-updates/state.txt" => whole(b"sequenceNumber=4929\ntimestamp=2026-10-04T20\\:20\\:50Z\n"),
-            "/europe/monaco-261003.osm.pbf" => whole(b"monaco"),
+            "/europe/monaco/updates/state.txt" => whole(b"sequenceNumber=4929\ntimestamp=2026-10-04T20\\:20\\:50Z\n"),
+            "/europe/monaco/monaco-261003.osm.pbf" => whole(b"monaco"),
             _ => not_found(),
         });
         let scratch = Scratch::new("geofabrik-day-before");
         let store = Store::at(&scratch.0);
-        let extracts = located(FetchKind::Geofabrik, &url.replace("data/file.bin", "{area}-{yymmdd}.osm.pbf"));
+        let extracts =
+            located(FetchKind::Geofabrik, &url.replace("data/file.bin", "{area}/{area:last}-{yymmdd}.osm.pbf"));
         let area = vec![("area".to_string(), "europe/monaco".to_string())];
         let newest = Request { refresh: false, source: &extracts, version: None, params: area.clone() };
         assert_eq!(fetch(&tooling_root(), &store, &quick(), &newest).unwrap().version, "2026-10-03");

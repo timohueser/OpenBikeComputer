@@ -289,10 +289,10 @@ pub fn volumes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) 
     out
 }
 
-/// Per end, the boxes of its part (`BOX` words each, the opening's first); none for an end that is not built.
-pub fn end_boxes(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<Vec<[f64; BOX]>> {
+/// Per end, whether it is built: its part and the chain of the chord at its opening are built.
+pub fn built_ends(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<bool> {
     let net = Net::new(ends, chords, rules);
-    (0..ends.len()).map(|e| boxes::boxes(&net, e)).collect()
+    (0..ends.len()).map(|e| net.built_end(e)).collect()
 }
 
 /// Per built end, the ring that its part takes from the ground: round its head wall and wings, from front to back,
