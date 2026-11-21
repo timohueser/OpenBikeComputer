@@ -149,7 +149,7 @@ fn boxes_fit(name: &str, ends: &[End], chords: &[Chord]) -> (usize, usize) {
     // Within the rounding of a box's words and of a sample: a millimetre.
     let tol = 1e-3;
     let (mut room, mut solid) = (0, 0);
-    for e in (0..ends.len()).filter(|&e| net.built_end(e)) {
+    for e in (0..net.ends.len()).filter(|&e| net.built_end(e)) {
         let list = boxes::boxes(&net, e);
         let small: Vec<[f64; BOX]> = list.iter().map(|b| shrunk(b, MARGIN_M)).collect();
         let held = |boxes: &[[f64; BOX]], p: [f64; 3]| {
@@ -161,7 +161,7 @@ fn boxes_fit(name: &str, ends: &[End], chords: &[Chord]) -> (usize, usize) {
         let first = &net.chords[c0];
         let sp = tube::spring(&net, first.section, first.height);
         // The room: the opening's hole from the front of the head wall to the frame line.
-        for k in 0..=4 {
+        for k in (0..=4).filter(|_| !net.closed(e)) {
             let st = net.frame(e, -design.recess_m * (1.0 - k as f64 / 4.0));
             for a in [-1.0, -0.5, 0.0, 0.5, 1.0] {
                 let hw = first.half + design.frame_m;
@@ -210,7 +210,7 @@ fn boxes_fit(name: &str, ends: &[End], chords: &[Chord]) -> (usize, usize) {
         }
         // Each box of the tube, grown by the margin: points of its sides, its floor and its roof, at shares 0 to 1
         // between its end planes, inside the drawn shell.
-        let m = metres_per_unit(ends[e].at[1]);
+        let m = metres_per_unit(net.ends[e].at[1]);
         for (i, b) in list.iter().enumerate().skip(1) {
             let lu = mesh::left_of([b[2], b[3]]);
             let (depth, half, roof, floor, spring) = (b[4], b[5] + MARGIN_M, b[6] + MARGIN_M, b[7], b[9]);
@@ -473,14 +473,15 @@ fn open_edges(mesh: &Mesh) -> (Edges, Edges) {
 fn not_closed(ends: &[End], chords: &[Chord]) -> (Edges, Edges) {
     let rules = Rules::embedded();
     let net = Net::new(ends, chords, rules);
-    let feet: Vec<f64> = (0..ends.len()).filter(|&e| net.built_end(e)).map(|e| boxes::foot(&net, e)).collect();
-    // Per end whose shell a face closes, the station of that face.
-    let faces: Vec<mesh::Station> = (0..ends.len())
-        .filter(|&e| net.built_end(e))
+    let built = || (0..net.ends.len()).filter(|&e| net.built_end(e));
+    let feet: Vec<f64> = built().map(|e| boxes::foot(&net, e)).collect();
+    // Per end whose shell a face closes, the station of that face; and the front of a closed end.
+    let faces: Vec<mesh::Station> = (built())
         .filter_map(|e| {
             let r = boxes::reach(&net, e);
             arch::collar(&net, e, r.shell).last().filter(|_| r.closed).map(|p| p.1)
         })
+        .chain(built().filter(|&e| net.closed(e)).map(|e| net.frame(e, 0.0)))
         .collect();
     // Within the rounding of a vertex to whole world units.
     let at_foot = |p: [f64; 3]| feet.iter().any(|f| (p[2] - f).abs() < 1e-3);
@@ -646,5 +647,185 @@ fn the_faces_along_a_tube_face_out_of_its_shell_and_into_its_room() {
             }
         }
         assert!(out > 20 && inside > 20, "{name}: {out} faces of the shell, {inside} inside");
+    }
+}
+
+/// A tube as one of `part` at both ends, of a way of `class`.
+fn kind((mut ends, mut chords): (Vec<End>, Vec<Chord>), part: Part, class: &str) -> (Vec<End>, Vec<Chord>) {
+    for e in &mut ends {
+        e.part = part;
+    }
+    for c in &mut chords {
+        (c.ends, c.class) = ([Some(part); 2], class.into());
+    }
+    (ends, chords)
+}
+
+/// Two road tubes 40 m east from a pair at each end: the first on the line 0 m north, the second `apart` metres north
+/// with its floor `dz` higher; each of two chords.
+fn pair(apart: f64, dz: f64) -> (Vec<End>, Vec<Chord>) {
+    let pi = std::f64::consts::PI;
+    let mut ends = vec![end(0.0, 0.0, 500.0, 0.0, 6.0), end(40.0, 0.0, 500.2, pi, 3.0)];
+    // Into the tubes from the west the second lies to the left, from the east to the right.
+    for (e, mate) in ends.iter_mut().zip([apart, -apart]) {
+        (e.part, e.mate, e.mate_way, e.mate_shift) = (Part::Pair, Some(mate), Some([1, 1]), Some(0.0));
+    }
+    let mut chords = Vec::new();
+    for (north, z) in [(0.0, 500.0), (apart, 500.0 + dz)] {
+        for (a, b) in [(0.0, 20.0), (20.0, 40.0)] {
+            let mut c = chord([a, north, z + a * 0.005], [b, north, z + b * 0.005], 5.0, a);
+            c.ends = [Some(Part::Pair); 2];
+            chords.push(c);
+        }
+    }
+    (ends, chords)
+}
+
+/// The triangles of a mesh in metres east, north and up, but the dark faces of the openings and the lamps.
+fn solid(mesh: &Mesh) -> Vec<[[f64; 3]; 3]> {
+    let point = |i: u32| {
+        let w = &mesh.vertices[i as usize * WORDS..];
+        let p = metric([w[0] as i32 as f64, w[1] as i32 as f64]);
+        [p[0], p[1], f32::from_bits(w[2]) as f64]
+    };
+    let shown = |i: u32| (mesh.vertices[i as usize * WORDS + 3] >> 24) & (mesh::VOID | mesh::LAMP) == 0;
+    mesh.indices.chunks(3).filter(|t| shown(t[0])).map(|t| [point(t[0]), point(t[1]), point(t[2])]).collect()
+}
+
+/// The first face that a ray from `o` along `d` meets within `far` metres: its distance, and whether the ray meets its
+/// front, or the front of a face at the same distance (two faces back to back).
+fn hit(faces: &[[[f64; 3]; 3]], o: [f64; 3], d: [f64; 3], far: f64) -> Option<(f64, bool)> {
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross =
+        |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let mut best: Option<(f64, bool)> = None;
+    for [a, b, c] in faces {
+        let (e1, e2) = (sub(*b, *a), sub(*c, *a));
+        let p = cross(d, e2);
+        let det = dot(e1, p);
+        if det.abs() < 1e-12 {
+            continue;
+        }
+        let tv = sub(o, *a);
+        let (u, q) = (dot(tv, p) / det, cross(tv, e1));
+        let (v, t) = (dot(d, q) / det, dot(e2, q) / det);
+        if u < -1e-9 || v < -1e-9 || u + v > 1.0 + 1e-9 || t <= 1e-6 || t > far {
+            continue;
+        }
+        let front = dot(cross(e1, e2), d) < 0.0;
+        best = match best {
+            Some(b) if (t - b.0).abs() < 1e-6 => Some((b.0, b.1 || front)),
+            Some(b) if b.0 < t => Some(b),
+            _ => Some((t, front)),
+        };
+    }
+    best
+}
+
+#[test]
+fn the_two_tubes_of_a_pair_are_one_room_and_one_head_wall() {
+    let rules = Rules::embedded();
+    let frame = rules.design.frame_m;
+    // Tubes 7 m apart, 4.5 m wide each: their rooms overlap by 2 m, so they are cut in the middle; with the second's
+    // floor 0.8 m higher, faces close the steps there. Tubes 10.5 m apart do not overlap.
+    for (apart, dz) in [(7.0, 0.0), (7.0, 0.8), (10.5, 0.0)] {
+        let name = format!("{apart} m apart, {dz} m higher");
+        let (ends, chords) = pair(apart, dz);
+        let (room, box_points) = boxes_fit(&name, &ends, &chords);
+        assert!(room > 200 && box_points > 100, "{name}: {room} room samples, {box_points} box samples");
+        let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);
+        let faces = solid(&mesh);
+        let o = tube::outline_of(&Net::new(&ends, &chords, rules), 0);
+        // Each tube's room on its side of the middle: no face lies in it. A face in the middle lies within the rounding
+        // of its vertices to world units.
+        let mid = apart / 2.0;
+        let inside = |p: [f64; 3]| {
+            let (axis, z) = if p[1] < mid { (0.0, 500.0) } else { (apart, 500.0 + dz) };
+            if (p[1] - mid).abs() < 0.05 {
+                return false;
+            }
+            let (x, up) = (p[1] - axis, p[2] - z - p[0] * 0.005);
+            p[0] > 0.5
+                && p[0] < 39.5
+                && x.abs() < 4.45
+                && up > 0.25
+                && tube::top_at(&o, x).is_some_and(|t| up < t - 0.05)
+        };
+        for f in &faces {
+            let c = [0, 1, 2].map(|k| (f[0][k] + f[1][k] + f[2][k]) / 3.0);
+            assert!(!inside(c), "{name}: a face in the room at {c:?}");
+        }
+        // From inside the room, every way across meets the front of a face: the room is closed at the middle.
+        for (north, up) in [(-3.0, 1.0), (0.0, 2.5), (2.5, 4.0), (apart - 2.5, 4.0), (apart, 2.5), (apart + 3.0, 1.0)] {
+            let z = if north < mid { 500.0 } else { 500.0 + dz };
+            for k in 0..24 {
+                let a = (k as f64 * 15.0 + 7.0).to_radians();
+                let d = [0.0, libm::cos(a), libm::sin(a)];
+                let got = hit(&faces, [20.0, north, z + 0.1 + up], d, 30.0);
+                assert!(got.is_some_and(|h| h.1), "{name}: from {north} m north, {up} m up, at {a} rad: {got:?}");
+            }
+        }
+        // One head wall: in front of the frame line, a ray east meets its front between the two holes, but none in a
+        // hole; where the holes overlap, they are one opening.
+        let holes_meet = apart < 2.0 * (4.5 + frame);
+        {
+            let north = mid;
+            let got = hit(&faces, [-3.0, north, 501.0], [1.0, 0.0, 0.0], 10.0);
+            if holes_meet {
+                assert!(got.is_none_or(|h| h.0 > 3.5), "{name}: the middle of one opening: {got:?}");
+            } else {
+                assert!(got.is_some_and(|h| h.1 && h.0 < 3.0), "{name}: the head wall between the holes: {got:?}");
+            }
+        }
+        for north in [0.0, apart] {
+            let got = hit(&faces, [-3.0, north, 502.5], [1.0, 0.0, 0.0], 10.0);
+            assert!(got.is_none_or(|h| h.0 > 3.5), "{name}: the hole at {north} m north: {got:?}");
+        }
+    }
+}
+
+#[test]
+fn a_rim_hugs_its_opening_and_a_covered_free_end_is_closed() {
+    let rules = Rules::embedded();
+    let d = &rules.design;
+    let (shell, frame) = (rules.ladder.bake.shell_m, d.frame_m);
+    // An opening in the rock and a free tube end: the head is a rim round the opening, 0.95 m wide, with no wings.
+    for (name, (ends, chords)) in [
+        ("rock", kind(bent(30.0, 20.0), Part::Rock, "footway")),
+        ("free", kind(tube(), Part::Free, "primary")),
+        ("closed", kind(tube(), Part::Free, "primary")),
+    ] {
+        let mut ends = ends;
+        if name == "closed" {
+            ends[0].collar = 0.0;
+        }
+        let (room, box_points) = boxes_fit(name, &ends, &chords);
+        assert!(room > 100 && box_points > 50, "{name}: {room} room samples, {box_points} box samples");
+        let (open, crowded) = not_closed(&ends, &chords);
+        assert!(open.is_empty(), "{name}: {} open edges, the first {:?}", open.len(), &open[..open.len().min(4)]);
+        assert!(
+            crowded.is_empty(),
+            "{name}: {} crowded edges, the first {:?}",
+            crowded.len(),
+            &crowded[..crowded.len().min(4)]
+        );
+        let net = Net::new(&ends, &chords, rules);
+        let ring = footprints(&ends, &chords, rules);
+        let (at, st) = (ends[0].at, net.frame(0, 0.0));
+        let (l, m) = (mesh::left_of(ends[0].way_in()), metres_per_unit(at[1]));
+        let across = |p: [f64; 2]| ((p[0] - at[0]) * l[0] + (p[1] - at[1]) * l[1]) * m;
+        if name == "closed" {
+            // No opening: its first box starts on the frame line, no daylight comes from it, and it has no ring.
+            assert_eq!(boxes::boxes(&net, 0)[0][..2], at);
+            assert_eq!(net.daylight(st.at([0.0, 2.0])), 0.0);
+            assert_eq!(ring.len(), 1);
+        } else {
+            // The ring's head: from the front's right end to its left end and back, then the back's right end.
+            let head = [ring[0][0], ring[0][1], ring[0][2], ring[0][ring[0].len() - 1]];
+            let wide = head.iter().map(|&p| across(p).abs()).fold(0.0, f64::max);
+            let half = 4.5;
+            assert!(wide <= half + frame + shell + 1e-6, "{name}: the ring reaches {wide} m across");
+        }
     }
 }

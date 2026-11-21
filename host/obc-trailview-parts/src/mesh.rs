@@ -1,6 +1,8 @@
 //! Faces as the viewer's structure meshes hold them (`structures/mesh.ts`), and the stations and cross-sections that
 //! the parts sweep.
 
+use std::collections::HashMap;
+
 use crate::{metres_per_unit, Mesh, Section};
 
 /// Words of a vertex: x, y (i32 world units), z (f32), colour and flags, across and half-width of a road face
@@ -99,19 +101,57 @@ pub struct Paint {
 
 pub const PLAIN: Paint = Paint { across: 0.0, half: 0.0, sleepers: NO_SLEEPERS };
 
+/// A vertical plane through two world points in plan that takes off the faces on one side of it: the side of `away`,
+/// a world direction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clip {
+    pub a: [f64; 2],
+    pub b: [f64; 2],
+    pub away: [f64; 2],
+}
+
+impl Clip {
+    /// How far a world point lies on the side that the plane takes off, in world units.
+    fn side(&self, p: [f64; 3]) -> f64 {
+        let n = [self.b[1] - self.a[1], self.a[0] - self.b[0]];
+        let l = libm::hypot(n[0], n[1]).max(f64::MIN_POSITIVE);
+        let sign = if n[0] * self.away[0] + n[1] * self.away[1] >= 0.0 { 1.0 } else { -1.0 };
+        sign * ((p[0] - self.a[0]) * n[0] + (p[1] - self.a[1]) * n[1]) / l
+    }
+}
+
 /// Collects faces. Each face is wound counter-clockwise seen from the side that `out` points to (east, north, up),
-/// so the back faces cull.
+/// so the back faces cull. With a clip, the part of a face past its plane is not drawn.
 pub struct Builder<L: Fn([f64; 3]) -> f64> {
     words: Vec<u32>,
     indices: Vec<u32>,
     points: Vec<[f64; 3]>,
+    looks: Vec<(u32, Paint)>,
     daylight: L,
+    clip: Option<Clip>,
+    /// The vertex where the clip's plane cuts the edge between two vertices.
+    cuts: HashMap<(u32, u32), u32>,
 }
 
 impl<L: Fn([f64; 3]) -> f64> Builder<L> {
     /// A builder whose vertices take their daylight from `daylight` of their world point.
     pub fn new(daylight: L) -> Self {
-        Builder { words: Vec::new(), indices: Vec::new(), points: Vec::new(), daylight }
+        Builder {
+            words: Vec::new(),
+            indices: Vec::new(),
+            points: Vec::new(),
+            looks: Vec::new(),
+            daylight,
+            clip: None,
+            cuts: HashMap::new(),
+        }
+    }
+
+    /// The clip of the faces from now on.
+    pub fn clip(&mut self, clip: Option<Clip>) {
+        if clip != self.clip {
+            (self.clip, self.cuts) = (clip, HashMap::new());
+        }
     }
 
     pub fn vertex(&mut self, p: [f64; 3], colour: u32, paint: Paint) -> u32 {
@@ -127,7 +167,52 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
             (light as f32).to_bits(),
         ]);
         self.points.push(p);
+        self.looks.push((colour, paint));
         (self.points.len() - 1) as u32
+    }
+
+    /// The vertex where the clip's plane cuts the edge from vertex i to j, which lie at `di` and `dj` from it.
+    fn cut(&mut self, (i, di): (u32, f64), (j, dj): (u32, f64)) -> u32 {
+        let key = (i.min(j), i.max(j));
+        if let Some(&v) = self.cuts.get(&key) {
+            return v;
+        }
+        let (u, p, q) = (di / (di - dj), self.points[i as usize], self.points[j as usize]);
+        let ((colour, a), z) = (self.looks[i as usize], self.looks[j as usize].1);
+        let mix = |a: f64, b: f64| a + (b - a) * u;
+        let paint = Paint { across: mix(a.across, z.across), half: a.half, sleepers: mix(a.sleepers, z.sleepers) };
+        let v = self.vertex([mix(p[0], q[0]), mix(p[1], q[1]), mix(p[2], q[2])], colour, paint);
+        self.cuts.insert(key, v);
+        v
+    }
+
+    /// A triangle in its winding, without its part past the clip's plane.
+    fn emit(&mut self, t: [u32; 3]) {
+        let Some(clip) = self.clip else {
+            self.indices.extend(t);
+            return;
+        };
+        let d = t.map(|v| clip.side(self.points[v as usize]));
+        // Within a hundredth of a world unit of the plane, a point lies on it.
+        let off = |x: f64| x > 0.01;
+        if !d.iter().any(|&x| off(x)) {
+            self.indices.extend(t);
+            return;
+        }
+        // The corners on the near side, and the points where an edge crosses the plane, in the winding.
+        let mut keep = Vec::with_capacity(4);
+        for k in 0..3 {
+            let (i, j) = (k, (k + 1) % 3);
+            if !off(d[i]) {
+                keep.push(t[i]);
+            }
+            if off(d[i]) != off(d[j]) {
+                keep.push(self.cut((t[i], d[i]), (t[j], d[j])));
+            }
+        }
+        for k in 1..keep.len().saturating_sub(1) {
+            self.indices.extend([keep[0], keep[k], keep[k + 1]]);
+        }
     }
 
     pub fn at(&mut self, s: &Station, c: Corner, colour: u32) -> u32 {
@@ -140,12 +225,13 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         if n.iter().all(|c| c.abs() < 1e-12) {
             return;
         }
-        let facing = n[0] * out[0] + n[1] * out[1] + n[2] * out[2] >= 0.0;
-        self.indices.extend(if facing {
-            [v[0], v[1], v[2], v[0], v[2], v[3]]
+        if n[0] * out[0] + n[1] * out[1] + n[2] * out[2] >= 0.0 {
+            self.emit([v[0], v[1], v[2]]);
+            self.emit([v[0], v[2], v[3]]);
         } else {
-            [v[0], v[2], v[1], v[0], v[3], v[2]]
-        });
+            self.emit([v[0], v[2], v[1]]);
+            self.emit([v[0], v[3], v[2]]);
+        }
     }
 
     /// A triangle turned to face `out`. A triangle of no area makes no face.
@@ -155,7 +241,7 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
             return;
         }
         let facing = n[0] * out[0] + n[1] * out[1] + n[2] * out[2] >= 0.0;
-        self.indices.extend(if facing { [a, b, c] } else { [a, c, b] });
+        self.emit(if facing { [a, b, c] } else { [a, c, b] });
     }
 
     /// The faces between two polylines that run side by side from a common start to a common end: the corners `a` at
@@ -192,8 +278,20 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         }
     }
 
+    /// The mesh of the faces, with the vertices that a face uses.
     pub fn mesh(self) -> Mesh {
-        Mesh { vertices: self.words, indices: self.indices }
+        let mut to = vec![u32::MAX; self.points.len()];
+        let mut vertices = Vec::with_capacity(self.words.len());
+        let indices = (self.indices.iter())
+            .map(|&i| {
+                if to[i as usize] == u32::MAX {
+                    to[i as usize] = (vertices.len() / WORDS) as u32;
+                    vertices.extend_from_slice(&self.words[i as usize * WORDS..(i as usize + 1) * WORDS]);
+                }
+                to[i as usize]
+            })
+            .collect();
+        Mesh { vertices, indices }
     }
 
     /// The normal of a, b, c, d by their diagonals, in metres east, north and up.
