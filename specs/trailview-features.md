@@ -588,8 +588,9 @@ Each opening takes the first kind of part that fits, by these rungs in order:
    the floor of the tube, as for every part. A short chain under a building only has no part.
 4. An end that meets no way and is covered at its opening: `free`.
 5. An end whose first covered metre lies within `collar_max_m`: `pair` where an opening of another chain of the same
-   family (rail or not) at that rung lies within `pair_max_m` and `pair_max_deg` (the nearest pairs first, each
-   opening in one pair); else `rock` for a group with `rock` covered within `rock_cover_max_m`; else `arch`.
+   family (rail or not) at that rung lies within `pair_max_m` and `pair_max_deg`, and each of the two chains has a
+   part at both of its ends (the nearest pairs first, each opening in one pair); else `rock` for a group with `rock`
+   covered within `rock_cover_max_m`; else `arch`.
 6. Else `free`.
 
 The two openings of a pair lie on the frame line of the opening farther in: the other one moves in along its way to
@@ -627,7 +628,7 @@ The tags, numbers in metres with at most 2 decimals, the values of a row separat
 | `along` | tube | The metres along the stroke of its way at the first vertex |
 | `ends` | tube | The parts of the chain's two ends, the end behind the first vertex first: `arch`, `pair`, `rock`, `box`, `free`, or `none` for an end with no part of its own |
 | `part` | end | `arch`, `pair`, `rock`, `box` or `free` |
-| `heading` | end | Radians from x to y of world coordinates, into the tube, three decimals |
+| `heading` | end | Radians from x to y of world coordinates, into the tube, three decimals; of `pair`, into the tube of the opening farther in, square to the frame line |
 | `collar` | end | The collar; of `free`, the length of its shell |
 | `face`, `left`, `right` | end | Not on `free` |
 | `foot` | end | |
