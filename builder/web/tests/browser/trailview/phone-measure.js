@@ -7,7 +7,7 @@
     const KEY = 'obc-phone';
     const FLIGHT_S = 20;
     /** From the navigation start to the first proper render, else the run fails. */
-    const READY_MS = 90_000;
+    const READY_MS = (Number(new URLSearchParams(location.search).get('ready')) || 90) * 1000;
     /** A frame that takes longer stops the flight. */
     const FRAME_MS = 10_000;
     /** Every Nth frame of a flight times its submit to onSubmittedWorkDone, and samples the memory and the look. */
@@ -35,6 +35,8 @@
             v('p-objects1', 'P, small objects on', { objects: 1 }), v('p-loads1', 'P, all loads at once', { loads: 1 }), v('p-scale07', 'P, scale 0.7', { scale: 0.7 }),
             v('p-terrain08', 'P, coarser terrain', { terrain: 0.8 }), v('p-finest17', 'P, finest level 17', { finest: 17 }), v('p-fps60', 'P at 60 fps', { fps: 60 }),
             v('p-ballast', 'P with 400 MiB ballast', {}, { ballast: 400 }),
+            v('p-mac', 'P, no probe', {}, { ready: 300 }),
+            v('p-empty', 'P with no data, 30 s', {}, { headroom: 1, empty: 1 }),
         ];
     }
     const TAIL = '&date=2026-08-15&time=15:00&weather=sunny';
@@ -43,6 +45,8 @@
         { id: 'walk', name: 'village walk', from: `?lat=46.820500&lon=8.403000&heading=160.0&pitch=0.0&eye=1.6${TAIL}`, to: { lat: 46.817, lon: 8.405, heading: 200, pitch: 5, height: 1.6 } },
         { id: 'valley-drive', name: 'valley drive', from: `?lat=46.818000&lon=8.380000&heading=80.0&pitch=0.0&eye=3.0${TAIL}`, to: { lat: 46.821, lon: 8.445, heading: 100, pitch: 0, height: 3 } },
         { id: 'zoom-out', name: 'rising above the valley', from: `?lat=46.790000&lon=8.415000&heading=0.0&pitch=-20.0&alt=1500.0${TAIL}`, to: { lat: 46.56, lon: 8.415, heading: 0, pitch: -66, height: 60000 } },
+        // Prototype #3765: a place without data, for the engine's fixed memory.
+        { id: 'nowhere', name: 'no data', from: `?lat=45.000000&lon=2.000000&heading=0.0&pitch=0.0&eye=1.6${TAIL}`, to: { lat: 45, lon: 2, heading: 0, pitch: 0, height: 1.6 } },
         { id: 'bridge-tunnel', name: 'bridge and tunnel', from: `?lat=46.9631796&lon=8.5085956&heading=83.0&pitch=-2.0&alt=487.0${TAIL}`, to: { lat: 46.96361, lon: 8.5137562, heading: 83, pitch: -2, height: 487 } },
     ];
 
@@ -95,6 +99,35 @@
                 return device;
             } catch (e) { event(`the WebGPU device request failed: ${e.message}`); throw e; }
         };
+        // Prototype #3765: the bytes of the GPU objects that the page creates, by kind, and its shaders and pipelines.
+        const BPP = { r8unorm: 1, rg8unorm: 2, r16float: 2, depth16unorm: 2, rgba16float: 8, rgba16uint: 8, rg32float: 8, rgba32float: 16 };
+        const bytesOf = d => {
+            const [w, h = 1, l = 1] = Array.isArray(d.size) ? d.size : [d.size.width, d.size.height ?? 1, d.size.depthOrArrayLayers ?? 1];
+            const per = BPP[d.format] ?? (/bc|etc|astc/.test(d.format) ? 1 : 4), mips = (d.mipLevelCount ?? 1) > 1 ? 4 / 3 : 1;
+            return w * h * l * per * mips * (d.sampleCount ?? 1);
+        };
+        const alloc = hooks.alloc = { buffers: 0, textures: 0, bufferCount: 0, textureCount: 0, shaderBytes: 0, shaders: 0, pipelines: 0, largestTextures: [] };
+        const track = (object, bytes, kind) => {
+            alloc[kind] += bytes;
+            alloc[kind === 'buffers' ? 'bufferCount' : 'textureCount']++;
+            const destroy = object.destroy.bind(object);
+            object.destroy = () => { alloc[kind] -= bytes; alloc[kind === 'buffers' ? 'bufferCount' : 'textureCount']--; bytes = 0; return destroy(); };
+            return object;
+        };
+        const createBuffer = GPUDevice.prototype.createBuffer;
+        GPUDevice.prototype.createBuffer = function (d) { return track(createBuffer.call(this, d), d.size, 'buffers'); };
+        const createTexture = GPUDevice.prototype.createTexture;
+        GPUDevice.prototype.createTexture = function (d) {
+            const bytes = bytesOf(d);
+            if (bytes > 8 * 2 ** 20) alloc.largestTextures.push({ label: d.label ?? '', format: d.format, size: d.size, mib: Math.round(bytes / 2 ** 20) });
+            return track(createTexture.call(this, d), bytes, 'textures');
+        };
+        const createShaderModule = GPUDevice.prototype.createShaderModule;
+        GPUDevice.prototype.createShaderModule = function (d) { alloc.shaders++; alloc.shaderBytes += d.code?.length ?? 0; return createShaderModule.call(this, d); };
+        for (const name of ['createRenderPipeline', 'createComputePipeline', 'createRenderPipelineAsync', 'createComputePipelineAsync']) {
+            const base = GPUDevice.prototype[name];
+            GPUDevice.prototype[name] = function (...args) { alloc.pipelines++; return base.apply(this, args); };
+        }
         const submit = GPUQueue.prototype.submit;
         GPUQueue.prototype.submit = function (buffers) { hooks.lastSubmit = performance.now(); return submit.call(this, buffers); };
         const current = GPUCanvasContext.prototype.getCurrentTexture;
@@ -217,6 +250,16 @@
             await post(key, { stage: 'failed', failure: tv ? `the page says: ${notice()}` : `no viewer after ${READY_MS / 1000} s` });
             return next();
         }
+        if (new URLSearchParams(location.search).get('empty')) {
+            say(`${label} … waiting 30 s`);
+            await sleep(30_000);
+            await post(key, { stage: 'empty', memory: { poolsEnd: poolBytes(tv), alloc: hooks.alloc && { ...hooks.alloc, buffers: Math.round(hooks.alloc.buffers / 2 ** 20), textures: Math.round(hooks.alloc.textures / 2 ** 20) } } });
+            state.probing = i;
+            save();
+            say(`${label} … memory headroom`);
+            await headroom(key);
+            return next();
+        }
         const marks = {};
         const mark = name => () => (marks[name] ??= round(performance.now()));
         tv.eyeReady().then(mark('eyeReady'), e => event(`eyeReady: ${e.message}`));
@@ -224,14 +267,22 @@
         // The first proper render: the near field is final (nearReady), and no road mesh, feature tile, record block or piece mesh
         // is on its way (meshesLoading: with ground=plan, every wanted cell has its block and every mesh cell draws).
         const proper = () => marks.nearReady !== undefined && !tv.terrain.meshesLoading;
+        const series = [];
+        let sampled = 0;
         while (performance.now() < deadline && marks.proper === undefined) {
             const now = await frame();
+            if (hooks.alloc && now - sampled > 1000) {
+                sampled = now;
+                series.push([Math.round(now), Math.round(hooks.alloc.buffers / 2 ** 20), Math.round(hooks.alloc.textures / 2 ** 20), hooks.alloc.pipelines]);
+            }
             if (marks.firstFrame === undefined && tv.stats().drawn > 0) marks.firstFrame = round(now);
             if (proper()) marks.proper = round(now);
         }
         marks.firstCanvas = hooks.firstCanvas && round(hooks.firstCanvas);
         const canvas = document.querySelector('canvas');
+        Object.assign(run, { allocSeries: series, wallStart: Date.now() - performance.now() });
         Object.assign(run, { stage: 'ready', marks, canvas: [canvas.width, canvas.height], memory: { poolsReady: poolBytes(tv) } });
+        await userAgentMemory().catch(e => event(`memory: ${e.message}`));
         if (marks.proper === undefined) {
             await post(key, { ...run, stage: 'failed', failure: `no proper render in ${READY_MS / 1000} s`, ...final(tv, run.memory) });
             return next();
@@ -250,9 +301,17 @@
         next();
     }
 
+    /** Chromium's memory split by worker, where the page is cross-origin isolated. */
+    async function userAgentMemory() {
+        if (!performance.measureUserAgentSpecificMemory || !crossOriginIsolated) return;
+        const m = await performance.measureUserAgentSpecificMemory();
+        window.obcUserAgentMemory = { totalMiB: Math.round(m.bytes / 2 ** 20), parts: m.breakdown.filter(b => b.bytes > 2 ** 20).map(b => ({ mib: Math.round(b.bytes / 2 ** 20), types: b.types, where: b.attribution.map(a => (a.scope ?? '') + ' ' + String(a.url).split('/').pop().slice(0, 40)) })) };
+    }
     /** What the HUD reports as problems, with the memory and the plan's state at the end. */
     function final(tv, memory) {
         const s = tv.stats(), plan = s.plan;
+        if (hooks.alloc) memory.alloc = { ...hooks.alloc, buffers: Math.round(hooks.alloc.buffers / 2 ** 20), textures: Math.round(hooks.alloc.textures / 2 ** 20), shaderKiB: Math.round(hooks.alloc.shaderBytes / 1024) };
+        memory.userAgent = window.obcUserAgentMemory;
         Object.assign(memory, { poolsEnd: poolBytes(tv), pools: Object.fromEntries(s.pools), planHeap: s.terrain.records?.heap, jsHeap: performance.memory?.usedJSHeapSize });
         return {
             adapter: s.adapter, scale: s.scale, memory,

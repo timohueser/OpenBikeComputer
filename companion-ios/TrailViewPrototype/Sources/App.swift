@@ -21,6 +21,7 @@ private let leversA = ["p", "p-shadows2", "p-shadows0", "p-trees1", "p-gpool1", 
 private let leversB = ["p", "p-loads1", "p-scale07", "p-terrain08", "p-finest17", "p-fps60"].map { "\($0):walk" } + ["p:valley-drive"]
 
 private let pages = [
+    KitPage(name: "Memory map: no data, then the walk (2 runs)", path: "/phone/?runs=p-empty:nowhere,p:walk"),
     KitPage(name: "Levers A (8 runs)", path: "/phone/?runs=\(leversA.joined(separator: ","))"),
     KitPage(name: "Levers B (7 runs)", path: "/phone/?runs=\(leversB.joined(separator: ","))"),
     KitPage(name: "Measure: the spike runs (9)", path: "/phone/?runs=\(spikeRuns.joined(separator: ","))"),

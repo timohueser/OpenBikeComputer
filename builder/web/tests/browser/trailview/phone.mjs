@@ -56,11 +56,13 @@ async function bundle() {
     for (const file of walk(resolve(a.out))) {
         const body = readFileSync(file);
         if (file.endsWith('.html')) writeFileSync(file, inject(body.toString()));
-        if (WORKER.test(file)) writeFileSync(file, Buffer.concat([readFileSync(join(HERE, 'phone-worker.js')), body]));
+        const prelude = [WORKER.test(file) && 'phone-worker.js', ANY_WORKER.test(file) && 'phone-wasm.js'].filter(Boolean);
+        if (prelude.length) writeFileSync(file, Buffer.concat([...prelude.map(name => readFileSync(join(HERE, name))), body]));
     }
 }
 
 const SPIKE = ['today', 'today-low'].flatMap(v => ['walk', 'valley-drive', 'zoom-out', 'bridge-tunnel'].map(s => `${v}:${s}`)).concat('new:walk').join(',');
+const ANY_WORKER = /-worker-[\w-]+\.js$/;
 const WORKER = /\/(ground|decode)-worker-[\w-]+\.js$/;
 const inject = html => html.replace('<head>', '<head><script src="/phone/measure.js"></script><script src="/phone/diagnose.js"></script>');
 
@@ -84,6 +86,8 @@ function serve() {
     const send = (response, status, type, body) => response.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' }).end(body);
     // Prototype #3765: --local PORT also serves --local-dist over plain HTTP on 127.0.0.1, a secure context for a browser on this machine.
     const handler = (DIST, secure) => (request, response) => {
+        // The local listener isolates its pages, so Chromium's performance.measureUserAgentSpecificMemory() splits the memory by worker.
+        if (!secure) { response.setHeader('cross-origin-opener-policy', 'same-origin'); response.setHeader('cross-origin-embedder-policy', 'require-corp'); }
         const path = normalize(decodeURIComponent(new URL(request.url, origin).pathname));
         if (request.method === 'POST' && path === '/result') return collect(request, response);
         if (request.method === 'POST' && path === '/blob') return keep(request, response);
@@ -121,6 +125,7 @@ function serve() {
             const type = TYPES[extname(local)] ?? 'application/octet-stream';
             // The ground worker's jobs carry their time split (phone-worker.js).
             if (WORKER.test(local)) body = Buffer.concat([readFileSync(join(HERE, 'phone-worker.js')), body]);
+            if (ANY_WORKER.test(local)) body = Buffer.concat([readFileSync(join(HERE, 'phone-wasm.js')), body]);
             // The scripts run before the page's module, so they see the WebGPU device as the page asks for it. Each acts only
             // while a session of its own runs in the tab.
             return send(response, 200, type, type === 'text/html' ? inject(body.toString()) : body);
