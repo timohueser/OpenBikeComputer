@@ -3,8 +3,7 @@ import { Pacer } from './pacer';
 
 /** The display frames of one second that draw, at `hz` with a timestamp noise of ±`noise` ms. */
 function drawn(hz: number, rate = 60, noise = 0): number[] {
-    const pacer = new Pacer();
-    pacer.rate = rate;
+    const pacer = new Pacer(rate);
     const frames: number[] = [];
     for (let i = 0; i < 2 * hz; i++) {
         const now = 1000 + (i * 1000) / hz + noise * Math.sin(i * 7.1);
@@ -34,7 +33,7 @@ describe('Pacer', () => {
     });
 
     it('draws a lone frame at once', () => {
-        const pacer = new Pacer();
+        const pacer = new Pacer(60);
         expect(pacer.due(0)).toBe(true);
         expect(pacer.due(5000)).toBe(true);
     });

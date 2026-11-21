@@ -1,4 +1,5 @@
 import type { Bounds } from '../../planner/config';
+import { BUDGETS } from '../budget';
 import { worldPixel } from '../../planner/layers/mercator';
 import { VFOV } from '../frame/camera';
 import { CURVATURE, type Frame } from '../frame/frame';
@@ -26,10 +27,10 @@ import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
 /**
- * GPU memory for pages: the stored and the synthesized budgets for a laptop, in MiB. The feature masks
- * take their share of the synthesized budget. A shortage of synthesized pages leaves out the farthest
- * pages of the finest level, and their parents draw in their place: the pool holds what a frame wants at
- * the least range, whichever way it looks.
+ * GPU memory for pages: the stored and the synthesized budgets of the desktop, in MiB. The feature masks
+ * take their share of the synthesized budget; a tier holds its share of the pages (`terrainPages`). A shortage of
+ * synthesized pages leaves out the farthest pages of the finest level, and their parents draw in their place: the
+ * desktop's pool holds what a frame wants at the least range, whichever way it looks.
  */
 const BUDGET: Record<Kind, number> = { stored: 104 * 2 ** 20, synth: 67 * 2 ** 20 };
 /**
@@ -268,18 +269,18 @@ export class Terrain {
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
     /**
-     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level and `pool` scales
-     * the page pools (debug options). The stamps read the nodes that `baked` holds. `cache` names the data of the tiles and the
+     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level (a debug option);
+     * `budget` sizes the page pools and the loads. The stamps read the nodes that `baked` holds. `cache` names the data of the tiles and the
      * versions of the stamp code and of the plan's input preparation, under which the nodes' stamps and the plan's cells are
      * cached on the device.
      */
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }, pool = 1) {
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }, budget = BUDGETS.desktop) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / PAGE_BYTES / LAYER_PAGES) * LAYER_PAGES;
         this.profileTable = profileTable();
-        this.stamps = new Stamps(features, changed, stop, plan, baked, plan ? cache : undefined);
+        this.stamps = new Stamps(features, changed, stop, plan, baked, plan ? cache : undefined, budget.loads.stamps);
         // With the ground plan the records draw the ways: no corridor holds one.
         this.roads = new Roads(plan ? undefined : features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
         if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
@@ -293,7 +294,7 @@ export class Terrain {
         // to hold its heights: until then the coarser page draws, never the far look up close.
         const waits = (node: Node) => records!.waits(node) || (node.level === pieces!.level && (records!.meshComing(cellOf(node)) || pieces!.ready(cellOf(node)) === false));
         const stamps = records ? { get: (node: Node) => (waits(node) ? undefined : this.stamps.get(node)), known: (node: Node) => (waits(node) ? undefined : this.stamps.known(node)) } : this.stamps;
-        this.pages = new Pages(source, { stored: Math.round(pool * (pages - SYNTH_PAGES)), synth: Math.round(pool * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS);
+        this.pages = new Pages(source, { stored: Math.round(budget.terrainPages * (pages - SYNTH_PAGES)), synth: Math.round(budget.terrainPages * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS, budget.loads.terrain);
     }
 
     get idle(): boolean {

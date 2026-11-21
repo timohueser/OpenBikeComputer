@@ -1,3 +1,4 @@
+import type { Budget } from '../budget';
 import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
@@ -15,8 +16,8 @@ import { CAPS, DeviceCache } from '../terrain/device-cache';
 
 /** Houses on the GPU at most, and the bytes of outline vertices. */
 const HOUSES = 2 ** 16, OUTLINE_BYTES = 2 * 2 ** 20;
-/** The houses of the zoom 14 tiles within this many metres of the eye draw; tiles kept, and tile requests in flight at most. */
-const RADIUS_M = 8000, KEPT = 400, REQUESTS = 6;
+/** The houses of the zoom 14 tiles within this many metres of the eye draw; tiles kept. */
+const RADIUS_M = 8000, KEPT = 400;
 /** Each zoom 14 tile takes its houses from its quarter of the zoom 13 feature tile. */
 const ZOOM = 14, EARTH_M = 40075016.686;
 /** Words of `Style` in houses.wgsl. */
@@ -175,7 +176,7 @@ export class Houses {
      * An abort of `stop` ends the worker. With `cache`, the release and the version of the house worker's code,
      * a tile's records come from the device cache where it holds them, and go there once made.
      */
-    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal, cache?: { release: string; version: string }) {
+    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal, private readonly budget: Budget, cache?: { release: string; version: string }) {
         if (!features) return;
         if (cache) this.cache = DeviceCache.open('houses', cache.release, cache.version, CAPS.houses).catch(() => undefined);
         const worker = this.worker = new Worker(new URL('./house-worker.ts', import.meta.url), { type: 'module' });
@@ -265,7 +266,7 @@ export class Houses {
         }
         wanted.sort((a, b) => a.d - b.d);
         for (const { name, x, y } of wanted) {
-            if (this.tiles.has(name) || this.pending.has(name) || this.pending.size >= REQUESTS) continue;
+            if (this.tiles.has(name) || this.pending.has(name) || this.pending.size >= this.budget.loads.houses) continue;
             this.pending.add(name);
             this.load(x, y).then(result => this.keep(name, result), error => {
                 if (!stopped(error)) console.warn(`House tile ${name}: ${error instanceof Error ? error.message : error}`);

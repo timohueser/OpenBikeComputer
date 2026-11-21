@@ -1,5 +1,3 @@
-/** The frames per second that the engine draws while the view moves. */
-export const FRAME_RATE = 60;
 /** Display frames whose median length is the refresh period. */
 const PERIODS = 8;
 /** A gap longer than this is an idle engine, not a display frame. */
@@ -14,11 +12,12 @@ const HYSTERESIS = 0.15;
  * so a late or early timestamp does not skip a frame. A quality controller may change `rate` at run time.
  */
 export class Pacer {
-    rate = FRAME_RATE;
     private step = 1;
     private drawn = -Infinity;
     private previous?: number;
     private readonly periods: number[] = [];
+
+    constructor(public rate: number) {}
 
     /** Whether the display frame at `now` (milliseconds) draws. */
     due(now: number): boolean {
