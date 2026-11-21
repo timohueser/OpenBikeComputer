@@ -69,7 +69,7 @@ export class Stamps implements StampSource {
     /** The owner nodes that are known without their structure meshes, whether one's meshes are on their way, and the last frame's rank. */
     private readonly unbuilt = new Map<string, Node>();
     private building = false;
-    private rank: (node: Node) => number = () => 0;
+    private rank: (node: Node, meshes?: boolean) => number = () => 0;
     /** The feature tiles of the frame's wishes, and of the near levels' nodes that the frame read and the frame before. */
     private queued = new Set<string>();
     private nearRead = new Set<string>();
@@ -123,9 +123,10 @@ export class Stamps implements StampSource {
 
     /**
      * Asks the worker for the frame's wishes, the lowest `rank` first, while it has fewer than REQUESTS
-     * on their way. The rest go as answers come, until the next frame states its wishes again.
+     * on their way. The rest go as answers come, until the next frame states its wishes again. With `meshes`,
+     * `rank` ranks the structure job of an owner node.
      */
-    send(rank: (node: Node) => number): void {
+    send(rank: (node: Node, meshes?: boolean) => number): void {
         const ranks = new Map([...this.wishes.values()].map(node => [node, rank(node)]));
         this.queue = [...ranks.keys()].sort((a, b) => ranks.get(a)! - ranks.get(b)!);
         this.queued = new Set(this.queue.map(node => key(featureTile(node)!)));
@@ -136,20 +137,20 @@ export class Stamps implements StampSource {
     }
 
     /**
-     * The stamps first: the structure meshes of an owner node are a job of their own, which goes to the worker only
-     * while no stamp request is on its way, and one at a time. The worker takes its jobs in turn, so a stamp wish
-     * waits for one structure job at most, whenever it comes. Of the owner nodes without meshes, the next is the
-     * lowest in the last frame's rank.
+     * The stamp wishes and the structure meshes of the owner nodes go in one order, the last frame's rank. The structure
+     * meshes of a node are a job of their own, one at a time, which goes before the stamp wishes still waiting of a
+     * higher rank: the tunnels and parts about the eye wait for no stamps of the far field. The worker takes its jobs
+     * in turn, so a stamp wish waits for one structure job at most, whenever it comes.
      */
     private refill(): void {
         while (this.pending.size < REQUESTS && this.queue.length) {
             const node = this.queue.shift()!;
             if (!this.pending.has(key(node)) && !this.nodes.has(key(node))) this.request(node);
         }
-        if (this.pending.size || this.building) return;
+        if (this.building) return;
         let next: Node | undefined;
-        for (const node of this.unbuilt.values()) if (!next || this.rank(node) < this.rank(next)) next = node;
-        if (next) this.build(next);
+        for (const node of this.unbuilt.values()) if (!next || this.rank(node, true) < this.rank(next, true)) next = node;
+        if (next && (!this.queue.length || this.rank(next, true) < this.rank(this.queue[0]))) this.build(next);
     }
 
     private request(node: Node): void {

@@ -96,25 +96,27 @@ describe('the structure meshes of an owner node', () => {
         return { stamps, jobs: worker.jobs, wish, answer };
     };
 
-    it('wait for every stamp request, and a stamp wish that comes later waits for one structure job at most', async () => {
-        // The owner nodes hold the eye, so they rank first: their stamps go first, their meshes after every stamp.
-        const { stamps, jobs, wish, answer } = await frame([...owners, near(0), near(1)], node => (node.level === 15 ? node.x - L15.x : 10));
-        expect(jobs).toEqual([...owners.map(node => `stamps ${name(node)}`), `stamps ${name(near(0))}`, `stamps ${name(near(1))}`]);
-        // The owner nodes' stamps came, two stamp requests are on their way: no structure job.
+    it('go one at a time in the rank of the stamp wishes: before those of a higher rank, after those of a lower one', async () => {
+        // The owner nodes hold the eye, so they rank first; twelve wishes of the far field follow, more than go out at once.
+        const far = Array.from({ length: 12 }, (_, i) => near(i)), stampsOf = (nodes: Node[]) => nodes.map(node => `stamps ${name(node)}`);
+        const { stamps, jobs, wish, answer } = await frame([...owners, ...far], node => (node.level === 15 ? node.x - L15.x : 10));
+        expect(jobs).toEqual(stampsOf([...owners, ...far.slice(0, 5)]));
+        // The owner nodes' stamps came: the structure job of the first goes before the four far wishes that still wait.
         await answer(3);
-        expect(jobs.length).toBe(5);
-        await answer();
-        // One structure job, of the first owner node in the rank. No other follows while it is on its way.
-        expect(jobs.slice(5)).toEqual([`meshes ${name(owners[0])}`]);
-        // The camera moves: a new stamp wish goes to the worker behind that one job, and the last owner node now ranks first.
-        await wish([near(2)], node => (node.level === 15 ? L15.x + 2 - node.x : 10));
-        expect(jobs.slice(6)).toEqual([`stamps ${name(near(2))}`]);
+        expect(jobs.slice(8).sort()).toEqual([`meshes ${name(owners[0])}`, ...stampsOf(far.slice(5, 8))].sort());
+        // The camera moves: nine new wishes rank before the owner nodes, of which the last now ranks first. No other
+        // structure job goes while one is on its way, nor while a wish of a lower rank waits.
+        const eye = Array.from({ length: 9 }, (_, i) => near(20 + i));
+        await wish(eye, node => (node.level === 15 ? L15.x + 2 - node.x : node.x >= 8 * L15.x + 20 ? -1 : 10));
+        expect(jobs.length).toBe(12);
         await answer();
         expect(stamps.known(owners[0])?.meshes).toBe(WORKER);
-        expect(jobs.slice(7)).toEqual([`meshes ${name(owners[2])}`]);
+        expect(jobs.slice(12)).toEqual(stampsOf(eye.slice(0, 8)));
+        await answer(1);
+        expect(jobs.slice(20).sort()).toEqual([`meshes ${name(owners[2])}`, ...stampsOf(eye.slice(8))]);
         await answer();
+        expect(jobs.slice(22)).toEqual([`meshes ${name(owners[1])}`]);
         await answer();
-        expect(jobs.slice(8)).toEqual([`meshes ${name(owners[1])}`]);
         expect(stamps.loading).toBe(false);
         expect(owners.map(node => stamps.known(node)?.meshes)).toEqual([WORKER, WORKER, WORKER]);
     });

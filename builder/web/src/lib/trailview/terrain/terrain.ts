@@ -589,8 +589,9 @@ export class Terrain {
 
     /**
      * One near-first order for the stamp worker: every wish within EYE_M and the nodes that the meshes in view read, then every
-     * other wish, each by its distance from the eye. The coarse pages over the eye count, as they draw until the eye's own do. A
-     * mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view wait their turn.
+     * other wish and the structure jobs, each by its distance from the eye. The coarse pages over the eye count, as they draw until
+     * the eye's own do. A mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view
+     * wait their turn.
      */
     private sendStamps(meshes: { node: Node }[], eye: { anchor: Anchor; above: number }, forward: Float64Array, view: View): void {
         const shown = new Set<string>(), hidden = new Set<string>(), level = { anchor: eye.anchor, above: 0 };
@@ -603,7 +604,7 @@ export class Terrain {
             }
         }
         const first = (name: string, node: Node) => shown.has(name) || (!hidden.has(name) && distances(level, node)[0] <= EYE_M);
-        this.stamps.send(node => (first(key(node), node) ? 0 : NO_LIMIT) + distances(eye, node)[0]);
+        this.stamps.send((node, meshes) => (!meshes && first(key(node), node) ? 0 : NO_LIMIT) + distances(eye, node)[0]);
     }
 
     /**
