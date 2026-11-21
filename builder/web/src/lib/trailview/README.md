@@ -170,8 +170,8 @@ uv run --locked --group planner-maps python FIX features features.pmtiles
   multiply by `look.screen.z`.
 - A still view shows the mean of 16 jittered frames; only new pages, nodes or extras restart them.
 - Debug colours lose bits in the `rg11b10ufloat` frame (2–4/255 near 1).
-- A finer node meets a coarser one only on the LOD plateau: a lower least range needs a narrower
-  morph band (`lod` of `budget.ts`, `lod.test.ts`).
+- A finer node meets a coarser one only on the LOD plateau: keep `lod` of `budget.ts`
+  (`lod.test.ts`).
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
 - Never let a synthesis read a stamped page: a stored page keeps its raw layer and draws a copy.
 - The ground pool has a fixed size too: the farthest pages past it draw from their cover, two levels
