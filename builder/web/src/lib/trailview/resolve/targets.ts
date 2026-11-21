@@ -36,7 +36,7 @@ export class Targets {
     history: GPUTexture[] = [];
     historyDepth: GPUTexture[] = [];
     parity = 0;
-    /** The output of a wide frame, `margin` wider in tangent space on each axis, with whole pixels about the canvas; its history pair. */
+    /** The output of a wide frame, `margin` (horizontal, vertical) wider in tangent space, with whole pixels about the canvas; its history pair. */
     wideWidth = 0;
     wideHeight = 0;
     wideHistory: GPUTexture[] = [];
@@ -44,8 +44,8 @@ export class Targets {
     /** Whether the last frame wrote the wide history. */
     lastWide = false;
 
-    /** `still`: the depth can be copied, for a still. `margin` > 1 makes the wide targets. */
-    constructor(private readonly gpu: Gpu, private readonly still = false, readonly margin = 1) {
+    /** `still`: the depth can be copied, for a still. A `margin` > 1 on an axis makes the wide targets. */
+    constructor(private readonly gpu: Gpu, private readonly still = false, readonly margin: [number, number] = [1, 1]) {
         this.format = sceneFormat(gpu);
     }
 
@@ -70,16 +70,16 @@ export class Targets {
         if (width === this.width && height === this.height && top === this.top) return false;
         const { gpu } = this;
         for (const texture of [this.scene, this.depth, ...this.history, ...this.historyDepth, ...this.wideHistory, ...this.wideHistoryDepth]) if (texture) gpu.destroy('targets', texture);
-        const pad = (n: number) => n + 2 * Math.round(n * (this.margin - 1) / 2);
-        Object.assign(this, { width, height, top, wideWidth: pad(width), wideHeight: pad(height), lastWide: false });
+        const pad = (n: number, margin: number) => n + 2 * Math.round(n * (margin - 1) / 2);
+        Object.assign(this, { width, height, top, wideWidth: pad(width, this.margin[0]), wideHeight: pad(height, this.margin[1]), lastWide: false });
         const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
         const make = (format: GPUTextureFormat, bytes: number, [w, h]: number[], extra = 0) => gpu.texture('targets', { size: [w, h], format, usage: usage | extra }, bytes * w * h);
-        const render = this.viewport(top, this.margin > 1), output = [width, height], wide = [this.wideWidth, this.wideHeight];
+        const wides = this.margin.some(m => m > 1), render = this.viewport(top, wides), output = [width, height], wide = [this.wideWidth, this.wideHeight];
         this.scene = make(this.format, this.format === 'rg11b10ufloat' ? 4 : 8, render);
         this.depth = make(DEPTH, 4, render, this.still ? GPUTextureUsage.COPY_SRC : 0);
         this.history = [make(HISTORY, 4, output), make(HISTORY, 4, output)];
         this.historyDepth = [make(HISTORY_DEPTH, 2, output), make(HISTORY_DEPTH, 2, output)];
-        if (this.margin > 1) {
+        if (wides) {
             this.wideHistory = [make(HISTORY, 4, wide), make(HISTORY, 4, wide)];
             this.wideHistoryDepth = [make(HISTORY_DEPTH, 2, wide), make(HISTORY_DEPTH, 2, wide)];
         }

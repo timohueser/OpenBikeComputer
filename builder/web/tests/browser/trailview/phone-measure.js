@@ -49,9 +49,10 @@
             v('p-end-road', 'P, then the road worker ends', {}, { headroom: 1, after: 'end:road-worker' }),
             v('p-soak', 'P, the path to and fro for 10 minutes', {}, { headroom: 1, soak: 600 }),
             v('p-end-rest', 'P, then the small workers end', {}, { headroom: 1, after: 'end:decode-worker|model-worker|house-worker|plant-worker' }),
-            // Prototype #3656: the turn prototype's `reuse=1`, and the same at 10 scene frames a second with a narrower margin.
+            // Prototype #3656: the turn prototype's `reuse=1`; then wider turn frames on the narrow portrait axis, and those with the width ahead of the turn.
             v('p-reuse', 'P, turn reuse', { reuse: 1 }),
-            v('p-reuse10', 'P, turn reuse at 10/s, margin 1.15', { reuse: 1, turn: 10, margin: 1.15 }),
+            v('p-margin', 'P, turn reuse, margin 1.5 × 1.1 at 8/s', { reuse: 1, margin: '1.5,1.1', turn: 8 }),
+            v('p-lead', 'P, turn reuse, margin 1.5 × 1.1 ahead, at 5/s', { reuse: 1, margin: '1.5,1.1', lead: 1, turn: 5 }),
         ];
     }
     const TAIL = '&date=2026-08-15&time=15:00&weather=sunny';

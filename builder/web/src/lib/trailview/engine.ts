@@ -53,7 +53,14 @@ const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters',
  * LOAD_RATE frames a second.
  */
 const REUSE = typeof location !== 'undefined' ? new URLSearchParams(location.search) : undefined;
-const MARGIN = Number(REUSE?.get('margin')) > 1 ? Number(REUSE?.get('margin')) : 1.25, TURN_RATE = Number(REUSE?.get('turn')) || 15, LOAD_RATE = 10;
+const TURN_RATE = Number(REUSE?.get('turn')) || 15, LOAD_RATE = 10;
+/** `margin=X` or `margin=X,Y`: the wide frame's width and height over the canvas's in tangent space, each at least 1. */
+const MARGIN = ((): [number, number] => {
+    const [x, y = x] = (REUSE?.get('margin') ?? '').split(',').map(Number), valid = (m: number) => (m >= 1 ? m : 1.25);
+    return [valid(x), valid(y)];
+})();
+/** `lead=`, 0 to 1: the share of the margin that moves to the side the view turns toward; 0 centres the wide frame. */
+const LEAD = Math.min(1, Math.max(0, Number(REUSE?.get('lead')) || 0));
 /** Half a display period: a frame due a little early draws. */
 const SLACK_MS = 8;
 /** History pixels about the canvas that the present reads past its edge: the Catmull-Rom and the sharpening. */
@@ -157,7 +164,7 @@ export class TrailView {
     private readonly controls?: Controls;
     private readonly reuse: boolean;
     /** With `reuse`: the last frame that drew the scene, its eye and extras as a key, its direction, its view projection without the jitter, whether it was wide, and when it drew. */
-    private shot?: { key: string; heading: number; pitch: number; viewProj: Float32Array; wide: boolean; at: number };
+    private shot?: { key: string; heading: number; pitch: number; viewProj: Float32Array; wide: boolean; at: number; toward: [number, number] };
     /** A change that a held frame saw and did not draw. */
     private unshown = false;
     private destroyed = false;
@@ -529,7 +536,7 @@ export class TrailView {
         this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | (this.output ? GPUTextureUsage.COPY_SRC : 0) });
         const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const look = gpu.buffer('uniforms', LOOK_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-        const targets = new Targets(gpu, !!this.output, this.reuse ? MARGIN : 1);
+        const targets = new Targets(gpu, !!this.output, this.reuse ? MARGIN : [1, 1]);
         this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES, { resolve: 'terrain', present: 'resolve' }), targets };
         this.temporal.reset();
         // The maps at once: the ground's group binds them.
@@ -747,9 +754,14 @@ export class TrailView {
         // Input changes the key or the direction, so it never holds: a turn takes the wide frames above.
         const hold = !!shot && !turned && this.loading && now - shot.at < 1000 / LOAD_RATE - SLACK_MS;
         // A wide frame keeps the canvas's pixel size: terrain, tiers and footprints take the canvas's pixels and `pixel`.
-        const wide = !!shot && (turned || shot.wide);
+        const wide = !!shot && (turned || shot.wide) && targets.wideHistory.length > 0;
         const widen: [number, number] = wide ? [targets.wideWidth / targets.width, targets.wideHeight / targets.height] : [1, 1];
-        const drawProj = wide ? widened(viewProj, widen) : viewProj;
+        // The side each axis turns toward (+1 right or up), kept while the view rests; LEAD of the margin moves there, in whole pixels.
+        const turn = (d: number) => Math.sign(LEAD * d);
+        const toward: [number, number] = turned ? [turn(((this.pose.heading - shot.heading) % 360 + 540) % 360 - 180), turn(this.pose.pitch - shot.pitch)] : shot?.toward ?? [0, 0];
+        const lead = (extra: number, side: number, n: number) => (2 * Math.round(extra * (1 + LEAD * side) / 2) - extra) / n;
+        const shift: [number, number] = wide ? [lead(targets.wideWidth - targets.width, toward[0], targets.width), lead(targets.wideHeight - targets.height, toward[1], targets.height)] : [0, 0];
+        const drawProj = wide ? widened(viewProj, widen, shift) : viewProj;
         if (wide) [width, height] = targets.viewport(scale, true);
         const lonLat = this.frame.lonLat(place.east, place.north);
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
@@ -798,7 +810,7 @@ export class TrailView {
             ndc = [2 * offset[0] / width, -2 * offset[1] / height];
             gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(drawProj, ndc), pixel, light));
             const near = this.regionLook(eye);
-            gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, near, lights, aspect, ndc, scale, step?.sample ?? 0, widen));
+            gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, near, lights, aspect, ndc, scale, step?.sample ?? 0, widen, shift));
             const { cover } = near.weather, night = lightAt(lights.sunAltitude).night;
             this.sky.write(gpu, {
                 stars: lights.stars, moon: lights.drawnMoon, moonRadius: lights.moonRadius, moonAir: lights.moonAir, moonLight: lights.share > 0,
@@ -854,7 +866,7 @@ export class TrailView {
             }
             targets.swap(wide);
             if (wide) this.resolve.present(encoder, targets, canvas, group, { last: drawProj, ...rays(this.pose, aspect) }, times.writes('present'));
-            this.shot = key === undefined ? undefined : { key, heading: this.pose.heading, pitch: this.pose.pitch, viewProj: drawProj, wide, at: now };
+            this.shot = key === undefined ? undefined : { key, heading: this.pose.heading, pitch: this.pose.pitch, viewProj: drawProj, wide, at: now, toward };
             this.lastFrame = { depth: targets.depth!, pixels: [width, height], viewProj: jittered(drawProj, ndc), eye: [eye.east, eye.north, eye.z] };
             if (this.grab && !this.converging) grabbed = this.copy(encoder, { viewProj, eye: [eye.east, eye.north, eye.z], pixel });
         }
@@ -978,12 +990,12 @@ export class TrailView {
      * The look of shade.wgsl: the light keys at the sun's altitude under the weather, with the moon's
      * light at night, and the haze, light and grade of the regions about the eye.
      */
-    private look(eye: Eye, near: EyeLook, lights: Lights, aspect: number, jitter: [number, number], scale: number, sample: number, widen: [number, number]): ArrayBuffer {
+    private look(eye: Eye, near: EyeLook, lights: Lights, aspect: number, jitter: [number, number], scale: number, sample: number, widen: [number, number], shift: [number, number]): ArrayBuffer {
         const [x, y, z, , bearing] = lights.key, light = lightAt(lights.sunAltitude);
         return lookUniform({
             sun: [x, y, z, bearing], skySun: lights.sun, light: weatherLight(lights.share > 0 ? moonlit(light, lights.share, lights.moonAir) : eclipsed(light, lights.left), near.weather),
             eye: near, altitude: eye.z, place: [eye.east, eye.north],
-            camera: rays(this.pose, aspect, widen),
+            camera: rays(this.pose, aspect, widen, shift),
             codes: this.groundLook.codes,
             debug: DEBUG_VIEWS.indexOf(this.extras.debug), sample,
             jitter, scale, detail: this.instances.detail,
@@ -1053,20 +1065,21 @@ interface Lights {
     seed: number;
 }
 
-/** The view ray of clip point (x, y) of a pose's camera: forward + x right + y up, its tangents `widen` wider. */
-function rays({ heading, pitch }: Pose, aspect: number, [sx, sy] = [1, 1]): Omit<Present, 'last'> {
-    const h = heading * RAD, p = pitch * RAD, ty = Math.tan(VFOV * RAD / 2) * sy, tx = Math.tan(VFOV * RAD / 2) * aspect * sx;
-    const forward = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)], right = [Math.cos(h), -Math.sin(h), 0];
-    const up = [right[1] * forward[2] - right[2] * forward[1], right[2] * forward[0] - right[0] * forward[2], right[0] * forward[1] - right[1] * forward[0]];
+/** The view ray of clip point (x, y) of a pose's camera: forward + x right + y up, its tangents `widen` wider and its centre at `shift` of the camera's clip space. */
+function rays({ heading, pitch }: Pose, aspect: number, [sx, sy] = [1, 1], [cx, cy] = [0, 0]): Omit<Present, 'last'> {
+    const h = heading * RAD, p = pitch * RAD, t = Math.tan(VFOV * RAD / 2), ty = t * sy, tx = t * aspect * sx;
+    const ahead = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)], right = [Math.cos(h), -Math.sin(h), 0];
+    const up = [right[1] * ahead[2] - right[2] * ahead[1], right[2] * ahead[0] - right[0] * ahead[2], right[0] * ahead[1] - right[1] * ahead[0]];
+    const forward = ahead.map((v, j) => v + cx * t * aspect * right[j] + cy * t * up[j]);
     return { forward, right: right.map(v => v * tx), up: up.map(v => v * ty) };
 }
 
-/** A view projection whose tangents are `widen` wider on each axis. */
-function widened(m: Float32Array, [sx, sy]: [number, number]): Float32Array {
+/** A view projection whose tangents are `widen` wider on each axis, its centre at `shift` of the clip space of `m`. */
+function widened(m: Float32Array, [sx, sy]: [number, number], [cx, cy]: [number, number]): Float32Array {
     const out = m.slice();
     for (let j = 0; j < 4; j++) {
-        out[4 * j] /= sx;
-        out[4 * j + 1] /= sy;
+        out[4 * j] = (m[4 * j] - cx * m[4 * j + 3]) / sx;
+        out[4 * j + 1] = (m[4 * j + 1] - cy * m[4 * j + 3]) / sy;
     }
     return out;
 }
