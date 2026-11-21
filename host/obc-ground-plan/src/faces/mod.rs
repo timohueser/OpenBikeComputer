@@ -88,6 +88,8 @@ pub(crate) struct WayLine<'a> {
 /// The band layers about a carriageway, inner to outer: paved shoulder, shoulder, verge, bank, slope.
 /// Read a layer by its name, never by its number. A way's bank and water's shoulders and verge are 0 wide.
 pub(crate) const LAYERS: usize = 5;
+/// The shoulder, at the carriageway's height.
+pub(crate) const SHOULDER: usize = 1;
 /// The verge, the outer edge of a line's core.
 pub(crate) const VERGE: usize = 2;
 /// The slope, the outermost layer.

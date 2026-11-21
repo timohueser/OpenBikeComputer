@@ -2,7 +2,7 @@
 //! the opening's inner width, so its walls or banks stand on the jamb lines and meet the head wall, and narrows back to
 //! its own width over `approach_m` (`obc-trailview-parts`), or over the way where it is shorter.
 
-use super::{Ctx, WayLine, LAYERS, VERGE};
+use super::{Ctx, WayLine, LAYERS, SHOULDER, VERGE};
 use crate::graph::MIN_STEP_M;
 
 /// A line's end lies at an opening where it lies this near the opening's point (m).
@@ -23,7 +23,8 @@ pub(super) fn widen(ctx: &Ctx, lines: &mut [WayLine]) {
             let Some(m) = ctx.graph.mouths.iter().find(|m| {
                 let d = [m.at[0] - g[0], m.at[1] - g[1]];
                 let away = [f64::from(line.p[next][0] - line.p[at][0]), f64::from(line.p[next][1] - line.p[at][1])];
-                d[0].hypot(d[1]) <= ctx.units(AT_MOUTH_M, line.p[at]) && away[0] * m.into[0] + away[1] * m.into[1] < 0.0
+                libm::hypot(d[0], d[1]) <= ctx.units(AT_MOUTH_M, line.p[at])
+                    && away[0] * m.into[0] + away[1] * m.into[1] < 0.0
             }) else {
                 continue;
             };
@@ -46,7 +47,8 @@ pub(super) fn widen(ctx: &Ctx, lines: &mut [WayLine]) {
                 insert(line, i, x);
             }
         }
-        // Each layer from the verge out moves by the widest widening at its vertex.
+        // The shoulder, at the road's height, and each layer out of it move by the widest widening at its vertex: the
+        // core's edge, where a wall or a bank stands, reaches the jamb line.
         let n = line.p.len();
         let ats: Vec<usize> = ends.iter().map(|&(at, ..)| if at == 0 { 0 } else { n - 1 }).collect();
         let moved: Vec<f64> = {
@@ -60,7 +62,7 @@ pub(super) fn widen(ctx: &Ctx, lines: &mut [WayLine]) {
                 .collect()
         };
         for (bands, d) in line.bands.iter_mut().zip(moved) {
-            for b in &mut bands[VERGE..LAYERS] {
+            for b in &mut bands[SHOULDER..LAYERS] {
                 *b += d;
             }
         }
@@ -74,7 +76,7 @@ fn length(p: &[[i32; 2]]) -> f64 {
 
 /// The distance of each vertex from vertex `at` along the line (units).
 fn along(p: &[[i32; 2]], at: usize) -> Vec<f64> {
-    let step = |a: [i32; 2], b: [i32; 2]| f64::from(b[0] - a[0]).hypot(f64::from(b[1] - a[1]));
+    let step = |a: [i32; 2], b: [i32; 2]| libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
     let mut s = vec![0.0; p.len()];
     for i in at + 1..p.len() {
         s[i] = s[i - 1] + step(p[i - 1], p[i]);
