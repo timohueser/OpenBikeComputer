@@ -67,8 +67,8 @@ export function quantize(mesh: FloatMesh, extent: number): Uint8Array<ArrayBuffe
 export interface TreeEntry { summer: string; keepsHeading: boolean; tones: (number[] | null)[]; crowns: (string | null)[] }
 /** A plant: where it grows, and per season the file of its SEEDS shapes. */
 export interface PlantEntry { ground: Ground; seasons: Record<string, string> }
-/** A breed: its height in metres to the top of the back, its count of coats, and the file of its coats. */
-export interface BreedEntry { height: number; coats: number; file: string }
+/** A breed: its height in metres to the top of the back, its counts of coats and poses, and the file of its models, each coat in each pose. */
+export interface BreedEntry { height: number; coats: number; poses: number; file: string }
 
 /**
  * The models of the build (`virtual:models`): what the engine knows before it fetches a file. The objects file holds the

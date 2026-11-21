@@ -24,13 +24,20 @@ struct Dressing {
     herd_reach: f32,
     unused2: f32,
     unused3: vec2f,
+    // The showroom of dressing.ts, which stands its animals in place of the herds: its middle in world units, its
+    // animals, and the first of their entries in `herds`.
+    show_origin: vec2i,
+    show_count: u32,
+    show_first: u32,
 }
 
-// A herd of a region, as dressing.ts writes it: its first model and coats, its groups per eye's circle,
-// its breed's height, its animals per group, and the materials that it grazes as bits of their codes.
+// A herd of a region, as dressing.ts writes it: its first model, its coats (low 16 bits) and poses (high 16 bits),
+// its groups per eye's circle, its breed's height, its animals per group, and the materials that it grazes as bits of
+// their codes. Its models are each coat in each pose. A showroom entry holds its model, its yaw in `groups` and its
+// offset from the showroom's middle in metres east and north in `size`.
 struct Herd {
     model: u32,
-    coats: u32,
+    looks: u32,
     groups: f32,
     height: f32,
     size: vec2f,
@@ -58,6 +65,20 @@ var<workgroup> cell_region: u32;
 
 @compute @workgroup_size(64)
 fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) lane: u32) {
+    if (dressing.show_count > 0u) {
+        if (all(group.xy == vec2u(0u))) {
+            for (var i = lane; i < dressing.show_count; i += 64u) {
+                let h = herds[dressing.show_first + i];
+                let at = dressing.show_origin + vec2i(round(vec2f(h.size.x, -h.size.y) / surface.unit));
+                let s = lod_space(vec2f(at - surface.anchor));
+                let ground = stand_height(s, at);
+                if (known(ground)) {
+                    emit(h.model, s, ground, h.height, h.groups, 1.0, 1.0, 1.0);
+                }
+            }
+        }
+        return;
+    }
     let cell = dressing.herd_origin + vec2i(group.xy);
     let size = 1 << HERD_SHIFT;
     let corner = cell << vec2u(HERD_SHIFT);
@@ -98,9 +119,12 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
                 if (!known(ground)) {
                     continue;
                 }
-                // Most of a group wears the breed's first coat.
-                let coat = select(1u + mix_bits(a + 7u) % max(herd.coats - 1u, 1u), 0u, unit_float(mix_bits(a + 8u)) < 0.6 || herd.coats == 1u);
-                emit(herd.model + coat, s, ground, herd.height * (0.85 + 0.3 * unit_float(mix_bits(a + 9u))),
+                // Most of a group wears the breed's first coat; the poses come about as often each.
+                let coats = herd.looks & 0xffffu;
+                let poses = herd.looks >> 16u;
+                let coat = select(1u + mix_bits(a + 7u) % max(coats - 1u, 1u), 0u, unit_float(mix_bits(a + 8u)) < 0.6 || coats == 1u);
+                let pose = mix_bits(a + 12u) % poses;
+                emit(herd.model + coat * poses + pose, s, ground, herd.height * (0.85 + 0.3 * unit_float(mix_bits(a + 9u))),
                     6.2831853 * unit_float(mix_bits(a + 10u)), 1.0, 0.92 + 0.16 * unit_float(mix_bits(a + 11u)), 1.0);
             }
         }

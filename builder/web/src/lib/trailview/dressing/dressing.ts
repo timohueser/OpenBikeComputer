@@ -10,10 +10,28 @@ import { bits, named, type Rules } from '../rules/regions';
 
 /** Herds stand within this many metres, rocks within this many; as HERDS of dressing.wgsl and ROCK_REACH_M of rocks.wgsl. */
 const HERD_REACH_M = 1500, ROCK_REACH_M = 1000, HERDS = 4;
+/** An animal draws its near tier to this many metres (specs/trailview-models.md). */
+const ANIMAL_NEAR_M = 150;
 /** Units along a herd cell and a rock point's cell, as HERD_SHIFT of dressing.wgsl and ROCK_SHIFT of rocks.wgsl. */
 const HERD_CELL = 2 ** 14, ROCK_CELL = 2 ** 7;
 /** Words of `Herd` and bytes of `Dressing` in dressing.wgsl. */
-const HERD_WORDS = 8, DRESSING_BYTES = 48;
+const HERD_WORDS = 8, DRESSING_BYTES = 64;
+
+/**
+ * The showroom (`showroom=lat,lon,heading,entries[,tier]` in the address), the engine view of the model review: in place
+ * of the herds, a row of animals across the view toward `heading` (degrees from north) at (lat, lon), SHOW_SPACING_M
+ * apart, each facing right and turned SHOW_TURN toward the eye. An entry is a breed, which stands all its models, or
+ * `breed.k`, its model k. With `tier` 1 every animal draws its far tier at any distance.
+ */
+interface Showroom { lonLat: [number, number]; heading: number; entries: string[]; tier: number }
+const SHOW_SPACING_M = 3.2, SHOW_TURN = 0.45;
+
+function showroom(): Showroom | undefined {
+    const value = globalThis.location ? new URLSearchParams(globalThis.location.search).get('showroom') : null;
+    if (!value) return undefined;
+    const [lat, lon, heading, entries, tier] = value.split(',');
+    return { lonLat: [Number(lon), Number(lat)], heading: (Number(heading) * Math.PI) / 180, entries: entries.split('|'), tier: Number(tier ?? 0) };
+}
 
 interface Resources { gpu: Gpu; herds: GPUComputePipeline; rocks: GPUComputePipeline; groups: GPUBindGroup[]; params: GPUBuffer }
 
@@ -28,6 +46,10 @@ export class Dressing implements Producer {
     private readonly rockModel?: number;
     private herdSide = 0;
     private rockSide = 0;
+    private readonly show = showroom();
+    /** The first entry of the showroom's animals in the table, and their count. */
+    private showFirst = 0;
+    private showCount = 0;
     /** The files of the models. */
     private readonly urls: string[] = [];
 
@@ -37,17 +59,31 @@ export class Dressing implements Producer {
         const spec = ({ tiers: [mesh], shape }: Packed, until: number): ModelSpec => ({ tiers: [{ mesh, until }], shape });
         // No fade of the rocks' tier: rocks_of ends each rock at its own distance before the reach.
         this.rockModel = this.load(objects.file, objects.rocks, model => ({ ...spec(model, ROCK_REACH_M), fade: 0 }));
-        const breeds = new Map<string, number>(), used = new Set(rules.regions.flatMap(region => region.herds.map(herd => herd.model)).filter(name => name in breedModels));
+        const animal = ({ tiers: [near, far], shape }: Packed): ModelSpec => ({ tiers: this.show?.tier ? [{ mesh: far, until: HERD_REACH_M }] : [{ mesh: near, until: ANIMAL_NEAR_M }, { mesh: far, until: HERD_REACH_M }], shape });
+        const shown = this.show?.entries.map(entry => entry.split('.')) ?? [];
+        const breeds = new Map<string, number>(), used = new Set([...rules.regions.flatMap(region => region.herds.map(herd => herd.model)), ...shown.map(([name]) => name)].filter(name => name in breedModels));
         for (const name of used) {
-            const first = this.load(breedModels[name].file, breedModels[name].coats, model => spec(model, HERD_REACH_M));
+            const first = this.load(breedModels[name].file, breedModels[name].coats * breedModels[name].poses, animal);
             if (first !== undefined) breeds.set(name, first);
         }
-        this.table = new Uint32Array(Math.max(1, rules.regions.length) * HERDS * HERD_WORDS);
+        // The showroom's animals: an entry of a breed stands each of its models.
+        const row = shown.filter(([name]) => breeds.has(name)).flatMap(([name, k]) => (k ? [Number(k)] : Array.from({ length: breedModels[name].coats * breedModels[name].poses }, (_, m) => m)).map(m => ({ name, model: breeds.get(name)! + m })));
+        this.showFirst = Math.max(1, rules.regions.length) * HERDS;
+        this.showCount = row.length;
+        this.table = new Uint32Array((this.showFirst + row.length) * HERD_WORDS);
         const floats = new Float32Array(this.table.buffer);
+        if (this.show) {
+            const across = -this.show.heading;
+            row.forEach(({ name, model }, k) => {
+                const at = (this.showFirst + k) * HERD_WORDS, offset = (k - (row.length - 1) / 2) * SHOW_SPACING_M;
+                this.table[at] = model;
+                floats.set([across - Math.PI / 2 - SHOW_TURN, breedModels[name].height, offset * Math.cos(across), offset * Math.sin(across)], at + 2);
+            });
+        }
         rules.regions.forEach((region, r) => {
             region.herds.filter(herd => breeds.has(herd.model)).slice(0, HERDS).forEach((herd, k) => {
-                const at = (r * HERDS + k) * HERD_WORDS;
-                this.table.set([breeds.get(herd.model)!, breedModels[herd.model].coats], at);
+                const at = (r * HERDS + k) * HERD_WORDS, { coats, poses } = breedModels[herd.model];
+                this.table.set([breeds.get(herd.model)!, coats | (poses << 16)], at);
                 floats.set([herd.groups, breedModels[herd.model].height, ...herd.size], at + 2);
                 this.table.set(bits(named(rules.vocabulary, herd.on)), at + 6);
             });
@@ -101,6 +137,11 @@ export class Dressing implements Producer {
         ints.set([Math.floor(ux / ROCK_CELL) - this.rockSide / 2, Math.floor(uy / ROCK_CELL) - this.rockSide / 2], 4);
         words[6] = this.rockModel ?? 0;
         floats[8] = HERD_REACH_M;
+        if (this.show) {
+            const [sx, sy] = worldPixel(this.show.lonLat, UNITS);
+            ints.set([Math.round(sx), Math.round(sy)], 12);
+            words.set([this.showCount, this.showFirst], 14);
+        }
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
     }
 

@@ -3,13 +3,14 @@
 import { KINDS } from '../kinds';
 import { SEASONS, type Season } from '../rules/regions';
 import { SUMMER } from '../vegetation/phenology';
-import { animal, BREEDS } from './animals';
+import { ANIMALS } from './animals';
 import { geometry } from './flat';
 import { bareIn, tree, TREES } from './library';
 import type { FloatMesh, Models, Packed } from './model-file';
 import { encodeModels, pack } from './pack';
 import { plant, PLANTS } from './plant-library';
 import { rock } from './rocks';
+import { mesh, Sculpt } from './sculpt';
 import { lit, simplified, simplifierReady } from './simplify';
 import { fits, tone } from './tone';
 import type { Grown, Lod } from './trees';
@@ -74,7 +75,15 @@ export async function bake(): Promise<Baked> {
         models.plants[id] = { ground, seasons };
     }
 
-    for (const [name, breed] of Object.entries(BREEDS)) models.breeds[name] = { height: breed.height, coats: breed.coats.length, file: await file('animal', `animal-${name}`, breed.coats.map((_, coat) => pack([geometry(animal(name, coat))]))) };
+    // A breed's models, each coat in each pose, with a near and a far tier.
+    for (const [name, animal] of Object.entries(ANIMALS)) {
+        const built = animal.coats.flatMap(coat => Array.from({ length: animal.poses }, (_, pose) => pack([0, 1].map(tier => {
+            const s = new Sculpt(tier);
+            animal.build(s, coat, pose);
+            return mesh(s.model);
+        }))));
+        models.breeds[name] = { height: animal.height, coats: animal.coats.length, poses: animal.poses, file: await file('animal', `animal-${name}`, built) };
+    }
 
     const rocks = (['slab', 'boulder'] as const).flatMap(name => Array.from({ length: SLABS }, (_, k) => pack([geometry(rock(name, k + 1))])));
     const points = [...KINDS].flatMap(([, kind]) => Object.values(kind.models ?? {}).map(source => source()));
