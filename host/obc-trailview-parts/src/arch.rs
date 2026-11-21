@@ -115,12 +115,18 @@ fn grown(net: &Net, e: usize, grow: f64) -> Vec<Corner> {
 }
 
 /// Where end e's head ends at another part: on each side, the nearest built tube that crosses its frame line within
-/// reach of the head (`Net::meets` with the head's metres across): the metres across to the middle between the two
-/// tubes' walls, and the side (1 to the left). The mate of a pair crosses it at its opening.
-fn head_cuts(net: &Net, e: usize) -> Vec<(f64, f64)> {
+/// reach of the head, or whose opening's approach crosses it within `pair_max_m` of the opening, and whose room
+/// overlaps the head from its foot to its top (`Net::meets` with the head's metres across and heights): the metres
+/// across to the middle between the two tubes' walls, and the side (1 to the left). The mate of a pair crosses it at
+/// its opening; the approach keeps a head out of the way to an opening behind it.
+fn head_cuts(net: &Net, e: usize, foot: f64) -> Vec<(f64, f64)> {
     let Some((c, _)) = net.opening(e) else { return Vec::new() };
+    let (end, chord, (design, bake)) = (&net.ends[e], &net.chords[c], (&net.rules.design, &net.rules.ladder.bake));
     let (right, left) = wide(net, e);
-    let cuts = net.meets(c, &net.frame(e, 0.0), [-right, left], tube::MEET_PAST_M);
+    let st = net.frame(e, 0.0);
+    let up = [foot - st.z, end.face.max(chord.height + design.frame_m + bake.shell_m)];
+    let meet = tube::Meet { across: [-right, left], past: tube::MEET_PAST_M, approach: bake.pair_max_m, up: Some(up) };
+    let cuts = net.meets(c, &st, meet);
     cuts.into_iter().flatten().map(|cut| (cut.x, cut.axis.signum())).collect()
 }
 
@@ -150,7 +156,7 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
         let (front, ring, back) =
             (net.frame(e, -design.recess_m), net.frame(e, 0.0), net.frame(e, design.face_m - design.recess_m));
         let (h, section) = shell.first().map_or((chord.height, chord.section), |p| (p.2, p.3));
-        let cuts = head_cuts(net, e);
+        let cuts = head_cuts(net, e, foot);
         b.clip(
             (cuts.iter())
                 .map(|&(x, side)| {

@@ -79,12 +79,23 @@ pub struct Meeting {
     pub end: Option<Station>,
 }
 
+/// How a part looks for other tubes from a station's line (`Net::meets`): the metres across to each side (to the right,
+/// to the left); the metres past the planes of the other's rings, and on from a ring at an opening along the line of
+/// its approach; and the heights over the station's floor that the part's faces span, or None for a room.
+#[derive(Clone, Copy, Debug)]
+pub struct Meet {
+    pub across: [f64; 2],
+    pub past: f64,
+    pub approach: f64,
+    pub up: Option<[f64; 2]>,
+}
+
 /// The side of a cell of `Net::cells`, in metres.
 const CELL_M: f64 = 16.0;
 /// Two tubes that meet at a cut each run this far past it: two world units, as each vertex is rounded to one.
 pub const OVERLAP_M: f64 = 0.05;
-/// A station meets a tube this far past the vertices of its chords: the openings of a pair lie on one frame line within
-/// a few centimetres of the rounding of their record.
+/// A station meets a tube this far past the planes of its rings: the two openings of a pair lie on one frame line within
+/// the rounding of their record.
 pub const MEET_PAST_M: f64 = 0.1;
 /// Halvings of a piece to find where another tube starts or ends on it: to a millimetre of a 10 m chord.
 const MEET_HALVES: usize = 14;
@@ -375,13 +386,15 @@ impl<'a> Net<'a> {
     }
 
     /// Where the line of a station across chord c meets another built tube, on each side (to the right, to the left)
-    /// the nearest: where the other's chord crosses the line, or passes within `past` metres of its vertices, within
-    /// `reach` of that side (the own part's metres across from its axis) and the other's half and shell, at the floor's
-    /// level within half their heights. The cut is at the middle between the two tubes' walls, measured square to each
-    /// tube's own chord, so both find one plane at any angle. A tube meets another for its inside and shell with the
-    /// reach of its shell; a head with the reach of its wall, and so where the other crosses its frame line. Needs
-    /// `meeting`.
-    pub fn meets(&self, c: usize, st: &Station, reach: [f64; 2], past: f64) -> [Option<Cut>; 2] {
+    /// the nearest, as `meet` looks: where the other's chord crosses the line between the planes of its rings (or past
+    /// them), within the own part's metres across from its axis and the other's half and shell; where the other's room
+    /// overlaps the heights that the own faces span (a head), or where its floor lies within half their heights of the
+    /// station's (a room). The cut is at the middle between the two tubes' walls, measured square to each tube's own
+    /// chord, so both find one plane at any angle. A tube meets another for its inside and shell with the reach of its
+    /// shell; a head with the reach of its wall, and so where the other or the approach of its opening crosses its
+    /// frame line. Needs `meeting`.
+    pub fn meets(&self, c: usize, st: &Station, meet: Meet) -> [Option<Cut>; 2] {
+        let reach = meet.across;
         let (own, shell) = (&self.chords[c], self.rules.ladder.bake.shell_m);
         let m = metres_per_unit(st.y);
         let cell = |dx: i64, dy: i64| {
@@ -416,18 +429,32 @@ impl<'a> Net<'a> {
             }
             let (px, py) = (other.a[0] - st.x, other.a[1] - st.y);
             let (x, u) = ((dx * py - dy * px) / det, (st.ax * py - st.ay * px) / det);
-            let past = past / direction(other).1.max(MEET_PAST_M);
             let side = usize::from(x > 0.0);
             let floor_at = |u: f64| other.a[2] + u.clamp(0.0, 1.0) * (other.b[2] - other.a[2]);
-            if !(-past..=1.0 + past).contains(&u)
-                || x.abs() > reach[side] + other.half + shell
-                || (floor_at(u) - st.z).abs() > (own.height + other.height) / 2.0
+            // The other tube runs between the planes of its two rings: at an opening its frame line, at a bend the mitre.
+            let o_dir = unit([dx, dy]);
+            let crossing = st.at([x, 0.0]);
+            let between = |k: usize, into: f64| {
+                let r = self.ring(o, k);
+                let n = unit([r.ay, -r.ax]);
+                let n = if dot(n, o_dir) * into >= 0.0 { n } else { [-n[0], -n[1]] };
+                let on = if self.end_at.contains_key(&(o, k)) { meet.approach } else { 0.0 };
+                dot([crossing[0] - r.x, crossing[1] - r.y], n) * m >= -(meet.past + on)
+            };
+            let df = floor_at(u) - st.z;
+            let level = match meet.up {
+                Some([lo, hi]) => df < hi && df + other.height > lo,
+                None => df.abs() <= (own.height + other.height) / 2.0,
+            };
+            if x.abs() > reach[side] + other.half + shell
+                || !level
                 || best[side].is_some_and(|b| b.axis.abs() <= x.abs())
+                || !between(0, 1.0)
+                || !between(1, -1.0)
             {
                 continue;
             }
             // Signed metres from each tube's axis toward the other: linear along the station's line.
-            let o_dir = unit([dx, dy]);
             let mut na = unit(left_of(own_dir));
             if dot(na, line) * x < 0.0 {
                 na = [-na[0], -na[1]];
@@ -454,12 +481,13 @@ impl<'a> Net<'a> {
     /// Where station s and t across chord c meet another tube for its inside and shell (`meets` with the reach of its
     /// shell): on each side, the clip that takes off the other's side between the two stations' cuts. Where only one
     /// station meets it, the clip holds from that station to where the other tube starts or ends on the piece (found
-    /// by halves, with no metres past its vertices), and no farther.
+    /// by halves, with no metres past its rings), and no farther.
     pub fn clips(&self, c: usize, (s, t): (&Station, &Station)) -> Vec<Meeting> {
         let reach = self.chords[c].half + self.rules.ladder.bake.shell_m;
         let at = |u: f64, side: usize, past: f64| {
             let st = s.mix(t, u);
-            self.meets(c, &st, [reach; 2], past)[side].map(|cut| (st, cut))
+            let meet = Meet { across: [reach; 2], past, approach: 0.0, up: None };
+            self.meets(c, &st, meet)[side].map(|cut| (st, cut))
         };
         let mut out = Vec::new();
         for side in 0..2 {

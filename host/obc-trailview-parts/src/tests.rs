@@ -960,12 +960,14 @@ fn two_tubes_meet_only_where_both_are_and_a_cut_head_is_closed() {
         let got = hit(&faces, [0.15, 7.0, 500.0 + up], [0.0, -1.0, 0.0], 30.0);
         assert!(got.is_some_and(|h| h.1 && (h.0 - 3.5).abs() < 0.2), "taller, {up} m up: {got:?}");
     }
-    // Two arches whose frame lines lie 3 m apart: the first's tube crosses the second's line, so the second's head
-    // ends at the middle, closed over the first's tube; the second does not cross the first's line, so the first's
-    // head wall stays whole.
+    // Two arches whose frame lines lie 3 m apart: the first's tube crosses the second's line, and the second's approach
+    // the first's, so both heads end at the middle, closed: a way over the first's tube meets the second's head, a way
+    // in the second's approach meets the first's head, both at the middle; the way into the second meets no face.
     let faces = faces_of(&staggered);
     let got = hit(&faces, [3.15, 0.0, 506.2], north, 30.0);
     assert!(got.is_some_and(|h| h.1 && (h.0 - 3.5).abs() < 0.2), "frame lines apart, the second's head: {got:?}");
-    let got = hit(&faces, [-5.0, 5.0, 506.2], [1.0, 0.0, 0.0], 30.0);
-    assert!(got.is_some_and(|h| h.1 && h.0 < 5.1), "frame lines apart, the first's head: {got:?}");
+    let got = hit(&faces, [0.15, 7.0, 506.2], [0.0, -1.0, 0.0], 30.0);
+    assert!(got.is_some_and(|h| h.1 && (h.0 - 3.5).abs() < 0.2), "frame lines apart, the first's head: {got:?}");
+    let got = hit(&faces, [-5.0, 7.0, 502.0], [1.0, 0.0, 0.0], 30.0);
+    assert!(got.is_none(), "frame lines apart, the way into the second: {got:?}");
 }
