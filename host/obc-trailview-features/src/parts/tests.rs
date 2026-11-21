@@ -234,7 +234,7 @@ fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
     // The first tube widens to the far edge of the footway and its margin.
     let foot_half = widths().way("tunnel", &tags(&FOOT), false).half_m;
     assert_eq!(west["half"], num(2.5 + foot_half + 0.6));
-    assert!(!placed.tags.contains_key(&foot), "a chain with no part has no tag");
+    assert_eq!(placed.tags[&foot]["parts"], "in in", "a way in a tube that draws as parts runs in it");
     assert_eq!(placed.tags[&a]["parts"], "pair pair");
     // Where the nearer opening's way ends before the line of the other (a short first way), the two are no pair.
     let mut case = Case::default();
@@ -318,6 +318,44 @@ fn a_tube_record_keeps_its_two_vertices_and_its_tags_after_a_tile_cut() {
         assert_eq!((read.len(), read[0].parts.len(), read[0].parts[0].xy.len()), (1, 1, 2), "tile {c}");
         assert_eq!(&read[0].tags, &tubes[0].1, "tile {c}");
     }
+}
+
+#[test]
+fn tubes_whose_shells_overlap_share_an_opening_and_meet_from_vertices() {
+    use Kind::*;
+    // Two road tubes 7 m apart, never covered, the second starting 3 m farther in: free ends, but their shells overlap
+    // at the opening farther in, so they are a pair on its frame line. Neither has a wall, so the head is a rim round
+    // both: no `face`. Each keeps a free end's collar.
+    let mut case = Case::default();
+    let a = case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let b = case.tunnel(&ROAD, (3.0, 200.0), 7.0);
+    let placed = case.place(&site(&|_| 500.0, &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, a), vec![(vec![Pair, Free], "free: never covered"); 2]);
+    assert_eq!(of(&placed, b), vec![(vec![Pair, Free], "free: never covered"); 2]);
+    assert_eq!(placed.metrics["joins"].as_u64(), Some(2));
+    let ends = records(&placed, "tunnel-end");
+    let west = ends.iter().find(|t| t["mate"] == "7").expect("the west pair");
+    assert_eq!((west["shift"].as_str(), west.get("face"), west["collar"].as_str()), ("3", None, "40"));
+    assert_eq!(west["mate_collar"], "40");
+    // A road tube and one that runs 7 m north of it for 60 m and turns away: the first gets a vertex where their shells
+    // stop overlapping, where its axis lies its half, the other's and two shells from the other's axis.
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let line = [[0.0, 7.0], [60.0, 7.0], [120.0, 40.0], [200.0, 40.0]];
+    case.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[500.0; 4])]));
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    let tubes = records(&placed, "tunnel-tube");
+    let reach = 2.0 * tubes[0]["half"].parse::<f64>().unwrap() + 1.0;
+    let gap = |x: f64| {
+        line.windows(2).map(|w| segment_m(at([x, 0.0]), at(w[0]), at(w[1]))).fold(f64::INFINITY, f64::min) - reach
+    };
+    let firsts: Vec<f64> = (placed.features.iter())
+        .filter(|f| f.0 == "tunnel-tube")
+        .map(|f| back(f.2.points[0]))
+        .filter(|p| p[1].abs() < 0.01)
+        .map(|p| p[0])
+        .collect();
+    assert!(firsts.iter().any(|&x| gap(x).abs() < 0.05), "a vertex where the shells part: {firsts:?}");
 }
 
 #[test]

@@ -5,6 +5,7 @@
 mod floor;
 mod ladder;
 mod measure;
+mod overlap;
 #[cfg(test)]
 mod tests;
 
@@ -484,10 +485,30 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
 fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, input: &Input) -> Placed {
     let (mut features, mut tags) = (Vec::new(), HashMap::new());
     let part_name = |k: Option<Kind>| k.map_or("none", Kind::name);
+    // The kind of an opening without its pair decides the section: a pair of underpasses stays of box section.
+    let own = |d: &ladder::End| d.kinds.iter().copied().find(|&k| k != Kind::Pair);
     let mut ends_of: Vec<[Option<Kind>; 2]> = vec![[None, None]; tubes.len()];
+    let mut boxed = vec![false; tubes.len()];
     for (o, d) in openings.iter().zip(&decided.ends) {
         ends_of[o.tube][o.end] = d.kind;
+        boxed[o.tube] |= d.kind.is_some() && own(d) == Some(Kind::Box);
     }
+    let built = |t: usize| ends_of[t].iter().all(Option::is_some);
+    // A way in the tube of a wider one that draws as parts runs on its floor: `in` at both ends.
+    for (t, a) in decided.absorbed.iter().enumerate() {
+        if a.is_some_and(built) {
+            for &id in &tubes[t].ids {
+                tags.insert(id, Tags::from([("parts".to_string(), "in in".to_string())]));
+            }
+        }
+    }
+    // Where the shells of two tubes with parts start or stop overlapping, each gets a vertex.
+    let spans: Vec<Option<[f64; 2]>> = (0..tubes.len())
+        .map(|t| decided.floors[t].as_ref().filter(|_| built(t)).map(|f| [f.s[0], f.s[f.s.len() - 1]]))
+        .collect();
+    let floor = |t: usize, s: f64| decided.floors[t].as_ref().map_or((0.0, 0.0), |f| f.at(s));
+    let axes = overlap::Axes::new(tubes);
+    let meeting = overlap::meeting_vertices(&axes, tubes, &spans, &decided.half, &floor, input.rules.bake.shell_m);
     for (ti, t) in tubes.iter().enumerate() {
         let kinds = ends_of[ti];
         if kinds.iter().all(Option::is_none) {
@@ -495,7 +516,7 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         }
         let group = &input.rules.groups[t.group];
         let half = decided.half[ti];
-        let section = if kinds.contains(&Some(Kind::Box)) { "box" } else { "round" };
+        let section = if boxed[ti] { "box" } else { "round" };
         let (wtags, _) = &input.tunnels[&t.widest];
         let mut common = Tags::new();
         common.insert("section".into(), section.into());
@@ -518,8 +539,11 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
                 continue;
             }
             let inside = |s: f64| s > a + 1e-6 && s < z - 1e-6;
+            let mut inner: Vec<f64> = fl.s.iter().chain(&meeting[ti]).copied().filter(|&s| inside(s)).collect();
+            inner.sort_by(f64::total_cmp);
+            inner.dedup_by(|x, y| (*x - *y).abs() < 1e-6);
             let mut pts: Vec<Point> = vec![t.curve.at(a).0];
-            pts.extend(fl.s.iter().filter(|&&s| inside(s)).map(|&s| t.curve.at(s).0));
+            pts.extend(inner.iter().map(|&s| t.curve.at(s).0));
             pts.push(t.curve.at(z).0);
             for w in pts.windows(2) {
                 let (p, q) = if rising { (w[0], w[1]) } else { (w[1], w[0]) };
@@ -541,16 +565,19 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
     for (o, d) in openings.iter().zip(&decided.ends) {
         let (Some(kind), Some(n)) = (d.kind, &d.numbers) else { continue };
         let mut t = Tags::new();
-        let section = if kind == Kind::Box { "box" } else { "round" };
+        let section = if boxed[o.tube] { "box" } else { "round" };
         t.insert("section".into(), section.into());
         t.insert("half".into(), num(decided.half[o.tube]));
         t.insert("height".into(), num(n.height));
-        let look = if kind == Kind::Rock { "rock" } else { input.rules.groups[tubes[o.tube].group].look.as_str() };
+        // In rock where the opening and its mate are both openings in the rock.
+        let members = std::iter::once(d).chain(n.mate.map(|(m, ..)| &decided.ends[m]));
+        let rock = members.into_iter().all(|e| own(e) == Some(Kind::Rock));
+        let look = if rock { "rock" } else { input.rules.groups[tubes[o.tube].group].look.as_str() };
         t.insert("look".into(), look.into());
         t.insert("part".into(), kind.name().into());
         t.insert("heading".into(), format!("{}", (n.heading * 1000.0).round() / 1000.0));
         t.insert("collar".into(), num(n.collar));
-        if kind != Kind::Free {
+        if n.walls {
             t.insert("face".into(), num(n.face));
             t.insert("left".into(), n.left.iter().map(|v| num(*v)).collect::<Vec<_>>().join(" "));
             t.insert("right".into(), n.right.iter().map(|v| num(*v)).collect::<Vec<_>>().join(" "));
