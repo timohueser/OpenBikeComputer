@@ -32,9 +32,9 @@ from pathlib import Path
 # the sidewalks' slabs with their ends, rings and kerbs, and the portal line's levels with the cover's sides.
 # The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
 # The built tunnel ends (obc-trailview-parts) with their open stretches and the approaches to their openings add
-# about 36 kB gzipped; measured on that build with wasm-pack 0.15.0 and rustc 1.99.0, which gives the build before it
-# about 5 kB more than CI.
-GROUND_PLAN_MEASURED = {"gzipped": 828_795, "raw_wasm": 2_129_601}
+# about 36 kB gzipped; the openings of a pair's mate (the parts' `mouths`) about 2 kB more, measured in CI with
+# wasm-pack 0.15.0 and rustc 1.100.0.
+GROUND_PLAN_MEASURED = {"gzipped": 831_466, "raw_wasm": 2_134_754}
 # The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
 # unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
 # A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
@@ -45,11 +45,10 @@ GROUND_PLAN_MARGIN = {
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * GROUND_PLAN_MEASURED["raw_wasm"] / GROUND_PLAN_MEASURED["gzipped"]),
 }
 
-# Measured on the build of the tunnel parts' arch, tube, boxes and underpasses, with a tile's volumes built once and
-# selected per node, and the pair, the rim, the closed free end and the cut of two tubes that meet: locally with
-# wasm-pack 0.15.0 and rustc 1.99.0, which gives develop's build before it about 2 kB more than CI. The margin is the
-# ground plan's, raw by the same fraction.
-PARTS_MEASURED = {"gzipped": 142_428, "raw_wasm": 321_839}
+# Measured in CI on the build of the tunnel parts' arch, tube, boxes and underpasses, with a tile's volumes built once
+# and selected per node, and the pair, the rim, the closed free end and the cut of two tubes that meet, with wasm-pack
+# 0.15.0 and rustc 1.100.0. The margin is the ground plan's, raw by the same fraction.
+PARTS_MEASURED = {"gzipped": 140_824, "raw_wasm": 321_998}
 PARTS_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * PARTS_MEASURED["raw_wasm"] / PARTS_MEASURED["gzipped"]),
