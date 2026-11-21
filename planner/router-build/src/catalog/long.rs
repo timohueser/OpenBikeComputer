@@ -1,8 +1,7 @@
 //! Long routes: the parts of a long relation in order, their direction and gaps, and the long
 //! record. `specs/route-catalog.md#long-routes` is the rule.
 use super::{
-    cell_ids, children, class, graded, header, is_connector, is_route, tag, Class, Kept, MAX_GAP_M, PROFILE_STEP_M,
-    ROUNDTRIP_M,
+    cell_ids, children, class, graded, is_connector, is_route, Class, Kept, MAX_GAP_M, PROFILE_STEP_M, ROUNDTRIP_M,
 };
 use crate::source::{Relation, Relations, Table};
 use planner_router::shape::{distance, P};
@@ -133,12 +132,13 @@ pub(super) fn apart(parts: &[Part]) -> bool {
     ends.len() >= 2 && 3 * largest < ends.len()
 }
 
-/// The record of a long relation of `stage_count` stages from its parts, and the plan points of its
-/// kept parts joined. `None` when no part is kept. A relation that opens a connector leg is never complete: the leg
-/// leaves a gap between its parts. It has no `symbol` when a kept part is in France, and the
-/// credits of its kept parts.
+/// The record of a long route of `stage_count` stages from the fields of `header` and its parts, and the plan points of
+/// its kept parts joined. `None` when no part is kept. `roundtrip` closes a loop whose ends are within `ROUNDTRIP_M`. A
+/// relation that opens a connector leg is never complete: the leg leaves a gap between its parts. It has no `symbol`
+/// when a kept part is in France, and the distinct credits of `header` and its kept parts.
 pub(super) fn record(
-    relation: &Relation,
+    mut header: Map<String, Value>,
+    roundtrip: bool,
     kind: &str,
     parts: &[Part],
     connector: bool,
@@ -151,7 +151,11 @@ pub(super) fn record(
     let flags = order(parts);
     // The first and last point of each part in the direction of the trail.
     let way = |i: usize| parts[i].ends().map(|e| if flags[i].0 { (e.finish, e.start) } else { (e.start, e.finish) });
-    let mut record = header(relation, kind, kept.iter().any(|k| k.french));
+    if kept.iter().any(|k| k.french) {
+        header.remove("symbol");
+    }
+    let own = header.remove("credit");
+    let mut record = header;
     let sum = |field: &str| kept.iter().map(|k| k.record[field].as_u64().unwrap()).sum::<u64>();
     for field in ["length_m", "ascent_m", "descent_m", "moving_s"] {
         record.insert(field.into(), json!(sum(field)));
@@ -173,9 +177,8 @@ pub(super) fn record(
     let last = parts.len() - 1;
     let ends =
         (parts[0].kept.is_some() && parts[last].kept.is_some()).then(|| (way(0).unwrap().0, way(last).unwrap().1));
-    let closed = ends.is_some_and(|(start, finish)| {
-        start == finish || tag(&relation.tags, "roundtrip") == "yes" && distance(start, finish) <= ROUNDTRIP_M
-    });
+    let closed =
+        ends.is_some_and(|(start, finish)| start == finish || roundtrip && distance(start, finish) <= ROUNDTRIP_M);
     record.insert("loop".into(), json!(closed));
     let mut end_m = 0;
     let entries: Vec<Value> = (0..parts.len())
@@ -187,8 +190,9 @@ pub(super) fn record(
     record.insert("parts".into(), json!(entries));
     record.insert("stage_count".into(), json!(stage_count));
     let mut credits: Vec<&str> = Vec::new();
-    for credit in kept.iter().filter_map(|k| k.record.get("credit").and_then(Value::as_str)) {
-        if !credits.contains(&credit) {
+    let all = own.iter().chain(kept.iter().filter_map(|k| k.record.get("credit"))).filter_map(Value::as_str);
+    for credit in all.flat_map(|credit| credit.split("; ")) {
+        if !credit.is_empty() && !credits.contains(&credit) {
             credits.push(credit);
         }
     }

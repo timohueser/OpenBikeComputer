@@ -225,6 +225,15 @@ pub(super) fn donors(successors: &BTreeMap<i64, Vec<i64>>, probes: &BTreeMap<i64
     best.into_iter().map(|(record, (.., job))| (record, job)).collect()
 }
 
+/// The record that takes the place of a failed official stage: of the `candidates` that agree with the stage and whose
+/// match line and the stage's each lie at least four fifths along the other, the one with the lower `id`.
+pub(super) fn fill<'a>(stage: &Probe, candidates: impl IntoIterator<Item = (i64, &'a Probe)>) -> Option<i64> {
+    let near = stage.near();
+    let both = |probe: &Probe| share(probe, &[&near]) >= SAME_SHARE && share(stage, &[&probe.near()]) >= SAME_SHARE;
+    let fills = candidates.into_iter().filter(|(_, probe)| agree(stage, probe) && stage.meets(probe) && both(probe));
+    fills.map(|(id, _)| id).min()
+}
+
 /// The place along a match line of its point nearest to `p`: the sample in the order of the pieces,
 /// which is the member order, and then along the piece.
 fn place(probe: &Probe, p: P) -> usize {
