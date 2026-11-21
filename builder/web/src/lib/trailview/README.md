@@ -27,7 +27,7 @@ the palette of the `world` region.
 | `engine.ts` | The frame loop, the view, `prepare()`, `waitForIdle()`, `nearReady()`, `eyeReady()`, `capture()`, `destroy()`, the recovery from a lost device |
 | `still.ts` | `still()`: one view to an image and, for a line, the place of each point in the image and whether it is visible, with an engine of its own that ends after it; `canRenderStills()`: false with no GPU or a software renderer |
 | `still-view.ts` | The view of a cover from the route and the terrain tiles (`coverView()`, `chooseView()`): not toward the sun, as low as shows 85 % of the route |
-| `budget.ts` | The tiers and the budget of each: the pools, the loads in flight and the frame rate |
+| `budget.ts` | The tiers and the budget of each: the pools, the loads in flight, the frame rate, the byte caps of the caches and the plan workers |
 | `pacer.ts` | The display frames that draw at a rate. Headless Chromium runs at 60 Hz, so flights and shots draw each display frame |
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device, its pools and shared layouts, the GPU time per pass, the WGSL `// #include` |
@@ -61,7 +61,7 @@ the palette of the `world` region.
 | `weather` | `sunny`, `cloudy` or `rainy` |
 | `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask, flat, as `mask_view` in `terrain.wgsl` colours them) |
 | `scale` | The render scale per axis, 0.25 to 0.75 (default 0.7); debug views draw at 1, with the nodes of the scale |
-| `tier` | `phone`: the budget for the iOS app, with smaller pools, fewer loads in flight and 30 fps (`budget.ts`); else `desktop`. Read once, as `scale` is |
+| `tier` | `phone`: the budget for the iOS app, with smaller pools and caches, fewer loads in flight, one plan worker and 30 fps (`budget.ts`); else `desktop`. Read once, as `scale` is |
 | `ground` | `plan`: a worker builds the ground plan of each cell near the eye; the HUD shows its line. Read once, as `scale` is |
 | `plan` | With `ground=plan`: `faces` draws the plan over the view in the debug tool's colours (default `off`) |
 | `still` | No engine starts. A headless script calls `window.trailviewStill.still(job, options)`, `coverView(line, when)`, `canRenderStills(options)`, `view(search)`, the view of a query string, and reads `release`, the id of the release; `still.test.js` and `home-views.mjs` show how |
@@ -177,7 +177,7 @@ uv run --locked --group planner-maps python FIX features features.pmtiles
 - The ground pool has a fixed size too: the farthest pages past it draw from their cover, two levels
   coarser (`short` in the HUD).
 - A new date builds every ground page again (the rules, the Sentinel-2 quarters and the snow are
-  part of a page) and loads most tile bodies again: a view's bodies exceed the 96 MiB cache.
+  part of a page) and loads most tile bodies again: a view's bodies exceed their cache (`caps.groundBodies`).
 - Mountain shadows need the `trailview-ground` layer.
 - The ground noise is in frame metres about the first view: far from it, float32 coarsens its
   finest grains, and a view that starts elsewhere draws other grains. Compare shots of one first

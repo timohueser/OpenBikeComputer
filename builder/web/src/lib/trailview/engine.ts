@@ -204,7 +204,7 @@ export class TrailView {
         const release = JSON.stringify([config.id, config.manifest, config.terrain, config.layers]);
         this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, budget, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION });
         this.groundLook = new Ground(ground, budget, () => this.request());
-        this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, budget.loads.houses, { release, version: HOUSE_VERSION });
+        this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, budget, { release, version: HOUSE_VERSION });
         this.models = new ModelFiles(MODELS, () => this.request(), signal);
         this.trees = new TreeModels(this.instances, () => this.treesNear(), this.models, budget.loads.models);
         this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal, budget);
@@ -244,9 +244,9 @@ export class TrailView {
      * All but the attach run while `gpu` comes: the frames before it ask for the view's records and stamps.
      */
     static async start(canvas: HTMLCanvasElement, gpu: Gpu | Promise<Gpu>, config: PlannerConfig, view: View, scale: number, { plan = false, finest = FINEST, tier = 'desktop', size, onclick, onhover }: StartOptions = {}): Promise<TrailView> {
-        const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
-        const ground = await GroundSource.open(config, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest, BUDGETS[tier], { onclick, onhover }, size);
+        const budget = BUDGETS[tier], stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], budget.caps, stop.signal);
+        const ground = await GroundSource.open(config, budget.caps, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest, budget, { onclick, onhover }, size);
         engine.request();
         // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
         await Promise.resolve(gpu).then(device => engine.attach(device)).catch(error => {

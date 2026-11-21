@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CELL_LEVEL, MODEL_ROW, Records } from './model';
 import { DeviceCache } from './device-cache';
 import { FakeCaches } from '../../../../test-support/fake-caches';
-import { HEAP_LIMIT } from '../plan/plan';
+import { BUDGETS, MiB } from '../budget';
 import type { PlanRequest } from '../plan/plan-worker';
 
 /** A plan worker that answers `start` and keeps the cell builds for the test to answer. */
@@ -234,7 +234,7 @@ describe('the records store', () => {
         await settle();
         const mesh = [{ node: B, distance: 0 }];
         let rim = 1, builtB = 0;
-        // Each build leaves the heap over HEAP_LIMIT, as a town cell can; each live worker answers one build a frame.
+        // Each build leaves the heap over the plan heap cap, as a town cell can; each live worker answers one build a frame.
         const frames = async (count: number) => {
             for (let frame = 0; frame < count && !FakeWorker.all.some(w => !w.dead && w.meshes.length); frame++) {
                 records.update([{ node: B, distance: 0 }], mesh);
@@ -243,7 +243,7 @@ describe('the records store', () => {
                 for (const worker of FakeWorker.all.filter(w => !w.dead)) {
                     const build = worker.builds.shift();
                     if (build && build.cell.x === B.x && build.cell.y === B.y) builtB++;
-                    if (build) worker.answer(build, 1, new Uint32Array([rim++]), HEAP_LIMIT + 1);
+                    if (build) worker.answer(build, 1, new Uint32Array([rim++]), BUDGETS.desktop.caps.planHeap * MiB + 1);
                 }
             }
             return FakeWorker.all.find(w => !w.dead && w.meshes.length);

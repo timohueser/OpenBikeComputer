@@ -13,10 +13,9 @@ export type Request = 'stamps' | 'meshes' | 'samples';
 /**
  * The 2 × 2 tiles of each zoom coarser than 13 read last, pinned in the byte budget: an eye near a tile
  * corner reads all four, and the shapes of a zoom 8 tile take about half a second. The pins hold at most
- * a third of the budget, so the deep tiles keep the 32 MiB of the other workers.
+ * a third of the budget, so the deep tiles keep the rest.
  */
 const COARSE = 4;
-tileBudget(48 * 2 ** 20);
 const coarse = new Map<number, string[]>();
 
 /** The features of a tile from its body, or as the worker still holds them without one; undefined where it holds none. */
@@ -34,9 +33,10 @@ function tileFeatures(tile: Node, body?: ArrayBuffer): Promise<Feature[]> | unde
 /**
  * A request without `body` reads the tile that an earlier request brought; where the worker no longer holds it, the
  * answer is `missing`. `wanted` names the tiles of the nodes on their way, still wished or without their structure
- * meshes, and of the near levels' nodes that the last frame read: the worker keeps them past its budget.
+ * meshes, and of the near levels' nodes that the last frame read: the worker keeps them past its budget, `bytes`.
  */
-self.onmessage = async ({ data: { id, tile, node, body, what, plan, wanted = [] } }: MessageEvent<{ id: number; tile: Node; node: Node; body?: ArrayBuffer; what: Request; plan: boolean; wanted?: string[] }>) => {
+self.onmessage = async ({ data: { id, tile, node, body, what, plan, wanted = [], bytes } }: MessageEvent<{ id: number; tile: Node; node: Node; body?: ArrayBuffer; what: Request; plan: boolean; wanted?: string[]; bytes: number }>) => {
+    tileBudget(bytes);
     wantTiles(wanted);
     try {
         const held = tileFeatures(tile, body);

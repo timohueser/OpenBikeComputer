@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { expect, test } from '@playwright/test';
 import { CATALOG, HOST } from './stills.mjs';
 import { launch } from './harness.js';
-import { FIXTURE_ROUTES, LOOK, checkMonths, checkRelease, gridCells, keyOf, lightOf, patiently, pointsOf, rowImages, sampleOf, storedCamera, switchTo, upload } from './route-pictures.mjs';
+import { FIXTURE_ROUTES, LOOK, check, checkMonths, checkRelease, gridCells, keyOf, lightOf, patiently, pointsOf, rowImages, sampleOf, storedCamera, switchTo, unexpected, upload } from './route-pictures.mjs';
 import { pack } from '../../../src/lib/covers/line.ts';
 
 const SCRIPT = new URL('./route-pictures.mjs', import.meta.url).pathname;
@@ -14,17 +14,21 @@ const CONFIG = JSON.parse(readFileSync(new URL('./fixture/config.json', import.m
 const [VALLEY] = JSON.parse(readFileSync(FIXTURE_ROUTES, 'utf8')).routes;
 const NO_VIEW = { ...VALLEY, id: 1002, cells: ['9-268-180'], line_udeg: [8450000, 46800000, 1000, 0] };
 const LONG = { id: 1003, kind: 'hiking', name: 'Long', cells: ['9-267-180'], stages: [1001] };
+/** A record of a second source, which has a negative id. */
+const OFFICIAL = { ...VALLEY, id: -1000000000001 };
 /** The ends of the names of the full and the row image of July, the one month of a set, at 10:00. */
 const IMAGE = '-0715-1000.webp', ROW = '-0715-1000-row.webp';
 const RELEASE = { id: 'release-1', bounds: CONFIG.bounds, routes: 'https://tiles.test/releases/release-1/routes/tiles/{cell}.json' };
 
-/** The cover of VALLEY and the mark of NO_VIEW in `out`, with a few bytes as each image. */
-function rendered(out) {
-    const file = end => join(out, 'covers', String(VALLEY.id), `${keyOf(VALLEY)}${end}`);
-    mkdirSync(dirname(file(IMAGE)), { recursive: true });
-    writeFileSync(file(IMAGE), 'image');
-    writeFileSync(file(ROW), 'row');
-    writeFileSync(file('.json'), JSON.stringify({ x: [], y: [], eye: [], credits: ['terrain'], camera: {} }));
+/** The cover of each of `covered` and the mark of NO_VIEW in `out`, with a few bytes as each image. */
+function rendered(out, covered = [VALLEY]) {
+    for (const record of covered) {
+        const file = end => join(out, 'covers', String(record.id), `${keyOf(record)}${end}`);
+        mkdirSync(dirname(file(IMAGE)), { recursive: true });
+        writeFileSync(file(IMAGE), 'image');
+        writeFileSync(file(ROW), 'row');
+        writeFileSync(file('.json'), JSON.stringify({ x: [], y: [], eye: [], credits: ['terrain'], camera: {} }));
+    }
     const none = join(out, 'covers', String(NO_VIEW.id), `${keyOf(NO_VIEW)}.none`);
     mkdirSync(dirname(none), { recursive: true });
     writeFileSync(none, '');
@@ -32,10 +36,10 @@ function rendered(out) {
 
 /**
  * A fake of `obc data r2` (list, get, put) and of the hosts: the catalogue, the cell files of RELEASE
- * and what was put. It refuses a key or folder with an empty part, as `check_key` does, and keeps each
+ * and what was put. `records` are the records of the catalog. It refuses a key or folder with an empty part, as `check_key` does, and keeps each
  * put when it ends. A cell file takes longer to put than another file.
  */
-function bucket() {
+function bucket(records = [VALLEY, NO_VIEW, LONG]) {
     const puts = [], objects = new Map();
     const r2 = async ([action, ...args]) => {
         const key = action === 'put' ? args.at(-1) : action === 'get' ? args[0] : args.at(-1);
@@ -50,7 +54,7 @@ function bucket() {
     const fetch = async url => {
         const cell = /routes\/tiles\/(.+)\.json$/.exec(url)?.[1];
         const body = url === CATALOG ? JSON.stringify({ format: 1, active: RELEASE })
-            : cell ? JSON.stringify({ format: 1, routes: [VALLEY, NO_VIEW, LONG].filter(record => record.cells.includes(cell)) })
+            : cell ? JSON.stringify({ format: 1, routes: records.filter(record => record.cells.includes(cell)) })
                 : objects.get(url.slice(`${HOST}/`.length));
         return { status: body === undefined ? 404 : 200, text: async () => body };
     };
@@ -178,6 +182,23 @@ test('upload refuses a route with no cover and no mark, else sends the points, t
     fake.objects.delete(`route-pictures/sets/${set}/cells/9-268-180.json`);
     await expect(switchTo(set, fake)).rejects.toThrow(`The cell files of set ${set} in the bucket do not give its id`);
     expect(fake.puts.length).toBe(puts);
+});
+
+test('check names each route record of the production release with no cover in the live set, also one of a second source', async () => {
+    const out = test.info().outputPath('check'), records = [VALLEY, OFFICIAL, NO_VIEW, LONG], fake = bucket(records);
+    const named = async without => (await check({ without, fetch: fake.fetch })).map(record => record.id);
+    expect(await named()).toEqual([OFFICIAL.id, VALLEY.id, NO_VIEW.id]);
+    rendered(out, [VALLEY, OFFICIAL]);
+    await switchTo(await upload({ out, ...fake }), fake);
+    // NO_VIEW has a mark of no view: its cell has no cell file, which answers 404.
+    expect(await named()).toEqual([NO_VIEW.id]);
+    // A route that --without leaves out is still named, but it does not fail the check.
+    const missing = await check({ without: [NO_VIEW.id], fetch: fake.fetch });
+    expect(missing.map(record => record.id)).toEqual([NO_VIEW.id]);
+    expect(unexpected(missing, [NO_VIEW.id])).toEqual([]);
+    expect(unexpected(missing)).toEqual(missing);
+    records[0] = { ...VALLEY, line_udeg: [...VALLEY.line_udeg.slice(0, -1), -2000] };
+    expect(await named([NO_VIEW.id])).toEqual([VALLEY.id, NO_VIEW.id]);
 });
 
 test('row makes a 480 × 320 WebP of a full image with none, keeps a newer one, makes it again after the full image is written again, and names an image that does not decode', async () => {
