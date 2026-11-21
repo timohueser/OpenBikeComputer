@@ -1,7 +1,7 @@
 // `virtual:models`: the model files of TrailView (specs/trailview-models.md) and where each lies. The plugin bundles
 // `models/bake.ts` for Node with every import inlined, runs it, and serves what it returns: a build emits each file as an
 // asset with the hash of its content in its name; the dev server serves the files itself and makes them again when a
-// module of the bundle changes, or any TrailView module after a bake that failed, such as on a model over the budget.
+// module of the bundle changes, when a TrailView module is added or removed, or on any change after a bake that failed.
 
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -70,15 +70,19 @@ export function modelFiles(): Plugin {
                     response.end(bytes);
                 }, next);
             });
-            server.watcher.on("change", async file => {
+            // A changed module of the bake, or any added or removed TrailView module (a new tree or plant file of a glob)
+            // makes the files again.
+            const again = async (file: string, added: boolean) => {
                 const module = server.moduleGraph.getModuleById(resolved);
                 if (!module) return;
-                const modules = await made?.then(({ modules }) => modules, () => undefined);
+                const modules = added ? undefined : await made?.then(({ modules }) => modules, () => undefined);
                 if (modules ? !modules.includes(path.resolve(file)) : !path.resolve(file).startsWith(SOURCES)) return;
                 made = undefined;
                 server.moduleGraph.invalidateModule(module);
                 server.ws.send({ type: "full-reload" });
-            });
+            };
+            server.watcher.on("change", file => void again(file, false));
+            for (const event of ["add", "unlink"] as const) server.watcher.on(event, file => void again(file, true));
         },
     };
 }

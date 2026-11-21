@@ -82,4 +82,23 @@ describe('the plant models', () => {
         plants.update([8.4, 46.8], '2026-07-01', 0, reach);
         expect(files.length).toBe(9);
     });
+
+    it('draw nothing of a model whose file for the new season failed', async () => {
+        const answers: ((models: Packed[] | undefined) => void)[] = [];
+        const load = () => new Promise<Packed[] | undefined>(resolve => answers.push(resolve));
+        const specs: ModelSpec[] = [];
+        const instances = { produce: () => {}, add: (...added: ModelSpec[]) => specs.push(...added) - added.length, replace: (m: number, spec: ModelSpec) => (specs[m] = spec) };
+        const rules = { vocabulary, regions: [{ ground: [{ id: 'grass', model: 'grass' }], trees: [] }], styles: [] } as unknown as Rules;
+        const models = { plants: { grass: { ground: PLANTS.grass.ground, seasons: { summer: 'grass/summer', winter: 'grass/winter' } } }, trees: {} };
+        const plants = new Plants(rules, {} as TreeModels, instances as unknown as Instances, { models, load } as unknown as ModelFiles);
+        const reach = { reach: new Set([0]), near: new Set([0]) }, shape = { tiers: [{ vertices: new Uint8Array(16), index: new Uint32Array(3) }], shape: {} } as unknown as Packed;
+        plants.update([8.4, 46.8], '2026-07-01', 0, reach);
+        answers.splice(0).forEach(answer => answer([shape, shape, shape]));
+        await new Promise(resolve => setTimeout(resolve));
+        expect(specs.every(spec => spec.tiers.length === 1)).toBe(true);
+        plants.update([8.4, 46.8], '2026-01-20', 0, reach);
+        answers.splice(0).forEach(answer => answer(undefined));
+        await new Promise(resolve => setTimeout(resolve));
+        expect([specs.every(spec => !spec.tiers.length), plants.nearIdle]).toEqual([true, true]);
+    });
 });

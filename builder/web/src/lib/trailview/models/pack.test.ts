@@ -14,6 +14,11 @@ describe('the model files', () => {
         // toStrictEqual compares the classes of the typed arrays too.
         expect(await decodeModels(await encodeModels(models))).toStrictEqual(models);
     });
+
+    it('refuse a model with no mesh tier', async () => {
+        const [model] = [pack([geometry(firepit())])];
+        await expect(decodeModels(await encodeModels([{ ...model, tiers: [] }]))).rejects.toThrow('no mesh tier');
+    });
 });
 
 describe('the impostor outlines', () => {

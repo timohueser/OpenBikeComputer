@@ -91,7 +91,8 @@ export async function decodeModels(bytes: Uint8Array): Promise<Packed[]> {
     if (u32() !== MAGIC || u32() !== VERSION) throw new Error('not a model file of this version');
     const heads = Array.from({ length: u32() }, () => {
         const [extent, radius, spread, crown] = [f32(), f32(), f32(), f32()], sinks = Array.from({ length: SINK_SLOPES }, f32);
-        const flags = u32(), counts = Array.from({ length: u32() + (flags & 2 ? 1 : 0) }, () => [u32(), u32()]);
+        const flags = u32(), tiers = u32(), counts = Array.from({ length: tiers + (flags & 2 ? 1 : 0) }, () => [u32(), u32()]);
+        if (!tiers) throw new Error('a model of a model file has no mesh tier');
         const outlines = new Float32Array(OUTLINE_FLOATS);
         for (let k = 0; k < OUTLINE_FLOATS; k++) outlines[k] = f32();
         return { shape: { extent, radius, spread, crown: Number.isNaN(crown) ? undefined : crown, sinks, trunk: !!(flags & 1), outlines }, counts, proxy: !!(flags & 2) };

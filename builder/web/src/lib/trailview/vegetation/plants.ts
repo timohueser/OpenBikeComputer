@@ -193,11 +193,15 @@ export class Plants implements Producer {
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
     }
 
-    /** Gives a model of the list its mesh of a season, while the season lasts. */
+    /** Gives a model of the list its mesh of a season, while the season lasts; a model whose file failed draws nothing. */
     private land(i: number, season: Season, model: Packed | undefined): void {
         this.loading--;
         if (season !== this.season) return;
-        if (!model) return void (this.failed[i] = season);
+        if (!model) {
+            this.instances.replace(this.indexes[i], { tiers: [] });
+            this.built[i] = undefined;
+            return void (this.failed[i] = season);
+        }
         this.instances.replace(this.indexes[i], spec(this.list[i], model));
         this.built[i] = season;
     }

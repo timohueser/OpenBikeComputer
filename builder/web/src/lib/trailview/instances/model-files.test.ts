@@ -27,7 +27,9 @@ describe('the model files', () => {
         expect([await first.load('gone'), await first.load('gone'), await busy, await first.load('busy'), fetch.mock.calls.length]).toEqual([undefined, undefined, undefined, undefined, 6]);
         expect([first.done('good', 'gone', 'busy'), first.idle]).toEqual([true, true]);
         first.save();
-        await new Promise(resolve => setTimeout(resolve, 20));
+        // The writes run in the background: wait until the entry is in the store.
+        const saved = async () => [...caches.caches.values()].some(entries => [...entries.keys()].some(url => url.endsWith('/good')));
+        for (let k = 0; k < 200 && !(await saved()); k++) await new Promise(resolve => setTimeout(resolve, 5));
         const again = await new ModelFiles({} as Models, () => {}, new AbortController().signal).load('good');
         expect([fetch.mock.calls.length, (await caches.keys()).some(name => name.startsWith('trailview-trees/'))]).toEqual([6, false]);
         // toStrictEqual compares the classes of the typed arrays too.
