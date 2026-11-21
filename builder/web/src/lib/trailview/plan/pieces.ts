@@ -278,23 +278,22 @@ export class Pieces {
         const resting = rule.finest < COARSEST_MESH;
         if (resting && !this.resting) for (const piece of this.pieces.values()) piece.plain = undefined;
         this.resting = resting;
-        // A split can take tens of milliseconds: one a frame.
-        let split = true;
+        // A split near a box can take tens of milliseconds: one a frame, shown and near cells first. A cell with no box near
+        // takes its empty tails at once.
+        const due: { piece: Piece; boxes: Float64Array[] }[] = [];
         for (const piece of this.resting ? [] : this.pieces.values()) {
             // Every node is asked for at once.
             const nodes = stampNodes(piece.node).map(this.stamps), now = block(piece.node) ?? -1, ready = nodes.every(stamps => stamps !== undefined);
             // With the nodes' stamps come their boxes, also when they come again: the triangles near them move to the tails,
             // and the piece's `all` pass waits for that. Each box once, as the terrain's `holes`.
             if (ready && !piece.stamped) piece.splitDue = true;
-            if (ready && piece.splitDue && split) {
-                split = piece.splitDue = false;
+            if (ready && piece.splitDue) {
                 const boxes = new Map<string, Float64Array>();
                 for (const list of nodes.map(stamps => stamps!.portals)) {
                     for (let k = 0; list && k < list.length; k += BOX) boxes.set(list.subarray(k, k + 4).join(), list.subarray(k, k + BOX));
                 }
-                const s = size(CELL_LEVEL);
-                piece.tails = splitTails(piece.mesh, piece.mouths, [piece.node.x * s, piece.node.y * s], [...boxes.values()]);
-                if (piece.gpu && this.resources) this.writeOrder(this.resources, piece);
+                if (boxes.size) due.push({ piece, boxes: [...boxes.values()] });
+                else this.split(piece, []);
             }
             // A new piece takes its first keys.
             const read = piece.plain === undefined || touched.some(node => touches(node, piece.box));
@@ -312,6 +311,8 @@ export class Pieces {
                 piece.grounded = false;
             }
         }
+        const next = due.sort((a, b) => +visible(b.piece.node) - +visible(a.piece.node) || distances(eye, a.piece.node)[0] - distances(eye, b.piece.node)[0])[0];
+        if (next) this.split(next.piece, next.boxes);
         const before = this.drawn.map(piece => key(piece.node)).join();
         const range = cellsAbout(eye, WINDOW >> 1).filter(cell => inRange(rule, eye, cell));
         ({ level: this.meshLevel, calm: this.calm } = meshLevel(range.some(rests) ? 0 : rule.finest, this.calm));
@@ -336,6 +337,14 @@ export class Pieces {
         const changed = before !== this.drawn.map(piece => key(piece.node)).join();
         this.cellsDirty ||= changed;
         return changed || (!this.resting && [...this.pieces.values()].some(piece => piece.stale));
+    }
+
+    /** Moves a piece's triangles and slots near `boxes` to its tails (splitTails), and writes their order. */
+    private split(piece: Piece, boxes: Float64Array[]): void {
+        const s = size(CELL_LEVEL);
+        piece.tails = splitTails(piece.mesh, piece.mouths, [piece.node.x * s, piece.node.y * s], boxes);
+        piece.splitDue = false;
+        if (piece.gpu && this.resources) this.writeOrder(this.resources, piece);
     }
 
     /** Uploads new pieces and the window of the cells that draw. */
@@ -714,7 +723,7 @@ export function splitMouths(mesh: CellMesh, mouths: Set<number>): number[] {
 }
 
 /**
- * Moves the triangles and step slots whose plan meets a box (BOX words in world units), grown by a level-18 grid step,
+ * Moves the triangles and step slots whose plan meets a box (BOX words in world units), grown by √2 level-18 grid steps,
  * to the end of their group, in place, and returns their counts: per run, of its own triangles (to their end) and of
  * its `mouths` last ones (to their start); and of the steps and of the end faces. A test in plan holds every point that
  * can lie in a box at any height; the tails draw with the pipelines that drop such a pixel. `origin` is the cell's

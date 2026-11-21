@@ -37,8 +37,8 @@ describe('splitTails', () => {
         const grid = [0, 300, 600, 900, 1200].flatMap(x => [0, 300, 600].map(y => [x, y]));
         const at = (x: number, y: number) => grid.findIndex(p => p[0] === x && p[1] === y);
         const corners = new Uint32Array(grid.flatMap(([x, y]) => [16 * x, 16 * y]));
-        // A box 600 units east and 300 south of the corner, heading east: 5 m deep, 3 m to each side. Grown by a grid
-        // step it reaches about 536 to 798 east and 155 to 445 south.
+        // A box 600 units east and 300 south of the corner, heading east: 5 m deep, 3 m to each side. Grown by √2 grid
+        // steps it reaches about 509 to 825 east and 129 to 471 south.
         const box = new Float64Array([600, 2 ** 29 + 300, 1, 0, 5, 3, 5, 0, 0, 5, 0, 0]);
         const inside = [at(300, 300), at(600, 300), at(600, 600)], across = [at(300, 0), at(900, 0), at(600, 600)];
         const far = [at(0, 0), at(300, 0), at(0, 300)], west = [at(0, 300), at(300, 600), at(0, 600)], beside = [at(900, 0), at(1200, 0), at(1200, 300)];
@@ -99,27 +99,30 @@ describe('Pieces', () => {
         expect(frames).toBe(CALM);
     });
 
-    it('splits one cell a frame, and a cell again when its stamps come again', () => {
-        // Each split reads the boxes of its cell's 36 nodes. A node of the first cell only goes away for a frame.
-        let reads = 0, gone = false;
-        const only = { level: 18, x: 34_307 * 4 - 1, y: 23_107 * 4 - 1 };
-        const pieces = new Pieces((node: Node) => (gone && key(node) === key(only) ? undefined : { data: null, get portals() { reads++; return null; } }));
-        const eye = { anchor: anchorAt(8.4048, 46.8219), above: 1.7 };
-        for (const x of [34_307, 34_308]) {
-            const words = new Uint32Array(12 + Math.ceil((130 * 130) / 32));
-            words[0] = 0x4f424d05;
-            pieces.add({ level: 16, x, y: 23_107 }, words.buffer, 0, new Set());
-        }
-        const splits = () => {
-            const before = reads;
-            pieces.update(cdlod(eye, RANGE.least, 18), eye, () => 0, () => '', [], () => true, () => true);
-            return (reads - before) / 36;
+    it('splits one cell near a box a frame, a cell with no box at once, and a cell again when its stamps come again', () => {
+        // A cell that waits for its split reads the boxes of its 36 nodes each frame. A node of the first cell only goes
+        // away for a frame.
+        const two = (portals: Float64Array<ArrayBuffer> | null) => {
+            let reads = 0, gone = false;
+            const only = { level: 18, x: 34_307 * 4 - 1, y: 23_107 * 4 - 1 };
+            const pieces = new Pieces((node: Node) => (gone && key(node) === key(only) ? undefined : { data: null, get portals() { reads++; return portals; } }));
+            const eye = { anchor: anchorAt(8.4048, 46.8219), above: 1.7 };
+            for (const x of [34_307, 34_308]) {
+                const words = new Uint32Array(12 + Math.ceil((130 * 130) / 32));
+                words[0] = 0x4f424d05;
+                pieces.add({ level: 16, x, y: 23_107 }, words.buffer, 0, new Set());
+            }
+            return (away = false) => {
+                const before = reads;
+                gone = away;
+                pieces.update(cdlod(eye, RANGE.least, 18), eye, () => 0, () => '', [], () => true, () => true);
+                return (reads - before) / 36;
+            };
         };
-        expect([splits(), splits(), splits()]).toEqual([1, 1, 0]);
-        gone = true;
-        expect(splits()).toBe(0);
-        gone = false;
-        expect([splits(), splits()]).toEqual([1, 0]);
+        const boxed = two(new Float64Array([0, 0, 1, 0, 5, 3, 5, 0, 0, 5, 0, 0]));
+        expect([boxed(), boxed(), boxed(), boxed(true), boxed(), boxed()]).toEqual([2, 1, 0, 0, 1, 0]);
+        const bare = two(null);
+        expect([bare(), bare()]).toEqual([2, 0]);
     });
 
     it('reads its pages again after a rest below 17, as pages came and went while it rested', () => {
