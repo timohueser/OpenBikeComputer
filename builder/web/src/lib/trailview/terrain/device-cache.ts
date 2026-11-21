@@ -9,6 +9,8 @@
  * 280 MiB; a view writes more cell bytes than stamp bytes. The cap of the models holds the model files of many regions.
  */
 export const CAPS = { cells: 192 * 2 ** 20, stamps: 64 * 2 ** 20, houses: 16 * 2 ** 20, models: 8 * 2 ** 20 };
+/** The kinds that no build opens any more: `open` deletes them, as it deletes the caches of another release or build. */
+const RETIRED = ['trailview-trees/'];
 /** The entry's first word, then the count of parts, their lengths in words and the SHA-256 of the parts. */
 const MAGIC = 0x4f424343;
 const DIGEST_WORDS = 8;
@@ -67,7 +69,7 @@ export class DeviceCache {
     static async open(kind: string, release: string, build: string, cap: number): Promise<DeviceCache | undefined> {
         if (!globalThis.caches) return undefined;
         const prefix = `trailview-${kind}/`, name = `${prefix}${await sha256(release)}/${build}`;
-        void caches.keys().then(names => Promise.all(names.filter(other => other.startsWith(prefix) && other !== name).map(other => caches.delete(other)))).catch(() => {});
+        void caches.keys().then(names => Promise.all(names.filter(other => (other.startsWith(prefix) && other !== name) || RETIRED.some(kind => other.startsWith(kind))).map(other => caches.delete(other)))).catch(() => {});
         return new DeviceCache(await caches.open(name), cap);
     }
 

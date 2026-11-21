@@ -28,22 +28,18 @@ export class Dressing implements Producer {
     private readonly rockModel?: number;
     private herdSide = 0;
     private rockSide = 0;
-    /** Files that load, and whether models arrived since the last update. */
-    private loading = 0;
-    private arrived = false;
-    /** Whether the last update installed models. */
-    newContent = false;
+    /** The files of the models. */
+    private readonly urls: string[] = [];
 
-    /** `wake` asks for a frame when models arrive. */
-    constructor(rules: Rules, private readonly instances: Instances, files: ModelFiles, private readonly wake: () => void) {
+    constructor(rules: Rules, private readonly instances: Instances, private readonly files: ModelFiles) {
         instances.produce(this);
         const { objects, breeds: breedModels } = files.models;
         const spec = ({ tiers: [mesh], shape }: Packed, until: number): ModelSpec => ({ tiers: [{ mesh, until }], shape });
         // No fade of the rocks' tier: rocks_of ends each rock at its own distance before the reach.
-        this.rockModel = this.models(files, objects.file, objects.rocks, model => ({ ...spec(model, ROCK_REACH_M), fade: 0 }));
+        this.rockModel = this.load(objects.file, objects.rocks, model => ({ ...spec(model, ROCK_REACH_M), fade: 0 }));
         const breeds = new Map<string, number>(), used = new Set(rules.regions.flatMap(region => region.herds.map(herd => herd.model)).filter(name => name in breedModels));
         for (const name of used) {
-            const first = this.models(files, breedModels[name].file, breedModels[name].coats, model => spec(model, HERD_REACH_M));
+            const first = this.load(breedModels[name].file, breedModels[name].coats, model => spec(model, HERD_REACH_M));
             if (first !== undefined) breeds.set(name, first);
         }
         this.table = new Uint32Array(Math.max(1, rules.regions.length) * HERDS * HERD_WORDS);
@@ -59,21 +55,19 @@ export class Dressing implements Producer {
     }
 
     /** The first of `count` models of the instances, which take the first `count` models of a file once it arrives. */
-    private models(files: ModelFiles, file: string, count: number, spec: (model: Packed) => ModelSpec): number | undefined {
+    private load(file: string, count: number, spec: (model: Packed) => ModelSpec): number | undefined {
         const first = this.instances.add(...Array.from({ length: count }, () => ({ tiers: [] })));
-        this.loading++;
-        void files.load(file).then(models => {
-            this.loading--;
+        this.urls.push(file);
+        void this.files.load(file).then(models => {
             if (first === undefined || !models) return;
             for (let k = 0; k < count; k++) this.instances.replace(first + k, spec(models[k]));
-            this.arrived = true;
-            this.wake();
         });
         return first;
     }
 
+    /** Whether the models have arrived, or failed. */
     get idle(): boolean {
-        return this.loading === 0;
+        return this.files.done(...this.urls);
     }
 
     async attach(gpu: Gpu, { surface, features }: Surfaces): Promise<void> {
@@ -96,8 +90,6 @@ export class Dressing implements Producer {
 
     /** The windows of herd cells and rock points about the eye at (lon, lat). */
     update(lonLat: [number, number]): void {
-        this.newContent = this.arrived;
-        this.arrived = false;
         const r = this.resources;
         if (!r) return;
         const [ux, uy] = worldPixel(lonLat, UNITS), unit = anchorAt(...lonLat).unit;

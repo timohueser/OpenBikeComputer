@@ -31,7 +31,8 @@ interface Job { model: string; phase?: number }
  * crown of the phase's own, such as a bare one, once its file has arrived for a phase that the date has; until then the
  * summer crown in the phase's colours. At most `loads` files load at once: summer crowns before crowns of their own, each
  * with the models of the near regions and then about the eye first. Loaded models stay, so a change of date loads only
- * what it has not seen. A species that a pack keeps green all year stays in summer. A model with a tie to the ground's hue
+ * what it has not seen. A file that failed counts as done, and is asked for again when the next file lands or the
+ * date's phases change; ModelFiles answers at once for a file that may not pass. A species that a pack keeps green all year stays in summer. A model with a tie to the ground's hue
  * (draw.wgsl), such as a tree that stands as a shrub, is an instance model of its own on the same meshes.
  */
 export class TreeModels {
@@ -40,7 +41,7 @@ export class TreeModels {
     /** The summer crowns by model, and the crowns of a phase by `model|phase`, that arrived. */
     private readonly leafy = new Map<string, Packed>();
     private readonly crowns = new Map<string, Packed>();
-    /** The jobs asked for (`model` or `model|phase`), those that failed, and those that wait for a load. */
+    /** The jobs asked for (`model` or `model|phase`), those that failed since the last `ask`, and those that wait for a load. */
     private readonly asked = new Set<string>();
     private readonly failed = new Set<string>();
     private waiting: Job[] = [];
@@ -57,10 +58,10 @@ export class TreeModels {
     private buildsOf = new WeakMap<Set<number>, string[]>();
 
     /** `near` gives the models about the eye, each with its share of the trees there. */
-    constructor(private readonly instances: Instances, private readonly wake: () => void, private readonly near: () => Map<string, number>, private readonly files: ModelFiles, private readonly loads: number) {}
+    constructor(private readonly instances: Instances, private readonly near: () => Map<string, number>, private readonly files: ModelFiles, private readonly loads: number) {}
 
     get idle(): boolean {
-        return this.loading === 0 && this.waiting.length === 0 && !this.stale && this.builds().every(build => this.asked.has(build.split('|')[0]));
+        return this.loading === 0 && this.waiting.length === 0 && !this.stale && this.builds().every(build => this.asked.has(build.split('|')[0]) || this.failed.has(build.split('|')[0]));
     }
 
     /**
@@ -116,7 +117,7 @@ export class TreeModels {
         }
         if (reach !== this.wanted) {
             this.wanted = reach;
-            if (this.builds().some(build => !this.asked.has(build.split('|')[0]))) this.ask();
+            if (this.builds().some(build => !this.asked.has(build.split('|')[0]) && !this.failed.has(build.split('|')[0]))) this.ask();
         }
         if (!this.stale) return;
         this.stale = false;
@@ -131,6 +132,7 @@ export class TreeModels {
 
     /** Queues the summer crowns not yet asked for, and the crowns of their own that the date's phases need. */
     private ask(): void {
+        this.failed.clear();
         const leafy = [...new Set(this.builds().map(build => build.split('|')[0]))].filter(model => !this.asked.has(model)).map((model): Job => ({ model }));
         // A species that every pack keeps green all year needs no crown of its own.
         const seasonal = new Set(this.builds().filter(build => build.endsWith('|0')).map(build => build.split('|')[0]));
@@ -162,15 +164,18 @@ export class TreeModels {
         }
     }
 
-    /** Keeps a file's model; a file that failed is not asked again. */
+    /** Keeps a file's model; a file that failed is asked for again by the next `ask`. */
     private land(job: Job, model: Packed | undefined): void {
         this.loading--;
-        if (!model) this.failed.add(keyOf(job));
-        else if (job.phase === undefined) this.leafy.set(job.model, model);
+        if (!model) {
+            this.asked.delete(keyOf(job));
+            this.failed.add(keyOf(job));
+            return this.post();
+        }
+        if (job.phase === undefined) this.leafy.set(job.model, model);
         else this.crowns.set(keyOf(job), model);
         this.stale = true;
         this.ask();
-        this.wake();
     }
 
     /**

@@ -19,7 +19,7 @@ function trees(kinds: Record<string, TreeEntry>, near = new Map<string, number>(
     loads.length = 0;
     const specs: ModelSpec[] = [];
     const instances = { add: (spec: ModelSpec) => specs.push(spec) - 1, replace: (m: number, spec: ModelSpec) => (specs[m] = spec), day: 0 };
-    const models = new TreeModels(instances as unknown as Instances, () => {}, () => near, files(kinds), 3);
+    const models = new TreeModels(instances as unknown as Instances, () => near, files(kinds), 3);
     return { models, specs, reach, beech: models.index(0, 'beech')! };
 }
 
@@ -75,12 +75,13 @@ describe('the tree models', () => {
         expect([models.nearIdle, specs[specs[beech].phases![0].model].shape?.crown]).toEqual([true, 0.2]);
     });
 
-    it('does not ask again for a file that failed, and counts it as done', async () => {
+    it('counts a file that failed as done, and asks for it again when the date\'s phases change', async () => {
         const { models, reach } = trees({ beech: species(true) });
         models.update('2026-01-20', reach);
         await loads[0].answer(undefined);
-        models.update('2026-07-01', reach);
         models.update('2026-01-20', reach);
         expect([loads.length, models.idle, models.nearIdle]).toEqual([1, true, true]);
+        models.update('2026-07-01', reach);
+        expect(loads.map(({ file }) => file)).toEqual(['beech/summer', 'beech/summer']);
     });
 });

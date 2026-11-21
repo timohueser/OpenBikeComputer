@@ -1,7 +1,7 @@
 // `virtual:models`: the model files of TrailView (specs/trailview-models.md) and where each lies. The plugin bundles
 // `models/bake.ts` for Node with every import inlined, runs it, and serves what it returns: a build emits each file as an
 // asset with the hash of its content in its name; the dev server serves the files itself and makes them again when a
-// module of the bundle changes.
+// module of the bundle changes, or any TrailView module after a bake that failed, such as on a model over the budget.
 
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -18,6 +18,8 @@ const ID = "virtual:models";
 const PREFIX = "/@trailview-models/";
 /** Marks a file name in the manifest's JSON, which the module replaces with the file's address. */
 const MARK = /"@@model-file:([\w-]+)@@"/g;
+/** The modules that a change makes the files again for, after a bake that failed. */
+const SOURCES = path.join(ROOT, "src/lib/trailview");
 
 /** The files and the models, and the files of the modules in the bundle. */
 async function bakeModels(): Promise<{ baked: Baked; modules: string[] }> {
@@ -39,6 +41,11 @@ async function bakeModels(): Promise<{ baked: Baked; modules: string[] }> {
 
 export function modelFiles(): Plugin {
     let made: ReturnType<typeof bakeModels> | undefined, serving = false;
+    // A bake that fails leaves no files: the next request or change bakes again.
+    const bake = () => (made ??= bakeModels().catch(error => {
+        made = undefined;
+        throw error;
+    }));
     const resolved = `\0${ID}`;
     return {
         name: "trailview-models",
@@ -46,8 +53,7 @@ export function modelFiles(): Plugin {
         resolveId: source => (source === ID ? resolved : undefined),
         async load(id) {
             if (id !== resolved) return undefined;
-            made ??= bakeModels();
-            const { baked: { files, models } } = await made;
+            const { baked: { files, models } } = await bake();
             const json = JSON.stringify(models, (_, value) => (typeof value === "string" && files.has(value) ? `@@model-file:${value}@@` : value));
             return `export default ${json.replace(MARK, (_, name: string) => {
                 const bytes = files.get(name)!;
@@ -57,7 +63,7 @@ export function modelFiles(): Plugin {
         },
         configureServer(server) {
             server.middlewares.use(PREFIX, (request, response, next) => {
-                void (made ??= bakeModels()).then(({ baked: { files } }) => {
+                void bake().then(({ baked: { files } }) => {
                     const bytes = files.get((request.url ?? "").slice(1).split("?")[0]);
                     if (!bytes) return next();
                     response.setHeader("Content-Type", "application/octet-stream");
@@ -65,10 +71,12 @@ export function modelFiles(): Plugin {
                 }, next);
             });
             server.watcher.on("change", async file => {
-                if (!made || !(await made).modules.includes(path.resolve(file))) return;
-                made = undefined;
                 const module = server.moduleGraph.getModuleById(resolved);
-                if (module) server.moduleGraph.invalidateModule(module);
+                if (!module) return;
+                const modules = await made?.then(({ modules }) => modules, () => undefined);
+                if (modules ? !modules.includes(path.resolve(file)) : !path.resolve(file).startsWith(SOURCES)) return;
+                made = undefined;
+                server.moduleGraph.invalidateModule(module);
                 server.ws.send({ type: "full-reload" });
             });
         },

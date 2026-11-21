@@ -74,7 +74,7 @@ A vertex is 16 bytes, as the instance pipeline reads it:
 | 12–14 | 3 × unorm8 | the colour in sRGB |
 | 15 | unorm8 | 255 − 255 × its glow at night |
 
-Indices are three per triangle. The proxy is a mesh of 6 vertices at the extent as float32.
+Indices are three per triangle. The proxy is a mesh of 6 vertices in this format, packed over the extent as the head holds it (rounded to float32).
 
 ## 4. Model budget
 
@@ -92,7 +92,7 @@ where each comes from.
 | Plant, each shape | 0 | 350 | 1,000 |
 | Rock | 0 | 100 | 300 |
 | Animal | 0 | 1,000 (the owner's choice: few on screen) | 3,000 |
-| Animal | 1 | 250 | 750 |
+| Animal, a second tier where it has one | 1 | 250 | 750 |
 | Small object of a kind | 0 | 600 (the owner's choice: few on screen) | 1,800 |
 
 One view draws at most 256 instance models, each with at most 3 mesh tiers and an impostor. The

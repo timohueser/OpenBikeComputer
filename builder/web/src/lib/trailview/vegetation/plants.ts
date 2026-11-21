@@ -63,10 +63,14 @@ export class Plants implements Producer {
     private resources?: Resources;
     private readonly list: Model[] = [];
     private readonly indexes: number[] = [];
-    /** Per model of the list: the regions that plant it, and the seasons that its mesh was asked for and that it holds. */
+    /**
+     * Per model of the list: the regions that plant it, and the seasons that its mesh was asked for, that it holds and whose
+     * file failed. A failed file counts as done, and is asked for again when the season or the regions in reach change.
+     */
     private readonly users: Set<number>[] = [];
     private readonly asked: (Season | undefined)[] = [];
     private readonly built: (Season | undefined)[] = [];
+    private readonly failed: (Season | undefined)[] = [];
     private readonly data: Uint32Array<ArrayBuffer>;
     /** The files that load. */
     private loading = 0;
@@ -78,7 +82,7 @@ export class Plants implements Producer {
     /** Whether the last update changed what the plants draw, other than by the camera. */
     newContent = false;
 
-    constructor(rules: Rules, trees: TreeModels, private readonly instances: Instances, private readonly wake: () => void, private readonly files: ModelFiles) {
+    constructor(rules: Rules, trees: TreeModels, private readonly instances: Instances, private readonly files: ModelFiles) {
         instances.produce(this);
         const { plants } = files.models;
         const { materials } = rules.vocabulary;
@@ -112,12 +116,12 @@ export class Plants implements Producer {
     }
 
     get idle(): boolean {
-        return this.loading === 0 && this.list.every((_, i) => this.asked[i] === this.season || !this.plants(i, this.reach.reach));
+        return this.loading === 0 && this.list.every((_, i) => this.asked[i] === this.season || this.failed[i] === this.season || !this.plants(i, this.reach.reach));
     }
 
     /** Whether the models of the near regions hold their meshes of the season; a file that failed counts as done. */
     get nearIdle(): boolean {
-        return this.list.every((_, i) => this.built[i] === this.season || !this.plants(i, this.reach.near) || (this.asked[i] === this.season && this.loading === 0));
+        return this.list.every((_, i) => this.built[i] === this.season || this.failed[i] === this.season || !this.plants(i, this.reach.near));
     }
 
     /** The first of SEEDS models of a plant that stands in rows (rows.ts) of region `region`, in its own colour; ask before the first update. */
@@ -165,8 +169,6 @@ export class Plants implements Producer {
      */
     update(lonLat: [number, number], date: string, above: number, reach: Reach): void {
         this.newContent = false;
-        const r = this.resources;
-        if (!r) return;
         const season = seasonOf(date), asking = season !== this.season || reach !== this.reach;
         this.season = season;
         this.reach = reach;
@@ -175,11 +177,14 @@ export class Plants implements Producer {
             for (const [i, entry] of this.list.entries()) {
                 if (this.asked[i] === season || !this.plants(i, regions)) continue;
                 this.asked[i] = season;
+                this.failed[i] = undefined;
                 const url = this.files.models.plants[entry.model]?.seasons[entry.evergreen ? 'summer' : season];
                 this.loading++;
                 void (url ? this.files.load(url) : Promise.resolve(undefined)).then(models => this.land(i, season, models?.[entry.seed - 1]));
             }
         }
+        const r = this.resources;
+        if (!r) return;
         const [ux, uy] = worldPixel(lonLat, UNITS), unit = anchorAt(...lonLat).unit;
         // An eye higher over the ground than a grid's reach dispatches none of it.
         const window = (units: number, metres: number) => {
@@ -195,11 +200,15 @@ export class Plants implements Producer {
     /** Gives a model of the list its mesh of a season, while the season lasts. */
     private land(i: number, season: Season, model: Packed | undefined): void {
         this.loading--;
-        if (!model || season !== this.season) return;
+        if (season !== this.season) return;
+        if (!model) {
+            this.asked[i] = undefined;
+            this.failed[i] = season;
+            return;
+        }
         this.instances.replace(this.indexes[i], spec(this.list[i], model));
         this.built[i] = season;
         this.newContent = true;
-        this.wake();
     }
 
     encode(pass: GPUComputePassEncoder, ground: GPUBindGroup, view: number): void {

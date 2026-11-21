@@ -19,37 +19,26 @@ export class KindPoints {
     private readonly lightOf = [...KINDS].flatMap(([, kind]) => Object.keys(kind.models ?? {}).map(model => kind.lights?.[model]));
     /** The pools of light of the points, as light-pools.ts takes them. */
     lights = new Uint32Array(0);
-    /** Whether the objects file loads, and whether its models arrived since the last update. */
-    private loading = true;
-    private arrived = false;
-    /** Whether the last update installed the models. */
-    newContent = false;
-
-    /** `wake` asks for a frame when the models arrive. */
-    constructor(instances: Instances, files: ModelFiles, wake: () => void) {
+    constructor(instances: Instances, private readonly files: ModelFiles) {
         const { objects } = files.models, first = instances.add(...objects.points.map(() => ({ tiers: [] })));
         this.first = first;
         this.pool = new Points(instances, CAPACITY);
         void files.load(objects.file).then(models => {
-            this.loading = false;
             if (first === undefined || !models) return;
             objects.points.forEach(({ until, casts }, k) => {
                 const { tiers, shape } = models[objects.rocks + k];
                 instances.replace(first + k, { tiers: tiers.map((mesh, t) => ({ mesh, until: until[t] })), shape, casts });
             });
-            this.arrived = true;
-            wake();
         });
     }
 
+    /** Whether the models have arrived, or failed. */
     get idle(): boolean {
-        return !this.loading;
+        return this.files.done(this.files.models.objects.file);
     }
 
     /** The points of the drawn nodes' kinds, each list as `packPoints` packs it; a new set of lists replaces the pool's points. */
     update(lists: Uint32Array[]): void {
-        this.newContent = this.arrived;
-        this.arrived = false;
         const first = this.first;
         if (first === undefined || (lists.length === this.lists.length && lists.every((list, i) => list === this.lists[i]))) return;
         this.lists = lists;
