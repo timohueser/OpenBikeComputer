@@ -171,9 +171,9 @@
         const trailId = stageItems.find(item => item.id === id)?.trail ?? id;
         return [...new Set([trailId, ...mapShown.flatMap(item => item.kind === 'signed' && item.trail === trailId ? [item.id] : [])])];
     }
-    // The map credits are HTML, and a record credit is plain text. A far file has no credits: the selected trail brings its own.
-    const credits = $derived(recordCredits([...mapShown.flatMap(item => item.kind === 'signed' ? [item.record] : []), ...tab === 'long' && trail?.record ? [trail.record] : []])
-        .map(escapeMarkup));
+    // The map credits are HTML, and a record credit is plain text. In a far view, the entries of the trails on the map bring them.
+    const credits = $derived(recordCredits([...mapShown.flatMap((item): { credit?: string }[] => item.kind === 'signed' ? [item.record] : item.kind === 'trail' ? [item.entry] : []),
+        ...tab === 'long' && trail?.record ? [trail.record] : []]).map(escapeMarkup));
     /** The pictures that show a cover, and the credits of the set: the map shows them while a cover shows. */
     let covers = $state(0), coverCredits = $state.raw<string[]>([]);
     function oncover(credits: string[] | undefined) {
