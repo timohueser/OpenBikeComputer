@@ -129,8 +129,10 @@ pub struct Builder<L: Fn([f64; 3]) -> f64> {
     looks: Vec<(u32, Paint)>,
     daylight: L,
     clips: Vec<Clip>,
-    /// The vertex where the plane of a clip cuts the edge between two vertices.
-    cuts: HashMap<(usize, u32, u32), u32>,
+    /// The vertex where the plane of clip k (one of at most four) cuts the edge between two vertices, by the lower
+    /// vertex and k, and the higher vertex. Its key and value have the types of `Net`'s map of openings, so the WASM
+    /// holds the code of one map of that type.
+    cuts: HashMap<(usize, usize), usize>,
 }
 
 impl<L: Fn([f64; 3]) -> f64> Builder<L> {
@@ -173,16 +175,16 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
 
     /// The vertex where the plane of clip k cuts the edge from vertex i to j, which lie at `di` and `dj` from it.
     fn cut(&mut self, k: usize, (i, di): (u32, f64), (j, dj): (u32, f64)) -> u32 {
-        let key = (k, i.min(j), i.max(j));
+        let key = (i.min(j) as usize * 4 + k, i.max(j) as usize);
         if let Some(&v) = self.cuts.get(&key) {
-            return v;
+            return v as u32;
         }
         let (u, p, q) = (di / (di - dj), self.points[i as usize], self.points[j as usize]);
         let ((colour, a), z) = (self.looks[i as usize], self.looks[j as usize].1);
         let mix = |a: f64, b: f64| a + (b - a) * u;
         let paint = Paint { across: mix(a.across, z.across), half: a.half, sleepers: mix(a.sleepers, z.sleepers) };
         let v = self.vertex([mix(p[0], q[0]), mix(p[1], q[1]), mix(p[2], q[2])], colour, paint);
-        self.cuts.insert(key, v);
+        self.cuts.insert(key, v as usize);
         v
     }
 

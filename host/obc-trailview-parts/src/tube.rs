@@ -50,8 +50,9 @@ pub struct Net<'a> {
     slope: Vec<f64>,
     /// Per chord, its tube: the chords that its vertices join.
     tube: Vec<usize>,
-    /// The built chords by the cells (`CELL_M`) that they come within reach of.
-    cells: HashMap<[i64; 2], Vec<usize>>,
+    /// The built chords by the cells (`CELL_M`) that they come within reach of; a cell's key is its two indices' bits,
+    /// so the WASM holds the code of one map of that type.
+    cells: HashMap<[u64; 2], Vec<usize>>,
     /// The world units of a cell.
     cell: f64,
 }
@@ -159,12 +160,13 @@ impl<'a> Net<'a> {
             let reach = 2.0 * chords.iter().map(|c| c.half + shell).fold(0.0, f64::max) / metres_per_unit(first.a[1]);
             let cell = net.cell;
             let at = |v: f64| libm::floor(v / cell) as i64;
+            let key = |x: i64, y: i64| [x as u64, y as u64];
             for (c, chord) in chords.iter().enumerate().filter(|&(c, _)| built(&chords[c].ends)) {
                 let lo = [chord.a[0].min(chord.b[0]) - reach, chord.a[1].min(chord.b[1]) - reach];
                 let hi = [chord.a[0].max(chord.b[0]) + reach, chord.a[1].max(chord.b[1]) + reach];
                 for x in at(lo[0])..=at(hi[0]) {
                     for y in at(lo[1])..=at(hi[1]) {
-                        net.cells.entry([x, y]).or_default().push(c);
+                        net.cells.entry(key(x, y)).or_default().push(c);
                     }
                 }
             }
@@ -343,7 +345,7 @@ impl<'a> Net<'a> {
     /// or under it by more than half their heights does not meet it.
     pub fn cuts(&self, c: usize, st: &Station) -> [Option<Cut>; 2] {
         let (own, shell) = (&self.chords[c], self.rules.ladder.bake.shell_m);
-        let key = [libm::floor(st.x / self.cell) as i64, libm::floor(st.y / self.cell) as i64];
+        let key = [libm::floor(st.x / self.cell) as i64 as u64, libm::floor(st.y / self.cell) as i64 as u64];
         let mut best: [Option<Cut>; 2] = [None, None];
         for &o in self.cells.get(&key).into_iter().flatten().filter(|&&o| self.tube[o] != self.tube[c]) {
             let other = &self.chords[o];
@@ -499,7 +501,8 @@ pub fn cut_face<L: Fn([f64; 3]) -> f64>(
 /// over it, each (lo, hi); the whole own span where the other has none.
 pub fn steps((lo, hi): (f64, f64), other: Option<(f64, f64)>) -> [(f64, f64); 2] {
     match other {
-        Some((olo, ohi)) => [(lo, olo.clamp(lo, hi)), (ohi.clamp(lo, hi), hi)],
+        // `max` and `min`, not `clamp`: its check of the bounds would bring the formatting of floats into the WASM.
+        Some((olo, ohi)) => [(lo, olo.max(lo).min(hi)), (ohi.max(lo).min(hi), hi)],
         None => [(lo, hi), (hi, hi)],
     }
 }
