@@ -217,10 +217,11 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
         // from the front to the frame line and the room from there to the back. Where the other part's head stands
         // on the same line, it lies in that head's wall.
         for &(x, side) in &cuts {
+            // `max` and `min`, not `clamp`: its check of the bounds would bring the formatting of floats into the WASM.
             let solid = |st: &Station, (lo, hi): (Option<f64>, Option<f64>)| {
                 let (foot, top) = (foot - st.z, top(x).max(foot - st.z));
                 match lo.zip(hi).filter(|(l, h)| h > l) {
-                    Some((l, h)) => [(foot, l.clamp(foot, top)), (h.clamp(foot, top), top)],
+                    Some((l, h)) => [(foot, l.max(foot).min(top)), (h.max(foot).min(top), top)],
                     None => [(foot, top), (top, top)],
                 }
             };
