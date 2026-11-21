@@ -167,7 +167,7 @@ test('a ground worker keeps the ground bytes under a low alpha, the colour under
         const job = { z: 3, x: 5, y: 2, ground: tile('ground', ground, 'ground'), quarters: [tile('q1', quarter, 'colour'), undefined], snow: tile('snow', snow, 'snow'), date: { weight: 0, band: 10 }, world: 9, regionCount: 3 };
         const builder = new Worker(`/assets/${worker}`, { type: 'module' });
         const ask = message => new Promise(resolve => { builder.onmessage = ({ data }) => resolve(data); builder.postMessage(message); });
-        const probe = await ask({ id: 0 });
+        const probe = await ask({ id: 0, bytes: 2 ** 20 });
         const { pages: [nw, ne] } = await ask({ id: 1, job });
         return { probe, west: [...nw.cells.subarray(0, 4), ...nw.colour.subarray(0, 4), ...nw.snow.subarray(0, 3)], east: [...ne.cells.subarray(0, 4), ...ne.snow.subarray(0, 2)] };
     }, { worker, ground: GROUND, quarter: QUARTER, snow: SNOW });

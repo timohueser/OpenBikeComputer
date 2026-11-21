@@ -221,7 +221,7 @@ export class Plan {
         for (const name of [...wantedNames, ...others]) {
             const record = this.records.get(name);
             if (!record) continue;
-            if (full || bytes + record.bytes > this.budget.caps.records * MiB) {
+            if (full || bytes + record.bytes > this.budget.caps.debugRecords * MiB) {
                 full = true;
                 this.records.delete(name);
                 this.dirty = true;
@@ -233,7 +233,7 @@ export class Plan {
             const name = key(node), record = this.records.get(name);
             if (this.serves(record)) continue;
             // A cell asks only while its last size fits: else it would build, go and build again every frame.
-            if (bytes + (this.sizes.get(name) ?? RECORD_BYTES) > this.budget.caps.records * MiB) {
+            if (bytes + (this.sizes.get(name) ?? RECORD_BYTES) > this.budget.caps.debugRecords * MiB) {
                 full = true;
                 break;
             }
