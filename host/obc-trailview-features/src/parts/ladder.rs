@@ -173,8 +173,8 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     for (i, o) in openings.iter().enumerate() {
         at_end[o.tube][o.end].get_or_insert(i);
     }
-    // Rung 2: a tube mostly inside a wider one is that tube. The widest takes first; the wider tube grows to hold the
-    // way of the other.
+    // Rung 2: a tube that meets a wider one along most of its length runs in it. The widest takes first; the wider tube
+    // grows to hold the way of the other.
     let axes = Axes::new(tubes);
     let mut order: Vec<usize> = (0..tubes.len()).collect();
     order.sort_by(|&x, &y| {
@@ -184,7 +184,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     for (k, &t) in order.iter().enumerate() {
         place[t] = k;
     }
-    let widest_half = tubes.iter().map(|t| t.half).fold(0.0, f64::max);
+    let reach = 2.0 * (tubes.iter().map(|t| t.half).fold(0.0, f64::max) + b.shell_m);
     let mut absorbed: Vec<Option<usize>> = vec![None; tubes.len()];
     let mut outside = 0;
     for &tb in &order {
@@ -193,17 +193,18 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         if !t.heights || span[1] - span[0] < 1e-6 {
             continue;
         }
-        // Per wider tube, the metres read in its room and the farthest of them from its axis.
+        // Per wider tube, the metres read where the two meet and the farthest of them from its axis.
         let steps = (span[1] - span[0]).ceil() as usize;
         let mut inside: HashMap<usize, (usize, f64)> = HashMap::new();
         for k in 0..=steps {
             let q = t.curve.at(span[0] + (span[1] - span[0]) * k as f64 / steps as f64).0;
-            for f in axes.near(q.p, tb, widest_half) {
+            for f in axes.near(q.p, tb, reach) {
                 let a = f.tube;
                 if place[a] < place[tb]
                     && absorbed[a].is_none()
                     && tubes[a].heights
-                    && f.d <= tubes[a].half
+                    && t.half < tubes[a].half
+                    && f.d < tubes[a].half + t.half + 2.0 * b.shell_m
                     && overlap::level(f.z - q.z, height[a], height[tb])
                 {
                     let e = inside.entry(a).or_insert((0, 0.0));
@@ -220,11 +221,13 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         };
         absorbed[tb] = Some(a);
         half[a] = half[a].max(d + t.way_half + tubes[a].margin);
+        // An opening of the narrow tube off the wide one's room and openings: its way enters the hill there.
         for i in at_end[tb].into_iter().flatten() {
             rung[i] = rung[i].or(Some("same tube"));
-            outside += usize::from(
-                axes.near(openings[i].p, tb, widest_half).iter().all(|f| f.tube != a || f.d > tubes[a].half),
-            );
+            let o = &openings[i];
+            let by_axis = axes.near(o.p, tb, half[a]).iter().any(|f| f.tube == a);
+            let by_opening = at_end[a].into_iter().flatten().any(|k| distance(openings[k].p, o.p) <= half[a]);
+            outside += usize::from(!by_axis && !by_opening);
         }
     }
     // The measure, as far across and in as a pair with a candidate can need.
