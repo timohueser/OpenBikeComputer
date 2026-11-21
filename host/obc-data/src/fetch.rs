@@ -68,9 +68,9 @@ fn fetch_files(
     match source.fetch.kind {
         FetchKind::Github if source.id == "protomaps-basemaps" => tools::basemap(root, store, http, request),
         FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => {
-            files(store, http, request).map_err(|error| http::shown_in(&error))
+            files(root, store, http, request).map_err(|error| http::shown_in(&error))
         }
-        FetchKind::Geofabrik => osm::extract(store, http, request),
+        FetchKind::Geofabrik => osm::extract(root, store, http, request),
         // Only the producer of `terrain` reads a national model, through its adapter.
         FetchKind::Dtm | FetchKind::ByHand if source.id.starts_with("dtm-") => Err(format!(
             "source `{}` is read through `terrain`: obc data source prepare terrain --region REGION",
@@ -213,11 +213,18 @@ pub(crate) fn check_version(source: &Source, version: &str) -> Result<(), String
     Err(format!("source `{}`: the version `{version}` is not {form}", source.id))
 }
 
+/// The dataset of `data/archive/` that lists the source `id`, or a placeholder when none does.
+fn dataset_of(root: &Path, id: &str) -> String {
+    let datasets = Registry::load(root).and_then(|registry| crate::datasets::load(root, &registry));
+    let found = datasets.ok().and_then(|all| all.into_iter().find(|dataset| dataset.sources.iter().any(|s| s == id)));
+    found.map_or_else(|| "DATASET".to_string(), |dataset| dataset.id)
+}
+
 /// One file per URL. A URL without `{version}` or `{yymmdd}` gives only upstream's newest file: a
 /// date version `V` is that file when it was last modified on or before `V`. A release or commit
 /// version of such a URL is only a name, so it needs a record that pins the bytes. A file that
 /// upstream gives without an `ETag` and a day comes only from the archive, which dates its bytes.
-fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
+fn files(root: &Path, store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     let template = source.fetch.url.as_deref().unwrap_or_default();
     let named = names_version(template);
@@ -246,10 +253,10 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
                         let head = head(url).or_else(|e| if http::not_found(&e) { Err(e) } else { head(url) })?;
                         if head.bare() && source.keep == Keep::Archive {
                             return Err(format!(
-                                "source `{}`: upstream gives no day of {}, so only the archive gives it: run `obc data archive get` with the dataset of data/archive/ that lists `{}`, then fetch it without --refresh",
+                                "source `{}`: upstream gives no day of {}, so only the archive gives it: run `obc data archive get {}`, then fetch it without --refresh",
                                 source.id,
                                 http::shown(url),
-                                source.id
+                                dataset_of(root, &source.id)
                             ));
                         }
                         Ok(head.modified)
@@ -1280,6 +1287,10 @@ pub(crate) mod tests {
         );
         let err = fetch(&tooling_root(), &store, &http(), &Request { refresh: true, ..request }).unwrap_err();
         assert!(err.contains("only the archive gives it"), "{err}");
+        let lu = Source { id: "lu-vtt".into(), ..land.clone() };
+        let request = Request { refresh: true, source: &lu, version: None, params: vec![] };
+        let err = fetch(&tooling_root(), &store, &http(), &request).unwrap_err();
+        assert!(err.contains("run `obc data archive get lu-sentiers`"), "{err}");
     }
 
     #[test]

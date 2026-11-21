@@ -1400,12 +1400,12 @@ mod tests {
                 reply
             };
             match index {
-                0 | 2 | 6 | 10 => status(405),
-                1 | 3 => bare(b"first"),
-                4 => bare(&[0; 7079]),
-                5 => bare(b"second"),
-                7 => bare(b"third"),
-                8 | 9 => status(503),
+                0 | 2 | 4 | 8 | 12 => status(405),
+                1 | 3 | 5 => bare(b"first"),
+                6 => bare(&[0; 7079]),
+                7 => bare(b"second"),
+                9 => bare(b"third"),
+                10 | 11 => status(503),
                 _ => not_found(),
             }
         });
@@ -1434,6 +1434,7 @@ mod tests {
         );
         assert_eq!(std::fs::read(root.join(&path)).unwrap(), b"first", "at the path of the digest of the query");
         let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        assert!(got.errors.is_empty(), "{:?}", got.errors);
         assert_eq!(
             (requests(), &got.manifest.files, &got.manifest.version),
             (4, &first.files, &first.version),
@@ -1446,6 +1447,13 @@ mod tests {
         manifest.write(&root.join("manifest/x.json")).unwrap();
         let old = fetch().unwrap();
         assert_eq!((old.version.as_str(), old.files[0].archive.as_deref()), ("2026-10-01", Some(path.as_str())));
+        let got = get(&http, &store, &dataset, &roots, None).unwrap();
+        assert!(got.errors.is_empty(), "{:?}", got.errors);
+        assert_eq!(
+            (requests(), &got.manifest.files, &got.manifest.version),
+            (6, &manifest.files, &manifest.version),
+            "the same bytes on a later day keep the entry and its version"
+        );
         let got = get(&http, &store, &dataset, &roots, None).unwrap();
         assert!(got.errors.is_empty(), "a HEAD size other than the body's checks nothing: {:?}", got.errors);
         assert_eq!(got.manifest.version.as_deref(), Some(today.as_str()), "other bytes on a later day");
@@ -1471,7 +1479,7 @@ mod tests {
         let got = get(&http, &store, &dataset, &roots, None).unwrap();
         assert_eq!(
             (requests(), got.errors.len(), &got.manifest.files),
-            (10, 0, &before.files),
+            (12, 0, &before.files),
             "a failed HEAD keeps the entry"
         );
 

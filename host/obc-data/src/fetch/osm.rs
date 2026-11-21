@@ -4,13 +4,14 @@ use super::http::Http;
 use super::{expand, files, Request};
 use crate::date;
 use crate::store::{Snapshot, Store};
+use std::path::Path;
 
 /// A dated Geofabrik extract. Without a version, the day of the data in the replication state of
 /// the area names the newest extract.
-pub fn extract(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
+pub fn extract(root: &Path, store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let template = request.source.fetch.url.as_deref().unwrap_or_default();
     if !template.contains("-{yymmdd}.osm.pbf") {
-        return files(store, http, request);
+        return files(root, store, http, request);
     }
     let day = match &request.version {
         Some(_) => None,
@@ -31,11 +32,11 @@ pub fn extract(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
         params: request.params.clone(),
     };
     match day {
-        None => files(store, http, &at(request.version.clone().unwrap_or_default())).map_err(hint),
+        None => files(root, store, http, &at(request.version.clone().unwrap_or_default())).map_err(hint),
         // The dated file of the newest day can come after its `state.txt`; the day before is there.
-        Some(day) => match files(store, http, &at(date::format(day))) {
+        Some(day) => match files(root, store, http, &at(date::format(day))) {
             Err(error) if super::http::not_found(&error) => {
-                files(store, http, &at(date::format(day - 1))).map_err(hint)
+                files(root, store, http, &at(date::format(day - 1))).map_err(hint)
             }
             result => result.map_err(hint),
         },
