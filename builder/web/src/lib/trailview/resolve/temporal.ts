@@ -43,10 +43,9 @@ export class Temporal {
         return this.held || this.k < this.frames;
     }
 
-    /** The history is lost: the next frame starts it again. */
+    /** The history is lost: the next frame starts it again. A held change stays: the instances still need it. */
     reset(): void {
         this.valid = false;
-        this.held = false;
         this.k = 0;
     }
 
