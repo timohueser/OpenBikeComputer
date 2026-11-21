@@ -173,8 +173,8 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     for (i, o) in openings.iter().enumerate() {
         at_end[o.tube][o.end].get_or_insert(i);
     }
-    // Rung 2: a tube that meets a wider one along most of its length runs in it. The widest takes first; the wider tube
-    // grows to hold the way of the other.
+    // Rung 2: a tube whose axis lies in a wider one's room along most of its length runs in it. The widest takes first;
+    // the wider tube grows to hold the way of the other.
     let axes = Axes::new(tubes);
     let mut order: Vec<usize> = (0..tubes.len()).collect();
     order.sort_by(|&x, &y| {
@@ -193,7 +193,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         if !t.heights || span[1] - span[0] < 1e-6 {
             continue;
         }
-        // Per wider tube, the metres read where the two meet and the farthest of them from its axis.
+        // Per wider tube, the metres read in its room and the farthest of them from its axis.
         let steps = (span[1] - span[0]).ceil() as usize;
         let mut inside: HashMap<usize, (usize, f64)> = HashMap::new();
         for k in 0..=steps {
@@ -203,8 +203,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
                 if place[a] < place[tb]
                     && absorbed[a].is_none()
                     && tubes[a].heights
-                    && t.half < tubes[a].half
-                    && f.d < tubes[a].half + t.half + 2.0 * b.shell_m
+                    && f.d <= tubes[a].half
                     && overlap::level(f.z - q.z, height[a], height[tb])
                 {
                     let e = inside.entry(a).or_insert((0, 0.0));
