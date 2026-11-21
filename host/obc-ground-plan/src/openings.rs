@@ -19,9 +19,25 @@ pub struct Cut {
     pub walls: Vec<[[i64; 2]; 2]>,
 }
 
-/// The built ends of a cell's input: their openings on the ground, where the end vertex of the opening's way lies in
-/// the cell grown by its margin, as the bake measures them; and the cut of each end that has one.
-pub fn built(input: &CellInput) -> (Vec<OpenEnd>, Vec<Cut>) {
+/// The opening of a built end: its point in frame units, its unit way into the tube, and its inner half-width in
+/// metres, to the jamb lines of its head wall.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mouth {
+    pub at: [f64; 2],
+    pub into: [f64; 2],
+    pub half_m: f64,
+}
+
+/// The built ends of a cell's input: their openings on the ground (`open`), where the end vertex of the opening's way
+/// lies in the cell grown by its margin, as the bake measures them; the cut of each end that has one; and the mouth of
+/// each.
+pub struct Built {
+    pub open: Vec<OpenEnd>,
+    pub cuts: Vec<Cut>,
+    pub mouths: Vec<Mouth>,
+}
+
+pub fn built(input: &CellInput) -> Built {
     let rules = Rules::embedded();
     let world = |p: GlobalPoint| [p.x as f64 / FRAME, p.y as f64 / FRAME];
     let (mut ends, mut cuts, mut chords) = (Vec::new(), Vec::new(), Vec::new());
@@ -48,7 +64,9 @@ pub fn built(input: &CellInput) -> (Vec<OpenEnd>, Vec<Cut>) {
     let [x0, y0, x1, y1] = input.key.grown();
     let mut open = Vec::new();
     let mut out = Vec::new();
+    let mut mouths = Vec::new();
     for ((end, cut), _) in ends.iter().zip(&cuts).zip(&built).filter(|(_, &b)| b) {
+        mouths.push(Mouth { at: end.at.map(|v| v * FRAME), into: end.way_in(), half_m: end.half });
         let ways = [Some((end.way, end.shift)), end.mate_way.zip(end.mate_shift)];
         for (way, shift_m) in ways.into_iter().flatten() {
             if (x0..=x1).contains(&way[0]) && (y0..=y1).contains(&way[1]) {
@@ -64,7 +82,7 @@ pub fn built(input: &CellInput) -> (Vec<OpenEnd>, Vec<Cut>) {
             }
         }
     }
-    (open, out)
+    Built { open, cuts: out, mouths }
 }
 
 /// A point `x y` of a tag of an end at frame point `p`, in frame units from the cell's origin.
@@ -93,7 +111,7 @@ mod tests {
     use super::*;
     use crate::faces::records;
     use crate::faces::tests::{at, cell, input_of, line, plane};
-    use crate::faces::Rules;
+    use crate::faces::{Rules, Surface};
     use crate::graph::Level;
     use crate::mesh::{mesh_cell, CellMesh, Reads};
     use crate::tile::{Feature, Part, Tags};
@@ -180,7 +198,7 @@ mod tests {
         let rules = Rules::embedded();
         let graph = crate::cell::cell_graph(input.key, input, rules);
         let (mut faces, near, _, _) = records::near_under(&graph, input, rules, input.key);
-        faces.cuts = built(input).1;
+        faces.cuts = built(input).cuts;
         let mesh = mesh_cell(&faces, &near.words, &Reads::of(&faces, &[]), &mut || 0.0).unwrap();
         (graph, mesh)
     }
@@ -234,7 +252,7 @@ mod tests {
             let rules = Rules::embedded();
             let graph = crate::cell::cell_graph(input.key, &input, rules);
             let (mut faces, near, _, _) = records::near_under(&graph, &input, rules, input.key);
-            faces.cuts = built(&input).1;
+            faces.cuts = built(&input).cuts;
             faces.cuts[0].walls = walls;
             mesh_cell(&faces, &near.words, &Reads::of(&faces, &[]), &mut || 0.0).unwrap()
         };
@@ -267,6 +285,39 @@ mod tests {
         let half = slots(&mesh(vec![[wide(a), wide(mid)]]));
         assert_eq!(half.len(), all.len(), "{half:?}");
         assert!(half.contains(&if mid < b { [mid, b] } else { [b, mid] }) && !half.contains(&[a, b]), "{half:?}");
+    }
+
+    #[test]
+    fn the_way_widens_to_the_jamb_lines_at_a_built_opening_and_back_over_its_approach() {
+        // The arch's inner half is 4.5 m, the road's core about 3.4 m: 4.2 m to each side lies in the road's core
+        // just before the opening, and on the ground 4 m before it, where its own way ends at the street.
+        let surface = |input: &CellInput, x: f64, y: f64| {
+            let rules = Rules::embedded();
+            let graph = crate::cell::cell_graph(input.key, input, rules);
+            let (plan, _, _, _) = records::near_under(&graph, input, rules, input.key);
+            let (o, q) = (cell().origin(), at([x, y]));
+            let q = [(q.x - o.x) as f64, (q.y - o.y) as f64];
+            let holds = |r: &Vec<u32>| {
+                let p: Vec<[f64; 2]> = r.iter().map(|&v| plan.vertices[v as usize].map(f64::from)).collect();
+                (0..p.len())
+                    .filter(|&k| {
+                        let (a, b) = (p[k], p[(k + 1) % p.len()]);
+                        (a[1] > q[1]) != (b[1] > q[1]) && q[0] < a[0] + (q[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
+                    })
+                    .count()
+                    % 2
+                    == 1
+            };
+            let face = plan.faces.iter().find(|f| f.level == 0 && f.rings.iter().filter(|r| holds(r)).count() % 2 == 1);
+            face.map(|f| f.surface)
+        };
+        let core = |s: Option<Surface>| matches!(s, Some(Surface::Carriageway | Surface::Shoulder | Surface::Verge));
+        let (built, develop) = (input(Some("arch arch")), input(None));
+        for y in [-4.2, 4.2] {
+            assert!(core(surface(&built, 5.5, y)), "{:?}", surface(&built, 5.5, y));
+            assert!(!core(surface(&develop, 5.5, y)), "{:?}", surface(&develop, 5.5, y));
+            assert!(!core(surface(&built, 2.0, y)), "{:?}", surface(&built, 2.0, y));
+        }
     }
 
     #[test]

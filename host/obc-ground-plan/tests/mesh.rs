@@ -30,10 +30,11 @@ fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its
         .collect();
     // As the device builds a cell: the ways of the built tunnel ends on the ground up to their openings, and the cuts.
     let built = fixture.map(&cells, |key, input| {
-        let (ends, cuts) = openings::built(&input);
-        let graph = graph::build_open(key, &input, &rules.sections, None, &ends);
+        let ends = openings::built(&input);
+        let mut graph = graph::build_open(key, &input, &rules.sections, None, &ends.open);
+        graph.mouths = ends.mouths;
         let mut built = records::build(&graph, &input, rules, key, 0, true);
-        built.faces.cuts = cuts;
+        built.faces.cuts = ends.cuts;
         (key, Rim::of(&built.faces), built.faces, built.near.words, input.terrain)
     });
     let rims: BTreeMap<CellKey, Rim> = built.iter().map(|b| (b.0, b.1.clone())).collect();

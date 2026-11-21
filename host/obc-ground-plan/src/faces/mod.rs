@@ -4,6 +4,7 @@
 //! cell by all their outlines, and a label per patch by key. Every point of the cell lies in exactly
 //! one face.
 
+mod approach;
 pub mod check;
 mod cover;
 pub mod culverts;
@@ -476,6 +477,7 @@ fn lines_with<'a>(
         out.push(line);
     }
     taper(ctx, &mut out, &of_way);
+    approach::widen(ctx, &mut out);
     // A bore's end on a portal takes the offsets of the ground way that ends there as storey 0 builds that way (its
     // own tapers included): one computation, so both strokes end on the same corners.
     if BORES && out.iter().any(|l| l.end_dir.iter().any(Option::is_some) && in_bore(g, l.way)) {
