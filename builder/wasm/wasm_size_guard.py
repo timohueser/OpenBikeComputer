@@ -45,10 +45,11 @@ GROUND_PLAN_MARGIN = {
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * GROUND_PLAN_MEASURED["raw_wasm"] / GROUND_PLAN_MEASURED["gzipped"]),
 }
 
-# Measured in CI on the build of the tunnel parts' arch, tube, boxes and underpasses, with a tile's volumes built once
-# and selected per node, with wasm-pack 0.15.0 and rustc 1.100.0. The margin is the ground plan's, raw by the same
-# fraction.
-PARTS_MEASURED = {"gzipped": 125_922, "raw_wasm": 293_466}
+# Measured on the build of the tunnel parts' arch, tube, boxes and underpasses, with a tile's volumes built once and
+# selected per node, and the pair, the rim, the closed free end and the cut of two tubes that meet: locally with
+# wasm-pack 0.15.0 and rustc 1.99.0, which gives develop's build before it about 2 kB more than CI. The margin is the
+# ground plan's, raw by the same fraction.
+PARTS_MEASURED = {"gzipped": 142_428, "raw_wasm": 321_839}
 PARTS_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * PARTS_MEASURED["raw_wasm"] / PARTS_MEASURED["gzipped"]),
