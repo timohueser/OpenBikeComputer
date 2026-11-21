@@ -53,6 +53,10 @@
             v('p-reuse', 'P, turn reuse', { reuse: 1 }),
             v('p-margin', 'P, turn reuse, margin 1.5 × 1.1 at 8/s', { reuse: 1, margin: '1.5,1.1', turn: 8 }),
             v('p-lead', 'P, turn reuse, margin 1.5 × 1.1 ahead, at 5/s', { reuse: 1, margin: '1.5,1.1', lead: 1, turn: 5 }),
+            // The second phone run: a small margin ahead of the turn at the full scene rate, the wide margin at that rate (the GPU clock against the work), and the load step alone.
+            v('p-small', 'P, turn reuse, margin 1.1 × 1.02 ahead, at 15/s', { reuse: 1, margin: '1.1,1.02', lead: 1, turn: 15 }),
+            v('p-lead15', 'P, turn reuse, margin 1.5 × 1.1 ahead, at 15/s', { reuse: 1, margin: '1.5,1.1', lead: 1, turn: 15 }),
+            v('p-hold', 'P, load step only', { reuse: 1, margin: '1,1' }),
         ];
     }
     const TAIL = '&date=2026-08-15&time=15:00&weather=sunny';
@@ -470,7 +474,7 @@
     function engineFrames(from, to) {
         const list = hooks.frames.filter(f => f.at >= from && f.at < to), stats = l => {
             const gpu = l.filter(f => f.gpu !== undefined).map(f => f.gpu), cpu = l.filter(f => f.cpu !== undefined).map(f => f.cpu);
-            return { frames: l.length, timed: gpu.length, gpuMean: mean(gpu), gpuMedian: round(quantile(gpu, 0.5) ?? NaN), gpuSum: round(gpu.reduce((a, b) => a + b, 0)), cpuMean: mean(cpu), cpuMedian: round(quantile(cpu, 0.5) ?? NaN) };
+            return { frames: l.length, timed: gpu.length, over33: gpu.filter(ms => ms > 33).length, gpuMean: mean(gpu), gpuMedian: round(quantile(gpu, 0.5) ?? NaN), gpuSum: round(gpu.reduce((a, b) => a + b, 0)), cpuMean: mean(cpu), cpuMedian: round(quantile(cpu, 0.5) ?? NaN) };
         };
         const kind = f => (f.passes.includes('terrain') ? 'scene' : f.passes.length === 1 && f.passes[0] === 'present' ? 'presentOnly' : 'other');
         const presents = list.filter(f => f.present !== undefined).map(f => f.present);
