@@ -35,8 +35,8 @@ export class Temporal {
     private moving = 0;
     private valid = false;
     private frames = STILL_FRAMES;
-    /** A change that a frame which drew nothing saw. */
-    private held = false;
+    /** A change that a frame which drew nothing saw: the next `next()` takes it in. */
+    held = false;
 
     /** Whether a still view needs more frames. */
     get converging(): boolean {

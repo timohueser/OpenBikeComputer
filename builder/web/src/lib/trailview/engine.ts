@@ -724,7 +724,9 @@ export class TrailView {
             changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || newExtras;
             // While a view at rest loads, its frames run the updates and the compute but draw LOAD_RATE frames a second. Input and a resize draw
             // at once; a frame that would draw nothing does not hold, so it asks for no more frames.
-            hold = !this.output && !this.grab && this.pacer.holds(now, !moved && !newExtras && !resized, (changed || this.temporal.converging) && (this.loading || this.terrain.meshesLoading));
+            hold = !this.output && !this.grab && (changed || this.temporal.converging) && this.pacer.holds(now, !moved && !newExtras && !resized, this.loading || this.terrain.meshesLoading);
+            // The frame that draws after held ones takes in their change: the restart, and the instances placed twice.
+            if (!hold) changed ||= this.temporal.held;
             this.camera = camera;
             if (moved) this.sight = { viewProj, eye: [eye.east, eye.north, eye.z] };
             this.drawnExtras = extras;
@@ -737,11 +739,8 @@ export class TrailView {
             else if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, light, casting, moved);
             this.shadow.write(gpu, [eye.east, eye.north, eye.z], light);
             // A new map changes the frame as new content does.
-            if (hold) {
-                this.temporal.hold(changed);
-                // The next frame that draws places the instances for this change.
-                this.unrest ||= changed;
-            } else step = this.temporal.next(moved, changed || cascade >= 0, debug ? 1 : STILL_FRAMES);
+            if (hold) this.temporal.hold(changed);
+            else step = this.temporal.next(moved, changed || cascade >= 0, debug ? 1 : STILL_FRAMES);
             if (step && !debug) offset = jitter(step.sample);
             // The jitter in clip space: render pixels are y down.
             ndc = [2 * offset[0] / width, -2 * offset[1] / height];
