@@ -1,3 +1,4 @@
+import { BUDGETS } from '../budget';
 import { EARTH_RADIUS } from '../frame/frame';
 import type { Anchor } from '../frame/space';
 import { PAGE, type PageData } from '../stream/heights';
@@ -5,8 +6,6 @@ import { TILE_ZOOM, type TerrainSource, stopped } from '../stream/terrain';
 import { NEAR, STAMP_WORDS, type NodeStamps } from './bins';
 import { CELL_LEVEL, COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
 
-/** Tile requests in flight at most. */
-const LOADS = 6;
 /** The level of the pages that fill the holes: one small tile of zoom 6 spans a view, so the view's own coarse tiles can come after the near field. */
 const FILL = 7;
 /** Pages that arrive or are synthesized per frame at most. */
@@ -164,7 +163,7 @@ export class Pages {
     private touched: Node[] = [];
 
     constructor(private readonly source: TerrainSource, readonly capacity: Record<Kind, number>, private readonly bounds: [number, number, number, number], private readonly changed: () => void,
-        private readonly stamps: StampSource = NO_STAMPS, readonly maskCapacity = 0) {
+        private readonly stamps: StampSource = NO_STAMPS, readonly maskCapacity = 0, private readonly maxLoads = BUDGETS.desktop.loads.terrain) {
         this.free = { stored: range(0, capacity.stored), synth: range(capacity.stored, capacity.stored + capacity.synth) };
         this.maskFree = range(0, maskCapacity);
     }
@@ -516,12 +515,12 @@ export class Pages {
 
     /** Starts the wished tiles in the order of `priority`, of the most valuable page that each holds; the finer tile first at a tie. */
     private start(anchor: Anchor): void {
-        if (this.loads >= LOADS) return;
+        if (this.loads >= this.maxLoads) return;
         const eye = { anchor, above: 0 };
         const order = [...this.wishes.values()].map(({ tile, pages }) => ({
             tile, value: Math.max(...[...pages.values()].map(page => priority(page.level, this.coming(page), distances(eye, page)[0]))),
         })).sort((a, b) => b.value - a.value || b.tile.level - a.tile.level);
-        for (const { tile } of order.slice(0, LOADS - this.loads)) this.fetch(tile.level, tile.x, tile.y);
+        for (const { tile } of order.slice(0, this.maxLoads - this.loads)) this.fetch(tile.level, tile.x, tile.y);
     }
 
     /**

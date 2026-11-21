@@ -7,11 +7,10 @@ import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
 import type { WaterMesh } from './water-mesh';
 import { stopped } from '../stream/terrain';
+import { BUDGETS } from '../budget';
 
 /** The bytes of the binned nodes and their water meshes kept; an entry costs ENTRY_BYTES more. */
 const NODE_BYTES = 64 * 2 ** 20, ENTRY_BYTES = 64;
-/** Requests to the worker in flight at most. */
-const REQUESTS = 8;
 
 /**
  * What a node stamps, its water, the floors of its structures and the boxes of its tunnels' portals, from the worker;
@@ -87,9 +86,10 @@ export class Stamps implements StampSource {
     /**
      * An abort of `stop` ends the worker. With `plan` the records draw the ways (nodeStamps of bins.ts). A node
      * that `baked` holds comes from it, with the same bytes as from the worker. With `cache`, the release and the
-     * version of the stamp code (`virtual:stamp-version`), the nodes go to the device cache.
+     * version of the stamp code (`virtual:stamp-version`), the nodes go to the device cache. `maxRequests` are the requests
+     * to the worker in flight at most.
      */
-    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, readonly plan = false, private readonly baked?: BakedNodes, cache?: { release: string; version: string }) {
+    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, readonly plan = false, private readonly baked?: BakedNodes, cache?: { release: string; version: string }, private readonly maxRequests = BUDGETS.desktop.loads.stamps) {
         if (!tiles) return;
         if (cache) this.cache = DeviceCache.open('stamps', cache.release, `${cache.version}/${plan}`, CAPS.stamps).catch(error => {
             console.warn(`The stamps' device cache did not open: ${error}`);
@@ -105,7 +105,7 @@ export class Stamps implements StampSource {
         };
     }
 
-    /** Whether features are on their way: each wakes the engine when it arrives. A wish waits only while REQUESTS are. */
+    /** Whether features are on their way: each wakes the engine when it arrives. A wish waits only while `maxRequests` are. */
     get loading(): boolean {
         return this.pending.size > 0 || this.unbuilt.size > 0;
     }
@@ -122,7 +122,7 @@ export class Stamps implements StampSource {
     }
 
     /**
-     * Asks the worker for the frame's wishes, the lowest `rank` first, while it has fewer than REQUESTS
+     * Asks the worker for the frame's wishes, the lowest `rank` first, while it has fewer than `maxRequests`
      * on their way. The rest go as answers come, until the next frame states its wishes again. With `meshes`,
      * `rank` ranks the structure job of an owner node.
      */
@@ -139,12 +139,12 @@ export class Stamps implements StampSource {
     /**
      * The stamp wishes and the structure meshes of the owner nodes go in one order, the last frame's rank. The structure
      * meshes of a node are a job of their own, one at a time, which goes once no stamp wish of a lower rank waits or is on
-     * its way: the tunnels and parts about the eye wait only for the far stamps already on their way, REQUESTS at most,
+     * its way: the tunnels and parts about the eye wait only for the far stamps already on their way, `maxRequests` at most,
      * and the stamps of a lower rank wait for no structure job of their frame. The worker takes its jobs in turn, so a
      * stamp wish of a later frame waits for one structure job at most.
      */
     private refill(): void {
-        while (this.pending.size < REQUESTS && this.queue.length) {
+        while (this.pending.size < this.maxRequests && this.queue.length) {
             const node = this.queue.shift()!;
             if (!this.pending.has(key(node)) && !this.nodes.has(key(node))) this.request(node);
         }
