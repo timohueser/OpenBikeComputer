@@ -65,9 +65,7 @@ function, uploads the covers and the set that names them, and makes a set the li
 [specs/route-pictures.md](../../../../../specs/route-pictures.md) has the keys, the files and the
 key of a cover. Run the commands from `builder/web/tests/browser`.
 
-## Steps
-
-The first run:
+## Steps of the first run
 
 1. Build the still page for production: `npm run build:trailview --prefix ../..`. `npm run
    test:trailview` builds it for the fixture, so build it again after each test run. `render`
@@ -84,17 +82,40 @@ The first run:
    `curl -sI https://maps.openbikecomputer.com/route-pictures/manifest.json` answers 200.
    `switch` with the id of the previous set goes back.
 
-For a new planner release, do steps 1 and 4: only the routes whose line changed render.
+## After a production data update
 
-`node trailview/route-pictures.mjs row [--out DIR]` makes each missing or older row
-image, with no render or network. A broken image gives exit code 1.
+```sh
+node trailview/route-pictures.mjs check
+# When check names routes: build the page (step 1), then:
+node trailview/route-pictures.mjs render --gpu --out DIR
+# --without=ID for each route that fails on each run or has no view; the pull request or the
+# issue gives the reason.
+node trailview/route-pictures.mjs upload --out DIR --without=ID,ID
+node trailview/route-pictures.mjs switch SET
+# One minute later, as the public host keeps the manifest for up to 60 s. It prints the new set id.
+node trailview/route-pictures.mjs check --without=ID,ID
+# No production data update between render and switch. After a data rollback, switch back to the
+# set that was live before the update.
+```
+
+Before a run, the output folder holds the points file, the full image and the row image of each
+route that keeps its cover. A folder without them renders those routes again with the camera from
+the bucket and sends nothing new. Copy the folder with `cp -a`, so that each row image stays newer
+than its full image.
+
+## Other commands
+
+| Command | Effect |
+| --- | --- |
+| `row [--out DIR]` | Makes each missing or older row image, with no render or network. A broken image gives exit code 1. |
+| `check [--without=ID,ID]` | Names each route of the production release with no cover in the live set, from public files only. Exit code 1 when a route that it names is not in `--without`. |
 
 ## Options of render
 
 | Option | Effect |
 | --- | --- |
 | `--sample N` | Only N routes, spread over the catalog |
-| `--only=ID,ID` | Only these record IDs; a section has a negative ID, which needs the `=` form |
+| `--only=ID,ID` | Only these record IDs. A list that starts with a negative ID needs the `=` form: `--only=-ID`, `--without=-ID`. |
 | `--out DIR` | Another folder than `.artifacts/route-pictures` |
 | `--gpu` | The GPU of the machine. Without it, SwiftShader draws for minutes. |
 | `--fixture` | The routes of `fixture/routes.json` and the tiles of the test fixture, for the test: build the page with `npm run pretest:trailview` |
@@ -104,7 +125,6 @@ image, with no render or network. A broken image gives exit code 1.
 - A route that fails gets no file. `render` goes on with the next route, names each failed route
   with its reason at the end, and exits with 1. The next run tries it again. After 5 failures in a
   row it renders a route with a cover again, and stops if that fails too: the host or the GPU is down.
-  When a route fails on each run, leave it out: `upload --without ID,ID`.
 - `render` skips a route whose cover or `.none` mark exists for its key. A change of the size, the
   camera rule or its light in the script changes `look` and so each key: all routes render again.
 - `upload` takes the routes of the active production release, and refuses while one of them has no
