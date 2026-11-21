@@ -681,6 +681,20 @@ fn pair(apart: f64, dz: f64) -> (Vec<End>, Vec<Chord>) {
     (ends, chords)
 }
 
+/// The two road tubes of `pair` as four arches: no end has a mate.
+fn side_by_side(apart: f64) -> (Vec<End>, Vec<Chord>) {
+    let (mut ends, mut chords) = pair(apart, 0.0);
+    let pi = std::f64::consts::PI;
+    ends.extend([end(0.0, apart, 500.0, 0.0, 6.0), end(40.0, apart, 500.2, pi, 3.0)]);
+    for e in &mut ends {
+        (e.part, e.mate, e.mate_way, e.mate_shift) = (Part::Arch, None, None, None);
+    }
+    for c in &mut chords {
+        c.ends = [Some(Part::Arch); 2];
+    }
+    (ends, chords)
+}
+
 /// The triangles of a mesh in metres east, north and up, but the dark faces of the openings and the lamps.
 fn solid(mesh: &Mesh) -> Vec<[[f64; 3]; 3]> {
     let point = |i: u32| {
@@ -724,14 +738,15 @@ fn hit(faces: &[[[f64; 3]; 3]], o: [f64; 3], d: [f64; 3], far: f64) -> Option<(f
 }
 
 #[test]
-fn the_two_tubes_of_a_pair_are_one_room_and_one_head_wall() {
+fn the_two_tubes_of_a_pair_are_one_room_and_one_head_wall_and_two_near_heads_end_between() {
     let rules = Rules::embedded();
     let frame = rules.design.frame_m;
     // Tubes 7 m apart, 4.5 m wide each: their rooms overlap by 2 m, so they are cut in the middle; with the second's
-    // floor 0.8 m higher, faces close the steps there. Tubes 10.5 m apart do not overlap.
-    for (apart, dz) in [(7.0, 0.0), (7.0, 0.8), (10.5, 0.0)] {
-        let name = format!("{apart} m apart, {dz} m higher");
-        let (ends, chords) = pair(apart, dz);
+    // floor 0.8 m higher, faces close the steps there. Tubes 10.5 m apart do not overlap. Two arches that are no pair
+    // end their head walls at the middle too.
+    for (apart, dz, paired) in [(7.0, 0.0, true), (7.0, 0.8, true), (10.5, 0.0, true), (10.5, 0.0, false)] {
+        let name = format!("{apart} m apart, {dz} m higher, a pair: {paired}");
+        let (ends, chords) = if paired { pair(apart, dz) } else { side_by_side(apart) };
         let (room, box_points) = boxes_fit(&name, &ends, &chords);
         assert!(room > 200 && box_points > 100, "{name}: {room} room samples, {box_points} box samples");
         let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);

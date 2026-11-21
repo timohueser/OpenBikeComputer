@@ -42,10 +42,10 @@ fn rim(net: &Net, e: usize) -> bool {
 /// pair.
 fn edges(net: &Net, e: usize) -> (f64, f64) {
     let shell = net.rules.ladder.bake.shell_m;
-    let edge = half(net, e) + shell;
+    let edge = half_at(net, e) + shell;
     match (net.mate[e], net.ends[e].mate) {
         (Some(m), Some(a)) => {
-            let other = half(net, m) + shell;
+            let other = half_at(net, m) + shell;
             ((-edge).min(a - other), edge.max(a + other))
         }
         _ => (-edge, edge),
@@ -53,7 +53,7 @@ fn edges(net: &Net, e: usize) -> (f64, f64) {
 }
 
 /// The inside half-width of end e's tube at its opening.
-fn half(net: &Net, e: usize) -> f64 {
+fn half_at(net: &Net, e: usize) -> f64 {
     net.opening(e).map_or(net.ends[e].half, |(c, _)| net.chords[c].half)
 }
 
@@ -62,7 +62,7 @@ fn rim_outline(net: &Net, e: usize) -> Vec<Corner> {
     let (end, design) = (&net.ends[e], &net.rules.design);
     let grow = design.frame_m + net.rules.ladder.bake.shell_m;
     let sp = spring(net, end.section, end.height);
-    outline(end.section, half(net, e) + grow, end.height + grow, sp, design.arch_segments)
+    outline(end.section, half_at(net, e) + grow, end.height + grow, sp, design.arch_segments)
 }
 
 /// The metres to the left of end e's axis of the two ends of its head: of its rim, or of its head wall with its wings.
@@ -114,11 +114,30 @@ fn grown(net: &Net, e: usize, grow: f64) -> Vec<Corner> {
     out
 }
 
-/// The cut of a pair at end e's frame line: the metres to the left of its axis of the middle between its tube's wall and
-/// the mate's, and the side of the mate (1 to the left).
-fn pair_cut(net: &Net, e: usize) -> Option<(f64, f64)> {
-    let (m, a) = (net.mate[e]?, net.ends[e].mate?);
-    Some(((a + a.signum() * (half(net, e) - half(net, m))) / 2.0, a.signum()))
+/// Where end e's head ends at another opening near it: the metres to the left of its axis of the middle between its
+/// tube's wall and the other's, the side of the other (1 to the left), the other end, and whether the two lie on one
+/// frame line. The other is the mate of a pair, or else the nearest built end that leads the same way within
+/// `pair_max_m` and `pair_max_deg`, at its floor's height, whose axis passes within reach of e's head.
+fn head_cut(net: &Net, e: usize) -> Option<(f64, f64, usize, bool)> {
+    let middle = |a: f64, m: usize| (a + a.signum() * (half_at(net, e) - half_at(net, m))) / 2.0;
+    if let (Some(m), Some(a)) = (net.mate[e], net.ends[e].mate) {
+        return Some((middle(a, m), a.signum(), m, true));
+    }
+    let (end, bake) = (&net.ends[e], &net.rules.ladder.bake);
+    let (into, k) = (end.way_in(), crate::metres_per_unit(end.at[1]));
+    let left = crate::mesh::left_of(into);
+    let (right_end, left_end) = wide(net, e);
+    let near = (0..net.ends.len()).filter(|&m| m != e && net.built_end(m) && !net.closed(m)).filter_map(|m| {
+        let other = &net.ends[m];
+        let (d, o) = (other.way_in(), [(other.at[0] - end.at[0]) * k, (other.at[1] - end.at[1]) * k]);
+        let (along, across) = (o[0] * into[0] + o[1] * into[1], o[0] * left[0] + o[1] * left[1]);
+        let reach = if across > 0.0 { left_end } else { -right_end } + half_at(net, m) + bake.shell_m;
+        let same_way = d[0] * into[0] + d[1] * into[1] >= libm::cos(bake.pair_max_deg.to_radians());
+        let level = (other.z - end.z).abs() <= (end.height + other.height) / 2.0;
+        (same_way && level && along.abs() <= bake.pair_max_m && across.abs() < reach).then_some((m, along, across))
+    });
+    let (m, along, a) = near.min_by(|x, y| x.2.abs().total_cmp(&y.2.abs()))?;
+    Some((middle(a, m), a.signum(), m, along.abs() < 0.5))
 }
 
 /// The faces of the head at end e: its head wall or rim, the sill, the reveal and the frame round the opening, the dark
@@ -147,8 +166,8 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
         let (front, ring, back) =
             (net.frame(e, -design.recess_m), net.frame(e, 0.0), net.frame(e, design.face_m - design.recess_m));
         let (h, section) = shell.first().map_or((chord.height, chord.section), |p| (p.2, p.3));
-        let cut = pair_cut(net, e);
-        b.clip(cut.map(|(x, side)| {
+        let cut = head_cut(net, e);
+        b.clip(cut.map(|(x, side, ..)| {
             let x = x + side * tube::OVERLAP_M;
             let (p, q, r) = (front.at([x, 0.0]), back.at([x, 0.0]), front.at([x + side, 0.0]));
             Clip { a: [p[0], p[1]], b: [q[0], q[1]], away: [r[0] - p[0], r[1] - p[1]] }
@@ -206,14 +225,15 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
             b.triangle(centre, rim_v[k], rim_v[(k + 1) % rim_v.len()], outward);
         }
         b.clip(None);
-        // Where the two holes of a pair differ at the middle, the reveal closes the step, from the front to the frame
-        // line: under the higher sill and over the lower top.
-        if let (Some((x, side)), Some(m)) = (cut, net.mate[e]) {
+        // Where two holes on one frame line differ at the middle, the reveal closes the step, from the front to the
+        // frame line: under the higher sill and over the lower top.
+        if let Some((x, side, m, true)) = cut {
             let other = grown(net, m, design.frame_m);
+            let a = 2.0 * x - side * (half - half_at(net, m));
             let span = |st: &Station, s: f64| {
                 let df = net.frame(m, s).z - st.z;
                 let own = (sill, top_at(&hole, x)?);
-                let them = top_at(&other, x - net.ends[e].mate?).map(|t| (sill + df, t + df));
+                let them = top_at(&other, x - a).map(|t| (sill + df, t + df));
                 Some(steps(own, them))
             };
             if let (Some(a), Some(z)) = (span(&front, -design.recess_m), span(&ring, 0.0)) {
