@@ -663,7 +663,7 @@ and two `shell_m`, and the point lies inside the other where `d` is at most the 
   The wider `half` grows to the largest `d` there plus the other way's half-width and the wider margin.
 - Two openings whose chains meet at the opening farther in are a pair (rung 5). A group of openings that pairs and
   such meetings link has the frame line of its far opening: one whose line no opening linked to it lies past, the
-  farthest in along the group's way. The openings linked to it move in onto it along their ways and take its heading;
+  one linked to the most, then the farthest in along the group's way. The openings linked to it move in onto it along their ways and take its heading;
   one whose way does not reach the line, or that lies past it, stays. The others of the group form the next group. A
   pair whose two openings do not end on one line is no pair.
 - Two chains with a part at both ends have a vertex where their shells start or stop meeting between their openings

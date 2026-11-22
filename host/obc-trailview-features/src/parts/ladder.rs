@@ -102,8 +102,10 @@ fn near(openings: &[Opening], input: &Input) -> Vec<Near> {
 /// their wings), and a stretch changes the ground up to about 100 m from its end vertex (its length, at most
 /// `junction_shift_max_m` plus `pair_max_m`, and the cut and fill of its road beyond it).
 const AGAIN_M: f64 = 200.0;
-/// An opening farther than this in from a frame line lies past it.
-const PAST_M: f64 = 0.01;
+/// An opening farther than this in from a frame line lies past it. Nearer, it stands in the depth of the line's head
+/// (`face_m` of `design`) and its ground is the head's: two openings beside each other whose ways differ by a
+/// few degrees lie each a little past the other's line.
+const PAST_M: f64 = 1.0;
 const SQUARE: f64 = (1u64 << obc_ground_plan::frame::FRAME_BITS) as f64;
 
 /// What to read about opening i (`measure::ask`): as far across and in as a pair with a candidate can need (`reach`:
@@ -381,9 +383,9 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     // One frame line for each group of openings whose tubes meet (a pair, or two openings whose tubes meet at the
     // one farther in): the line of the group's far opening, which never moves. The openings linked to it move in onto
     // it along their ways and read the ground that it measured, whose row reaches them; the others of the group form
-    // the next group. The far opening is one whose line none of its linked openings lies past, the farthest in along
-    // the group's way. An opening whose way does not reach the line, or that lies past it, stays; a pair whose two
-    // openings do not end on one line is no pair: each takes its next kind.
+    // the next group. The far opening is one whose line none of its linked openings lies past, the one linked to the
+    // most, then the farthest in along the group's way. An opening whose way does not reach the line, or that lies past
+    // it, stays; a pair whose two openings do not end on one line is no pair: each takes its next kind.
     let mut root: Vec<usize> = (0..n).collect();
     let find = |root: &mut Vec<usize>, mut i: usize| {
         while root[i] != i {
@@ -420,9 +422,10 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             let along = |i: usize| along_dir(openings[left[0]].p, openings[i].p, way);
             let past = |f: usize, i: usize| along_dir(openings[f].p, openings[i].p, openings[f].dir) > PAST_M;
             let clear = |f: usize| !left.iter().any(|&i| i != f && linked(f, i) && past(f, i));
-            let by_along = |a: &usize, b: &usize| along(*a).total_cmp(&along(*b));
-            let far = (left.iter().copied().filter(|&f| clear(f)).max_by(by_along))
-                .or_else(|| left.iter().copied().max_by(by_along))
+            let taken = |f: usize| left.iter().filter(|&&i| i != f && linked(f, i)).count();
+            let rank = |a: &usize, b: &usize| taken(*a).cmp(&taken(*b)).then(along(*a).total_cmp(&along(*b)));
+            let far = (left.iter().copied().filter(|&f| clear(f)).max_by(rank))
+                .or_else(|| left.iter().copied().max_by(rank))
                 .unwrap_or(left[0]);
             let members: Vec<(usize, bool)> =
                 left.iter().copied().filter(|&i| i != far && linked(far, i)).map(|i| (i, past(far, i))).collect();
