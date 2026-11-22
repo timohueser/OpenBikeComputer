@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde_json::{json, Value};
 
 use obc_ground_plan::graph::OpenEnd;
+use obc_trailview_parts::PAST_M;
 
 use super::floor::{self, Floor};
 use super::measure::{self, Ask, Site};
@@ -17,8 +18,8 @@ pub use obc_trailview_parts::Part as Kind;
 
 /// The numbers of a drawn opening (Plan 8 of the design): metres, `left` and `right` per metre out from the frame's
 /// outer edge, and in a pair the mate's opening, the metres to its axis to the left and its collar; `height` is the
-/// inside height of the tube's chord there; `heading` is square to its frame line, into the tube of the opening farther
-/// in; `walls` whether the record holds `face`, `left` and `right`.
+/// inside height of the tube's chord there; `heading` is square to its frame line, into the tube of its group's far
+/// opening; `walls` whether the record holds `face`, `left` and `right`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Numbers {
     pub heading: f64,
@@ -55,14 +56,12 @@ pub(crate) struct Decided {
 /// The measure of the asks, with the open ends of all openings.
 pub(crate) type Measure<'a> = dyn Fn(&[Ask], &[OpenEnd]) -> (Vec<Site>, usize) + 'a;
 
-/// Two openings of other tubes that lead the same way within `pair_max_deg` and lie within `pair_max_m`: their
-/// metres apart, and b's metres to the left of a and in along a.
+/// Two openings of other tubes that lead the same way within `pair_max_deg` and lie within `pair_max_m`, and their
+/// metres apart.
 struct Near {
     a: usize,
     b: usize,
     d: f64,
-    lat: f64,
-    stag: f64,
 }
 
 /// Every pair of openings of different tubes within `pair_max_m` and `pair_max_deg`, nearest first.
@@ -87,8 +86,7 @@ fn near(openings: &[Opening], input: &Input) -> Vec<Near> {
                 }
                 let d = distance(o.p, q.p);
                 if d <= b.pair_max_m {
-                    let (lat, stag) = (along_dir(o.p, q.p, left_of(o.dir)), along_dir(o.p, q.p, o.dir));
-                    out.push(Near { a: i, b: k, d, lat, stag });
+                    out.push(Near { a: i, b: k, d });
                 }
             }
         }
@@ -102,10 +100,6 @@ fn near(openings: &[Opening], input: &Input) -> Vec<Near> {
 /// their wings), and a stretch changes the ground up to about 100 m from its end vertex (its length, at most
 /// `junction_shift_max_m` plus `pair_max_m`, and the cut and fill of its road beyond it).
 const AGAIN_M: f64 = 200.0;
-/// An opening farther than this in from a frame line lies past it. Nearer, it shares the line: two openings beside each
-/// other whose ways differ by a few degrees lie each a little past the other's line. A pair's openings must lie on one
-/// line within the device's 0.5 m (`END_M` of `obc-trailview-parts`) after the tile rounds each by up to 0.15 m.
-const PAST_M: f64 = 0.2;
 const SQUARE: f64 = (1u64 << obc_ground_plan::frame::FRAME_BITS) as f64;
 
 /// What to read about opening i (`measure::ask`): as far across and in as a pair with a candidate can need (`reach`:
@@ -277,18 +271,24 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             (side, side, 0.0)
         })
         .collect();
-    // Any two near openings may share a frame line, so each one's row reaches the other.
+    // Any two near openings may share a frame line, so each one's row reaches the other where it is and where it moves
+    // onto this one's line, and its stations reach as far in as it moves onto the other's line.
     for x in near.iter().filter(|x| free[x.a] && free[x.b]) {
-        for (i, k, lat, stag) in [(x.a, x.b, x.lat, x.stag), (x.b, x.a, -x.lat, -x.stag)] {
-            let tk = &tubes[openings[k].tube];
-            let far = lat.abs() + half[openings[k].tube] + b.shell_m + input.rules.groups[tk.group].wing_max_m;
+        for (i, k) in [(x.a, x.b), (x.b, x.a)] {
+            let (o, q) = (&openings[i], &openings[k]);
+            let tk = &tubes[q.tube];
+            let edge = half[q.tube] + b.shell_m + input.rules.groups[tk.group].wing_max_m;
+            let on_line = onto_line(openings, tubes, (k, i), b).map(|shift| q.at(tk, shift).p);
             let r = &mut reach[i];
-            if lat >= 0.0 {
-                r.1 = r.1.max(far);
-            } else {
-                r.0 = r.0.max(far);
+            for p in std::iter::once(q.p).chain(on_line) {
+                let lat = along_dir(o.p, p, left_of(o.dir));
+                if lat >= 0.0 {
+                    r.1 = r.1.max(lat + edge);
+                } else {
+                    r.0 = r.0.max(edge - lat);
+                }
             }
-            r.2 = r.2.max(stag.abs());
+            r.2 = r.2.max(onto_line(openings, tubes, (i, k), b).map_or(0.0, |shift| shift - o.shift));
         }
     }
     let asked: Vec<usize> = (0..n).filter(|&i| free[i]).collect();
@@ -381,11 +381,12 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         kinds[c].insert(0, Kind::Pair);
     }
     // One frame line for each group of openings whose tubes meet (a pair, or two openings whose tubes meet at the
-    // one farther in): the line of the group's far opening, which never moves. The openings linked to it move in onto
-    // it along their ways and read the ground that it measured, whose row reaches them; the others of the group form
-    // the next group. The far opening is one whose line none of its linked openings lies past, the one linked to the
-    // most, then the farthest in along the group's way. An opening whose way does not reach the line, or that lies past
-    // it, stays; a pair whose two openings do not end on one line is no pair: each takes its next kind.
+    // one farther in): the line of the group's far opening, which never moves. The openings of the group near it
+    // (`near`) move in onto it along their ways and read the ground that it measured, whose row reaches them; the
+    // others form the next group, with each that stays. The far opening is one whose line none of the openings near it
+    // lies past by more than `PAST_M`, the one near the most, then the farthest in along the group's way. An opening
+    // whose way does not reach the line, or that lies past it, stays; a pair whose two openings do not end on one line
+    // is no pair: each takes its next kind.
     let mut root: Vec<usize> = (0..n).collect();
     let find = |root: &mut Vec<usize>, mut i: usize| {
         while root[i] != i {
@@ -402,50 +403,58 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             (both && meet_at(openings, far, nearer)).then_some((x.a.min(x.b), x.a.max(x.b)))
         }))
         .collect();
-    let linked = |i: usize, k: usize| links.contains(&(i.min(k), i.max(k)));
+    let mut grouped = vec![false; n];
     for &(i, k) in &links {
         let (ri, rk) = (find(&mut root, i), find(&mut root, k));
         root[ri.max(rk)] = ri.min(rk);
+        (grouped[i], grouped[k]) = (true, true);
     }
     let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for i in 0..n {
         let r = find(&mut root, i);
         groups.entry(r).or_default().push(i);
     }
+    let close: HashSet<(usize, usize)> = near.iter().map(|x| (x.a.min(x.b), x.a.max(x.b))).collect();
+    let near_to = |i: usize, k: usize| close.contains(&(i.min(k), i.max(k)));
     let mut moved: Vec<f64> = vec![0.0; n];
     let mut far_of: Vec<usize> = (0..n).collect();
-    let (mut unpaired, mut unjoined, mut unmoved, mut farthest_move) = (0, 0, 0, 0.0f64);
+    let (mut unpaired, mut unjoined, mut farthest_move) = (0, 0, 0.0f64);
     for list in groups.into_values() {
         let mut left = list;
         while left.len() > 1 {
             let way = left.iter().fold([0.0, 0.0], |w, &i| [w[0] + openings[i].dir[0], w[1] + openings[i].dir[1]]);
             let along = |i: usize| along_dir(openings[left[0]].p, openings[i].p, way);
             let past = |f: usize, i: usize| along_dir(openings[f].p, openings[i].p, openings[f].dir) > PAST_M;
-            let clear = |f: usize| !left.iter().any(|&i| i != f && linked(f, i) && past(f, i));
-            let taken = |f: usize| left.iter().filter(|&&i| i != f && linked(f, i)).count();
-            let rank = |a: &usize, b: &usize| taken(*a).cmp(&taken(*b)).then(along(*a).total_cmp(&along(*b)));
+            let members = |f: usize| left.iter().copied().filter(move |&i| i != f && near_to(f, i));
+            let clear = |f: usize| !members(f).any(|i| past(f, i));
+            let rank = |a: &usize, b: &usize| {
+                members(*a).count().cmp(&members(*b).count()).then(along(*a).total_cmp(&along(*b)))
+            };
             let far = (left.iter().copied().filter(|&f| clear(f)).max_by(rank))
                 .or_else(|| left.iter().copied().max_by(rank))
                 .unwrap_or(left[0]);
-            let members: Vec<(usize, bool)> =
-                left.iter().copied().filter(|&i| i != far && linked(far, i)).map(|i| (i, past(far, i))).collect();
-            for &(i, beyond) in &members {
-                let shift = if beyond { None } else { onto_line(openings, tubes, (i, far), b) };
-                match shift {
-                    Some(shift) => {
-                        let o = openings[i].clone();
-                        moved[i] = shift - o.shift;
-                        farthest_move = farthest_move.max(moved[i]);
-                        openings[i] = Opening { others: o.others, ..o.at(&tubes[o.tube], shift) };
-                        far_of[i] = far;
-                    }
-                    None if mate[i].is_none() => unmoved += 1,
-                    None => {}
-                }
+            let shifts: Vec<(usize, f64)> = members(far)
+                .filter(|&i| !past(far, i))
+                .filter_map(|i| onto_line(openings, tubes, (i, far), b).map(|shift| (i, shift)))
+                .collect();
+            for (i, shift) in shifts {
+                let o = openings[i].clone();
+                moved[i] = shift - o.shift;
+                farthest_move = farthest_move.max(moved[i]);
+                openings[i] = Opening { others: o.others, ..o.at(&tubes[o.tube], shift) };
+                far_of[i] = far;
             }
-            left.retain(|&i| i != far && !members.iter().any(|m| m.0 == i));
+            left.retain(|&i| i != far && far_of[i] == i);
         }
     }
+    // The openings on each frame line that others moved onto, the far opening with them; and the openings of a group,
+    // but of a pair, that share no line.
+    let mut lines: BTreeMap<usize, usize> = BTreeMap::new();
+    for i in (0..n).filter(|&i| far_of[i] != i) {
+        *lines.entry(far_of[i]).or_insert(1) += 1;
+    }
+    let alone = (0..n).filter(|&i| grouped[i] && mate[i].is_none() && far_of[i] == i && !lines.contains_key(&i));
+    let alone = alone.count();
     for i in 0..n {
         let Some(m) = mate[i].filter(|&m| m > i && far_of[i] != far_of[m]) else { continue };
         if joined[i] {
@@ -544,11 +553,6 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         Some(k) => k.name().to_string(),
         None => format!("none: {}", e.rung),
     };
-    // The openings on each frame line that others moved onto, the far opening with them.
-    let mut lines: BTreeMap<usize, usize> = BTreeMap::new();
-    for i in (0..n).filter(|&i| far_of[i] != i) {
-        *lines.entry(far_of[i]).or_insert(1) += 1;
-    }
     let mut metrics = json!({
         "tubes": tubes.len(),
         "openings": n,
@@ -561,7 +565,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         "joins": (0..n).filter(|&i| joined[i] && mate[i].is_some_and(|m| m > i)).count(),
         "joins_that_do_not_reach": unjoined,
         "openings_moved_onto_a_line": (0..n).filter(|&i| mate[i].is_none() && far_of[i] != i).count(),
-        "openings_that_do_not_reach_a_line": unmoved,
+        "openings_that_share_no_line": alone,
         "openings_per_frame_line": counts(lines.values().map(|k| k.to_string())),
         "farthest_move_onto_a_line_m": (farthest_move * 100.0).round() / 100.0,
         "absorbed_tubes": absorbed.iter().filter(|a| a.is_some()).count(),

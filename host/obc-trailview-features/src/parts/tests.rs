@@ -260,6 +260,17 @@ fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
     assert_eq!(of(&placed, a)[0], (vec![Arch, Free], "hill"));
     assert_eq!(of(&placed, b)[0], (vec![Arch, Free], "hill"));
     assert_eq!(placed.tags[&b]["parts"], "arch none");
+    // Two footways 3 m apart, a pair, beside a road tube that starts 3 m farther in and whose shell overlaps the first
+    // footway's but not the second's: the road's line is the group's, and both footways move onto it.
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (3.0, 200.0), 0.0);
+    let f1 = case.tunnel(&FOOT, (0.0, 200.0), 4.5);
+    case.tunnel(&FOOT, (0.0, 200.0), 7.5);
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, f1)[0].0[0], Pair);
+    let west = records(&placed, "tunnel-end").into_iter().find(|t| t.get("mate").is_some_and(|m| m == "3"));
+    let west = west.expect("the west footway pair");
+    assert_eq!((west["shift"].as_str(), west["mate_shift"].as_str()), ("3", "3"));
 }
 
 #[test]
