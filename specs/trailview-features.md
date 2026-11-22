@@ -597,6 +597,12 @@ whose rooms draw, that lie at one level (neither over the other, see Rooms) and 
 the narrower room does not draw, then the one with the higher id. These rules repeat until no room leaves. A room that
 does not draw writes no record, and its ways have no tag `parts`.
 
+What the rooms cannot build draws as a tunnel of one way: the arms of a room that does not draw run beside no other, and
+the rooms are made again, until each room draws or is alone, the whole of one chain with no seam. A room alone draws
+where one of its ends has a part; a seam, the region and a joint that the builder does not find whole never take it out;
+of two crowded openings it loses only its part. Its ways have the tag `parts` of both ends, `none` where an end has no
+part.
+
 Openings on one frame line share one head, a hole per opening, of rooms that draw:
 
 - Two ends of rung 4 of one family (rail or not) within `pair_max_m` and `pair_max_deg`, whose rooms lie two
@@ -688,7 +694,7 @@ Two tunnel ways whose spaces come nearer than a wall are one room for as long as
 a chain that opens at both ends, has a height at each vertex and does not fold; another chain is in no run and no head.
 A chain folds where its axis comes within its width and `wall_m` of itself, at metres more than twice that apart along
 it, and does not lie over itself there by its `height`, `shell_m` and `slab_m` (a V or a hairpin; a spiral passes over
-itself); it does not draw. An arm's
+itself); it is alone. An arm's
 space at a metre is `half` to each side of its axis, and from its height to that plus `height`. Two spaces lie apart
 where the gap (the distance of the axes less the two halves) is at least `wall_m`, two `shell_m`, or one lies over the
 other by its `height`, `shell_m` and `slab_m`, each less 0.01 m (the bake's centimetre).

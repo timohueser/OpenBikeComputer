@@ -57,8 +57,11 @@ pub(crate) struct Rooms {
     pub bounds: Vec<[Bound; 2]>,
     pub seams: Vec<Seam>,
     /// Per room whether the rooms alone keep it from drawing: a seam at one of its ends holds no hole for a room behind
-    /// it, an arm of it has an opening in no room, or an arm of it folds onto itself.
+    /// it, or an arm of it has an opening in no room.
     pub broken: Vec<bool>,
+    /// Per room whether it is the whole of one arm, with no seam: it draws as a tunnel of one way, where an end has a
+    /// part.
+    pub alone: Vec<bool>,
     /// Per stretch of two arms over one another: the room over, the room under, and whether only the section of the
     /// room under goes lower (else its floor too: they cross).
     pub over: Vec<(usize, usize, bool)>,
@@ -82,13 +85,13 @@ impl Rooms {
     }
 
     /// Per room whether it draws as parts: it is not `out` nor `broken`, and each of its ends is a seam or of a built
-    /// kind (`kind` of its opening). The rooms of one seam and the rooms of one arm draw together or not at all.
+    /// kind (`kind` of its opening); a room `alone` needs one end of a built kind. The rooms of one seam and the rooms of
+    /// one arm draw together or not at all.
     pub fn built(&self, kind: &dyn Fn(usize, usize) -> Option<Kind>, out: &[bool]) -> Vec<bool> {
         let n = self.tubes.len();
         let own = |t: usize| {
-            !out[t]
-                && !self.broken[t]
-                && (0..2).all(|e| self.seam_at(t, e) || obc_trailview_parts::built(&[kind(t, e)]))
+            let end = |e: usize| self.seam_at(t, e) || obc_trailview_parts::built(&[kind(t, e)]);
+            !out[t] && !self.broken[t] && if self.alone[t] { (0..2).any(end) } else { (0..2).all(end) }
         };
         let mut root: Vec<usize> = (0..n).collect();
         let find = |root: &mut Vec<usize>, mut i: usize| {
@@ -221,7 +224,13 @@ struct Made {
 /// no room until the first metre `vertex_gap_m` or more past it where it is with or across no arm; there its room starts
 /// with a cap. A seam's holes come from the row of the room before it (`holes`). The lanes of a room open on one frame
 /// line at each end with openings (`section`).
-pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) -> (Rooms, Vec<Opening>) {
+/// The rooms of the arms; an arm that is `lone` runs beside no other.
+pub(crate) fn rooms(
+    arms: Vec<Tube>,
+    arm_openings: Vec<Opening>,
+    lone: &[bool],
+    input: &Input,
+) -> (Rooms, Vec<Opening>) {
     let b = &input.rules.bake;
     let n = arms.len();
     // Per arm its openings at its two ends, and its metres from opening to opening.
@@ -252,11 +261,11 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
         })
     };
     let folded: Vec<Option<[f64; 2]>> = (0..n).map(|t| folds(t).map(|s| arms[t].curve.at(s).0.p)).collect();
-    // An arm runs beside others where it can draw: it opens at both ends, does not fold, its heights are known and it
-    // has a length.
+    // An arm runs beside others where it can draw: it opens at both ends, does not fold, its heights are known, it has a
+    // length and it is not lone.
     let live: Vec<Option<[f64; 2]>> = (0..n)
         .map(|t| {
-            let can = at_end[t].iter().all(Option::is_some) && folded[t].is_none() && arms[t].heights;
+            let can = at_end[t].iter().all(Option::is_some) && folded[t].is_none() && arms[t].heights && !lone[t];
             spans[t].filter(|s| can && s[1] - s[0] > 1e-6)
         })
         .collect();
@@ -277,6 +286,7 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
         bounds: Vec::new(),
         seams,
         broken: Vec::new(),
+        alone: Vec::new(),
         over: Vec::new(),
         arms: Vec::new(),
         arm_openings: Vec::new(),
@@ -419,7 +429,14 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
         .map(|r| {
             let seam = (0..2).any(|e| matches!(out.bounds[r][e], Bound::Seam(s) if !out.seams[s].whole));
             let arm = out.lanes[r].iter().any(|l| at_end[l.arm].iter().flatten().any(|&i| !opened[i]));
-            seam || arm || out.lanes[r].iter().any(|l| folded[l.arm].is_some())
+            seam || arm
+        })
+        .collect();
+    out.alone = (0..out.tubes.len())
+        .map(|r| {
+            let [l] = &out.lanes[r][..] else { return false };
+            let whole = out.from[r] == 0.0 && (out.tubes[r].curve.len - arms[l.arm].curve.len).abs() < 1e-6;
+            whole && (0..2).all(|e| !out.seam_at(r, e))
         })
         .collect();
     let far: Vec<String> =

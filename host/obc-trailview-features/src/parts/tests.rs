@@ -205,7 +205,7 @@ fn each_rung_gives_its_kinds_in_the_order_of_the_rungs() {
     case.ways.push(("tunnel", tags(&ROAD), vec![part(&[[200.0, 0.0], [250.0, 50.0], [300.0, 100.0]], &[500.0; 3])]));
     let placed = case.place(&site(&ridge(400.0, 1.0), &[], false), &mut Vec::new());
     assert_eq!((of(&placed, a).len(), of(&placed, b).len(), placed.metrics["fork_ends"].as_u64()), (1, 1, Some(3)));
-    assert!(!placed.tags.contains_key(&a), "a chain that does not draw has no parts");
+    assert_eq!(placed.tags[&a]["parts"], "arch none");
     // A vertex of unknown height: no part.
     let mut case = road();
     case.ways[0].2[0].z.as_mut().unwrap()[1] = f64::NAN;
@@ -270,7 +270,7 @@ fn a_pair_has_one_frame_line_and_a_way_beside_a_wider_one_is_a_lane_of_its_room(
     let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
     assert_eq!(of(&placed, a)[0], (vec![Arch, Free], "hill"));
     assert_eq!(of(&placed, b)[0], (vec![Arch, Free], "hill"));
-    assert!(!placed.tags.contains_key(&b), "a chain that does not draw has no parts");
+    assert_eq!(placed.tags[&b]["parts"], "arch none");
     // Two footways 3 m apart beside a road tube that starts 3 m farther in: the first comes nearer the road than a wall
     // and is a lane of its room, which opens on the road's line; the second pairs with the room and moves onto it too.
     let mut case = Case::default();
@@ -860,8 +860,10 @@ fn tile_edge_east() -> f64 {
     ((o[0] * n).ceil() / n - o[0]) * metres(o[1])
 }
 
+/// What the rooms cannot build draws as tunnels of one way: a V at a fork, a pair whose mate forks, a V that folds, a
+/// room past the bounds.
 #[test]
-fn what_cannot_draw_stays_out() {
+fn what_the_rooms_cannot_build_draws_alone() {
     let hill = ridge(200.0, 1.0);
     let ground = site(&hill, &[], false);
     // A footway east from an opening to a fork 60 m in, and beside its opening a V of a footway: from an opening 1.22 m
@@ -888,20 +890,11 @@ fn what_cannot_draw_stays_out() {
     cut.bounds = Some([BOUNDS[0], BOUNDS[1], 8.4 + 100.0 / metres(world(8.4, 46.8)[1]) * 360.0, BOUNDS[3]]);
     for (name, case) in [("the V", v), ("the pair", pair), ("the folded V", fold), ("the bounds", cut)] {
         let placed = case.place(&ground, &mut Vec::new());
-        let bounds = case.bounds.unwrap_or(BOUNDS);
-        let faults = not_whole_in_tiles(&placed, bounds);
-        assert!(faults.is_empty(), "{name}: {faults:?}");
-        for t in records(&placed, "tunnel-tube") {
-            assert!(!t["ends"].contains("none"), "{name}: a chord of a room that does not draw: {t:?}");
-        }
+        assert!(!records(&placed, "tunnel-tube").is_empty(), "{name}: nothing draws: {}", placed.metrics);
         match name {
-            "the V" => assert!(placed.features.is_empty() && !placed.tags.contains_key(&through), "{name}"),
-            "the pair" => {
-                let heads = records(&placed, "tunnel-end");
-                assert!(heads.len() == 2 && heads.iter().all(|t| !t.contains_key("across")), "{name}: {heads:?}");
-                assert_eq!(placed.tags[&single]["parts"], "arch arch");
-            }
-            _ => assert!(placed.features.is_empty(), "{name}: {}", placed.metrics),
+            "the V" => assert!(placed.tags.contains_key(&through), "{name}"),
+            "the pair" => assert_eq!(placed.tags[&single]["parts"], "arch arch"),
+            _ => {}
         }
     }
 }
