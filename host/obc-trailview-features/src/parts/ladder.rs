@@ -447,11 +447,12 @@ pub(crate) fn decide(
         last = Some(opened);
     }
     let refitted = (0..n).filter(|&i| kinds[i].first().copied() != before[i]).count();
-    // The floor of each tube with a part, from opening to opening; an end with no opening holds the end vertex. Its
-    // chord at an opening gives the opening its inside height.
-    let spans: Vec<Option<[f64; 2]>> = (tubes.iter().zip(&at_end))
-        .map(|(t, &[a, z])| {
-            let with = [a, z].into_iter().flatten().any(|i| !kinds[i].is_empty());
+    // The floor of each tube with a part or a seam, from opening to opening; an end with no opening holds the end
+    // vertex. Its chord at an opening gives the opening its inside height.
+    let spans: Vec<Option<[f64; 2]>> = (tubes.iter().zip(&at_end).enumerate())
+        .map(|(r, (t, &[a, z]))| {
+            let seam = (0..2).any(|e| rooms.seam_at(r, e));
+            let with = seam || [a, z].into_iter().flatten().any(|i| !kinds[i].is_empty());
             let s0 = a.map_or(0.0, |i| openings[i].s);
             let s1 = z.map_or(t.curve.len, |i| openings[i].s);
             (with && s1 - s0 > 1e-6).then_some([s0, s1])
