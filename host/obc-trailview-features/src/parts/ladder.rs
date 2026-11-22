@@ -495,6 +495,7 @@ pub(crate) fn decide(
     // A tube with an underpass at an end has a box section.
     let boxed: Vec<bool> =
         (at_end.iter()).map(|ends| ends.iter().flatten().any(|&i| kinds[i].first() == Some(&Kind::Box))).collect();
+    let boxed = rooms.one_section(boxed);
     let (floors, floor_metrics) = floor::floors(rooms, (&spans, &boxed), (&half, &height), input);
     let end_height = |o: &Opening| floors[o.tube].as_ref().map_or(height[o.tube], |f| f.end_height(o.end));
     let heights: Vec<f64> = openings.iter().map(end_height).collect();

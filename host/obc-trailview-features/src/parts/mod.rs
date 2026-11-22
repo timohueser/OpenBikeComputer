@@ -580,6 +580,7 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
     for (o, d) in openings.iter().zip(&decided.ends) {
         boxed[o.tube] |= d.kind == Some(Kind::Box);
     }
+    let boxed = rooms.one_section(boxed);
     // The tag `parts` of each tunnel way of a room that draws: the parts at its arm's two ends.
     let mut arm_kinds: Vec<Option<[Option<Kind>; 2]>> = vec![None; rooms.arms.len()];
     for (t, lanes) in rooms.lanes.iter().enumerate().filter(|&(t, _)| draws[t]) {

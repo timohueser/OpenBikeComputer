@@ -123,6 +123,26 @@ impl Rooms {
         (0..n).map(|t| ok[find(&mut root, t)]).collect()
     }
 
+    /// Per room whether it has a box section: where it has an underpass at an end (`boxed`), or another room of a seam
+    /// of it has; the rooms of one seam have one section, so each hole fits the room before the line.
+    pub fn one_section(&self, mut boxed: Vec<bool>) -> Vec<bool> {
+        loop {
+            let mut changed = false;
+            for seam in &self.seams {
+                let members: Vec<usize> = [seam.parent].iter().chain(&seam.children).map(|m| m.0).collect();
+                if members.iter().any(|&r| boxed[r]) {
+                    for r in members {
+                        changed |= !boxed[r];
+                        boxed[r] = true;
+                    }
+                }
+            }
+            if !changed {
+                return boxed;
+            }
+        }
+    }
+
     /// The places of room r's lanes at metres s along its centre line, linear between the vertices of its table.
     pub fn places(&self, r: usize, s: f64) -> Vec<Place> {
         let table = &self.table[r];
