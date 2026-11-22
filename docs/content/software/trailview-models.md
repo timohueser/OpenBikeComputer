@@ -93,8 +93,8 @@ stems and soft cushions.
   stalks of a meadow flower, the thick pads of a prickly pear.
 - **Flowers, berries and seed heads are shapes,** on stems, not painted spots.
 - **A bush stands on a soft cushion,** and its leaves light as one round dome.
-- **A plant that dies back is not there.** A plant file can name the seasons in which it has no
-  model; the engine then draws nothing for it.
+- **A plant that dies back is not there.** A plant file builds no model for a season in which it
+  has died back, and the engine draws nothing for it then.
 - **The ground gives the colour.** Most ground plants take much of their colour from the ground
   under them, so a meadow of tufts reads as the meadow. A flowering plant keeps more of its own,
   so its flowers show.
