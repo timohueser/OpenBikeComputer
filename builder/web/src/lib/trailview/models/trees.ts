@@ -51,6 +51,8 @@ interface Bark {
     scars?: number;
     /** Buttresses around the foot that run out up the trunk, as on a cedar: how many. A near trunk has two sides a buttress. */
     flutes?: number;
+    /** The flutes turn this far round the trunk on their way up, in turns, and run to its top, as on an old olive. */
+    twist?: number;
 }
 
 interface Base extends Bark {
@@ -158,10 +160,15 @@ interface Broadleaf extends Base {
     crook?: number;
     /**
      * A shrub of slender rods that rise from one stool in a vase, each in a narrow plume of leaves, as a
-     * shrub willow: how many it has. Its flecks are catkins that stand on the plumes.
+     * shrub willow: how many it has. Its flecks are catkins that stand on the plumes, three a rod, or with `heads` the
+     * season's share of that many flowers, over a little of their colour on the plumes. `dense` is a plume's width against
+     * a willow's: under 0.7 a slim green switch, as on a broom.
      */
     rods?: number;
-    /** The flecks of a leafy crown are bunches that hang from it, as a hop hornbeam's fruit, not dots: how many a near tree has. */
+    /**
+     * The flecks of a leafy crown are bunches that hang from it, as a hop hornbeam's fruit, not dots: how many a near tree
+     * has. A bare shaped crown has as many catkins that hang from its twigs.
+     */
     bunches?: number;
     /** A palm: this many fronds near the eye arch out of the trunk's top, as long as the crown is wide. */
     fronds?: number;
@@ -205,7 +212,7 @@ const vertices = (parts: Geometry[]) => parts.reduce((sum, part) => sum + part.p
 const BANDS = 18;
 
 /** A trunk from the ground to `top`, darker at its foot, its bole in `spans` spans, which a trunk that bends needs. */
-function trunk({ trunk: r, flare, neck = 0.6, bark, fade = [0, 0.5], marks, scars, flutes }: Bark, top: number, lod: Lod, seed: number, spans = 1): Geometry {
+function trunk({ trunk: r, flare, neck = 0.6, bark, fade = [0, 0.5], marks, scars, flutes, twist }: Bark, top: number, lod: Lod, seed: number, spans = 1): Geometry {
     if (scars && lod === 0) return scarred(r, flare, bark, scars, top);
     const [sides, perSpan] = DETAIL[lod].trunk;
     const [foot, bole] = bark.map(hex);
@@ -230,7 +237,7 @@ function trunk({ trunk: r, flare, neck = 0.6, bark, fade = [0, 0.5], marks, scar
         const p = geo.position;
         for (let i = 0; i < p.length; i += 3) {
             // A side stands out and the next stands in, less the higher up.
-            const k = 1 + 0.3 * Math.cos(flutes * (Math.atan2(p[i + 1], p[i]) + Math.PI / 2)) * smooth(0.5 * top, 0, p[i + 2]);
+            const k = 1 + 0.3 * Math.cos(flutes * (Math.atan2(p[i + 1], p[i]) + Math.PI / 2 + (2 * Math.PI * (twist ?? 0) * p[i + 2]) / top)) * smooth(twist ? 1.5 * top : 0.5 * top, 0, p[i + 2]);
             p[i] *= k;
             p[i + 1] *= k;
         }
@@ -701,7 +708,7 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
     // A palm or a dragon tree grows its crown from the trunk's top.
     if (spec.fronds || spec.branching || spec.rods) {
         const crown = spec.fronds ? palm(spec, lod, [deep, mid, tip], rand)
-            : spec.rods ? rods(spec, lod, bare, foliage, [mid, tip], flecks && hex(flecks[0]), rand, seed)
+            : spec.rods ? rods(spec, lod, bare, foliage, [mid, tip], flecks ? [hex(flecks[0]), flecks[1]] : [], rand, seed)
             : dragon(spec, lod, [deep, mid, tip], rand);
         // A far shrub's rods hide under its plumes, so it has one trunk as stout as all of them, up into the plumes.
         const bole = spec.rods && lod === 2 ? trunk({ ...spec, trunk: 1.4 * spec.trunk }, 0.35 * (cz + rz), lod, seed) : trunk(spec, spec.fork, lod, seed);
@@ -779,6 +786,11 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
                         const reach = root.clone().addScaledVector(along.clone().addScaledVector(across, 0.55 * fork).normalize(), length * (fork ? 0.8 : 1));
                         reach.z -= weep * rand() * r;
                         twig(twigs, toTree(root), toTree(reach), colours, rand, lod, kept++);
+                        // A catkin hangs from a twig, as many on the crown as it has bunches.
+                        if (flecks && !lod && Math.floor((kept * (spec.bunches ?? 0)) / TWIGS) > Math.floor(((kept - 1) * (spec.bunches ?? 0)) / TWIGS)) {
+                            const size = 0.035 + 0.03 * hash(reach, seed);
+                            parts.push(place(paint(soft(lathe(BUNCH, 4, 2)), (q) => dead.clone().multiplyScalar(0.75 + 0.35 * smooth(-1, 0, q.z))), { at: toTree(root.clone().lerp(reach, 0.6)), scale: [0.16 * size, 0.16 * size, size] }));
+                        }
                     }
                 }
                 if (clumped) continue;
@@ -831,7 +843,8 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
         for (let k = 0, tries = 0; flecks && lod === 0 && k < (spec.bunches ?? 0) && tries < 1000; tries++) {
             const { at, r } = crown[Math.floor(rand() * crown.length)];
             const a = 2 * Math.PI * rand(), up = -0.75 + 0.9 * rand(), level = Math.sqrt(1 - up * up);
-            const p = at.clone().addScaledVector(v3(level * Math.cos(a), level * Math.sin(a), up), 0.97 * r);
+            // A lump that swells is less deep between its tufts.
+            const p = at.clone().addScaledVector(v3(level * Math.cos(a), level * Math.sin(a), up * tall), (clumped && spec.billows ? 0.72 : 0.97) * r);
             if (crown.some(other => other.at !== at && other.at.distanceTo(p) < other.r)) continue;
             const size = 0.05 + 0.025 * rand(), fruit = hex(flecks[0]);
             const bunch = paint(soft(lathe(BUNCH, 5, 3)), (q) => mid.clone().lerp(fruit, 0.25 + 0.6 * smooth(0.1, -0.7, q.z)));
@@ -841,7 +854,7 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
         // Limbs run from the fork into the outer lumps. An open crown keeps them a level further out,
         // so its puffs never float, and a crooked one at every level, as its puffs stand far from the trunk.
         if (clumped) {
-            for (const [n, limb] of lod < 2 ? limbs.entries() : []) parts.push(tube((main(n) ? [0, 0.33, 0.67, 1] : [0, 0.5, 1]).map(limb), (main(n) ? 0.45 : 0.3) * spec.trunk, 0.2 * spec.trunk, 4, bark));
+            for (const [n, limb] of spec.trunk && lod < 2 ? limbs.entries() : []) parts.push(tube((main(n) ? [0, 0.33, 0.67, 1] : [0, 0.5, 1]).map(limb), (main(n) ? 0.45 : 0.3) * spec.trunk, 0.2 * spec.trunk, 4, bark));
         } else if (spec.trunk && (lod === 0 || (spec.open && lod === 1) || spec.crook)) {
             for (const { at } of crown.slice(1)) {
                 const end = toTree(at.clone().multiplyScalar(0.8));
@@ -894,7 +907,7 @@ const PLUME: [number, number][] = [[0, 0], [0.7, 0.08], [1, 0.3], [0.92, 0.6], [
  * The crown of a `rods` shrub: the rods fan from the stool, the outer ones lower and leaning further, each with
  * two side shoots. Leafy, a plume wraps each rod's upper part and each shoot; bare, twigs stand along them.
  */
-function rods(spec: Broadleaf, lod: Lod, bare: boolean, foliage: (p: V, n: V) => Colour, [, tip]: Colour[], catkin: Colour | undefined, rand: () => number, seed: number): Geometry[] {
+function rods(spec: Broadleaf, lod: Lod, bare: boolean, foliage: (p: V, n: V) => Colour, [, tip]: Colour[], [catkin, share]: [Colour?, number?], rand: () => number, seed: number): Geometry[] {
     const [cz, rx, ry, rz] = spec.crown, n = spec.rods!, sides = [4, 3, 0][lod];
     const foot = hex(spec.bark[0]), wood = hex(spec.twigs[1]), young = hex(spec.twigs[2]);
     const bark = (p: V) => foot.clone().lerp(wood, smooth(0, 0.2, p.z)).lerp(young, smooth(0.3, 0.9, p.z));
@@ -902,9 +915,10 @@ function rods(spec: Broadleaf, lod: Lod, bare: boolean, foliage: (p: V, n: V) =>
     const parts: Geometry[] = [], twigs = sheet();
     let kept = 0;
     // A plume around `path`, `width` across, in `tufts` tufts that stand out to one side after the other: a leafy
-    // wand, not a blade. A far one has fewer corners.
+    // wand, not a blade. A far one has fewer corners, and so has a slim one.
+    const slim = (spec.dense ?? 1) < 0.7;
     const plume = (path: (s: number) => V, from: number, width: number, k: number, tufts: number) => {
-        const geo = soft(lathe(PLUME, [6, 4, 3][lod], [2 * tufts, 4, 2][lod]), 0.1, 4, seed + k);
+        const geo = soft(lathe(PLUME, [slim ? 4 : 6, slim ? 3 : 4, 3][lod], [2 * tufts, 4, 2][lod]), 0.1, 4, seed + k);
         const wave = (q: number) => 2 * Math.PI * (tufts / 2) * q + k;
         bend(geo, path, from, 1.02, (x, y, q) => [width * ((1 + 0.3 * Math.cos(2 * wave(q))) * x + 0.35 * Math.sin(wave(q))), width * ((1 + 0.3 * Math.cos(2 * wave(q))) * y + 0.35 * Math.cos(wave(q)))]);
         parts.push(paint(rounded(geo, 0.5), leaf(0.9 + 0.2 * rand())));
@@ -927,7 +941,7 @@ function rods(spec: Broadleaf, lod: Lod, bare: boolean, foliage: (p: V, n: V) =>
             return v3(Math.cos(a) * lerp(start, reach * rx, k), Math.sin(a) * lerp(start, reach * ry, k), lerp(0.5 * spec.fork, height, s));
         };
         stem(parts, twigs, [0, 0.2, 0.5, 1].map(path), 0.4 * spec.trunk, 0.1 * spec.trunk, bark, sides, i);
-        const width = 0.034 * (0.8 + 0.4 * rand());
+        const width = 0.034 * (spec.dense ?? 1) * (0.8 + 0.4 * rand());
         if (bare) bristle(path, 0.35, 8, 0.09);
         else plume(path, 0.3 + 0.12 * rand(), width, 5 * i, 5);
         for (let b = 0; b < 2; b++) {
@@ -939,11 +953,13 @@ function rods(spec: Broadleaf, lod: Lod, bare: boolean, foliage: (p: V, n: V) =>
                 bristle(shoot, 0.2, 4, 0.07);
             } else plume(shoot, 0, 0.8 * width, 5 * i + 1 + b, 2);
         }
-        // A catkin stands on the plume, up and out.
-        for (let c = 0; catkin && !bare && lod === 0 && c < 3; c++) {
+        // A catkin stands on the plume, up and out: three a rod, or the season's share of the shrub's heads.
+        const { count, width: across, height: tall } = spec.heads ?? { count: 0, width: 0.022, height: 0 };
+        const catkins = !catkin || bare || lod ? 0 : spec.heads ? Math.round((count * share!) / n + rand() - 0.5) : 3;
+        for (let c = 0; c < catkins; c++) {
             const s = 0.4 + 0.5 * rand(), turn = 2 * Math.PI * rand(), out = v3(Math.cos(turn), Math.sin(turn), 0);
-            const geo = paint(soft(lathe([[0, 0], [1, 0.4], [0, 1]], 4, 2)), catkin);
-            parts.push(place(geo, { at: path(s).addScaledVector(out, width), turn: turnFromTo(UP, out.setZ(1.2).normalize()), scale: [0.011, 0.011, 0.065] }));
+            const geo = paint(soft(lathe([[0, 0], [1, 0.4], [0, 1]], 4, 2)), catkin!);
+            parts.push(place(geo, { at: path(s).addScaledVector(out, width), turn: turnFromTo(UP, out.setZ(1.2).normalize()), scale: [0.5 * across, 0.5 * across, spec.heads ? across * tall : 0.065] }));
         }
     }
     return [...parts, twigs.build()];
