@@ -6,7 +6,11 @@ export default {
   latin: 'Quercus robur',
   // A short, stout bole under a broad, low crown.
   fork: 0.28,
-  crown: [0.6, 0.56, 0.48, 0.4],
+  crown: [0.64, 0.56, 0.5, 0.36],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.25 + 0.75 * t)) ** 0.6,
+  clumps: 14,
+  billows: 5,
+  bow: -0.3,
   trunk: 0.065,
   flare: 1.5,
   neck: 0.55,
