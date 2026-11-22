@@ -412,7 +412,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     }
     let mut moved: Vec<f64> = vec![0.0; n];
     let mut far_of: Vec<usize> = (0..n).collect();
-    let (mut unpaired, mut unjoined, mut unmoved) = (0, 0, 0);
+    let (mut unpaired, mut unjoined, mut unmoved, mut farthest_move) = (0, 0, 0, 0.0f64);
     for list in groups.into_values() {
         let mut left = list;
         while left.len() > 1 {
@@ -432,6 +432,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
                     Some(shift) => {
                         let o = openings[i].clone();
                         moved[i] = shift - o.shift;
+                        farthest_move = farthest_move.max(moved[i]);
                         openings[i] = Opening { others: o.others, ..o.at(&tubes[o.tube], shift) };
                         far_of[i] = far;
                     }
@@ -540,6 +541,11 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         Some(k) => k.name().to_string(),
         None => format!("none: {}", e.rung),
     };
+    // The openings on each frame line that others moved onto, the far opening with them.
+    let mut lines: BTreeMap<usize, usize> = BTreeMap::new();
+    for i in (0..n).filter(|&i| far_of[i] != i) {
+        *lines.entry(far_of[i]).or_insert(1) += 1;
+    }
     let mut metrics = json!({
         "tubes": tubes.len(),
         "openings": n,
@@ -553,6 +559,8 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         "joins_that_do_not_reach": unjoined,
         "openings_moved_onto_a_line": (0..n).filter(|&i| mate[i].is_none() && far_of[i] != i).count(),
         "openings_that_do_not_reach_a_line": unmoved,
+        "openings_per_frame_line": counts(lines.values().map(|k| k.to_string())),
+        "farthest_move_onto_a_line_m": (farthest_move * 100.0).round() / 100.0,
         "absorbed_tubes": absorbed.iter().filter(|a| a.is_some()).count(),
         "tubes_not_absorbed_for_an_opening_outside": outside,
         "kinds_changed_by_the_second_measure": refitted,
