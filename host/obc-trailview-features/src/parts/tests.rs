@@ -224,13 +224,13 @@ fn a_pair_has_one_frame_line_and_a_way_beside_a_wider_one_is_a_lane_of_its_room(
         assert_eq!(of(&placed, id), vec![(vec![Arch, Free], "hill"); 2], "way {id}");
     }
     assert_eq!(placed.metrics["rooms"]["rooms"].as_u64(), Some(1));
-    // The room's lanes from the right wall to the left; it is as wide as both lanes' spaces need.
+    // The room's lanes from the right wall to the left: the footway runs at the road's side, with its way's width.
     let tubes = records(&placed, "tunnel-tube");
     let room = tubes.iter().find(|t| t["class"] == "residential footway").expect("the room");
     let half = |tags: &[(&str, &str)]| {
         widths().way("tunnel", &tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), false).half_m
     };
-    assert_eq!(room["half"], num((half(&ROAD) + 0.6 + 2.5 + half(&FOOT) + 0.3) / 2.0));
+    assert_eq!(room["half"], num(half(&ROAD) + 0.6 + half(&FOOT)));
     // One head per pair, a hole per room from the right: in the west, the room's two lanes move 3 m in onto the line of
     // the second road, which lies about 20 m to the left; in the east, heading west, the second is the right hole.
     let ends = records(&placed, "tunnel-end");

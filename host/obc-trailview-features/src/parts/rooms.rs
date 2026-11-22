@@ -173,6 +173,7 @@ struct RunOf {
 fn runs(arms: &[Tube], spans: &[Option<[f64; 2]>], input: &Input) -> Vec<RunOf> {
     let b = &input.rules.bake;
     let wall = 2.0 * b.shell_m;
+    let mitre = obc_trailview_parts::Rules::embedded().design.mitre_max;
     let axes = Axes::new(arms);
     let widest = arms.iter().map(|t| t.half).fold(0.0, f64::max);
     let mut metres: BTreeMap<(usize, usize), Vec<Metre>> = BTreeMap::new();
@@ -186,12 +187,15 @@ fn runs(arms: &[Tube], spans: &[Option<[f64; 2]>], input: &Input) -> Vec<RunOf> 
                 axes.near(q.p, a, arm.half + widest + wall).iter().filter(|f| f.tube > a && spans[f.tube].is_some())
             {
                 let (gap, rise) = beside(arms, (a, s), f);
-                if gap >= wall - MERGE_M {
+                // On a line square to either axis the other's half is its own over the cosine of the angle between
+                // them: the run goes on until the two lie a wall apart along it too, so the holes of a seam do.
+                let cos = dir[0] * f.dir[0] + dir[1] * f.dir[1];
+                let spread = (arm.half + arms[f.tube].half) * (1.0 / cos.abs().max(1.0 / mitre) - 1.0);
+                if gap - spread >= wall - MERGE_M {
                     continue;
                 }
                 let foot = arms[f.tube].curve.at(f.s).0.p;
                 let side = along_dir(q.p, foot, left_of(dir)).signum();
-                let cos = dir[0] * f.dir[0] + dir[1] * f.dir[1];
                 metres.entry((a, f.tube)).or_default().push(Metre { s, gap, rise, foot: f.s, cos, side });
             }
         }
@@ -542,9 +546,16 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
             let (own_a, own_c) = (opening(a, end), opening(c, cend));
             let (far_a, far_c) = (near(sa[end], opening(a, 1 - end)), near(sc[end], opening(c, 1 - cend)));
             let near_own = near(sa[end], own_a).is_some() || near(sc[end], own_c).is_some();
+            // The run reaches an opening (the two do not part before it) where it ends within a wall and a vertex
+            // gap of it.
+            let reach = 2.0 * b.shell_m + b.vertex_gap_m;
+            let reaches = |x: f64, o: Option<f64>| o.is_some_and(|o| (x - o).abs() <= reach);
             if let (true, Some(oa), Some(oc)) = (near_own, own_a, own_c) {
-                // To the openings on its side.
-                (sa[end], sc[end]) = (oa, oc);
+                // To the openings on its side where the run reaches one; else the two part in the hill before their
+                // openings, and the run ends there.
+                if reaches(sa[end], own_a) || reaches(sc[end], own_c) {
+                    (sa[end], sc[end]) = (oa, oc);
+                }
             } else if let Some(o) = near(sa[end], own_a).or(far_a) {
                 // In from that opening, `free_max_m` from it.
                 let toward = if near(sa[end], own_a).is_some() { -into(end) } else { into(end) };
@@ -796,6 +807,19 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
     let mut openings: Vec<Opening> = Vec::new();
     let (mut off_line, mut moves): (Vec<String>, Vec<(f64, [f64; 2])>) = (Vec::new(), Vec::new());
     let mut moved_openings = arm_openings.clone();
+    // A room of one lane at a seam ends on the seam's line, where its arm crosses it: there the room before the line
+    // ends, and its hole lies.
+    for seam in &out.seams {
+        for &(r, e) in seam.children.iter().chain([&seam.parent]) {
+            if let [l] = &mut rooms[r].0[..] {
+                let [s0, s1] = spans[l.arm].unwrap();
+                let cut = crossing(&arms[l.arm], seam.p, left_of(seam.dir), l.span[e]).map(|c| c.0);
+                if let Some(s) = cut.filter(|&s| s >= s0 && s <= s1 && (s - l.span[1 - e]).abs() > b.vertex_gap_m) {
+                    l.span[e] = s;
+                }
+            }
+        }
+    }
     // A room of one lane: its arm, or the stretch of its arm from its metres there on.
     let lone = |l: &Lane| {
         let t = &arms[l.arm];
@@ -992,10 +1016,35 @@ fn room_of(
         }
     }
     let ends_open = [0, 1].map(|end| bounds[end] == Bound::Open && off_line.is_empty());
+    // A lane of a narrow bore (`narrow_bore_m` or less) in a room with a wider one lies at the side of the nearest
+    // wider lane, edge to edge, with its way's half-width and no margin: a walk beside that tunnel, not a place of its
+    // own. Narrow lanes on one side of a wider one lie side by side outward, the nearest first.
+    let narrow: Vec<bool> = lanes.iter().map(|l| arms[l.arm].height <= b.narrow_bore_m).collect();
+    let snug = |mut places: Vec<(f64, f64, f64)>| {
+        let wide: Vec<usize> = (0..lanes.len()).filter(|&k| !narrow[k]).collect();
+        if wide.is_empty() || wide.len() == lanes.len() {
+            return places;
+        }
+        let nearest = |t: f64| {
+            *wide.iter().min_by(|&&x, &&y| (places[x].0 - t).abs().total_cmp(&(places[y].0 - t).abs())).unwrap()
+        };
+        let mut order: Vec<(usize, usize)> =
+            (0..lanes.len()).filter(|&k| narrow[k]).map(|k| (k, nearest(places[k].0))).collect();
+        order.sort_by(|x, y| (places[x.0].0 - places[x.1].0).abs().total_cmp(&(places[y.0].0 - places[y.1].0).abs()));
+        let mut edges: Vec<[f64; 2]> = places.iter().map(|p| [p.0 - p.1, p.0 + p.1]).collect();
+        for (k, w) in order {
+            let half = places[k].1 * (arms[lanes[k].arm].half - b.margin_narrow_m) / arms[lanes[k].arm].half;
+            let side = if places[k].0 >= places[w].0 { 1 } else { 0 };
+            let t = if side == 1 { edges[w][1] + half } else { edges[w][0] - half };
+            edges[w][side] = if side == 1 { t + half } else { t - half };
+            places[k] = (t, half, places[k].2);
+        }
+        places
+    };
     // The places of the lanes on a line through p with the unit direction `left`, whose normal is `normal`: per lane its
     // metres along `left`, its half-width along it, and its metres along its arm.
     let across = |p: [f64; 2], left: [f64; 2], normal: [f64; 2], near: &[f64]| -> Option<Vec<(f64, f64, f64)>> {
-        (lanes.iter().zip(near))
+        let places = (lanes.iter().zip(near))
             .map(|(l, &s)| {
                 let arm = &arms[l.arm];
                 let (sl, t) = crossing(arm, p, left, s)?;
@@ -1003,7 +1052,8 @@ fn room_of(
                 let cos = (d[0] * normal[0] + d[1] * normal[1]).abs().max(1.0 / mitre);
                 Some((t, arm.half / cos, sl))
             })
-            .collect()
+            .collect::<Option<Vec<_>>>()?;
+        Some(snug(places))
     };
     let middle = |places: &[(f64, f64, f64)]| {
         let lo = places.iter().map(|p| p.0 - p.1).fold(f64::INFINITY, f64::min);
@@ -1025,6 +1075,7 @@ fn room_of(
                     (along_dir(p, arm.curve.at(s).0.p, left), arm.half / cos, s)
                 })
                 .collect();
+            let places = snug(places);
             let c = offset(p, left, middle(&places));
             let places = places.into_iter().map(|(t, h, s)| (along_dir(c, offset(p, left, t), left), h, s)).collect();
             (c, left, places)
