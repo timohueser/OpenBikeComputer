@@ -651,10 +651,13 @@ impl<'a> Net<'a> {
             // past the narrow one's axis.
             let away = [s.ax * from.axis.signum(), s.ay * from.axis.signum()];
             // The two tubes overlap by `OVERLAP_M` at the plane, so the rounding of their vertices opens no gap there.
-            let l = libm::hypot(away[0], away[1]).max(f64::MIN_POSITIVE);
-            let d = OVERLAP_M / metres_per_unit(s.y) / l;
-            let shift = |p: [f64; 3]| [p[0] + away[0] * d, p[1] + away[1] * d];
-            let (a, z) = (shift(s.at([from.x, 0.0])), shift(t.at([to.x, 0.0])));
+            let sign = from.axis.signum();
+            let shift = |st: &Station, p: [f64; 3]| {
+                let w = [st.ax * sign, st.ay * sign];
+                let d = OVERLAP_M / metres_per_unit(st.y) / libm::hypot(w[0], w[1]).max(f64::MIN_POSITIVE);
+                [p[0] + w[0] * d, p[1] + w[1] * d]
+            };
+            let (a, z) = (shift(s, s.at([from.x, 0.0])), shift(t, t.at([to.x, 0.0])));
             let ends = [s, t].map(|st| {
                 ring_of(st).is_some_and(|k| {
                     !self.opening_at(c, k) && self.other(c, k).is_none_or(|n| !self.met(n).sides.contains(&Some(tube)))
