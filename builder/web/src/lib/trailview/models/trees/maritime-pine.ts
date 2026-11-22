@@ -5,10 +5,13 @@ export default {
   name: 'Maritime pine',
   latin: 'Pinus pinaster',
   fork: 0.6,
-  // A small, ragged crown of needle brushes high on a long bole.
-  crown: [0.82, 0.33, 0.3, 0.19],
+  // A small, ragged crown of large needle brushes high on a long, bent bole.
+  crown: [0.8, 0.33, 0.3, 0.23],
   open: true,
   stagger: true,
+  billows: 5,
+  dense: 1.3,
+  crook: 0.03,
   // Most lean, on sand and in the wind off the Atlantic; it takes a random heading like any other tree.
   sweep: 0.16,
   trunk: 0.028,
