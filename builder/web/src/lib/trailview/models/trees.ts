@@ -178,8 +178,8 @@ interface Broadleaf extends Base {
     /** The colour of a bare crown's twigs. */
     twigs: Ramp;
     /**
-     * Blossom, berries or flowers dotted over the crown, or on a bare crown whole twigs, as catkins or
-     * dead leaves that hang on: colour and share, by season.
+     * Blossom, berries, catkins or dead leaves by season: colour and share. A leafy crown shows them as its `heads`,
+     * its `bunches` or a `rods` shrub's catkins; a bare crown as whole twigs, as catkins or dead leaves that hang on.
      */
     flecks?: Partial<Record<Season, [string, number]>>;
 }
@@ -675,12 +675,6 @@ function puffs(count: number, rand: () => number, dense = 1, layers = 0): { at: 
     return out;
 }
 
-/** Dots on `share` of the vertices, fewer underneath. Far away an even tint, where dots would flicker. */
-function fleck(p: V, n: V, share: number, lod: Lod, seed: number): number {
-    const dot = hash(p, seed) < share ? 0.6 + 0.4 * smooth(-0.5, 0.5, n.z) : 0;
-    return lerp(dot, 0.6 * share, lod / 2);
-}
-
 /**
  * A crown of soft lumps on a trunk. A bare crown is a limb into each lump, its branches and twigs
  * out to the lump's far side, with sky between them, so its outline stays at every distance.
@@ -705,8 +699,7 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
             .lerp(mid, 0.7 * smooth(-0.6, 0.3, n.z) + 0.3 * smooth(-0.8, 0.6, p.z))
             .lerp(tip, 0.7 * smooth(0.2, 0.9, n.z) * smooth(-0.2, 0.8, p.z));
         // Under its heads a crown takes a little of their colour on its upper sides, which a far tier keeps.
-        if (flecks && spec.heads) return c.lerp(hex(flecks[0]), 0.5 * flecks[1] * smooth(0, 0.8, n.z));
-        return flecks && !spec.bunches && !spec.rods ? c.lerp(hex(flecks[0]), fleck(p, n, flecks[1], lod, seed)) : c;
+        return flecks && spec.heads ? c.lerp(hex(flecks[0]), 0.5 * flecks[1] * smooth(0, 0.8, n.z)) : c;
     };
     // A palm or a dragon tree grows its crown from the trunk's top.
     if (spec.fronds || spec.branching || spec.rods) {
