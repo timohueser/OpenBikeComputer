@@ -5,7 +5,7 @@ import { SEASONS, type Season } from '../rules/regions';
 import { SUMMER } from '../vegetation/phenology';
 import { ANIMALS } from './animals';
 import { geometry } from './flat';
-import { bareIn, buildsFar, farFromFar, growsTiers, tree, TREES } from './library';
+import { bareIn, tree, TREES } from './library';
 import type { FloatMesh, Models, Packed } from './model-file';
 import { encodeModels, pack } from './pack';
 import { plant, PLANTS } from './plant-library';
@@ -13,7 +13,7 @@ import { rock } from './rocks';
 import { mesh, Sculpt } from './sculpt';
 import { lit, relit, simplified, simplifierReady } from './simplify';
 import { fits, tone } from './tone';
-import type { Grown, Lod } from './trees';
+import type { Grown, Lod, Tree } from './trees';
 
 /** The crown triangles of tree tiers 1 and 2 that the simplifier makes. */
 const TRIANGLES = [600, 200];
@@ -105,15 +105,24 @@ function crown(id: string, season: Season): Packed {
 }
 
 /**
- * Tier 0, and tiers 1 and 2 simplified from it without its flower heads, each with its own trunk; a species of `buildsFar`
- * grows tier 2, as bright as tier 0, one of `growsTiers` tier 1 too, and one of `farFromFar` simplifies its own far level.
+ * How a species' leafy crown gets tiers 1 and 2, each with its own trunk and as bright as tier 0. A crown of rosettes of
+ * cards, which simplify into shards, grows both. Thin limbs, sprays or fronds would come apart, so tier 2 grows and
+ * tier 1 is simplified from tier 0. A shaped crown of many small lumps would come out in shards from tier 0, so tier 2
+ * is simplified from its own far level. Any other crown simplifies both from tier 0.
  */
+function farTiers(spec: Tree): 'grown' | 'far grown' | 'far simplified' | 'simplified' {
+    if (spec.form === 'broadleaf' && spec.branching) return 'grown';
+    if (spec.form === 'conifer' ? spec.boughs || spec.tufts : (spec.crook && !spec.shape) || spec.fronds) return 'far grown';
+    return spec.form === 'broadleaf' && spec.shape ? 'far simplified' : 'simplified';
+}
+
+/** Tier 0 and the tiers that `farTiers` makes; the simplifier takes tier 0 without its flower heads. */
 function tiers(id: string, season: Season, [near, middle, far]: Grown[]): Grown[] {
-    const want = lit(near);
-    if (growsTiers(id)) return [near, relit(middle, want), relit(far, want)];
+    const want = lit(near), how = farTiers(TREES[id]);
+    if (how === 'grown') return [near, relit(middle, want), relit(far, want)];
     // Flower heads simplify into loose shards; the crown's colour keeps theirs.
     const source = tree(id, season, 0, 1, false);
-    return [near, simplified(source, middle, TRIANGLES[0], want), buildsFar(id) ? relit(far, want) : simplified(farFromFar(id) ? far : source, far, TRIANGLES[1], want)];
+    return [near, simplified(source, middle, TRIANGLES[0], want), how === 'far grown' ? relit(far, want) : simplified(how === 'far simplified' ? far : source, far, TRIANGLES[1], want)];
 }
 
 /** A tree model, with its crown's lowest point at every tier. */
