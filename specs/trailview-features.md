@@ -425,7 +425,7 @@ The bake adds these to the features of the road solver:
 | tag `slab` | each way of a deck whose room gives less than its full depth (ladder step 2), at zoom 13 | The depth of its slab in metres |
 | line `tunnel-tube` | each chord of the curve of a chain of tunnel ways with a part, at zoom 13 | Two vertices; the heights are the floor. See Tunnel parts |
 | point `tunnel-end` | each opening with a part of its own, at zoom 13 | The middle of its frame line; the height is the floor there. See Tunnel parts |
-| tag `parts` | each tunnel way of a chain with a part, at zoom 13 | The parts of the two ends of its chain, as `ends` of a `tunnel-tube`: of the head that its opening enters, `none` at an end with no opening |
+| tag `parts` | each tunnel way of a room that draws, at zoom 13 | The parts of the two ends of its chain, as `ends` of a `tunnel-tube`: of the head that its opening enters |
 
 The bake decides `levels`, `storey` and `slab` by the levels of the ground plan (`graph::levels` of
 `host/obc-ground-plan`, and `graph::level_tags` for the tags) with the rule tables of its own build. The options
@@ -588,13 +588,27 @@ in order:
    `rock_cover_max_m`; else `arch`.
 5. Else `free`.
 
-Openings on one frame line share one head, a hole per opening:
+What draws is decided once, in the bake. A room draws where each of its ends is a seam or an opening with a part, and
+where it is not taken out. The rooms of one seam, and the rooms of one arm, draw together or not at all. A room whose
+seam holds no hole for a room behind it, or whose arm has an opening in no room, does not draw; nor does a room whose
+line leaves the bake's region. Of two openings within `pair_max_m` and `pair_max_deg` (also the two ends of one room)
+whose rooms draw, that lie at one level (neither over the other, see Rooms) and less than two `shell_m` apart across,
+the narrower room does not draw, then the one with the higher id. These rules repeat until no room leaves. A room that
+does not draw writes no record, and its ways have no tag `parts`.
+
+Openings on one frame line share one head, a hole per opening, of rooms that draw:
 
 - Two ends of rung 4 of one family (rail or not) within `pair_max_m` and `pair_max_deg`, whose rooms lie two
-  `shell_m` or more apart across, where each of the two rooms has a part or a seam at both of its ends: a pair. The
-  nearest pairs come first, each opening in one pair.
-- Two openings of any kinds within `pair_max_m` and `pair_max_deg` whose rooms lie at one level (not apart, see
-  Rooms) and less than two `frame_m` and two `shell_m` apart across.
+  `shell_m` or more apart across, their axes `JOINT_MAX_M` or less apart across: a pair. The nearest pairs come
+  first, each opening in one pair.
+- Two openings of any kinds within `pair_max_m` and `pair_max_deg` whose rooms lie at one level and less than two
+  `frame_m` and two `shell_m` apart across.
+
+`JOINT_MAX_M` (`parts`) is 29 m: `BUFFER_M` less the longest chord (10 m) and a metre for the rounding and the reach
+of the builder. So the tile that owns a chord of a hole holds its record, and the tile that owns a record holds the
+chords of its holes. The bake reads each head and seam back as a tile holds it, with the builder's `read_back` of
+`host/obc-trailview-parts`; a joint that is not whole, or has a hole more than `JOINT_MAX_M` from its point, takes its
+rooms out (`joints_not_whole`, `joints_too_wide`).
 
 The openings that these links join lie on the frame line of their group's far opening (see Rooms): the others move in
 along their ways to it. Where a way does not reach that line within `pair_max_m`, half its chain and its own way, its
@@ -628,8 +642,8 @@ holds `a b` per item, its values at the first and the second vertex. A room of o
 
 | Tag | On | Value |
 | --- | --- | --- |
-| `section` | both | `round`, or `box` for an underpass; a row on an end |
-| `half`, `height` | both | The inside half-width and height: of a tube, of the room, the height of its chord; of an end, a row: of each hole's room, the height of its chord there (see The floor of a tube). A room of two lanes or more rounds both up to the centimetre |
+| `section` | both | `round`, or `box` for an underpass and for each room of a seam with one; a row on an end |
+| `half`, `height` | both | The inside half-width and height: of a tube, of the room; `height` of a lone tube the height of its chord, of a room of lanes a pair, its height at each vertex; of an end, a row: of each hole's room, its height there (see The floor of a tube). A room of two lanes or more rounds both up to the centimetre |
 | `look` | both | `concrete`, `masonry` or `rock`: of the group, `rock` for a head whose holes are all `rock` |
 | `class`, `surface` | tube | A row: the class of `roads.json` and the `surface` tag of each lane's way, `-` for a way with none |
 | `road` | tube | A row: the half-width of each lane's carriageway |
@@ -647,12 +661,14 @@ holds `a b` per item, its values at the first and the second vertex. A room of o
 | `foot` | end | |
 | `way` | end | A row of the ways that enter the head, from the right: the end vertex of each, `x y` in the frame of the ground plan (2^34 units per side): the point that each zoom-13 tile holds, a quarter unit times 32, or a whole unit times 128 on a way with no alignment |
 | `shift` | end | A row: per way the metres along it from `way` to the line; 0 where it did not move |
+| `door` | seam | Per lane of the room before the line that ends on it: its door's metres to the left of the point, half-width, floor over the point's and the bore of its way, four values per door |
 
-A seam has the tags `part`, `heading`, `half`, `height`, `across` and `up` only. Its point lies on the axis of the room
-before the line, at that room's end; its height is that room's floor there. Its first hole is that room: `across` and
-`up` 0, the room's `half` and its height there. Each other hole is a room behind the line, from the right: `half` is
-its half-width along the line (its own half over the cosine of its turn, at most `mitre_max`, rounded down to the
-centimetre for a room of one lane), and its first chord tapers from it to its own `half`.
+A seam has the tags `part`, `heading`, `half`, `height`, `across`, `up` and `door` only. Its point lies on the axis of
+the room before the line, at that room's end; its height is that room's floor there. Its first hole is that room:
+`across` and `up` 0, the room's `half` and its height there. Each other hole is a room behind the line, from the right
+(see Rooms): its first vertex is the hole's point as the record gives it, and its first chord tapers from the hole's
+`half` to its own. A seam of one hole is a cap: the room ends there in the hill, and the builder draws the seam's face
+dark, as a closed end. The builder draws a door dark, up to the spring of the room before the line.
 
 Each `tunnel-tube` has the two vertices of one chord of the room from end to end (an opening or a seam), in the rising
 metres along the stroke of its base lane's way, so a tile that holds a piece of the room holds whole records. A room
@@ -667,26 +683,36 @@ the two from its axis), and narrows back to its own width over `approach_m` of `
 
 #### Rooms
 
-Two tunnel ways whose spaces come nearer than a wall are one room for as long as they stay that near. An arm is a
-chain; its space at a metre is `half` to each side of its axis, and from its height to that plus `height`. The gap of
-two arms at a point of one's axis is `d` less their two halves, with `d` the distance to the other's axis, square to
-its chord, with the foot between the other's two ends. Two spaces lie apart where the gap is at least `wall_m`, two
-`shell_m`, or one lies over the other by its `height`, `shell_m` and `slab_m`, each less 0.01 m (the bake's
-centimetre). The bake reads the heights of the road solver here.
+Two tunnel ways whose spaces come nearer than a wall are one room for as long as they lie beside each other. An arm is
+a chain that opens at both ends, has a height at each vertex and does not fold; another chain is in no run and no head.
+A chain folds where its axis comes within its width and `wall_m` of itself, at metres more than twice that apart along
+it, and does not lie over itself there by its `height`, `shell_m` and `slab_m` (a V or a hairpin; a spiral passes over
+itself); it does not draw. An arm's
+space at a metre is `half` to each side of its axis, and from its height to that plus `height`. Two spaces lie apart
+where the gap (the distance of the axes less the two halves) is at least `wall_m`, two `shell_m`, or one lies over the
+other by its `height`, `shell_m` and `slab_m`, each less 0.01 m (the bake's centimetre).
 
-- A run is a stretch of two arms, read every whole metre, along which the gap stays under `wall_m`, each half taken
-  over the cosine of the angle between the axes (at most `mitre_max` times), so the two part a wall apart along a line
-  square to either axis; holes shorter than `room_join_m` close. Where the spaces lie apart all along, the run changes nothing. Else the two lie side by
-  side where their axes lead one way or against each other within `pair_max_deg` at more than half of its metres and
-  do not cross. Two that lie side by side are over and under by height where their least rise leaves the lower its
-  group's `least_height_m`, `shell_m` and `slab_m`, else one room. Two that do not are over and under by the floor,
-  but where their run reaches a vertex of both where one of them ends (a fork, or a tube that ends on the side of
-  another): they meet there at one level, and the run changes nothing.
-- The ends of each one-room run move: within `free_max_m` of an opening of one of its arms, to the openings where
-  both arms open on that side and the run reaches one of them (within `wall_m` and `vertex_gap_m`); where both open
-  but the arms part before, the end stays; else in, to `free_max_m` from that opening. Each arm is cut where a run ends off its
-  openings, and a cut inside a run cuts the other arm at its foot, until no cut is new; a cut within `vertex_gap_m` of
-  another is that cut. The stretches between the cuts are lanes, and the lanes that a run joins are one room.
+The bake reads each arm every whole metre from opening to opening against the axes of the other arms near it, with
+the heights of the road solver. At a metre another arm is, tested in this order:
+
+- open: its foot lies past its openings;
+- apart: the gap is `wall_m` or more, less 0.01 m;
+- over: the one lies over the other by the lower one's `least_height_m` and `roof_m` (`shell_m` + `slab_m`) or more;
+- with: the two axes lead one way, or against each other, within `pair_max_deg`;
+- across: else.
+
+- A run is a stretch of metres with each other, as both arms' own metres see it: at a corner of one arm the other's
+  foot stays at the corner. Holes shorter than `room_join_m` close. A run shorter than `vertex_gap_m` is a crossing.
+- A run ends where an arm opens: at the openings of both arms on that side, on a frame line. Else it ends in the hill
+  at its last metre, with a seam. Where the next metres are across, of the two arms the narrower (then the higher id)
+  turns away: its lane ends on the seam's line with a door, and its arm is in no room until the first metre
+  `vertex_gap_m` or more past the line where it is with or across no arm (`lanes_in_a_wall`); there its room starts
+  with a cap.
+- A stretch of metres over or across that no run holds is over and under: by height where its metres are all over,
+  else by the floor (they cross). Next to a run only a stretch with metres over counts, by height.
+- Each arm is cut where a run ends in the hill and where a lane that turned away is a room again; a cut inside a run
+  cuts the other arm at its foot, until no cut is new, and a cut within `vertex_gap_m` of another is that cut. The
+  stretches between the cuts are lanes, and the lanes that a run joins are one room.
 - The base of a room is its widest lane, then the lowest id. Its centre line runs in the middle between the
   outermost edges of its lanes: on the line at each end, and at each vertex of the base and the foot of each vertex
   of another lane, its vertices `vertex_gap_m` apart at least. At a vertex each lane has a place on the ring's line:
@@ -695,14 +721,24 @@ centimetre). The bake reads the heights of the road solver here.
   the side of the nearest wider lane, edge to edge, with its way's half-width and no margin; narrow lanes on one side
   lie side by side outward, the nearest first. `half` of the room is the largest place and half-width. The edge
   between two lanes lies in the middle between the left edge of the one and the right edge of the next.
-- A room of one lane at a seam ends where its arm crosses the seam's line.
 - The lanes of a room that open at one end open on one frame line: the line of the far opening, the one that no
   other opening of the room lies past by more than 0.2 m, then the farthest in. The others move in along their
   ways, within half their chain and their own way. A lane whose way does not reach the line is counted
   (`lanes_off_the_line`).
-- Where the rooms on one side of the cuts of one place are one room, that place is a seam: a line square to that
-  room's base through its cut. The room before the line holds the rooms behind it and is as wide as they need there.
-  A place with no such room is counted, and its rooms end with no part.
+- Where one side of the cuts of one place is one room, that place is a seam: a line square to that room's base
+  through its cut, with a heading from that room (the room before the line) into the others. The lanes of all its
+  rooms end on the line. A place with no such room is counted, and its rooms end with no part.
+
+A seam is written from the row of the room before it: per lane its place, its half-width along the line and its floor. A
+hole per room behind the line runs from the right side of its first lane to the left side of its last, a door over a
+lane that ends on the line; a side between two lanes lies in the middle between them. Each is cut back by `shell_m` from
+a side that it shares with another, so the tubes behind stand a wall apart and no side stands on the step between two
+floors; the outer side of an outer lane lies at the room's wall. A side lies on a whole centimetre, so `across` and
+`half` of a hole or a door are whole millimetres, as each position on the line is. A room behind the line starts at its
+hole's point as the record gives it, with the places of the row kept inside the hole; its next vertex lies far enough
+that its first chord leaves the line within `pair_max_deg`, and `vertex_gap_m` at least. The room before the line is as
+wide as its own lanes. A seam whose row holds no hole for a room behind it, or whose rooms are not side by side in the
+row, is not whole.
 
 A group of openings that links join (see the rungs) has the frame line of its far opening: one whose line no opening
 of the group within `pair_max_m` and `pair_max_deg` of it lies past by more than 0.2 m, the one with the most such
@@ -719,15 +755,17 @@ Between its openings, the floor of a tube touches no other way. The bake lowers 
 lies under each way on top. The heights of a `tunnel-tube` are this floor, and the `z` of a `tunnel-end` is the height
 of the road solver there. The bake sets the floor before the numbers of the openings.
 
-A room reads the ways on top over its `half`, and each of its lanes gets its own floor under them by this rule, with
-the lane's heights, grade and least height. The room's floor at a vertex is its lowest lane's, and a lane's `up` its
-floor over that. The room's height is one value: the least that holds the outline of each lane on its floor anywhere,
-read at the corners of the room's outline as the device draws it (a box section: the highest lane's top). Where the
-shell of its crown would rise over a way on top, every lane there is lower by as much, each to its least height, and
-the room is as high as the ways on top let it be, at least as high as its lanes need. A chord takes the lesser height
-of its two vertices; at a seam's line, as high as the rooms behind it need. A room over another in a run of over and under is a way on top of it, its underside its floor less
-`slab_m`: by height it makes only the section of the room under lower, by the floor the floor too. The bake solves the
-rooms from the highest down.
+The rule runs once per arm from opening to opening, at the vertices of each room that the arm runs in, under the
+ways on top of that room read over its `half`, with the arm's heights, grade and least height; a vertex of two rooms
+(on a seam's line) once, under the ways of both. So a lane has one floor on both sides of a seam. A room's floor at a
+vertex is its lowest lane's, and a lane's `up` its floor over that. A room of lanes is as high at a vertex as the
+least that holds the outline of each lane on its floor there, read at the corners of the room's outline as the
+builder draws it (a box section: the highest lane's top). Where the shell of its crown would rise over a way on top,
+every lane there is lower by as much, each to its least height, and the room is as high as the ways on top let it be,
+at least as high as its lowered lanes need. At a seam's line it is as high as the rooms behind it need. A lone tube's
+chord takes the lesser height of its two vertices. A room over another in a stretch of over and under is a way on top
+of it, its underside its floor less `slab_m`: by height it makes only the section of the room under lower, by the
+floor the floor too. The bake solves the rooms from the highest down.
 
 - The curve of a way with heights, not of the kind `gallery`, lies over a vertex of the tube where the vertex is
   within its reach (its outer half-width + `half` + `shell_m`; at a vertex that took an end of the way's reach,
