@@ -674,24 +674,28 @@ its chord, with the foot between the other's two ends. Two spaces lie apart wher
 `shell_m`, or one lies over the other by its `height`, `shell_m` and `slab_m`, each less 0.01 m (the bake's
 centimetre). The bake reads the heights of the road solver here.
 
-- A run is a stretch of two arms, read every whole metre, along which the gap stays under `wall_m`; holes shorter
-  than `room_join_m` close. Where the spaces lie apart all along, the run changes nothing. Else the two lie side by
+- A run is a stretch of two arms, read every whole metre, along which the gap stays under `wall_m`, each half taken
+  over the cosine of the angle between the axes (at most `mitre_max` times), so the two part a wall apart along a line
+  square to either axis; holes shorter than `room_join_m` close. Where the spaces lie apart all along, the run changes nothing. Else the two lie side by
   side where their axes lead one way or against each other within `pair_max_deg` at more than half of its metres and
   do not cross. Two that lie side by side are over and under by height where their least rise leaves the lower its
   group's `least_height_m`, `shell_m` and `slab_m`, else one room. Two that do not are over and under by the floor,
   but where their run reaches a vertex of both where one of them ends (a fork, or a tube that ends on the side of
   another): they meet there at one level, and the run changes nothing.
 - The ends of each one-room run move: within `free_max_m` of an opening of one of its arms, to the openings where
-  both arms open on that side, else in, to `free_max_m` from that opening. Each arm is cut where a run ends off its
+  both arms open on that side and the run reaches one of them (within `wall_m` and `vertex_gap_m`); where both open
+  but the arms part before, the end stays; else in, to `free_max_m` from that opening. Each arm is cut where a run ends off its
   openings, and a cut inside a run cuts the other arm at its foot, until no cut is new; a cut within `vertex_gap_m` of
   another is that cut. The stretches between the cuts are lanes, and the lanes that a run joins are one room.
 - The base of a room is its widest lane, then the lowest id. Its centre line runs in the middle between the
   outermost edges of its lanes: on the line at each end, and at each vertex of the base and the foot of each vertex
   of another lane, its vertices `vertex_gap_m` apart at least. At a vertex each lane has a place on the ring's line:
   the metres from the centre line to its axis, and its half-width along the line (its half over the cosine of its
-  turn, at most `mitre_max`). `half` of the room is the largest place and half-width. Its `height` holds the outline
-  of each lane on its floor, read at the corners of the room's outline as the device draws it. The edge between two
-  lanes lies in the middle between the left edge of the one and the right edge of the next.
+  turn, at most `mitre_max`). A lane of a narrow bore (`narrow_bore_m` or less) in a room with a wider lane lies at
+  the side of the nearest wider lane, edge to edge, with its way's half-width and no margin; narrow lanes on one side
+  lie side by side outward, the nearest first. `half` of the room is the largest place and half-width. The edge
+  between two lanes lies in the middle between the left edge of the one and the right edge of the next.
+- A room of one lane at a seam ends where its arm crosses the seam's line.
 - The lanes of a room that open at one end open on one frame line: the line of the far opening, the one that no
   other opening of the room lies past by more than 0.2 m, then the farthest in. The others move in along their
   ways, within half their chain and their own way. A lane whose way does not reach the line is counted
@@ -717,7 +721,11 @@ of the road solver there. The bake sets the floor before the numbers of the open
 
 A room reads the ways on top over its `half`, and each of its lanes gets its own floor under them by this rule, with
 the lane's heights, grade and least height. The room's floor at a vertex is its lowest lane's, and a lane's `up` its
-floor over that. A room over another in a run of over and under is a way on top of it, its underside its floor less
+floor over that. The room's height is one value: the least that holds the outline of each lane on its floor anywhere,
+read at the corners of the room's outline as the device draws it (a box section: the highest lane's top). Where the
+shell of its crown would rise over a way on top, every lane there is lower by as much, each to its least height, and
+the room is as high as the ways on top let it be, at least as high as its lanes need. A chord takes the lesser height
+of its two vertices; at a seam's line, as high as the rooms behind it need. A room over another in a run of over and under is a way on top of it, its underside its floor less
 `slab_m`: by height it makes only the section of the room under lower, by the floor the floor too. The bake solves the
 rooms from the highest down.
 
