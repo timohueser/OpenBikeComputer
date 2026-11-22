@@ -49,7 +49,7 @@ GROUND_PLAN_MARGIN = {
 # and selected per node, and the pair, the rim, the closed free end and the cut of two tubes that meet where a chord's
 # middle does, at the middle between their walls as drawn and split where it bends, with the closed cut of a head, with
 # wasm-pack 0.15.0 and rustc 1.100.0. The margin is the ground plan's, raw by the same fraction.
-PARTS_MEASURED = {"gzipped": 156_910, "raw_wasm": 355_143}
+PARTS_MEASURED = {"gzipped": 156_912, "raw_wasm": 354_982}
 PARTS_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * PARTS_MEASURED["raw_wasm"] / PARTS_MEASURED["gzipped"]),
