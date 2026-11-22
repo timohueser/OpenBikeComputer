@@ -6,6 +6,12 @@ export default {
   latin: 'Crataegus monogyna',
   fork: 0.3,
   crown: [0.55, 0.6, 0.42, 0.24],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.3 + 0.7 * t)) ** 0.5,
+  clumps: 11,
+  billows: 5,
+  bow: -0.2,
+  crook: 0.03,
+  heads: { count: 150, width: 0.055, height: 0.4 },
   // Leans downwind of the Atlantic westerlies.
   sweep: 0.8,
   keepsHeading: true,

@@ -10,9 +10,8 @@ describe('the colour matrix of a season', () => {
         }
     });
 
-    it('turns no bare crown, and no blossom that the season moves', () => {
+    it('turns no bare crown, and no crown that the season gives flower heads', () => {
         expect(tone(tree('european-beech', 'summer', 0), tree('european-beech', 'winter', 0))).toBeUndefined();
-        const summer = tree('hawthorn', 'summer', 0), spring = tree('hawthorn', 'spring', 0);
-        expect(fits(tone(summer, spring)!, summer, spring, 8)).toBe(false);
+        expect(tone(tree('hawthorn', 'summer', 0), tree('hawthorn', 'spring', 0))).toBeUndefined();
     });
 });
