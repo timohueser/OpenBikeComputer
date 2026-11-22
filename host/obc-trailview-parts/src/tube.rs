@@ -120,8 +120,9 @@ pub struct Meet {
 const CELL_M: f64 = 16.0;
 /// Two tubes that meet at a cut each run this far past it: two world units, as each vertex is rounded to one.
 pub const OVERLAP_M: f64 = 0.05;
-/// A station meets a tube this far past the planes of its rings: the two openings of a pair lie on one frame line within
-/// the rounding of their record.
+/// A station meets a tube this far past the planes of its rings. The two openings of a pair lie on one frame line only
+/// within `PAST_M` and the rounding of their two records (the reach of `Net::new`), so near the frame line a station can
+/// miss the other's first ring; the head covers that: it ends at a tube that opens within its depth (`face_m`).
 pub const MEET_PAST_M: f64 = 0.1;
 
 impl<'a> Net<'a> {
@@ -653,6 +654,32 @@ impl<'a> Net<'a> {
                 None => self.cut_on(c, st, side, tube),
             };
             let (Some(from), Some(to)) = (cut(s), cut(t)) else { continue };
+            let ends = [s, t].map(|st| {
+                ring_of(st).is_some_and(|k| {
+                    !self.opening_at(c, k) && self.other(c, k).is_none_or(|n| !self.met(n).sides.contains(&Some(tube)))
+                })
+            });
+            // Where the meeting ends at a ring but the other tube goes on beside the chord beyond (their levels part,
+            // not their walls), the clip runs out to the own shell's wall at the ring: the room and the shell close
+            // along it and are whole there, as the chord beyond is. A piece that would run out at both of its rings
+            // does not meet.
+            let goes_on = |st: &Station| {
+                let only = Meet { across: [f64::INFINITY; 2], past: MEET_PAST_M, up: None, only: Some(tube) };
+                let beyond = ring_of(st).and_then(|k| self.other(c, k));
+                beyond.is_some_and(|n| self.meets(n, &self.ring(n, 0).mix(&self.ring(n, 1), 0.5), only) != [None, None])
+            };
+            let out_to_wall = [(s, ends[0]), (t, ends[1])].map(|(st, end)| end && goes_on(st));
+            if out_to_wall == [true, true] {
+                continue;
+            }
+            let wall = self.chords[c].half + self.rules.ladder.bake.shell_m;
+            let [from, to] = [(from, out_to_wall[0]), (to, out_to_wall[1])].map(|(cut, out)| {
+                if out {
+                    Cut { x: cut.axis.signum() * wall, ..cut }
+                } else {
+                    cut
+                }
+            });
             // Toward the other's side of the own axis: where a narrow tube lies in a wide one's room, the middle lies
             // past the narrow one's axis.
             let away = [s.ax * from.axis.signum(), s.ay * from.axis.signum()];
@@ -664,11 +691,6 @@ impl<'a> Net<'a> {
                 [p[0] + w[0] * d, p[1] + w[1] * d]
             };
             let (a, z) = (shift(s, s.at([from.x, 0.0])), shift(t, t.at([to.x, 0.0])));
-            let ends = [s, t].map(|st| {
-                ring_of(st).is_some_and(|k| {
-                    !self.opening_at(c, k) && self.other(c, k).is_none_or(|n| !self.met(n).sides.contains(&Some(tube)))
-                })
-            });
             out.push(Meeting { clip: Clip { a, b: z, away }, from: (*s, from), to: (*t, to), ends });
         }
         out

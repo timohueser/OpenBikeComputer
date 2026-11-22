@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::mesh::WORDS;
-use super::tube::Net;
+use super::tube::{Net, OVERLAP_M};
 use super::*;
 
 /// The test place: world units near 47° N, and metres east and north from it.
@@ -1019,7 +1019,31 @@ fn a_tube_that_bends_beside_another_leaves_no_slit() {
     // the middle bends lies in a chord beside the one under the bend. Between the two axes, every way up from 1 m and
     // down from 2 m over the floor meets the front of a vault or a floor: the joined room has no slit, also near the
     // middle. And no crack narrower than the rays: along the meeting, each edge that one face has alone, but at the
-    // foot, lies on the line where the device clips a piece (within a world unit), where the other tube overlaps it.
+    // foot, lies on the line where the device clips a piece or on the middle beside it (`OVERLAP_M` and a world unit),
+    // where the other tube overlaps it or a face closes a step.
+    let no_crack = |name: &str, ends: &[End], chords: &[Chord], end: f64| {
+        let net = Net::new(ends, chords, rules).meeting();
+        let clips: Vec<[[f64; 2]; 2]> = (0..chords.len())
+            .flat_map(|c| {
+                let pieces = net.split(c, (&net.ring(c, 0), &net.ring(c, 1)));
+                pieces.windows(2).flat_map(|w| net.clips(c, (&w[0], &w[1]))).collect::<Vec<_>>()
+            })
+            .map(|m| [m.clip.a, m.clip.b])
+            .collect();
+        let on_clip = |p: [f64; 3]| {
+            clips.iter().any(|[a, b]| {
+                let (d, r) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
+                let f =
+                    ((r[0] * d[0] + r[1] * d[1]) / (d[0] * d[0] + d[1] * d[1]).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
+                libm::hypot(r[0] - f * d[0], r[1] - f * d[1]) <= OVERLAP_M / metres_per_unit(p[1]) + 1.0
+            })
+        };
+        let along = |e: &&[[f64; 3]; 2]| e.iter().all(|p| (2.0..end).contains(&metric([p[0], p[1]])[0]));
+        for e in not_closed(ends, chords).0.iter().filter(along) {
+            let m = e.map(|p| metric([p[0], p[1]]));
+            assert!(on_clip(e[0]) && on_clip(e[1]), "{name}: an open edge off the clips from {:?} to {:?}", m[0], m[1]);
+        }
+    };
     let t30 = 30f64.to_radians().tan();
     let t10 = 10f64.to_radians().tan();
     let t50 = 50f64.to_radians().tan();
@@ -1046,26 +1070,13 @@ fn a_tube_that_bends_beside_another_leaves_no_slit() {
                 assert!(up.is_some_and(|h| h.1) && down.is_some_and(|h| h.1), "{name}, at {x}, {y}: {up:?} {down:?}");
             }
         }
-        let net = Net::new(&ends, &chords, rules).meeting();
-        let clips: Vec<[[f64; 2]; 2]> = (0..chords.len())
-            .flat_map(|c| {
-                let pieces = net.split(c, (&net.ring(c, 0), &net.ring(c, 1)));
-                pieces.windows(2).flat_map(|w| net.clips(c, (&w[0], &w[1]))).collect::<Vec<_>>()
-            })
-            .map(|m| [m.clip.a, m.clip.b])
-            .collect();
-        let on_clip = |p: [f64; 3]| {
-            clips.iter().any(|[a, b]| {
-                let (d, r) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
-                let f =
-                    ((r[0] * d[0] + r[1] * d[1]) / (d[0] * d[0] + d[1] * d[1]).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
-                libm::hypot(r[0] - f * d[0], r[1] - f * d[1]) <= 1.0
-            })
-        };
-        let along = |e: &&[[f64; 3]; 2]| e.iter().all(|p| (2.0..end).contains(&metric([p[0], p[1]])[0]));
-        for e in not_closed(&ends, &chords).0.iter().filter(along) {
-            let m = e.map(|p| metric([p[0], p[1]]));
-            assert!(on_clip(e[0]) && on_clip(e[1]), "{name}: an open edge off the clips from {:?} to {:?}", m[0], m[1]);
-        }
+        no_crack(name, &ends, &chords, end);
     }
+    // Two tubes 5 m apart, so their rooms overlap, the second's floor rising 6 m from 20 to 40 m east: their meeting
+    // ends at their vertices at 40 m, where their floors part by more than a height, and the rooms still overlap there.
+    let (mut ends, mut chords) =
+        tubes(&[&[[0.0, 0.0], [40.0, 0.0], [60.0, 0.0]], &[[0.0, 5.0], [20.0, 5.0], [40.0, 5.0], [60.0, 5.0]]]);
+    ends[3].z = 506.0;
+    (chords[3].b[2], chords[4].a[2], chords[4].b[2]) = (506.0, 506.0, 506.0);
+    no_crack("levels", &ends, &chords, 58.0);
 }
