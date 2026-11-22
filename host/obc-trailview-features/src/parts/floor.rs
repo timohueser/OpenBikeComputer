@@ -206,7 +206,7 @@ fn overs(lines: &[(Vec<[f64; 2]>, f64)], input: &Input) -> Vec<Over> {
 /// the highest down.
 pub(crate) fn floors(
     rooms: &Rooms,
-    spans: &[Option<[f64; 2]>],
+    (spans, boxed): (&[Option<[f64; 2]>], &[bool]),
     (half, height): (&[f64], &[f64]),
     input: &Input,
 ) -> (Vec<Option<Floor>>, Value) {
@@ -396,7 +396,7 @@ pub(crate) fn floors(
         let fl = if rooms.lanes[t].len() < 2 {
             floor((&s, &z), (&caps, &ceilings), grade, (height[t], least), b.shell_m)
         } else {
-            lanes_floor(rooms, t, (&s, (&caps, &ceilings)), &rule, input)
+            lanes_floor(rooms, (t, !boxed[t]), (&s, (&caps, &ceilings)), &rule, input)
         };
         // Over the floor as it is (past an opening, the chain), per way the most metres that the shell of the crown
         // rises over its underside where it lies over the floor by more than the band, and the vertex there.
@@ -461,39 +461,54 @@ pub(crate) fn floors(
     (out, metrics)
 }
 
-/// The floor of room r of lanes at its vertices `s`, under the undersides of the ways on top at each: per lane the
-/// floor of its heights, its class's grade, its height and its group's least height; the room's floor the lowest of
-/// them, and its height the least that holds each lane's outline.
+/// The floor of room r of lanes (`round` or of box section) at its vertices `s`, under the undersides of the ways on
+/// top at each: per lane the floor of its heights, its class's grade, its height and its group's least height; the
+/// room's floor the lowest of them. The room is as high as its lanes need anywhere, one value, as its half is; where
+/// its crown's shell would rise over a way on top, its lanes are lower by as much, each to its least height, and the
+/// room is as high as the ways on top let it be, at least as high as its lanes need.
 fn lanes_floor(
     rooms: &Rooms,
-    r: usize,
+    (r, round): (usize, bool),
     (s, under): (&[f64], Tops),
     rule: &dyn Fn(&Tube) -> (f64, f64),
     input: &Input,
 ) -> Floor {
     let design = &obc_trailview_parts::Rules::embedded().design;
+    let shell = input.rules.bake.shell_m;
     let places: Vec<Vec<Place>> = s.iter().map(|&m| rooms.places(r, m)).collect();
-    let lanes: Vec<Floor> = (rooms.lanes[r].iter().enumerate())
-        .map(|(k, l)| {
-            let arm = &rooms.arms[l.arm];
+    let arms: Vec<&Tube> = rooms.lanes[r].iter().map(|l| &rooms.arms[l.arm]).collect();
+    let lanes: Vec<Floor> = (arms.iter().enumerate())
+        .map(|(k, arm)| {
             let z: Vec<f64> = places.iter().map(|p| arm.curve.at(p[k].s).0.z).collect();
             let (grade, least) = rule(arm);
-            floor((s, &z), (under.0, under.1), grade, (arm.height, least), input.rules.bake.shell_m)
+            floor((s, &z), (under.0, under.1), grade, (arm.height, least), shell)
         })
         .collect();
     let n = s.len();
     let low = |v: &dyn Fn(&Floor) -> f64| lanes.iter().map(v).fold(f64::INFINITY, f64::min);
     let z: Vec<f64> = (0..n).map(|i| low(&|f| f.z[i])).collect();
     let f: Vec<f64> = (0..n).map(|i| low(&|l| l.f[i])).collect();
+    let segments = (design.arch_segments * arms.len(), design.arch_segments);
+    let hold_at = |i: usize, heights: &[f64]| {
+        let outlines: Vec<(f64, f64, f64, f64)> =
+            (places[i].iter().zip(&lanes).zip(heights)).map(|((p, l), &h)| (p.off, p.half, l.f[i] - f[i], h)).collect();
+        hold(round, rooms.tubes[r].half, design.spring, &outlines, segments)
+    };
+    let mut heights: Vec<Vec<f64>> = lanes.iter().map(|l| l.h.clone()).collect();
+    let high = (0..n).map(|i| hold_at(i, &lanes.iter().map(|l| l.h[i]).collect::<Vec<f64>>())).fold(0.0, f64::max);
     let h: Vec<f64> = (0..n)
         .map(|i| {
-            let outlines: Vec<(f64, f64, f64, f64)> =
-                (places[i].iter().zip(&lanes)).map(|(p, l)| (p.off, p.half, l.f[i] - f[i], l.h[i])).collect();
-            let segments = (design.arch_segments * rooms.lanes[r].len(), design.arch_segments);
-            hold(true, rooms.tubes[r].half, design.spring, &outlines, segments)
+            let top = under.0[i].iter().copied().fold(under.1[i], f64::min) - shell - f[i];
+            let over = high - top;
+            if over > 0.0 {
+                for (k, arm) in arms.iter().enumerate() {
+                    heights[k][i] = (lanes[k].h[i] - over).max(rule(arm).1).min(lanes[k].h[i]);
+                }
+            }
+            hold_at(i, &heights.iter().map(|l| l[i]).collect::<Vec<f64>>()).max(high.min(top))
         })
         .collect();
-    Floor { s: s.to_vec(), z, f, h, lanes: lanes.into_iter().map(|l| (l.f, l.h)).collect() }
+    Floor { s: s.to_vec(), z, f, h, lanes: lanes.into_iter().map(|l| l.f).zip(heights).collect() }
 }
 
 /// The metres of `kept`, sorted, with each of `more` in its order that lies `gap` or farther from every kept one.

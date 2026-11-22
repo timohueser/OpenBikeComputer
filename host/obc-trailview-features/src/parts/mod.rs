@@ -740,21 +740,20 @@ fn room(
             (t.curve.at(s).0, places, ups)
         };
         let (mut a, mut b) = (at(i), at(i + 1));
-        let lane_heights: Vec<f64> = fl.lanes.iter().map(|lane| lane.1[i].min(lane.1[i + 1])).collect();
+        // The lesser height of the room at the two vertices; at a seam's line, as high as the rooms behind it need.
         let last = fl.s.len() - 1;
-        let height = [(&a, i), (&b, i + 1)]
-            .map(|((_, places, ups), k)| {
-                let mut outlines: Vec<(f64, f64, f64, f64)> =
-                    (places.iter().zip(ups).zip(&lane_heights)).map(|((p, &up), &h)| (p.off, p.half, up, h)).collect();
-                for (end, at) in [(0, 0), (1, last)] {
-                    if k == at {
-                        outlines.extend_from_slice(&behind[end]);
-                    }
-                }
-                rooms::hold(round, t.half, spring, &outlines, (segments * lanes.len(), segments))
-            })
-            .into_iter()
-            .fold(0.0, f64::max);
+        let seam = |k: usize| [(0, 0), (1, last)].into_iter().find(|&(end, at)| k == at && !behind[end].is_empty());
+        let need = |((_, places, ups), k): (&(Point, Vec<rooms::Place>, Vec<f64>), usize)| {
+            let Some((end, _)) = seam(k) else { return fl.h[k] };
+            let mut outlines: Vec<(f64, f64, f64, f64)> = (places.iter().zip(ups).zip(&fl.lanes))
+                .map(|((p, &up), lane)| (p.off, p.half, up, lane.1[k]))
+                .collect();
+            outlines.extend_from_slice(&behind[end]);
+            rooms::hold(round, t.half, spring, &outlines, (segments * lanes.len(), segments)).max(fl.h[k])
+        };
+        let ends = [need((&a, i)), need((&b, i + 1))];
+        let height =
+            if seam(i).is_some() || seam(i + 1).is_some() { ends[0].max(ends[1]) } else { ends[0].min(ends[1]) };
         let mut floors = [fl.f[i], fl.f[i + 1]];
         // In the rising metres of the base lane's way.
         let mut order: Vec<usize> = (0..lanes.len()).collect();

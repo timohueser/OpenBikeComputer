@@ -458,7 +458,10 @@ pub(crate) fn decide(
             (with && s1 - s0 > 1e-6).then_some([s0, s1])
         })
         .collect();
-    let (floors, floor_metrics) = floor::floors(rooms, &spans, (&half, &height), input);
+    // A tube with an underpass at an end has a box section.
+    let boxed: Vec<bool> =
+        (at_end.iter()).map(|ends| ends.iter().flatten().any(|&i| kinds[i].first() == Some(&Kind::Box))).collect();
+    let (floors, floor_metrics) = floor::floors(rooms, (&spans, &boxed), (&half, &height), input);
     let end_height = |o: &Opening| floors[o.tube].as_ref().map_or(height[o.tube], |f| f.end_height(o.end));
     let heights: Vec<f64> = openings.iter().map(end_height).collect();
     // The numbers of each drawn opening.
