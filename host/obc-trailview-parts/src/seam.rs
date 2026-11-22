@@ -79,7 +79,7 @@ const CLEAR_M: f64 = 0.02;
 /// off one ear at a time, a corner whose triangle with its two neighbours turns the polygon's way and holds no other
 /// corner, not even on its edges, and whose new edge passes no other corner within `CLEAR_M`; of those the ear of the
 /// best shape (its area over the squares of its sides).
-fn ear_clip(poly: &[Corner]) -> Vec<[usize; 3]> {
+pub(crate) fn ear_clip(poly: &[Corner]) -> Vec<[usize; 3]> {
     let cross = |a: Corner, b: Corner, c: Corner| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
     let area: f64 = (0..poly.len()).map(|i| cross([0.0, 0.0], poly[i], poly[(i + 1) % poly.len()])).sum();
     let way = if area >= 0.0 { 1.0 } else { -1.0 };

@@ -38,18 +38,15 @@ fn need(net: &Net, e: usize) -> f64 {
 }
 
 /// The metres in from end e's opening of each vertex of its walk to the other end of its tube: 0, then the far vertex
-/// of each chord. A part never runs to a seam: a walk that ends at one ends at the vertex before it, or in the middle
-/// of its first chord.
+/// of each chord. Behind a seam a walk ends at the vertex before it (the bake writes one): the seam face lies in the
+/// seam's plane, and only the room before the line closes a shell there.
 fn stops(net: &Net, e: usize) -> Vec<f64> {
     let walk = net.walk(e, f64::INFINITY);
     let mut out = vec![0.0];
     out.extend(walk.iter().map(|&(c, _, start)| start + direction(&net.chords[c]).1));
-    let seam = walk.last().and_then(|&(c, forward, _)| net.end_at(c, usize::from(forward)));
-    if seam.is_some_and(|o| net.holes[o].part == Part::Seam) {
-        let last = out.pop().unwrap_or(0.0);
-        if out.len() == 1 {
-            out.push(last / 2.0);
-        }
+    let last = walk.last().and_then(|&(c, forward, _)| net.seam_at(c, usize::from(forward)));
+    if last.is_some_and(|(_, h)| h > 0) {
+        out.pop();
     }
     out
 }
@@ -67,7 +64,7 @@ pub fn reach(net: &Net, e: usize) -> Reach {
     let walk = net.walk(e, f64::INFINITY);
     let at = stops(net, e);
     let (total, own) = (at[at.len() - 1], at_or_past(&at, need(net, e)));
-    // A seam has no part: the part ends with a face where its walk does.
+    // A seam has no part: a part that runs to one ends there with a face, on the seam's corners.
     let other = walk.last().and_then(|&(c, forward, _)| net.end_at(c, usize::from(forward)));
     let other = other.filter(|&o| net.holes[o].part != Part::Seam);
     let alone = Reach { boxes: own, shell: own, closed: true, then: Meets::default() };

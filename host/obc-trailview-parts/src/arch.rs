@@ -5,6 +5,7 @@
 
 use crate::boxes;
 use crate::mesh::{flagged, flat, outline, Builder, Corner, Station, VOID};
+use crate::seam;
 use crate::tube::{self, direction, inward, spring, top_at, Net};
 use crate::{Part, Section};
 
@@ -307,8 +308,20 @@ fn end_face<L: Fn([f64; 3]) -> f64>(
         tube::shell_outline(net, (chord.section, tube::segments(net, chord)), chord.half, chord.height, foot - t.z);
     let n = shell.len();
     let (right, left) = room(net, (c, k), t);
-    b.strip((t, &shell[..n - 1]), (t, &right), colour, out);
     let bottom = [shell[0], shell[n - 1], shell[n - 2]];
+    // At a seam the floor has a corner at each hole's side and step: the two halves are cut into ears, as the seam face
+    // is, so no corner lies on an edge of a strip.
+    if net.seam_at(c, k).is_some() {
+        for (outer, inner) in [(&shell[..n - 1], &right), (&bottom[..], &left)] {
+            let poly: Vec<Corner> = outer.iter().chain(inner.iter().rev()).copied().collect();
+            for tri in seam::ear_clip(&poly) {
+                let v = tri.map(|i| b.at(t, poly[i], colour));
+                b.triangle(v[0], v[1], v[2], out);
+            }
+        }
+        return;
+    }
+    b.strip((t, &shell[..n - 1]), (t, &right), colour, out);
     b.strip((t, &bottom), (t, &left), colour, out);
 }
 
@@ -331,8 +344,18 @@ fn room(net: &Net, (c, k): (usize, usize), st: &Station) -> (Vec<Corner>, Vec<Co
                 out
             };
             let (floor, top) = (mine(&cut.floor), mine(&cut.top));
-            let right = [floor[0]].into_iter().chain(top.iter().copied()).collect();
-            let left = floor.into_iter().chain([top[top.len() - 1]]).collect();
+            // On each wall the corners of a hole's side there, as the inside's wall has them.
+            let wall = |from: Corner, to: Corner| {
+                let mut on: Vec<Corner> = (cut.holes.iter().flatten())
+                    .map(|q| [sign * q.0[0], q.0[1]])
+                    .filter(|q| q[0] == from[0] && q[1] > from[1] && q[1] < to[1])
+                    .collect();
+                on.sort_by(|p, q| p[1].total_cmp(&q[1]));
+                on
+            };
+            let (first, last, spring_r, spring_l) = (floor[0], floor[floor.len() - 1], top[0], top[top.len() - 1]);
+            let right = [first].into_iter().chain(wall(first, spring_r)).chain(top.iter().copied()).collect();
+            let left = floor.iter().copied().chain(wall(last, spring_l)).chain([spring_l]).collect();
             return (right, left);
         }
     }

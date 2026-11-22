@@ -682,6 +682,10 @@ fn lone(t: &Tube, kinds: [Option<Kind>; 2], (fl, common): (Option<&Floor>, &Tags
         let mut pts: Vec<Point> = vec![t.curve.at(a).0];
         pts.extend(fl.s.iter().filter(|&&s| s > a + 1e-6 && s < z - 1e-6).map(|&s| t.curve.at(s).0));
         pts.push(t.curve.at(z).0);
+        // A tube behind a seam has a vertex between its ends: the part of its other end stops there (`boxes::stops`).
+        if pts.len() == 2 && t.curve.stretches.len() == 1 && kinds.contains(&Some(Kind::Seam)) {
+            pts.insert(1, t.curve.at((a + z) / 2.0).0);
+        }
         for w in pts.windows(2) {
             let (p, q) = if rising { (w[0], w[1]) } else { (w[1], w[0]) };
             let ((pz, ph), (qz, qh)) = (fl.at(p.s), fl.at(q.s));
