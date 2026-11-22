@@ -19,7 +19,7 @@ const TWIGS = 80;
 /**
  * Teide broom: an almost hemispherical bush of rush-thin upright twigs. A grey-olive dome carries the mass, and the
  * twigs stand out of it all over, steeper than the dome, so they make the outline. In flower every second twig
- * stands, its upper half in a wand of white flowers, a few wands pink, and the dome pales a little. 270 triangles.
+ * stands, its upper half in a wand of white flowers, a few wands pink, and the dome pales a little.
  */
 function retama(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(RETAMA[season]);

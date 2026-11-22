@@ -46,7 +46,7 @@ function star(cards: Sheet, at: V, n: V, r: number, cup: number, throat: Colour,
  * Branched asphodel: a fountain of long keeled leaves, and out of it one stalk that branches near
  * the top into a candelabra of racemes. In spring the racemes carry white stars under a tip in
  * bud, in winter a slim cluster of buds, in summer and autumn round seed capsules; the stalk keeps
- * its height in every season. 175 triangles.
+ * its height in every season.
  */
 function asphodel(season: Season, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(LEAVES[season]);

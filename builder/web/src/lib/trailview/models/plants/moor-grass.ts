@@ -27,7 +27,7 @@ const HEADS: Record<Season, [string, string]> = {
  * A tussock of purple moor grass or deer grass, lit as one dome: a fountain of 31 blades, upright in the crown and
  * ever longer and more bowed toward the rim, where they arch over toward the ground, and five thin stalks that
  * stand above it with a slim flower head each. Live blades grow from the crown out as the season has them, dead
- * straw beyond. 97 triangles.
+ * straw beyond.
  */
 function moorGrass(season: Season, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(MOOR_GRASS[season]);

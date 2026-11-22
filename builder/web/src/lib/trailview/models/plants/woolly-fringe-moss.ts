@@ -15,7 +15,7 @@ const HOAR = hex('#d4d6cc');
 
 /**
  * Woolly fringe-moss: a carpet of four broad cushions grown together and five small ones in the gaps at their
- * rim, about nine times as wide as tall, each cushion hoary on its top. 264 triangles.
+ * rim, about nine times as wide as tall, each cushion hoary on its top.
  */
 export default {
     name: 'Woolly fringe-moss',

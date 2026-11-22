@@ -22,7 +22,7 @@ function dome([x, y, r, h]: Tuft, sides: number, [deep, mid]: Colour[], seed: nu
 /**
  * Oleander: a tall bush of four dark domes, the middle one the tallest, with a pair of long narrow leaves that
  * stand up and out at each stem tip. In flower a truss, a round pink or white bud, sits between the leaves of a
- * tip, and in summer on every tip and on four stems more. 182 triangles, 314 in full bloom.
+ * tip, and in summer on every tip and on four stems more.
  */
 function oleander(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(LEAVES);

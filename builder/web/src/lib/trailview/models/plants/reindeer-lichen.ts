@@ -12,7 +12,7 @@ const LICHEN: Record<Season, Ramp> = {
 
 /**
  * Reindeer lichen: four round puffs grown into each other, as the cushions of Cladonia stellaris, and two small
- * ones in the gaps at their rim. The heap is about five times as wide as tall. 168 triangles.
+ * ones in the gaps at their rim. The heap is about five times as wide as tall.
  */
 export default {
     name: 'Reindeer lichen',

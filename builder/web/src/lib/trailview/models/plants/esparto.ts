@@ -20,7 +20,7 @@ const PLUMES: Record<Season, [string, string]> = {
 
 /**
  * Esparto: a round tussock of 25 long wiry blades that arch out of the crown, grey-green below and straw at the
- * tips, and four long plumes that nod on stalks above it. 78 triangles.
+ * tips, and four long plumes that nod on stalks above it.
  */
 function esparto(season: Season, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(ESPARTO[season]);

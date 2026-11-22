@@ -17,7 +17,7 @@ const BERRY = hex('#3a4458');
 /**
  * A dwarf juniper: a low plate about three and a half times as wide as tall. Plump needle boughs lie out from a
  * dark heart over the ground, their tips turned up, and shorter ones rise from its middle; each bough has a prickly
- * side shoot, and three blue-black berries sit on the inner boughs. 204 triangles.
+ * side shoot, and three blue-black berries sit on the inner boughs.
  */
 function dwarfJuniper(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(JUNIPER[season]);

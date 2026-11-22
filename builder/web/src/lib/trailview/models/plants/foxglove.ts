@@ -28,7 +28,7 @@ const [BELL, RIM, BUD, BLUSH, CAPSULE, HUSK] = ['#96307e', '#e88cc8', '#7a9a5a',
  * Foxglove: a rosette of broad leaves, the inner ones raised, and one tall spike hung on one side
  * with nodding purple-pink bells. A bell is a three-sided trumpet that opens outward and down from
  * the stalk, pale at its mouth; the bells shrink up the spike to its tip. It builds itself 1 tall
- * in flower, so the winter rosette stays low. 61 triangles in flower.
+ * in flower, so the winter rosette stays low.
  */
 function foxglove(season: Season, rand: () => number): Geometry {
     const [height, stalk, bells, buds] = SPIKE[season];

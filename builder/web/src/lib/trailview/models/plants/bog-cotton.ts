@@ -33,7 +33,7 @@ function head(ball: Geometry, tip: V, axis: V, stretch: number, low: Colour, hig
 /**
  * A cotton-grass tuft: narrow arching leaves and six stalks, each topped in summer by a white cotton tuft that
  * nods off it and in spring by a dark flower spikelet. Out of flower the tuft is fuller and four dry stems lean
- * and break above it. 174 triangles in summer, 90 in spring, 42 without heads.
+ * and break above it.
  */
 function bogCotton(season: Season, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(SEDGE[season]);

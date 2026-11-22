@@ -28,7 +28,6 @@ const BLADES = 16, BRANCHES = 7;
  * a keel, so the feet make the plant's heart. A plant of the third shape carries a flower pole about four rosettes
  * tall with branches held out at the top, ending in flower clusters, in flower in summer and dead after, its
  * rosette spent with it. It builds itself with the rosette 1 tall, so the pole stands above the plant's height.
- * 48 triangles, 100 with the pole.
  */
 function agave(season: Season, seed: number, rand: () => number): Geometry {
     const pole = seed === POLE_SEED;

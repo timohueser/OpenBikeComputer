@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { hex, ramp, random, sheet, smooth, spike, UP, v3, type Colour, type Geometry, type Ramp, type Sheet, type V } from '../plant-shape';
+import { feather, hex, ramp, random, sheet, smooth, spike, v3, type Colour, type Geometry, type Ramp, type Sheet, type V } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** Bracken: fresh green, rust-orange as it dies in autumn, faded russet through winter. */
@@ -18,30 +18,10 @@ const BRACKEN: Record<Season, Ramp> = {
 const BRACKEN_SLUMP: Record<Season, [number, number]> = { winter: [0.35, 1], spring: [0, 1], summer: [0, 0], autumn: [0.08, 0.22] };
 
 /**
- * A feather along `path`, level across `side`: `pairs` broad teeth on each flank, swept forward,
- * `reach(t)` long and drooping `droop` of that. Those of one flank stand half a step past those of
- * the other, so the feather is whole along its length, with a ridge. Dark at its foot, light at its
- * tip and its edge. 2 × `pairs` triangles.
- */
-function feather(cards: Sheet, path: (s: number) => V, side: V, pairs: number, reach: (t: number) => number, droop: number, [deep, mid, tip]: Colour[]): void {
-    const colour = (s: number) => deep.clone().lerp(mid, smooth(0, 0.25, s)).lerp(tip, 0.7 * smooth(0.25, 1, s));
-    for (const flank of [-1, 1]) for (let i = 0; i < pairs; i++) {
-        const [s0, s1] = [i, i + 1].map((k) => (k + (flank > 0 ? 0.5 : 0)) / (pairs + 0.5)), t = (s0 + s1) / 2;
-        const [from, to] = [path(s0), path(s1)];
-        const up = v3().crossVectors(side, to.clone().sub(from)).normalize();
-        if (up.z < 0) up.negate();
-        const end = from.clone().lerp(to, 0.75).addScaledVector(side, flank * reach(t)).addScaledVector(up, -droop * reach(t));
-        end.z = Math.max(0.01, end.z);
-        const light = (p: V) => (p === end ? up.clone().addScaledVector(side, 0.6 * flank) : up.clone()).normalize().lerp(UP, 0.3).normalize();
-        cards.add([from, to, end], [colour(s0), colour(s1), colour(t).lerp(tip, 0.6)], light);
-    }
-}
-
-/**
  * A bracken frond: a stalk that leans out of the ground, and on it a broad triangular blade of
  * three feathers that rises and arches over: the rachis, and one branch to each side at its foot.
  * `slump` kills it, as BRACKEN_SLUMP says, until a fallen blade lies on the ground near the root;
- * a low `open` holds a young blade steep and narrow, its branches not yet spread. 27 triangles.
+ * a low `open` holds a young blade steep and narrow, its branches not yet spread.
  */
 function frond(cards: Sheet, root: V, a: number, size: number, colours: Colour[], slump: number, open: number, rand: () => number): void {
     const out = v3(Math.cos(a), Math.sin(a), 0), side = v3(-out.y, out.x, 0);
@@ -56,19 +36,20 @@ function frond(cards: Sheet, root: V, a: number, size: number, colours: Colour[]
         from.clone().addScaledVector(dir, l * Math.cos(pitch) * u).setZ(Math.max(0.02, from.z + l * (Math.sin(pitch) * u - sag * u * u)));
     const rachis = arch(top, out, length, droop), blade = rachis(0.12);
     spike(cards, root, blade, 0.022 * size, [colours[0], colours[0].clone().lerp(colours[1], 0.5)]);
-    feather(cards, (s) => rachis(0.12 + 0.88 * s), side, 6, (t) => 0.3 * reach * (1 - t) ** 0.6, fold, colours);
+    const [deep, mid, tip] = colours, colour = (s: number) => deep.clone().lerp(mid, smooth(0, 0.25, s)).lerp(tip, 0.7 * smooth(0.25, 1, s));
+    feather(cards, (s) => rachis(0.12 + 0.88 * s), side, 6, (t) => 0.3 * reach * (1 - t) ** 0.6, fold, colour, tip);
     const spread = 1.05 * open ** 2 * (1 - 0.5 * hang);
     for (const flank of [-1, 1]) {
         const dir = out.clone().multiplyScalar(Math.cos(spread)).addScaledVector(side, flank * Math.sin(spread));
         const branch = arch(blade, dir, 0.6 * length, droop + 0.1);
-        feather(cards, branch, v3(-dir.y, dir.x, 0), 3, (t) => 0.21 * reach * (1 - t) ** 0.6, fold, colours);
+        feather(cards, branch, v3(-dir.y, dir.x, 0), 3, (t) => 0.21 * reach * (1 - t) ** 0.6, fold, colour, tip);
     }
 }
 
 /**
  * Six bracken fronds arching out of a small patch, their blades in tiers. In spring young fronds
  * stand among last year's, which lie on the ground. A clump is the same in every season, only
- * older. 162 triangles.
+ * older.
  */
 function bracken(season: Season, rand: () => number): Geometry {
     const cards = sheet();

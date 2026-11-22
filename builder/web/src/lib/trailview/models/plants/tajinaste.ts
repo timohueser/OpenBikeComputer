@@ -27,7 +27,7 @@ const WHORLS = 15, FLOWERS = 6, LEAVES = 30;
 /**
  * Teide bugloss in flower: one tall spike out of a mound of narrow silver leaves. The spike is a round tapering
  * column, and whorls of flower sprays stand out of it and up, each whorl turned half a step against the one below,
- * so its outline is bristly from every side; the lowest whorls are still silver leaves. 306 triangles.
+ * so its outline is bristly from every side; the lowest whorls are still silver leaves.
  */
 function tajinaste(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, silver, pale] = ramp(SILVER);

@@ -23,7 +23,7 @@ const SECTION: [number, number][] = [[-0.13, 0.44], [-0.21, 0.66], [0, 0.88], [0
 /**
  * A piece of a trellised vine row, along x: two trunks to a cordon and, above it, a rounded hedge of leaves with
  * shoots that stand out of its top; in autumn two bunches of grapes hang under it. Bare in winter: canes rise from
- * the cordon to the hedge's height, so the piece keeps its size. 44 triangles in leaf, 13 bare.
+ * the cordon to the hedge's height, so the piece keeps its size.
  */
 function grapevine(season: Season, rand: () => number): Geometry {
     const cards = sheet();

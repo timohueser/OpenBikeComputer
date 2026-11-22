@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { byHeight, hex, merge, paint, ramp, random, ribbon, sheet, UP, v3, type Colour, type Geometry, type Ramp, type Sheet, type V, type Vec } from '../plant-shape';
+import { across, byHeight, hex, kite, merge, paint, ramp, random, ribbon, sheet, UP, v3, type Colour, type Geometry, type Ramp, type Sheet, type V, type Vec } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** The seasons in which the tuft stands; it dies back in winter. */
@@ -24,7 +24,7 @@ const FLOWERS: Record<Living, string[]> = {
  * radii from the middle to their rim, round a raised eye. Eight triangles.
  */
 function flower(cards: Sheet, at: V, axis: V, r: number, cup: number, petal: Colour, eye: Colour): void {
-    const u = v3().crossVectors(axis, Math.abs(axis.z) < 0.9 ? UP : v3(1, 0, 0)).normalize(), w = v3().crossVectors(axis, u);
+    const [u, w] = across(axis);
     const rim = (a: number, d: number, h: number) => at.clone().addScaledVector(u, d * Math.cos(a)).addScaledVector(w, d * Math.sin(a)).addScaledVector(axis, h);
     const light = () => axis.clone().lerp(UP, 0.5).normalize();
     const throat = petal.clone().lerp(eye, 0.35), turn = Math.atan2(at.y, at.x);
@@ -51,10 +51,8 @@ function flowers(season: Living, seed: number): Geometry {
         const inner = k % 2, a = (k / 14) * 2 * Math.PI + rand() * 0.3, length = (inner ? 0.3 : 0.48) + 0.1 * rand(), rise = inner ? 0.75 : 0.22;
         const out = v3(Math.cos(a), Math.sin(a), 0), side = v3(-out.y, out.x, 0).multiplyScalar(0.2 * length);
         const waist = out.clone().multiplyScalar(0.5 * length).setZ(rise * 0.6 * length), tip = out.clone().multiplyScalar(length).setZ(rise * 0.7 * length);
-        const [left, right] = [waist.clone().add(side), waist.clone().sub(side)];
         const light = (p: V) => out.clone().multiplyScalar(p === tip ? 0.5 : 0).add(UP).normalize();
-        cards.add([v3(), left, right], [leaf(v3()), leaf(waist), leaf(waist)], light);
-        cards.add([left, tip, right], [leaf(waist), leaf(tip), leaf(waist)], light);
+        kite(cards, v3(), waist, tip, side, [leaf(v3()), leaf(waist), leaf(tip)], light);
     }
     for (let k = 0; k < 7; k++) {
         const a = (k / 7) * 2 * Math.PI + rand() * 0.8;

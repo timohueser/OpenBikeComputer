@@ -15,7 +15,7 @@ const STEMS = 8;
 /**
  * Dwarf birch: a low, spreading thicket about three times as wide as tall, eight stiff dark stems that lean out
  * from the root, each with two forks. Small round leaves sit along the stems and the forks, and the thicket lights
- * as one low mound. Winter leaves the twigs bare, with many short side twigs. 216 triangles.
+ * as one low mound. Winter leaves the twigs bare, with many short side twigs.
  */
 function dwarfBirch(season: Season, rand: () => number): Geometry {
     const leaves = DWARF_BIRCH[season];

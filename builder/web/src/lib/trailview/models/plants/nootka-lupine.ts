@@ -22,7 +22,7 @@ const SPIKES: Record<Living, Ramp> = {
 /**
  * Nootka lupine: a bushy clump of seven palmate leaves, each five leaflets cupped round the end of
  * its stalk, and five dense flower spikes that stand above it. A spike is a spindle on its stalk,
- * widest near its foot and drawn out to a point. 146 triangles.
+ * widest near its foot and drawn out to a point.
  */
 function lupine(season: Living, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(LEAVES[season]);

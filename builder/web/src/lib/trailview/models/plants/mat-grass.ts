@@ -27,8 +27,8 @@ const SPIKE: Record<Season, [string, string]> = {
 /**
  * A tuft of mat-grass, round as a hedgehog: 28 stiff bristle leaves that splay straight out of a tight base, their
  * tips on one dome, a skirt of 13 bleached dead leaves flat round its foot, and three culms that stand above it,
- * each with a slim spike bent to one side. Live leaves grow from the middle out as the season has them. 103
- * triangles, 89 in spring, which has one culm.
+ * each with a slim spike bent to one side. Live leaves grow from the middle out as the season has them; spring
+ * has one culm.
  */
 function matGrass(season: Season, rand: () => number): Geometry {
     const [greenDeep, greenMid, greenTip] = ramp(MAT_GREEN);

@@ -24,8 +24,7 @@ const WINTER_LEAF = hex('#a87444');
 /**
  * A stand of common reed: 15 upright stems, each with four leaves that leave it at an angle and droop at the
  * tip, and a soft plume that nods at the top. Leaves and plumes point one way, as the wind combs a reed bed. In
- * spring 13 short green shoots stand among 7 of last year's stems. 270 triangles in summer and autumn, 214 in
- * spring, 162 in winter.
+ * spring 13 short green shoots stand among 7 of last year's stems.
  */
 function commonReed(season: Season, rand: () => number): Geometry {
     const green = ramp(REED[season]);

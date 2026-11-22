@@ -81,6 +81,7 @@ export class Dressing implements Producer {
                 const first = name === 'tree' ? this.tree(k, Number(n ?? 0)) : this.plant(k, Number(n));
                 if (first === undefined) return [];
                 const height = name === 'tree' ? SHOW_TREE_M : plants[k].ground.height[1];
+                // A decimal room, such as 1.5, came apart in the split on '.'.
                 return [{ model: first, height, room: Number(room.join('.')) || height }];
             }
             const first = this.breed(name);

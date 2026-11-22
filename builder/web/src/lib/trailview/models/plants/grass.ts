@@ -12,7 +12,7 @@ const GRASS: Record<Season, Ramp> = {
 
 /**
  * Nine blades, each bent once at its middle: three stand in the middle and nod, and six shorter ones leave the
- * foot at a slant and bow over round them, so the tuft is a small fountain. 27 triangles.
+ * foot at a slant and bow over round them, so the tuft is a small fountain.
  */
 function grass(season: Season, rand: () => number): Geometry {
     const colour = byHeight(ramp(GRASS[season]), 0.9);

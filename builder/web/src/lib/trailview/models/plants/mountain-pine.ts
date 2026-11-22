@@ -22,7 +22,7 @@ const MUGO_CANDLES: Record<Season, [string, number]> = {
  * Mountain pine: a low mound of five dark domes, about twice as wide as tall, with needle brushes that turn up out
  * of them at the branch ends, and two crooked limbs that creep out from under it along the ground and turn up into
  * brushes of their own. A brush is a three-sided cup, a point at its foot and wide at its ragged top, closed by a
- * pale face, a candle in spring. 288 triangles.
+ * pale face, a candle in spring.
  */
 function mountainPine(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(MUGO[season]);

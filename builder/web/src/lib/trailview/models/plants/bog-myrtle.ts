@@ -17,8 +17,7 @@ const STEMS = 9;
 /**
  * Bog myrtle: an upright broom of nine stiff red-brown stems, a little taller than wide, each with a fork. Narrow
  * leaves, widest near their tips, stand up round the stems. In spring an orange-brown catkin ends each stem before
- * half of the leaves are out; winter leaves the twigs bare, with more forks and the small catkin buds. 180
- * triangles.
+ * half of the leaves are out; winter leaves the twigs bare, with more forks and the small catkin buds.
  */
 function bogMyrtle(season: Season, rand: () => number): Geometry {
     const leaves = MYRTLE[season];

@@ -19,7 +19,7 @@ const ALPENROSE_FLOWER: Ramp = ['#a81e40', '#d0305a', '#f27094'];
  * Alpenrose: a cushion of four dark domes about twice as wide as tall, with rosettes of four leathery leaves on
  * the twig tips all over it; a few leaves show their rusty undersides or a glossy light. In summer a pink-red
  * flower truss sits in the middle of nine rosettes, lower than their leaves, so the bush keeps its size when scaled
- * to 1 tall. 190 triangles, 244 in summer.
+ * to 1 tall.
  */
 function alpenrose(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(ALPENROSE[season]);

@@ -20,7 +20,7 @@ const EARS: Record<Season, [string, string]> = {
 
 /**
  * Lyme grass: a stiff sheaf of 21 broad blades that stand up and only bow out at the rim, and three thick ears
- * on straight stalks above it. 63 triangles.
+ * on straight stalks above it.
  */
 function lymeGrass(season: Season, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(LYME[season]);

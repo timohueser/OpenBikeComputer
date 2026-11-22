@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { merge, paint, ramp, random, ribbon, sheet, smooth, UP, v3, type Colour, type Geometry, type Ramp, type Sheet, type V, type Vec } from '../plant-shape';
+import { feather, merge, paint, ramp, random, ribbon, sheet, smooth, v3, type Colour, type Geometry, type Ramp, type Sheet, type Vec } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 const FERN: Record<Season, Ramp> = {
@@ -17,18 +17,10 @@ const FERN: Record<Season, Ramp> = {
  * dark at the crown and light at its tip and its edge.
  */
 function frond(cards: Sheet, a: number, length: number, rise: number, pairs: number, [deep, mid, tip]: Colour[]): void {
-    const out = v3(Math.cos(a), Math.sin(a), 0), across = v3(-out.y, out.x, 0);
+    const out = v3(Math.cos(a), Math.sin(a), 0);
     const at = (s: number) => out.clone().multiplyScalar((0.45 * s + 0.55 * s * s) * length).setZ((1.7 * s - 0.7 * s * s) * rise);
     const colour = (s: number) => deep.clone().lerp(mid, smooth(0, 0.2, s)).lerp(tip, 0.8 * smooth(0.2, 0.9, s));
-    for (const side of [-1, 1]) for (let i = 0; i < pairs; i++) {
-        const [s0, s1] = [i, i + 1].map(k => (k + (side > 0 ? 0.5 : 0)) / (pairs + 0.5)), t = (s0 + s1) / 2;
-        const [from, to] = [at(s0), at(s1)];
-        const up = v3().crossVectors(across, to.clone().sub(from)).normalize();
-        const reach = 0.36 * length * smooth(-0.1, 0.35, t) * (1 - t) ** 0.5;
-        const end = at(t + 0.2 * (s1 - s0)).addScaledVector(across, side * reach).addScaledVector(up, -0.3 * reach);
-        const light = (p: V) => (p === end ? up.clone().addScaledVector(across, 0.6 * side) : up.clone()).normalize().lerp(UP, 0.3).normalize();
-        cards.add([from, to, end], [colour(s0), colour(s1), colour(t).lerp(tip, 0.6)], light);
-    }
+    feather(cards, at, v3(-out.y, out.x, 0), pairs, (t) => 0.36 * length * smooth(-0.1, 0.35, t) * (1 - t) ** 0.5, 0.3, colour, tip, { onPath: true, under: true });
 }
 
 /**

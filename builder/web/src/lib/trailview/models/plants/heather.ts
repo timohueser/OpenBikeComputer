@@ -20,7 +20,7 @@ const HEATHER_BLOOM: Record<Season, [string, number]> = {
 /**
  * A low mound of four round cushions grown into each other, set close with short upright sprays, each a pointed
  * blade. The sprays in flower, or out of bloom the rusty ones, take the flower's colour from the waist to the tip,
- * and the flowers tint the cushions' tops. 228 triangles.
+ * and the flowers tint the cushions' tops.
  */
 export function heather(season: Season, bloom: boolean, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(HEATHER[season]);

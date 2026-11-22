@@ -18,7 +18,7 @@ const AMBER = hex('#c08a10');
 
 /**
  * Western gorse: a low, dense cushion of five domes grown into each other, bristling with stiff spines. In bloom
- * short, stout yellow flowers stand among the spines, most on the upper side. 216 triangles.
+ * short, stout yellow flowers stand among the spines, most on the upper side.
  */
 function westernGorse(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(SPINES[season]);

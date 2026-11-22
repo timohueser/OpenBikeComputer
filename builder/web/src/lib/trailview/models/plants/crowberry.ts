@@ -21,8 +21,7 @@ const SHINE = hex('#4a4e60');
 /**
  * Crowberry: a low mat about four times as wide as tall, three broad cushions grown together and two small ones at
  * their rim. Short needle shoots stand close on the cushions, the fresh ones yellow-green; red-brown stems creep
- * out from under the rim and turn up into a shoot, and glossy black berries sit on the cushions' tops. 186
- * triangles and 4 for each berry.
+ * out from under the rim and turn up into a shoot, and glossy black berries sit on the cushions' tops.
  */
 function crowberry(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(CROWBERRY[season]);

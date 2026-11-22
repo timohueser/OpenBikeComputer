@@ -12,7 +12,7 @@ const GARRIGUE: Record<Season, Ramp> = {
 
 /**
  * Kermes oak, lentisc and rosemary in one evergreen cushion: a round dome with four smaller ones grown into it,
- * a few of them lit by the sun, and leafy twig tips that stand out of the domes all over. 190 triangles.
+ * a few of them lit by the sun, and leafy twig tips that stand out of the domes all over.
  */
 function garrigue(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(GARRIGUE[season]);

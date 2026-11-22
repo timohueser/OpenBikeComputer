@@ -19,7 +19,7 @@ const BASE = 3, CARRIES = [[2, 2, 2], [2, 2, 1, 1, 1, 1]], SIDES = 8;
 /**
  * Prickly pear: a clump of thick oval pads, three from the ground and each carrying one or two more on its upper
  * rim, three deep, every pad turned its own way. A pad is a smooth lens, wider toward its top and paler in its
- * middle; flowers or fruit sit as small knobs on the upper rims of the top pads. 272 triangles, to 299 with fruit.
+ * middle; flowers or fruit sit as small knobs on the upper rims of the top pads.
  */
 function pricklyPear(season: Season, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(PAD);

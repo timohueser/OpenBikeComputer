@@ -18,7 +18,7 @@ const DOWN = { 2: [0.8, 1.3], 3: [1.25, 0.6, 1.05] } as const;
  * Sweet spurge: a candelabra of thick grey succulent branches. A stem and five limbs leave the foot, each limb
  * forks into two or three twigs, and every twig ends on one dome in a rosette of narrow fleshy leaves, so the
  * rosettes make a round crown over branches that show beneath it. The summer drought sheds leaves: the crown
- * shrinks, the rosettes thin, and every fourth twig stands bare. 302 triangles, 240 in summer.
+ * shrinks, the rosettes thin, and every fourth twig stands bare.
  */
 function tabaiba(season: Season, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(TABAIBA[season]);

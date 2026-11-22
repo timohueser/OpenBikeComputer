@@ -1,7 +1,6 @@
-// The primitives that the plant models add to shape.ts, without three.js: the prototype's tubes,
-// ribbons and blades along smooth paths, tufts and their cores, and three.js's small solids.
+// The parts that the plant models build from, on top of shape.ts.
 
-import { computeNormals, domed, GOLDEN, paint, place, revolve, soft, smooth, UP, v3, type Colour, type Geometry, type Sheet, type V, type Vec } from './shape';
+import { computeNormals, GOLDEN, paint, place, revolve, soft, smooth, UP, v3, type Colour, type Geometry, type Sheet, type V, type Vec } from './shape';
 
 export * from './shape';
 
@@ -16,7 +15,7 @@ export function rampAt([shade, body, tip]: Colour[], t: number): Colour {
 }
 
 /** three.js's CatmullRomCurve3, centripetal, open: points by arc length with `at`. */
-export function curve(points: V[]) {
+function curve(points: V[]) {
     const n = points.length;
     const point = (t: number): V => {
         const p = (n - 1) * t;
@@ -151,11 +150,24 @@ export function tufts(middle: Tuft, count: number, turn: number, [d, r, h]: Vec,
     return out;
 }
 
-/** A low six-sided cone, `size` of the tuft wide and `height` of it tall, that fills the gaps in a tuft with shade. */
-export function core(cards: Sheet, [x, y, r, h]: Tuft, foot: Colour, top: Colour, size: number, height: number): void {
-    const light = domed(v3(x, y, 0), v3(r, r, h), 0.3);
-    const ring = (s: number) => v3(x + size * r * Math.cos((s * Math.PI) / 3), y + size * r * Math.sin((s * Math.PI) / 3), -0.02);
-    for (let s = 0; s < 6; s++) cards.add([ring(s), ring(s + 1), v3(x, y, height * h)], [foot, foot, top], light);
+/**
+ * A fern's feather on `cards` along `path`, level across `side`: `pairs` broad teeth on each flank,
+ * those of one flank half a step past those of the other, so the feather is whole along its length,
+ * with a ridge. A tooth `t` along it reaches `reach(t)` out and drops `droop` of that; `colour(s)`
+ * along the ridge, its point turned toward `tip`. The point stands on the chord of its step, or
+ * with `onPath` on the path; `under` lights the face that looks down. 2 × `pairs` triangles.
+ */
+export function feather(cards: Sheet, path: (s: number) => V, side: V, pairs: number, reach: (t: number) => number, droop: number, colour: (s: number) => Colour, tip: Colour, { onPath = false, under = false } = {}): void {
+    for (const flank of [-1, 1]) for (let i = 0; i < pairs; i++) {
+        const [s0, s1] = [i, i + 1].map((k) => (k + (flank > 0 ? 0.5 : 0)) / (pairs + 0.5)), t = (s0 + s1) / 2, r = reach(t);
+        const [from, to] = [path(s0), path(s1)];
+        const up = v3().crossVectors(side, to.clone().sub(from)).normalize();
+        if (up.z < 0 !== under) up.negate();
+        const end = (onPath ? path(t + 0.2 * (s1 - s0)) : from.clone().lerp(to, 0.75)).addScaledVector(side, flank * r).addScaledVector(up, -droop * r);
+        end.z = Math.max(0.01, end.z);
+        const light = (p: V) => (p === end ? up.clone().addScaledVector(side, 0.6 * flank) : up.clone()).normalize().lerp(UP, 0.3).normalize();
+        cards.add([from, to, end], [colour(s0), colour(s1), colour(t).lerp(tip, 0.6)], light);
+    }
 }
 
 /** A blade on `cards`: a kite from `foot` to `tip`, twice `half` across at its `waist`. 2 triangles. */
@@ -241,19 +253,3 @@ function polyhedron(corners: number[], faces: number[], r: number): Geometry {
 
 export const tetrahedron = (r: number) => polyhedron([1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1], [2, 1, 0, 0, 3, 2, 1, 3, 0, 2, 3, 1], r);
 export const octahedron = (r: number) => polyhedron([1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1], [0, 2, 4, 0, 4, 3, 0, 3, 5, 0, 5, 2, 1, 2, 5, 1, 5, 3, 1, 3, 4, 1, 4, 2], r);
-
-/** three.js's CircleGeometry: a flat disc of `segments` triangles about the origin, facing up. */
-export function circle(r: number, segments: number): Geometry {
-    const geo: Geometry = { position: [0, 0, 0], normal: [0, 0, 1], color: [], index: [] };
-    for (let i = 0; i <= segments; i++) {
-        const a = (i / segments) * 2 * Math.PI;
-        geo.position.push(r * Math.cos(a), r * Math.sin(a), 0);
-        geo.normal.push(0, 0, 1);
-    }
-    for (let i = 1; i <= segments; i++) geo.index.push(i, i + 1, 0);
-    return geo;
-}
-
-/** Moves a part. */
-export const translate = (geo: Geometry, x: number, y: number, z: number) => place(geo, { at: [x, y, z] });
-

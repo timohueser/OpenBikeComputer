@@ -17,7 +17,7 @@ const STEMS = 6, BERRIES = 4;
  * Huckleberry: an airy bush of six thin red stems that lean out from the root, each with a fork. Small oval
  * leaves stand in two rows along the stem and the fork, level like a fern's, and the bush lights as one round
  * tuft. Winter leaves the stems bare, each a broom of fine twigs; in summer a red berry hangs under the
- * fork of four stems. 128 triangles, 126 in winter, 160 in summer.
+ * fork of four stems.
  */
 function huckleberry(season: Season, rand: () => number): Geometry {
     const leaves = HUCKLEBERRY[season];

@@ -41,7 +41,7 @@ function fan(hinge: V, facing: V, along: V, r: number, span: number, rand: () =>
  * Dwarf fan palm: a clump of stiff fans on round stalks out of a short fibrous stem, the inner fans upright and
  * the outer ones held out, round two pale folded spear leaves, and one dead fan hanging straw-brown against the
  * foot. A fan is light along its segments and dark in the folds between, and the fans light together as one round
- * clump. 249 triangles.
+ * clump.
  */
 function fanPalm(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(PALM[season]);
