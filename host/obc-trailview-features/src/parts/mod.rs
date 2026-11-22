@@ -692,16 +692,13 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
             continue;
         }
         let at = tubes[pr].curve.at(if pe == 0 { 0.0 } else { tubes[pr].curve.len }).0.p;
-        let multi = |r: usize| rooms.lanes[r].len() > 1;
-        let floor_cm = |v: f64| ((v * 100.0) + 1e-4).floor() / 100.0;
         let mut holes: Vec<[f64; 4]> = Vec::new();
         for (&(r, e), &(across, half)) in seam.children.iter().zip(&seam.holes) {
             let (Some(fc), Some(ic)) = (floors[r].as_ref(), at_end(r, e)) else { continue };
-            let half = if multi(r) { ceil_cm(half) } else { floor_cm(half) };
             holes.push([across, fc.f[ic] - fp.f[ip], half, fc.h[ic]]);
         }
         holes.sort_by(|x, y| x[0].total_cmp(&y[0]));
-        let half_p = if multi(pr) { ceil_cm(decided.half[pr]) } else { decided.half[pr] };
+        let half_p = if rooms.lanes[pr].len() > 1 { ceil_cm(decided.half[pr]) } else { decided.half[pr] };
         holes.insert(0, [0.0, 0.0, half_p, fp.h[ip]]);
         let row = |k: usize| holes.iter().map(|h| num(h[k])).collect::<Vec<_>>().join(" ");
         let mut t = Tags::new();

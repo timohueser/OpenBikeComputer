@@ -513,9 +513,61 @@ pub struct SeamCut {
 }
 
 /// The floor of lane i of a chord at its vertex k across: per piece from the right, its metres across and the height of
-/// its top over the room's floor. A road or a track lies on its carriageway, kept inside the lane's edges, with a walk
-/// on each side; a walk of no width lies at the road's height, so no kerb stands where two carriageways touch.
+/// its top over the room's floor. Behind a seam's hole it is the floor of the room before the line there (`behind`),
+/// so each corner on the line has one source. Else a road or a track lies on its carriageway, kept inside the lane's
+/// edges, with a walk on each side; a walk of no width lies at the road's height, so no kerb stands where two
+/// carriageways touch.
 fn lane_pieces(net: &Net, c: usize, i: usize, k: usize) -> Vec<(f64, f64, f64)> {
+    let seam = net.seam_at(c, k).filter(|&(_, h)| h > 0);
+    seam.and_then(|(r, h)| behind(net, (r, h), (c, k), i)).unwrap_or_else(|| own_pieces(net, c, i, k))
+}
+
+/// The floor of lane i of chord c at its vertex k in hole h of seam record r: of the lanes of the room before the line
+/// that lie in the hole, the one in its place, cut to the hole, in the chord's metres and over its floor; a piece that
+/// the cut leaves with no width lies at the height of the next piece in the hole. None where the hole holds another
+/// count of lanes.
+fn behind(net: &Net, (r, h): (usize, usize), (c, k): (usize, usize), i: usize) -> Option<Vec<(f64, f64, f64)>> {
+    let (cp, kp) = net.opening(net.of_record[r][0])?;
+    let hole = &net.holes[net.of_record[r][h]];
+    let line = net.line(r, 0.0);
+    let sign = |st: Station| if st.ax * line.ax + st.ay * line.ay >= 0.0 { 1.0 } else { -1.0 };
+    let (sp, sc) = (sign(net.ring(cp, kp)), sign(net.ring(c, k)));
+    // A run of pieces from the right of one metres to the right of the other, by the sign between them.
+    let turn = |pieces: Vec<(f64, f64, f64)>, sign: f64, at: f64| -> Vec<(f64, f64, f64)> {
+        let moved =
+            pieces.into_iter().map(|(a, b, t)| if sign > 0.0 { (a - at, b - at, t) } else { (at - b, at - a, t) });
+        let mut out: Vec<_> = moved.collect();
+        if sign < 0.0 {
+            out.reverse();
+        }
+        out
+    };
+    let (lo, hi) = (hole.across - hole.half, hole.across + hole.half);
+    // The lanes of the room before the line in the line's metres from the right, those in the hole.
+    let mut lanes: Vec<Vec<(f64, f64, f64)>> =
+        (0..net.chords[cp].lanes.len()).map(|j| turn(own_pieces(net, cp, j, kp), sp, 0.0)).collect();
+    if sp < 0.0 {
+        lanes.reverse();
+    }
+    lanes.retain(|l| l[0].0 < hi && l[l.len() - 1].1 > lo);
+    let n = net.chords[c].lanes.len();
+    if lanes.len() != n {
+        return None;
+    }
+    let lane = &lanes[if sc > 0.0 { i } else { n - 1 - i }];
+    let mut cut: Vec<(f64, f64, f64)> =
+        lane.iter().map(|&(a, b, t)| (a.max(lo).min(hi), b.min(hi).max(lo), t - hole.up)).collect();
+    for j in 0..cut.len() {
+        if cut[j].0 == cut[j].1 {
+            let next = (j..cut.len()).chain((0..j).rev()).find(|&q| cut[q].0 < cut[q].1);
+            cut[j].2 = next.map_or(cut[j].2, |q| cut[q].2);
+        }
+    }
+    Some(turn(cut, sc, hole.across))
+}
+
+/// The floor of lane i of chord c at its vertex k by its own numbers (`lane_pieces`).
+fn own_pieces(net: &Net, c: usize, i: usize, k: usize) -> Vec<(f64, f64, f64)> {
     let (lane, design) = (&net.chords[c].lanes[i], &net.rules.design);
     let ((lo, hi), up) = (net.lane_edges(c, i, k), lane.up[k]);
     let (lift, kerb) = (up + design.lift_m, up + design.kerb_m);

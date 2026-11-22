@@ -1,6 +1,7 @@
 //! The face of a seam: where a room goes on as other rooms, one face in the plane of the line, seen from the room
 //! before it, from that room's floor up to its outline, with a hole per room behind the line. Its corners are those of
-//! the rings that meet it (`Net::seam_cut`), so it shares each edge with a face of a room.
+//! the rings that meet it (`Net::seam_cut`), so it shares each edge with a face of a room. A cap, a seam with no room
+//! behind it, is dark, as a closed end is.
 
 use crate::mesh::{flagged, flat, Builder, Corner, BORE};
 use crate::tube::Net;
@@ -16,9 +17,10 @@ pub fn face<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize) {
     let Some((c, _)) = net.opening(net.of_record[r][0]) else { return };
     let inside = &net.rules.inside;
     let colour = match net.bore(&net.chords[c]) {
-        Bore::Road => inside.tiles,
-        Bore::Track => inside.lining,
-        Bore::Rock => inside.rock,
+        _ if cut.holes.is_empty() => inside.void,
+        Bore::Road => flagged(inside.tiles, BORE),
+        Bore::Track => flagged(inside.lining, BORE),
+        Bore::Rock => flagged(inside.rock, BORE),
     };
     let into = net.records[r].way_in();
     let out = flat([-into[0], -into[1]]);
@@ -65,7 +67,7 @@ pub fn face<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize) {
             poly.pop();
         }
         for [i, j, k] in ear_clip(&poly.iter().map(|q| q.0).collect::<Vec<Corner>>()) {
-            let v = [i, j, k].map(|n| b.vertex(poly[n].1, flagged(colour, BORE), crate::mesh::PLAIN));
+            let v = [i, j, k].map(|n| b.vertex(poly[n].1, colour, crate::mesh::PLAIN));
             b.triangle(v[0], v[1], v[2], out);
         }
     }

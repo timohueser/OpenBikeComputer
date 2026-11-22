@@ -118,7 +118,8 @@ fn section(tags: &Tags) -> Result<Section, String> {
 
 /// A `tunnel-end` record (`specs/trailview-features.md`, Tunnel parts): a line with holes, its point on the axis of
 /// its first hole and the floor there, and its numbers in metres over that floor. A seam's first hole is the room on
-/// its side of the line, whose section holds the others; its heading leads from that room into them.
+/// its side of the line, whose section holds the others; its heading leads from that room into them. A seam of one
+/// hole is a cap: the room ends there in the hill.
 #[derive(Clone, Debug, PartialEq)]
 pub struct End {
     pub at: [f64; 2],
@@ -170,8 +171,8 @@ impl End {
             let (half, height) = (row(tags, "half")?, row(tags, "height")?);
             let n = half.len();
             let (across, up) = (row_of(tags, "across", n, None)?, row_of(tags, "up", n, None)?);
-            if height.len() != n || n < 2 {
-                return Err(format!("tags half, height: not {n} values of two holes or more"));
+            if height.len() != n || n == 0 {
+                return Err(format!("tags half, height: not {n} values"));
             }
             let holes = (0..n)
                 .map(|h| Hole {

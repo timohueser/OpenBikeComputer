@@ -1230,3 +1230,63 @@ fn a_seam_is_closed_and_has_no_t_vertex() {
         }
     }
 }
+
+/// A road tube of lone chords along `line` (metres east and north) at the floor 500 m, `height` high, with its `ends`.
+fn lone(line: &[[f64; 2]], height: f64, ends: &str) -> Vec<Chord> {
+    let along =
+        |k: usize| line[..=k].windows(2).map(|w| libm::hypot(w[1][0] - w[0][0], w[1][1] - w[0][1])).sum::<f64>();
+    (0..line.len() - 1)
+        .map(|k| {
+            let (a, b) = (line[k], line[k + 1]);
+            let mut c = chord([a[0], a[1], 500.0], [b[0], b[1], 500.0], height, along(k));
+            c.ends = [Part::parse(&ends[..4]), Part::parse(&ends[5..])];
+            c
+        })
+        .collect()
+}
+
+/// A seam record at metres east and north heading east, with a hole per (across, half, height).
+fn seam_at(east: f64, north: f64, holes: &[(f64, f64, f64)]) -> End {
+    let row = |f: &dyn Fn(&(f64, f64, f64)) -> String| holes.iter().map(f).collect::<Vec<_>>().join(" ");
+    let t = tags(&[
+        ("part", "seam".into()),
+        ("heading", "0".into()),
+        ("half", row(&|h| h.1.to_string())),
+        ("height", row(&|h| h.2.to_string())),
+        ("across", row(&|h| h.0.to_string())),
+        ("up", row(&|_| "0".into())),
+    ]);
+    End::from_tags(world(east, north), 500.0, &t, Rules::embedded()).unwrap()
+}
+
+#[test]
+fn a_cap_and_a_hole_narrower_than_its_tube_are_closed() {
+    let rules = Rules::embedded();
+    let line = [[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]];
+    // A tube 20 m east from a head to a cap: the room ends in the hill.
+    let cap =
+        (vec![end(0.0, 0.0, 500.0, 0.0, 6.0), seam_at(20.0, 0.0, &[(0.0, 4.5, 5.0)])], lone(&line, 5.0, "arch seam"));
+    // A tube 5.5 m high that goes on behind a seam from a hole 0.3 m to the left of its axis and 0.5 m narrower than
+    // it, 5 m high, to its axis 2 m on, and on to a covered free end.
+    let mut ends = vec![end(0.0, 0.0, 500.0, 0.0, 6.0), seam_at(20.0, 0.0, &[(0.0, 4.5, 5.5), (0.3, 4.0, 5.0)])];
+    let mut free = end(40.0, 0.0, 500.0, std::f64::consts::PI, 0.0);
+    (free.part, free.holes[0].kind) = (Part::Free, Part::Free);
+    ends.push(free);
+    let mut chords = lone(&line, 5.5, "arch seam");
+    chords.extend(lone(&[[20.0, 0.3], [22.0, 0.0], [40.0, 0.0]], 5.0, "seam free"));
+    for (name, (ends, chords)) in [("a cap", cap), ("a tapered hole", (ends, chords))] {
+        let (open, crowded) = not_closed(&ends, &chords);
+        assert!(open.is_empty(), "{name}: {} open edges, the first {:?}", open.len(), &open[..open.len().min(4)]);
+        assert!(
+            crowded.is_empty(),
+            "{name}: {} crowded edges, the first {:?}",
+            crowded.len(),
+            &crowded[..crowded.len().min(4)]
+        );
+        let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);
+        let t = t_vertices(&mesh);
+        assert!(t.is_empty(), "{name}: {} corners inside an edge", t.len());
+        let net = Net::new(&ends, &chords, rules);
+        assert!((0..ends.len()).all(|r| net.built_record(r)), "{name}: a record the builder does not find");
+    }
+}
