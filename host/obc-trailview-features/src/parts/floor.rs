@@ -337,7 +337,7 @@ pub(crate) fn floors(
                 on_top.map(|a| a.under).collect()
             })
             .collect();
-        let fl = if rooms.lanes[t].is_empty() {
+        let fl = if rooms.lanes[t].len() < 2 {
             floor((&s, &z), &caps, grade, (height[t], least), b.shell_m)
         } else {
             lanes_floor(rooms, t, (&s, &caps), &rule, input)
@@ -433,7 +433,8 @@ fn lanes_floor(
         .map(|i| {
             let outlines: Vec<(f64, f64, f64, f64)> =
                 (places[i].iter().zip(&lanes)).map(|(p, l)| (p.off, p.half, l.f[i] - f[i], l.h[i])).collect();
-            hold(true, rooms.tubes[r].half, design.spring, &outlines, design.arch_segments)
+            let segments = (design.arch_segments * rooms.lanes[r].len(), design.arch_segments);
+            hold(true, rooms.tubes[r].half, design.spring, &outlines, segments)
         })
         .collect();
     Floor { s: s.to_vec(), z, f, h, lanes: lanes.into_iter().map(|l| (l.f, l.h)).collect() }

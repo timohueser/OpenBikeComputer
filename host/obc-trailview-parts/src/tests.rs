@@ -1086,3 +1086,147 @@ fn from_each_lane_a_way_up_meets_the_vault_and_a_way_across_the_far_wall() {
         }
     }
 }
+
+/// A lane before a seam: its metres to the left of the room's axis, its floor over the room's, its class, its half-width
+/// and the half-width of its carriageway.
+type Before = (f64, f64, &'static str, f64, f64);
+
+/// A room 20 m east of `lanes` from a head at the origin to a seam, as wide as `half` and `high`, which goes on as a
+/// tube per lane, 20 m long, turned `turn` degrees away from the room's axis to each side, to a covered free end.
+fn seamed(lanes: &[Before], (half, high): (f64, f64), turn: f64) -> (Vec<End>, Vec<Chord>) {
+    let rules = Rules::embedded();
+    let num = |v: f64| format!("{}", (v * 1000.0).round() / 1000.0);
+    let row = |f: &dyn Fn(&Before) -> String| lanes.iter().map(f).collect::<Vec<_>>().join(" ");
+    let pair = |f: &dyn Fn(&Before) -> f64| {
+        lanes.iter().map(|l| format!("{} {}", num(f(l)), num(f(l)))).collect::<Vec<_>>().join(" ")
+    };
+    let mut chords = Vec::new();
+    for (a, b) in [(0.0, 10.0), (10.0, 20.0)] {
+        let mut t = vec![
+            ("section", "round".to_string()),
+            ("half", num(half)),
+            ("height", num(high)),
+            ("look", "concrete".into()),
+            ("class", row(&|l| l.2.into())),
+            ("road", row(&|l| num(l.4))),
+            ("along", row(&|_| num(a))),
+            ("ends", "arch seam".into()),
+            ("off", pair(&|l| l.0)),
+            ("up", pair(&|l| l.1)),
+        ];
+        if lanes.len() > 1 {
+            let edge = |w: &[Before]| (w[0].0 + w[0].3 + w[1].0 - w[1].3) / 2.0;
+            t.push((
+                "edge",
+                lanes.windows(2).map(|w| format!("{} {}", num(edge(w)), num(edge(w)))).collect::<Vec<_>>().join(" "),
+            ));
+        }
+        let (pa, pb) = (world(a, 0.0), world(b, 0.0));
+        let mut c = Chord::from_tags([pa[0], pa[1], 500.0], [pb[0], pb[1], 500.0], &tags(&t), rules).unwrap();
+        c.lanes.iter_mut().for_each(|l| l.code = 2);
+        chords.push(c);
+    }
+    let head = |p: [f64; 2], z: f64, heading: f64, (half, ways): (f64, usize)| {
+        let t = tags(&[
+            ("part", "arch".into()),
+            ("heading", heading.to_string()),
+            ("section", "round".into()),
+            ("half", num(half)),
+            ("height", if ways > 1 { num(high) } else { "5".into() }),
+            ("look", "concrete".into()),
+            ("collar", "6".into()),
+            ("face", "8.1".into()),
+            ("left", "6 4 2".into()),
+            ("right", "3".into()),
+            ("foot", "-2".into()),
+            ("way", vec!["0 0"; ways].join(" ")),
+            ("shift", vec!["0"; ways].join(" ")),
+        ]);
+        End::from_tags(world(p[0], p[1]), z, &t, rules).unwrap()
+    };
+    let mut ends = vec![head([0.0, 0.0], 500.0, 0.0, (half, lanes.len()))];
+    // The seam: the room, then per lane its tube, from the right; a lane's tube is its half over the cosine of its turn
+    // wide along the line.
+    let n = lanes.len();
+    let turns: Vec<f64> =
+        (0..n).map(|i| if n == 1 { 0.0 } else { turn * (2.0 * i as f64 / (n - 1) as f64 - 1.0) }).collect();
+    let mut t = vec![
+        ("part", "seam".to_string()),
+        ("heading", "0".into()),
+        (
+            "half",
+            [num(half)]
+                .into_iter()
+                .chain(lanes.iter().zip(&turns).map(|(l, a)| num(l.3 / a.to_radians().cos())))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        ("height", [num(high)].into_iter().chain(lanes.iter().map(|_| "5".to_string())).collect::<Vec<_>>().join(" ")),
+        ("across", ["0".to_string()].into_iter().chain(lanes.iter().map(|l| num(l.0))).collect::<Vec<_>>().join(" ")),
+        ("up", ["0".to_string()].into_iter().chain(lanes.iter().map(|l| num(l.1))).collect::<Vec<_>>().join(" ")),
+    ];
+    t.retain(|_| true);
+    ends.push(End::from_tags(world(20.0, 0.0), 500.0, &tags(&t), rules).unwrap());
+    for (l, &a) in lanes.iter().zip(&turns) {
+        let (c, s) = (libm::cos(a.to_radians()), libm::sin(a.to_radians()));
+        let points = [0.0, 10.0, 20.0].map(|m| [20.0 + m * c, l.0 + m * s]);
+        let z = 500.0 + l.1;
+        for w in points.windows(2) {
+            let t = tags(&[
+                ("section", "round".into()),
+                ("half", num(l.3)),
+                ("height", "5".into()),
+                ("look", "concrete".into()),
+                ("class", l.2.into()),
+                ("road", num(l.4)),
+                ("along", "0".into()),
+                ("ends", "seam free".into()),
+            ]);
+            let (pa, pb) = (world(w[0][0], w[0][1]), world(w[1][0], w[1][1]));
+            let mut chord = Chord::from_tags([pa[0], pa[1], z], [pb[0], pb[1], z], &t, rules).unwrap();
+            chord.lanes[0].code = 2;
+            chords.push(chord);
+        }
+        let heading = libm::atan2(-(points[1][1] - points[2][1]), points[1][0] - points[2][0]);
+        let mut end = head(points[2], z, heading, (l.3, 1));
+        (end.part, end.holes[0].kind, end.holes[0].collar) = (Part::Free, Part::Free, 0.0);
+        ends.push(end);
+    }
+    (ends, chords)
+}
+
+#[test]
+fn a_seam_is_closed_and_has_no_t_vertex() {
+    let rules = Rules::embedded();
+    let road = |off: f64, up: f64| (off, up, "primary", 4.2, 3.5);
+    let path = |off: f64, up: f64| (off, up, "footway", 1.6, 1.0);
+    let cases: [(&str, Vec<Before>, _, f64); 6] = [
+        ("one, in a wider room", vec![road(0.0, 0.0)], (7.0, 7.0), 0.0),
+        ("two", vec![road(-5.2, 0.0), road(5.2, 0.0)], (9.4, 7.0), 0.0),
+        ("two, turned 20°", vec![road(-5.2, 0.0), road(5.2, 0.0)], (9.7, 7.0), 20.0),
+        ("a step", vec![road(-5.2, 0.0), road(5.2, 0.8)], (9.4, 7.0), 0.0),
+        ("three", vec![road(-7.0, 0.0), road(3.0, 0.0), path(10.5, 3.0)], (12.5, 11.0), 0.0),
+        ("three, turned 20°", vec![road(-7.0, 0.0), road(3.0, 0.4), path(10.5, 3.0)], (12.5, 11.0), 20.0),
+    ];
+    for (name, lanes, size, turn) in cases {
+        let (ends, chords) = seamed(&lanes, size, turn);
+        let (open, crowded) = not_closed(&ends, &chords);
+        assert!(open.is_empty(), "{name}: {} open edges, the first {:?}", open.len(), &open[..open.len().min(4)]);
+        assert!(
+            crowded.is_empty(),
+            "{name}: {} crowded edges, the first {:?}",
+            crowded.len(),
+            &crowded[..crowded.len().min(4)]
+        );
+        let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);
+        let t = t_vertices(&mesh);
+        let shown: Vec<_> = t.iter().map(|p| (metric([p[0], p[1]]), p[2] * metres_per_unit(p[1]))).collect();
+        assert!(t.is_empty(), "{name}: {} corners inside an edge: {shown:?}", t.len());
+        // From the room along each lane's axis into its tube behind the seam: no face.
+        let faces = solid(&mesh);
+        for l in &lanes {
+            let got = hit(&faces, [16.0, l.0, 500.0 + l.1 + 1.5], [1.0, 0.0, 0.0], 6.0);
+            assert!(got.is_none(), "{name}: the way from the lane at {} m into its tube: {got:?}", l.0);
+        }
+    }
+}

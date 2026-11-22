@@ -487,7 +487,8 @@ fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height
 }
 
 /// The pairs of tube records of two rooms that come nearer than a wall at one level, as a tile holds them: each point
-/// rounded to the tile's grid (8 world units of 2^30), which with the decimals of the heights is the only allowance.
+/// rounded to the tile's grid (8 world units of 2^30), which with the decimals of the heights is the only allowance. A
+/// point reads another chord where its foot lies on it; two chords that end on one seam's line meet there.
 fn records_that_touch(placed: &Placed) -> Vec<String> {
     const UNITS: f64 = (1u64 << 27) as f64;
     let unit = |p: [f64; 2]| [(p[0] * UNITS).round() / UNITS, (p[1] * UNITS).round() / UNITS];
@@ -513,18 +514,37 @@ fn records_that_touch(placed: &Placed) -> Vec<String> {
         }
     }
     let allowance = distance(unit([0.5, 0.5]), unit([0.5 + 1.0 / UNITS, 0.5 + 1.0 / UNITS]));
+    // The seams' lines: a point and the unit heading.
+    let seams: Vec<([f64; 2], [f64; 2])> = (placed.features.iter())
+        .filter(|f| f.0 == "tunnel-end" && f.1["part"] == "seam")
+        .map(|f| {
+            let h: f64 = f.1["heading"].parse().unwrap();
+            (unit(f.2.points[0]), [h.cos(), h.sin()])
+        })
+        .collect();
+    let on_seam = |t: &Record| {
+        (seams.iter().enumerate())
+            .filter(|(_, (p, d))| [t.0, t.1].iter().any(|q| super::along_dir(*p, *q, *d).abs() < 2.0 * allowance))
+            .map(|(s, _)| s)
+            .collect::<Vec<usize>>()
+    };
     let mut out = Vec::new();
     for (i, a) in tubes.iter().enumerate() {
         let len = distance(a.0, a.1);
-        for k in (0..tubes.len()).filter(|&k| room[k] != room[i]) {
+        let mine = on_seam(a);
+        for k in
+            (0..tubes.len()).filter(|&k| room[k] != room[i] && !on_seam(&tubes[k]).iter().any(|s| mine.contains(s)))
+        {
             let b = &tubes[k];
             for m in 0..=len.ceil() as usize {
                 let u = (m as f64 / len.max(1.0)).min(1.0);
                 let p = [a.0[0] + u * (a.1[0] - a.0[0]), a.0[1] + u * (a.1[1] - a.0[1])];
                 let za = a.2[0] + u * (a.2[1] - a.2[0]);
                 let d = [b.1[0] - b.0[0], b.1[1] - b.0[1]];
-                let v =
-                    (((p[0] - b.0[0]) * d[0] + (p[1] - b.0[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0.0, 1.0);
+                let v = ((p[0] - b.0[0]) * d[0] + (p[1] - b.0[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1]);
+                if !(0.0..=1.0).contains(&v) {
+                    continue;
+                }
                 let foot = [b.0[0] + v * d[0], b.0[1] + v * d[1]];
                 let (gap, rise) = (distance(p, foot) - a.3 - b.3, b.2[0] + v * (b.2[1] - b.2[0]) - za);
                 let clear = gap >= 1.0 - 0.01 - allowance || rise >= a.4 + 1.0 - 0.01 || -rise >= b.4 + 1.0 - 0.01;
@@ -538,29 +558,111 @@ fn records_that_touch(placed: &Placed) -> Vec<String> {
     out
 }
 
-#[test]
-fn rooms_keep_apart() {
-    let hill = ridge(200.0, 1.0);
-    let ground = site(&hill, &[], false);
-    // Road tunnels 200 m east: a first on the line 0 m north at the floor 500 m, and a second as the layout says.
-    let layouts: [(&str, f64, f64, f64, u64); 6] = [
-        ("twins that overlap", 5.0, 0.0, 500.0, 1),
-        ("floors 3 m apart", 5.0, 0.0, 503.0, 1),
-        ("floors 6 m apart", 5.0, 0.0, 506.0, 0),
-        ("one 7 m under the other", 5.0, 0.0, 493.0, 0),
-        ("a staggered start of 3 m", 5.0, 3.0, 500.0, 1),
-        ("a staggered start of 60 m", 5.0, 60.0, 500.0, 1),
-    ];
-    for (name, north, start, z, rooms) in layouts {
+/// The layouts of the rooms' tests: road tunnels 200 m east, a first on the line 0 m north at the floor 500 m, and a
+/// second as the layout says; the count of rooms of lanes and of seams.
+fn layouts() -> Vec<(&'static str, Case, u64, u64)> {
+    let pair = |north: f64, start: f64, z: f64| {
         let mut case = Case::default();
         case.tunnel(&ROAD, (0.0, 200.0), 0.0);
         let line = [[start, north], [(start + 200.0) / 2.0, north], [200.0, north]];
         case.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[z; 3])]));
+        case
+    };
+    let mut footway = Case::default();
+    footway.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let rise = 200.0 * 3f64.to_radians().tan();
+    footway.ways.push(("tunnel", tags(&FOOT), vec![part(&[[0.0, 4.3], [200.0, 4.3 + rise]], &[500.0; 2])]));
+    let mut away = Case::default();
+    away.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let line = [[0.0, 7.0], [60.0, 7.0], [120.0, 40.0], [200.0, 40.0]];
+    away.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[500.0; 4])]));
+    vec![
+        ("twins that overlap", pair(5.0, 0.0, 500.0), 1, 0),
+        ("floors 3 m apart", pair(5.0, 0.0, 503.0), 1, 0),
+        ("floors 6 m apart", pair(5.0, 0.0, 506.0), 0, 0),
+        ("one 7 m under the other", pair(5.0, 0.0, 493.0), 0, 0),
+        ("a staggered start of 3 m", pair(5.0, 3.0, 500.0), 1, 0),
+        ("a staggered start of 60 m", pair(5.0, 60.0, 500.0), 1, 0),
+        ("a footway at 3 degrees beside a road", footway, 1, 1),
+        ("one that turns away", away, 1, 1),
+    ]
+}
+
+#[test]
+fn rooms_keep_apart() {
+    let hill = ridge(200.0, 1.0);
+    let ground = site(&hill, &[], false);
+    for (name, case, rooms, seams) in layouts() {
         let placed = case.place(&ground, &mut Vec::new());
         let m = &placed.metrics;
-        assert_eq!(m["rooms"]["rooms"].as_u64(), Some(rooms), "{name}: {m}");
+        assert_eq!(
+            (m["rooms"]["rooms"].as_u64(), m["rooms"]["seams"].as_u64()),
+            (Some(rooms), Some(seams)),
+            "{name}: {m}"
+        );
         assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "{name}: {}", m["rooms_that_touch_places"]);
         let touch = records_that_touch(&placed);
         assert!(touch.is_empty(), "{name}: the records come nearer than a wall at {touch:?}");
+    }
+}
+
+#[test]
+fn a_seams_record_is_whole() {
+    let hill = ridge(200.0, 1.0);
+    let ground = site(&hill, &[], false);
+    let number = |t: &Tags, k: &str| t[k].split(' ').map(|v| v.parse::<f64>().unwrap()).collect::<Vec<f64>>();
+    for (name, case, _, _) in layouts() {
+        let placed = case.place(&ground, &mut Vec::new());
+        // Each hole behind a seam lies in the section of the room before it, and a wall from the next.
+        for seam in records(&placed, "tunnel-end").into_iter().filter(|t| t["part"] == "seam") {
+            let (across, half, up, height) =
+                (number(seam, "across"), number(seam, "half"), number(seam, "up"), number(seam, "height"));
+            for k in 1..across.len() {
+                assert!(
+                    across[k].abs() + half[k] <= half[0] + 1e-9,
+                    "{name}: hole {k} reaches past the room before: {seam:?}"
+                );
+                assert!(up[k] + height[k] <= up[0] + height[0] + 0.5 * half[0], "{name}: hole {k} too high: {seam:?}");
+            }
+            for k in 1..across.len() - 1 {
+                assert!(
+                    across[k + 1] - half[k + 1] - across[k] - half[k] >= 1.0 - 0.01 - 1e-9,
+                    "{name}: holes {k} and {} less than a wall apart: {seam:?}",
+                    k + 1
+                );
+            }
+        }
+        // The two chords of a room at a vertex write the same strings there; no chord is shorter than the vertex gap,
+        // but for the rounding of a tile.
+        let tubes: Vec<&(&str, Tags, Part)> = placed.features.iter().filter(|f| f.0 == "tunnel-tube").collect();
+        let at = |f: &(&str, Tags, Part), k: usize| {
+            let off =
+                f.1.get("off").map(|o| o.split(' ').skip(k).step_by(2).map(String::from).collect::<Vec<String>>());
+            (f.2.points[k], off)
+        };
+        for (i, a) in tubes.iter().enumerate() {
+            assert!(
+                distance(a.2.points[0], a.2.points[1]) >= 1.0 - 0.3,
+                "{name}: a chord of {} m",
+                distance(a.2.points[0], a.2.points[1])
+            );
+            for c in tubes.iter().skip(i + 1) {
+                for (ka, kc) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                    let ((pa, oa), (pc, oc)) = (at(a, ka), at(c, kc));
+                    if pa == pc && oa.is_some() && oc.is_some() && a.1["class"] == c.1["class"] {
+                        // Chords that meet against each other's way see the lanes the other way round.
+                        let flip: Vec<String> = oc
+                            .clone()
+                            .unwrap()
+                            .iter()
+                            .rev()
+                            .map(|v| crate::parts::num(-v.parse::<f64>().unwrap()))
+                            .collect();
+                        let same = oa.clone().unwrap().iter().map(|v| v.to_string()).collect::<Vec<_>>();
+                        assert!(oa == oc || same == flip, "{name}: two chords at a vertex: {oa:?} and {oc:?}");
+                    }
+                }
+            }
+        }
     }
 }

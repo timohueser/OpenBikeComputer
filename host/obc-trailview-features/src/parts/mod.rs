@@ -487,15 +487,66 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
     records(&rooms, &openings, &decided, input)
 }
 
+/// A length up to the next centimetre: a room's numbers that must hold its lanes and the rooms behind a seam.
+fn ceil_cm(v: f64) -> f64 {
+    ((v * 100.0) - 1e-4).ceil() / 100.0
+}
+
 /// The features of the placement and the tag `parts` of the tunnel ways.
 fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided, input: &Input) -> Placed {
     let tubes = &rooms.tubes;
     let (mut features, mut tags) = (Vec::new(), HashMap::new());
-    let mut ends_of: Vec<[Option<Kind>; 2]> = vec![[None, None]; tubes.len()];
+    let open_kind = |t: usize, e: usize| {
+        let j = openings.iter().position(|o| o.tube == t && o.end == e)?;
+        decided.ends[j].kind
+    };
+    let built = rooms.built(&open_kind);
+    // A seam's rooms draw together or not at all.
+    let kind_at =
+        |t: usize, e: usize| if rooms.seam_at(t, e) { built[t].then_some(Kind::Seam) } else { open_kind(t, e) };
+    let ends_of: Vec<[Option<Kind>; 2]> = (0..tubes.len()).map(|t| [kind_at(t, 0), kind_at(t, 1)]).collect();
     let mut boxed = vec![false; tubes.len()];
     for (o, d) in openings.iter().zip(&decided.ends) {
-        ends_of[o.tube][o.end] = d.kind;
         boxed[o.tube] |= d.kind == Some(Kind::Box);
+    }
+    // The tag `parts` of each tunnel way: the parts at its arm's two ends.
+    let mut arm_kinds: Vec<[Option<Kind>; 2]> = vec![[None; 2]; rooms.arms.len()];
+    let mut with: Vec<bool> = vec![false; rooms.arms.len()];
+    for (t, lanes) in rooms.lanes.iter().enumerate() {
+        for l in lanes {
+            with[l.arm] |= ends_of[t].iter().any(Option::is_some);
+            for (i, kind) in l.ends.iter().zip(ends_of[t]) {
+                if let Some(i) = i {
+                    arm_kinds[l.arm][rooms.arm_openings[*i].end] = kind;
+                }
+            }
+        }
+    }
+    let part_name = |k: Option<Kind>| k.map_or("none", Kind::name);
+    for (arm, kinds) in rooms.arms.iter().zip(&arm_kinds).zip(&with).filter(|(_, &w)| w).map(|(a, _)| a) {
+        for (way, ps) in &arm.curve.stretches {
+            let rising = ps.last().unwrap().along >= ps[0].along;
+            let order = if rising { [kinds[0], kinds[1]] } else { [kinds[1], kinds[0]] };
+            tags.insert(
+                *way,
+                Tags::from([("parts".to_string(), format!("{} {}", part_name(order[0]), part_name(order[1])))]),
+            );
+        }
+    }
+    // The rooms before a seam hold the rooms behind it: per room end, their outlines on the line (metres across, half,
+    // floor over the room's, height).
+    let floors = &decided.floors;
+    let at_end = |r: usize, e: usize| floors[r].as_ref().map(|f| if e == 0 { 0 } else { f.s.len() - 1 });
+    let mut behind: Vec<Behind> = vec![[Vec::new(), Vec::new()]; tubes.len()];
+    for seam in &rooms.seams {
+        let (pr, pe) = seam.parent;
+        let (Some(fp), Some(ip)) = (floors[pr].as_ref(), at_end(pr, pe)) else { continue };
+        for (&(r, e), &(across, half)) in seam.children.iter().zip(&seam.holes) {
+            let (Some(fc), Some(ic)) = (floors[r].as_ref(), at_end(r, e)) else { continue };
+            // The room behind the line in the parent's way: across to the parent's left there.
+            let sign = if pe == 1 { 1.0 } else { -1.0 };
+            behind[pr][pe].push((sign * across, half, fc.f[ic] - fp.f[ip], fc.h[ic]));
+        }
     }
     for (ti, t) in tubes.iter().enumerate() {
         let kinds = ends_of[ti];
@@ -503,15 +554,16 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
             continue;
         }
         let group = &input.rules.groups[t.group];
+        let multi = rooms.lanes[ti].len() > 1;
         let mut common = Tags::new();
         common.insert("section".into(), if boxed[ti] { "box" } else { "round" }.into());
-        common.insert("half".into(), num(decided.half[ti]));
+        common.insert("half".into(), num(if multi { ceil_cm(decided.half[ti]) } else { decided.half[ti] }));
         common.insert("look".into(), group.look.clone());
         let fl = decided.floors[ti].as_ref();
-        if rooms.lanes[ti].is_empty() {
-            lone(t, kinds, (fl, &common), &input.tunnels[&t.widest].0, (&mut features, &mut tags));
+        if multi {
+            room(rooms, ti, kinds, (fl, &common, &behind[ti]), input, &mut features);
         } else {
-            room(rooms, ti, kinds, (fl, &common), input, (&mut features, &mut tags));
+            lone(t, kinds, (fl, &common), &input.tunnels[&t.widest].0, &mut features);
         }
     }
     for (o, d) in openings.iter().zip(&decided.ends) {
@@ -519,9 +571,10 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         let row = |f: &dyn Fn(&ladder::Hole) -> String| n.holes.iter().map(f).collect::<Vec<_>>().join(" ");
         let tube = |h: &ladder::Hole| openings[h.opening].tube;
         let kind_of = |h: &ladder::Hole| decided.ends[h.opening].kind.unwrap_or(kind);
+        let half_of = |t: usize| if rooms.lanes[t].len() > 1 { ceil_cm(decided.half[t]) } else { decided.half[t] };
         let mut t = Tags::new();
         t.insert("section".into(), row(&|h| if boxed[tube(h)] { "box" } else { "round" }.into()));
-        t.insert("half".into(), row(&|h| num(decided.half[tube(h)])));
+        t.insert("half".into(), row(&|h| num(half_of(tube(h)))));
         t.insert("height".into(), row(&|h| num(h.height)));
         // In rock where each hole opens in the rock.
         let rock = n.holes.iter().all(|h| kind_of(h) == Kind::Rock);
@@ -548,6 +601,33 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         let part = Part { outer: false, points: vec![o.p], z: Some(vec![o.floor]), plan: None };
         features.push(("tunnel-end", t, part));
     }
+    // The seams: at the axis of the room before the line, a hole per room, the room before first, then those behind
+    // from the right.
+    for seam in rooms.seams.iter().filter(|seam| built[seam.parent.0]) {
+        let (pr, pe) = seam.parent;
+        let (Some(fp), Some(ip)) = (floors[pr].as_ref(), at_end(pr, pe)) else { continue };
+        let at = tubes[pr].curve.at(if pe == 0 { 0.0 } else { tubes[pr].curve.len }).0.p;
+        let multi = |r: usize| rooms.lanes[r].len() > 1;
+        let floor_cm = |v: f64| ((v * 100.0) + 1e-4).floor() / 100.0;
+        let mut holes: Vec<[f64; 4]> = Vec::new();
+        for (&(r, e), &(across, half)) in seam.children.iter().zip(&seam.holes) {
+            let (Some(fc), Some(ic)) = (floors[r].as_ref(), at_end(r, e)) else { continue };
+            let half = if multi(r) { ceil_cm(half) } else { floor_cm(half) };
+            holes.push([across, fc.f[ic] - fp.f[ip], half, fc.h[ic]]);
+        }
+        holes.sort_by(|x, y| x[0].total_cmp(&y[0]));
+        let half_p = if multi(pr) { ceil_cm(decided.half[pr]) } else { decided.half[pr] };
+        holes.insert(0, [0.0, 0.0, half_p, fp.h[ip]]);
+        let row = |k: usize| holes.iter().map(|h| num(h[k])).collect::<Vec<_>>().join(" ");
+        let mut t = Tags::new();
+        t.insert("part".into(), Kind::Seam.name().into());
+        t.insert("heading".into(), format!("{}", (seam.dir[1].atan2(seam.dir[0]) * 1000.0).round() / 1000.0));
+        for (k, name) in ["across", "up", "half", "height"].into_iter().enumerate() {
+            t.insert(name.into(), row(k));
+        }
+        let part = Part { outer: false, points: vec![at], z: Some(vec![fp.f[ip]]), plan: None };
+        features.push(("tunnel-end", t, part));
+    }
     Placed {
         features,
         tags,
@@ -561,24 +641,17 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
     }
 }
 
-/// The features and the tags of the parts of a lone arm.
-type Out<'a> = (&'a mut Vec<(&'static str, Tags, Part)>, &'a mut HashMap<u32, Tags>);
+/// The features of the placement.
+type Out<'a> = &'a mut Vec<(&'static str, Tags, Part)>;
 
-/// The chords of a room of one arm, from opening to opening as its floor, and the tag `parts` of its ways.
-fn lone(
-    t: &Tube,
-    kinds: [Option<Kind>; 2],
-    (fl, common): (Option<&Floor>, &Tags),
-    widest: &Tags,
-    (features, tags): Out,
-) {
+/// The chords of a room of one lane, from end to end as its floor.
+fn lone(t: &Tube, kinds: [Option<Kind>; 2], (fl, common): (Option<&Floor>, &Tags), widest: &Tags, features: Out) {
     let part_name = |k: Option<Kind>| k.map_or("none", Kind::name);
     let (s0, s1) = fl.map_or((0.0, 0.0), |f| (f.s[0], f.s[f.s.len() - 1]));
-    for (way, ps) in &t.curve.stretches {
+    for (_, ps) in &t.curve.stretches {
         let rising = ps.last().unwrap().along >= ps[0].along;
         let order = if rising { [kinds[0], kinds[1]] } else { [kinds[1], kinds[0]] };
         let ends = format!("{} {}", part_name(order[0]), part_name(order[1]));
-        tags.insert(*way, Tags::from([("parts".to_string(), ends.clone())]));
         // The points of the stretch within the openings: its ends and each vertex of the floor between.
         let Some(fl) = fl else { continue };
         let (a, z) = (ps[0].s.max(s0), ps.last().unwrap().s.min(s1));
@@ -606,29 +679,22 @@ fn lone(
     }
 }
 
-/// The chords of room r of lanes, along its centre line from opening to opening as its floor, with a row per lane
-/// from the right wall to the left, and the tag `parts` of the ways of its lanes.
+/// Per room end, the outlines on its line of the rooms behind a seam there: metres across, half-width, floor over the
+/// room's, height.
+type Behind = [Vec<(f64, f64, f64, f64)>; 2];
+
+/// The chords of room r of lanes, along its centre line from end to end as its floor, with a row per lane from the right
+/// wall to the left. A chord is as high as the outlines of its lanes need, and at a seam those of the rooms behind it.
 fn room(
     rooms: &rooms::Rooms,
     r: usize,
     kinds: [Option<Kind>; 2],
-    (fl, common): (Option<&Floor>, &Tags),
+    (fl, common, behind): (Option<&Floor>, &Tags, &Behind),
     input: &Input,
-    (features, tags): Out,
+    features: Out,
 ) {
     let part_name = |k: Option<Kind>| k.map_or("none", Kind::name);
     let (t, lanes) = (&rooms.tubes[r], &rooms.lanes[r]);
-    for l in lanes {
-        let arm = &rooms.arms[l.arm];
-        for (way, ps) in &arm.curve.stretches {
-            let rising = ps.last().unwrap().along >= ps[0].along;
-            let order = if rising == l.forward { [kinds[0], kinds[1]] } else { [kinds[1], kinds[0]] };
-            tags.insert(
-                *way,
-                Tags::from([("parts".to_string(), format!("{} {}", part_name(order[0]), part_name(order[1])))]),
-            );
-        }
-    }
     let Some(fl) = fl else { return };
     let spring = obc_trailview_parts::Rules::embedded().design.spring;
     let round = common["section"] == "round";
@@ -646,11 +712,17 @@ fn room(
         };
         let (mut a, mut b) = (at(i), at(i + 1));
         let lane_heights: Vec<f64> = fl.lanes.iter().map(|lane| lane.1[i].min(lane.1[i + 1])).collect();
-        let height = [&a, &b]
-            .map(|(_, places, ups)| {
-                let outlines: Vec<(f64, f64, f64, f64)> =
+        let last = fl.s.len() - 1;
+        let height = [(&a, i), (&b, i + 1)]
+            .map(|((_, places, ups), k)| {
+                let mut outlines: Vec<(f64, f64, f64, f64)> =
                     (places.iter().zip(ups).zip(&lane_heights)).map(|((p, &up), &h)| (p.off, p.half, up, h)).collect();
-                rooms::hold(round, t.half, spring, &outlines, segments)
+                for (end, at) in [(0, 0), (1, last)] {
+                    if k == at {
+                        outlines.extend_from_slice(&behind[end]);
+                    }
+                }
+                rooms::hold(round, t.half, spring, &outlines, (segments * lanes.len(), segments))
             })
             .into_iter()
             .fold(0.0, f64::max);
@@ -675,7 +747,7 @@ fn room(
         };
         let row = |f: &dyn Fn(usize) -> String| order.iter().map(|&k| f(k)).collect::<Vec<_>>().join(" ");
         let mut tube_tags = common.clone();
-        tube_tags.insert("height".into(), num(height));
+        tube_tags.insert("height".into(), num(ceil_cm(height)));
         tube_tags.insert("class".into(), row(&|k| rooms.arms[lanes[k].arm].class.clone()));
         if surfaces.iter().any(Option::is_some) {
             tube_tags.insert("surface".into(), row(&|k| surfaces[k].clone().unwrap_or("-".into())));
@@ -702,12 +774,13 @@ fn room(
     }
 }
 
-/// The openings of the rooms whose ends are all of built kinds (`obc_trailview_parts::BUILT`) by the kind of each
-/// opening: those that the device opens.
-pub(crate) fn built_openings(openings: &[Opening], kind: &[Option<Kind>]) -> Vec<Opening> {
+/// The openings of the rooms that draw as parts (`Rooms::built`) by the kind of each opening: those that the device
+/// opens.
+pub(crate) fn built_openings(openings: &[Opening], kind: &[Option<Kind>], rooms: &rooms::Rooms) -> Vec<Opening> {
     let of =
         |tube: usize, end: usize| openings.iter().position(|o| o.tube == tube && o.end == end).and_then(|j| kind[j]);
-    (openings.iter()).filter(|o| obc_trailview_parts::built(&[of(o.tube, 0), of(o.tube, 1)])).cloned().collect()
+    let built = rooms.built(&of);
+    (openings.iter()).filter(|o| built[o.tube]).cloned().collect()
 }
 
 /// The open ends of the openings: each way of an opening moved in along it, for the ground plan's `graph::build_open`.

@@ -318,6 +318,24 @@ fn end_face<L: Fn([f64; 3]) -> f64>(
 /// goes on there.
 fn room(net: &Net, (c, k): (usize, usize), st: &Station) -> (Vec<Corner>, Vec<Corner>) {
     let chord = &net.chords[c];
+    // At a seam before which the room ends, its floor and its outline with the seam's corners.
+    if let Some((r, 0)) = net.seam_at(c, k) {
+        if let Some(cut) = net.seam_cut(r) {
+            let line = net.line(r, 0.0);
+            let sign = if st.ax * line.ax + st.ay * line.ay >= 0.0 { 1.0 } else { -1.0 };
+            let mine = |list: &[(Corner, [f64; 3])]| {
+                let mut out: Vec<Corner> = list.iter().map(|q| [sign * q.0[0], q.0[1]]).collect();
+                if sign < 0.0 {
+                    out.reverse();
+                }
+                out
+            };
+            let (floor, top) = (mine(&cut.floor), mine(&cut.top));
+            let right = [floor[0]].into_iter().chain(top.iter().copied()).collect();
+            let left = floor.into_iter().chain([top[top.len() - 1]]).collect();
+            return (right, left);
+        }
+    }
     let sp = spring(net, chord.section, chord.height);
     let inner = outline(chord.section, chord.half, chord.height, sp, tube::segments(net, chord));
     let (n, pieces) = (inner.len(), tube::floor_along(net, c, k, st));

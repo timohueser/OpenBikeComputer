@@ -142,7 +142,8 @@ export function partStamps(list: Feature[], tile: Node, lines: Line[]): PartStam
         }
     };
     for (const { kind, tags } of list) {
-        if (kind !== 'tunnel-end') continue;
+        // A seam has no way that enters it.
+        if (kind !== 'tunnel-end' || !tags.way) continue;
         // Per way that enters the head its end vertex (`x y` in the frame of the ground plan, 16 units to a world unit)
         // and its shift; the longest collar of the head's holes.
         const ways = tags.way.split(' ').map(Number), shifts = tags.shift.split(' ').map(Number);

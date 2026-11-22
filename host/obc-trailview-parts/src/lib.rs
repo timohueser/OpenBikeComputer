@@ -10,6 +10,7 @@ mod boxes;
 mod footprint;
 mod mesh;
 mod rules;
+mod seam;
 #[cfg(test)]
 mod tests;
 mod tube;
@@ -23,13 +24,14 @@ pub use tube::PAST_M;
 
 use tube::Net;
 
-/// A kind of part at a tunnel end.
+/// A kind of part at the end of a room: at an opening, or the seam where it goes on as other rooms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Part {
     Arch,
     Rock,
     Box,
     Free,
+    Seam,
 }
 
 impl Part {
@@ -39,17 +41,18 @@ impl Part {
             Part::Rock => "rock",
             Part::Box => "box",
             Part::Free => "free",
+            Part::Seam => "seam",
         }
     }
 
     /// The part of a name; None for `none` and for an unknown name.
     pub fn parse(name: &str) -> Option<Part> {
-        [Part::Arch, Part::Rock, Part::Box, Part::Free].into_iter().find(|p| p.name() == name)
+        [Part::Arch, Part::Rock, Part::Box, Part::Free, Part::Seam].into_iter().find(|p| p.name() == name)
     }
 }
 
-/// The kinds of part that the builder makes. A chain draws as parts only where both of its ends are of these kinds.
-pub const BUILT: &[Part] = &[Part::Arch, Part::Rock, Part::Box, Part::Free];
+/// The kinds of part that the builder makes. A room draws as parts only where both of its ends are of these kinds.
+pub const BUILT: &[Part] = &[Part::Arch, Part::Rock, Part::Box, Part::Free, Part::Seam];
 
 /// Whether all ends of a chain are built; `None` is an end with no part of its own.
 pub fn built(ends: &[Option<Part>]) -> bool {
@@ -114,7 +117,8 @@ fn section(tags: &Tags) -> Result<Section, String> {
 }
 
 /// A `tunnel-end` record (`specs/trailview-features.md`, Tunnel parts): a line with holes, its point on the axis of
-/// its first hole and the floor there, and its numbers in metres over that floor.
+/// its first hole and the floor there, and its numbers in metres over that floor. A seam's first hole is the room on
+/// its side of the line, whose section holds the others; its heading leads from that room into them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct End {
     pub at: [f64; 2],
@@ -157,10 +161,46 @@ pub struct Way {
 }
 
 impl End {
-    /// The end of a record; its `look` is one of `rules`.
+    /// The end of a record; its `look` is one of `rules`. A seam holds `heading`, and per hole `half`, `height`,
+    /// `across` and `up` only.
     pub fn from_tags(at: [f64; 2], z: f64, tags: &Tags, rules: &Rules) -> Result<End, String> {
         let name = tag(tags, "part")?;
         let part = Part::parse(name).ok_or(format!("tag part: {name}"))?;
+        if part == Part::Seam {
+            let (half, height) = (row(tags, "half")?, row(tags, "height")?);
+            let n = half.len();
+            let (across, up) = (row_of(tags, "across", n, None)?, row_of(tags, "up", n, None)?);
+            if height.len() != n || n < 2 {
+                return Err(format!("tags half, height: not {n} values of two holes or more"));
+            }
+            let holes = (0..n)
+                .map(|h| Hole {
+                    across: across[h],
+                    up: up[h],
+                    kind: part,
+                    section: Section::Round,
+                    half: half[h],
+                    height: height[h],
+                    collar: 0.0,
+                })
+                .collect();
+            let (left, right, ways) = (Vec::new(), Vec::new(), Vec::new());
+            let heading = number(tags, "heading")?;
+            return Ok(End {
+                at,
+                z,
+                part,
+                heading,
+                look: String::new(),
+                holes,
+                walls: false,
+                face: 0.0,
+                left,
+                right,
+                foot: 0.0,
+                ways,
+            });
+        }
         let look = tag(tags, "look")?;
         if !rules.looks.contains_key(look) {
             return Err(format!("tag look: no look {look}"));
@@ -332,7 +372,11 @@ pub fn meshes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -
     let mut b = mesh::Builder::new(|p| net.daylight(p));
     for (r, end) in ends.iter().enumerate() {
         if net.built_record(r) && holds(square, end.at) {
-            arch::faces(&mut b, &net, r);
+            if end.part == Part::Seam {
+                seam::face(&mut b, &net, r);
+            } else {
+                arch::faces(&mut b, &net, r);
+            }
         }
     }
     for (c, chord) in chords.iter().enumerate() {
@@ -349,7 +393,7 @@ pub fn volumes(ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
     let net = Net::new(ends, chords, rules);
     let lift = rules.design.lift_m;
     let mut out = Volumes::default();
-    for e in (0..net.holes.len()).filter(|&e| net.built_end(e)) {
+    for e in (0..net.holes.len()).filter(|&e| net.built_end(e) && net.holes[e].part != Part::Seam) {
         for words in boxes::boxes(&net, e) {
             out.boxes.extend(words);
         }
@@ -362,7 +406,8 @@ pub fn volumes(ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
                 let (v, r) = (if k == 0 { chord.a } else { chord.b }, rings[k]);
                 [v[0] + r.ax * lane.off[k], v[1] + r.ay * lane.off[k], v[2] + lane.up[k] + lift]
             };
-            let half = tube::lane_half(chord, i, 0).min(tube::lane_half(chord, i, 1));
+            let half = [0, 1].map(|k| net.lane_edges(c, i, k)).map(|(lo, hi)| (hi - lo) / 2.0);
+            let half = half[0].min(half[1]);
             let (p, q) = (at(0), at(1));
             out.floors.extend([p[0], p[1], q[0], q[1], p[2], q[2], half]);
         }
@@ -401,5 +446,8 @@ pub fn mouths(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<Mouth> {
 /// and its collar.
 pub fn footprints(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<Vec<[f64; 2]>> {
     let net = Net::new(ends, chords, rules);
-    (0..net.holes.len()).filter(|&e| net.built_end(e) && !net.closed(e)).map(|e| footprint::ring(&net, e)).collect()
+    (0..net.holes.len())
+        .filter(|&e| net.built_end(e) && !net.closed(e) && net.holes[e].part != Part::Seam)
+        .map(|e| footprint::ring(&net, e))
+        .collect()
 }

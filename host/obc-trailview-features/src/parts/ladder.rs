@@ -289,27 +289,34 @@ pub(crate) fn decide(
         rung[i] = Some(r);
         kinds[i] = k;
     }
-    // Rung 5: the pairs, nearest first, each end in one pair at most: two hill ends of one family. A pair is one part
-    // of two chains, so each of them has a part at both of its ends.
+    // Rung 5: the pairs, nearest first, each end in one pair at most: two hill ends of one family a wall apart across. A
+    // pair is one part of two chains, so each of them has a part at both of its ends.
     let mut mate: Vec<Option<usize>> = vec![None; n];
     let is_hill = |i: usize| hill.contains(&i);
-    let whole: Vec<bool> = at_end.iter().map(|e| e.iter().all(|i| i.is_some_and(|i| !kinds[i].is_empty()))).collect();
+    let whole: Vec<bool> = (at_end.iter().enumerate())
+        .map(|(t, e)| (0..2).all(|k| rooms.seam_at(t, k) || e[k].is_some_and(|i| !kinds[i].is_empty())))
+        .collect();
     for x in &near {
         let (a, c) = (x.a, x.b);
         let (ta, tc) = (openings[a].tube, openings[c].tube);
         if mate[a].is_some() || mate[c].is_some() || !whole[ta] || !whole[tc] {
             continue;
         }
-        if is_hill(a) && is_hill(c) && tubes[ta].rail == tubes[tc].rail {
+        // The holes of a head lie side by side: rooms one over the other open each with its own head.
+        let (o, q) = (&openings[a], &openings[c]);
+        let side_by_side = along_dir(o.p, q.p, left_of(o.dir)).abs() - half[ta] - half[tc] >= 2.0 * b.shell_m - 0.01;
+        if is_hill(a) && is_hill(c) && tubes[ta].rail == tubes[tc].rail && side_by_side {
             (mate[a], mate[c]) = (Some(c), Some(a));
         }
     }
-    // Two openings whose frames would overlap share a head too: their rooms lie nearer than two frames and shells.
+    // Two openings whose frames would overlap share a head too: their rooms lie at one level and nearer than two
+    // frames and shells.
     let design = &obc_trailview_parts::Rules::embedded().design;
     let overlap = |i: usize, k: usize| {
         let (o, q) = (&openings[i], &openings[k]);
         let gap = along_dir(o.p, q.p, left_of(o.dir)).abs() - half[o.tube] - half[q.tube];
-        !kinds[i].is_empty() && !kinds[k].is_empty() && gap < 2.0 * (design.frame_m + b.shell_m)
+        let level = !super::rooms::apart((0.0, q.floor - o.floor), (height[o.tube], height[q.tube]), input);
+        !kinds[i].is_empty() && !kinds[k].is_empty() && level && gap < 2.0 * (design.frame_m + b.shell_m)
     };
     // One frame line for each group of openings that pairs and overlaps link: the line of the group's far opening,
     // which never moves. The openings of the group near it (`near`) move in onto it along their ways and read the
@@ -397,7 +404,7 @@ pub(crate) fn decide(
     let (mut remeasured, mut last): (usize, Option<Vec<OpenEnd>>) = (0, None);
     loop {
         let now: Vec<Option<Kind>> = kinds.iter().map(|k| k.first().copied()).collect();
-        let opened = open_ends(&built_openings(openings, &now), rooms);
+        let opened = open_ends(&built_openings(openings, &now, rooms), rooms);
         if last.as_ref() == Some(&opened) {
             break;
         }
@@ -426,7 +433,7 @@ pub(crate) fn decide(
             let fits = |k: &Kind| match k {
                 Kind::Arch => hill,
                 Kind::Rock => d.is_some_and(|d| d <= g.collar_max_m.min(b.rock_cover_max_m)),
-                Kind::Box | Kind::Free => true,
+                Kind::Box | Kind::Free | Kind::Seam => true,
             };
             let was = kinds[i].first().copied();
             kinds[i].retain(|k| fits(k));
@@ -597,7 +604,7 @@ fn numbers(
             match own(k) {
                 Kind::Arch | Kind::Rock => collar_of(k).expect("an arch is covered within its collar"),
                 Kind::Box => collar_of(k).unwrap_or(f64::INFINITY).min(half_chain),
-                Kind::Free => collar_of(k).unwrap_or(f64::INFINITY).min(b.free_max_m).min(half_chain),
+                Kind::Free | Kind::Seam => collar_of(k).unwrap_or(f64::INFINITY).min(b.free_max_m).min(half_chain),
             }
         })
         .collect();
