@@ -22,11 +22,11 @@ export default {
   leaves: {
     winter: 'bare',
     // White blossom on black twigs before the leaves.
-    spring: ['#3e3634', '#a8a29a', '#f6f4ee'],
+    spring: ['#5a524c', '#d2cdc4', '#f6f4ee'],
     summer: ['#212f16', '#334620', '#556633'],
     autumn: ['#4a4426', '#6a6034', '#8e8248'],
   },
   twigs: ['#262020', '#3a3230', '#504644'],
-  // Blue-black sloes in autumn.
-  flecks: { autumn: ['#2c2e4a', 0.15] },
+  // Heads of blossom stand on the white crown; blue-black sloes in autumn.
+  flecks: { spring: ['#ffffff', 0.35], autumn: ['#2c2e4a', 0.15] },
 } satisfies Tree;
