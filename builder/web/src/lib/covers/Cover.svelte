@@ -15,8 +15,8 @@
         mark?: number;
         part?: [number, number];
         line?: boolean;
-        /** A row and a card show the map picture when the record has no cover. A row and a page ask the cover job for the
-         * cover, a card also for the map picture. */
+        /** A row and a card show the photo that the rider chose for a ride, else the map picture when the record has no
+         * cover. A row and a page ask the cover job for the cover, a card also for the map picture. */
         place?: Place;
         /** Labels at shares of the summary line from 0 to 1: a numbered waypoint, or a night without a number. */
         pins?: { share: number; label: string; number?: number }[];
@@ -32,6 +32,8 @@
     /** The image that the part shows, with the points of its line, and the summary that the points belong to. */
     interface Shown { bitmap: ImageBitmap; points: CoverPoints; summary?: Summary }
     let item = $state<RouteRecord | RideRecord>(), shown = $state<Shown>();
+    /** The address of the copy of the chosen photo of a ride. */
+    let photo = $state<string>();
     /** The theme of the map picture that a record with no cover image shows; a cover does not depend on the theme. */
     let pictureDark = $state<boolean>();
     let reload: (() => void) | undefined;
@@ -52,12 +54,13 @@
         const load = async (first: boolean) => {
             const dark = place !== 'page' && untrack(() => appearance.dark);
             const [nextItem, nextCover] = await Promise.all([library.item(target), library.cover(target)]);
-            const from = nextItem && nextCover && source(nextItem, nextCover, dark);
+            const chosen = place !== 'page' && nextItem && 'key' in nextItem && nextItem.photo ? await library.photo(nextItem.photo) : undefined;
+            const from = chosen ? undefined : nextItem && nextCover && source(nextItem, nextCover, dark);
             const bitmap = from ? await createImageBitmap(from.image).catch(() => undefined) : undefined;
             if (!live) return bitmap?.close();
-            [item, shown] = [nextItem, from && bitmap && { bitmap, points: from.points, summary: from.summary }];
+            [item, shown, photo] = [nextItem, from && bitmap && { bitmap, points: from.points, summary: from.summary }, chosen && URL.createObjectURL(chosen.image)];
             credits = shown ? from?.credits ?? [] : [];
-            pictureDark = place !== 'page' && !nextCover?.image ? dark : undefined;
+            pictureDark = place !== 'page' && !chosen && !nextCover?.image ? dark : undefined;
             if (!first || !nextItem?.summary) return;
             if (!settled(nextItem, nextCover) || (place === 'card' && wantsPicture(nextItem, nextCover, dark))) wantCover(target, place);
         };
@@ -76,6 +79,25 @@
         const bitmap = shown?.bitmap;
         return () => bitmap?.close();
     });
+
+    $effect(() => {
+        const url = photo;
+        return () => { if (url) URL.revokeObjectURL(url); };
+    });
 </script>
 
-<CoverPicture {shown} summary={item?.summary ?? undefined} {look} {mark} {part} {line} {pins} {photos} {onphoto} {onpoint} />
+<!-- The pages of a route and a ride show their own pins at the start. -->
+{#if photo}
+    <img class="card-photo" src={photo} alt="" />
+{:else}
+    <CoverPicture {shown} summary={item?.summary ?? undefined} {look} {mark} {part} {line} start={place !== 'page'} {pins} {photos} {onphoto} {onpoint} />
+{/if}
+
+<style>
+    .card-photo {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+</style>

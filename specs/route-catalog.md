@@ -1,13 +1,19 @@
 # Route catalog
 
 The route catalog lists the signed routes of a region: OSM route relations for hiking, foot, bicycle
-and mountain-bike routes. Each route record also holds the plan that reproduces the route. A
-relation with a member outside the extract leaves the catalog.
+and mountain-bike routes, and, when the target has the part `route-sources`, the routes of the
+second sources of the region's countries, such as the SchweizMobil routes in Switzerland (see
+[Second sources](#second-sources)). Each route record
+also holds the plan that reproduces the route. A relation with a member outside the extract leaves
+the catalog.
 
 - Version: `format` `1`. A new field does not change the format. A reader ignores a field that it
   does not know.
 - Writers: the region prepare step, `planner/router-build` (`src/catalog/mod.rs`,
-  `src/catalog/connector.rs`, `src/catalog/trails.rs`, `src/grid.rs`).
+  `src/catalog/connector.rs`, `src/catalog/sources.rs`, `src/catalog/merge.rs`,
+  `src/catalog/trails.rs`, `src/grid.rs`); the facts files: `src/facts/`. The routes of the second
+  sources come from `route-sources.json` of the step `planner/route-sources`
+  ([obc-data.md](obc-data.md#route-sources)).
 - Readers: the planner search, online and offline: the web planner
   (`builder/web/src/lib/planner/route-catalog.ts`) and its Explore page
   (`builder/web/src/pages/Explore.svelte`), the companion app (`OBCPlanner/SignedRoutes.swift`).
@@ -25,6 +31,7 @@ relation with a member outside the extract leaves the catalog.
 | Grid | `routes/tiles/9-X-Y.json` | One file for each grid cell |
 | Grid | `routes/tiles/trails/7-X-Y.json` | Far file: the trails of one zoom 7 cell (see [Trail files](#trail-files)) |
 | Grid | `routes/tiles/long/ID.json` | Trail record file: the whole record of one trail (see [Trail files](#trail-files)) |
+| Grid | `routes/tiles/facts/9-X-Y.json` | Facts file: the facts of the routes of one grid cell, only with the layer `route-facts` (see [Facts files](#facts-files)) |
 
 A region file, a cell file and a trail record file are UTF-8 JSON: `{"format": 1, "routes": [...]}`.
 The records are in ascending `id` order. A far file has its own form (see [Trail files](#trail-files)). A
@@ -84,16 +91,18 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 
 | Field | Value |
 | --- | --- |
-| `id` | OSM relation ID; for a section, a negative number (see [Sections](#sections)). A negative `id` is no OSM relation ID: no reader builds an OSM link from it |
-| `kind` | The OSM `route` value: `hiking`, `foot`, `bicycle` or `mtb` |
-| `name`, `ref`, `operator` | The OSM tag text |
-| `description` | The OSM tag text, at most 200 characters |
-| `website` | The OSM `website` text, else `contact:website`, else `url` |
-| `symbol` | The OSM `osmc:symbol` text |
-| `rank` | Network level from `network`: `4` for `iwn` and `icn`, `3` for `nwn` and `ncn`, `2` for `rwn` and `rcn`, `1` for `lwn` and `lcn`, else `0` |
+| `id` | The key of the origin of the record's line: OSM relation ID; for a section, −(relation ID × 100 + `section`); for a record of a second source, −(origin × 10¹² + key × 100 + stage) (see [Ids](#ids)). A negative `id` is no OSM relation ID: no reader builds an OSM link from it |
+| `kind` | The OSM `route` value: `hiking`, `foot`, `bicycle` or `mtb`; for a record of a second source, the kind of its route: `hiking`, `bicycle` or `mtb` |
+| `name`, `ref` | The OSM tag text; for a record of a second source, the text of the source |
+| `operator` | The OSM tag text; for a record of a second source, the text of the source, else by [Words](#words) |
+| `description` | The OSM tag text, at most 200 characters; for a record of a second source, the text of the source |
+| `website` | The OSM `website` text, else `contact:website`, else `url`; for a record of a second source, the text of the source, else by [Words](#words) |
+| `symbol` | The OSM `osmc:symbol` text; for a record of a second source, by [Words](#words) |
+| `rank` | Network level from `network`: `4` for `iwn` and `icn`, `3` for `nwn` and `ncn`, `2` for `rwn` and `rcn`, `1` for `lwn` and `lcn`, else `0`; for a record of a second source, the level of the source, else `0` |
 | `loop` | `true` for a loop, `false` for a one-way route |
 | `length_m` | Length of the plan route |
 | `ascent_m`, `descent_m` | Climb and descent of the plan route |
+| `moving_s` | Route record: the moving time of the plan route at the default pace of its plan profile, in whole seconds; long route: the sum over its parts in the catalog |
 | `grades_m` | `hiking`, `foot` and `mtb` only: 6 lengths, one for each grade |
 | `hardest` | Index in `grades_m` of the hardest explicit grade |
 | `cells` | Sorted IDs `9-X-Y` of the zoom 9 cells that the plan route touches |
@@ -101,17 +110,17 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 | `profile_m` | Route record only: the height of the plan route in metres at each 100 m from its start, and at its end |
 | `via` | Route record only: ascending indices of the shaping vertices in `line_udeg` |
 | `turnarounds` | Route record only: the entries of `via` where the plan route turns back, and `0` for a loop that turns back at its start |
-| `parent` | Stage of a complete long route only: relation ID of that long route |
-| `stage` | Stage of a complete long route only: its number in the stages of `parent`, from `1` |
-| `trail` | Part of a long route only: relation ID of the long route that lists it at the lowest level; for a section, relation ID of its cut line |
-| `trail_stage` | Part of a long route only, not a section: its stage number in `trail` |
+| `parent` | Stage of a complete long route only: the `id` of that long route |
+| `stage` | Stage of a complete long route only: the stage number of its part in `parent` |
+| `trail` | Part of a long route only: the `id` of the long route that lists it at the lowest level (see [Stage fields](#stage-fields)); for a section, relation ID of its cut line |
+| `trail_stage` | Part of a long route only, not a section: the stage number of its part in `trail` |
 | `section` | Section only: its number in `trail`, from `1` |
-| `stages` | Complete long route only: the relation IDs of its stages, in order |
+| `stages` | Complete long route only: the `id` of each of its parts, in order; two parts can have one stage number |
 | `start_udeg` | Complete long route only: `[longitude, latitude]` of its start |
 | `parts` | Long route only: each of its parts, in order (see [Long routes](#long-routes)) |
-| `stage_count` | Long route only: the number of different stage numbers in `parts` |
+| `stage_count` | Long route only: the number of its stages, the parts of its relation by the table of [Long routes](#long-routes) before any part leaves for a second source; `0` for a cut line; for a source trail, the highest stage number of its route (see [Source trails](#source-trails)) |
 | `trail_profile_m` | Long route only: 201 heights of the whole trail (see [Long routes](#long-routes)) |
-| `credit` | The `attribution` in `data/sources.toml` of the second route source of the record's line; on a long route, the distinct credits of its own line and of its parts, joined by `; `; absent otherwise |
+| `credit` | The `attribution` in `data/sources.toml` of the second route source of the record's line; on a long route, the distinct credits of its own origin and of its parts in the catalog (see [Record](#record)); absent otherwise |
 
 Each record has a `name` or a `ref`, or both. The builder cuts a longer `description` at a word
 boundary. `symbol` is absent when a vertex of the route's full planned line, before the
@@ -138,8 +147,9 @@ The plan reproduces the route with a profile of each activity that lists the kin
 for `hiking` and `foot`, `mtb/technical` for `mtb`, and `road`, `gravel` and `touring` for
 `bicycle`. A client plans a `hiking` or `foot` route with `hardest` above 1 (T2) with
 `hiking/alpine`, an `mtb` route with `hardest` above 2 (S2) with `mtb/technical`, and every other
-route with the Balanced profile. Both profiles give the same route when no grade on it is above the
-ordinary limit. A hiking route can have `hardest` 4 or 5 (T5 or T6).
+route with the Balanced profile. When no grade on the route is above the ordinary limit, both
+profiles give a route of the same cost. Cost is not time: on a tie, the route and its time can
+differ slightly. A hiking route can have `hardest` 4 or 5 (T5 or T6).
 The main line is the member ways with an empty, `main`, `forward` or `backward`
 role, ordered as the Waymarked Trails route builder orders them, with the forward branch where the
 route splits by direction. When that order has more than one piece, the builder joins the pieces at
@@ -159,11 +169,17 @@ The route's own line is its pieces joined straight across their gaps. A route le
 when more than 500 m of a routed patch is farther than 30 m from its own line. To reproduce the
 route, the router's route for the plan with each profile has a deviation of at most 2 % of the main-line length. The deviation is the length of
 the routed line that is more than 30 m from the main line, plus the length of the main line that is
-more than 30 m from the routed line. The plan route is the route that the router gives for the plan
-with one of these profiles: `touring` for `bicycle`, else the only one. The plan runs in the member
-order of the relation, also for a loop. A route is a loop when its main line is a closed ring, or
-when it has `roundtrip=yes` and its ends are within 200 m. A loop plan ends at its start, so the
-last vertex equals vertex 0.
+more than 30 m from the routed line. The shaping points are points of the main line. The builder
+first adds a point to the main line at least every 60 m, so that a shaping point can go near the
+middle of each stretch that a route leaves, also on a long straight segment. The builder routes each
+leg of the plan alone and adds shaping points while they make the deviation of the legs smaller.
+When 8 points in a row for each profile do not make it smaller by 2 %, or when no new point is
+left, it removes each point that does not help, and the route of the whole plan decides; when it
+fails, the point of its worst leg is added, up to 6 times. The plan route is the route that the
+router gives for the plan with one of these profiles: `touring` for `bicycle`, else the only one.
+The plan runs in the member order of the relation, also for a loop. A route is a loop when its main
+line is a closed ring, or when it has `roundtrip=yes` and its ends are within 200 m. A loop plan
+ends at its start, so the last vertex equals vertex 0.
 
 `length_m`, `ascent_m` and `descent_m` are the totals of the route engine for the plan route. The
 router smooths the heights of each leg first. Each height becomes the mean, over 100 m of the leg
@@ -247,13 +263,16 @@ route and not a piece. Its parts are its child relations in member order:
 | Another route relation | One part; a joined trail is one part |
 
 A relation that comes twice counts once, at its first place. The stage number of a part is its
-position in this list, from `1`, parts not in the catalog included. The sections of a cut part take
+position in this list, from `1`, parts not in the catalog included. A child route that left for the
+records of a second source has these records as its parts (see [Parts](#parts)). The sections of a cut part take
 its place in `parts`, each with its stage number (see [Sections](#sections)). A long route inside another one
 is also a long route of its own. A child route with no `name` and no `ref` that is a part gets a
 route record with the `name` and the `ref` of the long route that has it as a child relation and
-is in the catalog; of two, the one with the lower relation ID. When no such long route has it as a
-child relation, it takes the `name` and the `ref` of its `trail`, and with no `trail` it is not in
-the catalog, as any route with no `name` and no `ref`. A long route is in the catalog when at least
+whose parts are not separate routes (see below); of two, the one with the lower relation ID. When no
+such long route has it as a child relation, it takes the `name` and the `ref` of the long route in
+the catalog that lists it at the lowest level, of two the one with the lower `id`, also when that
+long route leaves for a second source (see [The same trail](#the-same-trail)). With none, it is not
+in the catalog, as any route with no `name` and no `ref`. A long route is in the catalog when at least
 one of its parts is, unless its parts are separate routes (see below).
 
 The ends of a part in the catalog are the first and the last vertex of its `line_udeg`. A part that
@@ -292,11 +311,11 @@ place, is never complete, because the leg leaves a gap between its parts. Only a
 route has `stages` and `start_udeg`, and only its stages have `parent` and `stage`: `stages` lists
 its parts, and `start_udeg` is the start of its first part. When a route is a stage of two complete
 long routes, `parent` is the one that lists it at the lower level (see `trail`); of two at the same
-level, the one with the lower relation ID. A reader that knows only
+level, the one with the lower `id`. A reader that knows only
 these fields shows the parts of every other long route as single routes.
 
 A long route has no `line_udeg`, `via`, `turnarounds` or `profile_m`. `length_m`, `ascent_m`,
-`descent_m` and `grades_m` are the sums of the values of its parts in the catalog. `hardest` is the
+`descent_m`, `moving_s` and `grades_m` are the sums of the values of its parts in the catalog. `hardest` is the
 largest `hardest` of these parts, and `cells` the union of their `cells`. So each file that holds a
 part in the catalog also holds its long route. A long route is a loop when its first and last parts
 are in the catalog and the trail start of the first part is the trail end of the last part, or when
@@ -304,17 +323,20 @@ it has `roundtrip=yes` and these two points are within 200 m.
 
 Each part in the catalog has `trail` and `trail_stage`; a section has `trail` only. `trail` is the
 long route that lists it at the lowest level of long routes inside each other, 1 for a child
-relation of the long route itself; of two at the same level, the one with the lower relation ID.
+relation of the long route itself; of two at the same level, the one with the lower `id`. Only a
+long route that stays gives these fields (see [Stage fields](#stage-fields)).
 
 An object of `parts` has these fields. A field with no value is absent.
 
 | Field | Value |
 | --- | --- |
-| `id` | Relation ID of the part, or the `id` of a section |
+| `id` | The `id` of the part's record: a relation ID, the `id` of a section or of a record of a second source; for a part of a source trail that is not in the catalog, the `id` that the record of its stage would have |
 | `stage` | Stage number of the part; absent for a section of a cut line that is no stage |
-| `name` | The OSM `name` of the part |
+| `name` | The OSM `name` of the part's relation; for a record of a second source, its `name`; for a part of a source trail, the `name` of its stage row, also for a part that an OSM record fills |
 | `length_m` | The `length_m` of the part's record; for a part not in the catalog, the length of its main line |
 | `ascent_m` | The `ascent_m` of the part's record |
+| `moving_s` | The `moving_s` of the part's record |
+| `hardest` | The `hardest` of the part's record |
 | `end_m` | The sum of `length_m` of this part and each part before it; a part without `length_m` adds 0 |
 | `cells` | The `cells` of the part's record |
 | `missing` | `true` when the part is not in the catalog |
@@ -322,6 +344,9 @@ An object of `parts` has these fields. A field with no value is absent.
 | `start_udeg`, `end_udeg` | Part not in the catalog only: its first and its last end |
 | `backwards` | `true` when the part runs backwards |
 | `jump` | `true` when the part has a jump |
+
+`ascent_m` and `moving_s` of a part are in the direction of its record, also for a part that runs
+backwards.
 
 Entry `k` of `trail_profile_m` is the height at `k / 200` of the whole trail, from its start (entry
 0) to the last `end_m` (entry 200). The place along the trail lies on the first part whose `end_m`
@@ -373,9 +398,7 @@ route lies wholly inside the download when each of its `cells` is the `id` of a 
 ### Trail files
 
 A trail is a record with no `trail` field that has a `stage_count` of 2 or more, or that takes more
-than 12 hours of moving time. The moving time of a route record is the time of its plan route at
-the default pace of its plan profile; that of a long route is the sum over its parts in the
-catalog. So a long route inside another one can be a trail, and a cut stage is none.
+than 12 hours of moving time: its `moving_s`. So a long route inside another one can be a trail, and a cut stage is none.
 
 A trail record file is `{"format": 1, "routes": [record]}` with the whole record of one trail, as
 in the region file, `parts` and `trail_profile_m` included. So a reader of cell files reads it too.
@@ -387,7 +410,7 @@ touches the cell, in ascending `id` order. A cell with no trails has an empty li
 
 | Field | Value |
 | --- | --- |
-| `id`, `kind`, `name`, `ref`, `symbol`, `rank`, `loop`, `length_m`, `ascent_m`, `hardest` | As in the record |
+| `id`, `kind`, `name`, `ref`, `symbol`, `rank`, `loop`, `length_m`, `ascent_m`, `hardest`, `credit` | As in the record |
 | `stage_count` | As in the record, when it is positive; absent for a route record |
 | `far_udeg` | A list of pieces of the far line in this cell, each encoded as `line_udeg` |
 
@@ -405,6 +428,101 @@ segments, the build fails. So no far file is larger than 400,000 bytes, and a fa
 `tolerance_m` + 10 m of the plan route. A reader draws each piece as a line of its own; the pieces
 of one `id` meet on their shared segments.
 
+### Facts files
+
+A facts file holds the facts of the route records of one grid cell for the search of the Explore
+page: the car parks, the lifts and the places near each route, the shares of its length, and its
+snow window. The optional layer `route-facts` writes them; a release without it has no facts files.
+The facts come from the OSM extract of the region bounds with their margin, the routing source,
+GLO-30 and, when the release has them, the [canopy archive](trailview-tiles.md#canopy) and
+[`snow-seasons`](planner-snow-tiles.md#snow-seasons). They do not change a record.
+
+Each grid cell has a facts file `{"format": 1, "places": {...}, "routes": {...}}`, also a cell with
+no routes:
+
+- `routes` maps the `id` of each record of the cell file that has `line_udeg`, as a decimal string,
+  to its entry. A negative `id` is a key too. A long route has no entry.
+- `places` maps a place id to its place, for each place that an entry of the file names and for the
+  car park of each such lift. A place can lie in another cell.
+
+A place id names the OSM element: `n`, `w` or `r` for a node, a way or a relation, and its ID, such
+as `n123`. A place has the same id in each file. Place ids sort by element (nodes, ways, then
+relations), then by ID. An area is a closed way or a multipolygon relation. A place:
+
+| Field | Value |
+| --- | --- |
+| `kind` | `parking`, `lift`, `peak`, `hut` (a hut with food), `lake` or `waterfall` |
+| `name` | The OSM `name` |
+| `ele_m` | The OSM `ele`, a number with or without `m`, rounded to whole metres |
+| `at_udeg` | `[longitude, latitude]` in microdegrees: the node; the top station of a lift; for an area, the centroid of its largest outer ring when it lies inside that ring, else the vertex of that ring nearest to the centroid |
+| `size` | Car park only: `large` or `small` |
+| `valley_udeg` | Lift only: `[longitude, latitude]` of the valley station |
+| `parking` | Lift only: the place id of the nearest car park within 300 m of the valley station |
+
+| Kind | OSM object; an object that fits more than one row takes the first |
+| --- | --- |
+| `parking` | A node or an area with `amenity=parking`, without `access` `private` or `customers`. It is `large` when `capacity` is a whole number of 50 or more, or, when `capacity` is no whole number, when the area has 1,250 m² or more; else `small` |
+| `lift` | A way with `aerialway` `cable_car`, `gondola`, `chair_lift` or `mixed_lift`, without `access` `private` or `no`. Its ends are the stations. The top station is the end with the greater height: the `ele` of a node with `aerialway=station` at the end, else the GLO-30 height. A lift without a height at an end, or with two equal heights, is no place |
+| `peak` | A node with `natural=peak` |
+| `hut` | A node or an area with `tourism=alpine_hut`, or with `amenity` `restaurant`, `cafe` or `biergarten` whose `at_udeg` is not inside an area with `landuse` `residential`, `commercial` or `retail` |
+| `lake` | An area with `natural=water` and `water` `lake` or `pond`, with a `name` or with 10,000 m² or more |
+| `waterfall` | A node with `waterway=waterfall` |
+
+An entry:
+
+| Field | Value |
+| --- | --- |
+| `parking` | The 5 nearest `large` and the 5 nearest `small` car parks within 3,000 m of the route |
+| `lifts` | The 5 nearest lifts whose top station is within 3,000 m of the route, by the distance of the top station |
+| `places` | Each peak, hut, lake and waterfall within 150 m of the route |
+| `paved_pct`, `big_road_pct`, `water_pct` | The shares of the samples that are paved, near a big road and by water |
+| `canopy_pct` | The share of the samples with a canopy value that are in forest. Absent when fewer than 90 % of the samples have a canopy value, or without a canopy archive |
+| `snow_free` | `[first, last]`: the first and the last day step of the snow window (see below); `[]` when no day step is free. Absent when more than 20 % of the samples have fewer than 5 seasons with data, or without `snow-seasons` |
+| `lift_ends` | Route that is not a loop only: `[place id, "start"]` or `[place id, "end"]` (see below) |
+| `back_s` | Route that is not a loop only: the moving time in the other direction, in whole seconds (see below) |
+
+An item of a list is `[place id, metres]`: the straight-line distance between the place and the
+nearest point of `line_udeg`, in whole metres. The distance of an area is to its nearest edge, and 0
+when the line enters the area. A list is in the order of the distance, then of the place id. An
+empty list is absent. A share is a whole percent of the samples, rounded to the nearest.
+
+The samples of a route are the points of `line_udeg` at each entry of `profile_m`: at `i × 100` m,
+with the line scaled to `length_m`, and at its end. A sample is:
+
+- Paved when the nearest way of the routing source within 15 m that has a `highway` class of the
+  router and no `area=yes` has a `surface` that the router counts as paved (`asphalt`, `paved`,
+  `concrete`, `concrete:plates`, `concrete:lanes`, `paving_stones`), or has no `surface` and is a
+  `motorway`, `trunk`, `primary`, `secondary`, `tertiary` (each also `_link`), `unclassified` or
+  `residential` way.
+- Near a big road when a `motorway`, `trunk` or `primary` way of the routing source without
+  `tunnel` (or with `tunnel=no`) is within 200 m. The routing source holds no node outside the
+  region bounds.
+- By water within 100 m of the edge of an area with `natural=water` and `water` `lake`, `pond`,
+  `reservoir` or `river`, or of a way with `waterway` `river` or `canal`.
+- In forest when the cell of the canopy archive that holds it is a forest cell with a cover of 5 or
+  more (50 %). A cell with the code 65535, or a cell of a tile that the archive does not hold, has no
+  canopy value.
+
+The snow window is the longest run of free day steps. A day step is the step of
+[`snow-seasons`](planner-snow-tiles.md#seasons), from 0 on 1 September to 182. Each sample reads its
+pixel in the tile of the deepest zoom that `snow-seasons` holds there. A sample with fewer than 5
+seasons with data is left out. A day step is free when no sample that is not left out had
+[snow](planner-snow-tiles.md#byte-values) on it in a quarter or more of its seasons with data. Steps 182 and 0 are neighbours, so the window can cross
+1 September; then `first` is greater than `last`. A route that is free on every step has
+`[0, 182]`. Of two runs of the same length, the window is the run with the smaller first step.
+
+A route that is not a loop has `lift_ends` when one end of `line_udeg` lies within 300 m of the
+valley station of a lift and the other end within 300 m of its top station. The second value names
+the end at the valley. Of several lifts, the entry takes the one with the smallest sum of the two
+distances, then the smallest place id.
+
+`back_s` is `moving_s` × T(backward) ÷ T(forward), rounded to whole seconds. T(forward) is the sum
+over the steps between the entries of `profile_m` of the moving time of the pace model of `moving_s`
+at its default pace for the kind: walking for `hiking` and `foot`, cycling for `bicycle` and
+`mtb`, with the pace of `mtb` for `mtb`. A step is 100 m, the last step the rest of `length_m`; its
+rise is the difference of its two entries, and 0 when one of them is `null`. T(backward) uses the
+negative rises. A flat route has `back_s` = `moving_s`, and so has a route without `profile_m`.
+
 ### Map view
 
 A map view is a box of longitude and latitude. Its cells are the zoom 9 cells whose box intersects
@@ -421,6 +539,267 @@ far view when a segment of a piece of its far line meets the box, edges included
 simplified far line can be longer than the view. Each trail is in the
 view once, with the pieces of all far files of the view.
 
+## Second sources
+
+A second source is an official source of signed routes, such as SchweizMobil, with a description
+in `data/routes/`. The step `planner/route-sources` reads the sources of the region into
+`route-sources.json` ([obc-data.md](obc-data.md#route-sources)). The builder makes a record of a
+source route as it makes one of an OSM relation, and merges the routes of all origins so that each
+route shows once. The official route takes the place of the OSM relation of the same route, and
+an official route with stages, its source trail, takes the place of the OSM long route of the same
+trail. A region with no second source, or a target without the part `route-sources`, has the catalog of its
+OSM relations only.
+
+### Origins
+
+OSM is origin 0. A second source has the `origin` of its description. The rank of the origins is
+each second source in the order of `route-sources.json`, which is the order of `data/sources.toml`,
+and then OSM. "Earlier" means earlier in this rank.
+
+### Ids
+
+A section has the `id` −(relation ID × 100 + section), so −10¹² < `id` < 0 while relation IDs are
+below 10¹⁰. A record of a second source has the `id` −(origin × 10¹² + key × 100 + stage), with the
+origin from 1 to 9006, the key of its route below 10¹⁰ and the stage from 0 (a route) to 99. So
+−(9007 × 10¹²) < `id` ≤ −10¹², and the two ranges do not meet. A reader that needs the number of a
+section reads `-id % 100` of an `id` in the first range only. A record has the `id` of the origin
+of its line, so it keeps its `id` when an OSM relation of its route comes, goes or splits. A source
+trail has the `id` of stage 0 of its route, −(origin × 10¹² + key × 100): a route with stages has no
+record of its own.
+
+### Jobs
+
+A job is one OSM relation, as the builder plans it today; one source route without `stages`; or
+one stage of a source route. A stage job takes the `ref`, the `rank` and the `kind` of its route,
+its own `name` and `ascent_m`, and the `description`, `operator` and `website` of its route when it
+has none of its own. A stage with no members is no job; it is a part not in the catalog of its
+source trail (see [Source trails](#source-trails)).
+
+### Line of a source job
+
+Each point of a member is a node, and points at the same microdegree point are one node. The
+builder joins the members by the rules of [Plan](#plan): the member order, the nearest-end chain
+with joins of at most 500 m, and the side branches. A job with a point outside the bounds of the
+release leaves as `ExtractEdge`. A source job is a loop when the two ends of this main line are
+within 200 m.
+
+The builder puts points into each run of the main line so that no two points are more than 10 m
+apart. A cut is a stretch of these points that are more than 30 m from every road that the first
+plan profile of the kind may use: `hiking/alpine` for `hiking`, `mtb/technical` for `mtb`,
+`touring` for `bicycle`. Such a road is a way of the routing source with a road of the package that
+the profile may use, in either direction. Points within 30 m of such a road for less than 100 m
+between two cuts belong to the cut, so a lift or a boat line that crosses a path is one cut. The
+length of a cut is the length of the line from the last point before it to the first point after
+it, or to the end of the run.
+
+- A cut longer than 500 m drops the job as `Gap`, also at an end.
+- A shorter cut takes its points out of the line. Inside the line, the router patches the gap as
+  for an OSM route. The patch bound measures against the main line before the cut: a patch with
+  more than 500 m farther than 30 m from it drops the job as `Gap`. At the start or the end, the
+  line gets shorter.
+- For a loop, the start and the end are one place: a cut at the start and a cut at the end that are
+  longer than 500 m together drop the job.
+
+So a stretch of up to 500 m on a path that the map closes to the bike type of the route is cut, the
+router goes around it, and the official route stays.
+
+The length of a source job is the length of its runs after the cut; a job under 1 km leaves as
+`Short`. The shaping budget is 2 % of that length, as for every route. A loop plan ends at its
+start: when the cut made an end shorter, the router patches the gap of at most 500 m between the
+two ends. A source line is never cut into sections, so a source line of more than 60 km whose plan
+fails leaves with its reason.
+
+### Match lines
+
+The match line of a job is a set of pieces, with no line between two pieces:
+
+- for an OSM job, each main member way that the import holds, as a piece in its node order, also
+  for a job that leaves as `ExtractEdge` or whose plan fails;
+- for a source job, the runs of its main line before the cut.
+
+The share of a match line along a set of match lines is the share of its points, at each 10 m of
+each piece, that lie within 30 m of a piece of the set.
+
+### Pairs
+
+Two jobs of different origins agree when they have the same kind family (`hiking` and `foot` are
+one), the same `rank` when both are above 0, and either both have a `ref` and the refs agree, or
+one has no `ref` and a name of one agrees with a name of the other. Two refs agree when they share a
+number (a run of digits and dots, read as the whole numbers between its dots: `SM 561` and `561`,
+`1;EV17` and `1`; `4.1` agrees with neither `4` nor `1`), or, when neither has a digit, when their
+letters and digits are equal in lower case.
+
+Two names agree when their letters and digits are equal in lower case, or by their words: the words
+of one name are all words of the other, and both names have the same digit words. A word is a run of
+letters and digits (`char::is_alphanumeric`) in lower case, and a digit word is a word with an ASCII
+digit 0 to 9. A name with no word agrees with no name. So "Eigertrail" and "Eiger Trail" agree (equal
+letters), "Cloefpfad" and "Traumschleife Cloefpfad" agree by their words, "Bliessteig" and
+"Bliessteig - Etappe 4" do not (only the second has the digit word "4"), and an empty name agrees
+with no name.
+
+A job has one name, the name of its route, with one exception. For an OSM relation that is a part of
+a long route, the `ref` is its own or else that of its long route, and the name is that of its long
+route. When the part has a name and the name of its long route has a word, the part has a second
+name: the name of its long route and its own name, joined with a space, such as "Bliessteig
+Bliessteig - Etappe 4". So a part never compares a bare stage name such as "Etappe 4" alone, which
+agrees with the stage 4 of each trail. Its long route is the one that lists it at the lowest level,
+of two the one with the lower relation ID. For a source stage, the `ref` and the name are those of
+its route. A long record of [The same trail](#the-same-trail) has its own name.
+
+Two jobs are a pair when (a) they agree and the match line of one lies at least a fifth along the
+other, or (b) they have the same kind family and each match line lies at least 80 % along the
+other, whatever their refs, names and ranks. Two jobs that agree only by the words of their names
+(their refs do not decide, and no two of their names have equal letters and digits) are a pair by
+(a) only when the match line of one lies at least four fifths along the other, and the other at
+least half along the first. A village name agrees by its words with the name of each route of the
+village, and only the same route on the ground lies so far along it.
+
+### Who stays
+
+A job of a later origin leaves (`Replaced`) when the kept records of earlier origins that are its
+pairs together cover at least four fifths of its match line. For a part of a long route, only its
+pairs by (a) count: a pair by (b) is another route on the same path, which cannot take its place.
+A kept record never leaves for a job of a later origin, so an official record never leaves for an
+OSM job.
+
+When each of these pairs is a pair by (a) whose names agree with the names of the job (equal letters
+and digits, or words at the shares of a pair by words), the job leaves when they cover at least a
+half of its match line. A pair whose refs agree and whose names do not keeps four fifths. So where an
+OSM route and an official route have the same name and their lines differ in part, the rider sees the
+official route only. At most half of the match line of such a job shows nowhere. A long record keeps
+four fifths (see [The same trail](#the-same-trail)).
+
+So no route leaves the catalog for another one unless the match lines of the records that stay cover
+four fifths of its match line, or a half for a job whose pairs agree with it by name: the rule
+counts only kept records of earlier origins, and nothing removes such a record later, as `named`
+drops only unnamed OSM stages and the builder cuts no source line into sections. The line that a
+record shows can differ from its match line where its plan goes around a cut of [Line of a source
+job](#line-of-a-source-job). A job that fails removes nothing. The builder plans all source jobs
+first. Then it applies the rule to the jobs of the second and later sources, in their order, and to
+the OSM jobs, so an OSM job that leaves needs no search. Then it plans the OSM jobs that stay.
+
+A route can show twice: an OSM job that its pairs cover by less than four fifths stays beside them,
+or by less than a half when they agree with it by name. Examples are a long OSM route with the number
+of a short official route, two stagings of one route whose stage names do not agree, and two circuits
+whose names agree by their words and whose lines lie less than four fifths along each other both
+ways. To remove one could remove a stretch that shows nowhere else.
+
+A name can show nowhere: a job that is no part of a long route can leave for an official record of
+another name on the same path, a pair by (b), such as a EuroVelo route that is a relation of its
+own, listed by no long route of the extract, on the line of a national route with another number.
+
+### Successors
+
+The successors of a job that left are its pairs by (a). A pair by (b) is another route on the same
+path, so it is no successor. So a regional OSM stage on a path that a national route shares has the
+regional official stage as its successor, not the national one, and a regional official stage never
+takes the place of a national stage.
+
+### Words
+
+A record that stays takes each of `operator`, `website` and `symbol` that it lacks from one job
+whose successor it is (not `description`: an OSM description often tells how the relation is
+mapped, such as "the route is not complete"): the job whose match line covers the largest share of the
+record's match line; of two equal shares, the job with the smaller absolute `id`. An OSM job gives
+its tags by the rules of [Records](#records). A record whose plan route has a vertex in France takes
+no `symbol`.
+
+### Parts
+
+A part of an OSM long route whose job left points to its successors, in the order of
+their starts along it: the place of the point of its match line nearest to the start of each
+successor, by the member order of its pieces, then along the piece. Each successor is a part with
+the stage number of the part that left. A record appears once in a long route, at its first place,
+and a part whose successors all stand at earlier places gives no part. So two parts can have one
+stage number (one OSM stage over two official stages), and a number can have no part (one official
+route over three OSM stages takes the number of the first). A part with no successor is a part not
+in the catalog, without ends. Then the rules of [Long routes](#long-routes) apply as to any part,
+so an official stage that runs against the trail is `backwards`, and the long route is not
+complete.
+
+A reader shows "Stage n of N" with n the stage number of the part and N the `stage_count` of the
+long route, and "K of N stages", with K = N less the stage numbers that only parts not in the
+catalog have, or 0 when no part is in the catalog.
+
+### Source trails
+
+Each source route with stages gives a long route, its source trail. Its parts are its stage rows, in
+the order of their numbers. The stage number of a part is the number of its row, so a number with
+no stage row has no part.
+
+- A stage that the builder kept is a part with its record.
+- A stage that failed and has a match line takes as its part a kept OSM record that is a stage of an
+  OSM long route (a part of it, not a section, not a route of its own), agrees with the stage (see
+  [Pairs](#pairs)), and whose match line and the match line of the stage each lie at least four
+  fifths along the other. Of two such records, it takes the one with the lower `id`. A record
+  stands once in a trail, at its first place, so a later stage does not take it again. This part
+  has the `id` of the OSM record, and the `name` and the number of the official stage.
+- Another stage that failed, or a stage that left for a record of an earlier source (see [Who
+  stays](#who-stays)), is a part not in the catalog; a stage that failed has the ends of its main
+  line when the builder made one.
+- A stage with no members is a part not in the catalog, without ends.
+
+A stage that the cut drops (see [Line of a source job](#line-of-a-source-job)) keeps its match line
+and the ends of its main line. Its match line takes no part in [Who stays](#who-stays), so it has no
+pairs. A part not in the catalog has the `id` that the record of its stage would have, and the
+`name` of its stage row.
+
+The record of a source trail has its `id` by [Ids](#ids); the `kind`, `rank`, `name` and `ref` of
+its route; the `description` (cut as for OSM), `operator` and `website` of its route when it has
+them; and `credit`. `stage_count` is the highest stage number of its route, so a stage page shows
+"Stage 35 of 35" also when two numbers have no stage row. A source has no `roundtrip` field: a
+source trail is a loop by the rule of [Long routes](#long-routes) as a relation with
+`roundtrip=yes`, as the builder takes a source route as a loop when the ends of its line are within
+200 m. The other rules of [Long routes](#long-routes) (separate routes, `backwards`, `jump`,
+complete) apply to it as to an OSM long route.
+
+### The same trail
+
+Only the long records of long routes take part: the OSM long routes and the source trails. A cut
+line, and a route record that is a trail by its moving time, stay as [Who stays](#who-stays) left
+them. The trail line of a long record is the `line_udeg` of each of its parts in the catalog, each
+part a piece. Two long records of different origins are a pair by rule (a) of [Pairs](#pairs) only,
+on their trail lines, so a long record of another rank is another trail.
+
+A long record leaves (`Replaced`) when the long records of earlier origins that are its pairs cover
+at least four fifths of its trail line, also when their names agree: a complete OSM trail does not
+give way to an official trail whose stages in the catalog cover only half of it. A source trail
+never leaves for an OSM long record, so where neither covers four fifths of the other, both trails
+stay. A long record that leaves takes no record out of the catalog. The long record that stays takes
+each of `operator`, `website` and `symbol` that it lacks, not `description`, from the long record
+that left for it and whose trail line lies along the largest share of its own, by the rule of
+[Words](#words). It takes no `symbol` when a part in the catalog is in France.
+
+So a trail can show twice: an OSM long record that the source trails cover by less than four fifths
+stays beside them, and so do a trail of another rank, a cut line and a route record that is a trail
+by its moving time.
+
+### Stage fields
+
+`trail`, `trail_stage`, `parent` and `stage` come only from the long records that stay. A source
+trail lists its parts at level 1. Of two long records that list a part, the part takes the fields
+of the one at the lowest level, and of two at one level of the one with the lower `id`. A source
+trail has a lower `id` than each OSM long record, so at one level the source trail gives the fields:
+the stage page shows "Stage n of N" of the official trail, and the stage line has its colour. The
+OSM long record that stays still lists the part in its `parts`, with the OSM number. A record that
+is a part only of long records that left has none of these fields and shows as a route of its own.
+An unnamed OSM stage takes its name by the rule of [Long routes](#long-routes), also from a long
+route that left, so it never leaves the catalog because a trail left. The long route that names it
+can be a source trail.
+
+### Record
+
+A record of a second source has the fields of a route record from its plan, `moving_s`, `hardest`
+and `profile_m` included; its `id` by [Ids](#ids); its `kind`; `rank`, `name` and `ref` from the
+source; `description` from the source; `operator` and `website` from the source, else by
+[Words](#words); `symbol` by [Words](#words); and `credit`. It has `trail` and `trail_stage` from a
+long route that lists it, and `parent` and `stage` only from a complete one, by [Stage
+fields](#stage-fields). A long route has `credit` when its own origin or one of its parts in the
+catalog has one. The builder splits each credit on `; `, and joins the distinct ones with `; `: its
+own first, then those of its parts in part order.
+`planner/route-facts` gives a record of a second source its facts entry as any record, under its
+`id`.
+
 ## Examples
 
 A one-way stage of 3.7 km in cell `9-267-178`, with one shaping point:
@@ -429,7 +808,7 @@ A one-way stage of 3.7 km in cell `9-267-178`, with one shaping point:
 {"ascent_m":184,"cells":["9-267-178"],"descent_m":251,"grades_m":[2460,1250,0,0,0,0],
  "hardest":1,"id":1234567,"kind":"hiking","length_m":3710,
  "line_udeg":[8004512,47873120,9210,-6400,8800,-11500,6500,-4200,5510,-2100],
- "loop":false,"name":"Mühlbach-Weg, Etappe 1","operator":"Schwarzwaldverein",
+ "loop":false,"moving_s":4380,"name":"Mühlbach-Weg, Etappe 1","operator":"Schwarzwaldverein",
  "parent":2345678,
  "profile_m":[620,618,625,631,640,652,661,668,676,684,690,699,708,716,725,733,741,748,752,
               760,768,773,779,784,788,780,768,751,733,712,694,671,650,628,610,590,571,555,553],
@@ -441,7 +820,7 @@ Its long route, with two stages, as in a cell file:
 
 ```json
 {"ascent_m":420,"cells":["9-267-178"],"descent_m":449,"grades_m":[6830,2000,0,0,0,0],
- "hardest":1,"id":2345678,"kind":"hiking","length_m":8830,"loop":false,
+ "hardest":1,"id":2345678,"kind":"hiking","length_m":8830,"loop":false,"moving_s":10500,
  "name":"Mühlbach-Weg","operator":"Schwarzwaldverein","rank":1,"ref":"MW","stage_count":2,
  "stages":[1234567,1234568],"start_udeg":[8004512,47873120],
  "symbol":"yellow:white:yellow_diamond"}
@@ -454,16 +833,16 @@ the catalog; the whole trail is the last `end_m`. `trail_profile_m` is shortened
 
 ```json
 {"ascent_m":610,"cells":["9-267-178"],"descent_m":655,"grades_m":[9930,3200,0,0,0,0],
- "hardest":1,"id":2345678,"kind":"hiking","length_m":13130,"loop":false,"name":"Mühlbach-Weg",
- "operator":"Schwarzwaldverein","parts":[
-  {"ascent_m":184,"cells":["9-267-178"],"end_m":3710,"id":1234567,"length_m":3710,
-   "name":"Mühlbach-Weg, Etappe 1","stage":1},
-  {"ascent_m":236,"cells":["9-267-178"],"end_m":8830,"id":1234568,"length_m":5120,
-   "name":"Mühlbach-Weg, Etappe 2","stage":2},
+ "hardest":1,"id":2345678,"kind":"hiking","length_m":13130,"loop":false,"moving_s":15240,
+ "name":"Mühlbach-Weg","operator":"Schwarzwaldverein","parts":[
+  {"ascent_m":184,"cells":["9-267-178"],"end_m":3710,"hardest":1,"id":1234567,"length_m":3710,
+   "moving_s":4380,"name":"Mühlbach-Weg, Etappe 1","stage":1},
+  {"ascent_m":236,"cells":["9-267-178"],"end_m":8830,"hardest":1,"id":1234568,"length_m":5120,
+   "moving_s":6120,"name":"Mühlbach-Weg, Etappe 2","stage":2},
   {"end_m":13650,"end_udeg":[8051210,47840730],"id":1234569,"length_m":4820,"missing":true,
    "name":"Mühlbach-Weg, Etappe 3","stage":3,"start_udeg":[8043980,47851020]},
-  {"ascent_m":190,"cells":["9-267-178"],"end_m":17950,"id":1234570,"length_m":4300,
-   "name":"Mühlbach-Weg, Etappe 4","stage":4}],
+  {"ascent_m":190,"cells":["9-267-178"],"end_m":17950,"hardest":1,"id":1234570,"length_m":4300,
+   "moving_s":4740,"name":"Mühlbach-Weg, Etappe 4","stage":4}],
  "rank":1,"ref":"MW","stage_count":4,"symbol":"yellow:white:yellow_diamond",
  "trail_profile_m":[620,624,629,"…",655,null,null,"…",null,604,"…",612]}
 ```

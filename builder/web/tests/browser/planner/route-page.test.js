@@ -9,7 +9,7 @@ const drawn = (id, kind, lat, from, to) => ({
 
 // A route of one day with drawn legs, so its line needs no routing request: 22.2 km along a meridian, up 400 m and down.
 const route = {
-  id: 'lake', revision: 0, name: 'Lake test', updatedAt: 0,
+  id: 'lake', name: 'Lake test', updatedAt: 0,
   trip: { mode: 'route', bike: 'touring', days: 1, routeOrder: ['view'], points: [drawn('start', 'start', 48), drawn('view', 'waypoint', 48.1, 300, 700), drawn('finish', 'finish', 48.2, 700, 300)] },
   summary: { line: [8, 48, 8, 48.1, 8, 48.2], heights: [300, 700, 300], bounds: [8, 48, 8, 48.2], lengthM: 22_239, climbM: 400, highestM: 700, seconds: 4000, bike: 'touring', days: 1 },
 };
@@ -28,7 +28,10 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   await page.goto('/planner.html?cover=none');
   await page.waitForFunction(() => window.coverTest);
   await page.evaluate(record => window.coverTest.library.saveRoute(record), route);
+  // A draft that the planner cannot open, so the planner below shows no reminder.
+  await page.evaluate(() => window.coverTest.library.saveDraft({ id: 'lake', updatedAt: 0, trip: {} }));
   await page.goto('/planner.html#/route/lake');
+  await expect(page.getByText('This route has unsaved changes in the planner.')).toBeVisible();
   const facts = page.locator('.facts');
   await expect(page.getByRole('heading', { name: 'Lake test', level: 1 })).toBeVisible();
   // The map shows the relief, so the credit of the terrain is behind the button of credits.
@@ -137,7 +140,7 @@ test('the cover shows whole with the map beside it, and with the map in its corn
   await page.waitForFunction(() => window.coverTest);
   await page.evaluate(async ({ image, summary, points }) => {
     const { library, lineKey } = window.coverTest;
-    const route = await library.saveRoute({ id: 'covered', revision: 0, name: 'Covered', updatedAt: 0, trip: {}, summary });
+    const route = await library.saveRoute({ id: 'covered', name: 'Covered', updatedAt: 0, trip: {}, summary });
     await library.saveCover({ id: 'covered', lineKey: lineKey(route), state: 'done', tries: 0, image: new Blob([new Uint8Array(image)], { type: 'image/webp' }),
       points: { x: Float32Array.from(points.x), y: Float32Array.from(points.y), eye: Uint8Array.from(points.eye) } });
   }, { image, summary, points });

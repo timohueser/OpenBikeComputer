@@ -34,7 +34,7 @@ async function fill(page, state, remembered = null) {
   await page.waitForFunction(() => window.coverTest);
   await page.evaluate(async ({ summary, state, remembered }) => {
     const { library } = window.coverTest;
-    for (const [id, name] of [['lake', 'Lake loop'], ['pass', 'Pass day']]) await library.saveRoute({ id, revision: 0, name, updatedAt: 0, trip: {}, summary });
+    for (const [id, name] of [['lake', 'Lake loop'], ['pass', 'Pass day']]) await library.saveRoute({ id, name, updatedAt: 0, trip: {}, summary });
     for (const [key, value] of Object.entries(state)) await library.setState(key, value);
     if (remembered) localStorage.setItem('obc-device', JSON.stringify(remembered));
   }, { summary, state, remembered });
@@ -63,7 +63,7 @@ test('connected, the rows show the sync, the routes, the rides, the memory card,
   await page.goto('/planner.html?fake-device#/device');
   await page.waitForFunction(() => window.deviceTest);
   const route = await page.evaluate(() => window.deviceTest.route);
-  await fill(page, { sent: { lake: { device: route, key: '' } } });
+  await fill(page, { sent: { lake: route } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route(url => url.hostname !== '127.0.0.1', route => route.abort());

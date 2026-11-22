@@ -43,7 +43,7 @@ const metres = ([lon1, lat1], [lon2, lat2]) =>
   Math.hypot((lon2 - lon1) * 111_320 * Math.cos((lat1 * Math.PI) / 180), (lat2 - lat1) * 110_574);
 
 /** A straight-line route through the points, in the answer format of `specs/route-api.md`. A leg position names its point. */
-function route(points, profile, id) {
+function route(points, profile) {
   const steps = 8;
   const geometry = [points[0]];
   const legs = [];
@@ -61,7 +61,7 @@ function route(points, profile, id) {
   const [lon, lat] = [0, 1].map(axis => deltas(geometry.map(p => Math.round(p[axis] * 1e6))));
   const edges = geometry.length - 1;
   return {
-    id, reason: id === 'primary' ? 'primary' : 'alternative', package: 'budget-test', profile,
+    package: 'budget-test', profile,
     coordinates_udeg: lon.flatMap((x, i) => [x, lat[i]]),
     elevation_dm: deltas(geometry.map((_, i) => Math.round(3000 + 400 * Math.sin(i / 3)))),
     elapsed_s: deltas(distance.map(d => Math.round(d / 5))),
@@ -77,13 +77,13 @@ const ROUTE_CELL = '9-267-177';
 const udeg = points => points.map(point => point.map(value => Math.round(value * 1e6)))
   .flatMap((point, i, all) => i ? [point[0] - all[i - 1][0], point[1] - all[i - 1][1]] : point);
 /** A loop with a profile, a description of a few lines and an official page, stage 2 of a long route with a long description and no profile, the
- * long route, and a cycle route. */
+ * long route, a cycle route, and two mountain bike routes like the loop and the stage. */
 const CATALOG = [
   { id: 101, kind: 'hiking', name: 'Schlossberg loop', rank: 1, loop: true, length_m: 1200, ascent_m: 150, descent_m: 150, hardest: 1,
     description: 'Over the castle hill and through the old town. '.repeat(12), operator: 'Test club', website: 'https://example.test/schlossberg', symbol: 'red:white:red_bar',
     cells: [ROUTE_CELL], line_udeg: udeg([[7.85, 47.99], [7.86, 47.995], [7.855, 48.0], [7.85, 47.99]]), via: [1, 2],
     profile_m: Array.from({ length: 14 }, (_, i) => 300 + 10 * Math.min(i, 13 - i)) },
-  { id: 202, kind: 'hiking', name: 'Westweg 2', ref: 'WW', rank: 3, loop: false, length_m: 2500, ascent_m: 80, descent_m: 20, hardest: 0,
+  { id: 202, kind: 'hiking', name: 'Westweg 2', ref: 'WW', rank: 3, loop: false, length_m: 2500, ascent_m: 80, descent_m: 20, hardest: 0, moving_s: 5400,
     cells: [ROUTE_CELL], line_udeg: udeg([[7.88, 47.98], [7.9, 47.985], [7.91, 48.0]]), via: [1], parent: 300, stage: 2,
     description: 'The stage follows the old trail through the forest and along the ridge to the next village. '.repeat(40) },
   { id: 300, kind: 'hiking', name: 'Westweg', rank: 3, loop: false, length_m: 5000, ascent_m: 200, descent_m: 100, cells: [ROUTE_CELL],
@@ -91,6 +91,30 @@ const CATALOG = [
   { id: 303, kind: 'bicycle', name: 'Dreisam path', rank: 2, loop: false, length_m: 3000, ascent_m: 10, descent_m: 10, cells: [ROUTE_CELL],
     line_udeg: udeg([[7.83, 47.99], [7.87, 47.99]]), via: [] },
 ];
+CATALOG.push({ ...CATALOG[0], id: 111, kind: 'mtb', name: 'Schlossberg trail' },
+  { ...CATALOG[1], id: 212, kind: 'mtb', name: 'Rosskopf trail', ref: undefined, parent: undefined, stage: undefined });
+/** The facts file of `ROUTE_CELL` (`specs/route-catalog.md`, "Facts files"): the loop passes a summit and has a large car park
+ * beside it; the stage has the larger paved share. */
+const FACTS = {
+  format: 1,
+  places: {
+    n1: { kind: 'peak', name: 'Schlossberg', ele_m: 460, at_udeg: [7_860_000, 47_995_000] },
+    w2: { kind: 'parking', size: 'large', at_udeg: [7_850_000, 47_989_000] },
+  },
+  routes: {
+    101: { parking: [['w2', 100]], places: [['n1', 0]], paved_pct: 10, big_road_pct: 0, water_pct: 0, canopy_pct: 70 },
+    202: { paved_pct: 30, big_road_pct: 0, water_pct: 0, back_s: 4800 },
+  },
+};
+/** The trail record file of "Westweg": stage 1 is a gap, stage 2 is in the catalog, and stage 3 is outside the release. */
+const WESTWEG = {
+  ...CATALOG[2], stage_count: 3, trail_profile_m: Array.from({ length: 201 }, (_, i) => i < 100 ? null : 300 + i),
+  parts: [
+    { id: 201, stage: 1, length_m: 2500, end_m: 2500, missing: true, start_udeg: [7_800_000, 47_970_000], end_udeg: [7_880_000, 47_980_000] },
+    { id: 202, stage: 2, length_m: 2500, ascent_m: 80, moving_s: 5400, end_m: 5000, cells: [ROUTE_CELL] },
+    { id: 203, stage: 3, end_m: 5000, missing: true },
+  ],
+};
 
 /** The live set of route pictures (`specs/route-pictures.md`) holds a cover of the first route of `CATALOG` only. */
 const LOOK = '1|0715-1000|960|640';
@@ -156,16 +180,16 @@ export function respond(request) {
       return url.pathname.endsWith('.png') ? { headers: CORS, contentType: 'image/png', body: PIXEL } : json({});
     case 'pictures': {
       const path = url.pathname.slice('/route-pictures/'.length);
-      if ([`covers/${COVERED.id}/${COVER}-0715-1000.webp`, `covers/${COVERED.id}/${COVER}-0715-1000-small.webp`].includes(path)) return { headers: CORS, contentType: 'image/png', body: PIXEL };
+      if ([`covers/${COVERED.id}/${COVER}-0715-1000.webp`, `covers/${COVERED.id}/${COVER}-0715-1000-row.webp`].includes(path)) return { headers: CORS, contentType: 'image/png', body: PIXEL };
       return PICTURES[path] ? json(PICTURES[path]) : { headers: CORS, status: 404 };
     }
     case 'routes':
+      if (url.pathname.startsWith('/routes/tiles/long/')) return url.pathname.endsWith(`/${WESTWEG.id}.json`) ? json({ format: 1, routes: [WESTWEG] }) : { headers: CORS, status: 404 };
+      if (url.pathname.startsWith('/routes/tiles/facts/')) return json(url.pathname.endsWith(`/${ROUTE_CELL}.json`) ? FACTS : { format: 1, places: {}, routes: {} });
       return json({ format: 1, routes: url.pathname.endsWith(`/${ROUTE_CELL}.json`) ? CATALOG : [] });
     case 'route': {
-      const { points, profile, alternatives, alternatives_only } = request.postDataJSON();
-      const routes = alternatives_only ? [] : [route(points, profile, 'primary')];
-      if (alternatives || alternatives_only) routes.push(route(points, profile, 'alternative'));
-      return json({ routes });
+      const { points, profile } = request.postDataJSON();
+      return json({ routes: [route(points, profile)] });
     }
     case 'region':
       return json({ package: 'budget-test', profiles: ['gravel', 'hiking', 'mtb', 'road', 'touring', 'gravel/less-climbing', 'road/less-climbing', 'touring/less-climbing'] });

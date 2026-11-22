@@ -6,7 +6,7 @@ use crate::{
 };
 
 const LABEL_BLOCK: usize = 512;
-// Reuse a bounded pool across short legs and alternative searches.
+// Reuse a bounded pool across short legs and repeated searches.
 const SPARE_BLOCKS: usize = 1024;
 
 struct LabelBlock {

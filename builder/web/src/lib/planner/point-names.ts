@@ -1,9 +1,17 @@
+import { planTitle, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { config } from './map-data';
 import { releaseFetch } from './release';
 import { searchPlaces } from './search/types';
 
 export const coordinateName = (coordinate: Coordinate) => `${coordinate[1].toFixed(5)}, ${coordinate[0].toFixed(5)}`;
+
+/** The name that the first save of a route offers: its title, or '' while its start or finish has no place name. */
+export function offeredName(trip: Trip): string {
+    const unnamed = (point?: RoutePoint) => !point || ['Start', 'Finish', coordinateName(point.coordinate)].includes(point.label);
+    const [start, finish] = (['start', 'finish'] as const).map(kind => trip.points.find(p => p.kind === kind));
+    return trip.name || (unnamed(start) || (!trip.loop && unnamed(finish)) ? '' : planTitle(trip));
+}
 
 export async function visitName(coordinate: Coordinate): Promise<string | null> {
     try {

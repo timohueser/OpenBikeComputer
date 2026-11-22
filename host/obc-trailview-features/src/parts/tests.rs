@@ -1,0 +1,450 @@
+use std::collections::{HashMap, HashSet};
+
+use obc_ground_plan::graph::OpenEnd;
+use serde_json::Value;
+
+use super::ladder::Kind;
+use super::measure::{Ask, Site};
+use super::*;
+use crate::tiles::{decode, Geometry, Tiles, MAX_ZOOM};
+use crate::{world, Plan};
+
+/// The world point at metres east and north of a point at about 46.8° N.
+fn at([e, n]: [f64; 2]) -> [f64; 2] {
+    let o = world(8.4, 46.8);
+    let m = metres(o[1]);
+    [o[0] + e / m, o[1] - n / m]
+}
+
+/// Metres east and north of a world point.
+fn back(p: [f64; 2]) -> [f64; 2] {
+    let o = world(8.4, 46.8);
+    let m = metres(o[1]);
+    [(p[0] - o[0]) * m, (o[1] - p[1]) * m]
+}
+
+fn tags(pairs: &[(&str, &str)]) -> Tags {
+    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+fn table(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
+
+fn widths() -> WidthRules {
+    let roads = crate::kinds::solver_rows(&table(include_str!("../../../../data/trailview/roads.json")));
+    let finishes = crate::kinds::finish_rows(&table(include_str!("../../../../data/trailview/finishes.json")));
+    crate::kinds::widths(&roads, &finishes).unwrap()
+}
+
+/// A way's part through points in metres at the heights z, with an alignment along its chords from 0 m.
+fn part(points: &[[f64; 2]], z: &[f64]) -> Part {
+    let pts: Vec<[f64; 2]> = points.iter().map(|&p| at(p)).collect();
+    let mut along = 0.0;
+    let plan = (0..pts.len())
+        .map(|k| {
+            let (a, b) = if k + 1 < pts.len() { (pts[k], pts[k + 1]) } else { (pts[k - 1], pts[k]) };
+            if k > 0 {
+                along += distance(pts[k - 1], pts[k]);
+            }
+            Plan { tangent: (b[1] - a[1]).atan2(b[0] - a[0]), along, ..Plan::default() }
+        })
+        .collect();
+    Part { outer: false, points: pts, z: Some(z.to_vec()), plan: Some(plan) }
+}
+
+const ROAD: [(&str, &str); 2] = [("highway", "residential"), ("tunnel", "yes")];
+const FOOT: [(&str, &str); 2] = [("highway", "footway"), ("tunnel", "yes")];
+
+/// The ways of a test: (kind, tags, parts) by id; the tunnels are the ways of kind `tunnel`.
+#[derive(Default)]
+struct Case {
+    ways: Vec<(&'static str, Tags, Vec<Part>)>,
+    /// The deck depth of a bridge way, by its place in `ways`.
+    decks: HashMap<usize, f64>,
+}
+
+impl Case {
+    /// A tunnel east from e0 to e1 at n, its floor at 500 m; its id.
+    fn tunnel(&mut self, t: &[(&str, &str)], (e0, e1): (f64, f64), n: f64) -> u32 {
+        let pts = [[e0, n], [(e0 + e1) / 2.0, n], [e1, n]];
+        self.ways.push(("tunnel", tags(t), vec![part(&pts, &[500.0; 3])]));
+        self.ways.len() as u32 - 1
+    }
+
+    fn way(&mut self, pts: &[[f64; 2]]) {
+        let z = vec![500.0; pts.len()];
+        self.ways.push(("road", tags(&[("highway", "residential")]), vec![part(pts, &z)]));
+    }
+
+    /// The placement of the tunnels, each ask measured by `site`; the open ends that the measure gets go to `opened`.
+    fn place(&self, site: &dyn Fn(&Ask) -> Site, opened: &mut Vec<OpenEnd>) -> Placed {
+        let roads = crate::kinds::solver_rows(&table(include_str!("../../../../data/trailview/roads.json")));
+        let (class_names, classes) = crate::kinds::classes(&roads).unwrap();
+        let widths = widths();
+        let rules =
+            Ladder::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))))
+                .unwrap();
+        let tunnels: HashMap<u32, (Tags, Vec<Part>)> = (self.ways.iter().enumerate())
+            .filter(|(_, w)| w.0 == "tunnel")
+            .map(|(id, w)| (id as u32, (w.1.clone(), w.2.clone())))
+            .collect();
+        let (tiles, levels) = (Tiles::new([8.3, 46.7, 8.5, 46.9]), HashMap::new());
+        let tunnel_ways: HashSet<usize> = tunnels.keys().map(|&id| id as usize).collect();
+        let input = Input {
+            tunnels: &tunnels,
+            ways: self.ways.iter().map(|(k, t, p)| (*k, t, p.as_slice())).collect(),
+            decks: &self.decks,
+            tunnel_ways: &tunnel_ways,
+            tiles: &tiles,
+            levels: &levels,
+            terrain: &|_: f64, _: f64| 0.0,
+            rules: &rules,
+            widths: &widths,
+            class_names: &class_names,
+            classes: &classes,
+        };
+        let opened = std::cell::RefCell::new(opened);
+        place_with(&input, &|asks, ends| {
+            opened.borrow_mut().extend_from_slice(ends);
+            (asks.iter().map(site).collect(), 0)
+        })
+    }
+}
+
+/// The sites of a ground at metres east and north, with the rooms of a way on top and a building over the line.
+fn site<'a>(ground: &'a dyn Fn([f64; 2]) -> f64, rooms: &[f64], building: bool) -> impl Fn(&Ask) -> Site + 'a {
+    let rooms = rooms.to_vec();
+    move |a: &Ask| {
+        let across = |j: i64| Some(ground(back(offset(a.p, left_of(a.dir), j as f64))));
+        Site {
+            stations: a.stations.iter().map(|st| st.map(|p| Some(ground(back(p))))).collect(),
+            row: (-(a.right as i64)..=a.left as i64).map(across).collect(),
+            decks: Vec::new(),
+            rooms: rooms.clone(),
+            building,
+        }
+    }
+}
+
+/// The kinds and the rung of each opening of way `id`.
+fn of(placed: &Placed, id: u32) -> Vec<(Vec<Kind>, &'static str)> {
+    placed.ends.iter().filter(|e| e.0 == id).map(|(_, e)| (e.kinds.clone(), e.rung)).collect()
+}
+
+fn records<'a>(placed: &'a Placed, kind: &str) -> Vec<&'a Tags> {
+    placed.features.iter().filter(|f| f.0 == kind).map(|f| &f.1).collect()
+}
+
+/// A ridge over a tunnel `len` metres long east from 0 m: it rises `rise` per metre from each end.
+fn ridge(len: f64, rise: f64) -> impl Fn([f64; 2]) -> f64 {
+    move |p: [f64; 2]| 500.0 + rise * p[0].min(len - p[0]).max(0.0)
+}
+
+#[test]
+fn each_rung_gives_its_kinds_in_the_order_of_the_rungs() {
+    use Kind::*;
+    let road = || {
+        let mut case = Case::default();
+        case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+        case
+    };
+    // A road tunnel 200 m long whose ridge rises 1 m per metre: the cover of 6 m (bore 5 m, shell and cover 0.5 m
+    // each) comes 6 m in, within the road's collar of 25 m: an arch, then the free tube end.
+    let placed = road().place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, 0), vec![(vec![Arch, Free], "hill"); 2]);
+    let ends = records(&placed, "tunnel-end");
+    assert_eq!(ends.len(), 2);
+    assert_eq!((ends[0]["collar"].as_str(), ends[0]["part"].as_str()), ("6", "arch"));
+    // Covered 30 m in, past the collar: the free tube end; never covered: the same.
+    let placed = road().place(&site(&ridge(200.0, 0.2), &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, 0), vec![(vec![Free], "free: covered past the limit"); 2]);
+    let placed = road().place(&site(&|_| 500.0, &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, 0), vec![(vec![Free], "free: never covered"); 2]);
+    // An end that meets no way, covered at its vertex: the free tube end.
+    let placed = road().place(&site(&|_| 520.0, &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, 0), vec![(vec![Free], "free: a covered end that meets no way"); 2]);
+    // A footway covered 2 m in (its cover is 3.6 m) opens in the rock first.
+    let mut case = Case::default();
+    case.tunnel(&FOOT, (0.0, 200.0), 0.0);
+    let placed = case.place(&site(&ridge(200.0, 2.0), &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, 0), vec![(vec![Rock, Arch, Free], "hill"); 2]);
+    // A footway 6 m long under a road on top at 503.5 m: an underpass at both ends. Its openings keep the floor's
+    // height, so the floor of the tube cannot go down there: their section is as high as the road's underside (0.5 m
+    // under it) less the shell allows, 2.5 m of the bore's 2.6 m. Under a building only: no part.
+    let mut case = Case::default();
+    case.tunnel(&FOOT, (0.0, 6.0), 0.0);
+    case.ways.push((
+        "road",
+        tags(&[("highway", "residential")]),
+        vec![part(&[[3.0, -50.0], [3.0, 50.0]], &[503.5; 2])],
+    ));
+    let placed = case.place(&site(&|_| 500.0, &[3.2], false), &mut Vec::new());
+    assert_eq!(of(&placed, 0), vec![(vec![Box, Free], "underpass"); 2]);
+    let ends = records(&placed, "tunnel-end");
+    assert_eq!((ends.len(), ends[0]["height"].as_str(), ends[0]["section"].as_str()), (2, "2.5", "box"));
+    let placed = case.place(&site(&|_| 500.0, &[], true), &mut Vec::new());
+    assert_eq!(of(&placed, 0), vec![(vec![], "under a building"); 2]);
+    assert!(placed.features.is_empty() && placed.tags.is_empty());
+    // Two tunnel ways end to end are one chain. A third way that ends at their node makes it a fork in the hill: no
+    // opening there.
+    let mut case = Case::default();
+    let (a, b) = (case.tunnel(&ROAD, (0.0, 200.0), 0.0), case.tunnel(&ROAD, (200.0, 400.0), 0.0));
+    let placed = case.place(&site(&ridge(400.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!((of(&placed, a), of(&placed, b)), (vec![(vec![Arch, Free], "hill")], vec![(vec![Arch, Free], "hill")]));
+    assert_eq!((placed.metrics["tubes"].as_u64(), placed.tags[&a]["parts"].as_str()), (Some(1), "arch arch"));
+    case.ways.push(("tunnel", tags(&ROAD), vec![part(&[[200.0, 0.0], [250.0, 50.0], [300.0, 100.0]], &[500.0; 3])]));
+    let placed = case.place(&site(&ridge(400.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!((of(&placed, a).len(), of(&placed, b).len(), placed.metrics["fork_ends"].as_u64()), (1, 1, Some(3)));
+    assert_eq!(placed.tags[&a]["parts"], "arch none");
+    // A vertex of unknown height: no part.
+    let mut case = road();
+    case.ways[0].2[0].z.as_mut().unwrap()[1] = f64::NAN;
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, 0), vec![(vec![], "a vertex of unknown height"); 2]);
+}
+
+#[test]
+fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
+    use Kind::*;
+    // Two road tunnels 20 m apart under one ridge; the second starts 3 m farther in. A footway 2.5 m beside the first
+    // lies in its tube.
+    let mut case = Case::default();
+    let a = case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let b = case.tunnel(&ROAD, (3.0, 200.0), 20.0);
+    let foot = case.tunnel(&FOOT, (0.0, 200.0), 2.5);
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, a), vec![(vec![Pair, Arch, Free], "hill"); 2]);
+    assert_eq!(of(&placed, b), vec![(vec![Pair, Arch, Free], "hill"); 2]);
+    assert_eq!(of(&placed, foot), vec![(vec![], "same tube"); 2]);
+    // One record per pair, at the lower id. In the west the first opening moves 3 m in onto the line of the second,
+    // and its mate lies 20 m to its left; in the east, heading west, to its right.
+    let ends = records(&placed, "tunnel-end");
+    assert_eq!(ends.len(), 2);
+    let west = ends.iter().find(|t| t["mate"] == "20").expect("the west pair");
+    assert_eq!((west["part"].as_str(), west["shift"].as_str(), west["mate_shift"].as_str()), ("pair", "3", "0"));
+    assert!(ends.iter().any(|t| t["mate"] == "-20" && t["shift"] == "0"));
+    // A pair is not built yet: the device keeps the moved stretch a tunnel, and so does the measure of the numbers.
+    assert_eq!(placed.metrics["measured_again"].as_u64(), Some(0));
+    // The first tube widens to the far edge of the footway and its margin.
+    let foot_half = widths().way("tunnel", &tags(&FOOT), false).half_m;
+    assert_eq!(west["half"], num(2.5 + foot_half + 0.6));
+    assert!(!placed.tags.contains_key(&foot), "a chain with no part has no tag");
+    assert_eq!(placed.tags[&a]["parts"], "pair pair");
+    // Where the nearer opening's way ends before the line of the other (a short first way), the two are no pair.
+    let mut case = Case::default();
+    let (a, _) = (case.tunnel(&ROAD, (0.0, 2.0), 0.0), case.tunnel(&ROAD, (2.0, 200.0), 0.0));
+    let b = case.tunnel(&ROAD, (5.0, 200.0), 20.0);
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, a), [(vec![Arch, Free], "hill")]);
+    assert_eq!(of(&placed, b)[0], (vec![Arch, Free], "hill"));
+    assert_eq!(placed.metrics["pairs_that_do_not_reach"].as_u64(), Some(1));
+}
+
+#[test]
+fn a_moved_opening_names_the_end_vertex_of_its_way_and_the_metres_to_it() {
+    // A road tunnel east from a junction of two residential ways (outer half-width 4 m), one from the west and one
+    // from the north. Its frame line (3.6 m each side) clears the stroke of the northern way 5 m in, the first whole
+    // metre past 4 m.
+    let mut case = Case::default();
+    let tunnel = case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    case.way(&[[-50.0, 0.0], [0.0, 0.0]]);
+    case.way(&[[0.0, 50.0], [0.0, 0.0]]);
+    let mut opened = Vec::new();
+    let placed = case.place(&site(&|_| 500.0, &[], false), &mut opened);
+    let ends = records(&placed, "tunnel-end");
+    let moved = ends.iter().find(|t| t["shift"] != "0").expect("the moved opening");
+    let vertex = frame_point(&case.ways[tunnel as usize].2, 0, 0);
+    assert_eq!((moved["way"].clone(), moved["shift"].as_str()), (format!("{} {}", vertex[0], vertex[1]), "5"));
+    // The measure builds the ground with that stretch open.
+    let way = obc_ground_plan::frame::GlobalPoint { x: vertex[0], y: vertex[1] };
+    assert_eq!(opened, [OpenEnd { way, shift_m: 5.0 }]);
+    // The tube starts at the opening.
+    let first = placed.features.iter().find(|f| f.0 == "tunnel-tube").unwrap();
+    assert!((back(first.2.points[0])[0] - 5.0).abs() < 1e-6);
+    // A through road with a vertex at the tunnel's end (a T) is two arms: the opening moves the same.
+    let mut tee = Case::default();
+    tee.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    tee.way(&[[0.0, -50.0], [0.0, 0.0], [0.0, 50.0]]);
+    let placed = tee.place(&site(&|_| 500.0, &[], false), &mut Vec::new());
+    assert!(records(&placed, "tunnel-end").iter().any(|t| t["shift"] == "5"));
+    assert_eq!(placed.metrics["t_ends"].as_u64(), Some(1));
+    // A tunnel 6 m long between two through roads: its openings would meet, so both stay at its ends.
+    let mut short = Case::default();
+    let id = short.tunnel(&ROAD, (0.0, 6.0), 0.0);
+    short.way(&[[0.0, -50.0], [0.0, 0.0], [0.0, 50.0]]);
+    short.way(&[[6.0, -50.0], [6.0, 0.0], [6.0, 50.0]]);
+    let placed = short.place(&site(&|_| 500.0, &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, id), vec![(vec![Kind::Free], "free: never covered"); 2]);
+    assert!(records(&placed, "tunnel-end").iter().all(|t| t["shift"] == "0"));
+    assert_eq!(placed.metrics["chains_whose_openings_would_meet"].as_u64(), Some(1));
+}
+
+#[test]
+fn a_tube_record_keeps_its_two_vertices_and_its_tags_after_a_tile_cut() {
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    let tubes: Vec<&(&str, Tags, Part)> = placed.features.iter().filter(|f| f.0 == "tunnel-tube").collect();
+    // Each chord of the curve is a record of two vertices in the rising metres of its way.
+    assert!(tubes.len() > 2 && tubes.iter().all(|t| t.2.points.len() == 2 && t.2.points[1][0] > t.2.points[0][0]));
+    assert_eq!(tubes[0].1["ends"], "arch arch");
+    // A record over the line between two tiles is whole in both, with its tags.
+    let n = f64::from(1u32 << MAX_ZOOM);
+    let (column, row) = (4286.0, 2889.0);
+    let points = vec![[(column + 0.999) / n, (row + 0.5) / n], [(column + 1.001) / n, (row + 0.5) / n]];
+    let record = Part { points, ..tubes[0].2.clone() };
+    let mut tiles = Tiles::new([8.3, 46.7, 8.5, 46.9]);
+    assert!(tiles.add(MAX_ZOOM, "tunnel-tube", Geometry::Line, &tubes[0].1, std::slice::from_ref(&record), None));
+    for c in [column as u32, column as u32 + 1] {
+        let read = decode(&tiles.tiles[&(MAX_ZOOM, c, row as u32)].bytes()).unwrap();
+        assert_eq!((read.len(), read[0].parts.len(), read[0].parts[0].xy.len()), (1, 1, 2), "tile {c}");
+        assert_eq!(&read[0].tags, &tubes[0].1, "tile {c}");
+    }
+}
+
+#[test]
+fn every_road_class_has_one_group() {
+    let rules = Ladder::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))));
+    let rules = rules.unwrap();
+    let roads = table(include_str!("../../../../data/trailview/roads.json"));
+    for class in roads.as_object().unwrap().keys() {
+        assert!(rules.group(class).is_some(), "{class}");
+    }
+}
+
+/// The tube records in metres east, west first: the east of both vertices, their floors and the record's height.
+fn chords(placed: &Placed) -> Vec<([f64; 2], [f64; 2], f64)> {
+    let mut out: Vec<([f64; 2], [f64; 2], f64)> = (placed.features.iter())
+        .filter(|f| f.0 == "tunnel-tube")
+        .map(|f| {
+            let (z, east) = (f.2.z.as_ref().unwrap(), |k: usize| back(f.2.points[k])[0]);
+            ([east(0), east(1)], [z[0], z[1]], f.1["height"].parse().unwrap())
+        })
+        .collect();
+    out.sort_by(|x, y| x.0[0].total_cmp(&y.0[0]));
+    out
+}
+
+/// A road tunnel 200 m long east from 0 m, its floor at 500 m, and a residential way over it through `points` (metres
+/// east and north) at the height `top`; with a deck of `deck` metres where it is a bridge.
+fn under(points: &[[f64; 2]], top: f64, deck: Option<f64>) -> Placed {
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let road = tags(&[("highway", "residential")]);
+    case.ways.push(("road", road, vec![part(points, &vec![top; points.len()])]));
+    if let Some(deck) = deck {
+        case.decks.insert(1, deck);
+    }
+    case.place(&site(&|_| 500.0, &[], false), &mut Vec::new())
+}
+
+/// The floor of the tube records at metres east.
+fn floor_at(chords: &[([f64; 2], [f64; 2], f64)], e: f64) -> f64 {
+    let c = chords.iter().find(|c| c.0[0] <= e && e <= c.0[1]).unwrap();
+    c.1[0] + (e - c.0[0]) / (c.0[1] - c.0[0]) * (c.1[1] - c.1[0])
+}
+
+#[test]
+fn the_floor_keeps_the_crown_a_slab_under_a_way_on_top_within_the_grade_and_the_openings_stay() {
+    // A road across the tube at 504 m: its underside lies a slab (0.5 m) lower, so the floor under it is 2 m lower, at
+    // most 498 m (bore 5 m, shell 0.5 m). Far from the openings the grade of the class (0.2) allows that.
+    let placed = under(&[[100.0, -50.0], [100.0, 50.0]], 504.0, None);
+    let chords = chords(&placed);
+    assert!((floor_at(&chords, 100.0) - 498.0).abs() < 1e-9, "{}", floor_at(&chords, 100.0));
+    // The stretch under it is the tube within the road's outer half-width, the tube's half and its shell.
+    let reach = widths().way("road", &tags(&[("highway", "residential")]), false).outer_m()
+        + widths().way("tunnel", &tags(&ROAD), false).half_m
+        + 0.6
+        + 0.5;
+    for e in [100.0 - reach, 100.0 + reach] {
+        assert!((floor_at(&chords, e) - 498.0).abs() < 1e-6, "the floor at {e} m: {}", floor_at(&chords, e));
+    }
+    assert!(floor_at(&chords, 100.0 - reach - 1.0) > 498.0 && floor_at(&chords, 100.0 + reach + 1.0) > 498.0);
+    assert!(chords.iter().all(|c| (c.1[1] - c.1[0]).abs() <= 0.2 * (c.0[1] - c.0[0]) + 1e-9), "{chords:?}");
+    assert!(chords.iter().all(|c| c.2 == 5.0));
+    let (first, last) = (chords[0], chords[chords.len() - 1]);
+    assert_eq!((first.0[0], first.1[0], last.1[1]), (0.0, 500.0, 500.0));
+    assert!(placed.features.iter().filter(|f| f.0 == "tunnel-end").all(|f| f.2.z.as_ref().unwrap()[0] == 500.0));
+    assert_eq!(placed.metrics["tubes_lowered"].as_u64(), Some(1));
+    assert_eq!(placed.metrics["floor_clashes"].as_u64(), Some(0));
+    // A road along the top, 2 m beside the axis from 60 m to 140 m, holds the floor down along it.
+    let chords = self::chords(&under(&[[60.0, 2.0], [100.0, 2.0], [140.0, 2.0]], 504.0, None));
+    assert!([60.0, 100.0, 140.0].iter().all(|&e| (floor_at(&chords, e) - 498.0).abs() < 1e-6));
+    // A road within the at-grade band (0.5 m) over the floor crosses at grade: the floor does not change.
+    let placed = under(&[[100.0, -50.0], [100.0, 50.0]], 500.5, None);
+    assert!(self::chords(&placed).iter().all(|c| c.1 == [500.0, 500.0]));
+    assert_eq!(placed.metrics["tops"].as_u64(), Some(0));
+    // A tube that falls into the hill from a junction of two roads: its opening moves 5 m in. The road that goes on
+    // from the junction climbs; near the opening it lies 0.75 m over the tube there, but its nearest point is the
+    // chain's end vertex, at the chain's height: it lies at grade.
+    let mut case = Case::default();
+    let falls = part(&[[0.0, 0.0], [5.0, 0.0], [100.0, 0.0], [200.0, 0.0]], &[515.0, 514.25, 500.0, 485.0]);
+    case.ways.push(("tunnel", tags(&ROAD), vec![falls]));
+    let residential = tags(&[("highway", "residential")]);
+    case.ways.push(("road", residential.clone(), vec![part(&[[-50.0, 0.0], [0.0, 0.0]], &[520.0, 515.0])]));
+    case.ways.push(("road", residential, vec![part(&[[0.0, 50.0], [0.0, 0.0]], &[515.0, 515.0])]));
+    let placed = case.place(&site(&|_| 400.0, &[], false), &mut Vec::new());
+    assert!(records(&placed, "tunnel-end").iter().any(|t| t["shift"] == "5"));
+    assert_eq!((placed.metrics["tops"].as_u64(), placed.metrics["tubes_lowered"].as_u64()), (Some(0), Some(0)));
+    // A bridge at 507 m with a deck 2 m deep: its underside is 505 m, so the floor goes to 499.5 m. On the ground, its
+    // underside would be a slab under it, and the floor would stay.
+    assert!(
+        (floor_at(&self::chords(&under(&[[100.0, -50.0], [100.0, 50.0]], 507.0, Some(2.0))), 100.0) - 499.5).abs()
+            < 1e-9
+    );
+    assert_eq!(floor_at(&self::chords(&under(&[[100.0, -50.0], [100.0, 50.0]], 507.0, None)), 100.0), 500.0);
+}
+
+#[test]
+fn a_way_whose_short_reach_lies_next_to_a_curve_point_holds_the_floor_down() {
+    // A road ends beside the tube: the tube is within its reach only from 100.65 m to 100.95 m east. Both ends of that
+    // reach lie within `vertex_gap_m` of the curve point at 100 m, so neither is a vertex; that point takes the cap.
+    let reach = widths().way("road", &tags(&[("highway", "residential")]), false).outer_m()
+        + widths().way("tunnel", &tags(&ROAD), false).half_m
+        + 0.6
+        + 0.5;
+    let beside = (reach * reach - 0.15 * 0.15).sqrt();
+    let placed = under(&[[100.8, 50.0], [100.8, beside]], 504.0, None);
+    let chords = chords(&placed);
+    assert!(chords.iter().all(|c| c.0[0] != 100.65 && c.0[1] != 100.95), "{chords:?}");
+    assert_eq!(placed.metrics["tops"].as_u64(), Some(1));
+    assert!((floor_at(&chords, 100.0) - 498.0).abs() < 1e-6, "{}", floor_at(&chords, 100.0));
+}
+
+#[test]
+fn a_way_half_a_metre_beside_the_reach_cuts_nothing() {
+    // A road runs beside the tube 0.5 m outside its reach from 60 m to 140 m east, then crosses it near 141 m. Only the
+    // crossing holds the floor down, from about 134 m, with the grade on to 118 m; beside it, the floor stays.
+    let reach = widths().way("road", &tags(&[("highway", "residential")]), false).outer_m()
+        + widths().way("tunnel", &tags(&ROAD), false).half_m
+        + 0.6
+        + 0.5;
+    let placed = under(&[[60.0, reach + 0.5], [140.0, reach + 0.5], [150.0, -50.0]], 504.0, None);
+    let chords = chords(&placed);
+    assert!((floor_at(&chords, 141.4) - 498.0).abs() < 0.5, "{}", floor_at(&chords, 141.4));
+    assert!([60.0, 80.0, 100.0, 110.0].iter().all(|&e| floor_at(&chords, e) == 500.0), "{chords:?}");
+    assert!(chords.iter().filter(|c| c.0[1] <= 118.0).all(|c| c.2 == 5.0));
+}
+
+#[test]
+fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height() {
+    // 3 m from the opening, the floor cannot go down in time: the section there is lower. A road on top at 505.5 m
+    // leaves 4.5 m over the floor of the opening (its underside, less the shell); the opening takes that height.
+    let near = [[3.0, -50.0], [3.0, 50.0]];
+    let placed = under(&near, 505.5, None);
+    let low = chords(&placed);
+    assert_eq!((low[0].1[0], low[0].2), (500.0, 4.5));
+    assert!(low.iter().all(|c| c.2 >= 4.5));
+    let mut heights: Vec<&str> = records(&placed, "tunnel-end").iter().map(|t| t["height"].as_str()).collect();
+    heights.sort_unstable();
+    assert_eq!(heights, ["4.5", "5"], "the opening near the road takes the height of its first chord");
+    assert_eq!(placed.metrics["low_stretches"].as_u64(), Some(1));
+    assert_eq!(placed.metrics["floor_clashes"].as_u64(), Some(0));
+    // At 504 m the section reaches the least height of a road (4 m), and the crown's shell still cuts the road on
+    // top: a clash.
+    let placed = under(&near, 504.0, None);
+    assert_eq!(chords(&placed)[0].2, 4.0);
+    assert_eq!(placed.metrics["low_stretches_at_least_height"].as_u64(), Some(1));
+    assert_eq!(placed.metrics["floor_clashes"].as_u64(), Some(1));
+}

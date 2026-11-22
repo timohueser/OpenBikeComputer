@@ -69,6 +69,19 @@ fn stat_tells_an_absent_object_from_an_empty_one() {
     assert!(bucket.list("nothing/here").unwrap().is_empty());
 }
 
+#[test]
+fn a_batch_upload_reads_its_progress_and_keeps_the_error_of_rclone() {
+    let temp = Temp::new("batch");
+    let bucket = Bucket::local(&temp.bucket());
+    let files = vec![(temp.file("a", b"aa"), "objects/a".to_string()), (temp.file("b", b"b"), "objects/b".to_string())];
+    bucket.put_many(&files, &Upload::default()).unwrap();
+    assert_eq!(std::fs::read(temp.bucket().join("objects/b")).unwrap(), b"b");
+
+    std::fs::write(temp.bucket().join("file"), b"").unwrap();
+    let error = bucket.put_many(&[(files[0].0.clone(), "file/a".into())], &Upload::default()).unwrap_err();
+    assert!(error.starts_with("rclone copy failed: ") && !error.contains('{'), "{error}");
+}
+
 fn obc_data_r2(temp: &Temp, args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_obc-data-plumbing"));
     // A credential from the environment or the credentials file must neither reach the child nor

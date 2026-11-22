@@ -128,17 +128,17 @@ describe('readFiles', () => {
         await library.addRide(ride.ride, await ride.open());
         await library.addRide(other.ride, await other.open());
         await library.removeRide(other.ride.key);
-        await library.addRoute({ id: route.id, revision: 0, name: route.name, updatedAt: 0, summary: null, trip: {} });
+        await library.addRoute({ id: route.id, name: route.name, updatedAt: 0, summary: null, trip: {} });
         expect((await collect([evening, morning, jura], library)).map(found => found.kind)).toEqual(['known', 'known', 'known']);
         await library.close();
     });
 
-    it('gives the reason for each file that it cannot read, and counts no other file', async () => {
+    it('gives the reason for each file that it cannot read, then the photos, and counts no other file', async () => {
         const library = new Library(new IDBFactory());
         const packed = file('packed.zip', zipOf([
             { name: 'bzip2.fit', data: encode({ sport: 'bike', samples: samples(t) }), method: 12 },
             { name: 'crc.fit', data: encode({ sport: 'bike', samples: samples(t) }), crc: 1 },
-            { name: 'photo.jpg', data: encode('not counted') },
+            { name: 'photo.jpg', data: encode('a photo') },
             // 1 MB of zeros that declares 1 KB.
             { name: 'bomb.fit', data: new Uint8Array(1 << 20), size: 1024 },
         ]));
@@ -151,8 +151,9 @@ describe('readFiles', () => {
         expect(found.map(f => [f.name, f.kind === 'unreadable' && f.reason])).toEqual([
             ['bad.zip', reasons.damaged], ['a.tcx', reasons.tcx], ['b.tcx.gz', reasons.tcx], ['swim.fit', reasons.sport],
             ['cut.fit', reasons.damaged], ['empty.fit', reasons.track], ['page.gpx', reasons.track], ['broken.fit.gz', reasons.damaged],
-            ['bzip2.fit', reasons.packing], ['crc.fit', reasons.damaged], ['bomb.fit', reasons.damaged],
+            ['bzip2.fit', reasons.packing], ['crc.fit', reasons.damaged], ['bomb.fit', reasons.damaged], ['photo.jpg', false],
         ]);
+        expect(found.at(-1)).toMatchObject({ file: 'packed.zip/photo.jpg', kind: 'photo' });
         await library.close();
     });
 
@@ -201,7 +202,7 @@ describe('readFiles', () => {
         const route = ride.other as Found & { kind: 'route' }, recorded = planned.other as Found & { kind: 'ride' };
         expect(route).toMatchObject({ name: 'Evening', bike: 'mtb', lengthM: ride.ride.summary.lengthM });
         expect((await route.open()).points.map(p => p.time)).toEqual(points(t).map(p => p.time));
-        await library.addRoute({ id: route.id, revision: 0, name: route.name, updatedAt: 0, summary: null, trip: {} });
+        await library.addRoute({ id: route.id, name: route.name, updatedAt: 0, summary: null, trip: {} });
         await library.addRide(recorded.ride, await recorded.open());
         expect((await collect([evening, tour], library)).map(found => found.kind)).toEqual(['known', 'known']);
         await library.close();

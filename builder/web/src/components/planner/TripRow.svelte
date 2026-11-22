@@ -1,26 +1,40 @@
+<!-- The trip bar: one row of equal cells for the day count, the dates and, for a trip of two or more days, the places
+     to sleep. A grey value is unset or a guess; a value that the rider set is ink. -->
 <script lang="ts">
-    import Icon from '../../lib/ui/Icon.svelte';
-    import { allStay, fewestDays, maxRidingDays, setDays, type Stay, type Trip } from '../../lib/planner/editor';
+    import DayCount from './DayCount.svelte';
+    import StayChip from './StayChip.svelte';
+    import { allStay, multiDay, type Stay, type Trip } from '../../lib/planner/editor';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
+    import type { RoutingLine } from '../../lib/planner/routing';
     import { stayOptions as kinds } from '../../lib/planner/search/presentation';
 
-    let { trip, onChange }: { trip: Trip; onChange: (next: Trip, description: string) => void } = $props();
+    let { trip, line, onChange, onDays, onLimit }: {
+        trip: Trip; line: RoutingLine | undefined;
+        onChange: (next: Trip, description: string) => void;
+        /** A change of the day count, which can change the type of the route. */
+        onDays: (next: Trip, description: string) => void;
+        /** A press of + at the most days. */
+        onLimit: () => void;
+    } = $props();
 
     let dating = $state(false);
     let root = $state<HTMLDivElement>();
+    const multi = $derived(multiDay(trip));
     const stay = $derived(trip.stay ?? allStay);
-    const range = $derived.by(() => {
-        if (!trip.startDate) return 'Start date';
-        const last = addDays(trip.startDate, trip.days + (trip.restAfter?.length ?? 0) - 1);
-        return `${weekdayLabel(trip.startDate, trip.startDate.slice(0, 7) !== last.slice(0, 7))} – ${weekdayLabel(last, true)}`;
+    const last = $derived(trip.startDate && addDays(trip.startDate, multi ? trip.days + (trip.restAfter?.length ?? 0) - 1 : 0));
+    const range = $derived(!trip.startDate || !last ? 'Any date' : last === trip.startDate ? weekdayLabel(last, true)
+        : `${weekdayLabel(trip.startDate, trip.startDate.slice(0, 7) !== last.slice(0, 7))} – ${weekdayLabel(last, true)}`);
+    // The cell is narrow: "19–25 Jun", or "29 Jun – 3 Jul" across two months.
+    const shortRange = $derived.by(() => {
+        if (!trip.startDate || !last) return 'Any date';
+        if (last === trip.startDate) return weekdayLabel(last, true);
+        const day = (date: string) => Number(date.slice(8));
+        const month = (date: string) => new Date(date).toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' });
+        return trip.startDate.slice(0, 7) === last.slice(0, 7) ? `${day(trip.startDate)}–${day(last)} ${month(last)}`
+            : `${day(trip.startDate)} ${month(trip.startDate)} – ${day(last)} ${month(last)}`;
     });
 
-    function changeDays(days: number) {
-        onChange(setDays(trip, days), `${days} riding ${days === 1 ? 'day' : 'days'}`);
-    }
-
-    function toggle(kind: Stay) {
-        const next = allStay.filter(k => k === kind ? !stay.includes(k) : stay.includes(k));
+    function changeStay(next: Stay[]) {
         onChange({ ...trip, stay: next.length === allStay.length ? undefined : next },
             `Sleeping in ${kinds.filter(k => next.includes(k.kind)).map(k => k.label.toLowerCase()).join(', ')}`);
     }
@@ -33,15 +47,16 @@
 
 <svelte:window onpointerdown={(event) => { if (dating && !root?.contains(event.target as Node)) dating = false; }} />
 
-<div class="trip-row">
+<div class="trip-row" class:any-stay={!trip.stay} class:multi>
+    <DayCount {trip} {line} onChange={onDays} {onLimit} />
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="dates" bind:this={root} onkeydown={(event) => { if (event.key === 'Escape' && dating) { event.stopPropagation(); close(); } }}>
-        <button type="button" class="date" class:guess={!trip.startDate} aria-label={`Trip dates: ${range}`} aria-expanded={dating} onclick={() => dating = !dating}>
-            <Icon name="calendar" size={15} />{range}
+        <button type="button" class="cell date" class:unset={!trip.startDate} aria-label={`Trip dates: ${range}`} aria-expanded={dating} onclick={() => dating = !dating}>
+            {shortRange}
         </button>
         {#if dating}
             <div class="popover">
-                <label>First riding day
+                <label>First day
                     <input type="date" value={trip.startDate ?? ''} onchange={(event) => {
                         const date = event.currentTarget.value;
                         onChange({ ...trip, startDate: date || undefined }, date ? 'Dates set' : 'Dates cleared');
@@ -54,31 +69,43 @@
             </div>
         {/if}
     </div>
-    <div class="days" role="group" aria-label="Number of riding days">
-        <button type="button" aria-label="One day fewer" disabled={trip.days <= fewestDays(trip)} onclick={() => changeDays(trip.days - 1)}><Icon path="M5 12h14" size={15} /></button>
-        <span class="count"><span class:guess={!trip.daysSet}>{trip.days} riding {trip.days === 1 ? 'day' : 'days'}</span></span>
-        <button type="button" aria-label="One day more" disabled={trip.days >= maxRidingDays} onclick={() => changeDays(trip.days + 1)}><Icon name="plus" size={15} /></button>
-    </div>
-    <div class="stay" role="group" aria-label="Where you sleep">
-        <span>Sleep in</span>
-        {#each kinds as { kind, label, icon } (kind)}
-            {@const on = stay.includes(kind)}
-            <button type="button" aria-pressed={on} disabled={on && stay.length === 1} onclick={() => toggle(kind)}>{#if icon}<Icon name={icon} size={14} />{/if}{label}</button>
-        {/each}
-    </div>
+    {#if multi}<StayChip value={stay} onChange={changeStay} />{/if}
 </div>
 
 <style>
+    /* Fixed columns, so a long value never wraps the bar. The cells have no icons: three do not fit at the default width. */
     .trip-row {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+        gap: 4px;
+        font-size: 13px;
+        color: var(--ink);
+    }
+    .trip-row.multi { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1fr); }
+    .trip-row :global(.stay-chip > .panel) { grid-column: 1 / -1; }
+    /* The date and the stay chip share the cell form of the day count. */
+    .cell, .trip-row :global(.stay-chip > .planner-chip) {
         display: flex;
         align-items: center;
-        gap: 16px;
-        flex-wrap: wrap;
-        flex: 1;
+        justify-content: center;
+        gap: 6px;
+        width: 100%;
         min-width: 0;
-        font-size: 13px;
-        color: var(--ink-soft);
+        height: 44px;
+        padding: 0 6px;
+        overflow: hidden;
+        border: 0;
+        border-radius: 8px;
+        background: var(--parchment-2);
+        font: 600 13px var(--sans);
+        color: var(--ink);
+        white-space: nowrap;
     }
+    .trip-row :global(.stay-chip > .planner-chip > svg) { display: none; }
+    .cell:hover, .trip-row :global(.stay-chip > .planner-chip:hover) { background: color-mix(in srgb, var(--ink) 8%, var(--parchment-2)); }
+    .cell[aria-expanded="true"], .trip-row :global(.stay-chip > .planner-chip[aria-expanded="true"]) { outline: 2px solid var(--ink); outline-offset: -2px; }
+    .cell.unset, .any-stay :global(.stay-chip > .planner-chip) { color: var(--ink-soft); }
     button {
         font: inherit;
         color: inherit;
@@ -86,30 +113,15 @@
     }
     button:disabled { cursor: default; opacity: .45; }
     button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-    .dates { position: relative; }
-    .date {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        height: 34px;
-        padding: 0 10px;
-        border: 1px solid var(--line-strong);
-        border-radius: 8px;
-        background: var(--panel);
-        color: var(--ink);
-        font-weight: 600;
-        white-space: nowrap;
-    }
-    .date.guess {
-        border: 1.5px dashed var(--ink-soft);
-        color: var(--ink-soft);
-    }
+    .dates { min-width: 0; }
     .popover {
         position: absolute;
         z-index: 40;
-        bottom: 42px;
+        /* Under the start of the bar, not of the date cell: the cell is the second one, and a phone is narrow. */
+        top: 48px;
         left: 0;
-        width: 280px;
+        width: min(280px, 100%);
+        box-sizing: border-box;
         padding: 14px;
         border-radius: 8px;
         background: var(--panel);
@@ -155,69 +167,4 @@
         color: var(--on-amber);
         font-weight: 600;
     }
-    .days {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        padding: 2px;
-        border: 1px solid var(--line-strong);
-        border-radius: 8px;
-    }
-    .days button {
-        display: grid;
-        place-items: center;
-        width: 30px;
-        height: 30px;
-        padding: 0;
-        border: 0;
-        border-radius: 6px;
-        background: none;
-        color: var(--ink);
-    }
-    .days button:not(:disabled):hover { background: var(--parchment-2); }
-    .count {
-        min-width: 108px;
-        text-align: center;
-        font-size: 14px;
-        color: var(--ink);
-        font-variant-numeric: tabular-nums;
-    }
-    .count span {
-        padding-bottom: 1px;
-        border-bottom: 2px solid var(--ink);
-        font-weight: 700;
-    }
-    .count span.guess {
-        border-bottom: 1.5px dashed var(--ink-soft);
-        font-weight: 600;
-    }
-    .stay {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        flex-wrap: wrap;
-        margin-left: auto;
-        padding: 2px;
-        border-radius: 6px;
-        background: var(--parchment-2);
-    }
-    .stay > span { padding: 0 6px 0 8px; }
-    .stay button {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        min-height: 30px;
-        padding: 0 10px;
-        border: 0;
-        border-radius: 5px;
-        background: transparent;
-        font-weight: 600;
-        white-space: nowrap;
-    }
-    .stay button[aria-pressed="true"] {
-        background: var(--panel);
-        color: var(--ink);
-        box-shadow: inset 0 0 0 1px var(--line-strong);
-    }
-    .stay button:disabled { opacity: 1; }
 </style>

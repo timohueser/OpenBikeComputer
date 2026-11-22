@@ -215,6 +215,11 @@ pub fn level_rows(roads: &Value, waterways: &Value, plan: &Value) -> Value {
                        "structures": plan["structures"]})
 }
 
+/// The rules of the tunnel parts of the step's options: `groups` and `bake` of `parts.json`.
+pub fn part_rows(table: &Value) -> Value {
+    serde_json::json!({"groups": table["groups"], "bake": table["bake"]})
+}
+
 /// The finishes of the step's options: the fields of `FINISH_FIELDS` of each finish of the table.
 pub fn finish_rows(table: &Value) -> Value {
     rows_of(table, &FINISH_FIELDS)

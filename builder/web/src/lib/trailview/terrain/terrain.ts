@@ -1,4 +1,5 @@
 import type { Bounds } from '../../planner/config';
+import type { Budget } from '../budget';
 import { worldPixel } from '../../planner/layers/mercator';
 import { VFOV } from '../frame/camera';
 import { CURVATURE, type Frame } from '../frame/frame';
@@ -12,7 +13,7 @@ import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile, NEAR, profileTable, STAMP_WORDS, waterAt } from './bins';
-import { CALM, cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
+import { CALM, cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type BakedNodes, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
@@ -26,10 +27,10 @@ import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
 /**
- * GPU memory for pages: the stored and the synthesized budgets for a laptop, in MiB. The feature masks
- * take their share of the synthesized budget. A shortage of synthesized pages leaves out the farthest
- * pages of the finest level, and their parents draw in their place: the pool holds what a frame wants at
- * the least range, whichever way it looks.
+ * GPU memory for pages: the stored and the synthesized budgets of the desktop, in MiB. The feature masks
+ * take their share of the synthesized budget; a tier holds its share of the pages (`terrainShare`). A shortage of
+ * synthesized pages leaves out the farthest pages of the finest level, and their parents draw in their place: the
+ * desktop's pool holds what a frame wants at the least range, whichever way it looks.
  */
 const BUDGET: Record<Kind, number> = { stored: 104 * 2 ** 20, synth: 67 * 2 ** 20 };
 /**
@@ -45,8 +46,8 @@ const PAGE_BYTES = PAGE * PAGE * 2;
 export const SYNTH_PAGES = Math.floor((BUDGET.synth - MASK_BYTES) / PAGE_BYTES);
 /** Per mask, the snaps of its page's 64 × 64 mesh vertices, 4 bytes each, as `snaps` in features.wgsl. */
 const SNAP_BYTES = (PAGE / 4) ** 2 * 4;
-/** Portal boxes in the terrain's holes at most. */
-const MAX_HOLES = 32;
+/** Boxes in the terrain's holes at most: the portals' boxes; with `ground=plan` also the parts', several to a part. */
+const MAX_HOLES = 32, PLAN_HOLES = 64;
 /** Nodes drawn per frame at most. */
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
@@ -63,8 +64,11 @@ const PROBE_STEP = 1;
 /**
  * The probe runs again when the eye's height above the ground moves more than this many metres from that of the
  * last probe. The probe's answer sets that height, and the height moves the answer through the morph of `lod`
- * (drawn-height.wgsl) by D / (MORPH · above · ln 2) per metre for a gap D between two levels, far below 1, so
- * repeated probes converge; float rounding then leaves a last swing of one step. The band ends it: 1 cm is 20
+ * (drawn-height.wgsl) by at most D / (morph · above · ln 2) per metre for a gap D between two levels. The eye's
+ * point morphs only above the start of the finest level's band, range · 2^−(18 + morph): 3.3 level-18 nodes on
+ * the phone, at least 166 m up to 71° N, where the bound is 0.06 D. At a walk's eye height the point lies on the
+ * finest level's plateau and the answer does not move. So repeated probes converge; float rounding then leaves a
+ * last swing of one step. The band ends it: 1 cm is 20
  * times the float32 step of a ground height below 8,192 m (at most 0.5 mm), and no change that a view shows.
  */
 const PROBE_ABOVE_M = 0.01;
@@ -73,7 +77,7 @@ const RAD = Math.PI / 180;
 /** The workgroups of a cliff job, as ROW in cliff.wgsl. */
 const CLIFF_ROW = 32;
 /** Bytes of `Surface` and `Job` in the WGSL, and of a node instance. */
-const SURFACE_BYTES = 416, JOB_BYTES = 24, STAMP_JOB_BYTES = 32, NODE_BYTES = 16;
+const SURFACE_BYTES = 432, JOB_BYTES = 24, STAMP_JOB_BYTES = 32, NODE_BYTES = 16;
 /** A stamp job whose base is the synthesized page in `out`, as SYNTHESIZED in stamp.wgsl. */
 export const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
@@ -188,6 +192,13 @@ interface Resources extends Pipelines {
 }
 
 /**
+ * The rank of a stamp wish in the order of the stamp worker (Stamps.send), and with `meshes` of an owner node's structure
+ * job: the `first` wishes, then the others, each by its metres from the eye. A structure job is never first: the view
+ * about the eye does not wait for it.
+ */
+export const stampRank = (first: boolean, metres: number, meshes = false): number => (first && !meshes ? 0 : NO_LIMIT) + metres;
+
+/**
  * The terrain: CDLOD by distance over pages of the stored terrain and of
  * levels synthesized below it, in fixed pools. One instanced grid mesh draws every node.
  */
@@ -216,6 +227,7 @@ export class Terrain {
     ground?: { height: number; slope: [number, number]; lonLat: [number, number]; frame: number };
     private resources?: Resources;
     private readonly bounds: [number, number, number, number];
+    private readonly lod: Budget['lod'];
     private nodes: Node[] = [];
     /** The first drawn nodes that hold a tunnel's portal: they draw with its hole. */
     private holed = 0;
@@ -261,36 +273,38 @@ export class Terrain {
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
     /**
-     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level and `pool` scales
-     * the page pools (debug options). The stamps read the nodes that `baked` holds. `cache` names the data of the tiles and the
-     * versions of the stamp code and of the plan's input preparation, under which the nodes' stamps and the plan's cells are
-     * cached on the device.
+     * An abort of `stop` ends the stamp worker; `budget` sizes the page pools and the loads. `plan` builds the ground plan;
+     * `finest` caps the finest level (a debug option). The stamps read the nodes that `baked` holds. `cache` names the data of
+     * the tiles and the versions of the stamp code and of the plan's input preparation, under which the nodes' stamps and the
+     * plan's cells are cached on the device.
      */
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }, pool = 1) {
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, budget: Budget, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
+        this.lod = budget.lod;
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / PAGE_BYTES / LAYER_PAGES) * LAYER_PAGES;
         this.profileTable = profileTable();
-        this.stamps = new Stamps(features, changed, stop, plan, baked, plan ? cache : undefined);
+        this.stamps = new Stamps(features, changed, stop, plan, baked, plan ? cache : undefined, budget);
         // With the ground plan the records draw the ways: no corridor holds one.
         this.roads = new Roads(plan ? undefined : features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
-        if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
+        if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop, budget);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
-        const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node)?.data) : undefined;
+        const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node), (x, y) => this.structures.holds(x, y)) : undefined;
         const records = this.records = plan
-            ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node), cache && { release: cache.release, version: cache.plan })
+            ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node), cache && { release: cache.release, version: cache.plan }, budget)
             : undefined;
         // A near page waits for its cell's records. A page of the level that the meshes draw over also waits for its cell's mesh
         // to hold its heights: until then the coarser page draws, never the far look up close.
         const waits = (node: Node) => records!.waits(node) || (node.level === pieces!.level && (records!.meshComing(cellOf(node)) || pieces!.ready(cellOf(node)) === false));
         const stamps = records ? { get: (node: Node) => (waits(node) ? undefined : this.stamps.get(node)), known: (node: Node) => (waits(node) ? undefined : this.stamps.known(node)) } : this.stamps;
-        this.pages = new Pages(source, { stored: Math.round(pool * (pages - SYNTH_PAGES)), synth: Math.round(pool * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS);
+        this.pages = new Pages(source, { stored: Math.round(budget.terrainShare * (pages - SYNTH_PAGES)), synth: Math.round(budget.terrainShare * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS, budget);
     }
 
+    /** No page loads, and the meshes are not waiting out the CALM frames that follow a rest (`Pieces.returning`). */
     get idle(): boolean {
-        return this.pages.idle && this.calm > 0 && this.probing === 0;
+        return this.pages.idle && this.calm > 0 && this.probing === 0 && !this.pieces?.returning;
     }
 
     /** The feature tiles and road meshes that failed. */
@@ -434,7 +448,7 @@ export class Terrain {
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
             scales: buffer('terrain', pages * 8, storage | GPUBufferUsage.COPY_SRC),
             nodes: buffer('terrain', MAX_NODES * NODE_BYTES, storage),
-            holes: buffer('terrain', (1 + 3 * MAX_HOLES) * 16, storage),
+            holes: buffer('terrain', (1 + 3 * (plan ? PLAN_HOLES : MAX_HOLES)) * 16, storage),
             cells: buffer('plan', plan ? CELLS_BYTES : 256, storage),
             synthJobs: buffer('compute', ARRIVALS * JOB_BYTES, storage),
             synthOut: buffer('compute', ARRIVALS * texels * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
@@ -561,7 +575,7 @@ export class Terrain {
             anchor, COARSEST_MESH);
         const short = this.pages.left.some((pages, level) => pages > 0 && level < COARSEST_MESH), { capacity } = this.pages;
         ({ quality: this.quality, calm: this.calm, held: this.held } = stepQuality({ quality: this.quality, calm: this.calm, held: this.held }, short, this.pages.missing === 0, moving,
-            () => this.quality < qualitySteps(view.pixels) && lowers(coarse(this.quality), coarse(this.quality + 1), capacity),
+            () => this.quality < qualitySteps(this.lod, view.pixels) && lowers(coarse(this.quality), coarse(this.quality + 1), capacity),
             () => fits(coarse(this.quality - 1), capacity)));
         // The level that the probe reads splits by the height of the last probe, as `encode` decides the next probe by it.
         const above = this.heldAbove(view.above), probeReads = this.probeKey(above === view.above ? rule : this.rule({ anchor, above }, view.pixels, quality), anchor);
@@ -589,8 +603,9 @@ export class Terrain {
 
     /**
      * One near-first order for the stamp worker: every wish within EYE_M and the nodes that the meshes in view read, then every
-     * other wish, each by its distance from the eye. The coarse pages over the eye count, as they draw until the eye's own do. A
-     * mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view wait their turn.
+     * other wish and the structure jobs, each by its distance from the eye. The coarse pages over the eye count, as they draw until
+     * the eye's own do. A mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view
+     * wait their turn.
      */
     private sendStamps(meshes: { node: Node }[], eye: { anchor: Anchor; above: number }, forward: Float64Array, view: View): void {
         const shown = new Set<string>(), hidden = new Set<string>(), level = { anchor: eye.anchor, above: 0 };
@@ -603,7 +618,7 @@ export class Terrain {
             }
         }
         const first = (name: string, node: Node) => shown.has(name) || (!hidden.has(name) && distances(level, node)[0] <= EYE_M);
-        this.stamps.send(node => (first(key(node), node) ? 0 : NO_LIMIT) + distances(eye, node)[0]);
+        this.stamps.send((node, meshes) => stampRank(first(key(node), node), distances(eye, node)[0], meshes));
     }
 
     /**
@@ -945,7 +960,8 @@ export class Terrain {
 
     /** The rule at a quality: each step makes the range a quarter step smaller, down to the least. No step lowers the finest level. */
     private rule(eye: { anchor: Anchor; above: number }, pixels: number, quality = this.quality): Rule {
-        return cdlod(eye, Math.max(RANGE.least, bestRange(pixels) * 2 ** (-quality / 4)), this.finest);
+        const lod = this.lod;
+        return cdlod(eye, Math.max(lod.least, bestRange(lod, pixels) * 2 ** (-quality / 4)), lod.morph, this.finest);
     }
 
     /** Whether a node's box can show: render space corners at its range of heights, against the frustum. */
@@ -1045,6 +1061,7 @@ export class Terrain {
         ints.set(anchor.whole, 0);
         floats.set([...anchor.part, anchor.unit, above, rule.range], 2);
         new Uint32Array(surface)[7] = rule.finest;
+        floats[104] = rule.morph;
         floats.set(forward, 8);
         work.origins.forEach((origin, level) => ints.set(origin, 28 + 4 * level));
         device.queue.writeBuffer(r.surface, 0, surface);
@@ -1070,7 +1087,7 @@ export class Terrain {
         device.queue.writeBuffer(r.nodes, 0, instances);
         // After the structures' upload: a portal opens the ground only where its owner's bore and facade draw in this frame.
         this.structures.write();
-        device.queue.writeBuffer(r.holes, 0, holes(this.boxes, anchor, (x, y) => this.structures.holds(x, y)));
+        device.queue.writeBuffer(r.holes, 0, holes(this.boxes, anchor, (x, y) => this.structures.holds(x, y), !!this.records));
         const changed = instances.length !== this.instances.length || instances.some((v, i) => v !== this.instances[i]);
         this.instances = instances;
         this.water.write();
@@ -1081,11 +1098,11 @@ export class Terrain {
     }
 }
 
-/** The range at which a level's grid cell spans CELL_PIXELS on a render target `pixels` high, within RANGE. */
-const bestRange = (pixels: number) => Math.min(RANGE.most, Math.max(RANGE.least, pixels / (2 * Math.tan(VFOV * RAD / 2)) / (GRID * CELL_PIXELS)));
+/** The range at which a level's grid cell spans CELL_PIXELS on a render target `pixels` high, within the tier's limits. */
+const bestRange = ({ least, most }: Budget['lod'], pixels: number) => Math.min(most, Math.max(least, pixels / (2 * Math.tan(VFOV * RAD / 2)) / (GRID * CELL_PIXELS)));
 
 /** The quality steps that make the range smaller: 0 on a usual screen, whose best range is the least already. */
-const qualitySteps = (pixels: number) => Math.ceil(4 * Math.log2(bestRange(pixels) / RANGE.least));
+const qualitySteps = (lod: Budget['lod'], pixels: number) => Math.ceil(4 * Math.log2(bestRange(lod, pixels) / lod.least));
 
 /** Whether a demand of slots per pool lowers that of `now` in every pool that `now` overfills. */
 const lowers = (now: Record<Kind, number>, next: Record<Kind, number>, capacity: Record<Kind, number>) =>
@@ -1229,17 +1246,22 @@ function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
 }
 
 /**
- * The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. A box
- * whose facade middle is not `drawn` is left out: without its bore and facade the ground stays closed.
+ * The boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once (by its start and its way in),
+ * MAX_HOLES at most, or with `plan` PLAN_HOLES, the nearest to the anchor first. A box whose start is not `drawn` is left
+ * out: without its bore and facade the ground stays closed.
  */
-function holes(lists: Float64Array[], anchor: Anchor, drawn: (x: number, y: number) => boolean): Float32Array<ArrayBuffer> {
-    const out = new Float32Array(4 * (1 + 3 * MAX_HOLES)), seen = new Set<string>();
+function holes(lists: Float64Array[], anchor: Anchor, drawn: (x: number, y: number) => boolean, plan: boolean): Float32Array<ArrayBuffer> {
+    const most = plan ? PLAN_HOLES : MAX_HOLES, out = new Float32Array(4 * (1 + 3 * most)), seen = new Set<string>();
+    const boxes = lists.flatMap(list => Array.from({ length: list.length / BOX }, (_, k) => list.subarray(BOX * k, BOX * (k + 1))));
+    const away = (box: Float64Array) => (box[0] - anchor.whole[0]) ** 2 + (box[1] - anchor.whole[1]) ** 2;
+    if (plan) boxes.sort((a, b) => away(a) - away(b));
     let n = 0;
-    for (const list of lists) for (let i = 0; i < list.length && n < MAX_HOLES; i += BOX) {
-        const name = `${list[i]},${list[i + 1]}`;
-        if (seen.has(name) || !drawn(list[i], list[i + 1])) continue;
+    for (const box of boxes) {
+        if (n === most) break;
+        const name = `${box[0]},${box[1]},${box[2]},${box[3]}`;
+        if (seen.has(name) || !drawn(box[0], box[1])) continue;
         seen.add(name);
-        out.set([list[i] - anchor.whole[0], list[i + 1] - anchor.whole[1], ...list.subarray(i + 2, i + BOX)], 4 + 12 * n++);
+        out.set([box[0] - anchor.whole[0], box[1] - anchor.whole[1], ...box.subarray(2)], 4 + 12 * n++);
     }
     out[0] = n;
     return out;

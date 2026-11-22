@@ -15,8 +15,10 @@ export interface MapPoint {
     markerLabel?: string;
     /** A fixed point never moves by drag. Places are always fixed. */
     fixed?: boolean;
-    /** The night a `dayend` pin ends. */
+    /** The night a `night` or `dayend` pin ends. */
     night?: number;
+    /** The riding day of a route point. */
+    day?: number;
 }
 
 /** One stretch of the drawn route: a leg, cut at day ends. */
@@ -24,5 +26,8 @@ export interface MapSegment {
     coordinates: Coordinate[];
     color: string;
     legEndId: string;
-    leg: import("./editor").LegMode;
+    /** The riding number of its day. */
+    day: number;
+    /** A gap is a leg with no legal path, drawn as a dashed straight line. */
+    leg: import("./editor").LegMode | "gap";
 }

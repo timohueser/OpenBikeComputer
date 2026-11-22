@@ -1,0 +1,5 @@
+name = "Luxembourg"
+kind = "geofabrik"
+areas = ["europe/luxembourg"]
+countries = ["LU"]
+time_zone = "Europe/Luxembourg"

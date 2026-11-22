@@ -21,10 +21,13 @@ pub const NEAR_M: f64 = 30.0;
 pub const SHARE: f64 = 0.02;
 pub const MAX_VIA: usize = 62;
 const STEP_M: f64 = 10.0;
+/// A shaping point is a line vertex. The search adds a vertex at least every `VERTEX_M`, so that one
+/// lies within `NEAR_M` of the middle of each stretch, also on a long straight segment.
+const VERTEX_M: f64 = 2.0 * NEAR_M;
 /// Rounds of the whole-plan check before the search gives up.
 const ROUNDS: usize = 6;
 /// Shaping points in a row, for each profile that the search checks, that do not cut the deviation
-/// over the budget by 2 %: the search stops.
+/// over the budget by 2 %: the whole plan decides.
 const STALE_POINTS: usize = 8;
 
 /// The input points of one client line.
@@ -63,8 +66,6 @@ pub fn request(profile: &str, points: &[P], turnarounds: Vec<usize>) -> Request 
         points: points.iter().map(|p| [p[0] as f64 * 1e-6, p[1] as f64 * 1e-6]).collect(),
         profile: profile.into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds,
         start_position: None,
         end_position: None,
@@ -101,12 +102,18 @@ pub struct Near<'a> {
 
 impl<'a> Near<'a> {
     pub fn new(line: &'a [P]) -> Self {
+        Self::pieces(line, &[])
+    }
+
+    /// The index of the pieces of `line` that start at the sorted points `breaks`: no segment joins
+    /// two pieces.
+    pub fn pieces(line: &'a [P], breaks: &[usize]) -> Self {
         // A degree of longitude is shortest at the latitude farthest from the equator.
         let lat = line.iter().map(|p| (p[1] as f64 * 1e-6).abs()).fold(0.0, f64::max);
         let cell_lat = 2.0 * NEAR_M / METRES_PER_UDEG;
         let cell = [cell_lat / lat.to_radians().cos().max(0.01), cell_lat];
         let mut cells = HashMap::<_, Vec<u32>>::new();
-        for k in 0..line.len() {
+        for k in (0..line.len()).filter(|k| breaks.binary_search(&(k + 1)).is_err()) {
             let (a, b) = (line[k], line[(k + 1).min(line.len() - 1)]);
             let span = |axis: usize| (b[axis] - a[axis]) as f64 / cell[axis];
             let steps = (2.0 * span(0).abs().max(span(1).abs())).ceil().max(1.0);
@@ -123,7 +130,7 @@ impl<'a> Near<'a> {
         Self { line, cell, cells }
     }
 
-    fn near(&self, p: P) -> bool {
+    pub fn near(&self, p: P) -> bool {
         let (x, y) = ((p[0] as f64 / self.cell[0]).floor() as i32, (p[1] as f64 / self.cell[1]).floor() as i32);
         (x - 1..=x + 1).any(|x| {
             (y - 1..=y + 1).any(|y| {
@@ -208,8 +215,6 @@ pub enum Failure {
     Memory,
     /// The search used all its router calls.
     Budget,
-    /// Shaping points stopped cutting the deviation.
-    Stall,
     Cancelled,
 }
 
@@ -369,9 +374,9 @@ fn untried(legs: &mut [Leg], tried: &HashSet<usize>) -> Option<usize> {
 ///
 /// Each leg is first routed alone. Of the profiles over the budget, the worst leg with an untried
 /// shaping point gets that point, in the middle of its longest stretch away from the line, until
-/// the plan is within the budget. Then every shaping point that does not help goes. The whole
-/// plan is routed last; when it fails, its worst leg with an untried point gets that point and the
-/// search continues.
+/// the plan is within the budget or the points stop cutting its deviation. Then every shaping
+/// point that does not help goes. The whole plan is routed last; when it fails, its worst leg with
+/// an untried point gets that point and the search continues.
 pub fn shape<D: RoutingData>(
     router: &mut Router<D>,
     profiles: &[&str],
@@ -381,6 +386,9 @@ pub fn shape<D: RoutingData>(
     closed: bool,
     limits: &mut Limits,
 ) -> Result<Plan, Failure> {
+    let given = line;
+    let (line, tips) = dense(given, tips);
+    let (line, tips) = (&line[..], &tips[..]);
     let n = line.len();
     let mut along = vec![0.0];
     for w in line.windows(2) {
@@ -412,9 +420,10 @@ pub fn shape<D: RoutingData>(
         max_calls: limits.max_calls,
     };
     let mut pruned_full = false;
+    // The deviation over the budget, at its lowest so far, and the shaping points since then. It
+    // spans the rounds, so a round after a stall checks only the whole plan.
+    let mut best = (f64::MAX, 0);
     for _ in 0..ROUNDS {
-        // The deviation over the budget, at its lowest so far, and the shaping points since then.
-        let mut best = (f64::MAX, 0);
         loop {
             let mut totals = search.totals(&plan);
             if search.stopped() {
@@ -426,9 +435,6 @@ pub fn shape<D: RoutingData>(
             }
             let excess: f64 = totals.iter().map(|&total| (total - search.budget).max(0.0)).sum();
             best = if excess < 0.98 * best.0 { (excess, 0) } else { (best.0, best.1 + 1) };
-            if best.1 >= STALE_POINTS * search.profiles.len() {
-                return Err(Failure::Stall);
-            }
             // One prune makes room; a search that fills the plan again does not converge.
             if plan.len() >= MAX_VIA + 2 {
                 if pruned_full {
@@ -437,7 +443,11 @@ pub fn shape<D: RoutingData>(
                 pruned_full = true;
                 search.prune(&mut plan, &mut totals);
             }
-            let via = search.next(&plan, &totals);
+            let via = (best.1 < STALE_POINTS * search.profiles.len()).then(|| search.next(&plan, &totals)).flatten();
+            if via.is_none() {
+                search.prune(&mut plan, &mut totals);
+                break;
+            }
             search.insert(&mut plan, via)?;
         }
         if plan.len() > MAX_VIA + 2 {
@@ -456,7 +466,7 @@ pub fn shape<D: RoutingData>(
         for profile in profiles {
             let route = search.route(profile, &snapped, &turnarounds)?;
             let geometry = vertices(&route);
-            if deviation(&geometry, line) > search.budget {
+            if deviation(&geometry, given) > search.budget {
                 legs.extend(
                     route
                         .legs
@@ -475,6 +485,19 @@ pub fn shape<D: RoutingData>(
         search.fixed.extend(via);
     }
     Err(search.failure())
+}
+
+/// `line` with a vertex at least every `VERTEX_M`, and the new index of each vertex in `keep`.
+fn dense(line: &[P], keep: &[usize]) -> (Vec<P>, Vec<usize>) {
+    let mut out = vec![line[0]];
+    let mut index = vec![0];
+    for w in line.windows(2) {
+        let pieces = (distance(w[0], w[1]) / VERTEX_M).ceil().max(1.0) as i64;
+        let at = |axis: usize, s: i64| w[0][axis] + ((w[1][axis] - w[0][axis]) as i64 * s / pieces) as i32;
+        out.extend((1..=pieces).map(|s| [at(0, s), at(1, s)]));
+        index.push(out.len() - 1);
+    }
+    (out, keep.iter().map(|&k| index[k]).collect())
 }
 
 /// Simplifies a line within `tolerance_m`, keeping the vertices at `keep` (ascending indices).
@@ -548,7 +571,7 @@ pub fn answer<D: RoutingData>(router: &mut Router<D>, request: &LineRequest, con
         Failure::Cancelled => Error::Cancelled,
         Failure::Limit => Error::Limit,
         Failure::Memory => Error::Memory,
-        Failure::TooManyPoints | Failure::Check | Failure::Budget | Failure::Stall => Error::NotReproducible,
+        Failure::TooManyPoints | Failure::Check | Failure::Budget => Error::NotReproducible,
     })?;
     let points: Vec<[f64; 2]> = plan.points.iter().map(|p| [p[0] as f64 / 1e6, p[1] as f64 / 1e6]).collect();
     Ok(json!({ "points": points, "turnarounds": plan.turnarounds }))
@@ -595,6 +618,21 @@ mod tests {
         let (simple, positions) = simplify(&routed, &[0, 6, 11], 50.0);
         assert_eq!(simple, [line[0], line[4], routed[5], routed[6], routed[7], line[10]]);
         assert_eq!(positions, [0, 3, 5]);
+    }
+
+    #[test]
+    fn the_dense_line_has_a_vertex_every_60_m_and_keeps_each_given_vertex() {
+        // About 9 microdegrees of latitude are 1 m: 1 km north; 130 m north, then 89 m east.
+        for (line, keep) in [(vec![[0, 0], [0, 9_000]], vec![0, 1]), (vec![[0, 0], [0, 1_170], [800, 1_170]], vec![1])]
+        {
+            let (out, positions) = dense(&line, &keep);
+            assert_eq!((out[0], out[out.len() - 1]), (line[0], line[line.len() - 1]));
+            assert!(out.windows(2).all(|w| distance(w[0], w[1]) <= VERTEX_M), "{out:?}");
+            assert_eq!(
+                positions.iter().map(|&k| out[k]).collect::<Vec<_>>(),
+                keep.iter().map(|&k| line[k]).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

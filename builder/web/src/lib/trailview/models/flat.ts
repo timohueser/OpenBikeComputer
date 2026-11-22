@@ -23,6 +23,10 @@ export class Model {
     /** How much each triangle glows at night, 0 to 1, and whether it rises from its foot as the night falls, as a flame. */
     readonly glows: number[] = [];
     readonly rises: boolean[] = [];
+    /** The polygon of each triangle: the triangles of one `poly` share it. */
+    readonly faces: number[] = [];
+    private polygons = 0;
+    private open?: number;
 
     get triangles(): number {
         return this.colours.length;
@@ -33,6 +37,7 @@ export class Model {
         this.colours.push(colour);
         this.glows.push(0);
         this.rises.push(false);
+        this.faces.push(this.open ?? this.polygons++);
         return this;
     }
 
@@ -45,7 +50,9 @@ export class Model {
 
     /** A convex polygon, as a fan. */
     poly(corners: Vec[], colour: number): this {
+        this.open = this.polygons++;
         for (let i = 1; i + 1 < corners.length; i++) this.tri(corners[0], corners[i], corners[i + 1], colour);
+        this.open = undefined;
         return this;
     }
 
@@ -54,6 +61,8 @@ export class Model {
         this.colours.push(...other.colours);
         this.glows.push(...other.glows);
         this.rises.push(...other.rises);
+        this.faces.push(...other.faces.map(face => face + this.polygons));
+        this.polygons += other.polygons;
         return this;
     }
 

@@ -1,7 +1,6 @@
-<script lang="ts">
-    /** `path` draws a 24 px stroke path instead of a named icon. */
-    let { name = 'pin', path, size = 18 }: { name?: string; path?: string; size?: number } = $props();
-    const paths: Record<string, string> = {
+<script lang="ts" module>
+    /** The 24 px stroke paths of the named icons; the map draws some of them on its markers. */
+    export const ICON_PATHS: Record<string, string> = {
         road: 'M1.6 16.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM15.6 16.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM17.1 7.4a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM5 16.6L8.4 9.9L15 9.3L17.2 13.2L19 16.6M8.4 9.9L12.8 13L11.4 16.6',
         gravel: 'M1.6 16a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM15.6 16a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM14.5 2.6a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM2 22.3v.01M7 22.3v.01M12 22.3v.01M17 22.3v.01M22 22.3v.01M5 16L8.4 9.2L13.6 5.4L17 10.8L19 16M8.4 9.2L13 12L11.4 16',
         touring: 'M8.4 17.6A3.4 3.4 0 0 1 1.6 17.6M2.9 11.4H6.5a1.1 1.1 0 0 1 1.1 1.1V16.5a1.1 1.1 0 0 1 -1.1 1.1H2.9a1.1 1.1 0 0 1 -1.1 -1.1V12.5a1.1 1.1 0 0 1 1.1 -1.1ZM15.6 17.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM11.3 2.5a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM8.8 11.2L11.2 6.2L16.4 10.6L19 17.6M8.8 11.2L13.4 13L12 17.6',
@@ -41,10 +40,24 @@
         gear: 'M10.1 5.3 10.5 2.6 13.5 2.6 13.9 5.3 15.4 5.9 17.6 4.3 19.7 6.4 18.1 8.6 18.7 10.1 21.4 10.5 21.4 13.5 18.7 13.9 18.1 15.4 19.7 17.6 17.6 19.7 15.4 18.1 13.9 18.7 13.5 21.4 10.5 21.4 10.1 18.7 8.6 18.1 6.4 19.7 4.3 17.6 5.9 15.4 5.3 13.9 2.6 13.5 2.6 10.5 5.3 10.1 5.9 8.6 4.3 6.4 6.4 4.3 8.6 5.9ZM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z',
         trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6m4-6v6',
         mountain: 'm2 20 7-13 4 7 3-5 6 11H2Zm4-7 3 1 2-3',
+        lake: 'M3 10c2-2 4-2 6 0s4 2 6 0 4-2 6 0M3 15c2-2 4-2 6 0s4 2 6 0 4-2 6 0', hut: 'M4 11l8-6 8 6v8H4zM10 19v-5h4v5',
+        waterfall: 'M7 3v8M12 3v11M17 3v8M4 19c2-2 4-2 6 0s4 2 6 0 3-1 4 0', tree: 'M12 3l5 8h-3l4 6H6l4-6H7zM12 17v4',
+        meadow: 'M3 20h18M6 20c0-3 1-5 2-6M11 20c0-4 1-7 3-9M16 20c0-3 1-5 3-6', quiet: 'M5 20 9 4m10 16L15 4M12 6v2m0 3v2m0 3v2',
+        car: 'M3 15.5h18v3.5H3zM5 15.5l2-5.5h10l2 5.5M6 19v2m12-2v2M7 17.3h1m8 0h1',
+        walk: 'M13.5 5a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6ZM9 22l2.5-7 2.5 2.5V22M8 12l2.5-4.5h3.5l1.5 3.5 3 1.5M10.5 7.5 9.5 15',
+        lift: 'M2 3l20 5M12 5.5V10M7 10h10l-1 10H8zM7.5 14h9', info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 8v5m0-8.5v.01', paved: 'M3 19h18M3 14h18M6 9h12',
+        // Mirror images of each other, so up and down read apart at 16 px.
+        ascent: 'm3 17 6-6 4 4 8-8m-6 0h6v6', descent: 'm3 7 6 6 4-4 8 8m-6 0h6v-6',
+        lock: 'M6 11h12v9H6v-9Zm2 0V8a4 4 0 0 1 8 0v3',
         wind: 'M3 8h10a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h7',
         snow: 'M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7M9.5 3.5 12 6l2.5-2.5M9.5 20.5 12 18l2.5 2.5M18.1 5.6 17.2 9l3.4.9M20.6 14.1 17.2 15l.9 3.4M3.4 14.1 6.8 15l-.9 3.4M5.9 5.6 6.8 9l-3.4.9',
         weather: 'M7 19h10a4 4 0 0 0 .7-7.9A5.5 5.5 0 0 0 7.2 10 4.5 4.5 0 0 0 7 19Z',
         rain: 'M7 15h10a4 4 0 0 0 .7-7.9A5.5 5.5 0 0 0 7.2 6 4.5 4.5 0 0 0 7 15Zm2 3-1 3m5-3-1 3m5-3-1 3',
     };
 </script>
-<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={path ?? paths[name] ?? paths.pin} /></svg>
+
+<script lang="ts">
+    /** `path` draws a 24 px stroke path instead of a named icon. */
+    let { name = 'pin', path, size = 18 }: { name?: string; path?: string; size?: number } = $props();
+</script>
+<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={path ?? ICON_PATHS[name] ?? ICON_PATHS.pin} /></svg>

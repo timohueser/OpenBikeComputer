@@ -28,7 +28,7 @@ struct Node {
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> nodes: array<Node>;
-// The boxes of the tunnels' portals near the eye: x the count; then per box its words, as portal-box.wgsl reads them.
+// The boxes of the tunnels' portals and parts near the eye: x the count; then per box its words, as portal-box.wgsl reads them.
 @group(0) @binding(2) var<storage, read> holes: array<vec4f>;
 
 // The nodes with a tunnel's portal draw no terrain in its box between its floor and its roof: the bore
@@ -39,15 +39,16 @@ override HOLES: bool = false;
 // mesh draws whole, and its triangles go inside the mesh's owned region.
 override PLAN: bool = false;
 
-// Metres from a point of the terrain, `u` units about the anchor at height `h`, to the nearest portal
-// box, negative inside; with `footprint`, to the nearest box's footprint, whatever the height.
+// Metres from a point of the terrain, `u` units about the anchor at height `h`, to the nearest box, negative
+// inside; with `footprint`, to the nearest box's footprint, whatever the height.
 fn hole_distance(u: vec2f, h: f32, footprint: bool) -> f32 {
     var d = 1e6;
     for (var i = 0u; i < u32(holes[0].x); i++) {
         let b = holes[2u + 3u * i];
-        let q = box_point(holes[1u + 3u * i], holes[3u + 3u * i].x, u, h);
-        let foot = max(max(-q.x, q.x - b.x), q.y - b.y);
-        d = min(d, select(max(foot, max(q.z - b.z, b.w - q.z)), foot, footprint));
+        let c = holes[3u + 3u * i];
+        let q = box_point(holes[1u + 3u * i], b, c, u, h);
+        let foot = box_plan(b, c, q);
+        d = min(d, select(max(foot, max(box_wall(b, c, q), b.w - q.z)), foot, footprint));
     }
     return d;
 }

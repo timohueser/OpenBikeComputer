@@ -19,6 +19,7 @@
         { "path": "software/packer-routing", "title": "Packer & routing" },
         { "path": "software/terrain", "title": "Terrain & elevation" },
         { "path": "software/trailview-roads", "title": "TrailView roads" },
+        { "path": "software/trailview-models", "title": "TrailView models" },
         { "path": "software/companion-link", "title": "The companion link" },
         { "path": "software/trips", "title": "Trips and rides" },
         { "path": "software/ride-replay", "title": "Ride replay" },

@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FitSample } from '../core/fit';
-import { browserZone, photoSample, placePhoto } from './photos';
+import type { RideSummary } from '../library/records';
+import { browserZone, photoRide, photoSample, placePhoto, type PhotoRide } from './photos';
 
 const start = Date.UTC(2026, 9, 24, 7) / 1000;
 /** 60 samples 10 s apart, about 50 m each: 30 to the north, then back to the south on the same line. */
@@ -66,5 +67,29 @@ describe('the place of a photo on a ride', () => {
         const timeless = samples.map(sample => ({ ...sample, timeS: 0 }));
         expect(placePhoto(timeless, { clock: start + 100, zone: 0, place: placeOf(5) }, utc)).toEqual({ time: null, place: placeOf(5) });
         expect(placePhoto(timeless, { clock: start + 100, zone: 0 }, utc)).toBeUndefined();
+    });
+});
+
+describe('the ride of a photo', () => {
+    const day = 86_400;
+    /** The ride of `samples`, `days` later. */
+    const rideOn = (days: number) => {
+        const shifted = samples.map(sample => ({ ...sample, timeS: sample.timeS + days * day }));
+        const summary = { start: start + days * day, seconds: 590, bounds: [8, 46.9, 8, 46.913] } as RideSummary;
+        return { summary, samples: vi.fn(async () => shifted) } satisfies PhotoRide;
+    };
+
+    it('finds the ride of a photo among three rides, and reads only the files of rides whose times can hold it', async () => {
+        const rides = [rideOn(2), rideOn(0), rideOn(1)];
+        expect(await photoRide(rides, { clock: start + day + 204, zone: 0 }, utc)).toEqual({ ride: rides[2], at: { time: start + day + 204 } });
+        expect(rides.map(ride => ride.samples.mock.calls.length)).toEqual([0, 0, 1]);
+        expect(await photoRide(rides, { place: placeOf(49) }, utc)).toEqual({ ride: rides[1], at: { time: null, place: placeOf(49) } });
+    });
+
+    it('gives no ride for a photo that fits none', async () => {
+        const rides = [rideOn(0), rideOn(1), rideOn(2)];
+        expect(await photoRide(rides, { clock: start + day + 3600, zone: 0 }, utc)).toBeUndefined();
+        expect(await photoRide(rides, { place: [9, 47] }, utc)).toBeUndefined();
+        expect(rides.map(ride => ride.samples.mock.calls.length)).toEqual([0, 1, 0]);
     });
 });

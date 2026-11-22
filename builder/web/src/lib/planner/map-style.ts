@@ -101,7 +101,24 @@ function cliffAndFerryLayers(dark: boolean): LayerSpecification[] {
     ];
 }
 
-/** The theme's layers with its land use layers replaced by the planner's, which draw every kind, and with cliffs and ferries. */
+/** Cable cars, which the theme does not draw: a thin line with a tick at each step, over the roads and bridges they
+ * hang above. The basemap build keeps only `aerialway=cable_car`, so gondolas and chair lifts are not in the tiles. */
+function cableCarLayers(dark: boolean): LayerSpecification[] {
+    const color = dark ? "#b5afa3" : "#5b5750";
+    const filter: ExpressionSpecification = ["==", ["get", "kind"], "aerialway"];
+    return [
+        {
+            id: "cable-cars", type: "line", source: "basemap", "source-layer": "roads", minzoom: 11, filter,
+            paint: { "line-color": color, "line-width": ["interpolate", ["linear"], ["zoom"], 11, 0.8, 16, 1.4] },
+        },
+        {
+            id: "cable-car-ticks", type: "line", source: "basemap", "source-layer": "roads", minzoom: 13, filter,
+            paint: { "line-color": color, "line-width": 5, "line-dasharray": [0.3, 6] },
+        },
+    ];
+}
+
+/** The theme's layers with its land use layers replaced by the planner's, which draw every kind, and with cliffs, ferries and cable cars. */
 function baseLayers(dark: boolean): LayerSpecification[] {
     const theme = layers("basemap", flavor(dark), { lang: "en" }) as LayerSpecification[];
     const base = theme.filter((layer) => !layer.id.startsWith("landuse_"));
@@ -111,6 +128,7 @@ function baseLayers(dark: boolean): LayerSpecification[] {
     base.splice(theme.findIndex((layer) => layer.id.startsWith("landuse_")), 0, ground, zone, detail);
     base.splice(base.findIndex((layer) => layer.id === "water") + 1, 0, structure, outline);
     base.splice(base.findIndex((layer) => layer.id === "water_river") + 1, 0, ...cliffAndFerryLayers(dark));
+    base.splice(base.findIndex((layer) => layer.id === "roads_bridges_highway") + 1, 0, ...cableCarLayers(dark));
     const river = base.find((layer) => layer.id === "water_river");
     if (river?.type === "line") river.filter = ["in", ["get", "kind"], ["literal", ["river", "canal"]]];
     const waterwayLabel = base.find((layer) => layer.id === "water_waterway_label");

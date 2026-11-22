@@ -10,6 +10,7 @@ import { ANCHOR_WORDS, ANCHORED_VERTEX } from './anchored';
 import { STRUCTURE_VERTEX, type StructureMesh } from './mesh';
 import { FLOOR, type NodeMeshes } from './node';
 import { Pool, type Mesh } from './pool';
+import { POINT_WORDS } from '../instances/points';
 
 /**
  * The structure meshes and the anchored meshes on the GPU, fixed pools; the anchors of the anchored
@@ -138,8 +139,9 @@ export class Structures {
         this.unanchored = 0;
         for (const { meshes, near } of now) {
             const parts = near ? [meshes.far, meshes.near] : [meshes.far];
-            // The models on the surface reach no farther than the near meshes.
-            if (near && meshes.points) this.points.push(meshes.points);
+            // The models on the surface reach no farther than the near meshes. With the ground plan, none stands in a part.
+            const off = this.stamps.plan ? (meshes.pointsOff ?? 0) * POINT_WORDS : 0;
+            if (near && meshes.points && meshes.points.length > off) this.points.push(off ? meshes.points.subarray(0, meshes.points.length - off) : meshes.points);
             for (const { structures } of parts) if (structures) this.draws.push(structures);
             const count = (meshes.anchors?.byteLength ?? 0) / (ANCHOR_WORDS * 4), hung = parts.map(({ anchored }) => anchored).filter(mesh => mesh !== null);
             if (!meshes.anchors) continue;
@@ -228,18 +230,17 @@ export class Structures {
         groups.forEach((group, k) => pass.setBindGroup(k, group));
         pass.setVertexBuffer(0, r.structures.vertices);
         pass.setIndexBuffer(r.structures.indices, 'uint32');
-        // With the ground plan, a bridge's faces draw with their own pipeline and its abutments not at all.
-        const plan = this.stamps.plan, own = (mesh: StructureMesh) => mesh.indices.length - (plan ? (mesh.offPlan ?? 0) + (mesh.decks ?? 0) : 0);
+        const plan = this.stamps.plan;
         pass.setPipeline(structures);
         for (const mesh of this.draws) {
-            const at = r.structures.at(mesh);
-            if (at && own(mesh)) pass.drawIndexed(own(mesh), 1, at.first, at.base);
+            const at = r.structures.at(mesh), { skip, count } = ownRange(mesh, plan);
+            if (at && count) pass.drawIndexed(count, 1, at.first + skip, at.base);
         }
         if (plan) {
             pass.setPipeline(bridges);
             for (const mesh of this.draws) {
                 const at = r.structures.at(mesh);
-                if (at && mesh.decks) pass.drawIndexed(mesh.decks, 1, at.first + own(mesh), at.base);
+                if (at && mesh.decks) pass.drawIndexed(mesh.decks, 1, at.first + ownRange(mesh, plan).count, at.base);
             }
         }
         pass.setPipeline(anchored);
@@ -251,6 +252,16 @@ export class Structures {
             if (at) pass.drawIndexed(mesh.indices.length, 1, at.first, at.base, anchor);
         }
     }
+}
+
+/**
+ * The indices of a mesh that the structures' own pipeline draws: `count` of them from the first `skip`. With the ground
+ * plan, all but a bridge's (`decks`, which draw with a pipeline of their own, and `offPlan`); without it, all but the
+ * parts (`planOnly`).
+ */
+export function ownRange(mesh: StructureMesh, plan: boolean): { skip: number; count: number } {
+    const skip = plan ? 0 : (mesh.planOnly ?? 0);
+    return { skip, count: mesh.indices.length - skip - (plan ? (mesh.offPlan ?? 0) + (mesh.decks ?? 0) : 0) };
 }
 
 /** The draws of the structures and the anchored meshes, the heights of the anchors, the casters, and their layouts. */
@@ -279,7 +290,7 @@ async function structurePipelines(gpu: Gpu) {
         arrayStride: STRUCTURE_VERTEX * 4, attributes: [
             { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' },
             { shaderLocation: 2, offset: 12, format: 'unorm8x4' }, { shaderLocation: 3, offset: 16, format: 'snorm16x2' },
-            { shaderLocation: 4, offset: 20, format: 'float32' },
+            { shaderLocation: 4, offset: 20, format: 'float32' }, { shaderLocation: 5, offset: 24, format: 'float32' },
         ],
     }];
     const anchoredVertices: GPUVertexBufferLayout[] = [{

@@ -1,10 +1,10 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it } from 'vitest';
-import type { PhotoRecord, RideRecord, RouteRecord } from './records';
+import type { PhotoRecord, RideRecord, RouteRecord, RouteSummary } from './records';
 import { Library } from './store';
 import { summarize } from './summary';
 
-const route = (id: string): RouteRecord => ({ id, revision: 0, name: id, updatedAt: 1, summary: null, trip: { points: [] } });
+const route = (id: string): RouteRecord => ({ id, name: id, updatedAt: 1, summary: null, trip: { points: [] } });
 
 const ride = (key: string, device?: string): RideRecord => ({
     key, name: key, source: device ? 'device' : 'file', format: 'gpx', maxHr: 180, ftp: null, ...device && { device },
@@ -14,18 +14,17 @@ const ride = (key: string, device?: string): RideRecord => ({
 const photo = (id: string, key: string): PhotoRecord => ({ id, ride: key, time: 1, image: new Blob([`copy of ${id}`]), small: new Blob(['small']) });
 
 describe('library store', () => {
-    it('saves routes in order, refuses an unseen edit from another tab, and removes the versions and the active pointer', async () => {
+    it('saves routes in order, lets the later save of two tabs win, and deletes the draft and the active pointer with the route', async () => {
         const factory = new IDBFactory(), first = new Library(factory), second = new Library(factory);
-        const saved = await first.saveRoute(route('a'), [{ id: 'v' }]);
+        const saved = await first.saveRoute(route('a'));
         await first.setState('active', saved.id);
-        const stale = (await second.route('a'))!;
         await Promise.all([first.saveRoute({ ...saved, updatedAt: 2 }), first.saveRoute({ ...saved, updatedAt: 3 })]);
-        expect((await first.routes())[0]).toMatchObject({ updatedAt: 3, revision: 3 });
-        expect(await first.versions('a')).toEqual([{ id: 'v' }]);
-        await expect(second.saveRoute({ ...stale, name: 'Unseen' })).rejects.toThrow('another tab');
-        await expect(second.removeRoute('a', stale.revision)).rejects.toThrow('changed');
-        await second.removeRoute('a', (await second.route('a'))!.revision);
-        expect([await first.routes(), await first.versions('a'), await first.state('active')]).toEqual([[], [], null]);
+        expect((await first.routes())[0]).toMatchObject({ updatedAt: 3 });
+        await second.saveRoute({ ...saved, updatedAt: 4, trip: { points: [], later: true } });
+        expect(await first.route('a')).toMatchObject({ updatedAt: 4, trip: { later: true } });
+        await first.saveDraft({ id: 'a', updatedAt: 5, trip: { points: [] } });
+        await second.removeRoute('a');
+        expect([await first.routes(), await first.draft('a'), await first.state('active')]).toEqual([[], undefined, null]);
         await first.close(); await second.close();
     });
 
@@ -37,29 +36,38 @@ describe('library store', () => {
         await library.close();
     });
 
-    it('keeps a rename over a save that was queued before it', async () => {
+    it('keeps a rename over a save that was queued before it, and saves a route again that another tab deleted', async () => {
         const library = new Library(new IDBFactory()), saved = await library.saveRoute(route('a'));
         const [renamed, later] = await Promise.all([library.renameRoute('a', 'Lake loop'), library.saveRoute({ ...saved, updatedAt: 5 })]);
-        expect(renamed).toMatchObject({ name: 'Lake loop', revision: 2 });
-        expect(later).toMatchObject({ name: 'Lake loop', revision: 3, updatedAt: 5 });
-        expect(await library.route('a')).toMatchObject({ name: 'Lake loop', revision: 3 });
+        expect(renamed).toMatchObject({ name: 'Lake loop' });
+        expect(later).toMatchObject({ name: 'Lake loop', updatedAt: 5 });
         await expect(library.renameRoute('gone', 'x')).rejects.toThrow('not in the library');
-        await library.renameRoute('a', 'Lake round');
-        // The copy of the route still has revision 1: the tab knows the revisions of its own save and rename.
-        await library.removeRoute('a', saved.revision);
-        expect(await library.route('a')).toBeUndefined();
+        await library.removeRoute('a');
+        expect(await library.saveRoute({ ...saved, updatedAt: 6 })).toMatchObject({ name: 'a', updatedAt: 6 });
         await library.close();
     });
 
-    it('does not hide a save of another tab behind a rename', async () => {
-        const factory = new IDBFactory(), stale = new Library(factory), other = new Library(factory);
-        const saved = await stale.saveRoute(route('a'));
-        await other.saveRoute({ ...(await other.route('a'))!, trip: { points: [], edited: true } });
-        expect(await stale.renameRoute('a', 'Lake loop')).toMatchObject({ name: 'Lake loop', revision: 3 });
-        await expect(stale.saveRoute({ ...saved, updatedAt: 2 })).rejects.toThrow('another tab');
-        await expect(stale.removeRoute('a', saved.revision)).rejects.toThrow('changed');
-        expect(await other.route('a')).toMatchObject({ name: 'Lake loop', trip: { edited: true } });
-        await stale.close(); await other.close();
+    it('keeps a draft for each route, deletes it at a save, and writes only the summary of a stored route', async () => {
+        const library = new Library(new IDBFactory()), heard: string[] = [];
+        const draft = (id: string) => ({ id, updatedAt: 1, trip: { points: [id] } });
+        await library.saveDraft(draft('new-1'));
+        await library.saveDraft(draft('new-2'));
+        expect([await library.draft('new-1'), await library.draft('new-2')]).toEqual([draft('new-1'), draft('new-2')]);
+        await library.saveRoute(route('new-1'));
+        expect([await library.draft('new-1'), await library.draft('new-2')]).toEqual([undefined, draft('new-2')]);
+        await library.removeDraft('new-2');
+        expect(await library.draft('new-2')).toBeUndefined();
+
+        library.onChange((store, key) => heard.push(`${store}:${key}`));
+        const summary = summarize<RouteSummary>([[8, 47, 400], [8.01, 47, 420]], { lengthM: 760, climbM: 20, seconds: 300, days: 1, bike: 'gravel' });
+        // A summary made for another trip of the route is not written.
+        await library.setSummary('new-1', summary, { points: ['other'] });
+        expect((await library.route('new-1'))!.summary).toBeNull();
+        await library.setSummary('new-1', summary, { points: [] });
+        await library.setSummary('gone', summary, { points: [] });
+        expect(await library.route('new-1')).toEqual({ ...route('new-1'), summary });
+        expect([heard, await library.route('gone')]).toEqual([['routes:new-1'], undefined]);
+        await library.close();
     });
 
     it('changes a state value in one transaction, and a removed route stops waiting and leaves the device', async () => {
@@ -75,7 +83,7 @@ describe('library store', () => {
         // Only a route on the device has to leave it.
         expect(await library.state('leaving')).toBeUndefined();
         await library.saveRoute(route('c'));
-        await library.setState('sent', { c: { device: '1:7', key: 'k' } });
+        await library.setState('sent', { c: { key: 'k', card: '1', days: ['7'], crcs: [0], gone: [], trips: [], tripKeys: [] } });
         await library.removeRoute('c');
         expect(await library.state('leaving')).toEqual(['c']);
         await library.close();
@@ -99,7 +107,7 @@ describe('library store', () => {
 
     it('clears all stores after the writes before it, and then refuses each write', async () => {
         const factory = new IDBFactory(), library = new Library(factory);
-        await library.saveRoute(route('a'), [{ id: 'v' }]);
+        await library.saveRoute(route('a'));
         await library.addRide(ride('20260801T070000Z'), new Blob(['ride']));
         await library.saveCover({ id: 'a', lineKey: 'k', state: 'none', tries: 0 });
         await library.setState('active', 'a');
@@ -108,12 +116,12 @@ describe('library store', () => {
         await expect(before).resolves.toMatchObject({ id: 'b' });
         await expect(library.saveRoute(route('c'))).rejects.toThrow('deleted');
         const fresh = new Library(factory), contents = await fresh.contents();
-        expect([contents.routes, contents.versions, contents.rides, contents.files.size, contents.state, await fresh.cover('a')])
-            .toEqual([[], {}, [], 0, {}, undefined]);
+        expect([contents.routes, contents.rides, contents.files.size, contents.state, await fresh.cover('a')])
+            .toEqual([[], [], 0, {}, undefined]);
         await library.close(); await fresh.close();
     });
 
-    it('opens a database of version 1 with its routes and rides, and adds the store of the photos', async () => {
+    it('opens a database of version 1 with its routes and rides, adds the stores of the photos and the drafts, and deletes the versions and the fields `open` and `revision`', async () => {
         const factory = new IDBFactory(), key = '20260801T070000Z';
         await new Promise<void>((resolve, reject) => {
             const request = factory.open('obc-library', 1);
@@ -126,7 +134,7 @@ describe('library store', () => {
             };
             request.onsuccess = () => {
                 const db = request.result, tx = db.transaction(['routes', 'rides', 'ride-files'], 'readwrite');
-                tx.objectStore('routes').put(route('a'));
+                tx.objectStore('routes').put({ ...route('a'), open: 'v1', revision: 3 });
                 tx.objectStore('rides').put(ride(key));
                 tx.objectStore('ride-files').put(new Blob(['ride']), key);
                 tx.oncomplete = () => { db.close(); resolve(); };
@@ -134,24 +142,29 @@ describe('library store', () => {
             request.onerror = () => reject(request.error);
         });
         const library = new Library(factory);
-        expect((await library.routes()).map(r => r.id)).toEqual(['a']);
+        expect(await library.routes()).toEqual([route('a')]);
         expect((await library.rides()).map(r => r.key)).toEqual([key]);
         expect(await (await library.rideFile(key))!.text()).toBe('ride');
         expect(await library.addPhoto(photo('p1', key))).toBe(true);
         expect((await library.photos(key)).map(p => p.id)).toEqual(['p1']);
+        await library.saveDraft({ id: 'a', updatedAt: 1, trip: {} });
         await library.close();
+        const db = await new Promise<IDBDatabase>(resolve => { const request = factory.open('obc-library'); request.onsuccess = () => resolve(request.result); });
+        expect(db.objectStoreNames.contains('versions')).toBe(false);
+        db.close();
     });
 
     it('fails each call with one plain sentence after another tab upgrades the database', async () => {
         const factory = new IDBFactory(), library = new Library(factory);
         await library.saveRoute(route('a'));
         await new Promise<void>((resolve, reject) => {
-            const request = factory.open('obc-library', 3);
+            const request = factory.open('obc-library', 5);
             request.onsuccess = () => { request.result.close(); resolve(); };
             request.onerror = request.onblocked = () => reject(new Error('The upgrade did not run.'));
         });
         await expect(library.routes()).rejects.toThrow('The app was updated in another tab. Reload the page.');
-        await expect(library.saveRoute(route('b'))).rejects.toThrow('The app was updated in another tab. Reload the page.');
+        for (const write of [library.saveRoute(route('b')), library.saveDraft({ id: 'b', updatedAt: 1, trip: {} }), library.removeDraft('a'), library.renameRoute('a', 'b')])
+            await expect(write).rejects.toMatchObject({ name: 'OutdatedError' });
     });
 
     it('adds a photo one time and only to a stored ride, and removes the photos of a ride with the ride', async () => {
@@ -168,6 +181,23 @@ describe('library store', () => {
         expect(await (await library.photo('p1'))!.image.text()).toBe('copy of p1');
         await library.removeRide(first);
         expect(await library.photoIds()).toEqual(['p4']);
+        await library.close();
+    });
+
+    it('gives the cards of a ride a photo, and the cover again after a second choice or after "Remove" of that photo', async () => {
+        const library = new Library(new IDBFactory()), key = '20260801T070000Z';
+        await library.addRide(ride(key), new Blob(['ride']));
+        await library.addPhoto(photo('p1', key));
+        await library.addPhoto(photo('p2', key));
+        await library.setCardPhoto(key, 'p1');
+        expect((await library.ride(key))!.photo).toBe('p1');
+        await library.setCardPhoto(key, null);
+        expect(await library.ride(key)).not.toHaveProperty('photo');
+        await library.setCardPhoto(key, 'p2');
+        await library.removePhoto('p1');
+        expect((await library.ride(key))!.photo).toBe('p2');
+        await library.removePhoto('p2');
+        expect(await library.ride(key)).toEqual(ride(key));
         await library.close();
     });
 });

@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::pmtiles::Archive;
+use obc_data::pmtiles::Archive;
+
 use crate::Terrain;
 
 const TILE: usize = 512;
@@ -110,11 +111,11 @@ impl Tiles {
                 None => {
                     let path = &files[&part];
                     let archive = Archive::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-                    if archive.tile_compression != 1 {
+                    if archive.tile_compression() != 1 {
                         return Err(format!(
                             "{}: tile compression {}, not none",
                             path.display(),
-                            archive.tile_compression
+                            archive.tile_compression()
                         ));
                     }
                     let archive = Arc::new(archive);
@@ -238,7 +239,8 @@ fn decode(data: &[u8]) -> Result<Vec<f32>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pmtiles::{self, tile_id, Header};
+    use crate::pmtiles::{self, Header};
+    use obc_data::pmtiles::tile_id;
     use std::io::Write;
 
     /// A tile of heights h(i, j) metres at pixel (i, j), transparent where h is None.

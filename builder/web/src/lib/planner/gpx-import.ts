@@ -47,8 +47,9 @@ export async function planFromFile(track: Pick<GpxImport, 'name' | 'points' | 'w
     return { ...newPlan(trip, track.name), id, summary: planSummary(trip, line) };
 }
 
-/** Shapes the lines one at a time, so an import never sends parallel requests. Any failure, such as a busy service, keeps
- * the file's line and names the file in `failed`. */
+/** Shapes the lines one at a time: a shape request can use only half the workers of the route service, and a request that
+ * waits more than 1 s for a worker is `busy`. Route requests go two at a time, because they can use every worker. Any
+ * failure, such as a busy service, keeps the file's line and names the file in `failed`. */
 export async function planOnRoads(lines: ImportedLine[], shape: (line: Coordinate[]) => Promise<Shape>): Promise<{ lines: ImportedLine[]; failed: string[] }> {
     const shaped: ImportedLine[] = [], failed: string[] = [];
     for (const line of lines) {

@@ -20,6 +20,7 @@ import { Resolve, resolvePipeline } from './resolve/resolve';
 import { MAX_SCALE, Targets } from './resolve/targets';
 import { jitter, STILL_FRAMES, Temporal, type Step } from './resolve/temporal';
 import { EYE, Instances, SUN, type InstanceStats, type LastFrame } from './instances/instances';
+import { ModelFiles } from './instances/model-files';
 import { GroundSource } from './stream/ground';
 import { eyeTiles, pageDecoder, type EyeTiles } from './stream/terrain';
 import { Terrain, terrainPipelines, type Audit, type TerrainStats } from './terrain/terrain';
@@ -27,7 +28,7 @@ import { piecePipelines } from './plan/pieces';
 import HOUSE_VERSION from 'virtual:house-version';
 import PLAN_VERSION from 'virtual:plan-version';
 import STAMP_VERSION from 'virtual:stamp-version';
-import TREE_VERSION from 'virtual:tree-version';
+import MODELS from 'virtual:models';
 import { FINEST, NEAR_M } from './terrain/lod';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
@@ -42,6 +43,7 @@ import { Route, type RouteLine, type RoutePin } from './route/route';
 import type { PlanStats } from './plan/plan';
 import { sampleDistances, terrainHides } from './sight';
 import { Pacer } from './pacer';
+import { BUDGETS, type Budget, type Tier } from './budget';
 import type { StillPoints } from './still';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
@@ -105,7 +107,7 @@ const first = (plan: boolean): ((gpu: Gpu) => Promise<unknown>)[] => [terrainPip
 const REST_WAIT_MS = 5000;
 
 /** The options of `TrailView.start`. */
-interface StartOptions extends Pointer { plan?: boolean; finest?: number; pool?: number; size?: [number, number] }
+interface StartOptions extends Pointer { plan?: boolean; finest?: number; tier?: Tier; size?: [number, number] }
 
 /** Where the eye stands: a height, and whether it lies in a tunnel. */
 interface Feet { z: number; tunnel: boolean; floor: boolean }
@@ -121,13 +123,14 @@ export class TrailView {
     onView?: (view: View) => void;
     recoveries = 0;
     /** Picks the display frames that draw: `pacer.rate` is the frame rate. */
-    readonly pacer = new Pacer();
+    readonly pacer: Pacer;
     private readonly context: GPUCanvasContext;
     private readonly frame: Frame;
     private readonly terrain: Terrain;
     private readonly groundLook: Ground;
     private readonly houses: Houses;
     private readonly instances = new Instances();
+    private readonly models: ModelFiles;
     private readonly trees: TreeModels;
     /** The last regions in reach, where they were read from and at which change of the ground pages. */
     private reached?: Reach & { east: number; north: number; changes: number };
@@ -153,7 +156,7 @@ export class TrailView {
     private feet?: Feet;
     private ready = false;
     /** No frame draws before `start` lets it: a frame asks for every tile, and the tiles under the eye come first. */
-    private held = true;
+    private starting = true;
     /** The attach of the other passes, which starts once a frame draws the view about the eye (`eyeDrawn`); it rejects when one fails. */
     private rest: Promise<unknown> = Promise.resolve();
     private eyeDrawn?: () => void;
@@ -188,25 +191,27 @@ export class TrailView {
      */
     private skyMagnitude = DARK_SKY;
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, readonly groundPlan: boolean, finest: number, pool: number, pointer: Pointer, private readonly output?: [number, number]) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, readonly groundPlan: boolean, finest: number, budget: Budget, pointer: Pointer, private readonly output?: [number, number]) {
         // `destroy()` aborts it: it ends the tile requests, the workers and the listeners.
         const { signal } = stop;
         this.context = canvas.getContext('webgpu')!;
+        this.pacer = new Pacer(budget.frameRate);
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug, plan: view.plan };
         const { features } = tiles;
         // The release ID, and the tile URLs for a config without one.
         const release = JSON.stringify([config.id, config.manifest, config.terrain, config.layers]);
-        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION }, pool);
-        this.groundLook = new Ground(ground, () => this.request());
-        this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, { release, version: HOUSE_VERSION });
-        this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal, TREE_VERSION);
-        this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
-        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
-        this.rows = new Rows(this.groundLook.rules, this.trees, this.plants, this.instances);
-        this.kindPoints = new KindPoints(this.instances);
-        this.dressing = new Dressing(this.groundLook.rules, this.instances);
+        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, budget, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION });
+        this.groundLook = new Ground(ground, budget, () => this.request());
+        this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, budget, { release, version: HOUSE_VERSION });
+        this.models = new ModelFiles(MODELS, () => this.request(), signal);
+        this.trees = new TreeModels(this.instances, () => this.treesNear(), this.models, budget.loads.models);
+        this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal, budget);
+        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, this.models);
+        this.rows = new Rows(config, this.groundLook.rules, this.trees, this.plants, this.instances, MODELS);
+        this.kindPoints = new KindPoints(this.instances, this.models);
+        this.dressing = new Dressing(this.groundLook.rules, this.instances, this.models);
         // A still has a size of its own and no input: the controls listen for keys on the whole window.
         if (output) return;
         this.controls = new Controls(canvas, {
@@ -233,15 +238,15 @@ export class TrailView {
      * attaches what the first frame draws, then starts the other tile loads once the tiles under the eye
      * are in, or after EYE_WAIT_MS: on a slow link the other loads would share it with them. The other
      * passes draw once they attach after the view about the eye. `scale` is the render scale; `plan` builds the
-     * ground plan beside the old ground (`ground=plan`); `finest` caps the terrain's finest level (`finest=`), and `pool`
-     * scales its page pools (`pool=`). `size` is the output of a still in pixels, in place of the element's size on the
-     * screen. `onclick` and `onhover` get a click and a move with no button on the canvas, in CSS pixels (`Pointer`).
+     * ground plan beside the old ground (`ground=plan`); `finest` caps the terrain's finest level (`finest=`), and `tier`
+     * chooses the budget: the pools, the loads and the frame rate (`tier=`). `size` is the output of a still in pixels,
+     * in place of the element's size on the screen. `onclick` and `onhover` get a click and a move with no button on the canvas, in CSS pixels (`Pointer`).
      * All but the attach run while `gpu` comes: the frames before it ask for the view's records and stamps.
      */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu | Promise<Gpu>, config: PlannerConfig, view: View, scale: number, { plan = false, finest = FINEST, pool = 1, size, onclick, onhover }: StartOptions = {}): Promise<TrailView> {
-        const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
-        const ground = await GroundSource.open(config, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest, pool, { onclick, onhover }, size);
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu | Promise<Gpu>, config: PlannerConfig, view: View, scale: number, { plan = false, finest = FINEST, tier = 'desktop', size, onclick, onhover }: StartOptions = {}): Promise<TrailView> {
+        const budget = BUDGETS[tier], stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], budget.caps, stop.signal);
+        const ground = await GroundSource.open(config, budget.caps, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest, budget, { onclick, onhover }, size);
         engine.request();
         // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
         await Promise.resolve(gpu).then(device => engine.attach(device)).catch(error => {
@@ -249,7 +254,7 @@ export class TrailView {
             throw error;
         });
         await Promise.race([tiles.arrived, new Promise(resolve => setTimeout(resolve, EYE_WAIT_MS))]);
-        engine.held = false;
+        engine.starting = false;
         engine.request();
         return engine;
     }
@@ -446,8 +451,13 @@ export class TrailView {
     }
 
     private idle(): boolean {
-        return this.complete && this.terrain.idle && this.groundLook.idle && this.houses.idle && this.trees.idle && this.forest.idle && this.plants.idle && this.instances.idle
-            && this.sky.idle && !this.shadow.pending && this.settled() && !this.converging;
+        return !this.loading && !this.shadow.pending && this.settled() && !this.converging;
+    }
+
+    /** Whether the late passes still attach, or a tile, a model or a page is on its way. */
+    private get loading(): boolean {
+        return !this.complete || !this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.trees.idle || !this.forest.idle || !this.plants.idle || !this.models.idle || !this.instances.idle
+            || !this.sky.idle;
     }
 
     /**
@@ -494,7 +504,7 @@ export class TrailView {
 
     private near(): boolean {
         return this.drawing && this.complete && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.nearIdle && this.forest.idle
-            && this.plants.nearIdle && this.instances.idle && this.shadow.nearDrawn;
+            && this.plants.nearIdle && this.kindPoints.idle && this.dressing.idle && this.instances.idle && this.shadow.nearDrawn;
     }
 
     /**
@@ -662,7 +672,7 @@ export class TrailView {
             if (!this.destroyed) this.ask();
             return;
         }
-        if (this.held) return;
+        if (this.starting) return;
         if (!this.pacer.due(now)) return this.request();
         const start = performance.now();
         const steer = this.controls?.steer(), dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
@@ -677,7 +687,8 @@ export class TrailView {
         this.last = steer || !settled ? now : 0;
         const eye = this.eye(), place = this.place();
         const { gpu, uniform, times, targets } = this.gpuState;
-        if (this.fit()) {
+        const resized = this.fit();
+        if (resized) {
             this.temporal.reset();
             this.lastFrame = undefined;
         }
@@ -689,6 +700,7 @@ export class TrailView {
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
         if (this.terrain.plan) this.terrain.plan.debug = this.extras.plan === 'faces';
         this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1], ahead: ahead(this.pose) }, this.groundLook.reads);
+        this.models.update();
         this.kindPoints.update(this.terrain.kindPoints);
         this.lightPools.set(this.kindPoints.lights);
         const { drawn, wanted, arrived, origins } = this.terrain.selected;
@@ -699,7 +711,7 @@ export class TrailView {
         this.forest.update(lonLat);
         this.plants.update(lonLat, this.extras.date, place.above, reach);
         this.rows.update(lonLat);
-        this.dressing.update(lonLat);
+        this.dressing.update(lonLat, reach);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
         // A frame that cannot draw asks for no next frame: a capture would wait forever.
@@ -707,22 +719,32 @@ export class TrailView {
             this.grab.reject(new Error(eye ? 'The still draws nothing: the ground layers are not ready.' : 'The still draws nothing: no terrain is known under the eye.'));
             this.grab = undefined;
         }
-        let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, cascade = -1;
+        let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, cascade = -1, hold = false;
         let lights: Lights | undefined, grabbed: Grabbed | undefined;
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify([this.extras, this.skyMagnitude]);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || extras !== this.drawnExtras;
+            const newExtras = extras !== this.drawnExtras;
+            changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.models.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || newExtras;
+            // While a view at rest loads, its frames run the updates and the compute but draw LOAD_RATE frames a second. Input and a resize draw
+            // at once; a frame that would draw nothing does not hold, so it asks for no more frames.
+            hold = !this.output && !this.grab && (changed || this.temporal.converging) && this.pacer.holds(now, !moved && !newExtras && !resized, this.loading || this.terrain.meshesLoading);
+            // The frame that draws after held ones takes in their change: the restart, and the instances placed twice.
+            if (!hold) changed ||= this.temporal.held;
             this.camera = camera;
             if (moved) this.sight = { viewProj, eye: [eye.east, eye.north, eye.z] };
             this.drawnExtras = extras;
             this.completed = false;
             lights = this.lights();
-            const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent;
-            if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, light, { casters, reshaped: this.terrain.reshaped }, moved);
+            const light = lights.key, casters = this.houses.newContent || this.trees.newContent || this.forest.newContent || this.models.newContent;
+            const casting = { casters, reshaped: this.terrain.reshaped };
+            // A held frame keeps its changes for the next frame that draws: `due()` marks the map that it returns as drawn.
+            if (this.complete && hold) this.shadow.hold(casting);
+            else if (this.complete) cascade = this.shadow.due([eye.east, eye.north, eye.z - eye.above], eye.above, light, casting, moved);
             this.shadow.write(gpu, [eye.east, eye.north, eye.z], light);
             // A new map changes the frame as new content does.
-            step = this.temporal.next(moved, changed || cascade >= 0, debug ? 1 : STILL_FRAMES);
+            if (hold) this.temporal.hold(changed);
+            else step = this.temporal.next(moved, changed || cascade >= 0, debug ? 1 : STILL_FRAMES);
             if (step && !debug) offset = jitter(step.sample);
             // The jitter in clip space: render pixels are y down.
             ndc = [2 * offset[0] / width, -2 * offset[1] / height];
@@ -800,14 +822,15 @@ export class TrailView {
         cast();
         this.cpu = performance.now() - start;
         this.drawn = eye ? this.terrain.drawn : 0;
-        // The tree models that the workers built go to the device cache once the view is idle, so a load never waits for the writes.
-        if (this.trees.unsaved && this.idle()) this.trees.save();
+        // The model files from the network go to the device cache once the view is idle, so a load never waits for the writes.
+        if (this.models.unsaved && this.idle()) this.models.save();
         // Frames go on while the eye moves or settles on the ground, while the terrain or the ground has
-        // work that no load waits for, and until a still view has all its jittered frames.
+        // work that no load waits for, and until a still view has all its jittered frames, which a held frame's change restarts.
         if (steer || !settled || this.terrain.working || this.groundLook.working || this.houses.working || this.shadow.pending || this.converging) this.request();
         if (steer || this.moved) this.onView?.(this.view);
         this.moved = false;
-        for (const resolve of this.rendered.splice(0)) resolve();
+        // The waits are for a frame that draws: a held frame shows none of what it took in.
+        if (!hold) for (const resolve of this.rendered.splice(0)) resolve();
     }
 
     /**

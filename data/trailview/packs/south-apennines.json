@@ -42,7 +42,7 @@
   "goat": { "groups": 2, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
   "cattle": { "model": "highland-cow", "latin": "Bos taurus (Podolica)", "groups": 2, "size": [4, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
   "horse": { "groups": 2, "size": [3, 12], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
-  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub"] }
+  "iberian-pig": { "model": "pig", "latin": "Sus scrofa domesticus", "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub"] }
  },
  "style": "stone-house"
 }

@@ -82,37 +82,37 @@ const lunchStop = ({ summary, trip }) => (trip?.points ?? []).some(point => STOP
 
 /**
  * The tasks. `fits` says whether one route record of the library reaches the goal; `success` is true when a
- * record of the page's library fits.
+ * record of the page's library fits. The planner stores a route only at Save, so each goal asks to keep the route.
  */
 export const tasks = [
   {
     id: 'plan-route',
-    goal: 'You want to ride from Meiringen station to the top of the Grimsel Pass tomorrow. Plan the route.',
+    goal: 'You want to ride from Meiringen station to the top of the Grimsel Pass tomorrow. Plan the route. Keep it in your routes.',
     stepBudget: 25,
     fits: meiringenToGrimsel,
   },
   {
     id: 'route-through',
-    goal: 'You want to ride from Meiringen to Andermatt via the Grimsel Pass and the Furka Pass. Plan the route.',
+    goal: 'You want to ride from Meiringen to Andermatt via the Grimsel Pass and the Furka Pass. Plan the route. Keep it in your routes.',
     stepBudget: 25,
     fits: ({ summary: { line } }) =>
       from(line, MEIRINGEN_STATION, ANDERMATT) && passes(line, GRIMSEL_PASS) && passes(line, FURKA_PASS),
   },
   {
     id: 'two-day-trip',
-    goal: 'You want to ride from Lucerne to Andermatt in two days. Plan the ride.',
+    goal: 'You want to ride from Lucerne to Andermatt in two days. Plan the ride. Keep it in your routes.',
     stepBudget: 25,
     fits: ({ summary }) => from(summary.line, LUCERNE, ANDERMATT) && summary.days === 2,
   },
   {
     id: 'change-bike',
-    goal: 'You want to ride from Meiringen station to the top of the Grimsel Pass on your mountain bike. Plan a route that suits your bike.',
+    goal: 'You want to ride from Meiringen station to the top of the Grimsel Pass on your mountain bike. Plan a route that suits your bike. Keep it in your routes.',
     stepBudget: 25,
     fits: route => meiringenToGrimsel(route) && route.summary.bike === 'mtb',
   },
   {
     id: 'lunch-stop',
-    goal: 'You want to ride from Meiringen station to the top of the Grimsel Pass, and stop for lunch about halfway. Plan the ride with a place to eat on the way.',
+    goal: 'You want to ride from Meiringen station to the top of the Grimsel Pass, and stop for lunch about halfway. Plan the ride with a place to eat on the way. Keep it in your routes.',
     stepBudget: 25,
     fits: route => meiringenToGrimsel(route) && lunchStop(route),
   },

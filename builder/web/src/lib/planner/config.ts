@@ -2,6 +2,13 @@ import type { Archive } from './layers/data-layer';
 
 export type Bounds = [number, number, number, number];
 
+/** The place at a map position, or null outside `bounds`: the map shows a margin with no data around the region. The
+ * edge is inside. */
+export function regionPlace(bounds: Bounds, { lng, lat }: { lng: number; lat: number }): [number, number] | null {
+    const [west, south, east, north] = bounds;
+    return lng >= west && lng <= east && lat >= south && lat <= north ? [lng, lat] : null;
+}
+
 /** The planner config: the `active` entry of the planner catalogue in specs/planner-release.md, or `VITE_PLANNER_CONFIG`. */
 export interface PlannerConfig {
     /** The release ID; a `VITE_PLANNER_CONFIG` has none. */
@@ -31,6 +38,8 @@ export interface PlannerConfig {
     trails?: string;
     /** The trail record file template with `{id}`; present with `trails`. */
     trail?: string;
+    /** The facts file template with `{cell}` of specs/route-catalog.md#facts-files; a release with no facts files has none. */
+    facts?: string;
     /** The data layer archives of the region, by name. */
     layers: Partial<Record<Archive, string>>;
     /** TrailView's ruleset `rules.json` (specs/trailview-tiles.md#rules); older releases have none. */
@@ -38,7 +47,7 @@ export interface PlannerConfig {
 }
 
 const URLS = ['basemap', 'places', 'overlays', 'terrain', 'glyphs', 'sprites', 'routing', 'search'] as const;
-const OPTIONAL_URLS = ['routes', 'trailview_rules', 'trails', 'trail'] as const;
+const OPTIONAL_URLS = ['routes', 'trailview_rules', 'trails', 'trail', 'facts'] as const;
 
 /** `value` when it is an absolute URL, such as a URL template; else undefined. */
 export function configUrl(value: unknown): string | undefined {

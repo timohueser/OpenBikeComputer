@@ -1,5 +1,6 @@
 <!-- The Explore page: the signed routes of the map view in a list with chips, on the map, and the selected one in a card
-     that opens it as a plan in the planner. -->
+     that opens it as a plan in the planner. With trail files, one tab lists the day routes and one the long trails. With
+     facts files, the day routes of hiking are a search: filters in the column, the results in a table under the map. -->
 <script lang="ts">
     import { tick, untrack } from 'svelte';
     import { keepInHistory } from '../lib/keep-in-history.svelte';
@@ -9,27 +10,45 @@
     import { escapeMarkup } from '../lib/core/gpx';
     import { decodeCoordinates } from '../lib/planner/route-answer';
     import { routeColor } from '../lib/planner/route-colors';
-    import { catalog, tooWide, type Box } from '../lib/planner/route-catalog';
-    import { gradeName, recordCredits, routePlan, type CatalogRecord, type RouteRecord } from '../lib/planner/signed-routes';
+    import { catalog, tooWide, trailsTooWide, type Box } from '../lib/planner/route-catalog';
+    import { gradeName, kinds, recordCredits, routePlan, type CatalogRecord, type RouteRecord, type TrailEntry } from '../lib/planner/signed-routes';
     import { hasTrailView, loadTrailView } from '../lib/planner/trailview';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import { distanceIn, heightIn } from '../lib/settings/format';
     import { today, type View } from '../lib/trailview/view';
     import Icon from '../lib/ui/Icon.svelte';
+    import Segmented from '../lib/ui/Segmented.svelte';
     import type { TrailViewRoute } from '../components/planner/TrailViewWindow.svelte';
     import SignedCard, { signedNumbers } from './explore/SignedCard.svelte';
     import SignedPicture from './explore/SignedPicture.svelte';
+    import TrailCard, { trailParts } from './explore/TrailCard.svelte';
+    import ResultsTable from './explore/ResultsTable.svelte';
     import { firstRows, ROWS } from './explore/rows';
+    import { counts, defaultQuery, DRIVE_KM, driveCap, find, keepQuery, loadBox, openingQuery, queryParams, reachBox, storedQuery, suggestions,
+        type Loaded, type Query, type Shape, type Sort } from './explore/search';
+    import SearchFilters from './explore/SearchFilters.svelte';
+    import { addMarkerLayers, MARKER_LAYERS, mapData, markerClick, markerTip, startAt } from './explore/search-map';
+    import type { MapOverlay } from './routes/RoutesMap.svelte';
+    import { LENGTH_TOP_M } from './explore/words';
+    import { signedHref } from './explore/signed-page';
     import Chips from './routes/Chips.svelte';
-    import { PROFILE_STEP_M, results, signedItem, type Chips as ChipValues, type SignedItem } from './routes/filter';
+    import { farOrder, farTrailId, nearTrails, PROFILE_STEP_M, results, scale, showAt, signedItem, splitDay, trailItem, type Chips as ChipValues, type Item, type SignedItem, type TrailItem } from './routes/filter';
     import ListAndMap from './routes/ListAndMap.svelte';
     import PlaceSearch from './routes/PlaceSearch.svelte';
     import RouteRow from './routes/RouteRow.svelte';
 
-    /** What the page keeps in `history.state.explore`, so that Back and "Find another route" find it again. */
-    interface Kept { chips: ChipValues; view?: Box; selected?: string }
+    /** What the page keeps in `history.state.explore`, so that Back and "Find another route" find it again. The page of a
+     * signed route gives `show`, the id of the route record to show: the first answer decides its tab and its card. The page
+     * of a trail gives the long trails tab and the trail. `query` is the search of the day routes (`queryParams`), and `shape`
+     * the shape of its open row. */
+    interface Kept { chips: ChipValues; query?: string; view?: Box; tab?: Tab; selected?: string; shape?: Shape; trail?: number; stage?: string; show?: number }
     type Place = { lon: number; lat: number; box?: Box };
+    type Tab = 'day' | 'long';
+    /** The files of a view: the records and the trails of a near view, or the trails of a far view. `trails` is null when
+     * the view is too wide or the release has no trail files. The records are those of the cells of `from`, which the search
+     * narrows to its reach, with their facts files when `facts`; `all` holds each trail of the far files of those cells. */
+    type Answer = { bike: Bike; view: Box; from: Box | null; facts: boolean; far: boolean; records: CatalogRecord[] | null; trails: TrailEntry[] | null; all: Map<number, TrailEntry> };
 
     // The page reads the route catalog only.
     let {}: { library: Library; active: boolean } = $props();
@@ -37,69 +56,178 @@
     /** The map gives its view when it is still for 100 ms; the page loads the files of a view this much later. */
     const WAIT_MS = 200;
     const kept = history.state?.explore as Kept | undefined;
+    const day = today();
+    /** The search of the day routes: from the page address, else the history, else the last query of the browser. */
+    const first = openingQuery(location.hash.includes('?') ? location.hash.slice(location.hash.indexOf('?') + 1) : undefined, kept?.query, storedQuery(), day);
+    const firstView = first.view ?? kept?.view;
 
     let chips = $state<ChipValues>(kept?.chips ?? { bike: 'hiking' });
-    let view = $state.raw<Box | undefined>(kept?.view), selected = $state(kept?.selected);
-    /** The place that the map shows: the kept view, or a place of the search field. */
-    let place = $state.raw<Place | undefined>(kept?.view
-        ? { lon: (kept.view[0] + kept.view[2]) / 2, lat: (kept.view[1] + kept.view[3]) / 2, box: kept.view } : undefined);
-    /** The answer of the last load, for its bike and view: the records, or null when the view needs too many cells. */
-    let answer = $state.raw<{ bike: Bike; view: Box; records: CatalogRecord[] | null }>(), failed = $state(false);
+    /** The page opens on the day routes; only the rider changes the tab. A release with no trail files has no tabs. */
+    let tab = $state<Tab>(config.trails ? kept?.tab ?? 'day' : 'day');
+    /** The selected route of the day routes tab. */
+    let view = $state.raw<Box | undefined>(firstView), selected = $state(kept?.selected);
+    /** The place that the map shows: the kept view, a place of the search field, or the reach of the search. */
+    let place = $state.raw<Place | undefined>(firstView && placeOf(firstView));
+    let query = $state.raw<Query>(first.query), sort = $state<Sort>('match'), shape = $state(kept?.shape);
+    /** The answer of the last load, for its bike and view. Both tabs read it, so with no start point a tab change loads nothing. */
+    let answer = $state.raw<Answer>(), failed = $state(false);
+    /** The selected trail of the long trails tab, and its selected stage. The trail stays through a change between the far
+     * and the near view. */
+    let trail = $state.raw<{ id: number; entry?: TrailEntry; record?: CatalogRecord; failed?: boolean }>(), stage = $state<string>();
 
     const bike = $derived(chips.bike ?? 'hiking');
     const graded = $derived(bike === 'hiking' || bike === 'mtb');
-    const records = $derived(answer?.bike === bike ? answer.records : undefined);
-    // An item is made once for each record and bike, so a new answer changes no row that it keeps.
-    const made = new WeakMap<CatalogRecord, SignedItem>();
-    const itemOf = (record: CatalogRecord) => {
-        let item = made.get(record);
-        if (item?.summary.bike !== bike) made.set(record, item = signedItem(record, bike));
+    /** The day routes are the search: hiking in a release with facts files. */
+    const searching = $derived(tab === 'day' && bike === 'hiking' && !!config.facts);
+    const start = $derived(query.start);
+    /** The box whose cells the day routes load: the view, or with a start point the part of it in reach; null for none. */
+    const from = $derived(searching && view ? loadBox({ start }, view) : view);
+    /** The view needs more cell files than a view loads: the page lists the trails of the far files only. */
+    const far = $derived(!!view && tooWide(view));
+    /** The day routes have no list: their cells are too many. */
+    const dayClosed = $derived(searching ? !!from && tooWide(from) : far);
+    // The trails of a far answer are for each bike.
+    const answered = $derived(answer && answer.far === far && (far || answer.bike === bike) && (!searching || answer.facts) ? answer : undefined);
+    const recordOf = (id: number) => catalog.record(id);
+    /** A place of the loaded facts files: a new answer gives a new function, so a name that waited for its file shows. */
+    const placeById = $derived.by(() => {
+        void answer;
+        return (id: string) => catalog.place(id);
+    });
+    // An item is made once for each record or trail and bike, so a new answer changes no row that it keeps.
+    const made = new WeakMap<CatalogRecord | TrailEntry, Item>();
+    function signedOf(record: CatalogRecord, trail?: string): SignedItem {
+        let item = made.get(record) as SignedItem | undefined;
+        if (item?.summary.bike !== bike || item.trail !== trail) made.set(record, item = signedItem(record, bike, trail));
         return item;
-    };
-    const items = $derived(records?.map(itemOf) ?? []);
-    /** The answer is for another view: until the load of the new view ends, the list shows its routes in the new view. */
-    const stale = $derived(!!answer && answer.view !== view);
-    // Each item is for `bike`, and each item of an answer for this view is in the view.
-    const inView = $derived(stale ? results(items, {}, '', view) : items);
-    const shown = $derived(results(inView, chips, '', undefined, 'shortest') as SignedItem[]);
-    // The map credits are HTML, and a record credit is plain text.
-    const credits = $derived(recordCredits((inView as SignedItem[]).map(item => item.record)).map(escapeMarkup));
-    const wide = $derived(!!view && tooWide(view));
-    const chosen = $derived(shown.find(item => item.id === selected));
+    }
+    function trailOf(entry: TrailEntry): TrailItem {
+        let item = made.get(entry) as TrailItem | undefined;
+        if (item?.summary.bike !== bike) made.set(entry, item = trailItem(entry, bike));
+        return item;
+    }
+    const split = $derived(answered?.records ? splitDay(answered.records, answered.all, recordOf) : { day: [], long: [] });
+    const dayItems = $derived(split.day.map(record => signedOf(record)));
+    /** The stages and single routes of the trails of a near view, in the colour of their trail. */
+    const stageItems = $derived(split.long.map(record => signedOf(record, String(farTrailId(record, answered!.all, recordOf)))));
+    const trailItems = $derived((!answered?.trails ? [] : answered.far ? answered.trails : nearTrails(answered.trails, answered.all, split.long, recordOf))
+        .filter(entry => kinds[bike].includes(entry.kind)).map(trailOf));
+    /** The answer is for another view: until the load of the new view ends, each tab shows its rows in the new view. */
+    const stale = $derived(!!answer && (answer.view !== view || answer.from !== from));
+    const inViewOf = <T extends Item>(items: T[]) => stale ? results(items, {}, '', view) as T[] : items;
+    const dayInView = $derived(inViewOf(dayItems)), longInView = $derived(inViewOf(trailItems));
+    const dayList = $derived(results(dayInView, chips, '', undefined, 'shortest') as SignedItem[]);
+    // A trail of 400 km matches no range of day routes: the Length and Climb chips belong to the day routes tab.
+    const longList = $derived((results(longInView, { ...chips, length: undefined, climb: undefined }, '') as TrailItem[]).sort(farOrder));
+    const wide = $derived(far && (!config.trails || trailsTooWide(view!)));
+    const dayReady = $derived(!!answered && !dayClosed && !(stale && !dayInView.length));
+    /** The loaded day routes with their facts, and the rows of the search in their order. */
+    const loaded = $derived<Loaded>({ records: dayInView.map(item => item.record), factsOf: id => catalog.factsOf(id), place: id => catalog.place(id) });
+    const found = $derived(searching && dayReady ? find(query, loaded, sort) : []);
+    const tally = $derived(searching && dayReady ? counts(query, loaded, found) : undefined);
+    /** The rows that the other filters keep, for the bars of the Length and Climb sliders. */
+    const without = (key: 'length' | 'climb') => !query[key] ? found : searching && dayReady ? find({ ...query, [key]: undefined }, loaded) : [];
+    const lengths = $derived(without('length').map(row => distanceIn(row.length_m)));
+    const climbs = $derived(without('climb').map(row => heightIn(row.ascent_m)));
+    /** For an empty list, the changes that help; the length widens by one step of its slider. */
+    const helps = $derived(searching && dayReady && !found.length && loaded.records.length
+        ? suggestions(query, loaded, Math.round(scale([distanceIn(LENGTH_TOP_M)]).step / distanceIn(1))) : []);
+    /** A row of the search opens in place: the selected route in the open shape, else in its first shape. */
+    const opened = $derived(selected === undefined ? undefined
+        : found.find(row => String(row.record.id) === selected && row.shape === shape) ?? found.find(row => String(row.record.id) === selected));
+    /** The routes of the rows, each once, in the order of the rows. */
+    const foundItems = $derived([...new Set(found.map(row => row.record))].map(record => signedOf(record)));
+    const dayShown = $derived(searching ? foundItems : dayList);
+    /** The rows of each tab, or undefined while the tab has no list for this view: the tab then shows no number. */
+    const dayRows = $derived(dayReady ? searching ? found : dayList : undefined);
+    const longRows = $derived(answered && !wide && !(stale && !longInView.length) ? longList : undefined);
+    const open = $derived(tab === 'day'
+        ? { rows: dayRows, inView: dayInView as Item[], closed: dayClosed, word: config.trails ? 'day route' : 'signed route' }
+        : { rows: longRows, inView: longInView as Item[], closed: wide, word: 'long trail' });
+    const shown = $derived<(SignedItem | TrailItem)[]>(tab === 'day' ? dayShown : longList);
+    const chosen = $derived(dayShown.find(item => item.id === selected));
+    const staged = $derived(stage === undefined ? undefined : stageItems.find(item => item.id === stage));
+    /** The row of the selected route or trail of the open tab. */
+    const currentId = $derived(tab === 'day' ? selected : trail ? String(trail.id) : undefined);
+    const current = $derived(shown.find(item => item.id === currentId));
+    /** What the trail card names: a trail restored from the history has nothing to name until its record comes. */
+    const trailAbout = $derived(trail?.record ?? trail?.entry);
+    /** A trail that is a route record has the card of a route. */
+    const trailRoute = $derived(trail?.record?.line_udeg ? signedOf(trail.record, String(trail.id)) : undefined);
+    /** The selected trail and its parts. The map marks them and does not move to them: a trail runs out of most views. With a
+     * stage open, only the stage is wide. */
+    const marked = $derived(tab === 'long' && !staged && trail && trailAbout ? [trail.id, ...trail.record?.parts?.map(part => part.id) ?? trail.record?.stages ?? []].map(String) : []);
+    /** The lines of the open tab: in a near view, the long trails tab draws the stage lines of its trails. */
+    const mapItems = $derived<Item[]>(tab === 'day' ? dayItems : far ? trailItems : stageItems);
+    const mapShown = $derived.by<Item[]>(() => {
+        if (tab === 'day' || far) return shown;
+        const listed = new Set(longList.map(item => item.id));
+        return stageItems.filter(item => listed.has(item.trail!));
+    });
+    /** The lines of the row of a line, for the hover. In a near view, a trail row of the long trails tab draws as the
+     * lines of its stages: the trail leads, so a stage line lights its trail row, and a trail has no start mark. */
+    function together(id: string): string[] {
+        if (tab === 'day' || far) return [id];
+        const trailId = stageItems.find(item => item.id === id)?.trail ?? id;
+        return [...new Set([trailId, ...mapShown.flatMap(item => item.kind === 'signed' && item.trail === trailId ? [item.id] : [])])];
+    }
+    // The map credits are HTML, and a record credit is plain text. In a far view, the entries of the trails on the map bring them.
+    const credits = $derived(recordCredits([...mapShown.flatMap((item): { credit?: string }[] => item.kind === 'signed' ? [item.record] : item.kind === 'trail' ? [item.entry] : []),
+        ...tab === 'long' && trail?.record ? [trail.record] : []]).map(escapeMarkup));
     /** The pictures that show a cover, and the credits of the set: the map shows them while a cover shows. */
     let covers = $state(0), coverCredits = $state.raw<string[]>([]);
     function oncover(credits: string[] | undefined) {
         if (credits) coverCredits = credits;
         covers += credits ? 1 : -1;
     }
-    /** The value of each item that the other chips keep, for the bars of the slider of `key`. */
-    const values = (key: 'length' | 'climb') => results(inView, { ...chips, [key]: undefined }, '')
+    /** The value of each day route that the other chips keep, for the bars of the slider of `key`. */
+    const values = (key: 'length' | 'climb') => results(dayInView, { ...chips, [key]: undefined }, '')
         .map(({ summary }) => key === 'length' ? distanceIn(summary!.lengthM) : heightIn(summary!.climbM));
     const count = (n: number) => `${n.toLocaleString('en')} signed route${n === 1 ? '' : 's'}`;
-    /** No row to show yet: the first load, or a new view with no route of the last answer in it. */
-    const waiting = $derived(!failed && !wide && (!records || (!inView.length && stale)));
-    const listed = $derived(!failed && !wide && !waiting && inView.length > 0);
-    const status = $derived(failed ? 'The routes could not load.' : wide ? 'Zoom in to see the signed routes.' : waiting || stale ? 'Loading the routes…'
-        : !inView.length ? 'No signed route in this map view.'
-        : shown.length === inView.length ? `${count(inView.length)} in this map view` : `${shown.length.toLocaleString('en')} of ${count(inView.length)}`);
+    const counted = (rows: unknown[] | undefined) => rows ? ` ${rows.length.toLocaleString('en')}` : '';
+    /** No row to show yet: the first load, or a new view with no row of the last answer in it. */
+    const waiting = $derived(!failed && !open.closed && !open.rows);
+    const listed = $derived(!failed && !open.closed && !!open.rows && open.inView.length > 0);
+    // The tabs show the counts; a release with no tabs shows them under the chips.
+    const status = $derived(failed ? 'The routes could not load.' : open.closed ? `Zoom in to see the ${open.word}s.`
+        : waiting || stale ? 'Loading the routes…' : !open.inView.length ? `No ${open.word} in this map view.`
+        : config.trails ? '' : shown.length === open.inView.length ? `${count(open.inView.length)} in this map view` : `${shown.length.toLocaleString('en')} of ${count(open.inView.length)}`);
 
     // A selected route that the list does not show any more closes its card. A selection from the history waits for
     // the first answer.
     $effect(() => {
         if (selected && answer && !chosen) selected = undefined;
     });
+    $effect(() => {
+        if (stage !== undefined && answer && !staged) stage = undefined;
+    });
 
-    // The page keeps only the answer of its last load.
+    // The page keeps only the answer of its last load. The records and the far files of a view load together, so the day
+    // routes never show a list that is not split yet. A failed file fails the answer of both tabs.
     let loads = 0;
-    async function load(box: Box, kind: Bike) {
-        const id = ++loads;
+    async function load(box: Box, from: Box | null, kind: Bike, facts: boolean) {
+        const id = ++loads, far = tooWide(box);
         failed = false;
         try {
-            const found = await catalog.inBox(box, kind);
-            if (id === loads) answer = { bike: kind, view: box, records: found };
+            const near = !!from && !tooWide(from);
+            const [records, trails] = await Promise.all([!from ? [] : near ? catalog.inBox(box, kind, from) : null, catalog.trailsInBox(box),
+                near && from !== box ? catalog.trailsInBox(from) : undefined, facts && near ? catalog.factsInBox(from) : undefined]);
+            // The far files of the cells have just loaded.
+            if (id === loads) answer = { bike: kind, view: box, from, facts, far, records, trails, all: near ? catalog.trailsOfCellsNow(from) ?? new Map() : new Map() };
         } catch {
             if (id === loads) failed = true;
         }
+    }
+    function retry() {
+        if (view && from !== undefined) void load(view, from, bike, searching);
+    }
+    /** The answer of a view whose files the catalog holds, else undefined. */
+    function answerNow(box: Box, from: Box | null, kind: Bike, facts: boolean): Answer | undefined {
+        const far = tooWide(box), trails = catalog.trailsInBoxNow(box);
+        const near = !!from && !tooWide(from);
+        const records = !from ? [] : near ? catalog.inBoxNow(box, kind, from) : null, all = near ? catalog.trailsOfCellsNow(from) : new Map();
+        if (records === undefined || trails === undefined || all === undefined || (facts && from && !catalog.factsInBoxNow(from))) return undefined;
+        return { bike: kind, view: box, from, facts, far, records, trails, all };
     }
     /** A view with the numbers of the last one, as after a resize to the same size, is no new view: a new view starts
      * the list again. */
@@ -109,39 +237,39 @@
         if (!now || next.some((value, i) => value !== now[i])) view = next;
     }
 
-    // A view whose cell files the catalog holds gets its answer before the page draws the view, so the list shows no
+    // A view whose cell files or far files the catalog holds gets its answer before the page draws the view, so the list shows no
     // load. Another view loads its files `WAIT_MS` later.
     $effect.pre(() => {
-        const box = view, kind = bike;
-        if (!box) return;
-        const held = catalog.inBoxNow(box, kind);
-        if (held !== undefined) {
+        const box = view, cells = from, kind = bike, facts = searching;
+        if (!box || cells === undefined) return;
+        const held = answerNow(box, cells, kind, facts);
+        if (held) {
             loads++;
             failed = false;
-            answer = { bike: kind, view: box, records: held };
+            answer = held;
             return;
         }
-        const timer = setTimeout(() => void load(box, kind), WAIT_MS);
+        const timer = setTimeout(() => void load(box, cells, kind, facts), WAIT_MS);
         return () => clearTimeout(timer);
     });
 
     // The list draws its first rows, and more when the rider scrolls near their end, so a new view makes few rows.
     let rows = $state<HTMLElement>(), rowLimit = $state(ROWS);
     const drawn = $derived(shown.length > rowLimit ? shown.slice(0, rowLimit) : shown);
-    const chosenAt = $derived(chosen ? shown.indexOf(chosen) : -1);
+    const chosenAt = $derived(current ? shown.indexOf(current) : -1);
     function drawMore() {
         if (rows && rowLimit < shown.length && rows.scrollTop + rows.clientHeight > rows.scrollHeight - 600) rowLimit += ROWS;
     }
-    // A new list, from an answer or from the chips, starts at its top with its first rows.
+    // A new list, from an answer, the chips or the tab, starts at its top with its first rows.
     $effect.pre(() => {
-        void [answer, chips];
+        void [answer, chips, tab];
         rowLimit = firstRows(untrack(() => chosenAt));
         if (rows) rows.scrollTop = 0;
     });
     // The selected route has its row and shows it: after a selection on the map or in TrailView, and in a new list,
     // which can move the route. Only the list scrolls, not the page.
     $effect(() => {
-        void [answer, chips];
+        void [answer, chips, tab];
         const at = chosenAt;
         if (at < 0) return;
         untrack(() => { rowLimit = Math.max(rowLimit, at + 1); });
@@ -160,25 +288,116 @@
         return [Math.max(-180, west - shift), south, Math.min(180, east - shift), north];
     }
 
+    /** Selects in the open tab. In the long trails tab, a trail row or line opens its card, and a stage line opens the card of
+     * its trail, or its own card when its trail is the selected one. */
+    function select(id: string | undefined) {
+        if (tab === 'day') return void ([selected, shape] = [id, undefined]);
+        const item = id === undefined ? undefined : trailItems.find(item => item.id === id) ?? stageItems.find(item => item.id === id);
+        if (item?.kind === 'trail') return void openTrail(item.entry.id, item.entry);
+        if (!item) {
+            trail = undefined;
+            stage = undefined;
+        } else if (trail?.id === Number(item.trail)) stage = item.id;
+        else void openTrail(Number(item.trail));
+    }
+
+    /** The card shows the trail at once from a far file or a cell file, and its profile and strip when its record comes. */
+    async function openTrail(id: number, entry?: TrailEntry) {
+        stage = undefined;
+        if (trail?.id === id) return;
+        const next = trail = { id, entry, record: catalog.record(id) };
+        // A trail opened from a stage or from the history has no far line yet: the far files of the view have it.
+        const [record, entries] = await Promise.all([
+            catalog.trail(id).catch((error: unknown) => { console.error('Trail:', error); return undefined; }),
+            entry || !view ? undefined : catalog.trailsInBox(view).catch(() => null),
+        ]);
+        // A trail that is a route record keeps the record of its cell file: its card holds the cover by that object.
+        const kept = next.record?.line_udeg ? next.record : record ?? next.record;
+        const opened = { ...next, entry: entry ?? entries?.find(other => other.id === id), record: kept, failed: !record };
+        // A trail with nothing to show, such as one of the history that a new release does not have, closes.
+        if (trail === next) trail = opened.entry || opened.record ? opened : undefined;
+    }
+
+    /** The trail button of a stage card opens the trail card; the focus moves to the new card. */
+    function trailOfCard(id: number) {
+        void openTrail(id);
+        void tick().then(() => document.querySelector<HTMLElement>('.selected .close')?.focus());
+    }
+
+    /** A new way of getting there fits the map to the box of its reach. */
+    function setQuery(change: Partial<Query>) {
+        const journey = (['start', 'walk', 'car', 'drive', 'lift', 'pin'] as const).some(key => key in change && change[key] !== query[key]);
+        query = { ...query, ...change };
+        const box = journey ? reachBox(query, id => catalog.place(id)) : undefined;
+        if (box) place = placeOf(box);
+    }
+
+    /** The next click on the map picks the start point. */
+    let picking = $state(false);
+    const pick = $derived(searching && picking
+        ? { text: 'Click the map where you start. Esc cancels.', onpick: (at: [number, number]) => { picking = false; setQuery({ start: startAt(at), pin: undefined }); } }
+        : undefined);
+    /** The markers of the search: the row under the pointer, else the open row, shows its places. A new query or new loaded
+     * routes give a new value, so the map asks for new tips. */
+    const overlay = $derived.by<MapOverlay | undefined>(() => {
+        if (!searching) return undefined;
+        const [now, files, rows, open] = [query, loaded, found, opened];
+        return {
+            data: hovered => mapData(rows, now, (hovered === undefined ? undefined : rows.find(row => String(row.record.id) === hovered)) ?? open, id => catalog.place(id)),
+            add: addMarkerLayers, hit: MARKER_LAYERS, tip: id => markerTip(id, now, files), onclick: id => setQuery(markerClick(id, now, id => catalog.place(id))),
+        };
+    });
+
+    function placeOf(box: Box): Place {
+        return { lon: (box[0] + box[2]) / 2, lat: (box[1] + box[3]) / 2, box };
+    }
+
     /** A new bike has other grades, so it clears the grade chip. */
     function setChips(next: ChipValues) {
         if (next.bike !== chips.bike) delete next.grade;
         chips = next;
     }
 
-    // Back from another page brings the view, the chips and the selection again.
-    const keep = keepInHistory('explore', (): Kept => ({ chips, view, selected }));
+    // The record of the page of a signed route: in the day routes, else a trail of the far files or a stage of one.
+    let show = kept?.show;
+    $effect(() => {
+        // An answer for another view or reach, as while a reset search loads, decides nothing.
+        if (show === undefined || !answer || stale || (searching && !answer.facts)) return;
+        const id = show, record = answer.records?.find(one => one.id === id), at = record && showAt(record, answer.all, recordOf);
+        // A last search that leaves out a day route, also by a start point elsewhere, gives way to the default search in the
+        // view of the route; without a start point, the next answer holds the route. A stage of a trail keeps the search.
+        if (searching && (at ? at.tab === 'day' && !find(query, { ...loaded, records: [record!] }).length : !!(query.start || query.pin))) {
+            query = defaultQuery(day);
+            if (!at) return;
+        }
+        show = undefined;
+        // By id: each cell file holds its own copy of a record.
+        if (!at) return;
+        tab = at.tab;
+        if (at.tab === 'day') selected = at.selected;
+        else void openTrail(at.trail).then(() => { if (trail?.id === at.trail) stage = at.stage; });
+    });
+
+    /** The page of a signed route. In the TrailView window the name is no link: Back from the page would start TrailView again. */
+    const linkOf = (record: CatalogRecord) => trailView ? undefined : signedHref(record, config.bounds);
+
+    // Back from another page brings the view, the chips, the search and the selection again. While the search shows, the page
+    // address holds its query and the view.
+    const keep = keepInHistory('explore', (): Kept => ({ chips, query: queryParams(query, day), view, tab, selected, shape, trail: trail?.id, stage }),
+        () => searching ? [ROUTES.explore, queryParams(query, day, view)].filter(Boolean).join('?') : ROUTES.explore);
+    $effect(() => keepQuery(query, day));
+    if (kept?.trail !== undefined) void openTrail(kept.trail).then(() => { if (trail?.id === kept.trail) stage = kept.stage; });
 
     // TrailView shows the first routes of the list from a view above them all.
     const TRAILVIEW_ROUTES = 100;
     let trailView = $state.raw<{ component: typeof import('../components/planner/TrailViewWindow.svelte').default; origin: [number, number]; view: View; routes: TrailViewRoute[] }>();
     /** A notice shows only in the map view that it is about. */
     let opening = $state(false), notice = $state.raw<{ text: string; view?: Box }>(), trailViewButton = $state<HTMLButtonElement>();
-    const trailViewTitle = $derived(shown.length > TRAILVIEW_ROUTES ? `TrailView: the first ${TRAILVIEW_ROUTES} of ${shown.length.toLocaleString('en')} routes` : undefined);
+    const trailViewTitle = $derived(dayShown.length > TRAILVIEW_ROUTES ? `TrailView: the first ${TRAILVIEW_ROUTES} of ${dayShown.length.toLocaleString('en')} routes` : undefined);
 
     /** The first routes of the list, with the selected route among them, so the window can show its card on its line. */
     function trailViewItems(): SignedItem[] {
-        const listed = shown.slice(0, TRAILVIEW_ROUTES);
+        const listed = dayShown.slice(0, TRAILVIEW_ROUTES);
         if (chosen && !listed.includes(chosen)) listed[listed.length - 1] = chosen;
         return listed;
     }
@@ -204,6 +423,8 @@
                     { width: full ? innerWidth : innerWidth - 64, height: full ? innerHeight : innerHeight - 64, date: today(), time: '10:00', weather: 'sunny' })
                     .catch((error: unknown) => { console.error('TrailView:', error); return null; });
                 const now = trailViewItems();
+                // TrailView shows the day routes of a near view only.
+                if (dayClosed || tab !== 'day') return;
                 if (now.length !== listed.length || now.some((item, i) => item.id !== listed[i].id)) continue;
                 if (first) trailView = { component, origin: [box.left + box.width / 2, box.top + box.height / 2], view: first, routes };
                 else notice = { text: first === null ? 'TrailView could not start. Try again.' : 'TrailView has no view of this area.', view };
@@ -222,47 +443,86 @@
     function plan(item: SignedItem) {
         keep();
         const route = item.record as RouteRecord;
-        router.go(`${ROUTES.planner}/new`, { signed: { route, plan: routePlan(route), back: $state.snapshot({ chips, view, selected }) } });
+        router.go(`${ROUTES.planner}/new`, { signed: { route, plan: routePlan(route), back: $state.snapshot({ chips, query: queryParams(query, day), view, tab, selected, shape, trail: trail?.id, stage }) } });
     }
 </script>
 
 <!-- Escape in an open window closes only the window. -->
-<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
+<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) { if (picking) picking = false; else select(undefined); } }} />
 
-<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={covers ? [...coverCredits, ...credits] : credits} selected={chosen ? [chosen.id] : []}
-    onselect={id => selected = id} onview={next => setView(wrapped(next))} card={chosen ? card : undefined}
-    mapButtons={hasTrailView(config) && shown.length ? mapButtons : undefined}>
+<!-- TrailView shows the day routes of a near view only. -->
+<ListAndMap title="Explore" items={mapItems} shown={mapShown} {place} fit={0} look="signed" credits={covers ? [...coverCredits, ...credits] : credits}
+    selected={tab === 'day' ? chosen ? [chosen.id] : [] : staged ? [staged.id] : []} {marked} {together} {overlay} {pick} onselect={select} onview={next => setView(wrapped(next))}
+    card={tab === 'day' ? chosen && !searching ? card : undefined : staged ? stageCard : trailAbout ? trailCard : undefined}
+    mapButtons={hasTrailView(config) && tab === 'day' && dayShown.length && !dayClosed ? mapButtons : undefined} tabs={config.trails ? dayOrLong : undefined}
+    table={searching ? table : undefined}>
     {#snippet list()}
         <!-- The search field finds places only; a chosen place moves the map. -->
         <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />
-        <Chips bind:chips={() => chips, setChips} {view} keys={['bike', 'length', 'climb', ...graded ? ['grade' as const] : [], 'shape']} fixed={['bike']}
-            grades={bike === 'mtb' ? [0, 1, 2, 3].map(grade => gradeName('mtb', grade)) : [0, 1, 2, 3, 4, 5].map(grade => gradeName('hiking', grade))} {values} />
-        <p class={listed ? 'count' : 'note'} aria-live="polite">
-            {status}{#if failed}{' '}<button type="button" class="retry" onclick={() => { if (view) void load(view, bike); }}>Retry</button>{/if}
-        </p>
-        {#if waiting}
-            <ul class="waiting" aria-hidden="true">
-                {#each { length: 5 }}<li><span class="thumb"></span><span class="lines"></span></li>{/each}
-            </ul>
-        {:else if listed}
-            <!-- The rows of the last view stay until the answer for this view comes. -->
-            <ul bind:this={rows} onscroll={drawMore}>
-                {#each drawn as item (item.id)}
-                    <li>
-                        <RouteRow name={item.name} current={item.id === selected} onclick={() => selected = item.id} parts={signedNumbers(item.record)}>
-                            {#snippet picture()}<SignedPicture {item} {oncover} small />{/snippet}
-                        </RouteRow>
-                    </li>
-                {:else}
-                    <li class="note">No route matches. Remove a chip.</li>
-                {/each}
-            </ul>
+        {#if searching}
+            <SearchFilters {query} today={day} cap={query.start ? driveCap(query.start[1]) : DRIVE_KM.max} counts={tally?.wishes ?? new Map()} ungraded={tally?.ungraded ?? 0}
+                {lengths} {climbs} place={placeById} fresh={!queryParams(query, day)} top={bikeChip} {picking} onpicking={on => picking = on} onchange={setQuery}
+                onreset={() => query = defaultQuery(day)} />
+        {:else}
+            <Chips bind:chips={() => chips, setChips} {view} keys={['bike', ...tab === 'day' ? ['length' as const, 'climb' as const] : [], ...graded ? ['grade' as const] : [], 'shape']} fixed={['bike']}
+                grades={bike === 'mtb' ? [0, 1, 2, 3].map(grade => gradeName('mtb', grade)) : [0, 1, 2, 3, 4, 5].map(grade => gradeName('hiking', grade))} {values} />
+            <p class={listed ? 'count' : 'note'} class:empty={!status} aria-live="polite">
+                {status}{#if failed}{' '}<button type="button" class="retry" onclick={retry}>Retry</button>{/if}
+            </p>
+            {#if waiting}
+                <ul class="waiting" aria-hidden="true">
+                    {#each { length: 5 }}<li><span class="thumb"></span><span class="lines"></span></li>{/each}
+                </ul>
+            {:else if listed}
+                <!-- The rows of the last view stay until the answer for this view comes. -->
+                <ul bind:this={rows} onscroll={drawMore}>
+                    {#each drawn as item (item.id)}
+                        <li>
+                            <RouteRow name={item.name} current={item.id === currentId} line={item.id} onclick={() => select(item.id)}
+                                parts={item.kind === 'trail' ? trailParts(item.entry) : signedNumbers(item.record)}>
+                                {#snippet picture()}<SignedPicture {item} {oncover} row />{/snippet}
+                            </RouteRow>
+                        </li>
+                    {:else}
+                        <li class="note">No route matches. Remove a chip.</li>
+                    {/each}
+                </ul>
+            {/if}
         {/if}
     {/snippet}
 </ListAndMap>
 
+{#snippet bikeChip()}
+    <Chips bind:chips={() => chips, setChips} {view} keys={['bike']} fixed={['bike']} {values} />
+{/snippet}
+
+{#snippet table()}
+    <ResultsTable rows={dayRows ? found : undefined} note={failed ? 'The routes could not load.' : dayClosed ? 'Zoom in to search.' : 'Loading the hikes…'}
+        waiting={!failed && !dayClosed && !dayRows} none={!!dayRows && !dayInView.length} {query} {sort} {opened} suggestions={helps}
+        place={placeById} itemOf={record => signedOf(record)} {linkOf} {oncover} onsort={next => sort = next}
+        onopen={row => [selected, shape] = [row && String(row.record.id), row?.shape]} onquery={setQuery} onreset={() => query = defaultQuery(day)}
+        onplan={record => plan(signedOf(record))} onretry={failed ? retry : undefined} />
+{/snippet}
+
 {#snippet card(refocus: () => void)}
-    <SignedCard item={chosen!} {oncover} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
+    <SignedCard item={chosen!} href={linkOf(chosen!.record)} {oncover} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
+{/snippet}
+
+{#snippet dayOrLong()}
+    <Segmented label="Day routes or long trails" value={tab} onChange={next => tab = next}
+        options={[{ value: 'day', label: `Day routes${counted(dayRows)}` }, { value: 'long', label: `Long trails${counted(longRows)}` }]} />
+{/snippet}
+
+{#snippet stageCard(refocus: () => void)}
+    <SignedCard item={staged!} href={linkOf(staged!.record)} {oncover} onplan={() => plan(staged!)} ontrail={trailOfCard} onclose={() => { refocus(); select(undefined); }} />
+{/snippet}
+
+{#snippet trailCard(refocus: () => void)}
+    {#if trailRoute}
+        <SignedCard item={trailRoute} href={linkOf(trailRoute.record)} {oncover} onplan={() => plan(trailRoute)} onclose={() => { refocus(); trail = undefined; }} />
+    {:else if trailAbout}
+        <TrailCard about={trailAbout} item={trail!.entry && trailOf(trail!.entry)} record={trail!.record} failed={!!trail!.failed} onclose={() => { refocus(); trail = undefined; }} />
+    {/if}
 {/snippet}
 
 {#snippet mapButtons()}
@@ -276,7 +536,7 @@
 {/snippet}
 
 {#if trailView}
-    <trailView.component origin={trailView.origin} view={trailView.view} routes={trailView.routes} {selected} onselect={id => selected = id}
+    <trailView.component origin={trailView.origin} view={trailView.view} routes={trailView.routes} {selected} onselect={select}
         card={chosen ? card : undefined} onClose={() => { trailView = undefined; trailViewButton?.focus(); }} />
 {/if}
 
@@ -287,6 +547,10 @@
     }
     .count {
         font-size: 13px;
+    }
+    /* The tabs show the counts: the line keeps its place for the screen reader and takes no room. */
+    .empty {
+        display: none;
     }
     .retry {
         padding: 0 4px;
@@ -361,10 +625,11 @@
         border-top: 1px solid var(--line);
         list-style: none;
     }
-    /* A row outside the list box skips its layout and paint. It keeps the height that it had, else that of a name of one line. */
+    /* A row outside the list box skips its layout and paint. It keeps the height that it had, else that of its picture
+       box and the 7 px padding of `RouteRow` above and below. */
     li {
         content-visibility: auto;
-        contain-intrinsic-size: auto 60px;
+        contain-intrinsic-size: auto calc(var(--row-picture-height) + 14px);
     }
     li.note {
         padding: 6px;
@@ -374,13 +639,13 @@
     }
     .waiting li {
         display: grid;
-        grid-template-columns: 72px 1fr;
+        grid-template-columns: var(--row-picture-width) 1fr;
         align-items: center;
         gap: 12px;
         padding: 6px;
     }
     .waiting .thumb {
-        height: 48px;
+        height: var(--row-picture-height);
         border-radius: 6px;
         background: var(--parchment-2);
     }
@@ -395,11 +660,7 @@
             max-height: 60vh;
         }
         .waiting li {
-            grid-template-columns: 64px 1fr;
             gap: 10px;
-        }
-        .waiting .thumb {
-            height: 44px;
         }
     }
 </style>

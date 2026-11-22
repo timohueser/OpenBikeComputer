@@ -136,7 +136,8 @@ The tile API serves `/releases/ID/basemap.json`, vector tiles at `/releases/ID/b
 `/releases/ID/LAYER.json` and its tiles at `/releases/ID/LAYER/Z/X/Y`. It serves route catalog cells
 at `/releases/ID/routes/tiles/9-X-Y.json`, the [trail files](route-catalog.md#trail-files) at
 `/releases/ID/routes/tiles/trails/7-X-Y.json` and `/releases/ID/routes/tiles/long/T.json`, where `T`
-is the `id` of a trail, and TrailView's ruleset at `/releases/ID/trailview/rules.json`. Each TileJSON
+is the `id` of a trail, the [facts files](route-catalog.md#facts-files) at
+`/releases/ID/routes/tiles/facts/9-X-Y.json`, and TrailView's ruleset at `/releases/ID/trailview/rules.json`. Each TileJSON
 holds its archive metadata. Data layer tiles that are not MVT or WebP keep their gzip encoding. An
 absent tile returns 204. The raw archives remain downloadable from R2.
 
@@ -236,8 +237,10 @@ has it. `routes` is the route catalog cell URL template on the tile API origin,
 `/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`. When the release has
 trail files, `trails` is the far file URL template `/releases/ID/routes/tiles/trails/{cell}.json`, where
 `{cell}` is a cell ID `7-X-Y`, and `trail` is the trail record file URL template
-`/releases/ID/routes/tiles/long/{id}.json`, where `{id}` is the `id` of a trail. An offline selection
-holds no trail files.
+`/releases/ID/routes/tiles/long/{id}.json`, where `{id}` is the `id` of a trail. When the release
+has [facts files](route-catalog.md#facts-files), `facts` is their URL template
+`/releases/ID/routes/tiles/facts/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`. An offline
+selection holds no trail files and no facts files.
 
 The publisher uploads and verifies all release files before the manifest. The catalogue cache
 lifetime is 30 seconds. Immutable objects have a one-year cache lifetime. The web app reads the

@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { BUDGETS } from '../budget';
 import { anchorAt } from '../frame/space';
-import { CALM, cdlod, RANGE } from '../terrain/lod';
+import { CALM, cdlod, key, type Node } from '../terrain/lod';
 import type { CellMesh } from './mesh';
-import { meshLevel, Pieces, splitMouths } from './pieces';
+import { meshLevel, Pieces, splitMouths, splitTails } from './pieces';
+
+const { least, morph } = BUDGETS.desktop.lod;
 
 describe('splitMouths', () => {
     it("moves a run's mouth triangles to its end and keeps every triangle with its first corner", () => {
@@ -28,6 +31,37 @@ describe('splitMouths', () => {
         const tris = Array.from({ length: mesh.triangles.length / 3 }, (_, t) => Array.from(mesh.triangles.subarray(3 * t, 3 * t + 3)));
         expect(tris.slice(0, 4)).toEqual([[0, 1, 2], [3, 0, 1], [2, 3, 0], [1, 2, 3]]);
         expect(tris.slice(4)).toEqual([[3, 2, 1], [0, 1, 2], [1, 0, 3]]);
+    });
+});
+
+describe('splitTails', () => {
+    it('moves the triangles and slots whose plan meets a grown box to the end of their group, in their order', () => {
+        // Corners on a grid of 300 world units (about 11 m at the equator), from the cell's corner; label 0.
+        const grid = [0, 300, 600, 900, 1200].flatMap(x => [0, 300, 600].map(y => [x, y]));
+        const at = (x: number, y: number) => grid.findIndex(p => p[0] === x && p[1] === y);
+        const corners = new Uint32Array(grid.flatMap(([x, y]) => [16 * x, 16 * y]));
+        // A box 600 units east and 300 south of the corner, heading east: 5 m deep, 3 m to each side. Grown by √2 grid
+        // steps it reaches about 509 to 825 east and 129 to 471 south.
+        const box = new Float64Array([600, 2 ** 29 + 300, 1, 0, 5, 3, 5, 0, 0, 5, 0, 0]);
+        const inside = [at(300, 300), at(600, 300), at(600, 600)], across = [at(300, 0), at(900, 0), at(600, 600)];
+        const far = [at(0, 0), at(300, 0), at(0, 300)], west = [at(0, 300), at(300, 600), at(0, 600)], beside = [at(900, 0), at(1200, 0), at(1200, 300)];
+        // The second run's indices add its base, 1; its last two triangles are its mouth's.
+        const runs = [[inside, far, across], [west, beside, inside].map(t => t.map(k => k - 1))];
+        const mesh: CellMesh = {
+            x: 0, y: 0, corners, triangles: new Uint16Array(runs.flat(2)), runs: [{ count: 3, base: 0 }, { count: 3, base: 1 }], level18Runs: 0,
+            // Two steps and an end face: a slot stands from its first corner to its second.
+            steps: new Uint32Array([[at(600, 0), at(600, 600)], [at(0, 0), at(300, 0)], [at(300, 300), at(600, 300)]].flatMap(([p, q]) => [p, q, q, p])),
+            endFaces: 1, sunk: new Uint32Array(0), culverts: new Uint32Array(0),
+        };
+        // A box 3 km east: the cell does not meet it, and its tail tests only the first.
+        const away = box.map((v, i) => (i === 0 ? v + 80_000 : v));
+        const tails = splitTails(mesh, [0, 2], [0, 2 ** 29], [box, away]);
+        expect(tails).toEqual({ own: [2, 0], mouth: [0, 1], slots: [1, 1], boxes: [box] });
+        const tris = Array.from({ length: 6 }, (_, t) => Array.from(mesh.triangles.subarray(3 * t, 3 * t + 3)).map(k => k + (t < 3 ? 0 : 1)));
+        expect(tris).toEqual([far, inside, across, west, inside, beside]);
+        expect(Array.from(mesh.steps.filter((_, i) => i % 4 === 0))).toEqual([at(0, 0), at(600, 0), at(300, 300)]);
+        // No box: nothing moves.
+        expect(splitTails(mesh, [0, 2], [0, 2 ** 29], [])).toEqual({ own: [0, 0], mouth: [0, 0], slots: [0, 0], boxes: [] });
     });
 });
 
@@ -57,8 +91,8 @@ describe('meshLevel', () => {
 
 describe('Pieces', () => {
     it('draws again after a dip to 16 in a still view: it asks for the frames that bring the meshes back', () => {
-        const pieces = new Pieces(() => null), eye = { anchor: anchorAt(8.4048, 46.8219), above: 1.7 };
-        const frame = (finest: number) => pieces.update(cdlod(eye, RANGE.least, finest), eye, () => 0, () => '', [], () => true, () => true);
+        const pieces = new Pieces(() => ({ data: null, portals: null })), eye = { anchor: anchorAt(8.4048, 46.8219), above: 1.7 };
+        const frame = (finest: number) => pieces.update(cdlod(eye, least, morph, finest), eye, () => 0, () => '', [], () => true, () => true);
         for (const finest of [18, 17, 16]) frame(finest);
         expect(pieces.level).toBe(0);
         // The quality is back at 17 and nothing else moves: only the meshes keep the frames going.
@@ -68,14 +102,40 @@ describe('Pieces', () => {
         expect(frames).toBe(CALM);
     });
 
+    it('splits one cell near a box a frame, a cell with no box at once, and a cell again when its stamps come again', () => {
+        // A cell that waits for its split reads the boxes of its 36 nodes each frame. A node of the first cell only goes
+        // away for a frame.
+        const two = (portals: Float64Array<ArrayBuffer> | null) => {
+            let reads = 0, gone = false;
+            const only = { level: 18, x: 34_307 * 4 - 1, y: 23_107 * 4 - 1 };
+            const pieces = new Pieces((node: Node) => (gone && key(node) === key(only) ? undefined : { data: null, get portals() { reads++; return portals; } }));
+            const eye = { anchor: anchorAt(8.4048, 46.8219), above: 1.7 };
+            for (const x of [34_307, 34_308]) {
+                const words = new Uint32Array(12 + Math.ceil((130 * 130) / 32));
+                words[0] = 0x4f424d05;
+                pieces.add({ level: 16, x, y: 23_107 }, words.buffer, 0, new Set());
+            }
+            return (away = false) => {
+                const before = reads;
+                gone = away;
+                pieces.update(cdlod(eye, least, morph, 18), eye, () => 0, () => '', [], () => true, () => true);
+                return (reads - before) / 36;
+            };
+        };
+        const boxed = two(new Float64Array([0, 0, 1, 0, 5, 3, 5, 0, 0, 5, 0, 0]));
+        expect([boxed(), boxed(), boxed(), boxed(true), boxed(), boxed()]).toEqual([2, 1, 0, 0, 1, 0]);
+        const bare = two(null);
+        expect([bare(), bare()]).toEqual([2, 0]);
+    });
+
     it('reads its pages again after a rest below 17, as pages came and went while it rested', () => {
-        const pieces = new Pieces(() => null), eye = { anchor: anchorAt(8.4048, 46.8219), above: 1.7 };
+        const pieces = new Pieces(() => ({ data: null, portals: null })), eye = { anchor: anchorAt(8.4048, 46.8219), above: 1.7 };
         // A cell's mesh with no corners: the head (MAGIC, HEAD 12 words) and the region words.
         const words = new Uint32Array(12 + Math.ceil((130 * 130) / 32));
         words[0] = 0x4f424d05;
         pieces.add({ level: 16, x: 34_307, y: 23_107 }, words.buffer, 0, new Set());
         let reads = 0;
-        const frame = (finest: number) => pieces.update(cdlod(eye, RANGE.least, finest), eye, () => 0, () => `${reads++}`, [], () => true, () => true);
+        const frame = (finest: number) => pieces.update(cdlod(eye, least, morph, finest), eye, () => 0, () => `${reads++}`, [], () => true, () => true);
         frame(18);
         frame(16);
         const before = reads;

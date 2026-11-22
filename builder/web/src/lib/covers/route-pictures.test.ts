@@ -19,7 +19,7 @@ beforeEach(() => {
         '/manifest.json': manifest,
         [CELL_FILE]: { format: 1, routes: { 1: KEY, 2: 'ffffffffffffffff' } },
         [`/covers/1/${KEY}-0715-1000.webp`]: 'image',
-        [`/covers/1/${KEY}-0715-1000-small.webp`]: 'small image',
+        [`/covers/1/${KEY}-0715-1000-row.webp`]: 'row image',
         [`/covers/1/${KEY}.json`]: { x: [10, null], y: [20, null], eye: [130, 0] },
     };
     vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
@@ -47,10 +47,10 @@ describe('coverOf', () => {
         expect(first?.credits).toEqual(['© Data']);
         expect(Array.from(first!.points.x)).toEqual([10, NaN]);
         expect(Array.from(first!.points.eye)).toEqual([130, 0]);
-        // A row loads the small image, a quarter of the full image, so its points are a quarter of the points file.
-        expect(asked).toContain(`/covers/1/${KEY}-0715-1000-small.webp`);
-        expect(Array.from(row!.points.x)).toEqual([2.5, NaN]);
-        expect(Array.from(row!.points.y)).toEqual([5, NaN]);
+        // A row loads the row image, half the full image, so its points are half the points file.
+        expect(asked).toContain(`/covers/1/${KEY}-0715-1000-row.webp`);
+        expect(Array.from(row!.points.x)).toEqual([5, NaN]);
+        expect(Array.from(row!.points.y)).toEqual([10, NaN]);
         // The cell file holds another key for this line.
         expect(second).toBeUndefined();
     });
@@ -108,7 +108,7 @@ describe('holdCover', () => {
         expect(a.cover).toBe(b.cover);
         // A row and a card of one route load two images.
         await Promise.all([a.cover, row.cover]);
-        expect(asked.filter(path => path.endsWith('.webp')).sort()).toEqual([`/covers/1/${KEY}-0715-1000-small.webp`, `/covers/1/${KEY}-0715-1000.webp`]);
+        expect(asked.filter(path => path.endsWith('.webp')).sort()).toEqual([`/covers/1/${KEY}-0715-1000-row.webp`, `/covers/1/${KEY}-0715-1000.webp`]);
         a.release();
         const cover = await b.cover;
         expect(cover).toBeDefined();

@@ -9,6 +9,7 @@ import * as routing from '../../lib/planner/routing';
 import { newPlan, type Plan } from '../../lib/planner/library';
 import type { RoutingLine } from '../../lib/planner/routing';
 
+import { moves, nightCalls, tiles, weekFits } from '../../../test-support/planner/MapStub.svelte';
 import { routeService } from '../../../test-support/planner/route-service';
 import { testTrip } from '../../../test-support/planner/trip';
 import { testConfig } from '../../../test-support/planner/config';
@@ -17,18 +18,34 @@ vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../t
 let app: ReturnType<typeof mount> | undefined;
 const stored = new Map<string, string>();
 let savedPlan: Plan | undefined;
+// The renames that the page asked for, as [id, name].
+const renamed: [string, string][] = [];
+// The other routes of the library.
+let others: Plan[] = [];
+const storedPlan = (): Plan => ({ ...newPlan(emptyTrip()), id: 'stored', trip: JSON.parse(stored.get('trip')!) });
+/** The open state of the trip that the page wrote last: its draft, else the stored route. */
+const written = () => stored.get('draft') ?? stored.get('trip');
 
 vi.mock('../../lib/library/store', () => ({
+    OUTDATED: 'OutdatedError',
     Library: class {
         async state() { return stored.has('trip') ? 'stored' : null; }
-        async route() { return { ...newPlan(emptyTrip()), id: 'stored', revision: 1, trip: JSON.parse(stored.get('trip')!) }; }
-        async versions() { return []; }
+        async route(id: string) { return others.find(plan => plan.id === id) ?? storedPlan(); }
+        async routes() { return [...savedPlan ? [savedPlan] : stored.has('trip') ? [storedPlan()] : [], ...others]; }
+        async unreadableRoutes() { return []; }
         async saveRoute(plan: Plan) {
             stored.set('trip', JSON.stringify(plan.trip));
-            savedPlan = { ...plan, revision: plan.revision + 1 };
-            return savedPlan;
+            stored.delete('draft');
+            return savedPlan = plan;
         }
-        async setState(_key: string, id: string | null) { if (!id) { stored.set('trip', JSON.stringify(emptyTrip())); savedPlan = undefined; } }
+        async draft(id: string) { return stored.has('draft') ? { id, updatedAt: 0, trip: JSON.parse(stored.get('draft')!) } : undefined; }
+        async newestUnstoredDraft() { return undefined; }
+        // The page writes the open state of the trip here at each change.
+        async saveDraft(draft: { trip: unknown }) { stored.set('draft', JSON.stringify(draft.trip)); }
+        async removeDraft() { stored.delete('draft'); }
+        async renameRoute(id: string, name: string) { renamed.push([id, name]); }
+        async setSummary() {}
+        async setState(_key: string, id: string | null) { if (!id) { stored.delete('trip'); savedPlan = undefined; } }
         onChange() { return () => {}; }
         async close() {}
     },
@@ -39,7 +56,12 @@ const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', cat
 
 beforeEach(() => {
     stored.clear();
+    sessionStorage.clear();
+    // happy-dom has no popover API, which the menu "More" uses.
+    HTMLElement.prototype.showPopover ??= () => {};
     savedPlan = undefined;
+    others = [];
+    renamed.length = 0;
     vi.stubGlobal('confirm', vi.fn(() => true));
     const trip = testTrip();
     const coordinates = routeLine;
@@ -49,7 +71,7 @@ beforeEach(() => {
         elevation: coordinates.map(() => 200), elapsed: distance.map(km => km * 240),
         edges: { pushing: coordinates.slice(1).map(() => false) }, seconds: distance.at(-1)! * 240,
         stops: [{ id: 'start', distance: 0 }, { id: 'finish', distance: distance.at(-1)! }],
-        unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
+        unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
     };
     stored.set('trip', JSON.stringify(trip));
     vi.spyOn(routing, 'calculateLine').mockResolvedValue(line);
@@ -86,6 +108,13 @@ function button(label: string, scope: ParentNode = document) {
     return found;
 }
 
+const escape = (target: Element) => target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+
+/** The checkbox of a kind of place to sleep in the open stay chip. */
+function stayBox(label: string, scope: ParentNode = document) {
+    return [...scope.querySelectorAll('label')].find(row => row.textContent === label)!.querySelector('input')!;
+}
+
 async function startApp(props: { library: Library; active?: boolean } = { library: new Library() }) {
     app = mount(PlannerApp, { target: document.body, props });
     await vi.waitFor(() => expect(document.querySelector('main')?.getAttribute('aria-busy')).toBe('false'));
@@ -100,8 +129,20 @@ async function search(text: string, label = tilePlace.label) {
     await vi.waitFor(() => expect(document.querySelector('.results')?.textContent).toContain(label));
 }
 
+const preferencesLine = () => [...document.querySelectorAll('button')].find(found => found.textContent?.trim().startsWith('Route preferences: '))!;
+
+async function openPreferences() {
+    if (preferencesLine().getAttribute('aria-expanded') === 'false') preferencesLine().click();
+    await tick();
+}
+
+async function chooseMore(item: string) {
+    button('More ▾').click(); await tick();
+    button(item).click(); await tick();
+}
+
 async function setRidingDays(days: number) {
-    const count = () => Number(document.querySelector('[aria-label="Number of riding days"] .count')!.textContent!.split(' ')[0]);
+    const count = () => Number(document.querySelector('[aria-label="Number of days"] .count')!.textContent!.split(' ')[0]);
     while (count() !== days) { button(count() < days ? 'One day more' : 'One day fewer').click(); await tick(); }
 }
 
@@ -113,9 +154,10 @@ describe('planner app transitions', () => {
         saved.preset = 'Shorter';
         stored.set('trip', JSON.stringify(saved));
         await startApp(); await tick();
+        await openPreferences();
         expect(button('Preset').textContent?.trim()).toBe('Balanced');
         expect(button('Pan map').dataset.accessMode).toBe('walking');
-        await vi.waitFor(() => expect(document.querySelector('.trip-summary')?.textContent).toContain('Walking time'));
+        await vi.waitFor(() => expect(document.querySelector('.plan-totals')?.textContent).toContain('Walking time'));
         const surface = document.querySelector<HTMLElement>('[aria-label="Surface along route"]')!;
         surface.focus(); await tick();
         expect(surface.getAttribute('aria-valuetext')).toContain('Walking');
@@ -127,9 +169,9 @@ describe('planner app transitions', () => {
     it('shows the route network of the activity, and keeps a network that the rider chose or switched off', async () => {
         await startApp();
         button('Map settings').click(); await tick();
-        const menu = document.querySelector('.map-settings')!;
+        const menu = document.querySelector('[role="dialog"][aria-label="Map settings"]')!;
         const network = () => menu.querySelector('[aria-label="Routes, one at a time"] [aria-pressed="true"]')?.textContent?.trim();
-        const activity = async (label: string) => { button('Activity').click(); await tick(); button(label).click(); await tick(); };
+        const activity = async (label: string) => { await openPreferences(); button('Activity').click(); await tick(); button(label).click(); await tick(); };
         expect(network()).toBe('Cycling');
         button('Hiking', menu).click(); await tick();
         await activity('Gravel bike');
@@ -151,15 +193,31 @@ describe('planner app transitions', () => {
         await startApp(); await tick();
         button('Pick map location').click(); await tick();
         button('Visit').click(); await tick();
-        expect(JSON.parse(stored.get('trip')!).points).toContainEqual(expect.objectContaining({ kind: 'waypoint', label: '48.00000, 7.84000' }));
+        expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ kind: 'waypoint', label: '48.00000, 7.84000' }));
         const response = { ok: true, json: async () => ({ label: 'Dorfstraße 12, Teningen' }) };
         finish(response);
         await vi.waitFor(() => expect(document.querySelector('.route')?.textContent).toContain('Dorfstraße 12, Teningen'));
         button('Undo').click(); await tick();
-        expect(JSON.parse(stored.get('trip')!)).toEqual(saved);
+        expect(JSON.parse(written()!)).toEqual(saved);
         button('Redo').click(); await tick();
         finish(response);
-        await vi.waitFor(() => expect(JSON.parse(stored.get('trip')!).points).toContainEqual(expect.objectContaining({ label: 'Dorfstraße 12, Teningen' })));
+        await vi.waitFor(() => expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ label: 'Dorfstraße 12, Teningen' })));
+    });
+
+    it('names a start set on the map after its town once, and keeps that name on Undo, Redo and reopening', async () => {
+        stored.set('trip', JSON.stringify(emptyTrip()));
+        const lookup = vi.spyOn(tiles, 'placeName').mockReturnValue('Sempach');
+        await startApp();
+        button('Pick map location').click(); await tick();
+        button('Start here').click(); await tick();
+        await vi.waitFor(() => expect(JSON.parse(written()!).points).toEqual([expect.objectContaining({ kind: 'start', label: 'Sempach', autoLabel: true })]));
+        button('Undo').click(); await tick();
+        button('Redo').click(); await tick();
+        await vi.waitFor(() => expect(written()).toContain('Sempach'));
+        await unmount(app!);
+        await startApp();
+        expect(button('Map point: Sempach')).toBeDefined();
+        expect(lookup).toHaveBeenCalledTimes(1);
     });
 
     it.each(['rename', 'remove', 'leave'] as const)('ignores an address response after %s', async action => {
@@ -176,10 +234,10 @@ describe('planner app transitions', () => {
             input.value = 'Picnic'; input.dispatchEvent(new Event('change', { bubbles: true })); await tick();
         } else if (action === 'remove') { button('Remove point').click(); await tick(); }
         else { await unmount(app!); app = undefined; }
-        const snapshot = stored.get('trip');
+        const snapshot = written();
         finish({ ok: true, json: async () => ({ label: 'Late address' }) });
         await tick(); await tick();
-        expect(stored.get('trip')).toBe(snapshot);
+        expect(written()).toBe(snapshot);
     });
 
     it('keeps a resolved address on reload when search is unavailable', async () => {
@@ -206,12 +264,12 @@ describe('planner app transitions', () => {
         const select = document.querySelector<HTMLSelectElement>('.callout select')!;
         expect(select.value).toBe('1');
         button('Stay here').click(); await tick();
-        const draft = JSON.parse(stored.get('trip')!);
+        const draft = JSON.parse(written()!);
         expect(draft).toMatchObject({ mode: 'trip', days: saved.days });
         expect(draft.points).toContainEqual(expect.objectContaining({ kind: 'night', night: 1, label: 'Fuxxbau', coordinate: [8.088, 48.279] }));
         expect(draft.points.find((p: { kind: string }) => p.kind === 'finish')).toEqual(saved.points.find((p: { kind: string }) => p.kind === 'finish'));
         button('Undo').click(); await tick();
-        expect(JSON.parse(stored.get('trip')!)).toEqual(saved);
+        expect(JSON.parse(written()!)).toEqual(saved);
     });
 
     it('runs an open search again after a plan edit', async () => {
@@ -256,6 +314,21 @@ describe('planner app transitions', () => {
         expect(bodies().find(body => body.q === 'Döner').pointing).toBeUndefined();
         expect(document.querySelector('.meaning')?.textContent).toContain('In this map view');
     });
+
+    it('says that a reorder cleared shapes only when it removed a shaping point', async () => {
+        const [start, finish] = testTrip().points;
+        const stop = (id: string, label: string, lat: number) => ({ id, kind: 'waypoint', label, coordinate: [7.6, lat] });
+        stored.set('trip', JSON.stringify({ ...emptyTrip('route'), routeOrder: ['a', 'b', 'c', 'shape'], points: [
+            start, stop('a', 'A', 47.4), stop('b', 'B', 47.2), stop('c', 'C', 47), { id: 'shape', kind: 'via', label: 'Shaping point', coordinate: [7.6, 46.9] }, finish,
+        ] }));
+        await startApp(); await tick();
+        const status = () => document.querySelector('.status-line')?.textContent;
+        button('Reorder A').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await tick();
+        expect(status()).toContain('Stops reordered');
+        button('Reorder C').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })); await tick();
+        expect(status()).toContain('Shapes cleared on the changed legs');
+    });
+
     it.each(['route', 'trip'] as const)('creates and clears a %s without routing incomplete drafts', async mode => {
         stored.set('trip', JSON.stringify(emptyTrip(mode)));
         const calculate = vi.spyOn(routing, 'calculateLine').mockRejectedValue(new Error('Routing service offline'));
@@ -282,7 +355,9 @@ describe('planner app transitions', () => {
         expect(document.body.textContent).toContain('Where would you like to ride?');
         button('Undo').click(); await tick();
         expect(document.body.textContent).toContain('Choose your start');
-        button(mode === 'route' ? 'New route' : 'New trip').click();
+        await chooseMore('New route');
+        await vi.waitFor(() => expect(document.querySelector('dialog h2')?.textContent).toBe('Save changes to ‘To Finish’?'));
+        button('Discard').click();
         await vi.waitFor(() => expect(document.body.textContent).toContain('Where would you like to ride?'));
         expect(window.confirm).not.toHaveBeenCalled();
         expect(document.body.textContent).toContain('Where would you like to ride?');
@@ -302,7 +377,7 @@ describe('planner app transitions', () => {
         button(`Map place: ${tilePlace.label}`).click(); await tick();
         button('Finish here').click(); await tick();
         expect(document.body.textContent).toContain('Choose your start');
-        const draft = JSON.parse(stored.get('trip')!);
+        const draft = JSON.parse(written()!);
         expect(draft.points).toEqual([expect.objectContaining({ kind: 'finish', label: tilePlace.label, coordinate: tilePlace.coordinate })]);
         expect(calculate).not.toHaveBeenCalled();
     });
@@ -323,14 +398,14 @@ describe('planner app transitions', () => {
         await startApp(props);
         button('Map point: Basel').click(); await tick();
         button('Remove point').click(); await tick();
-        const edited = stored.get('trip');
+        const edited = written();
         const undoKey = () => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
         props.active = false; await tick();
         undoKey(); await tick();
-        expect(stored.get('trip')).toBe(edited);
+        expect(written()).toBe(edited);
         props.active = true; await tick();
         undoKey(); await tick();
-        expect(stored.get('trip')).not.toBe(edited);
+        expect(written()).not.toBe(edited);
     });
 
     it('returns to an earlier bike and undoes without a route request', async () => {
@@ -343,6 +418,7 @@ describe('planner app transitions', () => {
         for (const [bike, requests] of [['Gravel bike', 1], ['Touring bike', 2]] as const) {
             await vi.waitFor(() => expect(document.querySelector('section.elevation')).not.toBeNull());
             expect(routeRequests()).toBe(requests);
+            await openPreferences();
             button('Activity').click(); await tick();
             button(bike).click(); await tick();
         }
@@ -353,7 +429,7 @@ describe('planner app transitions', () => {
         expect(routeRequests()).toBe(2);
     });
 
-    it('opens a tile place from both a search row and its map pin, then adds a visit', async () => {
+    it('opens a tile place from both a search row and its map pin, then adds a visit and shows it on the route', async () => {
         await startApp();
         await tick();
         await search('campsites');
@@ -390,10 +466,33 @@ describe('planner app transitions', () => {
         expect(row.isConnected).toBe(true);
         expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
         vi.useRealTimers();
+        const moved = moves.count;
         button('Add as visit').click();
         await tick();
-        const draft = [...stored.values()].map(value => JSON.parse(value)).find(value => value.points);
-        expect(draft.points).toContainEqual(expect.objectContaining({ label: tilePlace.label, kind: 'waypoint' }));
+        expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ label: tilePlace.label, kind: 'waypoint' }));
+        // The card closes so that it does not cover the new route, the map moves to it, and the new stop stays lit.
+        expect(document.querySelector('[role="dialog"]')).toBeNull();
+        expect(moves.count).toBe(moved + 1);
+        expect(button(`Map point: ${tilePlace.label}`).classList.contains('highlighted')).toBe(true);
+    });
+
+    it('keeps the totals of the whole plan in the title of the closed elevation drawer', async () => {
+        await startApp();
+        await vi.waitFor(() => expect(document.querySelector('.elevation .title .plan-totals')).not.toBeNull());
+        const totals = document.querySelector('.plan-totals')!.textContent;
+        button('Elevation').click(); await tick();
+        expect(button('Elevation').getAttribute('aria-expanded')).toBe('false');
+        expect(document.querySelector('.elevation .title .plan-totals')?.textContent).toBe(totals);
+    });
+
+    it('names the drawer button Elevation while the totals hide its label', async () => {
+        await startApp();
+        await vi.waitFor(() => expect(document.querySelector('.elevation .title .plan-totals')).not.toBeNull());
+        const toggle = document.querySelector<HTMLButtonElement>('.elevation .title > button')!;
+        expect(toggle.classList.contains('icon-only')).toBe(true);
+        expect(toggle.textContent?.trim()).toBe('Elevation');
+        expect(toggle.title).toBe('Elevation');
+        expect(toggle.getAttribute('aria-expanded')).toBe('true');
     });
 
     it('restores the focused day after a different-day search', async () => {
@@ -471,6 +570,7 @@ describe('planner app transitions', () => {
         vi.mocked(routing.calculateLine).mockImplementation(async (...args) => ({ ...await measured(...args) }));
         await select();
         expect(part()).not.toBeNull();
+        await openPreferences();
         button('Activity').click(); await tick();
         button('Gravel bike').click();
         await vi.waitFor(() => expect(part()).toBeNull());
@@ -480,23 +580,8 @@ describe('planner app transitions', () => {
         stored.set('trip', JSON.stringify({ points: [], days: 3, limit: 50 }));
         await startApp();
         await tick();
-        expect(document.body.textContent).toContain('Saved plan is invalid.');
+        expect(document.body.textContent).toContain('Saved route is invalid.');
         expect(document.body.textContent).toContain('Where would you like to ride?');
-    });
-
-    it('brings a deleted version back with the status-line Undo', async () => {
-        await startApp();
-        button('Save version').click(); await tick();
-        document.querySelector('.versions form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        const deleteButton = () => document.querySelector<HTMLButtonElement>('.versions button[aria-label^="Delete"]');
-        await vi.waitFor(() => expect(deleteButton()).not.toBeNull());
-        const label = deleteButton()!.getAttribute('aria-label');
-        deleteButton()!.click();
-        await vi.waitFor(() => expect(deleteButton()).toBeNull());
-        expect(document.querySelector('.status-line')?.textContent).toContain('Version deleted');
-        button('Undo', document.querySelector('.status-line')!).click();
-        await vi.waitFor(() => expect(deleteButton()?.getAttribute('aria-label')).toBe(label));
-        expect(document.querySelector('.status-line')?.textContent).not.toContain('Undo');
     });
 
     it('loads the website and phone that a list leaves out, also for a night made from the place', async () => {
@@ -514,7 +599,7 @@ describe('planner app transitions', () => {
         await vi.waitFor(() => expect(contacts()).toContain('href="https://camp.example/"'));
         expect(contacts()).toContain('href="tel:+49761123"');
         button('Stay here').click(); await tick();
-        expect(JSON.parse(stored.get('trip')!).points).toContainEqual(expect.objectContaining({ kind: 'night', placeId: 'n42', placeKind: 'campsite' }));
+        expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ kind: 'night', placeId: 'n42', placeKind: 'campsite' }));
         // A reopened plan has no details yet, so the night asks for its place.
         await unmount(app!);
         await startApp();
@@ -523,6 +608,15 @@ describe('planner app transitions', () => {
     });
 
     it('offers a place for the night the rider chose in the overview', async () => {
+        // The camp lies in the stretch that each search for places to sleep asks for.
+        const answer = fetch;
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+            const response = await answer(url, init), along = JSON.parse(String(init.body)).request?.where?.along;
+            if (!along) return response;
+            const { results, ...rest } = await response.json();
+            const middle = (along.from.value + along.to.value) / 2;
+            return { ok: true, json: async () => ({ ...rest, results: results.map((p: object) => ({ ...p, position: { along: middle, distance: .1 } })) }) };
+        }));
         await startApp();
         button('Choose night 2').click();
         await vi.waitFor(() => expect(button(`Map place: ${tilePlace.label}`)).toBeDefined());
@@ -530,49 +624,162 @@ describe('planner app transitions', () => {
         expect(document.querySelector<HTMLSelectElement>('.callout select')!.value).toBe('2');
     });
 
-    it('shows the days when a plan first has a start and finish, and what its route options offer', async () => {
-        const route = (id: string, km: number): routing.EngineRoute => ({ id, reason: id, package: 'test', profile: 'touring', geometry: routeLine,
-            elevation: routeLine.map(() => 200), elapsed: [], edges: {}, legs: [], snap_truncated: false,
-            totals: { distance_m: km * 1000, ascent_m: 0, seconds: 0, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 } });
-        const primary = route('primary', 120), measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
-        vi.mocked(routing.calculateLine).mockImplementation(async (...args) => ({ ...await measured(...args), primary }));
-        let answer!: (routes: routing.EngineRoute[]) => void;
-        vi.spyOn(routing, 'requestAlternatives').mockImplementation(() => new Promise(resolve => answer = resolve));
-        stored.set('trip', JSON.stringify({ ...testTrip(), points: testTrip().points.filter(point => point.kind === 'start') }));
+    /** Holds every search for places to sleep open until the returned function releases it, as a failure if `fail`. */
+    function holdTownSearch() {
+        const answer = fetch;
+        let release!: (fail: boolean) => void;
+        const gate = new Promise<boolean>(resolve => release = resolve);
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+            if (JSON.parse(String(init?.body ?? '{}')).request?.what?.includes('sleep') && await gate) throw new Error('Search offline');
+            return answer(url, init!);
+        }));
+        return release;
+    }
+
+    it('moves the map to a night with no towns once its search fails', async () => {
+        nightCalls.length = 0;
+        const release = holdTownSearch();
         await startApp();
-        button('Pick map location').click(); await tick();
-        button('Finish here').click(); await tick();
-        expect(document.querySelector('.list-head')).toBeNull();
-        await vi.waitFor(() => expect(routing.requestAlternatives).toHaveBeenCalled());
-        expect(document.querySelector('[data-list="ways"]')?.textContent).toBe('Route options');
-        answer([primary, route('less_climbing', 106)]);
-        await vi.waitFor(() => expect(button('Route options · 1 other way, 14.0 km shorter')).toBeDefined());
-        expect(dayButton(1)).toBeDefined();
+        button('Choose night 1').click(); await tick();
+        release(true);
+        await vi.waitFor(() => expect(nightCalls).toHaveLength(1));
+        expect(nightCalls[0][1]).toEqual([]);
     });
 
-    it('compares two saved versions and opens one in the planner', async () => {
+    it('moves the map once for each opening of a night, when its towns are ready, and not when its kinds change or it closes', async () => {
+        nightCalls.length = 0;
+        const release = holdTownSearch();
         await startApp();
-        // The menu stays open after a save.
-        const save = async () => {
-            document.querySelector('.versions form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-            await vi.waitFor(() => expect(document.querySelector('.versions form')).toBeNull());
+        button('Choose night 1').click(); await tick();
+        expect(document.body.textContent).toContain('Finding towns with somewhere to sleep…');
+        expect(nightCalls).toEqual([]);
+        release(false);
+        await vi.waitFor(() => expect(nightCalls).toHaveLength(1));
+        expect(nightCalls[0][1]).toEqual([[tilePlace.coordinate]]);
+        const page = document.querySelector('.night-page')!;
+        button('Places to sleep on night 1: Any place', page).click(); await tick();
+        stayBox('Huts', page).click(); await tick();
+        expect(stayBox('Huts', page).checked).toBe(false);
+        button('All days', page).click(); await tick();
+        expect(document.querySelector('.night-page')).toBeNull();
+        expect(nightCalls).toHaveLength(1);
+    });
+
+    it('keeps a night page while the route is recalculated', async () => {
+        const measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
+        let line!: RoutingLine, finish!: (line: RoutingLine) => void;
+        vi.mocked(routing.calculateLine)
+            .mockImplementationOnce(async (...args) => line = await measured(...args))
+            .mockImplementation(() => new Promise(resolve => finish = resolve));
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        button('Move start').click(); await tick();
+        expect(document.querySelector('.route-status')?.textContent).toContain('Calculating route');
+        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');
+        finish(line);
+        await vi.waitFor(() => expect(document.querySelector('.route-status')).toBeNull());
+        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');
+    });
+
+    it('goes back one level with Escape wherever the focus is: the pick on the map, the callout, then the night page', async () => {
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        await vi.waitFor(() => button('Pick on the map').click()); await tick();
+        escape(button('Pick on the map')); await tick();
+        expect(document.querySelector('.night-page')).not.toBeNull();
+        button('Pick map location').click(); await tick();
+        expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('Add point here');
+        escape(button('Pan map')); await tick();
+        expect(document.querySelector('.night-page')).not.toBeNull();
+        escape(button('Pan map')); await tick(); await tick();
+        expect(document.querySelector('.night-page')).toBeNull();
+        expect(document.activeElement).toBe(button('Choose night 1'));
+    });
+
+    it('keeps the night page when the map takes Escape to close its route details', async () => {
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        // As `PlannerMap` does while its details are open: in the capture phase, before the page.
+        window.addEventListener('keydown', event => event.preventDefault(), { capture: true, once: true });
+        escape(button('Pan map')); await tick();
+        expect(document.querySelector('.night-page')).not.toBeNull();
+        escape(button('Pan map')); await tick(); await tick();
+        expect(document.querySelector('.night-page')).toBeNull();
+    });
+
+    it('selects where to sleep in a town with the arrow keys and on the map, with the focus kept in the card', async () => {
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        await vi.waitFor(() => document.querySelector<HTMLButtonElement>('button.town')!.click()); await tick();
+        const radios = [...document.querySelectorAll<HTMLInputElement>('[role="radiogroup"] input')];
+        const confirm = () => document.querySelector('.confirm button')!.textContent!.trim();
+        // An arrow key focuses and checks the next radio, and fires its change.
+        const arrow = async (radio: HTMLInputElement) => {
+            radio.focus(); radio.checked = true;
+            radio.dispatchEvent(new Event('change', { bubbles: true }));
+            await tick(); await new Promise(requestAnimationFrame);
         };
-        button('Save version').click(); await tick(); await save();
-        button('Save as a new version…').click(); await tick(); await save();
-        button('Compare versions').click(); await tick();
+        expect(confirm()).toBe('End day 1 in Tile town');
+        await arrow(radios[1]);
+        expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
+        expect(document.activeElement).toBe(radios[1]);
+        expect(confirm()).toBe(`End day 1 at ${tilePlace.label}`);
+        const moved = moves.count;
+        await arrow(radios[0]);
+        expect(document.activeElement).toBe(radios[0]);
+        expect(document.querySelector('[role="dialog"]')).toBeNull();
+        expect(moves.count).toBe(moved);
+        button(`Map place: ${tilePlace.label}`).click(); await tick();
+        expect(radios[1].checked).toBe(true);
+        expect(confirm()).toBe(`End day 1 at ${tilePlace.label}`);
+    });
+
+    it('closes only the town with Escape on its card in an open day', async () => {
+        await startApp();
+        dayButton(1).click(); await tick();
+        await vi.waitFor(() => document.querySelector<HTMLButtonElement>('.choose button.town')!.click()); await tick();
+        escape(button('All towns')); await tick();
+        expect(document.querySelector('.choose button.town')).not.toBeNull();
+        expect(document.querySelector('[aria-label="Selected day"]')).not.toBeNull();
+    });
+
+    it('does not open a night again that an Undo removed', async () => {
+        await startApp();
+        await setRidingDays(4);
+        button('Choose night 3').click(); await tick();
+        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 3');
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true })); await tick();
+        expect(document.querySelector('.night-page')).toBeNull();
+        await setRidingDays(4);
+        expect(document.querySelector('.night-page')).toBeNull();
+    });
+
+    it('compares two saved routes with a start and a finish, and opens one in the planner', async () => {
+        const start = { ...testTrip(), points: testTrip().points.filter(point => point.kind === 'start') };
+        others = [{ ...newPlan({ ...testTrip(), days: 4 }, 'Coast'), id: 'coast' },
+            { ...newPlan(start, 'Only a start'), id: 'start', updatedAt: Date.now() + 60_000 }];
+        await startApp();
+        button('More ▾').click(); await tick();
+        button('Compare routes…').click();
         await vi.waitFor(() => expect(document.querySelectorAll('.compare .head .totals')).toHaveLength(2));
+        expect([...document.querySelectorAll('.compare .head .name strong')].map(name => name.textContent)).not.toContain('Only a start');
+        expect(document.querySelector('.compare .head .name strong')?.textContent).not.toBe('Coast');
         expect(document.querySelector('.trip-bar')).toBeNull();
         expect(document.activeElement?.textContent).toBe('Planner');
         button('Open in planner').click();
-        await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Opened'));
+        await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Route opened'));
         expect(document.querySelector('.compare')).toBeNull();
-        expect(document.activeElement).toBe(document.querySelector('.versions .toggle'));
+        expect(document.querySelector('.trip-bar h1')?.textContent).toBe('Coast');
+        expect(document.activeElement).toBe(document.querySelector('.trip-bar .menu > button'));
     });
 
     it('prevents adding an overnight past the riding-day limit', async () => {
         await startApp();
         await tick();
         await setRidingDays(maxRidingDays);
+        // The list shows the week in focus; End on the strip moves it to the last days.
+        document.querySelector('[role="slider"][aria-label="Week in focus"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+        await tick();
         button(`Open day ${maxRidingDays}: Day ${maxRidingDays - 1} overnight to Thun`).click();
         await tick();
         await search(`campsites day ${maxRidingDays}`);
@@ -585,32 +792,170 @@ describe('planner app transitions', () => {
         expect(dialog.textContent).toContain(`up to ${maxRidingDays} riding days`);
     });
 
-    it('sets the day count when the rider steps it, even back to the guess, and not when only the stay changes', async () => {
-        stored.set('trip', JSON.stringify({ ...testTrip(), daysSet: undefined }));
-        const draft = () => JSON.parse(stored.get('trip')!);
+    it('keeps the week when the rider opens the night before it, at the left edge of the profile', async () => {
         await startApp();
-        await vi.waitFor(() => expect(draft().days).not.toBe(3));
-        const guessed = draft().days;
-        for (const kind of ['Huts', 'Hostels', 'Hotels', 'Shelters']) { button(kind).click(); await tick(); }
-        expect(button('Campsites').disabled).toBe(true);
+        await setRidingDays(20);
+        const strip = document.querySelector('[role="slider"][aria-label="Week in focus"]')!;
+        strip.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true })); await tick();
+        expect(strip.getAttribute('aria-valuetext')).toBe('Days 8 to 14');
+        button('Day 7 ends here, suggested. Show the day.').click(); await tick();
+        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 7');
+        expect(strip.getAttribute('aria-valuetext')).toBe('Days 8 to 14');
+    });
+
+    it('shows the week on the map when it rests after ›, and not when a day opens before it rests', async () => {
+        await startApp();
+        await setRidingDays(20);
+        weekFits.count = 0;
+        button('7 days on').click(); await tick();
+        await vi.waitFor(() => expect(weekFits.count).toBe(1));
+        // The map gets the week and the day under the pointer on the strip.
+        document.querySelector('[role="slider"][aria-label="Week in focus"]')!.dispatchEvent(new PointerEvent('pointermove', { clientX: 1000, bubbles: true })); await tick();
+        expect(document.querySelector('.map-week')?.textContent).toBe('8-14 20');
+        button('7 days on').click(); await tick();
+        dayButton(16).click(); await tick();
+        await new Promise(resolve => setTimeout(resolve, 400));
+        expect(weekFits.count).toBe(1);
+    });
+
+    it('sets the day count when the rider steps it, even back to the guess, and not when only the stay changes; each step shows the whole trip', async () => {
+        stored.set('trip', JSON.stringify({ ...testTrip(), daysSet: undefined }));
+        const draft = () => JSON.parse(written()!);
+        const count = () => Number(document.querySelector('[aria-label="Number of days"] .count')!.textContent!.split(' ')[0]);
+        await startApp();
+        // A guess on the route as it opened writes nothing.
+        await vi.waitFor(() => expect(count()).not.toBe(3));
+        const guessed = count();
+        expect(draft().days).toBe(3);
+        button('Places to sleep: Any place').click(); await tick();
+        for (const kind of ['Huts', 'Hostels', 'Hotels', 'Shelters']) { stayBox(kind).click(); await tick(); }
+        expect(stayBox('Campsites').disabled).toBe(true);
         expect(draft()).toMatchObject({ days: guessed, stay: ['camp'] });
         expect(draft().daysSet).toBeUndefined();
+        const moved = moves.count;
         button('One day more').click(); await tick();
         button('One day fewer').click(); await tick();
         expect(draft()).toMatchObject({ days: guessed, daysSet: true });
+        // Each change of days moves every day end, so the map shows the whole trip.
+        expect(moves.count).toBe(moved + 2);
     });
 
     it('opens a night of the timeline in the day list and sets the start date in the trip row', async () => {
+        // An alpine path gives the route a note.
+        const measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
+        vi.mocked(routing.calculateLine).mockImplementation(async (...args) => {
+            const line = await measured(...args);
+            return { ...line, edges: { ...line.edges, sac_scale: line.coordinates.slice(1).map(() => 6) } };
+        });
         await startApp();
         await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(2));
-        document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick();
-        expect(button('Close night 1').getAttribute('aria-expanded')).toBe('true');
-        button('Trip dates: Start date').click(); await tick();
+        const hidden = ['[data-day]', '.trip-row', '.route-notes'];
+        for (const row of hidden) expect(document.querySelector(row)).not.toBeNull();
+        // The totals of the whole plan stay in the drawer on a night page and with a day open.
+        const totals = document.querySelector('.plan-totals')!.textContent;
+        document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick(); await tick();
+        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');
+        expect(document.querySelector('.plan-totals')?.textContent).toBe(totals);
+        expect(document.activeElement).toBe(button('All days'));
+        for (const row of hidden) expect(document.querySelector(row)).toBeNull();
+        expect(document.querySelector<HTMLElement>('.query-slot')!.style.display).toBe('none');
+        button('All days').click(); await tick(); await tick();
+        expect(document.activeElement).toBe(button('Choose night 1'));
+        button('Trip dates: Any date').click(); await tick();
         const date = document.querySelector<HTMLInputElement>('.trip-row input[type="date"]')!;
         date.value = '2027-06-19';
         date.dispatchEvent(new Event('change', { bubbles: true })); await tick();
-        expect(JSON.parse(stored.get('trip')!).startDate).toBe('2027-06-19');
+        expect(JSON.parse(written()!).startDate).toBe('2027-06-19');
+        // The trip row changes the rider's trip, so the suggested nights do not become day ends.
+        expect(JSON.parse(written()!).splits).toBeUndefined();
         expect(button('Trip dates: Sat 19 – Mon 21 Jun')).toBeDefined();
-        expect(document.querySelector('.labels')?.textContent).toContain('Sun 20');
+        expect(document.querySelector('[data-day="2"] strong')?.textContent).toBe('Day 2 · Sun 20');
+        dayButton(2).click(); await tick();
+        expect(document.querySelector('.trip-row')).toBeNull();
+        expect(document.querySelector('.plan-totals')?.textContent).toBe(totals);
     });
 });
+
+describe('planner side panel', () => {
+    const asRoute = (change: object = {}) => stored.set('trip', JSON.stringify({ ...testTrip(), mode: 'route', ...change }));
+    const dayOpen = () => !!document.querySelector('[aria-label="Selected day"]');
+
+    it('makes the view follow the type after Undo and Redo', async () => {
+        asRoute();
+        await startApp();
+        button('One day more').click(); await tick();
+        await vi.waitFor(() => dayButton(1).click()); await tick();
+        expect(dayOpen()).toBe(true);
+        await search('campsites');
+        button('Undo').click(); await tick();
+        expect([!!document.querySelector('ol.route'), dayOpen(), !!document.querySelector('.results')]).toEqual([true, false, false]);
+        button('Redo').click(); await tick();
+        expect([!!document.querySelector('ol.route'), dayOpen()]).toEqual([false, false]);
+        expect(document.querySelector('[aria-label="Number of days"]')?.textContent).toContain('3 days');
+    });
+
+    it('closes the map selection and the night page when the type changes', async () => {
+        stored.set('trip', JSON.stringify({ ...testTrip(), days: 2 }));
+        await startApp();
+        await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(1));
+        button('One day fewer').click(); await tick();
+        button('Map point: Basel').click(); await tick();
+        expect(document.querySelector('.callout')).not.toBeNull();
+        button('One day more').click(); await tick();
+        expect(document.querySelector('.callout')).toBeNull();
+        // The night page hides the day count; Undo changes the type there.
+        await vi.waitFor(() => expect(document.querySelector('.handle')).not.toBeNull());
+        document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick();
+        expect(document.querySelector('.night-page')).not.toBeNull();
+        button('Undo').click(); await tick();
+        expect(document.querySelector('.night-page')).toBeNull();
+    });
+
+    it('opens the preferences line in the page, keeps it open after a pick, and closes it on Escape only', async () => {
+        await startApp();
+        expect(preferencesLine().textContent?.trim()).toBe('Route preferences: Touring bike · Balanced · Moderate pace');
+        button('Map point: Basel').click(); await tick();
+        await openPreferences();
+        const choices = () => document.querySelector('[role="group"][aria-label="Choose route preferences"]');
+        expect(choices()).not.toBeNull();
+        button('Pace').click(); await tick();
+        button('Fast').click(); await tick();
+        expect([choices() !== null, JSON.parse(written()!).pace]).toEqual([true, 'fast']);
+        expect(preferencesLine().textContent).toContain('Fast pace');
+        button('Pace').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await tick();
+        expect([choices(), document.activeElement === preferencesLine(), !!document.querySelector('.callout')]).toEqual([null, true, true]);
+    });
+
+    it('keeps the preferences line open at a save and a rename, and closes it when another route opens', async () => {
+        await startApp();
+        await openPreferences();
+        const choices = () => document.querySelector('[role="group"][aria-label="Choose route preferences"]');
+        button('Pace').click(); await tick();
+        button('Fast').click(); await tick();
+        document.querySelector<HTMLButtonElement>('.trip-bar .save > button')!.click();
+        await vi.waitFor(() => expect(document.querySelector('.trip-bar .save > button')?.textContent?.trim()).toBe('Saved'));
+        document.querySelector<HTMLButtonElement>('.trip-bar h1 button')!.click(); await tick();
+        const name = document.querySelector<HTMLInputElement>('dialog input')!;
+        name.value = 'Lake round';
+        name.dispatchEvent(new Event('input', { bubbles: true }));
+        name.form!.requestSubmit();
+        await vi.waitFor(() => expect(renamed.map(([, name]) => name)).toEqual(['Lake round']));
+        await vi.waitFor(() => expect(document.querySelector('main')?.getAttribute('aria-busy')).toBe('false'));
+        expect(choices()).not.toBeNull();
+        await chooseMore('New route');
+        await vi.waitFor(() => expect(document.body.textContent).toContain('Where would you like to ride?'));
+        expect(choices()).toBeNull();
+    });
+
+
+    it('makes the side panel with the preferences line inert while the planner is busy', async () => {
+        await startApp();
+        let finish!: () => void;
+        vi.spyOn(Library.prototype, 'newestUnstoredDraft').mockReturnValue(new Promise(resolve => finish = () => resolve(undefined)));
+        await chooseMore('New route');
+        await vi.waitFor(() => expect(preferencesLine().closest('[inert]')?.getAttribute('aria-label')).toBe('Trip planning'));
+        finish();
+        await vi.waitFor(() => expect(preferencesLine().closest('[inert]')).toBeNull());
+    });
+});
+

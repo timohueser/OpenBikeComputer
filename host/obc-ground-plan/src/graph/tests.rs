@@ -915,6 +915,68 @@ fn the_room_reads_each_way_on_its_own_curve() {
     assert!(g.crossings.iter().any(|c| c.ladder.is_some()));
 }
 
+/// The runs of the bridge feature (the second line) of lines, each as its state and its metres along the way.
+fn bridge_runs(lines: &[Line]) -> Vec<(State, f64, f64)> {
+    let g = graph(lines);
+    let w = g.ways.iter().find(|w| g.parts[w.part as usize].feature.0 == 1).expect("the bridge way");
+    let m = |st: &Station| points::between(&g.parts, &w.from, st);
+    g.levels.runs.iter().filter(|r| r.way == w.id).map(|r| (r.state, m(&r.from), m(&r.to))).collect()
+}
+
+/// A bridge of a class from x0 to x1 at 7 m on approaches of its class at its height, with more lines after it.
+fn bridge_lines(class: &'static str, x0: f64, x1: f64, more: &[Line]) -> Vec<Line> {
+    let bridge = [("highway", class), ("bridge", "yes"), ("deck", "1")];
+    let mut lines = vec![
+        line("road", &[("highway", class)], &[[x0 - 50.0, 0.0], [x0, 0.0]], 7.0),
+        line("road", &bridge, &[[x0, 0.0], [x1, 0.0]], 7.0),
+        line("road", &[("highway", class)], &[[x1, 0.0], [x1 + 50.0, 0.0]], 7.0),
+    ];
+    lines.extend_from_slice(more);
+    lines
+}
+
+/// The one DECK run of the bridge feature of lines, as metres along its way.
+fn deck_of(lines: &[Line]) -> (f64, f64) {
+    let runs = bridge_runs(lines);
+    let deck: Vec<_> = runs.iter().filter(|r| r.0 == State::Deck).collect();
+    assert_eq!(deck.len(), 1, "{runs:?}");
+    (deck[0].1, deck[0].2)
+}
+
+#[test]
+fn a_short_bridge_keeps_a_deck_over_the_way_below_it() {
+    // A motorway bridge 12 m long over a residential road square to it, 7 m below. The motorway's approaches reach
+    // 6 m into the bridge, the whole of it: the A lines stop at the edges of the road's stroke instead (3.5 m and
+    // 8.5 m along).
+    let (a, b) = deck_of(&bridge_lines("motorway", -6.0, 6.0, &[road(&[[0.0, -40.0], [0.0, 40.0]], 0.0)]));
+    assert!((a - 3.5).abs() < 0.05 && (b - 8.5).abs() < 0.05, "deck {a} to {b}");
+}
+
+#[test]
+fn a_way_under_a_ground_arm_keeps_its_passage_and_water_there_does_not() {
+    // A bridge from x -20 to 20, 7 m up, with a side road that leaves its east tag end to the south, and below the
+    // bridge at x 19, 1 m off the side road and under its paved stroke, a footway or a stream. The footway keeps its
+    // passage: its stroke reaches the east tag end, so the east A line is there (40 m along). The stream already
+    // runs under the side road: the east A line stays clear of the side road's stroke (x 17.5, 37.5 m along), as on a
+    // bridge with no passage.
+    let side = || road(&[[20.0, 0.0], [20.0, 40.0]], 7.0);
+    let (_, way) =
+        deck_of(&bridge_lines("residential", -20.0, 20.0, &[side(), footway(&[[19.0, -40.0], [19.0, 40.0]], 0.0)]));
+    assert!(way > 39.5, "footway: deck to {way}");
+    let (_, water) =
+        deck_of(&bridge_lines("residential", -20.0, 20.0, &[side(), stream(&[], &[[19.0, -40.0], [19.0, 40.0]], 0.0)]));
+    assert!((water - 37.5).abs() < 0.05, "stream: deck to {water}");
+}
+
+#[test]
+fn a_bridge_that_keeps_a_passage_is_a_deck_however_short() {
+    // A bridge 1.5 m long, less than `deck_min_m`, over a stream with room under it: its deck covers the stream's
+    // stroke (0.5 m each side).
+    let lines = bridge_lines("residential", -0.75, 0.75, &[stream(&[], &[[0.0, -40.0], [0.0, 40.0]], 0.0)]);
+    let (a, b) = deck_of(&lines);
+    assert!(a <= 0.25 + 0.01 && b >= 1.25 - 0.01, "deck {a} to {b}");
+}
+
 /// The states of a way's runs in order, and its end lines by kind and metres along it.
 type WayLevels = (Vec<State>, Vec<(EndKind, f64)>);
 
@@ -1056,4 +1118,50 @@ fn a_passage_through_a_building_of_kind_tunnel_lies_on_the_ground_and_a_tunnel_d
     assert_eq!(level("road", "yes", true), Some(Level::Tunnel));
     assert_eq!(level("road", "yes", false), Some(Level::Ground));
     assert_eq!(level("road", "building_passage", true), Some(Level::Ground));
+}
+
+#[test]
+fn an_open_end_cuts_a_tunnel_way_as_its_end_lines_do() {
+    // A residential tunnel from x 0 to 40 between two roads. Openings 7.5 m in from its start and 5 m in from its end
+    // make those stretches ground ways, cut at a sample of the part, and leave a tunnel piece between them.
+    let street = [("highway", "residential")];
+    let tunnel = [("highway", "residential"), ("tunnel", "yes")];
+    let lines = |tunnel_tags: &[(&'static str, &'static str)]| {
+        [
+            line("road", &street, &[[-60.0, 0.0], [0.0, 0.0]], 3.0),
+            line("tunnel", tunnel_tags, &[[0.0, 0.0], [20.0, 0.0], [40.0, 0.0]], 3.0),
+            line("road", &street, &[[40.0, 0.0], [100.0, 0.0]], 3.0),
+        ]
+    };
+    let band = crate::faces::Rules::embedded().structures.edge_band_m;
+    let ends = [OpenEnd { way: at([0.0, 0.0]), shift_m: 7.5 }, OpenEnd { way: at([40.0, 0.0]), shift_m: 5.0 }];
+    let opened = build_open(cell(), &input_of(cell(), &lines(&tunnel)), Sections::embedded(), Some(band), &ends);
+    assert_eq!(check(&opened), Vec::new());
+    let of_tunnel = |g: &WayGraph| -> Vec<(Level, f64, f64)> {
+        let first = |w: &Way| &g.samples[w.samples.start as usize];
+        let last = |w: &Way| &g.samples[w.samples.end as usize - 1];
+        let mut v: Vec<(Level, f64, f64)> = (g.ways.iter())
+            .filter(|w| g.parts[w.part as usize].feature.0 == 1)
+            .map(|w| (w.level, first(w).along_m, last(w).along_m))
+            .collect();
+        v.sort_by(|a, b| a.1.total_cmp(&b.1));
+        v
+    };
+    let ways = of_tunnel(&opened);
+    assert_eq!(ways.iter().map(|w| w.0).collect::<Vec<_>>(), [Level::Ground, Level::Tunnel, Level::Ground], "{ways:?}");
+    let len = ways[2].2;
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    assert!(near(ways[0].1, 0.0) && near(ways[0].2, 7.5) && near(ways[1].2, len - 5.0), "{ways:?}");
+    // With the bores, the end lines of a `levels` tag at the same metres cut the way to the same graph.
+    if BORES {
+        let text = format!("O 7.5 P B {} P O", len - 5.0);
+        let mut tagged = tunnel.to_vec();
+        tagged.push(("levels", Box::leak(text.into_boxed_str())));
+        let split = build_levelled(cell(), &input_of(cell(), &lines(&tagged)), Sections::embedded(), band);
+        assert_eq!((&opened.ways, &opened.samples), (&split.ways, &split.samples));
+    }
+    // Without ends, or with an end at no tunnel vertex, the tunnel stays whole.
+    let other = [OpenEnd { way: at([20.0, 0.0]), shift_m: 5.0 }];
+    let whole = build_open(cell(), &input_of(cell(), &lines(&tunnel)), Sections::embedded(), Some(band), &other);
+    assert_eq!(of_tunnel(&whole).iter().map(|w| w.0).collect::<Vec<_>>(), [Level::Tunnel]);
 }

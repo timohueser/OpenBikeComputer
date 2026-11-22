@@ -1,7 +1,7 @@
-import { config, loadRouteCell, loadTrailCell, loadTrailRecord } from './map-data';
+import { config, coversCell, loadFactsCell, loadRouteCell, loadTrailCell, loadTrailRecord } from './map-data';
 import { tileColumn, tileRow } from './place-index';
 import type { BikeType } from './riding-profiles';
-import { kinds, type CatalogRecord, type TrailEntry } from './signed-routes';
+import { kinds, type CatalogFacts, type CatalogRecord, type FactsFile, type FactsPlace, type TrailEntry } from './signed-routes';
 
 /**
  * West, south, east and north, in degrees. The caller wraps longitudes to -180..180. A box with west above east,
@@ -51,6 +51,17 @@ function inBox(udeg: number[], [west, south, east, north]: Box): boolean {
 
 /** True when a segment of `udeg`, the deltas of a line in microdegrees, meets the box, edges included. */
 function segmentInBox(udeg: number[], [west, south, east, north]: Box): boolean {
+    // A far view tests some 100,000s of segments: a piece whose bounds miss the box needs no clip test.
+    let lon = 0, lat = 0, minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+    for (let i = 0; i < udeg.length; i += 2) {
+        lon += udeg[i];
+        lat += udeg[i + 1];
+        minLon = Math.min(minLon, lon);
+        maxLon = Math.max(maxLon, lon);
+        minLat = Math.min(minLat, lat);
+        maxLat = Math.max(maxLat, lat);
+    }
+    if (minLon / 1e6 > east || maxLon / 1e6 < west || minLat / 1e6 > north || maxLat / 1e6 < south) return false;
     for (let i = 2, lon = udeg[0], lat = udeg[1]; i < udeg.length; i += 2) {
         const x = lon / 1e6, y = lat / 1e6, dx = udeg[i] / 1e6, dy = udeg[i + 1] / 1e6;
         lon += udeg[i];
@@ -84,19 +95,37 @@ function cached<K, V>(files: Map<K, Promise<V>>, key: K, load: (key: K) => Promi
 }
 
 /**
- * The cell files, far files and trail record files of the route catalog. Cell files and trail record files have no limit:
- * a session holds some tens of them; far files are larger and keep `FAR_FILES`.
+ * The cell files, facts files, far files and trail record files of the route catalog. Cell files, facts files and trail
+ * record files have no limit: a session holds some tens of them; far files are larger and keep `FAR_FILES`.
  */
 export class RouteCatalog {
     private readonly cells = new Map<string, Promise<CatalogRecord[] | null>>();
     private readonly farCells = new Map<string, Promise<TrailEntry[] | null>>();
+    /** The far files of `farCells` that have loaded. */
+    private readonly farLoaded = new Map<string, TrailEntry[] | null>();
+    private readonly joined = new WeakMap<TrailEntry, { from: TrailEntry[]; entry: TrailEntry }>();
     private readonly trails = new Map<number, Promise<CatalogRecord | null>>();
     private readonly loaded = new Map<string, CatalogRecord[] | null>();
     private readonly records = new Map<number, CatalogRecord>();
+    private readonly factsFiles = new Map<string, Promise<FactsFile | null>>();
+    /** The cells whose facts file has loaded. */
+    private readonly factsLoaded = new Set<string>();
+    private readonly facts = new Map<number, CatalogFacts>();
+    private readonly places = new Map<string, FactsPlace>();
 
     /** A loaded record, such as the long route of a stage. */
     record(id: number): CatalogRecord | undefined {
         return this.records.get(id);
+    }
+
+    /** The facts entry of a record of a loaded facts file. */
+    factsOf(id: number): CatalogFacts | undefined {
+        return this.facts.get(id);
+    }
+
+    /** A place of the loaded facts files. */
+    place(id: string): FactsPlace | undefined {
+        return this.places.get(id);
     }
 
     /** The records of a cell, or null for a cell outside the release. A failed cell loads again on the next call. */
@@ -109,19 +138,43 @@ export class RouteCatalog {
     }
 
     /**
-     * The route records for `bike` with a vertex of their line in `box`, edges included, in ascending `id` order.
-     * A long route is not one, but its stages are. Null, with no load, when the box meets more than `MAX_CELLS` cells.
+     * The facts file of a cell, for `factsOf` and `place`; null for a cell outside the release and for a release with no
+     * facts files. Only the search reads facts, so a cell file does not load it. A failed file loads again on the next call.
      */
-    async inBox(box: Box, bike: BikeType): Promise<CatalogRecord[] | null> {
-        if (tooWide(box)) return null;
-        await Promise.all(boxCells(box).map(id => this.cell(id)));
-        return this.inBoxNow(box, bike)!;
+    factsCell(id: string): Promise<FactsFile | null> {
+        return cached(this.factsFiles, id, id => loadFactsCell(id).then(file => {
+            for (const [route, entry] of Object.entries(file?.routes ?? {})) this.facts.set(Number(route), entry);
+            for (const [place, value] of Object.entries(file?.places ?? {})) this.places.set(place, value);
+            this.factsLoaded.add(id);
+            return file;
+        }));
     }
 
-    /** The answer of `inBox` with no wait, or undefined while a cell of the box is not loaded. */
-    inBoxNow(box: Box, bike: BikeType): CatalogRecord[] | null | undefined {
-        if (tooWide(box)) return null;
-        const cells = boxCells(box);
+    /** The facts files of the cells of `box`; a box that meets more than `MAX_CELLS` cells loads none. */
+    async factsInBox(box: Box): Promise<void> {
+        if (!tooWide(box)) await Promise.all(boxCells(box).map(id => this.factsCell(id)));
+    }
+
+    /** True when each facts file that `factsInBox` loads for `box` has loaded, so that `factsOf` and `place` hold them. */
+    factsInBoxNow(box: Box): boolean {
+        return tooWide(box) || boxCells(box).every(id => this.factsLoaded.has(id));
+    }
+
+    /**
+     * The route records for `bike` with a vertex of their line in `box`, edges included, in ascending `id` order, from the
+     * cells of `from`. A long route is not one, but its stages are. Null, with no load, when `from` meets more than
+     * `MAX_CELLS` cells.
+     */
+    async inBox(box: Box, bike: BikeType, from = box): Promise<CatalogRecord[] | null> {
+        if (tooWide(from)) return null;
+        await Promise.all(boxCells(from).map(id => this.cell(id)));
+        return this.inBoxNow(box, bike, from)!;
+    }
+
+    /** The answer of `inBox` with no wait, or undefined while a cell of `from` is not loaded. */
+    inBoxNow(box: Box, bike: BikeType, from = box): CatalogRecord[] | null | undefined {
+        if (tooWide(from)) return null;
+        const cells = boxCells(from);
         if (!cells.every(id => this.loaded.has(id))) return undefined;
         const found = new Map<number, CatalogRecord>();
         for (const id of cells) {
@@ -139,16 +192,62 @@ export class RouteCatalog {
      */
     async trailsInBox(box: Box): Promise<TrailEntry[] | null> {
         if (!config.trails || trailsTooWide(box)) return null;
-        const files = await Promise.all(boxCells(box, 7).map(id => cached(this.farCells, id, loadTrailCell, FAR_FILES)));
-        const found = new Map<number, TrailEntry>();
-        for (const entry of files.flatMap(file => file ?? [])) {
-            const seen = found.get(entry.id);
-            found.set(entry.id, seen ? { ...seen, far_udeg: [...seen.far_udeg, ...entry.far_udeg] } : entry);
-        }
-        return [...found.values()].filter(entry => entry.far_udeg.some(piece => segmentInBox(piece, box))).sort((a, b) => a.id - b.id);
+        const files = boxCells(box, 7).map(id => cached(this.farCells, id, id => loadTrailCell(id).then(entries => {
+            if (this.farCells.has(id)) this.farLoaded.set(id, entries);
+            return entries;
+        }), FAR_FILES));
+        // The files that the cache dropped go, also when a load of this box fails.
+        for (const id of this.farLoaded.keys()) if (!this.farCells.has(id)) this.farLoaded.delete(id);
+        return this.trailsOf(await Promise.all(files), box);
     }
 
-    /** The whole record of the trail `id`, with `parts` and `trail_profile_m`, or null for a grid release with no trail files. */
+    /** The answer of `trailsInBox` with no wait, or undefined while a far file of the box is not loaded. */
+    trailsInBoxNow(box: Box): TrailEntry[] | null | undefined {
+        if (!config.trails || trailsTooWide(box)) return null;
+        // A cell outside the release has no far file to wait for.
+        const files = this.farFilesNow(box);
+        return files && this.trailsOf(files, box);
+    }
+
+    /**
+     * Every trail of the loaded far files of the zoom 7 cells of `box`, by id, with no test against the box: the far files
+     * of a near view name each trail that a record of the view is in. Undefined while a far file of the box is not
+     * loaded; empty when the release has no trail files.
+     */
+    trailsOfCellsNow(box: Box): Map<number, TrailEntry> | undefined {
+        if (!config.trails) return new Map();
+        const files = this.farFilesNow(box);
+        return files && new Map(this.joinedOf(files).map(entry => [entry.id, entry]));
+    }
+
+    /** The far files of the box, or undefined while one is not loaded. A cell outside the release has no far file to wait for. */
+    private farFilesNow(box: Box): (TrailEntry[] | null)[] | undefined {
+        const files = boxCells(box, 7).map(id => coversCell(config.bounds, id) ? this.farLoaded.get(id) : null);
+        return files.every(file => file !== undefined) ? files as (TrailEntry[] | null)[] : undefined;
+    }
+
+    /** The trails of `files` in `box`. */
+    private trailsOf(files: (TrailEntry[] | null)[], box: Box): TrailEntry[] {
+        return this.joinedOf(files).filter(entry => entry.far_udeg.some(piece => segmentInBox(piece, box))).sort((a, b) => a.id - b.id);
+    }
+
+    /** Each trail of `files` once. A trail in several files keeps one joined object while those files stay loaded, so a new
+     * answer keeps its row. */
+    private joinedOf(files: (TrailEntry[] | null)[]): TrailEntry[] {
+        const found = new Map<number, TrailEntry[]>();
+        for (const entry of files.flatMap(file => file ?? [])) found.set(entry.id, [...found.get(entry.id) ?? [], entry]);
+        return [...found.values()].map(from => {
+            if (from.length === 1) return from[0];
+            const kept = this.joined.get(from[0]);
+            if (kept?.from.length === from.length && kept.from.every((entry, i) => entry === from[i])) return kept.entry;
+            const entry = { ...from[0], far_udeg: from.flatMap(entry => entry.far_udeg) };
+            this.joined.set(from[0], { from, entry });
+            return entry;
+        });
+    }
+
+    /** The whole record of the trail `id`, with `parts` and `trail_profile_m`, or null for a grid release with no trail files
+     * and for an id that the release has no trail record file of. */
     trail(id: number): Promise<CatalogRecord | null> {
         return cached(this.trails, id, loadTrailRecord);
     }

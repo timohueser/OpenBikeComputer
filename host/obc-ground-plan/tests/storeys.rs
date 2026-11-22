@@ -96,9 +96,11 @@ fn open_without_ground(key: CellKey, m: &StoreyMesh, w: &[u32]) -> Vec<String> {
 /// this of the deck's top under it (metres): a parapet's height.
 const STAND_M: f64 = 1.0;
 /// Edge triangles over a stub where it meets its deck at a joint with a bend (the deck's end square to its own way,
-/// the stub's to its), and over another way's ground stretch beside a deck (their strokes overlap): measured on the
-/// fixture at the junction rule's build. The B6 seams and GP12.8 own them; the counts must not grow.
-const JOINT_MAX: usize = 25;
+/// the stub's to its), and over another way's ground stretch beside a deck (their strokes overlap). `BESIDE_MAX` is
+/// measured on the fixture at the junction rule's build and must not grow. `JOINT_MAX` is measured on the fixture at
+/// the passage rule's build, where decks that keep a passage end nearer their joints; the owner accepts that growth,
+/// because an open passage counts for more than a seam at a deck end. The B6 seams and GP12.8 own both.
+const JOINT_MAX: usize = 42;
 const BESIDE_MAX: usize = 235;
 
 /// The edge faces, parapets, railings and posts of the storeys that stand in a carriageway, rail bed or crossing of

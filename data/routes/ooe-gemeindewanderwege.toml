@@ -1,0 +1,13 @@
+origin = 4
+countries = ["AT"]
+kind = "hiking"
+
+# No field names a walk alone: two walks of one municipality can share a name, and the stated
+# length tells them apart.
+[route]
+file = "GEMEINDEWANDERWEGE.shp"
+layer = "GEMEINDEWANDERWEGE"
+key = "{NAME_GEMEI}: {NAME_WANDE}: {LAENGE}"
+name = "{NAME_WANDE}"
+operator = "{NAME_GEMEI}"
+ascent = "HOEHENMETE"

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { initSync, obc_fit_write_ride } from '../../../src/lib/core/pkg/obc_builder_bridge.js';
+import { drawnJpeg, photoFile } from './photos.js';
 import { CORS_PREFLIGHT, respond } from './stubs.js';
 
 initSync({ module: readFileSync(new URL('../../../src/lib/core/pkg/obc_builder_bridge_bg.wasm', import.meta.url)) });
@@ -307,17 +308,6 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   expect(errors).toEqual([]);
 });
 
-/** The EXIF block of a photo that a camera took at `time`, on a clock in UTC with its zone. */
-function exif(time) {
-  const u16 = value => [value & 255, value >> 8], u32 = value => [...u16(value & 0xffff), ...u16(value >>> 16)];
-  const ascii = text => [...text].map(letter => letter.charCodeAt(0));
-  const taken = `${new Date(time * 1000).toISOString().slice(0, 19).replace(/-/g, ':').replace('T', ' ')}\0`;
-  // The first directory, at 8, points to the EXIF directory at 26; the time and the zone follow it, at 56 and at 76.
-  const tiff = [0x49, 0x49, 42, 0, ...u32(8), ...u16(1), ...u16(0x8769), ...u16(4), ...u32(1), ...u32(26), ...u32(0),
-    ...u16(2), ...u16(0x9003), ...u16(2), ...u32(20), ...u32(56), ...u16(0x9011), ...u16(2), ...u32(7), ...u32(76), ...u32(0), ...ascii(taken), ...ascii('+00:00\0')];
-  return Buffer.from([0xff, 0xe1, (tiff.length + 8) >> 8, (tiff.length + 8) & 255, ...ascii('Exif\0\0'), ...tiff]);
-}
-
 test('the photos of a ride: "Add photos" places the files by their time, the marks open the photo window, and "Remove" removes one', async ({ page }) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -325,14 +315,7 @@ test('the photos of a ride: "Add photos" places the files by their time, the mar
   await page.goto('/planner.html?cover=none');
   await page.waitForFunction(() => window.coverTest);
   await page.evaluate(([record, bytes]) => window.coverTest.library.addRide(record, new Blob([new Uint8Array(bytes)])), [ride, [...file]]);
-  // A drawn picture as a JPEG file; `photo` gives it a time.
-  const jpeg = Buffer.from(await page.evaluate(async () => {
-    const canvas = Object.assign(document.createElement('canvas'), { width: 64, height: 48 });
-    canvas.getContext('2d').fillRect(8, 8, 32, 24);
-    const blob = await new Promise(done => canvas.toBlob(done, 'image/jpeg'));
-    return [...new Uint8Array(await blob.arrayBuffer())];
-  }));
-  const photo = (name, time) => ({ name, mimeType: 'image/jpeg', buffer: Buffer.concat([jpeg.subarray(0, 2), exif(time), jpeg.subarray(2)]) });
+  const jpeg = await drawnJpeg(page), photo = (name, time) => photoFile(jpeg, name, time);
   await page.goto(`/planner.html#/ride/${key}`);
   await expect(page.locator('.lanes')).toBeVisible();
   await expect(page.locator('.photo-mark, .ticks .photo')).toHaveCount(0);
@@ -377,5 +360,53 @@ test('the photos of a ride: "Add photos" places the files by their time, the mar
   await add.getByRole('button', { name: 'Add 1 photo' }).click();
   await expect(add).toHaveCount(0);
   await expect(dots).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('"Use for the card" puts a photo on the cards of the ride on the Home page and the Routes page, and "Remove" gives the cover back', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await answer(page);
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  await page.evaluate(([record, bytes]) => window.coverTest.library.addRide(record, new Blob([new Uint8Array(bytes)])), [ride, [...file]]);
+  const jpeg = await drawnJpeg(page);
+  await page.goto(`/planner.html#/ride/${key}`);
+  await expect(page.locator('.lanes')).toBeVisible();
+  await page.getByRole('button', { name: 'More' }).click();
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: 'Add photos' }).click()]);
+  await chooser.setFiles([photoFile(jpeg, 'early.jpg', start + 500), photoFile(jpeg, 'late.jpg', start + 1500)]);
+  await page.getByRole('dialog', { name: 'Add photos' }).getByRole('button', { name: 'Add 2 photos' }).click();
+
+  // The card on the Home page, the row of the Routes page, and its selected card.
+  const cards = [
+    async () => { await page.goto('/planner.html#/'); return page.getByRole('region', { name: 'Your rides' }).locator('.card'); },
+    async () => { await page.goto('/planner.html#/routes/ridden'); return page.locator('.list .row'); },
+    async () => { await page.locator('.list .row').click(); return page.locator('.selected .card'); },
+  ];
+  const photoOnCards = async count => { for (const card of cards) await expect((await card()).locator('img.card-photo')).toHaveCount(count); };
+  const openPhoto = async () => {
+    await page.goto(`/planner.html#/ride/${key}`);
+    await page.locator('.ticks .photo').first().click();
+    return page.getByRole('dialog');
+  };
+
+  // A second click gives the cards their cover back; the page of the ride keeps its cover.
+  let large = await openPhoto();
+  const use = large.getByRole('button', { name: 'Use for the card' });
+  for (const pressed of ['false', 'true', 'false']) {
+    await expect(use).toHaveAttribute('aria-pressed', pressed);
+    await use.click();
+  }
+  await expect(use).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('img.card-photo')).toHaveCount(0);
+  await photoOnCards(1);
+
+  large = await openPhoto();
+  await large.getByRole('button', { name: 'Remove' }).click();
+  await expect(large.getByRole('heading')).toHaveText('Photo 1 of 1');
+  await expect(large.getByRole('button', { name: 'Use for the card' })).toHaveAttribute('aria-pressed', 'false');
+  await photoOnCards(0);
   expect(errors).toEqual([]);
 });

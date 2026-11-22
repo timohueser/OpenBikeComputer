@@ -13,7 +13,7 @@ afterEach(() => {
 
 function open(dataLayers: DataLayer[] = []) {
     shown = mount(MapSettings, { target: document.body, props: {
-        dataLayers, hillshade: true, contours: true, hidden: [], highlighted: [], mapOverlays: { network: 'cycling', access: true },
+        dataLayers, hillshade: true, contours: true, mapOverlays: { network: 'cycling', access: true },
     } });
     click('Map settings');
 }

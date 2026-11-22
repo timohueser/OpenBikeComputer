@@ -6,6 +6,7 @@ import { PAGE } from '../stream/heights';
 import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import WATERWAY_RULES from '../../../../../../data/trailview/waterways.json' with { type: 'json' };
+import PLAN_RULES from '../../../../../../data/trailview/plan.json' with { type: 'json' };
 import { approaches } from './approaches';
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
@@ -171,9 +172,17 @@ export function halfWidth(tags: Record<string, string>, surface: Surface): numbe
 export const MOTORWAYS = ['motorway', 'motorway_link', 'trunk', 'trunk_link'], MAINS = ['primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link'];
 export const SETTS = ['sett', 'cobblestone', 'unhewn_cobblestone', 'stone'];
 /** Whether a road wears lines: one of those classes on asphalt. Its corridor (lookOf of roads/section.ts) and its paint read this one fact. */
-export function marked(line: Line): boolean {
+export function marked(line: Pick<Line, 'code' | 'profile' | 'surface'>): boolean {
     const tag = line.surface ?? '', surface = Object.keys(SURFACES)[(line.code & 15) - 1] as Surface;
     return [...MOTORWAYS, ...MAINS].includes(CLASSES[line.profile]) && PAVED_ROADS.includes(surface) && !SETTS.includes(tag) && tag !== 'paving_stones' && !tag.startsWith('concrete');
+}
+
+/** The surface code and the lines of a way of class `cls` (as `classOf` names it) with a `surface` tag, as a tunnel's line has them. */
+export function classPaint(cls: string, surface?: string): { code: number; marked: boolean } {
+    const tags: Record<string, string> = cls === 'rack' ? { railway: 'rail', rack: 'yes' } : TRACKS.includes(cls) ? { railway: cls } : { highway: cls };
+    if (surface !== undefined) tags.surface = surface;
+    const code = codeOf(isTrack(tags) ? trackSurface(tags) : surfaceOf(tags));
+    return { code, marked: marked({ code, profile: profileOf('road', cls), surface }) };
 }
 
 /** The width of a line's sidewalks where it has them. */
@@ -215,6 +224,8 @@ export interface Line {
     sideWays?: number[];
     /** The `surface` tag of its way. */
     surface?: string;
+    /** A tunnel's tag `parts`: the parts of the two ends of its chain. */
+    parts?: string;
 }
 /** An OSM guardrail or retaining wall beside a road, in world units, with a wall's `height` tag. */
 export interface Barrier { xy: number[]; wall: boolean; height?: number }
@@ -226,7 +237,14 @@ export interface Building { rings: number[][]; outer: boolean[] }
  * The shapes of a tile: lines, lakes and the sea with heights, the river areas, which lie on the drawn
  * surface, the pads under the platforms and the buildings.
  */
-export interface Shapes { lines: Line[]; mouths: CulvertMouth[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[]; crossings: { x: number; y: number }[] }
+export interface Shapes {
+    /** The zoom of the tile. */
+    zoom: number;
+    lines: Line[]; mouths: CulvertMouth[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[];
+    crossings: { x: number; y: number }[];
+    /** Each part of a bridge whole, missing heights included, in world units, and the half-width of its deck in metres. */
+    bridges: { xy: number[]; half: number }[];
+}
 
 /**
  * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit, the edges
@@ -243,8 +261,13 @@ export const gateTexel = (level: number) => 2 * Math.PI * EARTH_RADIUS * RULES.G
 /** As sea_shows of stamp-core.wgsl: whether a level cuts the sea. */
 export const seaShows = (level: number) => RULES.LIFT_M + RULES.LIFT * RULES.MESH_TEXELS * gateTexel(level) < RULES.BED_DEPTH;
 
+/** As reach_limit of stamp-core.wgsl: the metres that a line's half-width and its reach may take at a texel. */
+const reachLimit = (texel: number) => RULES.BUFFER_M - 2 * texel - 1;
+/** Whether any line can show at a level: below 0 of the reach limit, none does, as neither a half-width nor a reach is below 0. */
+export const linesShow = (level: number) => reachLimit(gateTexel(level)) >= 0;
+
 export function shows({ kind, h, profile }: Line, texel: number): boolean {
-    const limit = RULES.BUFFER_M - 2 * texel - 1, { reach, least } = Object.values(PROFILES)[profile];
+    const limit = reachLimit(texel), { reach, least } = Object.values(PROFILES)[profile];
     if (kind === STREAM) return false;
     if (kind === PATH) return 2 * h >= texel && h + reach <= limit;
     return 2 * h >= texel && h + least <= limit;
@@ -259,11 +282,25 @@ export function zebraTagged(tags: Record<string, string>): boolean {
 /** The shapes of each decoded tile, made once: the stamps and the water of each of its nodes read them. */
 const shapes = new WeakMap<Feature[], Shapes & { tile: string }>();
 
-/** The roads, paths, rivers, lakes and sea of a tile that have heights, its river areas and its buildings, in world units. */
+/**
+ * The lines that a node reads at a level where no line shows: the water mesh draws the rivers and streams, and lifts
+ * them under a bridge (`underDeck`); `portalBoxes` cuts the terrain at a tunnel's portals.
+ */
+const COARSE_KINDS = [RIVER, STREAM, BRIDGE, TUNNEL];
+
+/**
+ * The roads, paths, rivers, lakes and sea of a tile that have heights, its river areas and its buildings, in world units.
+ * A tile under DEEPEST serves the nodes of one level (featureTile); where no line shows there, it keeps only the lines that
+ * its nodes read (COARSE_KINDS), as its other lines take most of its bytes in a worker.
+ */
 export function features(list: Feature[], tile: Node): Shapes {
     const name = `${tile.level}/${tile.x}/${tile.y}`;
     let known = shapes.get(list);
-    if (known?.tile !== name) shapes.set(list, (known = { tile: name, ...shapesOf(list, tile) }));
+    if (known?.tile !== name) {
+        const made = shapesOf(list, tile);
+        if (tile.level < DEEPEST && !linesShow(tile.level + 1)) made.lines = made.lines.filter(({ kind }) => COARSE_KINDS.includes(kind));
+        shapes.set(list, (known = { tile: name, ...made }));
+    }
     return known;
 }
 
@@ -277,11 +314,13 @@ export function features(list: Feature[], tile: Node): Shapes {
 export interface TileIndex { lines: Grid; reach: number; waterHalf: number; outlines: Grid & { seasFrom: number; padsFrom: number; areasFrom: number; buildingsFrom: number } }
 const indexes = new WeakMap<Shapes, TileIndex>();
 /**
- * The cells of a tile's index, 2^13 world units (about 200 m in the Alps): a level-18 node asks a few, and a lake's box
+ * The cells of a zoom 13 tile's index, 2^13 world units (about 200 m in the Alps): a level-18 node asks a few, and a lake's box
  * takes few. Most structures ask about a point with a reach of some tens of metres: one cell, or two to four at a cell's
  * edge. `coreAt` asks with a quarter of the tile's longest way segment, which can be hundreds of metres and many cells.
+ * A coarser tile has at most 16 × 16 cells: a box takes a cell of each 2^13 that it covers, and a long river's box on a
+ * zoom 8 tile covers thousands of them.
  */
-const INDEX_SHIFT = 13;
+const indexShift = ({ zoom }: Shapes) => Math.max(13, 30 - zoom - 4);
 
 /** The box of rings, west, north, east, south. */
 function ringsBox(rings: number[][]): number[] {
@@ -301,12 +340,79 @@ export function tileIndex(shapes: Shapes): TileIndex {
     if (index) return index;
     const { lines, lakes, seas, pads, areas, buildings } = shapes, seasAt = lakes.length, padsAt = seasAt + seas.length, areasAt = padsAt + pads.length;
     index = {
-        lines: gridOf(lines.map(({ xy }) => ringsBox([xy])), INDEX_SHIFT),
+        lines: gridOf(lines.map(({ xy }) => ringsBox([xy])), indexShift(shapes)),
         reach: lines.reduce((most, line) => Math.max(most, reachOf(line, NEAR), reachOf(line, NEAR - 1)), REACH_M),
         waterHalf: lines.reduce((most, { kind, h }) => (kind === RIVER || kind === STREAM ? Math.max(most, h) : most), 0),
-        outlines: { ...gridOf([...lakes, ...seas, ...pads, ...areas, ...buildings].map(({ rings }) => ringsBox(rings)), INDEX_SHIFT), seasFrom: seasAt, padsFrom: padsAt, areasFrom: areasAt, buildingsFrom: areasAt + areas.length },
+        outlines: { ...gridOf([...lakes, ...seas, ...pads, ...areas, ...buildings].map(({ rings }) => ringsBox(rings)), indexShift(shapes)), seasFrom: seasAt, padsFrom: padsAt, areasFrom: areasAt, buildingsFrom: areasAt + areas.length },
     };
     indexes.set(shapes, index);
+    return index;
+}
+
+/** A deck ring's points lie this near the line that it stands for, and the ring grows by as much (metres). */
+const DECK_TOLERANCE_M = 0.1;
+/** A ring's mitre reaches at most this many half-widths out from its line at a bend. */
+const MITRE_CAP = 2;
+
+/**
+ * The ring around a bridge part's deck, in world units: its line thinned to `DECK_TOLERANCE_M`, each end carried on by
+ * the half-width (two deck lines that meet at a bend leave no wedge, and the ground past a deck's end is paved road), and
+ * offset by the half-width and the tolerance with mitred bends, capped at `MITRE_CAP`.
+ */
+function deckRing(xy: number[], half: number): number[] {
+    const metres = metresPerUnit(xy[1]), tol = DECK_TOLERANCE_M / metres;
+    const pts: number[][] = [];
+    for (let i = 0; i < xy.length; i += 2) {
+        const last = pts[pts.length - 1];
+        if (!last || last[0] !== xy[i] || last[1] !== xy[i + 1]) pts.push([xy[i], xy[i + 1]]);
+    }
+    if (pts.length < 2) return [];
+    // Douglas-Peucker: the points kept hold every dropped one within the tolerance.
+    const keep = new Uint8Array(pts.length);
+    keep[0] = keep[pts.length - 1] = 1;
+    const stack = [[0, pts.length - 1]];
+    while (stack.length) {
+        const [a, b] = stack.pop()!;
+        let far = -1, most = tol;
+        for (let i = a + 1; i < b; i++) {
+            const d = segmentDistance(pts[i][0], pts[i][1], pts[a][0], pts[a][1], pts[b][0], pts[b][1]);
+            if (d > most) (most = d), (far = i);
+        }
+        if (far >= 0) (keep[far] = 1), stack.push([a, far], [far, b]);
+    }
+    const line = pts.filter((_, i) => keep[i]), n = line.length, out = (half + DECK_TOLERANCE_M) / metres;
+    const unit = (a: number[], b: number[]) => {
+        const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+    };
+    const head = unit(line[1], line[0]), tail = unit(line[n - 2], line[n - 1]);
+    line[0] = [line[0][0] + head[0] * out, line[0][1] + head[1] * out];
+    line[n - 1] = [line[n - 1][0] + tail[0] * out, line[n - 1][1] + tail[1] * out];
+    const ring: number[] = [];
+    for (const side of [1, -1]) {
+        for (let k = 0; k < n; k++) {
+            const v = side > 0 ? k : n - 1 - k;
+            const a = v > 0 ? unit(line[v - 1], line[v]) : unit(line[v], line[v + 1]);
+            const b = v < n - 1 ? unit(line[v], line[v + 1]) : a;
+            const nx = -(a[1] + b[1]), ny = a[0] + b[0], l = Math.hypot(nx, ny) || 1;
+            // The bisector's normal, out by 1 / cos(θ/2) of the turn θ, capped.
+            const cos = Math.max((nx * -a[1] + ny * a[0]) / l, 1 / MITRE_CAP);
+            const off = (side * out) / cos / l;
+            ring.push(line[v][0] + nx * off, line[v][1] + ny * off);
+        }
+    }
+    return ring;
+}
+
+/** The deck rings of a tile's bridges and a grid of their boxes, made on the first use with `ground=plan`. */
+interface DeckIndex { grid: Grid; rings: Building[] }
+const deckIndexes = new WeakMap<Shapes, DeckIndex>();
+function deckIndex(shapes: Shapes): DeckIndex {
+    let index = deckIndexes.get(shapes);
+    if (!index) {
+        const rings = shapes.bridges.map(({ xy, half }) => ({ rings: [deckRing(xy, half)], outer: [true] })).filter(({ rings }) => rings[0].length);
+        deckIndexes.set(shapes, (index = { grid: gridOf(rings.map(({ rings }) => ringsBox(rings)), indexShift(shapes)), rings }));
+    }
     return index;
 }
 
@@ -341,7 +447,7 @@ export function fronts(list: Feature[], tile: Node): Front[] {
         const frame = frameOf(tile), town = townOf(frame.buildings(list)), lines: Line[] = [];
         list.forEach((feature, f) => {
             const type = lineType(feature.kind, feature.tags);
-            if (type === ROAD || type === PATH) addLines(lines, f, feature, type, frame, town);
+            if (type === ROAD || type === PATH) addLines(lines, [], f, feature, type, frame, town);
         });
         frontsMade.set(list, (known = { tile: name, fronts: faceRoads(lines, town) }));
     }
@@ -358,10 +464,16 @@ function strokeAt({ along, backward }: NonNullable<FeaturePart['plan']>, xy: Arr
     return backward ? { at: along - metres, sign: -1 } : { at: along + metres, sign: 1 };
 }
 
+/** Vertex v of a part's points of a tile, in world units. */
+export function worldPoint(tile: Node, xy: ArrayLike<number>, v: number): number[] {
+    const scale = unitScale(tile.level);
+    return [(tile.x * EXTENT + xy[2 * v]) * scale, (tile.y * EXTENT + xy[2 * v + 1]) * scale];
+}
+
 /** A tile's frame: its features' points in world units, the line of a part, whose curve is made once, and the rings of an area. */
 function frameOf(tile: Node) {
-    const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
-    const world = (xy: ArrayLike<number>, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
+    const scale = unitScale(tile.level), oy = tile.y * EXTENT;
+    const world = (xy: ArrayLike<number>, v: number) => worldPoint(tile, xy, v);
     const curves = new Map<FeaturePart, Curve>();
     /** A part of a line feature as its line: the chords of its curve where it has an alignment, for the outer edge of its sidewalks. */
     const drawn = (part: FeaturePart, kind: string, tags: Record<string, string>): Curve | FeaturePart => {
@@ -391,7 +503,7 @@ function lineType(kind: string, tags: Record<string, string>): number | undefine
  * Adds the lines of feature `feature` of the list, of primitive kind `type`. In a town, a road's sidewalk keeps out of the
  * `beds` of the other lines where they are given.
  */
-function addLines(lines: Line[], feature: number, { kind, tags, parts }: Feature, type: number, { world, drawn }: Frame, town: Town, beds?: () => Beds): void {
+function addLines(lines: Line[], bridges: Shapes['bridges'], feature: number, { kind, tags, parts }: Feature, type: number, { world, drawn }: Frame, town: Town, beds?: () => Beds): void {
     const river = type === RIVER || type === STREAM, bridge = type === BRIDGE, bore = type === TUNNEL, path = Object.hasOwn(PATH_HALF, tags.highway), track = isTrack(tags);
     const surface = track ? trackSurface(tags) : surfaceOf(tags), h = halfOf(kind, tags), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
     const profile = profileOf(kind === 'tunnel' || kind === 'gallery' ? (path ? 'path' : 'road') : kind, river ? waterwayOf(kind, tags) : classOf(tags));
@@ -401,8 +513,19 @@ function addLines(lines: Line[], feature: number, { kind, tags, parts }: Feature
     // In a town, where a building is near a piece of it: a road has a sidewalk on that side, and a footway is paved.
     const sidewalk = type === ROAD && kind !== 'gallery' ? sidewalkOf(tags, surface) : 0;
     const paving = type === PATH && kind !== 'gallery' && surfaceOf(tags, true) !== surface;
+    // A deck as the ground plan draws it: the larger of the OSM half-width and its class's carriageway, its paved
+    // shoulder, its widest widening and the band past its edge. A class that the table lacks takes the row of the crate's
+    // fallback: `path` for a path, else `road`.
+    const rules = CLASS_RULES as Record<string, { half_m: number; shoulder_m: number; shoulder_paved: boolean }>;
+    const rule = rules[classOf(tags)] ?? rules[kind === 'path' ? 'path' : 'road'];
+    const deckHalf = Math.max(h, rule.half_m) + (rule.shoulder_paved ? rule.shoulder_m : 0) + PLAN_RULES.structures.edge_band_m;
     for (const part of parts) {
         const curve = drawn(part, kind, tags), { xy, z } = curve, sideWaysOf = sidesAlong(part, world);
+        if (bridge) {
+            let widen = 0;
+            if ('plan' in curve && curve.plan) for (let v = 0; v < curve.plan.widen.length; v++) widen = Math.max(widen, curve.plan.widen[v]);
+            bridges.push({ xy: Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat(), half: deckHalf + widen });
+        }
         if (!z) continue;
         // A line splits where a vertex has no height: a missing height is unknown, never 0 m. A footway splits
         // where it enters or leaves a town.
@@ -420,6 +543,7 @@ function addLines(lines: Line[], feature: number, { kind, tags, parts }: Feature
                         kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1), plan: shape.plan && planPart(shape.plan, from, to + 1),
                         h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
                         gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1), surface: tags.surface, roundabout: tags.junction === 'roundabout' || undefined, oneway: onewayOf(tags), stroke,
+                        parts: bore ? tags.parts : undefined,
                     };
                     if (type === RAIL) line.sleepers = sleepers(line);
                     lines.push(line);
@@ -443,6 +567,7 @@ function addLines(lines: Line[], feature: number, { kind, tags, parts }: Feature
 function shapesOf(list: Feature[], tile: Node): Shapes {
     const frame = frameOf(tile), { world, drawn, area } = frame;
     const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [], barriers: Barrier[] = [], crossings: Shapes['crossings'] = [];
+    const bridges: Shapes['bridges'] = [];
     // The beds are made at the first sidewalk that a building is near.
     const buildings = frame.buildings(list), town = townOf(buildings);
     let made: Beds | undefined;
@@ -472,14 +597,14 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             continue;
         }
         const type = lineType(kind, tags);
-        if (type !== undefined) addLines(lines, feature, list[feature], type, frame, town, beds);
+        if (type !== undefined) addLines(lines, bridges, feature, list[feature], type, frame, town, beds);
     }
     // Before the culverts: `waysOf` keeps each way's segments by their vertices, and this adds vertices.
     approaches(lines);
     const buried = joinCulverts(list, lines, world);
     junctionPlanes(lines);
     abutments(lines);
-    return { lines, lakes, seas, areas, pads, buildings, barriers, crossings, mouths: standMouths(lines, buried) };
+    return { zoom: tile.level, lines, lakes, seas, areas, pads, buildings, barriers, crossings, bridges, mouths: standMouths(lines, buried) };
 }
 
 /**
@@ -1036,6 +1161,13 @@ export interface NodeStamps {
     limits?: number;
 }
 
+/**
+ * What the tunnel parts of a tile stamp with the ground plan (`partStamps` of structures/parts.ts): the tunnel lines of the
+ * chains that draw as parts, the metres from each end of such a line in which it stamps nothing, and the rings that the
+ * parts take from the ground.
+ */
+export interface PartStamps { built: Set<Line>; stops: Map<Line, [number, number]>; taken: number[][] }
+
 /** Words of stamp data per frame at most: the nodes of the frame's stamps. A node holds no more. */
 export const STAMP_WORDS = 2 ** 20;
 
@@ -1044,10 +1176,11 @@ export const STAMP_WORDS = 2 ** 20;
  * that it can act on, so the shader sees every primitive that can reach a texel. A cell keeps the
  * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together. With `plan`
  * the records shape and paint the roads, paths and rail lines (model.wgsl): their records stay out,
- * and the node stamps and holds a mask where they would. Without `areas` the river areas and the
- * buildings stay out, as they do where the node would pass STAMP_WORDS with them.
+ * and the node stamps and holds a mask where they would; and `parts` holds what the tile's tunnel parts stamp. Without
+ * `areas` the river areas, the buildings and the parts' rings stay out, as they do where the node would pass STAMP_WORDS
+ * with them.
  */
-export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false, areas = true): NodeStamps {
+export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false, areas = true, parts?: PartStamps): NodeStamps {
     const shapes = features(list, tile), { lines, lakes, seas, pads, buildings } = shapes, index = tileIndex(shapes);
     const shift = 22 - node.level, cell = CELL * 2 ** shift;
     const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, span = GRID * cell, square = [x0, y0, x0 + span, y0 + span];
@@ -1070,15 +1203,16 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     /** Two numbers within ±1 as unpack2x16snorm reads them. */
     const pair = (a: number, b: number) => (Math.round(a * 32767) & 0xffff) | (Math.round(b * 32767) << 16);
 
-    // With `plan` the records hold the junctions.
-    for (const [point, { x, y, h }] of plan ? [] : runsOnOf(lines)) {
+    // With `plan` the records hold the junctions. Where no line shows, the shader draws neither a junction nor a corner.
+    const junctionsShow = !plan && linesShow(node.level);
+    for (const [point, { x, y, h }] of junctionsShow ? runsOnOf(lines) : []) {
         if (!joinsOf(lines).has(point) && !kerbedOf(lines).has(point)) continue;
         const touched = within([x, y, x, y], REACH_M);
         if (!touched.length) continue;
         const at = record([x, y, 0, 0, JUNCTION, 0, f(h)]);
         for (const c of touched) cells[0][c].push(at);
     }
-    for (const corner of plan ? [] : cornersOf(lines)) {
+    for (const corner of junctionsShow ? cornersOf(lines) : []) {
         const { o, a, b, z, grad, walk, code, profile, h } = corner, touched = within(boxOf(corner), 1);
         if (!touched.length) continue;
         // The sidewalks' widths in decimetres share a word; the slopes fill the words about the second end.
@@ -1129,10 +1263,13 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             // The surface code in the low 4 bits, the sides with a sidewalk above it. Beside the line's index, in
             // steps of 2 cm, how far its edge lies out at the start and the end, where it tapers to a partner's.
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
-            // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
+            // The mitres of the two ends, then the rise of the bank to the right at each. On a tunnel that draws as parts,
+            // the decimetres from the segment's start and from its end in which it stamps nothing.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
+            const stop = parts?.stops.get(line), dm = (m: number) => Math.min(0xffff, Math.round(10 * Math.max(0, m)));
+            const bare = stop ? dm(stop[0] - along[v]) | (dm(stop[1] - (along[n - 1] - along[v + 1])) << 16) : 0;
             const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
-                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, number | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
+                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), bare, number | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
         }
     }
@@ -1142,11 +1279,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     // Per lake, sea polygon, pad and area near the node, its edges in each cell that they reach.
     const { outlines } = index, all = Array.from({ length: GRID * GRID }, (_, c) => c);
     // No outline acts farther than REACH_M past its box.
-    const near = nearBoxes(outlines, square, REACH_M * units + 1).flatMap(k => {
-        const kind = k < outlines.seasFrom ? LAKE : k < outlines.padsFrom ? SEA : k < outlines.areasFrom ? PAD : AREA, box = outlines.boxes[k];
-        if ((kind === SEA && !seaShows(node.level)) || (kind === PAD && node.level < PAD_LEVEL) || (kind === AREA && (node.level < NEAR || !areas))) return [];
-        const lake = kind === LAKE ? lakes[k] : kind === SEA ? seas[k - outlines.seasFrom] : kind === PAD ? pads[k - outlines.padsFrom]
-            : { level: 0, ...(k < outlines.buildingsFrom ? shapes.areas[k - outlines.areasFrom] : buildings[k - outlines.buildingsFrom]) };
+    const item = (kind: number, box: number[], lake: Lake) => {
         // An area acts only inside it: its edges go to the cells that they cross, so a village's cells stay
         // short. The sea acts no farther than the end of its bed's slope from its coast, so its long coasts
         // stay short too: BED_M past sea_band of stamp-core.wgsl, in units at most a shore band and the
@@ -1164,7 +1297,21 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
         }
         const cells = kind === AREA ? within(box, 0) : all;
         return [{ lake, kind, edges, cells }];
+    };
+    const near = nearBoxes(outlines, square, REACH_M * units + 1).flatMap(k => {
+        const kind = k < outlines.seasFrom ? LAKE : k < outlines.padsFrom ? SEA : k < outlines.areasFrom ? PAD : AREA, box = outlines.boxes[k];
+        if ((kind === SEA && !seaShows(node.level)) || (kind === PAD && node.level < PAD_LEVEL) || (kind === AREA && (node.level < NEAR || !areas))) return [];
+        const lake = kind === LAKE ? lakes[k] : kind === SEA ? seas[k - outlines.seasFrom] : kind === PAD ? pads[k - outlines.padsFrom]
+            : { level: 0, ...(k < outlines.buildingsFrom ? shapes.areas[k - outlines.areasFrom] : buildings[k - outlines.buildingsFrom]) };
+        return item(kind, box, lake);
     });
+    // With `plan` the records draw each deck over the ground: its ring takes the ground under it, as an area does; and so
+    // does the ring of each part.
+    if (plan && areas && node.level >= NEAR) {
+        const decks = deckIndex(shapes);
+        for (const k of nearBoxes(decks.grid, square, 1)) near.push(...item(AREA, decks.grid.boxes[k], { level: 0, ...decks.rings[k] }));
+        for (const ring of parts?.taken ?? []) near.push(...item(AREA, ringsBox([ring]), { level: 0, rings: [ring], outer: [true] }));
+    }
     // The origin of the lake crossings of a cell: its centre, held inside the node, as stamp-core.wgsl
     // has it, and moved a few units off every lake edge of the cell, so that no rule of a point on a
     // shore line decides inside or outside.
@@ -1204,7 +1351,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     const count = entries.reduce((sum, list) => sum + list.length, 0);
     if (HEAD + OFFSETS + count + RECORD * records.length > STAMP_WORDS) {
         // The areas only take their insides out of the mask. Without them a node that still passes the limit stamps nothing.
-        const dropped = areas ? near.filter(({ kind }) => kind === AREA).length : 0, lean = dropped ? nodeStamps(list, tile, node, plan, false) : { data: null, heights: false, mask: false, limits };
+        const dropped = areas ? near.filter(({ kind }) => kind === AREA).length : 0, lean = dropped ? nodeStamps(list, tile, node, plan, false, parts) : { data: null, heights: false, mask: false, limits };
         return { ...lean, limits: (lean.limits ?? 0) + (dropped || 1) };
     }
     const data = new Uint32Array(HEAD + OFFSETS + count + RECORD * records.length);

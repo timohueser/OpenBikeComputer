@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { axisLeft, axisPixels, axisProgress, axisRest, type ProfileAxis } from './profile-axis';
+import { axisLeft, axisPixels, axisProgress, axisRest, weekRests, type ProfileAxis } from './profile-axis';
 
 describe('profile axis', () => {
     it('maps a pointer back to its progress across rest columns, and a point in a column to its rest', () => {
@@ -18,6 +18,16 @@ describe('profile axis', () => {
             const live: ProfileAxis = { from: 0, to: 1, rests };
             expect(axisProgress(live, axisPixels(live, .5, 1000) + 30, 1000, .5)).toBeCloseTo(.5 + 30 / 872);
         }
+    });
+
+    it('gives a week the columns of its own rest days, also at its edges', () => {
+        // Riding days 1 to 20; rest days after nights 6 (calendar day 7), 13 (15) and 20 (23, after the last day).
+        const rests = [{ day: 7, after: 6 }, { day: 15, after: 13 }, { day: 23, after: 20 }];
+        expect(weekRests(rests, { start: 7, end: 13 }, 20)).toEqual([rests[0]]);
+        expect(weekRests(rests, { start: 1, end: 7 }, 20)).toEqual([rests[0]]);
+        // A rest before the week stands where the week starts, but has no column.
+        expect(weekRests(rests, { start: 8, end: 14 }, 20)).toEqual([]);
+        expect(weekRests(rests, { start: 17, end: 23 }, 20)).toEqual([]);
     });
 
     it('narrows the columns to half the track together', () => {

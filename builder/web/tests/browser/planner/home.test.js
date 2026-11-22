@@ -40,7 +40,7 @@ async function fill(page, { routes = [], rides = [], active = null }) {
 const summary = { line: [8, 48, 8.1, 48.1], heights: [400, 500], bounds: [8, 48, 8.1, 48.1], lengthM: 62_000, climbM: 400, highestM: 500, seconds: 9000, bike: 'gravel' };
 const point = (id, kind, lat) => ({ id, kind, label: id, coordinate: [8, lat], ...kind !== 'start' && { leg: 'drawn', drawn: [[8, lat - 0.1, 400], [8, lat, 500]] } });
 const trip = { mode: 'route', bike: 'gravel', days: 1, routeOrder: [], points: [point('Start', 'start', 48), point('Finish', 'finish', 48.1)] };
-const lake = { id: 'lake', revision: 0, name: 'Lake test', updatedAt: NOON.getTime() - DAY, trip, summary: { ...summary, days: 1 } };
+const lake = { id: 'lake', name: 'Lake test', updatedAt: NOON.getTime() - DAY, trip, summary: { ...summary, days: 1 } };
 const ride = (key, name, start) => ({ key, name, source: 'file', format: 'gpx', maxHr: null, ftp: null, summary: { ...summary, start: start.getTime() / 1000, movingS: 9000 } });
 const rides = [ride('20261109T090000Z', 'Kaiserstuhl', new Date(2026, 10, 9, 10)), ride('20261001T090000Z', 'Schauinsland', new Date(2026, 9, 1, 10))];
 
@@ -143,7 +143,14 @@ test('the text, the cards, the search and each button open what they name', asyn
   await expect(page.getByText('Choose your finish')).toBeVisible();
   await page.goto('/planner.html?cover=none');
   await page.waitForFunction(() => window.coverTest);
-  const [lon, lat] = await page.evaluate(async () => (await window.coverTest.library.routes()).find(route => route.trip.points.length === 1).trip.points[0].coordinate);
+  // The planner keeps a route that is not saved as its draft.
+  const [lon, lat] = await page.evaluate(() => new Promise(resolve => {
+    const request = indexedDB.open('obc-library');
+    request.onsuccess = () => {
+      const all = request.result.transaction('drafts').objectStore('drafts').getAll();
+      all.onsuccess = () => { request.result.close(); resolve(all.result.find(draft => draft.trip.points.length === 1).trip.points[0].coordinate); };
+    };
+  }));
   expect(lon).toBeGreaterThan(PLACE.west);
   expect(lon).toBeLessThan(PLACE.east);
   expect(lat).toBeGreaterThan(PLACE.south);

@@ -1,8 +1,9 @@
 // The plantings: the plants of the materials planted in rows, on the rows of the material fields
 // (ground/fields.wgsl), placed on the GPU each frame with no stored position.
 //
-// One workgroup per base cell, half a field cell, laid so that each point of it looks at the same
-// 2 × 2 field cells. A cell samples which crops its ground holds, then walks the row points of each
+// `find_rows` lists the base cells in view, one thread per base cell of the window; `plantings` runs
+// one workgroup per listed cell. A base cell is half a field cell, laid so that each point of it looks
+// at the same 2 × 2 field cells. A cell samples which crops its ground holds, then walks the row points of each
 // crop's fields that may lie in it. A crop thins past THIN times the square root of the area of a
 // plant: point (i, j) of a field, i along the rows and j across them, stands to that distance times
 // 2^r, where 2^r divides both i and j. So the far rows keep every 2^r-th plant of every 2^r-th row, a
@@ -39,6 +40,25 @@ struct Data {
 @group(0) @binding(8) var<storage, read> data: Data;
 @group(0) @binding(9) var<uniform> window: Window;
 
+// The base cells in view, which `find_rows` lists: each as its base cell and the bits of its middle's
+// height. Its count is the indirect dispatch of `plantings`.
+struct RowCells {
+    groups: atomic<u32>,
+    y: u32,
+    z: u32,
+    unused: u32,
+    list: array<vec4i>,
+}
+
+// The list as `plantings` reads it.
+struct ListedRows {
+    header: vec4u,
+    list: array<vec4i>,
+}
+
+@group(0) @binding(10) var<storage, read_write> found_rows: RowCells;
+@group(0) @binding(11) var<storage, read> listed_rows: ListedRows;
+
 const CROPS: u32 = 4u;
 const NO_CROP: u32 = 0xffffffffu;
 const NO_MODEL: u32 = 0xffffu;
@@ -60,7 +80,6 @@ const TALLEST_M: f32 = 12.0;
 const MOST: u32 = 8192u;
 const LANES: u32 = 256u;
 
-var<workgroup> cell_ground: f32;
 var<workgroup> found: atomic<u32>;
 var<workgroup> crops_here: u32;
 
@@ -72,30 +91,56 @@ fn plant_hash(u: vec2i, salt: u32) -> f32 {
     return unit_float(mix_bits3(u.x, u.y, salt));
 }
 
+// Half a field cell past a whole one, so the cell's points look at the field cells from base / 2.
+fn row_corner(base: vec2i) -> vec2i {
+    return (base << vec2u(BASE_SHIFT)) + vec2i(BASE);
+}
+
+// The metres from the eye to the nearest point of a base cell.
+fn row_nearest(base: vec2i) -> f32 {
+    let half = 0.5 * f32(BASE) * surface.unit;
+    return length(max(abs(lod_at(row_corner(base) + vec2i(BASE / 2))) - half, vec2f(0.0)));
+}
+
+// One thread per base cell of the window: the cell, listed with its middle's height, if it lies within
+// the reach and its box is in view. The box holds its ground within SLOPE_M of its middle's, and its plants.
+@compute @workgroup_size(8, 8)
+fn find_rows(@builtin(global_invocation_id) id: vec3u) {
+    if (any(id.xy >= vec2u(window.side))) {
+        return;
+    }
+    let base = window.origin + vec2i(id.xy);
+    if (row_nearest(base) > window.reach) {
+        return;
+    }
+    let middle = row_corner(base) + vec2i(BASE / 2);
+    let centre_s = lod_at(middle);
+    let height = units_height(middle, u32(ceil(lod(centre_s))));
+    let radius = 1.5 * (0.5 * f32(BASE) * surface.unit) + SLOPE_M + TALLEST_M;
+    let centre = render_at(centre_s, height + 0.5 * TALLEST_M);
+    if (!known(height) || !visible(centre, radius) || hidden(centre, radius)) {
+        return;
+    }
+    let k = atomicAdd(&found_rows.groups, 1u);
+    if (k < arrayLength(&found_rows.list)) {
+        found_rows.list[k] = vec4i(base, bitcast<i32>(height), 0);
+    }
+}
+
 @compute @workgroup_size(LANES)
 fn plantings(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) lane: u32) {
-    let base = window.origin + vec2i(group.xy);
-    // Half a field cell past a whole one, so the cell's points look at the field cells from base / 2.
-    let corner = (base << vec2u(BASE_SHIFT)) + vec2i(BASE);
-    let middle = corner + vec2i(BASE / 2);
-    let centre_s = lod_at(middle);
-    let half = 0.5 * f32(BASE) * surface.unit;
-    let nearest = length(max(abs(centre_s) - half, vec2f(0.0)));
-    if (nearest > window.reach) {
+    if (group.x >= arrayLength(&listed_rows.list)) {
         return;
     }
-    // One lane culls the cell: its box holds its ground within SLOPE_M of its middle's, and its plants.
+    let entry = listed_rows.list[group.x];
+    let base = entry.xy;
+    let corner = row_corner(base);
+    let nearest = row_nearest(base);
+    let ground = bitcast<f32>(entry.z);
     if (lane == 0u) {
-        let height = units_height(middle, u32(ceil(lod(centre_s))));
-        let radius = 1.5 * half + SLOPE_M + TALLEST_M;
-        let centre = render_at(centre_s, height + 0.5 * TALLEST_M);
-        cell_ground = select(NONE, height, known(height) && visible(centre, radius) && !hidden(centre, radius));
         atomicStore(&found, 0u);
     }
-    let ground = workgroupUniformLoad(&cell_ground);
-    if (!known(ground)) {
-        return;
-    }
+    workgroupBarrier();
     // The crops of the cell: its ground on an 8 × 8 grid.
     if (lane < 64u) {
         let sampled = finest_cell(lod_at(corner + vec2i((vec2f(f32(lane % 8u), f32(lane / 8u)) + 0.5) * f32(BASE / 8))));
