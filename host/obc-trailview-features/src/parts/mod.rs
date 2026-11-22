@@ -507,8 +507,11 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         .map(|t| decided.floors[t].as_ref().filter(|_| built(t)).map(|f| [f.s[0], f.s[f.s.len() - 1]]))
         .collect();
     let floor = |t: usize, s: f64| decided.floors[t].as_ref().map_or((0.0, 0.0), |f| f.at(s));
+    let base: Vec<Vec<f64>> = decided.floors.iter().map(|f| f.as_ref().map_or(Vec::new(), |f| f.s.clone())).collect();
     let axes = overlap::Axes::new(tubes);
-    let meeting = overlap::meeting_vertices(&axes, tubes, &spans, &decided.half, &floor, input.rules.bake.shell_m);
+    let b = &input.rules.bake;
+    let vertices =
+        overlap::meeting_vertices(&axes, tubes, (&spans, &decided.half), &floor, (&base, b.shell_m, b.vertex_gap_m));
     for (ti, t) in tubes.iter().enumerate() {
         let kinds = ends_of[ti];
         if kinds.iter().all(Option::is_none) {
@@ -539,9 +542,7 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
                 continue;
             }
             let inside = |s: f64| s > a + 1e-6 && s < z - 1e-6;
-            let mut inner: Vec<f64> = fl.s.iter().chain(&meeting[ti]).copied().filter(|&s| inside(s)).collect();
-            inner.sort_by(f64::total_cmp);
-            inner.dedup_by(|x, y| (*x - *y).abs() < 1e-6);
+            let inner: Vec<f64> = vertices[ti].iter().copied().filter(|&s| inside(s)).collect();
             let mut pts: Vec<Point> = vec![t.curve.at(a).0];
             pts.extend(inner.iter().map(|&s| t.curve.at(s).0));
             pts.push(t.curve.at(z).0);

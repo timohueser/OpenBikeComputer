@@ -393,7 +393,7 @@ pub(crate) fn floors(
 }
 
 /// The metres of `kept`, sorted, with each of `more` in its order that lies `gap` or farther from every kept one.
-fn spaced(more: &[f64], mut kept: Vec<f64>, gap: f64) -> Vec<f64> {
+pub(crate) fn spaced(more: &[f64], mut kept: Vec<f64>, gap: f64) -> Vec<f64> {
     kept.sort_by(f64::total_cmp);
     kept.dedup();
     for &x in more {

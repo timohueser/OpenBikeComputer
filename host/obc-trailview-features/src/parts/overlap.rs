@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use super::floor::spaced;
 use super::Tube;
 use crate::metres;
 
@@ -64,9 +65,11 @@ impl Axes {
     pub fn near(&self, p: [f64; 2], own: usize, reach: f64) -> Vec<Foot> {
         let m = metres(p[1]);
         let (cx, cy) = ((p[0] / self.cell).floor() as i64, (p[1] / self.cell).floor() as i64);
+        // The cells round p as far as the reach goes.
+        let k = (reach / m / self.cell).ceil().max(1.0) as i64;
         let mut best: HashMap<usize, Foot> = HashMap::new();
-        for x in cx - 1..=cx + 1 {
-            for y in cy - 1..=cy + 1 {
+        for x in cx - k..=cx + k {
+            for y in cy - k..=cy + k {
                 for &i in self.grid.get(&(x, y)).into_iter().flatten() {
                     let seg = &self.segs[i];
                     if seg.tube == own {
@@ -103,23 +106,25 @@ pub(crate) fn level(dz: f64, ha: f64, hb: f64) -> bool {
     dz.abs() <= (ha + hb) / 2.0
 }
 
-/// Per tube with a part, the metres along where its shell starts or stops overlapping the shell of another such tube
-/// between their openings (`spans`), at one level: read every metre, each place found to a centimetre. `floor` gives
-/// a tube's floor and inside height at metres along.
+/// Per tube with a part, its vertices between its openings: `base`, then where its shell starts or stops overlapping
+/// the shell of another such tube at one level (read every metre, each place found to a centimetre), spaced by `gap`
+/// (a vertex nearer than that to another is that vertex). `spans` gives each tube's metres from opening to opening,
+/// `floor` its floor and inside height at metres along.
 pub(crate) fn meeting_vertices(
     axes: &Axes,
     tubes: &[Tube],
-    spans: &[Option<[f64; 2]>],
-    half: &[f64],
+    (spans, half): (&[Option<[f64; 2]>], &[f64]),
     floor: &dyn Fn(usize, f64) -> (f64, f64),
-    shell: f64,
+    (base, shell, gap): (&[Vec<f64>], f64, f64),
 ) -> Vec<Vec<f64>> {
     let reach = 2.0 * half.iter().fold(0.0f64, |a, &h| a.max(h)) + 2.0 * shell;
+    let within = |t: usize, s: f64| spans[t].is_some_and(|sp| s >= sp[0] && s <= sp[1]);
+    // The tubes that tube t meets at metres s along.
     let meets = |t: usize, s: f64| -> Vec<usize> {
         let q = tubes[t].curve.at(s).0;
         let (z, h) = floor(t, s);
         (axes.near(q.p, t, reach).into_iter())
-            .filter(|f| spans[f.tube].is_some_and(|sp| f.s >= sp[0] && f.s <= sp[1]))
+            .filter(|f| within(f.tube, f.s))
             .filter(|f| {
                 let (zo, ho) = floor(f.tube, f.s);
                 f.d < half[t] + half[f.tube] + 2.0 * shell && level(zo - z, h, ho)
@@ -129,7 +134,7 @@ pub(crate) fn meeting_vertices(
     };
     (0..tubes.len())
         .map(|t| {
-            let Some([s0, s1]) = spans[t] else { return Vec::new() };
+            let Some([s0, s1]) = spans[t] else { return spaced(&[], base[t].clone(), gap) };
             let steps = (s1 - s0).ceil().max(1.0) as usize;
             let at = |k: usize| s0 + (s1 - s0) * k as f64 / steps as f64;
             let mut out = Vec::new();
@@ -153,8 +158,7 @@ pub(crate) fn meeting_vertices(
                 before = now;
             }
             out.sort_by(f64::total_cmp);
-            out.dedup_by(|a, b| (*a - *b).abs() < 0.05);
-            out
+            spaced(&out, base[t].clone(), gap)
         })
         .collect()
 }

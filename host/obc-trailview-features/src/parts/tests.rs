@@ -507,3 +507,128 @@ fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height
     assert_eq!(placed.metrics["low_stretches_at_least_height"].as_u64(), Some(1));
     assert_eq!(placed.metrics["floor_clashes"].as_u64(), Some(1));
 }
+
+/// The faces of the parts of a placement as the viewer draws them: each record's points rounded to the units of a
+/// zoom-13 tile (8 world units of 2^30), then the meshes of `obc-trailview-parts`; each face's corners in metres east
+/// and north of the test place and its height, but the dark faces of openings and the lamps (flags 4 and 16).
+fn drawn(placed: &Placed) -> Vec<[[f64; 3]; 3]> {
+    let rules = obc_trailview_parts::Rules::embedded();
+    let unit = |p: [f64; 2]| [(p[0] * 1073741824.0 / 8.0).round() * 8.0, (p[1] * 1073741824.0 / 8.0).round() * 8.0];
+    let (mut ends, mut chords) = (Vec::new(), Vec::new());
+    for (kind, t, part) in &placed.features {
+        let z = part.z.as_ref().unwrap();
+        match *kind {
+            "tunnel-end" => {
+                ends.push(obc_trailview_parts::End::from_tags(unit(part.points[0]), z[0], t, rules).unwrap())
+            }
+            "tunnel-tube" => {
+                let (a, b) = (unit(part.points[0]), unit(part.points[1]));
+                chords.push(
+                    obc_trailview_parts::Chord::from_tags([a[0], a[1], z[0]], [b[0], b[1], z[1]], t, rules).unwrap(),
+                );
+            }
+            _ => {}
+        }
+    }
+    let mesh = obc_trailview_parts::meshes([0.0, 0.0, 1073741824.0, 1073741824.0], &ends, &chords, rules);
+    let w = obc_trailview_parts::WORDS;
+    let point = |i: u32| {
+        let v = &mesh.vertices[i as usize * w..];
+        let p = back([v[0] as i32 as f64 / 1073741824.0, v[1] as i32 as f64 / 1073741824.0]);
+        [p[0], p[1], f32::from_bits(v[2]) as f64]
+    };
+    let solid = |i: u32| (mesh.vertices[i as usize * w + 3] >> 24) & (4 | 16) == 0;
+    mesh.indices.chunks(3).filter(|t| solid(t[0])).map(|t| [point(t[0]), point(t[1]), point(t[2])]).collect()
+}
+
+/// The first face that a ray from o along d meets within 40 m: its distance, and whether it meets its front.
+fn first_hit(faces: &[[[f64; 3]; 3]], o: [f64; 3], d: [f64; 3]) -> Option<(f64, bool)> {
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross =
+        |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let mut best: Option<(f64, bool)> = None;
+    for [a, b, c] in faces {
+        let (e1, e2) = (sub(*b, *a), sub(*c, *a));
+        let p = cross(d, e2);
+        let det = dot(e1, p);
+        if det.abs() < 1e-12 {
+            continue;
+        }
+        let tv = sub(o, *a);
+        let (u, q) = (dot(tv, p) / det, cross(tv, e1));
+        let (v, t) = (dot(d, q) / det, dot(e2, q) / det);
+        if u < -1e-9 || v < -1e-9 || u + v > 1.0 + 1e-9 || t <= 1e-6 || t > 40.0 {
+            continue;
+        }
+        let front = dot(cross(e1, e2), d) < 0.0;
+        best = match best {
+            Some(b) if (t - b.0).abs() < 1e-6 => Some((b.0, b.1 || front)),
+            Some(b) if b.0 < t => Some(b),
+            _ => Some((t, front)),
+        };
+    }
+    best
+}
+
+#[test]
+fn tubes_that_meet_are_one_room_from_the_bake_through_the_tile_to_the_device() {
+    let hill = ridge(200.0, 1.0);
+    let ground = site(&hill, &[], false);
+    let (north, south) = ([0.0, 1.0, 0.0], [0.0, -1.0, 0.0]);
+    // Two road tubes 5 m apart (their rooms overlap), the second starting 3 m farther in: one frame line, one room. A
+    // way north from the first meets the second's far wall; the way into the second meets no face.
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    case.tunnel(&ROAD, (3.0, 200.0), 5.0);
+    let placed = case.place(&ground, &mut Vec::new());
+    let faces = drawn(&placed);
+    for east in [5.0, 20.0, 60.0, 150.0] {
+        let got = first_hit(&faces, [east, 0.0, 502.0], north);
+        assert!(got.is_some_and(|h| h.1 && h.0 > 7.0), "staggered, north at {east} m: {got:?}");
+    }
+    for up in [1.0, 2.0] {
+        let got = first_hit(&faces, [-5.0, 5.0, 500.0 + up], [1.0, 0.0, 0.0]);
+        assert!(got.is_none(), "staggered, the way into the second {up} m up: {got:?}");
+    }
+    // A road tube 5 m beside another for 20 m that turns away (its curve swings in to 3.1 m on the way): from either
+    // room along the meeting, a way to the other meets the front of the other's far wall, past its own (3.1 m); past
+    // the parting, each its own wall.
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let line = [[0.0, 5.0], [20.0, 5.0], [50.0, 40.0], [200.0, 40.0]];
+    case.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[500.0; 4])]));
+    let faces = drawn(&case.place(&ground, &mut Vec::new()));
+    for east in (1..=19).map(f64::from) {
+        let got = first_hit(&faces, [east, 5.0, 502.0], south);
+        assert!(got.is_some_and(|h| h.1 && h.0 > 6.0), "turns away, south from the second at {east} m: {got:?}");
+        let got = first_hit(&faces, [east, 0.0, 502.0], north);
+        assert!(got.is_some_and(|h| h.1 && h.0 > 4.0), "turns away, north from the first at {east} m: {got:?}");
+    }
+    for east in [40.0, 80.0] {
+        let got = first_hit(&faces, [east, 0.0, 502.0], north);
+        assert!(got.is_some_and(|h| h.1 && h.0 < 5.0), "turns away, the first's own wall at {east} m: {got:?}");
+    }
+    // A footway tube 4.3 m beside a road tube at 3 degrees: every chord keeps the vertex gap but at its ends, and a way
+    // up from either room, and from the footway to the road, meets the front of a face.
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let rise = 200.0 * 3f64.to_radians().tan();
+    case.ways.push(("tunnel", tags(&FOOT), vec![part(&[[0.0, 4.3], [200.0, 4.3 + rise]], &[500.0; 2])]));
+    let placed = case.place(&ground, &mut Vec::new());
+    let short = (placed.features.iter())
+        .filter(|f| f.0 == "tunnel-tube")
+        .filter(|f| distance(f.2.points[0], f.2.points[1]) < 0.3)
+        .count();
+    assert_eq!(short, 0, "chords shorter than 0.3 m");
+    let faces = drawn(&placed);
+    for east in (1..=40).map(|k| f64::from(k) * 2.0) {
+        let y = 4.3 + east * rise / 200.0;
+        for o in [[east, 0.0, 501.5], [east, y, 501.5]] {
+            let got = first_hit(&faces, o, [0.0, 0.0, 1.0]);
+            assert!(got.is_some_and(|h| h.1), "at 3 degrees, up at {o:?}: {got:?}");
+        }
+        let got = first_hit(&faces, [east, y, 501.5], south);
+        assert!(got.is_some_and(|h| h.1), "at 3 degrees, south from the footway at {east} m: {got:?}");
+    }
+}

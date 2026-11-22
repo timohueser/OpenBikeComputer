@@ -124,6 +124,34 @@ fn ask_of(
     measure::ask(&t.curve, (o.s, sign), (o.p, o.dir), (right, left), in_m, half[o.tube] + b.shell_m, t.ids.clone())
 }
 
+/// The shift that moves opening `nearer` in along its way onto the frame line of opening `far`, within `pair_max_m`,
+/// half its chain and its own way; None where its way does not reach the line.
+fn onto_line(
+    openings: &[Opening],
+    tubes: &[Tube],
+    (nearer, far): (usize, usize),
+    b: &obc_trailview_parts::Bake,
+) -> Option<f64> {
+    let (pf, df) = (openings[far].p, openings[far].dir);
+    let o = &openings[nearer];
+    let t = &tubes[o.tube];
+    let most = (o.shift + b.pair_max_m).min(t.curve.len / 2.0).min(first_way_m(t, o.end));
+    let off = |shift: f64| along_dir(pf, o.at(t, shift).p, df);
+    let (mut lo, mut hi) = (o.shift, most.max(o.shift));
+    if off(hi) < 0.0 {
+        return None;
+    }
+    for _ in 0..40 {
+        let mid = (lo + hi) / 2.0;
+        if off(mid) < 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Some(hi)
+}
+
 /// Of two openings, the one farther in along the first's way, and the other.
 fn farther(openings: &[Opening], i: usize, k: usize) -> (usize, usize) {
     if along_dir(openings[i].p, openings[k].p, openings[i].dir) > 0.0 {
@@ -218,15 +246,22 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         else {
             continue;
         };
+        // Each opening of the narrow tube lies in the wide one's room or at one of its openings; else the narrow
+        // tube's way would enter the hill there with no opening, and it stays a tube of its own.
+        let grown = half[a].max(d + t.way_half + tubes[a].margin);
+        let held = |i: usize| {
+            let p = openings[i].p;
+            axes.near(p, tb, grown).iter().any(|f| f.tube == a)
+                || at_end[a].into_iter().flatten().any(|k| distance(openings[k].p, p) <= grown)
+        };
+        if !at_end[tb].into_iter().flatten().all(held) {
+            outside += 1;
+            continue;
+        }
         absorbed[tb] = Some(a);
-        half[a] = half[a].max(d + t.way_half + tubes[a].margin);
-        // An opening of the narrow tube off the wide one's room and openings: its way enters the hill there.
+        half[a] = grown;
         for i in at_end[tb].into_iter().flatten() {
             rung[i] = rung[i].or(Some("same tube"));
-            let o = &openings[i];
-            let by_axis = axes.near(o.p, tb, half[a]).iter().any(|f| f.tube == a);
-            let by_opening = at_end[a].into_iter().flatten().any(|k| distance(openings[k].p, o.p) <= half[a]);
-            outside += usize::from(!by_axis && !by_opening);
         }
     }
     // The measure, as far across and in as a pair with a candidate can need.
@@ -318,7 +353,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     let mut mate: Vec<Option<usize>> = vec![None; n];
     let mut joined = vec![false; n];
     let is_hill = |i: usize| hill.contains(&i);
-    let meet_at = |far: usize, nearer: usize| {
+    let meet_at = |openings: &[Opening], far: usize, nearer: usize| {
         let (of, on) = (&openings[far], &openings[nearer]);
         let reach = half[of.tube] + half[on.tube] + 2.0 * b.shell_m;
         (axes.near(of.p, of.tube, reach).iter()).any(|f| {
@@ -334,7 +369,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         }
         let join = {
             let (far, nearer) = farther(openings, a, c);
-            meet_at(far, nearer)
+            meet_at(openings, far, nearer)
         };
         if !join && !(is_hill(a) && is_hill(c) && tubes[ta].rail == tubes[tc].rail) {
             continue;
@@ -350,14 +385,8 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     for i in 0..n {
         let Some(m) = mate[i].filter(|&m| m > i) else { continue };
         let (far, nearer) = farther(openings, i, m);
-        let (pf, df) = (openings[far].p, openings[far].dir);
-        let o = openings[nearer].clone();
-        let t = &tubes[o.tube];
-        let most = (o.shift + b.pair_max_m).min(t.curve.len / 2.0).min(first_way_m(t, o.end));
-        let off = |shift: f64| along_dir(pf, o.at(t, shift).p, df);
-        let (mut lo, mut hi) = (o.shift, most.max(o.shift));
         // Where its way does not reach the line within its limits, the two are no pair: each takes its next kind.
-        if off(hi) < 0.0 {
+        let Some(shift) = onto_line(openings, tubes, (nearer, far), b) else {
             if joined[i] {
                 unjoined += 1;
             } else {
@@ -368,19 +397,40 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
                 kinds[k].retain(|&x| x != Kind::Pair);
             }
             continue;
-        }
-        for _ in 0..40 {
-            let mid = (lo + hi) / 2.0;
-            if off(mid) < 0.0 {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        moved[nearer] = hi - o.shift;
-        openings[nearer] = Opening { others: o.others, ..o.at(t, hi) };
+        };
+        let o = openings[nearer].clone();
+        moved[nearer] = shift - o.shift;
+        openings[nearer] = Opening { others: o.others, ..o.at(&tubes[o.tube], shift) };
         far_of[i] = far;
         far_of[m] = far;
+    }
+    // Every other opening whose tube meets one farther in moves onto that frame line too, so no head stands in front
+    // of another opening. An opening of a pair keeps its pair's line.
+    let mut unmoved = vec![false; n];
+    loop {
+        let mut changed = false;
+        for x in &near {
+            let (far, nearer) = farther(openings, x.a, x.b);
+            if kinds[far].is_empty() || kinds[nearer].is_empty() || mate[nearer].is_some() || unmoved[nearer] {
+                continue;
+            }
+            if far_of[nearer] == far || !meet_at(openings, far, nearer) {
+                continue;
+            }
+            match onto_line(openings, tubes, (nearer, far), b) {
+                Some(shift) => {
+                    let o = openings[nearer].clone();
+                    moved[nearer] += shift - o.shift;
+                    openings[nearer] = Opening { others: o.others, ..o.at(&tubes[o.tube], shift) };
+                    far_of[nearer] = far;
+                    changed = true;
+                }
+                None => unmoved[nearer] = true,
+            }
+        }
+        if !changed {
+            break;
+        }
     }
     // The numbers come from the ground with the stretches that the device opens: of each opening of a chain whose two
     // ends are built (`BUILT`) by their final kinds, at its final place. The openings near a stretch that the first
@@ -480,8 +530,10 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         "pairs_that_do_not_reach": unpaired,
         "joins": (0..n).filter(|&i| joined[i] && mate[i].is_some_and(|m| m > i)).count(),
         "joins_that_do_not_reach": unjoined,
+        "openings_moved_onto_a_line": (0..n).filter(|&i| mate[i].is_none() && far_of[i] != i).count(),
+        "openings_that_do_not_reach_a_line": unmoved.iter().filter(|&&u| u).count(),
         "absorbed_tubes": absorbed.iter().filter(|a| a.is_some()).count(),
-        "absorbed_openings_outside": outside,
+        "tubes_not_absorbed_for_an_opening_outside": outside,
         "kinds_changed_by_the_second_measure": refitted,
         "chains_whose_openings_would_meet": met,
     });
