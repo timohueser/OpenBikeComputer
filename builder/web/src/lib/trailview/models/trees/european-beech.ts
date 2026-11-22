@@ -4,8 +4,13 @@ export default {
   form: 'broadleaf',
   name: 'European beech',
   latin: 'Fagus sylvatica',
+  // A smooth grey bole under a dome of smooth, heavy lumps that hang a little.
   fork: 0.4,
   crown: [0.66, 0.34, 0.34, 0.34],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.18 + 0.82 * t)) ** 0.6,
+  clumps: 11,
+  weep: 0.15,
+  bow: 0.25,
   trunk: 0.04,
   flare: 1.4,
   bark: ['#6f716c', '#a2a29a'],
