@@ -31,6 +31,7 @@ function showroom(): Showroom | undefined {
     const value = globalThis.location ? new URLSearchParams(globalThis.location.search).get('showroom') : null;
     if (!value) return undefined;
     const [lat, lon, heading, entries, tier] = value.split(',');
+    if (!entries) return undefined;
     return { lonLat: [Number(lon), Number(lat)], heading: (Number(heading) * Math.PI) / 180, entries: entries.split('|'), tier: Number(tier ?? 0) };
 }
 
@@ -103,7 +104,8 @@ export class Dressing implements Producer {
         this.placed.add(r);
         this.changed = true;
         const floats = new Float32Array(this.table.buffer), { breeds } = this.files.models;
-        this.rules.regions[r].herds.filter(herd => this.breed(herd.model) !== undefined).slice(0, HERDS).forEach((herd, k) => {
+        // Only the first HERDS herds with a model draw, so only theirs take instance models.
+        this.rules.regions[r].herds.filter(herd => herd.model in breeds).slice(0, HERDS).filter(herd => this.breed(herd.model) !== undefined).forEach((herd, k) => {
             const at = (r * HERDS + k) * HERD_WORDS, { coats, poses, height } = breeds[herd.model];
             this.table.set([this.breed(herd.model)!, coats | (poses << 16)], at);
             floats.set([herd.groups, height, ...herd.size], at + 2);

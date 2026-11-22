@@ -104,8 +104,22 @@ export class Sculpt {
     /** Bars through the points, each `widths` across at its point, of `sides` sides: a horn, a tail. Tier 1 has fewer sides and goes through every second point and the last. */
     chain(points: Vec[], widths: number[], colour: number, sides = 4): this {
         const keep = points.map((_, i) => i).filter(i => !this.tier || i % 2 === 0 || i === points.length - 1);
-        for (let k = 0; k + 1 < keep.length; k++) this.model.beam(points[keep[k]], points[keep[k + 1]], widths[keep[k]], colour, { sides: this.sides(sides), w1: widths[keep[k + 1]], capped: true });
+        for (let k = 0; k + 1 < keep.length; k++) {
+            const a = points[keep[k]], b = points[keep[k + 1]], first = this.model.triangles;
+            this.model.beam(a, b, widths[keep[k]], colour, { sides: this.sides(sides), w1: widths[keep[k + 1]], capped: true });
+            this.outward(first, along(a, sub(b, a), 0.5));
+        }
         return this;
+    }
+
+    /** Turns each triangle from `first` on away from `inside`: Model.beam winds its start cap inward. */
+    private outward(first: number, inside: Vec): void {
+        const p = this.model.points;
+        for (let i = 9 * first; i < p.length; i += 9) {
+            const a: Vec = [p[i], p[i + 1], p[i + 2]], b: Vec = [p[i + 3], p[i + 4], p[i + 5]], c: Vec = [p[i + 6], p[i + 7], p[i + 8]];
+            const n = cross(sub(b, a), sub(c, a)), out = sub(along(along(a, b, 1), c, 1).map(v => v / 3) as Vec, inside);
+            if (n[0] * out[0] + n[1] * out[1] + n[2] * out[2] < 0) p.splice(i + 3, 6, ...c, ...b);
+        }
     }
 
     /** A box about its middle: an eye, a nostril. */

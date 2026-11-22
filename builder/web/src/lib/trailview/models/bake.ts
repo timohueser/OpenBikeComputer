@@ -37,8 +37,8 @@ const BUDGET: Record<string, [number, number][]> = {
 };
 const TREE_MEAN = 3400;
 
-/** What the build serves: each file by name, and the models with the names of their files. */
-export interface Baked { files: Map<string, Uint8Array>; models: Models }
+/** What the build serves: each file by name, and the models with the names of their files; and the budget, for the review page. */
+export interface Baked { files: Map<string, Uint8Array>; models: Models; budget: typeof BUDGET }
 
 export async function bake(): Promise<Baked> {
     await simplifierReady;
@@ -95,7 +95,7 @@ export async function bake(): Promise<Baked> {
     const mean = summers.reduce((sum, n) => sum + n, 0) / summers.length;
     if (mean > TREE_MEAN) over.push(`the tree species: ${Math.round(mean)} triangles in tier 0 on average, the budget ${TREE_MEAN}`);
     if (over.length) throw new Error(`Models over the budget of specs/trailview-models.md:\n${over.join('\n')}`);
-    return { files, models };
+    return { files, models, budget: BUDGET };
 }
 
 /** A crown of a species' own in a season: bare crowns grow each tier from the tree, the others simplify tier 0. */

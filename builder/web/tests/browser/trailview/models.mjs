@@ -27,10 +27,8 @@ const { values } = parseArgs({
 });
 /** The showroom's middle, the eye's heading toward it, and the page; SHOW_SPACING of dressing.ts. */
 const PLACE = [46.820416, 8.403045], HEADING = 160, WIDTH = 1600, HEIGHT = 640, SPACING = 2.3;
-/** The budget of models/bake.ts, per tier: triangles and vertices. */
-const BUDGET = [[1000, 3000], [250, 750]];
-
 const { baked } = await bakeModels();
+const BUDGET = baked.budget.animal;
 const only = values.only?.split(',');
 const breeds = Object.entries(baked.models.breeds).filter(([name]) => !only || only.includes(name));
 mkdirSync(values.out, { recursive: true });
