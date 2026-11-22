@@ -48,7 +48,7 @@
         lift: 'M2 3l20 5M12 5.5V10M7 10h10l-1 10H8zM7.5 14h9', info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 8v5m0-8.5v.01', paved: 'M3 19h18M3 14h18M6 9h12',
         // Mirror images of each other, so up and down read apart at 16 px.
         ascent: 'm3 17 6-6 4 4 8-8m-6 0h6v6', descent: 'm3 7 6 6 4-4 8 8m-6 0h6v-6',
-        lock: 'M6 11h12v9H6v-9Zm2 0V8a4 4 0 0 1 8 0v3',
+        lock: 'M6 11h12v9H6v-9Zm2 0V8a4 4 0 0 1 8 0v3', unlock: 'M6 11h12v9H6v-9Zm2 0V7a4 4 0 0 1 7.6-1.7',
         wind: 'M3 8h10a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h7',
         snow: 'M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7M9.5 3.5 12 6l2.5-2.5M9.5 20.5 12 18l2.5 2.5M18.1 5.6 17.2 9l3.4.9M20.6 14.1 17.2 15l.9 3.4M3.4 14.1 6.8 15l-.9 3.4M5.9 5.6 6.8 9l-3.4.9',
         weather: 'M7 19h10a4 4 0 0 0 .7-7.9A5.5 5.5 0 0 0 7.2 10 4.5 4.5 0 0 0 7 19Z',

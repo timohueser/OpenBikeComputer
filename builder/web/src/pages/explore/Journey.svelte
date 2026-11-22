@@ -5,6 +5,7 @@
 <script lang="ts">
     import type { FactsPlace } from '../../lib/planner/signed-routes';
     import Icon from '../../lib/ui/Icon.svelte';
+    import { unfold } from '../../lib/ui/search-bar/motion';
     import { DRIVE_KM, liftsOff, type Query } from './search';
     import { myLocation } from './search-map';
     import { placeName, shortDistance } from './words';
@@ -81,7 +82,7 @@
                     {#if query.car}<b class="value">up to {drive} km</b>{/if}
                 </button>
                 {#if query.car}
-                    <div class="leg-body">
+                    <div class="leg-body" transition:unfold>
                         <input type="range" min={DRIVE_KM.min} max={cap} step={DRIVE_KM.step} value={drive} aria-label="Longest drive, one way" aria-valuetext="up to {drive} km"
                             oninput={event => onchange({ drive: Number(event.currentTarget.value) })} />
                     </div>
@@ -99,7 +100,7 @@
                     {#if query.lift === 'always'}<b class="value">always</b>{/if}
                 </button>
                 {#if query.lift}
-                    <div class="leg-body">
+                    <div class="leg-body" transition:unfold>
                         {#if from}
                             <div class="when"><span>Use a lift</span>
                                 <span class="choice" role="group" aria-label="Use a lift">
@@ -225,11 +226,18 @@
         border: 1.5px solid var(--line-strong);
         border-radius: 5px;
         color: var(--panel);
+        transition: background 120ms, border-color 120ms;
     }
     .box :global(svg) {
-        transform: scale(0);
-        transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
+        opacity: 0;
+        transform: scale(0.6);
+        transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1), opacity 120ms;
         stroke-width: 3;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .box :global(svg) {
+            transition: opacity 120ms;
+        }
     }
     .leg-head:hover .box {
         border-color: var(--ink-soft);
@@ -239,6 +247,7 @@
         background: var(--ink);
     }
     [aria-pressed="true"] > .box :global(svg) {
+        opacity: 1;
         transform: scale(1);
     }
     .dot::after {
@@ -361,6 +370,15 @@
         background: var(--panel);
         color: var(--ink);
         font: 600 12.5px var(--sans);
+        transition: background 120ms, border-color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    .button:active {
+        transform: scale(0.97);
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .button {
+            transition-property: background, border-color;
+        }
     }
     .button :global(svg) {
         color: var(--ink-soft);

@@ -50,7 +50,12 @@
         color: var(--ink-soft);
         font: 13.5px/1.2 var(--sans);
         text-align: left;
-        transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background 120ms, border-color 120ms;
+        transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background 120ms, border-color 120ms, color 120ms;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .tile {
+            transition-property: background, border-color, color;
+        }
     }
     .tile :global(svg) {
         flex: none;

@@ -6,6 +6,7 @@
     import { distanceIn, formatHeight, heightIn, heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
     import Icon from '../../lib/ui/Icon.svelte';
+    import { unfold } from '../../lib/ui/search-bar/motion';
     import { rangeText, scale, type Range } from '../routes/filter';
     import RangeSlider from '../routes/RangeSlider.svelte';
     import GradeRange from './GradeRange.svelte';
@@ -57,7 +58,7 @@
                 <Icon name={row.icon} size={16} /><span>{row.label}</span><em class:set={!!row.value}>{row.value ?? 'Any'}</em><Icon name="down" size={14} />
             </button>
             {#if open === row.id && !row.off}
-                <div class="body">
+                <div class="body" transition:unfold>
                     {#if row.id === 'kind'}
                         <div class="kinds" role="radiogroup" aria-label="Kind of route">
                             {#each KINDS as kind (kind)}
@@ -83,6 +84,7 @@
             {/if}
         </div>
     {/each}
+    {#if trails}<p class="hint off">Not for long trails: Shape, Length and Climb.</p>{/if}
 </div>
 
 <style>
@@ -107,9 +109,13 @@
         color: var(--ink);
         font: inherit;
         text-align: left;
+        transition: background 120ms;
     }
     .head:hover:not(:disabled) {
         background: var(--parchment);
+    }
+    .head:active:not(:disabled) {
+        background: var(--parchment-2);
     }
     .head:disabled {
         cursor: default;
@@ -135,7 +141,7 @@
     .head > :global(svg:last-child) {
         flex: none;
         color: var(--ink-faint);
-        transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+        transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
     }
     .open .head > :global(svg:last-child) {
         transform: rotate(180deg);
@@ -145,6 +151,15 @@
         flex-direction: column;
         gap: 10px;
         padding: 2px 10px 14px;
+    }
+    /* The slider of a row is as wide as the row. */
+    .body :global(.slider) {
+        width: auto;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .head > :global(svg:last-child) {
+            transition: none;
+        }
     }
     .kinds {
         display: flex;
@@ -182,5 +197,9 @@
         margin: 0;
         color: var(--ink-soft);
         font-size: 12.5px;
+    }
+    .off {
+        padding: 10px 10px 8px;
+        border-top: 1px solid var(--line);
     }
 </style>

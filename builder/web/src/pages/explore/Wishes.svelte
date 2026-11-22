@@ -5,6 +5,7 @@
 <script lang="ts">
     import type { FactsPlace } from '../../lib/planner/signed-routes';
     import Icon from '../../lib/ui/Icon.svelte';
+    import { pop, unfold } from '../../lib/ui/search-bar/motion';
     import { wishesOf, type Query, type Wish } from './search';
     import { ROUTE_WISHES, WAY_WISHES, wishIcon, wishLabel } from './words';
 
@@ -59,13 +60,14 @@
             <span class="box"><Icon name="check" size={12} /></span><span class="icon"><Icon name={wishIcon(wish, place)} /></span><span class="label">{wishLabel(wish, place)}</span>
         </button>
         {#if level}
-            <button type="button" class="must" aria-pressed={level === 'must'} title="Only show hikes that have this" onclick={() => set(wish, level === 'must' ? 'nice' : 'must')}>
-                <Icon name="lock" size={12} />Must
+            <button type="button" class="must" aria-pressed={level === 'must'} title={level === 'must' ? 'Only hikes that have this' : 'Hikes that have this come first'}
+                in:pop onclick={() => set(wish, level === 'must' ? 'nice' : 'must')}>
+                <Icon name={level === 'must' ? 'lock' : 'unlock'} size={13} />Must
             </button>
         {/if}
         <span class="count" title={count === null ? 'No data for the hikes here' : undefined}>{count === null ? 'no data' : count}</span>
         {#if wish === 'snow' && count !== null}
-            <label class="day">on <input type="date" min={today} value={query.date} aria-label="Day of the hike" onchange={event => setDay(event.currentTarget.value)} /></label>
+            <label class="day" transition:unfold>on <input type="date" min={today} value={query.date} aria-label="Day of the hike" onchange={event => setDay(event.currentTarget.value)} /></label>
         {/if}
     </div>
 {/snippet}
@@ -131,8 +133,9 @@
         gap: 8px;
         padding: 0 8px;
         border-radius: 8px;
+        transition: background 120ms;
     }
-    .wish:hover {
+    .wish:hover:not(:has(.pick:disabled)) {
         background: var(--parchment);
     }
     .pick {
@@ -162,10 +165,12 @@
         border-radius: 5px;
         background: var(--panel);
         color: var(--panel);
+        transition: background 120ms, border-color 120ms;
     }
     .box :global(svg) {
-        transform: scale(0);
-        transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
+        opacity: 0;
+        transform: scale(0.6);
+        transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1), opacity 120ms;
         stroke-width: 3;
     }
     .pick:hover:not(:disabled) .box {
@@ -176,6 +181,7 @@
         background: var(--ink);
     }
     [aria-pressed="true"] > .box :global(svg) {
+        opacity: 1;
         transform: scale(1);
     }
     .icon {
@@ -196,24 +202,40 @@
         display: inline-flex;
         grid-column: 2;
         align-items: center;
-        gap: 4px;
-        height: 24px;
-        padding: 0 9px 0 7px;
+        gap: 5px;
+        height: 26px;
+        padding: 0 10px 0 8px;
         border: 1px solid var(--line-strong);
-        border-radius: 12px;
-        background: var(--panel);
+        border-radius: 13px;
+        background: none;
         color: var(--ink-soft);
         font: 600 12px var(--sans);
+        transition: background 140ms, border-color 140ms, color 140ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
     }
     .must:hover {
-        border-color: var(--ink);
+        border-color: var(--ink-faint);
         color: var(--ink);
     }
-    /* Rust is the one colour of a hard limit. */
+    .must:active {
+        transform: scale(0.96);
+    }
+    /* Filled as the tick of its wish. */
     .must[aria-pressed="true"] {
-        border-color: var(--rust);
-        background: var(--rust);
-        color: var(--cream);
+        border-color: var(--ink);
+        background: var(--ink);
+        color: var(--panel);
+    }
+    .must[aria-pressed="true"]:hover {
+        border-color: var(--ink-soft);
+        background: var(--ink-soft);
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .box :global(svg) {
+            transition: opacity 120ms;
+        }
+        .must {
+            transition-property: background, border-color, color;
+        }
     }
     .count {
         grid-column: 3;

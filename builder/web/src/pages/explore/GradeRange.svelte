@@ -231,6 +231,10 @@
         background: var(--panel);
         box-shadow: var(--planner-shadow);
         pointer-events: none;
+        animation: appear 140ms ease-out;
+    }
+    @keyframes appear {
+        from { opacity: 0; }
     }
     .drawing svg {
         display: block;

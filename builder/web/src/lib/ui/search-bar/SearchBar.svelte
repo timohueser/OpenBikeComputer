@@ -11,6 +11,7 @@
     import { untrack, type Snippet } from 'svelte';
     import Icon from '../Icon.svelte';
     import Field, { type FieldProps, type Place } from './Field.svelte';
+    import { drop, rise, still } from './motion';
     import type { Value } from './read';
 
     let { label, slots, field, panel, onreset, empty, onclear, onundo, open = $bindable() }: {
@@ -90,7 +91,7 @@
     /** The words of a value fly from `from` to its slot, which then flashes. With reduced motion, only the slot flashes. */
     function land(value: V, from: DOMRect | undefined, delay: number) {
         const to = button(value.slot)?.querySelector('strong')?.getBoundingClientRect();
-        if (!from || !to || matchMedia('(prefers-reduced-motion: reduce)').matches) return flash(value.slot);
+        if (!from || !to || still()) return flash(value.slot);
         ghosts.push({ id: flights++, slot: value.slot, label: value.label, from, to, delay });
     }
     function fly(node: HTMLElement, ghost: typeof ghosts[number]) {
@@ -127,13 +128,14 @@
 
 <div class="search-bar" role="search" aria-label={label} bind:this={bar} bind:clientWidth={barWidth}>
     <div class="strip">
-        <Field {...field} bind:text={typed} bind:listing slotLabel={id => slots.find(slot => slot.id === id)?.label ?? ''} {land} />
+        <Field {...field} bind:text={typed} bind:listing {slots} {land} />
         <div class="slots">
             {#each slots as slot (slot.id)}
                 <button type="button" class="slot" class:unset={!slot.words.length || !!slot.off} data-slot={slot.id} disabled={!!slot.off}
                     aria-expanded={open === slot.id} aria-controls="search-panel" onclick={() => open = open === slot.id ? undefined : slot.id}>
                     <span class="label"><Icon name={slot.icon} size={14} />{slot.label}</span>
-                    <strong>{slot.off ?? (text(slot.words) || slot.unset)}</strong>
+                    <!-- A slot that gets or loses a value shows it; a value that only changes, as under a slider, stays still. -->
+                    {#key slot.words.length}<strong in:rise>{slot.off ?? (text(slot.words) || slot.unset)}</strong>{/key}
                 </button>
             {/each}
         </div>
@@ -144,7 +146,8 @@
         {/if}
     </div>
     {#if current}
-        <div class="search-panel" id="search-panel" role="group" aria-label={current.label} bind:offsetWidth={panelWidth} style:left={innerWidth > NARROW_PX ? `${left}px` : undefined}>
+        <div class="search-panel" id="search-panel" role="group" aria-label={current.label} bind:offsetWidth={panelWidth} style:left={innerWidth > NARROW_PX ? `${left}px` : undefined}
+            in:drop out:drop={{ leave: true }}>
             {@render panel(current.id)}
             <div class="foot">
                 <button type="button" class="quiet" disabled={!current.set} onclick={() => onreset(current.id)}>Reset</button>
@@ -182,6 +185,7 @@
         flex-direction: column;
         justify-content: center;
         gap: 1px;
+        position: relative;
         min-width: 0;
         padding: 8px 14px;
         border: 0;
@@ -190,11 +194,27 @@
         color: var(--ink);
         font: inherit;
         text-align: left;
+        transition: background 120ms;
+    }
+    /* The cross and "Undo" have their place after the last slot, as wide as the cell of "Undo", so no slot moves when
+       they show. Until then, the colour of the last slot fills that place and a click there is a click on the slot. */
+    .slot:last-child {
+        margin-right: 76px;
+    }
+    .slot:last-child::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 100%;
+        width: 76px;
+        background: inherit;
+        transition: inherit;
     }
     .slot:hover:not(:disabled) {
         background: var(--parchment);
     }
-    .slot[aria-expanded="true"] {
+    .slot:active:not(:disabled), .slot[aria-expanded="true"]:not(:disabled) {
         background: var(--parchment-2);
     }
     .slot:focus-visible {
@@ -222,10 +242,20 @@
         font-weight: 400;
     }
     .tail {
+        position: absolute;
+        top: 1px;
+        right: 1px;
+        bottom: 1px;
         display: flex;
         align-items: center;
         padding: 0 8px;
         border-left: 1px solid var(--line);
+        border-radius: 0 9px 9px 0;
+        background: var(--panel);
+        animation: appear 140ms ease-out;
+    }
+    @keyframes appear {
+        from { opacity: 0; }
     }
     .clear {
         display: grid;
@@ -237,10 +267,14 @@
         border-radius: 50%;
         background: none;
         color: var(--ink-soft);
+        transition: background 120ms, color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
     }
     .clear:hover {
         background: var(--parchment-2);
         color: var(--ink);
+    }
+    .clear:active, .undo:active, .done:active {
+        transform: scale(0.96);
     }
     .undo, .done {
         min-height: 30px;
@@ -250,8 +284,10 @@
         background: var(--panel);
         color: var(--ink);
         font: 600 13px var(--sans);
+        transition: background 120ms, border-color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
     }
     .undo:hover, .done:hover {
+        border-color: var(--ink-faint);
         background: var(--parchment-2);
     }
     /* The panel of a slot, and the list of the field. */
@@ -266,16 +302,6 @@
         border-radius: 10px;
         background: var(--panel);
         box-shadow: var(--planner-shadow);
-        animation: drop 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
-    }
-    @keyframes drop {
-        from { opacity: 0; transform: translateY(-4px); }
-    }
-    @media (prefers-reduced-motion: reduce) {
-        .search-bar :global(.search-panel) { animation-name: fade; }
-        @keyframes fade {
-            from { opacity: 0; }
-        }
     }
     .foot {
         position: sticky;
@@ -295,6 +321,7 @@
         background: none;
         color: var(--ink-soft);
         font: 600 13px var(--sans);
+        transition: background 120ms, color 120ms;
     }
     .quiet:hover:not(:disabled) {
         background: var(--parchment-2);
@@ -315,6 +342,11 @@
         white-space: nowrap;
         pointer-events: none;
     }
+    @media (prefers-reduced-motion: reduce) {
+        .clear, .undo, .done {
+            transition-property: background, border-color, color;
+        }
+    }
     /* The field takes the first row and the slots the second; the cross stays at the end of the field. */
     @media (max-width: 760px) {
         .strip {
@@ -329,12 +361,17 @@
         .slot:first-child {
             border-left: 0;
         }
+        .slot:last-child {
+            margin-right: 0;
+        }
+        .slot:last-child::after {
+            content: none;
+        }
         .tail {
-            position: absolute;
-            top: 0;
-            right: 0;
+            bottom: auto;
             height: 46px;
             border-left: 0;
+            background: none;
         }
         strong {
             display: -webkit-box;
