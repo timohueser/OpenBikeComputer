@@ -1,7 +1,7 @@
 import { rgb } from '../../structures/mesh';
 import type { Animal } from '../animals';
 import { shade } from '../flat';
-import { axis, bellied } from '../sculpt';
+import { bellied } from '../sculpt';
 import { ears, eyes, quadruped, type Body } from './body/quadruped';
 
 // Few, large lumps of wool: a trunk through 5 rings.
@@ -23,7 +23,7 @@ export default {
     poses: 3,
     build(s, [wool, face], pose) {
         const q = quadruped(s, BODY, pose, { trunk: bellied(wool, shade(wool, 0.88)), neck: wool, head: () => face, leg: () => [wool, face, shade(face, 0.6)] }), h = q.head;
-        const cap = axis(h.p(0.09, 0, 0.11), 0);
+        const cap = q.crown(0.09, 0.11);
         s.skin(cap.rings([[-0.09, 0.06, 0.04, 0.04], [0, 0.13, 0.08, 0.05], [0.08, 0.07, 0.04, 0.04]]), 8, wool);
         ears(s, h, [0.1, 0.1, 0.04], [0.08, 0.31, -0.03], 0.11, face);
         eyes(s, h, [0.2, 0.13, 0.04], 0.04);

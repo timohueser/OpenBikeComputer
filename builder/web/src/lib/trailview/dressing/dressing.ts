@@ -151,7 +151,8 @@ export class Dressing implements Producer {
     update(lonLat: [number, number], { reach }: Reach): void {
         const r = this.resources;
         if (!r) return;
-        for (const region of reach) if (!this.placed.has(region) && this.rules.regions[region]) this.place(region);
+        // A showroom stands in place of the herds: they take no models.
+        if (!this.showCount) for (const region of reach) if (!this.placed.has(region) && this.rules.regions[region]) this.place(region);
         if (this.changed) r.gpu.device.queue.writeBuffer(r.table, 0, this.table);
         this.changed = false;
         this.updated = true;
