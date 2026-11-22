@@ -858,11 +858,9 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
         } else {
             let l = &lanes[0];
             let (tube, from) = lone(l);
-            for end in 0..2 {
-                if let Some(i) = l.ends[end] {
-                    let o = &arm_openings[i];
-                    openings.push(Opening { tube: r, s: o.s - from, ..o.clone() });
-                }
+            for i in l.ends.into_iter().flatten() {
+                let o = &arm_openings[i];
+                openings.push(Opening { tube: r, s: o.s - from, ..o.clone() });
             }
             out.tubes.push(tube);
             out.lanes.push(vec![l.clone()]);
