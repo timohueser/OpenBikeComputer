@@ -101,6 +101,11 @@ interface Conifer extends Base {
     /** A column has this many lower tops that lean out of its sides, as the stems of a juniper. */
     spires?: number;
     /**
+     * A column's skin is in round knobs, each four corners wide and tall, in upright rows that break joint, as the needle
+     * clumps of a juniper, in place of upright lumps; `jitter` is how far they stand out, in column radii.
+     */
+    knobs?: true;
+    /**
      * Separate boughs in place of tiers, with sky between: each sags and turns up at its tip under a hanging
      * curtain of needles, as on a larch. How many a tree has.
      */
@@ -445,12 +450,28 @@ function boughs(spec: Conifer, rand: () => number): { path: (s: number) => V; r:
 function column(spec: Conifer, needles: (p: V, n: V) => Colour, lod: Lod, seed: number): Geometry[] {
     const spires = spec.spires ?? 0;
     const flame = (k: number, radius: number, top: number, rows: number, sides: number, lean: V) => {
+        if (spec.knobs) {
+            // Corners as far apart around the column as up it, and whole knobs around it.
+            const around = (2 * Math.PI * 0.7 * radius) / (top - spec.base), quads = rows * sides;
+            [rows, sides] = [Math.round(Math.sqrt(quads / around)), 4 * Math.max(1, Math.round(Math.sqrt(quads * around) / 4))];
+        }
         const outline = Array.from({ length: rows + 1 }, (_, j): [number, number] => [radius * spec.shape(j / rows), lerp(spec.base, top, j / rows)]);
         const geo = soft(revolve([[0, spec.base], ...outline], sides)), p = geo.position, swell: number[] = [];
         for (let i = 0; i < p.length; i += 3) {
+            const out = (p[i + 2] - spec.base) / (top - spec.base);
+            if (spec.knobs) {
+                // A knob stands out along the skin's normal, so the top is in knobs too.
+                // A knob swells from its edges to its middle and stands out along the skin's normal, some further. The knobs
+                // of one upright row start a quarter, a half or three quarters of a knob higher than those of the next.
+                const u = ((Math.atan2(p[i + 1], p[i]) / (2 * Math.PI) + 1) * sides) / 4 + 0.01, row = Math.floor(u) % (sides / 4);
+                const v = (out * rows) / 4 + Math.floor(4 * hash(v3(row, k, 0), seed)) / 4;
+                swell.push(Math.sin(Math.PI * (u % 1)) * Math.sin(Math.PI * (v % 1)) * (0.5 + 0.5 * hash(v3(row, Math.floor(v), k), seed)));
+                const deep = spec.jitter * radius * swell[i / 3];
+                p.splice(i, 3, p[i] + deep * geo.normal[i] + lean.x * out, p[i + 1] + deep * geo.normal[i + 1] + lean.y * out, p[i + 2] + deep * geo.normal[i + 2]);
+                continue;
+            }
             // Lumps taller than wide, as sprays that stand upright.
             swell.push(noise(v3(p[i], p[i + 1], 0.5 * p[i + 2]), 2.6 / radius, seed + k));
-            const out = (p[i + 2] - spec.base) / (top - spec.base);
             p[i] = p[i] * (1 + spec.jitter * swell[i / 3]) + lean.x * out;
             p[i + 1] = p[i + 1] * (1 + spec.jitter * swell[i / 3]) + lean.y * out;
         }
