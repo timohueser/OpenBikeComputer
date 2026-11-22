@@ -476,7 +476,11 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         m.insert("tunnel_ways_without_id".into(), without_id.into());
         m.insert("chains_without_tube".into(), lost.into());
         m.insert("rooms".into(), rooms.metrics.clone());
-        let touching = rooms::touching(&rooms, &decided.floors, &decided.half, input);
+        let kind = |t: usize, e: usize| {
+            let j = openings.iter().position(|o| o.tube == t && o.end == e)?;
+            decided.ends[j].kind
+        };
+        let touching = rooms::touching(&rooms, (&decided.floors, &rooms.built(&kind)), &decided.half, input);
         let places = touching.iter().take(10).map(|&p| {
             let [lat, lon] = crate::degrees(p);
             format!("{lat:.5},{lon:.5}")

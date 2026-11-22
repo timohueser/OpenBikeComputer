@@ -196,8 +196,23 @@ fn runs(arms: &[Tube], spans: &[Option<[f64; 2]>], input: &Input) -> Vec<RunOf> 
             }
         }
     }
+    // The metres along arm a of each vertex that the two arms share where one of them ends (a fork or a T): they meet
+    // there at one level.
+    let shared = |a: usize, c: usize| {
+        let points = |t: &Tube| -> Vec<(f64, [u64; 2])> {
+            (t.curve.stretches.iter()).flat_map(|(_, ps)| ps.iter().map(|q| (q.s, q.p.map(f64::to_bits)))).collect()
+        };
+        let ends = |t: &Tube| [0.0, t.curve.len].map(|s| t.curve.at(s).0.p.map(f64::to_bits));
+        let (mine, theirs) = (points(&arms[a]), points(&arms[c]));
+        let (my_ends, their_ends) = (ends(&arms[a]), ends(&arms[c]));
+        let on = |k: &[u64; 2]| theirs.iter().any(|q| q.1 == *k);
+        let joins = |q: &&(f64, [u64; 2])| (my_ends.contains(&q.1) && on(&q.1)) || their_ends.contains(&q.1);
+        mine.iter().filter(joins).map(|q| q.0).collect::<Vec<f64>>()
+    };
     let mut out = Vec::new();
     for ((a, bt), list) in metres {
+        let at_vertex = shared(a, bt);
+        let reach = arms[a].half + arms[bt].half + wall;
         let mut run: Vec<Metre> = Vec::new();
         for m in list.into_iter().map(Some).chain([None]) {
             if let (Some(m), Some(last)) = (m, run.last()) {
@@ -207,8 +222,9 @@ fn runs(arms: &[Tube], spans: &[Option<[f64; 2]>], input: &Input) -> Vec<RunOf> 
                 }
             }
             if !run.is_empty() {
-                let kind = decide(&run, (&arms[a], &arms[bt]), input);
                 let (first, last) = (run[0], run[run.len() - 1]);
+                let junction = at_vertex.iter().any(|&e| e >= first.s - reach && e <= last.s + reach);
+                let kind = decide(&run, (&arms[a], &arms[bt]), junction, input);
                 let rise = run.iter().map(|m| m.rise).min_by(|x, y| x.abs().total_cmp(&y.abs())).unwrap_or(0.0);
                 out.push(RunOf { a, b: bt, sa: [first.s, last.s], sb: [first.foot, last.foot], kind, rise });
             }
@@ -220,8 +236,9 @@ fn runs(arms: &[Tube], spans: &[Option<[f64; 2]>], input: &Input) -> Vec<RunOf> 
 
 /// What a run is: apart where one lies clear over the other all along; else over and under by height where the two
 /// axes lie side by side and the least rise leaves the lower its least height and a roof; over and under by the floor
-/// where they cross; else one room.
-fn decide(run: &[Metre], (a, b): (&Tube, &Tube), input: &Input) -> Run {
+/// where they cross; else one room. A run that reaches a vertex of both arms where one of them ends (`junction`) lies
+/// at one level there: where the two do not lie side by side, it changes nothing.
+fn decide(run: &[Metre], (a, b): (&Tube, &Tube), junction: bool, input: &Input) -> Run {
     let bake = &input.rules.bake;
     if run.iter().all(|m| apart((0.0, m.rise), (a.height, b.height), input)) {
         return Run::Apart;
@@ -236,6 +253,8 @@ fn decide(run: &[Metre], (a, b): (&Tube, &Tube), input: &Input) -> Run {
     let low = input.rules.groups[lower.group].least_height_m;
     if side_by_side && least.rise.abs() >= low + bake.shell_m + bake.slab_m {
         Run::Height
+    } else if !side_by_side && junction {
+        Run::Apart
     } else if !side_by_side {
         Run::Cross
     } else {
@@ -549,11 +568,13 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
         }
         joined.push(Joined { a, c, sa, sc });
     }
-    // The cuts of each arm, where a run ends off its openings; a cut inside a run cuts the other arm at its foot.
+    // The cuts of each arm, where a run ends off its openings; a cut inside a run cuts the other arm at its foot. A cut
+    // within `vertex_gap_m` of another is that cut: the foot of a foot lies a little off where two arms are not
+    // parallel, so the cuts end.
     let mut cuts: Vec<Vec<f64>> = vec![Vec::new(); n];
     let add = |cuts: &mut Vec<Vec<f64>>, t: usize, s: f64| {
         let [s0, s1] = spans[t].unwrap();
-        let new = s > s0 + 1e-6 && s < s1 - 1e-6 && !cuts[t].iter().any(|x| (x - s).abs() < 1e-6);
+        let new = s > s0 + 1e-6 && s < s1 - 1e-6 && !cuts[t].iter().any(|x| (x - s).abs() < b.vertex_gap_m);
         if new {
             cuts[t].push(s);
         }
@@ -1114,15 +1135,20 @@ fn room_of(
     (tube, ordered, table, ends, moves, off_line)
 }
 
-/// Per two rooms with floors that come beside each other (`beside` and `apart`), the first place where they do: each
-/// room's centre line read every metre against the axes near it, on the final floors, halves and heights.
-pub(crate) fn touching(rooms: &Rooms, floors: &[Option<Floor>], half: &[f64], input: &Input) -> Vec<[f64; 2]> {
+/// Per two rooms that draw (`built`) and come beside each other (`beside` and `apart`), the first place where they do:
+/// each room's centre line read every metre against the axes near it, on the final floors, halves and heights.
+pub(crate) fn touching(
+    rooms: &Rooms,
+    (floors, built): (&[Option<Floor>], &[bool]),
+    half: &[f64],
+    input: &Input,
+) -> Vec<[f64; 2]> {
     let wall = 2.0 * input.rules.bake.shell_m;
-    // The rooms at their floors, with their halves; a room with no floor is none.
-    let tubes: Vec<Tube> = (rooms.tubes.iter().zip(floors).zip(half))
-        .map(|((t, f), &half)| {
+    // The rooms that draw at their floors, with their halves; another room is none.
+    let tubes: Vec<Tube> = (rooms.tubes.iter().zip(floors).zip(half).zip(built))
+        .map(|(((t, f), &half), &built)| {
             let mut t = t.clone();
-            let Some(f) = f else {
+            let Some(f) = f.as_ref().filter(|_| built) else {
                 t.curve.stretches.clear();
                 return t;
             };
