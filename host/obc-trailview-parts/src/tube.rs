@@ -827,13 +827,24 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
                 let paint_at = Paint { across: x - lane.off[k], half: lane.road, sleepers: count(m) };
                 b.vertex(rings[k].floor([x, road[k]]), paint, paint_at)
             };
-            let v = [
-                corner(b, 0, pa[1].0, 0.0),
-                corner(b, 0, pa[1].1, 0.0),
-                corner(b, 1, pb[1].1, length),
-                corner(b, 1, pb[1].0, length),
+            // On a seam's line the road has the seam's corners: where a hole's side stands on it.
+            let runs = [
+                rings[0].floor_run([pa[1].0, road[0]], [pa[1].1, road[0]]),
+                rings[1].floor_run([pb[1].0, road[1]], [pb[1].1, road[1]]),
             ];
-            b.quad(v, across([0.0, 1.0]));
+            if runs.iter().all(|r| r.len() == 2) {
+                let v = [
+                    corner(b, 0, pa[1].0, 0.0),
+                    corner(b, 0, pa[1].1, 0.0),
+                    corner(b, 1, pb[1].1, length),
+                    corner(b, 1, pb[1].0, length),
+                ];
+                b.quad(v, across([0.0, 1.0]));
+            } else {
+                let va: Vec<u32> = runs[0].iter().map(|q| corner(b, 0, q[0], 0.0)).collect();
+                let vz: Vec<u32> = runs[1].iter().map(|q| corner(b, 1, q[0], length)).collect();
+                b.strip_of((&va, &runs[0]), (&vz, &runs[1]), across([0.0, 1.0]));
+            }
             // Per side from the road out: the kerb's face up to the walk, and the walk to the lane's edge.
             for (side, j) in [(1.0, 2), (-1.0, 0)] {
                 // The walk's edge at the road, and at the lane's edge.

@@ -134,18 +134,10 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         self.vertex(s.at(c), colour, PLAIN)
     }
 
-    /// A quad of four vertices in order around it, turned to face `out`. A quad of no area makes no face.
+    /// A quad of four vertices in order around it, turned to face `out`: two triangles, each of no area none.
     pub fn quad(&mut self, v: [u32; 4], out: [f64; 3]) {
-        let n = self.normal(v[0], v[1], v[2], v[3]);
-        if n.iter().all(|c| c.abs() < 1e-12) {
-            return;
-        }
-        let facing = n[0] * out[0] + n[1] * out[1] + n[2] * out[2] >= 0.0;
-        self.indices.extend(if facing {
-            [v[0], v[1], v[2], v[0], v[2], v[3]]
-        } else {
-            [v[0], v[2], v[1], v[0], v[3], v[2]]
-        });
+        self.triangle(v[0], v[1], v[2], out);
+        self.triangle(v[0], v[2], v[3], out);
     }
 
     /// A triangle turned to face `out`. A triangle of no area makes no face.
@@ -176,6 +168,19 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         colour: u32,
         out: [f64; 3],
     ) {
+        // A side runs one way: no step of it turns back against the one before.
+        let folds = |c: &[Corner]| {
+            c.windows(3)
+                .any(|w| (w[1][0] - w[0][0]) * (w[2][0] - w[1][0]) + (w[1][1] - w[0][1]) * (w[2][1] - w[1][1]) < 0.0)
+        };
+        debug_assert!(!folds(a) && !folds(b), "a side of a strip folds back: {a:?} {b:?}");
+        let va: Vec<u32> = pa.iter().map(|&p| self.vertex(p, colour, PLAIN)).collect();
+        let vb: Vec<u32> = pb.iter().map(|&p| self.vertex(p, colour, PLAIN)).collect();
+        self.strip_of((&va, a), (&vb, b), out);
+    }
+
+    /// The faces of `strip` between two polylines of vertices, each with its corners for the shares along it.
+    pub fn strip_of(&mut self, (va, a): (&[u32], &[Corner]), (vb, b): (&[u32], &[Corner]), out: [f64; 3]) {
         let shares = |c: &[Corner]| {
             let mut run = vec![0.0];
             for w in c.windows(2) {
@@ -184,15 +189,7 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
             let all = run[run.len() - 1];
             run.iter().map(|r| if all > 0.0 { r / all } else { 0.0 }).collect::<Vec<f64>>()
         };
-        // A side runs one way: no step of it turns back against the one before.
-        let folds = |c: &[Corner]| {
-            c.windows(3)
-                .any(|w| (w[1][0] - w[0][0]) * (w[2][0] - w[1][0]) + (w[1][1] - w[0][1]) * (w[2][1] - w[1][1]) < 0.0)
-        };
-        debug_assert!(!folds(a) && !folds(b), "a side of a strip folds back: {a:?} {b:?}");
         let (sa, sb) = (shares(a), shares(b));
-        let va: Vec<u32> = pa.iter().map(|&p| self.vertex(p, colour, PLAIN)).collect();
-        let vb: Vec<u32> = pb.iter().map(|&p| self.vertex(p, colour, PLAIN)).collect();
         let (mut i, mut j) = (0, 0);
         while i + 1 < va.len() || j + 1 < vb.len() {
             if i + 1 < va.len() && (j + 1 == vb.len() || sa[i + 1] <= sb[j + 1]) {
