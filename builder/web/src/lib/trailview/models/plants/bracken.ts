@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { hex, merge, paint, ramp, random, ribbon, sheet, smooth, v3, type Colour, type Geometry, type Ramp, type V, type Vec } from '../plant-shape';
+import { hex, ramp, random, sheet, smooth, spike, UP, v3, type Colour, type Geometry, type Ramp, type Sheet, type V } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** Bracken: fresh green, rust-orange as it dies in autumn, faded russet through winter. */
@@ -17,76 +17,65 @@ const BRACKEN: Record<Season, Ramp> = {
  */
 const BRACKEN_SLUMP: Record<Season, [number, number]> = { winter: [0.35, 1], spring: [0, 1], summer: [0, 0], autumn: [0.08, 0.22] };
 
-const PINNAE = 6;
-
 /**
- * A bracken frond: a short stalk curving out of the ground into a triangular blade that rises at 35
- * to 50 degrees and arches over, its pinnae swept forward. `slump` kills it, as BRACKEN_SLUMP says,
- * until a fallen blade props on its tip near the root; a low `open` curls a young blade into a
- * nodding crozier. 28 triangles.
+ * A feather along `path`, level across `side`: `pairs` broad teeth on each flank, swept forward,
+ * `reach(t)` long and drooping `droop` of that. Those of one flank stand half a step past those of
+ * the other, so the feather is whole along its length, with a ridge. Dark at its foot, light at its
+ * tip and its edge. 2 × `pairs` triangles.
  */
-function frond(root: Vec, a: number, size: number, [deep, mid, tip]: Colour[], slump: number, open: number, rand: () => number) {
-    const out = v3(Math.cos(a), Math.sin(a), 0);
-    const side = v3(-out.y, out.x, 0);
-    const [hang, fall, young] = [smooth(0, 0.35, slump), smooth(0.35, 1, slump), 1 - open];
-    const curl = Math.min(1, hang + 2 * young);
-    const height = size * (0.22 + 0.08 * rand()) * (1 - 0.3 * fall);
-    const lean = (0.25 + 0.25 * rand()) * (1 - 0.7 * young) + 0.3 * fall;
-    // The stalk bends from near upright at the root to past `lean` at the elbow, so stalk and blade
-    // make one arch rather than a pole and a table.
-    const step = (from: V, tilt: number) => from.clone().addScaledVector(out, 0.5 * height * Math.sin(tilt)).setZ(from.z + 0.5 * height * Math.cos(tilt));
-    const bend = step(v3(...root), 0.4 * lean);
-    const top = step(bend, 1.6 * lean);
-    const stalk = paint(ribbon([root, bend.toArray(), top.toArray()], side.toArray(), () => 0.008, 2), deep.clone().lerp(mid, 0.5));
-    const length = size * (0.5 + 0.15 * rand()) * (0.55 + 0.45 * open) * (1 - 0.25 * hang) * (1 - 0.3 * fall);
-    const rise = 0.6 + 0.25 * rand() + 1.2 * young + 0.3 * hang - 1.6 * fall;
-    // The rachis is a parabola from the elbow to where its tip ends: a live tip near the elbow's
-    // height, a withered one hanging near the ground, a fallen one on it.
-    const live = top.z + length * (young ? 0.05 : -0.06 + 0.12 * rand());
-    const end = live + (0.03 + 0.12 * (1 - fall) - live) * hang;
-    const droop = Math.sin(rise) - (end - top.z) / length;
-    const rachis = (u: number) =>
-        top.clone().addScaledVector(out, length * Math.cos(rise) * u).setZ(Math.max(0.02, top.z + length * (Math.sin(rise) * u - droop * u * u)));
-    const cards = sheet();
-    // Each pinna is a triangle on most of a rachis segment, its apex out to the side and forward,
-    // folded down along its midrib: the two halves light apart and notches open between pinnae, so the
-    // blade reads lacy rather than as one smooth panel.
-    for (const s of [1, -1]) {
-        for (let i = 0; i < PINNAE; i++) {
-            const [u0, u1] = [(i + 0.08) / PINNAE, (i + 0.92) / PINNAE];
-            const midrib = rachis((u0 + u1) / 2);
-            const forward = rachis(u1).sub(rachis(u0)).normalize();
-            const reach = 0.42 * length * open ** 1.5 * (1 - 0.45 * hang) * (1 - u0) ** 0.85 * (0.85 + 0.3 * rand());
-            // Young and withered pinnae fold down and in along the rachis, so the blade hangs narrow.
-            const apex = midrib.clone().addScaledVector(side, s * reach * (1 - 0.4 * curl)).addScaledVector(forward, (0.65 + 0.3 * curl) * reach);
-            apex.z = Math.max(0.01, apex.z - (0.1 + 1.1 * curl) * reach);
-            const fold = 0.25 * midrib.distanceTo(rachis(u0));
-            const [back, front] = [rachis(u0), rachis(u1)].map((p) => p.setZ(p.z - fold));
-            const stem = deep.clone().lerp(mid, 0.3 + 0.4 * u0);
-            const leaf = mid.clone().lerp(tip, 0.1 + 0.3 * u0 + 0.2 * rand());
-            const lit = mid.clone().lerp(tip, 0.4 + 0.4 * u0 + 0.2 * rand());
-            for (const edge of [back, front]) {
-                const n = edge.clone().sub(midrib).cross(apex.clone().sub(midrib)).normalize();
-                if (n.z < 0) n.negate();
-                cards.add([midrib, edge, apex], [stem, leaf, lit], () => n);
-            }
-        }
+function feather(cards: Sheet, path: (s: number) => V, side: V, pairs: number, reach: (t: number) => number, droop: number, [deep, mid, tip]: Colour[]): void {
+    const colour = (s: number) => deep.clone().lerp(mid, smooth(0, 0.25, s)).lerp(tip, 0.7 * smooth(0.25, 1, s));
+    for (const flank of [-1, 1]) for (let i = 0; i < pairs; i++) {
+        const [s0, s1] = [i, i + 1].map((k) => (k + (flank > 0 ? 0.5 : 0)) / (pairs + 0.5)), t = (s0 + s1) / 2;
+        const [from, to] = [path(s0), path(s1)];
+        const up = v3().crossVectors(side, to.clone().sub(from)).normalize();
+        if (up.z < 0) up.negate();
+        const end = from.clone().lerp(to, 0.75).addScaledVector(side, flank * reach(t)).addScaledVector(up, -droop * reach(t));
+        end.z = Math.max(0.01, end.z);
+        const light = (p: V) => (p === end ? up.clone().addScaledVector(side, 0.6 * flank) : up.clone()).normalize().lerp(UP, 0.3).normalize();
+        cards.add([from, to, end], [colour(s0), colour(s1), colour(t).lerp(tip, 0.6)], light);
     }
-    return merge([stalk, cards.build()]);
 }
 
 /**
- * Three to six bracken fronds arching out of a small patch, their blades in tiers. In spring young
- * fronds stand among last year's, propped on the ground. A clump is the same in every season, only
- * older. 84 to 168 triangles.
+ * A bracken frond: a stalk that leans out of the ground, and on it a broad triangular blade of
+ * three feathers that rises and arches over: the rachis, and one branch to each side at its foot.
+ * `slump` kills it, as BRACKEN_SLUMP says, until a fallen blade lies on the ground near the root;
+ * a low `open` holds a young blade steep and narrow, its branches not yet spread. 27 triangles.
+ */
+function frond(cards: Sheet, root: V, a: number, size: number, colours: Colour[], slump: number, open: number, rand: () => number): void {
+    const out = v3(Math.cos(a), Math.sin(a), 0), side = v3(-out.y, out.x, 0);
+    const [hang, fall, young] = [smooth(0, 0.35, slump), smooth(0.35, 1, slump), 1 - open];
+    const height = size * (0.42 + 0.12 * rand()) * (1 - 0.8 * fall);
+    const top = root.clone().addScaledVector(out, height * (0.2 + 0.15 * rand() + 2 * fall)).setZ(height);
+    spike(cards, root, top, 0.022 * size, [colours[0], colours[0].clone().lerp(colours[1], 0.5)]);
+    const length = size * (0.9 + 0.16 * rand()) * (0.6 + 0.4 * open) * (1 - 0.25 * hang);
+    const reach = length * open * (1 - 0.3 * hang), fold = 0.15 + 0.35 * hang;
+    const pitch = 0.45 + 0.15 * rand() + 1.3 * young - 0.45 * hang - 0.6 * fall, droop = 0.32 - 0.4 * young + 0.3 * hang;
+    // A parabola from the stalk's top: a live tip ends near the top's height, a withered one hangs to the ground.
+    const arch = (from: V, dir: V, l: number, sag: number) => (u: number) =>
+        from.clone().addScaledVector(dir, l * Math.cos(pitch) * u).setZ(Math.max(0.02, from.z + l * (Math.sin(pitch) * u - sag * u * u)));
+    const rachis = arch(top, out, length, droop);
+    feather(cards, (s) => rachis(0.12 + 0.88 * s), side, 6, (t) => 0.3 * reach * (1 - t) ** 0.6, fold, colours);
+    const spread = 1.05 * open ** 2 * (1 - 0.5 * hang);
+    for (const flank of [-1, 1]) {
+        const dir = out.clone().multiplyScalar(Math.cos(spread)).addScaledVector(side, flank * Math.sin(spread));
+        const branch = arch(rachis(0.1), dir, 0.6 * length, droop + 0.1);
+        feather(cards, branch, v3(-dir.y, dir.x, 0), 3, (t) => 0.21 * reach * (1 - t) ** 0.6, fold, colours);
+    }
+}
+
+/**
+ * Six bracken fronds arching out of a small patch, their blades in tiers. In spring young fronds
+ * stand among last year's, which lie on the ground. A clump is the same in every season, only
+ * older. 162 triangles.
  */
 function bracken(season: Season, rand: () => number): Geometry {
-    const count = 6 - Math.floor(4 * rand());
-    const parts: Geometry[] = [];
-    for (let k = 0; k < count; k++) {
+    const cards = sheet();
+    for (let k = 0; k < 6; k++) {
         const fallen = k % 2 === 1;
         const old = season === 'spring' && fallen;
-        const b = (k / count) * 2 * Math.PI + rand() * 0.8;
+        const b = (k / 6) * 2 * Math.PI + rand() * 0.8;
         const d = 0.05 + 0.2 * rand();
         const colours = ramp(BRACKEN[old ? 'winter' : season]);
         // Autumn fronds die unevenly: some still orange, some already brown.
@@ -96,10 +85,10 @@ function bracken(season: Season, rand: () => number): Geometry {
         const slump = Math.min(1, BRACKEN_SLUMP[season][fallen ? 1 : 0] * (0.85 + 0.3 * rand()));
         const open = season === 'spring' && !old ? 0.55 : 1;
         // Lower fronds around a tall one hide its stalk under their blades, in tiers.
-        const size = 1 - (0.55 * k * (0.8 + 0.4 * rand())) / count;
-        parts.push(frond([d * Math.cos(b), d * Math.sin(b), 0], b + (rand() - 0.5) * 0.6, size, colours, slump, open, rand));
+        const size = 1 - (0.55 * k * (0.8 + 0.4 * rand())) / 6;
+        frond(cards, v3(d * Math.cos(b), d * Math.sin(b), 0), b + (rand() - 0.5) * 0.6, size, colours, slump, open, rand);
     }
-    return merge(parts);
+    return cards.build();
 }
 
 export default {

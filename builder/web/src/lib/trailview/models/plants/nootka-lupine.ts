@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { byHeight, circle, merge, paint, place, ramp, random, ribbon, sheet, soft, v3, type Geometry, type Ramp, type V, type Vec } from '../plant-shape';
+import { across, domed, leaf, ramp, random, sheet, spike, spindle, UP, v3, type Geometry, type Ramp } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** The seasons in which the clump stands; it dies back in winter. */
@@ -12,53 +12,45 @@ const LEAVES: Record<Living, Ramp> = {
     autumn: ['#4a5a2c', '#6e7a3e', '#94985a'],
 };
 
-/** The spikes: blue-purple in flower in early summer, green pods after, then dry brown. */
+/** The spikes from foot to tip: blue-purple in flower in early summer, green pods under the last flowers after, then dry brown. */
 const SPIKES: Record<Living, Ramp> = {
-    spring: ['#3e3088', '#5a4cb0', '#9a90d8'],
-    summer: ['#4a6a30', '#6a8a44', '#5a4cb0'],
+    spring: ['#3e3088', '#5a4cb0', '#b0a6e6'],
+    summer: ['#4a6a30', '#62708a', '#6a5cc0'],
     autumn: ['#5a4630', '#7a6040', '#9a7c54'],
 };
 
-/** A palmate leaf: six leaflets from one point, twelve triangles. */
-function palm(r: number): Geometry {
-    const geo = circle(r, 12);
-    for (let i = 2; i < geo.position.length / 3; i += 2) geo.position.splice(3 * i, 3, geo.position[3 * i] * 0.3, geo.position[3 * i + 1] * 0.3, 0);
-    return soft(geo);
-}
-
 /**
- * Nootka lupine: a bushy clump of palmate leaves on stalks, with six dense flower spikes above it.
- * A spike is four crossed triangles round its stalk, wide at the foot and pointed at the top, so it
- * reads as a cone from every side. 140 triangles.
+ * Nootka lupine: a bushy clump of seven palmate leaves, each five leaflets cupped round the end of
+ * its stalk, and five dense flower spikes that stand above it. A spike is a spindle on its stalk,
+ * widest near its foot and drawn out to a point. 146 triangles.
  */
 function lupine(season: Living, rand: () => number): Geometry {
-    const leaf = byHeight(ramp(LEAVES[season]), 0.6);
-    const [deep, mid, tip] = ramp(SPIKES[season]);
-    const parts: Geometry[] = [];
-    for (let k = 0; k < 8; k++) {
-        const a = (k / 8) * 2 * Math.PI + rand();
-        const d = 0.1 + 0.25 * rand();
-        const h = 0.25 + 0.3 * rand();
-        const at: Vec = [d * Math.cos(a), d * Math.sin(a), h];
-        parts.push(paint(ribbon([[0, 0, 0], at], [-Math.sin(a), Math.cos(a), 0], () => 0.015, 1), leaf));
-        parts.push(paint(place(palm(0.16), { at, rot: [(rand() - 0.5) * 0.6, (rand() - 0.5) * 0.6, rand() * 6] }), leaf));
-    }
+    const [deep, mid, tip] = ramp(LEAVES[season]);
     const cards = sheet();
-    for (let k = 0; k < 6; k++) {
-        const a = (k / 6) * 2 * Math.PI + rand();
-        const d = 0.05 + 0.2 * rand();
-        const foot = v3(d * Math.cos(a), d * Math.sin(a), 0.45 + 0.1 * rand());
-        const top = foot.clone().add(v3(0.03 * Math.cos(a), 0.03 * Math.sin(a), 0.4 + 0.15 * rand()));
-        parts.push(paint(ribbon([[0, 0, 0], foot.toArray()], [-Math.sin(a), Math.cos(a), 0], () => 0.02, 1), leaf));
-        const light = (p: V) => v3(p.x - foot.x, p.y - foot.y, 0.5).normalize();
-        for (let i = 0; i < 4; i++) {
-            const t = a + (i * Math.PI) / 4;
-            const side = v3(0.06 * Math.cos(t), 0.06 * Math.sin(t), 0);
-            cards.add([foot.clone().add(side), foot.clone().sub(side), top], [deep, mid, tip], light);
+    const bush = domed(v3(0, 0, 0.1), v3(0.5, 0.5, 0.6), 0.5);
+    for (let k = 0; k < 7; k++) {
+        const a = (k / 7) * 2 * Math.PI + rand() * 0.6;
+        const d = 0.2 + 0.2 * rand();
+        const out = v3(Math.cos(a), Math.sin(a), 0);
+        const at = out.clone().multiplyScalar(d).setZ(0.24 + 0.28 * rand());
+        spike(cards, v3(), at, 0.016, [deep, mid]);
+        const [u, w] = across(out.clone().multiplyScalar(0.5).add(UP).normalize()), face = v3().crossVectors(u, w), turn = rand() * 6;
+        for (let j = 0; j < 5; j++) {
+            const b = turn + (j / 5) * 2 * Math.PI;
+            const dir = u.clone().multiplyScalar(Math.cos(b)).addScaledVector(w, Math.sin(b)).addScaledVector(face, 0.3).normalize();
+            leaf(cards, at, dir, 0.19 + 0.03 * rand(), 0.1, 0.62, [deep.clone().lerp(mid, 0.6), mid, tip], bush);
         }
     }
-    parts.push(cards.build());
-    return merge(parts);
+    const colours = ramp(SPIKES[season]);
+    for (let k = 0; k < 5; k++) {
+        const a = (k / 5) * 2 * Math.PI + rand();
+        const d = 0.04 + 0.17 * rand();
+        const foot = v3(d * Math.cos(a), d * Math.sin(a), 0.42 + 0.14 * rand());
+        const top = foot.clone().add(v3(0.04 * Math.cos(a), 0.04 * Math.sin(a), 0.46 + 0.16 * rand()));
+        spike(cards, v3(), foot.clone().lerp(top, 0.1), 0.02, [deep, mid]);
+        spindle(cards, foot, top, 0.058, 4, colours, 0.24);
+    }
+    return cards.build();
 }
 
 export default {

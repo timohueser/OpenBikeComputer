@@ -21,7 +21,7 @@
   "arctic-thyme": { "model": "alpine-flowers", "latin": "Thymus praecox subsp. arcticus", "on": ["bare", "moss", "grass"], "height": [0.03, 0.08], "share": 0.08 },
   "mountain-avens": { "model": "alpine-flowers", "latin": "Dryas octopetala", "on": ["grass", "moss", "bare"], "share": 0.06 },
   "lyme-grass": { "latin": "Leymus arenarius", "on": ["bare"], "height": [0.5, 1.0], "share": 0.03, "clumped": true },
-  "nootka-lupin": { "model": "alpine-flowers", "latin": "Lupinus nootkatensis", "on": ["grass", "bare"], "height": [0.4, 0.8], "share": 0.05, "clumped": true },
+  "nootka-lupin": { "model": "nootka-lupine", "latin": "Lupinus nootkatensis", "on": ["grass", "bare"], "height": [0.4, 0.8], "share": 0.05, "clumped": true },
   "bog-cotton": {}
  },
  "herds": {

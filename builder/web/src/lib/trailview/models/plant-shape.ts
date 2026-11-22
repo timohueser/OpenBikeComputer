@@ -204,11 +204,11 @@ export const onDome = (tuft: Tuft, j: number, n: number, reach: number, turn = 0
 
 /**
  * A seed head, plume or bud on `cards`: a spindle of `sides` sides from `base` on its stalk to `tip`, `r` at its
- * widest, `low` at its base, `high` from there on and `end` at its tip. 2 × `sides` triangles, lit as a round body
+ * widest, `at` of the way up, `low` at its base, `high` from there on and `end` at its tip. 2 × `sides` triangles, lit as a round body
  * that leans up.
  */
-export function spindle(cards: Sheet, base: V, tip: V, r: number, sides: number, [low, high, end = high]: Colour[]): void {
-    const axis = tip.clone().sub(base).normalize(), waist = base.clone().lerp(tip, 0.4), [u, w] = across(axis);
+export function spindle(cards: Sheet, base: V, tip: V, r: number, sides: number, [low, high, end = high]: Colour[], at = 0.4): void {
+    const axis = tip.clone().sub(base).normalize(), waist = base.clone().lerp(tip, at), [u, w] = across(axis);
     const ring = (k: number) => waist.clone().addScaledVector(u, r * Math.cos((k / sides) * 2 * Math.PI)).addScaledVector(w, r * Math.sin((k / sides) * 2 * Math.PI));
     const light = (p: V) => p.clone().sub(waist).normalize().lerp(UP, 0.4).normalize();
     for (let k = 0; k < sides; k++) {

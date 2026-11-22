@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { blade, domed, GOLDEN, hex, merge, paint, ramp, random, sheet, smooth, UP, v3, type Colour, type Geometry, type Ramp, type Sheet, type V } from '../plant-shape';
+import { across, GOLDEN, hex, kite, ramp, random, sheet, spike, spindle, UP, v3, type Colour, type Geometry, type Ramp, type Sheet, type V } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** The rosette's keeled leaves: grey-green from autumn to spring, dead straw by summer. */
@@ -26,92 +26,71 @@ const ROSETTE: Record<Season, [length: number, tilt: number, arch: number]> = {
 const STALK: Record<Season, [stalk: string, along: string, buds: string]> = {
     winter: ['#6a8650', '#7e8a5a', '#9a6e60'],
     spring: ['#6a8650', '#fbf8f2', '#b07c6c'],
-    summer: ['#8a6c48', '#6a5034', '#7a6040'],
-    autumn: ['#8e877a', '#a49884', '#948a7a'],
+    summer: ['#8a6c48', '#6a5034', '#8a6e48'],
+    autumn: ['#8e877a', '#7c7468', '#a49884'],
 };
 
-/** A flat six-pointed star of two triangles at `at`, facing `n`: a flower, or a capsule when small. */
-function star(cards: Sheet, at: V, n: V, r: number, colour: Colour, turn: number): void {
-    const u = v3().crossVectors(n, Math.abs(n.z) > 0.9 ? v3(1, 0, 0) : UP).normalize();
-    const w = v3().crossVectors(n, u);
+/** A star flower at `at`, facing `n`: five pointed tepals that rise `cup` radii to their tips, `throat` where they meet. 5 triangles. */
+function star(cards: Sheet, at: V, n: V, r: number, cup: number, throat: Colour, petal: Colour, turn: number): void {
+    const [u, w] = across(n);
     // Lit as if turned halfway to the sky, so a raceme's stars stay bright from every side.
-    const lit = n.clone().lerp(UP, 0.5).normalize();
-    const tip = (a: number) => at.clone().addScaledVector(u, r * Math.cos(a)).addScaledVector(w, r * Math.sin(a));
-    for (const s of [0, Math.PI / 3]) {
-        const corners = [0, 1, 2].map((k) => tip(turn + s + (k * 2 * Math.PI) / 3));
-        cards.add(corners, [colour, colour, colour], () => lit);
+    const light = () => n.clone().lerp(UP, 0.5).normalize();
+    for (let k = 0; k < 5; k++) {
+        const a = turn + (k / 5) * 2 * Math.PI;
+        const dir = u.clone().multiplyScalar(Math.cos(a)).addScaledVector(w, Math.sin(a)), half = v3().crossVectors(n, dir).multiplyScalar(0.36 * r);
+        cards.add([at.clone().add(half), at.clone().sub(half), at.clone().addScaledVector(dir, r).addScaledVector(n, cup * r)], [throat, throat, petal], light);
     }
 }
 
 /**
  * Branched asphodel: a fountain of long keeled leaves, and out of it one stalk that branches near
- * the top into a candelabra of racemes. Each raceme carries stars along its upper part and a slim
- * cluster of buds at its tip; the stalk keeps its height in every season. 176 triangles.
+ * the top into a candelabra of racemes. In spring the racemes carry white stars under a tip in
+ * bud, in winter a slim cluster of buds, in summer and autumn round seed capsules; the stalk keeps
+ * its height in every season. 175 triangles.
  */
 function asphodel(season: Season, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(LEAVES[season]);
     const [stalk, along, buds] = STALK[season].map(hex);
     const [length, tilt, arch] = ROSETTE[season];
-    const parts: Geometry[] = [];
+    const cards = sheet();
     // Spring leaves have dried at the tips by flowering time.
     const dryTip = season === 'spring' ? hex('#a88a5a') : tip;
-    for (let k = 0; k < 16; k++) {
-        const a = k * GOLDEN + rand() * 0.4;
-        const l = length * (0.75 + 0.35 * rand());
-        // A strap, widest past its middle, that narrows to a point over its last quarter.
-        const width = (t: number) => 0.07 * Math.min(1, 4 * (1 - t)) * (0.8 + 0.2 * Math.sin(Math.PI * t));
-        const leaf = blade([0, 0, 0], a, l, tilt * (0.5 + 0.7 * rand()), arch * (0.8 + 0.4 * rand()), width, 3);
-        parts.push(paint(leaf, (p) => {
-            const t = Math.hypot(p.x, p.y, p.z) / l;
-            return deep.clone().lerp(mid, smooth(0, 0.35, t)).lerp(dryTip, smooth(0.6, 1, t));
-        }));
+    for (let k = 0; k < 20; k++) {
+        const a = k * GOLDEN + rand() * 0.4, l = length * (0.7 + 0.4 * rand()), lean = tilt * (0.45 + 0.75 * rand()), drop = arch * (0.8 + 0.4 * rand());
+        const out = v3(Math.cos(a), Math.sin(a), 0);
+        const on = (s: number) => out.clone().multiplyScalar(Math.sin(lean) * s * l).setZ((Math.cos(lean) * s - drop * s * s) * l);
+        kite(cards, v3(), on(0.5), on(1), v3(-out.y, out.x, 0).multiplyScalar(0.045), [deep, mid, dryTip], (p) => out.clone().multiplyScalar(p.length() / l).add(UP).normalize());
     }
-    const cards = sheet();
-    const light = domed(v3(0, 0, 0.6), v3(0.3, 0.3, 0.5), 0.5);
-    // Two crossed slim triangles, so an axis shows from every side.
-    const axis = (from: V, to: V, width: number, foot: Colour, top: Colour) => {
-        const dir = to.clone().sub(from).normalize();
-        const across = v3().crossVectors(dir, UP).normalize();
-        for (const side of [across, v3().crossVectors(dir, across)]) {
-            cards.add([from.clone().addScaledVector(side, width), from.clone().addScaledVector(side, -width), to], [foot, foot, top], light);
-        }
-    };
     const lean = rand() * 2 * Math.PI;
     const top = v3(0.05 * Math.cos(lean), 0.05 * Math.sin(lean), 1);
-    axis(v3(), top, 0.02, stalk.clone().lerp(deep, 0.3), stalk);
-    const racemes: [V, V, number][] = [[v3().lerp(top, 0.6), top, 9]];
+    const tips = season === 'spring' ? buds : stalk;
+    spike(cards, v3(), top, 0.024, [stalk.clone().lerp(deep, 0.3), tips]);
+    const racemes: [V, V, number][] = [[v3().lerp(top, 0.58), top, 8]];
     for (let b = 0; b < 4; b++) {
         const at = v3().lerp(top, 0.46 + 0.06 * b + 0.04 * rand());
         const a = lean + Math.PI / 2 + b * 1.7 + rand() * 0.5;
-        const reach = 0.17 + 0.09 * rand();
+        const reach = 0.18 + 0.09 * rand();
         const end = at.clone().add(v3(reach * Math.cos(a), reach * Math.sin(a), 0.3 + 0.12 * rand()));
-        axis(at, end, 0.012, stalk, stalk);
-        racemes.push([at.clone().lerp(end, 0.25), end, 6]);
+        spike(cards, at, end, 0.014, [stalk, tips]);
+        racemes.push([at.clone().lerp(end, 0.3), end, season === 'spring' ? 4 : 3]);
     }
-    const open = season !== 'winter';
-    const size = season === 'spring' ? 0.05 : 0.026;
     for (const [from, to, count] of racemes) {
         const dir = to.clone().sub(from).normalize();
-        // Stars from the raceme's foot to three quarters up, turning round it; buds above them.
-        if (open) {
-            for (let i = 0; i < count; i++) {
-                const turn = i * GOLDEN * 2 + rand();
-                const out = v3(Math.cos(turn), Math.sin(turn), 0);
-                const at = from.clone().lerp(to, (0.75 * (i + 0.5)) / count).addScaledVector(out, 0.025);
-                const n = out.multiplyScalar(0.8).addScaledVector(dir, 0.6).normalize();
-                star(cards, at, n, size * (0.85 + 0.3 * rand()), along.clone().lerp(buds, season === 'spring' ? 0.15 * rand() : 0), rand() * 2);
-            }
+        if (season === 'winter') {
+            spindle(cards, from.clone().lerp(to, 0.4), to, 0.026, 5, [along, buds, buds]);
+            continue;
         }
-        const budFrom = from.clone().lerp(to, open ? 0.7 : 0.35);
-        for (const side of [v3().crossVectors(dir, UP).normalize(), v3().crossVectors(dir, v3().crossVectors(dir, UP)).normalize()]) {
-            const bulge = budFrom.clone().lerp(to, 0.4).addScaledVector(side, 0.016);
-            const other = budFrom.clone().lerp(to, 0.4).addScaledVector(side, -0.016);
-            cards.add([budFrom, bulge, to], [along.clone().lerp(buds, 0.5), buds, buds], light);
-            cards.add([budFrom, to, other], [along.clone().lerp(buds, 0.5), buds, buds], light);
+        // Flowers or capsules from the raceme's foot to five sixths up, turning round it.
+        for (let i = 0; i < count; i++) {
+            const turn = i * GOLDEN * 2 + rand();
+            const out = v3(Math.cos(turn), Math.sin(turn), 0);
+            const at = from.clone().lerp(to, (0.84 * (i + 0.5)) / count);
+            const n = out.clone().multiplyScalar(0.8).addScaledVector(dir, 0.6).normalize();
+            if (season === 'spring') star(cards, at.addScaledVector(out, 0.012), n, 0.06 * (0.85 + 0.3 * rand()), 0.35, along.clone().lerp(buds, 0.25), along, rand() * 2);
+            else spindle(cards, at, at.clone().addScaledVector(n, 0.062), 0.024, 3, [stalk, along, buds]);
         }
     }
-    parts.push(cards.build());
-    return merge(parts);
+    return cards.build();
 }
 
 export default {

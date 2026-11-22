@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { blade, byHeight, domed, hex, merge, paint, ramp, random, ribbon, sheet, v3, type Geometry, type Ramp, type Vec } from '../plant-shape';
+import { hex, leaf, ramp, random, sheet, spike, UP, v3, type Geometry, type Ramp, type V } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** The rosette's broad, soft leaves: dark green, a little duller in winter. */
@@ -11,60 +11,61 @@ const LEAVES: Record<Season, Ramp> = {
 };
 
 /**
- * Per season: the spike's height, its stalk colour, and the share of its places that hold an open
- * bell, from the foot up; the rest hold buds, or seed capsules once it has flowered. Winter has
- * the leaf rosette alone.
+ * Per season: the spike's height, its stalk colour, the number of open bells from its foot up, and
+ * the number of buds above them, or of seed capsules once it has flowered. Winter has the leaf
+ * rosette alone.
  */
-const SPIKE: Record<Season, [height: number, stalk: string, bells: number, seeds: boolean]> = {
-    winter: [0, '#4a6038', 0, false],
-    spring: [0.75, '#5a7a44', 0.3, false],
-    summer: [1, '#5a7a44', 0.8, false],
-    autumn: [0.95, '#7a6448', 0, true],
+const SPIKE: Record<Season, [height: number, stalk: string, bells: number, buds: number]> = {
+    winter: [0, '#4a6038', 0, 0],
+    spring: [0.75, '#5a7a44', 4, 7],
+    summer: [1, '#5a7a44', 12, 0],
+    autumn: [0.95, '#7a6448', 0, 10],
 };
 
-const [BELL, RIM, BUD, CAPSULE] = ['#a03c88', '#e07cc0', '#7a9a5a', '#6a5038'].map(hex);
+const [BELL, RIM, BUD, BLUSH, CAPSULE, HUSK] = ['#96307e', '#e88cc8', '#7a9a5a', '#c070a0', '#5a4430', '#8a6c48'].map(hex);
 
 /**
- * Foxglove: a rosette of broad leaves and one tall spike hung on one side with nodding purple-pink
- * bells, each two cards that open downwards from the stalk. It builds itself 1 tall in flower, so
- * the winter rosette stays low. 61 triangles in flower.
+ * Foxglove: a rosette of broad leaves, the inner ones raised, and one tall spike hung on one side
+ * with nodding purple-pink bells. A bell is a three-sided trumpet that opens outward and down from
+ * the stalk, pale at its mouth; the bells shrink up the spike to its tip. It builds itself 1 tall
+ * in flower, so the winter rosette stays low. 61 triangles in flower.
  */
 function foxglove(season: Season, rand: () => number): Geometry {
-    const [height, stalk, bells, seeds] = SPIKE[season];
-    const parts: Geometry[] = [];
-    const leaf = byHeight(ramp(LEAVES[season]), 0.15);
-    for (let k = 0; k < 7; k++) {
-        const a = (k / 7) * 2 * Math.PI + rand() * 0.5;
-        parts.push(paint(blade([0, 0, 0], a, 0.28 + 0.06 * rand(), 1.2, 0.35, (t) => 0.13 * Math.sin(Math.PI * Math.min(1, t + 0.1)), 2), leaf));
-    }
-    const face = rand() * 2 * Math.PI;
-    const lean = 0.04 * rand();
-    if (!height) return merge(parts);
-    const top: Vec = [lean * Math.cos(face), lean * Math.sin(face), height];
-    parts.push(paint(ribbon([[0, 0, 0], [0.5 * top[0], 0.5 * top[1], 0.5 * height], top], [-Math.sin(face), Math.cos(face), 0], (t) => 0.025 * (1 - 0.6 * t), 2), hex(stalk)));
+    const [height, stalk, bells, buds] = SPIKE[season];
+    const colours = ramp(LEAVES[season]);
     const cards = sheet();
-    const light = domed(v3(0, 0, 0.6 * height), v3(0.3, 0.3, 0.6), 0.3);
-    for (let i = 0; i < 20; i++) {
-        const t = 0.35 + (0.6 * i) / 20;
-        // The bells keep to one side of the spike, a little spread round it.
-        const a = face + (rand() - 0.5) * 1.6;
-        const at = v3(t * top[0], t * top[1], t * height);
-        const out = v3(Math.cos(a), Math.sin(a), 0);
-        const side = v3(-out.y, out.x, 0);
-        const size = 0.1 * (1.15 - 0.6 * (i / 20));
-        // Bells open from the foot of the spike up.
-        const open = i < Math.round(20 * bells);
-        if (open) {
-            const mouth = at.clone().addScaledVector(out, size).setZ(at.z - 0.8 * size);
-            cards.add([at, mouth.clone().addScaledVector(side, 0.5 * size), mouth.clone().addScaledVector(side, -0.5 * size)], [BELL, RIM, RIM], light);
-            cards.add([at, mouth.clone().add(v3(0, 0, 0.35 * size)), mouth.clone().add(v3(0, 0, -0.35 * size))], [BELL, RIM, BELL], light);
-        } else {
-            const end = at.clone().addScaledVector(out, 0.4 * size).setZ(at.z + 0.2 * size);
-            cards.add([at.clone().addScaledVector(side, 0.25 * size), at.clone().addScaledVector(side, -0.25 * size), end], [seeds ? CAPSULE : BUD, seeds ? CAPSULE : BUD, seeds ? CAPSULE : BUD], light);
-        }
+    for (let k = 0; k < 10; k++) {
+        const inner = k >= 7, a = (inner ? (k - 6.5) / 3 : k / 7) * 2 * Math.PI + rand() * 0.5;
+        const out = v3(Math.cos(a), Math.sin(a), 0), length = inner ? 0.2 + 0.04 * rand() : 0.3 + 0.07 * rand();
+        const dir = out.clone().addScaledVector(UP, inner ? 0.9 : 0.22).normalize();
+        leaf(cards, v3(), dir, length, 0.52 * length, 0.55, colours, (p: V) => out.clone().multiplyScalar((0.5 * p.length()) / length).add(UP).normalize());
     }
-    parts.push(cards.build());
-    return merge(parts);
+    if (!height) return cards.build();
+    const face = rand() * 2 * Math.PI, lean = 0.05 * rand();
+    const top = v3(lean * Math.cos(face), lean * Math.sin(face), height);
+    const green = hex(stalk);
+    spike(cards, v3(), top, 0.024, [green.clone().lerp(colours[0], 0.4), green]);
+    const back = v3(-Math.cos(face), -Math.sin(face), 0.5).normalize();
+    leaf(cards, top.clone().multiplyScalar(0.18), back, 0.17, 0.08, 0.5, colours);
+    const count = bells + buds;
+    for (let i = 0; i < count; i++) {
+        const at = top.clone().multiplyScalar(0.36 + (0.58 * i) / (count - 1));
+        // The bells keep to one side of the spike, a little spread round it.
+        const a = face + (i % 2 ? 0.7 : -0.7) * (0.4 + 0.6 * rand());
+        const out = v3(Math.cos(a), Math.sin(a), 0);
+        const size = 0.15 * (1.1 - 0.55 * (i / count));
+        if (i >= bells) {
+            const seeds = season === 'autumn';
+            leaf(cards, at, out.clone().addScaledVector(UP, seeds ? 0.7 : -0.25).normalize(), 0.55 * size, 0.3 * size, 0.5, seeds ? [CAPSULE, CAPSULE, HUSK] : [BUD, BUD, BLUSH]);
+            continue;
+        }
+        const axis = out.clone().addScaledVector(UP, -0.8).normalize(), side = v3(-out.y, out.x, 0), under = v3().crossVectors(axis, side);
+        const middle = at.clone().addScaledVector(axis, 0.6 * size);
+        const mouth = [0, 1, 2, 0].map((k) => at.clone().addScaledVector(axis, size).addScaledVector(side, 0.4 * size * Math.sin((k * 2 * Math.PI) / 3)).addScaledVector(under, -0.4 * size * Math.cos((k * 2 * Math.PI) / 3)));
+        const light = (p: V) => p.clone().sub(middle).normalize().lerp(UP, 0.45).normalize();
+        for (let k = 0; k < 3; k++) cards.add([at, mouth[k], mouth[k + 1]], [BELL, RIM, RIM], light);
+    }
+    return cards.build();
 }
 
 export default {
