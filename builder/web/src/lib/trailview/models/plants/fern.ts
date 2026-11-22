@@ -12,7 +12,7 @@ const FERN: Record<Season, Ramp> = {
 /**
  * A frond from the crown toward angle `a`, `length` along the ground: it leaves the crown steeply,
  * arches out and ends level. `pairs` pinnae sit on each side of the rachis, the longest below the
- * middle, each a broad tooth that droops from the rachis. Those of one side stand half a step past
+ * middle, each a broad tooth that curls up from the rachis. Those of one side stand half a step past
  * those of the other, so the frond is whole along its length: a zigzag feather with a ridge. It is
  * dark at the crown and light at its tip and its edge.
  */
