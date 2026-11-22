@@ -49,6 +49,8 @@ interface Bark {
     marks?: [string, number];
     /** Diamond leaf scars, as on a palm: how many around the trunk. */
     scars?: number;
+    /** Buttresses around the foot that run out up the trunk, as on a cedar: how many. A near trunk has two sides a buttress. */
+    flutes?: number;
 }
 
 interface Base extends Bark {
@@ -56,6 +58,8 @@ interface Base extends Bark {
     latin: string;
     /** Placed at the heading it is built in, as a tree the wind bends must be; others turn at random. */
     keepsHeading?: true;
+    /** Berries in clusters of three on the crown of a near tree, as on a juniper: their colour and how many clusters. */
+    berries?: [string, number];
 }
 
 interface Conifer extends Base {
@@ -75,16 +79,27 @@ interface Conifer extends Base {
     needles: Record<Season, Ramp | 'bare'>;
     /** The colour of a bare conifer's branches and twigs. */
     twigs?: Ramp;
+    /** This many tiers or whorls in place of the level's own, a tier with fewer rows: thin plates of level branches, as on a fir. */
+    whorls?: number;
+    /** The top tier is flat, so the crown ends in a nest in place of a point, as an old fir's. */
+    nest?: true;
     /** Pale needle undersides, as on silver fir. */
     under?: string;
     /** How far the leader nods over towards +x, in tree heights. */
     nod?: number;
-    /** Each tier a whorl of branches ending in drooping tufts, with sky between, as on a Canary pine. */
-    tufts?: true;
+    /**
+     * Each tier a whorl of `lobes` branches that end in tufts of needles, as on a pine: a tuft's radius in tier radii.
+     * Under a half, sky shows between the tufts; near 1 they close into a dense crown.
+     */
+    tufts?: number;
+    /** A whorl's branches rise this far, in their length, and their tufts stand along them, as the brushes of a mountain pine. */
+    lift?: number;
     /** Needle tufts sprouting from the bare trunk: how many a near tree has. */
     sprouts?: number;
     /** One smooth column over the crown's outline in soft upright lumps, `jitter` deep, as a cypress: no tiers. */
     column?: true;
+    /** A column has this many lower tops that lean out of its sides, as the stems of a juniper. */
+    spires?: number;
     /**
      * Separate boughs in place of tiers, with sky between: each sags and turns up at its tip under a hanging
      * curtain of needles, as on a larch. How many a tree has.
@@ -106,6 +121,12 @@ interface Broadleaf extends Base {
     stagger?: true;
     /** Puffs are flat-topped pads, as on a Scots pine; a near tree has three more. */
     pads?: true;
+    /** Each lump swells into this many round tufts, lighter on the swells, as the needle brushes of a pine. */
+    billows?: number;
+    /** Puffs this many times as wide: an open crown of few, heavy puffs. */
+    dense?: number;
+    /** An open crown's puffs stand in this many level whorls under a dome, the widest lowest, as on a black pine: near the eye 3 or 4 a whorl. */
+    layers?: number;
     /** Lumps hang into points this far, in lump radii, as the twigs of a weeping birch. */
     weep?: number;
     /** Trunks leaning out from one foot. */
@@ -163,7 +184,7 @@ const vertices = (parts: Geometry[]) => parts.reduce((sum, part) => sum + part.p
 const BANDS = 18;
 
 /** A trunk from the ground to `top`, darker at its foot, its bole in `spans` spans, which a trunk that bends needs. */
-function trunk({ trunk: r, flare, neck = 0.6, bark, fade = [0, 0.5], marks, scars }: Bark, top: number, lod: Lod, seed: number, spans = 1): Geometry {
+function trunk({ trunk: r, flare, neck = 0.6, bark, fade = [0, 0.5], marks, scars, flutes }: Bark, top: number, lod: Lod, seed: number, spans = 1): Geometry {
     if (scars && lod === 0) return scarred(r, flare, bark, scars, top);
     const [sides, perSpan] = DETAIL[lod].trunk;
     const [foot, bole] = bark.map(hex);
@@ -184,6 +205,16 @@ function trunk({ trunk: r, flare, neck = 0.6, bark, fade = [0, 0.5], marks, scar
     ];
     // The lathe samples its spline evenly per span, so whole rows per span keep every profile point.
     const geo = soft(lathe(profile, sides, (bands ? 1 : perSpan) * (profile.length - 1)), 0.075 * r, 1.4 / r, seed);
+    if (flutes) {
+        const p = geo.position;
+        for (let i = 0; i < p.length; i += 3) {
+            // A side stands out and the next stands in, less the higher up.
+            const k = 1 + 0.3 * Math.cos(flutes * (Math.atan2(p[i + 1], p[i]) + Math.PI / 2)) * smooth(0.5 * top, 0, p[i + 2]);
+            p[i] *= k;
+            p[i + 1] *= k;
+        }
+        computeNormals(geo);
+    }
     // A far scarred trunk takes the mean shade of its plates and grooves.
     const colour = (p: V) => foot.clone().lerp(bole, smooth(fade[0] * top, fade[1] * top, p.z)).multiplyScalar(scars ? 0.8 : 1);
     if (!marks) return paint(geo, colour);
@@ -256,12 +287,12 @@ function scallop(geo: Geometry, lobes: number, droop: number, seed: number): Geo
 
 /** Stacked tiers along the crown; fewer, taller tiers keep the same outline at a lower detail. */
 function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Built {
-    const { sides, rows } = DETAIL[lod];
+    const { sides } = DETAIL[lod];
     const rand = random(seed);
     const own = spec.needles[season];
     const bare = own === 'bare';
-    // A far tufted pine keeps its whorls, as its tiers are layers apart, not one cone; a bare one all of them.
-    const { tiers } = DETAIL[bare ? 0 : spec.tufts ? Math.min(lod, 1) : lod];
+    // A far tufted pine keeps its whorls, as its tiers are layers apart, not one cone; so does a bare tree.
+    const tiers = spec.whorls ?? DETAIL[bare || spec.tufts ? 0 : lod].tiers, rows = spec.whorls ? Math.round((DETAIL[lod].rows * DETAIL[lod].tiers) / tiers) : DETAIL[lod].rows;
     const [deep, mid, tip] = ramp(bare ? spec.twigs! : own);
     const under = spec.under ? hex(spec.under) : deep;
     const needles = (p: V, n: V) =>
@@ -275,12 +306,12 @@ function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Built {
     const step = (1 - spec.base) / (tiers - 1 + spec.overlap);
     const height = spec.overlap * step;
     const sways = spec.boughs ? boughs(spec, rand) : [];
-    // A column hides its trunk but for the foot; boughs show theirs up to the leader.
-    const parts = [trunk(spec, bare ? 0.97 : spec.column ? spec.base + 0.1 : spec.boughs ? 0.88 : 1 - height, lod, seed)];
+    // A column hides its trunk but for the foot; boughs show theirs up to the leader; a nest covers its trunk's top.
+    const parts = [trunk(spec, bare ? 0.97 : spec.column ? spec.base + 0.1 : spec.boughs ? 0.88 : 1 - height - (spec.nest ? 0.03 : 0), lod, seed)];
     const twigs = sheet();
     let kept = 0;
     const bole = hex(spec.bark[1]);
-    if (spec.column) parts.push(column(spec, needles, lod, seed));
+    if (spec.column) parts.push(...column(spec, needles, lod, seed));
     for (const [k, { path, r }] of sways.entries()) {
         if (bare) {
             stem(parts, twigs, (lod < 2 ? [0, 0.33, 0.66, 1] : [0, 1]).map(path), spec.trunk * 0.3, spec.trunk * 0.06, () => mid, lod ? 0 : 4, k);
@@ -304,12 +335,26 @@ function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Built {
     }
     // The leader stands over the top boughs.
     if (sways.length && !bare) parts.push(place(paint(soft(lathe([[0, 0], [1, 0.2], [0.55, 0.6], [0, 1]], sides >> 1, 4)), needles), { at: [0, 0, 0.82], scale: [0.03, 0.03, 0.18] }));
-    // A flat ball of needles drooping from a branch tip: 80 triangles near, 20, then a 12-triangle
-    // double cone. A far tuft has too few corners to droop without turning into a point.
-    const tuft = (at: Vec, size: number, k: number) => {
-        const geo = lod === 2 ? soft(lathe([[0, -1], [1, 0], [0, 1]], 6, 2)) : soft(lump(1, lod ? 0 : 1), 0.08, 3, seed + k);
-        if (lod < 2) hang(geo, 1, spec.droop);
-        return place(paint(geo, needles), { at, scale: [size, size, 0.5 * size] });
+    const lift = spec.lift ?? 0, rise = Math.min(1, lift);
+    // The needles on the end of a branch that leaves the trunk towards `a`. A tuft that droops is a mop, a dome over a
+    // fringe that hangs in points; another is a ball, longer along a branch that rises and rounder. Far off both are
+    // balls of 20 triangles.
+    const tuft = (at: Vec, size: number, k: number, a = 0) => {
+        const mop = spec.droop > 0;
+        const geo = mop && !lod ? soft(scallop(lathe(MOP, 8, 6), 4, spec.droop, seed + k), 0.05, 3, seed + k) : hang(soft(lump(1, lod ? 0 : 1), 0.08, 3, seed + k), 1, spec.droop);
+        const tone = 0.9 + 0.2 * hash(v3(...at), seed), scale: Vec = mop ? [size, size, size] : [(1 + 0.3 * rise) * size, size, lerp(0.5, 0.8, rise) * size];
+        const tilted = place(paint(geo, (p, n) => needles(p, n).multiplyScalar(tone)), { rot: [0, mop ? 0 : -Math.atan(lift), 0], scale });
+        return place(tilted, { at, rot: [0, 0, a] });
+    };
+    // Far off a whorl's tufts merge into one layer of radius 1 with a point for each tuft, its rim as high as the branches rise.
+    const layer = () => {
+        const n = spec.lobes, thick = lerp(0.5, 0.8, rise) * spec.tufts!, geo = soft(lathe([[0, -thick], [1, 0], [0, thick]], 2 * n, 2)), p = geo.position;
+        for (let i = 0; i < p.length; i += 3) {
+            const d = Math.hypot(p[i], p[i + 1]), dent = Math.round((Math.atan2(p[i + 1], p[i]) * n) / Math.PI) % 2 ? Math.min(0.9, 0.1 + spec.tufts!) : 1;
+            // The rim of mops hangs; that of balls stands as high as their branches rise.
+            p.splice(i, 3, p[i] * dent, p[i + 1] * dent, p[i + 2] + (spec.droop > 0 ? -0.5 * spec.droop : lift * (1 - 0.8 * spec.tufts!)) * d * dent);
+        }
+        return paint(computeNormals(geo), needles);
     };
     for (let i = 0; i < (spec.column || spec.boughs ? 0 : tiers); i++) {
         const z = spec.base + i * step;
@@ -334,24 +379,28 @@ function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Built {
             continue;
         }
         if (spec.tufts && lod === 2) {
-            // Far off a whorl's tufts merge into one flat layer.
-            parts.push(place(tuft([0, 0, 0], 1, i), { at: [shift, 0, z + 0.2 * height], rot: [0, 0, spin], scale: [1.25 * r, 1.25 * r, 0.85 * r] }));
+            parts.push(place(layer(), { at: [shift, 0, z + 0.2 * height + (spec.droop > 0 ? lift * (1.25 - spec.tufts) * r : 0)], rot: [0, 0, spin], scale: [1.25 * r, 1.25 * r, 1.25 * r] }));
             continue;
         }
         if (spec.tufts) {
             const n = spec.lobes;
             for (let k = 0; k < n; k++) {
                 const a = spin + ((k + 0.5 * rand()) / n) * 2 * Math.PI;
-                const end: Vec = [shift + 0.8 * r * Math.cos(a), 0.8 * r * Math.sin(a), z + 0.2 * height];
+                // A wider tuft stands nearer the trunk, so the whorl is as wide.
+                const out = (1.25 - spec.tufts) * r;
+                // Tufts of one whorl stand a little higher or lower and are larger or smaller, by `jitter`.
+                const end: Vec = [shift + out * Math.cos(a), out * Math.sin(a), z + 0.2 * height + lift * out + spec.jitter * step * (rand() - 0.5)];
                 parts.push(limb([0, 0, z], end, spec.trunk * 0.3, bole, 0, 4));
-                parts.push(tuft(end, 0.45 * r * (1 + 0.2 * lod), i * n + k));
+                parts.push(tuft(end, spec.tufts * r * (1 + spec.jitter * (rand() - 0.5)), i * n + k, a));
             }
             continue;
         }
         const geo = soft(scallop(lathe(TIER, sides, rows), lobes, spec.droop, seed + i), 0.02, 4, seed + i);
-        parts.push(place(paint(geo, needles), { at: [shift, shift * 0.5, z], rot: [0, 0, spin], scale: [r, r, height] }));
+        parts.push(place(paint(geo, needles), { at: [shift, shift * 0.5, z], rot: [0, 0, spin], scale: [r, r, spec.nest && i === tiers - 1 ? 0.4 * height : height] }));
     }
     if (spec.tufts && !bare) parts.push(tuft([0, 0, 1 - 0.5 * height], 0.35 * spec.radius, -1));
+    // No berries near the top, where the crown is too thin to hold them.
+    if (spec.berries && !lod && !bare) parts.push(...berries(parts.slice(1), spec.berries, rand, p => p.z > lerp(spec.base, 1, 0.7)));
     const crown = parts.slice(1);
     // Sprouts are too small to see beyond the near trees.
     for (let k = 0; !bare && k < (spec.sprouts ?? 0) >> (2 * lod); k++) {
@@ -370,6 +419,8 @@ function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Built {
     return { geo, trunk: vertices(parts.slice(0, 1)), crown: lowest(crown) };
 }
 
+// A mop of needles, radius 1: a dome over a rim that `scallop` droops.
+const MOP: [number, number][] = [[0, -0.2], [0.5, -0.3], [0.9, -0.35], [1, -0.1], [0.9, 0.3], [0.55, 0.7], [0, 0.85]];
 /** Twigs that hang from a bare bough of a near tree. */
 const CURTAIN = 16;
 // A spray along z from 0 to 1, radius 1: broad near its root, with a round tip.
@@ -387,19 +438,52 @@ function boughs(spec: Conifer, rand: () => number): { path: (s: number) => V; r:
     });
 }
 
-/** The crown of a `column` conifer. A swell is lighter and a hollow darker, so the lumps show in flat light. */
-function column(spec: Conifer, needles: (p: V, n: V) => Colour, lod: Lod, seed: number): Geometry {
-    const rows = [60, 24, 10][lod];
-    const outline = Array.from({ length: rows + 1 }, (_, k): [number, number] => [spec.radius * spec.shape(k / rows), lerp(spec.base, 1, k / rows)]);
-    const geo = soft(revolve([[0, spec.base], ...outline], DETAIL[lod].sides)), p = geo.position, swell: number[] = [];
-    for (let i = 0; i < p.length; i += 3) {
-        // Lumps taller than wide, as sprays that stand upright.
-        swell.push(noise(v3(p[i], p[i + 1], 0.5 * p[i + 2]), 2.6 / spec.radius, seed));
-        p[i] *= 1 + spec.jitter * swell[i / 3];
-        p[i + 1] *= 1 + spec.jitter * swell[i / 3];
+/**
+ * The crown of a `column` conifer, and its spires: each a flame of the same outline that leans out of the column's side
+ * to a lower top. A swell is lighter and a hollow darker, so the lumps show in flat light.
+ */
+function column(spec: Conifer, needles: (p: V, n: V) => Colour, lod: Lod, seed: number): Geometry[] {
+    const spires = spec.spires ?? 0;
+    const flame = (k: number, radius: number, top: number, rows: number, sides: number, lean: V) => {
+        const outline = Array.from({ length: rows + 1 }, (_, j): [number, number] => [radius * spec.shape(j / rows), lerp(spec.base, top, j / rows)]);
+        const geo = soft(revolve([[0, spec.base], ...outline], sides)), p = geo.position, swell: number[] = [];
+        for (let i = 0; i < p.length; i += 3) {
+            // Lumps taller than wide, as sprays that stand upright.
+            swell.push(noise(v3(p[i], p[i + 1], 0.5 * p[i + 2]), 2.6 / radius, seed + k));
+            const out = (p[i + 2] - spec.base) / (top - spec.base);
+            p[i] = p[i] * (1 + spec.jitter * swell[i / 3]) + lean.x * out;
+            p[i + 1] = p[i + 1] * (1 + spec.jitter * swell[i / 3]) + lean.y * out;
+        }
+        let v = 0;
+        return paint(computeNormals(geo), (q, n) => needles(q, n).multiplyScalar(1 + 0.4 * swell[v++]));
+    };
+    // A column with spires has fewer corners, as they share its triangles.
+    const main = flame(0, spec.radius, 1, spires ? [36, 24, 10][lod] : [60, 24, 10][lod], spires && !lod ? 16 : DETAIL[lod].sides, v3());
+    return [main, ...Array.from({ length: spires }, (_, k) => {
+        const a = k * GOLDEN + seed, top = lerp(spec.base, 1, 0.6 + (0.25 * k) / spires);
+        return flame(k + 1, 0.7 * spec.radius, top, [20, 10, 5][lod], [10, 6, 4][lod], v3(Math.cos(a), Math.sin(a), 0).multiplyScalar(1.1 * spec.radius));
+    })];
+}
+
+/** A berry's radius, in tree heights. */
+const BEAD = 0.009;
+
+/**
+ * Berry clusters on the skin of a crown's `parts`, three beads each, at corners on its side that `hidden` does not rule
+ * out, as corners inside another part.
+ */
+function berries(parts: Geometry[], [colour, count]: [string, number], rand: () => number, hidden: (p: V, part: number) => boolean = () => false): Geometry[] {
+    const out: Geometry[] = [], shade = hex(colour), p = v3(), n = v3();
+    for (let tries = 0; out.length < 3 * count && tries < 1000; tries++) {
+        const part = Math.floor(rand() * parts.length), k = Math.floor((rand() * parts[part].position.length) / 3);
+        p.from(parts[part].position, k);
+        if (Math.abs(n.from(parts[part].normal, k).z) > 0.6 || hidden(p, part)) continue;
+        for (let b = 0; b < 3; b++) {
+            const a = 2 * Math.PI * (b / 3 + rand()), at = p.clone().addScaledVector(n, 0.5 * BEAD).add(v3(0.9 * BEAD * Math.cos(a), 0.9 * BEAD * Math.sin(a), BEAD * (rand() - 0.5)));
+            out.push(place(paint(soft(lump(BEAD, 0)), (_, m) => shade.clone().multiplyScalar(0.8 + 0.4 * smooth(-0.5, 1, m.z))), { at }));
+        }
     }
-    let k = 0;
-    return paint(computeNormals(geo), (q, n) => needles(q, n).multiplyScalar(1 + 0.4 * swell[k++]));
+    return out;
 }
 
 /**
@@ -460,13 +544,20 @@ function lumps(count: number, rand: () => number): { at: V; r: number }[] {
  * An open crown in its own frame, radius 1: a puff on top and smaller ones around it, with sky
  * between. More puffs are smaller; fewer huddle in a little, as a far tree has no limbs to hold them.
  */
-function puffs(count: number, rand: () => number): { at: V; r: number }[] {
+function puffs(count: number, rand: () => number, dense = 1, layers = 0): { at: V; r: number }[] {
     const out = [{ at: v3(0.1, 0, 0.5), r: 0.5 }];
     const ring = count - 1;
     for (let k = 0; k < ring; k++) {
+        if (layers) {
+            // Whorl after whorl takes a puff, each a part of a turn on from the one below.
+            const j = k % layers, n = Math.ceil((ring - j) / layers), z = lerp(-0.75, 0.1, j / Math.max(1, layers - 1));
+            const a = ((Math.floor(k / layers) + 0.5 * j + 0.3 * rand()) / n) * 2 * Math.PI, d = clamp(ring / 8, 0.5, 1) * 0.8 * Math.sqrt(1 - ((z + 0.75) / 1.9) ** 2);
+            out.push({ at: v3(d * Math.cos(a), d * Math.sin(a), z + 0.1 * (rand() - 0.5)), r: dense * Math.min(1, Math.sqrt(8 / ring)) * (0.34 + 0.06 * rand()) });
+            continue;
+        }
         const a = (k / ring) * 2 * Math.PI + rand() * 0.6;
         const d = clamp(ring / 5, 0.85, 1) * (0.62 + 0.25 * rand());
-        out.push({ at: v3(d * Math.cos(a), d * Math.sin(a), -0.5 + 0.9 * rand()), r: Math.min(1, Math.sqrt(5 / ring)) * (0.32 + 0.1 * rand()) });
+        out.push({ at: v3(d * Math.cos(a), d * Math.sin(a), -0.5 + 0.9 * rand()), r: dense * Math.min(1, Math.sqrt(5 / ring)) * (0.32 + 0.1 * rand()) });
     }
     return out;
 }
@@ -508,10 +599,11 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
         return { geo: merge([bole, ...crown]), trunk: vertices([bole]), crown: lowest(crown) };
     }
     // A far crooked tree has a puff more, as it keeps its limbs.
-    const crown = spec.open ? puffs(count + (spec.pads && !lod ? 3 : 0) + (spec.crook && lod === 2 ? 1 : 0), rand) : lumps(count, rand);
+    const whorled = spec.layers && [Math.round(3.6 * spec.layers), Math.round(2.4 * spec.layers), 4][lod] + 1;
+    const crown = spec.open ? puffs((whorled || count + (spec.pads && !lod ? 3 : 0)) + (spec.crook && lod === 2 ? 1 : 0), rand, spec.dense, spec.layers) : lumps(count, rand);
     const parts: Geometry[] = [];
     // An open crown's trunk runs up into its top puff, which no limb reaches.
-    const top = spec.open ? cz + 0.3 * rz : spec.fork + 0.3 * rz;
+    const top = spec.open ? cz + (spec.layers ? 0.5 : 0.3) * rz : spec.fork + 0.3 * rz;
     // A far tree's stems hide under its crown, so it has one trunk as stout as all of them.
     const stems = lod < 2 ? (spec.stems ?? 1) : 1;
     const stout = { ...spec, trunk: spec.trunk * Math.sqrt((spec.stems ?? 1) / stems) };
@@ -564,13 +656,21 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
         crown.forEach(({ at, r }, k) => {
             // Each lump a little lighter or darker, so the crown does not read as one blob.
             const tone = 0.9 + 0.2 * rand();
-            // A flat pad needs fewer corners than a round puff.
-            const puff = soft(lump(r, spec.pads ? Math.min(ico, 2) : ico), 0.04, 4, seed + k);
+            // A flat pad needs fewer corners than a round puff, and so does a small puff that swells.
+            const puff = soft(lump(r, spec.pads || (spec.billows && r < 0.44) ? Math.min(ico, 2) : ico), 0.04, 4, seed + k);
+            // A far lump has too few corners to swell.
+            const swell = spec.billows && ico > 1 ? billow(puff, r, spec.billows, seed + k) : undefined;
             if (spec.weep) hang(puff, r, spec.weep);
             if (spec.pads) pad(puff, r);
-            const geo = paint(place(puff, { at }), (p, n) => foliage(p, n).multiplyScalar(tone));
+            let v = 0;
+            // A whorl's puff is no taller in a crown taller than wide; a far one has too few corners for a pad, and is flat.
+            const geo = paint(place(puff, { at, scale: [1, 1, spec.layers ? Math.min(ico < 2 ? 0.6 : 1, rx / rz) : 1] }), (p, n) => foliage(p, n).multiplyScalar(tone * (swell ? 0.8 + 0.4 * swell[v++] : 1)));
             parts.push(place(geo, { at: [0, 0, cz], scale: [rx, ry, rz] }));
         });
+        if (spec.berries && !lod) {
+            const inside = (p: V, own: number) => crown.some((other, k) => k !== own && other.at.distanceTo(v3(p.x / rx, p.y / ry, (p.z - cz) / rz)) < 0.75 * other.r);
+            parts.push(...berries(parts.slice(-crown.length), spec.berries, rand, inside));
+        }
         // A bunch hangs from the side or the underside of a lump, where no other lump hides it.
         for (let k = 0, tries = 0; flecks && lod === 0 && k < (spec.bunches ?? 0) && tries < 1000; tries++) {
             const { at, r } = crown[Math.floor(rand() * crown.length)];
@@ -845,6 +945,30 @@ function crook(geo: Geometry, amount: number): void {
     computeNormals(geo);
 }
 
+/**
+ * Swells a lump of radius r into `count` round tufts that stand out of a core, most of them on its upper side, as
+ * balls that share one skin. Returns how far each vertex swells, 0 to 1.
+ */
+function billow(geo: Geometry, r: number, count: number, seed: number): number[] {
+    const p = geo.position, d = v3(), swell: number[] = [];
+    const tufts = Array.from({ length: count }, (_, k) => {
+        const z = lerp(0.9, -0.4, (k + 0.5) / count), level = Math.sqrt(1 - z * z), a = k * GOLDEN + seed;
+        return v3(level * Math.cos(a), level * Math.sin(a), z);
+    });
+    // A tuft is a ball of radius 0.5 r that stands 0.55 r out of the centre; the core has radius 0.7 r.
+    for (let k = 0; k < p.length / 3; k++) {
+        const far = Math.max(0.7, ...tufts.map(c => {
+            const cos = d.from(p, k).normalize().dot(c), under = 0.25 - 0.3025 * (1 - cos * cos);
+            return cos > 0 && under > 0 ? 0.55 * cos + Math.sqrt(under) : 0;
+        }));
+        d.multiplyScalar(r * far);
+        p.splice(3 * k, 3, d.x, d.y, d.z);
+        swell.push((far - 0.7) / 0.35);
+    }
+    computeNormals(geo);
+    return swell;
+}
+
 /** Squashes a lump of radius r into a pad with a flat top and round sides. */
 function pad(geo: Geometry, r: number): void {
     const p = geo.position;
@@ -853,14 +977,14 @@ function pad(geo: Geometry, r: number): void {
 }
 
 /** Draws the underside of a lump of radius r down into a hanging point. */
-function hang(geo: Geometry, r: number, amount: number): void {
+function hang(geo: Geometry, r: number, amount: number): Geometry {
     const p = geo.position;
     for (let i = 0; i < p.length; i += 3) {
         const k = smooth(0.2, -1, p[i + 2] / r);
         const narrow = 1 - 0.5 * amount * k;
         p.splice(i, 3, p[i] * narrow, p[i + 1] * narrow, p[i + 2] - amount * r * k * k);
     }
-    computeNormals(geo);
+    return computeNormals(geo);
 }
 
 /** Shears a tree downwind, towards +x, more the higher it reaches. */

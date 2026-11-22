@@ -24,5 +24,5 @@ export const bareIn = (id: string, season: Season) => {
  */
 export const buildsFar = (id: string) => {
     const spec = TREES[id];
-    return spec.form === 'conifer' ? !!spec.boughs : !!spec.crook;
+    return spec.form === 'conifer' ? !!(spec.boughs || spec.tufts) : !!spec.crook;
 };
