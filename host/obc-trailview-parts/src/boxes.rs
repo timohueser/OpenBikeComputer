@@ -14,7 +14,7 @@ use crate::{metres_per_unit, Part, Section};
 /// to the roof; where the spring is the roof the box is flat.
 pub const BOX: usize = 12;
 
-/// How far end e's part runs in from its frame line: its boxes, and its shell, which ends with a face (`closed`) or
+/// How far hole e's part runs in from its frame line: its boxes, and its shell, which ends with a face (`closed`) or
 /// meets the shell of the tube's other end (`then`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reach {
@@ -29,7 +29,7 @@ pub struct Reach {
 /// collar. An underpass is one part for its chain: a `box` end runs to where it meets the other end's part, as the
 /// ground can dip between two ways on top.
 fn need(net: &Net, e: usize) -> f64 {
-    let (end, design) = (&net.ends[e], &net.rules.design);
+    let (end, design) = (&net.holes[e], &net.rules.design);
     if end.part == Part::Box {
         return f64::INFINITY;
     }
@@ -95,13 +95,15 @@ pub fn reach(net: &Net, e: usize) -> Reach {
     Reach { boxes: meet, shell: meet, closed: false, then: Meets { foot, lower } }
 }
 
-/// The level that end e's head wall and shell go down to, a world height: its `foot`, or `foot_m` under the lowest
-/// floor of the chords that its part runs over, the lower.
+/// The level that the head and the shells of hole e's record go down to, a world height: its `foot`, or `foot_m` under
+/// the lowest floor of the chords that the parts of its holes run over, the lower.
 pub fn foot(net: &Net, e: usize) -> f64 {
-    let end = &net.ends[e];
-    let own = at_or_past(&stops(net, e), need(net, e));
-    let walk = net.walk(e, own);
-    let low = walk.iter().map(|&(c, ..)| net.chords[c].a[2].min(net.chords[c].b[2])).fold(f64::INFINITY, f64::min);
+    let r = net.holes[e].record;
+    let end = &net.records[r];
+    let low = (net.of_record[r].iter())
+        .flat_map(|&e| net.walk(e, at_or_past(&stops(net, e), need(net, e))))
+        .map(|(c, ..)| net.chords[c].a[2].min(net.chords[c].b[2]))
+        .fold(f64::INFINITY, f64::min);
     (end.z + end.foot).min(low - net.rules.ladder.bake.foot_m)
 }
 
@@ -195,7 +197,7 @@ impl Line {
 /// reach, each at the middle of the wall of its section, its ends in the planes of the tube's rings there.
 pub fn boxes(net: &Net, e: usize) -> Vec<[f64; BOX]> {
     let Some((c0, _)) = net.opening(e) else { return Vec::new() };
-    let (end, design, bake) = (&net.ends[e], &net.rules.design, &net.rules.ladder.bake);
+    let (end, design, bake) = (&net.holes[e], &net.rules.design, &net.rules.ladder.bake);
     let (wall, lift) = (bake.shell_m / 2.0, design.lift_m);
     let first = &net.chords[c0];
     let (front, ring) = (net.frame(e, -design.recess_m), net.frame(e, 0.0));

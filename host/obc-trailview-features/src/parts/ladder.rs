@@ -16,25 +16,33 @@ use super::{along_dir, built_openings, counts, distance, first_way_m, left_of, o
 /// The kind of part at an opening.
 pub use obc_trailview_parts::Part as Kind;
 
-/// The numbers of a drawn opening (Plan 8 of the design): metres, `left` and `right` per metre out from the frame's
-/// outer edge, and in a pair the mate's opening, the metres to its axis to the left and its collar; `height` is the
-/// inside height of the tube's chord there; `heading` is square to its frame line, into the tube of its group's far
-/// opening; `walls` whether the record holds `face`, `left` and `right`.
+/// The numbers of a drawn head (Plan 8 of the design): metres over the floor of its first hole, `left` and `right` per
+/// metre out from the frame's outer edge; per hole from the right its opening, the metres to its axis to the left, the
+/// inside height of the tube's chord there and its collar; `heading` is square to its frame line, into the tube of its
+/// group's far opening; `walls` whether the record holds `face`, `left` and `right`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Numbers {
     pub heading: f64,
-    pub height: f64,
-    pub collar: f64,
+    pub holes: Vec<Hole>,
     pub walls: bool,
     pub face: f64,
     pub left: Vec<f64>,
     pub right: Vec<f64>,
     pub foot: f64,
-    pub mate: Option<(usize, f64, f64)>,
 }
 
-/// An opening's decision: every kind that fits in the order of the rungs, the part of the end (the first; also the
-/// mate of a pair), the rung that decided it, and the numbers where the opening has a record of its own.
+/// A hole of a head: its opening, the metres to its axis to the left of the head's point, the inside height of the
+/// tube's chord there and its collar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Hole {
+    pub opening: usize,
+    pub across: f64,
+    pub height: f64,
+    pub collar: f64,
+}
+
+/// An opening's decision: every kind that fits in the order of the rungs, the part of the end (the first), the rung
+/// that decided it, and the numbers where the opening is the first hole of a record.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct End {
     pub kinds: Vec<Kind>,
@@ -377,8 +385,6 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             continue;
         }
         (mate[a], mate[c], joined[a], joined[c]) = (Some(c), Some(a), join, join);
-        kinds[a].insert(0, Kind::Pair);
-        kinds[c].insert(0, Kind::Pair);
     }
     // One frame line for each group of openings whose tubes meet (a pair, or two openings whose tubes meet at the
     // one farther in): the line of the group's far opening, which never moves. The openings of the group near it
@@ -464,13 +470,12 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         }
         for k in [i, m] {
             (mate[k], joined[k]) = (None, false);
-            kinds[k].retain(|&x| x != Kind::Pair);
         }
     }
     // The numbers come from the ground with the stretches that the device opens: of each opening of a chain whose two
     // ends are built (`BUILT`) by their final kinds, at its final place. The openings near a stretch that the first
     // measure opened otherwise are measured again there. Where the ground no longer fits a kind (no cover, or cover
-    // past the limit), the end drops it; a pair with an end that dropped `Pair` is no pair. Dropping kinds commutes,
+    // past the limit), the end drops it; a pair of hill ends with such an end is no pair. Dropping kinds commutes,
     // so the order of the ends does not matter. The built chains can grow too (a broken pair's mate can become an
     // arch), but a round goes on only where a list of kinds shrank in the round before: the rounds end within one more
     // than the count of all kinds.
@@ -503,9 +508,9 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         for &i in &again {
             let g = &input.rules.groups[tubes[openings[i].tube].group];
             let d = cover[i];
+            let hill = d.is_some_and(|d| d <= g.collar_max_m);
             let fits = |k: &Kind| match k {
-                Kind::Pair if joined[i] => true,
-                Kind::Pair | Kind::Arch => d.is_some_and(|d| d <= g.collar_max_m),
+                Kind::Arch => hill,
                 Kind::Rock => d.is_some_and(|d| d <= g.collar_max_m.min(b.rock_cover_max_m)),
                 Kind::Box | Kind::Free => true,
             };
@@ -514,9 +519,8 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             if was != Some(Kind::Free) && kinds[i].first() == Some(&Kind::Free) {
                 rung[i] = Some(if d.is_none() { "free: never covered" } else { "free: covered past the limit" });
             }
-            if let Some(m) = mate[i].filter(|_| !kinds[i].contains(&Kind::Pair)) {
+            if let Some(m) = mate[i].filter(|_| !joined[i] && !hill) {
                 (mate[i], mate[m], joined[i], joined[m]) = (None, None, false, false);
-                kinds[m].retain(|&k| k != Kind::Pair);
             }
         }
         last = Some(opened);
@@ -537,16 +541,20 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     let heights: Vec<f64> = openings.iter().map(end_height).collect();
     // The numbers of each drawn opening.
     let mut ends: Vec<End> = Vec::with_capacity(n);
-    // The kind of each opening without its pair: it decides a member's collar and whether a pair has a wall.
-    let base: Vec<Option<Kind>> = kinds.iter().map(|k| k.iter().copied().find(|&k| k != Kind::Pair)).collect();
+    // The kind of each opening: it decides a hole's collar and whether a head has a wall.
+    let base: Vec<Option<Kind>> = kinds.iter().map(|k| k.first().copied()).collect();
+    // A pair has one record, at its opening farther to the right of its line.
+    let right = |i: usize, m: usize| {
+        let left = left_of(openings[far_of[i]].dir);
+        let d = along_dir(openings[i].p, openings[m].p, left);
+        d > 0.0 || (d == 0.0 && (openings[i].way_id, i) < (openings[m].way_id, m))
+    };
     for i in 0..n {
         let kind = kinds[i].first().copied();
-        // A pair has one record, at the opening of the lower feature id.
-        let drawn = mate[i].is_none_or(|m| (openings[i].way_id, i) < (openings[m].way_id, m));
+        let drawn = mate[i].is_none_or(|m| right(i, m));
         let m = Measured { sites: &sites, rights: &rights, cover: &cover, moved: &moved };
-        let numbers = (kind.filter(|_| drawn)).map(|kind| {
-            numbers(i, (kind, &base), (mate[i], far_of[i]), &m, (openings, tubes), (&half, &heights), input)
-        });
+        let numbers = (kind.filter(|_| drawn))
+            .map(|_| numbers(i, &base, (mate[i], far_of[i]), &m, (openings, tubes), (&half, &heights), input));
         ends.push(End { kinds: kinds[i].clone(), kind, rung: rung[i].unwrap_or_default(), numbers });
     }
     let shown = |e: &End| match e.kind {
@@ -589,11 +597,11 @@ struct Measured<'a> {
     moved: &'a [f64],
 }
 
-/// The numbers of drawn opening i of `kind` (Plan 8), with the inside height of each opening: its frame is its own, or
-/// in a pair the frame line of the opening farther in, which holds both.
+/// The numbers of the head whose first hole is opening i (Plan 8), with the kind and the inside height of each opening:
+/// its frame is its own, or in a pair the frame line of the opening farther in, which holds both.
 fn numbers(
     i: usize,
-    (kind, base): (Kind, &[Option<Kind>]),
+    base: &[Option<Kind>],
     (mate, far): (Option<usize>, usize),
     m: &Measured,
     (openings, tubes): (&[Opening], &[Tube]),
@@ -656,22 +664,23 @@ fn numbers(
     };
     let (left, right) = (wing(hi, 1.0), wing(lo, -1.0));
     let collar_of = |k: usize| cover[k].map(|d| (d - moved[k]).max(0.0));
-    // Each tube of a pair has its own collar, by the kind of its opening without the pair.
-    let own = |k: usize| if kind == Kind::Pair { base[k].unwrap_or(Kind::Arch) } else { kind };
+    // Each tube of a pair has its own collar, by the kind of its opening.
+    let own = |k: usize| base[k].unwrap_or(Kind::Arch);
     let collars: Vec<f64> = (members.iter())
         .map(|&k| {
             let half_chain = tubes[openings[k].tube].curve.len / 2.0;
             match own(k) {
-                Kind::Pair | Kind::Arch | Kind::Rock => collar_of(k).expect("an arch is covered within its collar"),
+                Kind::Arch | Kind::Rock => collar_of(k).expect("an arch is covered within its collar"),
                 Kind::Box => collar_of(k).unwrap_or(f64::INFINITY).min(half_chain),
                 Kind::Free => collar_of(k).unwrap_or(f64::INFINITY).min(b.free_max_m).min(half_chain),
             }
         })
         .collect();
     // The record holds the wall's numbers but on a free end and on a pair of two rims.
-    let walls = match kind {
-        Kind::Pair => members.iter().any(|&k| !matches!(own(k), Kind::Rock | Kind::Free)),
-        _ => kind != Kind::Free,
+    let walls = if members.len() > 1 {
+        members.iter().any(|&k| !matches!(own(k), Kind::Rock | Kind::Free))
+    } else {
+        own(i) != Kind::Free
     };
     // The lowest ground under the frame, its wing walls and the collars, and the floors.
     let (from, to) = (lo - right.len() as f64, hi + left.len() as f64);
@@ -685,18 +694,10 @@ fn numbers(
     });
     let floors = members.iter().map(|&k| openings[k].floor);
     let lowest = under.chain(collar_ground).chain(floors).fold(floor, f64::min);
-    let mate = mate.map(|m| (m, axis(m) - axis(i), collars[1]));
+    let holes = (members.iter().zip(&collars))
+        .map(|(&k, &collar)| Hole { opening: k, across: axis(k) - axis(i), height: heights[k], collar })
+        .collect();
     let numbers = if walls { (left, right) } else { (Vec::new(), Vec::new()) };
     let heading = openings[far].heading();
-    Numbers {
-        heading,
-        height: heights[i],
-        collar: collars[0],
-        walls,
-        face,
-        left: numbers.0,
-        right: numbers.1,
-        foot: lowest - b.foot_m - floor,
-        mate,
-    }
+    Numbers { heading, holes, walls, face, left: numbers.0, right: numbers.1, foot: lowest - b.foot_m - floor }
 }

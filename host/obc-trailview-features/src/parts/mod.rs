@@ -485,13 +485,11 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
 fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, input: &Input) -> Placed {
     let (mut features, mut tags) = (Vec::new(), HashMap::new());
     let part_name = |k: Option<Kind>| k.map_or("none", Kind::name);
-    // The kind of an opening without its pair decides the section: a pair of underpasses stays of box section.
-    let own = |d: &ladder::End| d.kinds.iter().copied().find(|&k| k != Kind::Pair);
     let mut ends_of: Vec<[Option<Kind>; 2]> = vec![[None, None]; tubes.len()];
     let mut boxed = vec![false; tubes.len()];
     for (o, d) in openings.iter().zip(&decided.ends) {
         ends_of[o.tube][o.end] = d.kind;
-        boxed[o.tube] |= d.kind.is_some() && own(d) == Some(Kind::Box);
+        boxed[o.tube] |= d.kind == Some(Kind::Box);
     }
     let built = |t: usize| ends_of[t].iter().all(Option::is_some);
     // A way in the tube of a wider one that draws as parts runs on its floor: `in` at both ends.
@@ -565,32 +563,33 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
     }
     for (o, d) in openings.iter().zip(&decided.ends) {
         let (Some(kind), Some(n)) = (d.kind, &d.numbers) else { continue };
+        let row = |f: &dyn Fn(&ladder::Hole) -> String| n.holes.iter().map(f).collect::<Vec<_>>().join(" ");
+        let tube = |h: &ladder::Hole| openings[h.opening].tube;
+        let kind_of = |h: &ladder::Hole| decided.ends[h.opening].kind.unwrap_or(kind);
         let mut t = Tags::new();
-        let section = if boxed[o.tube] { "box" } else { "round" };
-        t.insert("section".into(), section.into());
-        t.insert("half".into(), num(decided.half[o.tube]));
-        t.insert("height".into(), num(n.height));
-        // In rock where the opening and its mate are both openings in the rock.
-        let members = std::iter::once(d).chain(n.mate.map(|(m, ..)| &decided.ends[m]));
-        let rock = members.into_iter().all(|e| own(e) == Some(Kind::Rock));
+        t.insert("section".into(), row(&|h| if boxed[tube(h)] { "box" } else { "round" }.into()));
+        t.insert("half".into(), row(&|h| num(decided.half[tube(h)])));
+        t.insert("height".into(), row(&|h| num(h.height)));
+        // In rock where each hole opens in the rock.
+        let rock = n.holes.iter().all(|h| kind_of(h) == Kind::Rock);
         let look = if rock { "rock" } else { input.rules.groups[tubes[o.tube].group].look.as_str() };
         t.insert("look".into(), look.into());
         t.insert("part".into(), kind.name().into());
         t.insert("heading".into(), format!("{}", (n.heading * 1000.0).round() / 1000.0));
-        t.insert("collar".into(), num(n.collar));
+        t.insert("collar".into(), row(&|h| num(h.collar)));
         if n.walls {
             t.insert("face".into(), num(n.face));
             t.insert("left".into(), n.left.iter().map(|v| num(*v)).collect::<Vec<_>>().join(" "));
             t.insert("right".into(), n.right.iter().map(|v| num(*v)).collect::<Vec<_>>().join(" "));
         }
         t.insert("foot".into(), num(n.foot));
-        t.insert("way".into(), format!("{} {}", o.way[0], o.way[1]));
-        t.insert("shift".into(), num(o.shift));
-        if let Some((mate, m, collar)) = n.mate.map(|(i, m, collar)| (&openings[i], m, collar)) {
-            t.insert("mate".into(), num(m));
-            t.insert("mate_way".into(), format!("{} {}", mate.way[0], mate.way[1]));
-            t.insert("mate_shift".into(), num(mate.shift));
-            t.insert("mate_collar".into(), num(collar));
+        let way = |h: &ladder::Hole| openings[h.opening].way;
+        t.insert("way".into(), row(&|h| format!("{} {}", way(h)[0], way(h)[1])));
+        t.insert("shift".into(), row(&|h| num(openings[h.opening].shift)));
+        if n.holes.len() > 1 {
+            t.insert("across".into(), row(&|h| num(h.across)));
+            t.insert("up".into(), row(&|h| num(openings[h.opening].floor - o.floor)));
+            t.insert("kind".into(), row(&|h| kind_of(h).name().into()));
         }
         let part = Part { outer: false, points: vec![o.p], z: Some(vec![o.floor]), plan: None };
         features.push(("tunnel-end", t, part));

@@ -101,9 +101,9 @@ const lengthOf = (line: Line) => line.z.slice(1).reduce((sum, _, v) => sum + Mat
 
 /**
  * What the parts of a tile stamp with the ground plan (`PartStamps` of bins.ts), made once. A tunnel line of a chain that
- * draws as parts stamps nothing from each end vertex of the ways of its openings (`shift` metres before the opening) to
- * the start of its part's cover, `collar` + COVER_START_M past the opening, along the chain into its next line: there the
- * ground is the ground of the ground plan that the bake's measure read to fit the parts.
+ * draws as parts stamps nothing from the end vertex of each way that enters a head (`shift` metres before the opening)
+ * to the start of the head's cover, its longest `collar` + COVER_START_M past the opening, along the chain into its next
+ * line: there the ground is the ground of the ground plan that the bake's measure read to fit the parts.
  */
 export function partStamps(list: Feature[], tile: Node, lines: Line[]): PartStamps {
     const known = stamped.get(list);
@@ -143,11 +143,13 @@ export function partStamps(list: Feature[], tile: Node, lines: Line[]): PartStam
     };
     for (const { kind, tags } of list) {
         if (kind !== 'tunnel-end') continue;
-        for (const [way, shift, collar] of [[tags.way, tags.shift, tags.collar], [tags.mate_way, tags.mate_shift, tags.mate_collar]]) {
-            // `way` is in the frame of the ground plan, 16 units to a world unit.
-            const [x, y] = way?.split(' ').map(Number) ?? [];
-            for (const [line, end] of at.get(`${x / 16},${y / 16}`) ?? []) stop(line, end, Number(shift) + Number(collar) + COVER_START_M);
-        }
+        // Per way that enters the head its end vertex (`x y` in the frame of the ground plan, 16 units to a world unit)
+        // and its shift; the longest collar of the head's holes.
+        const ways = tags.way.split(' ').map(Number), shifts = tags.shift.split(' ').map(Number);
+        const collar = Math.max(...tags.collar.split(' ').map(Number));
+        shifts.forEach((shift, w) => {
+            for (const [line, end] of at.get(`${ways[2 * w] / 16},${ways[2 * w + 1] / 16}`) ?? []) stop(line, end, shift + collar + COVER_START_M);
+        });
     }
     return out;
 }

@@ -27,7 +27,6 @@ use tube::Net;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Part {
     Arch,
-    Pair,
     Rock,
     Box,
     Free,
@@ -37,7 +36,6 @@ impl Part {
     pub fn name(self) -> &'static str {
         match self {
             Part::Arch => "arch",
-            Part::Pair => "pair",
             Part::Rock => "rock",
             Part::Box => "box",
             Part::Free => "free",
@@ -46,12 +44,12 @@ impl Part {
 
     /// The part of a name; None for `none` and for an unknown name.
     pub fn parse(name: &str) -> Option<Part> {
-        [Part::Arch, Part::Pair, Part::Rock, Part::Box, Part::Free].into_iter().find(|p| p.name() == name)
+        [Part::Arch, Part::Rock, Part::Box, Part::Free].into_iter().find(|p| p.name() == name)
     }
 }
 
 /// The kinds of part that the builder makes. A chain draws as parts only where both of its ends are of these kinds.
-pub const BUILT: &[Part] = &[Part::Arch, Part::Pair, Part::Rock, Part::Box, Part::Free];
+pub const BUILT: &[Part] = &[Part::Arch, Part::Rock, Part::Box, Part::Free];
 
 /// Whether all ends of a chain are built; `None` is an end with no part of its own.
 pub fn built(ends: &[Option<Part>]) -> bool {
@@ -91,22 +89,32 @@ fn row(tags: &Tags, name: &str) -> Result<Vec<f64>, String> {
         .ok_or(format!("tag {name}: {v}"))
 }
 
-fn vertex(tags: &Tags, name: &str) -> Result<[i64; 2], String> {
-    let v = tag(tags, name)?;
-    let xy: Vec<i64> = v.split(' ').filter_map(|x| x.parse().ok()).collect();
-    xy.try_into().map_err(|_| format!("tag {name}: not x y: {v}"))
+/// A row of `n` values; with `alone`, a missing tag is that value.
+fn row_of(tags: &Tags, name: &str, n: usize, alone: Option<f64>) -> Result<Vec<f64>, String> {
+    let list = match (tags.contains_key(name), alone) {
+        (false, Some(v)) => vec![v; n],
+        _ => row(tags, name)?,
+    };
+    if list.len() != n {
+        return Err(format!("tag {name}: not {n} values"));
+    }
+    Ok(list)
 }
 
-fn section(tags: &Tags) -> Result<Section, String> {
-    match tag(tags, "section")? {
+fn section_of(name: &str) -> Result<Section, String> {
+    match name {
         "round" => Ok(Section::Round),
         "box" => Ok(Section::Box),
         other => Err(format!("tag section: {other}")),
     }
 }
 
-/// A `tunnel-end` record (`specs/trailview-features.md`, Tunnel parts): the opening's point and floor, and its numbers in
-/// metres over that floor.
+fn section(tags: &Tags) -> Result<Section, String> {
+    section_of(tag(tags, "section")?)
+}
+
+/// A `tunnel-end` record (`specs/trailview-features.md`, Tunnel parts): a line with holes, its point on the axis of
+/// its first hole and the floor there, and its numbers in metres over that floor.
 #[derive(Clone, Debug, PartialEq)]
 pub struct End {
     pub at: [f64; 2],
@@ -114,32 +122,38 @@ pub struct End {
     pub part: Part,
     /// Radians from x to y of world units, into the tube.
     pub heading: f64,
-    pub section: Section,
-    pub half: f64,
-    pub height: f64,
     pub look: String,
-    pub collar: f64,
-    /// Whether the record holds `face`, `left` and `right`: not a free end, nor a pair of two rims. Else they are 0 and
-    /// empty.
+    /// From the right to the left of the way in.
+    pub holes: Vec<Hole>,
+    /// Whether the record holds `face`, `left` and `right`. Else they are 0 and empty.
     pub walls: bool,
     pub face: f64,
     pub left: Vec<f64>,
     pub right: Vec<f64>,
     pub foot: f64,
-    /// The other tube of a pair.
-    pub mate: Option<Mate>,
-    pub way: [i64; 2],
-    pub shift: f64,
+    /// The ways that enter the head: per hole from the right, per lane of its tube from the right.
+    pub ways: Vec<Way>,
 }
 
-/// The other tube of a pair: the metres to the left from the end's axis to its axis, and its `way`, `shift` and
-/// `collar`.
+/// A hole of a line: the metres to the left of the record's point to its axis and its floor over the record's, its
+/// kind, its section and its collar.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Mate {
+pub struct Hole {
     pub across: f64,
+    pub up: f64,
+    pub kind: Part,
+    pub section: Section,
+    pub half: f64,
+    pub height: f64,
+    pub collar: f64,
+}
+
+/// A way that enters a head: the end vertex of the way in the frame of the ground plan, and the metres along the way
+/// from it to the opening.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Way {
     pub way: [i64; 2],
     pub shift: f64,
-    pub collar: f64,
 }
 
 impl End {
@@ -151,35 +165,55 @@ impl End {
         if !rules.looks.contains_key(look) {
             return Err(format!("tag look: no look {look}"));
         }
-        let walls = part != Part::Free && (part != Part::Pair || tags.contains_key("face"));
-        let pair = part == Part::Pair;
+        let half = row(tags, "half")?;
+        let n = half.len();
+        let one = |v: f64| (n == 1).then_some(v);
+        let (across, up) = (row_of(tags, "across", n, one(0.0))?, row_of(tags, "up", n, one(0.0))?);
+        let (height, collar) = (row_of(tags, "height", n, None)?, row_of(tags, "collar", n, None)?);
+        let sections: Vec<&str> = tag(tags, "section")?.split(' ').collect();
+        let kinds: Vec<&str> = if n == 1 { vec![name] } else { tag(tags, "kind")?.split(' ').collect() };
+        if sections.len() != n || kinds.len() != n {
+            return Err(format!("tags section, kind: not {n} values"));
+        }
+        let holes = (0..n)
+            .map(|h| {
+                let kind = Part::parse(kinds[h]).ok_or(format!("tag kind: {}", kinds[h]))?;
+                let section = section_of(sections[h])?;
+                Ok(Hole {
+                    across: across[h],
+                    up: up[h],
+                    kind,
+                    section,
+                    half: half[h],
+                    height: height[h],
+                    collar: collar[h],
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let way: Vec<i64> = tag(tags, "way")?
+            .split(' ')
+            .map(|x| x.parse().map_err(|_| format!("tag way: {x}")))
+            .collect::<Result<_, _>>()?;
+        let shift = row(tags, "shift")?;
+        if way.len() != 2 * shift.len() || shift.is_empty() {
+            return Err("tags way, shift: not a vertex per shift".into());
+        }
+        let ways =
+            shift.iter().enumerate().map(|(i, &shift)| Way { way: [way[2 * i], way[2 * i + 1]], shift }).collect();
+        let walls = tags.contains_key("face");
         Ok(End {
             at,
             z,
             part,
             heading: number(tags, "heading")?,
-            section: section(tags)?,
-            half: number(tags, "half")?,
-            height: number(tags, "height")?,
             look: look.to_string(),
+            holes,
             walls,
-            collar: number(tags, "collar")?,
             face: if walls { number(tags, "face")? } else { 0.0 },
             left: if walls { row(tags, "left")? } else { Vec::new() },
             right: if walls { row(tags, "right")? } else { Vec::new() },
             foot: number(tags, "foot")?,
-            mate: pair
-                .then(|| -> Result<Mate, String> {
-                    Ok(Mate {
-                        across: number(tags, "mate")?,
-                        way: vertex(tags, "mate_way")?,
-                        shift: number(tags, "mate_shift")?,
-                        collar: number(tags, "mate_collar")?,
-                    })
-                })
-                .transpose()?,
-            way: vertex(tags, "way")?,
-            shift: number(tags, "shift")?,
+            ways,
         })
     }
 
@@ -267,14 +301,14 @@ fn near(square: [f64; 4], points: &[[f64; 2]], reach: f64) -> bool {
     hi[0] >= square[0] - reach && lo[0] <= square[2] + reach && hi[1] >= square[1] - reach && lo[1] <= square[3] + reach
 }
 
-/// The faces of the parts that a square draws: of each built end whose point it holds, and of each chord of a built
+/// The faces of the parts that a square draws: of each built record whose point it holds, and of each chord of a built
 /// chain whose `a` it holds, so each face draws in one square.
 pub fn meshes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -> Mesh {
-    let net = Net::new(ends, chords, rules).meeting();
+    let net = Net::new(ends, chords, rules);
     let mut b = mesh::Builder::new(|p| net.daylight(p));
-    for (e, end) in net.ends.iter().enumerate() {
-        if net.built_end(e) && holds(square, end.at) {
-            arch::faces(&mut b, &net, e);
+    for (r, end) in ends.iter().enumerate() {
+        if net.built_record(r) && holds(square, end.at) {
+            arch::faces(&mut b, &net, r);
         }
     }
     for (c, chord) in chords.iter().enumerate() {
@@ -285,13 +319,13 @@ pub fn meshes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -
     b.mesh()
 }
 
-/// The boxes of the built ends and the floor segments of the chords of built chains. `near_volumes` keeps those near a
-/// square, so a tile's records build their volumes once.
+/// The boxes of the built holes and the floor segments of the chords of built chains. `near_volumes` keeps those near
+/// a square, so a tile's records build their volumes once.
 pub fn volumes(ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
     let net = Net::new(ends, chords, rules);
     let lift = rules.design.lift_m;
     let mut out = Volumes::default();
-    for e in (0..net.ends.len()).filter(|&e| net.built_end(e)) {
+    for e in (0..net.holes.len()).filter(|&e| net.built_end(e)) {
         for words in boxes::boxes(&net, e) {
             out.boxes.extend(words);
         }
@@ -321,29 +355,27 @@ pub fn near_volumes(square: [f64; 4], boxes: &[f64], floors: &[f64], rules: &Rul
     Volumes { boxes: boxes.flatten().copied().collect(), floors: floors.flatten().copied().collect() }
 }
 
-/// An opening of a built end, two of a pair: its point, its unit way into the tube and its inside half-width, and the
-/// end vertex of its way and the metres along that way to it (`way`, `shift`).
+/// A way that enters a built head: its point on the frame line, its unit way into the tube, the metres from its point
+/// to the jamb lines of its hole on each side (to the right negative), and the end vertex of the way and the metres
+/// along it to the opening (`way`, `shift`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mouth {
     pub at: [f64; 2],
     pub into: [f64; 2],
-    pub half: f64,
+    pub jamb: [f64; 2],
     pub way: [i64; 2],
     pub shift: f64,
 }
 
-/// The openings of the built ends.
+/// The ways that enter the built heads.
 pub fn mouths(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<Mouth> {
     let net = Net::new(ends, chords, rules);
-    (net.ends.iter().enumerate())
-        .filter(|&(e, _)| net.built_end(e))
-        .map(|(_, end)| Mouth { at: end.at, into: end.way_in(), half: end.half, way: end.way, shift: end.shift })
-        .collect()
+    (0..ends.len()).filter(|&r| net.built_record(r)).flat_map(|r| net.mouths(r)).collect()
 }
 
-/// Per built end with an opening, the ring that its part takes from the ground: round its head, from front to back,
+/// Per built hole with an opening, the ring that its part takes from the ground: round its head, from front to back,
 /// and its collar.
 pub fn footprints(ends: &[End], chords: &[Chord], rules: &Rules) -> Vec<Vec<[f64; 2]>> {
     let net = Net::new(ends, chords, rules);
-    (0..net.ends.len()).filter(|&e| net.built_end(e) && !net.closed(e)).map(|e| footprint::ring(&net, e)).collect()
+    (0..net.holes.len()).filter(|&e| net.built_end(e) && !net.closed(e)).map(|e| footprint::ring(&net, e)).collect()
 }

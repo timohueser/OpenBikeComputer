@@ -1,6 +1,6 @@
 //! The approach to a built tunnel opening (`WayGraph::mouths`): a way that ends at the opening widens its core there to
-//! the opening's inner width, so its walls or banks stand on the jamb lines and meet the head wall, and narrows back to
-//! its own width over `approach_m` (`obc-trailview-parts`), or over the way where it is shorter.
+//! the farther of the jamb lines of its hole, so its walls or banks stand on them and meet the head wall, and narrows
+//! back to its own width over `approach_m` (`obc-trailview-parts`), or over the way where it is shorter.
 
 use super::{Ctx, WayLine, LAYERS, SHOULDER, VERGE};
 use crate::graph::MIN_STEP_M;
@@ -28,7 +28,7 @@ pub(super) fn widen(ctx: &Ctx, lines: &mut [WayLine]) {
             }) else {
                 continue;
             };
-            let wider = ctx.units(m.half_m, line.p[at]) - line.bands[at][VERGE];
+            let wider = ctx.units(m.jamb_m[1].max(-m.jamb_m[0]), line.p[at]) - line.bands[at][VERGE];
             if wider > 0.0 {
                 ends.push((at, wider, ctx.units(approach_m, line.p[at]).min(length(&line.p))));
             }

@@ -3,10 +3,10 @@
 use crate::arch::{collar, wide};
 use crate::tube::Net;
 
-/// The ring of end e, in world units, in order round it: its head from front to back (the head wall of both openings
-/// of a pair), and the collar's shell along its chords out to `collar`.
+/// The ring of hole e, in world units, in order round it: its head from front to back (the head wall of all holes of
+/// its record, or the run of rims that holds it), and the collar's shell along its chords out to `collar`.
 pub fn ring(net: &Net, e: usize) -> Vec<[f64; 2]> {
-    let end = &net.ends[e];
+    let end = &net.holes[e];
     let (design, bake) = (&net.rules.design, &net.rules.ladder.bake);
     let edge = end.half + bake.shell_m;
     let (wide_r, wide_l) = wide(net, e);
