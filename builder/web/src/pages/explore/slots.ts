@@ -63,7 +63,7 @@ export function shapesSet(query: Query): Shape[] {
 }
 
 /** "A T2 part, up to T4", "Up to T3", or none for any grade. */
-export function gradeText({ grade: [low, high] }: Query): string | undefined {
+export function gradeText({ grade: [low, high] }: Pick<Query, 'grade'>): string | undefined {
     return low > 0 ? `A T${low + 1} part, up to T${high + 1}` : high < GRADE_TOP ? `Up to T${high + 1}` : undefined;
 }
 
