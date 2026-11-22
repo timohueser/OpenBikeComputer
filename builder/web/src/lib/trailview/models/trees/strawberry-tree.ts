@@ -5,9 +5,16 @@ export default {
   name: 'Strawberry tree',
   latin: 'Arbutus unedo',
   // A dense evergreen dome on a few crooked stems, leafy low down.
-  fork: 0.18,
-  crown: [0.52, 0.46, 0.44, 0.44],
+  fork: 0.2,
+  crown: [0.56, 0.46, 0.44, 0.4],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.2 + 0.8 * t)) ** 0.5,
+  clumps: 12,
+  billows: 4,
+  bow: 0.3,
+  crook: 0.025,
   stems: 3,
+  leaders: true,
+  heads: { count: 260, width: 0.03, height: 0.5 },
   trunk: 0.03,
   flare: 1.3,
   // Red-brown bark that peels in strips.

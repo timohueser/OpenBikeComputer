@@ -7,9 +7,16 @@ export default {
   fork: 0.3,
   // A light, upswept crown of feathery leaves.
   crown: [0.62, 0.3, 0.3, 0.36],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.15 + 0.85 * t)) ** 0.7,
+  clumps: 10,
   open: true,
+  dense: 0.85,
   stagger: true,
+  billows: 4,
+  bow: 0.3,
+  heads: { count: 110, width: 0.04, height: 0.5 },
   stems: 2,
+  leaders: true,
   trunk: 0.022,
   flare: 1.4,
   // Smooth silver-grey bark.

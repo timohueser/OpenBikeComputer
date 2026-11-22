@@ -17,8 +17,9 @@ of a model file and the triangle budget of each kind are in the
 A model is low in detail and looks like a model from a game. It is friendly and never odd. A rider
 sees it for a moment, at the side of a trail, so its shape must read at once.
 
-- **Round, faceted shapes.** A body is a skin through rings of 8 to 12 sides. Each face has one flat
-  colour and one normal, so the facets show and the light gives the shape.
+- **Round shapes.** An animal's body is a skin through rings of 8 to 12 sides. Each face has one
+  flat colour and one normal, so the facets show and the light gives the shape. A tree crown is
+  smooth: see [Trees](#trees).
 - **Clear outlines.** A model reads from the side and from above. Legs, ears, horns and tails stand
   out from the body. A detail that a rider cannot see at 10 m does not get a triangle.
 - **Friendly proportions.** An animal has a slightly large head with eyes and a pale muzzle, short
@@ -29,12 +30,12 @@ sees it for a moment, at the side of a trail, so its shape must read at once.
 
 ## Why we make every model in code
 
-We make all models ourselves, in TypeScript, with one shared kit
-([`sculpt.ts`](src:builder/web/src/lib/trailview/models/sculpt.ts)). We do not ship models from
-asset packs or from image-to-3-D tools, even with a free licence. A model from another source has
-another style, and two sources never agree. Packs and photos are only references.
+We make all models ourselves, in TypeScript. We do not ship models from asset packs or from
+image-to-3-D tools, even with a free licence. A model from another source has another style, and
+two sources never agree. Packs and photos are only references.
 
-The kit has few parts:
+The animals use one shared kit ([`sculpt.ts`](src:builder/web/src/lib/trailview/models/sculpt.ts)),
+which has few parts:
 
 - a **skin** through rings, with a separate reach above and below the middle, a pitch and a
   squareness, for bodies, necks, heads and legs;
@@ -62,10 +63,27 @@ looks alive. A breed has one to four coats, and most animals of a group wear the
 
 ![A brown cow standing, grazing and lying](../../assets/trailview-models/poses.jpg)
 
+## Trees
+
+Trees fill the screen, so their crowns have smooth light, not facets. Faceted crowns looked flat
+and cheap in a forest. The trees have a builder of their own
+([`trees.ts`](src:builder/web/src/lib/trailview/models/trees.ts)); a species file in `trees/`
+gives its numbers, colours and features.
+
+- **The species shows in the outline.** A crown is many soft lumps or needle pads on visible limbs,
+  in the outline of the species: the flat pads of a pine, the flame of a cypress, the drooping
+  sprays of a larch, the rods of a broom.
+- **Flowers and fruit are shapes.** Blossom, berries, cones and catkins are small modelled
+  clusters, not painted spots.
+- **A bare crown is a tree.** In winter every twig grows from a branch and every branch from a
+  limb, at each tier.
+- **Each tier keeps the outline.** The far tiers keep the same limbs and crown, with fewer parts.
+
+![Tree species of TrailView in a row in autumn: spruce, larch, cypress, beech, birch, oak, olive and broom, before the forest of a mountain valley](../../assets/trailview-models/trees.jpg)
+
 ## A new model
 
 A new model or a change to a model is a change of look. The review page
-(`builder/web/tests/browser/trailview/models.mjs`) shows each animal in TrailView's own light, near
-and far, with its triangle and vertex counts against the budget, and the old model beside it. The
-owner approves the pictures before the change merges. The page covers the animals today; the other
-kinds join it when they move to the kit.
+(`builder/web/tests/browser/trailview/models.mjs`) shows each animal or tree species in TrailView's
+own light, at each tier, with its triangle and vertex counts against the budget, and the old model
+beside it. The owner approves the pictures before the change merges.

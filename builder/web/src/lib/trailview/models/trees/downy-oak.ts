@@ -6,7 +6,12 @@ export default {
   latin: 'Quercus pubescens',
   // A small, crooked tree of dry hills: a low, broad crown on a leaning bole.
   fork: 0.2,
-  crown: [0.54, 0.5, 0.46, 0.44],
+  crown: [0.6, 0.5, 0.46, 0.36],
+  crook: 0.035,
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.3 + 0.7 * t)) ** 0.6,
+  clumps: 10,
+  billows: 4,
+  bow: -0.4,
   sweep: 0.15,
   trunk: 0.05,
   flare: 1.4,

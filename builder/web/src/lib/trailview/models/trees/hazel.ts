@@ -4,11 +4,17 @@ export default {
   form: 'broadleaf',
   name: 'Hazel',
   latin: 'Corylus avellana',
-  fork: 0.15,
-  // Many rods from one stool under a broad mound of soft leaves.
-  crown: [0.48, 0.55, 0.55, 0.42],
-  stems: 6,
-  trunk: 0.025,
+  fork: 0.1,
+  // Many rods lean out of one stool under a broad crown of few, soft lumps.
+  crown: [0.58, 0.56, 0.54, 0.4],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.12 + 0.88 * t)) ** 0.5,
+  clumps: 10,
+  billows: 3,
+  bow: 0.4,
+  stems: 5,
+  leaders: true,
+  bunches: 40,
+  trunk: 0.02,
   flare: 1.2,
   bark: ['#4e4036', '#7a6650'],
   leaves: {

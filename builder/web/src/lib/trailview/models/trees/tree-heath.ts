@@ -4,10 +4,12 @@ export default {
   form: 'broadleaf',
   name: 'Tree heath',
   latin: 'Erica arborea',
-  fork: 0.15,
-  // Upright plumes from a few stems, taller than wide.
-  crown: [0.55, 0.3, 0.3, 0.5],
-  stems: 4,
+  fork: 0.1,
+  // Feathery plumes on many rods from one stool, taller than wide.
+  crown: [0.5, 0.36, 0.34, 0.5],
+  dense: 0.95,
+  rods: 18,
+  heads: { count: 110, width: 0.022, height: 2.5 },
   trunk: 0.02,
   flare: 1.2,
   bark: ['#4a3a32', '#6e5848'],

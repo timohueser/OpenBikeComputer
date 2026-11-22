@@ -7,6 +7,11 @@ export default {
   // A dense egg-shaped crown low on a short, smooth grey bole.
   fork: 0.24,
   crown: [0.56, 0.34, 0.33, 0.46],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.1 + 0.9 * t)) ** 1.2,
+  clumps: 14,
+  billows: 3,
+  bow: 0.3,
+  flutes: 5,
   trunk: 0.035,
   flare: 1.3,
   bark: ['#5a5c58', '#8a8c86'],
