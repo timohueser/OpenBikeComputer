@@ -1041,16 +1041,15 @@ function palm(spec: Broadleaf, lod: Lod, [deep, mid, tip]: Colour[], rand: () =>
 
 /**
  * Limbs fork `branching` ways at each level, rising and spreading so the rosettes of sword
- * leaves at their ends make an umbrella. A tree within 200 m keeps two levels; a far one keeps
- * the first, each limb ending in a ragged bowl where its rosettes would be.
+ * leaves at their ends make an umbrella. Further off the rosettes have fewer, wider blades; a far
+ * tree keeps two levels, each limb ending in a ragged bowl where its rosettes would be.
  */
 function dragon(spec: Broadleaf, lod: Lod, [deep, mid, tip]: Colour[], rand: () => number): Geometry[] {
     const [cz, rx, , rz] = spec.crown;
-    const levels = spec.branching!.slice(0, [3, 2, 1][lod]);
+    const levels = spec.branching!.slice(0, lod < 2 ? 3 : 2);
     const [foot, bole] = spec.bark.map(hex);
     const bark = (p: V) => foot.clone().lerp(bole, smooth(0, spec.fork, p.z));
     const size = 0.2;
-    const blades = lod ? 20 : 32;
     const fork = v3(0, 0, spec.fork);
     // A collar where the limbs leave the trunk, so the trunk swells into them.
     const parts = lod < 2 ? [paint(place(soft(lump(1.1 * spec.trunk, lod ? 0 : 1), 0.08 * spec.trunk, 30), { at: fork }), bark)] : [];
@@ -1059,18 +1058,19 @@ function dragon(spec: Broadleaf, lod: Lod, [deep, mid, tip]: Colour[], rand: () 
         const m = levels[level];
         for (let c = 0; c < m; c++) {
             const a = a0 + ((c + 0.5 + 0.4 * (rand() - 0.5)) / m) * (a1 - a0);
-            // A far tree's one level reaches as far as a near tree's first.
-            const f = (level + 1) / Math.max(2, levels.length);
+            const f = (level + 1) / levels.length;
             const d = rx * f ** 0.8 * (0.75 + 0.35 * rand());
             const z = spec.fork + (cz + rz * Math.sqrt(Math.max(0, 1 - (d / rx) ** 2)) - size - spec.fork) * f ** 0.45;
             const to = v3(d * Math.cos(a), d * Math.sin(a), z);
-            parts.push(limb(from.toArray(), to.toArray(), r, bark, 0, [6, 4, 3][lod]));
+            // A limb leaves level and turns up under its fork, as thick at its end as the limbs that leave it.
+            const knee = from.clone().lerp(to, 0.55).setZ(lerp(from.z, to.z, 0.35));
+            parts.push(tube(lod ? [from, to] : [from, knee, to], r, 0.8 * r, [6, 4, 3][lod], bark));
             if (level + 1 < levels.length) grow(to, a0 + (c * (a1 - a0)) / m, a0 + ((c + 1) * (a1 - a0)) / m, level + 1, 0.75 * r);
-            else if (lod === 2) bowl(cards, to, a, 0.7 * rx, size, [deep, mid, tip]);
+            else if (lod === 2) bowl(cards, to, a, 0.42 * rx, size, [deep, mid, tip]);
             else {
-                rosette(cards, to, size, blades, [deep, mid, tip], rand);
+                rosette(cards, to, size, lod ? 11 : 32, lod ? 0.3 : 0.14, [deep, mid, tip], rand);
                 // A heart fills the rosette between its blades.
-                parts.push(paint(place(soft(lump(0.38 * size, 0)), { at: to.clone().setZ(to.z + 0.15 * size) }), deep.clone().lerp(mid, 0.5)));
+                if (!lod) parts.push(paint(place(soft(lump(0.38 * size, 0)), { at: to.clone().setZ(to.z + 0.15 * size) }), deep.clone().lerp(mid, 0.5)));
             }
         }
     };
@@ -1094,8 +1094,8 @@ function bowl(cards: Sheet, at: V, heading: number, radius: number, height: numb
     for (let k = 0; k < 8; k++) cards.add([at, point(k), point(k + 1)], [deep, k % 2 ? notch : spike, k % 2 ? spike : notch], light);
 }
 
-/** Stiff sword leaves up and out from one point, only the outer ring drooping. */
-function rosette(cards: Sheet, at: V, size: number, count: number, [deep, mid, tip]: Colour[], rand: () => number): void {
+/** Stiff sword leaves up and out from one point, only the outer ring drooping: `count` of them, each `width` of its length wide. */
+function rosette(cards: Sheet, at: V, size: number, count: number, width: number, [deep, mid, tip]: Colour[], rand: () => number): void {
     const light = domed(at, v3(1, 1, 1), 0.3);
     for (let j = 0; j < count; j++) {
         const a = j * GOLDEN + 0.5 * rand();
@@ -1103,7 +1103,7 @@ function rosette(cards: Sheet, at: V, size: number, count: number, [deep, mid, t
         const polar = 1.3 * Math.sqrt(t) + 0.45 * smooth(0.7, 1, t);
         const reach = size * (0.8 + 0.35 * rand());
         const end = at.clone().add(v3(Math.sin(polar) * Math.cos(a), Math.sin(polar) * Math.sin(a), Math.cos(polar)).multiplyScalar(reach));
-        const side = v3(-Math.sin(a), Math.cos(a), 0).multiplyScalar(0.14 * reach);
+        const side = v3(-Math.sin(a), Math.cos(a), 0).multiplyScalar(width * reach);
         cards.add([at.clone().sub(side), at.clone().add(side), end], [deep, deep, mid.clone().lerp(tip, smooth(0.5, 0, polar) + 0.3 * rand())], light);
     }
 }

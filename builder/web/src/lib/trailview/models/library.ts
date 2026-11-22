@@ -32,3 +32,9 @@ export const farFromFar = (id: string) => {
     const spec = TREES[id];
     return spec.form === 'broadleaf' && !!spec.shape;
 };
+
+/** Whether a species grows every tier of its leafy crown: rosettes of cards, which simplify into shards. */
+export const growsTiers = (id: string) => {
+    const spec = TREES[id];
+    return spec.form === 'broadleaf' && !!spec.branching;
+};
