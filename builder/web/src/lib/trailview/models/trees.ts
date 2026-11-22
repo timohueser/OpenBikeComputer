@@ -190,8 +190,9 @@ export type Tree = Conifer | Broadleaf;
 /** A tree 1 tall: its first `trunk` vertices are its trunk, and `crown` is the lowest point of the rest in tree heights. */
 export interface Grown extends Geometry { trunk: number; crown: number }
 
-export function grow(spec: Tree, season: Season, lod: Lod, seed: number): Grown {
-    const { geo, crown, trunk } = spec.form === 'conifer' ? conifer(spec, season, lod, seed) : broadleaf(spec, season, lod, seed);
+/** Without `heads`, a broadleaf grows no flower heads, but its crown keeps their colour. */
+export function grow(spec: Tree, season: Season, lod: Lod, seed: number, heads = true): Grown {
+    const { geo, crown, trunk } = spec.form === 'conifer' ? conifer(spec, season, lod, seed) : broadleaf(spec, season, lod, seed, heads);
     // No crown reaches under the ground: low boughs and lumps that would lie on it. Their normals stay, so they light as before.
     const p = geo.position;
     for (let k = 3 * trunk + 2; k < p.length; k += 3) p[k] = Math.max(0, p[k]);
@@ -679,7 +680,7 @@ function puffs(count: number, rand: () => number, dense = 1, layers = 0): { at: 
  * A crown of soft lumps on a trunk. A bare crown is a limb into each lump, its branches and twigs
  * out to the lump's far side, with sky between them, so its outline stays at every distance.
  */
-function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Built {
+function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number, withHeads: boolean): Built {
     const rand = random(seed);
     const [cz, rx, ry, rz] = spec.crown;
     const toTree = (p: V) => v3(p.x * rx, p.y * ry, cz + p.z * rz);
@@ -704,7 +705,7 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
     // A palm or a dragon tree grows its crown from the trunk's top.
     if (spec.fronds || spec.branching || spec.rods) {
         const crown = spec.fronds ? palm(spec, lod, [deep, mid, tip], rand)
-            : spec.rods ? rods(spec, lod, bare, foliage, [mid, tip], flecks ? [hex(flecks[0]), flecks[1]] : [], rand, seed)
+            : spec.rods ? rods(spec, lod, bare, foliage, [mid, tip], flecks ? [hex(flecks[0]), flecks[1]] : [], rand, seed, withHeads)
             : dragon(spec, lod, [deep, mid, tip], rand);
         // A far shrub's rods hide under its plumes, so it has one trunk as stout as all of them, up into the plumes.
         const bole = spec.rods && lod === 2 ? trunk({ ...spec, trunk: 1.4 * spec.trunk }, 0.35 * (cz + rz), lod, seed) : trunk(spec, spec.fork, lod, seed);
@@ -831,7 +832,7 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
             const inside = (p: V, own: number) => crown.some((other, k) => k !== own && other.at.distanceTo(v3(p.x / rx, p.y / ry, (p.z - cz) / rz)) < 0.75 * other.r);
             parts.push(...berries(parts.slice(-crown.length), spec.berries, rand, inside));
         }
-        if (spec.heads && flecks && !lod) {
+        if (spec.heads && flecks && !lod && withHeads) {
             const inside = (p: V, own: number) => crown.some((other, k) => k !== own && other.at.distanceTo(v3(p.x / rx, p.y / ry, (p.z - cz) / rz)) < other.r);
             parts.push(...heads(parts.slice(-crown.length), spec.heads, flecks, mid, rand, inside));
         }
@@ -903,7 +904,7 @@ const PLUME: [number, number][] = [[0, 0], [0.7, 0.08], [1, 0.3], [0.92, 0.6], [
  * The crown of a `rods` shrub: the rods fan from the stool, the outer ones lower and leaning further, each with
  * two side shoots. Leafy, a plume wraps each rod's upper part and each shoot; bare, twigs stand along them.
  */
-function rods(spec: Broadleaf, lod: Lod, bare: boolean, foliage: (p: V, n: V) => Colour, [, tip]: Colour[], [catkin, share]: [Colour?, number?], rand: () => number, seed: number): Geometry[] {
+function rods(spec: Broadleaf, lod: Lod, bare: boolean, foliage: (p: V, n: V) => Colour, [, tip]: Colour[], [catkin, share]: [Colour?, number?], rand: () => number, seed: number, withHeads: boolean): Geometry[] {
     const [cz, rx, ry, rz] = spec.crown, n = spec.rods!, sides = [4, 3, 0][lod];
     const foot = hex(spec.bark[0]), wood = hex(spec.twigs[1]), young = hex(spec.twigs[2]);
     const bark = (p: V) => foot.clone().lerp(wood, smooth(0, 0.2, p.z)).lerp(young, smooth(0.3, 0.9, p.z));
@@ -954,6 +955,8 @@ function rods(spec: Broadleaf, lod: Lod, bare: boolean, foliage: (p: V, n: V) =>
         const catkins = !catkin || bare || lod ? 0 : spec.heads ? Math.round((count * share!) / n + rand() - 0.5) : 3;
         for (let c = 0; c < catkins; c++) {
             const s = 0.4 + 0.5 * rand(), turn = 2 * Math.PI * rand(), out = v3(Math.cos(turn), Math.sin(turn), 0);
+            // Without its heads the shrub draws as many random numbers, so its rods stay.
+            if (spec.heads && !withHeads) continue;
             const geo = paint(soft(lathe([[0, 0], [1, 0.4], [0, 1]], 4, 2)), catkin!);
             parts.push(place(geo, { at: path(s).addScaledVector(out, width), turn: turnFromTo(UP, out.setZ(1.2).normalize()), scale: [0.5 * across, 0.5 * across, spec.heads ? across * tall : 0.065] }));
         }

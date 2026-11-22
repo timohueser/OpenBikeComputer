@@ -64,7 +64,7 @@ export async function bake(): Promise<Baked> {
             tones.push(matrix ?? null);
             crowns.push(!matrix || !fits(matrix, summer[0], near!, FIT) ? await file('tree', `tree-${id}-${season}`, [crown(id, season)]) : null);
         }
-        const leafy = treeModel(tiers(id, summer));
+        const leafy = treeModel(tiers(id, 'summer', summer));
         summers.push(leafy.tiers[0].index.length / 3);
         models.trees[id] = { summer: await file('tree', `tree-${id}-summer`, [leafy]), keepsHeading: !!spec.keepsHeading, tones, crowns };
     }
@@ -101,17 +101,19 @@ export async function bake(): Promise<Baked> {
 /** A crown of a species' own in a season: bare crowns grow each tier from the tree, the others simplify tier 0. */
 function crown(id: string, season: Season): Packed {
     const grown = ([0, 1, 2] as Lod[]).map(lod => tree(id, season, lod));
-    return treeModel(bareIn(id, season) ? grown : tiers(id, grown));
+    return treeModel(bareIn(id, season) ? grown : tiers(id, season, grown));
 }
 
 /**
  * Tier 0, and tiers 1 and 2 simplified from it, each with its own trunk; a species of `buildsFar` grows tier 2, as bright as
  * tier 0, one of `growsTiers` tier 1 too, and one of `farFromFar` simplifies its own far level.
  */
-function tiers(id: string, [near, middle, far]: Grown[]): Grown[] {
+function tiers(id: string, season: Season, [near, middle, far]: Grown[]): Grown[] {
     const want = lit(near);
     if (growsTiers(id)) return [near, relit(middle, want), relit(far, want)];
-    return [near, simplified(near, middle, TRIANGLES[0], want), buildsFar(id) ? relit(far, want) : simplified(farFromFar(id) ? far : near, far, TRIANGLES[1], want)];
+    // Flower heads simplify into loose shards; the crown's colour keeps theirs.
+    const source = tree(id, season, 0, 1, false);
+    return [near, simplified(source, middle, TRIANGLES[0], want), buildsFar(id) ? relit(far, want) : simplified(farFromFar(id) ? far : source, far, TRIANGLES[1], want)];
 }
 
 /** A tree model, with its crown's lowest point at every tier. */
