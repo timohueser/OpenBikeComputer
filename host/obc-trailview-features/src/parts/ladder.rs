@@ -102,10 +102,10 @@ fn near(openings: &[Opening], input: &Input) -> Vec<Near> {
 /// their wings), and a stretch changes the ground up to about 100 m from its end vertex (its length, at most
 /// `junction_shift_max_m` plus `pair_max_m`, and the cut and fill of its road beyond it).
 const AGAIN_M: f64 = 200.0;
-/// An opening farther than this in from a frame line lies past it. Nearer, it stands in the depth of the line's head
-/// (`face_m` of `design`) and its ground is the head's: two openings beside each other whose ways differ by a
-/// few degrees lie each a little past the other's line.
-const PAST_M: f64 = 1.0;
+/// An opening farther than this in from a frame line lies past it. Nearer, it shares the line: two openings beside each
+/// other whose ways differ by a few degrees lie each a little past the other's line. A pair's openings must lie on one
+/// line within the device's 0.5 m (`END_M` of `obc-trailview-parts`) after the tile rounds each by up to 0.15 m.
+const PAST_M: f64 = 0.2;
 const SQUARE: f64 = (1u64 << obc_ground_plan::frame::FRAME_BITS) as f64;
 
 /// What to read about opening i (`measure::ask`): as far across and in as a pair with a candidate can need (`reach`:
