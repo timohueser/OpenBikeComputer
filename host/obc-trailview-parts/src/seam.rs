@@ -133,7 +133,8 @@ pub(crate) fn ear_clip(poly: &[Corner]) -> Vec<[usize; 3]> {
         out.push([a, b, c]);
         left.remove(i);
     }
-    if left.len() == 3 {
+    // The last three corners make a face where they span an area: a region of no width is no face.
+    if left.len() == 3 && way * cross(poly[left[0]], poly[left[1]], poly[left[2]]) > 1e-12 {
         out.push([left[0], left[1], left[2]]);
     }
     out

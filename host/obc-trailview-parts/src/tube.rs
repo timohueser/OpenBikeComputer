@@ -411,14 +411,14 @@ impl<'a> Net<'a> {
             let child = &self.chords[c];
             let (half, st) = (self.half_at(c, k), self.ring(c, k));
             let pieces = floor_pieces(self, c, k);
-            let o = inside_outline(self, child, k, half);
+            let o: Vec<Corner> = inside_outline(self, child, k, half).into_iter().map(|q| q.map(mm)).collect();
             let mut corners = vec![[-half, pieces[0].2]];
             corners.extend_from_slice(&o[1..o.len() - 1]);
             corners.push([half, pieces[pieces.len() - 1].2]);
             let (sc, h) = (sign(&st), &self.holes[e]);
             // In the line's metres from the right; the floor corners are the parent's.
             let mut on: Vec<(Corner, [f64; 3])> =
-                corners.iter().map(|&q| ([h.across + sc * q[0], h.up + q[1]], st.at(q))).collect();
+                corners.iter().map(|&q| ([mm(h.across + sc * q[0]), mm(h.up + q[1])], st.at(q))).collect();
             if sc < 0.0 {
                 on.reverse();
             }
@@ -429,8 +429,8 @@ impl<'a> Net<'a> {
         // spring of the room before the line.
         let sp_parent = spring(self, chord.section, chord.height[kp]);
         for door in &self.records[r].doors {
-            let (lo, hi, top) =
-                (door.across - door.half, door.across + door.half, (door.up + door.height).min(sp_parent));
+            let (lo, hi) = (mm(door.across - door.half), mm(door.across + door.half));
+            let top = mm((door.up + door.height).min(sp_parent));
             let on: Vec<(Corner, [f64; 3])> =
                 [[lo, 0.0], [lo, top], [hi, top], [hi, 0.0]].map(|q| (q, ring.at([sp * q[0], q[1]]))).to_vec();
             sides.extend([lo, hi].map(|x| sp * x));
@@ -446,7 +446,8 @@ impl<'a> Net<'a> {
         floor.sort_by(|a, b| a[0].total_cmp(&b[0]));
         floor.dedup();
         // The parent's outline from spring to spring, with a corner over each hole's side, as high as the hole there.
-        let o = inside_outline(self, chord, kp, self.half_at(cp, kp));
+        let o: Vec<Corner> =
+            inside_outline(self, chord, kp, self.half_at(cp, kp)).into_iter().map(|q| q.map(mm)).collect();
         let mut top: Vec<Corner> = o[1..o.len() - 1].to_vec();
         for (i, &x) in sides.iter().enumerate() {
             let hole = &outlines[i / 2];
@@ -528,8 +529,20 @@ pub struct SeamCut {
 /// edges, with a walk on each side; a walk of no width lies at the road's height, so no kerb stands where two
 /// carriageways touch.
 fn lane_pieces(net: &Net, c: usize, i: usize, k: usize) -> Vec<(f64, f64, f64)> {
-    let seam = net.seam_at(c, k).filter(|&(_, h)| h > 0);
-    seam.and_then(|(r, h)| behind(net, (r, h), (c, k), i)).unwrap_or_else(|| own_pieces(net, c, i, k))
+    let Some((r, h)) = net.seam_at(c, k) else { return own_pieces(net, c, i, k) };
+    let pieces = if h > 0 { behind(net, (r, h), (c, k), i) } else { None };
+    on_line(pieces.unwrap_or_else(|| own_pieces(net, c, i, k)))
+}
+
+/// A length on a seam's line: whole millimetres, as the records give each position there, so that a corner reached by
+/// two sums is one corner.
+pub fn mm(v: f64) -> f64 {
+    (v * 1000.0).round() / 1000.0
+}
+
+/// Pieces of a floor on a seam's line, in whole millimetres.
+fn on_line(pieces: Vec<(f64, f64, f64)>) -> Vec<(f64, f64, f64)> {
+    pieces.into_iter().map(|(a, b, t)| (mm(a), mm(b), mm(t))).collect()
 }
 
 /// The floor of lane i of chord c at its vertex k in hole h of seam record r: of the lanes of the room before the line
@@ -555,7 +568,7 @@ fn behind(net: &Net, (r, h): (usize, usize), (c, k): (usize, usize), i: usize) -
     let (lo, hi) = (hole.across - hole.half, hole.across + hole.half);
     // The lanes of the room before the line in the line's metres from the right, those in the hole.
     let mut lanes: Vec<Vec<(f64, f64, f64)>> =
-        (0..net.chords[cp].lanes.len()).map(|j| turn(own_pieces(net, cp, j, kp), sp, 0.0)).collect();
+        (0..net.chords[cp].lanes.len()).map(|j| turn(on_line(own_pieces(net, cp, j, kp)), sp, 0.0)).collect();
     if sp < 0.0 {
         lanes.reverse();
     }
@@ -868,7 +881,14 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     }
     // The walls stand on the floor at its sides, the vault on the walls.
     let [fa, fz] = [0, 1].map(|k| floor_pieces(net, c, k));
-    let outlines = [0, 1].map(|k| inside_outline(net, chord, k, net.half_at(c, k)));
+    let outlines = [0, 1].map(|k| {
+        let o = inside_outline(net, chord, k, net.half_at(c, k));
+        if net.seam_at(c, k).is_some() {
+            o.into_iter().map(|q| q.map(mm)).collect()
+        } else {
+            o
+        }
+    });
     let (o, n) = (&outlines[0], outlines[0].len());
     let feet = [[fa[0].2, fz[0].2], [fa[fa.len() - 1].2, fz[fz.len() - 1].2]];
     let lower = |k: usize| net.lower(c, k).map(|l| spring(net, chord.section, l));
