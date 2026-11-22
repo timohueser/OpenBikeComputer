@@ -1015,17 +1015,23 @@ fn two_tubes_meet_where_both_rings_do_and_a_cut_head_is_closed() {
 fn a_tube_that_bends_beside_another_leaves_no_slit() {
     let rules = Rules::embedded();
     // A tube runs east; another runs 7 m north of it and jogs 2 m at 30° toward it or away from it while they meet, or
-    // bends 10° toward it. Between the two axes, every way up from 1 m and down from 2 m over the floor meets the front
-    // of a vault or a floor: the joined room has no slit, also near the middle.
+    // bends 10° toward it; or 8 m north and jogs 3 m at 50° toward the first, cut into chords of 2 m, so the point where
+    // the middle bends lies in a chord beside the one under the bend. Between the two axes, every way up from 1 m and
+    // down from 2 m over the floor meets the front of a vault or a floor: the joined room has no slit, also near the
+    // middle.
     let t30 = 30f64.to_radians().tan();
     let t10 = 10f64.to_radians().tan();
+    let t50 = 50f64.to_radians().tan();
+    let long = vec![[0.0, 0.0], [60.0, 0.0]];
+    let short: Vec<[f64; 2]> = (0..=30).map(|k| [f64::from(k) * 2.0, 0.0]).collect();
     let cases = [
-        ("toward", vec![[0.0, 7.0], [20.0, 7.0], [20.0 + 2.0 / t30, 5.0], [60.0, 5.0]]),
-        ("away", vec![[0.0, 7.0], [20.0, 7.0], [20.0 + 2.0 / t30, 9.0], [60.0, 9.0]]),
-        ("gentle", vec![[0.0, 7.5], [20.0, 7.5], [40.0, 7.5 - 20.0 * t10]]),
+        ("toward", &long, vec![[0.0, 7.0], [20.0, 7.0], [20.0 + 2.0 / t30, 5.0], [60.0, 5.0]]),
+        ("away", &long, vec![[0.0, 7.0], [20.0, 7.0], [20.0 + 2.0 / t30, 9.0], [60.0, 9.0]]),
+        ("gentle", &long, vec![[0.0, 7.5], [20.0, 7.5], [40.0, 7.5 - 20.0 * t10]]),
+        ("short", &short, vec![[0.0, 8.0], [21.0, 8.0], [21.0 + 3.0 / t50, 5.0], [60.0, 5.0]]),
     ];
-    for (name, b) in cases {
-        let (ends, chords) = tubes(&[&[[0.0, 0.0], [60.0, 0.0]], &b]);
+    for (name, a, b) in cases {
+        let (ends, chords) = tubes(&[a, &b]);
         let faces = solid(&meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules));
         let north_of = |x: f64| {
             let w = b.windows(2).find(|w| x <= w[1][0]).unwrap_or(&b[b.len() - 2..]);

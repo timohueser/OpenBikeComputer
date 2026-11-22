@@ -537,9 +537,15 @@ impl<'a> Net<'a> {
         let meet = Meet { across: [reach; 2], past: MEET_PAST_M, up: None, only: None };
         let sides = self.meets(c, &rings[0].mix(&rings[1], 0.5), meet).map(|cut| cut.map(|cut| self.tube[cut.other]));
         let cuts = rings.map(|r| [0, 1].map(|side| sides[side].and_then(|t| self.cut_on(c, &r, side, t))));
-        // The other's cut on each of its rings beside the chord (its vertex within the chord's span and the reach of
-        // a meeting): there its two chords give one middle.
+        // The other's cut on each of its rings beside the chord (its vertex within the reach of a meeting of the chord,
+        // also past its ends, as the cut lies along the chord from the vertex's foot): there its two chords give one
+        // middle.
         let mut bends: Vec<[f64; 2]> = Vec::new();
+        if sides == [None, None] {
+            let met = Rc::new(Met { sides, cuts, bends });
+            self.met.borrow_mut().insert(c, met.clone());
+            return met;
+        }
         let chord = &self.chords[c];
         let (d, m) = ([chord.b[0] - chord.a[0], chord.b[1] - chord.a[1]], metres_per_unit(chord.a[1]));
         let (len2, shell) = (d[0] * d[0] + d[1] * d[1], self.rules.ladder.bake.shell_m);
@@ -557,7 +563,9 @@ impl<'a> Net<'a> {
                         let p = vertex(other, k);
                         let u = ((p[0] - chord.a[0]) * d[0] + (p[1] - chord.a[1]) * d[1]) / len2;
                         let foot = [chord.a[0] + u * d[0], chord.a[1] + u * d[1]];
-                        let beside = u > -0.5 && u < 1.5 && libm::hypot(p[0] - foot[0], p[1] - foot[1]) * m <= reach;
+                        let grow = reach / (len2.sqrt() * m);
+                        let across = libm::hypot(p[0] - foot[0], p[1] - foot[1]) * m;
+                        let beside = u > -grow && u < 1.0 + grow && across <= reach;
                         let v = key(p);
                         if !beside || seen.contains(&v) {
                             continue;
