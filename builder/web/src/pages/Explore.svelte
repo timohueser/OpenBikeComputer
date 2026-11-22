@@ -31,7 +31,7 @@
     import Journey from './explore/Journey.svelte';
     import { counts, defaultQuery, DRIVE_KM, driveCap, find, GRADE_TOP, keepQuery, keepSearch, loadBox, openingQuery, queryParams, reachBox, readQuery, storedQuery,
         storedSearches, suggestions, type Loaded, type Query, type Shape, type Sort } from './explore/search';
-    import { apply, changes, EXAMPLES, often, phraseTable, type Choice } from './explore/phrases';
+    import { apply, changes, EXAMPLES, ignored, often, phraseTable, type Choice } from './explore/phrases';
     import { effectiveQuery, resetSlot, slotSet, slotWords, type SlotId } from './explore/slots';
     import Wishes from './explore/Wishes.svelte';
     import { addMarkerLayers, MARKER_LAYERS, mapData, markerClick, markerTip, myLocation, startAt } from './explore/search-map';
@@ -86,7 +86,8 @@
     const facts = $derived(searching && !!config.facts);
     /** The query that the day routes search, and the one that the bar shows: each value that is off has its default. */
     const dayQuery = $derived(effectiveQuery(query, { from: !config.facts, way: !config.facts, trails: false }, day));
-    const shownQuery = $derived(tab === 'long' ? effectiveQuery(query, { from: true, way: true, trails: true }, day) : dayQuery);
+    const shownOf = (next: Query) => effectiveQuery(next, tab === 'long' ? { from: true, way: true, trails: true } : { from: !config.facts, way: !config.facts, trails: false }, day);
+    const shownQuery = $derived(shownOf(query));
     const start = $derived(dayQuery.start);
     /** The box whose cells the day routes load: the view, or with a start point the part of it in reach; null for none. */
     const from = $derived(searching && view ? loadBox({ start }, view) : view);
@@ -365,7 +366,8 @@
     /** The text field of the bar. Its words and its suggestions are read in the browser; only a typed name asks the server
      * for places, which move the map. */
     let searches = $state(storedSearches());
-    const off = $derived(offText ? { from: offText, way: offText } : {});
+    /** The words of a choice that the open tab does not search stay in the field, with the text of what is off. */
+    const off = $derived(offText ? ignored(shownOf, offText, day) : () => undefined);
     const phrases = $derived(phraseTable(loaded, off));
     /** The words of the slots of a query; a search with none is no last search. */
     const summary = (kept: Query) => Object.values(slotWords(kept, placeById, day)).flat().join(' · ');

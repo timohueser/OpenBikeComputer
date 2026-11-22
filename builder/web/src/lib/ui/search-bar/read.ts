@@ -13,8 +13,8 @@ export interface Table<V extends Value> {
      * with no `value` gets no mark alone. */
     phrases: { words: string; value?: Meaning<V>; not?: Meaning<V> }[];
     /** Quantities, such as "under 12 km": an expression that starts with `^`, run on the text from the start of a word.
-     * Its first value is what the words mean, and each value is a suggestion. */
-    patterns: { match: RegExp; values: (match: RegExpExecArray) => V[] }[];
+     * Its first value is what the words mean, and each value is a suggestion; a note keeps the words in the field. */
+    patterns: { match: RegExp; values: (match: RegExpExecArray) => V[] | string }[];
     /** Words that start a quantity, such as "at least", and the usual values for them before a number. */
     starts: { words: string[]; values: V[] }[];
     /** The units that can follow a number. */
@@ -65,9 +65,11 @@ function compiled<V extends Value>(table: Table<V>): Compiled<V> {
 /** A word of the text is the word of a phrase; the last word of a phrase can have a plural "s" or "es". */
 const same = (word: string, of: string, last: boolean) => word === of || (last && (word === `${of}s` || word === `${of}es`));
 
-/** A token that the table knows at the start of a phrase, a stop, or no token. */
-function known<V extends Value>(table: Table<V>, token: Token | undefined): boolean {
-    const { phrases, not, leads } = compiled(table);
+/** After glue words, the token at `i` starts a phrase that the table knows, or is a stop, or there is no token. */
+function known<V extends Value>(table: Table<V>, list: Token[], i: number): boolean {
+    const { phrases, not, leads, glue } = compiled(table);
+    while (list[i] && !list[i].stop && glue.has(list[i].word)) i++;
+    const token = list[i];
     return !token || token.stop || not.has(token.word) || leads.some(lead => lead.split(' ')[0] === token.word)
         || phrases.some(phrase => same(token.word, phrase.words[0], phrase.words.length === 1));
 }
@@ -83,10 +85,11 @@ function longest<V extends Value>(table: Table<V>, folded: string, list: Token[]
         if (!best || to > best.to) best = { to, next: i + count, value: phrase.value, not: phrase.not };
     }
     for (const pattern of table.patterns) {
-        const match = pattern.match.exec(folded.slice(list[i].from)), value = match && pattern.values(match)[0];
-        if (!value) continue;
+        const match = pattern.match.exec(folded.slice(list[i].from)), values = match && pattern.values(match);
+        const value = typeof values === 'string' ? values : values?.[0];
+        if (!match || !value) continue;
         const to = list[i].from + match[0].trimEnd().length, end = list.findIndex(token => token.to === to);
-        if (end < i || (/^[\d.,\-–]+$/.test(list[end].word) && !known(table, list[end + 1]))) continue;
+        if (end < i || (/^[\d.,\-–]+$/.test(list[end].word) && !known(table, list, end + 1))) continue;
         if (!best || to > best.to) best = { to, next: end + 1, value };
     }
     return best;
@@ -214,8 +217,8 @@ export function suggest<V extends Value>(fragment: string, table: Table<V>): V[]
     const found: { score: number; value: V }[] = [];
     if (!negated) {
         for (const pattern of table.patterns) {
-            const match = pattern.match.exec(typed);
-            if (match?.[0].trimEnd().length === typed.length) found.push(...pattern.values(match).map((value, i) => ({ score: 96 - i, value })));
+            const match = pattern.match.exec(typed), values = match?.[0].trimEnd().length === typed.length ? pattern.values(match) : [];
+            if (typeof values !== 'string') found.push(...values.map((value, i) => ({ score: 96 - i, value })));
         }
         if (typed.length >= 2 && !/\d/.test(typed)) {
             for (const start of table.starts) {

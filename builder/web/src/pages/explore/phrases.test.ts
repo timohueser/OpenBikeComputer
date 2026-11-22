@@ -2,9 +2,9 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import type { CatalogRecord, FactsPlace } from '../../lib/planner/signed-routes';
 import { settings } from '../../lib/settings/settings.svelte';
 import { scan, suggest } from '../../lib/ui/search-bar/read';
-import { apply, EXAMPLES, phraseTable } from './phrases';
+import { apply, EXAMPLES, ignored, phraseTable, type Off } from './phrases';
 import { defaultQuery, type Loaded } from './search';
-import { slotWords } from './slots';
+import { effectiveQuery, slotWords } from './slots';
 
 const TODAY = '2026-07-01';
 const PLACES: Record<string, FactsPlace> = { n4: { kind: 'peak', name: 'Pilatus', at_udeg: [0, 0] }, w2: { kind: 'parking', name: 'Talboden', at_udeg: [0, 0] } };
@@ -16,20 +16,21 @@ const loaded: Loaded = {
 /** The words with plain spaces: the app writes a non-breaking space before a unit. */
 const plain = (words: string[]) => words.map(word => word.replaceAll(' ', ' '));
 
+const NONE: Off = () => undefined;
 /** The text after Enter: the words of the slots, and the words that stay in the field with their notes. */
-function enter(text: string) {
-    const parts = scan(text, phraseTable(loaded, {}));
+function enter(text: string, off = NONE) {
+    const parts = scan(text, phraseTable(loaded, off));
     const words = slotWords(apply(defaultQuery(TODAY), parts.flatMap(part => part.kind === 'value' ? [part.value] : [])), loaded.place, TODAY);
     return {
         from: plain(words.from), hike: plain(words.hike), way: plain(words.way),
-        stays: parts.flatMap(part => part.kind === 'unknown' ? [[text.slice(part.from, part.to), part.note]] : []),
+        stays: parts.flatMap(part => part.kind === 'unknown' ? [[text.slice(part.from, part.to), part.note?.replaceAll('\u00a0', ' ')]] : []),
     };
 }
-const labels = (fragment: string) => plain(suggest(fragment, phraseTable(loaded, {})).map(choice => choice.label));
+const labels = (fragment: string) => plain(suggest(fragment, phraseTable(loaded, NONE)).map(choice => choice.label));
 
 describe('the words of Explore', () => {
     it('send each phrase of the examples to its slot, in any order', () => {
-        expect(EXAMPLES.map(enter)).toEqual([
+        expect(EXAMPLES.map(text => enter(text))).toEqual([
             { from: [], hike: ['Loop', 'Under 15 km'], way: ['Hut with food'], stays: [] },
             { from: [], hike: ['Up to T3'], way: ['Summit', 'Mostly open'], stays: [] },
             { from: [], hike: ['Under 800 m climb'], way: ['Lake', 'Waterfall'], stays: [] },
@@ -53,9 +54,11 @@ describe('the words of Explore', () => {
         expect(enter('1,5 km, under 1,500 m climb')).toMatchObject({ hike: ['Under 1.5 km', 'Under 1,500 m climb'] });
     });
 
-    it('read a number with no unit only before a phrase, a stop or the end', () => {
+    it('read a number with no unit only before a phrase, a stop or the end, after glue words', () => {
         expect(enter('12 loop')).toMatchObject({ hike: ['Loop', 'Under 12 km'] });
-        expect(enter('under 4 hours, a 1 day hike, within 30 minutes')).toEqual({ from: [], hike: [], way: [], stays: [['4', undefined], ['hours', undefined], ['1', undefined], ['30', undefined], ['minutes', undefined]] });
+        expect(enter('under 12 and a hut')).toMatchObject({ hike: ['Under 12 km'], way: ['Hut with food'], stays: [] });
+        expect(enter('under 4 hours, a 1 day hike, within 30 minutes')).toEqual({ from: [], hike: [], way: [],
+            stays: [['4', undefined], ['hours', undefined], ['1', undefined], ['day', undefined], ['30', undefined], ['minutes', undefined]] });
     });
 
     it('give the opposite of a wish after "no", or keep the words with a note', () => {
@@ -66,10 +69,18 @@ describe('the words of Explore', () => {
 
     it('keep a word that they do not know, bike words and the values of a slot that is off, with a note', () => {
         expect(enter('sunny loop by gravel bike')).toMatchObject({ hike: ['Loop'], stays: [['sunny', undefined], ['gravel', 'Explore searches hikes only for now.'], ['bike', 'Explore searches hikes only for now.']] });
-        expect(scan('hut', phraseTable(loaded, { way: 'Not for long trails' }))).toEqual([{ from: 0, to: 3, kind: 'unknown', note: 'Not for long trails: Hut with food.' }]);
+    });
+
+    it('keep the words of a value that the page does not search, with a note', () => {
+        const noFacts = ignored(query => effectiveQuery(query, { from: true, way: true, trails: false }, TODAY), 'No data for this map', TODAY);
+        expect(enter('hut, within 20 km, loop', noFacts)).toMatchObject({ hike: ['Loop'], stays: [['hut', 'No data for this map: Hut with food.'],
+            ['within 20 km', 'No data for this map: By car, up to 20 km.']] });
+        const longTrails = ignored(query => effectiveQuery(query, { from: true, way: true, trails: true }, TODAY), 'Not for long trails', TODAY);
+        expect(enter('loop under 10 km, up to T3, at least T2', longTrails)).toMatchObject({ hike: ['Up to T3'], stays: [['loop', 'Not for long trails: Loop.'],
+            ['under 10 km', 'Not for long trails: Under 10 km.'], ['at least T2', 'Not for long trails: A T2 part, up to T6.']] });
     });
 
     it('ask for the start point with the car and a drive, which need one', () => {
-        expect(scan('by car within 20 km', phraseTable(loaded, {})).map(part => part.kind === 'value' && part.value.here)).toEqual([true, true]);
+        expect(scan('by car within 20 km', phraseTable(loaded, NONE)).map(part => part.kind === 'value' && part.value.here)).toEqual([true, true]);
     });
 });

@@ -4,7 +4,7 @@ import type { FactsPlace } from '../../lib/planner/signed-routes';
 import { distanceIn, formatHeight, heightIn, heightUnit } from '../../lib/settings/format';
 import { fold, type Table, type Value } from '../../lib/ui/search-bar/read';
 import { rangeText, type Range } from '../routes/filter';
-import { DRIVE_KM, find, GRADE_TOP, SHAPES, WISHES, type Loaded, type Query, type Shape, type Wish } from './search';
+import { defaultQuery, DRIVE_KM, find, GRADE_TOP, SHAPES, WISHES, type Loaded, type Query, type Shape, type Wish } from './search';
 import { gradeText, shapesSet, type SlotId } from './slots';
 import { LENGTH_TOP_M, SHAPE_WORDS, shortDistance, wishIcon, wishLabel } from './words';
 
@@ -95,7 +95,7 @@ const HEIGHTS: Record<string, number> = { m: 1, metres: 1, meters: 1, hm: 1, ft:
 const LONGEST_M = 2 * LENGTH_TOP_M, LEAST_CLIMB_M = 50;
 
 const GLUE = ('a an the with and or in on of for to at by from near around along via past passing passes through i we me my want would like please '
-    + 'show find some also but plus that has have is it be go goes which where there one day today nice hike hikes hiking walk walks walking route routes trail trails tour').split(' ');
+    + 'show find some also but plus that has have is it be go goes which where there one nice hike hikes hiking walk walks walking route routes trail trails tour').split(' ');
 
 type Kind = 'less' | 'more' | 'about';
 const kindOf = (lead: string | undefined): Kind | undefined => !lead ? undefined : LESS.includes(lead) ? 'less' : MORE.includes(lead) ? 'more' : 'about';
@@ -128,15 +128,24 @@ const N = '(\\d{1,3}(?:,\\d{3})+(?!\\d)|\\d+(?:[.,]\\d+)?)', END = '(?![\\p{L}\\
 const CLIMBED = '(\\s+(?:of\\s+)?(?:climb|climbing|ascent|elevation gain|uphill))?';
 const LEAD = `(?:(${words([...LESS, ...MORE, ...ABOUT])})\\s+)?`;
 
-/** The text of each slot that is off, such as "Not for long trails". */
-export type Off = Partial<Record<SlotId, string>>;
+/** Why the page does not search a choice, such as "Not for long trails"; nothing for a choice that it searches. */
+export type Off = (choice: Choice) => string | undefined;
+
+/** The choices that change nothing that the page searches, where `searched` gives the query that it searches. */
+export function ignored(searched: (query: Query) => Query, why: string, today: string): Off {
+    const base = defaultQuery(today), seen = JSON.stringify(searched(base));
+    return choice => JSON.stringify(searched(apply(base, [choice]))) === seen ? why : undefined;
+}
 
 /** The table of the field, with "Passes <name>" for each named summit, hut, lake and waterfall that the loaded hikes pass.
- * A value of a slot that is off is a note, so its words stay in the field. */
+ * A choice that is off is a note, so its words stay in the field. */
 export function phraseTable(loaded: Loaded, off: Off): Table<Choice> {
     const place = loaded.place, phrases: Table<Choice>['phrases'] = [];
-    const usable = (value?: Choice | string) => typeof value === 'object' && off[value.slot] ? `${off[value.slot]}: ${value.label}.` : value;
-    const on = (choices: Choice[]) => choices.filter(choice => !off[choice.slot]);
+    const note = (choice: Choice) => `${off(choice)}: ${choice.label}.`;
+    const usable = (value?: Choice | string) => typeof value === 'object' && off(value) ? note(value) : value;
+    const on = (choices: Choice[]) => choices.filter(choice => !off(choice));
+    /** The values of a quantity; with each of them off, a note, so no shorter quantity reads the same number. */
+    const read = (choices: Choice[]) => on(choices).length || !choices.length ? on(choices) : note(choices[0]);
     const add = (list: string[], value?: Choice | string, not?: Choice | string) => phrases.push(...list.map(text => ({ words: text, value: usable(value), not: usable(not) })));
     for (const id of WISHES) {
         const opposite = OPPOSITE[id], left = LEFT_OUT[id];
@@ -162,11 +171,11 @@ export function phraseTable(loaded: Loaded, off: Off): Table<Choice> {
         phrases,
         patterns: [
             { match: new RegExp(`^${LEAD}${N}\\s*${UNIT}?${END}${CLIMBED}`, 'u'),
-                values: ([, lead, count, unit, climbed]) => on(sized(number(count), unit, !!climbed, size => ranges(number(count), size, kindOf(lead)))) },
+                values: ([, lead, count, unit, climbed]) => read(sized(number(count), unit, !!climbed, size => ranges(number(count), size, kindOf(lead)))) },
             { match: new RegExp(`^(?:between\\s+)?${N}\\s*(?:-|–|to|and)\\s*${N}\\s*${UNIT}?${END}${CLIMBED}`, 'u'),
-                values: ([, low, high, unit, climbed]) => number(low) < number(high) ? on(sized(number(high), unit, !!climbed, size => [[number(low) * size, number(high) * size]])).slice(0, 1) : [] },
-            { match: new RegExp(`^${LEAD}t([1-6])${END}`, 'u'), values: ([, lead, index]) => on(grades(Number(index) - 1, kindOf(lead))) },
-            { match: new RegExp(`^(?:${words(WITHIN)})\\s+(?:up to\\s+)?${N}\\s*(?:km)?${END}`, 'u'), values: ([, count]) => on([drive(number(count))]) },
+                values: ([, low, high, unit, climbed]) => number(low) < number(high) ? read(sized(number(high), unit, !!climbed, size => [[number(low) * size, number(high) * size]]).slice(0, 1)) : [] },
+            { match: new RegExp(`^${LEAD}t([1-6])${END}`, 'u'), values: ([, lead, index]) => read(grades(Number(index) - 1, kindOf(lead))) },
+            { match: new RegExp(`^(?:${words(WITHIN)})\\s+(?:up to\\s+)?${N}\\s*(?:km)?${END}`, 'u'), values: ([, count]) => read([drive(number(count))]) },
         ],
         starts: [
             { words: LESS, values: on([length([0, lengthIn(10)]), climb([0, usualClimb()]), grade([0, 1])]) },
@@ -180,11 +189,11 @@ export function phraseTable(loaded: Loaded, off: Off): Table<Choice> {
     };
 }
 
-/** Up to four values that riders often add next: those of a slot that is on, that the query does not hold and that leave a
- * hike. */
+/** Up to four values that riders often add next: those that the page searches, that the query does not hold and that leave
+ * a hike. */
 export function often(query: Query, loaded: Loaded, off: Off): Choice[] {
     return [length([0, lengthIn(12)]), shape('loop'), wish('hut', loaded.place), wish('peak', loaded.place), climb([0, usualClimb()]), wish('lake', loaded.place)]
-        .filter(choice => !off[choice.slot] && changes(query, choice) && find(apply(query, [choice]), loaded).length > 0).slice(0, 4);
+        .filter(choice => !off(choice) && changes(query, choice) && find(apply(query, [choice]), loaded).length > 0).slice(0, 4);
 }
 
 /** Sentences for an empty field before the first search. */
