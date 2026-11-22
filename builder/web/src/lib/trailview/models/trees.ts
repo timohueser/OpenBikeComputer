@@ -213,7 +213,7 @@ const BANDS = 18;
 
 /** A trunk from the ground to `top`, darker at its foot, its bole in `spans` spans, which a trunk that bends needs. */
 function trunk({ trunk: r, flare, neck = 0.6, bark, fade = [0, 0.5], marks, scars, flutes, twist }: Bark, top: number, lod: Lod, seed: number, spans = 1): Geometry {
-    if (scars && lod === 0) return scarred(r, flare, bark, scars, top);
+    if (scars && lod === 0) return scarred(r, flare, neck, bark, scars, top);
     const [sides, perSpan] = DETAIL[lod].trunk;
     const [foot, bole] = bark.map(hex);
     const low = Math.min(6 * r, 0.5 * top);
@@ -271,9 +271,9 @@ function stain(geo: Geometry, mark: Colour, dark: (centre: V) => boolean): Geome
 /**
  * A trunk of diamond leaf scars in rings, each ring turned half a diamond. A diamond is four flat
  * faces around a raised centre, so the sun lights its upper half and the grooves stay dark:
- * 4 × n triangles a ring.
+ * 4 × n triangles a ring. The trunk swells to `neck` radii under the crown.
  */
-function scarred(r: number, flare: number, bark: [string, string], n: number, top: number): Geometry {
+function scarred(r: number, flare: number, neck: number, bark: [string, string], n: number, top: number): Geometry {
     const [foot, bole] = bark.map(hex);
     // Rings half a diamond apart; a diamond is half as tall as it is wide.
     const h = (0.25 * 2 * Math.PI * r) / n;
@@ -281,7 +281,7 @@ function scarred(r: number, flare: number, bark: [string, string], n: number, to
         const z = i * h;
         // Scars run in a slow spiral, as the leaves grew.
         const a = (k / 2 + 0.03 * i) * ((2 * Math.PI) / n);
-        const radius = r * (1 + (flare - 1) * (1 - smooth(0, 4 * r, z))) * (raised ? 1.15 : 1);
+        const radius = r * (1 + (flare - 1) * (1 - smooth(0, 4 * r, z))) * lerp(1, neck, smooth(0.4 * top, top, z)) * (raised ? 1.15 : 1);
         return v3(radius * Math.cos(a), radius * Math.sin(a), z);
     };
     const cards = sheet();
@@ -1035,7 +1035,9 @@ function palm(spec: Broadleaf, lod: Lod, [deep, mid, tip]: Colour[], rand: () =>
         }
     }
     // Leaf bases far off are as green as the fronds around them, lest they read as a nut.
-    const knob = paint(place(soft(lump((lod ? 1.3 : 1.7) * spec.trunk, lod ? 0 : 1), 0.1 * spec.trunk, 30), { at: base }), hex('#6a5a3c').lerp(deep, lod ? 0.6 : 0));
+    const husk = hex('#6a5a3c').lerp(deep, lod ? 0.6 : 0);
+    // The knob's top is as green as the young fronds that leave it.
+    const knob = paint(place(soft(lump((lod ? 1.3 : 1.7) * spec.trunk, lod ? 0 : 1), 0.1 * spec.trunk, 30), { at: base }), (p) => husk.clone().lerp(mid, smooth(0, spec.trunk, p.z - spec.fork)));
     return [cards.build(), knob];
 }
 

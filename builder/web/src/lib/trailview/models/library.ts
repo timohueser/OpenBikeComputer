@@ -19,12 +19,12 @@ export const bareIn = (id: string, season: Season) => {
 };
 
 /**
- * Whether a species builds the far tier of its leafy crown: its thin limbs or sprays are too small to
+ * Whether a species builds the far tier of its leafy crown: its thin limbs, sprays or fronds are too small to
  * simplify from the nearest tier, and would come apart.
  */
 export const buildsFar = (id: string) => {
     const spec = TREES[id];
-    return spec.form === 'conifer' ? !!(spec.boughs || spec.tufts) : !!spec.crook && !spec.shape;
+    return spec.form === 'conifer' ? !!(spec.boughs || spec.tufts) : (!!spec.crook && !spec.shape) || !!spec.fronds;
 };
 
 /** Whether a species' far tier is simplified from its own far level, not from its nearest: a shaped crown of many small lumps would come out in shards. */
