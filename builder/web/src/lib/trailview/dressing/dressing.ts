@@ -7,6 +7,7 @@ import { Instances, VIEWS, type ModelSpec, type Producer, type Surfaces } from '
 import type { ModelFiles } from '../instances/model-files';
 import type { Packed } from '../models/model-file';
 import { bits, named, type Rules } from '../rules/regions';
+import type { Reach } from '../vegetation/tree-models';
 
 /** Herds stand within this many metres, rocks within this many; as HERDS of dressing.wgsl and ROCK_REACH_M of rocks.wgsl. */
 const HERD_REACH_M = 1500, ROCK_REACH_M = 1000, HERDS = 4;
@@ -33,12 +34,14 @@ function showroom(): Showroom | undefined {
     return { lonLat: [Number(lon), Number(lat)], heading: (Number(heading) * Math.PI) / 180, entries: entries.split('|'), tier: Number(tier ?? 0) };
 }
 
-interface Resources { gpu: Gpu; herds: GPUComputePipeline; rocks: GPUComputePipeline; groups: GPUBindGroup[]; params: GPUBuffer }
+interface Resources { gpu: Gpu; herds: GPUComputePipeline; rocks: GPUComputePipeline; groups: GPUBindGroup[]; params: GPUBuffer; table: GPUBuffer }
 
 /**
  * The dressing of the ground (dressing.wgsl): the herds of the regions' packs on the materials that
  * they graze, and rocks on rough and rocky ground, placed on the GPU each frame. Their models come from
- * model files (models/model-file.ts): the rocks from the objects file, each breed from a file of its own.
+ * model files (models/model-file.ts): the rocks from the objects file, each breed from a file of its own. A
+ * region's herds take their models when the region comes into reach: all breeds of all packs would not fit
+ * in the instances' models.
  */
 export class Dressing implements Producer {
     private resources?: Resources;
@@ -52,22 +55,21 @@ export class Dressing implements Producer {
     private showCount = 0;
     /** The files of the models. */
     private readonly urls: string[] = [];
+    /** The first instance model of each breed that has its models, and the regions whose herds are in the table. */
+    private readonly breeds = new Map<string, number | undefined>();
+    private readonly placed = new Set<number>();
+    private changed = false;
+    private updated = false;
 
-    constructor(rules: Rules, private readonly instances: Instances, private readonly files: ModelFiles) {
+    constructor(private readonly rules: Rules, private readonly instances: Instances, private readonly files: ModelFiles) {
         instances.produce(this);
         const { objects, breeds: breedModels } = files.models;
         const spec = ({ tiers: [mesh], shape }: Packed, until: number): ModelSpec => ({ tiers: [{ mesh, until }], shape });
         // No fade of the rocks' tier: rocks_of ends each rock at its own distance before the reach.
         this.rockModel = this.load(objects.file, objects.rocks, model => ({ ...spec(model, ROCK_REACH_M), fade: 0 }));
-        const animal = ({ tiers: [near, far], shape }: Packed): ModelSpec => ({ tiers: this.show?.tier ? [{ mesh: far, until: HERD_REACH_M }] : [{ mesh: near, until: ANIMAL_NEAR_M }, { mesh: far, until: HERD_REACH_M }], shape });
-        const shown = this.show?.entries.map(entry => entry.split('.')) ?? [];
-        const breeds = new Map<string, number>(), used = new Set([...rules.regions.flatMap(region => region.herds.map(herd => herd.model)), ...shown.map(([name]) => name)].filter(name => name in breedModels));
-        for (const name of used) {
-            const first = this.load(breedModels[name].file, breedModels[name].coats * breedModels[name].poses, animal);
-            if (first !== undefined) breeds.set(name, first);
-        }
         // The showroom's animals: an entry of a breed stands each of its models.
-        const row = shown.filter(([name]) => breeds.has(name)).flatMap(([name, k]) => (k ? [Number(k)] : Array.from({ length: breedModels[name].coats * breedModels[name].poses }, (_, m) => m)).map(m => ({ name, model: breeds.get(name)! + m })));
+        const row = (this.show?.entries ?? []).map(entry => entry.split('.')).filter(([name]) => this.breed(name) !== undefined)
+            .flatMap(([name, k]) => (k ? [Number(k)] : Array.from({ length: breedModels[name].coats * breedModels[name].poses }, (_, m) => m)).map(m => ({ name, model: this.breed(name)! + m })));
         this.showFirst = Math.max(1, rules.regions.length) * HERDS;
         this.showCount = row.length;
         this.table = new Uint32Array((this.showFirst + row.length) * HERD_WORDS);
@@ -83,13 +85,29 @@ export class Dressing implements Producer {
                 offset += room[k] / 2;
             });
         }
-        rules.regions.forEach((region, r) => {
-            region.herds.filter(herd => breeds.has(herd.model)).slice(0, HERDS).forEach((herd, k) => {
-                const at = (r * HERDS + k) * HERD_WORDS, { coats, poses } = breedModels[herd.model];
-                this.table.set([breeds.get(herd.model)!, coats | (poses << 16)], at);
-                floats.set([herd.groups, breedModels[herd.model].height, ...herd.size], at + 2);
-                this.table.set(bits(named(rules.vocabulary, herd.on)), at + 6);
-            });
+    }
+
+    /** The first instance model of a breed, which it adds on the first ask; undefined where the instances have no room. */
+    private breed(name: string): number | undefined {
+        const entry = this.files.models.breeds[name];
+        if (!entry) return undefined;
+        if (!this.breeds.has(name)) {
+            const near = this.show?.tier ? [] : [ANIMAL_NEAR_M];
+            this.breeds.set(name, this.load(entry.file, entry.coats * entry.poses, ({ tiers, shape }) => ({ tiers: [...near, HERD_REACH_M].map((until, t) => ({ mesh: tiers[t + 1 - near.length], until })), shape })));
+        }
+        return this.breeds.get(name);
+    }
+
+    /** Writes the herds of region `r` into the table, in the order of its pack: those whose breed has its models. */
+    private place(r: number): void {
+        this.placed.add(r);
+        this.changed = true;
+        const floats = new Float32Array(this.table.buffer), { breeds } = this.files.models;
+        this.rules.regions[r].herds.filter(herd => this.breed(herd.model) !== undefined).slice(0, HERDS).forEach((herd, k) => {
+            const at = (r * HERDS + k) * HERD_WORDS, { coats, poses, height } = breeds[herd.model];
+            this.table.set([this.breed(herd.model)!, coats | (poses << 16)], at);
+            floats.set([herd.groups, height, ...herd.size], at + 2);
+            this.table.set(bits(named(this.rules.vocabulary, herd.on)), at + 6);
         });
     }
 
@@ -104,9 +122,9 @@ export class Dressing implements Producer {
         return first;
     }
 
-    /** Whether the models have arrived, or failed. */
+    /** Whether the models of the regions in reach have arrived, or failed. */
     get idle(): boolean {
-        return this.files.done(...this.urls);
+        return this.updated && this.files.done(...this.urls);
     }
 
     async attach(gpu: Gpu, { surface, features }: Surfaces): Promise<void> {
@@ -114,10 +132,10 @@ export class Dressing implements Producer {
         const { device } = gpu;
         const herds = gpu.buffer('dressing', this.table.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const params = gpu.buffer('dressing', DRESSING_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-        device.queue.writeBuffer(herds, 0, this.table);
+        this.changed = true;
         const [herdsOf, rocksOf] = await gpu.once(dressingPipelines);
         this.resources = {
-            gpu, herds: herdsOf, rocks: rocksOf, params,
+            gpu, herds: herdsOf, rocks: rocksOf, params, table: herds,
             groups: VIEWS.map(view => device.createBindGroup({ layout: herdsOf.getBindGroupLayout(0), entries: [...this.instances.emitResources(view), { binding: 8, resource: { buffer: params } }, { binding: 9, resource: { buffer: herds } }] })),
         };
         this.surface = surface;
@@ -127,10 +145,14 @@ export class Dressing implements Producer {
     private surface?: GPUBindGroup;
     private features?: GPUBindGroup;
 
-    /** The windows of herd cells and rock points about the eye at (lon, lat). */
-    update(lonLat: [number, number]): void {
+    /** The windows of herd cells and rock points about the eye at (lon, lat), and the herds of the regions in reach. */
+    update(lonLat: [number, number], { reach }: Reach): void {
         const r = this.resources;
         if (!r) return;
+        for (const region of reach) if (!this.placed.has(region) && this.rules.regions[region]) this.place(region);
+        if (this.changed) r.gpu.device.queue.writeBuffer(r.table, 0, this.table);
+        this.changed = false;
+        this.updated = true;
         const [ux, uy] = worldPixel(lonLat, UNITS), unit = anchorAt(...lonLat).unit;
         this.herdSide = 2 * Math.ceil(HERD_REACH_M / (HERD_CELL * unit)) + 2;
         this.rockSide = 2 * Math.ceil(ROCK_REACH_M / (ROCK_CELL * unit)) + 2;

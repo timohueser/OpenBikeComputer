@@ -711,7 +711,7 @@ export class TrailView {
         this.forest.update(lonLat);
         this.plants.update(lonLat, this.extras.date, place.above, reach);
         this.rows.update(lonLat);
-        this.dressing.update(lonLat);
+        this.dressing.update(lonLat, reach);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
         // A frame that cannot draw asks for no next frame: a capture would wait forever.
