@@ -1010,3 +1010,34 @@ fn two_tubes_meet_where_both_rings_do_and_a_cut_head_is_closed() {
     let got = hit(&faces, [3.15, 0.0, 506.2], north, 30.0);
     assert!(got.is_some_and(|h| h.1 && (h.0 - 3.5).abs() < 0.2), "frame lines apart, the second's head: {got:?}");
 }
+
+#[test]
+fn a_tube_that_bends_beside_another_leaves_no_slit() {
+    let rules = Rules::embedded();
+    // A tube runs east; another runs 7 m north of it and jogs 2 m at 30° toward it or away from it while they meet, or
+    // bends 10° toward it. Between the two axes, every way up from 1 m and down from 2 m over the floor meets the front
+    // of a vault or a floor: the joined room has no slit, also near the middle.
+    let t30 = 30f64.to_radians().tan();
+    let t10 = 10f64.to_radians().tan();
+    let cases = [
+        ("toward", vec![[0.0, 7.0], [20.0, 7.0], [20.0 + 2.0 / t30, 5.0], [60.0, 5.0]]),
+        ("away", vec![[0.0, 7.0], [20.0, 7.0], [20.0 + 2.0 / t30, 9.0], [60.0, 9.0]]),
+        ("gentle", vec![[0.0, 7.5], [20.0, 7.5], [40.0, 7.5 - 20.0 * t10]]),
+    ];
+    for (name, b) in cases {
+        let (ends, chords) = tubes(&[&[[0.0, 0.0], [60.0, 0.0]], &b]);
+        let faces = solid(&meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules));
+        let north_of = |x: f64| {
+            let w = b.windows(2).find(|w| x <= w[1][0]).unwrap_or(&b[b.len() - 2..]);
+            w[0][1] + (w[1][1] - w[0][1]) * (x - w[0][0]) / (w[1][0] - w[0][0])
+        };
+        let end = b[b.len() - 1][0] - 2.0;
+        for x in (8..(end * 4.0) as i32).map(|k| f64::from(k) / 4.0) {
+            for y in (5..(north_of(x) * 10.0 - 5.0) as i32).map(|k| f64::from(k) / 10.0) {
+                let up = hit(&faces, [x, y, 501.0], [0.0, 0.0, 1.0], 15.0);
+                let down = hit(&faces, [x, y, 502.0], [0.0, 0.0, -1.0], 2.5);
+                assert!(up.is_some_and(|h| h.1) && down.is_some_and(|h| h.1), "{name}, at {x}, {y}: {up:?} {down:?}");
+            }
+        }
+    }
+}
