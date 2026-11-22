@@ -52,11 +52,13 @@ function view(entries, width, { tier = 0, date = DATES.summer, eye = 1.6, pitch 
 
 const breeds = trees ? [] : Object.entries(baked.models.breeds).filter(([name]) => !only || only.includes(name));
 const species = trees ? Object.keys(baked.models.trees).filter(id => !only || only.includes(id)) : [];
+// A tree's room in the row: SHOW_TREE_M, or its crown's width where that is wider, so wide crowns do not overlap.
+const rooms = Object.fromEntries(await Promise.all(species.map(async id => [id, TREE_M * Math.max(1, 2.2 * (await decodeModels(baked.files.get(baked.models.trees[id].summer)))[0].shape.spread)])));
 const groups = Array.from({ length: Math.ceil(species.length / GROUP) }, (_, g) => species.slice(GROUP * g, GROUP * (g + 1)));
 // A tree view stands one species' tiers: a row of 12 trees would be too small to judge in one picture.
 const views = trees
     ? species.flatMap(id => Object.entries(DATES).map(([season, date]) => ({
-        name: `${id}-${season}`, view: view([0, 1, 2].map(tier => `tree.${id}.${tier}`), 3.3 * TREE_M, { date, eye: 0.3 * TREE_M, pitch: 7, tan: (0.577 * TREE_VIEW[0]) / TREE_VIEW[1], trees: true }),
+        name: `${id}-${season}`, view: view([0, 1, 2].map(tier => `tree.${id}.${tier}.${Math.round(rooms[id])}`), 3.3 * rooms[id], { date, eye: 0.3 * TREE_M, pitch: 7, tan: (0.577 * TREE_VIEW[0]) / TREE_VIEW[1], trees: true }),
     })))
     : breeds.flatMap(([name, { height, coats, poses }]) => [0, 1].map(tier => ({ name: `${name}-${tier ? 'tier1' : 'near'}`, view: view([name], coats * poses * SPACING * height, { tier }) })));
 writeFileSync(join(values.out, 'views.json'), JSON.stringify(views));

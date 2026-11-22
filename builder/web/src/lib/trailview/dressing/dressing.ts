@@ -23,7 +23,8 @@ const HERD_WORDS = 8, DRESSING_BYTES = 64;
  * of the herds, a row of models across the view toward `heading` (degrees from north) at (lat, lon), each facing right
  * and turned SHOW_TURN toward the eye. An entry is a breed, which stands all its models, or `breed.k`, its model k, an
  * animal SHOW_SPACING times its height wide; with `tier` 1 every animal draws its far tier at any distance. An entry
- * `tree.<id>.<tier>` stands that tier of a tree species, SHOW_TREE_M tall and as wide, in the crown of the date's phase.
+ * `tree.<id>.<tier>[.<room>]` stands that tier of a tree species, SHOW_TREE_M tall, in `room` metres of the row (SHOW_TREE_M
+ * by default), in the crown of the date's phase.
  * A showroom has no ground, so its trees take no satellite hue: they show their own colours.
  */
 interface Showroom { lonLat: [number, number]; heading: number; entries: string[]; tier: number }
@@ -71,10 +72,10 @@ export class Dressing implements Producer {
         // No fade of the rocks' tier: rocks_of ends each rock at its own distance before the reach.
         this.rockModel = this.load(objects.file, objects.rocks, model => ({ ...spec(model, ROCK_REACH_M), fade: 0 }));
         // The showroom's models: an entry of a breed stands each of its models.
-        const row = (this.show?.entries ?? []).map(entry => entry.split('.')).flatMap(([name, k, tier]) => {
+        const row = (this.show?.entries ?? []).map(entry => entry.split('.')).flatMap(([name, k, tier, room]) => {
             const first = name === 'tree' ? this.tree(k, Number(tier ?? 0)) : this.breed(name);
             if (first === undefined) return [];
-            if (name === 'tree') return [{ model: first, height: SHOW_TREE_M, room: SHOW_TREE_M }];
+            if (name === 'tree') return [{ model: first, height: SHOW_TREE_M, room: Number(room) || SHOW_TREE_M }];
             const { coats, poses, height } = breedModels[name];
             return (k ? [Number(k)] : Array.from({ length: coats * poses }, (_, m) => m)).map(m => ({ model: first + m, height, room: SHOW_SPACING * height }));
         });
