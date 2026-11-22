@@ -1,7 +1,7 @@
 // The stored terrain for the road worker: a rail or a wall stands by the ground beside a road, and the worker
 // decides that once per station, so no vertex reads the ground for it. It reads the terrain under the stamps, which
 // only limit it by a road's cut and fill, so a decision does not move with the pages that the eye holds.
-import { imagePixels } from '../../planner/layers/terrain';
+import { terrainPixels } from '../stream/exact-pixels';
 import { heightOf, PAGE } from '../stream/heights';
 import { TILE_ZOOM } from '../stream/terrain';
 import { size, type Node } from '../terrain/lod';
@@ -46,7 +46,7 @@ const decoded = new Map<string, Promise<GroundTile | undefined>>();
 
 /** The heights of a tile, decoded once; a tile that fails leaves its stations without details, and decodes anew for the next owner. */
 export function decodedGround({ z, x, y, body }: GroundBody): Promise<GroundTile | undefined> {
-    const name = `${z}/${x}/${y}`, known = decoded.get(name) ?? imagePixels(new Uint8Array(body)).then(({ data }) => ({ z, x, y, heights: Float32Array.from({ length: SIDE * SIDE }, (_, p) => heightOf(data, 4 * p)) }), () => {
+    const name = `${z}/${x}/${y}`, known = decoded.get(name) ?? terrainPixels(body).then(({ data }) => ({ z, x, y, heights: Float32Array.from({ length: SIDE * SIDE }, (_, p) => heightOf(data, 4 * p)) }), () => {
         decoded.delete(name);
         return undefined;
     });
