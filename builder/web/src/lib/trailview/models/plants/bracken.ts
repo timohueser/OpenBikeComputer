@@ -48,19 +48,19 @@ function frond(cards: Sheet, root: V, a: number, size: number, colours: Colour[]
     const [hang, fall, young] = [smooth(0, 0.35, slump), smooth(0.35, 1, slump), 1 - open];
     const height = size * (0.42 + 0.12 * rand()) * (1 - 0.8 * fall);
     const top = root.clone().addScaledVector(out, height * (0.2 + 0.15 * rand() + 2 * fall)).setZ(height);
-    spike(cards, root, top, 0.022 * size, [colours[0], colours[0].clone().lerp(colours[1], 0.5)]);
     const length = size * (0.9 + 0.16 * rand()) * (0.6 + 0.4 * open) * (1 - 0.25 * hang);
     const reach = length * open * (1 - 0.3 * hang), fold = 0.15 + 0.35 * hang;
     const pitch = 0.45 + 0.15 * rand() + 1.3 * young - 0.45 * hang - 0.6 * fall, droop = 0.32 - 0.4 * young + 0.3 * hang;
     // A parabola from the stalk's top: a live tip ends near the top's height, a withered one hangs to the ground.
     const arch = (from: V, dir: V, l: number, sag: number) => (u: number) =>
         from.clone().addScaledVector(dir, l * Math.cos(pitch) * u).setZ(Math.max(0.02, from.z + l * (Math.sin(pitch) * u - sag * u * u)));
-    const rachis = arch(top, out, length, droop);
+    const rachis = arch(top, out, length, droop), blade = rachis(0.12);
+    spike(cards, root, blade, 0.022 * size, [colours[0], colours[0].clone().lerp(colours[1], 0.5)]);
     feather(cards, (s) => rachis(0.12 + 0.88 * s), side, 6, (t) => 0.3 * reach * (1 - t) ** 0.6, fold, colours);
     const spread = 1.05 * open ** 2 * (1 - 0.5 * hang);
     for (const flank of [-1, 1]) {
         const dir = out.clone().multiplyScalar(Math.cos(spread)).addScaledVector(side, flank * Math.sin(spread));
-        const branch = arch(rachis(0.1), dir, 0.6 * length, droop + 0.1);
+        const branch = arch(blade, dir, 0.6 * length, droop + 0.1);
         feather(cards, branch, v3(-dir.y, dir.x, 0), 3, (t) => 0.21 * reach * (1 - t) ** 0.6, fold, colours);
     }
 }

@@ -24,11 +24,9 @@ export interface Ground {
 export interface Plant {
     name: string;
     latin: string;
-    /** The plant at any size with its root at the origin and z up; the seed picks its shape. */
-    build: (season: Season, seed: number) => Geometry;
+    /** The plant at any size with its root at the origin and z up; the seed picks its shape. None in a season in which it has died back. */
+    build: (season: Season, seed: number) => Geometry | undefined;
     ground: Ground;
-    /** The seasons in which it has died back: it has no model then, and `build` never sees them. */
-    absent?: Season[];
     /** It builds itself 1 tall in its tallest season and keeps that scale, so `height` stays metres and stubble stands lower than the crop. */
     sized?: true;
 }
@@ -41,7 +39,6 @@ export const PLANTS = byId<Plant>(import.meta.glob('./plants/*.ts', { eager: tru
 
 /** A plant model, 1 tall, or in its own scale if it is sized; none in a season in which it has died back. */
 export function plant(id: string, season: Season, seed = 1): Geometry | undefined {
-    const { build, sized, absent } = PLANTS[id];
-    if (absent?.includes(season)) return undefined;
-    return sized ? build(season, seed) : unit(build(season, seed));
+    const { build, sized } = PLANTS[id], built = build(season, seed);
+    return sized || !built ? built : unit(built);
 }

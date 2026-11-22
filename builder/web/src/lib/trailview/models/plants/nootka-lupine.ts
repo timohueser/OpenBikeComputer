@@ -56,7 +56,6 @@ function lupine(season: Living, rand: () => number): Geometry {
 export default {
     name: 'Nootka lupine',
     latin: 'Lupinus nootkatensis',
-    build: (season, seed) => lupine(season as Living, random(seed)),
-    absent: ['winter'],
+    build: (season, seed) => (season === 'winter' ? undefined : lupine(season, random(seed))),
     ground: { on: ['bare', 'grass', 'shrub'], height: [0.5, 1], share: 0.3, own: true, clumped: true },
 } satisfies Plant;

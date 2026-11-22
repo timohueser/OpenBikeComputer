@@ -7,11 +7,10 @@ import { POLE_SEED } from './plants/agave';
 const SEEDS = [1, 2, 3];
 
 describe('the plant models', () => {
-    it('build every plant in each season it has and shape: 1 tall, a sized one in its tallest season, with finite vertices; none in an absent season', () => {
-        for (const [id, { sized, absent }] of Object.entries(PLANTS)) for (const seed of SEEDS) {
+    it('build every plant in each season it has and shape: 1 tall, a sized one in its tallest season, with finite vertices', () => {
+        for (const [id, { sized }] of Object.entries(PLANTS)) for (const seed of SEEDS) {
             const tops = SEASONS.flatMap(season => {
                 const built = plant(id, season, seed);
-                expect(built === undefined, `${id} ${season} ${seed}`).toBe(!!absent?.includes(season));
                 if (!built) return [];
                 const { position, normal, color, index } = built;
                 expect([...position, ...normal, ...color].every(Number.isFinite), `${id} ${season} ${seed}`).toBe(true);

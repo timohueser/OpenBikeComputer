@@ -75,7 +75,6 @@ function flowers(season: Living, seed: number): Geometry {
 export default {
     name: 'Alpine flowers',
     latin: 'Gentiana, Ranunculus, Leontopodium, Aster, Dianthus',
-    build: (season, seed) => flowers(season as Living, seed),
-    absent: ['winter'],
+    build: (season, seed) => (season === 'winter' ? undefined : flowers(season, seed)),
     ground: { on: ['grass'], height: [0.2, 0.35], share: 0.15, own: true },
 } satisfies Plant;

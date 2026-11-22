@@ -72,8 +72,9 @@ export async function bake(): Promise<Baked> {
     for (const [id, { ground }] of Object.entries(PLANTS)) {
         const seasons: PlantEntry['seasons'] = {};
         for (const season of SEASONS) {
-            const shapes = Array.from({ length: SEEDS }, (_, k) => plant(id, season, k + 1));
-            if (shapes.every(shape => shape !== undefined)) seasons[season] = await file('plant', `plant-${id}-${season}`, shapes.map(shape => pack([float32(shape)])));
+            const shapes = Array.from({ length: SEEDS }, (_, k) => plant(id, season, k + 1)).filter(shape => shape !== undefined);
+            if (shapes.length > 0 && shapes.length < SEEDS) throw new Error(`plant ${id} has a model in ${season} for some seeds only`);
+            if (shapes.length) seasons[season] = await file('plant', `plant-${id}-${season}`, shapes.map(shape => pack([float32(shape)])));
         }
         models.plants[id] = { ground, seasons };
     }
