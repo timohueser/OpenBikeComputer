@@ -1,0 +1,1648 @@
+<!doctype html>
+<!-- A prototype: it never merges. It shows the search bar that the issue describes. Open this file in a browser from a checkout: the fonts come from docs/assets/fonts. All data in it is invented. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Search Bar Study</title>
+<style>:root { color-scheme: light; } body { margin: 0; } img { max-width: 100%; } [hidden] { display: none !important; }</style>
+</head>
+<body>
+<style>
+/* Layout: a short heading with the page switch, then one app frame in the product's own look with the bar at work, then short notes. */
+@font-face { font-family: "Atkinson"; src: url("../../../docs/assets/fonts/atkinson-hyperlegible-next-latin.woff2") format("woff2"); font-weight: 200 800; font-display: swap; }
+@font-face { font-family: "Atkinson Mono"; src: url("../../../docs/assets/fonts/atkinson-hyperlegible-mono-latin.woff2") format("woff2"); font-weight: 200 800; font-display: swap; }
+:root {
+    --parchment: #f4f2eb; --parchment-2: #e7ecdf; --parchment-3: #d6d5c8; --panel: #fff;
+    --line: rgba(92, 90, 46, .16); --line-strong: rgba(92, 90, 46, .32);
+    --ink: #1c1b14; --ink-soft: #5c5a2e; --ink-faint: #676443; --wood: #757047;
+    --amber: #f4a81d; --on-amber: #1c1b14; --forest: #a4501e; --coral: #ae4825; --water: #33575b; --rust: #a4501e; --cream: #fff2d1;
+    --menu-shadow: 0 8px 24px rgb(28 27 20 / .18); --frame-shadow: 0 6px 18px rgba(28, 27, 20, .12);
+    --lake: #cddcda; --dot-ring: #fff; --day-1: #a4501e; --day-2: #33575b; --day-3: #757047;
+    --sans: "Atkinson", system-ui, sans-serif; --mono: "Atkinson Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        color-scheme: dark;
+        --parchment: #16150f; --parchment-2: #232820; --parchment-3: #414233; --panel: #201f17;
+        --line: rgba(189, 180, 126, .15); --line-strong: rgba(189, 180, 126, .3);
+        --ink: #f2efe3; --ink-soft: #bdb47e; --ink-faint: #aaa383; --wood: #bdb47e;
+        --amber: #f2a93a; --forest: #f2a93a; --coral: #ef996f; --water: #8bb9bd; --rust: #93461a; --cream: #ffe9c0;
+        --menu-shadow: 0 8px 24px rgb(0 0 0 / .5); --frame-shadow: 0 6px 18px rgba(0, 0, 0, .4);
+        --lake: #22383a; --dot-ring: #201f17; --day-1: #e0874c; --day-2: #8bb9bd; --day-3: #bdb47e;
+    }
+}
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --parchment: #16150f; --parchment-2: #232820; --parchment-3: #414233; --panel: #201f17;
+    --line: rgba(189, 180, 126, .15); --line-strong: rgba(189, 180, 126, .3);
+    --ink: #f2efe3; --ink-soft: #bdb47e; --ink-faint: #aaa383; --wood: #bdb47e;
+    --amber: #f2a93a; --forest: #f2a93a; --coral: #ef996f; --water: #8bb9bd; --rust: #93461a; --cream: #ffe9c0;
+    --menu-shadow: 0 8px 24px rgb(0 0 0 / .5); --frame-shadow: 0 6px 18px rgba(0, 0, 0, .4);
+    --lake: #22383a; --dot-ring: #201f17; --day-1: #e0874c; --day-2: #8bb9bd; --day-3: #bdb47e;
+}
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+::selection { background: color-mix(in srgb, var(--parchment-3) 75%, transparent); color: var(--ink); }
+html, body { height: auto; }
+body { margin: 0; background: var(--parchment); color: var(--ink); font: 14px/1.4 var(--sans); -webkit-font-smoothing: antialiased; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:focus-visible, a:focus-visible, input[type="range"]:focus-visible { outline: 2px solid var(--forest); outline-offset: 2px; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-block: 22px 56px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+/* Heading */
+.intro { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px 24px; margin-bottom: 16px; }
+.intro h1 { margin: 0 0 4px; font: 700 25px/1.2 var(--sans); }
+.intro p { margin: 0; max-width: 62ch; color: var(--ink-soft); }
+.segmented { display: flex; padding: 2px; gap: 2px; border-radius: 6px; background: var(--parchment-2); }
+.segmented button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 0 14px; border: 0; border-radius: 5px; background: transparent; color: var(--ink-soft); font: 600 13px var(--sans); white-space: nowrap; }
+.segmented button:hover { color: var(--ink); }
+.segmented button[aria-checked="true"] { background: var(--panel); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); }
+
+/* The app frame */
+.app { overflow: hidden; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--parchment); box-shadow: var(--frame-shadow); }
+.appbar { display: flex; align-items: center; gap: 22px; height: 48px; padding-inline: 20px; background: var(--rust); color: var(--cream); }
+.appbar b { font: 700 17px var(--mono); }
+.appbar nav { display: flex; gap: 18px; font-size: 13px; }
+.appbar nav span[aria-current] { font-weight: 700; }
+.page { display: flex; flex-direction: column; gap: 12px; padding: 14px 20px 18px; }
+.pagehead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.pagehead h2 { margin: 0; font: 700 25px/1.2 var(--sans); }
+.pagehead span { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.cards { display: grid; grid-template-columns: clamp(380px, 36%, 470px) 1fr; gap: 14px; height: 600px; }
+.list { display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
+.geo { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--parchment-2); }
+.geo svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.geo .credit { position: absolute; right: 8px; bottom: 6px; color: var(--ink-faint); font-size: 11.5px; }
+
+
+/* The bar: a text field and the slots of the page; under it one panel, of the text or of one slot. Three looks share it. */
+.barhost { flex: none; container-type: inline-size; }
+.barhost:empty { display: none; }
+.bar { position: relative; z-index: 5; }
+.strip { position: relative; display: flex; }
+.say { display: flex; align-items: center; gap: 9px; min-width: 0; cursor: text; }
+.say > .ic { flex: none; color: var(--ink-soft); }
+.type { position: relative; flex: 1; min-width: 0; height: 28px; }
+.mirror, .type input { position: absolute; inset: 0; width: 100%; height: 28px; padding: 0; border: 0; font: 15px/28px var(--sans); letter-spacing: 0; white-space: pre; }
+.mirror { overflow: hidden; color: var(--ink); pointer-events: none; }
+.type input { outline: 0; background: transparent; color: transparent; caret-color: var(--rust); }
+.type input::placeholder { color: var(--ink-faint); opacity: 1; }
+.m-piece { border-radius: 4px; background: var(--parchment-3); box-shadow: 0 0 0 1px var(--parchment-3); animation: seen .2s ease-out; }
+@keyframes seen { from { background: transparent; box-shadow: 0 0 0 1px transparent; } }
+.m-glue { color: var(--ink-faint); opacity: .7; }
+.m-unknown { text-decoration: underline dotted var(--coral); text-decoration-thickness: 1.5px; text-underline-offset: 4px; }
+.segs { min-width: 0; }
+.seg { display: flex; min-width: 0; border: 0; background: none; color: var(--ink); text-align: left; }
+.seg:focus-visible { outline-offset: -3px; }
+.seg .slabel { color: var(--ink-soft); font-size: 12px; white-space: nowrap; }
+.seg strong { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.seg.unset strong { color: var(--ink-faint); font-weight: 400; }
+.seg .sic, .seg .chev { display: none; flex: none; color: var(--ink-soft); }
+.seg:disabled { cursor: default; opacity: .45; }
+.seg.land { animation: land .75s ease-out; }
+@keyframes land { from { background: color-mix(in srgb, var(--amber) 40%, var(--panel)); } }
+.tail { display: flex; align-items: center; gap: 2px; }
+.count { color: var(--ink-soft); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.count.tick { animation: tick .28s cubic-bezier(.2, .8, .2, 1); }
+@keyframes tick { from { opacity: .2; transform: translateY(4px); } }
+.clear { display: grid; flex: none; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--ink-soft); }
+.clear:hover { background: var(--parchment-2); color: var(--ink); }
+.go { display: grid; flex: none; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: var(--amber); color: var(--on-amber); }
+.go:hover { background: color-mix(in srgb, var(--amber) 86%, var(--ink)); }
+.undo { min-height: 28px; margin-left: 6px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--ink); font: 600 12.5px var(--sans); }
+.undo:hover { background: var(--parchment-2); }
+.ghost { position: fixed; z-index: 50; padding: 3px 9px; border-radius: 6px; background: var(--parchment-3); color: var(--ink); font: 600 13px/1.4 var(--sans); white-space: nowrap; pointer-events: none; }
+.panel { position: absolute; top: calc(100% + 6px); max-height: min(540px, 74vh); overflow: auto; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel); box-shadow: var(--menu-shadow); animation: drop .16s cubic-bezier(.2, .8, .2, 1); }
+@keyframes drop { from { opacity: 0; transform: translateY(-4px); } }
+
+/* Look A: one bar. The text and the slots are cells of one surface. */
+[data-look="a"] .strip { align-items: stretch; min-height: 58px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel); }
+[data-look="a"] .say { flex: 0 1 348px; padding: 0 12px 0 14px; }
+[data-look="a"] .say:has(input:focus-visible) { box-shadow: inset 0 -2px 0 var(--forest); }
+[data-look="a"] .segs { display: flex; flex: 1 1 0; }
+[data-look="a"] .seg { flex: 1 1 0; flex-direction: column; justify-content: center; gap: 1px; padding: 8px 14px; border-left: 1px solid var(--line); }
+[data-look="a"] .seg:hover:not(:disabled) { background: var(--parchment); }
+[data-look="a"] .seg[aria-expanded="true"] { background: var(--parchment-2); }
+[data-look="a"] .tail { padding: 0 8px; border-left: 1px solid var(--line); }
+.tail:not(:has(button:not([hidden]))) { display: none; }
+@container (max-width: 720px) {
+    [data-look="a"] .strip { flex-wrap: wrap; }
+    [data-look="a"] .say { flex: 1 1 100%; min-height: 46px; padding-right: 42px; border-bottom: 1px solid var(--line); }
+    [data-look="a"] .segs { flex: 1 1 100%; }
+    [data-look="a"] .seg { padding: 7px 12px; }
+    [data-look="a"] .seg:first-child { border-left: 0; }
+    [data-look="a"] .seg strong { display: -webkit-box; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+    [data-look="a"] .tail { position: absolute; top: 0; right: 0; height: 46px; border-left: 0; }
+}
+
+/* Look B: a field and a quiet row. A slot is plain text until it holds something; then it is a box, as a set chip of the Routes page. */
+[data-look="b"] .strip { align-items: flex-start; gap: 8px 2px; }
+[data-look="b"] .say { flex: 0 1 400px; min-height: 44px; margin-right: 8px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); }
+[data-look="b"] .say:has(input:focus-visible), [data-look="c"] .say:has(input:focus-visible) { border-color: var(--ink); }
+[data-look="b"] .segs { display: flex; flex: 1 1 0; flex-wrap: wrap; gap: 4px; padding-top: 6px; }
+[data-look="b"] .seg { flex: 0 1 auto; align-items: center; gap: 6px; max-width: 100%; min-height: 32px; padding: 4px 7px 4px 9px; border-radius: 6px; }
+[data-look="b"] .seg .slabel { font-size: 13px; }
+[data-look="b"] .seg .chev { display: inline-flex; }
+[data-look="b"] .seg.unset strong { display: none; }
+[data-look="b"] .seg:hover:not(:disabled), [data-look="b"] .seg[aria-expanded="true"] { background: var(--parchment-2); }
+[data-look="b"] .seg:hover:not(:disabled) .slabel { color: var(--ink); }
+[data-look="b"] .seg:not(.unset) { background: var(--parchment-3); }
+[data-look="b"] .seg:not(.unset):hover { background: color-mix(in srgb, var(--parchment-3) 86%, var(--ink)); }
+[data-look="b"] .seg[aria-expanded="true"] { box-shadow: inset 0 0 0 1px var(--ink-faint); }
+[data-look="b"] .tail { height: 44px; margin-left: auto; padding-left: 8px; }
+[data-look="b"] .panel { border-radius: 8px; }
+@container (max-width: 720px) {
+    [data-look="b"] .strip { flex-wrap: wrap; }
+    [data-look="b"] .say { flex: 1 1 100%; margin-right: 0; padding-right: 112px; }
+    [data-look="b"] .segs { flex: 1 1 100%; padding-top: 0; }
+    [data-look="b"] .tail { position: absolute; top: 0; right: 6px; height: 44px; }
+}
+
+/* Look C: tabs in the list. The panel of a slot is in the page, under its tab, and moves the list down. */
+[data-look="c"] .strip { flex-direction: column; gap: 8px; }
+[data-look="c"] .say { min-height: 44px; padding: 0 112px 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); }
+[data-look="c"] .tail { position: absolute; top: 0; right: 6px; height: 44px; }
+[data-look="c"] .segs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; padding: 2px; border-radius: 8px; background: var(--parchment-2); }
+[data-look="c"] .seg { flex-direction: column; justify-content: center; gap: 1px; min-height: 52px; padding: 6px 10px; border-radius: 6px; }
+[data-look="c"] .seg strong { display: -webkit-box; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; font-size: 13px; line-height: 1.25; }
+[data-look="c"] .seg:hover:not(:disabled) .slabel { color: var(--ink); }
+[data-look="c"] .seg[aria-expanded="true"] { background: var(--panel); box-shadow: inset 0 0 0 1px var(--line-strong); }
+[data-look="c"] .panel { border-radius: 8px; }
+.panel.inflow { position: static; width: auto; max-height: 430px; margin-top: 6px; box-shadow: none; }
+
+/* The panel of the text: what the words can become, the last searches, and examples before the first search */
+.rows { display: flex; flex-direction: column; margin: 0; padding: 4px; list-style: none; }
+.rows h3 { margin: 6px 8px 2px; color: var(--ink-soft); font: 400 12px var(--sans); }
+.row { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 38px; padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--ink); text-align: left; }
+.row .ic { flex: none; color: var(--ink-soft); }
+.row .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .what b { font-weight: 700; }
+.row .what i { color: var(--ink-faint); font-style: normal; }
+.row small { flex: none; color: var(--ink-faint); font-size: 12px; }
+.row:hover, .opt.active { background: var(--parchment-2); }
+.pi { position: relative; display: inline-flex; flex: none; color: var(--ink-soft); }
+.note { margin: 0; padding: 10px 12px; color: var(--ink-soft); font-size: 13px; }
+.note button { margin-left: 6px; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); font-size: 12.5px; }
+.note button:hover { background: var(--parchment-2); }
+.keys { display: none; gap: 14px; margin: 0; padding: 7px 12px; border-top: 1px solid var(--line); color: var(--ink-faint); font-size: 12px; }
+kbd { padding: 1px 5px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--parchment); color: var(--ink-soft); font: 11.5px var(--sans); }
+@media (hover: hover) and (pointer: fine) { .keys { display: flex; flex-wrap: wrap; } }
+
+/* The panel of a slot: a short list of rows; a control shows under the row that is picked */
+.pad { padding: 10px; }
+.prows { padding: 4px; }
+.prow + .prow { border-top: 1px solid var(--line); }
+.phead { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 46px; padding: 8px 10px; border: 0; border-radius: 6px; background: none; color: var(--ink); text-align: left; }
+.phead:hover { background: var(--parchment); }
+.phead > .ic:first-child { color: var(--ink-soft); }
+.phead span { flex: 1; font-weight: 600; }
+.phead em { color: var(--ink-faint); font-style: normal; font-variant-numeric: tabular-nums; }
+.phead em.set { color: var(--ink); }
+.phead .chev { color: var(--ink-faint); transition: transform .16s; }
+.prow.open .chev { transform: rotate(180deg); }
+.pbody { padding: 2px 10px 14px; }
+.pbody.fresh { animation: drop .16s cubic-bezier(.2, .8, .2, 1); }
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.tile { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--ink); font-weight: 600; font-size: 13px; text-align: left; }
+.tile .ic { color: var(--ink-soft); }
+.tile:hover { background: var(--parchment); }
+.tile[aria-pressed="true"] { border-color: var(--ink); background: var(--parchment-2); }
+.wcols { display: grid; grid-template-columns: 1fr; gap: 6px 14px; padding: 10px 8px 6px; }
+.panel.cols .wcols { grid-template-columns: 1fr 1fr; }
+.panel.cols .wcols.one { grid-template-columns: 1fr; }
+.panel.cols .wcol.two { columns: 2; column-gap: 14px; }
+.wcol.two h3 { column-span: all; }
+.wcol.two .wrow { break-inside: avoid; }
+.wcol h3, .pad h3 { margin: 0 0 4px 8px; color: var(--ink-soft); font: 400 12px var(--sans); }
+.pad h3 { margin: 12px 2px 6px; }
+.pad h3:first-child { margin-top: 2px; }
+.wline { display: flex; align-items: center; }
+.wline .wpick { flex: 1; min-width: 0; }
+.must { display: inline-flex; flex: none; align-items: center; gap: 4px; min-height: 28px; margin-right: 6px; padding: 0 10px 0 7px; border: 1px solid var(--line-strong); border-radius: 14px; background: none; color: var(--ink-soft); font: 600 12px var(--sans); }
+.must:hover { border-color: var(--ink-faint); color: var(--ink); }
+.must[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: var(--panel); }
+.wpick { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 38px; padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--ink); text-align: left; }
+.wpick:hover:not(:disabled) { background: var(--parchment); }
+.wpick:disabled { cursor: default; opacity: .4; }
+.wpick .box { display: grid; flex: none; place-items: center; width: 18px; height: 18px; border: 1.5px solid var(--line-strong); border-radius: 5px; color: transparent; }
+.wpick.radio .box { border-radius: 50%; }
+.wrow.on .box { border-color: var(--ink); background: var(--ink); color: var(--panel); }
+.wpick > .ic { color: var(--ink-soft); }
+.wpick span { flex: 1; }
+.wrow.on .wpick span { font-weight: 600; }
+.wpick small { color: var(--ink-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.mini, .choice { display: flex; flex-wrap: wrap; gap: 2px; padding: 2px; border-radius: 6px; background: var(--parchment-2); }
+.mini { margin: 0 8px 8px 35px; }
+.mini button, .choice button { flex: 1 1 auto; min-height: 30px; padding: 0 9px; border: 0; border-radius: 5px; background: transparent; color: var(--ink-soft); font: 600 12.5px var(--sans); white-space: nowrap; }
+.choice button { min-height: 34px; font-size: 13px; }
+.mini button:hover, .choice button:hover:not(:disabled) { color: var(--ink); }
+.mini button[aria-checked="true"], .choice button[aria-checked="true"] { background: var(--panel); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.choice button:disabled { cursor: default; opacity: .4; }
+.under { margin: 0 8px 10px 35px; }
+.plabel { display: flex; justify-content: space-between; margin: 12px 2px 4px; color: var(--ink-soft); font-size: 12.5px; }
+.plabel em { color: var(--ink); font-style: normal; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ehint { margin: 8px 2px 0; color: var(--ink-soft); font-size: 12.5px; }
+.pfoot { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--line); }
+.quiet { min-height: 32px; padding: 5px 10px; border: 0; border-radius: 6px; background: none; color: var(--ink-soft); font-weight: 600; font-size: 13px; }
+.quiet:hover:not(:disabled) { background: var(--parchment-2); color: var(--ink); }
+.quiet:disabled { cursor: default; opacity: .4; }
+.done { min-height: 32px; padding: 5px 12px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); font-weight: 600; font-size: 13px; }
+.done:hover { background: var(--parchment-2); border-color: var(--ink-faint); }
+.range { position: relative; height: 62px; }
+.range.flat { height: 30px; }
+.range .bars { position: absolute; left: 9px; right: 9px; bottom: 23px; display: flex; align-items: flex-end; gap: 2px; height: 34px; }
+.range .bars i { flex: 1; min-height: 1px; border-radius: 2px 2px 0 0; background: var(--parchment-3); }
+.range .bars i.in { background: var(--wood); }
+.range .track { position: absolute; left: 9px; right: 9px; bottom: 9px; height: 6px; border-radius: 3px; background: var(--parchment-3); }
+.range .track i { position: absolute; top: 0; bottom: 0; left: calc(var(--a) * 100%); right: calc((1 - var(--b)) * 100%); border-radius: 3px; background: var(--ink-soft); }
+.range input { position: absolute; left: 0; bottom: 0; width: 100%; height: 24px; margin: 0; background: none; pointer-events: none; appearance: none; -webkit-appearance: none; }
+.range.one input { pointer-events: auto; cursor: pointer; }
+.range input::-webkit-slider-runnable-track { height: 6px; background: transparent; }
+.range input::-moz-range-track { height: 6px; background: transparent; }
+.range input::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; margin-top: -6px; border: 3px solid var(--panel); border-radius: 50%; background: var(--rust); box-shadow: 0 1px 3px rgba(28, 27, 20, .4); pointer-events: auto; cursor: pointer; }
+.range input::-moz-range-thumb { width: 12px; height: 12px; border: 3px solid var(--panel); border-radius: 50%; background: var(--rust); box-shadow: 0 1px 3px rgba(28, 27, 20, .4); pointer-events: auto; cursor: pointer; }
+.scale { display: flex; justify-content: space-between; color: var(--ink-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.grades { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; padding: 2px; border-radius: 6px; background: var(--parchment-2); }
+.grades button { min-height: 32px; border: 0; border-radius: 5px; background: transparent; color: var(--ink-faint); font: 600 13px var(--sans); }
+.grades button.in { background: var(--panel); color: var(--ink); }
+.grades button.edge { box-shadow: inset 0 0 0 1px var(--line-strong); }
+button { -webkit-tap-highlight-color: transparent; }
+.switches { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+/* The results */
+.results { flex: 1; min-height: 0; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.results.fresh { animation: fresh .18s ease-out; }
+@keyframes fresh { from { opacity: .55; } }
+.hike { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; align-items: center; padding: 6px; border-radius: 8px; }
+.hike:hover, .hike.hot { background: var(--panel); }
+.thumb { height: 60px; overflow: hidden; border-radius: 6px; background: var(--parchment-2); }
+.thumb svg { display: block; width: 100%; height: 100%; }
+.hike strong, .spot strong { display: block; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.meta { color: var(--ink-soft); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.ticks { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 2px; font-size: 12.5px; }
+.ticks span { display: inline-flex; align-items: center; gap: 3px; color: var(--ink-soft); }
+.ticks .miss { color: var(--ink-faint); opacity: .75; }
+.spot { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; align-items: center; padding: 7px 6px; border-radius: 8px; }
+.spot:hover, .spot.hot { background: var(--panel); }
+.spot > .ic { justify-self: center; color: var(--ink-soft); }
+.open-now { color: var(--water); font-weight: 600; }
+.empty { padding: 18px 8px; color: var(--ink-soft); }
+.empty p { margin: 0 0 10px; }
+.empty .fix { display: block; margin-top: 6px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); font-weight: 600; font-size: 13px; }
+.empty .fix:hover { background: var(--parchment-2); }
+.sample { margin: 0; color: var(--ink-faint); font-size: 12px; }
+
+/* The map sketch */
+.m-water { fill: var(--lake); }
+.m-river { fill: none; stroke: var(--lake); stroke-width: 7; stroke-linecap: round; }
+.m-label { fill: var(--ink-faint); font: 15px var(--sans); opacity: .8; }
+.m-reach { fill: color-mix(in srgb, var(--panel) 55%, transparent); stroke: var(--ink-faint); stroke-width: 1.5; stroke-dasharray: 5 6; transition: r .2s cubic-bezier(.2, .8, .2, 1); }
+.m-home { fill: var(--ink); stroke: var(--dot-ring); stroke-width: 3; }
+.m-dot { fill: var(--ink-faint); opacity: .28; transition: opacity .2s, r .2s cubic-bezier(.2, .8, .2, 1); }
+.m-dot.in { fill: var(--rust); stroke: var(--dot-ring); stroke-width: 2.5; opacity: 1; }
+:root[data-theme="dark"] .m-dot.in { fill: var(--amber); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .m-dot.in { fill: var(--amber); } }
+.m-dot.hot { stroke: var(--ink); }
+.m-line { fill: none; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; opacity: .38; }
+.m-part { fill: none; stroke: var(--ink); stroke-width: 9; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
+.m-night { fill: var(--panel); stroke: var(--ink-soft); stroke-width: 2.5; }
+
+/* Notes */
+.notes { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 40px; margin-top: 30px; }
+.notes h2 { margin: 0 0 8px; font: 700 17px/1.25 var(--sans); }
+.notes ul { margin: 0; padding-left: 18px; }
+.notes li { margin-bottom: 6px; max-width: 62ch; }
+.notes li::marker { color: var(--ink-faint); }
+.notes code { padding: 1px 5px; border-radius: 4px; background: var(--parchment-2); font: 13px var(--mono); }
+.notes .try { padding: 0; border: 0; border-bottom: 1px solid var(--line-strong); background: none; color: var(--ink); font-weight: 600; }
+.notes .try:hover { border-bottom-color: var(--ink); }
+
+
+.spot { grid-template-columns: 30px minmax(0, 1fr) auto; }
+.act { flex: none; min-height: 30px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--ink); font: 600 12.5px var(--sans); white-space: nowrap; }
+.act:hover { background: var(--parchment-2); border-color: var(--ink-faint); }
+.act.primary { border-color: var(--amber); background: var(--amber); color: var(--on-amber); }
+.act.primary:hover { border-color: transparent; background: color-mix(in srgb, var(--amber) 86%, var(--ink)); }
+.donerow { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; padding: 8px 8px 8px 12px; border-radius: 8px; background: var(--parchment-2); font-weight: 600; }
+.donerow span { flex: 1; min-width: 0; }
+.donerow .ic { flex: none; color: var(--ink-soft); }
+.m-goal { fill: var(--amber); stroke: var(--ink); stroke-width: 2.5; }
+/* "Where" on the profile of the route: the profile is the track of the two handles */
+.prof { position: relative; height: 96px; margin: 4px 9px 0; }
+.prof svg { display: block; width: 100%; height: 100%; }
+.p-area { fill: var(--parchment-3); }
+.p-line { fill: none; stroke: var(--ink-soft); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.p-day { fill: none; stroke-width: 3; vector-effect: non-scaling-stroke; }
+.psel { position: absolute; top: 0; bottom: 0; border-inline: 2px solid var(--rust); background: color-mix(in srgb, var(--amber) 24%, transparent); pointer-events: none; }
+.psel.all { border-color: transparent; background: transparent; }
+.pdot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--ink-faint); opacity: .5; pointer-events: none; }
+.pdot.in { background: var(--rust); opacity: 1; box-shadow: 0 0 0 2px var(--panel); }
+.pfact { position: absolute; bottom: 5px; height: 5px; border-radius: 3px; background: var(--ink-faint); opacity: .5; pointer-events: none; }
+.pfact.in { background: var(--ink); opacity: .85; }
+.pdrag { position: absolute; inset: 0; cursor: crosshair; touch-action: pan-y; }
+.prange { height: 24px; margin-top: -12px; }
+.prange .track { background: transparent; }
+.prange .track i { background: transparent; }
+.pdays { display: flex; gap: 2px; margin: 4px 9px 0; }
+.pdays button { min-width: 0; min-height: 30px; border: 0; border-radius: 5px; background: var(--parchment-2); color: var(--ink-soft); font: 600 12.5px var(--sans); }
+.pdays button:hover { color: var(--ink); }
+.pdays button[aria-pressed="true"] { background: var(--ink); color: var(--panel); }
+.countline { flex: none; margin: 0 0 -4px 6px; }
+.countline:has(output:empty) { display: none; }
+@media (max-width: 860px) {
+    .cards { grid-template-columns: 1fr; height: auto; }
+    .geo { order: -1; height: 190px; }
+    .results { overflow: visible; }
+    .appbar b { display: none; }
+    .appbar { gap: 14px; padding-inline: 14px; }
+    .page { padding: 12px 12px 16px; }
+    .notes { grid-template-columns: 1fr; }
+    .switches, .intro .segmented { width: 100%; }
+    .intro .segmented button { flex: 1; }
+}
+@media (pointer: coarse) {
+    .mirror, .type input { font-size: 16px; }
+    .row, .wpick { min-height: 44px; }
+    .mini button { min-height: 36px; }
+    .must { min-height: 34px; }
+    .choice button { min-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+</style>
+
+<div class="wrap">
+    <header class="intro">
+        <div>
+            <h1>Search bar study</h1>
+            <p>Fourth version, in look A: a result carries the action, and “Where” is on the elevation profile. It works: open a slot, or type. The hikes, the places and their numbers are sample data.</p>
+        </div>
+        <div class="switches">
+            <div class="segmented" role="radiogroup" aria-label="Page of the app">
+                <button type="button" role="radio" data-surface="explore" aria-checked="true">Explore hikes</button>
+                <button type="button" role="radio" data-surface="planner" aria-checked="false">Route planner</button>
+            </div>
+        </div>
+    </header>
+
+    <section class="app" aria-label="A mock of the web app">
+        <div class="appbar">
+            <b>OpenBikeComputer</b>
+            <nav aria-label="Pages of the mock"><span>Home</span><span data-nav="planner">Planner</span><span>Routes</span><span data-nav="explore">Explore</span></nav>
+        </div>
+        <div class="page">
+            <div class="pagehead"><h2 id="page-title"></h2><span id="page-facts"></span></div>
+            <div class="barhost" id="host-wide"><div class="bar" id="bar" data-look="a">
+                <div class="strip">
+                    <label class="say" id="say">
+                        <span id="search-icon"></span>
+                        <div class="type">
+                            <div class="mirror" id="mirror" aria-hidden="true"></div>
+                            <input id="search" type="text" role="combobox" aria-expanded="false" aria-controls="panel" aria-autocomplete="list" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go">
+                        </div>
+                        <button type="button" class="go" id="go" aria-label="Put the words in the slots" title="Enter" hidden></button>
+                    </label>
+                    <div class="segs" id="segs"></div>
+                    <div class="tail"><button type="button" class="undo" id="undo" hidden>Undo</button><button type="button" class="clear" id="clear" aria-label="Clear the search" hidden></button></div>
+                </div>
+                <div class="panel" id="panel" hidden></div>
+            </div></div>
+            <div class="cards">
+                <div class="list">
+                    <div class="barhost" id="host-narrow"></div>
+                    <p class="countline"><output class="count" id="count" for="search" aria-live="polite"></output></p>
+                    <ul class="results" id="results"></ul>
+                    <p class="sample" id="sample"></p>
+                </div>
+                <div class="geo" id="geo"></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="notes">
+        <div>
+            <h2>Things to try</h2>
+            <ul id="tries"></ul>
+        </div>
+        <div>
+            <h2>New in this version</h2>
+            <ul>
+                <li><b>Your words stay in the field.</b> While you type, the bar only marks what it understands. Enter, or the amber button in the field, sends every phrase to its slot.</li>
+                <li><b>A result carries the action.</b> The first slot can say what to do with the place: find it, route to it, add it as a stop, or end the day at it. The top result then has the one amber button. Nothing changes before you press it, and “Undo” takes it back.</li>
+                <li><b>“Where” is on the profile.</b> Drag across the profile for a stretch, tap a day for that day, or move the two handles. The places that match are dots on the profile, so you see what lies before a climb.</li>
+            </ul>
+        </div>
+    </section>
+</div>
+
+<script>
+(() => {
+'use strict';
+const ICONS = {
+    "road": "M1.6 16.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM15.6 16.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM17.1 7.4a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM5 16.6L8.4 9.9L15 9.3L17.2 13.2L19 16.6M8.4 9.9L12.8 13L11.4 16.6",
+    "gravel": "M1.6 16a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM15.6 16a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM14.5 2.6a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM2 22.3v.01M7 22.3v.01M12 22.3v.01M17 22.3v.01M22 22.3v.01M5 16L8.4 9.2L13.6 5.4L17 10.8L19 16M8.4 9.2L13 12L11.4 16",
+    "touring": "M8.4 17.6A3.4 3.4 0 0 1 1.6 17.6M2.9 11.4H6.5a1.1 1.1 0 0 1 1.1 1.1V16.5a1.1 1.1 0 0 1 -1.1 1.1H2.9a1.1 1.1 0 0 1 -1.1 -1.1V12.5a1.1 1.1 0 0 1 1.1 -1.1ZM15.6 17.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM11.3 2.5a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM8.8 11.2L11.2 6.2L16.4 10.6L19 17.6M8.8 11.2L13.4 13L12 17.6",
+    "mtb": "M3.45 13.65a3 3 0 1 0 6 0a3 3 0 1 0 -6 0ZM14.95 17.49a3 3 0 1 0 6 0a3 3 0 1 0 -6 0ZM15.8 4a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM1.5 15.17L21.5 21.83M17.5 11L17.95 17.49M11.9 15.4L11.7 11.4L8.9 7.6L14.1 6.4L17.5 11",
+    "hiking": "M15 4a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm-3 3 4 4h3M13 6l-3 7 5 3-1 6m-4-9-3 5-4 3M11 7l-3-1-2 6 3 1m11-3-2 12",
+    "less-climbing": "M3 17h18M5 13l4-5 4 5 3-3 3 3",
+    "calendar": "M4 5h16v16H4V5Zm0 5h16M8 3v4m8-4v4M8 14h2m4 0h2m-8 3h2",
+    "clock": "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 4v5l3 2",
+    "locate": "M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm0-5v3m0 14v3M2 12h3m14 0h3",
+    "up": "m6 15 6-6 6 6",
+    "grip": "M9 5v.1M15 5v.1M9 12v.1M15 12v.1M9 19v.1M15 19v.1",
+    "layers": "m12 3 10 6-10 6L2 9l10-6Zm-10 10 10 6 10-6M2 17l10 6 10-6",
+    "eye": "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Zm10-3a3 3 0 1 0 0 6 3 3 0 0 0 0-6",
+    "binoculars": "M9 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm12 0a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM3 16V8a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v8m6 0V8a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v8M9 11h6M5 6V4h2v2m10 0V4h2v2",
+    "flag": "M5 22V3m0 1c5-4 9 4 15 0v10c-6 4-10-4-15 0",
+    "pencil": "m4 16 12-12 4 4L8 20l-5 1 1-5Zm10-10 4 4",
+    "pause": "M8 5v14M16 5v14",
+    "train": "M9 3h6a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3ZM6 10h12M9 19l-2 2m8-2 2 2",
+    "search": "M21 21l-4.5-4.5M19 10.5a8.5 8.5 0 1 1-17 0 8.5 8.5 0 0 1 17 0",
+    "arrow": "M5 12h14m-6-6 6 6-6 6",
+    "back": "M19 12H5m6-6-6 6 6 6",
+    "chevron": "m9 5 7 7-7 7",
+    "down": "m6 9 6 6 6-6",
+    "close": "m6 6 12 12M6 18 18 6",
+    "pin": "M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 1 1 14 0ZM12 7v6m-3-3h6",
+    "camp": "m2 20 10-17 10 17H2Zm5 0 5-9 5 9M12 3V1",
+    "hotel": "M4 21V3h16v18M2 21h20M9 21v-5h6v5M8 7h2m4 0h2M8 11h2m4 0h2",
+    "water": "M12 2S5 10 5 15a7 7 0 0 0 14 0c0-5-7-13-7-13ZM8 15a4 4 0 0 0 4 4",
+    "check": "m5 12 4 4L19 6",
+    "warning": "m12 3 10 18H2L12 3Zm0 6v5m0 3v.2",
+    "sliders": "M4 4v5m0 4v7M12 4v11m0 4v1M20 4v1m0 4v11M1 9h6m2 6h6m2-10h6",
+    "route": "M5 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm14 14a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM7 5h8a4 4 0 0 1 0 8H9a4 4 0 0 0 0 8h8",
+    "undo": "M4 10h10a6 6 0 0 1 0 12M4 10l5-5m-5 5 5 5",
+    "sync": "M20 11a8 8 0 0 0-14.6-4.5M4 3v4h4m-4 6a8 8 0 0 0 14.6 4.5M20 21v-4h-4",
+    "loop": "M17 4.5A8 8 0 1 0 20 11M20 4v7h-7",
+    "redo": "M20 10H10a6 6 0 0 0 0 12m10-12-5-5m5 5-5 5",
+    "fit": "M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M9 12h6m-3-3v6",
+    "plus": "M5 12h14m-7-7v14",
+    "minus": "M5 12h14",
+    "moon": "M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z",
+    "sun": "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1",
+    "gear": "M10.1 5.3 10.5 2.6 13.5 2.6 13.9 5.3 15.4 5.9 17.6 4.3 19.7 6.4 18.1 8.6 18.7 10.1 21.4 10.5 21.4 13.5 18.7 13.9 18.1 15.4 19.7 17.6 17.6 19.7 15.4 18.1 13.9 18.7 13.5 21.4 10.5 21.4 10.1 18.7 8.6 18.1 6.4 19.7 4.3 17.6 5.9 15.4 5.3 13.9 2.6 13.5 2.6 10.5 5.3 10.1 5.9 8.6 4.3 6.4 6.4 4.3 8.6 5.9ZM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z",
+    "trash": "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6m4-6v6",
+    "mountain": "m2 20 7-13 4 7 3-5 6 11H2Zm4-7 3 1 2-3",
+    "lake": "M3 10c2-2 4-2 6 0s4 2 6 0 4-2 6 0M3 15c2-2 4-2 6 0s4 2 6 0 4-2 6 0",
+    "hut": "M4 11l8-6 8 6v8H4zM10 19v-5h4v5",
+    "waterfall": "M7 3v8M12 3v11M17 3v8M4 19c2-2 4-2 6 0s4 2 6 0 3-1 4 0",
+    "tree": "M12 3l5 8h-3l4 6H6l4-6H7zM12 17v4",
+    "meadow": "M3 20h18M6 20c0-3 1-5 2-6M11 20c0-4 1-7 3-9M16 20c0-3 1-5 3-6",
+    "quiet": "M5 20 9 4m10 16L15 4M12 6v2m0 3v2m0 3v2",
+    "car": "M3 15.5h18v3.5H3zM5 15.5l2-5.5h10l2 5.5M6 19v2m12-2v2M7 17.3h1m8 0h1",
+    "walk": "M13.5 5a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6ZM9 22l2.5-7 2.5 2.5V22M8 12l2.5-4.5h3.5l1.5 3.5 3 1.5M10.5 7.5 9.5 15",
+    "lift": "M2 3l20 5M12 5.5V10M7 10h10l-1 10H8zM7.5 14h9",
+    "info": "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 8v5m0-8.5v.01",
+    "paved": "M3 19h18M3 14h18M6 9h12",
+    "ascent": "m3 17 6-6 4 4 8-8m-6 0h6v6",
+    "descent": "m3 7 6 6 4-4 8 8m-6 0h6v-6",
+    "lock": "M6 11h12v9H6v-9Zm2 0V8a4 4 0 0 1 8 0v3",
+    "wind": "M3 8h10a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h7",
+    "snow": "M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7M9.5 3.5 12 6l2.5-2.5M9.5 20.5 12 18l2.5 2.5M18.1 5.6 17.2 9l3.4.9M20.6 14.1 17.2 15l.9 3.4M3.4 14.1 6.8 15l-.9 3.4M5.9 5.6 6.8 9l-3.4.9",
+    "weather": "M7 19h10a4 4 0 0 0 .7-7.9A5.5 5.5 0 0 0 7.2 10 4.5 4.5 0 0 0 7 19Z",
+    "rain": "M7 15h10a4 4 0 0 0 .7-7.9A5.5 5.5 0 0 0 7.2 6 4.5 4.5 0 0 0 7 15Zm2 3-1 3m5-3-1 3m5-3-1 3",
+    "c-water": "M12 3s-6 7-6 11.5a6 6 0 0 0 12 0C18 10 12 3 12 3Z",
+    "c-shop": "M3 5h2l2 10h11l2-7H6m3 12h.01M17 20h.01",
+    "c-food": "M6 3v6a2 2 0 0 0 4 0V3M8 11v10M17 21V3c-2 1-3 4-3 8h3",
+    "c-camp": "M3 20 12 4l9 16H3Zm5 0 4-8 4 8",
+    "c-bike": "M2.5 16a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0m12 0a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0M6 16l4-7h6l2 7m-8-7 3 7h2M8 6h3",
+    "c-station": "M6 3h12v12H6V3Zm0 8h12M9 18l-2 3m8-3 2 3",
+    "c-peak": "M3 20 12 5l9 15H3Zm5.5-6 3.5-2 3.5 2",
+    "c-hotel": "M3 19V8m18 11v-5M3 15h18M3 11h7v4M13 15v-4h5a3 3 0 0 1 3 3",
+    "c-shelter": "M2 12 12 4l10 8M5 10v10m14-10v10",
+    "c-toilets": "M12 3v18M7 5h.01M17 5h.01M5 9h4v5H8v6H6v-6H5V9Zm10 0h4l1 7h-2v4h-2v-4h-2l1-7Z",
+    "c-pharmacy": "M9 4h6v5h5v6h-5v5H9v-5H4V9h5V4Z",
+    "c-rest": "M4 9h16M2 14h20M8 9 5 20m11-11 3 11",
+    "c-viewpoint": "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Zm7 0a3 3 0 1 0 6 0 3 3 0 1 0-6 0",
+};
+const $ = (s, r = document) => r.querySelector(s);
+const ic = (n, s = 16) => `<svg class="ic" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICONS[n] || ICONS.pin}"/></svg>`;
+const pic = (n, s = 16) => `<span class="pi">${ic(n, s)}</span>`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const norm = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const num = s => parseFloat(String(s).replace(',', '.'));
+const still = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const N = '(\\d+(?:[.,]\\d+)?)';
+
+/* ── Words that carry no piece, and words that change the next piece ─────────────────────────────────────────── */
+const MODS = [['nice to have', 'soft'], ['if possible', 'soft'], ['must have', 'must'], ['has to have', 'must'], ['no', 'avoid'], ['without', 'avoid'],
+    ['avoid', 'avoid'], ['not', 'avoid'], ['ideally', 'soft'], ['maybe', 'soft'], ['preferably', 'soft'], ['perhaps', 'soft'], ['bonus', 'soft'], ['must', 'must'], ['definitely', 'must']];
+const MOD_WORDS = new Map(MODS.filter(([w]) => !w.includes(' ')));
+const AFTER = ['if possible', 'would be nice', 'as a bonus'];
+
+/* ── Sample data: the hikes of Explore ──────────────────────────────────────────────────────────────────────── */
+// name, km east and north of the start, shape, length km, climb m, hardest grade (0 = T1), summit, lake, hut, waterfall, forest share, along water, quiet, official, free of snow
+const HIKES = [
+    ['Kandel from Waldkirch', 12, -6, 'back', 13.8, 950, 1, 1, 0, 1, 0, .7, 0, 1, 1, 1], ['Kandel summit loop', 13, -8, 'loop', 6.2, 240, 0, 1, 0, 1, 0, .35, 0, 0, 1, 1],
+    ['Zweribach waterfalls', 15, -10, 'loop', 9.4, 480, 1, 0, 0, 0, 1, .8, 1, 1, 1, 1], ['Rosskopf towers', 4, -13, 'loop', 11.2, 520, 0, 1, 0, 0, 0, .85, 0, 0, 0, 1],
+    ['Schauinsland summit round', 5, -24, 'loop', 8.1, 310, 0, 1, 0, 1, 0, .3, 0, 0, 1, 1], ['Schauinsland by cable car', 4, -23, 'liftUp', 9.6, 120, 0, 1, 0, 1, 0, .5, 0, 0, 0, 1],
+    ['Schauinsland from Günterstal', 3, -21, 'liftDown', 10.4, 980, 1, 1, 0, 1, 0, .75, 0, 0, 0, 1], ['Feldberg over the Feldsee', 21, -29, 'loop', 12.6, 610, 1, 1, 1, 1, 0, .4, 0, 0, 1, 0],
+    ['Feldberg summit path', 20, -30, 'liftUp', 7.4, 180, 0, 1, 0, 1, 0, .1, 0, 0, 1, 0], ['Feldsee shore loop', 22, -28, 'loop', 5.8, 190, 0, 0, 1, 1, 0, .8, 1, 0, 0, 1],
+    ['Belchen from Multen', 2, -34, 'loop', 8.9, 560, 1, 1, 0, 1, 0, .3, 0, 1, 1, 1], ['Belchen by cable car', 1, -35, 'liftUp', 6.3, 90, 0, 1, 0, 1, 0, .15, 0, 0, 0, 1],
+    ['Belchen north ridge', 3, -33, 'back', 11.8, 880, 2, 1, 0, 0, 0, .5, 0, 1, 0, 1], ['Blauen', -8, -40, 'loop', 10.2, 640, 0, 1, 0, 1, 0, .8, 0, 0, 0, 1],
+    ['Herzogenhorn', 19, -33, 'loop', 9.8, 430, 1, 1, 0, 0, 0, .35, 0, 1, 0, 0], ['Hinterwaldkopf', 15, -22, 'loop', 12.9, 720, 1, 1, 0, 1, 0, .45, 0, 1, 1, 1],
+    ['Hünersedel tower', 10, 6, 'loop', 7.6, 330, 0, 1, 0, 1, 0, .7, 0, 0, 0, 1], ['Brend and Günterfelsen', 22, 2, 'loop', 10.6, 380, 0, 1, 0, 1, 0, .75, 0, 0, 1, 1],
+    ['Rohrhardsberg', 20, 6, 'loop', 13.4, 590, 1, 1, 0, 1, 0, .6, 0, 1, 0, 1], ['Todtnau waterfall', 10, -30, 'loop', 6.8, 320, 0, 0, 0, 1, 1, .65, 1, 0, 1, 1],
+    ['Ravenna gorge', 20, -22, 'back', 7.2, 290, 1, 0, 0, 1, 1, .9, 1, 0, 1, 1], ['Titisee shore', 27, -25, 'loop', 6.4, 80, 0, 0, 1, 1, 0, .5, 1, 0, 1, 1],
+    ['Hochfirst above Titisee', 29, -27, 'loop', 11.5, 480, 0, 1, 1, 1, 0, .8, 0, 0, 0, 1], ['Schluchsee east shore', 30, -34, 'back', 14.2, 160, 0, 0, 1, 1, 0, .55, 1, 0, 0, 1],
+    ['Nonnenmattweiher', 0, -38, 'loop', 8.3, 410, 1, 0, 1, 1, 0, .6, 0, 1, 0, 1], ['Kaiserstuhl: Totenkopf', -10, -3, 'loop', 12.1, 430, 0, 1, 0, 0, 0, .55, 0, 0, 1, 1],
+    ['Kaiserstuhl: Eichelspitze', -8, -1, 'loop', 9.3, 350, 0, 1, 0, 0, 0, .5, 0, 0, 1, 1], ['Kaiserstuhl vineyard terraces', -12, -5, 'loop', 14.6, 380, 0, 0, 0, 0, 0, .1, 0, 0, 1, 1],
+    ['Schönberg', -2, -19, 'loop', 9.9, 400, 0, 1, 0, 1, 0, .45, 0, 0, 0, 1], ['Kybfelsen', 4, -19, 'back', 8.6, 520, 1, 1, 0, 0, 0, .9, 0, 1, 0, 1],
+    ['St. Peter to St. Märgen', 14, -14, 'back', 15.8, 360, 0, 0, 0, 1, 0, .2, 0, 0, 1, 1], ['Simonswald wild stream', 17, -5, 'loop', 10.9, 450, 1, 0, 0, 0, 1, .8, 1, 1, 0, 1],
+    ['Wiedener Eck ridge', 4, -33, 'loop', 13.2, 470, 0, 0, 0, 1, 0, .25, 0, 1, 1, 1], ['Präg glacier cirque', 12, -36, 'loop', 11.1, 540, 1, 0, 1, 0, 0, .5, 0, 1, 0, 1],
+    ['Hohneck over the Sentier des Roches', -57, -9, 'loop', 13.9, 760, 2, 1, 0, 1, 0, .3, 0, 0, 0, 0], ['Lac de Schiessrothried', -57, -11, 'loop', 9.2, 510, 1, 1, 1, 0, 0, .4, 0, 0, 0, 0],
+    ['Lac Blanc and Lac Noir', -50, 0, 'loop', 8.7, 420, 1, 0, 1, 1, 0, .5, 1, 0, 1, 1], ['Grand Ballon', -52, -27, 'loop', 7.9, 380, 0, 1, 0, 1, 0, .2, 0, 0, 1, 0],
+    ['Petit Ballon', -52, -13, 'loop', 10.3, 450, 0, 1, 0, 1, 0, .15, 0, 0, 0, 1], ['Taennchel rocks', -40, 8, 'loop', 14.8, 620, 1, 1, 0, 0, 0, .9, 0, 1, 0, 1],
+    ['Haut-Koenigsbourg', -33, 13, 'loop', 9.7, 410, 0, 0, 0, 1, 0, .85, 0, 0, 1, 1], ['Flaunser', 7, -12, 'loop', 10.4, 560, 0, 1, 0, 0, 0, .9, 0, 1, 0, 1],
+    ['Feldberg: Zastler Loch', 19, -28, 'loop', 14.3, 890, 2, 1, 0, 1, 0, .35, 0, 1, 0, 0], ['Bernau high valley', 16, -37, 'loop', 12.2, 300, 0, 0, 0, 1, 0, .2, 0, 0, 1, 1],
+    ['Suggental silver path', 9, -4, 'loop', 5.4, 210, 0, 0, 0, 0, 0, .6, 0, 0, 1, 1],
+].map(([name, e, n, shape, km, climb, grade, peak, lake, hut, fall, forestShare, water, quiet, official, snow], i) =>
+    ({ i, name, e, n, shape, km, climb, grade, peak: !!peak, lake: !!lake, hut: !!hut, fall: !!fall, forestShare, water: !!water, quiet: !!quiet, official: !!official, snow: !!snow, d: Math.round(Math.hypot(e, n)) }));
+const SHAPE_NAMES = { loop: 'Loop', back: 'There and back', liftUp: 'Lift up', liftDown: 'Lift down' };
+const NAMED = ['Kandel', 'Feldberg', 'Feldsee', 'Belchen', 'Schauinsland', 'Titisee', 'Kaiserstuhl', 'Hohneck'];
+
+/* ── Sample data: a route of the planner ────────────────────────────────────────────────────────────────────── */
+const ROUTE = { km: 212, days: [[0, 74], [74, 147], [147, 212]], line: [[0, 70, 318], [17, 168, 286], [31, 256, 236], [40, 318, 258], [48, 372, 228], [74, 470, 268], [96, 548, 330], [118, 628, 368], [147, 706, 326], [163, 768, 372], [188, 836, 342], [205, 892, 366], [212, 934, 392]] };
+const TOWNS = [['Freiburg', 0], ['Hinterzarten', 31], ['Titisee', 40], ['Neustadt', 48], ['Löffingen', 74], ['Blumberg', 118], ['Engen', 147], ['Singen', 163], ['Radolfzell', 188], ['Konstanz', 212]];
+// name, parent kind, kind, km on the route, metres off it, open now, open on Sunday, closing time
+const SPOTS = [
+    ['Café Auszeit', 'food', 'cafe', 4, 60, 1, 1, '18:00'], ['Bäckerei Reiß', 'shop', 'bakery', 9, 120, 1, 0, '13:00'], ['Gasthaus Himmelreich', 'food', 'restaurant', 17, 40, 1, 1, '22:00'],
+    ['Dorfbrunnen Himmelreich', 'water', 'fountain', 17.5, 20], ['Hofgut Sternen', 'food', 'restaurant', 24, 80, 0, 1], ['Ravenna spring', 'water', 'spring', 25, 150],
+    ['Edeka Hinterzarten', 'shop', 'supermarket', 31, 300, 1, 0, '20:00'], ['Café Unmüssig', 'food', 'cafe', 33, 90, 1, 1, '17:30'], ['Camping Bankenhof', 'sleep', 'campsite', 38, 400],
+    ['Eiscafé Titisee', 'food', 'icecream', 40, 50, 1, 1, '19:00'], ['Titisee station', 'station', 'station', 41, 200], ['Radhaus Neustadt', 'bike', 'bike', 47, 250, 0, 0],
+    ['Marktbrunnen Neustadt', 'water', 'fountain', 49, 70], ['Pension Rössle', 'sleep', 'guesthouse', 62, 100], ['Netto Löffingen', 'shop', 'supermarket', 72, 180, 1, 0, '20:00'], ['Gasthof Kranz', 'food', 'restaurant', 73, 30, 1, 0, '21:30'],
+    ['Hotel Lamm', 'sleep', 'hotel', 74, 150], ['Löffingen station', 'station', 'station', 74.5, 350], ['Kiosk Wutachmühle', 'food', 'fastfood', 88, 20, 0, 1],
+    ['Schattenmühle', 'food', 'restaurant', 95, 10, 1, 1, '20:00'], ['Wutach spring', 'water', 'spring', 101, 90], ['Rewe Blumberg', 'shop', 'supermarket', 118, 260, 1, 0, '21:00'],
+    ['Stadt-Apotheke Blumberg', 'pharmacy', 'pharmacy', 119, 180, 1, 0, '18:30'], ['Randen shelter', 'sleep', 'shelter', 131, 30], ['Hegau camping', 'sleep', 'campsite', 146, 500],
+    ['Bäckerei Engen', 'shop', 'bakery', 147, 110, 0, 1], ['Marktbrunnen Engen', 'water', 'fountain', 147.5, 60], ['Repair station Singen', 'bike', 'bike', 163, 40],
+    ['Hohentwiel kiosk', 'food', 'fastfood', 170, 200, 1, 1, '17:00'], ['Edeka Radolfzell', 'shop', 'supermarket', 187, 240, 1, 0, '20:00'], ['Seecafé Radolfzell', 'food', 'cafe', 188, 20, 1, 1, '18:00'], ['Uferbrunnen Radolfzell', 'water', 'fountain', 189, 30],
+    ['Fischerstube Reichenau', 'food', 'restaurant', 205, 120, 0, 1], ['Hafenbrunnen Konstanz', 'water', 'fountain', 209, 80], ['Jugendherberge Konstanz', 'sleep', 'hostel', 210, 600], ['Konstanz station', 'station', 'station', 212, 100],
+].map(([name, parent, kind, km, off, now, sun, until], i) => ({ i, name, parent, kind, km, off, hours: now !== undefined, now: !!now, sun: !!sun, until }));
+const STRETCHES = {
+    climbs: [[12, 31, '640 m', '3.4 %', 640], [52, 58, '190 m', '3.2 %', 190], [96, 104, '310 m', '3.9 %', 310], [121, 127, '220 m', '3.7 %', 220]],
+    steep: [[26.2, 27.4, '130 m', '11 %', 11], [99, 99.8, '95 m', '12 %', 12]],
+    unpaved: [[84, 101, 'Gravel', '', 17], [128, 134, 'Dirt', '', 6]],
+    pushing: [[97.2, 97.9, 'Steps in the gorge', '', .7]],
+    closures: [],
+    gap: [[49, 101, 'No drinking water', '', 52]],
+};
+const KIND_ICON = { food: 'c-food', water: 'c-water', sleep: 'c-hotel', shop: 'c-shop', bike: 'c-bike', toilets: 'c-toilets', pharmacy: 'c-pharmacy', station: 'c-station' };
+const dayOf = km => ROUTE.days.findIndex(([a, b]) => km >= a && km <= b) + 1 || 3;
+
+
+// Sample heights of the route, in metres at a km: the climbs of STRETCHES are in them.
+const HEIGHTS = [[0, 280], [12, 330], [31, 960], [40, 850], [48, 810], [52, 790], [58, 980], [74, 800], [88, 640], [96, 590], [104, 900], [118, 700], [121, 700], [127, 920], [147, 520], [163, 430], [188, 400], [205, 405], [212, 400]];
+function heightAt(km) {
+    const found = HEIGHTS.findIndex(point => point[0] >= km), i = found < 1 ? found < 0 ? HEIGHTS.length - 1 : 1 : found;
+    const [k0, h0] = HEIGHTS[i - 1], [k1, h1] = HEIGHTS[i], t = clamp((km - k0) / (k1 - k0 || 1), 0, 1);
+    return h0 + (h1 - h0) * t * t * (3 - 2 * t) + Math.sin(km * 1.7) * 8 + Math.sin(km * .53) * 14;
+}
+
+/* ── The tables of pieces: each piece belongs to one slot ───────────────────────────────────────────────────── */
+let V;
+const SURFACES = {};
+function table(def) {
+    def.byId = Object.fromEntries(def.items.map(item => [item.id, item]));
+    def.phrases = [];
+    for (const item of def.items)
+        for (const entry of [item.label, ...(item.words || [])]) {
+            const [text, arg] = Array.isArray(entry) ? entry : [entry];
+            const t = norm(text).trim();
+            if (t) def.phrases.push({ text: t, ws: t.split(' '), item, arg });
+        }
+    def.phrases.sort((a, b) => b.ws.length - a.ws.length || b.text.length - a.text.length);
+    def.glue = new Set(def.glue.split(' '));
+    def.leads = [...def.starters, ...MODS.map(([words]) => words).filter(words => words.includes(' ')), ...AFTER];
+    def.history = [];
+    return def;
+}
+const wish = (id, group, icon, label, words, o = {}) => ({
+    id, seg: 'wishes', group, icon, label, words, states: 2, core: [norm(label), norm(words[0])],
+    make(arg, mod) {
+        if (mod === 'avoid') return o.flip ? V.byId[o.flip].make() : null;
+        return { key: id, item: id, state: mod === 'soft' ? 'soft' : 'must' };
+    },
+    text: p => p.state === 'soft' ? `${label} if possible` : label,
+});
+const flag = (id, seg, icon, label, words) => ({ id, seg, icon, label, words, make: () => ({ key: id, item: id }), text: () => label });
+const rangeText = ([a, b], unit, top) => a <= 0 ? `Up to ${b} ${unit}` : b >= top ? `${a} ${unit} or more` : `${a}–${b} ${unit}`;
+const lengthPiece = ([a, b]) => ({ key: 'length', item: 'length', value: [clamp(Math.round(a), 0, 30), b === Infinity ? 30 : clamp(Math.round(b), 1, 30)] });
+const climbPiece = ([a, b]) => ({ key: 'climb', item: 'climb', value: [clamp(Math.round(a / 50) * 50, 0, 1500), b === Infinity ? 1500 : clamp(Math.round(b / 50) * 50, 50, 1500)] });
+const gradePiece = ({ min = 0, max = 5 }) => ({ key: 'grade', item: 'grade', value: { min, max: Math.max(min, max) } });
+
+SURFACES.explore = table({
+    title: 'Explore', facts: 'Day hikes · 28 November', wide: true, placeholder: 'Say what you want, such as “loop with a hut”', placeholderRoom: 280, noun: n => n === 1 ? '1 hike' : `${n} hikes`,
+    sample: 'Sample hikes around Teningen. Their numbers are invented.',
+    glue: 'a an the with and in of for to i want would like hike hikes hiking route routes walk that has have is on at please me show find some also but or plus something day today nice one which where it should be go goes past passing passes via along there s we',
+    items: [
+        { id: 'from', seg: 'from', icon: 'locate', label: 'From my location', words: ['from here', 'from teningen', 'near me', 'nearby', 'close to home', 'by car'],
+            make: arg => ({ key: 'from', item: 'from', value: { km: arg?.km ?? 40 } }), text: p => `Teningen · ${p.value.km} km` },
+        flag('loop', 'hike', 'loop', 'Loop', ['round trip', 'roundtrip', 'circular', 'circuit']),
+        flag('back', 'hike', 'undo', 'There and back', ['out and back', 'same way back']),
+        { ...flag('liftUp', 'hike', 'lift', 'Lift up, hike down', ['lift up', 'cable car up', 'gondola up', 'ride up']), text: () => 'Lift up' },
+        { ...flag('liftDown', 'hike', 'lift', 'Hike up, lift down', ['lift down', 'cable car down', 'gondola down', 'ride down']), text: () => 'Lift down' },
+        { id: 'length', seg: 'hike', icon: 'route', label: 'Length', words: ['distance', 'how long'], range: { min: 0, max: 30, step: 1, unit: 'km', of: h => h.km },
+            make: arg => lengthPiece(arg || [0, 12]), text: p => rangeText(p.value, 'km', 30) },
+        { id: 'climb', seg: 'hike', icon: 'ascent', label: 'Climb', words: ['ascent', 'elevation gain', 'climbing', ['flat', [0, 200]], ['no climbing', [0, 200]], ['little climbing', [0, 300]]],
+            range: { min: 0, max: 1500, step: 50, unit: 'm', of: h => h.climb }, make: arg => climbPiece(arg || [0, 600]), text: p => rangeText(p.value, 'm', 1500) + ' climb' },
+        { id: 'grade', seg: 'hike', icon: 'hiking', label: 'Path difficulty', words: ['difficulty', ['easy', { max: 1 }], ['easy paths', { max: 1 }], ['scrambly', { min: 2 }], ['scramble', { min: 2 }],
+            ['scrambling', { min: 2 }], ['alpine', { min: 3 }], ['t1', { max: 0 }], ['t2', { max: 1 }], ['t3', { max: 2 }], ['t4', { max: 3 }], ['t5', { max: 4 }], ['t6', { max: 5 }]],
+            make: arg => gradePiece(arg || { max: 1 }),
+            text: p => p.value.min === 0 ? `Up to T${p.value.max + 1}` : p.value.max === 5 ? `T${p.value.min + 1} or harder` : p.value.min === p.value.max ? `T${p.value.min + 1}` : `T${p.value.min + 1}–T${p.value.max + 1}` },
+        wish('peak', 'way', 'mountain', 'Summit', ['peak', 'top', 'mountain top']),
+        wish('lake', 'way', 'lake', 'Lake', ['tarn', 'swim']),
+        wish('hut', 'way', 'hut', 'Hut with food', ['hut', 'cafe', 'restaurant', 'food', 'mountain hut', 'inn', 'lunch', 'something to eat'], { short: 'hut' }),
+        wish('fall', 'way', 'waterfall', 'Waterfall', ['falls', 'cascade']),
+        wish('open', 'route', 'meadow', 'Mostly open', ['open', 'open terrain', 'meadows', 'above the trees', 'little forest', 'not much forest'], { flip: 'forest' }),
+        wish('forest', 'route', 'tree', 'Mostly forest', ['forest', 'woods', 'woodland', 'shady', 'in the forest'], { flip: 'open' }),
+        wish('water', 'route', 'water', 'Along water', ['river', 'stream', 'riverside', 'by the water', 'along a river', 'along a stream'], { plain: true }),
+        wish('quiet', 'route', 'quiet', 'Far from big roads', ['quiet', 'remote', 'peaceful', 'away from roads'], { plain: true }),
+        wish('snow', 'route', 'snow', 'Free of snow', ['snow free', 'snow-free', 'no snow', 'without snow'], { plain: true }),
+        wish('official', 'route', 'flag', 'Official route', ['official', 'signposted', 'waymarked', 'signed'], { plain: true }),
+        { id: 'via', seg: 'wishes', icon: 'pin', label: '', make: arg => ({ key: 'via:' + norm(arg), item: 'via', value: arg }), text: p => `Passes ${p.value}` },
+    ],
+    patterns: [
+        { re: new RegExp(`^(?:within|drive|driving)\\s+(?:up to\\s+)?${N}\\s*km\\b`), make: m => ({ key: 'from', item: 'from', value: { km: clamp(Math.round(num(m[1]) / 5) * 5, 5, 50) } }) },
+        { re: new RegExp(`^${N}\\s*(?:-|–|to)\\s*${N}\\s*km\\b`), make: m => lengthPiece([num(m[1]), num(m[2])]) },
+        { re: new RegExp(`^${N}\\s*(?:-|–|to)\\s*${N}\\s*(?:m|hm)\\b`), make: m => climbPiece([num(m[1]), num(m[2])]) },
+        { re: new RegExp(`^(?:under|below|up to|max|at most|less than|shorter than)\\s+${N}\\s*km\\b`), make: m => lengthPiece([0, num(m[1])]) },
+        { re: new RegExp(`^(?:over|above|at least|min|more than|longer than)\\s+${N}\\s*km\\b`), make: m => lengthPiece([num(m[1]), Infinity]) },
+        { re: new RegExp(`^(?:under|below|up to|max|at most|less than)\\s+${N}\\s*(?:m|hm)\\b(?:\\s+(?:of\\s+)?(?:climb|climbing|ascent))?`), make: m => climbPiece([0, num(m[1])]) },
+        { re: new RegExp(`^(?:over|above|at least|min|more than)\\s+${N}\\s*(?:m|hm)\\b(?:\\s+(?:of\\s+)?(?:climb|climbing|ascent))?`), make: m => climbPiece([num(m[1]), Infinity]) },
+        { re: new RegExp(`^(?:(?:about|around|roughly)\\s+)?${N}\\s*km\\b`), make: m => lengthPiece([num(m[1]) * .8, num(m[1]) * 1.2]) },
+        { re: new RegExp(`^${N}\\s*(?:m|hm)\\b(?:\\s+(?:of\\s+)?(?:climb|climbing|ascent))?`), make: m => climbPiece([0, num(m[1])]) },
+        { re: /^(?:up to|max|at most|no harder than)\s+t([1-6])\b/, make: m => gradePiece({ max: +m[1] - 1 }) },
+        { re: /^(?:at least|min|from)\s+t([1-6])\b/, make: m => gradePiece({ min: +m[1] - 1 }) },
+    ],
+    pending: /(?:(?:under|below|up to|max|at most|less than|shorter than|over|above|at least|min|more than|longer than|about|around|roughly|within|drive|driving|no harder than|from)\s+)?(?:\d+(?:[.,]\d*)?(?:\s*(?:-|–|to)\s*\d*(?:[.,]\d*)?)?\s*[a-z]{0,2}|t[1-6]?)$/,
+    starters: ['under', 'below', 'up to', 'at most', 'less than', 'over', 'above', 'at least', 'more than', 'about', 'around', 'within'],
+    numbers(n, lead, unit) {
+        const rows = [], low = /over|above|least|more|longer|min/.test(lead), high = /under|below|up to|max|most|less|shorter/.test(lead);
+        if (unit !== 'm' && unit !== 'hm' && n > 0 && n <= 40) {
+            if (!low) rows.push(lengthPiece([0, n]));
+            if (!low && !high) rows.push(lengthPiece([n * .8, n * 1.2]));
+            if (!high) rows.push(lengthPiece([n, Infinity]));
+        }
+        if (unit !== 'km' && unit !== 'k' && n >= 50) {
+            if (!low) rows.push(climbPiece([0, n]));
+            if (!high) rows.push(climbPiece([n, Infinity]));
+        }
+        return rows;
+    },
+    names: q => NAMED.filter(name => norm(name).startsWith(q)).map(name => ({ key: 'via:' + norm(name), item: 'via', value: name })),
+    defaults: () => [{ key: 'from', item: 'from', value: { km: 40 } }],
+    examples: ['loop with a hut and a lake, under 12 km', 'easy summit hike, up to 600 m, no forest', 'waterfall, there and back, within 30 km'],
+    segs: [
+        { id: 'from', icon: 'locate', label: 'From', unset: 'Anywhere on the map', width: 340 },
+        { id: 'hike', icon: 'hiking', label: 'Hike', unset: 'Any length and shape', width: 400 },
+        { id: 'wishes', icon: 'mountain', label: 'On the way', unset: 'Anything', width: 560 },
+    ],
+});
+
+const kind = (id, label, words, parent) => ({ id, seg: 'what', parent, icon: KIND_ICON[parent || id], label, words, make: () => ({ key: 'what', item: id, parent: parent || id }), text: () => label });
+const fact = (id, icon, label, words) => ({ id, seg: 'what', fact: true, icon, label, words, make: () => ({ key: 'what', item: id, fact: true }), text: () => label });
+const where = (id, icon, label, words) => ({ id, seg: 'where', icon, label, words, make: () => ({ key: 'where', item: id }), text: () => label });
+const verb = (id, label, words, action) => ({ id, seg: 'what', verb: true, icon: 'route', label, words, action, make: () => ({ key: 'verb', item: id }), text: () => label });
+const part = (id, label, words) => ({ id, seg: 'where', icon: 'route', label, words, make: () => ({ key: 'part', item: id }), text: () => label });
+const MIN = { climbs: ['m', 800, 20], steep: ['%', 20, 1], unpaved: ['km', 30, 1] };
+
+SURFACES.planner = table({
+    title: 'Freiburg to Konstanz', facts: '3 days · 212 km · 2,340 m', placeholder: 'Ask, such as “water on day 2”', placeholderRoom: 200,
+    noun: (n, what) => what === 'stretch' ? n === 1 ? '1 stretch' : `${n} stretches` : n === 1 ? '1 place' : `${n} places`,
+    sample: 'A sample route with sample places. Their numbers are invented.',
+    glue: 'a an the in on for any find show me is are there where can i get of to and some places place at route s my do we have that which with it near',
+    items: [
+        verb('v-route', 'Route to', ['navigate to', 'take me to', 'go to', 'directions to', 'ride to'], 'Route here'),
+        verb('v-stop', 'Add a stop at', ['add stop at', 'add a stop', 'add stop', 'stop at'], 'Add as a stop'),
+        verb('v-night', 'End the day at', ['end day at', 'end the day', 'sleep at', 'stay at', 'overnight at'], 'End the day here'),
+        kind('food', 'Food', ['eat', 'eating', 'something to eat', 'lunch', 'dinner', 'places to eat']),
+        kind('water', 'Drinking water', ['water', 'refill', 'tap water']),
+        kind('sleep', 'A place to sleep', ['sleep', 'place to sleep', 'somewhere to sleep', 'accommodation', 'overnight', 'stay']),
+        kind('shop', 'Food shops', ['shop', 'shops', 'groceries', 'resupply', 'food shop']),
+        kind('bike', 'Bike service', ['bike shop', 'bike repair', 'repair', 'mechanic']),
+        kind('pharmacy', 'Pharmacy', ['chemist', 'drugstore']),
+        kind('station', 'Station', ['train station', 'railway station', 'train']),
+        kind('cafe', 'Café', ['cafe', 'coffee'], 'food'), kind('restaurant', 'Restaurant', [], 'food'), kind('fastfood', 'Fast food', ['snack', 'takeaway', 'kiosk'], 'food'), kind('icecream', 'Ice cream', ['gelato'], 'food'),
+        kind('fountain', 'Fountain', [], 'water'), kind('spring', 'Spring', [], 'water'),
+        kind('campsite', 'Campsite', ['camping', 'camp', 'campground'], 'sleep'), kind('hotel', 'Hotel', [], 'sleep'), kind('guesthouse', 'Guest house', ['pension', 'bed and breakfast'], 'sleep'),
+        kind('hostel', 'Hostel', [], 'sleep'), kind('shelter', 'Shelter', ['bivvy'], 'sleep'),
+        kind('supermarket', 'Supermarket', [], 'shop'), kind('bakery', 'Bakery', ['bread'], 'shop'),
+        fact('climbs', 'ascent', 'Climbs', ['climb', 'climbing', 'uphill', 'ascent']),
+        fact('steep', 'warning', 'Steep parts', ['steep', 'steep sections', 'steep bits']),
+        fact('unpaved', 'gravel', 'Unpaved', ['gravel', 'dirt', 'off-road', 'gravel sections']),
+        fact('pushing', 'hiking', 'Pushing', ['hike-a-bike', 'hike a bike', 'push', 'carrying']),
+        fact('closures', 'close', 'Closures', ['closure', 'closed roads', 'roadworks']),
+        fact('gap', 'c-water', 'Longest stretch without water', ['without water', 'no water', 'stretch without water']),
+        { id: 'min', seg: 'what', icon: 'sliders', label: '', make: arg => ({ key: 'min', item: 'min', value: arg }), text: p => `over ${p.value.n} ${p.value.unit}` },
+        where('route', 'route', 'Whole route', ['along the route', 'along my route', 'on the route', 'on my route', 'on route', 'along route', 'anywhere']),
+        where('here', 'locate', 'Near me', ['nearby', 'around here', 'close to me', 'near here']),
+        where('nearest', 'locate', 'Nearest to me', ['nearest', 'closest', 'the nearest', 'the closest', 'nearest to me']),
+        { id: 'day', seg: 'where', icon: 'calendar', label: '', words: [['day 1', 1], ['day one', 1], ['first day', 1], ['day 2', 2], ['day two', 2], ['second day', 2], ['day 3', 3], ['day three', 3], ['third day', 3], ['last day', 3]],
+            make: arg => ({ key: 'where', item: 'day', value: arg || 1 }), text: p => `Day ${p.value}` },
+        { id: 'first', seg: 'where', icon: 'route', label: '', make: arg => ({ key: 'where', item: 'first', value: arg }), text: p => p.value[0] > 0 ? `km ${p.value[0]}–${p.value[1]}` : `First ${p.value[1]} km` },
+        { id: 'near', seg: 'where', icon: 'pin', label: '', make: arg => ({ key: 'where', item: 'near', value: arg }), text: p => `Near ${p.value.name}` },
+        part('p-start', 'Start', ['at the start', 'near the start', 'at the beginning', 'beginning', 'start of']),
+        part('p-middle', 'Middle', ['in the middle', 'halfway', 'midway', 'middle of']),
+        part('p-end', 'End', ['at the end', 'near the end', 'near the finish', 'end of']),
+        { id: 'now', seg: 'when', icon: 'clock', label: 'Open now', words: ['open', 'currently open', 'open right now', 'that is open', 'that are open'], make: () => ({ key: 'open', item: 'now' }), text: () => 'Open now' },
+        { id: 'sun', seg: 'when', icon: 'calendar', label: 'Open on Sunday', words: ['open sunday', 'open sundays', 'open on sundays'], make: () => ({ key: 'open', item: 'sun' }), text: () => 'Open on Sunday' },
+    ],
+    patterns: [
+        { re: new RegExp(`^(?:(?:in|within)\\s+)?(?:the\\s+)?(?:first|next)\\s+${N}\\s*km\\b`), make: m => ({ key: 'where', item: 'first', value: [0, clamp(Math.round(num(m[1])), 1, 212)] }) },
+        { re: new RegExp(`^(?:between\\s+)?km\\s*${N}\\s*(?:-|–|to|and)\\s*(?:km\\s*)?${N}\\b`), make: m => ({ key: 'where', item: 'first', value: [Math.round(num(m[1])), clamp(Math.round(num(m[2])), 1, 212)] }) },
+        { re: new RegExp(`^(?:over|above|at least|more than|longer than|steeper than)\\s+${N}\\s*(m|%|km)(?![a-z])`), make: m => ({ key: 'min', item: 'min', value: { n: num(m[1]), unit: m[2] } }) },
+        // "the next supermarket": the nearest one. "The next 20 km" is the pattern above.
+        { re: /^(?:the\s+)?next\b(?!\s*\d)/, make: () => ({ key: 'where', item: 'nearest' }) },
+    ],
+    pending: /(?:(?:in the first|in the next|the first|the next|first|next|over|above|at least|more than|longer than|steeper than|between km|km|day)\s+)?\d+(?:[.,]\d*)?(?:\s*(?:-|–|to|and)\s*\d*)?\s*[a-z%]{0,2}$/,
+    starters: ['first', 'next', 'in the first', 'in the next', 'over', 'above', 'at least', 'more than', 'between', 'km'],
+    numbers(n, lead, unit, pieces) {
+        const rows = [], asked = pieces.find(p => p.key === 'what');
+        if (asked && MIN[asked.item] && /over|above|least|more|longer|steeper/.test(lead || 'over')) rows.push({ key: 'min', item: 'min', value: { n, unit: MIN[asked.item][0] } });
+        if (!/over|above|least|more/.test(lead) && n >= 1 && n <= 212) rows.push({ key: 'where', item: 'first', value: [0, Math.round(n)] });
+        if (!lead && n >= 1 && n <= 3 && !unit) rows.push({ key: 'where', item: 'day', value: n });
+        return rows;
+    },
+    names: q => TOWNS.filter(([name]) => norm(name).startsWith(q)).map(([name, km]) => ({ key: 'where', item: 'near', value: { name, km } })),
+    defaults: () => [],
+    examples: ['route to the next supermarket', 'drinking water in the middle of day 1', 'climbs over 300 m on day 2'],
+    // One thing to find. A minimum goes with a route fact, and opening hours go with a place.
+    settle(pieces) {
+        const what = pieces.find(p => p.key === 'what'), min = pieces.find(p => p.key === 'min');
+        let out = pieces;
+        if (min && (!what || !MIN[what.item] || MIN[what.item][0] !== min.value.unit)) out = out.filter(p => p !== min);
+        if (what?.fact) out = out.filter(p => p.key !== 'open' && p.key !== 'verb');
+        if (out.some(p => p.key === 'where' && ['here', 'near', 'nearest'].includes(p.item))) out = out.filter(p => p.key !== 'part');
+        return out;
+    },
+    segs: [
+        { id: 'what', icon: 'search', label: () => find('verb') ? labelOf(find('verb')) : 'Find', unset: 'Choose', width: 520, parts: () => inSeg('what').filter(p => p.key !== 'verb').map(labelOf) },
+        { id: 'where', icon: 'route', label: 'Where', unset: 'Whole route', width: 460,
+            text() {
+                const w = find('where'), p = find('part'), base = w && w.item !== 'route' ? labelOf(w) : null;
+                return p ? `${labelOf(p)} of ${base || 'the route'}` : base;
+            } },
+        { id: 'when', icon: 'clock', label: 'When', unset: 'Any time', width: 280, off: () => !!find('what')?.fact },
+    ],
+});
+
+const proposals = groups => q => q.length < 2 ? [] : groups.filter(([words]) => words.some(word => word.startsWith(q))).flatMap(([, rows]) => rows());
+SURFACES.explore.templates = proposals([
+    [['under', 'below', 'up to', 'max', 'at most', 'less than', 'shorter than'], () => [lengthPiece([0, 10]), climbPiece([0, 600]), gradePiece({ max: 1 })]],
+    [['over', 'above', 'at least', 'min', 'more than', 'longer than'], () => [lengthPiece([10, Infinity]), climbPiece([600, Infinity]), gradePiece({ min: 2 })]],
+    [['about', 'around', 'roughly'], () => [lengthPiece([8, 12]), lengthPiece([12, 18])]],
+    [['within', 'drive', 'driving'], () => [20, 30].map(km => ({ key: 'from', item: 'from', value: { km } }))],
+]);
+SURFACES.explore.often = () => [!find('length') && lengthPiece([0, 12]), !SHAPES.some(find) && V.byId.loop.make(), !find('hut') && V.byId.hut.make(), !find('peak') && V.byId.peak.make(),
+    !find('climb') && climbPiece([0, 600]), !find('lake') && V.byId.lake.make()].filter(piece => piece && V.count([...S.pieces, piece])).slice(0, 4);
+SURFACES.planner.templates = proposals([
+    [['first', 'next', 'in the first', 'in the next', 'the first', 'the next'], () => [20, 40].map(km => ({ key: 'where', item: 'first', value: [0, km] }))],
+    [['over', 'above', 'at least', 'more than', 'longer than', 'steeper than'], () => { const m = MIN[find('what')?.item]; return m ? [{ key: 'min', item: 'min', value: { n: { m: 300, '%': 10, km: 5 }[m[0]], unit: m[0] } }] : []; }],
+    [['between', 'km'], () => [{ key: 'where', item: 'first', value: [20, 60] }]],
+]);
+SURFACES.planner.often = () => {
+    const what = find('what'), free = !find('where') && !find('part');
+    if (!what) return ['water', 'food', 'sleep', 'climbs'].map(id => V.byId[id].make());
+    return [free && V.byId.day.make(1), free && { key: 'where', item: 'first', value: [0, 40] }, !what.fact && !find('open') && V.byId.now.make(), free && V.byId.here.make()].filter(Boolean).slice(0, 4);
+};
+
+/* ── State ──────────────────────────────────────────────────────────────────────────────────────────────────── */
+const S = { pieces: [], open: null, row: null, active: -1, options: [], frag: '', unknown: [], playing: 0, justMade: null, justAt: 0, look: 'a', session: false, undo: null, pending: [] };
+const input = $('#search'), mirror = $('#mirror'), bar = $('#bar'), panel = $('#panel');
+const itemOf = p => V.byId[p.item];
+const labelOf = p => itemOf(p).text(p);
+const find = key => S.pieces.find(p => p.key === key);
+const inSeg = id => S.pieces.filter(p => itemOf(p).seg === id).sort((a, b) => V.items.indexOf(itemOf(a)) - V.items.indexOf(itemOf(b)));
+const same = (a, b) => a.key === b.key && a.item === b.item && (a.state || '') === (b.state || '') && JSON.stringify(a.value ?? '') === JSON.stringify(b.value ?? '');
+const segParts = seg => seg.parts ? seg.parts() : seg.text ? [seg.text()].filter(Boolean) : inSeg(seg.id).map(labelOf);
+const segLabel = seg => typeof seg.label === 'function' ? seg.label() : seg.label;
+const segText = seg => segParts(seg).join(' · ') || null;
+function summary(pieces) {
+    const keep = S.pieces;
+    S.pieces = pieces;
+    const text = V.segs.map(segText).filter(Boolean).join(' · ');
+    S.pieces = keep;
+    return text;
+}
+
+/* ── Reading typed text ─────────────────────────────────────────────────────────────────────────────────────── */
+function tokens(text) {
+    const out = [], re = /\d+(?:[.,]\d+)?[^\s,;.!?]*|[^\s,;.!?]+|[,;.!?]/g;
+    for (let m; (m = re.exec(text));) out.push({ w: norm(m[0]), a: m.index, b: m.index + m[0].length, p: /^[,;.!?]$/.test(m[0]) });
+    return out;
+}
+const sameWord = (word, of, last) => word === of || (last && (word === of + 's' || word === of + 'es'));
+function modAt(tk, i) {
+    for (const [words, state] of MODS) {
+        const ws = words.split(' ');
+        if (ws.every((w, j) => tk[i + j] && tk[i + j].w === w)) return { state, n: ws.length };
+    }
+    return null;
+}
+/** The parts of settled text: pieces, the words that carry none, and the words that the table does not know. */
+function scan(text) {
+    const tk = tokens(text), segs = [], low = norm(text);
+    let mod = null, modSeg = null;
+    for (let i = 0; i < tk.length;) {
+        const t = tk[i];
+        if (t.p) { segs.push({ a: t.a, b: t.b, t: 'glue' }); i++; mod = modSeg = null; continue; }
+        let hit = null;
+        for (const pattern of V.patterns) {
+            const m = pattern.re.exec(low.slice(t.a));
+            if (!m) continue;
+            const to = tk.findIndex(x => x.b === t.a + m[0].length);
+            if (to >= i) { hit = { piece: pattern.make(m), to }; break; }
+        }
+        if (!hit) for (const phrase of V.phrases) {
+            const n = phrase.ws.length;
+            if (i + n > tk.length || !phrase.ws.every((w, j) => !tk[i + j].p && sameWord(tk[i + j].w, w, j === n - 1))) continue;
+            const piece = phrase.item.make(phrase.arg, mod);
+            if (piece) { hit = { piece, to: i + n - 1 }; break; }
+        }
+        if (hit) {
+            let a = t.a, to = hit.to;
+            if (modSeg) { a = modSeg.a; segs.splice(segs.indexOf(modSeg), 1); }
+            const rest = tk.slice(to + 1, to + 4).map(x => x.w).join(' ');
+            const after = AFTER.find(words => rest.startsWith(words));
+            if (after && hit.piece.state === 'must') { hit.piece.state = 'soft'; to += after.split(' ').length; }
+            hit.piece.words = text.slice(a, tk[to].b);
+            segs.push({ a, b: tk[to].b, t: 'piece', piece: hit.piece });
+            i = to + 1; mod = modSeg = null;
+            continue;
+        }
+        const m = modAt(tk, i);
+        if (m) { modSeg = { a: t.a, b: tk[i + m.n - 1].b, t: 'glue' }; segs.push(modSeg); mod = m.state; i += m.n; continue; }
+        if (V.glue.has(t.w)) { segs.push({ a: t.a, b: t.b, t: 'glue' }); i++; continue; }
+        segs.push({ a: t.a, b: t.b, t: 'unknown' }); i++; mod = modSeg = null;
+    }
+    return segs;
+}
+/** Where the words start that the rider is still typing: the last word, or more words when they begin a longer phrase or a quantity. */
+function fragStart(text) {
+    const trimmed = text.replace(/\s+$/, ''), trailing = trimmed.length < text.length;
+    if (!trimmed || /[,;.!?]$/.test(trimmed)) return text.length;
+    const tk = tokens(trimmed), n = tk.length, low = norm(trimmed), tails = [];
+    for (let k = Math.min(5, n); k >= 1; k--) if (!tk.slice(n - k).some(t => t.p)) tails.push({ at: tk[n - k].a, k, tail: tk.slice(n - k).map(t => t.w).join(' ') });
+    const q = V.pending.exec(low), quantity = q && q[0].trim() && (q.index === 0 || /\s/.test(low[q.index - 1])) ? q : null;
+    const starts = (tail, gap) => V.phrases.some(phrase => phrase.text.startsWith(tail + gap));
+    const leads = (tail, gap) => V.leads.some(words => (words + gap).startsWith(tail + gap));
+    let start = text.length;
+    if (trailing) {
+        // After a space: a finished phrase or quantity is settled.
+        const whole = tails.map(({ at, tail }) => ({ at, tail, is: V.phrases.find(phrase => phrase.text === tail) })).find(found => found.is);
+        if (whole) start = text.length;
+        else if (quantity) start = /[a-z%]$/.test(quantity[0]) && !/\b(?:to|and)$/.test(quantity[0]) ? text.length : quantity.index;
+        else start = tails.find(({ tail }) => starts(tail, ' ') || leads(tail, ' '))?.at ?? (MOD_WORDS.has(tk[n - 1].w) ? tk[n - 1].a : text.length);
+    } else {
+        start = tk[n - 1].a;
+        if (quantity) start = Math.min(start, quantity.index);
+        const found = tails.find(({ k, tail }) => starts(tail, '') || (k > 1 && leads(tail, '')));
+        if (found) start = Math.min(start, found.at);
+    }
+    if (start < text.length) {
+        const before = tokens(text.slice(0, start)), prev = before[before.length - 1];
+        if (prev && !prev.p && MOD_WORDS.has(prev.w)) start = prev.a;
+    }
+    return start;
+}
+
+function paint(text, segs) {
+    let html = '', at = 0;
+    segs.forEach((seg, i) => {
+        html += esc(text.slice(at, seg.a)) + `<span class="m-${seg.t}" data-s="${i}">${esc(text.slice(seg.a, seg.b))}</span>`;
+        at = seg.b;
+    });
+    mirror.innerHTML = html + esc(text.slice(at));
+    mirror.scrollLeft = input.scrollLeft;
+}
+/** Reads the text field. While the rider types, it only marks what it understands. With `force` (Enter), each phrase leaves the field and goes to its slot, and what it does not know stays as text. */
+function sync(force) {
+    // The words after a piece that typing just made can still change it: "hut" then "if possible", "food" then "shops".
+    const made0 = S.justMade && find(S.justMade);
+    if (made0 && force) {
+        const head = input.value.slice(0, S.justAt), rest = norm(input.value.slice(S.justAt)).replace(/^[\s,]+/, ''), cut = input.value.length - rest.length, said = norm(made0.words || '');
+        const ends = words => rest.startsWith(words) && !/[a-z0-9]/.test(rest[words.length] || ' ') && (rest.length > words.length || force);
+        const softer = made0.state === 'must' && AFTER.find(ends);
+        const longer = !softer && said && V.phrases.find(phrase => phrase.text.startsWith(said + ' ') && ends(phrase.text.slice(said.length + 1)));
+        if (softer || longer) {
+            const words = softer || longer.text.slice(said.length + 1);
+            input.value = head + input.value.slice(cut + words.length).replace(/^[\s,]+/, '');
+            S.justMade = null;
+            if (softer) add({ ...made0, state: 'soft', words: `${made0.words} ${softer}` });
+            else {
+                // The longer phrase can be a piece of another slot: "end" is a part of the route, "end the day at" says what to do.
+                const piece = { ...longer.item.make(longer.arg), words: `${made0.words} ${words}` };
+                if (piece.key !== made0.key) S.pieces = S.pieces.filter(p => p !== made0);
+                add(piece);
+            }
+        }
+    }
+    const text = input.value, fs = force ? text.length : fragStart(text), settled = text.slice(0, fs), segs = scan(settled);
+    paint(text, segs);
+    const made = segs.filter(seg => seg.t === 'piece');
+    S.pending = force ? [] : made.map(seg => seg.piece);
+    if (made.length && force) {
+        const rects = made.map(seg => mirror.querySelector(`[data-s="${segs.indexOf(seg)}"]`).getBoundingClientRect());
+        const last = made[made.length - 1].b;
+        const kept = segs.filter(seg => seg.t === 'unknown' && seg.b <= last).map(seg => settled.slice(seg.a, seg.b));
+        input.value = (kept.length ? kept.join(' ') + ' ' : '') + settled.slice(last).replace(/^[\s,;.!?]+/, '') + text.slice(fs);
+        // All pieces of the sentence go in before the page settles them, so their order in the sentence does not matter.
+        made.forEach(seg => put(seg.piece));
+        if (V.settle) S.pieces = V.settle(S.pieces);
+        S.undo = S.done = null; S.session = true;
+        renderBar(); renderResults();
+        made.filter(seg => S.pieces.includes(seg.piece)).forEach((seg, i) => fly(labelOf(seg.piece), rects[made.indexOf(seg)], itemOf(seg.piece).seg, i * 70));
+        S.justMade = !settled.slice(last).trim() ? made[made.length - 1].piece.key : null;
+        S.justAt = kept.length ? kept.join(' ').length + 1 : 0;
+        return sync(force);
+    }
+    if (force) {
+        const kept = segs.filter(seg => seg.t === 'unknown').map(seg => settled.slice(seg.a, seg.b)).join(' ');
+        if (kept !== text.trim() || !kept) { input.value = kept ? kept + ' ' : ''; return sync(false); }
+    }
+    S.frag = text.slice(fs);
+    if (S.justMade) {
+        const rest = norm(text.slice(S.justAt)).replace(/^[\s,]+/, '').trimEnd(), said = norm(find(S.justMade)?.words || '\0');
+        if (rest && !AFTER.some(words => words.startsWith(rest)) && !V.phrases.some(phrase => phrase.text.startsWith(said + ' ' + rest))) S.justMade = null;
+    }
+    S.unknown = segs.filter(seg => seg.t === 'unknown').map(seg => settled.slice(seg.a, seg.b));
+    S.active = S.frag.trim() || S.pending.length ? 0 : -1;
+    renderPanel(); renderBar();
+}
+
+/* ── Pieces and their slots ─────────────────────────────────────────────────────────────────────────────────── */
+/** Puts a piece in its slot. With `from`, its words fly there from that place; `quiet` is a change made in the panel of the slot. */
+function put(piece) {
+    const i = S.pieces.findIndex(p => p.key === piece.key);
+    if (i >= 0) S.pieces[i] = piece; else S.pieces.push(piece);
+}
+function add(piece, from, quiet) {
+    put(piece);
+    if (V.settle) S.pieces = V.settle(S.pieces);
+    S.undo = S.done = null;
+    renderBar(); renderResults();
+    if (!quiet) fly(labelOf(piece), from, itemOf(piece).seg);
+}
+function drop(...keys) {
+    S.pieces = S.pieces.filter(p => !keys.includes(p.key));
+    if (V.settle) S.pieces = V.settle(S.pieces);
+    S.undo = S.done = null;
+    renderBar(); renderResults();
+}
+const segEl = id => $(`.seg[data-seg="${id}"]`);
+function fly(label, from, seg, delay = 0) {
+    const el = segEl(seg), land = () => { el.classList.remove('land'); void el.offsetWidth; el.classList.add('land'); };
+    if (!from || still()) return land();
+    setTimeout(() => {
+        const to = el.querySelector('strong').getBoundingClientRect(), ghost = document.createElement('div');
+        ghost.className = 'ghost'; ghost.textContent = label;
+        Object.assign(ghost.style, { left: from.left + 'px', top: from.top + 'px' });
+        document.body.append(ghost);
+        ghost.animate([{ transform: 'none', opacity: 1 }, { transform: `translate(${to.left - from.left}px,${to.top - from.top}px) scale(.94)`, opacity: .35 }], { duration: 360, easing: 'cubic-bezier(.3,.7,.2,1)' })
+            .onfinish = () => { ghost.remove(); land(); };
+    }, delay);
+}
+function renderBar() {
+    for (const seg of V.segs) {
+        // A slot names its first two things and counts the rest, so its words never run out of room.
+        const el = segEl(seg.id), parts = segParts(seg), off = !!seg.off?.();
+        el.classList.toggle('unset', !parts.length || off);
+        el.disabled = off;
+        el.setAttribute('aria-expanded', String(S.open === seg.id));
+        el.querySelector('.slabel').textContent = segLabel(seg);
+        el.querySelector('strong').textContent = off ? 'Not for route facts' : parts.length > 2 ? `${parts.slice(0, 2).join(' · ')} +${parts.length - 2}` : parts.join(' · ') || seg.unset;
+    }
+    input.placeholder = $('.type').clientWidth >= V.placeholderRoom ? V.placeholder : 'Say what you want';
+    $('#go').hidden = !input.value.trim();
+    $('#undo').hidden = !S.undo;
+    $('#clear').hidden = !!S.undo || (!input.value && S.pieces.every(p => V.defaults().some(d => same(d, p))) && S.pieces.length === V.defaults().length);
+}
+
+/* ── The panel of the text ──────────────────────────────────────────────────────────────────────────────────── */
+function lev(a, b) {
+    const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+        let prev = row[0]; row[0] = i;
+        for (let j = 1; j <= b.length; j++) { const keep = row[j]; row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = keep; }
+    }
+    return row[b.length];
+}
+function score(q, text) {
+    if (text.startsWith(q)) return 100 - Math.min(20, text.length - q.length);
+    if (text.split(' ').slice(1).some(word => word.startsWith(q))) return 70;
+    if (q.length >= 4 && lev(q, text.slice(0, q.length)) <= 1) return 55;
+    if (q.length >= 7 && lev(q, text.slice(0, q.length)) <= 2) return 45;
+    return 0;
+}
+
+/** The pieces that the typed words can become, the best first. Local: a match on the table and templates for numbers. */
+function complete(frag) {
+    let q = norm(frag).trim(), mod = null;
+    const lead = /^(no|without|avoid|not|ideally|maybe|preferably|perhaps|bonus|must|definitely)(?:\s+(.*))?$/.exec(q);
+    if (lead) { mod = MOD_WORDS.get(lead[1]); q = (lead[2] || '').trim(); }
+    const found = [];
+    const number = /^(?:(under|below|up to|max|at most|less than|shorter than|over|above|at least|min|more than|longer than|steeper than|about|around|first|next|in the first|in the next|the first|the next)\s+)?(\d+(?:[.,]\d+)?)\s*([a-z%]{0,2})$/.exec(q);
+    if (number && !mod) for (const piece of V.numbers(num(number[2]), number[1] || '', number[3], S.pieces)) found.push({ sc: 96 - found.length, piece });
+    // A word that starts a quantity proposes usual quantities before the number is there.
+    if (q && !mod && !number) for (const piece of V.templates(q)) found.push({ sc: 84 - found.length * .01, piece });
+    if (q || mod) {
+        const best = new Map();
+        for (const phrase of V.phrases) {
+            const sc = q ? score(q, phrase.text) : phrase.item.states ? 50 : 0;
+            if (!sc || (mod && (!phrase.item.states || (mod === 'avoid' && phrase.item.states === 2 && !phrase.item.core.includes(phrase.text))))) continue;
+            const piece = phrase.item.make(phrase.arg, mod);
+            if (!piece) continue;
+            const id = piece.key + '|' + (piece.state || '') + '|' + JSON.stringify(piece.value ?? '') + '|' + piece.item, had = best.get(id);
+            if (!had || sc > had.sc) best.set(id, { sc, piece, heard: phrase.text });
+        }
+        found.push(...best.values());
+        if (q.length >= 2 && !mod) for (const piece of V.names(q)) found.push({ sc: 90, piece });
+    }
+    const order = id => V.items.findIndex(item => item.id === id);
+    const value = row => JSON.stringify(row.piece.value ?? '');
+    return found.filter(row => !S.pieces.some(p => same(p, row.piece))).sort((a, b) => b.sc - a.sc || order(a.piece.item) - order(b.piece.item) || value(a).localeCompare(value(b))).slice(0, 6);
+}
+const bold = (label, q) => q && norm(label).indexOf(q) === 0 ? `${esc(label.slice(0, q.length))}<b>${esc(label.slice(q.length))}</b>` : esc(label);
+const option = (html, act) => { S.options.push(act); return `<button type="button" class="opt row" role="option" id="opt-${S.options.length - 1}" data-opt="${S.options.length - 1}">${html}</button>`; };
+function textPanel() {
+    const frag = S.frag.trim();
+    if (frag) {
+        const rows = complete(frag), q = norm(frag).replace(/^(no|without|avoid|not|ideally|maybe|preferably|perhaps|bonus|must|definitely)\s+/, '');
+        if (rows.length) return '<div class="rows" role="listbox" aria-label="What the words can become">' + rows.map(({ piece, heard }) => {
+            const label = labelOf(piece), said = heard && !norm(label).includes(q) ? ` <i>${esc(heard)}</i>` : '';
+            return option(`<span class="pi">${ic(itemOf(piece).icon)}</span><span class="what">${bold(label, q)}${said}</span><small>${segLabel(V.segs.find(seg => seg.id === itemOf(piece).seg))}</small>`, from => take(piece, from));
+        }).join('') + '</div><p class="keys"><span><kbd>Enter</kbd> all to the slots</span><span><kbd>Tab</kbd> only this one</span><span><kbd>↑</kbd> <kbd>↓</kbd> choose</span></p>';
+        S.active = -1;
+        return frag.length >= 3 && !V.leads.some(words => words.startsWith(norm(frag))) && !MOD_WORDS.has(norm(frag)) ? `<p class="note">Nothing here matches “${esc(frag)}”. It stays in the field as text and changes nothing.</p>` : '';
+    }
+    const lost = S.unknown.length ? `<p class="note">Not understood: ${S.unknown.map(word => `“${esc(word)}”`).join(', ')}. It changes nothing.<button type="button" data-drop>Remove</button></p>` : '';
+    // The words are understood and still in the field: one row says what Enter does with them.
+    if (S.pending.length) return '<div class="rows" role="listbox" aria-label="What Enter does">' + option(`${ic('arrow')}<span class="what">${esc(S.pending.map(labelOf).join(' · '))}</span><small><kbd>Enter</kbd></small>`, () => commit()) + '</div>' + lost;
+    if (lost) return lost;
+    if (input.value.trim()) return '';
+    if (S.session) {
+        // In the middle of a sentence: what riders often add next, of the things that are not there yet.
+        const rows = V.often();
+        if (rows.length) return '<div class="rows" role="listbox" aria-label="Often added next"><h3>Add</h3>' + rows.map(piece =>
+            option(`<span class="pi">${ic(itemOf(piece).icon)}</span><span class="what">${esc(labelOf(piece))}</span><small>${segLabel(V.segs.find(seg => seg.id === itemOf(piece).seg))}</small>`, from => { add(piece, from); renderPanel(); })).join('') + '</div>';
+    }
+    if (V.history.length) return '<div class="rows" role="listbox" aria-label="Last searches"><h3>Last searches</h3>' + V.history.map(entry =>
+        option(`${ic('clock')}<span class="what">${esc(entry.text)}</span>`, () => { S.pieces = structuredClone(entry.pieces); S.open = null; render(); remember(); })).join('') + '</div>';
+    return '<div class="rows" role="listbox" aria-label="Examples"><h3>Say it in one go, for example</h3>' + V.examples.map(text => option(`${ic('arrow')}<span class="what">${esc(text)}</span>`, () => play(text))).join('') + '</div>';
+}
+/** Takes a row of the text panel: the words in progress leave the field, and the piece flies to its slot from the row. The other words stay. */
+function take(piece, from) {
+    const text = input.value;
+    input.value = text.slice(0, fragStart(text));
+    S.session = true;
+    add(piece, from);
+    sync();
+}
+/** Enter: the row that is marked, if there is one, and then every phrase in the field. */
+function commit() { sync(true); remember(); }
+function enter() {
+    const on = panel.querySelector('.opt.active');
+    if (on) S.options[S.active](on.getBoundingClientRect());
+    commit();
+}
+function remember() {
+    if (S.pieces.every(p => V.defaults().some(d => same(d, p)))) return;
+    const pieces = structuredClone(S.pieces.map(({ words, ...piece }) => piece)), text = summary(pieces);
+    V.history = [{ text, pieces }, ...V.history.filter(entry => entry.text !== text)].slice(0, 3);
+}
+
+/* ── The panels of the slots ────────────────────────────────────────────────────────────────────────────────── */
+const GRADES = [['Good path', 'Flat or a gentle slope.'], ['Mountain path', 'Clear, with some steep parts.'], ['Rocky path', 'A chain in places, hands for balance.'],
+    ['Alpine', 'The path is missing in places, hands needed.'], ['Hard alpine', 'Often no path, easy climbing.'], ['Climbing', 'Mostly no path.']];
+const without = key => S.pieces.filter(p => p.key !== key);
+function twoThumbs(id, { min, max, step, unit }, [a, b], values) {
+    const bins = Array(20).fill(0);
+    for (const v of values || []) bins[clamp(Math.floor((v - min) / (max - min) * 20), 0, 19)]++;
+    const top = Math.max(1, ...bins);
+    return `<div class="range${values ? '' : ' flat'}" data-min="${min}" data-max="${max}" style="--a:${(a - min) / (max - min)};--b:${(b - min) / (max - min)}">
+        ${values ? `<div class="bars">${bins.map((n, i) => { const at = min + (i + .5) / 20 * (max - min); return `<i class="${at >= a && at <= b ? 'in' : ''}" style="height:${Math.round(n / top * 100)}%"></i>`; }).join('')}</div>` : ''}
+        <div class="track"><i></i></div>
+        <input type="range" data-lo="${id}" min="${min}" max="${max}" step="${step}" value="${a}" aria-label="From"><input type="range" data-hi="${id}" min="${min}" max="${max}" step="${step}" value="${b}" aria-label="To"></div>
+        <div class="scale"><span>${min} ${unit}</span><span>${max} ${unit}${values ? ' or more' : ''}</span></div>`;
+}
+const oneThumb = (id, min, max, step, value, unit) => `<div class="range one flat" data-min="${min}" data-max="${max}" style="--a:0;--b:${(value - min) / (max - min)}"><div class="track"><i></i></div>
+    <input type="range" data-one="${id}" min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${id}"></div><div class="scale"><span>${min} ${unit}</span><span>${max} ${unit}</span></div>`;
+const choice = (name, options, on, off) => `<div class="choice" role="radiogroup" aria-label="${name}">${options.map(([id, label]) =>
+    `<button type="button" role="radio" data-${name}="${id}" aria-checked="${id === on}"${off ? ' disabled' : ''}>${label}</button>`).join('')}</div>`;
+const pick = (attr, id, icon, label, on, n, radio) => `<button type="button" class="wpick${radio ? ' radio' : ''}" data-${attr}="${id}" aria-pressed="${on}"${!on && n === 0 ? ' disabled' : ''}>
+    <i class="box">${radio ? '' : ic('check', 12)}</i>${icon ? ic(icon) : ''}<span>${esc(label)}</span>${on || n === undefined ? '' : `<small>${n}</small>`}</button>`;
+
+const PANELS = {
+    from() {
+        const p = find('from');
+        return `<div class="pad">${choice('from', [['on', 'From Teningen'], ['off', 'Anywhere on the map']], p ? 'on' : 'off')}
+            ${p ? `<div class="plabel"><span>Longest drive</span><em data-read="from">${p.value.km} km</em></div>${oneThumb('from', 5, 50, 5, p.value.km, 'km')}` : '<p class="ehint">Every hike on the map counts.</p>'}</div>`;
+    },
+    hike() {
+        const shapes = SHAPES.filter(id => find(id)), rows = [
+            ['shape', 'loop', 'Shape', shapes.length ? shapes.map(id => labelOf(find(id))).join(', ') : null,
+                () => `<div class="tiles">${SHAPES.map(id => `<button type="button" class="tile" data-shape="${id}" aria-pressed="${!!find(id)}">${ic(V.byId[id].icon)}${V.byId[id].label}</button>`).join('')}</div>`],
+            ...['length', 'climb'].map(id => [id, V.byId[id].icon, V.byId[id].label, find(id) && labelOf(find(id)).replace(' climb', ''),
+                () => twoThumbs(id, V.byId[id].range, find(id)?.value || [V.byId[id].range.min, V.byId[id].range.max], HIKES.filter(h => matches(h, without(id))).map(V.byId[id].range.of))]),
+            ['grade', 'hiking', 'Path difficulty', find('grade') && labelOf(find('grade')), () => {
+                const g = find('grade')?.value || { min: 0, max: 5 };
+                return `<div class="grades" role="group" aria-label="Hardest path allowed">${GRADES.map((_, i) => `<button type="button" data-grade="${i}" class="${i >= g.min && i <= g.max ? 'in' : ''}${i === g.max ? ' edge' : ''}">T${i + 1}</button>`).join('')}</div>
+                    <p class="ehint">Hardest allowed: T${g.max + 1}, ${GRADES[g.max][0].toLowerCase()}. ${GRADES[g.max][1]}</p>`;
+            }],
+        ];
+        return '<div class="prows">' + rows.map(([id, icon, label, value, body]) => `<div class="prow${S.row === id ? ' open' : ''}">
+            <button type="button" class="phead" data-row="${id}" aria-expanded="${S.row === id}">${ic(icon)}<span>${label}</span><em class="${value ? 'set' : ''}" data-read="${id}">${esc(value || 'Any')}</em><i class="chev">${ic('down', 14)}</i></button>
+            ${S.row === id ? `<div class="pbody${S.rowFresh ? ' fresh' : ''}">${body()}</div>` : ''}</div>`).join('') + '</div>';
+    },
+    wishes() {
+        const col = (group, title) => `<div class="wcol"><h3>${title}</h3>` + [
+            ...(group === 'way' ? S.pieces.filter(p => p.item === 'via').map(p => `<div class="wrow on">${pick('via', p.key, 'pin', labelOf(p), true)}</div>`) : []),
+            ...V.items.filter(item => item.group === group).map(item => {
+                const p = find(item.id);
+                return `<div class="wrow${p ? ' on' : ''}"><div class="wline">${pick('pick', item.id, item.icon, item.label, !!p, p ? undefined : V.count([...S.pieces, item.make()]))}
+                    ${p ? `<button type="button" class="must" data-must="${item.id}" aria-pressed="${p.state === 'must'}" title="Only hikes that have it">${ic('lock', 12)}Must</button>` : ''}</div></div>`;
+            })].join('') + '</div>';
+        return `<div class="wcols">${col('way', 'On the way')}${col('route', 'The route')}</div><p class="ehint" style="margin:0 18px 10px">With “Must”, only hikes that have it. Without, hikes that have it come first.</p>`;
+    },
+    what() {
+        const what = find('what'), min = find('min');
+        const verbOn = find('verb');
+        const places = V.items.filter(item => item.seg === 'what' && !item.parent && !item.fact && !item.verb && item.label).map(item => {
+            const on = what?.parent === item.id, kinds = V.items.filter(k => k.parent === item.id);
+            return `<div class="wrow${on ? ' on' : ''}">${pick('what', item.id, item.icon, item.label, on, V.count([...without('what'), item.make()]), true)}
+                ${on && kinds.length ? `<div class="mini" role="radiogroup" aria-label="Which kind">${[[item.id, 'Any'], ...kinds.map(k => [k.id, k.label])].map(([id, name]) =>
+                    `<button type="button" role="radio" data-what="${id}" data-keep aria-checked="${what.item === id}">${name}</button>`).join('')}</div>` : ''}</div>`;
+        }).join('');
+        const facts = V.items.filter(item => item.fact).map(item => {
+            const on = what?.item === item.id, m = MIN[item.id];
+            return `<div class="wrow${on ? ' on' : ''}">${pick('what', item.id, item.icon, item.label, on, V.count([...without('what'), item.make()]), true)}
+                ${on && m ? `<div class="under"><div class="plabel"><span>At least</span><em data-read="min">${min ? `${min.value.n} ${m[0]}` : 'Any size'}</em></div>${oneThumb('min', 0, m[1], m[2], min?.value.n || 0, m[0])}</div>` : ''}</div>`;
+        }).join('');
+        return `<div class="pad" style="padding-bottom:0">${choice('verb', [['find', 'Find'], ...V.items.filter(item => item.verb).map(item => [item.id, item.label])], verbOn ? verbOn.item : 'find')}</div>
+            <div class="wcols${verbOn ? ' one' : ''}"><div class="wcol${verbOn ? ' two' : ''}"><h3>A place</h3>${places}</div>${verbOn ? '' : `<div class="wcol"><h3>The route itself</h3>${facts}</div>`}</div>`;
+    },
+where() {
+        const w = find('where'), p = find('part'), loose = w && ['here', 'near', 'nearest'].includes(w.item), [a, b] = span(S.pieces).map(km => clamp(Math.round(km), 0, ROUTE.km));
+        const y = km => 92 - (heightAt(km) - 250) / 750 * 84, pct = km => (km / ROUTE.km * 100).toFixed(2) + '%';
+        let line = '';
+        for (let km = 0; km <= ROUTE.km; km += 2) line += `${km ? 'L' : 'M'}${km} ${y(km).toFixed(1)}`;
+        const all = plannerFind(S.pieces.filter(x => x.key !== 'where' && x.key !== 'part'));
+        const marks = !all ? '' : all.what === 'place' ? all.rows.map(spot => `<i class="pdot${spot.km >= a && spot.km <= b ? ' in' : ''}" data-km="${spot.km}" style="left:${pct(spot.km)};top:${y(spot.km).toFixed(1)}%"></i>`).join('')
+            : all.rows.map(s => `<i class="pfact${s[1] >= a && s[0] <= b ? ' in' : ''}" data-a="${s[0]}" data-b="${s[1]}" style="left:${pct(s[0])};width:${pct(s[1] - s[0])}"></i>`).join('');
+        return `<div class="pad"><div class="plabel" style="margin-top:2px"><span>Drag on the profile, or tap a day</span><em data-read="km">${kmText(a, b)}</em></div>
+            <div class="prof" id="prof"><svg viewBox="0 0 ${ROUTE.km} 100" preserveAspectRatio="none" aria-hidden="true"><path class="p-area" d="${line}L${ROUTE.km} 100L0 100Z"/><path class="p-line" d="${line}"/>
+                ${ROUTE.days.map(([from, to], i) => `<path class="p-day" d="M${from + .6} 98.5H${to - .6}" style="stroke:var(--day-${i + 1})"/>`).join('')}</svg>
+                <div class="psel${a <= 0 && b >= ROUTE.km ? ' all' : ''}" style="left:${pct(a)};width:${pct(b - a)}"></div>${marks}<div class="pdrag" data-pdrag></div></div>
+            <div class="range flat prange" data-min="0" data-max="${ROUTE.km}" style="--a:${a / ROUTE.km};--b:${b / ROUTE.km}"><div class="track"><i></i></div>
+                <input type="range" data-lo="km" min="0" max="${ROUTE.km}" step="1" value="${a}" aria-label="The stretch starts at km"><input type="range" data-hi="km" min="0" max="${ROUTE.km}" step="1" value="${b}" aria-label="The stretch ends at km"></div>
+            <div class="pdays">${ROUTE.days.map(([from, to], i) => `<button type="button" style="flex:${to - from} 1 0" data-where="day${i + 1}" aria-pressed="${w?.item === 'day' && w.value === i + 1}">Day ${i + 1}</button>`).join('')}</div>
+            <h3>Within it</h3>${choice('part', [['any', 'Anywhere'], ['p-start', 'Start'], ['p-middle', 'Middle'], ['p-end', 'End']], p ? p.item : 'any', loose)}
+            <h3>Or by where you are</h3>${choice('where', [['route', 'Whole route'], ['here', 'Near me'], ['nearest', 'Nearest to me']], !w ? 'route' : w.item)}</div>`;
+    },
+    when() {
+        const o = find('open');
+        return '<div class="prows">' + [['any', 'Any time', 'clock'], ['now', 'Open now', 'clock'], ['sun', 'Open on Sunday', 'calendar']].map(([id, label, icon]) =>
+            `<div class="wrow${(o?.item || 'any') === id ? ' on' : ''}">${pick('open', id, icon, label, (o?.item || 'any') === id, undefined, true)}</div>`).join('') + '</div>';
+    },
+};
+function renderPanel() {
+    input.setAttribute('aria-expanded', String(S.open === 'text'));
+    S.options = [];
+    const seg = V.segs.find(seg => seg.id === S.open);
+    const html = S.open === 'text' ? textPanel() : seg ? PANELS[seg.id]() +
+        `<div class="pfoot"><button type="button" class="quiet" data-reset${segText(seg) ? '' : ' disabled'}>Reset</button><button type="button" class="done" data-done>Done</button></div>` : '';
+    panel.hidden = !html;
+    if (!html) return;
+    const top = panel.scrollTop;
+    panel.innerHTML = html;
+    panel.scrollTop = top;
+    S.rowFresh = false;
+    // Look C puts the panel of a slot in the page. The other looks float it: under its slot where the bar is wide, else from the left.
+    const inflow = !!seg && S.look === 'c', wide = bar.clientWidth > 720, roomy = innerWidth > 860, fixed = !inflow && (wide || roomy);
+    const width = seg ? Math.max(seg.width, roomy && !wide ? bar.clientWidth : 0) : Math.max($('#say').offsetWidth, Math.min(420, bar.clientWidth));
+    panel.classList.toggle('inflow', inflow);
+    panel.style.width = inflow ? '' : fixed ? width + 'px' : '100%';
+    panel.style.left = fixed && seg && (wide || S.look === 'b') ? Math.max(0, Math.min(segEl(seg.id).offsetLeft, bar.clientWidth - width)) + 'px' : inflow ? '' : '0';
+    panel.classList.toggle('cols', inflow ? bar.clientWidth >= 500 : fixed && width >= 500);
+    panel.querySelectorAll('.opt').forEach(el => el.classList.toggle('active', +el.dataset.opt === S.active));
+    mark();
+}
+function mark() {
+    panel.querySelectorAll('.opt').forEach(el => el.classList.toggle('active', +el.dataset.opt === S.active));
+    const on = panel.querySelector('.opt.active');
+    if (on) { input.setAttribute('aria-activedescendant', on.id); on.scrollIntoView({ block: 'nearest' }); } else input.removeAttribute('aria-activedescendant');
+}
+panel.addEventListener('pointerdown', event => { if (event.target.closest('.opt, [data-drop]')) event.preventDefault(); });
+panel.addEventListener('click', event => {
+    const hit = name => event.target.closest(`[data-${name}]`);
+    let el;
+    if ((el = hit('opt'))) { stop(); return S.options[+el.dataset.opt](el.getBoundingClientRect()); }
+    if (hit('drop')) { input.value = ''; return sync(); }
+    if (hit('done')) { S.open = null; remember(); return render(); }
+    if (hit('reset')) drop(...inSeg(S.open).map(p => p.key));
+    else if ((el = hit('row'))) { S.row = S.row === el.dataset.row ? null : el.dataset.row; S.rowFresh = true; }
+    else if ((el = hit('shape'))) find(el.dataset.shape) ? drop(el.dataset.shape) : add(V.byId[el.dataset.shape].make(), null, true);
+    else if ((el = hit('grade'))) +el.dataset.grade === 5 ? drop('grade') : add(gradePiece({ max: +el.dataset.grade }), null, true);
+    else if ((el = hit('must'))) add({ ...find(el.dataset.must), state: find(el.dataset.must).state === 'must' ? 'soft' : 'must' }, null, true);
+    else if ((el = hit('pick'))) find(el.dataset.pick) ? drop(el.dataset.pick) : add(V.byId[el.dataset.pick].make(), null, true);
+    else if ((el = hit('via'))) drop(el.dataset.via);
+    else if ((el = hit('from'))) el.dataset.from === 'on' ? add(V.byId.from.make(), null, true) : drop('from');
+    else if ((el = hit('verb'))) el.dataset.verb === 'find' ? drop('verb') : add(V.byId[el.dataset.verb].make(), null, true);
+    else if ((el = hit('what'))) find('what')?.item === el.dataset.what && !('keep' in el.dataset) ? drop('what', 'min') : add(V.byId[el.dataset.what].make(), null, true);
+    else if ((el = hit('where'))) {
+        const id = el.dataset.where, day = id.startsWith('day') && +id.slice(3), w = find('where');
+        id === 'route' || (day && w?.item === 'day' && w.value === day) ? drop('where') : add(day ? V.byId.day.make(day) : V.byId[id].make(), null, true);
+    }
+    else if ((el = hit('part'))) el.dataset.part === 'any' ? drop('part') : add(V.byId[el.dataset.part].make(), null, true);
+    else if ((el = hit('open'))) el.dataset.open === 'any' ? drop('open') : add(V.byId[el.dataset.open].make(), null, true);
+    else return;
+    renderPanel();
+});
+// A slider changes its piece while it moves; the panel stays as it is, and only the readings follow.
+panel.addEventListener('input', event => {
+    const el = event.target, box = el.closest('.range'), min = +box.dataset.min, max = +box.dataset.max, read = (id, text, set = true) => panel.querySelectorAll(`[data-read="${id}"]`).forEach(out => { out.textContent = text; out.classList.toggle('set', set); });
+    if (el.dataset.one) {
+        const id = el.dataset.one, v = +el.value;
+        box.style.setProperty('--b', (v - min) / (max - min));
+        if (id === 'from') { add({ key: 'from', item: 'from', value: { km: v } }, null, true); read('from', `${v} km`); }
+        else if (v === 0) { drop('min'); read('min', 'Any size', false); }
+        else { const unit = MIN[find('what').item][0]; add({ key: 'min', item: 'min', value: { n: v, unit } }, null, true); read('min', `${v} ${unit}`); }
+        return;
+    }
+    const lo = box.querySelector('[data-lo]'), hi = box.querySelector('[data-hi]'), id = lo.dataset.lo, step = +lo.step;
+    if (el === lo && +lo.value > +hi.value - step) lo.value = +hi.value - step;
+    if (el === hi && +hi.value < +lo.value + step) hi.value = +lo.value + step;
+    const a = +lo.value, b = +hi.value;
+    box.style.setProperty('--a', (a - min) / (max - min)); box.style.setProperty('--b', (b - min) / (max - min));
+    box.querySelectorAll('.bars i').forEach((bin, i) => { const at = min + (i + .5) / 20 * (max - min); bin.classList.toggle('in', at >= a && at <= b); });
+    if (id === 'km') setKm(a, b);
+    else if (a <= min && b >= max) { drop(id);    } else if (a <= min && b >= max) { drop(id); read(id, 'Any', false); }
+    else { add({ key: id, item: id, value: [a, b] }, null, true); read(id, labelOf(find(id)).replace(' climb', '')); }
+});
+
+/* ── "Where" on the profile ─────────────────────────────────────────────────────────────────────────────────── */
+function kmText(a, b) {
+    if (a <= 0 && b >= ROUTE.km) return `Whole route · ${ROUTE.km} km`;
+    const from = dayOf(a + .01), to = dayOf(b - .01);
+    return `km ${a}–${b} · ${from === to ? `Day ${from}` : `Days ${from}–${to}`}`;
+}
+/** Makes km a to b the stretch of "Where", and shows it on the open panel without drawing the panel again: a drag stays a drag. */
+function setKm(a, b) {
+    if (b - a < 1) b = Math.min(ROUTE.km, a + 1);
+    S.pieces = without('part');
+    a <= 0 && b >= ROUTE.km ? drop('where') : add({ key: 'where', item: 'first', value: [a, b] }, null, true);
+    const box = $('#prof', panel), pct = km => km / ROUTE.km * 100 + '%';
+    if (!box) return;
+    Object.assign($('.psel', box).style, { left: pct(a), width: pct(b - a) });
+    $('.psel', box).classList.toggle('all', a <= 0 && b >= ROUTE.km);
+    const range = $('.prange', panel);
+    range.style.setProperty('--a', a / ROUTE.km); range.style.setProperty('--b', b / ROUTE.km);
+    $('[data-lo]', range).value = a; $('[data-hi]', range).value = b;
+    $('[data-read="km"]', panel).textContent = kmText(a, b);
+    box.querySelectorAll('.pdot').forEach(dot => dot.classList.toggle('in', +dot.dataset.km >= a && +dot.dataset.km <= b));
+    box.querySelectorAll('.pfact').forEach(bar => bar.classList.toggle('in', +bar.dataset.b >= a && +bar.dataset.a <= b));
+    panel.querySelectorAll('.pdays button').forEach(button => button.setAttribute('aria-pressed', 'false'));
+    panel.querySelectorAll('[data-part], .choice [data-where]').forEach(button => button.setAttribute('aria-checked', String(button.dataset.part === 'any' || (button.dataset.where === 'route' && a <= 0 && b >= ROUTE.km))));
+}
+// A drag across the profile makes a stretch. A tap on it takes the day under the finger.
+panel.addEventListener('pointerdown', event => {
+    const el = event.target.closest('[data-pdrag]');
+    if (!el) return;
+    event.preventDefault();
+    const box = el.getBoundingClientRect(), kmAt = x => clamp(Math.round((x - box.left) / box.width * ROUTE.km), 0, ROUTE.km), first = kmAt(event.clientX);
+    let moved = false;
+    el.setPointerCapture(event.pointerId);
+    const move = now => {
+        if (Math.abs(now.clientX - event.clientX) > 4) moved = true;
+        if (moved) { const km = kmAt(now.clientX); setKm(Math.min(first, km), Math.max(first, km)); }
+    };
+    const up = () => {
+        el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up);
+        if (moved) return;
+        const day = dayOf(first), w = find('where');
+        w?.item === 'day' && w.value === day ? drop('where') : add(V.byId.day.make(day), null, true);
+        renderPanel();
+    };
+    el.addEventListener('pointermove', move); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+});
+
+/* ── Explore: the hikes that match ──────────────────────────────────────────────────────────────────────────── */
+function test(h, p) {
+    switch (p.item) {
+        case 'from': return h.d <= p.value.km;
+        case 'length': return h.km >= p.value[0] && (h.km <= p.value[1] || p.value[1] >= 30);
+        case 'climb': return h.climb >= p.value[0] && (h.climb <= p.value[1] || p.value[1] >= 1500);
+        case 'grade': return h.grade <= p.value.max && (p.value.min === 0 || h.grade >= p.value.min);
+        case 'open': return h.forestShare <= .35;
+        case 'forest': return h.forestShare >= .6;
+        case 'via': return norm(h.name).includes(norm(p.value));
+        default: return !!h[p.item];
+    }
+}
+const SHAPES = ['loop', 'back', 'liftUp', 'liftDown'];
+function matches(h, pieces) {
+    const shapes = pieces.filter(p => SHAPES.includes(p.item)).map(p => p.item);
+    if (shapes.length && !shapes.includes(h.shape)) return false;
+    return pieces.every(p => SHAPES.includes(p.item) || p.state === 'soft' || (p.state === 'avoid' ? !test(h, p) : test(h, p)));
+}
+SURFACES.explore.count = pieces => HIKES.filter(h => matches(h, pieces)).length;
+// A second shape widens the search: the shelf shows how many hikes it adds.
+SURFACES.explore.adds = (piece, pieces) => SHAPES.includes(piece.item) && pieces.some(p => SHAPES.includes(p.item));
+function profile(h) {
+    let seed = h.i * 9301 + 49297;
+    const rand = () => (seed = (seed * 233280 + 12345) % 2147483647) / 2147483647;
+    const ys = [], n = 22, height = clamp(h.climb / 1000, .22, 1);
+    let drift = 0;
+    for (let i = 0; i <= n; i++) {
+        const t = i / n, shape = h.shape === 'liftUp' ? 1 - t : h.shape === 'liftDown' ? t : Math.sin(Math.PI * t) ** .8;
+        drift = drift * .6 + (rand() - .5) * .16;
+        ys.push(clamp(shape * height + drift, 0, 1.05));
+    }
+    const pts = ys.map((y, i) => `${(i / n * 96).toFixed(1)},${(52 - y * 40).toFixed(1)}`).join(' ');
+    return `<svg viewBox="0 0 96 60" preserveAspectRatio="none" aria-hidden="true"><polygon points="0,60 ${pts} 96,60" fill="var(--parchment-3)"/><polyline points="${pts}" fill="none" stroke="var(--ink-soft)" stroke-width="1.4" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+function exploreResults() {
+    const soft = S.pieces.filter(p => p.state === 'soft');
+    const rows = HIKES.filter(h => matches(h, S.pieces)).map(h => ({ h, met: soft.filter(p => test(h, p)) }));
+    rows.sort((a, b) => b.met.length - a.met.length || a.h.d - b.h.d);
+    const shown = new Set(rows.map(row => row.h.i));
+    document.querySelectorAll('#geo .m-dot').forEach(dot => { dot.classList.toggle('in', shown.has(+dot.dataset.i)); dot.setAttribute('r', shown.has(+dot.dataset.i) ? 8 : 5); });
+    const from = find('from'), reach = $('#geo .m-reach');
+    reach.setAttribute('r', from ? from.value.km * 10 : 0); reach.style.opacity = from ? 1 : 0;
+    $('#geo .m-home').style.opacity = from ? 1 : 0;
+    $('#count').textContent = V.noun(rows.length);
+    if (!rows.length) {
+        const fixes = [];
+        for (const p of S.pieces) {
+            if (itemOf(p).states && p.state !== 'soft') {
+                const softer = V.count(S.pieces.map(x => x === p ? { ...p, state: 'soft' } : x));
+                if (softer) fixes.push({ n: softer, text: `Make “${itemOf(p).label}” a wish`, act: () => add({ ...p, state: 'soft' }, null, true) });
+            } else if (V.count(without(p.key))) fixes.push({ n: V.count(without(p.key)), text: `Remove “${labelOf(p)}”`, act: () => drop(p.key) });
+        }
+        S.fixes = fixes.sort((a, b) => b.n - a.n).slice(0, 3);
+        return `<li class="empty"><p>No hike has all of this. One change brings hikes back:</p>${S.fixes.map((fix, i) => `<button type="button" class="fix" data-fix="${i}">${esc(fix.text)} · ${V.noun(fix.n)}</button>`).join('')}</li>`;
+    }
+    return rows.map(({ h, met }) => `<li class="hike" data-i="${h.i}"><div class="thumb">${profile(h)}</div><div><strong>${esc(h.name)}</strong>
+        <div class="meta">${SHAPE_NAMES[h.shape]} · ${h.km.toFixed(1)} km · ${h.climb} m · T${h.grade + 1} · ${h.d} km away</div>
+        ${soft.length ? `<div class="ticks">${soft.map(p => met.includes(p) ? `<span>${ic('check', 13)}${esc(itemOf(p).label)}</span>` : `<span class="miss">no ${esc((itemOf(p).label).toLowerCase())}</span>`).join('')}</div>` : ''}</div></li>`).join('');
+}
+function exploreMap() {
+    const x = e => (e + 62) * 10, y = n => (28 - n) * 10;
+    return `<svg viewBox="0 0 1000 820" role="img" aria-label="Map sketch: the hikes around Teningen, and the reach of the drive">
+        <path class="m-river" d="M452 -200C440 -20 470 190 452 380S420 700 436 1100"/>
+        <ellipse class="m-water" cx="${x(27)}" cy="${y(-25)}" rx="13" ry="7"/><ellipse class="m-water" cx="${x(31)}" cy="${y(-35)}" rx="9" ry="20" transform="rotate(-28 ${x(31)} ${y(-35)})"/>
+        <circle class="m-reach" cx="${x(0)}" cy="${y(0)}" r="400"/>
+        <text class="m-label" x="40" y="60">Vosges</text><text class="m-label" x="850" y="60">Black Forest</text><text class="m-label" x="466" y="760">Rhine</text>
+        ${HIKES.map(h => `<circle class="m-dot" data-i="${h.i}" cx="${x(h.e)}" cy="${y(h.n)}" r="5"><title>${esc(h.name)}</title></circle>`).join('')}
+        <circle class="m-home" cx="${x(0)}" cy="${y(0)}" r="7"/></svg><span class="credit">Map sketch</span>`;
+}
+
+SURFACES.explore.results = exploreResults;
+SURFACES.explore.map = exploreMap;
+
+/* ── Planner: the places and the stretches that match ───────────────────────────────────────────────────────── */
+/** The part of the route that the slot "Where" names, before the start, the middle or the end of it. */
+function base(pieces) {
+    const w = pieces.find(p => p.key === 'where');
+    if (!w || w.item === 'route' || w.item === 'nearest') return [0, ROUTE.km];
+    return w.item === 'here' ? [0, 10] : w.item === 'day' ? ROUTE.days[w.value - 1] : w.item === 'first' ? w.value : [w.value.km - 7, w.value.km + 7];
+}
+function span(pieces) {
+    const [a, b] = base(pieces), p = pieces.find(p => p.key === 'part'), edge = Math.min(b - a, Math.max(10, (b - a) * .2));
+    return !p ? [a, b] : p.item === 'p-start' ? [a, a + edge] : p.item === 'p-end' ? [b - edge, b] : [a + (b - a) * .3, a + (b - a) * .7];
+}
+function at(km) {
+    const line = ROUTE.line, i = Math.max(1, line.findIndex(point => point[0] >= km));
+    const [k0, x0, y0] = line[i - 1], [k1, x1, y1] = line[i === -1 ? line.length - 1 : i], t = clamp((km - k0) / (k1 - k0 || 1), 0, 1);
+    return [x0 + (x1 - x0) * t, y0 + (y1 - y0) * t];
+}
+function path(a, b) {
+    const points = [at(a), ...ROUTE.line.filter(point => point[0] > a && point[0] < b).map(point => [point[1], point[2]]), at(b)];
+    return 'M' + points.map(point => point.map(v => v.toFixed(1)).join(' ')).join('L');
+}
+
+function plannerFind(pieces) {
+    const what = pieces.find(p => p.key === 'what'), [a, b] = span(pieces);
+    if (!what) return null;
+    if (what.fact) {
+        const min = pieces.find(p => p.key === 'min');
+        return { what: 'stretch', rows: STRETCHES[what.item].filter(s => s[1] >= a && s[0] <= b && (!min || s[4] >= min.value.n)) };
+    }
+    const open = pieces.find(p => p.key === 'open');
+    return { what: 'place', rows: SPOTS.filter(spot => (what.item === spot.kind || (what.item === what.parent && what.parent === spot.parent))
+        && spot.km >= a && spot.km <= b && (!open || (spot.hours && (open.item === 'now' ? spot.now : spot.sun)))) };
+}
+SURFACES.planner.count = pieces => plannerFind(V.settle(pieces))?.rows.length;
+function plannerResults() {
+    const found = plannerFind(S.pieces), [a, b] = span(S.pieces), live = $('#geo .m-live'), what = find('what');
+    const overlay = b - a < ROUTE.km ? `<path class="m-part" d="${path(Math.max(0, a), Math.min(ROUTE.km, b))}" style="opacity:.3"/>` : '';
+    if (!found) {
+        live.innerHTML = overlay;
+        $('#count').textContent = '';
+        const towns = ['Freiburg', 'Löffingen', 'Engen', 'Konstanz'], climbs = [1080, 720, 540];
+        return ROUTE.days.map(([from, to], i) => `<li class="spot">${ic('calendar', 18)}<div><strong>Day ${i + 1} · ${towns[i]} to ${towns[i + 1]}</strong><div class="meta">${to - from} km · ${climbs[i].toLocaleString('en')} m</div></div></li>`).join('');
+    }
+    $('#count').textContent = V.noun(found.rows.length, found.what);
+    const fixes = [];
+    if (!found.rows.length) for (const p of S.pieces.filter(p => p.key !== 'what')) {
+        const n = plannerFind(V.settle(without(p.key))).rows.length;
+        if (n) fixes.push({ n, text: `Remove “${p.key === 'part' ? labelOf(p) + ' of it' : labelOf(p)}”`, act: () => drop(p.key) });
+    }
+    S.fixes = fixes;
+    const none = text => `<li class="empty"><p>${text}${fixes.length ? ' One change brings answers back:' : ''}</p>${fixes.map((fix, i) => `<button type="button" class="fix" data-fix="${i}">${esc(fix.text)} · ${V.noun(fix.n, found.what)}</button>`).join('')}</li>`;
+    if (found.what === 'stretch') {
+        live.innerHTML = overlay + found.rows.map(s => `<path class="m-part" d="${path(s[0], s[1])}"/>`).join('');
+        if (!found.rows.length) return none(STRETCHES[what.item].length ? 'No stretch here matches.' : 'This route has no closures.');
+        return found.rows.map(s => `<li class="spot">${ic(itemOf(what).icon, 18)}<div><strong>km ${s[0]}–${s[1]} · Day ${dayOf(s[0])}</strong>
+            <div class="meta">${[`${+(s[1] - s[0]).toFixed(1)} km`, s[2], s[3]].filter(Boolean).join(' · ')}</div></div></li>`).join('');
+    }
+    const goal = S.done ? `${S.done.route ? `<path class="m-part" d="${path(0, S.done.km)}"/>` : ''}<circle class="m-goal" cx="${at(S.done.km)[0].toFixed(1)}" cy="${at(S.done.km)[1].toFixed(1)}" r="11"/>` : '';
+    live.innerHTML = overlay + goal + found.rows.map(spot => { const [x, y] = at(spot.km); return `<circle class="m-dot in" data-i="${spot.i}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="8"><title>${esc(spot.name)}</title></circle>`; }).join('');
+    if (!found.rows.length) return none('No place matches all of this.');
+    // The action is on the row. With a verb in the first slot, the top row has the one amber button.
+    const verb = find('verb'), action = verb ? itemOf(verb).action : 'Add as a stop';
+    const done = S.done ? `<li class="donerow">${ic('check', 16)}<span>${esc(S.done.text)}</span><button type="button" class="undo" data-undone>Undo</button></li>` : '';
+    return done + found.rows.map((spot, n) => `<li class="spot" data-i="${spot.i}">${ic(KIND_ICON[spot.parent], 18)}<div><strong>${esc(spot.name)}</strong>
+        <div class="meta">km ${spot.km} · Day ${dayOf(spot.km)} · ${spot.off} m off${spot.hours ? ` · ${spot.now ? `<span class="open-now">Open until ${spot.until}</span>` : 'Closed now'}` : ''}</div></div>
+        <button type="button" class="act${verb && !n ? ' primary' : ''}" data-act="${spot.i}">${action}</button></li>`).join('');
+}
+function plannerMap() {
+    return `<svg viewBox="0 0 1000 600" role="img" aria-label="Map sketch: the route from Freiburg to Konstanz in three days">
+        <path class="m-water" d="M800 392C846 368 900 372 948 398C990 420 1010 452 1010 480L1010 610L760 610C742 540 752 430 800 392Z"/>
+        <ellipse class="m-water" cx="322" cy="272" rx="12" ry="6"/>
+        ${ROUTE.days.map(([a, b], i) => `<path class="m-line" d="${path(a, b)}" style="stroke:var(--day-${i + 1})"/>`).join('')}
+        ${[0, 74, 147, 212].map(km => { const [x, y] = at(km); return `<circle class="m-night" cx="${x}" cy="${y}" r="6"/>`; }).join('')}
+        ${[['Freiburg', 0, -8, -16], ['Löffingen', 74, -30, -16], ['Engen', 147, -18, -16], ['Konstanz', 212, -70, 30], ['Lake Constance', 196, 20, 110]].map(([name, km, dx, dy]) => { const [x, y] = at(km); return `<text class="m-label" x="${x + dx}" y="${y + dy}">${name}</text>`; }).join('')}
+        <g class="m-live"></g></svg><span class="credit">Map sketch</span>`;
+}
+
+SURFACES.planner.results = plannerResults;
+SURFACES.planner.map = plannerMap;
+
+/* ── Drawing ────────────────────────────────────────────────────────────────────────────────────────────────── */
+let lastCount = '';
+function renderResults() {
+    const list = $('#results');
+    list.innerHTML = V.results();
+    list.classList.remove('fresh'); void list.offsetWidth; list.classList.add('fresh');
+    const count = $('#count');
+    if (count.textContent !== lastCount) { lastCount = count.textContent; count.classList.remove('tick'); void count.offsetWidth; count.classList.add('tick'); }
+}
+function render() { renderBar(); renderResults(); renderPanel(); }
+$('#results').addEventListener('click', event => {
+    const fix = event.target.closest('[data-fix]'), act = event.target.closest('[data-act]');
+    if (fix) { S.fixes[+fix.dataset.fix].act(); renderPanel(); }
+    else if (act) {
+        const spot = SPOTS[+act.dataset.act], verb = find('verb')?.item;
+        S.done = { km: spot.km, route: verb === 'v-route',
+            text: verb === 'v-route' ? `Route to ${spot.name}: ${spot.km} km from you` : verb === 'v-night' ? `Day ${dayOf(spot.km)} now ends at ${spot.name}` : `${spot.name} is now a stop on Day ${dayOf(spot.km)}` };
+        renderResults();
+    } else if (event.target.closest('[data-undone]')) { S.done = null; renderResults(); }
+});
+for (const type of ['pointerover', 'pointerout']) $('#results').addEventListener(type, event => {
+    const row = event.target.closest('[data-i]');
+    if (row) document.querySelector(`#geo .m-dot[data-i="${row.dataset.i}"]`)?.classList.toggle('hot', type === 'pointerover');
+});
+
+/* ── The bar ────────────────────────────────────────────────────────────────────────────────────────────────── */
+input.addEventListener('input', () => { stop(); S.open = 'text'; S.undo = null; sync(); });
+input.addEventListener('scroll', () => { mirror.scrollLeft = input.scrollLeft; });
+input.addEventListener('focus', () => { if (S.open !== 'text') { S.open = 'text'; S.active = -1; S.session = false; render(); } });
+input.addEventListener('keydown', event => {
+    const n = S.options.length;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        if (S.open !== 'text') { S.open = 'text'; render(); }
+        else if (n) { S.active = event.key === 'ArrowDown' ? (S.active + 1) % n : (S.active - 1 + n) % n; mark(); }
+        event.preventDefault();
+    } else if (event.key === 'Enter') {
+        event.preventDefault();
+        enter();
+    } else if (event.key === 'Tab' && S.frag.trim() && S.active >= 0 && n) {
+        event.preventDefault();
+        const on = panel.querySelector('.opt.active');
+        if (on) S.options[S.active](on.getBoundingClientRect());
+    } else if (event.key === 'Escape') { S.open = null; render(); }
+});
+$('#segs').addEventListener('click', event => {
+    const el = event.target.closest('.seg');
+    if (!el || el.disabled) return;
+    stop();
+    S.open = S.open === el.dataset.seg ? null : el.dataset.seg;
+    S.row = null;
+    render();
+});
+$('#clear').addEventListener('click', () => {
+    // The cross empties the bar, and for a moment "Undo" brings all of it back.
+    stop();
+    const was = { pieces: S.pieces, text: input.value };
+    input.value = ''; S.pieces = V.defaults(); S.open = null; S.session = false;
+    render(); sync();
+    S.undo = was;
+    renderBar();
+    clearTimeout(S.undoTimer);
+    S.undoTimer = setTimeout(() => { S.undo = null; renderBar(); }, 8000);
+});
+$('#undo').addEventListener('click', () => { const was = S.undo; S.pieces = was.pieces; input.value = was.text; S.undo = null; render(); sync(); });
+document.addEventListener('keydown', event => {
+    if (event.key === '/' && !/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) { event.preventDefault(); input.focus(); }
+    else if (event.key === 'Escape' && S.open && S.open !== 'text' && bar.contains(document.activeElement)) { const id = S.open; S.open = null; render(); segEl(id).focus(); }
+});
+document.addEventListener('pointerdown', event => {
+    if (bar.contains(event.target) || event.target.closest('.try') || !S.open) return;
+    stop();
+    S.open = null; S.session = false;
+    if (!input.value.trim()) remember();
+    render();
+});
+
+/* ── A sentence that types itself ───────────────────────────────────────────────────────────────────────────── */
+function stop() { S.playing++; }
+function play(text) {
+    const run = ++S.playing;
+    S.pieces = V.defaults();
+    input.value = ''; S.open = 'text';
+    render(); sync();
+    if (still()) { input.value = text; sync(true); remember(); return; }
+    let i = 0;
+    const step = () => {
+        if (run !== S.playing) return;
+        if (i < text.length) { input.value += text[i++]; sync(); setTimeout(step, text[i - 1] === ' ' ? 120 : 48); }
+        else setTimeout(() => { if (run === S.playing) { sync(true); remember(); } }, 260);
+    };
+    setTimeout(step, 240);
+}
+
+/** A wide panel crops the sketch; any other panel shows all of it. */
+function fitMap() {
+    const svg = $('#geo svg'), panel = $('#geo').getBoundingClientRect(), view = svg.viewBox.baseVal;
+    svg.setAttribute('preserveAspectRatio', panel.width / panel.height > view.width / view.height * 1.25 ? 'xMidYMid slice' : 'xMidYMid meet');
+}
+addEventListener('resize', fitMap);
+
+
+/* ── Pages ──────────────────────────────────────────────────────────────────────────────────────────────────── */
+const TRIES = {
+    explore: [
+        ['Open “Hike” and pick “Length”. A control shows only under the row that you pick.'],
+        ['Open “On the way” and tick a hut. “Must” at the end of its row decides if it filters or only sorts.'],
+        ['Let a sentence type itself: ', 'loop with a hut and a lake, under 12 km', '. The words stay while it types. At the end it presses Enter, and each phrase goes to its slot.'],
+        ['Type <code>at least</code>, <code>up to</code> or <code>12</code>. The bar proposes what it can mean before you finish. Tab, or a click, takes one.'],
+        ['Type <code>loop</code> and press Enter. With the field empty again, the bar proposes what riders often add next.'],
+        ['Ask for something the page does not have: ', 'sunny loop with a summit', '. The word stays as text and the bar says so.'],
+        ['Press the cross in the bar, then “Undo”. Press <code>/</code> anywhere to go to the text field.'],
+    ],
+    planner: [
+        ['Type <code>supermarket end of day one</code> yourself. Nothing leaves the field. What the bar understands gets a mark, and Enter sends it to the slots.'],
+        ['Let a sentence type itself: ', 'route to the next supermarket', '. The first slot now says “Route to”, and the top result has the amber button. Press it, then “Undo”.'],
+        ['Open the first slot. The switch on top says what to do with the place: find it, route to it, add it as a stop or end the day at it.'],
+        ['With no verb, each result has a quiet “Add as a stop”.'],
+        ['Run ', 'drinking water', ' and open “Where”. The dots on the profile are the water points. Drag across the profile before the big climb.'],
+        ['In “Where”, tap a day under the profile, then “Middle”. Move a handle to change the stretch.'],
+        ['Ask about the route: ', 'climbs over 300 m', '. Open “Where”: the climbs are bars under the profile.'],
+    ],
+};
+/** Look C keeps the bar in the list; in the other looks, the bar of a wide page is over the list and the map. */
+const host = () => $(V.wide && S.look !== 'c' ? '#host-wide' : '#host-narrow').append(bar);
+document.querySelectorAll('[data-pick-look]').forEach(el => el.addEventListener('click', () => {
+    stop();
+    S.look = bar.dataset.look = el.dataset.pickLook;
+    document.querySelectorAll('[data-pick-look]').forEach(other => other.setAttribute('aria-checked', String(other === el)));
+    S.open = null;
+    host(); render();
+}));
+function show(id) {
+    stop();
+    V = SURFACES[id];
+    host();
+    $('#segs').innerHTML = V.segs.map(seg => `<button type="button" class="seg" data-seg="${seg.id}" aria-controls="panel"><i class="sic">${ic(seg.icon, 17)}</i><span class="slabel">${segLabel(seg)}</span><strong></strong><i class="chev">${ic('down', 13)}</i></button>`).join('');
+    S.pieces = V.defaults(); S.open = null; S.row = null; S.frag = ''; S.unknown = []; S.justMade = null; S.session = false; S.undo = S.done = null; S.pending = []; input.value = ''; lastCount = '';
+    document.querySelectorAll('[data-surface]').forEach(el => el.setAttribute('aria-checked', String(el.dataset.surface === id)));
+    document.querySelectorAll('[data-nav]').forEach(el => el.dataset.nav === id ? el.setAttribute('aria-current', 'page') : el.removeAttribute('aria-current'));
+    $('#page-title').textContent = V.title; $('#page-facts').textContent = V.facts; $('#sample').textContent = V.sample;
+    input.setAttribute('aria-label', 'Say what you want');
+    $('#geo').innerHTML = V.map();
+    fitMap();
+    $('#tries').innerHTML = TRIES[id].map(([before, say, after]) => `<li>${before}${say ? `<button type="button" class="try" data-say="${esc(say)}">${esc(say)}</button>${after}` : ''}</li>`).join('');
+    render(); sync();
+}
+document.querySelectorAll('[data-surface]').forEach(el => el.addEventListener('click', () => show(el.dataset.surface)));
+$('#tries').addEventListener('click', event => {
+    const el = event.target.closest('[data-say]');
+    if (!el) return;
+    bar.scrollIntoView({ block: 'center', behavior: still() ? 'auto' : 'smooth' });
+    play(el.dataset.say);
+});
+addEventListener('resize', () => { if (S.open) renderPanel(); });
+$('#search-icon').outerHTML = ic('search', 17);
+$('#clear').innerHTML = ic('close', 16);
+$('#go').innerHTML = ic('arrow', 15);
+$('#go').addEventListener('pointerdown', event => event.preventDefault());
+$('#go').addEventListener('click', event => { event.preventDefault(); stop(); enter(); });
+show('planner');
+})();
+</script>
+</body>
+</html>
