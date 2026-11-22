@@ -661,12 +661,15 @@ and two `shell_m`, and the point lies inside the other where `d` is at most the 
   more than half of its metres from opening to opening (from a chain end where an end has no opening), read every
   metre, and each of its openings lies in the wider one's room or within that `half` of one of its openings: rung 2.
   The wider `half` grows to the largest `d` there plus the other way's half-width and the wider margin.
-- Two openings whose chains meet at the opening farther in are a pair (rung 5). Any other opening whose chain meets
-  that of an opening farther in moves onto that frame line too, as the nearer opening of a pair does, and takes its
-  heading; an opening of a pair keeps its pair's line.
+- Two openings whose chains meet at the opening farther in are a pair (rung 5). Each group of openings that a pair
+  or such a meeting links has one frame line: that of the opening farthest in along the group's way. The others move
+  in onto it along their ways and take its heading; one whose way does not reach it stays, and a pair with such an
+  opening is no pair.
 - Two chains with a part at both ends have a vertex where their shells start or stop meeting between their openings
-  (found to a centimetre). These vertices keep `vertex_gap_m` as the others do. The device cuts a chord at the
-  middle where its middle meets the other tube, split at the foot of each vertex of the other.
+  (found to a centimetre). These vertices keep `vertex_gap_m` as the others do: a vertex within it on the side where
+  the chains do not meet stands for one, and a floor vertex between the openings on the side where they meet gives
+  way to it. The device cuts a chord where its middle meets the other tube, at the middle between the two walls as it
+  draws them, and splits it where its station passes the other's cut on each of the other's rings.
 
 #### The floor of a tube
 
