@@ -81,8 +81,10 @@ pub struct Net<'a> {
 
 impl<'a> Net<'a> {
     pub fn new(records: &'a [End], chords: &'a [Chord], rules: &'a Rules) -> Net<'a> {
+        // The chords at each vertex. A chord that does not draw (a tunnel way that ends on this one's side, as a cross
+        // passage does) does not bend the rings of those that do.
         let mut at: HashMap<[u64; 2], Vec<usize>> = HashMap::new();
-        for (c, chord) in chords.iter().enumerate() {
+        for (c, chord) in chords.iter().enumerate().filter(|(_, chord)| built(&chord.ends)) {
             for k in 0..2 {
                 at.entry(key(vertex(chord, k))).or_default().push(c);
             }
@@ -204,7 +206,7 @@ impl<'a> Net<'a> {
 
     /// The one other chord at vertex k of chord c, if exactly one shares it.
     fn other(&self, c: usize, k: usize) -> Option<usize> {
-        let list = &self.at[&key(vertex(&self.chords[c], k))];
+        let list = self.at.get(&key(vertex(&self.chords[c], k)))?;
         let mut others = list.iter().copied().filter(|&o| o != c);
         let o = others.next()?;
         others.next().is_none().then_some(o)
