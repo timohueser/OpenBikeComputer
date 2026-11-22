@@ -8,9 +8,9 @@ const NORMAL_WEIGHT = 0.5, COLOUR_WEIGHT = 1;
 export const simplifierReady = MeshoptSimplifier.ready;
 
 /**
- * Tier k of a tree: the trunk of its own tier, which is a few triangles, and the crown of tier 0 with
- * at most `triangles` triangles, made by collapsing the edges where the place, the normal and the
- * colour change least. So every tier has the same crown parts, outline, normals and colours. `want`
+ * Tier k of a tree: the trunk of its own tier `own`, which is a few triangles, and the crown of `near`
+ * with at most `triangles` triangles, made by collapsing the edges where the place, the normal and the
+ * colour change least. So the tier has the crown parts, outline, normals and colours of `near`. `want`
  * is how bright tier 0 draws (`lit`), which every tier of one tree shares.
  */
 export function simplified(near: Grown, own: Grown, triangles: number, want = lit(near)): Grown {

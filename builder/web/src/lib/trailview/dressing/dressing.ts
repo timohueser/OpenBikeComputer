@@ -25,7 +25,7 @@ const HERD_WORDS = 8, DRESSING_BYTES = 64;
  * animal SHOW_SPACING times its height wide; with `tier` 1 every animal draws its far tier at any distance. An entry
  * `tree.<id>.<tier>[.<room>]` stands that tier of a tree species, SHOW_TREE_M tall, in `room` metres of the row (SHOW_TREE_M
  * by default), in the crown of the date's phase.
- * A showroom has no ground, so its trees take no satellite hue: they show their own colours.
+ * A showroom stands on the ground but does not read its colour, so its trees take no satellite hue: they show their own colours.
  */
 interface Showroom { lonLat: [number, number]; heading: number; entries: string[]; tier: number }
 const SHOW_SPACING = 2.3, SHOW_TURN = 0.45, SHOW_TREE_M = 10;

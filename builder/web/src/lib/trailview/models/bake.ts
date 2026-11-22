@@ -15,7 +15,7 @@ import { lit, relit, simplified, simplifierReady } from './simplify';
 import { fits, tone } from './tone';
 import type { Grown, Lod } from './trees';
 
-/** The crown triangles of tree tiers 1 and 2, which the simplifier makes from tier 0. */
+/** The crown triangles of tree tiers 1 and 2 that the simplifier makes. */
 const TRIANGLES = [600, 200];
 /** A phase draws the summer crown through a colour matrix where that turns every crown vertex within this many sRGB steps of 255. */
 const FIT = 8;
@@ -98,15 +98,15 @@ export async function bake(): Promise<Baked> {
     return { files, models, budget: BUDGET };
 }
 
-/** A crown of a species' own in a season: bare crowns grow each tier from the tree, the others simplify tier 0. */
+/** A crown of a species' own in a season: bare crowns grow each tier from the tree, the others take theirs from `tiers`. */
 function crown(id: string, season: Season): Packed {
     const grown = ([0, 1, 2] as Lod[]).map(lod => tree(id, season, lod));
     return treeModel(bareIn(id, season) ? grown : tiers(id, season, grown));
 }
 
 /**
- * Tier 0, and tiers 1 and 2 simplified from it, each with its own trunk; a species of `buildsFar` grows tier 2, as bright as
- * tier 0, one of `growsTiers` tier 1 too, and one of `farFromFar` simplifies its own far level.
+ * Tier 0, and tiers 1 and 2 simplified from it without its flower heads, each with its own trunk; a species of `buildsFar`
+ * grows tier 2, as bright as tier 0, one of `growsTiers` tier 1 too, and one of `farFromFar` simplifies its own far level.
  */
 function tiers(id: string, season: Season, [near, middle, far]: Grown[]): Grown[] {
     const want = lit(near);

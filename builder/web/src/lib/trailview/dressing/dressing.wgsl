@@ -24,8 +24,8 @@ struct Dressing {
     herd_reach: f32,
     unused2: f32,
     unused3: vec2f,
-    // The showroom of dressing.ts, which stands its animals in place of the herds: its middle in world units, its
-    // animals, and the first of their entries in `herds`.
+    // The showroom of dressing.ts, which stands its animals and trees in place of the herds: its middle in world
+    // units, its models, and the first of their entries in `herds`.
     show_origin: vec2i,
     show_count: u32,
     show_first: u32,
