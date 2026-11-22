@@ -108,8 +108,8 @@ pub(crate) fn level(dz: f64, ha: f64, hb: f64) -> bool {
 
 /// Per tube with a part, its vertices between its openings: `base`, then where its shell starts or stops overlapping
 /// the shell of another such tube at one level (read every metre, each place found to a centimetre), spaced by `gap`
-/// (a vertex nearer than that to another is that vertex). `spans` gives each tube's metres from opening to opening,
-/// `floor` its floor and inside height at metres along.
+/// (`meeting_spaced`). `spans` gives each tube's metres from opening to opening, `floor` its floor and inside height at
+/// metres along.
 pub(crate) fn meeting_vertices(
     axes: &Axes,
     tubes: &[Tube],
@@ -153,12 +153,33 @@ pub(crate) fn meeting_vertices(
                             hi = mid;
                         }
                     }
-                    out.push((lo + hi) / 2.0);
+                    // The side on which the two meet: before where o stops meeting t, after where it starts.
+                    out.push(((lo + hi) / 2.0, if was { -1.0 } else { 1.0 }));
                 }
                 before = now;
             }
-            out.sort_by(f64::total_cmp);
-            spaced(&out, base[t].clone(), gap)
+            out.sort_by(|a, b| a.0.total_cmp(&b.0));
+            meeting_spaced(&out, base[t].clone(), [s0, s1], gap)
         })
         .collect()
+}
+
+/// The metres of `kept`, sorted, with each meeting vertex of `more` (its metres along, and the side on which the tubes
+/// meet: −1 before it, 1 after it) that lies `gap` or farther from every kept one. A vertex within `gap` on the side
+/// where the tubes do not meet stands for it: the chord that holds the overlap reaches a little past it, where its
+/// cut takes off nothing. One on the side where they meet would leave the chord past it in the overlap, uncut, so a
+/// vertex of `kept` between the openings gives way to the meeting vertex there.
+pub(super) fn meeting_spaced(more: &[(f64, f64)], kept: Vec<f64>, [s0, s1]: [f64; 2], gap: f64) -> Vec<f64> {
+    let mut kept = spaced(&[], kept, gap);
+    let mut fixed = vec![s0, s1];
+    for &(x, side) in more {
+        let near: Vec<f64> = kept.iter().copied().filter(|&v| (v - x).abs() < gap).collect();
+        if near.iter().any(|&v| (v - x) * side <= 0.0 || fixed.contains(&v)) {
+            continue;
+        }
+        kept.retain(|v| !near.contains(v));
+        kept.insert(kept.partition_point(|&k| k < x), x);
+        fixed.push(x);
+    }
+    kept
 }

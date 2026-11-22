@@ -1,7 +1,7 @@
 //! The ladder of the parts: per opening every kind of part that fits, in the order of the rungs, and the numbers of
 //! the first.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{json, Value};
 
@@ -378,58 +378,62 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         kinds[a].insert(0, Kind::Pair);
         kinds[c].insert(0, Kind::Pair);
     }
-    // A pair's frame line is the line of the opening farther in: the nearer one moves in onto it along its way.
+    // One frame line for each group of openings whose tubes meet (a pair, or two openings whose tubes meet at the
+    // one farther in): the line of the opening farthest in along the group's way. Each other opening of the group
+    // moves in onto it along its way and reads the ground there; that opening never moves. An opening whose way does
+    // not reach the line stays, and a pair with such an opening is no pair: each takes its next kind.
+    let mut root: Vec<usize> = (0..n).collect();
+    let find = |root: &mut Vec<usize>, mut i: usize| {
+        while root[i] != i {
+            root[i] = root[root[i]];
+            i = root[i];
+        }
+        i
+    };
+    let links = (0..n).filter_map(|i| mate[i].map(|m| (i, m))).chain(near.iter().filter_map(|x| {
+        let (far, nearer) = farther(openings, x.a, x.b);
+        let both = !kinds[far].is_empty() && !kinds[nearer].is_empty();
+        (both && meet_at(openings, far, nearer)).then_some((far, nearer))
+    }));
+    for (i, k) in links.collect::<Vec<_>>() {
+        let (ri, rk) = (find(&mut root, i), find(&mut root, k));
+        root[ri.max(rk)] = ri.min(rk);
+    }
+    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..n {
+        let r = find(&mut root, i);
+        groups.entry(r).or_default().push(i);
+    }
     let mut moved: Vec<f64> = vec![0.0; n];
     let mut far_of: Vec<usize> = (0..n).collect();
-    let (mut unpaired, mut unjoined) = (0, 0);
-    for i in 0..n {
-        let Some(m) = mate[i].filter(|&m| m > i) else { continue };
-        let (far, nearer) = farther(openings, i, m);
-        // Where its way does not reach the line within its limits, the two are no pair: each takes its next kind.
-        let Some(shift) = onto_line(openings, tubes, (nearer, far), b) else {
-            if joined[i] {
-                unjoined += 1;
-            } else {
-                unpaired += 1;
-            }
-            for k in [i, m] {
-                (mate[k], joined[k]) = (None, false);
-                kinds[k].retain(|&x| x != Kind::Pair);
-            }
-            continue;
-        };
-        let o = openings[nearer].clone();
-        moved[nearer] = shift - o.shift;
-        openings[nearer] = Opening { others: o.others, ..o.at(&tubes[o.tube], shift) };
-        far_of[i] = far;
-        far_of[m] = far;
-    }
-    // Every other opening whose tube meets one farther in moves onto that frame line too, so no head stands in front
-    // of another opening. An opening of a pair keeps its pair's line.
-    let mut unmoved = vec![false; n];
-    loop {
-        let mut changed = false;
-        for x in &near {
-            let (far, nearer) = farther(openings, x.a, x.b);
-            if kinds[far].is_empty() || kinds[nearer].is_empty() || mate[nearer].is_some() || unmoved[nearer] {
-                continue;
-            }
-            if far_of[nearer] == far || !meet_at(openings, far, nearer) {
-                continue;
-            }
-            match onto_line(openings, tubes, (nearer, far), b) {
+    let (mut unpaired, mut unjoined, mut unmoved) = (0, 0, 0);
+    for list in groups.values().filter(|l| l.len() > 1) {
+        let way = list.iter().fold([0.0, 0.0], |w, &i| [w[0] + openings[i].dir[0], w[1] + openings[i].dir[1]]);
+        let along = |i: usize| along_dir(openings[list[0]].p, openings[i].p, way);
+        let far = list.iter().copied().fold(list[0], |f, i| if along(i) > along(f) { i } else { f });
+        for &i in list.iter().filter(|&&i| i != far) {
+            match onto_line(openings, tubes, (i, far), b) {
                 Some(shift) => {
-                    let o = openings[nearer].clone();
-                    moved[nearer] += shift - o.shift;
-                    openings[nearer] = Opening { others: o.others, ..o.at(&tubes[o.tube], shift) };
-                    far_of[nearer] = far;
-                    changed = true;
+                    let o = openings[i].clone();
+                    moved[i] = shift - o.shift;
+                    openings[i] = Opening { others: o.others, ..o.at(&tubes[o.tube], shift) };
+                    far_of[i] = far;
                 }
-                None => unmoved[nearer] = true,
+                None => match mate[i] {
+                    Some(m) => {
+                        if joined[i] {
+                            unjoined += 1;
+                        } else {
+                            unpaired += 1;
+                        }
+                        for k in [i, m] {
+                            (mate[k], joined[k]) = (None, false);
+                            kinds[k].retain(|&x| x != Kind::Pair);
+                        }
+                    }
+                    None => unmoved += 1,
+                },
             }
-        }
-        if !changed {
-            break;
         }
     }
     // The numbers come from the ground with the stretches that the device opens: of each opening of a chain whose two
@@ -482,7 +486,6 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             if let Some(m) = mate[i].filter(|_| !kinds[i].contains(&Kind::Pair)) {
                 (mate[i], mate[m], joined[i], joined[m]) = (None, None, false, false);
                 kinds[m].retain(|&k| k != Kind::Pair);
-                (far_of[i], far_of[m]) = (i, m);
             }
         }
         last = Some(opened);
@@ -531,7 +534,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         "joins": (0..n).filter(|&i| joined[i] && mate[i].is_some_and(|m| m > i)).count(),
         "joins_that_do_not_reach": unjoined,
         "openings_moved_onto_a_line": (0..n).filter(|&i| mate[i].is_none() && far_of[i] != i).count(),
-        "openings_that_do_not_reach_a_line": unmoved.iter().filter(|&&u| u).count(),
+        "openings_that_do_not_reach_a_line": unmoved,
         "absorbed_tubes": absorbed.iter().filter(|a| a.is_some()).count(),
         "tubes_not_absorbed_for_an_opening_outside": outside,
         "kinds_changed_by_the_second_measure": refitted,

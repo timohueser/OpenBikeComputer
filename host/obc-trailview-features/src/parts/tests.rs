@@ -360,6 +360,11 @@ fn tubes_whose_shells_overlap_share_an_opening_and_meet_from_vertices() {
         .map(|p| p[0])
         .collect();
     assert!(firsts.iter().any(|&x| gap(x).abs() < 0.05), "a vertex where the shells part: {firsts:?}");
+    // A vertex where two tubes stop meeting takes the place of a floor vertex within the vertex gap on the side where
+    // they meet; one on the other side, or an opening, stands for it.
+    let spaced = |more: &[(f64, f64)]| overlap::meeting_spaced(more, vec![0.0, 10.0, 20.0, 30.0], [0.0, 30.0], 1.0);
+    assert_eq!(spaced(&[(10.4, -1.0)]), [0.0, 10.4, 20.0, 30.0]);
+    assert_eq!(spaced(&[(19.6, -1.0), (0.4, -1.0)]), [0.0, 10.0, 20.0, 30.0]);
 }
 
 #[test]
@@ -510,7 +515,7 @@ fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height
 
 /// The faces of the parts of a placement as the viewer draws them: each record's points rounded to the units of a
 /// zoom-13 tile (8 world units of 2^30), then the meshes of `obc-trailview-parts`; each face's corners in metres east
-/// and north of the test place and its height, but the dark faces of openings and the lamps (flags 4 and 16).
+/// and north of the test place and its height, but the dark faces of openings and the lamps.
 fn drawn(placed: &Placed) -> Vec<[[f64; 3]; 3]> {
     let rules = obc_trailview_parts::Rules::embedded();
     let unit = |p: [f64; 2]| [(p[0] * 1073741824.0 / 8.0).round() * 8.0, (p[1] * 1073741824.0 / 8.0).round() * 8.0];
@@ -537,7 +542,9 @@ fn drawn(placed: &Placed) -> Vec<[[f64; 3]; 3]> {
         let p = back([v[0] as i32 as f64 / 1073741824.0, v[1] as i32 as f64 / 1073741824.0]);
         [p[0], p[1], f32::from_bits(v[2]) as f64]
     };
-    let solid = |i: u32| (mesh.vertices[i as usize * w + 3] >> 24) & (4 | 16) == 0;
+    let solid = |i: u32| {
+        (mesh.vertices[i as usize * w + 3] >> 24) & (obc_trailview_parts::VOID | obc_trailview_parts::LAMP) == 0
+    };
     mesh.indices.chunks(3).filter(|t| solid(t[0])).map(|t| [point(t[0]), point(t[1]), point(t[2])]).collect()
 }
 
