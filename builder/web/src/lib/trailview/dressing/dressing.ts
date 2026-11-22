@@ -113,7 +113,7 @@ export class Dressing implements Producer {
      */
     private tree(id: string, tier: number): number | undefined {
         const entry = this.files.models.trees[id];
-        if (!entry) return undefined;
+        if (!entry || ![0, 1, 2].includes(tier)) return undefined;
         const spec = ({ tiers, shape }: Packed): ModelSpec => ({ tiers: [{ mesh: tiers[tier], until: HERD_REACH_M }], shape });
         const own = entry.crowns.map(file => (file ? this.load(file, 1, spec) : undefined));
         const summer: number | undefined = this.load(entry.summer, 1, model => ({
