@@ -282,20 +282,23 @@ export function zebraTagged(tags: Record<string, string>): boolean {
 /** The shapes of each decoded tile, made once: the stamps and the water of each of its nodes read them. */
 const shapes = new WeakMap<Feature[], Shapes & { tile: string }>();
 
-/** The lines that a node reads at a level where no line shows: the water mesh draws the waterways, under the bridges and through the tunnels. */
-const WATER_MESH_KINDS = [RIVER, STREAM, BRIDGE, TUNNEL];
+/**
+ * The lines that a node reads at a level where no line shows: the water mesh draws the rivers and streams, and lifts
+ * them under a bridge (`underDeck`); `portalBoxes` cuts the terrain at a tunnel's portals.
+ */
+const COARSE_KINDS = [RIVER, STREAM, BRIDGE, TUNNEL];
 
 /**
  * The roads, paths, rivers, lakes and sea of a tile that have heights, its river areas and its buildings, in world units.
- * A tile under DEEPEST serves the nodes of one level (featureTile); where no line shows there, it keeps only the lines of
- * the water mesh, as its other lines take most of its bytes in a worker.
+ * A tile under DEEPEST serves the nodes of one level (featureTile); where no line shows there, it keeps only the lines that
+ * its nodes read (COARSE_KINDS), as its other lines take most of its bytes in a worker.
  */
 export function features(list: Feature[], tile: Node): Shapes {
     const name = `${tile.level}/${tile.x}/${tile.y}`;
     let known = shapes.get(list);
     if (known?.tile !== name) {
         const made = shapesOf(list, tile);
-        if (tile.level < DEEPEST && !linesShow(tile.level + 1)) made.lines = made.lines.filter(({ kind }) => WATER_MESH_KINDS.includes(kind));
+        if (tile.level < DEEPEST && !linesShow(tile.level + 1)) made.lines = made.lines.filter(({ kind }) => COARSE_KINDS.includes(kind));
         shapes.set(list, (known = { tile: name, ...made }));
     }
     return known;

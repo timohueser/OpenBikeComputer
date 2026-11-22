@@ -188,8 +188,9 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
 
     it('shows no line at a level where linesShow says that none shows', () => {
         const levels = Array.from({ length: 23 }, (_, level) => level).filter(level => !linesShow(level));
-        expect(levels.length).toBeGreaterThan(0);
-        expect(linesShow(NEAR)).toBe(true);
+        // Level 13 reads zoom 12 tiles, which keep their roads: a motorway of 6.75 to 7 m half-width shows there.
+        expect(levels).toEqual(Array.from({ length: 13 }, (_, level) => level));
+        expect(shows({ kind: ROAD, h: 7, profile: Object.keys(PROFILES).indexOf('motorway') } as Line, gateTexel(13))).toBe(true);
         for (const level of levels) for (const profile of Object.keys(PROFILES).keys()) for (const kind of [ROAD, PATH]) for (const h of [0, 0.5, 2, 6, 20, 100]) {
             expect(shows({ kind, h, profile } as Line, gateTexel(level)), `kind ${kind}, profile ${profile}, h ${h}, level ${level}`).toBe(false);
         }
@@ -201,6 +202,9 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         const kinds = new Set(features(fixture(coarse.level, coarse.x, coarse.y), coarse).lines.map(({ kind }) => kind));
         expect(kinds.size).toBeGreaterThan(0);
         expect([...kinds].filter(kind => ![RIVER, STREAM, BRIDGE, TUNNEL].includes(kind))).toEqual([]);
+        // A zoom 12 tile serves level 13, where lines show: it keeps its roads.
+        const finer = { level: 12, x: 2143, y: 1444 };
+        expect(features(fixture(finer.level, finer.x, finer.y), finer).lines.some(({ kind }) => kind === ROAD)).toBe(true);
         // The junctions and corners of the fixture tile in its four level 14 nodes, and in the level 12 node over it.
         const list = fixture(TILE.level, TILE.x, TILE.y);
         const joints = (node: { level: number; x: number; y: number }) => {
