@@ -118,6 +118,8 @@ test('the text field sends each typed phrase to its slot, takes one suggestion w
   // The words stay while the rider types, and the field marks each phrase that it understands.
   await field.fill('loop with a summit, sunny');
   await expect(page.locator('.mirror .m-value')).toHaveText(['loop', 'summit']);
+  // The first line of the list names the slot of each marked phrase.
+  await expect(page.locator('.reading .to')).toHaveText([/^Hike\s*Loop$/, /^On the way\s*Summit$/]);
   // Enter never takes a place of the server: each marked phrase goes to its slot, and the unknown word stays.
   await expect(page.getByRole('option', { name: /^Freiburg/ })).toBeVisible();
   await field.press('Enter');
@@ -134,6 +136,10 @@ test('the text field sends each typed phrase to its slot, takes one suggestion w
   await expect(slotText(page, 'hike')).toHaveText(/^Loop · Under 2\skm$/);
   await expect(field).toHaveValue('sunny ');
   await expect(rows).toHaveText([/Schlossberg loop/]);
+
+  // A name that begins a place of the server is not unknown: the list says what a click on the place does.
+  await field.fill('Freib');
+  await expect(page.locator('.search-panel.list')).toHaveText(/^\s*Move the map to\s*Freiburg\s*city · Testland\s*$/);
   expect(errors).toEqual([]);
 });
 

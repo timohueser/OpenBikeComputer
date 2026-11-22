@@ -372,15 +372,16 @@
     /** The words of the slots of a query; a search with none is no last search. */
     const summary = (kept: Query) => Object.values(slotWords(kept, placeById, day)).flat().join(' · ');
     const field = $derived<FieldProps<Choice, FoundPlace & NamedPlace>>({
-        table: phrases, label: 'Say what you want', placeholder: 'Say what you want, such as “loop with a hut”', examples: EXAMPLES,
+        table: phrases, label: 'Say what you want', placeholder: 'Say what you want, such as “loop with a hut”', examples: searches.length ? [] : EXAMPLES,
+        // The search that the slots show is no last search.
         recent: searches.flatMap(text => {
             const kept = readQuery(text, day).query, words = summary(kept);
-            return words ? [{ text: words, run: () => setQuery(kept) }] : [];
+            return words && words !== summary(query) ? [{ text: words, run: () => setQuery(kept) }] : [];
         }),
         often: () => often(dayQuery, loaded, off), changes: choice => changes(dayQuery, choice), onvalues: send,
         places: (name, signal) => findPlaces(name, view ?? [-180, -85, 180, 85], signal, true)
             .then(found => found.map(one => ({ ...one, about: [one.kind.replaceAll('_', ' '), one.region].filter(Boolean).join(' · ') }))),
-        onplace: ({ lon, lat, box }) => place = { lon, lat, box }, onsearch: () => { if (summary(query)) searches = keepSearch(query, day, searches); },
+        placesLabel: 'Move the map to', onplace: ({ lon, lat, box }) => place = { lon, lat, box }, onsearch: () => { if (summary(query)) searches = keepSearch(query, day, searches); },
     });
     function send(choices: Choice[]) {
         setQuery(apply(query, choices));
