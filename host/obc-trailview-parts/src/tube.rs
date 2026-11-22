@@ -8,8 +8,11 @@ use std::rc::Rc;
 use crate::mesh::{flagged, flat, left_of, outline, Builder, Clip, Corner, Paint, Station, BORE, LAMP, PAINT};
 use crate::{built, metres_per_unit, Bore, Chord, End, Mate, Part, Rules, Section};
 
-/// An end's point lies within this of the vertex of its tube's chord.
-const END_M: f64 = 0.5;
+/// The two openings of a pair lie on one frame line within this: the bake leaves an opening this little past the line
+/// where it lies (two openings side by side whose ways differ by a few degrees lie each a little past the other's line).
+pub const PAST_M: f64 = 0.2;
+/// The tile rounds a record's point to its grid: 8 world units (extent 16384 at zoom 13).
+const TILE_UNIT: f64 = 8.0;
 /// A lamp's half-width and its gap under the crown.
 const LAMP_HALF_M: f64 = 0.15;
 const LAMP_DROP_M: f64 = 0.05;
@@ -129,16 +132,19 @@ impl<'a> Net<'a> {
                 at.entry(key(vertex(chord, k))).or_default().push(c);
             }
         }
-        // The chord vertex nearest a point, within `END_M`.
+        // The chord vertex nearest a point, within the error of a pair's mate placed from its record: `PAST_M` along,
+        // the rounding of two points by up to half a tile unit on each axis, and the decimals of the heading and the
+        // mate (0.025 m at a mate 40 m across) twice over.
         let nearest = |p: [f64; 2]| {
             let m = metres_per_unit(p[1]);
+            let within = PAST_M + TILE_UNIT * std::f64::consts::SQRT_2 * m + 0.05;
             let gap = |c: usize, k: usize| {
                 let v = vertex(&chords[c], k);
                 libm::hypot(v[0] - p[0], v[1] - p[1]) * m
             };
             let near =
                 (0..chords.len()).flat_map(|c| [(c, 0), (c, 1)]).min_by(|x, y| gap(x.0, x.1).total_cmp(&gap(y.0, y.1)));
-            near.filter(|&(c, k)| gap(c, k) <= END_M)
+            near.filter(|&(c, k)| gap(c, k) <= within)
         };
         let mut ends = inputs.to_vec();
         let mut mate = vec![None; ends.len()];
