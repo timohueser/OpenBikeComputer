@@ -887,10 +887,10 @@ fn two_tubes_meet_where_both_rings_do_and_a_cut_head_is_closed() {
     let faces_of =
         |(ends, chords): &(Vec<End>, Vec<Chord>)| solid(&meshes([0.0, 0.0, 1.07e9, 1.07e9], ends, chords, rules));
     let north = [0.0, 1.0, 0.0];
-    // The bake puts a vertex where two tubes start or stop meeting. A tube 7 m north starts 3 m after the first (an
-    // opening that could not move onto the first's frame line): before it the first keeps its wall; after it, a way
-    // north meets the second's far wall; a way west in the first's wall, from the second's room, meets the face that
-    // closes the first's shell where the meeting begins.
+    // The bake puts a vertex where two tubes start or stop meeting, and the device cuts a chord where its middle meets.
+    // A tube 7 m north starts 3 m after the first (an opening that could not move onto the first's frame line): before
+    // it the first keeps its wall; after it, a way north meets the second's far wall; a way west in the first's wall,
+    // from the second's room, meets the face that closes the first's shell where the meeting begins.
     let staggered =
         tubes(&[&[[0.0, 0.0], [3.0, 0.0], [10.0, 0.0], [40.0, 0.0]], &[[3.0, 7.0], [10.0, 7.0], [40.0, 7.0]]]);
     let faces = faces_of(&staggered);
@@ -906,15 +906,24 @@ fn two_tubes_meet_where_both_rings_do_and_a_cut_head_is_closed() {
         let got = hit(&faces, [6.0, 4.7, 500.0 + up], [-1.0, 0.0, 0.0], 30.0);
         assert!(got.is_some_and(|h| h.1 && h.0 < 3.2), "staggered, the first's shell {up} m up: {got:?}");
     }
-    // A tube beside the first for 20 m that turns away north, with the first's vertex where their shells part (7.14 m
-    // from the bend): past it the first keeps its wall.
-    let away = tubes(&[&[[0.0, 0.0], [27.14, 0.0], [100.0, 0.0]], &[[0.0, 7.0], [20.0, 7.0], [50.0, 40.0]]]);
+    // A tube beside the first for 20 m that turns away north, with each tube's vertex where their shells part, as the
+    // bake puts them: the first's chord is cut at the foot of the bend too. Along the meeting, a way from either room
+    // to the other meets the other's far wall; past the parting the first keeps its wall.
+    let away =
+        tubes(&[&[[0.0, 0.0], [27.14, 0.0], [100.0, 0.0]], &[[0.0, 7.0], [20.0, 7.0], [22.73, 10.0], [50.0, 40.0]]]);
     let faces = faces_of(&away);
     for east in [30.0, 60.0, 90.0] {
         let got = hit(&faces, [east, 0.0, 502.5], north, 30.0);
         assert!(got.is_some_and(|h| h.1 && h.0 < 5.1), "turns away, {east} m east: {got:?}");
     }
-    assert!(hit(&faces, [10.0, 0.0, 502.5], north, 30.0).is_some_and(|h| h.1 && h.0 > 11.0), "turns away, 10 m east");
+    for east in [10.0, 15.0, 19.0, 21.0, 23.0] {
+        let got = hit(&faces, [east, 0.0, 502.5], north, 30.0);
+        assert!(got.is_some_and(|h| h.1 && h.0 > 11.0), "turns away, north at {east} m: {got:?}");
+    }
+    for east in [5.0, 10.0, 15.0, 19.0] {
+        let got = hit(&faces, [east, 7.0, 502.5], [0.0, -1.0, 0.0], 30.0);
+        assert!(got.is_some_and(|h| h.1 && h.0 > 11.0), "turns away, south at {east} m: {got:?}");
+    }
     // A short tube beside the first from 12 to 18 m east, with the first's vertices there: the first keeps its wall
     // before and after it, and none of its shell stands in the short one's room.
     let short = tubes(&[&[[0.0, 0.0], [12.0, 0.0], [18.0, 0.0], [40.0, 0.0]], &[[12.0, 7.0], [18.0, 7.0]]]);

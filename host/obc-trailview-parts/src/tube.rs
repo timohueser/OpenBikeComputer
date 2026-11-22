@@ -1,6 +1,7 @@
 //! The tubes: the chords of a tile by their vertices, the ring of a chord at each vertex, the inside of a chord, and
 //! the light of day in a tube.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::mesh::{flagged, flat, left_of, outline, Builder, Clip, Corner, Paint, Station, BORE, LAMP, PAINT};
@@ -55,7 +56,13 @@ pub struct Net<'a> {
     cells: HashMap<[u64; 2], Vec<usize>>,
     /// The world units of a cell.
     cell: f64,
+    /// Per chord, the other tube on each side (to the right, to the left) that its middle meets, and the cut of that
+    /// tube at each of its rings; made as needed.
+    met: RefCell<HashMap<usize, Met>>,
 }
+
+/// The other tube on each side that a chord's middle meets, and its cut at each ring of the chord.
+type Met = ([Option<usize>; 2], [[Option<Cut>; 2]; 2]);
 
 /// Where a station across chord c meets another tube (`Net::meets`), on one side: the metres across the station to
 /// the middle between their walls and to the other's axis on its line, the other's chord, and the other's floor (a
@@ -70,7 +77,8 @@ pub struct Cut {
 }
 
 /// Where a piece of a tube meets another tube on one side: the clip that takes off the other's side, its two stations
-/// with their cuts, and per station whether the meeting ends there (the tube beyond it does not meet the other).
+/// with their cuts, and per station whether the meeting ends there (the chord beyond that ring does not meet the
+/// other).
 #[derive(Clone, Copy, Debug)]
 pub struct Meeting {
     pub clip: Clip,
@@ -80,13 +88,14 @@ pub struct Meeting {
 }
 
 /// How a part looks for other tubes from a station's line (`Net::meets`): the metres across to each side (to the right,
-/// to the left), the metres past the planes of the other's rings, and the heights over the station's floor that the
-/// part's faces span, or None for a room.
+/// to the left), the metres past the planes of the other's rings, the heights over the station's floor that the
+/// part's faces span (None for a room), and the one tube to find at any distance (None for every tube within reach).
 #[derive(Clone, Copy, Debug)]
 pub struct Meet {
     pub across: [f64; 2],
     pub past: f64,
     pub up: Option<[f64; 2]>,
+    pub only: Option<usize>,
 }
 
 /// The side of a cell of `Net::cells`, in metres.
@@ -96,8 +105,6 @@ pub const OVERLAP_M: f64 = 0.05;
 /// A station meets a tube this far past the planes of its rings: the two openings of a pair lie on one frame line within
 /// the rounding of their record.
 pub const MEET_PAST_M: f64 = 0.1;
-/// A meeting ends at a station where the tube this far beyond it does not meet the other.
-const BEYOND_M: f64 = 0.5;
 
 impl<'a> Net<'a> {
     pub fn new(inputs: &[End], chords: &'a [Chord], rules: &'a Rules) -> Net<'a> {
@@ -170,6 +177,7 @@ impl<'a> Net<'a> {
             tube: Vec::new(),
             cells: HashMap::new(),
             cell: 1.0,
+            met: RefCell::new(HashMap::new()),
         };
         let run = rules.design.face_m;
         net.slope = (0..n).map(|e| net.floor_at(e, run).map_or(0.0, |(s, z)| (z - net.ends[e].z) / s)).collect();
@@ -401,13 +409,13 @@ impl<'a> Net<'a> {
             [(libm::floor(st.x / self.cell) as i64 + dx) as u64, (libm::floor(st.y / self.cell) as i64 + dy) as u64]
         };
         // The cells round the station's, where a reach passes the cell's growth.
-        let ring = i64::from(reach.iter().fold(0.0f64, |r, &x| r.max(x)) > own.half + shell + 1e-9);
+        let wide = meet.only.is_some() || reach.iter().fold(0.0f64, |r, &x| r.max(x)) > own.half + shell + 1e-9;
+        let ring = i64::from(wide);
         let mut seen: Vec<usize> = Vec::new();
+        let wanted = |o: usize| self.tube[o] != self.tube[c] && meet.only.is_none_or(|t| self.tube[o] == t);
         for dx in -ring..=ring {
             for dy in -ring..=ring {
-                seen.extend(
-                    self.cells.get(&cell(dx, dy)).into_iter().flatten().filter(|&&o| self.tube[o] != self.tube[c]),
-                );
+                seen.extend(self.cells.get(&cell(dx, dy)).into_iter().flatten().filter(|&&o| wanted(o)));
             }
         }
         seen.sort_unstable();
@@ -455,7 +463,7 @@ impl<'a> Net<'a> {
                 nb = [-nb[0], -nb[1]];
             }
             let b0 = dot([st.x - other.a[0], st.y - other.a[1]], nb) * m;
-            if b0 > reach[side] + other.half + shell
+            if (meet.only.is_none() && b0 > reach[side] + other.half + shell)
                 || !level
                 || best[side].is_some_and(|b| b.axis.abs() <= x.abs())
                 || !between(rings[0], 1.0)
@@ -483,19 +491,90 @@ impl<'a> Net<'a> {
         best
     }
 
-    /// Where stations s and t across chord c both meet another tube for its inside and shell (`meets` with the reach of
-    /// its shell): on each side, the clip that takes off the other's side between the two stations' cuts. The bake puts
-    /// a vertex where two tubes start or stop meeting, so a piece meets another all along or not at all.
+    /// The other tube on each side (to the right, to the left) that chord c's middle meets for its inside and shell
+    /// (`meets` with the reach of its shell), and that tube's cut at each ring of the chord. The bake puts a vertex
+    /// where two tubes start or stop meeting, so a chord meets another all along or not at all.
+    fn met(&self, c: usize) -> Met {
+        if let Some(m) = self.met.borrow().get(&c) {
+            return *m;
+        }
+        let rings = [self.ring(c, 0), self.ring(c, 1)];
+        let reach = self.chords[c].half + self.rules.ladder.bake.shell_m;
+        let meet = Meet { across: [reach; 2], past: MEET_PAST_M, up: None, only: None };
+        let sides = self.meets(c, &rings[0].mix(&rings[1], 0.5), meet).map(|cut| cut.map(|cut| self.tube[cut.other]));
+        let cuts = rings.map(|r| [0, 1].map(|side| sides[side].and_then(|t| self.cut_on(c, &r, side, t))));
+        self.met.borrow_mut().insert(c, (sides, cuts));
+        (sides, cuts)
+    }
+
+    /// The cut of tube `t` on side `side` of station st across chord c, at any distance.
+    fn cut_on(&self, c: usize, st: &Station, side: usize, t: usize) -> Option<Cut> {
+        let meet = Meet { across: [f64::INFINITY; 2], past: MEET_PAST_M, up: None, only: Some(t) };
+        self.meets(c, st, meet)[side]
+    }
+
+    /// The piece of chord c from station s to t as stations, split at the foot on its axis of each vertex of a tube that
+    /// the chord meets, within the reach of a meeting: the middle between two tubes is one plane only where both are
+    /// straight.
+    pub fn split(&self, c: usize, (s, t): (&Station, &Station)) -> Vec<Station> {
+        let sides = self.met(c).0;
+        if sides == [None, None] {
+            return vec![*s, *t];
+        }
+        let chord = &self.chords[c];
+        let (d, m) = ([chord.b[0] - chord.a[0], chord.b[1] - chord.a[1]], metres_per_unit(s.y));
+        let along =
+            |p: [f64; 3]| ((p[0] - chord.a[0]) * d[0] + (p[1] - chord.a[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1]);
+        let (us, ut) = (along([s.x, s.y, 0.0]), along([t.x, t.y, 0.0]));
+        let shell = self.rules.ladder.bake.shell_m;
+        let at = |v: f64| libm::floor(v / self.cell) as i64;
+        let (lo, hi) = (chord.a[0].min(chord.b[0]), chord.a[0].max(chord.b[0]));
+        let (south, north) = (chord.a[1].min(chord.b[1]), chord.a[1].max(chord.b[1]));
+        let mut feet: Vec<f64> = Vec::new();
+        for x in at(lo)..=at(hi) {
+            for y in at(south)..=at(north) {
+                for &o in self.cells.get(&[x as u64, y as u64]).into_iter().flatten() {
+                    if !sides.contains(&Some(self.tube[o])) {
+                        continue;
+                    }
+                    let other = &self.chords[o];
+                    for p in [other.a, other.b] {
+                        let u = along(p);
+                        let (f, foot) = ((u - us) / (ut - us), [chord.a[0] + u * d[0], chord.a[1] + u * d[1]]);
+                        let near =
+                            libm::hypot(p[0] - foot[0], p[1] - foot[1]) * m <= chord.half + other.half + 2.0 * shell;
+                        if near && f > 1e-6 && f < 1.0 - 1e-6 {
+                            feet.push(f);
+                        }
+                    }
+                }
+            }
+        }
+        feet.sort_by(f64::total_cmp);
+        feet.dedup_by(|a, b| *a - *b < 1e-9);
+        [*s].into_iter().chain(feet.iter().map(|&f| s.mix(t, f))).chain([*t]).collect()
+    }
+
+    /// Where the piece of chord c from station s to t meets another tube for its inside and shell: on each side whose
+    /// tube the chord's middle meets, the clip that takes off the other's side between the two stations' cuts. The
+    /// meeting ends at a ring whose next chord does not meet that tube.
     pub fn clips(&self, c: usize, (s, t): (&Station, &Station)) -> Vec<Meeting> {
-        let meet =
-            Meet { across: [self.chords[c].half + self.rules.ladder.bake.shell_m; 2], past: MEET_PAST_M, up: None };
-        let at = |u: f64| self.meets(c, &s.mix(t, u), meet);
-        let (cs, ct) = (at(0.0), at(1.0));
-        let beyond = BEYOND_M / direction(&self.chords[c]).1.max(BEYOND_M);
-        let (before, after) = (at(-beyond), at(1.0 + beyond));
+        let (sides, ring_cuts) = self.met(c);
+        if sides == [None, None] {
+            return Vec::new();
+        }
+        let rings = [self.ring(c, 0), self.ring(c, 1)];
+        // A piece that runs against its chord sees the chord's sides the other way round.
+        let against = s.ax * rings[0].ax + s.ay * rings[0].ay < 0.0;
+        let ring_of = |st: &Station| (0..2).find(|&k| libm::hypot(st.x - rings[k].x, st.y - rings[k].y) < 1e-9);
         let mut out = Vec::new();
         for side in 0..2 {
-            let (Some(from), Some(to)) = (cs[side], ct[side]) else { continue };
+            let Some(tube) = sides[if against { 1 - side } else { side }] else { continue };
+            let cut = |st: &Station| match ring_of(st).filter(|_| !against) {
+                Some(k) => ring_cuts[k][side],
+                None => self.cut_on(c, st, side, tube),
+            };
+            let (Some(from), Some(to)) = (cut(s), cut(t)) else { continue };
             // Toward the other's side of the own axis: where a narrow tube lies in a wide one's room, the middle lies
             // past the narrow one's axis.
             let away = [s.ax * from.axis.signum(), s.ay * from.axis.signum()];
@@ -504,7 +583,9 @@ impl<'a> Net<'a> {
             let d = OVERLAP_M / metres_per_unit(s.y) / l;
             let shift = |p: [f64; 3]| [p[0] + away[0] * d, p[1] + away[1] * d];
             let (a, z) = (shift(s.at([from.x, 0.0])), shift(t.at([to.x, 0.0])));
-            let ends = [before[side].is_none(), after[side].is_none()];
+            let ends = [s, t].map(|st| {
+                ring_of(st).is_some_and(|k| self.other(c, k).is_some_and(|n| !self.met(n).0.contains(&Some(tube))))
+            });
             out.push(Meeting { clip: Clip { a, b: z, away }, from: (*s, from), to: (*t, to), ends });
         }
         out
@@ -623,9 +704,6 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     let sp = spring(net, chord.section, chord.height);
     let bore = |colour: u32| flagged(colour, BORE);
     let across = |c: Corner| s.mix(&t, 0.5).out(c);
-    // Of two tubes that meet, each draws its side of the middle between their walls.
-    let meetings = net.clips(c, (&s, &t));
-    b.clip(meetings.iter().map(|m| m.clip).collect());
     // A box section is cast: its rock bore is lined.
     let cast = chord.section == Section::Box;
     let (wall, vault) = match bore_of {
@@ -635,36 +713,10 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
         Bore::Rock => (inside.rock, inside.rock),
     };
     let pieces = floor_pieces(net, chord);
-    if bore_of == Bore::Rock {
-        b.strip(
-            (&s, &[[half, lift], [-half, lift]]),
-            (&t, &[[half, lift], [-half, lift]]),
-            bore(if cast { inside.walk } else { inside.rock_floor }),
-            across([0.0, 1.0]),
-        );
-    } else {
-        // The road or the track: in its colour the surface code and the lines; along it, the metres of its stroke or
-        // its sleepers.
-        let paint = flagged(chord.code | (u32::from(chord.marked) << 8), PAINT | BORE);
-        let count =
-            |m: f64| if bore_of == Bore::Track { (chord.along + m) / design.sleeper_m } else { chord.along + m };
-        let corner = |b: &mut Builder<L>, st: &Station, across: f64, m: f64| {
-            b.vertex(st.at([across, lift]), paint, Paint { across, half: road, sleepers: count(m) })
-        };
-        let v = [
-            corner(b, &s, -road, 0.0),
-            corner(b, &s, road, 0.0),
-            corner(b, &t, road, length),
-            corner(b, &t, -road, length),
-        ];
-        b.quad(v, across([0.0, 1.0]));
-        for side in [1.0, -1.0] {
-            let (kerb_face, walk) =
-                ([[side * road, lift], [side * road, kerb]], [[side * road, kerb], [side * half, kerb]]);
-            b.strip((&s, &kerb_face), (&t, &kerb_face), bore(inside.walk), across([-side, 0.0]));
-            b.strip((&s, &walk), (&t, &walk), bore(inside.walk), across([0.0, 1.0]));
-        }
-    }
+    // The road or the track: in its colour the surface code and the lines; along it, the metres of its stroke or its
+    // sleepers.
+    let paint = flagged(chord.code | (u32::from(chord.marked) << 8), PAINT | BORE);
+    let count = |m: f64| if bore_of == Bore::Track { (chord.along + m) / design.sleeper_m } else { chord.along + m };
     // The walls stand on the floor at its sides, the vault on the walls.
     let mut o = inside_outline(net, chord);
     let n = o.len();
@@ -672,34 +724,68 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     let lower = |k: usize| net.lower(c, k).map(|l| spring(net, chord.section, l));
     // Each face faces the middle of the room: a box section's spring is its roof.
     let to_middle = |j: usize| across(inward(o[j], o[j + 1], chord.height / 2.0));
-    for (x, foot, j) in [(-half, o[0][1], 0), (half, o[n - 1][1], n - 2)] {
-        let (a, z) = (wall_side(x, foot, sp, lower(0)), wall_side(x, foot, sp, lower(1)));
-        b.strip((&s, &a), (&t, &z), bore(wall), to_middle(j));
-    }
-    for j in 1..n - 2 {
-        b.strip((&s, &o[j..j + 2]), (&t, &o[j..j + 2]), bore(vault), to_middle(j));
-    }
-    for k in 0..2 {
-        step(b, net, c, k, &o, vault);
-    }
-    // At an opening (not a closed end), the front of the floor goes down to the sill, `lift_m` under the floor. Each
-    // side of a piece has a corner at the top of each piece beside it, which is the corner of a face there.
     let open = |k: usize| net.end_at(c, k).is_some_and(|e| !net.closed(e));
-    for (k, r) in [(0, &s), (1, &t)].into_iter().filter(|(k, _)| open(*k)) {
-        let out = flat(if k == 0 { [-d[0], -d[1]] } else { d });
-        for &(a0, a1, top) in &pieces {
-            let side = |x: f64| {
-                let mut ups: Vec<f64> =
-                    (pieces.iter()).filter(|p| (p.0 == x || p.1 == x) && p.2 <= top).map(|p| p.2).collect();
-                ups.sort_by(f64::total_cmp);
-                ups.dedup();
-                [[x, -lift]].into_iter().chain(ups.into_iter().map(|u| [x, u])).collect::<Vec<Corner>>()
+    // Of two tubes that meet, each draws its side of the middle between their walls, piece by piece where the other
+    // bends.
+    let stations = net.split(c, (&s, &t));
+    let metres = |st: &Station| libm::hypot(st.x - s.x, st.y - s.y) / libm::hypot(t.x - s.x, t.y - s.y) * length;
+    let mut meetings = Vec::new();
+    for (i, w) in stations.windows(2).enumerate() {
+        let (ps, pt, first, last) = (&w[0], &w[1], i == 0, i + 2 == stations.len());
+        let here = net.clips(c, (ps, pt));
+        b.clip(here.iter().map(|m| m.clip).collect());
+        if bore_of == Bore::Rock {
+            let floor = [[half, lift], [-half, lift]];
+            b.strip(
+                (ps, &floor),
+                (pt, &floor),
+                bore(if cast { inside.walk } else { inside.rock_floor }),
+                across([0.0, 1.0]),
+            );
+        } else {
+            let corner = |b: &mut Builder<L>, st: &Station, across: f64| {
+                b.vertex(st.at([across, lift]), paint, Paint { across, half: road, sleepers: count(metres(st)) })
             };
-            b.strip((r, &side(a0)), (r, &side(a1)), bore(inside.walk), out);
+            let v = [corner(b, ps, -road), corner(b, ps, road), corner(b, pt, road), corner(b, pt, -road)];
+            b.quad(v, across([0.0, 1.0]));
+            for side in [1.0, -1.0] {
+                let (kerb_face, walk) =
+                    ([[side * road, lift], [side * road, kerb]], [[side * road, kerb], [side * half, kerb]]);
+                b.strip((ps, &kerb_face), (pt, &kerb_face), bore(inside.walk), across([-side, 0.0]));
+                b.strip((ps, &walk), (pt, &walk), bore(inside.walk), across([0.0, 1.0]));
+            }
         }
-    }
-    if bore_of == Bore::Road {
-        lamps(b, net, c, (&s, &t));
+        for (x, foot, j) in [(-half, o[0][1], 0), (half, o[n - 1][1], n - 2)] {
+            let (lo, hi) = (lower(0).filter(|_| first), lower(1).filter(|_| last));
+            b.strip((ps, &wall_side(x, foot, sp, lo)), (pt, &wall_side(x, foot, sp, hi)), bore(wall), to_middle(j));
+        }
+        for j in 1..n - 2 {
+            b.strip((ps, &o[j..j + 2]), (pt, &o[j..j + 2]), bore(vault), to_middle(j));
+        }
+        // At a vertex the step in the crown, and at an opening (not a closed end) the front of the floor down to the
+        // sill, `lift_m` under the floor. Each side of a piece has a corner at the top of each piece beside it, which
+        // is the corner of a face there.
+        for (k, r) in [(0, &s), (1, &t)].into_iter().filter(|&(k, _)| if k == 0 { first } else { last }) {
+            step(b, net, c, k, &o, vault);
+            if !open(k) {
+                continue;
+            }
+            let out = flat(if k == 0 { [-d[0], -d[1]] } else { d });
+            for &(a0, a1, top) in &pieces {
+                let side = |x: f64| {
+                    let mut ups: Vec<f64> =
+                        (pieces.iter()).filter(|p| (p.0 == x || p.1 == x) && p.2 <= top).map(|p| p.2).collect();
+                    ups.sort_by(f64::total_cmp);
+                    ups.dedup();
+                    [[x, -lift]].into_iter().chain(ups.into_iter().map(|u| [x, u])).collect::<Vec<Corner>>()
+                };
+                b.strip((r, &side(a0)), (r, &side(a1)), bore(inside.walk), out);
+            }
+        }
+        if bore_of == Bore::Road {
+            lamps(b, net, c, (&s, &t), (metres(ps), metres(pt)));
+        }
+        meetings.extend(here);
     }
     b.clip(Vec::new());
     // At a cut, a face closes the room where the other tube's floor is higher or its roof lower.
@@ -723,13 +809,19 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     }
 }
 
-/// The lamps of chord c of a road bore, from ring s to ring t: one under the crown where the metres along pass a multiple
-/// of the spacing.
-fn lamps<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize, (s, t): (&Station, &Station)) {
+/// The lamps of chord c of a road bore, from ring s to ring t, within metres `from` to `to` along it: one under the
+/// crown where the metres along pass a multiple of the spacing.
+fn lamps<L: Fn([f64; 3]) -> f64>(
+    b: &mut Builder<L>,
+    net: &Net,
+    c: usize,
+    (s, t): (&Station, &Station),
+    (from, to): (f64, f64),
+) {
     let (chord, design, inside) = (&net.chords[c], &net.rules.design, &net.rules.inside);
     let length = direction(chord).1;
-    let mut at = (chord.along / design.lamp_spacing_m).ceil() * design.lamp_spacing_m;
-    while at < chord.along + length {
+    let mut at = ((chord.along + from) / design.lamp_spacing_m).ceil() * design.lamp_spacing_m;
+    while at < chord.along + to {
         let m = at - chord.along;
         let (p, q) = (((m - design.lamp_m / 2.0) / length).max(0.0), ((m + design.lamp_m / 2.0) / length).min(1.0));
         let (sp, sq) = (s.mix(t, p), s.mix(t, q));
@@ -785,6 +877,11 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
     colour: u32,
     meets: Meets,
 ) {
+    // Split where a tube that a piece meets bends, as the inside is.
+    let split = |&(s, t, h, section, c): &Run| {
+        net.split(c, (&s, &t)).windows(2).map(|w| (w[0], w[1], h, section, c)).collect::<Vec<Run>>()
+    };
+    let pieces: Vec<Run> = pieces.iter().flat_map(split).collect();
     let last = |i: usize| i + 1 == pieces.len();
     let next_of = |i: usize| pieces.get(i + 1).map(|p| (p.2, p.3)).or(meets.lower.filter(|_| last(i)));
     let outer = |st: &Station, h: f64, section: Section| shell_outline(net, section, half, h, foot - st.z);

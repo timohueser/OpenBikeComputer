@@ -126,7 +126,7 @@ fn head_cuts(net: &Net, e: usize, foot: f64) -> Vec<(f64, f64)> {
     let (right, left) = wide(net, e);
     let st = net.frame(e, 0.0);
     let up = [foot - st.z, end.face.max(chord.height + design.frame_m + bake.shell_m)];
-    let meet = tube::Meet { across: [-right, left], past: tube::MEET_PAST_M, up: Some(up) };
+    let meet = tube::Meet { across: [-right, left], past: tube::MEET_PAST_M, up: Some(up), only: None };
     let cuts = net.meets(c, &st, meet);
     cuts.into_iter().flatten().map(|cut| (cut.x, cut.axis.signum())).collect()
 }
@@ -246,7 +246,8 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize) {
     let run: Vec<_> = shell.iter().map(|p| (p.0, p.1, p.2, p.3, p.4)).collect();
     tube::shell(b, net, &run, half, foot, look.shell, reach.then);
     if let Some(&(s, t, _, _, c, k)) = shell.last().filter(|_| reach.closed) {
-        b.clip(net.clips(c, (&s, &t)).iter().map(|m| m.clip).collect());
+        let split = net.split(c, (&s, &t));
+        b.clip(net.clips(c, (&split[split.len() - 2], &t)).iter().map(|m| m.clip).collect());
         end_face(b, net, (c, k), &t, foot, look.shell, flat([t.x - s.x, t.y - s.y]));
         b.clip(Vec::new());
     }
