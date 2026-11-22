@@ -43,12 +43,17 @@ fn half_at(net: &Net, e: usize) -> f64 {
     net.opening(e).map_or(net.holes[e].half, |(c, _)| net.chords[c].half)
 }
 
+/// The arch segments of hole e's tube at its opening.
+fn segments_at(net: &Net, e: usize) -> usize {
+    net.opening(e).map_or(net.rules.design.arch_segments, |(c, _)| tube::segments(net, &net.chords[c]))
+}
+
 /// The outline of hole e's rim, round its opening's outline grown by the frame and the shell.
 fn rim_outline(net: &Net, e: usize) -> Vec<Corner> {
     let (o, design) = (&net.holes[e], &net.rules.design);
     let grow = design.frame_m + net.rules.ladder.bake.shell_m;
     let sp = spring(net, o.section, o.height);
-    outline(o.section, half_at(net, e) + grow, o.height + grow, sp, design.arch_segments)
+    outline(o.section, half_at(net, e) + grow, o.height + grow, sp, segments_at(net, e))
 }
 
 /// The metres to the left of record r's point of the outer edges of the frames of its holes.
@@ -118,15 +123,21 @@ fn top(end: &crate::End, (lo, hi): (f64, f64), (coping, slope): (f64, f64), t: f
 fn grown(net: &Net, e: usize, grow: f64) -> Vec<Corner> {
     let Some((c, _)) = net.opening(e) else { return Vec::new() };
     let (chord, design) = (&net.chords[c], &net.rules.design);
-    let pieces = tube::floor_pieces(net, chord);
+    let pieces = floor_across(net, e);
     let sp = spring(net, chord.section, chord.height);
-    let o = outline(chord.section, chord.half + grow, chord.height + grow, sp, design.arch_segments);
+    let o = outline(chord.section, chord.half + grow, chord.height + grow, sp, tube::segments(net, chord));
     let (first, last) = (o[0][0], o[o.len() - 1][0]);
     let sides = |x: f64, top: f64| [[x, -design.lift_m], [x, top]];
     let mut out = sides(first, pieces[0].2).to_vec();
     out.extend_from_slice(&o[1..o.len() - 1]);
     out.extend(sides(last, pieces[pieces.len() - 1].2).into_iter().rev());
     out
+}
+
+/// The floor of hole e's tube at its opening across to the left of the way in: per piece from the right, its metres
+/// across and the height of its top.
+fn floor_across(net: &Net, e: usize) -> Vec<(f64, f64, f64)> {
+    net.opening(e).map_or(Vec::new(), |(c, k)| tube::floor_along(net, c, k, &net.frame(e, 0.0)))
 }
 
 /// The faces of record r: the head on its frame line with a hole per opening (its head wall or rims, the sills, the
@@ -149,7 +160,7 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize) {
         let shell = collar(net, e, reach.shell);
         let half = net.opening(e).map_or(net.holes[e].half, |(c, _)| net.chords[c].half);
         let run: Vec<_> = shell.iter().map(|p| (p.0, p.1, p.2, p.3)).collect();
-        tube::shell(b, net, &run, half, foot, look.shell, reach.then);
+        tube::shell(b, net, &run, (half, segments_at(net, e)), foot, look.shell, reach.then);
         if let Some(&(s, t, _, _, c, k)) = shell.last().filter(|_| reach.closed) {
             end_face(b, net, (c, k), &t, foot, look.shell, flat([t.x - s.x, t.y - s.y]));
         }
@@ -188,7 +199,7 @@ fn head<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize, foot: f
             .map(|&e| {
                 let hole = grown(net, e, design.frame_m);
                 let hw = hole[0][0].abs();
-                let pieces = net.opening(e).map(|(c, _)| tube::floor_pieces(net, &net.chords[c])).unwrap_or_default();
+                let pieces = floor_across(net, e);
                 let sills = [-hw].into_iter().chain(pieces.iter().map(|p| p.0)).chain([pieces[pieces.len() - 1].1, hw]);
                 Gap {
                     st: net.frame(e, -design.recess_m),
@@ -207,7 +218,7 @@ fn head<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize, foot: f
                 let reach = boxes::reach(net, e);
                 let (h, section) =
                     collar(net, e, reach.shell).first().map_or((chord.height, chord.section), |p| (p.2, p.3));
-                let outline = tube::shell_outline(net, section, chord.half, h, foot - st.z);
+                let outline = tube::shell_outline(net, (section, segments_at(net, e)), chord.half, h, foot - st.z);
                 Gap { st, across: net.holes[e].across, up: net.holes[e].up, outline, sills: Vec::new() }
             })
             .collect();
@@ -227,7 +238,7 @@ fn head<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize, foot: f
         let (c, _) = net.opening(e).expect("a built hole");
         let chord = &net.chords[c];
         let sp = spring(net, chord.section, chord.height);
-        let pieces = tube::floor_pieces(net, chord);
+        let pieces = floor_across(net, e);
         let (inner, hole) = (grown(net, e, 0.0), grown(net, e, design.frame_m));
         let (front, ring) = (net.frame(e, -design.recess_m), net.frame(e, 0.0));
         // The sill from the front to the frame line, the reveal, and the frame round the opening.
@@ -267,7 +278,7 @@ fn closed<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize, foot:
     let look = &net.rules.looks[&net.records[end.record].look];
     end_face(b, net, (c, k), &ring, foot, look.shell, flat([-into[0], -into[1]]));
     // The room's outline round, from the right wall's foot: up and over, down the left wall, back across the floor.
-    let (right, left) = room(net, (c, k));
+    let (right, left) = room(net, (c, k), &ring);
     let mut round = right;
     round.extend(left[1..left.len() - 1].iter().rev());
     let dark = net.rules.inside.void;
@@ -292,22 +303,24 @@ fn end_face<L: Fn([f64; 3]) -> f64>(
     out: [f64; 3],
 ) {
     let chord = &net.chords[c];
-    let shell = tube::shell_outline(net, chord.section, chord.half, chord.height, foot - t.z);
+    let shell =
+        tube::shell_outline(net, (chord.section, tube::segments(net, chord)), chord.half, chord.height, foot - t.z);
     let n = shell.len();
-    let (right, left) = room(net, (c, k));
+    let (right, left) = room(net, (c, k), t);
     b.strip((t, &shell[..n - 1]), (t, &right), colour, out);
     let bottom = [shell[0], shell[n - 1], shell[n - 2]];
     b.strip((t, &bottom), (t, &left), colour, out);
 }
 
-/// The room of chord c at its vertex k, as the inside draws it there, in two runs from the right wall's foot to the
-/// left spring: up the right wall and over the vault; across the floor (each piece's top, and both tops where two
-/// pieces meet) and up the left wall. A wall has the spring of a lower chord that goes on there.
-fn room(net: &Net, (c, k): (usize, usize)) -> (Vec<Corner>, Vec<Corner>) {
+/// The room of chord c at its vertex k, as the inside draws it there, across to the left of station `st` there, in two
+/// runs from the right wall's foot to the left spring: up the right wall and over the vault; across the floor (each
+/// piece's top, and both tops where two pieces meet) and up the left wall. A wall has the spring of a lower chord that
+/// goes on there.
+fn room(net: &Net, (c, k): (usize, usize), st: &Station) -> (Vec<Corner>, Vec<Corner>) {
     let chord = &net.chords[c];
     let sp = spring(net, chord.section, chord.height);
-    let inner = outline(chord.section, chord.half, chord.height, sp, net.rules.design.arch_segments);
-    let (n, pieces) = (inner.len(), tube::floor_pieces(net, chord));
+    let inner = outline(chord.section, chord.half, chord.height, sp, tube::segments(net, chord));
+    let (n, pieces) = (inner.len(), tube::floor_along(net, c, k, st));
     let lower = net.lower(c, k).map(|l| spring(net, chord.section, l));
     let wall = |x: f64, floor: f64| {
         let mut w = vec![[x, floor]];
@@ -431,13 +444,15 @@ impl Wall<'_> {
         let mut beside: Vec<Column> = metres(wide.0, edges.0).into_iter().filter(|&t| t < first).map(plain).collect();
         for h in holes {
             let (n, hw, foot) = (h.outline.len(), h.outline[0][0].abs(), self.foot - h.st.z);
-            // The side of the hole up to where its top starts.
+            // Each side of the hole up to where its top starts.
             let rise = h.outline.iter().position(|p| p[0] != h.outline[0][0]).unwrap() - 1;
-            let jamb: Vec<f64> = [foot].into_iter().chain(h.outline[..=rise].iter().map(|p| p[1])).collect();
-            beside.push(on(h, -hw, &jamb));
+            let jamb = |side: &mut dyn Iterator<Item = &Corner>| {
+                [foot].into_iter().chain(side.map(|p| p[1])).collect::<Vec<f64>>()
+            };
+            beside.push(on(h, -hw, &jamb(&mut h.outline[..=rise].iter())));
             runs.push((beside, false));
             runs.push((h.outline[rise..n - rise].iter().map(|p| on(h, p[0], &[p[1]])).collect(), true));
-            beside = vec![on(h, hw, &jamb)];
+            beside = vec![on(h, hw, &jamb(&mut h.outline[n - 1 - rise..].iter().rev()))];
         }
         let last = holes.last().map_or(wide.0, |h| h.across - h.outline[0][0]);
         beside.extend(metres(edges.1, wide.1).into_iter().filter(|&t| t > last).map(plain));

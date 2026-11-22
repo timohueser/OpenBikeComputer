@@ -223,8 +223,8 @@ impl End {
     }
 }
 
-/// A `tunnel-tube` record: one chord of a tube from `a` to `b` (world point and floor), in the rising metres of its
-/// way, with the surface code and the lines of its road as the viewer gives them (`code`, `marked`).
+/// A `tunnel-tube` record: one chord of a room from `a` to `b` (world point and the room's floor), in the rising metres
+/// of its first lane's way, with its lanes from the right wall to the left and the places of the edges between them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chord {
     pub a: [f64; 3],
@@ -233,24 +233,51 @@ pub struct Chord {
     pub half: f64,
     pub height: f64,
     pub look: String,
-    pub class: String,
-    /// The half-width of the carriageway.
-    pub road: f64,
-    /// The metres along the stroke of its way at `a`.
-    pub along: f64,
+    pub lanes: Vec<Lane>,
+    /// Per edge between two lanes, its metres to the left of the axis at `a` and at `b`.
+    pub edges: Vec<[f64; 2]>,
     /// The parts of the chain's two ends; None for an end with no part of its own.
     pub ends: [Option<Part>; 2],
+}
+
+/// A lane of a room: its way's class, the half-width of its carriageway, the metres along the stroke of its way at
+/// `a`, its axis's metres to the left of the room's and its floor over the room's at `a` and at `b`, and the surface
+/// code and the lines of its road as the viewer gives them (`code`, `marked`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lane {
+    pub class: String,
+    pub road: f64,
+    pub along: f64,
+    pub off: [f64; 2],
+    pub up: [f64; 2],
     pub code: u32,
     pub marked: bool,
 }
 
 impl Chord {
-    /// The chord of a record, whose `class` is in a group of `rules`; `code` and `marked` are the caller's.
+    /// The chord of a record, each of whose lanes' classes is in a group of `rules`; `code` and `marked` are the
+    /// caller's.
     pub fn from_tags(a: [f64; 3], b: [f64; 3], tags: &Tags, rules: &Rules) -> Result<Chord, String> {
-        let class = tag(tags, "class")?;
-        if rules.ladder.group(class).is_none() {
+        let classes: Vec<&str> = tag(tags, "class")?.split(' ').collect();
+        if let Some(class) = classes.iter().find(|c| rules.ladder.group(c).is_none()) {
             return Err(format!("tag class: {class} is in no group"));
         }
+        let n = classes.len();
+        let (road, along) = (row_of(tags, "road", n, None)?, row_of(tags, "along", n, None)?);
+        let alone = (n == 1).then_some(0.0);
+        let (off, up) = (row_of(tags, "off", 2 * n, alone)?, row_of(tags, "up", 2 * n, Some(0.0))?);
+        let edges = if n == 1 { Vec::new() } else { row_of(tags, "edge", 2 * (n - 1), None)? };
+        let lanes = (0..n)
+            .map(|i| Lane {
+                class: classes[i].to_string(),
+                road: road[i],
+                along: along[i],
+                off: [off[2 * i], off[2 * i + 1]],
+                up: [up[2 * i], up[2 * i + 1]],
+                code: 0,
+                marked: false,
+            })
+            .collect();
         let ends: Vec<&str> = tag(tags, "ends")?.split(' ').collect();
         let [e0, e1] = ends[..] else { return Err(format!("tag ends: {}", ends.join(" "))) };
         Ok(Chord {
@@ -260,12 +287,9 @@ impl Chord {
             half: number(tags, "half")?,
             height: number(tags, "height")?,
             look: tag(tags, "look")?.to_string(),
-            class: class.to_string(),
-            road: number(tags, "road")?,
-            along: number(tags, "along")?,
+            lanes,
+            edges: edges.chunks(2).map(|e| [e[0], e[1]]).collect(),
             ends: [Part::parse(e0), Part::parse(e1)],
-            code: 0,
-            marked: false,
         })
     }
 }
@@ -319,7 +343,7 @@ pub fn meshes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -
     b.mesh()
 }
 
-/// The boxes of the built holes and the floor segments of the chords of built chains. `near_volumes` keeps those near
+/// The boxes of the built holes and the floor segments of the lanes of the chords of built chains. `near_volumes` keeps those near
 /// a square, so a tile's records build their volumes once.
 pub fn volumes(ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
     let net = Net::new(ends, chords, rules);
@@ -330,17 +354,17 @@ pub fn volumes(ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {
             out.boxes.extend(words);
         }
     }
-    for (c, chord) in chords.iter().enumerate() {
-        if net.built_chord(c) {
-            out.floors.extend([
-                chord.a[0],
-                chord.a[1],
-                chord.b[0],
-                chord.b[1],
-                chord.a[2] + lift,
-                chord.b[2] + lift,
-                chord.half,
-            ]);
+    for (c, chord) in chords.iter().enumerate().filter(|&(c, _)| net.built_chord(c)) {
+        let rings = [net.ring(c, 0), net.ring(c, 1)];
+        for (i, lane) in chord.lanes.iter().enumerate() {
+            // A lane's axis at each vertex, its floor there and its half-width, the lesser of its two.
+            let at = |k: usize| {
+                let (v, r) = (if k == 0 { chord.a } else { chord.b }, rings[k]);
+                [v[0] + r.ax * lane.off[k], v[1] + r.ay * lane.off[k], v[2] + lane.up[k] + lift]
+            };
+            let half = tube::lane_half(chord, i, 0).min(tube::lane_half(chord, i, 1));
+            let (p, q) = (at(0), at(1));
+            out.floors.extend([p[0], p[1], q[0], q[1], p[2], q[2], half]);
         }
     }
     out

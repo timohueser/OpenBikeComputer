@@ -51,7 +51,7 @@ fn chord(a: [f64; 3], b: [f64; 3], height: f64, along: f64) -> Chord {
     ]);
     let (pa, pb) = (world(a[0], a[1]), world(b[0], b[1]));
     let mut c = Chord::from_tags([pa[0], pa[1], a[2]], [pb[0], pb[1], b[2]], &t, Rules::embedded()).unwrap();
-    c.code = 2;
+    c.lanes[0].code = 2;
     c
 }
 
@@ -76,7 +76,7 @@ fn underpass((mut ends, mut chords): (Vec<End>, Vec<Chord>), class: &str) -> (Ve
         (e.holes[0].kind, e.holes[0].section) = (Part::Box, Section::Box);
     }
     for c in &mut chords {
-        (c.section, c.ends, c.class) = (Section::Box, [Some(Part::Box); 2], class.into());
+        (c.section, c.ends, c.lanes[0].class) = (Section::Box, [Some(Part::Box); 2], class.into());
     }
     (ends, chords)
 }
@@ -116,7 +116,8 @@ fn in_shell(net: &Net, c: usize, foot: f64, p: [f64; 3]) -> bool {
     // The shell's faces run straight from ring to ring: at `across`, the floor rises by the share between them.
     let share = boxes::share(along, across, len, [boxes::slope(d, &s), boxes::slope(d, &t)]).clamp(0.0, 1.0);
     let floor = s.z + (t.z - s.z) * share;
-    let o = tube::shell_outline(net, chord.section, chord.half, chord.height, foot - floor);
+    let o =
+        tube::shell_outline(net, (chord.section, tube::segments(net, chord)), chord.half, chord.height, foot - floor);
     let q = [across, p[2] - floor];
     let mut odd = false;
     for (i, a) in o.iter().enumerate() {
@@ -279,6 +280,11 @@ fn the_boxes_hold_the_room_and_lie_inside_the_part() {
     for (bend, grade) in [(30.0, 0.15), (45.0, 0.15), (60.0, 0.15), (60.0, 0.25)] {
         let (ends, chords) = graded(bend, grade);
         cases.push((format!("bent {bend}° on a grade of {grade}"), ends, chords));
+    }
+    // Rooms of two and three lanes.
+    for (name, lanes, line) in rooms().into_iter().filter(|r| r.1.len() > 1) {
+        let (ends, chords) = room(&lanes, &line);
+        cases.push((name.to_string(), ends, chords));
     }
     for (name, ends, chords) in &cases {
         let (room, solid) = boxes_fit(name, ends, chords);
@@ -541,7 +547,7 @@ fn one_chord() -> (Vec<End>, Vec<Chord>) {
 #[test]
 fn a_part_is_closed_but_at_its_foot() {
     let (ends, mut rock) = bent(30.0, 20.0);
-    rock.iter_mut().for_each(|c| c.class = "footway".into());
+    rock.iter_mut().for_each(|c| c.lanes[0].class = "footway".into());
     for (name, (ends, chords)) in [
         ("straight", tube()),
         ("turned and bent", bent(30.0, 20.0)),
@@ -657,7 +663,7 @@ fn kind((mut ends, mut chords): (Vec<End>, Vec<Chord>), part: Part, class: &str)
         (e.part, e.holes[0].kind) = (part, part);
     }
     for c in &mut chords {
-        (c.ends, c.class) = ([Some(part); 2], class.into());
+        (c.ends, c.lanes[0].class) = ([Some(part); 2], class.into());
     }
     (ends, chords)
 }
@@ -844,7 +850,7 @@ fn side_by_side(lines: &[(f64, f64)], part: Part, class: &str) -> (Vec<End>, Vec
     for &(north, z) in lines {
         for (a, b) in [(0.0, 20.0), (20.0, 40.0)] {
             let mut c = chord([a, north, z + a * 0.005], [b, north, z + b * 0.005], 5.0, a);
-            (c.ends, c.class) = ([Some(part); 2], class.into());
+            (c.ends, c.lanes[0].class) = ([Some(part); 2], class.into());
             chords.push(c);
         }
     }
@@ -893,6 +899,190 @@ fn a_line_with_holes_is_closed_and_has_no_t_vertex() {
         for w in lines.windows(2).filter(|_| part == Part::Arch) {
             let got = hit(&faces, [-3.0, (w[0].0 + w[1].0) / 2.0, w[0].1 + 1.0], [1.0, 0.0, 0.0], 10.0);
             assert!(got.is_some_and(|h| h.1 && h.0 < 3.0), "{name}: the head wall between the holes: {got:?}");
+        }
+    }
+}
+
+#[test]
+fn a_tube_of_one_lane_draws_as_before_lanes() {
+    // The counts of vertices and indices and an FNV-1a digest of all words of the meshes of the one-lane fixtures, as
+    // the builder drew them before rooms had lanes.
+    let rules = Rules::embedded();
+    let (ends, mut rock) = bent(30.0, 20.0);
+    rock.iter_mut().for_each(|c| c.lanes[0].class = "footway".into());
+    for (name, (ends, chords), want) in [
+        ("tube", tube(), (1692, 2760, 0x76ca59c6c0417d99)),
+        ("bent", bent(30.0, 20.0), (1796, 2922, 0x32770b2e08b39be2)),
+        ("rock", (ends, rock), (1596, 2604, 0x7985ddc9a6419370)),
+        ("underpass", underpass(tube(), "primary"), (804, 1308, 0x605ceef7d1cd5375)),
+        ("path underpass", underpass(bent(30.0, 20.0), "footway"), (676, 1116, 0x8b983f3aff05a770)),
+        ("one chord", one_chord(), (532, 876, 0xe9940653d7761b90)),
+        ("short", short(), (1326, 2136, 0xdc35cfb127bf2d81)),
+        ("graded", graded(60.0, 0.15), (1556, 2538, 0x775cdd3aa508c8eb)),
+    ] {
+        let m = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);
+        let mut h: u64 = 0xcbf29ce484222325;
+        for w in m.vertices.iter().chain(&m.indices) {
+            h = (h ^ u64::from(*w)).wrapping_mul(0x100000001b3);
+        }
+        assert_eq!((m.vertices.len() / WORDS, m.indices.len(), h), want, "{name}");
+    }
+}
+
+/// A lane of a test room: its class, the half-width of its carriageway and of its own space, and per metre along the
+/// room its axis's metres to the left of the room's and its floor over the room's.
+struct Way {
+    class: &'static str,
+    road: f64,
+    half: f64,
+    off: fn(f64) -> f64,
+    up: fn(f64) -> f64,
+}
+
+/// A room of `lanes` along a line of metres east and north at the floor 500 m, with a head of one hole at each end and
+/// a way per lane into it. Its half-width holds each lane's space; between two lanes the edge lies in the middle of
+/// their two spaces' edges; it is 7 m high.
+fn room(lanes: &[Way], line: &[[f64; 2]]) -> (Vec<End>, Vec<Chord>) {
+    let at: Vec<f64> = (line.windows(2)).fold(vec![0.0], |mut s, w| {
+        s.push(s[s.len() - 1] + libm::hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]));
+        s
+    });
+    let half = (at.iter()).flat_map(|&m| lanes.iter().map(move |l| (l.off)(m).abs() + l.half)).fold(0.0, f64::max);
+    let num = |v: f64| format!("{}", (v * 1000.0).round() / 1000.0);
+    let row = |f: &dyn Fn(&Way) -> String| lanes.iter().map(f).collect::<Vec<_>>().join(" ");
+    let mut chords = Vec::new();
+    for (k, w) in line.windows(2).enumerate() {
+        let (m0, m1) = (at[k], at[k + 1]);
+        let pair = |f: fn(f64) -> f64| format!("{} {}", num(f(m0)), num(f(m1)));
+        let edge = |i: usize, m: f64| {
+            let (r, l) = (&lanes[i], &lanes[i + 1]);
+            ((r.off)(m) + r.half + (l.off)(m) - l.half) / 2.0
+        };
+        let edges = (0..lanes.len() - 1).map(|i| format!("{} {}", num(edge(i, m0)), num(edge(i, m1))));
+        let mut t = vec![
+            ("section", "round".to_string()),
+            ("half", num(half)),
+            ("height", "7".into()),
+            ("look", "concrete".into()),
+            ("class", row(&|l| l.class.into())),
+            ("road", row(&|l| num(l.road))),
+            ("along", row(&|_| num(m0))),
+            ("ends", "arch arch".into()),
+            ("off", lanes.iter().map(|l| pair(l.off)).collect::<Vec<_>>().join(" ")),
+            ("up", lanes.iter().map(|l| pair(l.up)).collect::<Vec<_>>().join(" ")),
+        ];
+        if lanes.len() > 1 {
+            t.push(("edge", edges.collect::<Vec<_>>().join(" ")));
+        }
+        let (pa, pb) = (world(w[0][0], w[0][1]), world(w[1][0], w[1][1]));
+        let mut c =
+            Chord::from_tags([pa[0], pa[1], 500.0], [pb[0], pb[1], 500.0], &tags(&t), Rules::embedded()).unwrap();
+        c.lanes.iter_mut().for_each(|l| l.code = 2);
+        chords.push(c);
+    }
+    let n = line.len();
+    let heading = |a: [f64; 2], b: [f64; 2]| libm::atan2(-(b[1] - a[1]), b[0] - a[0]);
+    let end = |p: [f64; 2], q: [f64; 2]| {
+        let t = tags(&[
+            ("part", "arch".into()),
+            ("heading", heading(p, q).to_string()),
+            ("section", "round".into()),
+            ("half", num(half)),
+            ("height", "7".into()),
+            ("look", "concrete".into()),
+            ("collar", "6".into()),
+            ("face", "8.1".into()),
+            ("left", "6 4 2".into()),
+            ("right", "3".into()),
+            ("foot", "-2".into()),
+            ("way", row(&|_| "0 0".into())),
+            ("shift", row(&|_| "0".into())),
+        ]);
+        End::from_tags(world(p[0], p[1]), 500.0, &t, Rules::embedded()).unwrap()
+    };
+    (vec![end(line[0], line[1]), end(line[n - 1], line[n - 2])], chords)
+}
+
+/// A test room: its name, its lanes and its line.
+type Room = (&'static str, Vec<Way>, Vec<[f64; 2]>);
+
+/// The test rooms.
+fn rooms() -> Vec<Room> {
+    let road = |off: fn(f64) -> f64, up: fn(f64) -> f64| Way { class: "primary", road: 3.5, half: 4.2, off, up };
+    let path = |off: fn(f64) -> f64, up: fn(f64) -> f64| Way { class: "footway", road: 1.0, half: 1.6, off, up };
+    let straight = vec![[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [30.0, 0.0], [40.0, 0.0]];
+    // A bend of 30° at 20 m, in chords of a metre.
+    let (c, s) = (libm::cos(30f64.to_radians()), libm::sin(30f64.to_radians()));
+    let bent: Vec<[f64; 2]> = (0..=40)
+        .map(f64::from)
+        .map(|m| if m <= 20.0 { [m, 0.0] } else { [20.0 + (m - 20.0) * c, (m - 20.0) * s] })
+        .collect();
+    vec![
+        ("one", vec![road(|_| 0.0, |_| 0.0)], straight.clone()),
+        ("two, level", vec![road(|_| -4.5, |_| 0.0), road(|_| 4.5, |_| 0.0)], straight.clone()),
+        ("two, 0.8 m apart", vec![road(|_| -4.5, |_| 0.0), road(|_| 4.5, |_| 0.8)], straight.clone()),
+        ("a footway 3 m up", vec![road(|_| -1.5, |_| 0.0), path(|_| 4.6, |_| 3.0)], straight.clone()),
+        ("three", vec![road(|_| -7.0, |_| 0.4), road(|_| 1.0, |_| 0.0), path(|_| 6.5, |_| 3.0)], straight.clone()),
+        (
+            "a lane that drifts 3 m",
+            vec![road(|m| -5.0 + 3.0 * m / 40.0, |_| 0.0), road(|_| 4.5, |m| m / 40.0)],
+            straight.clone(),
+        ),
+        ("carriageways that touch", vec![road(|_| -3.5, |_| 0.0), road(|_| 3.5, |_| 0.0)], straight.clone()),
+        ("a bend of 30° in 1 m chords", vec![road(|_| -4.5, |_| 0.0), road(|_| 4.5, |m| 0.5 + m / 80.0)], bent),
+    ]
+}
+
+#[test]
+fn a_room_is_closed_exactly() {
+    for (name, lanes, line) in rooms() {
+        let (ends, chords) = room(&lanes, &line);
+        let (open, crowded) = not_closed(&ends, &chords);
+        assert!(open.is_empty(), "{name}: {} open edges, the first {:?}", open.len(), &open[..open.len().min(4)]);
+        assert!(
+            crowded.is_empty(),
+            "{name}: {} crowded edges, the first {:?}",
+            crowded.len(),
+            &crowded[..crowded.len().min(4)]
+        );
+    }
+}
+
+#[test]
+fn from_each_lane_a_way_up_meets_the_vault_and_a_way_across_the_far_wall() {
+    let rules = Rules::embedded();
+    for (name, lanes, line) in rooms() {
+        let (ends, chords) = room(&lanes, &line);
+        let net = Net::new(&ends, &chords, rules);
+        let faces = solid(&meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules));
+        let p3 = |p: [f64; 3]| {
+            let q = metric([p[0], p[1]]);
+            [q[0], q[1], p[2]]
+        };
+        for (c, chord) in chords.iter().enumerate().skip(1).step_by(3).take(chords.len().saturating_sub(2)) {
+            let st = net.ring(c, 0).mix(&net.ring(c, 1), 0.5);
+            let lane = |i: usize| {
+                let l = &chord.lanes[i];
+                ((l.off[0] + l.off[1]) / 2.0, (l.up[0] + l.up[1]) / 2.0)
+            };
+            for i in 0..chord.lanes.len() {
+                let (off, up) = lane(i);
+                let o = p3(st.at([off, up + 1.0]));
+                let got = hit(&faces, o, [0.0, 0.0, 1.0], 20.0);
+                assert!(got.is_some_and(|h| h.1), "{name}, chord {c}, lane {i}: up {got:?}");
+                let got = hit(&faces, o, [0.0, 0.0, -1.0], 20.0);
+                assert!(got.is_some_and(|h| h.1 && h.0 < 1.0), "{name}, chord {c}, lane {i}: down {got:?}");
+                // Across, over both floors, past the next lane's axis to the far wall.
+                if i + 1 < chord.lanes.len() {
+                    let (next, up_next) = lane(i + 1);
+                    let from = p3(st.at([off, up.max(up_next) + 1.5]));
+                    let far = p3(st.at([next, up.max(up_next) + 1.5]));
+                    let d = [far[0] - from[0], far[1] - from[1], 0.0];
+                    let l = libm::hypot(d[0], d[1]);
+                    let got = hit(&faces, from, [d[0] / l, d[1] / l, 0.0], 40.0);
+                    assert!(got.is_some_and(|h| h.1 && h.0 > l), "{name}, chord {c}, lane {i}: across {got:?}");
+                }
+            }
         }
     }
 }

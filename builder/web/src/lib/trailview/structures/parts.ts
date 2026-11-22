@@ -29,7 +29,7 @@ function recordsOf(list: Feature[], tile: Node): string | null {
         for (const { xy, z } of kind === 'tunnel-end' || kind === 'tunnel-tube' ? parts : []) {
             if (!z) continue;
             if (kind === 'tunnel-end') ends.push({ at: worldPoint(tile, xy, 0), z: z[0], tags });
-            else chords.push({ a: [...worldPoint(tile, xy, 0), z[0]], b: [...worldPoint(tile, xy, 1), z[1]], tags, ...classPaint(tags.class, tags.surface) });
+            else chords.push({ a: [...worldPoint(tile, xy, 0), z[0]], b: [...worldPoint(tile, xy, 1), z[1]], tags, ...lanePaint(tags) });
         }
     }
     known = ends.length ? `"ends":${JSON.stringify(ends)},"chords":${JSON.stringify(chords)}` : null;
@@ -37,12 +37,19 @@ function recordsOf(list: Feature[], tile: Node): string | null {
     return known;
 }
 
+/** The surface code and the lines of each lane of a chord, by the rows `class` and `surface` (`-` for no surface). */
+function lanePaint(tags: Record<string, string>): { code: number[]; marked: boolean[] } {
+    const surfaces = tags.surface?.split(' ');
+    const paints = tags.class.split(' ').map((cls, i) => classPaint(cls, surfaces && surfaces[i] !== '-' ? surfaces[i] : undefined));
+    return { code: paints.map(p => p.code), marked: paints.map(p => p.marked) };
+}
+
 /** A node's square [x0, y0, x1, y1] in world units, as the bridge reads it. */
 const squareOf = ({ level, x, y }: Node) => [x, y, x + 1, y + 1].map(v => v * 2 ** (30 - level));
 
 /**
  * The input of the bridge for `node` of its feature tile: the node's square and the tile's part records in world
- * units, each chord with the surface code and the lines of a way of its class and surface; null for a tile without a
+ * units, each chord with the surface code and the lines of a way of each lane's class and surface; null for a tile without a
  * `tunnel-end`, which has no part.
  */
 export function partInput(list: Feature[], tile: Node, node: Node): string | null {

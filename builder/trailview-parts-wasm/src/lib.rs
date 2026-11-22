@@ -3,7 +3,8 @@
 //! the tests run them without a browser.
 //!
 //! An input is JSON: `{"square": [x0, y0, x1, y1], "ends": [{"at": [x, y], "z": z, "tags": {..}}],
-//! "chords": [{"a": [x, y, z], "b": [x, y, z], "tags": {..}, "code": c, "marked": m}]}`, in world units.
+//! "chords": [{"a": [x, y, z], "b": [x, y, z], "tags": {..}, "code": [c, ..], "marked": [m, ..]}]}`, in world units, with
+//! a `code` and a `marked` per lane of a chord.
 
 use obc_trailview_parts::{Chord, End, Part, Rules, Tags, Volumes};
 use serde_json::Value;
@@ -69,8 +70,15 @@ fn input(text: &str) -> Result<Input, String> {
         .map(|c| {
             let mut chord =
                 Chord::from_tags(numbers(&c["a"], "a")?, numbers(&c["b"], "b")?, &tags(&c["tags"])?, rules)?;
-            chord.code = c["code"].as_u64().ok_or("code: not a count")? as u32;
-            chord.marked = c["marked"].as_bool().ok_or("marked: not true or false")?;
+            let (codes, marks) = (c["code"].as_array(), c["marked"].as_array());
+            let (codes, marks) = codes
+                .zip(marks)
+                .filter(|(c, m)| c.len() == chord.lanes.len() && m.len() == c.len())
+                .ok_or("code, marked: not one per lane")?;
+            for ((lane, code), marked) in chord.lanes.iter_mut().zip(codes).zip(marks) {
+                lane.code = code.as_u64().ok_or("code: not a count")? as u32;
+                lane.marked = marked.as_bool().ok_or("marked: not true or false")?;
+            }
             Ok(chord)
         })
         .collect::<Result<_, String>>()?;
