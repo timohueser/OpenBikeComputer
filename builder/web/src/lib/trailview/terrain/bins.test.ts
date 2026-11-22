@@ -9,7 +9,7 @@ import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, fronts, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, linesNear, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile, type Shapes } from './bins';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, fronts, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, linesNear, linesShow, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile, type Shapes } from './bins';
 import { SPILL_M } from '../roads/section';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
@@ -184,6 +184,39 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
             seen.add(expected);
         }
         expect(seen.size).toBe(2);
+    });
+
+    it('shows no line at a level where linesShow says that none shows', () => {
+        const levels = Array.from({ length: 23 }, (_, level) => level).filter(level => !linesShow(level));
+        // Level 13 reads zoom 12 tiles, which keep their roads: a motorway of 6.75 to 7 m half-width shows there.
+        expect(levels).toEqual(Array.from({ length: 13 }, (_, level) => level));
+        expect(shows({ kind: ROAD, h: 7, profile: Object.keys(PROFILES).indexOf('motorway') } as Line, gateTexel(13))).toBe(true);
+        for (const level of levels) for (const profile of Object.keys(PROFILES).keys()) for (const kind of [ROAD, PATH]) for (const h of [0, 0.5, 2, 6, 20, 100]) {
+            expect(shows({ kind, h, profile } as Line, gateTexel(level)), `kind ${kind}, profile ${profile}, h ${h}, level ${level}`).toBe(false);
+        }
+    });
+
+    it('keeps only the lines of the water mesh where no line shows, and writes no junction or corner there', () => {
+        const coarse = { level: 10, x: 535, y: 360 };
+        expect(linesShow(coarse.level + 1)).toBe(false);
+        const kinds = new Set(features(fixture(coarse.level, coarse.x, coarse.y), coarse).lines.map(({ kind }) => kind));
+        expect(kinds.size).toBeGreaterThan(0);
+        expect([...kinds].filter(kind => ![RIVER, STREAM, BRIDGE, TUNNEL].includes(kind))).toEqual([]);
+        // A zoom 12 tile serves level 13, where lines show: it keeps its roads.
+        const finer = { level: 12, x: 2143, y: 1444 };
+        expect(features(fixture(finer.level, finer.x, finer.y), finer).lines.some(({ kind }) => kind === ROAD)).toBe(true);
+        // The junctions and corners of the fixture tile in its four level 14 nodes, and in the level 12 node over it.
+        const list = fixture(TILE.level, TILE.x, TILE.y);
+        const joints = (node: { level: number; x: number; y: number }) => {
+            const { data } = nodeStamps(list, TILE, node);
+            if (!data) return 0;
+            const records = 2 + GRID * GRID + 1 + data[1];
+            return Array.from({ length: data[0] }, (_, r) => data[records + RECORD * r + 4]).filter(kind => kind === JUNCTION || kind === CORNER).length;
+        };
+        const fine = [0, 1, 2, 3].map(k => joints({ level: 14, x: 2 * TILE.x + (k % 2), y: 2 * TILE.y + (k >> 1) }));
+        expect(fine.reduce((a, b) => a + b)).toBeGreaterThan(0);
+        expect(linesShow(12)).toBe(false);
+        expect(joints({ level: 12, x: TILE.x >> 1, y: TILE.y >> 1 })).toBe(0);
     });
 
     it('lists in each cell every segment and edge within the buffer of the feature tiles, and the lakes over its centre, in the order of the shader', () => {
@@ -776,7 +809,7 @@ describe('the cross-section table of the ground plan', () => {
 describe('the lines near a point', () => {
     /** A steady value in [0, 1) for each call. */
     const random = (seed => () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31)(7);
-    const tileOf = (lines: Line[]) => ({ lines, lakes: [], seas: [], pads: [], areas: [], buildings: [] }) as unknown as Shapes;
+    const tileOf = (lines: Line[], zoom = 13) => ({ zoom, lines, lakes: [], seas: [], pads: [], areas: [], buildings: [] }) as unknown as Shapes;
     const way = (xy: number[]) => ({ kind: ROAD, xy, z: xy.filter((_, i) => i % 2 === 0).map(() => 0), h: 2.5, code: 2, ford: false, profile: 0 }) as Line;
     /** The world units from a point to the nearest segment of a line. */
     const distance = ({ xy }: Line, x: number, y: number) => {
@@ -788,9 +821,9 @@ describe('the lines near a point', () => {
         return best;
     };
 
-    it('hold every line that a scan of all lines finds within reach, in the tile\'s order', () => {
-        // The index has cells of 2^13 units: a square of 20 cells, with its corner on a cell line.
-        const cell = 2 ** 13, x0 = 2 ** 29, y0 = 2 ** 29, side = 20 * cell, lines: Line[] = [];
+    it.each([13, 8])('hold every line that a scan of all lines finds within reach, in the tile\'s order, on a zoom %i tile', zoom => {
+        // The index has cells of 2^13 units on a zoom 13 tile and 16 × 16 cells on a coarser one: a square of 20 cells, with its corner on a cell line.
+        const cell = Math.max(2 ** 13, 2 ** (30 - zoom) / 16), x0 = 2 ** 29, y0 = 2 ** 29, side = 20 * cell, lines: Line[] = [];
         for (let k = 0; k < 400; k++) {
             const xy = [x0 + random() * side, y0 + random() * side];
             for (let v = 1 + Math.floor(random() * 5); v > 0; v--) xy.push(xy[xy.length - 2] + (random() - 0.5) * 3 * cell, xy[xy.length - 2 + 1] + (random() - 0.5) * 3 * cell);
@@ -798,7 +831,7 @@ describe('the lines near a point', () => {
         }
         // A segment without length, ways on a cell line and across every cell, and a way that ends on a corner of cells.
         lines.push(way([x0 + 5.5 * cell, y0 + 5.5 * cell, x0 + 5.5 * cell, y0 + 5.5 * cell]), way([x0 + 3 * cell, y0, x0 + 3 * cell, y0 + side]), way([x0, y0 + 7 * cell, x0 + side, y0 + 7 * cell]), way([x0 + 2 * cell, y0 + 2 * cell, x0 + 2.5 * cell, y0 + 2.2 * cell]));
-        const shapes = tileOf(lines);
+        const shapes = tileOf(lines, zoom);
         const points = Array.from({ length: 300 }, () => [x0 + (random() * 1.4 - 0.2) * side, y0 + (random() * 1.4 - 0.2) * side]);
         // On a cell line, on a corner of cells, on the segment without length, and far outside the tile.
         points.push([x0 + 3 * cell, y0 + 4.5 * cell], [x0 + 2 * cell, y0 + 2 * cell], [x0 + 5.5 * cell, y0 + 5.5 * cell], [x0 - 50 * cell, y0 + 300 * cell], [0, 0]);
@@ -811,6 +844,6 @@ describe('the lines near a point', () => {
             found += scanned.length;
         }
         expect(found).toBeGreaterThan(1000);
-        expect(linesNear(tileOf([]), x0, y0, 600)).toEqual([]);
+        expect(linesNear(tileOf([], zoom), x0, y0, 600)).toEqual([]);
     });
 });
