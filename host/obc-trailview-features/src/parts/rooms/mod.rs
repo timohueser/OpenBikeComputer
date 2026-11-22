@@ -337,7 +337,10 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
             let children: Vec<Vec<usize>> =
                 seam.children.iter().map(|&(c, _)| rooms[c].0.iter().map(|l| l.arm).collect()).collect();
             let h = heading(seam.dir);
-            match holes_of(&row, &children, b.shell_m).filter(|_| !children.is_empty()) {
+            // The room's half-width as its records hold it: up to the centimetre for a room of lanes.
+            let half = if room.lanes.len() < 2 { room.tube.half } else { super::ceil_cm(room.tube.half) };
+            let half = (half * 100.0).round() / 100.0;
+            match holes_of(&row, (&children, half), b.shell_m).filter(|_| !children.is_empty()) {
                 Some(Holes { holes, doors }) => {
                     for (&child, (across, half, mut st)) in seam.children.iter().zip(holes) {
                         st.p = offset(at, left_of([h.cos(), h.sin()]), across);

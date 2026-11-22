@@ -365,6 +365,16 @@ pub(crate) fn segment_m(q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     distance(q, [a[0] + t * d[0], a[1] + t * d[1]])
 }
 
+/// A number of metres to the millimetre, as a seam's holes hold it.
+fn mm(v: f64) -> String {
+    let r = (v * 1000.0).round() / 1000.0;
+    if r == 0.0 {
+        "0".into()
+    } else {
+        format!("{r}")
+    }
+}
+
 /// A number of metres as a tag holds it: at most two decimals.
 pub(crate) fn num(v: f64) -> String {
     let r = (v * 100.0).round() / 100.0;
@@ -534,7 +544,7 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
 }
 
 /// A length up to the next centimetre: a room's numbers that must hold its lanes and the rooms behind a seam.
-fn ceil_cm(v: f64) -> f64 {
+pub(crate) fn ceil_cm(v: f64) -> f64 {
     ((v * 100.0) - 1e-4).ceil() / 100.0
 }
 
@@ -701,7 +711,9 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         holes.sort_by(|x, y| x[0].total_cmp(&y[0]));
         let half_p = if rooms.lanes[pr].len() > 1 { ceil_cm(decided.half[pr]) } else { decided.half[pr] };
         holes.insert(0, [0.0, 0.0, half_p, fp.h[ip]]);
-        let row = |k: usize| holes.iter().map(|h| num(h[k])).collect::<Vec<_>>().join(" ");
+        // A hole's middle and half-width are whole millimetres, so its sides are those of the bake.
+        let row = |k: usize| holes.iter().map(move |h| if k.is_multiple_of(2) { mm(h[k]) } else { num(h[k]) });
+        let row = |k: usize| row(k).collect::<Vec<_>>().join(" ");
         let mut t = Tags::new();
         t.insert("part".into(), Kind::Seam.name().into());
         t.insert("heading".into(), format!("{}", (seam.dir[1].atan2(seam.dir[0]) * 1000.0).round() / 1000.0));
@@ -713,7 +725,7 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
             .filter_map(|&(across, half, arm)| {
                 let k = rooms.lanes[pr].iter().position(|l| l.arm == arm)?;
                 let up = fp.lanes.get(k)?.0[ip] - fp.f[ip];
-                Some([across, half, up, rooms.arms[arm].height].map(num).join(" "))
+                Some([mm(across), mm(half), num(up), num(rooms.arms[arm].height)].join(" "))
             })
             .collect();
         if !doors.is_empty() {

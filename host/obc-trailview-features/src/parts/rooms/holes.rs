@@ -16,9 +16,9 @@ pub(super) struct Holes {
     pub doors: Vec<(f64, f64, usize)>,
 }
 
-/// A length to the centimetre, and one down to it.
-fn cm(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
+/// A length up and down to the centimetre.
+fn cm_up(v: f64) -> f64 {
+    ((v * 100.0) - 1e-4).ceil() / 100.0
 }
 
 fn cm_down(v: f64) -> f64 {
@@ -26,29 +26,32 @@ fn cm_down(v: f64) -> f64 {
 }
 
 /// The holes of a seam in the row of the room before it (per lane its arm, its metres across to the left of the
-/// heading, its half-width along the line and its metres along its arm), one per room behind the line (by the arms of
-/// its lanes), and a door per lane of no room behind it. A hole runs from the right side of its first lane to the left
-/// side of its last, a door over its lane; a side between two lanes lies in the middle between them. Each is cut back
-/// by `shell_m` from a side that it shares with another, so the tubes behind stand a wall apart and no side stands on
-/// the step between two lanes' floors. Each lane of a hole is across from its middle, its half-width kept inside the
-/// hole. Metres across are to the centimetre, half-widths down to it. None where a room's lanes are not side by side in
-/// the row, or a hole has no width; a door of no width is none.
-pub(super) fn holes_of(row: &[(usize, f64, f64, f64)], children: &[Vec<usize>], shell: f64) -> Option<Holes> {
+/// heading, its half-width along the line and its metres along its arm; the room's half-width `half` as its records
+/// hold it), one per room behind the line (by the arms of its lanes), and a door per lane of no room behind it. A hole
+/// runs from the right side of its first lane to the left side of its last, a door over its lane; a side between two
+/// lanes lies in the middle between them, the outer side of an outer lane at the room's wall, as the builder draws its
+/// floor. Each is cut back by `shell_m` from a side that it shares with another, so the tubes behind stand a wall apart
+/// and no side stands on the step between two lanes' floors. Its sides lie on whole centimetres, so its middle and its
+/// half-width are whole millimetres. Each lane of a hole is across from its middle, its half-width kept inside the
+/// hole. None where a room's lanes are not side by side in the row, or a hole has no width; a door of no width is none.
+pub(super) fn holes_of(
+    row: &[(usize, f64, f64, f64)],
+    (children, half): (&[Vec<usize>], f64),
+    shell: f64,
+) -> Option<Holes> {
     let mut row = row.to_vec();
     row.sort_by(|x, y| x.1.total_cmp(&y.1));
     let n = row.len();
     let owner: Vec<Option<usize>> = row.iter().map(|l| children.iter().position(|c| c.contains(&l.0))).collect();
-    let right =
-        |k: usize| if k == 0 { row[0].1 - row[0].2 } else { (row[k - 1].1 + row[k - 1].2 + row[k].1 - row[k].2) / 2.0 };
-    let left = |k: usize| if k + 1 == n { row[k].1 + row[k].2 } else { right(k + 1) };
+    let right = |k: usize| if k == 0 { -half } else { (row[k - 1].1 + row[k - 1].2 + row[k].1 - row[k].2) / 2.0 };
+    let left = |k: usize| if k + 1 == n { half } else { right(k + 1) };
     // A side of lane k at the next lane that is in another hole or door: there the two stand a wall apart, and no side
     // stands on the step between two floors.
     let cut = |k: usize, next: usize| owner[k].is_none() || owner[k] != owner[next];
     let span = |first: usize, last: usize| {
-        let lo = right(first) + if first > 0 && cut(first, first - 1) { shell } else { 0.0 };
-        let hi = left(last) - if last + 1 < n && cut(last, last + 1) { shell } else { 0.0 };
-        let across = cm((lo + hi) / 2.0);
-        (across, cm_down((across - lo).min(hi - across)))
+        let lo = cm_up(right(first) + if first > 0 && cut(first, first - 1) { shell } else { 0.0 });
+        let hi = cm_down(left(last) - if last + 1 < n && cut(last, last + 1) { shell } else { 0.0 });
+        ((lo + hi) / 2.0, (hi - lo) / 2.0)
     };
     let mut holes = Vec::new();
     for (c, arms) in children.iter().enumerate() {

@@ -499,9 +499,10 @@ pub(crate) fn floors(
             }
         }
         lowered += usize::from(fl.f.iter().zip(&fl.z).any(|(f, z)| *f < z - 0.005));
-        // A low stretch: a run of chords (the lesser height of their two vertices) under the tube's height, and its
-        // lowest vertex.
-        let chords: Vec<f64> = fl.h.windows(2).map(|w| w[0].min(w[1])).collect();
+        // A low stretch of a lone tube: a run of chords (the lesser height of their two vertices) under the tube's
+        // height, and its lowest vertex. A room of lanes is as high as its lanes need at each vertex.
+        let chords: Vec<f64> =
+            if fl.lanes.is_empty() { fl.h.windows(2).map(|w| w[0].min(w[1])).collect() } else { Vec::new() };
         let mut run: Option<usize> = None;
         let least = rule(tube).1;
         for k in 0..=chords.len() {

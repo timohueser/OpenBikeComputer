@@ -358,8 +358,8 @@ pub(super) fn room_of(
         .map(|(&m, row)| (m, order.iter().map(|&k| Place { off: row[k].0, half: row[k].1, s: row[k].2 }).collect()))
         .collect();
     let half = table.iter().flat_map(|(_, row)| row.iter().map(|p| p.off.abs() + p.half)).fold(0.0, f64::max);
-    // The tube of the room: its centre line at the least height of its lanes, as wide as they need and as high as
-    // their outlines need at the heights of the road solver.
+    // The tube of the room: its centre line at the least height of its lanes, as wide as they need and at its ends as
+    // high as their outlines need at the heights of the road solver, the height that its openings read.
     let design = &obc_trailview_parts::Rules::embedded().design;
     let segments = (design.arch_segments * lanes.len(), design.arch_segments);
     let mut height: f64 = 0.0;
@@ -370,7 +370,9 @@ pub(super) fn room_of(
         let outlines: Vec<(f64, f64, f64, f64)> = (ordered.iter().zip(row).zip(&z))
             .map(|((l, p), &zl)| (p.off, p.half, zl - low, arms[l.arm].height))
             .collect();
-        height = height.max(hold(true, half, design.spring, &outlines, segments));
+        if i == 0 || i + 1 == n {
+            height = height.max(hold(true, half, design.spring, &outlines, segments));
+        }
         let along = arms[ordered[0].arm].curve.at(row[0].s).0.along;
         curve_points.push(Point { p: points[i], z: low, s: *m, along });
     }
