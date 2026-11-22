@@ -1,10 +1,10 @@
-/** The words of the day-hike search: the names of the wishes, shapes and grades, how a row is reached, the line over the
- * results and the changes that help an empty list. */
+/** The words of the day-hike search: the names of the wishes, shapes and grades, how a row is reached and the changes
+ * that help an empty list. */
 import type { CatalogFacts, FactsPlace } from '../../lib/planner/signed-routes';
 import { distanceIn, formatDistance, formatHeight } from '../../lib/settings/format';
 import { settings } from '../../lib/settings/settings.svelte';
 import { rangeText } from '../routes/filter';
-import { driveCap, GRADE_TOP, wishesOf, WISHES, type Query, type Row, type Shape, type Suggestion, type Way, type Wish } from './search';
+import { WISHES, type Query, type Row, type Shape, type Suggestion, type Way, type Wish } from './search';
 
 type Place = (id: string) => FactsPlace | undefined;
 
@@ -15,7 +15,7 @@ const WISH_WORDS: Record<typeof WISHES[number], { label: string; short?: string;
     hut: { label: 'Hut with food', icon: 'hut' },
     waterfall: { label: 'Waterfall', icon: 'waterfall' },
     official: { label: 'Official route', icon: 'flag' },
-    snow: { label: 'Usually free of snow on that day', short: 'Free of snow', icon: 'snow' },
+    snow: { label: 'Usually free of snow', short: 'Free of snow', icon: 'snow' },
     quiet: { label: 'Far from big roads', icon: 'quiet' },
     forest: { label: 'Mostly forest', icon: 'tree' },
     open: { label: 'Mostly open', icon: 'meadow' },
@@ -63,7 +63,7 @@ export const shortDistance = (metres: number) => settings.units === 'km' && metr
     : `${distanceIn(metres).toLocaleString('en', { maximumFractionDigits: 1 })}\u00a0${settings.units}`;
 /** The walk of a way shows from this distance; a shorter one is "the route starts there". */
 const SHOWN_WALK_M = 150;
-const walked = (metres: number) => shortDistance(Math.max(100, Math.round(metres / 100) * 100));
+export const walked = (metres: number) => shortDistance(Math.max(100, Math.round(metres / 100) * 100));
 
 /** One step of the way to a row: an icon, or the car park mark, and a few words. */
 export type Step = { icon?: string; park?: true; text: string };
@@ -142,32 +142,6 @@ export function snowText(free: CatalogFacts['snow_free']): string | undefined {
     if (free.length === 0) return 'No day is usually free of snow';
     if (free[0] === 0 && free[1] === 182) return 'Usually free of snow all year';
     return `Usually free of snow ${stepDay(free[0])} to ${stepDay(free[1], true)}`;
-}
-
-/** A part of the line over the results; a strong part is a value that the rider set. */
-export type Part = string | { strong: string };
-
-/** The plain line that says what the search holds: where from, the shapes, the length and climb, the grade and each must
- * wish. */
-export function queryLine(query: Query, place: Place): Part[] {
-    const line: Part[] = [];
-    const walk = `walk ${walked(query.walk)}`;
-    if (query.pin) line.push('From ', { strong: placeName(place(query.pin)) }, `, ${walk}`);
-    else if (query.start) {
-        const legs = [walk, query.car && `drive ${Math.min(query.drive, driveCap(query.start[1]))} km`, query.lift === 'always' ? 'always by lift' : query.lift && 'lifts'].filter(Boolean);
-        line.push('From ', { strong: 'the start point' }, `: ${legs.join(', ')}`);
-    } else line.push('In the map view');
-    const shown = query.shapes.filter(shape => query.lift || (shape !== 'liftDown' && shape !== 'liftUp'));
-    if (shown.length < (query.lift ? 4 : 2)) line.push(` · ${shown.map(shape => SHAPE_WORDS[shape].label.toLowerCase()).join(' or ') || 'no shape'}`);
-    if (query.length) line.push(` · ${rangeText(query.length, shortDistance).toLowerCase()}`);
-    if (query.climb) line.push(` · ${rangeText(query.climb, formatHeight).toLowerCase()} up`);
-    const [low, high] = query.grade;
-    if (low > 0 || high < GRADE_TOP) line.push(` · ${low > 0 ? `a T${low + 1} part, ` : ''}up to T${high + 1}`);
-    const musts = wishesOf(query, 'must');
-    // A place keeps its name as it is.
-    const must = (wish: Wish) => wish.startsWith('via:') ? `passes ${placeName(place(wish.slice(4)))}` : wishLabel(wish, place, true).toLowerCase();
-    musts.forEach((wish, i) => line.push(i ? ', ' : ' · must: ', { strong: must(wish) }));
-    return line;
 }
 
 /** The words of a change that helps an empty list. */

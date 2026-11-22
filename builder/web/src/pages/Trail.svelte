@@ -18,7 +18,7 @@
     import Card from '../lib/ui/Card.svelte';
     import Lanes from '../lib/ui/Lanes.svelte';
     import TrailFacts from './explore/TrailFacts.svelte';
-    import { exploreAt, signedHref } from './explore/signed-page';
+    import { bikeOf, signedHref } from './explore/signed-page';
     import { stageCount } from './explore/strip';
     import { borderPoints, lastEnd, stageBorders, stageCells, stageNumbers, stageStretches, trailProfileLine, trailRows } from './explore/trail-page';
     import { signedItem } from './routes/filter';
@@ -42,7 +42,7 @@
     let hovered = $state<number>(), pointer = $state<number>(), width = $state(0);
 
     const parts = $derived(record?.parts ?? []);
-    const bike = $derived(record ? exploreAt(record).chips.bike! : 'hiking');
+    const bike = $derived(record ? bikeOf(record) : 'hiking');
     const colour = $derived(routeColor(id));
     const rows = $derived(record ? trailRows(parts, record.kind, config.bounds) : []);
     const website = $derived(routeWebsite(record?.website));
@@ -105,13 +105,13 @@
         return () => { live = false; };
     });
 
-    /** Back when Explore is the page before this one in this tab; else Explore opens on this trail in the long trails tab.
-     * With no trail record, the link opens Explore as it is. */
+    /** Back when Explore is the page before this one in this tab; else Explore opens in the view of this trail in the long
+     * trails tab, with the trail open when it is a hike. With no trail record, the link opens Explore as it is. */
     function toExplore(event: MouseEvent) {
         if (router.from !== 'explore' && !record) return;
         event.preventDefault();
         if (router.from === 'explore') history.back();
-        else router.go(ROUTES.explore, { explore: { chips: { bike }, view: box, tab: 'long', trail: id } });
+        else router.go(ROUTES.explore, { explore: { view: box, tab: 'long', ...bike === 'hiking' ? { trail: id } : {} } });
     }
 
     function open(next: string | undefined) {
@@ -133,7 +133,7 @@
     <Detail {message} name={record?.name ?? record?.ref ?? ''} back={{ label: '‹ Explore', href: ROUTES.explore, onclick: toExplore }}>
         {#snippet action()}
             {#if gone}
-                <a class="action" href={ROUTES.explore} onclick={event => { event.preventDefault(); router.go(ROUTES.explore, { explore: { chips: { bike: 'hiking' }, tab: 'long' } }); }}>Show the long trails</a>
+                <a class="action" href={ROUTES.explore} onclick={event => { event.preventDefault(); router.go(ROUTES.explore, { explore: { tab: 'long' } }); }}>Show the long trails</a>
             {:else if failed}
                 <button type="button" class="action" onclick={() => attempt++}>Retry</button>
             {/if}

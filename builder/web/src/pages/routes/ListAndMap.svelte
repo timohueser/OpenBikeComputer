@@ -11,7 +11,7 @@
     import type { MapOverlay } from './RoutesMap.svelte';
     import { HoverState } from './hover.svelte';
 
-    let { title, failure, items, shown, selected, marked, fit, place, look, credits, together, onselect, onview, overlay, pick, tabs, actions, list, table, mapButtons, card }: {
+    let { title, failure, items, shown, selected, marked, fit, place, look, credits, together, onselect, onview, overlay, pick, tabs, actions, bar, list, table, mapButtons, card }: {
         title: string;
         failure?: string;
         /** The props of the map. */
@@ -35,8 +35,11 @@
         tabs?: Snippet;
         /** The buttons at the end of the header. */
         actions?: Snippet;
-        /** The content of the list card. Each row has the id of its lead line in `data-line`. */
-        list: Snippet;
+        /** Between the header and the cards, as wide as the page. */
+        bar?: Snippet;
+        /** The content of the list card. Each row has the id of its lead line in `data-line`. Without it, the map takes
+         * the width of the page. */
+        list?: Snippet;
         /** Under the map, with a handle that sets its height. Its rows have `data-line` too. */
         table?: Snippet;
         /** At the top right of the map, left of its zoom buttons. */
@@ -133,7 +136,7 @@
 
 <!-- Escape closes the card as the close button does, and lights nothing either: the row that a key focused goes dark until
      the next key moves the focus. Escape in an open window closes only the window. -->
-<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) hover.blur(); }} />
+<svelte:window onkeydown={event => { if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector('dialog[open]')) hover.blur(); }} />
 
 <div class="routes-page">
     <header>
@@ -145,10 +148,13 @@
     </header>
     {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
 
-    <div class="cards" class:below={!!table}>
-        <div class="list" bind:this={listBox}>
-            <Card>{@render list()}</Card>
-        </div>
+    {@render bar?.()}
+    <div class="cards" class:below={!!table} class:alone={!list}>
+        {#if list}
+            <div class="list" bind:this={listBox}>
+                <Card>{@render list()}</Card>
+            </div>
+        {/if}
         <!-- One element in both forms, so that a new form keeps the map. -->
         <div class="geo" bind:clientHeight={geoHeight} style:--table-height={table ? `${tableHeight}px` : null}>
             <div class="map" style:--map-buttons={mapButtons ? `${buttonsWidth + 10}px` : null}>
@@ -215,6 +221,9 @@
     .below {
         grid-template-columns: 340px 1fr;
     }
+    .alone {
+        grid-template-columns: 1fr;
+    }
     .list > :global(section) {
         display: flex;
         flex-direction: column;
@@ -280,7 +289,7 @@
         --card-height: calc(100cqh - 24px);
     }
     @media (max-width: 1180px) {
-        .below {
+        .below:not(.alone) {
             grid-template-columns: 312px 1fr;
         }
     }

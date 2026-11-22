@@ -40,22 +40,30 @@ test('the Explore page searches the day hikes of the map view, plans one and com
   await page.getByRole('button', { name: 'TrailView' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'TrailView' })).toHaveText('TrailView has no view of this area.');
 
-  // A must wish keeps only the hikes that meet it, and the line over the table names it.
+  // A tick on a wish is a must: it keeps only the hikes that meet it, and its slot names it.
+  await openSlot(page, 'way');
   const summit = page.locator('.wish', { hasText: 'Summit' });
   await expect(summit.locator('.count')).toHaveText('1');
   await summit.getByRole('button', { name: 'Summit' }).click();
-  await summit.getByRole('button', { name: 'Must' }).click();
+  await expect(summit.getByRole('button', { name: 'Must' })).toHaveAttribute('aria-pressed', 'true');
   await expect(rows).toHaveText([/Schlossberg loop/]);
-  await expect(results.locator('.query')).toHaveText('In the map view · must: summit.');
+  await expect(slotText(page, 'way')).toHaveText('Summit');
   // The page address holds the query and the view, and a new load of the page reads it.
   await expect(page).toHaveURL(/#\/explore\?must=peak&view=[\d.,]+$/);
   await page.reload();
   await expect(rows).toHaveText([/Schlossberg loop/]);
+  await openSlot(page, 'way');
   await expect(summit.getByRole('button', { name: 'Must' })).toHaveAttribute('aria-pressed', 'true');
 
   await summit.getByRole('button', { name: 'Summit' }).click();
+  await openSlot(page, 'hike');
+  await page.locator('#search-panel').getByRole('button', { name: /^Shape/ }).click();
   await page.getByRole('button', { name: 'Loop', exact: true }).click();
   await expect(rows).toHaveText([/Westweg 2/]);
+  await expect(slotText(page, 'hike')).toHaveText('There and back');
+  // Escape closes the panel and leaves the search as it is.
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#search-panel')).toHaveCount(0);
   // A row opens in place, with the link to the page of its route.
   await rows.getByRole('button', { name: /Westweg 2/ }).click();
   const open = results.locator('tr.more');
@@ -80,15 +88,20 @@ test('the Explore page searches the day hikes of the map view, plans one and com
   // Until the map loads, the page keeps the view of the history; after it, the view is the map's own.
   await expect(page.locator('.routes-map')).toHaveAttribute('data-loaded', 'true');
   const back = await page.evaluate(() => new Promise(done => setTimeout(() => done(history.state.explore), 500)));
-  expect([back.chips, back.query, back.selected, back.shape]).toEqual([kept.chips, kept.query, '202', 'back']);
+  expect([back.query, back.selected, back.shape]).toEqual([kept.query, '202', 'back']);
   for (const [i, value] of kept.view.entries()) expect(back.view[i]).toBeCloseTo(value, 4);
 
-  // A bike keeps the list with chips, and the plain address.
-  await page.locator('.chip summary', { hasText: 'Hiking' }).click();
-  await page.getByRole('button', { name: 'Mountain bike' }).click();
-  await expect(results).toHaveCount(0);
-  await expect(page.locator('.list .row')).toHaveText([/Schlossberg trail.*1\.2\skm · 150\sm up · S1/, /Rosskopf trail.*2\.5\skm · 80\sm up · S0/]);
-  await expect(page).toHaveURL(/#\/explore$/);
+  // Explore searches hikes only: the bike kinds are greyed out.
+  await openSlot(page, 'hike');
+  await page.locator('#search-panel').getByRole('button', { name: /^Kind/ }).click();
+  await expect(page.getByRole('radio', { name: 'Hiking' })).toBeChecked();
+  await expect(page.getByRole('radio', { name: 'Mountain bike' })).toBeDisabled();
+
+  // The cross empties the search, and "Undo" brings it back.
+  await page.getByRole('button', { name: 'Clear the search' }).click();
+  await expect(rows).toHaveCount(2);
+  await page.getByRole('button', { name: 'Undo' }).click();
+  await expect(rows).toHaveText([/Westweg 2/]);
   expect(errors).toEqual([]);
 });
 
@@ -96,8 +109,12 @@ test('the name of an open row opens the page of the route, and Back and "‹ Exp
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   const open = await openRow(page, 'Westweg 2', 1440, 900);
-  // A nice wish is the last search of the browser.
+  // A nice wish is the last search of the browser. The tick is a must first, which closes the row of the stage.
+  await openSlot(page, 'way');
   await page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Summit' }).click();
+  await page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Must' }).click();
+  await page.keyboard.press('Escape');
+  await page.locator('.results').getByRole('button', { name: /Westweg 2/ }).click();
   let answer;
   const held = new Promise(done => answer = done);
   await page.route(url => url.pathname.endsWith('/v1/route'), async route => { await held; await route.fallback(); });
@@ -133,17 +150,18 @@ test('the name of an open row opens the page of the route, and Back and "‹ Exp
     await page.getByRole('link', { name: '‹ Explore' }).click();
     await expect(page).toHaveURL(/#\/explore(\?.*)?$/);
     await expect(page.locator('.results tr.row.open')).toContainText(name);
-    await expect(page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Summit' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(slotText(page, 'way')).toHaveText('Summit if possible');
   }
 
   // A last search that leaves the route out gives way to the default search, so the row of the route opens.
+  await openSlot(page, 'way');
   await page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Must' }).click();
   await expect(page).toHaveURL(/must=peak/);
   await page.goto('/planner.html#/signed/9-267-177/202');
   await page.reload();
   await page.getByRole('link', { name: '‹ Explore' }).click();
   await expect(page.locator('.results tr.row.open')).toContainText('Westweg 2');
-  await expect(page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Summit' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(slotText(page, 'way')).toHaveText('Anything');
 
   // So does a last search with a start point far from the route, once the answer for the view of the route has come.
   await page.evaluate(() => localStorage.setItem('explore-day-query', 'start=10.2,49.6'));
@@ -151,7 +169,7 @@ test('the name of an open row opens the page of the route, and Back and "‹ Exp
   await page.reload();
   await page.getByRole('link', { name: '‹ Explore' }).click();
   await expect(page.locator('.results tr.row.open')).toContainText('Schlossberg loop');
-  await expect(page.locator('.results .query')).toHaveText('In the map view.');
+  await expect(slotText(page, 'from')).toHaveText('Anywhere on the map');
 
   await page.goto('/planner.html#/signed/9-267-177/999');
   await expect(page.getByText('This route is no longer in the map data.')).toBeVisible();
@@ -164,9 +182,8 @@ test('with a start point, a view of more than 12 cells searches the cells in rea
   await stub(page);
   // The whole area of the test build. At Freiburg the drive is at most 40 km; the stage is 2 km away and has no car park.
   await page.goto('/planner.html#/explore?start=7.85,47.99&car=1&drive=45&view=7.45,47.5,10.5,49.85');
-  const results = page.locator('.results');
-  await expect(results.locator('.query')).toHaveText('From the start point: walk 1 km, drive 40 km.');
-  await expect(results.locator('tr.row')).toHaveText([/Schlossberg loop/]);
+  await expect(slotText(page, 'from')).toHaveText('Start point · By car, up to 40 km');
+  await expect(page.locator('.results tr.row')).toHaveText([/Schlossberg loop/]);
   expect(errors).toEqual([]);
 });
 
@@ -190,7 +207,10 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   await rows.getByRole('button', { name: /Schlossberg loop/ }).click();
 
   // A summit shows on the map while Summit is a wish; a click on it asks for the hikes that pass it.
+  await openSlot(page, 'way');
   await page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Summit' }).click();
+  await page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Must' }).click();
+  await page.keyboard.press('Escape');
   const summit = await pointOf(page, 7.86, 47.995);
   // The tip follows the pointer: it moves until the marker has drawn.
   await expect(async () => {
@@ -200,7 +220,7 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   }).toPass();
   await page.mouse.click(summit.x, summit.y);
   await expect(rows).toHaveText([/Schlossberg loop/]);
-  await expect(page.locator('.wish', { hasText: 'Passes Schlossberg' }).getByRole('button', { name: 'Must' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(slotText(page, 'way')).toHaveText('Summit if possible · Passes Schlossberg');
   await expect(page).toHaveURL(/must=via:n1&/);
   // The tip after the click says what the next click does.
   await expect(async () => {
@@ -214,20 +234,22 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   // The car park that the loop names is a marker; a click pins it as the only start, and Unpin gives the others back.
   const park = await pointOf(page, 7.85, 47.989);
   await page.mouse.click(park.x, park.y);
-  await expect(page.getByText('Pinned on the map')).toBeVisible();
   await expect(rows).toHaveText([/Schlossberg loop/]);
   await expect(page).toHaveURL(/pin=w2&/);
+  await openSlot(page, 'from');
+  await expect(page.getByText('Pinned on the map')).toBeVisible();
   // The map fits the walk and the last walk around the pin: 4 km on each side.
   await expect.poll(() => { const [west, south, east, north] = viewOf(page); return west < 7.85 && 7.85 < east && Math.abs(south - 47.953) < 0.005 && Math.abs(north - 48.025) < 0.005; }).toBe(true);
   await page.getByRole('button', { name: 'Unpin' }).click();
   await expect(rows).toHaveCount(2);
 
-  // "Pick on the map" takes the next click as the start point.
+  // "Pick on the map" closes the panel and takes the next click as the start point.
   await page.getByRole('button', { name: 'Pick on the map' }).click();
+  await expect(page.locator('#search-panel')).toHaveCount(0);
   await expect(page.getByText('Click the map where you start. Esc cancels.')).toBeVisible();
   const picked = await pointOf(page, 7.9, 47.985);
   await page.mouse.click(picked.x, picked.y);
-  await expect(results.locator('.query')).toHaveText('From the start point: walk 1 km.');
+  await expect(slotText(page, 'from')).toHaveText(/^Start point · On foot, up to 1\skm$/);
   await expect(rows).toHaveText([/Westweg 2/]);
   await expect(page).toHaveURL(/start=/);
   const [lon, lat] = new URL(page.url()).hash.match(/start=([\d.]+,[\d.]+)/)[1].split(',').map(Number);
@@ -243,6 +265,7 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   await expect(rows).toHaveText([/Westweg 2/]);
 
   // "My location" asks the browser: a refusal gives a short note, a position the start point.
+  await openSlot(page, 'from');
   await page.getByRole('button', { name: 'Remove the start point' }).click();
   await page.getByRole('button', { name: 'My location' }).click();
   await expect(page.getByText('The browser does not share your location.')).toBeVisible();
@@ -264,6 +287,16 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   expect(height(viewOf(page))).toBeGreaterThanOrEqual(before - 1e-4);
   expect(errors).toEqual([]);
 });
+
+/** Opens the panel of a slot of the search bar, if it is not open. */
+async function openSlot(page, id) {
+  const slot = page.locator(`.search-bar [data-slot="${id}"]`);
+  if (await slot.getAttribute('aria-expanded') !== 'true') await slot.click();
+  await expect(page.locator('#search-panel')).toBeVisible();
+}
+
+/** The words of a slot of the search bar. */
+const slotText = (page, id) => page.locator(`.search-bar [data-slot="${id}"] strong`);
 
 /** The map view in the page address. */
 const viewOf = page => new URL(page.url()).hash.match(/view=([-\d.,]+)/)[1].split(',').map(Number);
@@ -305,7 +338,7 @@ test('the trail name on a stage page opens the page of the trail, whose rows ope
     [...document.querySelectorAll('a')].find(link => link.textContent === '‹ Explore').click();
     return history.state.explore;
   });
-  expect(state).toEqual({ chips: { bike: 'hiking' }, view: [7.88, 47.98, 7.91, 48].map(value => expect.closeTo(value, 6)), tab: 'long', trail: 300 });
+  expect(state).toEqual({ view: [7.88, 47.98, 7.91, 48].map(value => expect.closeTo(value, 6)), tab: 'long', trail: 300 });
   await expect(page).toHaveURL(/#\/explore$/);
 
   await page.goto('/planner.html#/trail/1');
@@ -320,15 +353,6 @@ async function openRow(page, name, width, height) {
   return page.locator('.results tr.more');
 }
 
-/** Shows the card of the mountain bike route `name` in a window of `width` × `height` px: a bike keeps the list and the card. */
-async function openCard(page, name, width, height) {
-  await findFreiburg(page, width, height);
-  await page.locator('.chip summary', { hasText: 'Hiking' }).click();
-  await page.getByRole('button', { name: 'Mountain bike' }).click();
-  await page.locator('.list').getByRole('button', { name: new RegExp(name) }).click();
-  return page.getByRole('region', { name });
-}
-
 async function findFreiburg(page, width, height) {
   await page.setViewportSize({ width, height });
   await stub(page);
@@ -336,45 +360,3 @@ async function findFreiburg(page, width, height) {
   await page.getByRole('searchbox', { name: 'Find a place' }).fill('Freiburg');
   await page.getByRole('button', { name: /^Freiburg/ }).click();
 }
-
-/** The text of the card shows at least `lines` lines on the screen, and the wheel over it scrolls it. */
-async function textScrolls(page, card, lines) {
-  const more = card.locator('.more');
-  await expect.poll(() => more.evaluate((node, lines) => {
-    const box = node.getBoundingClientRect(), line = parseFloat(getComputedStyle(node.firstElementChild).lineHeight);
-    return Math.min(box.bottom, innerHeight) - Math.max(box.top, 0) >= lines * line;
-  }, lines)).toBe(true);
-  const box = await more.boundingBox();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, 100);
-  await expect.poll(() => more.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
-}
-
-test('on a phone, the card of a route with a long text and no profile stays on the screen, and its text scrolls', async ({ page }) => {
-  const card = await openCard(page, 'Rosskopf trail', 390, 844);
-  // The card is never higher than the screen less 96 px.
-  await expect.poll(() => card.evaluate(node => [!node.querySelector('.profile'), node.getBoundingClientRect().height <= innerHeight - 96]))
-    .toEqual([true, true]);
-  await textScrolls(page, card, 1);
-});
-
-// 844 px wide has the layout of a computer, and 667 px wide that of a phone.
-for (const [width, height] of [[844, 390], [667, 375]]) {
-  test(`in a window of ${width} × ${height} px, the card of a route with a profile shows no strip, and two lines of its text that scroll`, async ({ page }) => {
-    const card = await openCard(page, 'Schlossberg trail', width, height);
-    await expect(card.locator('.profile')).toBeHidden();
-    await textScrolls(page, card, 2);
-  });
-}
-
-test('in a wide and low window, the card is in the map with its close button, and a lower picture leaves three lines of its text', async ({ page }) => {
-  const card = await openCard(page, 'Rosskopf trail', 1440, 420);
-  await textScrolls(page, card, 3);
-  const close = card.getByRole('button', { name: 'Close' });
-  await expect.poll(async () => {
-    const [map, button] = await Promise.all([page.locator('.map').boundingBox(), close.boundingBox()]);
-    return button.y >= map.y && button.y + button.height <= map.y + map.height;
-  }).toBe(true);
-  await close.click();
-  await expect(card).toHaveCount(0);
-});
