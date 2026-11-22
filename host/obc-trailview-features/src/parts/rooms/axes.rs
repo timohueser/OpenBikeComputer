@@ -61,6 +61,32 @@ impl Axes {
         Axes { segs, grid, cell, len: tubes.iter().map(|t| t.curve.len).collect() }
     }
 
+    /// Whether tube t's axis comes within `reach` metres of its point p at metres s and height z, at metres more than
+    /// `apart` from s along it and nearer than `over` metres in height.
+    pub fn folds(&self, t: usize, (p, s, z): ([f64; 2], f64, f64), (reach, apart, over): (f64, f64, f64)) -> bool {
+        let m = metres(p[1]);
+        let (cx, cy) = ((p[0] / self.cell).floor() as i64, (p[1] / self.cell).floor() as i64);
+        let k = (reach / m / self.cell).ceil().max(1.0) as i64;
+        (cx - k..=cx + k).flat_map(|x| (cy - k..=cy + k).map(move |y| (x, y))).any(|c| {
+            self.grid.get(&c).into_iter().flatten().any(|&i| {
+                let seg = &self.segs[i];
+                if seg.tube != t {
+                    return false;
+                }
+                let d = [(seg.b[0] - seg.a[0]) * m, (seg.b[1] - seg.a[1]) * m];
+                let q = [(p[0] - seg.a[0]) * m, (p[1] - seg.a[1]) * m];
+                // The shares of the chord more than `apart` from s along the axis.
+                let share = |x: f64| (x - seg.s[0]) / (seg.s[1] - seg.s[0]);
+                let parts = [(0.0, share(s - apart).min(1.0)), (share(s + apart).max(0.0), 1.0)];
+                parts.into_iter().filter(|(lo, hi)| lo < hi).any(|(lo, hi)| {
+                    let u = ((q[0] * d[0] + q[1] * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(lo, hi);
+                    let level = (seg.z[0] + u * (seg.z[1] - seg.z[0]) - z).abs() < over;
+                    level && (q[0] - u * d[0]).hypot(q[1] - u * d[1]) < reach
+                })
+            })
+        })
+    }
+
     /// The axis of each tube but `own` within `reach` metres of p, nearest per tube.
     pub fn near(&self, p: [f64; 2], own: usize, reach: f64) -> Vec<Foot> {
         let m = metres(p[1]);

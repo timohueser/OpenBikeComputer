@@ -57,7 +57,7 @@ pub(crate) struct Rooms {
     pub bounds: Vec<[Bound; 2]>,
     pub seams: Vec<Seam>,
     /// Per room whether the rooms alone keep it from drawing: a seam at one of its ends holds no hole for a room behind
-    /// it, or an arm of it has an opening in no room.
+    /// it, an arm of it has an opening in no room, or an arm of it folds onto itself.
     pub broken: Vec<bool>,
     /// Per stretch of two arms over one another: the room over, the room under, and whether only the section of the
     /// room under goes lower (else its floor too: they cross).
@@ -236,9 +236,29 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
             Some([s0, s1])
         })
         .collect();
-    // An arm runs beside others where it can draw: it opens at both ends, its heights are known and it has a length.
+    // An arm folds where its axis comes within its width and a wall of itself, at metres more than twice that apart
+    // along it, and does not lie clear over itself there (a V or a hairpin; a spiral passes over itself): its walls
+    // would stand in its own room.
+    let axes = Axes::new(&arms);
+    let wall = 2.0 * b.shell_m;
+    let folds = |t: usize| {
+        let (a, reach) = (&arms[t], 2.0 * arms[t].half + wall);
+        let over = a.height + b.shell_m + b.slab_m;
+        let steps = a.curve.len.ceil().max(1.0) as usize;
+        let at = |k: usize| a.curve.len * k as f64 / steps as f64;
+        (0..=steps).map(at).find(|&s| {
+            let q = a.curve.at(s).0;
+            axes.folds(t, (q.p, s, q.z), (reach, 2.0 * reach, over))
+        })
+    };
+    let folded: Vec<Option<[f64; 2]>> = (0..n).map(|t| folds(t).map(|s| arms[t].curve.at(s).0.p)).collect();
+    // An arm runs beside others where it can draw: it opens at both ends, does not fold, its heights are known and it
+    // has a length.
     let live: Vec<Option<[f64; 2]>> = (0..n)
-        .map(|t| spans[t].filter(|s| at_end[t].iter().all(Option::is_some) && arms[t].heights && s[1] - s[0] > 1e-6))
+        .map(|t| {
+            let can = at_end[t].iter().all(Option::is_some) && folded[t].is_none() && arms[t].heights;
+            spans[t].filter(|s| can && s[1] - s[0] > 1e-6)
+        })
         .collect();
     let metres = runs::metres(&arms, &live, input);
     let (found, over_arms, short) = runs::runs(&metres, &live, input);
@@ -399,7 +419,7 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
         .map(|r| {
             let seam = (0..2).any(|e| matches!(out.bounds[r][e], Bound::Seam(s) if !out.seams[s].whole));
             let arm = out.lanes[r].iter().any(|l| at_end[l.arm].iter().flatten().any(|&i| !opened[i]));
-            seam || arm
+            seam || arm || out.lanes[r].iter().any(|l| folded[l.arm].is_some())
         })
         .collect();
     let far: Vec<String> =
@@ -415,6 +435,8 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
         "caps": out.seams.iter().filter(|s| s.children.is_empty()).count(),
         "doors": out.seams.iter().map(|s| s.doors.len()).sum::<usize>(),
         "seams_not_whole": out.seams.iter().filter(|s| !s.whole).count(),
+        "arms_that_fold": folded.iter().flatten().count(),
+        "arms_that_fold_places": folded.iter().flatten().take(10).map(|&p| place(p)).collect::<Vec<_>>().join("; "),
         "lanes_in_a_wall": walls.len(),
         "lanes_in_a_wall_m": (wall_m * 100.0).round() / 100.0,
         "lanes_in_a_wall_places": walls.iter().take(10).map(|w| format!("{} {:.1} m", place(arms[w.0].curve.at(w.1[0]).0.p), (w.1[1] - w.1[0]).abs())).collect::<Vec<_>>().join("; "),

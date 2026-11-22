@@ -879,11 +879,14 @@ fn what_cannot_draw_stays_out() {
     for n in [60.0, -20.0] {
         pair.ways.push(("tunnel", tags(&ROAD), vec![part(&[[200.0, 20.0], [210.0, n]], &[500.0; 2])]));
     }
+    // A V of a footway whose two openings lead 28 degrees apart: its legs come within a wall of each other.
+    let mut fold = Case::default();
+    fold.ways.push(("tunnel", tags(&FOOT), vec![part(&[[0.0, 1.5], [5.0, 0.0], [0.0, 5.0]], &[500.0; 3])]));
     // A road tunnel whose east end lies past the bake's region.
     let mut cut = Case::default();
     cut.tunnel(&ROAD, (0.0, 200.0), 0.0);
     cut.bounds = Some([BOUNDS[0], BOUNDS[1], 8.4 + 100.0 / metres(world(8.4, 46.8)[1]) * 360.0, BOUNDS[3]]);
-    for (name, case) in [("the V", v), ("the pair", pair), ("the bounds", cut)] {
+    for (name, case) in [("the V", v), ("the pair", pair), ("the folded V", fold), ("the bounds", cut)] {
         let placed = case.place(&ground, &mut Vec::new());
         let bounds = case.bounds.unwrap_or(BOUNDS);
         let faults = not_whole_in_tiles(&placed, bounds);
@@ -898,7 +901,7 @@ fn what_cannot_draw_stays_out() {
                 assert!(heads.len() == 2 && heads.iter().all(|t| !t.contains_key("across")), "{name}: {heads:?}");
                 assert_eq!(placed.tags[&single]["parts"], "arch arch");
             }
-            _ => assert!(placed.features.is_empty(), "{name}"),
+            _ => assert!(placed.features.is_empty(), "{name}: {}", placed.metrics),
         }
     }
 }
