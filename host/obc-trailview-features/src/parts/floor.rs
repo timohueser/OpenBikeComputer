@@ -78,13 +78,15 @@ impl Floor {
         (interp(s, &self.s, &self.f), interp(s, &self.s, &self.h))
     }
 
-    /// The inside height of the chord at an end of the tube (0 its first vertex, 1 its last).
+    /// The inside height of the chord at an end of the tube (0 its first vertex, 1 its last): of a room of lanes its
+    /// height at that vertex, of a lone tube the lesser of the chord's two.
     pub fn end_height(&self, end: usize) -> f64 {
-        let n = self.h.len();
-        if end == 0 {
-            self.h[0].min(self.h[1])
-        } else {
-            self.h[n - 1].min(self.h[n - 2])
+        let (n, lanes) = (self.h.len(), !self.lanes.is_empty());
+        match (end, lanes) {
+            (0, true) => self.h[0],
+            (_, true) => self.h[n - 1],
+            (0, false) => self.h[0].min(self.h[1]),
+            _ => self.h[n - 1].min(self.h[n - 2]),
         }
     }
 }
@@ -553,9 +555,9 @@ type LaneFloor = [Vec<f64>; 3];
 
 /// The floor of room r of lanes (`round` or of box section) at its vertices `s`, of the floors of its lanes there (per
 /// lane its floor, its inside height and the road solver's height, and its group's least height) under the undersides
-/// of the ways on top: its floor the lowest of its lanes'. The room is as high as its lanes need anywhere, one value,
-/// as its half is; where its crown's shell would rise over a way on top, its lanes are lower by as much, each to its
-/// least height, and the room is as high as the ways on top let it be, at least as high as its lanes need.
+/// of the ways on top: its floor the lowest of its lanes'. At a vertex the room is as high as its lanes need there;
+/// where its crown's shell would rise over a way on top, its lanes are lower by as much, each to its least height, and
+/// the room is as high as the ways on top let it be, at least as high as its lowered lanes need.
 fn lanes_floor(
     rooms: &Rooms,
     (r, round): (usize, bool),
@@ -576,17 +578,18 @@ fn lanes_floor(
         hold(round, rooms.tubes[r].half, design.spring, &outlines, segments)
     };
     let mut heights: Vec<Vec<f64>> = lanes.iter().map(|l| l[1].clone()).collect();
-    let high = (0..n).map(|i| hold_at(i, &lanes.iter().map(|l| l[1][i]).collect::<Vec<f64>>())).fold(0.0, f64::max);
     let h: Vec<f64> = (0..n)
         .map(|i| {
+            let need = hold_at(i, &lanes.iter().map(|l| l[1][i]).collect::<Vec<f64>>());
             let top = under.0[i].iter().copied().fold(under.1[i], f64::min) - shell - f[i];
-            let over = high - top;
-            if over > 0.0 {
-                for (k, least) in leasts.iter().enumerate() {
-                    heights[k][i] = (lanes[k][1][i] - over).max(*least).min(lanes[k][1][i]);
-                }
+            let over = need - top;
+            if over <= 0.0 {
+                return need;
             }
-            hold_at(i, &heights.iter().map(|l| l[i]).collect::<Vec<f64>>()).max(high.min(top))
+            for (k, least) in leasts.iter().enumerate() {
+                heights[k][i] = (lanes[k][1][i] - over).max(*least).min(lanes[k][1][i]);
+            }
+            hold_at(i, &heights.iter().map(|l| l[i]).collect::<Vec<f64>>()).max(top)
         })
         .collect();
     Floor { s: s.to_vec(), z, f, h, lanes: lanes.iter().map(|l| l[0].clone()).zip(heights).collect() }

@@ -90,11 +90,11 @@ pub fn reach(net: &Net, e: usize) -> Reach {
     });
     let (meet, lower) = match mid {
         Some(mid) => {
-            let (here, there) = (&net.chords[walk[mid - 1].0], &net.chords[walk[mid].0]);
-            (
-                at[mid],
-                (there.height < here.height && there.section == here.section).then_some((there.height, there.section)),
-            )
+            // The heights of the two chords at their vertex there.
+            let ((c, forward, _), (o, ahead, _)) = (walk[mid - 1], walk[mid]);
+            let (here, there) = (&net.chords[c], &net.chords[o]);
+            let (h, next) = (here.height[usize::from(forward)], there.height[usize::from(!ahead)]);
+            (at[mid], (next < h && there.section == here.section).then_some((next, there.section)))
         }
         None => (total / 2.0, None),
     };
@@ -203,7 +203,7 @@ impl Line {
 /// the middle of the wall round it, but at a closed end; then one per straight piece of the tube's axis out to its
 /// reach, each at the middle of the wall of its section, its ends in the planes of the tube's rings there.
 pub fn boxes(net: &Net, e: usize) -> Vec<[f64; BOX]> {
-    let Some((c0, _)) = net.opening(e) else { return Vec::new() };
+    let Some((c0, k0)) = net.opening(e) else { return Vec::new() };
     let (end, design, bake) = (&net.holes[e], &net.rules.design, &net.rules.ladder.bake);
     let (wall, lift) = (bake.shell_m / 2.0, design.lift_m);
     let first = &net.chords[c0];
@@ -213,30 +213,35 @@ pub fn boxes(net: &Net, e: usize) -> Vec<[f64; BOX]> {
         let roof = z + h + grow;
         (roof, if section == Section::Box { roof } else { z + sp })
     };
-    let sp = spring(net, first.section, first.height);
-    let (roof, spring_at) = roof_of(front.z, first.height, sp, first.section, design.frame_m + wall);
+    let sp = spring(net, first.section, first.height[k0]);
+    let (roof, spring_at) = roof_of(front.z, first.height[k0], sp, first.section, design.frame_m + wall);
     let (half, rise) = (first.half + design.frame_m + wall, (ring.z - front.z) / design.recess_m);
     let opening =
         [front.x, front.y, into[0], into[1], design.recess_m, half, roof, front.z + lift, rise, spring_at, 0.0, 0.0];
     // A closed end has no opening.
     let mut out = if net.closed(e) { Vec::new() } else { vec![opening] };
     // The axis from the frame line: per chord of the walk its far vertex, with the height and section that end there.
+    // A chord whose height changes is cut where it has changed by an eighth of a shell, so each box's roof, the highest
+    // of its piece, lies inside the shell by the margin of a box.
     let reach = reach(net, e).boxes;
     let mut axis = vec![Axis { p: end.at, z: end.z, ring }];
-    let mut sections = vec![(first.height, first.section, first.half)];
+    let mut sections = vec![(first.height[k0], first.section, first.half)];
     for (c, forward, start) in net.walk(e, reach) {
         let chord = &net.chords[c];
-        let (v, len) = (if forward { chord.b } else { chord.a }, direction(chord).1);
-        let far = net.ring_along(c, usize::from(forward), forward);
+        let len = direction(chord).1;
+        let (k0, k1) = if forward { (0, 1) } else { (1, 0) };
+        let (near, far) = (net.ring_along(c, k0, forward), net.ring_along(c, k1, forward));
         // A reach inside a chord ends at a ring there, as the shell does (`arch::collar`).
-        let end = if start + len > reach {
-            let ring = net.ring_along(c, usize::from(!forward), forward).mix(&far, (reach - start) / len);
-            Axis { p: [ring.x, ring.y], z: ring.z, ring }
-        } else {
-            Axis { p: [v[0], v[1]], z: v[2], ring: far }
-        };
-        axis.push(end);
-        sections.push((chord.height, chord.section, chord.half));
+        let end = ((reach - start) / len).min(1.0);
+        let (h0, h1) = (chord.height[k0], chord.height[k1]);
+        let parts = ((h1 - h0).abs() * end / (bake.shell_m / 8.0)).ceil().max(1.0) as usize;
+        for j in 1..=parts {
+            let u = end * j as f64 / parts as f64;
+            let ring = if u >= 1.0 { far } else { near.mix(&far, u) };
+            let high = h0.max(h1).min(h0 + (h1 - h0) * u).max(h0 + (h1 - h0) * end * (j - 1) as f64 / parts as f64);
+            axis.push(Axis { p: [ring.x, ring.y], z: ring.z, ring });
+            sections.push((high, chord.section, chord.half));
+        }
         if start + len >= reach {
             break;
         }

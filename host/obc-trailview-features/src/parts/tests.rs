@@ -503,7 +503,8 @@ fn records_that_touch(placed: &Placed) -> Vec<String> {
         .filter(|f| f.0 == "tunnel-tube")
         .map(|f| {
             let z = f.2.z.as_ref().unwrap();
-            let num = |k: &str| f.1[k].parse::<f64>().unwrap();
+            // The higher of a chord's heights at its two vertices.
+            let num = |k: &str| f.1[k].split(' ').map(|v| v.parse::<f64>().unwrap()).fold(0.0, f64::max);
             (unit(f.2.points[0]), unit(f.2.points[1]), [z[0], z[1]], num("half"), num("height"))
         })
         .collect();

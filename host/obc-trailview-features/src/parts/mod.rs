@@ -651,11 +651,12 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         }
         let row = |f: &dyn Fn(&ladder::Hole) -> String| n.holes.iter().map(f).collect::<Vec<_>>().join(" ");
         let kind_of = |h: &ladder::Hole| decided.ends[h.opening].kind.unwrap_or(kind);
-        let half_of = |t: usize| if rooms.lanes[t].len() > 1 { ceil_cm(decided.half[t]) } else { decided.half[t] };
+        // A room of lanes rounds its numbers up to the centimetre, as its chords do.
+        let up_cm = |t: usize, v: f64| if rooms.lanes[t].len() > 1 { ceil_cm(v) } else { v };
         let mut t = Tags::new();
         t.insert("section".into(), row(&|h| if boxed[tube(h)] { "box" } else { "round" }.into()));
-        t.insert("half".into(), row(&|h| num(half_of(tube(h)))));
-        t.insert("height".into(), row(&|h| num(h.height)));
+        t.insert("half".into(), row(&|h| num(up_cm(tube(h), decided.half[tube(h)]))));
+        t.insert("height".into(), row(&|h| num(up_cm(tube(h), h.height))));
         // In rock where each hole opens in the rock.
         let rock = n.holes.iter().all(|h| kind_of(h) == Kind::Rock);
         let look = if rock { "rock" } else { input.rules.groups[tubes[o.tube].group].look.as_str() };
@@ -829,7 +830,7 @@ fn lone(t: &Tube, kinds: [Option<Kind>; 2], (fl, common): (Option<&Floor>, &Tags
 type Behind = [Vec<(f64, f64, f64, f64)>; 2];
 
 /// The chords of room r of lanes, along its centre line from end to end as its floor, with a row per lane from the right
-/// wall to the left. A chord is as high as the outlines of its lanes need, and at a seam those of the rooms behind it.
+/// wall to the left. At each vertex a chord is as high as the room there, and at a seam as the rooms behind it need.
 fn room(
     rooms: &rooms::Rooms,
     r: usize,
@@ -867,9 +868,7 @@ fn room(
             outlines.extend_from_slice(&behind[end]);
             rooms::hold(round, t.half, spring, &outlines, (segments * lanes.len(), segments)).max(fl.h[k])
         };
-        let ends = [need((&a, i)), need((&b, i + 1))];
-        let height =
-            if seam(i).is_some() || seam(i + 1).is_some() { ends[0].max(ends[1]) } else { ends[0].min(ends[1]) };
+        let mut heights = [need((&a, i)), need((&b, i + 1))];
         let mut floors = [fl.f[i], fl.f[i + 1]];
         // In the rising metres of the base lane's way.
         let mut order: Vec<usize> = (0..lanes.len()).collect();
@@ -877,6 +876,7 @@ fn room(
         if b.0.along < a.0.along {
             (a, b) = (b, a);
             floors.swap(0, 1);
+            heights.swap(0, 1);
             order.reverse();
             sign = -1.0;
         }
@@ -891,7 +891,7 @@ fn room(
         };
         let row = |f: &dyn Fn(usize) -> String| order.iter().map(|&k| f(k)).collect::<Vec<_>>().join(" ");
         let mut tube_tags = common.clone();
-        tube_tags.insert("height".into(), num(ceil_cm(height)));
+        tube_tags.insert("height".into(), format!("{} {}", num(ceil_cm(heights[0])), num(ceil_cm(heights[1]))));
         tube_tags.insert("class".into(), row(&|k| rooms.arms[lanes[k].arm].class.clone()));
         if surfaces.iter().any(Option::is_some) {
             tube_tags.insert("surface".into(), row(&|k| surfaces[k].clone().unwrap_or("-".into())));

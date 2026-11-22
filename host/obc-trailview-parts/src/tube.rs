@@ -345,12 +345,14 @@ impl<'a> Net<'a> {
         self.lane_bore(widest)
     }
 
-    /// The height of the one other chord at vertex k of chord c, not at an opening, where it is lower than c and of its
-    /// section: a step in the crown goes down to it there.
+    /// The height at vertex k of chord c of the one other chord there, not at an opening, where it is lower than c's
+    /// and of its section: a step in the crown goes down to it there.
     pub fn lower(&self, c: usize, k: usize) -> Option<f64> {
         let chord = &self.chords[c];
-        let other = &self.chords[self.other(c, k).filter(|_| !self.opening_at(c, k))?];
-        (other.height < chord.height && other.section == chord.section).then_some(other.height)
+        let o = self.other(c, k).filter(|_| !self.opening_at(c, k))?;
+        let other = &self.chords[o];
+        let h = other.height[if key(other.a) == key(vertex(chord, k)) { 0 } else { 1 }];
+        (h < chord.height[k] && other.section == chord.section).then_some(h)
     }
 
     /// The chord and vertex at hole e's opening, where its record and its chain are built.
@@ -409,13 +411,7 @@ impl<'a> Net<'a> {
             let child = &self.chords[c];
             let (half, st) = (self.half_at(c, k), self.ring(c, k));
             let pieces = floor_pieces(self, c, k);
-            let o = outline(
-                child.section,
-                half,
-                child.height,
-                spring(self, child.section, child.height),
-                segments(self, child),
-            );
+            let o = inside_outline(self, child, k, half);
             let mut corners = vec![[-half, pieces[0].2]];
             corners.extend_from_slice(&o[1..o.len() - 1]);
             corners.push([half, pieces[pieces.len() - 1].2]);
@@ -431,7 +427,7 @@ impl<'a> Net<'a> {
         }
         // Per door its outline from the floor at its right side up to its top and down its left side, its top under the
         // spring of the room before the line.
-        let sp_parent = spring(self, chord.section, chord.height);
+        let sp_parent = spring(self, chord.section, chord.height[kp]);
         for door in &self.records[r].doors {
             let (lo, hi, top) =
                 (door.across - door.half, door.across + door.half, (door.up + door.height).min(sp_parent));
@@ -450,7 +446,7 @@ impl<'a> Net<'a> {
         floor.sort_by(|a, b| a[0].total_cmp(&b[0]));
         floor.dedup();
         // The parent's outline from spring to spring, with a corner over each hole's side, as high as the hole there.
-        let o = inside_outline(self, chord, self.half_at(cp, kp));
+        let o = inside_outline(self, chord, kp, self.half_at(cp, kp));
         let mut top: Vec<Corner> = o[1..o.len() - 1].to_vec();
         for (i, &x) in sides.iter().enumerate() {
             let hole = &outlines[i / 2];
@@ -636,9 +632,9 @@ fn shell_spring(net: &Net, section: Section, h: f64) -> f64 {
     }
 }
 
-/// The inside outline of a chord, `half` wide.
-fn inside_outline(net: &Net, c: &Chord, half: f64) -> Vec<Corner> {
-    outline(c.section, half, c.height, spring(net, c.section, c.height), segments(net, c))
+/// The inside outline of a chord at its vertex k, `half` wide.
+fn inside_outline(net: &Net, c: &Chord, k: usize, half: f64) -> Vec<Corner> {
+    outline(c.section, half, c.height[k], spring(net, c.section, c.height[k]), segments(net, c))
 }
 
 /// The outside of the shell of a section of height `h` in `segments` round the inside half-width `half`, its walls down
@@ -795,7 +791,7 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     let (s, t) = (rings[0].ring, rings[1].ring);
     let (d, length) = direction(chord);
     let lift = design.lift_m;
-    let sp = spring(net, chord.section, chord.height);
+    let sp = chord.height.map(|h| spring(net, chord.section, h));
     let bore = |colour: u32| flagged(colour, BORE);
     let across = |c: Corner| s.mix(&t, 0.5).out(c);
     // A strip between corners of the floor at a and at b.
@@ -861,16 +857,16 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
     }
     // The walls stand on the floor at its sides, the vault on the walls.
     let [fa, fz] = [0, 1].map(|k| floor_pieces(net, c, k));
-    let outlines = [0, 1].map(|k| inside_outline(net, chord, net.half_at(c, k)));
+    let outlines = [0, 1].map(|k| inside_outline(net, chord, k, net.half_at(c, k)));
     let (o, n) = (&outlines[0], outlines[0].len());
     let feet = [[fa[0].2, fz[0].2], [fa[fa.len() - 1].2, fz[fz.len() - 1].2]];
     let lower = |k: usize| net.lower(c, k).map(|l| spring(net, chord.section, l));
     // Each face faces the middle of the room: a box section's spring is its roof.
-    let to_middle = |j: usize| across(inward(o[j], o[j + 1], chord.height / 2.0));
+    let to_middle = |j: usize| across(inward(o[j], o[j + 1], (chord.height[0] + chord.height[1]) / 4.0));
     for (side, foot, j) in [(0, feet[0], 0), (1, feet[1], n - 2)] {
         let sides = [0, 1].map(|k| {
             let x = outlines[k][if side == 0 { 0 } else { n - 1 }][0];
-            let side = wall_side(x, foot[k], sp, lower(k));
+            let side = wall_side(x, foot[k], sp[k], lower(k));
             let mut corners = vec![side[0]];
             for w in side.windows(2) {
                 corners.extend_from_slice(&rings[k].wall_run(w[0], w[1])[1..]);
@@ -890,7 +886,7 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
         let [qa, qz] = [0, 1].map(|k| rings[k].top_run(outlines[k][j], outlines[k][j + 1]));
         b.strip((&s, &qa), (&t, &qz), bore(vault), to_middle(j));
     }
-    for k in 0..2 {
+    for (k, o) in outlines.iter().enumerate() {
         step(b, net, c, k, o, vault);
     }
     // At an opening (not a closed end), the front of the floor goes down to the sill, `lift_m` under the room's floor.
@@ -918,10 +914,13 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
             let m = at - lane.along;
             let (p, q) = (((m - design.lamp_m / 2.0) / length).max(0.0), ((m + design.lamp_m / 2.0) / length).min(1.0));
             let (sp, sq) = (s.mix(&t, p), s.mix(&t, q));
-            let off = lane.off[0] + (lane.off[1] - lane.off[0]) * (m / length).clamp(0.0, 1.0);
+            let u = (m / length).clamp(0.0, 1.0);
+            let off = lane.off[0] + (lane.off[1] - lane.off[0]) * u;
             // Under the crown, lower by the fall of the vault from the axis to the lane.
-            let fall = top_at(o, 0.0).zip(top_at(o, off)).map_or(0.0, |(c, v)| c - v);
-            let up = chord.height - LAMP_DROP_M - fall;
+            let h = chord.height[0] + (chord.height[1] - chord.height[0]) * u;
+            let o = outline(chord.section, net.half_at(c, 0), h, spring(net, chord.section, h), segments(net, chord));
+            let fall = top_at(&o, 0.0).zip(top_at(&o, off)).map_or(0.0, |(c, v)| c - v);
+            let up = h - LAMP_DROP_M - fall;
             let light = flagged(inside.lamp, LAMP);
             let v = [
                 b.at(&sp, [off - LAMP_HALF_M, up], light),
@@ -957,38 +956,40 @@ pub struct Meets {
     pub lower: Option<(f64, Section)>,
 }
 
-/// The outer shell of a run of pieces, each its start and end station and its chord's height and section, with the
-/// inside half-width `half` and its arch in `segments`; its walls go down to the world height `foot`. Where two pieces of different height meet,
-/// a face closes the step, facing the lower one; so too after the last piece where a lower shell goes on (`meets`).
-/// There the walls have a corner at the foot of the shell that goes on.
+/// The outer shell of a run of pieces, each its start and end station, its chord's height at each and its section,
+/// with the inside half-width `half` and its arch in `segments`; its walls go down to the world height `foot`. Where
+/// two pieces of different height meet, a face closes the step, facing the lower one; so too after the last piece
+/// where a lower shell goes on (`meets`). There the walls have a corner at the foot of the shell that goes on.
 pub fn shell<L: Fn([f64; 3]) -> f64>(
     b: &mut Builder<L>,
     net: &Net,
-    pieces: &[(Station, Station, f64, Section)],
+    pieces: &[(Station, Station, [f64; 2], Section)],
     (half, segments): (f64, usize),
     foot: f64,
     colour: u32,
     meets: Meets,
 ) {
     let last = |i: usize| i + 1 == pieces.len();
-    let next_of = |i: usize| pieces.get(i + 1).map(|p| (p.2, p.3)).or(meets.lower.filter(|_| last(i)));
+    let next_of = |i: usize| pieces.get(i + 1).map(|p| (p.2[0], p.3)).or(meets.lower.filter(|_| last(i)));
     let outer = |st: &Station, h: f64, section: Section| shell_outline(net, (section, segments), half, h, foot - st.z);
-    for (i, (s, t, h, section)) in pieces.iter().enumerate() {
-        let (sp, top) = (spring(net, *section, *h), shell_spring(net, *section, *h));
-        let (os, ot) = (outer(s, *h, *section), outer(t, *h, *section));
+    for (i, &(s, t, [hs, ht], section)) in pieces.iter().enumerate() {
+        let (s, t) = (&s, &t);
+        let (sp, top) = ([hs, ht].map(|h| spring(net, section, h)), [hs, ht].map(|h| shell_spring(net, section, h)));
+        let (os, ot) = (outer(s, hs, section), outer(t, ht, section));
         let n = os.len();
         let away = |j: usize| {
-            let o = inward(os[j], os[j + 1], sp);
+            let o = inward(os[j], os[j + 1], sp[0]);
             s.mix(t, 0.5).out([-o[0], -o[1]])
         };
         // The spring of a lower piece that goes on before or after it: a step face meets its walls there.
-        let lower = |p: Option<(f64, Section)>| {
-            p.filter(|p| p.0 < *h && p.1 == *section).map(|p| shell_spring(net, *section, p.0))
+        let lower = |p: Option<(f64, Section)>, h: f64| {
+            p.filter(|p| p.0 < h && p.1 == section).map(|p| shell_spring(net, section, p.0))
         };
-        let (before, after) = (lower(i.checked_sub(1).map(|k| (pieces[k].2, pieces[k].3))), lower(next_of(i)));
+        let before = lower(i.checked_sub(1).map(|k| (pieces[k].2[1], pieces[k].3)), hs);
+        let after = lower(next_of(i), ht);
         let other = meets.foot.filter(|_| last(i)).map(|f| f - t.z);
         for (j, x) in [(0, os[0][0]), (n - 2, os[n - 1][0])] {
-            let (a, mut z) = (wall_side(x, os[0][1], top, before), wall_side(x, ot[0][1], top, after));
+            let (a, mut z) = (wall_side(x, os[0][1], top[0], before), wall_side(x, ot[0][1], top[1], after));
             if let Some(f) = other.filter(|&f| f > z[0][1] && f < z[1][1]) {
                 z.insert(1, [x, f]);
             }
@@ -998,10 +999,11 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
             b.strip((s, &os[j..j + 2]), (t, &ot[j..j + 2]), colour, away(j));
         }
         let Some((next, next_section)) = next_of(i) else { continue };
-        if next == *h || next_section != *section {
+        if next == ht || next_section != section {
             continue;
         }
         // The step at t: from the taller outline to the lower, facing the lower piece.
+        let (h, section) = (&ht, &section);
         let (tall, low) = (outer(t, h.max(next), *section), outer(t, h.min(next), *section));
         let ahead = s.mix(t, 0.5);
         let d = [t.x - ahead.x, t.y - ahead.y];
@@ -1014,5 +1016,5 @@ pub fn shell<L: Fn([f64; 3]) -> f64>(
 
 #[cfg(test)]
 pub(crate) fn outline_of(net: &Net, c: usize) -> Vec<Corner> {
-    inside_outline(net, &net.chords[c], net.chords[c].half)
+    inside_outline(net, &net.chords[c], 0, net.chords[c].half)
 }

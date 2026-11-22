@@ -291,7 +291,8 @@ pub struct Chord {
     pub b: [f64; 3],
     pub section: Section,
     pub half: f64,
-    pub height: f64,
+    /// At `a` and at `b`: of a room of lanes the room's height at each vertex, of a lone tube one height.
+    pub height: [f64; 2],
     pub look: String,
     pub lanes: Vec<Lane>,
     /// Per edge between two lanes, its metres to the left of the axis at `a` and at `b`.
@@ -340,12 +341,17 @@ impl Chord {
             .collect();
         let ends: Vec<&str> = tag(tags, "ends")?.split(' ').collect();
         let [e0, e1] = ends[..] else { return Err(format!("tag ends: {}", ends.join(" "))) };
+        let height = match row(tags, "height")?[..] {
+            [h] => [h, h],
+            [a, b] => [a, b],
+            _ => return Err("tag height: not one or two values".into()),
+        };
         Ok(Chord {
             a,
             b,
             section: section(tags)?,
             half: number(tags, "half")?,
-            height: number(tags, "height")?,
+            height,
             look: tag(tags, "look")?.to_string(),
             lanes,
             edges: edges.chunks(2).map(|e| [e[0], e[1]]).collect(),
