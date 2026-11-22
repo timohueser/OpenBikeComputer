@@ -12,7 +12,7 @@
   "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 1 },
   "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 900], "weight": 2 },
   "tea-leaved-willow": { "model": "hawthorn", "latin": "Salix phylicifolia", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 2 },
-  "dwarf-birch": { "model": "huckleberry", "latin": "Betula nana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 1 }
+  "dwarf-birch": { "latin": "Betula nana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 1 }
  },
  "ground": {
   "bilberry": {},

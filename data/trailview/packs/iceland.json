@@ -10,7 +10,7 @@
   "siberian-larch": { "model": "european-larch", "latin": "Larix sibirica", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 2 },
   "tea-leaved-willow": { "model": "hawthorn", "latin": "Salix phylicifolia", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 2 },
   "woolly-willow": { "model": "garrigue", "latin": "Salix lanata", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
-  "dwarf-birch": { "model": "huckleberry", "latin": "Betula nana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 4 },
+  "dwarf-birch": { "latin": "Betula nana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 4 },
   "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1, "evergreen": true }
  },
  "ground": {

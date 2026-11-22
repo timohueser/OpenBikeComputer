@@ -1,7 +1,7 @@
 // The primitives that the plant models add to shape.ts, without three.js: the prototype's tubes,
 // ribbons and blades along smooth paths, tufts and their cores, and three.js's small solids.
 
-import { computeNormals, domed, paint, place, revolve, soft, smooth, UP, v3, type Colour, type Geometry, type Sheet, type V, type Vec } from './shape';
+import { computeNormals, domed, GOLDEN, paint, place, revolve, soft, smooth, UP, v3, type Colour, type Geometry, type Sheet, type V, type Vec } from './shape';
 
 export * from './shape';
 
@@ -165,13 +165,49 @@ export function kite(cards: Sheet, foot: V, waist: V, tip: V, half: V, [root, bo
     cards.add([left, tip, right], [body, end, body], light);
 }
 
+/** A leaf on `cards`: a kite from `at` along the unit `dir`, `length` long and `width` across at `waist` of its length, level across. 2 triangles. */
+export function leaf(cards: Sheet, at: V, dir: V, length: number, width: number, waist: number, colours: Colour[], light?: (p: V) => V): void {
+    const half = v3().crossVectors(dir, UP);
+    if (half.lengthSq() < 1e-6) half.set(1, 0, 0);
+    kite(cards, at, at.clone().addScaledVector(dir, waist * length), at.clone().addScaledVector(dir, length), half.setLength(width / 2), colours, light);
+}
+
+/** Two unit vectors across the unit `axis`, square to each other. */
+export function across(axis: V): [V, V] {
+    const u = v3().crossVectors(axis, Math.abs(axis.z) < 0.9 ? UP : v3(1, 0, 0)).normalize();
+    return [u, v3().crossVectors(axis, u)];
+}
+
+/**
+ * A stem, twig, spine or spray on `cards`: a three-sided point from `foot`, `r` thick there, to `tip`, `root` at its
+ * foot and `end` at its tip. 3 triangles, lit as a round stick that leans the way `lean` gives, so sprays on a dome
+ * shade with it.
+ */
+export function spike(cards: Sheet, foot: V, tip: V, r: number, [root, end]: Colour[], lean: (p: V) => V = () => UP): void {
+    const axis = tip.clone().sub(foot).normalize(), [u, w] = across(axis);
+    const ring = [0, 1, 2, 0].map((k) => foot.clone().addScaledVector(u, r * Math.cos((k * 2 * Math.PI) / 3)).addScaledVector(w, r * Math.sin((k * 2 * Math.PI) / 3)));
+    const light = (p: V) => p.clone().sub(foot).projectOnPlane(axis).normalize().addScaledVector(axis, 0.3).add(lean(p)).normalize();
+    for (let k = 0; k < 3; k++) cards.add([ring[k], ring[k + 1], tip], [root, root, end], light);
+}
+
+/**
+ * The place on a tuft's dome toward angle `a`, `polar` radians down from its top: the point, a little inside the
+ * skin of a `cushion` so that what grows there joins it, and the way out.
+ */
+export function domeAt([x, y, r, h]: Tuft, a: number, polar: number): [V, V] {
+    const out = v3(Math.sin(polar) * Math.cos(a), Math.sin(polar) * Math.sin(a), Math.cos(polar));
+    return [v3(x + 0.88 * r * out.x, y + 0.88 * r * out.y, 0.88 * h * out.z), out];
+}
+
+/** Place `j` of `n` on a tuft's dome, spread by the golden angle from its top down to `reach` radians and turned by `turn`. */
+export const onDome = (tuft: Tuft, j: number, n: number, reach: number, turn = 0) => domeAt(tuft, turn + j * GOLDEN, reach * Math.sqrt((j + 0.5) / n));
+
 /**
  * A seed head or plume on `cards`: a spindle of `sides` sides from `base` on its stalk to `tip`, `r` at its widest,
  * `low` at its base and `high` from there on. 2 × `sides` triangles, lit as a round body that leans up.
  */
 export function spindle(cards: Sheet, base: V, tip: V, r: number, sides: number, [low, high]: Colour[]): void {
-    const axis = tip.clone().sub(base).normalize(), waist = base.clone().lerp(tip, 0.4);
-    const u = v3().crossVectors(axis, Math.abs(axis.z) < 0.9 ? UP : v3(1, 0, 0)).normalize(), w = v3().crossVectors(axis, u);
+    const axis = tip.clone().sub(base).normalize(), waist = base.clone().lerp(tip, 0.4), [u, w] = across(axis);
     const ring = (k: number) => waist.clone().addScaledVector(u, r * Math.cos((k / sides) * 2 * Math.PI)).addScaledVector(w, r * Math.sin((k / sides) * 2 * Math.PI));
     const light = (p: V) => p.clone().sub(waist).normalize().lerp(UP, 0.4).normalize();
     for (let k = 0; k < sides; k++) {

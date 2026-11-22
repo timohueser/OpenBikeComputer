@@ -20,7 +20,7 @@
   "grey-willow": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 3 },
   "fuchsia": { "model": "hawthorn", "latin": "Fuchsia magellanica", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 150], "weight": 1 },
   "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 3 },
-  "western-gorse": { "model": "gorse", "latin": "Ulex gallii", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 1 }
+  "western-gorse": { "latin": "Ulex gallii", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 1 }
  },
  "ground": {
   "heather": {},

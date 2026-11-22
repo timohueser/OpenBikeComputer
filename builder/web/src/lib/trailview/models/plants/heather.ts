@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { core, domed, GOLDEN, hash, hex, ramp, random, sheet, smooth, tufts, v3, type Geometry, type Ramp } from '../plant-shape';
+import { cushion, domed, hash, hex, leaf, merge, onDome, ramp, random, sheet, tufts, UP, v3, type Geometry, type Ramp } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 const HEATHER: Record<Season, Ramp> = {
@@ -18,42 +18,31 @@ const HEATHER_BLOOM: Record<Season, [string, number]> = {
 };
 
 /**
- * Five round tufts of upright twig sprays around a dark core. Each spray is one triangle from a
- * narrow foot to a ragged top on its tuft's dome. Flowers, or out of bloom rusty tips, colour the
- * top corners, the highest most.
+ * A low mound of four round cushions grown into each other, set close with short upright sprays, each a pointed
+ * blade. The sprays in flower, or out of bloom the rusty ones, take the flower's colour from the waist to the tip,
+ * and the flowers tint the cushions' tops. 228 triangles.
  */
 export function heather(season: Season, bloom: boolean, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(HEATHER[season]);
     const [flower, share] = bloom ? HEATHER_BLOOM[season] : ['#7d6a44', 0.15];
-    const [dots, bronze, shade] = [hex(flower), hex('#6a5530'), deep.clone().multiplyScalar(0.7)];
+    const [dots, bronze] = [hex(flower), hex('#6a5530')];
     const cards = sheet();
-    for (const tuft of tufts([0, 0, 0.52, 1], 4, 0.8, [0.4, 0.38, 0.6], [0.12, 0.1, 0.2], rand)) {
-        const [x, y, r, h] = tuft;
-        const light = domed(v3(x, y, 0), v3(r, r, h), 0.3);
-        core(cards, tuft, shade, deep, 0.75, 0.7);
-        for (let j = 0; j < 40; j++) {
-            const a = j * GOLDEN + rand() * 0.6;
-            const polar = 1.5 * Math.sqrt((j + 0.5) / 40);
-            const k = 0.9 + 0.15 * rand();
-            const top = v3(x + r * k * Math.sin(polar) * Math.cos(a), y + r * k * Math.sin(polar) * Math.sin(a), h * k * Math.cos(polar) ** 0.4);
-            // A spray leans out with the dome, but stands more upright than the dome's normal.
-            const lean = 0.3 * polar;
-            const foot = top.clone().addScaledVector(v3(Math.sin(lean) * Math.cos(a), Math.sin(lean) * Math.sin(a), Math.cos(lean)), -h * (0.45 + 0.2 * rand()));
-            foot.z = Math.max(foot.z, 0);
-            const turn = a + Math.PI / 2 + (rand() - 0.5) * 0.8;
-            const side = v3(Math.cos(turn), Math.sin(turn), 0).multiplyScalar(0.075 * h * (0.8 + 0.4 * rand()));
-            const twig = mid
-                .clone()
-                .lerp(tip, 0.2 + 0.3 * rand())
-                .lerp(bronze, rand() < 0.35 ? 0.5 * rand() : 0)
-                .lerp(deep, 0.35 * (1 - smooth(0.2, 0.9, top.z / h)));
-            const corners = [top.clone().add(side), top.clone().sub(side)];
-            for (const c of corners) c.z -= 0.08 * h * rand();
-            const tips = corners.map((c) => (hash(c, seed) < share ? twig.clone().lerp(dots, (bloom ? 1 : 0.6) * (0.2 + 0.8 * smooth(0.4, 0.95, c.z / h))) : twig));
-            cards.add([foot, ...corners], [shade.clone().lerp(mid, 0.2 * rand()), ...tips], light);
+    const mounds = tufts([0, 0, 0.5, 0.7], 3, 0.8, [0.46, 0.36, 0.46], [0.1, 0.08, 0.12], rand);
+    const parts = mounds.map((mound, k) => cushion(mound, k ? 6 : 8, [deep, deep.clone().lerp(mid, 0.6), mid.clone().lerp(dots, 0.5 * share)], 0.3, seed + k));
+    mounds.forEach((mound, k) => {
+        const [x, y, r, h] = mound, light = domed(v3(x, y, 0), v3(r, r, h), 0.3);
+        const sprays = k ? 15 : 30, turn = rand() * 2 * Math.PI;
+        for (let j = 0; j < sprays; j++) {
+            const [foot, out] = onDome(mound, j, sprays, 1.45, turn);
+            // A spray stands more upright than the dome's normal.
+            const dir = out.clone().multiplyScalar(0.5).add(UP).normalize();
+            const twig = mid.clone().lerp(tip, 0.3 + 0.5 * rand()).lerp(bronze, rand() < 0.35 ? 0.5 * rand() : 0);
+            const flowering = hash(foot, seed) < share, strength = bloom ? 1 : 0.6;
+            const colours = flowering ? [twig, twig.clone().lerp(dots, 0.85 * strength), twig.clone().lerp(dots, strength)] : [deep.clone().lerp(mid, 0.5), twig, twig.clone().lerp(tip, 0.4)];
+            leaf(cards, foot, dir, 0.27 + 0.12 * rand(), 0.14, 0.55, colours, light);
         }
-    }
-    return cards.build();
+    });
+    return merge([...parts, cards.build()]);
 }
 
 export default {
