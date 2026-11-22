@@ -16,7 +16,7 @@ export async function wasmPixels(body: ArrayBuffer): Promise<Pixels> {
 }
 
 /** Whether every alpha is 0 or 255: a terrain tile stores no other (specs/planner-release.md, Terrain tiles). */
-export function terrainAlpha(rgba: ArrayLike<number>): boolean {
+function terrainAlpha(rgba: ArrayLike<number>): boolean {
     for (let i = 3; i < rgba.length; i += 4) if (rgba[i] !== 0 && rgba[i] !== 255) return false;
     return true;
 }

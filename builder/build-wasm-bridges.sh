@@ -29,7 +29,7 @@ wasm-pack build builder/trailview-parts-wasm --release --target web \
 git ls-files -z -- host/obc-trailview-parts builder/trailview-parts-wasm data/trailview/parts.json ':(exclude)*.md' \
   | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1 > "$parts_pkg/sources.sha256"
 
-# The WebP decode of TrailView's ground worker where the browser decodes images premultiplied.
+# The exact WebP decode of TrailView's workers where the browser's decode is not exact.
 wasm-pack build builder/webp-wasm --release --target web \
   --out-dir ../web/src/lib/trailview/stream/webp \
   --out-name obc_webp_bridge
