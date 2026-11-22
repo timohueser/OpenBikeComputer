@@ -661,11 +661,11 @@ function rods(spec: Broadleaf, lod: Lod, bare: boolean, foliage: (p: V, n: V) =>
     };
     for (let i = 0; i < n; i++) {
         const ring = Math.sqrt((i + 0.5) / n), a = i * GOLDEN;
-        const height = (cz + rz) * lerp(1, 0.7, ring ** 1.5) * (0.92 + 0.16 * rand());
+        const height = (cz + rz) * lerp(1, 0.55, ring ** 1.5) * (0.92 + 0.16 * rand());
         const reach = ring * (0.85 + 0.3 * rand()), start = 1.2 * spec.trunk * ring;
-        // A rod splays at the stool, then stands; its tip nods out.
+        // A rod arches out of the stool, then stands, so the shrub is round; its tip nods out.
         const path = (s: number) => {
-            const k = 0.6 * Math.min(1, Math.max(0, s)) ** 0.7 + 0.4 * s ** 3;
+            const k = 0.6 * (1 - (1 - Math.min(1, Math.max(0, s))) ** 2) + 0.4 * s ** 3;
             return v3(Math.cos(a) * lerp(start, reach * rx, k), Math.sin(a) * lerp(start, reach * ry, k), lerp(0.5 * spec.fork, height, s));
         };
         stem(parts, twigs, [0, 0.2, 0.5, 1].map(path), 0.4 * spec.trunk, 0.1 * spec.trunk, bark, sides, i);
