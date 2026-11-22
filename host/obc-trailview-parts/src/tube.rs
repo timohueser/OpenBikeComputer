@@ -788,10 +788,12 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
         meetings.extend(here);
     }
     b.clip(Vec::new());
-    // At a cut, a face closes the room where the other tube's floor is higher or its roof lower.
+    // At a cut, a face closes the room where the other tube's floor is higher or its roof lower. Where the cut passes
+    // the own wall within a piece, the face goes on past it at the wall's heights, in the solid between the walls.
     let span = |st: &Station, cut: &Cut| {
         let f = |p: &[(f64, f64, f64)], x: f64| p.iter().find(|q| x >= q.0 - 1e-9 && x <= q.1 + 1e-9).map(|q| q.2);
-        let own = f(&pieces, cut.x).zip(top_at(&o, cut.x))?;
+        let x = cut.x.max(pieces[0].0).min(pieces[pieces.len() - 1].1);
+        let own = f(&pieces, x).zip(top_at(&o, x))?;
         let other = &net.chords[cut.other];
         let mut oo = inside_outline(net, other);
         let (op, m) = (floor_pieces(net, other), oo.len() - 1);

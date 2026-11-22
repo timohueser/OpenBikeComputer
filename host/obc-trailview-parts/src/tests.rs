@@ -931,6 +931,20 @@ fn two_tubes_meet_where_both_rings_do_and_a_cut_head_is_closed() {
         let got = hit(&faces, [east, 7.0, 502.5], [0.0, -1.0, 0.0], 30.0);
         assert!(got.is_some_and(|h| h.1 && h.0 > 11.0), "turns away, south at {east} m: {got:?}");
     }
+    // The same with the second's floor 1 m higher: along the meeting, also where the cut passes the first's wall within
+    // a piece, a way north under the second's floor meets the face that closes the step.
+    let mut high = away.clone();
+    for e in &mut high.0[2..] {
+        e.z += 1.0;
+    }
+    for c in &mut high.1[2..] {
+        (c.a[2], c.b[2]) = (c.a[2] + 1.0, c.b[2] + 1.0);
+    }
+    let faces = faces_of(&high);
+    for east in [10.0, 21.0, 23.0, 24.0, 25.0] {
+        let got = hit(&faces, [east, 0.0, 500.5], north, 30.0);
+        assert!(got.is_some_and(|h| h.1 && h.0 < 5.0), "turns away, a step, north at {east} m: {got:?}");
+    }
     // A short tube beside the first from 12 to 18 m east, with the first's vertices there: the first keeps its wall
     // before and after it, and none of its shell stands in the short one's room.
     let short = tubes(&[&[[0.0, 0.0], [12.0, 0.0], [18.0, 0.0], [40.0, 0.0]], &[[12.0, 7.0], [18.0, 7.0]]]);
