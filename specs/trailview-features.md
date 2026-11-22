@@ -593,8 +593,8 @@ Each opening takes the first kind of part that fits, by these rungs in order:
    whose chains meet at the opening farther in (see Overlapping tubes) are a `pair` too.
 6. Else `free`.
 
-The two openings of a pair lie on the frame line of the opening farther in: the other one moves in along its way to
-it. Where its way does not reach that line within `pair_max_m`, half the chain and its own way, the two are no pair
+The two openings of a pair lie on one frame line, of their group's far opening (see Overlapping tubes): the other one
+moves in along its way to it. Where its way does not reach that line within `pair_max_m`, half the chain and its own way, the two are no pair
 and each takes its next kind. A pair has one `tunnel-end`, at the opening of the lower feature id. The kind that each
 of its openings takes without the pair gives its collar and its section; the head is a wall where one of them is
 `arch` or `box`, else a rim round both.
@@ -630,7 +630,7 @@ The tags, numbers in metres with at most 2 decimals, the values of a row separat
 | `along` | tube | The metres along the stroke of its way at the first vertex |
 | `ends` | tube | The parts of the chain's two ends, the end behind the first vertex first: `arch`, `pair`, `rock`, `box`, `free`, or `none` for an end with no part of its own |
 | `part` | end | `arch`, `pair`, `rock`, `box` or `free` |
-| `heading` | end | Radians from x to y of world coordinates, into the tube, three decimals; of `pair`, into the tube of the opening farther in, square to the frame line |
+| `heading` | end | Radians from x to y of world coordinates, into the tube, three decimals; on the frame line of a group (see Overlapping tubes), into the tube of its far opening, square to the line |
 | `collar` | end | The collar; of `free`, the length of its shell |
 | `face`, `left`, `right` | end | Not on `free`, nor on a pair whose head is a rim |
 | `foot` | end | |
@@ -662,15 +662,20 @@ and two `shell_m`, and the point lies inside the other where `d` is at most the 
   metre, and each of its openings lies in the wider one's room or within that `half` of one of its openings: rung 2.
   The wider `half` grows to the largest `d` there plus the other way's half-width and the wider margin.
 - Two openings whose chains meet at the opening farther in are a pair (rung 5). A group of openings that pairs and
-  such meetings link has the frame line of its far opening: one whose line no opening linked to it lies past, the
-  one linked to the most, then the farthest in along the group's way. The openings linked to it move in onto it along their ways and take its heading;
-  one whose way does not reach the line, or that lies past it, stays. The others of the group form the next group. A
-  pair whose two openings do not end on one line is no pair.
+  such meetings link has the frame line of its far opening: one whose line no opening of the group within
+  `pair_max_m` and `pair_max_deg` of it lies past by more than 0.2 m, the one with the most such openings, then the
+  farthest in along the group's way. Those openings move in onto the line along their ways and take its heading; one
+  whose way does not reach the line, or that lies past it, stays. The others of the group, with each that stays, form
+  the next group. A pair whose two openings do not end on one line is no pair. So the openings of a pair lie on one
+  line within 0.2 m: two openings side by side whose ways differ by a few degrees lie each a little past the other's
+  line. The device finds the other opening's tube within that, the rounding of the two points to tile units and the
+  decimals of `heading` and `mate`.
 - Two chains with a part at both ends have a vertex where their shells start or stop meeting between their openings
   (found to a centimetre). These vertices keep `vertex_gap_m` as the others do: a vertex within it on the side where
   the chains do not meet stands for one, and a floor vertex between the openings on the side where they meet gives
-  way to it; an opening or another such vertex there stands for it. The device cuts a chord where its middle meets the other tube, at the middle between the two walls as it
-  draws them, and splits it where its station passes the other's cut on each of the other's rings.
+  way to it; an opening or another such vertex there stands for it. The device cuts a chord where its middle meets
+  the other tube, at the middle between the two walls as it draws them, and splits it where its station passes the
+  other's cut on each of the other's rings.
 
 #### The floor of a tube
 
