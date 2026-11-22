@@ -329,11 +329,15 @@ pub(crate) fn decide(
             if parts && draws[ti] && draws[tk] && across(i, k) < wall - 0.01 && level(i, k) {
                 let narrower = |t: usize| (tubes[t].half, std::cmp::Reverse(t));
                 let (t, o) = if narrower(ti) <= narrower(tk) { (ti, i) } else { (tk, k) };
-                // A room alone keeps its tube and loses the part at that end, as a tunnel of one way did.
-                if rooms.alone[t] {
+                // A room alone keeps its tube and loses the part at that end while its other end keeps one; its last
+                // part stays, as the head of a tunnel of one way did.
+                let other = (0..2).filter_map(|e| at_end[t][e]).any(|x| x != o && !kinds[x].is_empty());
+                if !rooms.alone[t] {
+                    out[t] = true;
+                } else if other {
                     kinds[o].clear();
                 } else {
-                    out[t] = true;
+                    continue;
                 }
                 held_out.push(openings[i].p);
                 left = false;

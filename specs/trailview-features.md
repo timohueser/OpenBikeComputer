@@ -600,7 +600,7 @@ does not draw writes no record, and its ways have no tag `parts`.
 What the rooms cannot build draws as a tunnel of one way: the arms of a room that does not draw run beside no other, and
 the rooms are made again, until each room draws or is alone, the whole of one chain with no seam. A room alone draws
 where one of its ends has a part; a seam, the region and a joint that the builder does not find whole never take it out;
-of two crowded openings it loses only its part. Its ways have the tag `parts` of both ends, `none` where an end has no
+of two crowded openings it loses only its part, and keeps its last part. Its ways have the tag `parts` of both ends, `none` where an end has no
 part.
 
 Openings on one frame line share one head, a hole per opening, of rooms that draw:
