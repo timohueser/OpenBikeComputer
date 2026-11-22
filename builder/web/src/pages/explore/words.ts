@@ -144,7 +144,6 @@ export function snowText(free: CatalogFacts['snow_free']): string | undefined {
     return `Usually free of snow ${stepDay(free[0])} to ${stepDay(free[1], true)}`;
 }
 
-/** A part of the line over the results; a strong part is a value that the rider set. */
 /** The words of a change that helps an empty list. */
 export function suggestionText(suggestion: Suggestion, query: Query, place: Place): string {
     const next = suggestion.query;

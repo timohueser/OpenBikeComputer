@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FactsPlace } from '../../lib/planner/signed-routes';
 import { defaultQuery, type Query } from './search';
-import { effectiveQuery, resetSlot, slotWords } from './slots';
+import { effectiveQuery, resetSlot, slotSet, slotWords } from './slots';
 
 const TODAY = '2026-07-01';
 const PLACES: Record<string, FactsPlace> = { w2: { kind: 'parking', size: 'large', name: 'Talboden', at_udeg: [0, 0] }, n4: { kind: 'peak', name: 'Pilatus', at_udeg: [0, 0] } };
@@ -32,6 +32,12 @@ describe('the words of the slots', () => {
 });
 
 describe('a slot', () => {
+    it('holds a value that shows no word, such as the car with no start point', () => {
+        expect(slotSet(query({ car: true }), 'from', TODAY)).toBe(true);
+        expect(slotWords(query({ car: true }), place, TODAY).from).toEqual([]);
+        expect(slotSet(query(), 'from', TODAY)).toBe(false);
+    });
+
     it('resets only its own fields', () => {
         const reset = resetSlot(full, 'way', TODAY);
         expect(reset).toEqual({ ...full, wishes: {}, date: TODAY });

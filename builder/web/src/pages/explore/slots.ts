@@ -22,6 +22,13 @@ export function resetSlot(query: Query, slot: SlotId, today: string): Query {
     return next.lift ? next : { ...next, shapes: liftsOff(next.shapes) };
 }
 
+/** Whether a field of the slot differs from its default: its "Reset" then has work, and the cross shows. A slot can hold a
+ * value that it shows no word for, such as the car with no start point. */
+export function slotSet(query: Query, slot: SlotId, today: string): boolean {
+    const base = defaultQuery(today);
+    return SLOT_FIELDS[slot].some(key => JSON.stringify(query[key]) !== JSON.stringify(base[key]));
+}
+
 /** What the page cannot search: "From" and "On the way" with no facts files or on the long trails tab, and the shape,
  * the length, the climb and the lower grade on the long trails tab. */
 export interface Off { from: boolean; way: boolean; trails: boolean }

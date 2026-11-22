@@ -1,11 +1,17 @@
-<!-- The shapes that the rider accepts: loop, there and back, and the two lift shapes. A lift shape counts, and shows as
-     pressed, only while lifts are on; a click on it turns lifts on. At least one shape that counts stays on. -->
+<!-- The shapes that the rider accepts: loop, there and back, and the two lift shapes where lifts can apply. A lift shape
+     counts, and shows as pressed, only while lifts are on; a click on it turns lifts on. At least one shape that counts
+     stays on. -->
 <script lang="ts">
     import { SHAPES, type Query, type Shape } from './search';
     import ShapeIcon from './ShapeIcon.svelte';
     import { SHAPE_WORDS } from './words';
 
-    let { query, onchange }: { query: Query; onchange: (change: Partial<Query>) => void } = $props();
+    let { query, lifts, onchange }: {
+        query: Query;
+        /** Lifts can apply: the release has facts files. */
+        lifts: boolean;
+        onchange: (change: Partial<Query>) => void;
+    } = $props();
 
     const lift = (shape: Shape) => shape === 'liftDown' || shape === 'liftUp';
     const counted = $derived(SHAPES.filter(shape => query.lift || !lift(shape)));
@@ -19,7 +25,7 @@
 </script>
 
 <div class="tiles">
-    {#each SHAPES as shape (shape)}
+    {#each SHAPES.filter(shape => lifts || !lift(shape)) as shape (shape)}
         {@const pressed = on.includes(shape)}
         <button type="button" class="tile" aria-pressed={pressed} title={pressed && on.length === 1 ? 'Keep at least one shape' : undefined}
             onclick={() => toggle(shape)}><ShapeIcon {shape} />{SHAPE_WORDS[shape].label}</button>

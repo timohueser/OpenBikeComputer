@@ -1,9 +1,9 @@
 <!-- A search bar of fixed slots. Each slot shows its values as words and opens one panel under it; one panel is open at
      a time. The cross empties the search, and "Undo" brings it back for a short time. -->
 <script lang="ts" module>
-    /** `words` are the values of the slot in their order; `unset` shows when it has none. A slot with `off` is disabled
-     * and shows `off`. */
-    export interface Slot { id: string; icon: string; label: string; words: string[]; unset: string; off?: string }
+    /** `words` are the values of the slot in their order; `unset` shows when it has none. `set` says that a value differs
+     * from its default, also one with no word, so "Reset" has work. A slot with `off` is disabled and shows `off`. */
+    export interface Slot { id: string; icon: string; label: string; words: string[]; unset: string; set: boolean; off?: string }
 </script>
 
 <script lang="ts">
@@ -17,7 +17,7 @@
         panel: Snippet<[id: string]>;
         /** Sets the values of the slot to their defaults. */
         onreset: (id: string) => void;
-        /** The search holds only defaults: the cross hides. */
+        /** No slot that is on holds a value: the cross hides. */
         empty: boolean;
         onclear: () => void;
         onundo: () => void;
@@ -102,7 +102,7 @@
         <div class="panel" id="search-panel" role="group" aria-label={current.label} bind:offsetWidth={panelWidth} style:left={innerWidth > NARROW_PX ? `${left}px` : undefined}>
             {@render panel(current.id)}
             <div class="foot">
-                <button type="button" class="quiet" disabled={!current.words.length} onclick={() => onreset(current.id)}>Reset</button>
+                <button type="button" class="quiet" disabled={!current.set} onclick={() => onreset(current.id)}>Reset</button>
                 <button type="button" class="done" onclick={() => close(true)}>Done</button>
             </div>
         </div>

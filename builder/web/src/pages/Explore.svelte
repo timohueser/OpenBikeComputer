@@ -30,7 +30,7 @@
     import Journey from './explore/Journey.svelte';
     import { counts, defaultQuery, DRIVE_KM, driveCap, find, GRADE_TOP, keepQuery, loadBox, openingQuery, queryParams, reachBox, storedQuery, suggestions,
         type Loaded, type Query, type Shape, type Sort } from './explore/search';
-    import { effectiveQuery, resetSlot, slotWords, type SlotId } from './explore/slots';
+    import { effectiveQuery, resetSlot, slotSet, slotWords, type SlotId } from './explore/slots';
     import Wishes from './explore/Wishes.svelte';
     import { addMarkerLayers, MARKER_LAYERS, mapData, markerClick, markerTip, startAt } from './explore/search-map';
     import type { MapOverlay } from './routes/RoutesMap.svelte';
@@ -185,7 +185,6 @@
         if (credits) coverCredits = credits;
         covers += credits ? 1 : -1;
     }
-    const count = (n: number) => `${n.toLocaleString('en')} signed route${n === 1 ? '' : 's'}`;
     const counted = (rows: unknown[] | undefined) => rows ? ` ${rows.length.toLocaleString('en')}` : '';
     /** No row to show yet: the first load, or a new view with no row of the last answer in it. */
     const waiting = $derived(!failed && !open.closed && !open.rows);
@@ -193,7 +192,7 @@
     // The tabs show the counts; a release with no tabs shows them over the list.
     const status = $derived(failed ? 'The routes could not load.' : open.closed ? `Zoom in to see the ${open.word}s.`
         : waiting || stale ? 'Loading the routes…' : !open.inView.length ? `No ${open.word} in this map view.`
-        : config.trails ? '' : shown.length === open.inView.length ? `${count(open.inView.length)} in this map view` : `${shown.length.toLocaleString('en')} of ${count(open.inView.length)}`);
+        : '');
 
     // A selected route that the list does not show any more closes its card. A selection from the history waits for
     // the first answer.
@@ -341,12 +340,26 @@
     const words = $derived(slotWords(shownQuery, placeById, day));
     const offText = $derived(tab === 'long' ? 'Not for long trails' : !config.facts ? 'No data for this map' : undefined);
     const slots = $derived<Slot[]>([
-        { id: 'from', icon: 'locate', label: 'From', words: words.from, unset: 'Anywhere on the map', off: offText },
-        { id: 'hike', icon: 'hiking', label: 'Hike', words: words.hike, unset: tab === 'long' ? 'Any grade' : 'Any length and shape' },
-        { id: 'way', icon: 'mountain', label: 'On the way', words: words.way, unset: 'Anything', off: offText },
+        { id: 'from', icon: 'locate', label: 'From', words: words.from, unset: 'Anywhere on the map', set: slotSet(shownQuery, 'from', day), off: offText },
+        { id: 'hike', icon: 'hiking', label: 'Hike', words: words.hike, unset: tab === 'long' ? 'Any grade' : 'Any length and shape', set: slotSet(shownQuery, 'hike', day) },
+        { id: 'way', icon: 'mountain', label: 'On the way', words: words.way, unset: 'Anything', set: slotSet(shownQuery, 'way', day), off: offText },
     ]);
     /** The open panel of the bar, and the query before the cross for its "Undo". */
     let openSlot = $state<string>(), cleared = $state.raw<Query>();
+    /** "Reset" of a slot. On the long trails tab "Hike" shows only the hardest grade, so its reset keeps the other values of
+     * the day search. */
+    const reset = (id: SlotId, from: Query): Query => tab === 'long' ? { ...from, grade: [from.grade[0], GRADE_TOP] } : resetSlot(from, id, day);
+    /** The cross resets each slot that is on: a slot that is off keeps its values for when it is on again. */
+    function clear() {
+        cleared = query;
+        setQuery(slots.filter(slot => !slot.off).reduce((next, slot) => reset(slot.id as SlotId, next), query));
+    }
+    /** On the long trails tab "Hike" changes only the hardest grade, so the day search keeps its lower grade. */
+    function setHike(change: Partial<Query>) {
+        if (tab !== 'long' || !change.grade) return setQuery(change);
+        const high = change.grade[1];
+        setQuery({ grade: [Math.min(query.grade[0], high), high] });
+    }
     const pick = $derived(searching && picking
         ? { text: 'Click the map where you start. Esc cancels.', onpick: (at: [number, number]) => { picking = false; setQuery({ start: startAt(at), pin: undefined }); } }
         : undefined);
@@ -460,7 +473,7 @@
 <!-- TrailView shows the day routes of a near view only. -->
 <ListAndMap title="Explore" items={mapItems} shown={mapShown} {place} fit={0} look="signed" credits={covers ? [...coverCredits, ...credits] : credits}
     selected={tab === 'day' ? chosen ? [chosen.id] : [] : staged ? [staged.id] : []} {marked} {together} {overlay} {pick} onselect={select} onview={next => setView(wrapped(next))}
-    card={tab === 'day' ? chosen && !searching ? card : undefined : staged ? stageCard : trailAbout ? trailCard : undefined}
+    card={tab === 'day' ? undefined : staged ? stageCard : trailAbout ? trailCard : undefined}
     mapButtons={hasTrailView(config) && tab === 'day' && dayShown.length && !dayClosed ? mapButtons : undefined} tabs={config.trails ? dayOrLong : undefined}
     bar={searchBar} list={searching ? undefined : trailList} table={searching ? table : undefined} />
 
@@ -493,14 +506,14 @@
     <div class="search">
         <!-- The place field finds places only; a chosen place moves the map. -->
         <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />
-        <SearchBar label="Search the hikes" {slots} bind:open={openSlot} empty={!queryParams(query, day)} onreset={id => setQuery(resetSlot(query, id as SlotId, day))}
-            onclear={() => { cleared = query; query = defaultQuery(day); }} onundo={() => { if (cleared) query = cleared; }}>
+        <SearchBar label="Search the hikes" {slots} bind:open={openSlot} empty={!slots.some(slot => slot.set && !slot.off)} onreset={id => setQuery(reset(id as SlotId, query))}
+            onclear={clear} onundo={() => { if (cleared) query = cleared; }}>
             {#snippet panel(id)}
                 {#if id === 'from'}
                     <Journey query={dayQuery} cap={start ? driveCap(start[1]) : DRIVE_KM.max} place={placeById} {picking}
                         onpicking={on => { picking = on; if (on) openSlot = undefined; }} onchange={setQuery} />
                 {:else if id === 'hike'}
-                    <HikePanel query={shownQuery} trails={tab === 'long'} ungraded={tally?.ungraded ?? 0} {lengths} {climbs} onchange={setQuery} />
+                    <HikePanel query={shownQuery} trails={tab === 'long'} lifts={!!config.facts} ungraded={tally?.ungraded ?? 0} {lengths} {climbs} onchange={setHike} />
                 {:else}
                     <Wishes query={dayQuery} today={day} counts={tally?.wishes ?? new Map()} place={placeById} onchange={setQuery} />
                 {/if}

@@ -14,11 +14,13 @@
     import { gradeText, shapesSet } from './slots';
     import { CLIMB_TOP_M, GRADES, LENGTH_TOP_M, SHAPE_WORDS, shortDistance } from './words';
 
-    let { query, trails, ungraded, lengths, climbs, onchange }: {
+    let { query, trails, lifts, ungraded, lengths, climbs, onchange }: {
         /** The query that the page searches, with the values that are off at their defaults. */
         query: Query;
         /** The long trails tab: the shape, the length and the climb do not apply. */
         trails: boolean;
+        /** Lifts can apply: the release has facts files. */
+        lifts: boolean;
         /** The rows with no grade that "Include routes with an unknown grade" keeps. */
         ungraded: number;
         /** The length and the climb of each row that the other values keep, in the units of the rider. */
@@ -66,7 +68,7 @@
                         </div>
                         <p class="hint">Bike routes come later.</p>
                     {:else if row.id === 'shape'}
-                        <Shapes {query} {onchange} />
+                        <Shapes {query} {lifts} {onchange} />
                     {:else if row.id === 'length'}
                         <!-- The sliders keep one scale while the loaded hikes change. -->
                         <RangeSlider values={lengths} fixed={scale([distanceIn(LENGTH_TOP_M)]).step} range={shown(query.length, distanceIn)} label="Length" reading={false}
