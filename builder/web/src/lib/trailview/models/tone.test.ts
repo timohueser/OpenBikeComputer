@@ -10,6 +10,12 @@ describe('the colour matrix of a season', () => {
         }
     });
 
+    it('does not fit a season whose ramp the matrix turns more than 8 steps off, as the aspen\'s autumn gold', () => {
+        const summer = tree('aspen', 'summer', 0), autumn = tree('aspen', 'autumn', 0), matrix = tone(summer, autumn);
+        expect(matrix).toBeDefined();
+        expect(fits(matrix!, summer, autumn, 8)).toBe(false);
+    });
+
     it('turns no bare crown, and no crown that the season gives flower heads', () => {
         expect(tone(tree('european-beech', 'summer', 0), tree('european-beech', 'winter', 0))).toBeUndefined();
         expect(tone(tree('hawthorn', 'summer', 0), tree('hawthorn', 'spring', 0))).toBeUndefined();
