@@ -18,8 +18,8 @@ A model is low in detail and looks like a model from a game. It is friendly and 
 sees it for a moment, at the side of a trail, so its shape must read at once.
 
 - **Round shapes.** An animal's body is a skin through rings of 8 to 12 sides. Each face has one
-  flat colour and one normal, so the facets show and the light gives the shape. A tree crown is
-  smooth: see [Trees](#trees).
+  flat colour and one normal, so the facets show and the light gives the shape. Trees and plants
+  are smooth: see [Trees](#trees) and [Plants](#plants).
 - **Clear outlines.** A model reads from the side and from above. Legs, ears, horns and tails stand
   out from the body. A detail that a rider cannot see at 10 m does not get a triangle.
 - **Friendly proportions.** An animal has a slightly large head with eyes and a pale muzzle, short
@@ -81,9 +81,29 @@ gives its numbers, colours and features.
 
 ![Tree species of TrailView in a row in autumn: spruce, larch, cypress, beech, birch, oak, olive and broom, before the forest of a mountain valley](../../assets/trailview-models/trees.jpg)
 
+## Plants
+
+Plants stand near the eye in large numbers, so they keep the smooth light of the trees. Most are
+thin leaves and blades, which have no body to facet; the fleshy cacti and spurges are smooth too.
+Each plant is a file in `plants/` that builds its three shapes in each season with the parts of
+[`plant-shape.ts`](src:builder/web/src/lib/trailview/models/plant-shape.ts): blades, kites, round
+stems and soft cushions.
+
+- **The species shows in the outline.** The shuttlecock of a fern, the cupped flowers on bowed
+  stalks of a meadow flower, the thick pads of a prickly pear.
+- **Flowers, berries and seed heads are shapes,** on stems, not painted spots.
+- **A bush stands on a soft cushion,** and its leaves light as one round dome.
+- **A plant that dies back is not there.** A plant file can name the seasons in which it has no
+  model; the engine then draws nothing for it.
+- **The ground gives the colour.** Most ground plants take much of their colour from the ground
+  under them, so a meadow of tufts reads as the meadow. A flowering plant keeps more of its own,
+  so its flowers show.
+
+![TrailView plants in a row in summer: a grass tuft, a fern, bilberry, alpine flowers, heather, a foxglove, alpenrose and a lupine](../../assets/trailview-models/plants.jpg)
+
 ## A new model
 
 A new model or a change to a model is a change of look. The review page
-(`builder/web/tests/browser/trailview/models.mjs`) shows each animal or tree species in TrailView's
+(`builder/web/tests/browser/trailview/models.mjs`) shows each animal, tree species or plant in TrailView's
 own light, at each tier, with its triangle and vertex counts against the budget, and the old model
 beside it. The owner approves the pictures before the change merges.
