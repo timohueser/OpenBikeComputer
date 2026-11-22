@@ -10,7 +10,7 @@ them have one style, "soft low-poly". This page says what the style is and why w
 of a model file and the triangle budget of each kind are in the
 [model contract](src:specs/trailview-models.md).
 
-![A row of the herd animals on a meadow in TrailView: cattle, sheep, goats, a horse, a donkey, a pig, a dromedary, deer, reindeer, ibex and chamois](../assets/trailview-models/lineup.jpg)
+![A row of the herd animals on a meadow in TrailView: cattle, sheep, goats, a horse, a donkey, a pig, a dromedary, deer, reindeer, ibex and chamois](../../assets/trailview-models/lineup.jpg)
 
 ## The style
 
@@ -53,14 +53,14 @@ and leaves out fine details such as eyes and udders. So the outline and the colo
 same when an animal moves from one tier to the other. For an animal, the near tier ends at 150 m.
 Past it, an animal is only a few pixels tall.
 
-![The cattle of TrailView in the near tier (left) and the far tier (right), drawn at the same size](../assets/trailview-models/tiers.jpg)
+![The cattle of TrailView in the near tier (left) and the far tier (right), drawn at the same size](../../assets/trailview-models/tiers.jpg)
 
 ## Poses and coats
 
 An animal has two or three poses: it stands, it grazes, or it lies. A herd mixes them, so a group
 looks alive. A breed has one to four coats, and most animals of a group wear the first coat.
 
-![A brown cow standing, grazing and lying](../assets/trailview-models/poses.jpg)
+![A brown cow standing, grazing and lying](../../assets/trailview-models/poses.jpg)
 
 ## A new model
 
