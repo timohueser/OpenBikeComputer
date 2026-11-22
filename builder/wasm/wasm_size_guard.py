@@ -34,7 +34,7 @@ from pathlib import Path
 # The built tunnel ends (obc-trailview-parts) with their open stretches and the approaches to their openings add
 # about 36 kB gzipped; the openings of a pair's mate (the parts' `mouths`) about 2 kB more, measured in CI with
 # wasm-pack 0.15.0 and rustc 1.100.0.
-GROUND_PLAN_MEASURED = {"gzipped": 831_313, "raw_wasm": 2_133_837}
+GROUND_PLAN_MEASURED = {"gzipped": 831_631, "raw_wasm": 2_134_406}
 # The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
 # unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
 # A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
@@ -46,10 +46,10 @@ GROUND_PLAN_MARGIN = {
 }
 
 # Measured in CI on the build of the tunnel parts' arch, tube, boxes and underpasses, with a tile's volumes built once
-# and selected per node, and the pair, the rim, the closed free end and the cut of two tubes that meet only where both
-# are, with the closed cut of a head, with wasm-pack 0.15.0 and rustc 1.100.0. The margin is the ground plan's, raw by
-# the same fraction.
-PARTS_MEASURED = {"gzipped": 147_785, "raw_wasm": 335_603}
+# and selected per node, and the pair, the rim, the closed free end and the cut of two tubes that meet where both ends
+# of a chord do, with the closed cut of a head, with wasm-pack 0.15.0 and rustc 1.100.0. The margin is the ground
+# plan's, raw by the same fraction.
+PARTS_MEASURED = {"gzipped": 147_579, "raw_wasm": 335_270}
 PARTS_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * PARTS_MEASURED["raw_wasm"] / PARTS_MEASURED["gzipped"]),
