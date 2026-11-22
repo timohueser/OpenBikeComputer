@@ -891,6 +891,13 @@ fn two_tubes_meet_where_both_rings_do_and_a_cut_head_is_closed() {
     // A tube 7 m north starts 3 m after the first (an opening that could not move onto the first's frame line): before
     // it the first keeps its wall; after it, a way north meets the second's far wall; a way west in the first's wall,
     // from the second's room, meets the face that closes the first's shell where the meeting begins.
+    // Two tubes 7 m apart whose openings lie 0.3 m apart along (the rounding of their records on one frame line): the
+    // first's head ends at the middle, so a way into the second meets no face.
+    let faces = faces_of(&tubes(&[&[[0.0, 0.0], [40.0, 0.0]], &[[0.3, 7.0], [40.0, 7.0]]]));
+    for (y, z) in [(5.2, 501.0), (5.2, 502.0), (7.0, 501.0)] {
+        let got = hit(&faces, [-2.0, y, z], [1.0, 0.0, 0.0], 2.5);
+        assert!(got.is_none(), "one line, the way into the second at {y} m north, {z}: {got:?}");
+    }
     let staggered =
         tubes(&[&[[0.0, 0.0], [3.0, 0.0], [10.0, 0.0], [40.0, 0.0]], &[[3.0, 7.0], [10.0, 7.0], [40.0, 7.0]]]);
     let faces = faces_of(&staggered);

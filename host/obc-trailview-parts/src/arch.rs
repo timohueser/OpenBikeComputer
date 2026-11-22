@@ -117,16 +117,18 @@ fn grown(net: &Net, e: usize, grow: f64) -> Vec<Corner> {
 }
 
 /// Where end e's head ends at another part: on each side, the nearest built tube that crosses its frame line within
-/// reach of the head and whose room overlaps the head from its foot to its top (`Net::meets` with the head's metres
-/// across and heights): the metres across to the middle between the two tubes' walls, and the side (1 to the left).
-/// The mate of a pair crosses it at its opening, also where their floors lie apart by more than half their heights.
+/// reach of the head, or opens up to the head's depth (`face_m`) behind it, and whose room overlaps the head from its
+/// foot to its top (`Net::meets` with the head's metres across and heights): the metres across to the middle between
+/// the two tubes' walls, and the side (1 to the left). Two openings on one frame line lie apart by the rounding of
+/// their records and the turn between their headings. The mate of a pair crosses it at its opening, also where their
+/// floors lie apart by more than half their heights.
 fn head_cuts(net: &Net, e: usize, foot: f64) -> Vec<(f64, f64)> {
     let Some((c, _)) = net.opening(e) else { return Vec::new() };
     let (end, chord, (design, bake)) = (&net.ends[e], &net.chords[c], (&net.rules.design, &net.rules.ladder.bake));
     let (right, left) = wide(net, e);
     let st = net.frame(e, 0.0);
     let up = [foot - st.z, end.face.max(chord.height + design.frame_m + bake.shell_m)];
-    let meet = tube::Meet { across: [-right, left], past: tube::MEET_PAST_M, up: Some(up), only: None };
+    let meet = tube::Meet { across: [-right, left], past: design.face_m, up: Some(up), only: None };
     let cuts = net.meets(c, &st, meet);
     cuts.into_iter().flatten().map(|cut| (cut.x, cut.axis.signum())).collect()
 }
