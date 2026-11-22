@@ -157,7 +157,8 @@ impl Run {
     }
 }
 
-/// A run of two arms: the arms, its metres along each at its two ends, and what it is.
+/// A run of two arms: the arms, its metres along each at its two ends, what it is, and the rise of the second where
+/// the two lie nearest in height.
 #[derive(Clone, Copy, Debug)]
 struct RunOf {
     a: usize,
@@ -165,6 +166,7 @@ struct RunOf {
     sa: [f64; 2],
     sb: [f64; 2],
     kind: Run,
+    rise: f64,
 }
 
 /// The runs of two arms along which their gap stays under a wall, with holes shorter than `room_join_m` closed.
@@ -207,7 +209,8 @@ fn runs(arms: &[Tube], spans: &[Option<[f64; 2]>], input: &Input) -> Vec<RunOf> 
             if !run.is_empty() {
                 let kind = decide(&run, (&arms[a], &arms[bt]), input);
                 let (first, last) = (run[0], run[run.len() - 1]);
-                out.push(RunOf { a, b: bt, sa: [first.s, last.s], sb: [first.foot, last.foot], kind });
+                let rise = run.iter().map(|m| m.rise).min_by(|x, y| x.abs().total_cmp(&y.abs())).unwrap_or(0.0);
+                out.push(RunOf { a, b: bt, sa: [first.s, last.s], sb: [first.foot, last.foot], kind, rise });
             }
             run = m.into_iter().collect();
         }
@@ -267,6 +270,9 @@ pub(crate) struct Rooms {
     pub table: Vec<Vec<(f64, Vec<Place>)>>,
     pub bounds: Vec<[Bound; 2]>,
     pub seams: Vec<Seam>,
+    /// Per run of over and under: the room over, the room under, and whether only the section of the room under goes
+    /// lower (the two lie side by side).
+    pub over: Vec<(usize, usize, bool)>,
     pub arms: Vec<Tube>,
     pub arm_openings: Vec<Opening>,
     pub metrics: Value,
@@ -761,6 +767,7 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
         table: Vec::new(),
         bounds: Vec::new(),
         seams,
+        over: Vec::new(),
         arms: Vec::new(),
         arm_openings: Vec::new(),
         metrics: Value::Null,
@@ -853,6 +860,23 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
         "lane_moves_over_free_max_places": far.join("; "),
         "farthest_lane_move_m": (moves.iter().map(|m| m.0).fold(0.0, f64::max) * 100.0).round() / 100.0,
     });
+    // The runs of over and under between the rooms of their arms.
+    let mut of_arm: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (r, lanes) in out.lanes.iter().enumerate() {
+        for l in lanes {
+            of_arm[l.arm].push(r);
+        }
+    }
+    for run in found.iter().filter(|r| matches!(r.kind, Run::Height | Run::Cross)) {
+        let (upper, lower) = if run.rise > 0.0 { (run.b, run.a) } else { (run.a, run.b) };
+        for &u in &of_arm[upper] {
+            for &t in of_arm[lower].iter().filter(|&&t| t != u) {
+                out.over.push((u, t, run.kind == Run::Height));
+            }
+        }
+    }
+    out.over.sort_unstable_by_key(|o| (o.0, o.1, o.2));
+    out.over.dedup();
     out.arms = arms;
     out.arm_openings = moved_openings;
     (out, openings)

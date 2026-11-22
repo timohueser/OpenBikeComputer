@@ -483,6 +483,27 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         });
         m.insert("rooms_that_touch".into(), touching.len().into());
         m.insert("rooms_that_touch_places".into(), places.collect::<Vec<_>>().join("; ").into());
+        // The largest step of each room of lanes: the most that a lane's floor lies over the room's, and where.
+        let mut steps: Vec<(f64, [f64; 2])> = (rooms.tubes.iter().zip(&decided.floors))
+            .filter_map(|(t, f)| {
+                let f = f.as_ref().filter(|f| f.lanes.len() > 1)?;
+                let (i, up) = (0..f.s.len())
+                    .map(|i| (i, f.lanes.iter().map(|l| l.0[i] - f.f[i]).fold(0.0, f64::max)))
+                    .max_by(|x, y| x.1.total_cmp(&y.1))?;
+                Some((up, t.curve.at(f.s[i]).0.p))
+            })
+            .collect();
+        steps.sort_by(|x, y| y.0.total_cmp(&x.0));
+        let band = |lo: f64, hi: f64| steps.iter().filter(|s| s.0 > lo && s.0 <= hi).count();
+        m.insert(
+            "largest_steps".into(),
+            json!({"to 0.5 m": band(-1.0, 0.5), "to 1.5 m": band(0.5, 1.5), "to 3 m": band(1.5, 3.0), "to 5 m": band(3.0, 5.0), "over 5 m": band(5.0, f64::INFINITY)}),
+        );
+        let places = steps.iter().take(10).map(|&(up, p)| {
+            let [lat, lon] = crate::degrees(p);
+            format!("{lat:.5},{lon:.5} {up:.2} m")
+        });
+        m.insert("largest_step_places".into(), places.collect::<Vec<_>>().join("; ").into());
     }
     records(&rooms, &openings, &decided, input)
 }

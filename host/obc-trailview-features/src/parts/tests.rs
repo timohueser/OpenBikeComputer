@@ -572,6 +572,15 @@ fn layouts() -> Vec<(&'static str, Case, u64, u64)> {
     footway.tunnel(&ROAD, (0.0, 200.0), 0.0);
     let rise = 200.0 * 3f64.to_radians().tan();
     footway.ways.push(("tunnel", tags(&FOOT), vec![part(&[[0.0, 4.3], [200.0, 4.3 + rise]], &[500.0; 2])]));
+    // A road tunnel 3 m over the first, crossing it at 40 degrees from 30 m east to 170 m east.
+    let mut cross = Case::default();
+    cross.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let t = 40f64.to_radians().tan();
+    cross.ways.push((
+        "tunnel",
+        tags(&ROAD),
+        vec![part(&[[30.0, -70.0 * t], [100.0, 0.0], [170.0, 70.0 * t]], &[503.0; 3])],
+    ));
     let mut away = Case::default();
     away.tunnel(&ROAD, (0.0, 200.0), 0.0);
     let line = [[0.0, 7.0], [60.0, 7.0], [120.0, 40.0], [200.0, 40.0]];
@@ -585,6 +594,7 @@ fn layouts() -> Vec<(&'static str, Case, u64, u64)> {
         ("a staggered start of 60 m", pair(5.0, 60.0, 500.0), 1, 0),
         ("a footway at 3 degrees beside a road", footway, 1, 1),
         ("one that turns away", away, 1, 1),
+        ("two that cross", cross, 0, 0),
     ]
 }
 
