@@ -273,7 +273,8 @@ pub(crate) fn decide(
         let o = &openings[i];
         let t = &tubes[o.tube];
         let g = &input.rules.groups[t.group];
-        let short = t.curve.len < b.underpass_max_m;
+        // The chain of a lane is its arm: a room that a seam ends is no shorter than the tunnel it is a part of.
+        let short = rooms.lanes[o.tube].iter().all(|l| rooms.arms[l.arm].curve.len < b.underpass_max_m);
         let d = cover[i];
         let (r, k): (&'static str, Vec<Kind>) = if short && !crossings[o.tube].is_empty() {
             ("underpass", vec![Kind::Box, Kind::Free])

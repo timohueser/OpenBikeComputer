@@ -581,8 +581,9 @@ and the family and the group of its widest lane. Each opening takes the first ki
 in order:
 
 1. No part where a vertex of the chain has no height.
-2. A chain shorter than `underpass_max_m` with a way or a track on top: `box` at its openings. Its height comes from
-   the floor of the tube, as for every part. A short chain under a building only has no part.
+2. A room whose lanes' chains are all shorter than `underpass_max_m`, with a way or a track on top: `box` at its
+   openings. Its height comes from the floor of the tube, as for every part. A short chain under a building only has
+   no part.
 3. An end that meets no way and is covered at its opening: `free`.
 4. An end whose first covered metre lies within `collar_max_m`: `rock` for a group with `rock` covered within
    `rock_cover_max_m`; else `arch`.
