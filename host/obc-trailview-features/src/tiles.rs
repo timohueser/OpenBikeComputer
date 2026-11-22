@@ -356,6 +356,12 @@ impl Tiles {
         Tiles { region: [x0, y0, x1, y1], tiles: HashMap::new(), pads: HashMap::new() }
     }
 
+    /// Whether the region holds a world point.
+    pub fn holds(&self, [x, y]: [f64; 2]) -> bool {
+        let [x0, y0, x1, y1] = self.region;
+        (x0..=x1).contains(&x) && (y0..=y1).contains(&y)
+    }
+
     /// The columns and rows (c0, r0, c1, r1) of the tiles of the region at `zoom`.
     pub fn span(&self, zoom: u8) -> [i64; 4] {
         let n = (1u64 << zoom) as f64;

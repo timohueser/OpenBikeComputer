@@ -210,6 +210,11 @@ impl<'a> Net<'a> {
         built(&self.chords[c].ends)
     }
 
+    /// Whether another chord of a built chain shares vertex k of chord c.
+    pub fn meets(&self, c: usize, k: usize) -> bool {
+        self.at.get(&key(vertex(&self.chords[c], k))).is_some_and(|list| list.iter().any(|&o| o != c))
+    }
+
     /// The one other chord at vertex k of chord c, if exactly one shares it.
     fn other(&self, c: usize, k: usize) -> Option<usize> {
         let list = self.at.get(&key(vertex(&self.chords[c], k)))?;

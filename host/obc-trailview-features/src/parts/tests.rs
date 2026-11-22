@@ -62,7 +62,12 @@ struct Case {
     ways: Vec<(&'static str, Tags, Vec<Part>)>,
     /// The deck depth of a bridge way, by its place in `ways`.
     decks: HashMap<usize, f64>,
+    /// The bake's region (west, south, east, north), where not the default.
+    bounds: Option<[f64; 4]>,
 }
+
+/// The bake's region of a test.
+const BOUNDS: [f64; 4] = [8.3, 46.7, 8.5, 46.9];
 
 impl Case {
     /// A tunnel east from e0 to e1 at n, its floor at 500 m; its id.
@@ -89,7 +94,7 @@ impl Case {
             .filter(|(_, w)| w.0 == "tunnel")
             .map(|(id, w)| (id as u32, (w.1.clone(), w.2.clone())))
             .collect();
-        let (tiles, levels) = (Tiles::new([8.3, 46.7, 8.5, 46.9]), HashMap::new());
+        let (tiles, levels) = (Tiles::new(self.bounds.unwrap_or(BOUNDS)), HashMap::new());
         let tunnel_ways: HashSet<usize> = tunnels.keys().map(|&id| id as usize).collect();
         let input = Input {
             tunnels: &tunnels,
@@ -200,7 +205,7 @@ fn each_rung_gives_its_kinds_in_the_order_of_the_rungs() {
     case.ways.push(("tunnel", tags(&ROAD), vec![part(&[[200.0, 0.0], [250.0, 50.0], [300.0, 100.0]], &[500.0; 3])]));
     let placed = case.place(&site(&ridge(400.0, 1.0), &[], false), &mut Vec::new());
     assert_eq!((of(&placed, a).len(), of(&placed, b).len(), placed.metrics["fork_ends"].as_u64()), (1, 1, Some(3)));
-    assert_eq!(placed.tags[&a]["parts"], "arch none");
+    assert!(!placed.tags.contains_key(&a), "a chain that does not draw has no parts");
     // A vertex of unknown height: no part.
     let mut case = road();
     case.ways[0].2[0].z.as_mut().unwrap()[1] = f64::NAN;
@@ -265,7 +270,7 @@ fn a_pair_has_one_frame_line_and_a_way_beside_a_wider_one_is_a_lane_of_its_room(
     let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
     assert_eq!(of(&placed, a)[0], (vec![Arch, Free], "hill"));
     assert_eq!(of(&placed, b)[0], (vec![Arch, Free], "hill"));
-    assert_eq!(placed.tags[&b]["parts"], "arch none");
+    assert!(!placed.tags.contains_key(&b), "a chain that does not draw has no parts");
     // Two footways 3 m apart beside a road tube that starts 3 m farther in: the first comes nearer the road than a wall
     // and is a lane of its room, which opens on the road's line; the second pairs with the room and moves onto it too.
     let mut case = Case::default();
@@ -673,6 +678,123 @@ fn a_seams_record_is_whole() {
                     }
                 }
             }
+        }
+    }
+}
+
+/// The records that the builder does not find whole as the tiles hold them: per tile of the zoom-13 tiles of `bounds`,
+/// each record whose point it owns that the builder does not find whole, and each chord whose `a` it owns that does
+/// not close.
+fn not_whole_in_tiles(placed: &Placed, bounds: [f64; 4]) -> Vec<String> {
+    use obc_trailview_parts::{read_back, Chord, End, Rules};
+    let mut tiles = Tiles::new(bounds);
+    for (kind, tags, part) in &placed.features {
+        let geometry = if part.points.len() == 1 { Geometry::Point } else { Geometry::Line };
+        tiles.add(MAX_ZOOM, kind, geometry, tags, std::slice::from_ref(part), None);
+    }
+    let (rules, side, unit) = (Rules::embedded(), f64::from(crate::tiles::EXTENT), 8.0);
+    let mut out = Vec::new();
+    for (&(_, col, row), tile) in &tiles.tiles {
+        let (x0, y0) = (f64::from(col) * side, f64::from(row) * side);
+        let world = |xy: [i64; 2]| [(x0 + xy[0] as f64) * unit, (y0 + xy[1] as f64) * unit];
+        let owns = |p: [f64; 2]| {
+            let q = [p[0] / unit - x0, p[1] / unit - y0];
+            (0.0..side).contains(&q[0]) && (0.0..side).contains(&q[1])
+        };
+        let (mut ends, mut chords) = (Vec::new(), Vec::new());
+        for f in decode(&tile.bytes()).unwrap() {
+            let (xy, z) = (&f.parts[0].xy, f.parts[0].z.clone().unwrap());
+            if f.kind == "tunnel-end" {
+                ends.push(End::from_tags(world(xy[0]), z[0], &f.tags, rules).unwrap());
+            } else if f.kind == "tunnel-tube" {
+                let (a, b) = (world(xy[0]), world(xy[1]));
+                chords.push(Chord::from_tags([a[0], a[1], z[0]], [b[0], b[1], z[1]], &f.tags, rules).unwrap());
+            }
+        }
+        let (whole, closed) = read_back(&ends, &chords, rules);
+        let place = |p: [f64; 2]| back([p[0] / (1u64 << 30) as f64, p[1] / (1u64 << 30) as f64]);
+        for (e, ok) in ends.iter().zip(&whole).filter(|(e, ok)| owns(e.at) && !**ok) {
+            out.push(format!("tile {col} {row}: record {} at {:?} ({ok})", e.part.name(), place(e.at)));
+        }
+        for (c, _) in chords.iter().zip(&closed).filter(|(c, ok)| owns([c.a[0], c.a[1]]) && !**ok) {
+            out.push(format!("tile {col} {row}: chord at {:?} open", place([c.a[0], c.a[1]])));
+        }
+    }
+    out
+}
+
+/// The case moved `east` metres east.
+fn moved(mut case: Case, east: f64) -> Case {
+    for (_, _, parts) in &mut case.ways {
+        for p in parts.iter_mut().flat_map(|part| part.points.iter_mut()) {
+            p[0] += east / metres(p[1]);
+        }
+    }
+    case
+}
+
+/// The metres east of the origin of `at` to the next edge between two zoom-13 tiles.
+fn tile_edge_east() -> f64 {
+    let o = world(8.4, 46.8);
+    let n = f64::from(1u32 << MAX_ZOOM);
+    ((o[0] * n).ceil() / n - o[0]) * metres(o[1])
+}
+
+#[test]
+fn what_cannot_draw_stays_out() {
+    let hill = ridge(200.0, 1.0);
+    let ground = site(&hill, &[], false);
+    // A footway east from an opening to a fork 60 m in, and beside its opening a V of a footway: from an opening 1.22 m
+    // to its left 5 m in to a point on its axis and back to an opening 2.51 m to its left.
+    let mut v = Case::default();
+    let through = v.tunnel(&FOOT, (0.0, 60.0), 0.0);
+    for n in [20.0, -20.0] {
+        v.ways.push(("tunnel", tags(&FOOT), vec![part(&[[60.0, 0.0], [80.0, n]], &[500.0; 2])]));
+    }
+    v.ways.push(("tunnel", tags(&FOOT), vec![part(&[[0.0, 1.22], [5.0, 0.0], [0.0, 2.51]], &[500.0; 3])]));
+    // Two road tunnels 20 m apart, the second with a fork at its east end.
+    let mut pair = Case::default();
+    let single = pair.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    pair.tunnel(&ROAD, (0.0, 200.0), 20.0);
+    for n in [60.0, -20.0] {
+        pair.ways.push(("tunnel", tags(&ROAD), vec![part(&[[200.0, 20.0], [210.0, n]], &[500.0; 2])]));
+    }
+    // A road tunnel whose east end lies past the bake's region.
+    let mut cut = Case::default();
+    cut.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    cut.bounds = Some([BOUNDS[0], BOUNDS[1], 8.4 + 100.0 / metres(world(8.4, 46.8)[1]) * 360.0, BOUNDS[3]]);
+    for (name, case) in [("the V", v), ("the pair", pair), ("the bounds", cut)] {
+        let placed = case.place(&ground, &mut Vec::new());
+        let bounds = case.bounds.unwrap_or(BOUNDS);
+        let faults = not_whole_in_tiles(&placed, bounds);
+        assert!(faults.is_empty(), "{name}: {faults:?}");
+        for t in records(&placed, "tunnel-tube") {
+            assert!(!t["ends"].contains("none"), "{name}: a chord of a room that does not draw: {t:?}");
+        }
+        match name {
+            "the V" => assert!(placed.features.is_empty() && !placed.tags.contains_key(&through), "{name}"),
+            "the pair" => {
+                let heads = records(&placed, "tunnel-end");
+                assert!(heads.len() == 2 && heads.iter().all(|t| !t.contains_key("across")), "{name}: {heads:?}");
+                assert_eq!(placed.tags[&single]["parts"], "arch arch");
+            }
+            _ => assert!(placed.features.is_empty(), "{name}"),
+        }
+    }
+}
+
+#[test]
+fn the_builder_reads_each_joint_back_from_the_tiles() {
+    let edge = tile_edge_east();
+    for (name, _, _, _) in layouts() {
+        // A tile edge through each 20 m of the layout, its heads and its seams.
+        for at in (0..=10).map(|k| -1.0 + 20.0 * f64::from(k)) {
+            let shift = edge - at;
+            let hill = |p: [f64; 2]| ridge(200.0, 1.0)([p[0] - shift, p[1]]);
+            let case = layouts().into_iter().find(|l| l.0 == name).unwrap().1;
+            let placed = moved(case, shift).place(&site(&hill, &[], false), &mut Vec::new());
+            let faults = not_whole_in_tiles(&placed, BOUNDS);
+            assert!(faults.is_empty(), "{name}, a tile edge {at} m east: {faults:?}");
         }
     }
 }

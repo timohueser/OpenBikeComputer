@@ -51,11 +51,14 @@ pub(crate) struct End {
     pub numbers: Option<Numbers>,
 }
 
-/// The decisions of all openings, the inside half-width and the floor of each room (None with no part), and the counts.
+/// The decisions of all openings, the inside half-width and the floor of each room (None with no part), the rooms
+/// taken out and those that draw, and the counts.
 pub(crate) struct Decided {
     pub ends: Vec<End>,
     pub half: Vec<f64>,
     pub floors: Vec<Option<Floor>>,
+    pub out: Vec<bool>,
+    pub draws: Vec<bool>,
     pub metrics: Value,
 }
 
@@ -166,12 +169,13 @@ fn first_covered(site: &Site, floors: &[f64], need: f64) -> Option<usize> {
 }
 
 /// The kinds, numbers and counts of the openings; a pair moves its nearer opening in onto the frame line of the other.
+/// The rooms `out` do not draw.
 pub(crate) fn decide(
     tubes: &[Tube],
     openings: &mut [Opening],
     input: &Input,
     measure: &Measure,
-    rooms: &Rooms,
+    (rooms, out): (&Rooms, &[bool]),
 ) -> Decided {
     let b = &input.rules.bake;
     let n = openings.len();
@@ -289,34 +293,64 @@ pub(crate) fn decide(
         rung[i] = Some(r);
         kinds[i] = k;
     }
-    // The pairs, nearest first, each end in one pair at most: two hill ends of one family a wall apart across. A pair is
-    // one head of two rooms, so each of them has a part or a seam at both of its ends.
+    // The rooms that draw. A head holds only openings of rooms that draw, and its holes stand a wall apart: of two
+    // openings that a link could join, at one level and nearer than a wall across, the narrower room does not draw,
+    // then the higher id; the two ends of one room count as two. Rooms only leave.
+    let wall = 2.0 * b.shell_m;
+    let across = |i: usize, k: usize| {
+        let (o, q) = (&openings[i], &openings[k]);
+        along_dir(o.p, q.p, left_of(o.dir)).abs() - half[o.tube] - half[q.tube]
+    };
+    let level = |i: usize, k: usize| {
+        let (o, q) = (&openings[i], &openings[k]);
+        !super::rooms::apart((0.0, q.floor - o.floor), (height[o.tube], height[q.tube]), input)
+    };
+    let cos = b.pair_max_deg.to_radians().cos();
+    let ends_of_one: Vec<(usize, usize)> = (at_end.iter())
+        .filter_map(|e| Some((e[0]?, e[1]?)))
+        .filter(|&(i, k)| {
+            let (o, q) = (&openings[i], &openings[k]);
+            distance(o.p, q.p) <= b.pair_max_m && o.dir[0] * q.dir[0] + o.dir[1] * q.dir[1] >= cos
+        })
+        .collect();
+    let kind_of = |t: usize, e: usize| at_end[t][e].and_then(|i| kinds[i].first().copied());
+    let mut out = out.to_vec();
+    let draws = loop {
+        let draws = rooms.built(&kind_of, &out);
+        let mut left = true;
+        for (i, k) in near.iter().map(|x| (x.a, x.b)).chain(ends_of_one.iter().copied()) {
+            let (ti, tk) = (openings[i].tube, openings[k].tube);
+            if draws[ti] && draws[tk] && across(i, k) < wall - 0.01 && level(i, k) {
+                let narrower = |t: usize| (tubes[t].half, std::cmp::Reverse(t));
+                out[if narrower(ti) <= narrower(tk) { ti } else { tk }] = true;
+                left = false;
+            }
+        }
+        if left {
+            break draws;
+        }
+    };
+    // The pairs, nearest first, each end in one pair at most: two hill ends of one family a wall apart across, each of
+    // a room that draws.
     let mut mate: Vec<Option<usize>> = vec![None; n];
     let is_hill = |i: usize| hill.contains(&i);
-    let whole: Vec<bool> = (at_end.iter().enumerate())
-        .map(|(t, e)| (0..2).all(|k| rooms.seam_at(t, k) || e[k].is_some_and(|i| !kinds[i].is_empty())))
-        .collect();
     for x in &near {
         let (a, c) = (x.a, x.b);
         let (ta, tc) = (openings[a].tube, openings[c].tube);
-        if mate[a].is_some() || mate[c].is_some() || !whole[ta] || !whole[tc] {
+        if mate[a].is_some() || mate[c].is_some() || !draws[ta] || !draws[tc] {
             continue;
         }
         // The holes of a head lie side by side: rooms one over the other open each with its own head.
-        let (o, q) = (&openings[a], &openings[c]);
-        let side_by_side = along_dir(o.p, q.p, left_of(o.dir)).abs() - half[ta] - half[tc] >= 2.0 * b.shell_m - 0.01;
-        if is_hill(a) && is_hill(c) && tubes[ta].rail == tubes[tc].rail && side_by_side {
+        if is_hill(a) && is_hill(c) && tubes[ta].rail == tubes[tc].rail && across(a, c) >= wall - 0.01 {
             (mate[a], mate[c]) = (Some(c), Some(a));
         }
     }
-    // Two openings whose frames would overlap share a head too: their rooms lie at one level and nearer than two
+    // Two openings whose frames would overlap share a head too: their rooms draw, lie at one level and nearer than two
     // frames and shells.
     let design = &obc_trailview_parts::Rules::embedded().design;
     let overlap = |i: usize, k: usize| {
-        let (o, q) = (&openings[i], &openings[k]);
-        let gap = along_dir(o.p, q.p, left_of(o.dir)).abs() - half[o.tube] - half[q.tube];
-        let level = !super::rooms::apart((0.0, q.floor - o.floor), (height[o.tube], height[q.tube]), input);
-        !kinds[i].is_empty() && !kinds[k].is_empty() && level && gap < 2.0 * (design.frame_m + b.shell_m)
+        let (ti, tk) = (openings[i].tube, openings[k].tube);
+        draws[ti] && draws[tk] && level(i, k) && across(i, k) < 2.0 * (design.frame_m + b.shell_m)
     };
     // One frame line for each group of openings that pairs and overlaps link: the line of the group's far opening,
     // which never moves. The openings of the group near it (`near`) move in onto it along their ways and read the
@@ -393,18 +427,14 @@ pub(crate) fn decide(
         unpaired += 1;
         (mate[i], mate[m]) = (None, None);
     }
-    // The numbers come from the ground with the stretches that the device opens: of each opening of a chain whose two
-    // ends are built (`BUILT`) by their final kinds, at its final place. The openings near a stretch that the first
-    // measure opened otherwise are measured again there. Where the ground no longer fits a kind (no cover, or cover
-    // past the limit), the end drops it; a pair of hill ends with such an end is no pair. Dropping kinds commutes,
-    // so the order of the ends does not matter. The built chains can grow too (a broken pair's mate can become an
-    // arch), but a round goes on only where a list of kinds shrank in the round before: the rounds end within one more
-    // than the count of all kinds.
+    // The numbers come from the ground with the stretches that the device opens: of each opening of a room that draws,
+    // at its final place. The openings near a stretch that the first measure opened otherwise are measured again
+    // there. Where the ground no longer fits a kind (no cover, or cover past the limit), the end drops it; a pair of
+    // hill ends with such an end is no pair. A list of kinds keeps `free`, so the rooms that draw stay.
     let before: Vec<Option<Kind>> = kinds.iter().map(|k| k.first().copied()).collect();
     let (mut remeasured, mut last): (usize, Option<Vec<OpenEnd>>) = (0, None);
     loop {
-        let now: Vec<Option<Kind>> = kinds.iter().map(|k| k.first().copied()).collect();
-        let opened = open_ends(&built_openings(openings, &now, rooms), rooms);
+        let opened = open_ends(&built_openings(openings, &draws), rooms);
         if last.as_ref() == Some(&opened) {
             break;
         }
@@ -541,7 +571,7 @@ pub(crate) fn decide(
     if let (Value::Object(m), Value::Object(f)) = (&mut metrics, floor_metrics) {
         m.extend(f);
     }
-    Decided { ends, half, floors, metrics }
+    Decided { ends, half, floors, out, draws, metrics }
 }
 
 /// What the measure gave of each opening: its site, the metres of its row to the right, the metres to its first covered

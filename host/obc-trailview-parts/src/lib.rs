@@ -387,6 +387,18 @@ pub fn meshes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -
     b.mesh()
 }
 
+/// What the builder finds in records as a tile holds them: per record whether it finds each of its holes, and per chord
+/// whether it closes, as a chord that does not draw does: a chord of a built chain closes where each of its ends is a
+/// hole that the builder finds or meets another such chord. The bake reads its records back with it.
+pub fn read_back(ends: &[End], chords: &[Chord], rules: &Rules) -> (Vec<bool>, Vec<bool>) {
+    let net = Net::new(ends, chords, rules);
+    let records = (0..ends.len()).map(|r| net.built_record(r)).collect();
+    let closed = (0..chords.len())
+        .map(|c| !net.built_chord(c) || (0..2).all(|k| net.opening_at(c, k) || net.meets(c, k)))
+        .collect();
+    (records, closed)
+}
+
 /// The boxes of the built holes and the floor segments of the lanes of the chords of built chains. `near_volumes` keeps those near
 /// a square, so a tile's records build their volumes once.
 pub fn volumes(ends: &[End], chords: &[Chord], rules: &Rules) -> Volumes {

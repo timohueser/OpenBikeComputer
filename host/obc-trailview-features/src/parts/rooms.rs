@@ -315,26 +315,42 @@ impl Rooms {
         matches!(self.bounds[t][e], Bound::Seam(_))
     }
 
-    /// Per room whether it draws as parts: each of its ends is a seam or of a built kind (`kind` of its opening), and
-    /// each room of a seam at one of its ends draws.
-    pub fn built(&self, kind: &dyn Fn(usize, usize) -> Option<Kind>) -> Vec<bool> {
-        let own = |t: usize| (0..2).all(|e| self.seam_at(t, e) || obc_trailview_parts::built(&[kind(t, e)]));
-        let mut out: Vec<bool> = (0..self.tubes.len()).map(own).collect();
-        loop {
-            let mut changed = false;
-            for seam in &self.seams {
-                let members: Vec<usize> = [seam.parent].iter().chain(&seam.children).map(|m| m.0).collect();
-                if members.iter().any(|&r| !out[r]) {
-                    for r in members {
-                        changed |= out[r];
-                        out[r] = false;
-                    }
-                }
+    /// Per room whether it draws as parts: it is not `out`, and each of its ends is a seam or of a built kind (`kind` of
+    /// its opening). The rooms of one seam and the rooms of one arm draw together or not at all.
+    pub fn built(&self, kind: &dyn Fn(usize, usize) -> Option<Kind>, out: &[bool]) -> Vec<bool> {
+        let n = self.tubes.len();
+        let own = |t: usize| !out[t] && (0..2).all(|e| self.seam_at(t, e) || obc_trailview_parts::built(&[kind(t, e)]));
+        let mut root: Vec<usize> = (0..n).collect();
+        let find = |root: &mut Vec<usize>, mut i: usize| {
+            while root[i] != i {
+                root[i] = root[root[i]];
+                i = root[i];
             }
-            if !changed {
-                return out;
+            i
+        };
+        let mut join = |members: &mut dyn Iterator<Item = usize>| {
+            let Some(first) = members.next() else { return };
+            for m in members {
+                let (a, b) = (find(&mut root, first), find(&mut root, m));
+                root[a.max(b)] = a.min(b);
             }
+        };
+        for seam in &self.seams {
+            join(&mut [seam.parent].iter().chain(&seam.children).map(|m| m.0));
         }
+        let mut of_arm: Vec<Vec<usize>> = vec![Vec::new(); self.arms.len()];
+        for (r, lanes) in self.lanes.iter().enumerate() {
+            lanes.iter().for_each(|l| of_arm[l.arm].push(r));
+        }
+        for rooms in &of_arm {
+            join(&mut rooms.iter().copied());
+        }
+        let mut ok = vec![true; n];
+        for t in (0..n).filter(|&t| !own(t)) {
+            let r = find(&mut root, t);
+            ok[r] = false;
+        }
+        (0..n).map(|t| ok[find(&mut root, t)]).collect()
     }
 
     /// The places of room r's lanes at metres s along its centre line, linear between the vertices of its table.
@@ -519,9 +535,10 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
             Some([s0, s1])
         })
         .collect();
-    // An arm runs beside others where its heights are known and it has a length.
-    let live: Vec<Option<[f64; 2]>> =
-        (spans.iter().zip(&arms)).map(|(s, t)| s.filter(|s| t.heights && s[1] - s[0] > 1e-6)).collect();
+    // An arm runs beside others where it can draw: it opens at both ends, its heights are known and it has a length.
+    let live: Vec<Option<[f64; 2]>> = (0..n)
+        .map(|t| spans[t].filter(|s| at_end[t].iter().all(Option::is_some) && arms[t].heights && s[1] - s[0] > 1e-6))
+        .collect();
     let found = runs(&arms, &live, input);
     let mut counts: BTreeMap<&str, u64> = BTreeMap::new();
     for r in &found {
