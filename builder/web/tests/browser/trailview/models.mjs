@@ -72,8 +72,8 @@ function view(entries, width, { tier = 0, date = DATES.summer, eye = 1.6, pitch 
 const breeds = trees || plants ? [] : Object.entries(baked.models.breeds).filter(([name]) => !only || only.includes(name));
 const species = trees ? Object.keys(baked.models.trees).filter(id => !only || only.includes(id)) : [];
 const plantIds = plants ? Object.keys(baked.models.plants).filter(id => !only || only.includes(id)) : [];
-/** A plant's models in each season: its 3 shapes. */
-const plantModels = Object.fromEntries(await Promise.all(plantIds.map(async id => [id, Object.fromEntries(await Promise.all(seasons.map(async season => [season, await decodeModels(baked.files.get(baked.models.plants[id].seasons[season]))])))])));
+/** A plant's models in each season: its 3 shapes, or none in a season without a model. */
+const plantModels = Object.fromEntries(await Promise.all(plantIds.map(async id => [id, Object.fromEntries(await Promise.all(seasons.map(async season => [season, baked.models.plants[id].seasons[season] ? await decodeModels(baked.files.get(baked.models.plants[id].seasons[season])) : []])))])));
 // A tree's room in the row: SHOW_TREE_M, or its crown's width where that is wider, so wide crowns do not overlap.
 const rooms = Object.fromEntries(await Promise.all(species.map(async id => [id, TREE_M * Math.max(1, 2.2 * (await decodeModels(baked.files.get(baked.models.trees[id].summer)))[0].shape.spread)])));
 const groups = Array.from({ length: Math.ceil(species.length / GROUP) }, (_, g) => species.slice(GROUP * g, GROUP * (g + 1)));
@@ -133,7 +133,7 @@ ${seasons.map(season => `<div class="trees">${group.map(id => figure(`${id}-${se
 }
 for (const id of plantIds) {
     const { ground } = baked.models.plants[id];
-    const counts = seasons.map(season => `<tr><td>${season}</td>${plantModels[id][season].map(({ tiers }) => cells(tiers, baked.budget.plant)).join('')}</tr>`).join('');
+    const counts = seasons.map(season => `<tr><td>${season}</td>${plantModels[id][season].map(({ tiers }) => cells(tiers, baked.budget.plant)).join('') || '<td colspan="6">none</td>'}</tr>`).join('');
     rows.push(`<section><h2>${id}</h2><p>Shapes 1, 2 and 3 from the left, ${ground.height[1]} m tall (it grows ${ground.height.join(' to ')} m), in their own colours.</p>
 <div class="trees">${seasons.map(season => figure(`${id}-${season}`, `${id}, ${season}`)).join('')}</div>
 <table><tr><th>Season</th>${[1, 2, 3].map(k => `<th>Shape ${k} triangles</th><th>Shape ${k} vertices</th>`).join('')}</tr>${counts}</table></section>`);

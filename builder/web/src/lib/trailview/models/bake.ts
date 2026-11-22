@@ -6,7 +6,7 @@ import { SUMMER } from '../vegetation/phenology';
 import { ANIMALS } from './animals';
 import { geometry } from './flat';
 import { bareIn, tree, TREES } from './library';
-import type { FloatMesh, Models, Packed } from './model-file';
+import type { FloatMesh, Models, Packed, PlantEntry } from './model-file';
 import { encodeModels, pack } from './pack';
 import { plant, PLANTS } from './plant-library';
 import { rock } from './rocks';
@@ -70,8 +70,11 @@ export async function bake(): Promise<Baked> {
     }
 
     for (const [id, { ground }] of Object.entries(PLANTS)) {
-        const seasons: Record<string, string> = {};
-        for (const season of SEASONS) seasons[season] = await file('plant', `plant-${id}-${season}`, Array.from({ length: SEEDS }, (_, k) => pack([float32(plant(id, season, k + 1))])));
+        const seasons: PlantEntry['seasons'] = {};
+        for (const season of SEASONS) {
+            const shapes = Array.from({ length: SEEDS }, (_, k) => plant(id, season, k + 1));
+            if (shapes.every(shape => shape !== undefined)) seasons[season] = await file('plant', `plant-${id}-${season}`, shapes.map(shape => pack([float32(shape)])));
+        }
         models.plants[id] = { ground, seasons };
     }
 

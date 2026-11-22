@@ -3,6 +3,7 @@
 // engine reads them.
 import { MeshoptDecoder } from 'meshoptimizer/decoder';
 import type { Ground } from './plant-library';
+import type { Season } from '../rules/regions';
 
 /**
  * A mesh as a generator makes it: per vertex a position, a normal and a linear colour, in a model 1 tall; three indices
@@ -65,8 +66,8 @@ export function quantize(mesh: FloatMesh, extent: number): Uint8Array<ArrayBuffe
 
 /** A tree species: its summer crown's file and, per phase (winter first), its colour matrix (3 × 3, columns first) and the file of a crown of its own. */
 export interface TreeEntry { summer: string; keepsHeading: boolean; tones: (number[] | null)[]; crowns: (string | null)[] }
-/** A plant: where it grows, and per season the file of its SEEDS shapes. */
-export interface PlantEntry { ground: Ground; seasons: Record<string, string> }
+/** A plant: where it grows, and per season in which it has a model the file of its SEEDS shapes. */
+export interface PlantEntry { ground: Ground; seasons: Partial<Record<Season, string>> }
 /** A breed: its height in metres to the top of the back, its counts of coats and poses, and the file of its models, each coat in each pose. */
 export interface BreedEntry { height: number; coats: number; poses: number; file: string }
 

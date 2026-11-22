@@ -131,11 +131,11 @@ export class Dressing implements Producer {
         return summer;
     }
 
-    /** The instance model of a showroom plant's shape `seed`, in the showroom's season, drawn as a ground plant to HERD_REACH_M. */
+    /** The instance model of a showroom plant's shape `seed`, in the showroom's season, drawn as a ground plant to HERD_REACH_M; none in a season without a model. */
     private plant(id: string, seed: number): number | undefined {
-        const entry = this.files.models.plants[id];
-        if (!entry || !(seed >= 1 && seed <= SEEDS)) return undefined;
-        return this.load(entry.seasons[this.show!.season], 1, ({ tiers: [mesh], shape }) => ({ tiers: [{ mesh, until: HERD_REACH_M }], shape }), seed - 1);
+        const file = this.files.models.plants[id]?.seasons[this.show!.season];
+        if (!file || !(seed >= 1 && seed <= SEEDS)) return undefined;
+        return this.load(file, 1, ({ tiers: [mesh], shape }) => ({ tiers: [{ mesh, until: HERD_REACH_M }], shape }), seed - 1);
     }
 
     /** Writes the herds of region `r` into the table, in the order of its pack: those whose breed has its models. */

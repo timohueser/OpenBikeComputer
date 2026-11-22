@@ -2,19 +2,21 @@ import type { Plant } from '../plant-library';
 import { byHeight, hex, merge, paint, ramp, random, ribbon, sheet, UP, v3, type Colour, type Geometry, type Ramp, type Sheet, type V, type Vec } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
-/** Leaves in the grass tuft's summer green; they yellow in autumn and wither in winter, as the meadow does. */
-const GREEN: Ramp = ['#557a34', '#86a84a', '#c2c46a'];
-const LEAF: Record<Season, Ramp> = { winter: ['#565034', '#766c48', '#968a60'], spring: GREEN, summer: GREEN, autumn: ['#5f6e34', '#8a9448', '#b8ae64'] };
+/** The seasons in which the tuft stands; it dies back in winter. */
+type Living = Exclude<Season, 'winter'>;
 
-/** A dry seed head: the flower of winter, and of some stalks in autumn. */
-const DRY = ['#8a7456', '#9a8462', '#a08a5a'];
+/** Leaves in the grass tuft's summer green; they yellow in autumn, as the meadow does. */
+const GREEN: Ramp = ['#557a34', '#86a84a', '#c2c46a'];
+const LEAF: Record<Living, Ramp> = { spring: GREEN, summer: GREEN, autumn: ['#5f6e34', '#8a9448', '#b8ae64'] };
+
+/** A dry seed head: the flower of some stalks in autumn. */
+const DRY = ['#8a7456', '#a08a5a'];
 
 /** Gentian, buttercup, edelweiss white, aster and pink, as the season has them. */
-const FLOWERS: Record<Season, string[]> = {
-    winter: [DRY[0], DRY[1]],
+const FLOWERS: Record<Living, string[]> = {
     spring: ['#2f5fd0', '#f2c832', '#f6f2e6', '#2f5fd0'],
     summer: ['#2f5fd0', '#f2c832', '#f6f2e6', '#9a6ad0', '#e48ab0'],
-    autumn: ['#9a6ad0', DRY[0], DRY[2]],
+    autumn: ['#9a6ad0', DRY[0], DRY[1]],
 };
 
 /**
@@ -39,10 +41,10 @@ function flower(cards: Sheet, at: V, axis: V, r: number, cup: number, petal: Col
  * ones raised, and seven flowers on bowed stalks that face up and out. Most flowers of a tuft have
  * one colour, which the seed picks. A dry seed head keeps its petals closed.
  */
-function flowers(season: Season, seed: number): Geometry {
+function flowers(season: Living, seed: number): Geometry {
     const rand = random(seed);
     const leaf = byHeight(ramp(LEAF[season]), 0.35);
-    const stalk = hex(season === 'winter' || season === 'autumn' ? '#8a7a52' : '#5c8a45');
+    const stalk = hex(season === 'autumn' ? '#8a7a52' : '#5c8a45');
     const colours = FLOWERS[season], main = colours[seed % colours.length];
     const cards = sheet(), parts: Geometry[] = [];
     for (let k = 0; k < 14; k++) {
@@ -73,6 +75,7 @@ function flowers(season: Season, seed: number): Geometry {
 export default {
     name: 'Alpine flowers',
     latin: 'Gentiana, Ranunculus, Leontopodium, Aster, Dianthus',
-    build: flowers,
+    build: (season, seed) => flowers(season as Living, seed),
+    absent: ['winter'],
     ground: { on: ['grass'], height: [0.2, 0.35], share: 0.15, own: true },
 } satisfies Plant;
