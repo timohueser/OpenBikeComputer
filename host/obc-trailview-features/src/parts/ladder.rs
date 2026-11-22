@@ -486,11 +486,31 @@ pub(crate) fn decide(
         let first = list[0];
         members[first] = list;
     }
+    // A wing row ends at the metre that comes within a wall of another room or another head: per head, metres across
+    // its frame line from the point of its far opening.
+    let axes = super::rooms::Axes::new(tubes);
+    let widest = tubes.iter().map(|t| t.half).fold(0.0, f64::max);
+    let wall = 2.0 * b.shell_m;
+    let blocked = |list: &[usize], far: usize, x: f64| {
+        let o = &openings[far];
+        let q = super::offset(o.p, left_of(o.dir), x);
+        let own: Vec<usize> = list.iter().map(|&k| openings[k].tube).collect();
+        let room = (axes.near(q, usize::MAX, widest + wall).iter())
+            .any(|f| !own.contains(&f.tube) && f.d < half[f.tube] + wall - 0.01);
+        let head = (0..n).filter(|k| !list.contains(k) && !kinds[*k].is_empty()).any(|k| {
+            let p = &openings[k];
+            along_dir(p.p, q, p.dir).abs() <= design.face_m
+                && along_dir(p.p, q, left_of(p.dir)).abs() < half[p.tube] + b.shell_m + wall
+        });
+        room || head
+    };
     for i in 0..n {
         let kind = kinds[i].first().copied();
         let m = Measured { sites: &sites, rights: &rights, cover: &cover, moved: &moved };
-        let numbers = (kind.filter(|_| !members[i].is_empty()))
-            .map(|_| numbers(&members[i], &base, far_of[i], &m, (openings, tubes), (&half, &heights), input));
+        let numbers = (kind.filter(|_| !members[i].is_empty())).map(|_| {
+            let stop = |x: f64| blocked(&members[i], far_of[i], x);
+            numbers(&members[i], &base, (far_of[i], &stop), &m, (openings, tubes), (&half, &heights), input)
+        });
         ends.push(End { kinds: kinds[i].clone(), kind, rung: rung[i].unwrap_or_default(), numbers });
     }
     let shown = |e: &End| match e.kind {
@@ -531,11 +551,12 @@ struct Measured<'a> {
 }
 
 /// The numbers of the head of `members`, from the right of its frame line (Plan 8), with the kind and the inside height
-/// of each opening: its frame is the frame line of the opening farther in, which holds them all.
+/// of each opening: its frame is the frame line of the opening farther in, which holds them all; a wing row ends
+/// before a metre across that line that is `blocked`.
 fn numbers(
     members: &[usize],
     base: &[Option<Kind>],
-    far: usize,
+    (far, blocked): (usize, &dyn Fn(f64) -> bool),
     m: &Measured,
     (openings, tubes): (&[Opening], &[Tube]),
     (half, heights): (&[f64], &[f64]),
@@ -576,7 +597,7 @@ fn numbers(
     let wing = |from: f64, sign: f64| {
         let mut row = Vec::new();
         let mut d = 1.0;
-        while d <= g.wing_max_m {
+        while d <= g.wing_max_m && !blocked(from + sign * d) {
             let gr = ground(from + sign * d);
             // A wall's top lies at least its coping over the floor.
             let top = |g: f64| (g + b.coping_m - floor).clamp(b.coping_m, face.max(b.coping_m));
