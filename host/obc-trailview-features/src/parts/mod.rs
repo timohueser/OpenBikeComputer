@@ -5,7 +5,7 @@
 mod floor;
 mod ladder;
 mod measure;
-mod overlap;
+mod rooms;
 #[cfg(test)]
 mod tests;
 
@@ -21,6 +21,7 @@ use crate::geometry::key;
 use crate::roads::Classes;
 use crate::tiles::{frame_point, Tiles};
 use crate::{metres, roads, Part, Tags, Terrain};
+use floor::Floor;
 
 pub use ladder::Kind;
 
@@ -48,9 +49,9 @@ pub(crate) struct Placed {
     pub features: Vec<(&'static str, Tags, Part)>,
     pub tags: HashMap<u32, Tags>,
     pub metrics: Value,
-    /// Per opening its way's id and its decision.
+    /// Per opening the ids of its ways and its decision.
     #[cfg(test)]
-    pub ends: Vec<(u32, ladder::End)>,
+    pub ends: Vec<(Vec<u32>, ladder::End)>,
 }
 
 /// A point of a chain's curve: world point, floor height, metres along the chain, and metres along the stroke of its
@@ -159,17 +160,15 @@ pub(crate) struct Tube {
     /// Every vertex has a height.
     pub heights: bool,
     pub ends: [([i64; 2], u32); 2],
-    /// Of its widest way: its id, its class and its group, the half-width of its carriageway and that with its
-    /// widening; the inside half-width and height of the tube.
+    /// Of its widest way: its id, its class and its group, and the half-width of its carriageway; the inside half-width
+    /// (the way's half-width with its widening and margin) and height of the tube.
     pub widest: u32,
     pub class: String,
     pub group: usize,
     pub rail: bool,
     pub road: f64,
-    pub way_half: f64,
     pub half: f64,
     pub height: f64,
-    pub margin: f64,
 }
 
 /// A part of a way in a chain: the way's id, the part, and whether the chain runs against it.
@@ -291,10 +290,8 @@ fn tube(chain: &[Link], input: &Input) -> Option<Tube> {
         group,
         rail: is_track(tags),
         road: w.half_m,
-        way_half,
         half: way_half + margin,
         height,
-        margin,
     })
 }
 
@@ -469,7 +466,8 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
             openings.push(o);
         }
     }
-    let mut decided = ladder::decide(&tubes, &mut openings, input, measure);
+    let (rooms, mut openings) = rooms::rooms(tubes, openings, input);
+    let mut decided = ladder::decide(&rooms.tubes, &mut openings, input, measure, &rooms);
     if let Value::Object(m) = &mut decided.metrics {
         m.insert("shallow_ends".into(), shallow.into());
         m.insert("fork_ends".into(), forks.into());
@@ -477,88 +475,43 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         m.insert("ring_parts".into(), rings.into());
         m.insert("tunnel_ways_without_id".into(), without_id.into());
         m.insert("chains_without_tube".into(), lost.into());
+        m.insert("rooms".into(), rooms.metrics.clone());
+        let touching = rooms::touching(&rooms, &decided.floors, &decided.half, input);
+        let places = touching.iter().take(10).map(|&p| {
+            let [lat, lon] = crate::degrees(p);
+            format!("{lat:.5},{lon:.5}")
+        });
+        m.insert("rooms_that_touch".into(), touching.len().into());
+        m.insert("rooms_that_touch_places".into(), places.collect::<Vec<_>>().join("; ").into());
     }
-    records(&tubes, &openings, &decided, input)
+    records(&rooms, &openings, &decided, input)
 }
 
 /// The features of the placement and the tag `parts` of the tunnel ways.
-fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, input: &Input) -> Placed {
+fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided, input: &Input) -> Placed {
+    let tubes = &rooms.tubes;
     let (mut features, mut tags) = (Vec::new(), HashMap::new());
-    let part_name = |k: Option<Kind>| k.map_or("none", Kind::name);
     let mut ends_of: Vec<[Option<Kind>; 2]> = vec![[None, None]; tubes.len()];
     let mut boxed = vec![false; tubes.len()];
     for (o, d) in openings.iter().zip(&decided.ends) {
         ends_of[o.tube][o.end] = d.kind;
         boxed[o.tube] |= d.kind == Some(Kind::Box);
     }
-    let built = |t: usize| ends_of[t].iter().all(Option::is_some);
-    // A way in the tube of a wider one that draws as parts runs on its floor: `in` at both ends.
-    for (t, a) in decided.absorbed.iter().enumerate() {
-        if a.is_some_and(built) {
-            for &id in &tubes[t].ids {
-                tags.insert(id, Tags::from([("parts".to_string(), "in in".to_string())]));
-            }
-        }
-    }
-    // Where the shells of two tubes with parts start or stop overlapping, each gets a vertex.
-    let spans: Vec<Option<[f64; 2]>> = (0..tubes.len())
-        .map(|t| decided.floors[t].as_ref().filter(|_| built(t)).map(|f| [f.s[0], f.s[f.s.len() - 1]]))
-        .collect();
-    let floor = |t: usize, s: f64| decided.floors[t].as_ref().map_or((0.0, 0.0), |f| f.at(s));
-    let base: Vec<Vec<f64>> = decided.floors.iter().map(|f| f.as_ref().map_or(Vec::new(), |f| f.s.clone())).collect();
-    let axes = overlap::Axes::new(tubes);
-    let b = &input.rules.bake;
-    let vertices =
-        overlap::meeting_vertices(&axes, tubes, (&spans, &decided.half), &floor, (&base, b.shell_m, b.vertex_gap_m));
     for (ti, t) in tubes.iter().enumerate() {
         let kinds = ends_of[ti];
         if kinds.iter().all(Option::is_none) {
             continue;
         }
         let group = &input.rules.groups[t.group];
-        let half = decided.half[ti];
-        let section = if boxed[ti] { "box" } else { "round" };
-        let (wtags, _) = &input.tunnels[&t.widest];
         let mut common = Tags::new();
-        common.insert("section".into(), section.into());
-        common.insert("half".into(), num(half));
+        common.insert("section".into(), if boxed[ti] { "box" } else { "round" }.into());
+        common.insert("half".into(), num(decided.half[ti]));
         common.insert("look".into(), group.look.clone());
-        // The tube from opening to opening, as its floor.
         let fl = decided.floors[ti].as_ref();
-        let (s0, s1) = fl.map_or((0.0, 0.0), |f| (f.s[0], f.s[f.s.len() - 1]));
-        for (way, ps) in &t.curve.stretches {
-            let rising = ps.last().unwrap().along >= ps[0].along;
-            let order = if rising { [kinds[0], kinds[1]] } else { [kinds[1], kinds[0]] };
-            let ends = format!("{} {}", part_name(order[0]), part_name(order[1]));
-            let mut way_tags = Tags::new();
-            way_tags.insert("parts".into(), ends.clone());
-            tags.insert(*way, way_tags);
-            // The points of the stretch within the openings: its ends and each vertex of the floor between.
-            let Some(fl) = fl else { continue };
-            let (a, z) = (ps[0].s.max(s0), ps.last().unwrap().s.min(s1));
-            if z - a <= 1e-6 {
-                continue;
-            }
-            let inside = |s: f64| s > a + 1e-6 && s < z - 1e-6;
-            let inner: Vec<f64> = vertices[ti].iter().copied().filter(|&s| inside(s)).collect();
-            let mut pts: Vec<Point> = vec![t.curve.at(a).0];
-            pts.extend(inner.iter().map(|&s| t.curve.at(s).0));
-            pts.push(t.curve.at(z).0);
-            for w in pts.windows(2) {
-                let (p, q) = if rising { (w[0], w[1]) } else { (w[1], w[0]) };
-                let ((pz, ph), (qz, qh)) = (fl.at(p.s), fl.at(q.s));
-                let mut tube_tags = common.clone();
-                tube_tags.insert("height".into(), num(ph.min(qh)));
-                tube_tags.insert("class".into(), t.class.clone());
-                if let Some(surface) = wtags.get("surface") {
-                    tube_tags.insert("surface".into(), surface.clone());
-                }
-                tube_tags.insert("road".into(), num(t.road));
-                tube_tags.insert("along".into(), num(p.along));
-                tube_tags.insert("ends".into(), ends.clone());
-                let part = Part { outer: false, points: vec![p.p, q.p], z: Some(vec![pz, qz]), plan: None };
-                features.push(("tunnel-tube", tube_tags, part));
-            }
+        if rooms.lanes[ti].is_empty() {
+            lone(t, kinds, (fl, &common), &input.tunnels[&t.widest].0, (&mut features, &mut tags));
+        } else {
+            room(rooms, ti, kinds, (fl, &common), input, (&mut features, &mut tags));
         }
     }
     for (o, d) in openings.iter().zip(&decided.ends) {
@@ -583,9 +536,10 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
             t.insert("right".into(), n.right.iter().map(|v| num(*v)).collect::<Vec<_>>().join(" "));
         }
         t.insert("foot".into(), num(n.foot));
-        let way = |h: &ladder::Hole| openings[h.opening].way;
-        t.insert("way".into(), row(&|h| format!("{} {}", way(h)[0], way(h)[1])));
-        t.insert("shift".into(), row(&|h| num(openings[h.opening].shift)));
+        // Per hole from the right, the ways that enter it from the right.
+        let ways: Vec<rooms::Way> = n.holes.iter().flat_map(|h| rooms.ways(&openings[h.opening])).collect();
+        t.insert("way".into(), ways.iter().map(|w| format!("{} {}", w.way[0], w.way[1])).collect::<Vec<_>>().join(" "));
+        t.insert("shift".into(), ways.iter().map(|w| num(w.shift)).collect::<Vec<_>>().join(" "));
         if n.holes.len() > 1 {
             t.insert("across".into(), row(&|h| num(h.across)));
             t.insert("up".into(), row(&|h| num(openings[h.opening].floor - o.floor)));
@@ -599,11 +553,156 @@ fn records(tubes: &[Tube], openings: &[Opening], decided: &ladder::Decided, inpu
         tags,
         metrics: decided.metrics.clone(),
         #[cfg(test)]
-        ends: openings.iter().map(|o| o.way_id).zip(decided.ends.iter().cloned()).collect(),
+        ends: openings
+            .iter()
+            .map(|o| rooms.ways(o).iter().map(|w| w.id).collect())
+            .zip(decided.ends.iter().cloned())
+            .collect(),
     }
 }
 
-/// The openings of the chains whose ends are all of built kinds (`obc_trailview_parts::BUILT`) by the kind of each
+/// The features and the tags of the parts of a lone arm.
+type Out<'a> = (&'a mut Vec<(&'static str, Tags, Part)>, &'a mut HashMap<u32, Tags>);
+
+/// The chords of a room of one arm, from opening to opening as its floor, and the tag `parts` of its ways.
+fn lone(
+    t: &Tube,
+    kinds: [Option<Kind>; 2],
+    (fl, common): (Option<&Floor>, &Tags),
+    widest: &Tags,
+    (features, tags): Out,
+) {
+    let part_name = |k: Option<Kind>| k.map_or("none", Kind::name);
+    let (s0, s1) = fl.map_or((0.0, 0.0), |f| (f.s[0], f.s[f.s.len() - 1]));
+    for (way, ps) in &t.curve.stretches {
+        let rising = ps.last().unwrap().along >= ps[0].along;
+        let order = if rising { [kinds[0], kinds[1]] } else { [kinds[1], kinds[0]] };
+        let ends = format!("{} {}", part_name(order[0]), part_name(order[1]));
+        tags.insert(*way, Tags::from([("parts".to_string(), ends.clone())]));
+        // The points of the stretch within the openings: its ends and each vertex of the floor between.
+        let Some(fl) = fl else { continue };
+        let (a, z) = (ps[0].s.max(s0), ps.last().unwrap().s.min(s1));
+        if z - a <= 1e-6 {
+            continue;
+        }
+        let mut pts: Vec<Point> = vec![t.curve.at(a).0];
+        pts.extend(fl.s.iter().filter(|&&s| s > a + 1e-6 && s < z - 1e-6).map(|&s| t.curve.at(s).0));
+        pts.push(t.curve.at(z).0);
+        for w in pts.windows(2) {
+            let (p, q) = if rising { (w[0], w[1]) } else { (w[1], w[0]) };
+            let ((pz, ph), (qz, qh)) = (fl.at(p.s), fl.at(q.s));
+            let mut tube_tags = common.clone();
+            tube_tags.insert("height".into(), num(ph.min(qh)));
+            tube_tags.insert("class".into(), t.class.clone());
+            if let Some(surface) = widest.get("surface") {
+                tube_tags.insert("surface".into(), surface.clone());
+            }
+            tube_tags.insert("road".into(), num(t.road));
+            tube_tags.insert("along".into(), num(p.along));
+            tube_tags.insert("ends".into(), ends.clone());
+            let part = Part { outer: false, points: vec![p.p, q.p], z: Some(vec![pz, qz]), plan: None };
+            features.push(("tunnel-tube", tube_tags, part));
+        }
+    }
+}
+
+/// The chords of room r of lanes, along its centre line from opening to opening as its floor, with a row per lane
+/// from the right wall to the left, and the tag `parts` of the ways of its lanes.
+fn room(
+    rooms: &rooms::Rooms,
+    r: usize,
+    kinds: [Option<Kind>; 2],
+    (fl, common): (Option<&Floor>, &Tags),
+    input: &Input,
+    (features, tags): Out,
+) {
+    let part_name = |k: Option<Kind>| k.map_or("none", Kind::name);
+    let (t, lanes) = (&rooms.tubes[r], &rooms.lanes[r]);
+    for l in lanes {
+        let arm = &rooms.arms[l.arm];
+        for (way, ps) in &arm.curve.stretches {
+            let rising = ps.last().unwrap().along >= ps[0].along;
+            let order = if rising == l.forward { [kinds[0], kinds[1]] } else { [kinds[1], kinds[0]] };
+            tags.insert(
+                *way,
+                Tags::from([("parts".to_string(), format!("{} {}", part_name(order[0]), part_name(order[1])))]),
+            );
+        }
+    }
+    let Some(fl) = fl else { return };
+    let spring = obc_trailview_parts::Rules::embedded().design.spring;
+    let round = common["section"] == "round";
+    let segments = obc_trailview_parts::Rules::embedded().design.arch_segments;
+    let surface = |l: &rooms::Lane| input.tunnels[&rooms.arms[l.arm].widest].0.get("surface").cloned();
+    let surfaces: Vec<Option<String>> = lanes.iter().map(surface).collect();
+    // Per vertex of the floor: the room's point, its floor, and per lane its place, its floor over the room's, its
+    // height and its metres along its way.
+    for i in 0..fl.s.len() - 1 {
+        let at = |k: usize| {
+            let s = fl.s[k];
+            let places = rooms.places(r, s);
+            let ups: Vec<f64> = fl.lanes.iter().map(|lane| lane.0[k] - fl.f[k]).collect();
+            (t.curve.at(s).0, places, ups)
+        };
+        let (mut a, mut b) = (at(i), at(i + 1));
+        let lane_heights: Vec<f64> = fl.lanes.iter().map(|lane| lane.1[i].min(lane.1[i + 1])).collect();
+        let height = [&a, &b]
+            .map(|(_, places, ups)| {
+                let outlines: Vec<(f64, f64, f64, f64)> =
+                    (places.iter().zip(ups).zip(&lane_heights)).map(|((p, &up), &h)| (p.off, p.half, up, h)).collect();
+                rooms::hold(round, t.half, spring, &outlines, segments)
+            })
+            .into_iter()
+            .fold(0.0, f64::max);
+        let mut floors = [fl.f[i], fl.f[i + 1]];
+        // In the rising metres of the base lane's way.
+        let mut order: Vec<usize> = (0..lanes.len()).collect();
+        let mut sign = 1.0;
+        if b.0.along < a.0.along {
+            (a, b) = (b, a);
+            floors.swap(0, 1);
+            order.reverse();
+            sign = -1.0;
+        }
+        let along = |k: usize| {
+            let arm = &rooms.arms[lanes[k].arm];
+            let (from, to) = (arm.curve.at(a.1[k].s).0.along, arm.curve.at(b.1[k].s).0.along);
+            if to >= from {
+                from
+            } else {
+                -from
+            }
+        };
+        let row = |f: &dyn Fn(usize) -> String| order.iter().map(|&k| f(k)).collect::<Vec<_>>().join(" ");
+        let mut tube_tags = common.clone();
+        tube_tags.insert("height".into(), num(height));
+        tube_tags.insert("class".into(), row(&|k| rooms.arms[lanes[k].arm].class.clone()));
+        if surfaces.iter().any(Option::is_some) {
+            tube_tags.insert("surface".into(), row(&|k| surfaces[k].clone().unwrap_or("-".into())));
+        }
+        tube_tags.insert("road".into(), row(&|k| num(rooms.arms[lanes[k].arm].road)));
+        tube_tags.insert("along".into(), row(&|k| num(along(k))));
+        let ends = if sign > 0.0 { [kinds[0], kinds[1]] } else { [kinds[1], kinds[0]] };
+        tube_tags.insert("ends".into(), format!("{} {}", part_name(ends[0]), part_name(ends[1])));
+        tube_tags.insert("off".into(), row(&|k| format!("{} {}", num(sign * a.1[k].off), num(sign * b.1[k].off))));
+        let ups = row(&|k| format!("{} {}", num(a.2[k]), num(b.2[k])));
+        if ups.split(' ').any(|u| u != "0") {
+            tube_tags.insert("up".into(), ups);
+        }
+        let edge = |(_, places, _): &(Point, Vec<rooms::Place>, Vec<f64>), j: usize| {
+            let (x, y) = (&places[order[j]], &places[order[j + 1]]);
+            let (x, y) = if sign > 0.0 { (x, y) } else { (y, x) };
+            sign * ((x.off + x.half + y.off - y.half) / 2.0)
+        };
+        let edges: Vec<String> =
+            (0..lanes.len() - 1).map(|j| format!("{} {}", num(edge(&a, j)), num(edge(&b, j)))).collect();
+        tube_tags.insert("edge".into(), edges.join(" "));
+        let part = Part { outer: false, points: vec![a.0.p, b.0.p], z: Some(vec![floors[0], floors[1]]), plan: None };
+        features.push(("tunnel-tube", tube_tags, part));
+    }
+}
+
+/// The openings of the rooms whose ends are all of built kinds (`obc_trailview_parts::BUILT`) by the kind of each
 /// opening: those that the device opens.
 pub(crate) fn built_openings(openings: &[Opening], kind: &[Option<Kind>]) -> Vec<Opening> {
     let of =
@@ -611,10 +710,10 @@ pub(crate) fn built_openings(openings: &[Opening], kind: &[Option<Kind>]) -> Vec
     (openings.iter()).filter(|o| obc_trailview_parts::built(&[of(o.tube, 0), of(o.tube, 1)])).cloned().collect()
 }
 
-/// The open ends of the openings: each moved opening on its way, for the ground plan's `graph::build_open`.
-pub(crate) fn open_ends(openings: &[Opening]) -> Vec<OpenEnd> {
-    (openings.iter().filter(|o| o.shift > 0.0))
-        .map(|o| OpenEnd { way: obc_ground_plan::frame::GlobalPoint { x: o.way[0], y: o.way[1] }, shift_m: o.shift })
+/// The open ends of the openings: each way of an opening moved in along it, for the ground plan's `graph::build_open`.
+pub(crate) fn open_ends(openings: &[Opening], rooms: &rooms::Rooms) -> Vec<OpenEnd> {
+    (openings.iter().flat_map(|o| rooms.ways(o)).filter(|w| w.shift > 0.0))
+        .map(|w| OpenEnd { way: obc_ground_plan::frame::GlobalPoint { x: w.way[0], y: w.way[1] }, shift_m: w.shift })
         .collect()
 }
 

@@ -10,7 +10,7 @@ use obc_trailview_parts::PAST_M;
 
 use super::floor::{self, Floor};
 use super::measure::{self, Ask, Site};
-use super::overlap::{self, Axes};
+use super::rooms::Rooms;
 use super::{along_dir, built_openings, counts, distance, first_way_m, left_of, open_ends, Input, Opening, Tube};
 
 /// The kind of part at an opening.
@@ -51,13 +51,11 @@ pub(crate) struct End {
     pub numbers: Option<Numbers>,
 }
 
-/// The decisions of all openings, the inside half-width and the floor of each tube (None with no part), the wider
-/// tube that holds each tube mostly inside it, and the counts.
+/// The decisions of all openings, the inside half-width and the floor of each room (None with no part), and the counts.
 pub(crate) struct Decided {
     pub ends: Vec<End>,
     pub half: Vec<f64>,
     pub floors: Vec<Option<Floor>>,
-    pub absorbed: Vec<Option<usize>>,
     pub metrics: Value,
 }
 
@@ -158,15 +156,6 @@ fn onto_line(
     Some(hi)
 }
 
-/// Of two openings, the one farther in along the first's way, and the other.
-fn farther(openings: &[Opening], i: usize, k: usize) -> (usize, usize) {
-    if along_dir(openings[i].p, openings[k].p, openings[i].dir) > 0.0 {
-        (k, i)
-    } else {
-        (i, k)
-    }
-}
-
 /// The first metre in from the opening (station index) whose cover reaches `need`: the least ground over the centre
 /// and both walls, less the floor there.
 fn first_covered(site: &Site, floors: &[f64], need: f64) -> Option<usize> {
@@ -177,11 +166,17 @@ fn first_covered(site: &Site, floors: &[f64], need: f64) -> Option<usize> {
 }
 
 /// The kinds, numbers and counts of the openings; a pair moves its nearer opening in onto the frame line of the other.
-pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, measure: &Measure) -> Decided {
+pub(crate) fn decide(
+    tubes: &[Tube],
+    openings: &mut [Opening],
+    input: &Input,
+    measure: &Measure,
+    rooms: &Rooms,
+) -> Decided {
     let b = &input.rules.bake;
     let n = openings.len();
     let mut rung: Vec<Option<&'static str>> = vec![None; n];
-    let mut half: Vec<f64> = tubes.iter().map(|t| t.half).collect();
+    let half: Vec<f64> = tubes.iter().map(|t| t.half).collect();
     let height: Vec<f64> = tubes.iter().map(|t| t.height).collect();
     // The two openings of a chain shorter than their shifts would meet: they stay at the ends of the chain.
     let mut met = 0;
@@ -206,69 +201,6 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     let mut at_end: Vec<[Option<usize>; 2]> = vec![[None; 2]; tubes.len()];
     for (i, o) in openings.iter().enumerate() {
         at_end[o.tube][o.end].get_or_insert(i);
-    }
-    // Rung 2: a tube whose axis lies in a wider one's room along most of its length runs in it. The widest takes first;
-    // the wider tube grows to hold the way of the other.
-    let axes = Axes::new(tubes);
-    let mut order: Vec<usize> = (0..tubes.len()).collect();
-    order.sort_by(|&x, &y| {
-        tubes[y].half.total_cmp(&tubes[x].half).then(tubes[x].widest.cmp(&tubes[y].widest)).then(x.cmp(&y))
-    });
-    let mut place = vec![0; tubes.len()];
-    for (k, &t) in order.iter().enumerate() {
-        place[t] = k;
-    }
-    let reach = 2.0 * (tubes.iter().map(|t| t.half).fold(0.0, f64::max) + b.shell_m);
-    let mut absorbed: Vec<Option<usize>> = vec![None; tubes.len()];
-    let mut outside = 0;
-    for &tb in &order {
-        let t = &tubes[tb];
-        let span = [at_end[tb][0].map_or(0.0, |i| openings[i].s), at_end[tb][1].map_or(t.curve.len, |i| openings[i].s)];
-        if !t.heights || span[1] - span[0] < 1e-6 {
-            continue;
-        }
-        // Per wider tube, the metres read in its room and the farthest of them from its axis.
-        let steps = (span[1] - span[0]).ceil() as usize;
-        let mut inside: HashMap<usize, (usize, f64)> = HashMap::new();
-        for k in 0..=steps {
-            let q = t.curve.at(span[0] + (span[1] - span[0]) * k as f64 / steps as f64).0;
-            for f in axes.near(q.p, tb, reach) {
-                let a = f.tube;
-                if place[a] < place[tb]
-                    && absorbed[a].is_none()
-                    && tubes[a].heights
-                    && f.d <= tubes[a].half
-                    && overlap::level(f.z - q.z, height[a], height[tb])
-                {
-                    let e = inside.entry(a).or_insert((0, 0.0));
-                    (e.0, e.1) = (e.0 + 1, e.1.max(f.d));
-                }
-            }
-        }
-        let Some((a, d)) = (inside.into_iter())
-            .filter(|(_, (count, _))| 2 * count > steps + 1)
-            .max_by_key(|&(a, (count, _))| (count, std::cmp::Reverse(place[a])))
-            .map(|(a, (_, d))| (a, d))
-        else {
-            continue;
-        };
-        // Each opening of the narrow tube lies in the wide one's room or at one of its openings; else the narrow
-        // tube's way would enter the hill there with no opening, and it stays a tube of its own.
-        let grown = half[a].max(d + t.way_half + tubes[a].margin);
-        let held = |i: usize| {
-            let p = openings[i].p;
-            axes.near(p, tb, grown).iter().any(|f| f.tube == a)
-                || at_end[a].into_iter().flatten().any(|k| distance(openings[k].p, p) <= grown)
-        };
-        if !at_end[tb].into_iter().flatten().all(held) {
-            outside += 1;
-            continue;
-        }
-        absorbed[tb] = Some(a);
-        half[a] = grown;
-        for i in at_end[tb].into_iter().flatten() {
-            rung[i] = rung[i].or(Some("same tube"));
-        }
     }
     // The measure, as far across and in as a pair with a candidate can need.
     let free: Vec<bool> = rung.iter().map(Option::is_none).collect();
@@ -306,7 +238,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         (0..len).map(|k| t.curve.at(o.s + sign * k as f64).0.z).collect()
     };
     let asks: Vec<Ask> = asked.iter().map(|&i| ask_of(i, openings, tubes, &half, &reach, input)).collect();
-    let first = open_ends(openings);
+    let first = open_ends(openings, rooms);
     let (measured, mut cells) = measure(&asks, &first);
     let mut sites: Vec<Option<Site>> = vec![None; n];
     let mut rights: Vec<u32> = vec![0; n];
@@ -322,12 +254,12 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             first_covered(site, &floors_of(o, site.stations.len()), need(o.tube)).map(|k| k as f64)
         })
         .collect();
-    // Rung 3 reads the rooms and the buildings of both ends of a tube.
-    let mut rooms: Vec<Vec<f64>> = vec![Vec::new(); tubes.len()];
+    // Rung 3 reads the rooms of the crossings and the buildings of both ends of a tube.
+    let mut crossings: Vec<Vec<f64>> = vec![Vec::new(); tubes.len()];
     let mut building = vec![false; tubes.len()];
     for (i, site) in sites.iter().enumerate() {
         if let Some(site) = site {
-            rooms[openings[i].tube].extend(&site.rooms);
+            crossings[openings[i].tube].extend(&site.rooms);
             building[openings[i].tube] |= site.building;
         }
     }
@@ -339,7 +271,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         let g = &input.rules.groups[t.group];
         let short = t.curve.len < b.underpass_max_m;
         let d = cover[i];
-        let (r, k): (&'static str, Vec<Kind>) = if short && !rooms[o.tube].is_empty() {
+        let (r, k): (&'static str, Vec<Kind>) = if short && !crossings[o.tube].is_empty() {
             ("underpass", vec![Kind::Box, Kind::Free])
         } else if short && building[o.tube] {
             ("under a building", Vec::new())
@@ -357,19 +289,10 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         rung[i] = Some(r);
         kinds[i] = k;
     }
-    // Rung 5: the pairs, nearest first, each end in one pair at most. A pair is one part of two chains, so each of them
-    // has a part at both of its ends. Two hill ends of one family are a pair; so are two ends of any kinds whose tubes
-    // meet at the opening farther in (joined: the shells overlap there).
+    // Rung 5: the pairs, nearest first, each end in one pair at most: two hill ends of one family. A pair is one part
+    // of two chains, so each of them has a part at both of its ends.
     let mut mate: Vec<Option<usize>> = vec![None; n];
-    let mut joined = vec![false; n];
     let is_hill = |i: usize| hill.contains(&i);
-    let meet_at = |openings: &[Opening], far: usize, nearer: usize| {
-        let (of, on) = (&openings[far], &openings[nearer]);
-        let reach = half[of.tube] + half[on.tube] + 2.0 * b.shell_m;
-        (axes.near(of.p, of.tube, reach).iter()).any(|f| {
-            f.tube == on.tube && f.d < reach && overlap::level(f.z - of.floor, height[of.tube], height[on.tube])
-        })
-    };
     let whole: Vec<bool> = at_end.iter().map(|e| e.iter().all(|i| i.is_some_and(|i| !kinds[i].is_empty()))).collect();
     for x in &near {
         let (a, c) = (x.a, x.b);
@@ -377,22 +300,23 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         if mate[a].is_some() || mate[c].is_some() || !whole[ta] || !whole[tc] {
             continue;
         }
-        let join = {
-            let (far, nearer) = farther(openings, a, c);
-            meet_at(openings, far, nearer)
-        };
-        if !join && !(is_hill(a) && is_hill(c) && tubes[ta].rail == tubes[tc].rail) {
-            continue;
+        if is_hill(a) && is_hill(c) && tubes[ta].rail == tubes[tc].rail {
+            (mate[a], mate[c]) = (Some(c), Some(a));
         }
-        (mate[a], mate[c], joined[a], joined[c]) = (Some(c), Some(a), join, join);
     }
-    // One frame line for each group of openings whose tubes meet (a pair, or two openings whose tubes meet at the
-    // one farther in): the line of the group's far opening, which never moves. The openings of the group near it
-    // (`near`) move in onto it along their ways and read the ground that it measured, whose row reaches them; the
-    // others form the next group, with each that stays. The far opening is one whose line none of the openings near it
-    // lies past by more than `PAST_M`, the one near the most, then the farthest in along the group's way. An opening
-    // whose way does not reach the line, or that lies past it, stays; a pair whose two openings do not end on one line
-    // is no pair: each takes its next kind.
+    // Two openings whose frames would overlap share a head too: their rooms lie nearer than two frames and shells.
+    let design = &obc_trailview_parts::Rules::embedded().design;
+    let overlap = |i: usize, k: usize| {
+        let (o, q) = (&openings[i], &openings[k]);
+        let gap = along_dir(o.p, q.p, left_of(o.dir)).abs() - half[o.tube] - half[q.tube];
+        !kinds[i].is_empty() && !kinds[k].is_empty() && gap < 2.0 * (design.frame_m + b.shell_m)
+    };
+    // One frame line for each group of openings that pairs and overlaps link: the line of the group's far opening,
+    // which never moves. The openings of the group near it (`near`) move in onto it along their ways and read the
+    // ground that it measured, whose row reaches them; the others form the next group, with each that stays. The far
+    // opening is one whose line none of the openings near it lies past by more than `PAST_M`, the one near the most,
+    // then the farthest in along the group's way. An opening whose way does not reach the line, or that lies past it,
+    // stays; a pair whose two openings do not end on one line is no pair: each takes its next kind.
     let mut root: Vec<usize> = (0..n).collect();
     let find = |root: &mut Vec<usize>, mut i: usize| {
         while root[i] != i {
@@ -403,11 +327,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     };
     let links: HashSet<(usize, usize)> = (0..n)
         .filter_map(|i| mate[i].map(|m| (i.min(m), i.max(m))))
-        .chain(near.iter().filter_map(|x| {
-            let (far, nearer) = farther(openings, x.a, x.b);
-            let both = !kinds[far].is_empty() && !kinds[nearer].is_empty();
-            (both && meet_at(openings, far, nearer)).then_some((x.a.min(x.b), x.a.max(x.b)))
-        }))
+        .chain(near.iter().filter(|x| overlap(x.a, x.b)).map(|x| (x.a.min(x.b), x.a.max(x.b))))
         .collect();
     let mut grouped = vec![false; n];
     for &(i, k) in &links {
@@ -424,7 +344,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     let near_to = |i: usize, k: usize| close.contains(&(i.min(k), i.max(k)));
     let mut moved: Vec<f64> = vec![0.0; n];
     let mut far_of: Vec<usize> = (0..n).collect();
-    let (mut unpaired, mut unjoined, mut farthest_move) = (0, 0, 0.0f64);
+    let (mut unpaired, mut farthest_move) = (0, 0.0f64);
     for list in groups.into_values() {
         let mut left = list;
         while left.len() > 1 {
@@ -463,14 +383,8 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     let alone = alone.count();
     for i in 0..n {
         let Some(m) = mate[i].filter(|&m| m > i && far_of[i] != far_of[m]) else { continue };
-        if joined[i] {
-            unjoined += 1;
-        } else {
-            unpaired += 1;
-        }
-        for k in [i, m] {
-            (mate[k], joined[k]) = (None, false);
-        }
+        unpaired += 1;
+        (mate[i], mate[m]) = (None, None);
     }
     // The numbers come from the ground with the stretches that the device opens: of each opening of a chain whose two
     // ends are built (`BUILT`) by their final kinds, at its final place. The openings near a stretch that the first
@@ -483,7 +397,7 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
     let (mut remeasured, mut last): (usize, Option<Vec<OpenEnd>>) = (0, None);
     loop {
         let now: Vec<Option<Kind>> = kinds.iter().map(|k| k.first().copied()).collect();
-        let opened = open_ends(&built_openings(openings, &now));
+        let opened = open_ends(&built_openings(openings, &now), rooms);
         if last.as_ref() == Some(&opened) {
             break;
         }
@@ -519,8 +433,8 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             if was != Some(Kind::Free) && kinds[i].first() == Some(&Kind::Free) {
                 rung[i] = Some(if d.is_none() { "free: never covered" } else { "free: covered past the limit" });
             }
-            if let Some(m) = mate[i].filter(|_| !joined[i] && !hill) {
-                (mate[i], mate[m], joined[i], joined[m]) = (None, None, false, false);
+            if let Some(m) = mate[i].filter(|_| !hill) {
+                (mate[i], mate[m]) = (None, None);
             }
         }
         last = Some(opened);
@@ -536,25 +450,40 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
             (with && s1 - s0 > 1e-6).then_some([s0, s1])
         })
         .collect();
-    let (floors, floor_metrics) = floor::floors(tubes, &spans, (&half, &height), input);
+    let (floors, floor_metrics) = floor::floors(rooms, &spans, (&half, &height), input);
     let end_height = |o: &Opening| floors[o.tube].as_ref().map_or(height[o.tube], |f| f.end_height(o.end));
     let heights: Vec<f64> = openings.iter().map(end_height).collect();
     // The numbers of each drawn opening.
     let mut ends: Vec<End> = Vec::with_capacity(n);
     // The kind of each opening: it decides a hole's collar and whether a head has a wall.
     let base: Vec<Option<Kind>> = kinds.iter().map(|k| k.first().copied()).collect();
-    // A pair has one record, at its opening farther to the right of its line.
-    let right = |i: usize, m: usize| {
-        let left = left_of(openings[far_of[i]].dir);
-        let d = along_dir(openings[i].p, openings[m].p, left);
-        d > 0.0 || (d == 0.0 && (openings[i].way_id, i) < (openings[m].way_id, m))
-    };
+    // A head: the openings on one frame line that a pair or an overlap links, from the right of the line. It has one
+    // record, at its first.
+    let mut head: Vec<usize> = (0..n).collect();
+    for &(i, k) in links.iter().filter(|&&(i, k)| far_of[i] == far_of[k] && base[i].is_some() && base[k].is_some()) {
+        let (ri, rk) = (find(&mut head, i), find(&mut head, k));
+        head[ri.max(rk)] = ri.min(rk);
+    }
+    let mut heads: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..n {
+        let r = find(&mut head, i);
+        heads.entry(r).or_default().push(i);
+    }
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for mut list in heads.into_values() {
+        let (p, left) = (openings[far_of[list[0]]].p, left_of(openings[far_of[list[0]]].dir));
+        list.sort_by(|&x, &y| {
+            let (ax, ay) = (along_dir(p, openings[x].p, left), along_dir(p, openings[y].p, left));
+            ax.total_cmp(&ay).then((openings[x].way_id, x).cmp(&(openings[y].way_id, y)))
+        });
+        let first = list[0];
+        members[first] = list;
+    }
     for i in 0..n {
         let kind = kinds[i].first().copied();
-        let drawn = mate[i].is_none_or(|m| right(i, m));
         let m = Measured { sites: &sites, rights: &rights, cover: &cover, moved: &moved };
-        let numbers = (kind.filter(|_| drawn))
-            .map(|_| numbers(i, &base, (mate[i], far_of[i]), &m, (openings, tubes), (&half, &heights), input));
+        let numbers = (kind.filter(|_| !members[i].is_empty()))
+            .map(|_| numbers(&members[i], &base, far_of[i], &m, (openings, tubes), (&half, &heights), input));
         ends.push(End { kinds: kinds[i].clone(), kind, rung: rung[i].unwrap_or_default(), numbers });
     }
     let shown = |e: &End| match e.kind {
@@ -570,21 +499,18 @@ pub(crate) fn decide(tubes: &[Tube], openings: &mut [Opening], input: &Input, me
         "cells": cells,
         "measured_again": remeasured,
         "pairs_that_do_not_reach": unpaired,
-        "joins": (0..n).filter(|&i| joined[i] && mate[i].is_some_and(|m| m > i)).count(),
-        "joins_that_do_not_reach": unjoined,
+        "heads_of_three_holes_or_more": members.iter().filter(|m| m.len() > 2).count(),
         "openings_moved_onto_a_line": (0..n).filter(|&i| mate[i].is_none() && far_of[i] != i).count(),
         "openings_that_share_no_line": alone,
         "openings_per_frame_line": counts(lines.values().map(|k| k.to_string())),
         "farthest_move_onto_a_line_m": (farthest_move * 100.0).round() / 100.0,
-        "absorbed_tubes": absorbed.iter().filter(|a| a.is_some()).count(),
-        "tubes_not_absorbed_for_an_opening_outside": outside,
         "kinds_changed_by_the_second_measure": refitted,
         "chains_whose_openings_would_meet": met,
     });
     if let (Value::Object(m), Value::Object(f)) = (&mut metrics, floor_metrics) {
         m.extend(f);
     }
-    Decided { ends, half, floors, absorbed, metrics }
+    Decided { ends, half, floors, metrics }
 }
 
 /// What the measure gave of each opening: its site, the metres of its row to the right, the metres to its first covered
@@ -597,18 +523,19 @@ struct Measured<'a> {
     moved: &'a [f64],
 }
 
-/// The numbers of the head whose first hole is opening i (Plan 8), with the kind and the inside height of each opening:
-/// its frame is its own, or in a pair the frame line of the opening farther in, which holds both.
+/// The numbers of the head of `members`, from the right of its frame line (Plan 8), with the kind and the inside height
+/// of each opening: its frame is the frame line of the opening farther in, which holds them all.
 fn numbers(
-    i: usize,
+    members: &[usize],
     base: &[Option<Kind>],
-    (mate, far): (Option<usize>, usize),
+    far: usize,
     m: &Measured,
     (openings, tubes): (&[Opening], &[Tube]),
     (half, heights): (&[f64], &[f64]),
     input: &Input,
 ) -> Numbers {
     let Measured { sites, rights, cover, moved } = *m;
+    let i = members[0];
     let b = &input.rules.bake;
     let o = &openings[i];
     let t = &tubes[o.tube];
@@ -618,8 +545,6 @@ fn numbers(
     let left_far = left_of(openings[far].dir);
     let axis = |k: usize| along_dir(openings[far].p, openings[k].p, left_far);
     let edge = |k: usize| half[openings[k].tube] + b.shell_m;
-    let mut members = vec![i];
-    members.extend(mate);
     let lo = members.iter().map(|&k| axis(k) - edge(k)).fold(f64::INFINITY, f64::min);
     let hi = members.iter().map(|&k| axis(k) + edge(k)).fold(f64::NEG_INFINITY, f64::max);
     let ground = |x: f64| site.across(rights[far], x);

@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use serde_json::Value;
 
 /// The rule values of the bake, in the order of `Bake`.
-const BAKE_FIELDS: [&str; 19] = [
+const BAKE_FIELDS: [&str; 20] = [
     "margin_m",
     "margin_narrow_m",
     "shell_m",
@@ -27,6 +27,7 @@ const BAKE_FIELDS: [&str; 19] = [
     "narrow_bore_m",
     "grade_default",
     "vertex_gap_m",
+    "room_join_m",
 ];
 const GROUP_FIELDS: [&str; 7] = ["classes", "look", "collar_max_m", "wing_max_m", "least_height_m", "rock", "bore"];
 /// The values of the design, in the order of `Design`.
@@ -101,6 +102,8 @@ pub struct Bake {
     pub grade_default: f64,
     /// The vertices of a tube lie this far apart at least, but at its openings and at the joins of its ways.
     pub vertex_gap_m: f64,
+    /// Two tunnel ways that come nearer than a wall again within this are one room on.
+    pub room_join_m: f64,
 }
 
 /// The rules of the feature bake: `groups` and `bake`, its option `parts`.
@@ -222,6 +225,7 @@ impl Ladder {
             narrow_bore_m: v[16],
             grade_default: v[17],
             vertex_gap_m: v[18],
+            room_join_m: v[19],
         };
         let mut groups = Vec::new();
         for (name, row) in rows["groups"].as_object().ok_or("parts groups: not an object")? {

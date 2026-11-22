@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use obc_ground_plan::faces::Rules as PlanRules;
 use serde_json::{json, Value};
 
+use super::rooms::{hold, Place, Rooms};
 use super::{distance, segment_m, Input, Point, Tube};
 use crate::geometry::{bounds, interp, Boxes};
 use crate::{degrees, metres, roads};
@@ -34,13 +35,15 @@ struct Above {
     band: f64,
 }
 
-/// The floor of a tube: per vertex its metres, the road solver's height, the floor and the inside height.
+/// The floor of a room: per vertex its metres, the road solver's height, the floor and the inside height; of a room of
+/// lanes, per lane its floor and its inside height at each vertex.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Floor {
     pub s: Vec<f64>,
     pub z: Vec<f64>,
     pub f: Vec<f64>,
     pub h: Vec<f64>,
+    pub lanes: Vec<(Vec<f64>, Vec<f64>)>,
 }
 
 impl Floor {
@@ -100,7 +103,7 @@ pub(crate) fn floor(
     let h: Vec<f64> = (0..n)
         .map(|i| if f[i] > cap[i] { (height - (f[i] - cap[i])).max(least).min(height) } else { height })
         .collect();
-    Floor { s: s.to_vec(), z: z.to_vec(), f, h }
+    Floor { s: s.to_vec(), z: z.to_vec(), f, h, lanes: Vec::new() }
 }
 
 /// The metres from q to the segment a-b, and the share along it of the nearest point.
@@ -182,14 +185,16 @@ fn overs(lines: &[(Vec<[f64; 2]>, f64)], input: &Input) -> Vec<Over> {
     out
 }
 
-/// The floors of the tubes with a part (`spans`: the metres of their two openings; `half` and `height` their inside
-/// half-width and height), and their counts.
+/// The floors of the rooms with a part (`spans`: the metres of their two openings; `half` and `height` their inside
+/// half-width and height), and their counts. The ways on top are read over a room's width; each lane of a room of
+/// lanes gets its own profile under them, and the room's floor is the lowest.
 pub(crate) fn floors(
-    tubes: &[Tube],
+    rooms: &Rooms,
     spans: &[Option<[f64; 2]>],
     (half, height): (&[f64], &[f64]),
     input: &Input,
 ) -> (Vec<Option<Floor>>, Value) {
+    let tubes = &rooms.tubes;
     let b = &input.rules.bake;
     let sections = &PlanRules::embedded().sections;
     let with: Vec<usize> = (0..tubes.len()).filter(|&t| spans[t].is_some()).collect();
@@ -317,9 +322,13 @@ pub(crate) fn floors(
             v.sort_unstable();
             v.into_iter().map(|(_, o)| &overs[o]).collect()
         };
-        let least = input.rules.groups[tube.group].least_height_m;
-        let rank = input.class_names.iter().position(|c| *c == tube.class);
-        let grade = rank.map(|r| input.classes.rows[r].grade).filter(|g| g.is_finite()).unwrap_or(b.grade_default);
+        // A tube's grade of its class and its group's least height.
+        let rule = |t: &Tube| {
+            let rank = input.class_names.iter().position(|c| *c == t.class);
+            let grade = rank.map(|r| input.classes.rows[r].grade).filter(|g| g.is_finite()).unwrap_or(b.grade_default);
+            (grade, input.rules.groups[t.group].least_height_m)
+        };
+        let (grade, least) = rule(tube);
         // A way lies on top where it lies over the road solver's height of the tube by more than the at-grade band;
         // a way of the kind `tunnel` lowers no floor.
         let caps: Vec<Vec<f64>> = (above.iter())
@@ -328,7 +337,11 @@ pub(crate) fn floors(
                 on_top.map(|a| a.under).collect()
             })
             .collect();
-        let fl = floor((&s, &z), &caps, grade, (height[t], least), b.shell_m);
+        let fl = if rooms.lanes[t].is_empty() {
+            floor((&s, &z), &caps, grade, (height[t], least), b.shell_m)
+        } else {
+            lanes_floor(rooms, t, (&s, &caps), &rule, input)
+        };
         // Over the floor as it is (past an opening, the chain), per way the most metres that the shell of the crown
         // rises over its underside where it lies over the floor by more than the band, and the vertex there.
         let ground = |a: &Above| if a.along >= s0 && a.along <= s1 { interp(a.along, &fl.s, &fl.f) } else { a.base };
@@ -390,6 +403,40 @@ pub(crate) fn floors(
         "tube_clash_places": places(tube_clashes, 1.0),
     });
     (out, metrics)
+}
+
+/// The floor of room r of lanes at its vertices `s`, under the undersides of the ways on top at each: per lane the
+/// floor of its heights, its class's grade, its height and its group's least height; the room's floor the lowest of
+/// them, and its height the least that holds each lane's outline.
+fn lanes_floor(
+    rooms: &Rooms,
+    r: usize,
+    (s, under): (&[f64], &[Vec<f64>]),
+    rule: &dyn Fn(&Tube) -> (f64, f64),
+    input: &Input,
+) -> Floor {
+    let design = &obc_trailview_parts::Rules::embedded().design;
+    let places: Vec<Vec<Place>> = s.iter().map(|&m| rooms.places(r, m)).collect();
+    let lanes: Vec<Floor> = (rooms.lanes[r].iter().enumerate())
+        .map(|(k, l)| {
+            let arm = &rooms.arms[l.arm];
+            let z: Vec<f64> = places.iter().map(|p| arm.curve.at(p[k].s).0.z).collect();
+            let (grade, least) = rule(arm);
+            floor((s, &z), under, grade, (arm.height, least), input.rules.bake.shell_m)
+        })
+        .collect();
+    let n = s.len();
+    let low = |v: &dyn Fn(&Floor) -> f64| lanes.iter().map(v).fold(f64::INFINITY, f64::min);
+    let z: Vec<f64> = (0..n).map(|i| low(&|f| f.z[i])).collect();
+    let f: Vec<f64> = (0..n).map(|i| low(&|l| l.f[i])).collect();
+    let h: Vec<f64> = (0..n)
+        .map(|i| {
+            let outlines: Vec<(f64, f64, f64, f64)> =
+                (places[i].iter().zip(&lanes)).map(|(p, l)| (p.off, p.half, l.f[i] - f[i], l.h[i])).collect();
+            hold(true, rooms.tubes[r].half, design.spring, &outlines, design.arch_segments)
+        })
+        .collect();
+    Floor { s: s.to_vec(), z, f, h, lanes: lanes.into_iter().map(|l| (l.f, l.h)).collect() }
 }
 
 /// The metres of `kept`, sorted, with each of `more` in its order that lies `gap` or farther from every kept one.

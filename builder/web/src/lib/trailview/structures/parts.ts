@@ -123,14 +123,7 @@ export function partStamps(list: Feature[], tile: Node, lines: Line[]): PartStam
     // The ends of the built tunnel lines at each vertex.
     const at = new Map<string, [Line, number][]>();
     for (const line of lines) {
-        if (line.kind !== TUNNEL || !line.parts) continue;
-        // A way in the tube of a wider one (`in`) runs on that part's floor: it draws and stamps nothing of its own.
-        if (line.parts === 'in in') {
-            out.built.add(line);
-            out.stops.set(line, [Infinity, Infinity]);
-            continue;
-        }
-        if (!built(line.parts)) continue;
+        if (line.kind !== TUNNEL || !line.parts || !built(line.parts)) continue;
         out.built.add(line);
         for (const end of [0, 1]) {
             const key = vertex(line, end ? line.z.length - 1 : 0);

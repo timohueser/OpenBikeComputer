@@ -127,9 +127,9 @@ fn site<'a>(ground: &'a dyn Fn([f64; 2]) -> f64, rooms: &[f64], building: bool) 
     }
 }
 
-/// The kinds and the rung of each opening of way `id`.
+/// The kinds and the rung of each opening that way `id` enters.
 fn of(placed: &Placed, id: u32) -> Vec<(Vec<Kind>, &'static str)> {
-    placed.ends.iter().filter(|e| e.0 == id).map(|(_, e)| (e.kinds.clone(), e.rung)).collect()
+    placed.ends.iter().filter(|e| e.0.contains(&id)).map(|(_, e)| (e.kinds.clone(), e.rung)).collect()
 }
 
 fn records<'a>(placed: &'a Placed, kind: &str) -> Vec<&'a Tags> {
@@ -209,10 +209,10 @@ fn each_rung_gives_its_kinds_in_the_order_of_the_rungs() {
 }
 
 #[test]
-fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
+fn a_pair_has_one_frame_line_and_a_way_beside_a_wider_one_is_a_lane_of_its_room() {
     use Kind::*;
     // Two road tunnels 20 m apart under one ridge, which rises half as fast over the second; the second starts 3 m
-    // farther in. A footway 2.5 m beside the first lies in its tube.
+    // farther in. A footway 2.5 m beside the first comes nearer it than a wall: the two are one room of two lanes.
     let mut case = Case::default();
     let a = case.tunnel(&ROAD, (0.0, 200.0), 0.0);
     let b = case.tunnel(&ROAD, (3.0, 200.0), 20.0);
@@ -220,26 +220,32 @@ fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
     let (steep, gentle) = (ridge(200.0, 1.0), ridge(200.0, 0.5));
     let ground = |p: [f64; 2]| if p[1] < 10.0 { steep(p) } else { gentle(p) };
     let placed = case.place(&site(&ground, &[], false), &mut Vec::new());
-    assert_eq!(of(&placed, a), vec![(vec![Arch, Free], "hill"); 2]);
-    assert_eq!(of(&placed, b), vec![(vec![Arch, Free], "hill"); 2]);
-    assert_eq!(of(&placed, foot), vec![(vec![], "same tube"); 2]);
-    // One head per pair, a hole per tube from the right. In the west the first opening moves 3 m in onto the line of
-    // the second, which lies 20 m to its left; in the east, heading west, the second is the right hole.
+    for id in [a, b, foot] {
+        assert_eq!(of(&placed, id), vec![(vec![Arch, Free], "hill"); 2], "way {id}");
+    }
+    assert_eq!(placed.metrics["rooms"]["rooms"].as_u64(), Some(1));
+    // The room's lanes from the right wall to the left; it is as wide as both lanes' spaces need.
+    let tubes = records(&placed, "tunnel-tube");
+    let room = tubes.iter().find(|t| t["class"] == "residential footway").expect("the room");
+    let half = |tags: &[(&str, &str)]| {
+        widths().way("tunnel", &tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), false).half_m
+    };
+    assert_eq!(room["half"], num((half(&ROAD) + 0.6 + 2.5 + half(&FOOT) + 0.3) / 2.0));
+    // One head per pair, a hole per room from the right: in the west, the room's two lanes move 3 m in onto the line of
+    // the second road, which lies about 20 m to the left; in the east, heading west, the second is the right hole.
     let ends = records(&placed, "tunnel-end");
     assert_eq!(ends.len(), 2);
-    let west = ends.iter().find(|t| t["shift"] == "3 0").expect("the west pair");
-    assert_eq!((west["part"].as_str(), west["across"].as_str(), west["kind"].as_str()), ("arch", "0 20", "arch arch"));
-    let east = ends.iter().find(|t| t["shift"] == "0 0").expect("the east pair");
-    assert_eq!(east["across"], "0 20");
-    // Each tube has its own collar: the hill over the second comes later, and the first moved 3 m in.
+    let west = ends.iter().find(|t| t["shift"] == "3 3 0").expect("the west pair");
+    assert_eq!((west["part"].as_str(), west["kind"].as_str()), ("arch", "arch arch"));
+    let east = ends.iter().find(|t| t["shift"] == "0 0 0").expect("the east pair");
+    assert_eq!(west["across"], east["across"]);
+    // Each room has its own collar: the hill over the second comes later, and the first moved 3 m in.
     assert_eq!((west["collar"].as_str(), east["collar"].as_str()), ("4 9", "12 7"));
-    // A pair is built: the device opens the moved stretch, so the measure reads the four openings near it again.
+    // A pair is built: the device opens the moved stretches, so the measure reads the four openings near them again.
     assert_eq!(placed.metrics["measured_again"].as_u64(), Some(4));
-    // The first tube widens to the far edge of the footway and its margin.
-    let foot_half = widths().way("tunnel", &tags(&FOOT), false).half_m;
-    assert_eq!(west["half"].split(' ').next(), Some(num(2.5 + foot_half + 0.6).as_str()));
-    assert_eq!(placed.tags[&foot]["parts"], "in in", "a way in a tube that draws as parts runs in it");
-    assert_eq!(placed.tags[&a]["parts"], "arch arch");
+    for id in [a, foot] {
+        assert_eq!(placed.tags[&id]["parts"], "arch arch");
+    }
     // Where the nearer opening's way ends before the line of the other (a short first way), the two are no pair.
     let mut case = Case::default();
     let (a, _) = (case.tunnel(&ROAD, (0.0, 2.0), 0.0), case.tunnel(&ROAD, (2.0, 200.0), 0.0));
@@ -260,17 +266,16 @@ fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
     assert_eq!(of(&placed, a)[0], (vec![Arch, Free], "hill"));
     assert_eq!(of(&placed, b)[0], (vec![Arch, Free], "hill"));
     assert_eq!(placed.tags[&b]["parts"], "arch none");
-    // Two footways 3 m apart, a pair, beside a road tube that starts 3 m farther in and whose shell overlaps the first
-    // footway's but not the second's: the road's line is the group's, and both footways move onto it.
+    // Two footways 3 m apart beside a road tube that starts 3 m farther in: the first comes nearer the road than a wall
+    // and is a lane of its room, which opens on the road's line; the second pairs with the room and moves onto it too.
     let mut case = Case::default();
     case.tunnel(&ROAD, (3.0, 200.0), 0.0);
     let f1 = case.tunnel(&FOOT, (0.0, 200.0), 4.5);
     case.tunnel(&FOOT, (0.0, 200.0), 7.5);
     let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
     assert_eq!(of(&placed, f1)[0].0[0], Arch);
-    let west = records(&placed, "tunnel-end").into_iter().find(|t| t.get("across").is_some_and(|m| m == "0 3"));
-    let west = west.expect("the west footway pair");
-    assert_eq!(west["shift"], "3 3");
+    let west = records(&placed, "tunnel-end").into_iter().find(|t| t["heading"] == "0").expect("the west head");
+    assert_eq!((west["shift"].as_str(), west["half"].split(' ').count()), ("0 3 3", 2));
 }
 
 #[test]
@@ -333,48 +338,6 @@ fn a_tube_record_keeps_its_two_vertices_and_its_tags_after_a_tile_cut() {
         assert_eq!((read.len(), read[0].parts.len(), read[0].parts[0].xy.len()), (1, 1, 2), "tile {c}");
         assert_eq!(&read[0].tags, &tubes[0].1, "tile {c}");
     }
-}
-
-#[test]
-fn tubes_whose_shells_overlap_share_an_opening_and_meet_from_vertices() {
-    use Kind::*;
-    // Two road tubes 7 m apart, never covered, the second starting 3 m farther in: free ends, but their shells overlap
-    // at the opening farther in, so they are a pair on its frame line. Neither has a wall, so the head is a rim round
-    // both: no `face`. Each keeps a free end's collar.
-    let mut case = Case::default();
-    let a = case.tunnel(&ROAD, (0.0, 200.0), 0.0);
-    let b = case.tunnel(&ROAD, (3.0, 200.0), 7.0);
-    let placed = case.place(&site(&|_| 500.0, &[], false), &mut Vec::new());
-    assert_eq!(of(&placed, a), vec![(vec![Free], "free: never covered"); 2]);
-    assert_eq!(of(&placed, b), vec![(vec![Free], "free: never covered"); 2]);
-    assert_eq!(placed.metrics["joins"].as_u64(), Some(2));
-    let ends = records(&placed, "tunnel-end");
-    let west = ends.iter().find(|t| t["across"] == "0 7" && t["shift"] == "3 0").expect("the west pair");
-    assert_eq!((west.get("face"), west["collar"].as_str()), (None, "40 40"));
-    // A road tube and one that runs 7 m north of it for 60 m and turns away: the first gets a vertex where their shells
-    // stop overlapping, where its axis lies its half, the other's and two shells from the other's axis.
-    let mut case = Case::default();
-    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
-    let line = [[0.0, 7.0], [60.0, 7.0], [120.0, 40.0], [200.0, 40.0]];
-    case.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[500.0; 4])]));
-    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
-    let tubes = records(&placed, "tunnel-tube");
-    let reach = 2.0 * tubes[0]["half"].parse::<f64>().unwrap() + 1.0;
-    let gap = |x: f64| {
-        line.windows(2).map(|w| segment_m(at([x, 0.0]), at(w[0]), at(w[1]))).fold(f64::INFINITY, f64::min) - reach
-    };
-    let firsts: Vec<f64> = (placed.features.iter())
-        .filter(|f| f.0 == "tunnel-tube")
-        .map(|f| back(f.2.points[0]))
-        .filter(|p| p[1].abs() < 0.01)
-        .map(|p| p[0])
-        .collect();
-    assert!(firsts.iter().any(|&x| gap(x).abs() < 0.05), "a vertex where the shells part: {firsts:?}");
-    // A vertex where two tubes stop meeting takes the place of a floor vertex within the vertex gap on the side where
-    // they meet; one on the other side, or an opening, stands for it.
-    let spaced = |more: &[(f64, f64)]| overlap::meeting_spaced(more, vec![0.0, 10.0, 20.0, 30.0], [0.0, 30.0], 1.0);
-    assert_eq!(spaced(&[(10.4, -1.0)]), [0.0, 10.4, 20.0, 30.0]);
-    assert_eq!(spaced(&[(19.6, -1.0), (0.4, -1.0)]), [0.0, 10.0, 20.0, 30.0]);
 }
 
 #[test]
@@ -521,4 +484,83 @@ fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height
     assert_eq!(chords(&placed)[0].2, 4.0);
     assert_eq!(placed.metrics["low_stretches_at_least_height"].as_u64(), Some(1));
     assert_eq!(placed.metrics["floor_clashes"].as_u64(), Some(1));
+}
+
+/// The pairs of tube records of two rooms that come nearer than a wall at one level, as a tile holds them: each point
+/// rounded to the tile's grid (8 world units of 2^30), which with the decimals of the heights is the only allowance.
+fn records_that_touch(placed: &Placed) -> Vec<String> {
+    const UNITS: f64 = (1u64 << 27) as f64;
+    let unit = |p: [f64; 2]| [(p[0] * UNITS).round() / UNITS, (p[1] * UNITS).round() / UNITS];
+    // Per record its two points, their floors, its half-width and its height.
+    type Record = ([f64; 2], [f64; 2], [f64; 2], f64, f64);
+    let tubes: Vec<Record> = (placed.features.iter())
+        .filter(|f| f.0 == "tunnel-tube")
+        .map(|f| {
+            let z = f.2.z.as_ref().unwrap();
+            let num = |k: &str| f.1[k].parse::<f64>().unwrap();
+            (unit(f.2.points[0]), unit(f.2.points[1]), [z[0], z[1]], num("half"), num("height"))
+        })
+        .collect();
+    // The rooms: the chords that share a vertex.
+    let mut room: Vec<usize> = (0..tubes.len()).collect();
+    for i in 0..tubes.len() {
+        for k in 0..i {
+            let shared = [tubes[i].0, tubes[i].1].iter().any(|p| *p == tubes[k].0 || *p == tubes[k].1);
+            if shared {
+                let (ri, rk) = (room[i], room[k]);
+                room.iter_mut().filter(|r| **r == ri.max(rk)).for_each(|r| *r = ri.min(rk));
+            }
+        }
+    }
+    let allowance = distance(unit([0.5, 0.5]), unit([0.5 + 1.0 / UNITS, 0.5 + 1.0 / UNITS]));
+    let mut out = Vec::new();
+    for (i, a) in tubes.iter().enumerate() {
+        let len = distance(a.0, a.1);
+        for k in (0..tubes.len()).filter(|&k| room[k] != room[i]) {
+            let b = &tubes[k];
+            for m in 0..=len.ceil() as usize {
+                let u = (m as f64 / len.max(1.0)).min(1.0);
+                let p = [a.0[0] + u * (a.1[0] - a.0[0]), a.0[1] + u * (a.1[1] - a.0[1])];
+                let za = a.2[0] + u * (a.2[1] - a.2[0]);
+                let d = [b.1[0] - b.0[0], b.1[1] - b.0[1]];
+                let v =
+                    (((p[0] - b.0[0]) * d[0] + (p[1] - b.0[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0.0, 1.0);
+                let foot = [b.0[0] + v * d[0], b.0[1] + v * d[1]];
+                let (gap, rise) = (distance(p, foot) - a.3 - b.3, b.2[0] + v * (b.2[1] - b.2[0]) - za);
+                let clear = gap >= 1.0 - 0.01 - allowance || rise >= a.4 + 1.0 - 0.01 || -rise >= b.4 + 1.0 - 0.01;
+                if !clear {
+                    out.push(format!("{:?} gap {gap:.2} rise {rise:.2}", back(p)));
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn rooms_keep_apart() {
+    let hill = ridge(200.0, 1.0);
+    let ground = site(&hill, &[], false);
+    // Road tunnels 200 m east: a first on the line 0 m north at the floor 500 m, and a second as the layout says.
+    let layouts: [(&str, f64, f64, f64, u64); 6] = [
+        ("twins that overlap", 5.0, 0.0, 500.0, 1),
+        ("floors 3 m apart", 5.0, 0.0, 503.0, 1),
+        ("floors 6 m apart", 5.0, 0.0, 506.0, 0),
+        ("one 7 m under the other", 5.0, 0.0, 493.0, 0),
+        ("a staggered start of 3 m", 5.0, 3.0, 500.0, 1),
+        ("a staggered start of 60 m", 5.0, 60.0, 500.0, 1),
+    ];
+    for (name, north, start, z, rooms) in layouts {
+        let mut case = Case::default();
+        case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+        let line = [[start, north], [(start + 200.0) / 2.0, north], [200.0, north]];
+        case.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[z; 3])]));
+        let placed = case.place(&ground, &mut Vec::new());
+        let m = &placed.metrics;
+        assert_eq!(m["rooms"]["rooms"].as_u64(), Some(rooms), "{name}: {m}");
+        assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "{name}: {}", m["rooms_that_touch_places"]);
+        let touch = records_that_touch(&placed);
+        assert!(touch.is_empty(), "{name}: the records come nearer than a wall at {touch:?}");
+    }
 }
