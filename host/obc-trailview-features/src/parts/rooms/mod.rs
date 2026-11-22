@@ -22,7 +22,7 @@ use section::{crossing, room_of, started, stretch};
 
 pub(crate) use axes::Axes;
 pub(crate) use section::{hold, onto};
-pub(crate) use touch::{apart, touching};
+pub(crate) use touch::touching;
 
 /// The bake's centimetre (`MERGE_M` of the floor pass).
 const MERGE_M: f64 = 0.01;

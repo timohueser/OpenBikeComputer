@@ -301,9 +301,12 @@ pub(crate) fn decide(
         let (o, q) = (&openings[i], &openings[k]);
         along_dir(o.p, q.p, left_of(o.dir)).abs() - half[o.tube] - half[q.tube]
     };
+    // One level, as the runs read it: neither lies over the other by the lower one's least height and a roof.
     let level = |i: usize, k: usize| {
         let (o, q) = (&openings[i], &openings[k]);
-        !super::rooms::apart((0.0, q.floor - o.floor), (height[o.tube], height[q.tube]), input)
+        let lower = if q.floor > o.floor { o.tube } else { q.tube };
+        let roof = b.shell_m + b.slab_m;
+        (q.floor - o.floor).abs() < input.rules.groups[tubes[lower].group].least_height_m + roof
     };
     let cos = b.pair_max_deg.to_radians().cos();
     let ends_of_one: Vec<(usize, usize)> = (at_end.iter())
@@ -315,6 +318,7 @@ pub(crate) fn decide(
         .collect();
     let kind_of = |t: usize, e: usize| at_end[t][e].and_then(|i| kinds[i].first().copied());
     let mut out = out.to_vec();
+    let mut held_out: Vec<[f64; 2]> = Vec::new();
     let draws = loop {
         let draws = rooms.built(&kind_of, &out);
         let mut left = true;
@@ -323,6 +327,7 @@ pub(crate) fn decide(
             if draws[ti] && draws[tk] && across(i, k) < wall - 0.01 && level(i, k) {
                 let narrower = |t: usize| (tubes[t].half, std::cmp::Reverse(t));
                 out[if narrower(ti) <= narrower(tk) { ti } else { tk }] = true;
+                held_out.push(openings[i].p);
                 left = false;
             }
         }
@@ -568,6 +573,8 @@ pub(crate) fn decide(
         "heads_of_three_holes_or_more": members.iter().filter(|m| m.len() > 2).count(),
         "openings_moved_onto_a_line": (0..n).filter(|&i| mate[i].is_none() && far_of[i] != i).count(),
         "openings_that_share_no_line": alone,
+        "rooms_out_at_heads": held_out.len(),
+        "rooms_out_at_heads_places": held_out.iter().take(10).map(|&p| { let [lat, lon] = crate::degrees(p); format!("{lat:.5},{lon:.5}") }).collect::<Vec<_>>().join("; "),
         "openings_per_frame_line": counts(lines.values().map(|k| k.to_string())),
         "farthest_move_onto_a_line_m": (farthest_move * 100.0).round() / 100.0,
         "kinds_changed_by_the_second_measure": refitted,

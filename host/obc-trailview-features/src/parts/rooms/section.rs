@@ -357,7 +357,12 @@ pub(super) fn room_of(
     let table: Vec<(f64, Vec<Place>)> = (metres_at.iter().zip(&table))
         .map(|(&m, row)| (m, order.iter().map(|&k| Place { off: row[k].0, half: row[k].1, s: row[k].2 }).collect()))
         .collect();
-    let half = table.iter().flat_map(|(_, row)| row.iter().map(|p| p.off.abs() + p.half)).fold(0.0, f64::max);
+    // Behind a seam the room starts as wide as its hole; its half-width is what its lanes need elsewhere.
+    let rows = table
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| !(i == 0 && starts[0].is_some() || i + 1 == n && starts[1].is_some()));
+    let half = rows.flat_map(|(_, (_, row))| row.iter().map(|p| p.off.abs() + p.half)).fold(0.0, f64::max);
     // The tube of the room: its centre line at the least height of its lanes, as wide as they need and at its ends as
     // high as their outlines need at the heights of the road solver, the height that its openings read.
     let design = &obc_trailview_parts::Rules::embedded().design;

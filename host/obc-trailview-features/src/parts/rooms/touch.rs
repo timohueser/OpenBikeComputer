@@ -10,7 +10,7 @@ use super::{Rooms, MERGE_M};
 
 /// Two spaces lie apart: their gap is a wall or more, within the bake's centimetre, or one lies clear over the other,
 /// a crown's shell and a slab over its crown; `rise` is the height of the second's floor over the first's.
-pub(crate) fn apart((gap, rise): (f64, f64), (ha, hb): (f64, f64), input: &Input) -> bool {
+fn apart((gap, rise): (f64, f64), (ha, hb): (f64, f64), input: &Input) -> bool {
     let b = &input.rules.bake;
     let (wall, roof) = (2.0 * b.shell_m, b.shell_m + b.slab_m);
     gap >= wall - MERGE_M || rise >= ha + roof || -rise >= hb + roof
