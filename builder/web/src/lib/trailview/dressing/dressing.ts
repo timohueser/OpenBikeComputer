@@ -19,12 +19,12 @@ const HERD_WORDS = 8, DRESSING_BYTES = 64;
 
 /**
  * The showroom (`showroom=lat,lon,heading,entries[,tier]` in the address), the engine view of the model review: in place
- * of the herds, a row of animals across the view toward `heading` (degrees from north) at (lat, lon), SHOW_SPACING_M
- * apart, each facing right and turned SHOW_TURN toward the eye. An entry is a breed, which stands all its models, or
+ * of the herds, a row of animals across the view toward `heading` (degrees from north) at (lat, lon), SHOW_SPACING
+ * times their heights apart, each facing right and turned SHOW_TURN toward the eye. An entry is a breed, which stands all its models, or
  * `breed.k`, its model k. With `tier` 1 every animal draws its far tier at any distance.
  */
 interface Showroom { lonLat: [number, number]; heading: number; entries: string[]; tier: number }
-const SHOW_SPACING_M = 3.2, SHOW_TURN = 0.45;
+const SHOW_SPACING = 2.3, SHOW_TURN = 0.45;
 
 function showroom(): Showroom | undefined {
     const value = globalThis.location ? new URLSearchParams(globalThis.location.search).get('showroom') : null;
@@ -73,11 +73,14 @@ export class Dressing implements Producer {
         this.table = new Uint32Array((this.showFirst + row.length) * HERD_WORDS);
         const floats = new Float32Array(this.table.buffer);
         if (this.show) {
-            const across = -this.show.heading;
+            const across = -this.show.heading, room = row.map(({ name }) => SHOW_SPACING * breedModels[name].height);
+            let offset = -room.reduce((sum, r) => sum + r, 0) / 2;
             row.forEach(({ name, model }, k) => {
-                const at = (this.showFirst + k) * HERD_WORDS, offset = (k - (row.length - 1) / 2) * SHOW_SPACING_M;
+                const at = (this.showFirst + k) * HERD_WORDS;
+                offset += room[k] / 2;
                 this.table[at] = model;
                 floats.set([across - Math.PI / 2 - SHOW_TURN, breedModels[name].height, offset * Math.cos(across), offset * Math.sin(across)], at + 2);
+                offset += room[k] / 2;
             });
         }
         rules.regions.forEach((region, r) => {

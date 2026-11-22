@@ -7,8 +7,11 @@ import type { FloatMesh } from './model-file';
 
 /** A ring of a skin: its middle, its half-width, its reach above and below the middle, the pitch of its axis above +y in degrees, and how square it is (2 is an ellipse). */
 export interface Ring { at: Vec; w: number; up: number; down: number; pitch: number; e: number }
-/** The colour of a face from its band (−1 and the band count are the end caps) and from how far up (−1 to 1) its facet looks. */
-export type Paint = (band: number, top: number) => number;
+/**
+ * The colour of a face from its band (−1 and the band count are the end caps), from how far up (−1 to 1) its facet looks,
+ * and from its place around the ring: 0 at +x, 0.25 at the top, 0.5 at −x.
+ */
+export type Paint = (band: number, top: number, around: number) => number;
 
 export const sub = (a: Vec, b: Vec): Vec => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 export const along = (a: Vec, d: Vec, k: number): Vec => [a[0] + d[0] * k, a[1] + d[1] * k, a[2] + d[2] * k];
@@ -36,17 +39,25 @@ export function axis(at: Vec, pitch: number) {
     return { p, dir: [0, c, s] as Vec, rings: (rows: number[][], e = 2): Ring[] => rows.map(([d, w, up, down]) => ({ at: p(d), w, up, down, pitch, e })) };
 }
 
-/** Tier 1 builds a part of n sides with this share of them, at least 3. */
-const FAR_SIDES = 0.4;
+/**
+ * The rings of a part through points of one bend in the y-z plane, each ring square to the path, from rows of
+ * [half-width, up, down]: a bent neck, a folded leg.
+ */
+export function through(points: Vec[], rows: number[][], e = 2): Ring[] {
+    return points.map((at, i) => {
+        const a = points[Math.max(0, i - 1)], b = points[Math.min(points.length - 1, i + 1)], [w, up, down] = rows[i];
+        return { at, w, up, down, pitch: (Math.atan2(b[2] - a[2], b[1] - a[1]) * 180) / Math.PI, e };
+    });
+}
 
 /** A model in the making, at a tier: 0 near, 1 far. */
 export class Sculpt {
     readonly model = new Model();
     constructor(readonly tier = 0) {}
 
-    /** Sides of a part that has n at tier 0. */
+    /** Sides of a part that has n at tier 0: 4 keep a round part the same at both sides, 3 are enough for a thin one. */
     sides(n: number): number {
-        return this.tier ? Math.max(3, Math.round(n * FAR_SIDES)) : n;
+        return this.tier ? (n < 8 ? 3 : 4) : n;
     }
 
     /** Fine details, which only tier 0 builds. */
@@ -63,20 +74,23 @@ export class Sculpt {
         return this;
     }
 
-    /** A skin of `sides` facets (fewer at tier 1) through the rings, its ends closed. `lump` pushes every second point out and the others in, as wool. */
+    /**
+     * A skin of `sides` facets (fewer at tier 1) through the rings, its ends closed; a ring of few sides grows to keep the
+     * area of its ellipse. `lump` pushes every second point out and the others in, as wool.
+     */
     skin(rings: Ring[], sides: number, paint: Paint | number, lump = 0): this {
-        const colour: Paint = typeof paint === 'number' ? () => paint : paint, last = rings.length - 1, n = this.sides(sides);
+        const colour: Paint = typeof paint === 'number' ? () => paint : paint, last = rings.length - 1, n = this.sides(sides), full = Math.sqrt(Math.PI / ((n / 2) * Math.sin((2 * Math.PI) / n)));
         const points = rings.map((r, i) => Array.from({ length: n }, (_, k): Vec => {
-            const t = (2 * Math.PI * (k + 0.5)) / n, p = (r.pitch * Math.PI) / 180, swell = i > 0 && i < last ? 1 + lump * ((i + k) % 2 ? 1 : -1) : 1;
+            const t = (2 * Math.PI * (k + 0.5)) / n, p = (r.pitch * Math.PI) / 180, swell = full * (i > 0 && i < last ? 1 + lump * ((i + k) % 2 ? 1 : -1) : 1);
             const s = bend(Math.sin(t), r.e), v = s * (s > 0 ? r.up : r.down) * swell;
             return [r.at[0] + bend(Math.cos(t), r.e) * r.w * swell, r.at[1] - Math.sin(p) * v, r.at[2] + Math.cos(p) * v];
         }));
         for (let i = 0; i < last; i++) for (let k = 0; k < n; k++) {
             const j = (k + 1) % n;
-            this.face([points[i][k], points[i][j], points[i + 1][j], points[i + 1][k]], colour(i, Math.sin((2 * Math.PI * (k + 1)) / n)), along(rings[i].at, sub(rings[i + 1].at, rings[i].at), 0.5));
+            this.face([points[i][k], points[i][j], points[i + 1][j], points[i + 1][k]], colour(i, Math.sin((2 * Math.PI * (k + 1)) / n), ((k + 1) / n) % 1), along(rings[i].at, sub(rings[i + 1].at, rings[i].at), 0.5));
         }
-        this.face(points[0], colour(-1, 0), rings[1].at);
-        return this.face(points[last], colour(last, 0), rings[last - 1].at);
+        this.face(points[0], colour(-1, 0, 0), rings[1].at);
+        return this.face(points[last], colour(last, 0, 0), rings[last - 1].at);
     }
 
     /** A flat diamond from a to its tip b, `width` across and `thick` along n: an ear, a beard, a short tail. */
@@ -87,9 +101,10 @@ export class Sculpt {
         return this;
     }
 
-    /** Bars through the points, each `widths` across at its point, of `sides` sides (fewer at tier 1): a horn, a tail. */
+    /** Bars through the points, each `widths` across at its point, of `sides` sides: a horn, a tail. Tier 1 has fewer sides and goes through every second point and the last. */
     chain(points: Vec[], widths: number[], colour: number, sides = 4): this {
-        for (let i = 0; i + 1 < points.length; i++) this.model.beam(points[i], points[i + 1], widths[i], colour, { sides: this.sides(sides), w1: widths[i + 1], capped: true });
+        const keep = points.map((_, i) => i).filter(i => !this.tier || i % 2 === 0 || i === points.length - 1);
+        for (let k = 0; k + 1 < keep.length; k++) this.model.beam(points[keep[k]], points[keep[k + 1]], widths[keep[k]], colour, { sides: this.sides(sides), w1: widths[keep[k + 1]], capped: true });
         return this;
     }
 
