@@ -32,8 +32,8 @@ test('the Explore page searches the day hikes of the map view, plans one and com
   await expect(results.getByText('Zoom in to search.')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Explore' })).toHaveAttribute('aria-current', 'page');
 
-  await page.getByRole('searchbox', { name: 'Find a place' }).fill('Freiburg');
-  await page.getByRole('button', { name: /^Freiburg/ }).click();
+  await page.getByRole('combobox', { name: 'Say what you want' }).fill('Freiburg');
+  await page.getByRole('option', { name: /^Freiburg/ }).click();
   // The least paved first; the long route is no row, the bike routes are not for hiking, and the stage is there and back.
   await expect(results.locator('.count')).toHaveText('2 hikes');
   await expect(rows).toHaveText([/Schlossberg loop\s*Loop\s*1\.2\skm\s*150\sm\s*–\s*T2\s*PLarge car park/, /Westweg 2\s*There and back\s*5\.0\skm\s*100\sm\s*2h 50m\s*T1\s*No car park/]);
@@ -102,6 +102,38 @@ test('the Explore page searches the day hikes of the map view, plans one and com
   await expect(rows).toHaveCount(2);
   await page.getByRole('button', { name: 'Undo' }).click();
   await expect(rows).toHaveText([/Westweg 2/]);
+  expect(errors).toEqual([]);
+});
+
+test('the text field sends each typed phrase to its slot, takes one suggestion with Tab and keeps the words that it does not know', async ({ page }) => {
+  const errors = [], asked = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => { if (request.url().endsWith('/query') && request.method() === 'POST') asked.push(request.postDataJSON().request); });
+  await findFreiburg(page, 1440, 900);
+  // A typed name asks the server for places of that name only, so the server runs no model.
+  expect(asked).toEqual([{ type: 'place', name: 'Freiburg' }]);
+  const rows = page.locator('.results tr.row'), field = page.getByRole('combobox', { name: 'Say what you want' });
+  await expect(rows).toHaveCount(2);
+
+  // The words stay while the rider types, and the field marks each phrase that it understands.
+  await field.fill('loop with a summit, sunny');
+  await expect(page.locator('.mirror .m-value')).toHaveText(['loop', 'summit']);
+  // Enter never takes a place of the server: each marked phrase goes to its slot, and the unknown word stays.
+  await expect(page.getByRole('option', { name: /^Freiburg/ })).toBeVisible();
+  await field.press('Enter');
+  await expect(slotText(page, 'hike')).toHaveText('Loop');
+  await expect(slotText(page, 'way')).toHaveText('Summit');
+  await expect(rows).toHaveText([/Schlossberg loop/]);
+  await expect(field).toHaveValue('sunny ');
+  await expect(page.getByText('Not understood: “sunny”. It changes nothing.')).toBeVisible();
+
+  // Tab takes one suggestion for the words in progress, and the other words stay.
+  await field.fill('sunny 2');
+  await expect(page.getByRole('option').first()).toHaveText(/Under 2\skm\s*Hike/);
+  await field.press('Tab');
+  await expect(slotText(page, 'hike')).toHaveText(/^Loop · Under 2\skm$/);
+  await expect(field).toHaveValue('sunny ');
+  await expect(rows).toHaveText([/Schlossberg loop/]);
   expect(errors).toEqual([]);
 });
 
@@ -357,6 +389,6 @@ async function findFreiburg(page, width, height) {
   await page.setViewportSize({ width, height });
   await stub(page);
   await page.goto('/planner.html#/explore');
-  await page.getByRole('searchbox', { name: 'Find a place' }).fill('Freiburg');
-  await page.getByRole('button', { name: /^Freiburg/ }).click();
+  await page.getByRole('combobox', { name: 'Say what you want' }).fill('Freiburg');
+  await page.getByRole('option', { name: /^Freiburg/ }).click();
 }

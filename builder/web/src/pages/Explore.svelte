@@ -1,6 +1,6 @@
 <!-- The Explore page: the signed hikes of the map view, on the map, and the selected one in a card that opens it as a plan
-     in the planner. One search bar of three slots holds the search. The day routes are a search, with the results in a
-     table under the map. With trail files, a second tab lists the long trails beside the map. -->
+     in the planner. One search bar, a text field and three slots, holds the search. The day routes are a search, with the
+     results in a table under the map. With trail files, a second tab lists the long trails beside the map. -->
 <script lang="ts">
     import { tick, untrack } from 'svelte';
     import { keepInHistory } from '../lib/keep-in-history.svelte';
@@ -18,6 +18,7 @@
     import { distanceIn, heightIn } from '../lib/settings/format';
     import { today, type View } from '../lib/trailview/view';
     import Icon from '../lib/ui/Icon.svelte';
+    import type { FieldProps, Place as NamedPlace } from '../lib/ui/search-bar/Field.svelte';
     import SearchBar, { type Slot } from '../lib/ui/search-bar/SearchBar.svelte';
     import Segmented from '../lib/ui/Segmented.svelte';
     import type { TrailViewRoute } from '../components/planner/TrailViewWindow.svelte';
@@ -28,17 +29,18 @@
     import { firstRows, ROWS } from './explore/rows';
     import HikePanel from './explore/HikePanel.svelte';
     import Journey from './explore/Journey.svelte';
-    import { counts, defaultQuery, DRIVE_KM, driveCap, find, GRADE_TOP, keepQuery, loadBox, openingQuery, queryParams, reachBox, storedQuery, suggestions,
-        type Loaded, type Query, type Shape, type Sort } from './explore/search';
+    import { counts, defaultQuery, DRIVE_KM, driveCap, find, GRADE_TOP, keepQuery, keepSearch, loadBox, openingQuery, queryParams, reachBox, readQuery, storedQuery,
+        storedSearches, suggestions, type Loaded, type Query, type Shape, type Sort } from './explore/search';
+    import { apply, changes, EXAMPLES, ignored, often, phraseTable, type Choice } from './explore/phrases';
     import { effectiveQuery, resetSlot, slotSet, slotWords, type SlotId } from './explore/slots';
     import Wishes from './explore/Wishes.svelte';
-    import { addMarkerLayers, MARKER_LAYERS, mapData, markerClick, markerTip, startAt } from './explore/search-map';
+    import { addMarkerLayers, MARKER_LAYERS, mapData, markerClick, markerTip, myLocation, startAt } from './explore/search-map';
     import type { MapOverlay } from './routes/RoutesMap.svelte';
     import { LENGTH_TOP_M } from './explore/words';
     import { signedHref } from './explore/signed-page';
-    import { farOrder, farTrailId, nearTrails, PROFILE_STEP_M, results, scale, showAt, signedItem, splitDay, trailItem, type Item, type SignedItem, type TrailItem } from './routes/filter';
+    import { farOrder, farTrailId, findPlaces, nearTrails, PROFILE_STEP_M, results, scale, showAt, signedItem, splitDay, trailItem, type FoundPlace, type Item, type SignedItem,
+        type TrailItem } from './routes/filter';
     import ListAndMap from './routes/ListAndMap.svelte';
-    import PlaceSearch from './routes/PlaceSearch.svelte';
     import RouteRow from './routes/RouteRow.svelte';
 
     /** What the page keeps in `history.state.explore`, so that Back and "Find another route" find it again. The page of a
@@ -84,7 +86,8 @@
     const facts = $derived(searching && !!config.facts);
     /** The query that the day routes search, and the one that the bar shows: each value that is off has its default. */
     const dayQuery = $derived(effectiveQuery(query, { from: !config.facts, way: !config.facts, trails: false }, day));
-    const shownQuery = $derived(tab === 'long' ? effectiveQuery(query, { from: true, way: true, trails: true }, day) : dayQuery);
+    const shownOf = (next: Query) => effectiveQuery(next, tab === 'long' ? { from: true, way: true, trails: true } : { from: !config.facts, way: !config.facts, trails: false }, day);
+    const shownQuery = $derived(shownOf(query));
     const start = $derived(dayQuery.start);
     /** The box whose cells the day routes load: the view, or with a start point the part of it in reach; null for none. */
     const from = $derived(searching && view ? loadBox({ start }, view) : view);
@@ -360,6 +363,39 @@
         const high = change.grade[1];
         setQuery({ grade: [Math.min(query.grade[0], high), high] });
     }
+    /** The text field of the bar. Its words and its suggestions are read in the browser; only a typed name asks the server
+     * for places, which move the map. */
+    let searches = $state(storedSearches());
+    /** The words of a choice that the open tab does not search stay in the field, with the text of what is off. */
+    const off = $derived(offText ? ignored(shownOf, offText, day) : () => undefined);
+    const phrases = $derived(phraseTable(loaded, off));
+    /** The words of the slots of a query; a search with none is no last search. */
+    const summary = (kept: Query) => Object.values(slotWords(kept, placeById, day)).flat().join(' · ');
+    const field = $derived<FieldProps<Choice, FoundPlace & NamedPlace>>({
+        table: phrases, label: 'Say what you want', placeholder: 'Say what you want, such as “loop with a hut”', examples: EXAMPLES,
+        recent: searches.flatMap(text => {
+            const kept = readQuery(text, day).query, words = summary(kept);
+            return words ? [{ text: words, run: () => setQuery(kept) }] : [];
+        }),
+        often: () => often(dayQuery, loaded, off), changes: choice => changes(dayQuery, choice), onvalues: send,
+        places: (name, signal) => findPlaces(name, view ?? [-180, -85, 180, 85], signal, true)
+            .then(found => found.map(one => ({ ...one, about: [one.kind.replaceAll('_', ' '), one.region].filter(Boolean).join(' · ') }))),
+        onplace: ({ lon, lat, box }) => place = { lon, lat, box }, onsearch: () => { if (summary(query)) searches = keepSearch(query, day, searches); },
+    });
+    function send(choices: Choice[]) {
+        setQuery(apply(query, choices));
+        if (choices.some(choice => choice.here)) void locate();
+    }
+    /** The start point from the browser for a choice that needs one. A start or a pin wins, also one that the rider sets
+     * meanwhile; with no location, "From" opens. */
+    async function locate() {
+        if (query.start || query.pin) return;
+        const at = await myLocation();
+        if (query.start || query.pin) return;
+        if (typeof at === 'string') openSlot = 'from';
+        else setQuery({ start: at, pin: undefined });
+    }
+
     const pick = $derived(searching && picking
         ? { text: 'Click the map where you start. Esc cancels.', onpick: (at: [number, number]) => { picking = false; setQuery({ start: startAt(at), pin: undefined }); } }
         : undefined);
@@ -503,23 +539,19 @@
 {/snippet}
 
 {#snippet searchBar()}
-    <div class="search">
-        <!-- The place field finds places only; a chosen place moves the map. -->
-        <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />
-        <SearchBar label="Search the hikes" {slots} bind:open={openSlot} empty={!slots.some(slot => slot.set && !slot.off)} onreset={id => setQuery(reset(id as SlotId, query))}
-            onclear={clear} onundo={() => { if (cleared) query = cleared; }}>
-            {#snippet panel(id)}
-                {#if id === 'from'}
-                    <Journey query={dayQuery} cap={start ? driveCap(start[1]) : DRIVE_KM.max} place={placeById} {picking}
-                        onpicking={on => { picking = on; if (on) openSlot = undefined; }} onchange={setQuery} />
-                {:else if id === 'hike'}
-                    <HikePanel query={shownQuery} trails={tab === 'long'} lifts={!!config.facts} ungraded={tally?.ungraded ?? 0} {lengths} {climbs} onchange={setHike} />
-                {:else}
-                    <Wishes query={dayQuery} today={day} counts={tally?.wishes ?? new Map()} place={placeById} onchange={setQuery} />
-                {/if}
-            {/snippet}
-        </SearchBar>
-    </div>
+    <SearchBar label="Search the hikes" {slots} {field} bind:open={openSlot} empty={!slots.some(slot => slot.set && !slot.off)} onreset={id => setQuery(reset(id as SlotId, query))}
+        onclear={clear} onundo={() => { if (cleared) query = cleared; }}>
+        {#snippet panel(id)}
+            {#if id === 'from'}
+                <Journey query={dayQuery} cap={start ? driveCap(start[1]) : DRIVE_KM.max} place={placeById} {picking}
+                    onpicking={on => { picking = on; if (on) openSlot = undefined; }} onchange={setQuery} />
+            {:else if id === 'hike'}
+                <HikePanel query={shownQuery} trails={tab === 'long'} lifts={!!config.facts} ungraded={tally?.ungraded ?? 0} {lengths} {climbs} onchange={setHike} />
+            {:else}
+                <Wishes query={dayQuery} today={day} counts={tally?.wishes ?? new Map()} place={placeById} onchange={setQuery} />
+            {/if}
+        {/snippet}
+    </SearchBar>
 {/snippet}
 
 {#snippet table()}
@@ -567,18 +599,6 @@
 {/if}
 
 <style>
-    .search {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-    .search > :global(.place-search) {
-        flex: 0 1 260px;
-    }
-    .search > :global(.search-bar) {
-        flex: 1 1 0;
-        min-width: 0;
-    }
     .note, .count {
         margin: 0;
         color: var(--ink-soft);
@@ -694,13 +714,6 @@
             linear-gradient(var(--parchment-2), var(--parchment-2)) 0 100% / 38% 10px no-repeat;
     }
     @media (max-width: 760px) {
-        .search {
-            flex-direction: column;
-            align-items: stretch;
-        }
-        .search > :global(.place-search) {
-            flex: none;
-        }
         ul {
             max-height: 60vh;
         }

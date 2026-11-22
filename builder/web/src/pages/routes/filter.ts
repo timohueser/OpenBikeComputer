@@ -269,10 +269,10 @@ function toSegment(x: number, y: number, ax: number, ay: number, bx: number, by:
 export interface FoundPlace extends Place { lon: number; lat: number; region: string }
 
 /** The places that the place search finds for `text` around `view`. None when the search reads the text as another kind
- * of request. */
-export async function findPlaces(text: string, view: Box, signal: AbortSignal): Promise<FoundPlace[]> {
+ * of request. With `byName`, the search reads nothing and finds places of that name only. */
+export async function findPlaces(text: string, view: Box, signal: AbortSignal, byName = false): Promise<FoundPlace[]> {
     const { searchPlaces } = await import('../../lib/planner/search/types');
-    const answer = await searchPlaces(text, { view, plan: { coordinates: [], km: [], days: [], points: [] } }, 6, signal);
+    const answer = await searchPlaces(text, { view, plan: { coordinates: [], km: [], days: [], points: [] } }, 6, signal, byName ? { type: 'place', name: text } : undefined);
     if (answer.type !== 'places') return [];
     return (answer.results ?? []).map(({ name, kind, lon, lat, city, region, west, south, east, north }) => ({
         name, kind, lon, lat, region: [city, region].filter(part => part && part !== name).join(', '),
