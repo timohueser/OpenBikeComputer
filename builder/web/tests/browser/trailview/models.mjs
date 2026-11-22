@@ -8,7 +8,7 @@
 // options of shoot.mjs (--tiles, --ground, --features); the place is a flat meadow of the Engelberg box. --before names
 // the folder of another run: its picture of the same name stands beside each one (today's model, for a change of
 // models). Writes DIR/index.html and the PNGs; the showroom of dressing.ts stands the models, its trees in their own
-// colours, as they have no ground to take the satellite's hue from.
+// colours, as it does not read the ground's colour to take the satellite's hue from.
 
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -28,6 +28,10 @@ const { values } = parseArgs({
         features: { type: 'string' },
     },
 });
+if (!['animals', 'trees'].includes(values.kind)) {
+    console.error(`--kind is animals or trees, not ${values.kind}`);
+    process.exit(2);
+}
 /** The showroom's middle, the eye's heading toward it, and the page; SHOW_SPACING and SHOW_TREE_M of dressing.ts. */
 const PLACE = [46.820416, 8.403045], HEADING = 160, WIDTH = 1600, HEIGHT = 640, SPACING = 2.3, TREE_M = 10;
 /** Tree species a section of the page, the dates of the views (summer and winter), and the size of a tree view. */
@@ -42,11 +46,11 @@ const ahead = ([lat, lon], d) => [lat + (d * Math.cos((HEADING * Math.PI) / 180)
 
 /**
  * A view of the showroom with `entries` in a row `width` metres wide, the eye far enough before it to see all of it
- * (`tan` is the tangent of half the view's width). The animals stand at PLACE; the eye of the taller trees stands
- * there, as the meadow is wider ahead.
+ * (`tan` is the tangent of half the view's width). The animals stand at PLACE; with `tall` the eye stands there, as the
+ * meadow is wider ahead.
  */
-function view(entries, width, { tier = 0, date = DATES.summer, eye = 1.6, pitch = -6, tan = 1.1, trees = false } = {}) {
-    const distance = Math.max(6, (0.5 * width) / tan), [from, row] = trees ? [PLACE, ahead(PLACE, distance)] : [ahead(PLACE, -distance), PLACE];
+function view(entries, width, { tier = 0, date = DATES.summer, eye = 1.6, pitch = -6, tan = 1.1, tall = false } = {}) {
+    const distance = Math.max(6, (0.5 * width) / tan), [from, row] = tall ? [PLACE, ahead(PLACE, distance)] : [ahead(PLACE, -distance), PLACE];
     return `?lat=${from[0].toFixed(7)}&lon=${from[1].toFixed(7)}&heading=${HEADING}&pitch=${pitch}&eye=${eye}&date=${date}&time=15:00&weather=sunny&showroom=${row.map(v => v.toFixed(7)).join(',')},${HEADING},${entries.join('|')},${tier}`;
 }
 
@@ -58,7 +62,7 @@ const groups = Array.from({ length: Math.ceil(species.length / GROUP) }, (_, g) 
 // A tree view stands one species' tiers: a row of 12 trees would be too small to judge in one picture.
 const views = trees
     ? species.flatMap(id => Object.entries(DATES).map(([season, date]) => ({
-        name: `${id}-${season}`, view: view([0, 1, 2].map(tier => `tree.${id}.${tier}.${Math.round(rooms[id])}`), 3.3 * rooms[id], { date, eye: 0.3 * TREE_M, pitch: 7, tan: (0.577 * TREE_VIEW[0]) / TREE_VIEW[1], trees: true }),
+        name: `${id}-${season}`, view: view([0, 1, 2].map(tier => `tree.${id}.${tier}.${Math.round(rooms[id])}`), 3.3 * rooms[id], { date, eye: 0.3 * TREE_M, pitch: 7, tan: (0.577 * TREE_VIEW[0]) / TREE_VIEW[1], tall: true }),
     })))
     : breeds.flatMap(([name, { height, coats, poses }]) => [0, 1].map(tier => ({ name: `${name}-${tier ? 'tier1' : 'near'}`, view: view([name], coats * poses * SPACING * height, { tier }) })));
 writeFileSync(join(values.out, 'views.json'), JSON.stringify(views));
