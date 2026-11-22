@@ -65,6 +65,7 @@ looks alive. A breed has one to four coats, and most animals of a group wear the
 ## A new model
 
 A new model or a change to a model is a change of look. The review page
-(`builder/web/tests/browser/trailview/models.mjs`) shows each model in TrailView's own light, near
+(`builder/web/tests/browser/trailview/models.mjs`) shows each animal in TrailView's own light, near
 and far, with its triangle and vertex counts against the budget, and the old model beside it. The
-owner approves the pictures before the change merges.
+owner approves the pictures before the change merges. The page covers the animals today; the other
+kinds join it when they move to the kit.
