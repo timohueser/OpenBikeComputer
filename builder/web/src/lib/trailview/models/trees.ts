@@ -294,10 +294,13 @@ function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Built {
             }
             continue;
         }
+        // A far tree keeps every other bough, its spray wide enough to fill the cone's outline.
+        if (lod === 2 && k % 2) continue;
+        const wide = lod === 2 ? 0.75 * r + 0.012 : 0.5 * r;
         // A leaf-shaped spray over the bough, from the trunk; its underside hangs in a curtain of two or three points.
-        const spray = soft(lathe(SPRAY, [6, 4, 3][lod], [7, 4, 2][lod]), 0.05, 4, seed + k);
+        const spray = soft(lathe(SPRAY, [6, 4, 4][lod], [7, 4, 2][lod]), 0.05, 4, seed + k);
         const hang = (q: number) => 2.4 + 1.6 * Math.cos(2 * Math.PI * 2.5 * q + k);
-        parts.push(paint(rounded(bend(spray, path, 0.02, 1, (x, y, q) => [0.5 * r * x, 0.1 * r * y * (y > 0 ? 1.5 : hang(q))]), 0.5), needles));
+        parts.push(paint(rounded(bend(spray, path, 0.02, 1, (x, y, q) => [wide * x, 0.1 * r * y * (y > 0 ? (lod === 2 ? 3 : 1.5) : hang(q))]), 0.5), needles));
     }
     // The leader stands over the top boughs.
     if (sways.length && !bare) parts.push(place(paint(soft(lathe([[0, 0], [1, 0.2], [0.55, 0.6], [0, 1]], sides >> 1, 4)), needles), { at: [0, 0, 0.82], scale: [0.03, 0.03, 0.18] }));
@@ -504,7 +507,8 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
         const bole = spec.rods && lod === 2 ? trunk({ ...spec, trunk: 1.4 * spec.trunk }, 0.35 * (cz + rz), lod, seed) : trunk(spec, spec.fork, lod, seed);
         return { geo: merge([bole, ...crown]), trunk: vertices([bole]), crown: lowest(crown) };
     }
-    const crown = spec.open ? puffs(count + (spec.pads && !lod ? 3 : 0), rand) : lumps(count, rand);
+    // A far crooked tree has a puff more, as it keeps its limbs.
+    const crown = spec.open ? puffs(count + (spec.pads && !lod ? 3 : 0) + (spec.crook && lod === 2 ? 1 : 0), rand) : lumps(count, rand);
     const parts: Geometry[] = [];
     // An open crown's trunk runs up into its top puff, which no limb reaches.
     const top = spec.open ? cz + 0.3 * rz : spec.fork + 0.3 * rz;
@@ -518,7 +522,7 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
         const out = stems > 1 ? v3(Math.cos(a), Math.sin(a), 0) : v3();
         const lean = out.clone().multiplyScalar(0.3).setZ(1).normalize();
         leaders.push({ out: out.clone(), foot: out.clone().multiplyScalar(1.2 * spec.trunk), lean });
-        parts.push(place(trunk(stout, top, lod, seed + s, spec.crook ? [5, 3, 1][lod] : 1), { at: out.multiplyScalar(1.2 * spec.trunk), turn: turnFromTo(UP, lean) }));
+        parts.push(place(trunk(stout, top, lod, seed + s, spec.crook ? [5, 3, 3][lod] : 1), { at: out.multiplyScalar(1.2 * spec.trunk), turn: turnFromTo(UP, lean) }));
     }
     // Where a limb towards `to` leaves the trunk at height z: the middle, or with `leaders` the stem on that side.
     const leave = (to: V, z: number) => {
@@ -579,15 +583,15 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
             k++;
         }
         // Limbs run from the fork into the outer lumps. An open crown keeps them a level further out,
-        // so its puffs never float.
-        if (spec.trunk && (lod === 0 || (spec.open && lod === 1))) {
+        // so its puffs never float, and a crooked one at every level, as its puffs stand far from the trunk.
+        if (spec.trunk && (lod === 0 || (spec.open && lod === 1) || spec.crook)) {
             for (const { at } of crown.slice(1)) {
                 const end = toTree(at.clone().multiplyScalar(0.8));
                 const from = leave(end, spec.stagger ? Math.max(spec.fork, end.z - 0.6 * Math.hypot(end.x, end.y)) : spec.fork);
                 if (spec.crook) {
                     // The limb leaves the trunk nearly level and turns up under its puff.
                     const knee = from.clone().lerp(end, 0.6).setZ(lerp(from.z, end.z, 0.25));
-                    parts.push(tube([from, knee, end], spec.trunk * 0.45, spec.trunk * 0.3, lod ? 4 : 6, bark));
+                    parts.push(tube(lod < 2 ? [from, knee, end] : [from, end], spec.trunk * 0.45, spec.trunk * 0.3, [6, 4, 3][lod], bark));
                 } else parts.push(limb(from.toArray(), end.toArray(), spec.trunk * 0.45, bark, 0, lod ? 4 : 6));
             }
         }

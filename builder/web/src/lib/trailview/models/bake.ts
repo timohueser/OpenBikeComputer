@@ -5,13 +5,13 @@ import { SEASONS, type Season } from '../rules/regions';
 import { SUMMER } from '../vegetation/phenology';
 import { ANIMALS } from './animals';
 import { geometry } from './flat';
-import { bareIn, tree, TREES } from './library';
+import { bareIn, buildsFar, tree, TREES } from './library';
 import type { FloatMesh, Models, Packed } from './model-file';
 import { encodeModels, pack } from './pack';
 import { plant, PLANTS } from './plant-library';
 import { rock } from './rocks';
 import { mesh, Sculpt } from './sculpt';
-import { lit, simplified, simplifierReady } from './simplify';
+import { lit, relit, simplified, simplifierReady } from './simplify';
 import { fits, tone } from './tone';
 import type { Grown, Lod } from './trees';
 
@@ -64,7 +64,7 @@ export async function bake(): Promise<Baked> {
             tones.push(matrix ?? null);
             crowns.push(!matrix || !fits(matrix, summer[0], near!, FIT) ? await file('tree', `tree-${id}-${season}`, [crown(id, season)]) : null);
         }
-        const leafy = treeModel(tiers(summer));
+        const leafy = treeModel(tiers(id, summer));
         summers.push(leafy.tiers[0].index.length / 3);
         models.trees[id] = { summer: await file('tree', `tree-${id}-summer`, [leafy]), keepsHeading: !!spec.keepsHeading, tones, crowns };
     }
@@ -101,13 +101,13 @@ export async function bake(): Promise<Baked> {
 /** A crown of a species' own in a season: bare crowns grow each tier from the tree, the others simplify tier 0. */
 function crown(id: string, season: Season): Packed {
     const grown = ([0, 1, 2] as Lod[]).map(lod => tree(id, season, lod));
-    return treeModel(bareIn(id, season) ? grown : tiers(grown));
+    return treeModel(bareIn(id, season) ? grown : tiers(id, grown));
 }
 
-/** Tier 0, and tiers 1 and 2 simplified from it, each with its own trunk. */
-function tiers([near, middle, far]: Grown[]): Grown[] {
+/** Tier 0, and tiers 1 and 2 simplified from it, each with its own trunk; a species of `buildsFar` grows tier 2, as bright as tier 0. */
+function tiers(id: string, [near, middle, far]: Grown[]): Grown[] {
     const want = lit(near);
-    return [near, simplified(near, middle, TRIANGLES[0], want), simplified(near, far, TRIANGLES[1], want)];
+    return [near, simplified(near, middle, TRIANGLES[0], want), buildsFar(id) ? relit(far, want) : simplified(near, far, TRIANGLES[1], want)];
 }
 
 /** A tree model, with its crown's lowest point at every tier. */

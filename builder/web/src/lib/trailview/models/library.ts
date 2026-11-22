@@ -17,3 +17,12 @@ export const bareIn = (id: string, season: Season) => {
     const spec = TREES[id];
     return (spec.form === 'conifer' ? spec.needles : spec.leaves)[season] === 'bare';
 };
+
+/**
+ * Whether a species builds the far tier of its leafy crown: its thin limbs or sprays are too small to
+ * simplify from the nearest tier, and would come apart.
+ */
+export const buildsFar = (id: string) => {
+    const spec = TREES[id];
+    return spec.form === 'conifer' ? !!spec.boughs : !!spec.crook;
+};

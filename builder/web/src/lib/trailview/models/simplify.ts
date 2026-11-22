@@ -28,8 +28,14 @@ export function simplified(near: Grown, own: Grown, triangles: number, want = li
         position: [...trunk(own.position), ...pick(near.position)], normal: [...trunk(own.normal), ...pick(near.normal)], color: [...trunk(own.color), ...pick(near.color)],
         index: [...trunkIndex, ...Array.from(index, v => at.get(v)!)], trunk: own.trunk, crown: near.crown,
     };
-    // Fewer triangles show the crown's lit and shaded sides in other shares: the crown's colours
-    // scale so that it draws as bright as tier 0, seen from the side.
+    return relit(far, want);
+}
+
+/**
+ * Fewer triangles show the crown's lit and shaded sides in other shares: scales the crown's colours of
+ * `far` so that it draws as bright as `want`, seen from the side.
+ */
+export function relit(far: Grown, want: number[]): Grown {
     const got = lit(far);
     for (let k = 3 * far.trunk; k < far.color.length; k++) far.color[k] *= want[k % 3] / Math.max(got[k % 3], 1e-6);
     return far;
