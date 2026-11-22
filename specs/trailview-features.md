@@ -678,11 +678,13 @@ centimetre). The bake reads the heights of the road solver here.
   than `room_join_m` close. Where the spaces lie apart all along, the run changes nothing. Else the two lie side by
   side where their axes lead one way or against each other within `pair_max_deg` at more than half of its metres and
   do not cross. Two that lie side by side are over and under by height where their least rise leaves the lower its
-  group's `least_height_m`, `shell_m` and `slab_m`, else one room. Two that do not are over and under by the floor.
+  group's `least_height_m`, `shell_m` and `slab_m`, else one room. Two that do not are over and under by the floor,
+  but where their run reaches a vertex of both where one of them ends (a fork, or a tube that ends on the side of
+  another): they meet there at one level, and the run changes nothing.
 - The ends of each one-room run move: within `free_max_m` of an opening of one of its arms, to the openings where
   both arms open on that side, else in, to `free_max_m` from that opening. Each arm is cut where a run ends off its
-  openings, and a cut inside a run cuts the other arm at its foot, until no cut is new. The stretches between the cuts
-  are lanes, and the lanes that a run joins are one room.
+  openings, and a cut inside a run cuts the other arm at its foot, until no cut is new; a cut within `vertex_gap_m` of
+  another is that cut. The stretches between the cuts are lanes, and the lanes that a run joins are one room.
 - The base of a room is its widest lane, then the lowest id. Its centre line runs in the middle between the
   outermost edges of its lanes: on the line at each end, and at each vertex of the base and the foot of each vertex
   of another lane, its vertices `vertex_gap_m` apart at least. At a vertex each lane has a place on the ring's line:
@@ -704,8 +706,8 @@ openings, then the farthest in along the group's way. Those openings move in ont
 its heading; one whose way does not reach the line, or that lies past it, stays. The others of the group, with each
 that stays, form the next group.
 
-The bake counts, on the final floors, halves and heights, each two rooms but those of one seam that still come
-nearer than a wall and do not lie apart (`rooms_that_touch`, with places).
+The bake counts, on the final floors, halves and heights, each two rooms that draw, but those of one seam, that still
+come nearer than a wall and do not lie apart (`rooms_that_touch`, with places).
 
 #### The floor of a tube
 
