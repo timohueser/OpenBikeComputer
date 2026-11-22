@@ -289,8 +289,8 @@
             {#each row.to as { slot, labels } (slot.id)}
                 <span class="to"><span class="slot"><Icon name={slot.icon} size={13} />{slot.label}</span><b>{labels.join(' · ')}</b></span>
             {/each}
-            <!-- With words in progress, Enter also reads them. -->
-            {#if !fragment}<kbd>Enter</kbd>{/if}
+            <!-- Enter does what this row does only with no words in progress and no other row chosen. -->
+            {#if !fragment && active <= 0}<kbd>Enter</kbd>{/if}
         {:else}
             <Icon name={row.icon} size={16} />
             <span class="what">{#if row.typed}{row.text.slice(0, row.typed)}<b>{row.text.slice(row.typed)}</b>{:else}{row.text}{/if}{#if row.about}<i>{row.about}</i>{/if}</span>

@@ -209,6 +209,7 @@
         left: 100%;
         width: 76px;
         background: inherit;
+        transition: inherit;
     }
     .slot:hover:not(:disabled) {
         background: var(--parchment);
