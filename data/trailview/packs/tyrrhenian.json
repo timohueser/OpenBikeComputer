@@ -36,7 +36,7 @@
   "fan-palm": {},
   "branched-asphodel": { "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true },
   "prickly-pear": { "latin": "Opuntia ficus-indica", "on": ["shrub", "bare"], "height": [1, 2.5], "share": 0.02, "clumped": true },
-  "century-plant": { "model": "agave", "latin": "Agave americana", "on": ["shrub", "bare"], "height": [1.5, 5], "share": 0.01 }
+  "century-plant": { "model": "agave", "latin": "Agave americana", "on": ["shrub", "bare"], "share": 0.01 }
  },
  "herds": {
   "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },

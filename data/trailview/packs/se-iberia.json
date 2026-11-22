@@ -25,7 +25,7 @@
   "fan-palm": {},
   "albaida": { "model": "tabaiba", "latin": "Anthyllis cytisoides", "on": ["shrub", "bare"], "height": [0.4, 1.0], "share": 0.12 },
   "prickly-pear": { "latin": "Opuntia ficus-indica", "on": ["shrub", "bare"], "height": [1, 2.5], "share": 0.02, "clumped": true },
-  "century-plant": { "model": "agave", "latin": "Agave americana", "on": ["shrub", "bare"], "height": [1.5, 5], "share": 0.01 }
+  "century-plant": { "model": "agave", "latin": "Agave americana", "on": ["shrub", "bare"], "share": 0.01 }
  },
  "herds": {
   "goat": { "groups": 2, "size": [10, 40], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },

@@ -14,7 +14,7 @@
   "aulaga": { "model": "retama", "latin": "Launaea arborescens", "on": ["bare", "grass", "shrub"], "height": [0.4, 1.0], "share": 0.06 },
   "tabaiba": { "on": ["shrub", "bare"], "share": 0.04 },
   "prickly-pear": { "latin": "Opuntia ficus-indica", "on": ["shrub", "bare"], "height": [1, 2.5], "share": 0.02, "clumped": true },
-  "century-plant": { "model": "agave", "latin": "Agave americana", "on": ["shrub", "bare"], "height": [1.5, 5], "share": 0.01 },
+  "century-plant": { "model": "agave", "latin": "Agave americana", "on": ["shrub", "bare"], "share": 0.01 },
   "grapevine": { "model": "garrigue", "latin": "Vitis vinifera", "on": ["crop"], "height": [0.4, 1.0], "share": 0.1 }
  },
  "herds": {
