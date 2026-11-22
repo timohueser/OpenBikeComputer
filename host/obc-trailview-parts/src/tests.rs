@@ -1260,7 +1260,7 @@ fn seam_at(east: f64, north: f64, holes: &[(f64, f64, f64)]) -> End {
 }
 
 #[test]
-fn a_cap_and_a_hole_narrower_than_its_tube_are_closed() {
+fn a_cap_a_door_and_a_hole_narrower_than_its_tube_are_closed() {
     let rules = Rules::embedded();
     let line = [[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]];
     // A tube 20 m east from a head to a cap: the room ends in the hill.
@@ -1274,7 +1274,22 @@ fn a_cap_and_a_hole_narrower_than_its_tube_are_closed() {
     ends.push(free);
     let mut chords = lone(&line, 5.5, "arch seam");
     chords.extend(lone(&[[20.0, 0.3], [22.0, 0.0], [40.0, 0.0]], 5.0, "seam free"));
-    for (name, (ends, chords)) in [("a cap", cap), ("a tapered hole", (ends, chords))] {
+    // A room of a road and a footway 1 m up at its side, whose footway ends on the seam's line with a door: the road
+    // goes on alone through its hole.
+    let road = (-1.0, 0.0, "primary", 4.2, 3.5);
+    let (mut door_ends, mut door_chords) = seamed(&[road, (4.6, 1.0, "footway", 1.6, 1.0)], (6.2, 7.0), 0.0);
+    door_ends.truncate(3);
+    door_chords.truncate(4);
+    let t = [("half", "6.2 3.9"), ("height", "7 5"), ("across", "0 -1.3"), ("up", "0 0"), ("door", "4.9 1.3 1 2.5")];
+    let mut tags = door_ends[1].clone();
+    let mut record: Tags =
+        [("part", "seam"), ("heading", "0")].iter().chain(&t).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    record.retain(|_, _| true);
+    tags = End::from_tags(tags.at, tags.z, &record, rules).unwrap();
+    door_ends[1] = tags;
+    for (name, (ends, chords)) in
+        [("a cap", cap), ("a tapered hole", (ends, chords)), ("a door", (door_ends, door_chords))]
+    {
         let (open, crowded) = not_closed(&ends, &chords);
         assert!(open.is_empty(), "{name}: {} open edges, the first {:?}", open.len(), &open[..open.len().min(4)]);
         assert!(

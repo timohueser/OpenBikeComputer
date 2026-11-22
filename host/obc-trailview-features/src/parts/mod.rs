@@ -549,7 +549,7 @@ struct Faults {
 
 /// A hole lies at most this far from its record's point: the tiles' buffer (`BUFFER_M`) less the longest chord and a
 /// metre for the rounding and the reach, so a tile that owns a chord of a hole holds its record and the reverse.
-const JOINT_MAX_M: f64 = crate::tiles::BUFFER_M - 10.0 - 1.0;
+pub(crate) const JOINT_MAX_M: f64 = crate::tiles::BUFFER_M - 10.0 - 1.0;
 
 /// The features of the rooms that draw and the tag `parts` of their tunnel ways, and the joints that they would not
 /// hold whole: a head with a hole of a room that does not draw, a joint with a hole more than `JOINT_MAX_M` from its
@@ -706,6 +706,17 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         t.insert("heading".into(), format!("{}", (seam.dir[1].atan2(seam.dir[0]) * 1000.0).round() / 1000.0));
         for (k, name) in ["across", "up", "half", "height"].into_iter().enumerate() {
             t.insert(name.into(), row(k));
+        }
+        // Per lane that ends on the line, its door: across, half-width, its floor over the room's, its bore.
+        let doors: Vec<String> = (seam.doors.iter())
+            .filter_map(|&(across, half, arm)| {
+                let k = rooms.lanes[pr].iter().position(|l| l.arm == arm)?;
+                let up = fp.lanes.get(k)?.0[ip] - fp.f[ip];
+                Some([across, half, up, rooms.arms[arm].height].map(num).join(" "))
+            })
+            .collect();
+        if !doors.is_empty() {
+            t.insert("door".into(), doors.join(" "));
         }
         let part = Part { outer: false, points: vec![at], z: Some(vec![fp.f[ip]]), plan: None };
         features.push(("tunnel-end", t, part));

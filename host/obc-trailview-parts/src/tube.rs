@@ -429,6 +429,17 @@ impl<'a> Net<'a> {
             sides.extend([on[0].0[0], on[on.len() - 1].0[0]].map(|x| sp * x));
             outlines.push(on);
         }
+        // Per door its outline from the floor at its right side up to its top and down its left side, its top under the
+        // spring of the room before the line.
+        let sp_parent = spring(self, chord.section, chord.height);
+        for door in &self.records[r].doors {
+            let (lo, hi, top) =
+                (door.across - door.half, door.across + door.half, (door.up + door.height).min(sp_parent));
+            let on: Vec<(Corner, [f64; 3])> =
+                [[lo, 0.0], [lo, top], [hi, top], [hi, 0.0]].map(|q| (q, ring.at([sp * q[0], q[1]]))).to_vec();
+            sides.extend([lo, hi].map(|x| sp * x));
+            outlines.push(on);
+        }
         // The parent's floor, with a corner where a hole's side stands on it.
         let mut floor: Vec<Corner> = Vec::new();
         for (x0, x1, top) in floor_pieces(self, cp, kp) {
@@ -467,7 +478,8 @@ impl<'a> Net<'a> {
                 }
             }
         }
-        Some(SeamCut { half: self.half_at(cp, kp), floor, top, holes: outlines })
+        let doors = (0..outlines.len()).map(|h| h + 1 >= list.len()).collect();
+        Some(SeamCut { half: self.half_at(cp, kp), floor, top, holes: outlines, doors })
     }
 
     /// The ways that enter record r's head: per hole from the right, per lane of its chord there from the right of
@@ -510,6 +522,8 @@ pub struct SeamCut {
     pub floor: Vec<(Corner, [f64; 3])>,
     pub top: Vec<(Corner, [f64; 3])>,
     pub holes: Vec<Vec<(Corner, [f64; 3])>>,
+    /// Per hole whether it is a door, which a dark face closes.
+    pub doors: Vec<bool>,
 }
 
 /// The floor of lane i of a chord at its vertex k across: per piece from the right, its metres across and the height of

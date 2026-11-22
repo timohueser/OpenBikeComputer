@@ -331,10 +331,14 @@ pub(crate) fn decide(
         }
     };
     // The pairs, nearest first, each end in one pair at most: two hill ends of one family a wall apart across, each of
-    // a room that draws.
+    // a room that draws, their axes within `JOINT_MAX_M` across: the tiles' buffer holds a head and its holes' tubes.
     let mut mate: Vec<Option<usize>> = vec![None; n];
     let is_hill = |i: usize| hill.contains(&i);
-    for x in &near {
+    let within = |x: &&Near| {
+        let (o, q) = (&openings[x.a], &openings[x.b]);
+        along_dir(o.p, q.p, left_of(o.dir)).abs() <= super::JOINT_MAX_M
+    };
+    for x in near.iter().filter(within) {
         let (a, c) = (x.a, x.b);
         let (ta, tc) = (openings[a].tube, openings[c].tube);
         if mate[a].is_some() || mate[c].is_some() || !draws[ta] || !draws[tc] {
@@ -530,7 +534,7 @@ pub(crate) fn decide(
         let q = super::offset(o.p, left_of(o.dir), x);
         let own: Vec<usize> = list.iter().map(|&k| openings[k].tube).collect();
         let room = (axes.near(q, usize::MAX, widest + wall).iter())
-            .any(|f| !own.contains(&f.tube) && f.d < half[f.tube] + wall - 0.01);
+            .any(|f| !f.past && !own.contains(&f.tube) && f.d < half[f.tube] + wall - 0.01);
         let head = (0..n).filter(|k| !list.contains(k) && !kinds[*k].is_empty()).any(|k| {
             let p = &openings[k];
             along_dir(p.p, q, p.dir).abs() <= design.face_m

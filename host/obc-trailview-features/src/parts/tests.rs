@@ -596,6 +596,7 @@ fn layouts() -> Vec<(&'static str, Case, u64, u64)> {
     let t = 5f64.to_radians().tan();
     let line = [[0.0, 7.0], [60.0, 7.0], [130.0, 7.0 + 70.0 * t], [200.0, 7.0 + 140.0 * t]];
     part5.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[500.0; 4])]));
+    let (rail, _) = rail_over_rail();
     vec![
         ("twins that overlap", pair(5.0, 0.0, 500.0), 1, 0),
         ("floors 3 m apart", pair(5.0, 0.0, 503.0), 1, 0),
@@ -604,10 +605,86 @@ fn layouts() -> Vec<(&'static str, Case, u64, u64)> {
         ("a staggered start of 3 m", pair(5.0, 3.0, 500.0), 1, 0),
         ("a staggered start of 60 m", pair(5.0, 60.0, 500.0), 1, 0),
         ("a footway at 3 degrees beside a road", footway, 1, 1),
-        ("one that turns away", away, 1, 1),
+        ("one that turns away", away, 1, 2),
         ("twins that part at 5 degrees", part5, 1, 1),
+        ("a footway that turns away", path_turns().0, 1, 2),
+        ("one track 12 m over the other", rail, 2, 2),
         ("two that cross", cross, 0, 0),
     ]
+}
+
+const RAIL: [(&str, &str); 2] = [("railway", "rail"), ("tunnel", "yes")];
+
+/// A road tunnel 200 m east and a footway at the numbers of stagger-path (46.92647, 8.58401): 4.7 m beside the road's
+/// axis at the openings, 3.8 m 29 m in, then turned 40 and 60 degrees away to its own opening; and the footway's id.
+fn path_turns() -> (Case, u32) {
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let (c40, s40, c60, s60) = (40f64.to_radians().cos(), 40f64.to_radians().sin(), 0.5, 60f64.to_radians().sin());
+    let turn = [32.0 + 5.0 * c40, 3.8 + 5.0 * s40];
+    let line = [
+        [0.0, 4.7],
+        [29.0, 3.8],
+        turn,
+        [turn[0] + 20.0 * c60, turn[1] + 20.0 * s60],
+        [turn[0] + 40.0 * c60, turn[1] + 40.0 * s60],
+    ];
+    let line = [line[0], [32.0, 3.8], line[2], line[3], line[4]];
+    case.ways.push(("tunnel", tags(&FOOT), vec![part(&line, &[500.0; 5])]));
+    (case, 1)
+}
+
+/// Two rail tunnels 200 m east, their axes 4 m apart, the second level with the first at its openings and 12 m over it
+/// in the middle; and the second's id.
+fn rail_over_rail() -> (Case, u32) {
+    let mut case = Case::default();
+    case.tunnel(&RAIL, (0.0, 200.0), 0.0);
+    let line = [[0.0, 4.0], [50.0, 4.0], [100.0, 4.0], [150.0, 4.0], [200.0, 4.0]];
+    case.ways.push(("tunnel", tags(&RAIL), vec![part(&line, &[500.0, 506.0, 512.0, 506.0, 500.0])]));
+    (case, 1)
+}
+
+#[test]
+fn a_lane_that_turns_away_ends_at_a_door() {
+    let hill = ridge(200.0, 1.0);
+    let placed = path_turns().0.place(&site(&hill, &[], false), &mut Vec::new());
+    let m = &placed.metrics;
+    let rooms = &m["rooms"];
+    assert_eq!(
+        (rooms["rooms"].as_u64(), rooms["caps"].as_u64(), rooms["doors"].as_u64()),
+        (Some(1), Some(1), Some(1)),
+        "{m}"
+    );
+    assert!(rooms["lanes_in_a_wall_m"].as_f64().unwrap() < 5.0, "{m}");
+    assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "{}", m["rooms_that_touch_places"]);
+    let half = |tags: &[(&str, &str)]| {
+        widths().way("tunnel", &tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), false).half_m
+    };
+    // The room is as wide as its two lanes: the road and the footway at its side with its way's width, on a line within
+    // `pair_max_deg` of it.
+    let most = half(&ROAD) + 0.6 + half(&FOOT) / 25f64.to_radians().cos() + 0.01;
+    for t in records(&placed, "tunnel-tube").into_iter().chain(records(&placed, "tunnel-end")) {
+        let widest = t["half"].split(' ').map(|v| v.parse::<f64>().unwrap()).fold(0.0, f64::max);
+        assert!(widest <= most, "a record {widest} m wide: {t:?}");
+    }
+    // The seam at the turn has the road's hole and the footway's door; the footway's own room starts with a cap.
+    let seams: Vec<&Tags> = records(&placed, "tunnel-end").into_iter().filter(|t| t["part"] == "seam").collect();
+    let turn = seams.iter().find(|t| t.contains_key("door")).expect("the seam with the door");
+    assert_eq!((turn["across"].split(' ').count(), turn["door"].split(' ').count()), (2, 4));
+    assert!(seams.iter().any(|t| !t["across"].contains(' ')), "the cap: {seams:?}");
+}
+
+#[test]
+fn a_track_that_climbs_over_the_other_is_its_own_tunnel() {
+    let hill = ridge(200.0, 1.0);
+    let placed = rail_over_rail().0.place(&site(&hill, &[], false), &mut Vec::new());
+    let m = &placed.metrics;
+    assert_eq!((m["rooms"]["rooms"].as_u64(), m["rooms"]["seams"].as_u64()), (Some(2), Some(2)), "{m}");
+    assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "{}", m["rooms_that_touch_places"]);
+    // No room has a step past the rail's least height and a roof, and the rise of 10 m of floor (0.12 m per metre).
+    let steps = m["largest_step_places"].as_str().unwrap();
+    let most = steps.split("; ").filter_map(|p| p.split(' ').nth(1)?.parse::<f64>().ok()).fold(0.0, f64::max);
+    assert!(most > 3.0 && most < 4.8 + 1.0 + 1.2, "steps {steps}");
 }
 
 #[test]
@@ -634,7 +711,7 @@ fn a_seams_record_is_whole() {
     let ground = site(&hill, &[], false);
     let number = |t: &Tags, k: &str| t[k].split(' ').map(|v| v.parse::<f64>().unwrap()).collect::<Vec<f64>>();
     let tile = distance(world(8.4, 46.8), [world(8.4, 46.8)[0] + 8.0 / (1u64 << 30) as f64, world(8.4, 46.8)[1]]);
-    for (name, case, _, seams) in layouts().into_iter().filter(|l| l.0 != "one that turns away") {
+    for (name, case, _, seams) in layouts() {
         let placed = case.place(&ground, &mut Vec::new());
         let ends = records(&placed, "tunnel-end");
         assert_eq!(ends.iter().filter(|t| t["part"] == "seam").count() as u64, seams, "{name}: {}", placed.metrics);
@@ -828,7 +905,7 @@ fn what_cannot_draw_stays_out() {
 #[test]
 fn the_builder_reads_each_joint_back_from_the_tiles() {
     let edge = tile_edge_east();
-    for (name, _, _, _) in layouts().into_iter().filter(|l| l.0 != "one that turns away") {
+    for (name, _, _, _) in layouts() {
         // A tile edge through each 20 m of the layout, its heads and its seams.
         for at in (0..=10).map(|k| -1.0 + 20.0 * f64::from(k)) {
             let shift = edge - at;

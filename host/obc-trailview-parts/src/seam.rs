@@ -1,7 +1,7 @@
 //! The face of a seam: where a room goes on as other rooms, one face in the plane of the line, seen from the room
 //! before it, from that room's floor up to its outline, with a hole per room behind the line. Its corners are those of
 //! the rings that meet it (`Net::seam_cut`), so it shares each edge with a face of a room. A cap, a seam with no room
-//! behind it, is dark, as a closed end is.
+//! behind it, is dark, as a closed end is; so is a door, where a lane of the room before the line ends on it.
 
 use crate::mesh::{flagged, flat, Builder, Corner, BORE};
 use crate::tube::Net;
@@ -25,20 +25,20 @@ pub fn face<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize) {
     let into = net.records[r].way_in();
     let out = flat([-into[0], -into[1]]);
     let (floor, top) = (&cut.floor, &cut.top);
-    let mut holes: Vec<&Vec<At>> = cut.holes.iter().collect();
-    holes.sort_by(|a, z| a[0].0[0].total_cmp(&z[0].0[0]));
+    let mut holes: Vec<(&Vec<At>, bool)> = cut.holes.iter().zip(cut.doors.iter().copied()).collect();
+    holes.sort_by(|a, z| a.0[0].0[0].total_cmp(&z.0[0].0[0]));
     let within = |list: &[At], lo: f64, hi: f64| {
         list.iter().copied().filter(|q| q.0[0] >= lo && q.0[0] <= hi).collect::<Vec<At>>()
     };
-    let mut regions: Vec<Vec<At>> = Vec::new();
+    let mut regions: Vec<(Vec<At>, u32)> = Vec::new();
     // Between the right wall or a hole's left side and the next hole's right side or the left wall: the floor, up the
     // hole's side, back along the outline, down the side before.
     let mut before: Option<&Vec<At>> = None;
     let mut from = floor[0].0[0];
     for hole in holes.iter().copied().map(Some).chain([None]) {
-        let to = hole.map_or(floor[floor.len() - 1].0[0], |h| h[0].0[0]);
+        let to = hole.map_or(floor[floor.len() - 1].0[0], |h| h.0[0].0[0]);
         let mut poly = within(floor, from, to);
-        if let Some(h) = hole {
+        if let Some((h, _)) = hole {
             poly.extend(h.iter().copied().skip(1).take_while(|q| q.0[0] == to));
         }
         let mut over = within(top, from, to);
@@ -49,19 +49,25 @@ pub fn face<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize) {
                 h.iter().rev().copied().skip(1).take_while(|q| q.0[0] == from).collect::<Vec<At>>().into_iter().rev(),
             );
         }
-        regions.push(poly);
-        // Over the hole: its arch from spring to spring, back along the outline.
-        if let Some(h) = hole {
+        regions.push((poly, colour));
+        // Over the hole: its arch from spring to spring, back along the outline. A door is dark: the floor under it,
+        // up its side, along its top and down.
+        if let Some((h, door)) = hole {
             let (lo, hi) = (h[0].0[0], h[h.len() - 1].0[0]);
             let mut poly: Vec<At> = h[1..h.len() - 1].to_vec();
             let mut over = within(top, lo, hi);
             over.reverse();
             poly.extend(over);
-            regions.push(poly);
+            regions.push((poly, colour));
+            if door {
+                let mut dark = within(floor, lo, hi);
+                dark.extend(h[1..h.len() - 1].iter().rev());
+                regions.push((dark, inside.void));
+            }
             (before, from) = (Some(h), hi);
         }
     }
-    for mut poly in regions {
+    for (mut poly, colour) in regions {
         poly.dedup_by(|a, z| a.0 == z.0);
         while poly.len() > 1 && poly[0].0 == poly[poly.len() - 1].0 {
             poly.pop();

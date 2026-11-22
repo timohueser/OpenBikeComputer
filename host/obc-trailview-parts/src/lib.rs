@@ -119,7 +119,7 @@ fn section(tags: &Tags) -> Result<Section, String> {
 /// A `tunnel-end` record (`specs/trailview-features.md`, Tunnel parts): a line with holes, its point on the axis of
 /// its first hole and the floor there, and its numbers in metres over that floor. A seam's first hole is the room on
 /// its side of the line, whose section holds the others; its heading leads from that room into them. A seam of one
-/// hole is a cap: the room ends there in the hill.
+/// hole is a cap: the room ends there in the hill. A seam's door is a lane of the room before it that ends on its line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct End {
     pub at: [f64; 2],
@@ -138,6 +138,18 @@ pub struct End {
     pub foot: f64,
     /// The ways that enter the head: per hole from the right, per lane of its tube from the right.
     pub ways: Vec<Way>,
+    /// Of a seam, where a lane of the room before the line ends on it.
+    pub doors: Vec<Door>,
+}
+
+/// Where a lane of the room before a seam ends on its line: the metres to the left of the record's point to its middle,
+/// its half-width, and its floor and its height over the record's floor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Door {
+    pub across: f64,
+    pub half: f64,
+    pub up: f64,
+    pub height: f64,
 }
 
 /// A hole of a line: the metres to the left of the record's point to its axis and its floor over the record's, its
@@ -187,6 +199,11 @@ impl End {
                 .collect();
             let (left, right, ways) = (Vec::new(), Vec::new(), Vec::new());
             let heading = number(tags, "heading")?;
+            let door = if tags.contains_key("door") { row(tags, "door")? } else { Vec::new() };
+            if door.len() % 4 != 0 {
+                return Err("tag door: not four values per door".into());
+            }
+            let doors = door.chunks(4).map(|d| Door { across: d[0], half: d[1], up: d[2], height: d[3] }).collect();
             return Ok(End {
                 at,
                 z,
@@ -200,6 +217,7 @@ impl End {
                 right,
                 foot: 0.0,
                 ways,
+                doors,
             });
         }
         let look = tag(tags, "look")?;
@@ -255,6 +273,7 @@ impl End {
             right: if walls { row(tags, "right")? } else { Vec::new() },
             foot: number(tags, "foot")?,
             ways,
+            doors: Vec::new(),
         })
     }
 
