@@ -1,4 +1,4 @@
-<!-- Getting there: a line from the start point through the ways to travel that the rider ticks, Car, Train (later) and
+<!-- The panel of "From", getting there: a line from the start point through the ways to travel that the rider ticks, Car, Train (later) and
      Lifts, to one walk to the route. With no start point every hike of the map view counts, and only Lifts shows: it adds
      the lift shapes. A pinned car park or top station is the only start. The start point is picked on the map or comes
      from the browser. -->
@@ -44,8 +44,7 @@
         : query.car || query.lift ? 'The last part, to the route' : 'From your start to the route');
 </script>
 
-<section>
-    <div class="head"><h3>Getting there</h3></div>
+<div class="from">
     <ol class="journey" class:alone={!from}>
         <li class="leg start">
             {#if query.pin}
@@ -129,9 +128,23 @@
             <li class="leg end"><div class="leg-head"><span class="node ring"></span><span></span><span class="label">The route</span></div></li>
         {/if}
     </ol>
-</section>
+</div>
 
 <style>
+    .from {
+        width: 340px;
+        max-width: 100%;
+        padding: 14px 14px 8px;
+    }
+    .hint {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        margin: 0;
+        color: var(--ink-soft);
+        font-size: 13px;
+        line-height: 1.4;
+    }
     .journey {
         display: flex;
         flex-direction: column;

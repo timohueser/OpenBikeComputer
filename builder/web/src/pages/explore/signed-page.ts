@@ -6,7 +6,7 @@ import type { Box } from '../../lib/planner/route-catalog';
 import { decodeCoordinates } from '../../lib/planner/route-answer';
 import { longTrailId, type CatalogRecord, type TrailPart } from '../../lib/planner/signed-routes';
 import { ROUTES } from '../../lib/routes';
-import type { Chips } from '../routes/filter';
+import type { Bike } from '../../lib/library/records';
 
 /** `#/signed/<cell>/<id>` with the first cell of the record that the release covers: `cells` can name a cell outside the
  * grid, which has no file. Undefined when the release covers none. */
@@ -25,14 +25,16 @@ export function readAddress(address: string): { cell: string; zoom: number; box:
     return { cell: match[1], zoom, box: [x / n * 360 - 180, latitude(y + 1), (x + 1) / n * 360 - 180, latitude(y)], id: Number(match[5]) };
 }
 
-/** The Explore state that shows `record`: the view of its line, the bike of its kind and its id. Explore decides the tab and
- * the card. */
-export function exploreAt(record: CatalogRecord): { chips: Chips; view?: Box; show: number } {
-    const bike = record.kind === 'mtb' ? 'mtb' : record.kind === 'bicycle' ? 'touring' : 'hiking';
+/** The bike of the kind of a record. */
+export const bikeOf = (record: CatalogRecord): Bike => record.kind === 'mtb' ? 'mtb' : record.kind === 'bicycle' ? 'touring' : 'hiking';
+
+/** The Explore state that shows `record`: the view of its line and, for a hike, its id. Explore searches hikes only, so a
+ * bike route opens no card. Explore decides the tab and the card. */
+export function exploreAt(record: CatalogRecord): { view?: Box; show?: number } {
     const points = decodeCoordinates(record.line_udeg ?? []);
     const lons = points.map(point => point[0]), lats = points.map(point => point[1]);
     const view: Box | undefined = points.length ? [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)] : undefined;
-    return { chips: { bike }, ...view ? { view } : {}, show: record.id };
+    return { ...view ? { view } : {}, ...bikeOf(record) === 'hiking' ? { show: record.id } : {} };
 }
 
 /** Words that name a part of a route, in the languages of the catalog. */

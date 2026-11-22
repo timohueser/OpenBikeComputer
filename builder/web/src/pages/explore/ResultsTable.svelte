@@ -1,5 +1,5 @@
-<!-- The results of the day-hike search under the map: a line with the count and what the search holds, a table that sorts
-     by a click on a column header, a row that opens in place, and for an empty list the changes that help. -->
+<!-- The results of the day-hike search under the map: the count, a table that sorts by a click on a column header, a row
+     that opens in place, and for an empty list the changes that help. -->
 <script lang="ts">
     import { tick, untrack } from 'svelte';
     import { on } from 'svelte/events';
@@ -14,7 +14,7 @@
     import ShapeIcon from './ShapeIcon.svelte';
     import { kindName } from './SignedCard.svelte';
     import SignedPicture from './SignedPicture.svelte';
-    import { accessSteps, accessText, hikes, placeName, queryLine, SHAPE_WORDS, shapeText, snowText, suggestionText, wishIcon, wishLabel } from './words';
+    import { accessSteps, accessText, hikes, placeName, SHAPE_WORDS, shapeText, snowText, suggestionText, wishIcon, wishLabel } from './words';
 
     let { rows, note, waiting, none, query, sort, opened, suggestions, place, itemOf, linkOf, oncover, onsort, onopen, onquery, onreset, onplan, onretry }: {
         /** In their order; undefined while there is no list, and `note` says why. */
@@ -109,7 +109,6 @@
     {#if rows}
         <div class="top">
             <h2 class="count" aria-live="polite">{hikes(rows.length)}</h2>
-            <p class="query">{#each queryLine(query, place) as part, i (i)}{#if typeof part === 'string'}{part}{:else}<b>{part.strong}</b>{/if}{/each}.</p>
         </div>
     {:else}
         <p class="top note" aria-live="polite">{note}{#if onretry}{' '}<button type="button" class="retry" onclick={onretry}>Retry</button>{/if}</p>
@@ -253,19 +252,6 @@
         font-size: 15px;
         font-weight: 700;
         white-space: nowrap;
-    }
-    .query {
-        min-width: 0;
-        margin: 0;
-        overflow: hidden;
-        color: var(--ink-soft);
-        font-size: 13px;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-    .query b {
-        color: var(--ink);
-        font-weight: 600;
     }
     .note {
         color: var(--ink-soft);
