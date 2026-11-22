@@ -653,16 +653,20 @@ change of `BUILT` bakes the layer again.
 
 Where the rooms of two tubes overlap, they are one room. For two tubes at a point of one's axis, `d` is the distance to
 the other's axis, square to its chord, with the foot between the other's two ends. They are at one level where their
-floors lie at most half their two heights apart; at one level they meet where `d` is less than their two halves and
-two `shell_m`, and the point lies inside the other where `d` is at most the other's `half`.
+heights lie at most half their two heights apart: for rungs 2 and 5 the heights of the road solver, which the bake
+knows before the floors; for the vertices the floors. At one level they meet where `d` is less than their two halves
+and two `shell_m`, and the point lies inside the other where `d` is at most the other's `half`.
 
 - A chain runs in a wider one (a larger `half`; the widest first, then the lower id) where its axis lies inside it at
   more than half of its metres from opening to opening (from a chain end where an end has no opening), read every
-  metre: rung 2. The wider `half` grows to the largest `d` there plus the other way's half-width and the wider margin.
-- Two openings whose chains meet at the opening farther in are a pair (rung 5).
-- Where the shells of two chains with a part at both ends start or stop meeting between their openings, each chain has
-  a vertex there, found to a centimetre. The device cuts a chord at the middle only where both its ends meet the
-  other tube.
+  metre, and each of its openings lies in the wider one's room or within that `half` of one of its openings: rung 2.
+  The wider `half` grows to the largest `d` there plus the other way's half-width and the wider margin.
+- Two openings whose chains meet at the opening farther in are a pair (rung 5). Any other opening whose chain meets
+  that of an opening farther in moves onto that frame line too, as the nearer opening of a pair does, and takes its
+  heading; an opening of a pair keeps its pair's line.
+- Two chains with a part at both ends have a vertex where their shells start or stop meeting between their openings
+  (found to a centimetre). These vertices keep `vertex_gap_m` as the others do. The device cuts a chord at the
+  middle where its middle meets the other tube, split at the foot of each vertex of the other.
 
 #### The floor of a tube
 
