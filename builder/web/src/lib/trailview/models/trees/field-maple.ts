@@ -7,6 +7,9 @@ export default {
   // A small, dense, round crown low on a short bole, often in a hedge.
   fork: 0.2,
   crown: [0.54, 0.46, 0.44, 0.42],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.2 + 0.8 * t)) ** 0.5,
+  clumps: 12,
+  billows: 6,
   trunk: 0.045,
   flare: 1.4,
   // Grey-brown bark in corky ridges.
