@@ -192,7 +192,10 @@ export interface Grown extends Geometry { trunk: number; crown: number }
 
 export function grow(spec: Tree, season: Season, lod: Lod, seed: number): Grown {
     const { geo, crown, trunk } = spec.form === 'conifer' ? conifer(spec, season, lod, seed) : broadleaf(spec, season, lod, seed);
-    const top = Math.max(...geo.position.filter((_, i) => i % 3 === 2));
+    // No crown reaches under the ground: low boughs and lumps that would lie on it. Their normals stay, so they light as before.
+    const p = geo.position;
+    for (let k = 3 * trunk + 2; k < p.length; k += 3) p[k] = Math.max(0, p[k]);
+    const top = Math.max(...p.filter((_, i) => i % 3 === 2));
     return Object.assign(unit(geo), { trunk, crown: Math.max(0, crown / top) });
 }
 
