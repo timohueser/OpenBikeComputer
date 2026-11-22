@@ -31,7 +31,7 @@ has a new address. The module `virtual:models` of the build is the manifest (`Mo
 | A tree species' summer crown | 1, with 3 tiers | `trees[id].summer`, with `keepsHeading` and, per phase (winter, spring, summer, autumn), the colour matrix (3 × 3, columns first) that turns the summer crown into the phase's, or null |
 | A tree species' crown of its own in a phase | 1, with 3 tiers | `trees[id].crowns[phase]`, null for a phase without one |
 | A plant in a season | 3 shapes (seeds 1, 2, 3), 1 tier each | `plants[id].seasons[season]`, with the plant's `ground` |
-| A breed of animal | 1 per coat | `breeds[name].file`, with `height` and `coats` |
+| A breed of animal | 1 per coat and pose, coat by coat (model `coat × poses + pose`), 2 tiers each | `breeds[name].file`, with `height`, `coats` and `poses` |
 | The objects | the rocks (3 slabs, 3 boulders), then the models of the kinds in the order of `POINT_MODELS` | `objects.file`, with `rocks` and per kind model the end of each tier in metres (`until`) and `casts` |
 
 ## 2. File layout
@@ -92,7 +92,7 @@ where each comes from.
 | Plant, each shape | 0 | 350 | 1,000 |
 | Rock | 0 | 100 | 300 |
 | Animal | 0 | 1,000 (the owner's choice: few on screen) | 3,000 |
-| Animal, a second tier where it has one | 1 | 250 | 750 |
+| Animal | 1 | 250 | 750 |
 | Small object of a kind | 0 | 600 (the owner's choice: few on screen) | 1,800 |
 
 One view draws at most 256 instance models, each with at most 3 mesh tiers and an impostor. The

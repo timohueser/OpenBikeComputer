@@ -22,7 +22,7 @@ const MARK = /"@@model-file:([\w-]+)@@"/g;
 const SOURCES = path.join(ROOT, "src/lib/trailview");
 
 /** The files and the models, and the files of the modules in the bundle. */
-async function bakeModels(): Promise<{ baked: Baked; modules: string[] }> {
+export async function bakeModels(): Promise<{ baked: Baked; modules: string[] }> {
     const out = await build({
         configFile: false, root: ROOT, logLevel: "silent", ssr: { noExternal: true },
         build: { ssr: ENTRY, write: false, minify: false, rollupOptions: { output: { inlineDynamicImports: true } } },

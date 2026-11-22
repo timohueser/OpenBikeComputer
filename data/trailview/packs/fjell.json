@@ -24,7 +24,7 @@
   "grass": { "off": ["#moor"] }
  },
  "herds": {
-  "reindeer": { "model": "goat", "latin": "Rangifer tarandus", "groups": 3, "size": [3, 12], "on": ["heath", "rough-grass", "wet-grassland", "grassland", "bog"] },
+  "reindeer": { "latin": "Rangifer tarandus", "groups": 3, "size": [3, 12], "on": ["heath", "rough-grass", "wet-grassland", "grassland", "bog"] },
   "sheep": { "groups": 3, "size": [2, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] }
  },
  "style": "falu-red-house",

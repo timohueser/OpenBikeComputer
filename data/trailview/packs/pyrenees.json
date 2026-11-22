@@ -41,7 +41,7 @@
   "sheep": { "groups": 3, "size": [10, 40], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
   "horse": { "groups": 2, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "heath", "pasture", "arable"] },
   "goat": { "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
-  "pyrenean-chamois": { "model": "goat", "latin": "Rupicapra pyrenaica", "groups": 1, "size": [2, 8], "on": ["bare-rock", "scree", "sparse", "rough-grass", "wet-grassland", "grassland"] }
+  "pyrenean-chamois": { "model": "chamois", "latin": "Rupicapra pyrenaica", "groups": 1, "size": [2, 8], "on": ["bare-rock", "scree", "sparse", "rough-grass", "wet-grassland", "grassland"] }
  },
  "rows": { "orchard": "hawthorn" },
  "style": "slate-stone-house"
