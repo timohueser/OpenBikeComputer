@@ -38,8 +38,9 @@ export const fold = (text: string) => text.replace(/./gsu, char => {
     return plain.length === char.length ? plain : char;
 });
 
-/** A number with what follows it, a word, or a stop. A dash between letters splits words: "snow-free" is "snow free". */
-const TOKEN = /\d+(?:[.,]\d+)?[^\s,;.!?]*|[^\s,;.!?\-–]+|[,;.!?]/g;
+/** A number with what follows it, a word, or a stop. A comma before three digits groups thousands: "1,500" is one
+ * number, and "1,5" a decimal. A dash between letters splits words: "snow-free" is "snow free". */
+const TOKEN = /(?:\d{1,3}(?:,\d{3})+(?!\d)|\d+(?:[.,]\d+)?)[^\s,;.!?]*|[^\s,;.!?\-–]+|[,;.!?]/g;
 function tokens(folded: string): Token[] {
     return [...folded.matchAll(TOKEN)].map(match => ({ word: match[0], from: match.index, to: match.index + match[0].length, stop: /^[,;.!?]$/.test(match[0]) }));
 }
@@ -54,7 +55,7 @@ function compiled<V extends Value>(table: Table<V>): Compiled<V> {
     const phrases = table.phrases.map(phrase => ({ ...phrase, words: phrase.words.split(' '), text: phrase.words }));
     // A number at the end with its range and the letters of a unit that the rider may still type.
     const units = longestFirst(table.units.flatMap(unit => [...unit].map((_, i) => unit.slice(0, i + 1))));
-    const number = '\\d+(?:[.,]\\d*)?';
+    const number = '\\d+(?:[.,]\\d*)*';
     const pending = new RegExp(`(?<!\\S)${number}(?:\\s*(?:-|–|to|and)\\s*(?:${number})?)?(?:\\s*(?:${units}))?$`);
     done = { phrases, texts: new Set(phrases.map(phrase => phrase.text)), glue: new Set(table.glue), not: new Set(table.not), leads: table.starts.flatMap(start => start.words), pending };
     made.set(table, done);
@@ -64,7 +65,15 @@ function compiled<V extends Value>(table: Table<V>): Compiled<V> {
 /** A word of the text is the word of a phrase; the last word of a phrase can have a plural "s" or "es". */
 const same = (word: string, of: string, last: boolean) => word === of || (last && (word === `${of}s` || word === `${of}es`));
 
-/** The longest phrase or quantity that starts at token `i`: where it ends, the next token, and what it means. */
+/** A token that the table knows at the start of a phrase, a stop, or no token. */
+function known<V extends Value>(table: Table<V>, token: Token | undefined): boolean {
+    const { phrases, not, leads } = compiled(table);
+    return !token || token.stop || not.has(token.word) || leads.some(lead => lead.split(' ')[0] === token.word)
+        || phrases.some(phrase => same(token.word, phrase.words[0], phrase.words.length === 1));
+}
+
+/** The longest phrase or quantity that starts at token `i`: where it ends, the next token, and what it means. A number
+ * with no unit means nothing before an unknown word: "4 hours" is no length. */
 function longest<V extends Value>(table: Table<V>, folded: string, list: Token[], i: number) {
     let best: { to: number; next: number; value?: Meaning<V>; not?: Meaning<V> } | undefined;
     for (const phrase of compiled(table).phrases) {
@@ -77,7 +86,8 @@ function longest<V extends Value>(table: Table<V>, folded: string, list: Token[]
         const match = pattern.match.exec(folded.slice(list[i].from)), value = match && pattern.values(match)[0];
         if (!value) continue;
         const to = list[i].from + match[0].trimEnd().length, end = list.findIndex(token => token.to === to);
-        if (end >= i && (!best || to > best.to)) best = { to, next: end + 1, value };
+        if (end < i || (/^[\d.,\-–]+$/.test(list[end].word) && !known(table, list[end + 1]))) continue;
+        if (!best || to > best.to) best = { to, next: end + 1, value };
     }
     return best;
 }

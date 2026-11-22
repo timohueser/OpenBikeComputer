@@ -8,7 +8,8 @@ import { DRIVE_KM, find, GRADE_TOP, SHAPES, WISHES, type Loaded, type Query, typ
 import { gradeText, shapesSet, type SlotId } from './slots';
 import { LENGTH_TOP_M, SHAPE_WORDS, shortDistance, wishIcon, wishLabel } from './words';
 
-/** A value of the field: a change of the query. `here` also asks the browser for the start point. */
+/** A value of the field: a change of the query. `here` also asks the browser for the start point when the query has no
+ * start point and no pin. */
 export interface Choice extends Value { slot: SlotId; set: (query: Query) => Partial<Query>; here?: true }
 
 type Place = (id: string) => FactsPlace | undefined;
@@ -17,8 +18,9 @@ type Named = typeof WISHES[number];
 /** The query after the choices, in their order. */
 export const apply = (query: Query, choices: Choice[]): Query => choices.reduce((next, choice) => ({ ...next, ...choice.set(next) }), query);
 
-/** Whether a choice changes the query. "My location" does while the query has no start point. */
-export const changes = (query: Query, choice: Choice) => choice.here ? !query.start : JSON.stringify(apply(query, [choice])) !== JSON.stringify(query);
+/** Whether a choice changes the query, or asks for the start point that the query does not have. */
+export const changes = (query: Query, choice: Choice) =>
+    (!!choice.here && !query.start && !query.pin) || JSON.stringify(apply(query, [choice])) !== JSON.stringify(query);
 
 // ── Values ──────────────────────────────────────────────────────────────────
 
@@ -38,13 +40,13 @@ const shape = (id: Shape): Choice => ({
 const length = (range: Range): Choice => ({ label: rangeText(range, shortDistance), slot: 'hike', icon: 'route', set: () => ({ length: range }) });
 const climb = (range: Range): Choice => ({ label: `${rangeText(range, formatHeight)} climb`, slot: 'hike', icon: 'ascent', set: () => ({ climb: range }) });
 const grade = (range: [number, number]): Choice => ({ label: gradeText({ grade: range })!, slot: 'hike', icon: 'hiking', set: () => ({ grade: range }) });
-/** A drive in km, in the steps of its slider. */
+/** A drive in km, in the steps of its slider. A drive needs a start point, as the car does. */
 function drive(km: number): Choice {
     const value = Math.min(DRIVE_KM.max, Math.max(DRIVE_KM.min, Math.round(km / DRIVE_KM.step) * DRIVE_KM.step));
-    return { label: `By car, up to ${value} km`, slot: 'from', icon: 'car', set: () => ({ car: true, drive: value }) };
+    return { label: `By car, up to ${value} km`, slot: 'from', icon: 'car', set: () => ({ car: true, drive: value }), here: true };
 }
 const HERE: Choice = { label: 'My location', slot: 'from', icon: 'locate', set: () => ({}), here: true };
-const CAR: Choice = { label: 'By car', slot: 'from', icon: 'car', set: () => ({ car: true }) };
+const CAR: Choice = { label: 'By car', slot: 'from', icon: 'car', set: () => ({ car: true }), here: true };
 const LIFTS: Choice = { label: 'Lifts', slot: 'from', icon: 'lift', set: query => ({ lift: query.lift ?? 'helps' }) };
 
 /** A length or a climb in the units of the rider. */
@@ -97,7 +99,8 @@ const GLUE = ('a an the with and or in on of for to at by from near around along
 
 type Kind = 'less' | 'more' | 'about';
 const kindOf = (lead: string | undefined): Kind | undefined => !lead ? undefined : LESS.includes(lead) ? 'less' : MORE.includes(lead) ? 'more' : 'about';
-const number = (text: string) => Number(text.replace(',', '.'));
+/** "1,500" is a thousand and five hundred, and "1,5" one and a half. */
+const number = (text: string) => Number(/^\d{1,3}(,\d{3})+$/.test(text) ? text.replaceAll(',', '') : text.replace(',', '.'));
 
 /** The ranges of a number in a unit of `size` metres: up to it, about it (a fifth less to a fifth more) and from it. A
  * word before it keeps one of them. */
@@ -121,14 +124,20 @@ function grades(index: number, kind: Kind | undefined): Choice[] {
 }
 
 const words = (list: string[]) => [...list].sort((a, b) => b.length - a.length).join('|');
-const N = '(\\d+(?:[.,]\\d+)?)', END = '(?![\\p{L}\\d])', UNIT = `(${words([...Object.keys(LENGTHS), ...Object.keys(HEIGHTS)])})`;
+const N = '(\\d{1,3}(?:,\\d{3})+(?!\\d)|\\d+(?:[.,]\\d+)?)', END = '(?![\\p{L}\\d])', UNIT = `(${words([...Object.keys(LENGTHS), ...Object.keys(HEIGHTS)])})`;
 const CLIMBED = '(\\s+(?:of\\s+)?(?:climb|climbing|ascent|elevation gain|uphill))?';
 const LEAD = `(?:(${words([...LESS, ...MORE, ...ABOUT])})\\s+)?`;
 
-/** The table of the field, with "Passes <name>" for each named summit, hut, lake and waterfall that the loaded hikes pass. */
-export function phraseTable(loaded: Loaded): Table<Choice> {
+/** The text of each slot that is off, such as "Not for long trails". */
+export type Off = Partial<Record<SlotId, string>>;
+
+/** The table of the field, with "Passes <name>" for each named summit, hut, lake and waterfall that the loaded hikes pass.
+ * A value of a slot that is off is a note, so its words stay in the field. */
+export function phraseTable(loaded: Loaded, off: Off): Table<Choice> {
     const place = loaded.place, phrases: Table<Choice>['phrases'] = [];
-    const add = (list: string[], value?: Choice | string, not?: Choice | string) => phrases.push(...list.map(text => ({ words: text, value, not })));
+    const usable = (value?: Choice | string) => typeof value === 'object' && off[value.slot] ? `${off[value.slot]}: ${value.label}.` : value;
+    const on = (choices: Choice[]) => choices.filter(choice => !off[choice.slot]);
+    const add = (list: string[], value?: Choice | string, not?: Choice | string) => phrases.push(...list.map(text => ({ words: text, value: usable(value), not: usable(not) })));
     for (const id of WISHES) {
         const opposite = OPPOSITE[id], left = LEFT_OUT[id];
         add([fold(wishLabel(id, place)), ...WISH_WORDS[id]], wish(id, place), opposite ? wish(opposite, place) : left && `Explore cannot leave out ${left}.`);
@@ -153,17 +162,17 @@ export function phraseTable(loaded: Loaded): Table<Choice> {
         phrases,
         patterns: [
             { match: new RegExp(`^${LEAD}${N}\\s*${UNIT}?${END}${CLIMBED}`, 'u'),
-                values: ([, lead, count, unit, climbed]) => sized(number(count), unit, !!climbed, size => ranges(number(count), size, kindOf(lead))) },
+                values: ([, lead, count, unit, climbed]) => on(sized(number(count), unit, !!climbed, size => ranges(number(count), size, kindOf(lead)))) },
             { match: new RegExp(`^(?:between\\s+)?${N}\\s*(?:-|–|to|and)\\s*${N}\\s*${UNIT}?${END}${CLIMBED}`, 'u'),
-                values: ([, low, high, unit, climbed]) => number(low) < number(high) ? sized(number(high), unit, !!climbed, size => [[number(low) * size, number(high) * size]]).slice(0, 1) : [] },
-            { match: new RegExp(`^${LEAD}t([1-6])${END}`, 'u'), values: ([, lead, index]) => grades(Number(index) - 1, kindOf(lead)) },
-            { match: new RegExp(`^(?:${words(WITHIN)})\\s+(?:up to\\s+)?${N}\\s*(?:km)?${END}`, 'u'), values: ([, count]) => [drive(number(count))] },
+                values: ([, low, high, unit, climbed]) => number(low) < number(high) ? on(sized(number(high), unit, !!climbed, size => [[number(low) * size, number(high) * size]])).slice(0, 1) : [] },
+            { match: new RegExp(`^${LEAD}t([1-6])${END}`, 'u'), values: ([, lead, index]) => on(grades(Number(index) - 1, kindOf(lead))) },
+            { match: new RegExp(`^(?:${words(WITHIN)})\\s+(?:up to\\s+)?${N}\\s*(?:km)?${END}`, 'u'), values: ([, count]) => on([drive(number(count))]) },
         ],
         starts: [
-            { words: LESS, values: [length([0, lengthIn(10)]), climb([0, usualClimb()]), grade([0, 1])] },
-            { words: MORE, values: [length([lengthIn(10), Infinity]), climb([usualClimb(), Infinity]), grade([2, GRADE_TOP])] },
-            { words: ABOUT, values: [length([lengthIn(8), lengthIn(12)]), length([lengthIn(12), lengthIn(18)])] },
-            { words: WITHIN, values: [drive(20), drive(30)] },
+            { words: LESS, values: on([length([0, lengthIn(10)]), climb([0, usualClimb()]), grade([0, 1])]) },
+            { words: MORE, values: on([length([lengthIn(10), Infinity]), climb([usualClimb(), Infinity]), grade([2, GRADE_TOP])]) },
+            { words: ABOUT, values: on([length([lengthIn(8), lengthIn(12)]), length([lengthIn(12), lengthIn(18)])]) },
+            { words: WITHIN, values: on([drive(20), drive(30)]) },
         ],
         units: [...Object.keys(LENGTHS), ...Object.keys(HEIGHTS)],
         glue: GLUE,
@@ -171,10 +180,11 @@ export function phraseTable(loaded: Loaded): Table<Choice> {
     };
 }
 
-/** Up to four values that riders often add next: those that the query does not hold and that leave a hike. */
-export function often(query: Query, loaded: Loaded): Choice[] {
+/** Up to four values that riders often add next: those of a slot that is on, that the query does not hold and that leave a
+ * hike. */
+export function often(query: Query, loaded: Loaded, off: Off): Choice[] {
     return [length([0, lengthIn(12)]), shape('loop'), wish('hut', loaded.place), wish('peak', loaded.place), climb([0, usualClimb()]), wish('lake', loaded.place)]
-        .filter(choice => changes(query, choice) && find(apply(query, [choice]), loaded).length > 0).slice(0, 4);
+        .filter(choice => !off[choice.slot] && changes(query, choice) && find(apply(query, [choice]), loaded).length > 0).slice(0, 4);
 }
 
 /** Sentences for an empty field before the first search. */

@@ -18,14 +18,14 @@ const plain = (words: string[]) => words.map(word => word.replaceAll(' ', ' '))
 
 /** The text after Enter: the words of the slots, and the words that stay in the field with their notes. */
 function enter(text: string) {
-    const parts = scan(text, phraseTable(loaded));
+    const parts = scan(text, phraseTable(loaded, {}));
     const words = slotWords(apply(defaultQuery(TODAY), parts.flatMap(part => part.kind === 'value' ? [part.value] : [])), loaded.place, TODAY);
     return {
         from: plain(words.from), hike: plain(words.hike), way: plain(words.way),
         stays: parts.flatMap(part => part.kind === 'unknown' ? [[text.slice(part.from, part.to), part.note]] : []),
     };
 }
-const labels = (fragment: string) => plain(suggest(fragment, phraseTable(loaded)).map(choice => choice.label));
+const labels = (fragment: string) => plain(suggest(fragment, phraseTable(loaded, {})).map(choice => choice.label));
 
 describe('the words of Explore', () => {
     it('send each phrase of the examples to its slot, in any order', () => {
@@ -46,8 +46,16 @@ describe('the words of Explore', () => {
         onTestFinished(() => { settings.units = 'km'; });
         expect(labels('12')).toEqual(['Under 12 mi', '10 mi to 14 mi', '12 mi or more']);
         expect(enter('8-12, under 2000')).toMatchObject({ hike: ['8 mi to 12 mi', 'Under 2,000 ft climb'] });
-        // A unit that the rider types wins.
+        // A unit that the rider types wins, and a comma before three digits groups thousands.
         expect(enter('under 10 km')).toMatchObject({ hike: ['Under 6.2 mi'] });
+        expect(enter('under 2,000 ft climb')).toMatchObject({ hike: ['Under 2,000 ft climb'] });
+        settings.units = 'km';
+        expect(enter('1,5 km, under 1,500 m climb')).toMatchObject({ hike: ['Under 1.5 km', 'Under 1,500 m climb'] });
+    });
+
+    it('read a number with no unit only before a phrase, a stop or the end', () => {
+        expect(enter('12 loop')).toMatchObject({ hike: ['Loop', 'Under 12 km'] });
+        expect(enter('under 4 hours, a 1 day hike, within 30 minutes')).toEqual({ from: [], hike: [], way: [], stays: [['4', undefined], ['hours', undefined], ['1', undefined], ['30', undefined], ['minutes', undefined]] });
     });
 
     it('give the opposite of a wish after "no", or keep the words with a note', () => {
@@ -56,7 +64,12 @@ describe('the words of Explore', () => {
         expect(enter('snow')).toMatchObject({ way: [], stays: [['snow', undefined]] });
     });
 
-    it('keep a word that they do not know, and bike words with a note', () => {
+    it('keep a word that they do not know, bike words and the values of a slot that is off, with a note', () => {
         expect(enter('sunny loop by gravel bike')).toMatchObject({ hike: ['Loop'], stays: [['sunny', undefined], ['gravel', 'Explore searches hikes only for now.'], ['bike', 'Explore searches hikes only for now.']] });
+        expect(scan('hut', phraseTable(loaded, { way: 'Not for long trails' }))).toEqual([{ from: 0, to: 3, kind: 'unknown', note: 'Not for long trails: Hut with food.' }]);
+    });
+
+    it('ask for the start point with the car and a drive, which need one', () => {
+        expect(scan('by car within 20 km', phraseTable(loaded, {})).map(part => part.kind === 'value' && part.value.here)).toEqual([true, true]);
     });
 });

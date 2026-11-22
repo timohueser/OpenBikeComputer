@@ -365,23 +365,31 @@
     /** The text field of the bar. Its words and its suggestions are read in the browser; only a typed name asks the server
      * for places, which move the map. */
     let searches = $state(storedSearches());
-    const phrases = $derived(phraseTable(loaded));
+    const off = $derived(offText ? { from: offText, way: offText } : {});
+    const phrases = $derived(phraseTable(loaded, off));
+    /** The words of the slots of a query; a search with none is no last search. */
+    const summary = (kept: Query) => Object.values(slotWords(kept, placeById, day)).flat().join(' · ');
     const field = $derived<FieldProps<Choice, FoundPlace & NamedPlace>>({
         table: phrases, label: 'Say what you want', placeholder: 'Say what you want, such as “loop with a hut”', examples: EXAMPLES,
-        recent: searches.map(text => ({ text: Object.values(slotWords(readQuery(text, day).query, placeById, day)).flat().join(' · '), run: () => setQuery(readQuery(text, day).query) })),
-        often: () => often(dayQuery, loaded), changes: choice => changes(dayQuery, choice), onvalues: send,
+        recent: searches.flatMap(text => {
+            const kept = readQuery(text, day).query, words = summary(kept);
+            return words ? [{ text: words, run: () => setQuery(kept) }] : [];
+        }),
+        often: () => often(dayQuery, loaded, off), changes: choice => changes(dayQuery, choice), onvalues: send,
         places: (name, signal) => findPlaces(name, view ?? [-180, -85, 180, 85], signal, true)
             .then(found => found.map(one => ({ ...one, about: [one.kind.replaceAll('_', ' '), one.region].filter(Boolean).join(' · ') }))),
-        onplace: ({ lon, lat, box }) => place = { lon, lat, box }, onsearch: () => searches = keepSearch(query, day, searches),
+        onplace: ({ lon, lat, box }) => place = { lon, lat, box }, onsearch: () => { if (summary(query)) searches = keepSearch(query, day, searches); },
     });
     function send(choices: Choice[]) {
         setQuery(apply(query, choices));
         if (choices.some(choice => choice.here)) void locate();
     }
-    /** "My location" of the field. A start or a pin that the rider set meanwhile wins; with no location, "From" opens. */
+    /** The start point from the browser for a choice that needs one. A start or a pin wins, also one that the rider sets
+     * meanwhile; with no location, "From" opens. */
     async function locate() {
-        const { start, pin } = query, at = await myLocation();
-        if (query.start !== start || query.pin !== pin) return;
+        if (query.start || query.pin) return;
+        const at = await myLocation();
+        if (query.start || query.pin) return;
         if (typeof at === 'string') openSlot = 'from';
         else setQuery({ start: at, pin: undefined });
     }

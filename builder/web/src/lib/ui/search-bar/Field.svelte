@@ -46,8 +46,8 @@
         land: (value: V, from: DOMRect | undefined, delay: number) => void;
     } = $props();
 
-    /** A row of the list. Enter takes a row with `value` for the words in progress and then reads the rest of the text. */
-    type Row = { icon: string; text: string; typed?: number; side?: string; value?: true; pick: (from?: DOMRect) => void };
+    /** A row of the list. Enter takes a row with `value` in place of the words in progress, with the rest of the text. */
+    type Row = { icon: string; text: string; typed?: number; side?: string; value?: V; pick: (from?: DOMRect) => void };
     type Line = { text: string; remove?: Part<V>[] };
 
     const WAIT_MS = 300, KEY_MS = 48, SPACE_MS = 120;
@@ -94,19 +94,20 @@
     }
     const valueRow = (value: V, pick: (from?: DOMRect) => void): Row => {
         const typed = fold(value.label).startsWith(fold(fragment)) ? fragment.length : 0;
-        return { icon: value.icon, text: value.label, typed, side: slotLabel(value.slot), value: true, pick };
+        return { icon: value.icon, text: value.label, typed, side: slotLabel(value.slot), value, pick };
     };
     const list = $derived.by((): { title?: string; rows: Row[]; lines: Line[]; keys?: boolean } => {
+        // A name can end in a space, as a phone keyboard writes it: its places show without words in progress too.
+        const named = found.map((place): Row => ({ icon: 'pin', text: place.name, side: place.about, pick: () => choose(place) }));
         if (fragment) {
-            const rows = suggest(fragment, table).filter(changes).map(value => valueRow(value, from => take(value, from)));
-            rows.push(...found.map((place): Row => ({ icon: 'pin', text: place.name, side: place.about, pick: () => choose(place) })));
-            if (rows.length) return { rows, lines: [], keys: rows[0].value };
+            const rows = [...suggest(fragment, table).filter(changes).map(value => valueRow(value, from => take(value, from))), ...named];
+            if (rows.length) return { rows, lines: [], keys: !!rows[0].value };
             const said = lines(scan(fragment, table)).filter(line => !line.remove);
             return { rows, lines: said.length ? said : fragment.length >= 3 ? [{ text: `Nothing here matches “${fragment}”. It stays in the field and changes nothing.` }] : [] };
         }
         const values = parts.flatMap(part => part.kind === 'value' ? [part.value] : []);
-        if (values.length) return { rows: [{ icon: 'arrow', text: values.map(value => value.label).join(' · '), side: 'Enter', pick: commit }], lines: lines(parts) };
-        if (text.trim()) return { rows: [], lines: lines(parts) };
+        if (values.length) return { rows: [{ icon: 'arrow', text: values.map(value => value.label).join(' · '), side: 'Enter', pick: () => commit() }, ...named], lines: lines(parts) };
+        if (text.trim()) return { rows: named, lines: lines(parts) };
         const added = session ? often().map(value => valueRow(value, from => send([[value, from]]))) : [];
         if (added.length) return { title: 'Add', rows: added, lines: [] };
         if (recent.length) return { title: 'Last searches', rows: recent.map(one => ({ icon: 'clock', text: one.text, pick: () => { one.run(); listing = false; } })), lines: [] };
@@ -153,11 +154,14 @@
         text = text.slice(0, start);
         send([[value, from]]);
     }
-    /** Enter: each marked phrase goes to its slot, and the unknown words stay. */
-    function commit() {
+    /** Enter: each marked phrase goes to its slot, and the unknown words stay. `last` takes the place of the words in
+     * progress, so all values go in one call, in the order of the text. */
+    function commit(last?: [V, DOMRect | undefined]) {
+        if (last) text = text.slice(0, start);
         sealed = true;
         flushSync();
         const values = parts.flatMap((part, i): [V, DOMRect | undefined][] => part.kind === 'value' ? [[part.value, mirror?.querySelector(`[data-part="${i}"]`)?.getBoundingClientRect()]] : []);
+        if (last) values.push(last);
         const kept = parts.flatMap(part => part.kind === 'unknown' ? [text.slice(part.from, part.to)] : []);
         sealed = false;
         text = kept.length ? `${kept.join(' ')} ` : '';
@@ -166,6 +170,7 @@
     }
     function enter() {
         const row = list.rows[active];
+        if (row?.value && fragment) return commit([row.value, optionRect(active)]);
         row?.pick(optionRect(active));
         if (!row || row.value) commit();
     }
@@ -212,7 +217,7 @@
         } else if (event.key === 'Enter') {
             event.preventDefault();
             enter();
-        } else if (event.key === 'Tab' && !event.shiftKey && fragment && list.rows[active]?.value) {
+        } else if (event.key === 'Tab' && !event.shiftKey && list.rows[active]) {
             event.preventDefault();
             list.rows[active].pick(optionRect(active));
         } else if (event.key === 'Escape' && listing) {
