@@ -140,10 +140,12 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         self.triangle(v[0], v[2], v[3], out);
     }
 
-    /// A triangle turned to face `out`. A triangle of no area makes no face.
+    /// A triangle turned to face `out`. A triangle of no area makes no face, nor one with two corners on one point of
+    /// the mesh's words.
     pub fn triangle(&mut self, a: u32, b: u32, c: u32, out: [f64; 3]) {
         let n = self.normal(a, b, c, c);
-        if n.iter().all(|c| c.abs() < 1e-12) {
+        let at = |v: u32| &self.words[v as usize * WORDS..v as usize * WORDS + 3];
+        if n.iter().all(|c| c.abs() < 1e-12) || at(a) == at(b) || at(b) == at(c) || at(c) == at(a) {
             return;
         }
         let facing = n[0] * out[0] + n[1] * out[1] + n[2] * out[2] >= 0.0;
