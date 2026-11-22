@@ -133,8 +133,6 @@
         gap: 8px;
         padding: 0 8px;
         border-radius: 8px;
-    }
-    .wish {
         transition: background 120ms;
     }
     .wish:hover:not(:has(.pick:disabled)) {

@@ -1,7 +1,7 @@
 <!-- The text field of the search bar and its list under the bar. While the rider types, the field marks each phrase that
      the table of the page knows, shows the glue words faint and underlines the unknown words. Enter sends each marked
      phrase to its slot, and the unknown words stay. The list suggests values for the words in progress and places of
-     the server for a typed name, and its first line says which marked value goes to which slot; with an empty field, it
+     the server for a typed name, and its first row says which marked value goes to which slot; with an empty field, it
      offers the values often added next, the last searches or examples. -->
 <script lang="ts" module>
     import type { Table, Value } from './read';
@@ -24,7 +24,8 @@
         changes: (value: V) => boolean;
         /** Sends values to the search, in the order of the text. */
         onvalues: (values: V[]) => void;
-        /** The places of the server for a typed name. Enter never takes one; a click goes to `onplace`. */
+        /** The places of the server for a typed name. Enter never takes one; a click goes to `onplace`. A new function
+         * is a new search, such as that of a new map view: the field asks again. */
         places: (name: string, signal: AbortSignal) => Promise<P[]>;
         onplace: (place: P) => void;
         /** The words over the places in the list, which say what a click does. */
@@ -51,14 +52,14 @@
     } = $props();
 
     /** A row of the list. Enter takes a row with `value` in place of the words in progress, with the rest of the text.
-     * `head` is a line over the row, and `about` some quiet words after its text. */
-    type Row = { icon: string; text: string; typed?: number; side?: string; about?: string; head?: string; value?: V; pick: (from?: DOMRect) => void };
+     * `to` is the row of the marked values, by slot; `about` is some quiet words after the name of a place. */
+    type Row = { icon: string; text: string; typed?: number; side?: string; about?: string; to?: typeof reading; value?: V; pick: (from?: DOMRect) => void };
     type Line = { text: string; remove?: Part<V>[] };
 
     const WAIT_MS = 300, KEY_MS = 48, SPACE_MS = 120;
     let input = $state<HTMLInputElement>(), mirror = $state<HTMLElement>(), listbox = $state<HTMLElement>();
-    /** The places of the server, and the name that they answer. */
-    let active = $state(-1), found = $state.raw<P[]>([]), answered = $state('');
+    /** The places of the server, and the name and the search of the page that they answer. */
+    let active = $state(-1), found = $state.raw<P[]>([]), answered = $state.raw<{ words: string; by: typeof places }>();
     /** At Enter the words in progress are done too, so the marks cover the whole text. */
     let sealed = $state(false);
     /** A value went to its slot since the list opened: an empty field then offers the values often added next. */
@@ -90,14 +91,18 @@
         return { from, words: listing && /\p{L}.*\p{L}/u.test(words) && !/\d/.test(words) ? words : '' };
     });
 
-    /** The answer for the name is still on its way. */
-    const asking = $derived(!!name.words && answered !== name.words);
+    /** The answer for the name, in the search of the page, is still on its way. */
+    const asking = $derived(!!name.words && (answered?.words !== name.words || answered.by !== places));
+    const begins = (place: P) => fold(place.name).startsWith(fold(name.words));
+    /** The places in the list. Until the answer comes, the places before whose name begins with the new name stay, so
+     * the rows do not blink while the rider types. */
+    const offered = $derived(!name.words ? [] : asking ? found.filter(begins) : found);
     /** The name is not unknown while the server looks for it, or when it begins the name of a place in the list. */
-    const placed = $derived(!!name.words && (asking || found.some(place => fold(place.name).startsWith(fold(name.words)))));
+    const placed = $derived(!!name.words && (asking || offered.some(begins)));
     /** A word of the name, which no phrase knows. */
     const plain = (part: Part<V>) => part.kind === 'unknown' && !part.note && part.from >= name.from;
 
-    /** The marked values of each slot, in the order of the bar: what Enter sends, and where. */
+    /** The marked values of each slot, in the order of the bar: what the first row of the list sends, and where. */
     const reading = $derived(slots.map(slot => ({ slot, labels: parts.flatMap(part => part.kind === 'value' && part.value.slot === slot.id ? [part.value.label] : []) }))
         .filter(group => group.labels.length));
 
@@ -113,27 +118,31 @@
         const typed = fold(value.label).startsWith(fold(fragment)) ? fragment.length : 0;
         return { icon: value.icon, text: value.label, typed, side: slots.find(slot => slot.id === value.slot)?.label, value, pick };
     };
-    const list = $derived.by((): { title?: string; rows: Row[]; lines: Line[]; keys?: boolean } => {
+    /** The rows in their order: the marked values, the suggestions, then `places` rows of places. */
+    const list = $derived.by((): { title?: string; rows: Row[]; places: number; lines: Line[]; keys?: boolean } => {
         // A name can end in a space, as a phone keyboard writes it: its places show without words in progress too.
-        const named = found.map((place, i): Row => ({ icon: 'pin', text: place.name, about: place.about, head: i ? undefined : placesLabel, pick: () => choose(place) }));
+        const named = offered.map((place): Row => ({ icon: 'pin', text: place.name, about: place.about, pick: () => choose(place) }));
+        // The first row sends the marked phrases alone, so the words in progress stay.
+        const marked: Row[] = reading.length ? [{ icon: 'arrow', text: reading.map(({ slot, labels }) => `${slot.label}: ${labels.join(', ')}`).join('. '), to: reading,
+            pick: () => commit(undefined, false) }] : [];
         if (fragment) {
-            const rows = [...suggest(fragment, table).filter(changes).map(value => valueRow(value, from => take(value, from))), ...named];
-            // Short words in progress, and words with a suggestion, can still become a value.
-            const open = rows.length > 0 || fragment.length < 3;
-            return { rows, lines: lines(open ? parts : scan(text, table)), keys: !!rows[0]?.value };
+            const rows = [...marked, ...suggest(fragment, table).filter(changes).map(value => valueRow(value, from => take(value, from))), ...named];
+            // Short words in progress, and words with a suggestion or a place, can still become one.
+            const open = rows.length > marked.length || fragment.length < 3;
+            return { rows, places: named.length, lines: lines(open ? parts : scan(text, table)), keys: rows.some(row => row.value) };
         }
-        if (text.trim()) return { rows: named, lines: lines(parts) };
+        if (text.trim()) return { rows: [...marked, ...named], places: named.length, lines: lines(parts) };
         const added = session ? often().map(value => valueRow(value, from => send([[value, from]]))) : [];
-        if (added.length) return { title: 'Add', rows: added, lines: [] };
-        if (recent.length) return { title: 'Last searches', rows: recent.map(one => ({ icon: 'clock', text: one.text, pick: () => { one.run(); listing = false; } })), lines: [] };
-        return { title: 'Say it in one go, for example', rows: examples.map(sentence => ({ icon: 'arrow', text: sentence, pick: () => play(sentence) })), lines: [] };
+        if (added.length) return { title: 'Add', rows: added, places: 0, lines: [] };
+        if (recent.length) return { title: 'Last searches', rows: recent.map(one => ({ icon: 'clock', text: one.text, pick: () => { one.run(); listing = false; } })), places: 0, lines: [] };
+        return { title: 'Say it in one go, for example', rows: examples.map(sentence => ({ icon: 'arrow', text: sentence, pick: () => play(sentence) })), places: 0, lines: [] };
     });
-    const shown = $derived(listing && (list.rows.length > 0 || list.lines.length > 0 || reading.length > 0));
+    const shown = $derived(listing && (list.rows.length > 0 || list.lines.length > 0));
 
     // A new text marks the first suggestion, which Enter takes for the words in progress.
     $effect.pre(() => {
         void [text, listing];
-        untrack(() => active = fragment && list.rows[0]?.value ? 0 : -1);
+        untrack(() => active = fragment ? list.rows.findIndex(row => row.value) : -1);
     });
     $effect(() => {
         if (active >= 0) listbox?.querySelector(`#search-option-${active}`)?.scrollIntoView({ block: 'nearest' });
@@ -143,15 +152,15 @@
         void pieces;
         if (mirror && input) mirror.scrollLeft = input.scrollLeft;
     });
-    // The places of the server for a new name, 300 ms after the last key; a newer name stops the request. The places of
-    // the name before stay until the answer, so the rows do not blink while the rider types.
+    // The places of the server for a new name or a new search of the page, 300 ms after the last key; a newer one stops
+    // the request.
     $effect(() => {
-        const asked = name.words;
-        if (!asked) [found, answered] = [[], ''];
-        if (!asked || asked === untrack(() => answered)) return;
+        const asked = name.words, by = places;
+        if (!asked) [found, answered] = [[], undefined];
+        if (!untrack(() => asking)) return;
         const controller = new AbortController();
-        const answer = (list: P[]) => { if (!controller.signal.aborted) [found, answered] = [list, asked]; };
-        const timer = setTimeout(() => places(asked, controller.signal).then(answer, () => answer([])), WAIT_MS);
+        const answer = (list: P[]) => { if (!controller.signal.aborted) [found, answered] = [list, { words: asked, by }]; };
+        const timer = setTimeout(() => by(asked, controller.signal).then(answer, () => answer([])), WAIT_MS);
         return () => {
             clearTimeout(timer);
             controller.abort();
@@ -172,16 +181,17 @@
         send([[value, from]]);
     }
     /** Enter: each marked phrase goes to its slot, and the unknown words stay. `last` takes the place of the words in
-     * progress, so all values go in one call, in the order of the text. */
-    function commit(last?: [V, DOMRect | undefined]) {
+     * progress, so all values go in one call, in the order of the text. Without `whole`, the words in progress are not
+     * read: they stay too. */
+    function commit(last?: [V, DOMRect | undefined], whole = true) {
         if (last) text = text.slice(0, start);
-        sealed = true;
+        sealed = whole;
         flushSync();
         const values = parts.flatMap((part, i): [V, DOMRect | undefined][] => part.kind === 'value' ? [[part.value, mirror?.querySelector(`[data-part="${i}"]`)?.getBoundingClientRect()]] : []);
         if (last) values.push(last);
         const kept = parts.flatMap(part => part.kind === 'unknown' ? [text.slice(part.from, part.to)] : []);
+        text = [...kept, text.slice(start).trim()].join(' ').trimStart();
         sealed = false;
-        text = kept.length ? `${kept.join(' ')} ` : '';
         send(values);
         onsearch();
     }
@@ -259,7 +269,7 @@
         <Icon name="search" size={17} />
         <span class="type">
             <span class="mirror" aria-hidden="true" bind:this={mirror}>{#each pieces as piece, i (i)}{#if piece.kind}<span class="m-{piece.kind}" data-part={piece.at}>{piece.text}</span>{:else}{piece.text}{/if}{/each}</span>
-            <input bind:this={input} bind:value={text} type="text" role="combobox" aria-label={label} {placeholder} aria-expanded={shown} aria-controls="search-list"
+            <input bind:this={input} bind:value={text} type="text" role="combobox" aria-label={label} {placeholder} aria-expanded={shown && list.rows.length > 0} aria-controls="search-list"
                 aria-autocomplete="list" aria-activedescendant={active >= 0 ? `search-option-${active}` : undefined} autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"
                 onfocus={() => { if (!listing) [listing, session] = [true, false]; }} onblur={() => listing = false} onclick={() => listing = true}
                 oninput={() => { stop(); listing = true; }} onkeydown={keydown} onscroll={() => { if (mirror && input) mirror.scrollLeft = input.scrollLeft; }} />
@@ -272,29 +282,37 @@
     {/if}
 </div>
 
+{#snippet option(row: Row, i: number)}
+    <button type="button" class="row" class:reading={!!row.to} class:active={i === active} role="option" id="search-option-{i}" tabindex="-1" aria-selected={i === active}
+        aria-label={row.to ? row.text : undefined} onclick={event => { stop(); row.pick(event.currentTarget.getBoundingClientRect()); }}>
+        {#if row.to}
+            {#each row.to as { slot, labels } (slot.id)}
+                <span class="to"><span class="slot"><Icon name={slot.icon} size={13} />{slot.label}</span><b>{labels.join(' · ')}</b></span>
+            {/each}
+            <!-- With words in progress, Enter also reads them. -->
+            {#if !fragment}<kbd>Enter</kbd>{/if}
+        {:else}
+            <Icon name={row.icon} size={16} />
+            <span class="what">{#if row.typed}{row.text.slice(0, row.typed)}<b>{row.text.slice(row.typed)}</b>{:else}{row.text}{/if}{#if row.about}<i>{row.about}</i>{/if}</span>
+            {#if row.side}<small>{row.side}</small>{/if}
+        {/if}
+    </button>
+{/snippet}
+
 {#if shown}
     <!-- A press in the list keeps the cursor in the field. -->
     <div class="search-panel list" role="presentation" in:drop out:drop={{ leave: true }} onpointerdown={event => event.preventDefault()}>
-        {#if reading.length}
-            <button type="button" class="reading" tabindex="-1" onclick={() => { stop(); enter(); }}>
-                {#each reading as { slot, labels } (slot.id)}
-                    <span class="to"><span class="slot"><Icon name={slot.icon} size={13} />{slot.label}</span><b>{labels.join(' · ')}</b></span>
-                {/each}
-                <kbd>Enter</kbd>
-            </button>
-        {/if}
         {#if list.title}<h3>{list.title}</h3>{/if}
         {#if list.rows.length}
+            {@const cut = list.rows.length - list.places}
             <div class="rows" role="listbox" id="search-list" aria-label={list.title ?? 'Suggestions'} bind:this={listbox}>
-                {#each list.rows as row, i (i)}
-                    {#if row.head}<h3 role="presentation">{row.head}</h3>{/if}
-                    <button type="button" class="row" class:active={i === active} role="option" id="search-option-{i}" tabindex="-1" aria-selected={i === active}
-                        onclick={event => { stop(); row.pick(event.currentTarget.getBoundingClientRect()); }}>
-                        <Icon name={row.icon} size={16} />
-                        <span class="what">{#if row.typed}{row.text.slice(0, row.typed)}<b>{row.text.slice(row.typed)}</b>{:else}{row.text}{/if}{#if row.about}<i>{row.about}</i>{/if}</span>
-                        {#if row.side}<small>{row.side}</small>{/if}
-                    </button>
-                {/each}
+                {#each list.rows.slice(0, cut) as row, i (i)}{@render option(row, i)}{/each}
+                {#if list.places}
+                    <div class="places" role="group" aria-label={placesLabel}>
+                        <span class="head" aria-hidden="true">{placesLabel}</span>
+                        {#each list.rows.slice(cut) as row, i (i)}{@render option(row, cut + i)}{/each}
+                    </div>
+                {/if}
             </div>
         {/if}
         {#each list.lines as line (line.text)}
@@ -407,28 +425,6 @@
         left: 0;
         width: min(420px, 100%);
     }
-    /* What Enter sends: the marked values under the name of their slot. */
-    .reading {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 4px 16px;
-        width: 100%;
-        min-height: 42px;
-        padding: 8px 12px;
-        border: 0;
-        background: var(--parchment);
-        color: var(--ink);
-        font: 13.5px var(--sans);
-        text-align: left;
-        transition: background 120ms;
-    }
-    .reading:not(:last-child) {
-        border-bottom: 1px solid var(--line);
-    }
-    .reading:hover {
-        background: var(--parchment-2);
-    }
     .to {
         display: inline-flex;
         align-items: center;
@@ -450,17 +446,20 @@
         display: none;
         margin-left: auto;
     }
-    h3 {
+    h3, .head {
         margin: 10px 12px 2px;
         color: var(--ink-soft);
         font: 400 12px var(--sans);
     }
-    .rows h3 {
+    .places {
+        display: flex;
+        flex-direction: column;
+    }
+    .head {
         margin: 8px 8px 2px;
     }
-    .rows h3:not(:first-child) {
+    .row:not(.reading) + .places {
         margin-top: 4px;
-        padding-top: 10px;
         border-top: 1px solid var(--line);
     }
     .rows {
@@ -485,6 +484,24 @@
     .row > :global(svg) {
         flex: none;
         color: var(--ink-soft);
+    }
+    /* The marked values under the name of their slot, from edge to edge of the list. */
+    .reading {
+        flex-wrap: wrap;
+        gap: 4px 16px;
+        width: auto;
+        min-height: 42px;
+        margin: -4px -4px 4px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--line);
+        border-radius: 0;
+        background: var(--parchment);
+        font-size: 13.5px;
+        transition: background 120ms;
+    }
+    .reading:last-child {
+        margin-bottom: -4px;
+        border-bottom: 0;
     }
     .row:hover, .row.active {
         background: var(--parchment-2);

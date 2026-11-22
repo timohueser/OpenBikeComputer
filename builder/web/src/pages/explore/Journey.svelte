@@ -238,9 +238,6 @@
         .box :global(svg) {
             transition: opacity 120ms;
         }
-        .button {
-            transition-property: background, border-color;
-        }
     }
     .leg-head:hover .box {
         border-color: var(--ink-soft);
@@ -377,6 +374,11 @@
     }
     .button:active {
         transform: scale(0.97);
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .button {
+            transition-property: background, border-color;
+        }
     }
     .button :global(svg) {
         color: var(--ink-soft);

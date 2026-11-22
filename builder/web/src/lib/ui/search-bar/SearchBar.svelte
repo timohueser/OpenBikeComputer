@@ -185,6 +185,7 @@
         flex-direction: column;
         justify-content: center;
         gap: 1px;
+        position: relative;
         min-width: 0;
         padding: 8px 14px;
         border: 0;
@@ -195,11 +196,19 @@
         text-align: left;
         transition: background 120ms;
     }
-    /* The cross and "Undo" stand over the end of the last slot, inside the border of the strip, so no slot moves when
-       they show. The last slot is wider by the cell of the cross, so its words have the room of the other slots. */
+    /* The cross and "Undo" have their place after the last slot, as wide as the cell of "Undo", so no slot moves when
+       they show. Until then, the colour of the last slot fills that place and a click there is a click on the slot. */
     .slot:last-child {
-        flex-basis: 44px;
-        padding-right: 58px;
+        margin-right: 76px;
+    }
+    .slot:last-child::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 100%;
+        width: 76px;
+        background: inherit;
     }
     .slot:hover:not(:disabled) {
         background: var(--parchment);
@@ -352,8 +361,10 @@
             border-left: 0;
         }
         .slot:last-child {
-            flex-basis: 0;
-            padding-right: 10px;
+            margin-right: 0;
+        }
+        .slot:last-child::after {
+            content: none;
         }
         .tail {
             bottom: auto;

@@ -140,6 +140,19 @@ test('the text field sends each typed phrase to its slot, takes one suggestion w
   // A name that begins a place of the server is not unknown: the list says what a click on the place does.
   await field.fill('Freib');
   await expect(page.locator('.search-panel.list')).toHaveText(/^\s*Move the map to\s*Freiburg\s*city · Testland\s*$/);
+
+  // A click on the first row sends what it shows, also while a place is the active row: the words in progress stay, and
+  // the map does not move.
+  await field.fill('forest Freib');
+  const marked = page.getByRole('option', { name: 'On the way: Mostly forest' }), view = viewOf(page);
+  await expect(marked).toBeVisible();
+  await field.press('ArrowDown');
+  await field.press('ArrowDown');
+  await expect(page.getByRole('option', { name: /^Freiburg/ })).toHaveAttribute('aria-selected', 'true');
+  await marked.click();
+  await expect(slotText(page, 'way')).toHaveText('Summit · Mostly forest');
+  await expect(field).toHaveValue('Freib');
+  expect(viewOf(page)).toEqual(view);
   expect(errors).toEqual([]);
 });
 
