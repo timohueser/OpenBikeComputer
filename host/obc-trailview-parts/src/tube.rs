@@ -906,12 +906,35 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
         let (xl, df) = (cut.across, cut.floor - st.z);
         Some(steps(own, f(&op, xl).zip(top_at(&oo, xl)).map(|(lo, hi)| (lo + df, hi + df))))
     };
+    // Where the cut moves across the room within a piece, the faces break where it passes a corner of the outline or
+    // of the floor, so they follow both.
+    let corners: Vec<f64> = o.iter().map(|p| p[0]).chain(pieces.iter().flat_map(|p| [p.0, p.1])).collect();
     for m in &meetings {
         let ((s, cs), (t, ct)) = (m.from, m.to);
-        if let (Some([ls, us]), Some([lt, ut])) = (span(&s, &cs), span(&t, &ct)) {
-            let out = across([-cs.axis.signum(), 0.0]);
-            cut_face(b, (&s, &t), (cs.x, ls.0, ls.1), (ct.x, lt.0, lt.1), bore(inside.walk), out);
-            cut_face(b, (&s, &t), (cs.x, us.0, us.1), (ct.x, ut.0, ut.1), bore(vault), out);
+        let mut at: Vec<f64> =
+            corners.iter().map(|&x| (x - cs.x) / (ct.x - cs.x)).filter(|u| *u > 1e-6 && *u < 1.0 - 1e-6).collect();
+        at.extend([0.0, 1.0]);
+        at.sort_by(f64::total_cmp);
+        at.dedup_by(|a, b| *a - *b < 1e-9);
+        let mix = |u: f64| {
+            let lerp = |a: f64, b: f64| a + (b - a) * u;
+            (
+                s.mix(&t, u),
+                Cut {
+                    x: lerp(cs.x, ct.x),
+                    across: lerp(cs.across, ct.across),
+                    floor: lerp(cs.floor, ct.floor),
+                    ..if u < 1.0 { cs } else { ct }
+                },
+            )
+        };
+        let out = across([-cs.axis.signum(), 0.0]);
+        for w in at.windows(2) {
+            let ((p, cp), (q, cq)) = (mix(w[0]), mix(w[1]));
+            if let (Some([lp, up]), Some([lq, uq])) = (span(&p, &cp), span(&q, &cq)) {
+                cut_face(b, (&p, &q), (cp.x, lp.0, lp.1), (cq.x, lq.0, lq.1), bore(inside.walk), out);
+                cut_face(b, (&p, &q), (cp.x, up.0, up.1), (cq.x, uq.0, uq.1), bore(vault), out);
+            }
         }
     }
 }
