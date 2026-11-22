@@ -5,7 +5,7 @@ import { SEASONS, type Season } from '../rules/regions';
 import { SUMMER } from '../vegetation/phenology';
 import { ANIMALS } from './animals';
 import { geometry } from './flat';
-import { bareIn, buildsFar, tree, TREES } from './library';
+import { bareIn, buildsFar, farFromFar, tree, TREES } from './library';
 import type { FloatMesh, Models, Packed } from './model-file';
 import { encodeModels, pack } from './pack';
 import { plant, PLANTS } from './plant-library';
@@ -104,10 +104,10 @@ function crown(id: string, season: Season): Packed {
     return treeModel(bareIn(id, season) ? grown : tiers(id, grown));
 }
 
-/** Tier 0, and tiers 1 and 2 simplified from it, each with its own trunk; a species of `buildsFar` grows tier 2, as bright as tier 0. */
+/** Tier 0, and tiers 1 and 2 simplified from it, each with its own trunk; a species of `buildsFar` grows tier 2, as bright as tier 0, and one of `farFromFar` simplifies its own. */
 function tiers(id: string, [near, middle, far]: Grown[]): Grown[] {
     const want = lit(near);
-    return [near, simplified(near, middle, TRIANGLES[0], want), buildsFar(id) ? relit(far, want) : simplified(near, far, TRIANGLES[1], want)];
+    return [near, simplified(near, middle, TRIANGLES[0], want), buildsFar(id) ? relit(far, want) : simplified(farFromFar(id) ? far : near, far, TRIANGLES[1], want)];
 }
 
 /** A tree model, with its crown's lowest point at every tier. */

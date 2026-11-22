@@ -24,5 +24,11 @@ export const bareIn = (id: string, season: Season) => {
  */
 export const buildsFar = (id: string) => {
     const spec = TREES[id];
-    return spec.form === 'conifer' ? !!(spec.boughs || spec.tufts) : !!spec.crook;
+    return spec.form === 'conifer' ? !!(spec.boughs || spec.tufts) : !!spec.crook && !spec.shape;
+};
+
+/** Whether a species' far tier is simplified from its own far level, not from its nearest: a shaped crown of many small lumps would come out in shards. */
+export const farFromFar = (id: string) => {
+    const spec = TREES[id];
+    return spec.form === 'broadleaf' && !!spec.shape;
 };

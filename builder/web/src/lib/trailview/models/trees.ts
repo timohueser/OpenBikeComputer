@@ -124,11 +124,27 @@ interface Broadleaf extends Base {
     open?: true;
     /** Limbs leave the trunk at staggered heights below their lumps, as on an old pine, not from one fork. */
     stagger?: true;
+    /**
+     * The crown's outline: its radius in crown half-widths from its base (t = 0) to its top (t = 1). `clumps` lumps stand
+     * on it near the eye, 12 by default, more where it is wide, each on its own limb: the lowest on main limbs from the
+     * fork, or with `stagger` from a trunk that runs to the top, the others on limbs that fork from the main ones. An
+     * `open` crown has sky between its lumps; another has a core that closes it.
+     */
+    shape?: (t: number) => number;
+    clumps?: number;
+    /** A shaped crown's limbs bow: above 0 they rise from the trunk and arch out, below 0 they leave it level and turn up. */
+    bow?: number;
+    /**
+     * The flecks of a leafy crown are heads that sit on it, as flower heads, plumes or berry clusters, not dots: how many
+     * a near tree has where the season's share is 1, a head's width in tree heights and its height in widths, and the
+     * points of a head that is a star, as a burst of catkins.
+     */
+    heads?: { count: number; width: number; height: number; points?: number };
     /** Puffs are flat-topped pads, as on a Scots pine; a near tree has three more. */
     pads?: true;
     /** Each lump swells into this many round tufts, lighter on the swells, as the needle brushes of a pine. */
     billows?: number;
-    /** Puffs this many times as wide: an open crown of few, heavy puffs. */
+    /** Puffs this many times as wide: an open crown of few, heavy puffs. In a shaped open crown, a lump's width as a share of one that closes the crown, 0.6 by default. */
     dense?: number;
     /** An open crown's puffs stand in this many level whorls under a dome, the widest lowest, as on a black pine: near the eye 3 or 4 a whorl. */
     layers?: number;
@@ -507,6 +523,33 @@ function berries(parts: Geometry[], [colour, count]: [string, number], rand: () 
     return out;
 }
 
+// A flower head, radius 1 and 1 tall, over a collar that stands in the crown.
+const HEAD: [number, number][] = [[0.9, -0.3], [1, 0.1], [0.8, 0.6], [0, 1]];
+
+/**
+ * Heads on the skin of a crown's `parts`, as `berries`: each faces out of the crown and up, in the fleck's colour over
+ * a collar of the leaves' colour `leaf`.
+ */
+function heads(parts: Geometry[], { count, width, height, points }: NonNullable<Broadleaf['heads']>, [colour, share]: [string, number], leaf: Colour, rand: () => number, hidden: (p: V, part: number) => boolean): Geometry[] {
+    const out: Geometry[] = [], shade = hex(colour), p = v3(), n = v3();
+    for (let tries = 0; out.length < Math.round(count * share) && tries < 2000; tries++) {
+        const part = Math.floor(rand() * parts.length), k = Math.floor((rand() * parts[part].position.length) / 3);
+        p.from(parts[part].position, k);
+        if (n.from(parts[part].normal, k).z < -0.3 || hidden(p, part)) continue;
+        // A star is flat: a point in the middle and a rim.
+        const geo = points ? soft(revolve([[1, 0], [0, 0.4]], 2 * points)) : soft(lathe(HEAD, 6, 2), 0.1, 5, tries), q = geo.position;
+        // A star's points stand out and hang a little.
+        for (let i = 0; points && i < q.length; i += 3) {
+            const far = 0.5 + 0.5 * Math.cos(points * Math.atan2(q[i + 1], q[i])), k = lerp(0.3, 1.4, far);
+            q.splice(i, 3, q[i] * k, q[i + 1] * k, q[i + 2] - 0.4 * far * Math.hypot(q[i], q[i + 1]));
+        }
+        const tone = 0.85 + 0.3 * rand(), size = 0.5 * width * (0.8 + 0.4 * rand());
+        const head = paint(computeNormals(geo), (at, m) => leaf.clone().lerp(shade.clone().multiplyScalar(tone * (0.85 + 0.2 * m.z)), smooth(-0.15, 0.1, at.z)));
+        out.push(place(head, { at: p.clone(), turn: turnFromTo(UP, n.lerp(UP, 0.5).normalize()), scale: [size, size, 2 * size * height] }));
+    }
+    return out;
+}
+
 /**
  * Bends a part made along z from 0 to 1 onto `path` from `from` to `to`. `across` gives where a point (x, y)
  * at z stands beside the path: level, and up.
@@ -522,6 +565,24 @@ function bend(geo: Geometry, path: (s: number) => V, from: number, to: number, a
         p.splice(i, 3, at.x, at.y, at.z);
     }
     return computeNormals(geo);
+}
+
+/** A part without the triangles whose corners `hidden` all picks, and without the corners that no triangle is left on. */
+function shown(geo: Geometry, hidden: (p: V) => boolean): Geometry {
+    const p = v3(), gone = Array.from({ length: geo.position.length / 3 }, (_, k) => hidden(p.from(geo.position, k)));
+    const at = new Map<number, number>(), out: Geometry = { position: [], normal: [], color: [], index: [] };
+    for (let t = 0; t < geo.index.length; t += 3) {
+        const corners = geo.index.slice(t, t + 3);
+        if (corners.every(k => gone[k])) continue;
+        for (const k of corners) {
+            if (!at.has(k)) {
+                at.set(k, at.size);
+                for (const name of ['position', 'normal', 'color'] as const) out[name].push(...geo[name].slice(3 * k, 3 * k + 3));
+            }
+            out.index.push(at.get(k)!);
+        }
+    }
+    return out;
 }
 
 /**
@@ -557,6 +618,27 @@ function lumps(count: number, rand: () => number): { at: V; r: number }[] {
         const a = (k / ring) * 2 * Math.PI + rand() * 0.5;
         const z = (k % 2 ? 0.2 : -0.15) + (rand() - 0.5) * 0.15;
         out.push({ at: v3(0.55 * Math.cos(a), 0.55 * Math.sin(a), z), r: 0.48 + rand() * 0.08 });
+    }
+    return out;
+}
+
+/**
+ * A shaped crown in its own frame, from -1 to 1 high: a lump on top, first, and the others around the outline from low
+ * to high, a part of a turn on each, at heights that share the outline's area evenly. `size` times as large as lumps
+ * that close the crown.
+ */
+function clumps(shape: (t: number) => number, count: number, rand: () => number, size: number): { at: V; r: number }[] {
+    const ring = count - 1, r0 = (size * 1.75) / Math.sqrt(count), STEPS = 24;
+    const wide = Array.from({ length: STEPS }, (_, i) => shape((i + 0.5) / STEPS)), total = wide.reduce((sum, w) => sum + w, 0), widest = Math.max(...wide);
+    const top = clamp(1.3 * shape(0.85), 0.6 * r0, 1.1 * r0), out = [{ at: v3(0, 0, 1 - top), r: top }];
+    for (let k = 0, i = 0, below = 0; k < ring; k++) {
+        const want = ((k + 0.5) / ring) * total;
+        while (below + wide[i] < want) below += wide[i++];
+        const t = lerp(0.08, 0.82, (i + (want - below) / wide[i]) / STEPS), edge = shape(t);
+        const r = Math.min(r0 * lerp(0.7, 1.1, edge / widest) * (0.85 + 0.3 * rand()), Math.max(edge, 0.5 * r0)), a = k * GOLDEN + 0.5 * rand();
+        // A lump stands a little out of the outline, a large one no further than a small one.
+        const d = Math.max(0, edge - r + 0.12);
+        out.push({ at: v3(d * Math.cos(a), d * Math.sin(a), Math.max(2 * t - 1, 0.8 * r - 1)), r });
     }
     return out;
 }
@@ -600,7 +682,11 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
     const leaves = spec.leaves[season];
     const bare = leaves === 'bare';
     // A bare crown grows the limbs of the nearest level at every level.
-    const { lumps: count, ico } = DETAIL[bare ? 0 : lod];
+    const { lumps: count, ico: corners } = DETAIL[bare ? 0 : lod];
+    // The lumps of a shaped crown: a leafy one has fewer, larger ones a level. Its far tier is simplified from its far
+    // level, whose lumps are round enough to stay lumps.
+    const clumped = spec.shape && Math.round((spec.clumps ?? 12) * (bare ? 1 : [1, 0.75, 0.55][lod]));
+    const ico = clumped ? Math.max(1, corners) : corners;
     const [deep, mid, tip] = ramp(bare ? spec.twigs : leaves);
     const flecks = spec.flecks?.[season];
     const foliage = (p: V, n: V) => {
@@ -608,6 +694,8 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
             .clone()
             .lerp(mid, 0.7 * smooth(-0.6, 0.3, n.z) + 0.3 * smooth(-0.8, 0.6, p.z))
             .lerp(tip, 0.7 * smooth(0.2, 0.9, n.z) * smooth(-0.2, 0.8, p.z));
+        // Under its heads a crown takes a little of their colour on its upper sides, which a far tier keeps.
+        if (flecks && spec.heads) return c.lerp(hex(flecks[0]), 0.5 * flecks[1] * smooth(0, 0.8, n.z));
         return flecks && !spec.bunches && !spec.rods ? c.lerp(hex(flecks[0]), fleck(p, n, flecks[1], lod, seed)) : c;
     };
     // A palm or a dragon tree grows its crown from the trunk's top.
@@ -621,10 +709,13 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
     }
     // A far crooked tree has a puff more, as it keeps its limbs.
     const whorled = spec.layers && [Math.round(3.6 * spec.layers), Math.round(2.4 * spec.layers), 4][lod] + 1;
-    const crown = spec.open ? puffs((whorled || count + (spec.pads && !lod ? 3 : 0)) + (spec.crook && lod === 2 ? 1 : 0), rand, spec.dense, spec.layers) : lumps(count, rand);
+    const crown = clumped ? clumps(spec.shape!, clumped, rand, spec.open ? (spec.dense ?? 0.6) : 1) : spec.open ? puffs((whorled || count + (spec.pads && !lod ? 3 : 0)) + (spec.crook && lod === 2 ? 1 : 0), rand, spec.dense, spec.layers) : lumps(count, rand);
     const parts: Geometry[] = [];
     // An open crown's trunk runs up into its top puff, which no limb reaches.
-    const top = spec.open ? cz + (spec.layers ? 0.5 : 0.3) * rz : spec.fork + 0.3 * rz;
+    const high = spec.open ? cz + (spec.layers ? 0.5 : 0.3) * rz : spec.fork + 0.3 * rz;
+    // A shaped crown's trunk ends where its limbs leave: under the top lump with `stagger`, in the crown's middle where
+    // it has stems, else at the fork. A far open one runs to the middle, as its limbs are too thin to keep.
+    const top = !clumped ? high : spec.stagger ? (spec.stems ? cz : toTree(crown[0].at).z - crown[0].r * rz) : spec.open && lod === 2 && !bare ? cz : spec.fork + 0.1 * rz;
     // A far tree's stems hide under its crown, so it has one trunk as stout as all of them.
     const stems = lod < 2 ? (spec.stems ?? 1) : 1;
     const stout = { ...spec, trunk: spec.trunk * Math.sqrt((spec.stems ?? 1) / stems) };
@@ -635,7 +726,7 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
         const out = stems > 1 ? v3(Math.cos(a), Math.sin(a), 0) : v3();
         const lean = out.clone().multiplyScalar(0.3).setZ(1).normalize();
         leaders.push({ out: out.clone(), foot: out.clone().multiplyScalar(1.2 * spec.trunk), lean });
-        parts.push(place(trunk(stout, top, lod, seed + s, spec.crook ? [5, 3, 3][lod] : 1), { at: out.multiplyScalar(1.2 * spec.trunk), turn: turnFromTo(UP, lean) }));
+        parts.push(place(trunk(stout, top, lod, seed + s, spec.crook ? [5, 3, clumped ? 1 : 3][lod] : 1), { at: out.multiplyScalar(1.2 * spec.trunk), turn: turnFromTo(UP, lean) }));
     }
     // Where a limb towards `to` leaves the trunk at height z: the middle, or with `leaders` the stem on that side.
     const leave = (to: V, z: number) => {
@@ -645,6 +736,21 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
     };
     const [foot, bole] = spec.bark.map(hex);
     const bark = (p: V) => foot.clone().lerp(bole, smooth(0, spec.fork, p.z));
+    // The limbs of a shaped crown, by lump: a main limb leaves the trunk, another forks from the main limb on its side.
+    // A bare limb runs to its lump's middle. The top lump's comes last, as it forks from a main limb.
+    const MAINS = 5;
+    const main = (n: number) => !!spec.stagger || (n > 0 && n <= MAINS);
+    const limbs: ((s: number) => V)[] = [];
+    for (const n of clumped ? [...crown.keys()].slice(1).concat(0) : []) {
+        const end = toTree(crown[n].at.clone().multiplyScalar(bare ? 1 : 0.8)), level = Math.hypot(end.x, end.y);
+        const from = spec.stagger ? leave(end, n ? clamp(end.z - 0.6 * level, spec.fork, top) : top)
+            : main(n) ? leave(end, spec.fork)
+            : limbs.slice(1, MAINS + 1).reduce((best, limb) => (limb(1).setZ(0).normalize().dot(end) > best(1).setZ(0).normalize().dot(end) ? limb : best))(0.45);
+        const length = from.distanceTo(end), side = level > 1e-6 ? v3(-end.y, end.x, 0).normalize() : v3(1, 0, 0);
+        // The limb's bend: up or down by `bow`, and a little to one side.
+        const knee = from.clone().lerp(end, 0.5).addScaledVector(UP, 0.5 * (spec.bow ?? 0) * length).addScaledVector(side, 0.12 * length * (hash(end, seed) - 0.5));
+        limbs[n] = (s: number) => from.clone().multiplyScalar((1 - s) ** 2).addScaledVector(knee, 2 * s * (1 - s)).addScaledVector(end, s * s);
+    }
     if (bare) {
         const twigs = sheet();
         const [dead, share] = flecks ? [hex(flecks[0]), flecks[1]] : [mid, 0];
@@ -656,13 +762,26 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
             // Without a stagger the limbs leave over the lowest part of the way from the fork to their lumps.
             const fork = spec.stagger ? Math.max(spec.fork, centre.z - 0.6 * Math.hypot(centre.x, centre.y)) : lerp(spec.fork, Math.max(spec.fork, centre.z), 0.3 * rise);
             const from = leave(centre, Math.min(top, fork));
-            bough(parts, twigs, from, centre, spec.trunk * 0.45, bark, DETAIL[lod].limbs, n, spec.trunk * 0.2);
+            if (clumped) stem(parts, twigs, (lod < 2 ? [0, 0.33, 0.67, 1] : [0, 0.5, 1]).map(limbs[n]), (main(n) ? 0.45 : 0.3) * spec.trunk, spec.trunk * 0.15, bark, DETAIL[lod].limbs, n);
+            else bough(parts, twigs, from, centre, spec.trunk * 0.45, bark, DETAIL[lod].limbs, n, spec.trunk * 0.2);
             // The limb forks into branches that rise as they spread, and short twigs fan from their
             // outer parts to the lump's far side: a tree's tapering fork, not spikes from one point.
             for (let b = 0; b < BRANCHES; b++) {
                 const way = v3(rand() - 0.5, rand() - 0.5, rand() - 0.2 - weep).multiplyScalar(1.6).add(out).normalize();
-                const end = at.clone().addScaledVector(way, 0.6 * r);
+                const end = at.clone().addScaledVector(way, (clumped ? 0.85 : 0.6) * r);
                 bough(parts, twigs, centre, toTree(end), spec.trunk * 0.2, bark, lod ? 0 : 4, BRANCHES * n + b, spec.trunk * 0.04);
+                // A shaped crown's twigs fork in threes, at the branch's end and along it.
+                for (let k = 0, fans = Math.round(TWIGS / crown.length / BRANCHES / 3); clumped && k < fans; k++) {
+                    const root = at.clone().lerp(end, 1 - (0.7 * (k + 0.5 * rand())) / fans);
+                    const along = v3(rand() - 0.5, rand() - 0.5, rand() - 0.3 - weep).add(way).normalize(), across = v3(rand() - 0.5, rand() - 0.5, rand() - 0.5).cross(along).normalize();
+                    const colours = rand() < share ? [dead, dead] : [mid, tip], length = (0.4 + 0.4 * rand()) * r;
+                    for (const fork of [0, -1, 1]) {
+                        const reach = root.clone().addScaledVector(along.clone().addScaledVector(across, 0.55 * fork).normalize(), length * (fork ? 0.8 : 1));
+                        reach.z -= weep * rand() * r;
+                        twig(twigs, toTree(root), toTree(reach), colours, rand, lod, kept++);
+                    }
+                }
+                if (clumped) continue;
                 for (let k = 0; k < TWIGS / crown.length / BRANCHES; k++) {
                     const root = at.clone().lerp(end, 0.3 + 0.7 * rand());
                     const reach = root.clone().addScaledVector(v3(rand() - 0.5, rand() - 0.5, rand() - 0.3 - weep).add(way).normalize(), (0.2 + 0.25 * rand()) * r);
@@ -674,23 +793,39 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
         }
         parts.push(twigs.build());
     } else {
+        // A closed shaped crown has a core inside its lumps.
+        if (clumped && !spec.open) {
+            const core = soft(lathe([[0, -0.9], ...Array.from({ length: 5 }, (_, j): [number, number] => [0.7 * spec.shape!(0.1 + 0.2 * j), -0.8 + 0.4 * j]), [0, 0.9]], [8, 6, 4][lod], [6, 4, 3][lod]));
+            parts.push(place(paint(core, (p, n) => foliage(p, n).multiplyScalar(0.85)), { at: [0, 0, cz], scale: [rx, ry, rz] }));
+        }
+        // A shaped crown's lumps are less tall in a crown taller than wide, and taller in a wide one, so they are nearly round.
+        const tall = clumped ? clamp((rx / rz) ** 0.6, 0.6, 1.3) : 1;
         crown.forEach(({ at, r }, k) => {
             // Each lump a little lighter or darker, so the crown does not read as one blob.
             const tone = 0.9 + 0.2 * rand();
             // A flat pad needs fewer corners than a round puff, and so does a small puff that swells.
-            const puff = soft(lump(r, spec.pads || (spec.billows && r < 0.44) ? Math.min(ico, 2) : ico), 0.04, 4, seed + k);
+            const puff = soft(lump(r, spec.pads || ((spec.billows || clumped) && r < 0.44) ? Math.min(ico, 2) : ico), 0.04, 4, seed + k);
             // A far lump has too few corners to swell.
             const swell = spec.billows && ico > 1 ? billow(puff, r, spec.billows, seed + k) : undefined;
             if (spec.weep) hang(puff, r, spec.weep);
             if (spec.pads) pad(puff, r);
             let v = 0;
             // A whorl's puff is no taller in a crown taller than wide; a far one has too few corners for a pad, and is flat.
-            const geo = paint(place(puff, { at, scale: [1, 1, spec.layers ? Math.min(ico < 2 ? 0.6 : 1, rx / rz) : 1] }), (p, n) => foliage(p, n).multiplyScalar(tone * (swell ? 0.8 + 0.4 * swell[v++] : 1)));
-            parts.push(place(geo, { at: [0, 0, cz], scale: [rx, ry, rz] }));
+            const whole = paint(place(puff, { at, scale: [1, 1, spec.layers ? Math.min(ico < 2 ? 0.6 : 1, rx / rz) : tall] }), (p, n) => foliage(p, n).multiplyScalar(tone * (swell ? 0.8 + 0.4 * swell[v++] : 1)));
+            // A shaped crown's lump keeps the skin that shows: not what stands in another lump or in the core. A lump is
+            // less deep where it swells between tufts or hangs to a point.
+            const sunk = (swell ? 0.62 : 0.88) * (1 - 0.5 * (spec.weep ?? 0));
+            const within = (other: V, p: V) => Math.hypot(p.x - other.x, p.y - other.y, (p.z - other.z) / tall);
+            const geo = clumped ? shown(whole, p => crown.some((other, j) => j !== k && within(other.at, p) < sunk * other.r) || (!spec.open && Math.abs(p.z) < 0.75 && Math.hypot(p.x, p.y) < 0.55 * spec.shape!((p.z + 1) / 2))) : whole;
+            parts.push(place(clumped ? rounded(geo, 0.3) : geo, { at: [0, 0, cz], scale: [rx, ry, rz] }));
         });
         if (spec.berries && !lod) {
             const inside = (p: V, own: number) => crown.some((other, k) => k !== own && other.at.distanceTo(v3(p.x / rx, p.y / ry, (p.z - cz) / rz)) < 0.75 * other.r);
             parts.push(...berries(parts.slice(-crown.length), spec.berries, rand, inside));
+        }
+        if (spec.heads && flecks && !lod) {
+            const inside = (p: V, own: number) => crown.some((other, k) => k !== own && other.at.distanceTo(v3(p.x / rx, p.y / ry, (p.z - cz) / rz)) < other.r);
+            parts.push(...heads(parts.slice(-crown.length), spec.heads, flecks, mid, rand, inside));
         }
         // A bunch hangs from the side or the underside of a lump, where no other lump hides it.
         for (let k = 0, tries = 0; flecks && lod === 0 && k < (spec.bunches ?? 0) && tries < 1000; tries++) {
@@ -705,7 +840,9 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
         }
         // Limbs run from the fork into the outer lumps. An open crown keeps them a level further out,
         // so its puffs never float, and a crooked one at every level, as its puffs stand far from the trunk.
-        if (spec.trunk && (lod === 0 || (spec.open && lod === 1) || spec.crook)) {
+        if (clumped) {
+            for (const [n, limb] of lod < 2 ? limbs.entries() : []) parts.push(tube((main(n) ? [0, 0.33, 0.67, 1] : [0, 0.5, 1]).map(limb), (main(n) ? 0.45 : 0.3) * spec.trunk, 0.2 * spec.trunk, 4, bark));
+        } else if (spec.trunk && (lod === 0 || (spec.open && lod === 1) || spec.crook)) {
             for (const { at } of crown.slice(1)) {
                 const end = toTree(at.clone().multiplyScalar(0.8));
                 const from = leave(end, spec.stagger ? Math.max(spec.fork, end.z - 0.6 * Math.hypot(end.x, end.y)) : spec.fork);
