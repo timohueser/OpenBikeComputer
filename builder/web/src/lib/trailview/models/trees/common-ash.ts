@@ -4,9 +4,16 @@ export default {
   form: 'broadleaf',
   name: 'Common ash',
   latin: 'Fraxinus excelsior',
-  // A domed crown high on a long, pale grey bole.
+  // An open, domed crown high on a long, pale grey bole; the limbs leave level and turn up.
   fork: 0.42,
   crown: [0.68, 0.4, 0.36, 0.32],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.1 + 0.8 * t)) ** 0.6,
+  clumps: 12,
+  open: true,
+  dense: 0.85,
+  billows: 3,
+  weep: 0.25,
+  bow: -0.5,
   trunk: 0.04,
   flare: 1.4,
   bark: ['#66665e', '#9a9a90'],
