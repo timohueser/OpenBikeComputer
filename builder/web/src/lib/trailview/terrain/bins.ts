@@ -238,6 +238,8 @@ export interface Building { rings: number[][]; outer: boolean[] }
  * surface, the pads under the platforms and the buildings.
  */
 export interface Shapes {
+    /** The zoom of the tile. */
+    zoom: number;
     lines: Line[]; mouths: CulvertMouth[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[];
     crossings: { x: number; y: number }[];
     /** Each part of a bridge whole, missing heights included, in world units, and the half-width of its deck in metres. */
@@ -259,8 +261,13 @@ export const gateTexel = (level: number) => 2 * Math.PI * EARTH_RADIUS * RULES.G
 /** As sea_shows of stamp-core.wgsl: whether a level cuts the sea. */
 export const seaShows = (level: number) => RULES.LIFT_M + RULES.LIFT * RULES.MESH_TEXELS * gateTexel(level) < RULES.BED_DEPTH;
 
+/** As reach_limit of stamp-core.wgsl: the metres that a line's half-width and its reach may take at a texel. */
+const reachLimit = (texel: number) => RULES.BUFFER_M - 2 * texel - 1;
+/** Whether any line can show at a level: below 0 of the reach limit, none does, as neither a half-width nor a reach is below 0. */
+export const linesShow = (level: number) => reachLimit(gateTexel(level)) >= 0;
+
 export function shows({ kind, h, profile }: Line, texel: number): boolean {
-    const limit = RULES.BUFFER_M - 2 * texel - 1, { reach, least } = Object.values(PROFILES)[profile];
+    const limit = reachLimit(texel), { reach, least } = Object.values(PROFILES)[profile];
     if (kind === STREAM) return false;
     if (kind === PATH) return 2 * h >= texel && h + reach <= limit;
     return 2 * h >= texel && h + least <= limit;
@@ -275,11 +282,22 @@ export function zebraTagged(tags: Record<string, string>): boolean {
 /** The shapes of each decoded tile, made once: the stamps and the water of each of its nodes read them. */
 const shapes = new WeakMap<Feature[], Shapes & { tile: string }>();
 
-/** The roads, paths, rivers, lakes and sea of a tile that have heights, its river areas and its buildings, in world units. */
+/** The lines that a node reads at a level where no line shows: the water mesh draws the waterways, under the bridges and through the tunnels. */
+const WATER_MESH_KINDS = [RIVER, STREAM, BRIDGE, TUNNEL];
+
+/**
+ * The roads, paths, rivers, lakes and sea of a tile that have heights, its river areas and its buildings, in world units.
+ * A tile under DEEPEST serves the nodes of one level (featureTile); where no line shows there, it keeps only the lines of
+ * the water mesh, as its other lines take most of its bytes in a worker.
+ */
 export function features(list: Feature[], tile: Node): Shapes {
     const name = `${tile.level}/${tile.x}/${tile.y}`;
     let known = shapes.get(list);
-    if (known?.tile !== name) shapes.set(list, (known = { tile: name, ...shapesOf(list, tile) }));
+    if (known?.tile !== name) {
+        const made = shapesOf(list, tile);
+        if (tile.level < DEEPEST && !linesShow(tile.level + 1)) made.lines = made.lines.filter(({ kind }) => WATER_MESH_KINDS.includes(kind));
+        shapes.set(list, (known = { tile: name, ...made }));
+    }
     return known;
 }
 
@@ -293,11 +311,13 @@ export function features(list: Feature[], tile: Node): Shapes {
 export interface TileIndex { lines: Grid; reach: number; waterHalf: number; outlines: Grid & { seasFrom: number; padsFrom: number; areasFrom: number; buildingsFrom: number } }
 const indexes = new WeakMap<Shapes, TileIndex>();
 /**
- * The cells of a tile's index, 2^13 world units (about 200 m in the Alps): a level-18 node asks a few, and a lake's box
+ * The cells of a zoom 13 tile's index, 2^13 world units (about 200 m in the Alps): a level-18 node asks a few, and a lake's box
  * takes few. Most structures ask about a point with a reach of some tens of metres: one cell, or two to four at a cell's
  * edge. `coreAt` asks with a quarter of the tile's longest way segment, which can be hundreds of metres and many cells.
+ * A coarser tile has at most 16 × 16 cells: a box takes a cell of each 2^13 that it covers, and a long river's box on a
+ * zoom 8 tile covers thousands of them.
  */
-const INDEX_SHIFT = 13;
+const indexShift = ({ zoom }: Shapes) => Math.max(13, 30 - zoom - 4);
 
 /** The box of rings, west, north, east, south. */
 function ringsBox(rings: number[][]): number[] {
@@ -317,10 +337,10 @@ export function tileIndex(shapes: Shapes): TileIndex {
     if (index) return index;
     const { lines, lakes, seas, pads, areas, buildings } = shapes, seasAt = lakes.length, padsAt = seasAt + seas.length, areasAt = padsAt + pads.length;
     index = {
-        lines: gridOf(lines.map(({ xy }) => ringsBox([xy])), INDEX_SHIFT),
+        lines: gridOf(lines.map(({ xy }) => ringsBox([xy])), indexShift(shapes)),
         reach: lines.reduce((most, line) => Math.max(most, reachOf(line, NEAR), reachOf(line, NEAR - 1)), REACH_M),
         waterHalf: lines.reduce((most, { kind, h }) => (kind === RIVER || kind === STREAM ? Math.max(most, h) : most), 0),
-        outlines: { ...gridOf([...lakes, ...seas, ...pads, ...areas, ...buildings].map(({ rings }) => ringsBox(rings)), INDEX_SHIFT), seasFrom: seasAt, padsFrom: padsAt, areasFrom: areasAt, buildingsFrom: areasAt + areas.length },
+        outlines: { ...gridOf([...lakes, ...seas, ...pads, ...areas, ...buildings].map(({ rings }) => ringsBox(rings)), indexShift(shapes)), seasFrom: seasAt, padsFrom: padsAt, areasFrom: areasAt, buildingsFrom: areasAt + areas.length },
     };
     indexes.set(shapes, index);
     return index;
@@ -388,7 +408,7 @@ function deckIndex(shapes: Shapes): DeckIndex {
     let index = deckIndexes.get(shapes);
     if (!index) {
         const rings = shapes.bridges.map(({ xy, half }) => ({ rings: [deckRing(xy, half)], outer: [true] })).filter(({ rings }) => rings[0].length);
-        deckIndexes.set(shapes, (index = { grid: gridOf(rings.map(({ rings }) => ringsBox(rings)), INDEX_SHIFT), rings }));
+        deckIndexes.set(shapes, (index = { grid: gridOf(rings.map(({ rings }) => ringsBox(rings)), indexShift(shapes)), rings }));
     }
     return index;
 }
@@ -581,7 +601,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     const buried = joinCulverts(list, lines, world);
     junctionPlanes(lines);
     abutments(lines);
-    return { lines, lakes, seas, areas, pads, buildings, barriers, crossings, bridges, mouths: standMouths(lines, buried) };
+    return { zoom: tile.level, lines, lakes, seas, areas, pads, buildings, barriers, crossings, bridges, mouths: standMouths(lines, buried) };
 }
 
 /**
@@ -1180,15 +1200,16 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     /** Two numbers within ±1 as unpack2x16snorm reads them. */
     const pair = (a: number, b: number) => (Math.round(a * 32767) & 0xffff) | (Math.round(b * 32767) << 16);
 
-    // With `plan` the records hold the junctions.
-    for (const [point, { x, y, h }] of plan ? [] : runsOnOf(lines)) {
+    // With `plan` the records hold the junctions. Where no line shows, the shader draws neither a junction nor a corner.
+    const junctionsShow = !plan && linesShow(node.level);
+    for (const [point, { x, y, h }] of junctionsShow ? runsOnOf(lines) : []) {
         if (!joinsOf(lines).has(point) && !kerbedOf(lines).has(point)) continue;
         const touched = within([x, y, x, y], REACH_M);
         if (!touched.length) continue;
         const at = record([x, y, 0, 0, JUNCTION, 0, f(h)]);
         for (const c of touched) cells[0][c].push(at);
     }
-    for (const corner of plan ? [] : cornersOf(lines)) {
+    for (const corner of junctionsShow ? cornersOf(lines) : []) {
         const { o, a, b, z, grad, walk, code, profile, h } = corner, touched = within(boxOf(corner), 1);
         if (!touched.length) continue;
         // The sidewalks' widths in decimetres share a word; the slopes fill the words about the second end.
