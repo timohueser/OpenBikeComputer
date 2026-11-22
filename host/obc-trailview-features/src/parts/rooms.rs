@@ -289,6 +289,8 @@ pub(crate) struct Place {
 /// their rooms' frame lines; and the counts.
 pub(crate) struct Rooms {
     pub tubes: Vec<Tube>,
+    /// Of a room of one lane, the metres along its arm where its own metres start.
+    pub from: Vec<f64>,
     pub lanes: Vec<Vec<Lane>>,
     pub table: Vec<Vec<(f64, Vec<Place>)>>,
     pub bounds: Vec<[Bound; 2]>,
@@ -812,6 +814,7 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
     // The rooms' tubes, tables and openings. A room of one lane is its arm, or the stretch of its arm.
     let mut out = Rooms {
         tubes: Vec::new(),
+        from: Vec::new(),
         lanes: Vec::new(),
         table: Vec::new(),
         bounds: Vec::new(),
@@ -870,6 +873,7 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
                 }
             }
             out.tubes.push(tube);
+            out.from.push(0.0);
             out.lanes.push(ordered);
             out.table.push(table);
         } else {
@@ -880,6 +884,7 @@ pub(crate) fn rooms(arms: Vec<Tube>, arm_openings: Vec<Opening>, input: &Input) 
                 openings.push(Opening { tube: r, s: o.s - from, ..o.clone() });
             }
             out.tubes.push(tube);
+            out.from.push(from);
             out.lanes.push(vec![l.clone()]);
             out.table.push(Vec::new());
         }
