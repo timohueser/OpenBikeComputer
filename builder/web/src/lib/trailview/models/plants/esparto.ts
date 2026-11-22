@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { blade, GOLDEN, merge, paint, ramp, random, smooth, type Geometry, type Ramp, type V } from '../plant-shape';
+import { domed, GOLDEN, hex, kite, ramp, random, sheet, spindle, v3, type Geometry, type Ramp } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** Esparto blades: grey-green at the root, pale straw at the tip. */
@@ -10,21 +10,42 @@ const ESPARTO: Record<Season, Ramp> = {
     autumn: ['#6b6a45', '#a39d6a', '#d4c58e'],
 };
 
-/** Esparto: a tussock of long wiry blades arching out of the crown, grey-green below, straw at the tips. */
+/** The feathery plumes, foot and top: silvery green as they open, gold in summer, bleached after. */
+const PLUMES: Record<Season, [string, string]> = {
+    winter: ['#a89c7c', '#d2c8aa'],
+    spring: ['#a8ae7c', '#dcdcae'],
+    summer: ['#c4a862', '#ecd89a'],
+    autumn: ['#b4a274', '#dccfa6'],
+};
+
+/**
+ * Esparto: a round tussock of 25 long wiry blades that arch out of the crown, grey-green below and straw at the
+ * tips, and four long plumes that nod on stalks above it. 78 triangles.
+ */
 function esparto(season: Season, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(ESPARTO[season]);
-    const parts: Geometry[] = [];
-    for (let k = 0; k < 26; k++) {
-        const a = k * GOLDEN + rand() * 0.4;
+    const light = domed(v3(), v3(1, 1, 1), 0.35);
+    const cards = sheet();
+    const reach = (a: number, angle: number, d: number) => v3(d * Math.sin(angle) * Math.cos(a), d * Math.sin(angle) * Math.sin(a), d * Math.cos(angle));
+    const blades = 25;
+    for (let k = 0; k < blades; k++) {
+        const u = (k + 0.5) / blades, a = k * GOLDEN + rand() * 0.4, length = 0.85 + 0.3 * rand();
         // Inner blades stand, outer ones bow out; no tip reaches the ground.
-        const tilt = 0.1 + 0.8 * Math.sqrt(k / 26) * (0.8 + 0.2 * rand());
-        const arch = Math.min(0.7 * tilt * (0.8 + 0.4 * rand()), Math.cos(tilt) - 0.1);
-        const ends = tip.clone().lerp(mid, 0.4 * rand());
-        const colour = (p: V) => deep.clone().lerp(mid, smooth(0, 0.35, p.length())).lerp(ends, smooth(0.4, 0.95, p.length()));
-        const d = 0.04 + 0.08 * Math.sqrt(k / 26);
-        parts.push(paint(blade([d * Math.cos(a), d * Math.sin(a), 0], a, 0.9 + 0.4 * rand(), tilt, arch, (t) => 0.06 * (1 - t), 2), colour));
+        const tilt = 0.08 + 0.85 * Math.sqrt(u), bow = Math.min(0.35 + 0.6 * u, 1.5 - tilt);
+        const foot = reach(a, Math.PI / 2, 0.03 + 0.07 * Math.sqrt(u));
+        const waist = foot.clone().add(reach(a, tilt, 0.5 * length)), end = waist.clone().add(reach(a, tilt + bow, 0.5 * length));
+        const body = mid.clone().lerp(tip, 0.3 * rand());
+        kite(cards, foot, waist, end, reach(a + Math.PI / 2, Math.PI / 2, 0.034 + 0.012 * rand()), [deep, body, tip.clone().lerp(mid, 0.4 * rand())], light);
     }
-    return merge(parts);
+    const plume = PLUMES[season].map(hex);
+    for (let k = 0; k < 4; k++) {
+        const a = (k / 4) * 2 * Math.PI + rand() * 1.2, lean = 0.12 + 0.2 * rand(), height = 0.95 + 0.2 * rand();
+        const base = reach(a, lean, 0.72 * height), top = base.clone().add(reach(a, lean + 0.5 + 0.4 * rand(), 0.34 * height));
+        const side = reach(a + Math.PI / 2, Math.PI / 2, 0.012);
+        cards.add([side, side.clone().negate(), base], [deep, deep, mid], light);
+        spindle(cards, base, top, 0.035, 3, plume);
+    }
+    return cards.build();
 }
 
 export default {

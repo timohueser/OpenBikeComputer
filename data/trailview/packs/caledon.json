@@ -27,7 +27,7 @@
   "bilberry": {},
   "lingonberry": { "model": "bilberry", "latin": "Vaccinium vitis-idaea", "on": ["tree", "shrub"], "height": [0.1, 0.25], "share": 0.15 },
   "crowberry": { "share": 0.2 },
-  "woolly-fringe-moss": { "model": "heather", "latin": "Racomitrium lanuginosum", "on": ["moss", "bare"], "height": [0.05, 0.15], "share": 0.3 },
+  "woolly-fringe-moss": { "latin": "Racomitrium lanuginosum", "on": ["moss", "bare"], "height": [0.05, 0.15], "share": 0.3 },
   "moor-grass": {},
   "bog-cotton": {},
   "soft-rush": { "model": "moor-grass", "latin": "Juncus effusus", "on": ["grass", "wetland"], "height": [0.5, 1.0], "share": 0.05, "clumped": true },

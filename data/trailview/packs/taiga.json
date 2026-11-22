@@ -18,7 +18,7 @@
   "bilberry": {},
   "lingonberry": { "model": "bilberry", "latin": "Vaccinium vitis-idaea", "on": ["tree", "shrub", "moss"], "height": [0.1, 0.25], "share": 0.2 },
   "crowberry": { "on": ["tree", "moss", "wetland"], "share": 0.15 },
-  "reindeer-lichen": { "model": "heather", "latin": "Cladonia rangiferina, Cladonia stellaris", "on": ["moss", "bare"], "height": [0.05, 0.12], "share": 0.3 },
+  "reindeer-lichen": { "latin": "Cladonia rangiferina, Cladonia stellaris", "on": ["moss", "bare"], "height": [0.05, 0.12], "share": 0.3 },
   "heather": {},
   "fern": {},
   "labrador-tea": { "model": "alpenrose", "latin": "Rhododendron tomentosum", "on": ["wetland", "moss"], "height": [0.3, 0.8], "share": 0.12, "clumped": true },

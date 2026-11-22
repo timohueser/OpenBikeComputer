@@ -1,7 +1,7 @@
 // The primitives that the plant models add to shape.ts, without three.js: the prototype's tubes,
 // ribbons and blades along smooth paths, tufts and their cores, and three.js's small solids.
 
-import { computeNormals, domed, place, soft, smooth, UP, v3, type Colour, type Geometry, type Sheet, type V, type Vec } from './shape';
+import { computeNormals, domed, paint, place, revolve, soft, smooth, UP, v3, type Colour, type Geometry, type Sheet, type V, type Vec } from './shape';
 
 export * from './shape';
 
@@ -156,6 +156,40 @@ export function core(cards: Sheet, [x, y, r, h]: Tuft, foot: Colour, top: Colour
     const light = domed(v3(x, y, 0), v3(r, r, h), 0.3);
     const ring = (s: number) => v3(x + size * r * Math.cos((s * Math.PI) / 3), y + size * r * Math.sin((s * Math.PI) / 3), -0.02);
     for (let s = 0; s < 6; s++) cards.add([ring(s), ring(s + 1), v3(x, y, height * h)], [foot, foot, top], light);
+}
+
+/** A blade on `cards`: a kite from `foot` to `tip`, twice `half` across at its `waist`. 2 triangles. */
+export function kite(cards: Sheet, foot: V, waist: V, tip: V, half: V, [root, body, end]: Colour[], light?: (p: V) => V): void {
+    const [left, right] = [waist.clone().add(half), waist.clone().sub(half)];
+    cards.add([foot, left, right], [root, body, body], light);
+    cards.add([left, tip, right], [body, end, body], light);
+}
+
+/**
+ * A seed head or plume on `cards`: a spindle of `sides` sides from `base` on its stalk to `tip`, `r` at its widest,
+ * `low` at its base and `high` from there on. 2 × `sides` triangles, lit as a round body that leans up.
+ */
+export function spindle(cards: Sheet, base: V, tip: V, r: number, sides: number, [low, high]: Colour[]): void {
+    const axis = tip.clone().sub(base).normalize(), waist = base.clone().lerp(tip, 0.4);
+    const u = v3().crossVectors(axis, Math.abs(axis.z) < 0.9 ? UP : v3(1, 0, 0)).normalize(), w = v3().crossVectors(axis, u);
+    const ring = (k: number) => waist.clone().addScaledVector(u, r * Math.cos((k / sides) * 2 * Math.PI)).addScaledVector(w, r * Math.sin((k / sides) * 2 * Math.PI));
+    const light = (p: V) => p.clone().sub(waist).normalize().lerp(UP, 0.4).normalize();
+    for (let k = 0; k < sides; k++) {
+        cards.add([base, ring(k), ring(k + 1)], [low, high, high], light);
+        cards.add([ring(k), tip, ring(k + 1)], [high, high, high], light);
+    }
+}
+
+/**
+ * A round cushion of a mat, sunk a little into the ground: a dome `sides` round, of 3 × `sides` triangles, its rim
+ * knobbly, `deep` in the crease at its rim and `tip` on its top. Its light leans `lift` of the way up, so cushions
+ * that grow into each other shade softly into one mat.
+ */
+export function cushion([x, y, r, h]: Tuft, sides: number, [deep, mid, tip]: Colour[], lift: number, seed: number): Geometry {
+    const dome = soft(revolve([[r, 0], [0.74 * r, 0.62 * h], [0, h]], sides), 0.1 * r, 5 / r, seed);
+    relight(dome, (p) => v3(p.x / r, p.y / r, p.z / h).normalize().lerp(UP, lift).normalize());
+    place(dome, { at: [x, y, -0.12 * h], rot: [0, 0, seed] });
+    return paint(dome, (p) => deep.clone().lerp(mid, smooth(-0.12, 0.4, p.z / h)).lerp(tip, smooth(0.35, 0.85, p.z / h)));
 }
 
 /** A solid of three.js's PolyhedronGeometry at detail 0: its corners on a sphere of radius r, flat faces. */

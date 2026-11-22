@@ -12,7 +12,7 @@
  },
  "ground": {
   "crowberry": { "on": ["shrub", "moss", "bare", "grass"], "share": 0.4 },
-  "reindeer-lichen": { "model": "heather", "latin": "Cladonia rangiferina, Cladonia stellaris", "on": ["moss", "bare", "shrub"], "height": [0.05, 0.12], "share": 0.3 },
+  "reindeer-lichen": { "latin": "Cladonia rangiferina, Cladonia stellaris", "on": ["moss", "bare", "shrub"], "height": [0.05, 0.12], "share": 0.3 },
   "bog-bilberry": { "model": "bilberry", "latin": "Vaccinium uliginosum", "on": ["shrub", "moss", "tree"], "height": [0.1, 0.35], "share": 0.15 },
   "bilberry": { "on": ["tree"] },
   "cloudberry": { "model": "bilberry", "latin": "Rubus chamaemorus", "on": ["wetland", "moss"], "height": [0.1, 0.25], "share": 0.2 },
@@ -20,7 +20,7 @@
   "bottle-sedge": { "model": "moor-grass", "latin": "Carex rostrata", "on": ["wetland"], "height": [0.4, 0.8], "share": 0.3 },
   "mountain-avens": { "model": "alpine-flowers", "latin": "Dryas octopetala", "on": ["grass", "moss", "bare"], "share": 0.05 },
   "fireweed": { "model": "alpine-flowers", "latin": "Chamerion angustifolium", "on": ["grass", "shrub"], "height": [0.6, 1.2], "share": 0.04, "clumped": true },
-  "lyme-grass": { "model": "esparto", "latin": "Leymus arenarius", "on": ["bare"], "height": [0.5, 1.0], "share": 0.03, "clumped": true }
+  "lyme-grass": { "latin": "Leymus arenarius", "on": ["bare"], "height": [0.5, 1.0], "share": 0.03, "clumped": true }
  },
  "herds": {
   "reindeer": { "latin": "Rangifer tarandus", "groups": 3, "size": [3, 12], "on": ["heath", "rough-grass", "wet-grassland", "grassland", "bog"] },
