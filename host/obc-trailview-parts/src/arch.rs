@@ -150,14 +150,14 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize) {
     let list = &net.of_record[r];
     let look = &net.rules.looks[&end.look];
     let foot = boxes::foot(net, list[0]);
+    let reaches: Vec<boxes::Reach> = list.iter().map(|&e| boxes::reach(net, e)).collect();
     for &e in list.iter().filter(|&&e| net.closed(e)) {
         closed(b, net, e, foot);
     }
     if list.iter().any(|&e| !net.closed(e)) {
-        head(b, net, r, foot);
+        head(b, net, r, (foot, &reaches));
     }
-    for &e in list {
-        let reach = boxes::reach(net, e);
+    for (&e, &reach) in list.iter().zip(&reaches) {
         let shell = collar(net, e, reach.shell);
         let half = net.opening(e).map_or(net.holes[e].half, |(c, _)| net.chords[c].half);
         let run: Vec<_> = shell.iter().map(|p| (p.0, p.1, p.2, p.3)).collect();
@@ -169,7 +169,7 @@ pub fn faces<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize) {
 }
 
 /// The head of record r, its open holes in its wall or rims, from the foot `foot` up.
-fn head<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize, foot: f64) {
+fn head<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize, (foot, reaches): (f64, &[boxes::Reach])) {
     let end = &net.records[r];
     let look = &net.rules.looks[&end.look];
     let (design, bake) = (&net.rules.design, &net.rules.ladder.bake);
@@ -216,7 +216,7 @@ fn head<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize, foot: f
                 let st = net.frame(e, design.face_m - design.recess_m);
                 let (c, _) = net.opening(e).expect("a built hole");
                 let chord = &net.chords[c];
-                let reach = boxes::reach(net, e);
+                let reach = reaches[net.of_record[r].iter().position(|&h| h == e).expect("a hole of the record")];
                 let (h, section) =
                     collar(net, e, reach.shell).first().map_or((chord.height, chord.section), |p| (p.2, p.3));
                 let outline = tube::shell_outline(net, (section, segments_at(net, e)), chord.half, h, foot - st.z);

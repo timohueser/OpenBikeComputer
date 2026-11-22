@@ -74,7 +74,8 @@ pub struct Net<'a> {
     /// Per hole, the chord and vertex at its opening, where its record and its chain are built.
     opening: Vec<Option<(usize, usize)>>,
     /// The hole at each opening's chord vertex.
-    end_at: HashMap<(usize, usize), usize>,
+    /// Per chord and vertex the built hole whose opening it is.
+    end_at: Vec<[Option<usize>; 2]>,
     /// Per record, the rise of its floor per metre in, over the first `face_m` of its first hole.
     slope: Vec<f64>,
 }
@@ -152,7 +153,12 @@ impl<'a> Net<'a> {
                 list.iter().for_each(|&e| opening[e] = None);
             }
         }
-        let end_at = (0..holes.len()).filter_map(|e| opening[e].map(|o| (o, e))).collect();
+        let mut end_at = vec![[None; 2]; chords.len()];
+        for (e, o) in opening.iter().enumerate() {
+            if let Some((c, k)) = *o {
+                end_at[c][k] = Some(e);
+            }
+        }
         let mut net =
             Net { records, holes, of_record, chords, rules, at, opening, end_at, slope: vec![0.0; records.len()] };
         let run = rules.design.face_m;
@@ -192,12 +198,12 @@ impl<'a> Net<'a> {
 
     /// Whether vertex k of chord c is the opening of a built end.
     pub fn opening_at(&self, c: usize, k: usize) -> bool {
-        self.end_at.contains_key(&(c, k))
+        self.end_at[c][k].is_some()
     }
 
     /// The built end whose opening is vertex k of chord c.
     pub fn end_at(&self, c: usize, k: usize) -> Option<usize> {
-        self.end_at.get(&(c, k)).copied()
+        self.end_at[c][k]
     }
 
     pub fn built_chord(&self, c: usize) -> bool {
@@ -235,7 +241,7 @@ impl<'a> Net<'a> {
     pub fn ring(&self, c: usize, k: usize) -> Station {
         let chord = &self.chords[c];
         let (d, _) = direction(chord);
-        if let Some(&e) = self.end_at.get(&(c, k)) {
+        if let Some(e) = self.end_at[c][k] {
             let s = self.frame(e, 0.0);
             let into = self.holes[e].way_in();
             return if d[0] * into[0] + d[1] * into[1] >= 0.0 { s } else { s.turned() };
@@ -279,7 +285,7 @@ impl<'a> Net<'a> {
             out.push((c, forward, s));
             s += direction(&self.chords[c]).1;
             let far = if forward { 1 } else { 0 };
-            if self.end_at.contains_key(&(c, far)) {
+            if self.end_at[c][far].is_some() {
                 break;
             }
             let Some(o) = self.other(c, far) else { break };
@@ -806,6 +812,10 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
         b.strip_at((&sides[0].1, &sides[0].0), (&sides[1].1, &sides[1].0), bore(wall), to_middle(j));
     }
     for j in 1..n - 2 {
+        if rings.iter().all(|r| r.parent.is_none()) {
+            b.strip((&s, &outlines[0][j..j + 2]), (&t, &outlines[1][j..j + 2]), bore(vault), to_middle(j));
+            continue;
+        }
         let [qa, qz] = [0, 1].map(|k| rings[k].top_run(outlines[k][j], outlines[k][j + 1]));
         b.strip((&s, &qa), (&t, &qz), bore(vault), to_middle(j));
     }
