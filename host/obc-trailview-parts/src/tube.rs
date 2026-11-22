@@ -89,7 +89,8 @@ pub struct Meeting {
 
 /// How a part looks for other tubes from a station's line (`Net::meets`): the metres across to each side (to the right,
 /// to the left), the metres past the planes of the other's rings, the heights over the station's floor that the
-/// part's faces span (None for a room), and the one tube to find at any distance (None for every tube within reach).
+/// part's faces span (None for a room), and the one tube to find at any distance and level (None for every tube within
+/// reach).
 #[derive(Clone, Copy, Debug)]
 pub struct Meet {
     pub across: [f64; 2],
@@ -463,8 +464,8 @@ impl<'a> Net<'a> {
                 nb = [-nb[0], -nb[1]];
             }
             let b0 = dot([st.x - other.a[0], st.y - other.a[1]], nb) * m;
-            if (meet.only.is_none() && b0 > reach[side] + other.half + shell)
-                || !level
+            // The one tube to find is found at any distance and level: its chord's middle decided the meeting.
+            if (meet.only.is_none() && (b0 > reach[side] + other.half + shell || !level))
                 || best[side].is_some_and(|b| b.axis.abs() <= x.abs())
                 || !between(rings[0], 1.0)
                 || !between(rings[1], -1.0)
@@ -507,7 +508,7 @@ impl<'a> Net<'a> {
         (sides, cuts)
     }
 
-    /// The cut of tube `t` on side `side` of station st across chord c, at any distance.
+    /// The cut of tube `t` on side `side` of station st across chord c, at any distance and level.
     fn cut_on(&self, c: usize, st: &Station, side: usize, t: usize) -> Option<Cut> {
         let meet = Meet { across: [f64::INFINITY; 2], past: MEET_PAST_M, up: None, only: Some(t) };
         self.meets(c, st, meet)[side]
