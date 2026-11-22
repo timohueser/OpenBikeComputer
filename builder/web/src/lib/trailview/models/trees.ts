@@ -487,9 +487,9 @@ function column(spec: Conifer, needles: (p: V, n: V) => Colour, lod: Lod, seed: 
         for (let i = 0; i < p.length; i += 3) {
             const out = (p[i + 2] - spec.base) / (top - spec.base);
             if (spec.knobs) {
-                // A knob stands out along the skin's normal, so the top is in knobs too.
-                // A knob swells from its edges to its middle and stands out along the skin's normal, some further. The knobs
-                // of one upright row start a quarter, a half or three quarters of a knob higher than those of the next.
+                // A knob swells from its edges to its middle and stands out along the skin's normal, some further, so the
+                // top is in knobs too. The knobs of one upright row start a quarter, a half or three quarters of a knob higher
+                // than those of the next.
                 const u = ((Math.atan2(p[i + 1], p[i]) / (2 * Math.PI) + 1) * sides) / 4 + 0.01, row = Math.floor(u) % (sides / 4);
                 const v = (out * rows) / 4 + Math.floor(4 * hash(v3(row, k, 0), seed)) / 4;
                 swell.push(Math.sin(Math.PI * (u % 1)) * Math.sin(Math.PI * (v % 1)) * (0.5 + 0.5 * hash(v3(row, Math.floor(v), k), seed)));
@@ -517,15 +517,24 @@ function column(spec: Conifer, needles: (p: V, n: V) => Colour, lod: Lod, seed: 
 const BEAD = 0.009;
 
 /**
- * Berry clusters on the skin of a crown's `parts`, three beads each, at corners on its side that `hidden` does not rule
- * out, as corners inside another part.
+ * Random corners on the skin of a crown's `parts`, while `more` holds and for at most `tries` draws: those whose normal
+ * `faces` allows and that `hidden` does not rule out, as corners inside another part. Each with its place, its normal
+ * and its draw.
  */
-function berries(parts: Geometry[], [colour, count]: [string, number], rand: () => number, hidden: (p: V, part: number) => boolean = () => false): Geometry[] {
-    const out: Geometry[] = [], shade = hex(colour), p = v3(), n = v3();
-    for (let tries = 0; out.length < 3 * count && tries < 1000; tries++) {
+function* skin(parts: Geometry[], rand: () => number, tries: number, more: () => boolean, faces: (n: V) => boolean, hidden: (p: V, part: number) => boolean): Generator<[V, V, number]> {
+    const p = v3(), n = v3();
+    for (let t = 0; t < tries && more(); t++) {
         const part = Math.floor(rand() * parts.length), k = Math.floor((rand() * parts[part].position.length) / 3);
         p.from(parts[part].position, k);
-        if (Math.abs(n.from(parts[part].normal, k).z) > 0.6 || hidden(p, part)) continue;
+        if (!faces(n.from(parts[part].normal, k)) || hidden(p, part)) continue;
+        yield [p, n, t];
+    }
+}
+
+/** Berry clusters on the side of a crown's `parts` (`skin`), three beads each. */
+function berries(parts: Geometry[], [colour, count]: [string, number], rand: () => number, hidden: (p: V, part: number) => boolean): Geometry[] {
+    const out: Geometry[] = [], shade = hex(colour);
+    for (const [p, n] of skin(parts, rand, 1000, () => out.length < 3 * count, m => Math.abs(m.z) <= 0.6, hidden)) {
         for (let b = 0; b < 3; b++) {
             const a = 2 * Math.PI * (b / 3 + rand()), at = p.clone().addScaledVector(n, 0.5 * BEAD).add(v3(0.9 * BEAD * Math.cos(a), 0.9 * BEAD * Math.sin(a), BEAD * (rand() - 0.5)));
             out.push(place(paint(soft(lump(BEAD, 0)), (_, m) => shade.clone().multiplyScalar(0.8 + 0.4 * smooth(-0.5, 1, m.z))), { at }));
@@ -538,15 +547,12 @@ function berries(parts: Geometry[], [colour, count]: [string, number], rand: () 
 const HEAD: [number, number][] = [[0.9, -0.3], [1, 0.1], [0.8, 0.6], [0, 1]];
 
 /**
- * Heads on the skin of a crown's `parts`, as `berries`: each faces out of the crown and up, in the fleck's colour over
- * a collar of the leaves' colour `leaf`.
+ * Heads on the skin of a crown's `parts` (`skin`), not on its underside: each faces out of the crown and up, in the
+ * fleck's colour over a collar of the leaves' colour `leaf`.
  */
 function heads(parts: Geometry[], { count, width, height, points }: NonNullable<Broadleaf['heads']>, [colour, share]: [string, number], leaf: Colour, rand: () => number, hidden: (p: V, part: number) => boolean): Geometry[] {
-    const out: Geometry[] = [], shade = hex(colour), p = v3(), n = v3();
-    for (let tries = 0; out.length < Math.round(count * share) && tries < 2000; tries++) {
-        const part = Math.floor(rand() * parts.length), k = Math.floor((rand() * parts[part].position.length) / 3);
-        p.from(parts[part].position, k);
-        if (n.from(parts[part].normal, k).z < -0.3 || hidden(p, part)) continue;
+    const out: Geometry[] = [], shade = hex(colour);
+    for (const [p, n, tries] of skin(parts, rand, 2000, () => out.length < Math.round(count * share), m => m.z >= -0.3, hidden)) {
         // A star is flat: a point in the middle and a rim.
         const geo = points ? soft(revolve([[1, 0], [0, 0.4]], 2 * points)) : soft(lathe(HEAD, 6, 2), 0.1, 5, tries), q = geo.position;
         // A star's points stand out and hang a little.
@@ -828,14 +834,10 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number, with
             const geo = clumped ? shown(whole, p => crown.some((other, j) => j !== k && within(other.at, p) < sunk * other.r) || (!spec.open && Math.abs(p.z) < 0.75 && Math.hypot(p.x, p.y) < 0.55 * spec.shape!((p.z + 1) / 2))) : whole;
             parts.push(place(clumped ? rounded(geo, 0.3) : geo, { at: [0, 0, cz], scale: [rx, ry, rz] }));
         });
-        if (spec.berries && !lod) {
-            const inside = (p: V, own: number) => crown.some((other, k) => k !== own && other.at.distanceTo(v3(p.x / rx, p.y / ry, (p.z - cz) / rz)) < 0.75 * other.r);
-            parts.push(...berries(parts.slice(-crown.length), spec.berries, rand, inside));
-        }
-        if (spec.heads && flecks && !lod && withHeads) {
-            const inside = (p: V, own: number) => crown.some((other, k) => k !== own && other.at.distanceTo(v3(p.x / rx, p.y / ry, (p.z - cz) / rz)) < other.r);
-            parts.push(...heads(parts.slice(-crown.length), spec.heads, flecks, mid, rand, inside));
-        }
+        // Whether a point stands within `share` of the radius of a lump other than `own`.
+        const inside = (share: number) => (p: V, own: number) => crown.some((other, k) => k !== own && other.at.distanceTo(v3(p.x / rx, p.y / ry, (p.z - cz) / rz)) < share * other.r);
+        if (spec.berries && !lod) parts.push(...berries(parts.slice(-crown.length), spec.berries, rand, inside(0.75)));
+        if (spec.heads && flecks && !lod && withHeads) parts.push(...heads(parts.slice(-crown.length), spec.heads, flecks, mid, rand, inside(1)));
         // A bunch hangs from the side or the underside of a lump, where no other lump hides it.
         for (let k = 0, tries = 0; flecks && lod === 0 && k < (spec.bunches ?? 0) && tries < 1000; tries++) {
             const { at, r } = crown[Math.floor(rand() * crown.length)];
