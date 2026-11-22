@@ -254,7 +254,7 @@ pub(crate) fn decide(
             first_covered(site, &floors_of(o, site.stations.len()), need(o.tube)).map(|k| k as f64)
         })
         .collect();
-    // Rung 3 reads the rooms of the crossings and the buildings of both ends of a tube.
+    // Rung 2 reads the rooms of the crossings and the buildings of both ends of a tube.
     let mut crossings: Vec<Vec<f64>> = vec![Vec::new(); tubes.len()];
     let mut building = vec![false; tubes.len()];
     for (i, site) in sites.iter().enumerate() {
@@ -289,8 +289,8 @@ pub(crate) fn decide(
         rung[i] = Some(r);
         kinds[i] = k;
     }
-    // Rung 5: the pairs, nearest first, each end in one pair at most: two hill ends of one family a wall apart across. A
-    // pair is one part of two chains, so each of them has a part at both of its ends.
+    // The pairs, nearest first, each end in one pair at most: two hill ends of one family a wall apart across. A pair is
+    // one head of two rooms, so each of them has a part or a seam at both of its ends.
     let mut mate: Vec<Option<usize>> = vec![None; n];
     let is_hill = |i: usize| hill.contains(&i);
     let whole: Vec<bool> = (at_end.iter().enumerate())
@@ -323,7 +323,7 @@ pub(crate) fn decide(
     // ground that it measured, whose row reaches them; the others form the next group, with each that stays. The far
     // opening is one whose line none of the openings near it lies past by more than `PAST_M`, the one near the most,
     // then the farthest in along the group's way. An opening whose way does not reach the line, or that lies past it,
-    // stays; a pair whose two openings do not end on one line is no pair: each takes its next kind.
+    // stays; a pair whose two openings do not end on one line is no pair: each opening has a head of its own.
     let mut root: Vec<usize> = (0..n).collect();
     let find = |root: &mut Vec<usize>, mut i: usize| {
         while root[i] != i {
