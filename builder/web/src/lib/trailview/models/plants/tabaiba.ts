@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { domed, GOLDEN, hex, lathe, merge, paint, ramp, random, relight, sheet, smooth, soft, tube, UP, v3, type Geometry, type Ramp, type V, type Vec, place } from '../plant-shape';
+import { across, GOLDEN, hex, leaf, merge, paint, ramp, random, sheet, smooth, soft, tube, UP, v3, type Geometry, type Ramp, type V } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** Tabaiba leaves: pale glaucous green, yellowing as the summer drought sheds them. */
@@ -10,62 +10,53 @@ const TABAIBA: Record<Season, Ramp> = {
     autumn: ['#5e7a4a', '#90ae6e', '#c0d292'],
 };
 
+/** The twigs of each of the five limbs, and where each twig's tip lies on the dome: radians down from its top. */
+const FORKS = [3, 2, 3, 2, 2];
+const DOWN = { 2: [0.8, 1.3], 3: [1.25, 0.6, 1.05] } as const;
+
 /**
- * Sweet spurge: a compact dome of foliage, its surface broken into rosettes of narrow fleshy
- * leaves, on grey branches that show beneath it. Each rosette is a star of leaves biased to its
- * top, lit as a small lump of the dome. The summer drought sheds leaves, so the dome shrinks and
- * fewer rosettes sit on it among bare twigs. 302 triangles, 242 in summer.
+ * Sweet spurge: a candelabra of thick grey succulent branches. A stem and five limbs leave the foot, each limb
+ * forks into two or three twigs, and every twig ends on one dome in a rosette of narrow fleshy leaves, so the
+ * rosettes make a round crown over branches that show beneath it. The summer drought sheds leaves: the crown
+ * shrinks, the rosettes thin, and every fourth twig stands bare. 302 triangles, 240 in summer.
  */
 function tabaiba(season: Season, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(TABAIBA[season]);
     const [bark, barkLit] = [hex('#57554e'), hex('#9a978a')];
     const dry = season === 'summer';
-    const k = dry ? 0.85 : 1;
-    const size = v3(0.5 * k, 0.5 * k, 0.56 * k);
+    const k = dry ? 0.9 : 1;
     const cards = sheet();
     const parts: Geometry[] = [];
-    // The shade among the branches inside the bush, grey between the rosettes.
-    const shell = soft(lathe([[0.95, 0.12], [1, 0.4], [0.75, 0.8], [0, 1]], 10, 3));
-    place(shell, { scale: [0.85 * size.x, 0.85 * size.y, 0.85 * size.z] });
-    const inside = deep.clone().lerp(mid, 0.3).lerp(bark, 0.25);
-    parts.push(paint(relight(shell, domed(v3(0, 0, 0.1), size, 0.15)), (p) => inside.clone().lerp(mid, 0.35 * smooth(0.15, 0.5, p.z))));
-    for (let i = 0; i < 12; i++) {
-        const a = i * GOLDEN + rand() * 0.4;
-        const polar = Math.acos(1 - 0.85 * ((i + 0.5) / 12));
-        const around = v3(Math.sin(polar) * Math.cos(a), Math.sin(polar) * Math.sin(a), Math.cos(polar));
-        const centre = around.clone().multiply(size).setZ(0.08 + around.z * (size.z - 0.08)).addScaledVector(around, 0.02);
-        // The low ones stand on branches; in summer every third has shed its leaves and is a bare twig.
-        const bare = dry && i % 3 === 1;
-        if (polar > 1 || bare) {
-            const foot: Vec = [0.06 * Math.cos(a), 0.06 * Math.sin(a), -0.02];
-            const end = bare ? centre.clone().addScaledVector(around, 0.04).addScaledVector(UP, 0.08) : centre.clone().addScaledVector(around, -0.1);
-            parts.push(paint(soft(tube([foot, end.toArray()], 0.035, 0.5, 1, 3)), (p) => bark.clone().lerp(barkLit, smooth(0, 0.3, p.z))));
+    const crown = (a: number, down: number) => v3(0.56 * k * Math.sin(down) * Math.cos(a), 0.56 * k * Math.sin(down) * Math.sin(a), 0.12 + 0.5 * k * Math.cos(down));
+    const branch = (from: V, to: V, r: number, taper: number, sides: number) =>
+        parts.push(paint(soft(tube([from.toArray(), to.toArray()], r, taper, 1, sides)), (p) => bark.clone().lerp(barkLit, smooth(0, 0.4, p.z))));
+    let twigs = 0;
+    // A twig from `from` to its rosette at `to`; a bare one tapers to a point a little short of the crown.
+    const twig = (from: V, to: V, sides: number) => {
+        const bare = dry && twigs++ % 4 === 1;
+        const axis = to.clone().sub(from).normalize();
+        branch(from, bare ? to.clone().addScaledVector(axis, -0.04) : to, sides === 4 ? 0.058 : 0.048, bare ? 0.15 : 0.7, sides);
+        if (bare) return;
+        axis.lerp(UP, 0.5).normalize();
+        const [u, w] = across(axis), r = (dry ? 0.2 : 0.25) * (0.9 + 0.2 * rand()), spin = rand() * Math.PI;
+        const sun = rand() < 0.4 ? 0.4 : 0.15 * rand();
+        const leaves = dry ? 6 : 7;
+        const light = (p: V) => p.clone().sub(to).divideScalar(r).addScaledVector(axis, 0.9).normalize().lerp(UP, 0.25).normalize();
+        for (let j = 0; j < leaves; j++) {
+            // The inner leaves stand, the outer ones spread, so the rosette is a cup with no hole.
+            const t = spin + j * GOLDEN, tilt = 0.4 + 0.85 * ((j + 0.5) / leaves);
+            const dir = axis.clone().multiplyScalar(Math.cos(tilt)).addScaledVector(u, Math.sin(tilt) * Math.cos(t)).addScaledVector(w, Math.sin(tilt) * Math.sin(t));
+            const body = mid.clone().lerp(tip, sun + 0.25 * rand()).lerp(deep, 0.25 * smooth(0.7, 1.25, tilt));
+            leaf(cards, to, dir, r * (0.85 + 0.3 * rand()), 0.4 * r, 0.55, [deep, body, body.clone().lerp(tip, 0.5)], light);
         }
-        if (bare) continue;
-        const axis = around.clone().lerp(UP, 0.3).normalize();
-        const e1 = v3().crossVectors(axis, Math.abs(axis.z) > 0.9 ? v3(1, 0, 0) : UP).normalize();
-        const e2 = v3().crossVectors(axis, e1);
-        const r = (dry ? 0.19 : 0.26) * (0.9 + 0.2 * rand());
-        const base = centre.clone().addScaledVector(axis, -0.3 * r);
-        const sun = rand() < 0.4 ? 0.45 : 0.15 * rand();
-        const low = 0.4 * (1 - smooth(0.15, 0.55, centre.z));
-        const light = (p: V) => p.clone().sub(centre).divideScalar(r).addScaledVector(around, 0.8).normalize().lerp(UP, 0.2).normalize();
-        for (let j = 0; j < 9; j++) {
-            const t = a + j * GOLDEN + rand() * 0.5;
-            // Denser towards the rosette's top and none past 75 degrees, so from above it shows no hole.
-            const tilt = 1.3 * ((j + 0.5) / 9) ** 0.8;
-            const across = e1.clone().multiplyScalar(Math.cos(t)).addScaledVector(e2, Math.sin(t));
-            const dir = axis.clone().multiplyScalar(Math.cos(tilt)).addScaledVector(across, Math.sin(tilt));
-            const length = r * (0.85 + 0.25 * rand());
-            const end = base.clone().addScaledVector(dir, length);
-            end.z -= 0.15 * length * Math.sin(tilt);
-            const middle = base.clone().lerp(end, 0.55);
-            const side = e1.clone().multiplyScalar(-Math.sin(t)).addScaledVector(e2, Math.cos(t)).multiplyScalar(0.03 * (0.8 + 0.4 * rand()));
-            const leaf = mid.clone().lerp(tip, sun + 0.25 * rand()).lerp(deep, low + 0.2 * smooth(0.7, 1.3, tilt));
-            const lit = leaf.clone().lerp(tip, 0.5);
-            cards.add([base, middle.clone().add(side), end, base, end, middle.clone().sub(side)], [deep, leaf, lit, deep, lit, leaf], light);
-        }
-    }
+    };
+    twig(v3(0, 0, -0.02), crown(0, 0), 4);
+    FORKS.forEach((count, i) => {
+        const a = (i / FORKS.length) * 2 * Math.PI + 0.4 * rand();
+        const fork = v3(0.2 * k * Math.cos(a), 0.2 * k * Math.sin(a), 0.2 * k);
+        branch(v3(0.05 * Math.cos(a), 0.05 * Math.sin(a), -0.02), fork, 0.07, 0.8, 4);
+        for (let j = 0; j < count; j++) twig(fork, crown(a + (j - (count - 1) / 2) * 0.62 + 0.2 * (rand() - 0.5), DOWN[count as 2 | 3][j]), 3);
+    });
     parts.push(cards.build());
     return merge(parts);
 }

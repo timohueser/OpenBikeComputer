@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { GOLDEN, hex, limb, merge, ramp, random, sheet, smooth, v3, type Geometry, type Ramp, type V } from '../plant-shape';
+import { GOLDEN, hex, ramp, random, sheet, spike, spindle, UP, v3, type Geometry, type Ramp } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** The leaves: blue-grey with a waxy bloom, the same all year. */
@@ -19,59 +19,55 @@ const POLE: Record<Season, [pole: string, clusters: string]> = {
 /** Of the plant's shapes, the third carries a flower pole. */
 export const POLE_SEED = 3;
 
+/** The leaves of a rosette and the branches of a pole. */
+const BLADES = 16, BRANCHES = 7;
+
 /**
- * Agave: a rosette of thick, stiff sword leaves, the inner ones upright and the outer ones spread
- * out, a few bent down at the tip. Each leaf is two triangles folded along its keel, so it reads
- * as thick. A plant of the third shape carries a flower pole about four rosettes tall with
- * branches held out flat at the top, ending in flower clusters, in flower in summer and dead
- * after, its rosette spent with it. It builds
- * itself with the rosette 1 tall, so the pole stands above the plant's height. 48 triangles, 140
- * with the pole.
+ * Agave: a rosette of sixteen thick sword leaves, the inner ones upright round the bud and the outer ones spread
+ * out, each ending in a dark spine. A leaf is a solid three-sided point: a flat upper face, widest at its foot, on
+ * a keel, so the feet make the plant's heart. A plant of the third shape carries a flower pole about four rosettes
+ * tall with branches held out at the top, ending in flower clusters, in flower in summer and dead after, its
+ * rosette spent with it. It builds itself with the rosette 1 tall, so the pole stands above the plant's height.
+ * 48 triangles, 100 with the pole.
  */
 function agave(season: Season, seed: number, rand: () => number): Geometry {
     const pole = seed === POLE_SEED;
     const [deep, mid, tip] = ramp(pole && season !== 'summer' ? SPENT : LEAVES);
-    const light = (p: V) => v3(p.x, p.y, 0.6).normalize();
+    const spine = hex('#4a3a30');
     const cards = sheet();
-    for (let k = 0; k < 24; k++) {
+    for (let k = 0; k < BLADES; k++) {
         const a = k * GOLDEN + 0.3 * rand();
-        const s = Math.sqrt((k + 0.5) / 24);
-        // Inner leaves stand; outer ones spread nearly flat.
-        const polar = 0.2 + 1.15 * s;
-        const length = 1.05 - 0.25 * s + 0.1 * rand();
-        const out = v3(Math.cos(a), Math.sin(a), 0);
-        const side = v3(-out.y, out.x, 0).multiplyScalar(0.07 + 0.03 * s);
-        const end = out.clone().multiplyScalar(length * Math.sin(polar)).setZ(length * Math.cos(polar));
-        // A few old leaves break and hang at the tip.
-        if (rand() < 0.15 * s) end.z -= 0.25 * length;
-        const keel = out.clone().multiplyScalar(0.05).setZ(0.05);
-        const ridge = keel.clone().lerp(end, 0.4).add(v3(0, 0, 0.04));
-        const [foot, body, top] = [deep, mid.clone().lerp(tip, 0.3 * rand()), tip.clone().lerp(mid, 0.3)];
-        const base = keel.clone().setZ(0.02);
-        cards.add([base.clone().add(side), ridge, end], [foot, body, top], light);
-        cards.add([ridge, base.clone().sub(side), end], [body, foot, top], light);
+        const s = Math.sqrt((k + 0.5) / BLADES);
+        // Inner leaves stand; outer ones spread.
+        const polar = 0.1 + 1.02 * s;
+        const length = 1.04 - 0.2 * s + 0.1 * rand();
+        const out = v3(Math.cos(a), Math.sin(a), 0), side = v3(-out.y, out.x, 0);
+        const dir = out.clone().multiplyScalar(Math.sin(polar)).setZ(Math.cos(polar));
+        // The leaf's upper face looks to the plant's axis and up.
+        const face = v3().crossVectors(side, dir);
+        const foot = out.clone().multiplyScalar(0.03).setZ(0.02);
+        const [left, right] = [1, -1].map((e) => foot.clone().addScaledVector(side, e * (0.13 + 0.03 * s)).addScaledVector(face, 0.03));
+        const keel = foot.clone().addScaledVector(face, -0.1), end = foot.clone().addScaledVector(dir, length);
+        const body = mid.clone().lerp(tip, 0.5 * rand()), under = deep.clone().lerp(mid, 0.4);
+        const up = face.clone().lerp(UP, 0.5).normalize(), down = out.clone().lerp(UP, 0.15).normalize();
+        cards.add([left, right, end], [body, body, spine], (p) => (p === end ? up : up.clone().addScaledVector(side, p === left ? 0.5 : -0.5).normalize()));
+        for (const edge of [left, right]) cards.add([edge, keel, end], [body, under, spine], (p) => (p === keel ? down : down.clone().addScaledVector(side, edge === left ? 0.7 : -0.7).normalize()));
     }
-    const parts = [cards.build()];
     if (pole) {
         const [stalk, cluster] = POLE[season].map(hex);
-        const height = 4 + 0.8 * rand();
-        const shade = (p: V) => stalk.clone().multiplyScalar(0.8 + 0.2 * smooth(0, height, p.z));
-        parts.push(limb([0, 0, 0.3], [0.1, 0, height], 0.05, shade, 0, 4));
-        const heads = sheet();
-        for (let b = 0; b < 8; b++) {
-            const a = b * GOLDEN + rand();
-            const from = v3(0.1 * (0.75 + 0.25 * (b / 8)), 0, height * (0.75 + 0.22 * (b / 8)));
-            const reach = 0.5 * (1 - 0.6 * (b / 8));
-            const to = from.clone().add(v3(reach * Math.cos(a), reach * Math.sin(a), 0.12));
-            const across = v3(-Math.sin(a), Math.cos(a), 0).multiplyScalar(0.02);
-            heads.add([from.clone().add(across), from.clone().sub(across), to], [stalk, stalk, stalk]);
-            // A cluster: a flat cup of four triangles opening upwards.
-            const ring = [0, 1, 2, 3].map((i) => to.clone().add(v3(0.12 * Math.cos(a + (i * Math.PI) / 2), 0.12 * Math.sin(a + (i * Math.PI) / 2), 0.1)));
-            for (let i = 0; i < 4; i++) heads.add([to, ring[i], ring[(i + 1) % 4]], [stalk, cluster, cluster]);
+        const height = 4 + 0.8 * rand(), top = v3(0.1, 0, height);
+        spike(cards, v3(0, 0, 0.3), top, 0.06, [stalk.clone().multiplyScalar(0.8), stalk]);
+        for (let b = 0; b < BRANCHES; b++) {
+            const a = b * GOLDEN + rand(), t = b / BRANCHES;
+            const from = v3(0.1 * (0.72 + 0.26 * t), 0, height * (0.72 + 0.26 * t));
+            const reach = 0.55 * (1 - 0.65 * t);
+            const to = from.clone().add(v3(reach * Math.cos(a), reach * Math.sin(a), 0.14));
+            cards.add([from.clone().setZ(from.z + 0.03), from.clone().setZ(from.z - 0.03), to], [stalk, stalk, stalk]);
+            // A cluster: a low round head on the branch end.
+            spindle(cards, to.clone().setZ(to.z - 0.03), to.clone().setZ(to.z + 0.16), 0.15, 3, [stalk, cluster]);
         }
-        parts.push(heads.build());
     }
-    return merge(parts);
+    return cards.build();
 }
 
 export default {

@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { domed, GOLDEN, hash, hex, lathe, merge, noise, paint, ramp, random, relight, sheet, smooth, soft, UP, v3, type Geometry, type Ramp, type V, place } from '../plant-shape';
+import { cushion, domed, hash, hex, merge, onDome, ramp, random, sheet, spike, UP, v3, type Geometry, type Ramp, type Tuft } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** Retama twigs: grey olive, browner in winter. */
@@ -10,58 +10,40 @@ const RETAMA: Record<Season, Ramp> = {
     autumn: ['#434c3a', '#748260', '#a2ae86'],
 };
 
-/** Retama flowers in late spring, black pods in summer: colour and share of twig tips. */
-const RETAMA_BLOOM: Record<Season, [string, number]> = {
-    winter: ['#969a76', 0],
-    spring: ['#f8f2ee', 0.85],
-    summer: ['#4a4030', 0.25],
-    autumn: ['#969a76', 0],
-};
+/** White flowers in late spring, black pods on a share of the twig tips in summer. */
+const FLOWER = hex('#f8f2ee'), PINK = hex('#f0c8d0'), POD = hex('#4a4030'), PODS = 0.25;
+
+/** The places of twigs on the dome; in flower every second one stands, in a wand of flowers. */
+const TWIGS = 80;
 
 /**
- * Teide broom: an almost hemispherical bush of rush-thin upright twigs. A grey-olive shell carries
- * the mass; each twig is one sliver lying up it and standing out at its tip, so the twigs make
- * the outline. In flower the twig tips turn white, a few pink, and the shell pales a little. All
- * of it lights as the dome does. 270 triangles.
+ * Teide broom: an almost hemispherical bush of rush-thin upright twigs. A grey-olive dome carries the mass, and the
+ * twigs stand out of it all over, steeper than the dome, so they make the outline. In flower every second twig
+ * stands, its upper half in a wand of white flowers, a few wands pink, and the dome pales a little. 270 triangles.
  */
 function retama(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(RETAMA[season]);
-    const [flower, share] = RETAMA_BLOOM[season];
     const bloom = season === 'spring';
-    const [petal, pink] = [hex(flower), hex('#f0c8d0')];
-    const size = v3(0.95, 0.95, 1);
-    const radius = (n: V) => 1 + 0.05 * noise(n, 2.5, seed);
+    const dome: Tuft = [0, 0, 0.82, 0.8];
     // Flowers deep in the bush pale its shade in bloom, still grey-olive.
-    const inside = deep.clone().lerp(mid, 0.25).lerp(hex('#c8c4a8'), bloom ? 0.3 : 0);
+    const inside = deep.clone().lerp(mid, 0.3).lerp(hex('#c8c4a8'), bloom ? 0.3 : 0);
+    const light = domed(v3(), v3(1, 1, 1), 0.3);
     const cards = sheet();
-    const count = 210;
-    for (let j = 0; j < count; j++) {
-        const polar = Math.acos(1 - (j + 0.5) / count) * (0.97 + 0.04 * rand());
-        const a = j * GOLDEN + rand() * 0.3;
-        const n = v3(Math.sin(polar) * Math.cos(a), Math.sin(polar) * Math.sin(a), Math.cos(polar));
-        const surface = n.clone().multiply(size).multiplyScalar(0.92 * radius(n));
-        // Up the dome along its meridian but steeper, as broom twigs stand upright, so each lies on
-        // the dome as a long streak and its tip stands out of it.
-        const meridian = v3(-Math.cos(polar) * Math.cos(a), -Math.cos(polar) * Math.sin(a), Math.sin(polar));
-        const dir = meridian.addScaledVector(UP, 0.8).addScaledVector(n, 0.25).normalize();
-        const length = 0.32 + 0.12 * rand();
-        const top = surface.clone().addScaledVector(dir, 0.45 * length);
-        const foot = surface.clone().addScaledVector(dir, -0.55 * length).addScaledVector(n, -0.04);
-        foot.z = Math.max(foot.z, 0);
-        const twig = mid.clone().lerp(tip, 0.1 + 0.5 * rand());
-        const flowers = hash(top, seed) < share;
-        const end = flowers ? twig.clone().lerp(bloom && rand() < 0.18 ? pink : petal, bloom ? 0.95 : 0.5) : twig;
-        // Flowering twigs are a little wider, as their flowers stand off them.
-        const across = v3().crossVectors(dir, n);
-        if (across.lengthSq() < 0.01) across.set(-Math.sin(a), Math.cos(a), 0);
-        across.setLength((bloom && flowers ? 0.02 : 0.012) + 0.004 * rand());
-        const lit = n.clone().lerp(UP, 0.15).normalize();
-        cards.add([foot.clone().add(across), foot.clone().sub(across), top], [inside, twig.clone().lerp(inside, 0.5), end], () => lit);
+    for (let j = 0; j < TWIGS; j++) {
+        const [at, out] = onDome(dome, j, TWIGS, 1.42);
+        const dir = out.clone().addScaledVector(UP, 0.9).add(v3(rand() - 0.5, rand() - 0.5, 0).multiplyScalar(0.25)).normalize();
+        const end = at.clone().addScaledVector(dir, 0.34 + 0.16 * rand());
+        const twig = mid.clone().lerp(tip, 0.2 + 0.6 * rand());
+        if (season === 'summer' && hash(at, seed) < PODS) twig.lerp(POD, 0.7);
+        if (bloom && j % 2) continue;
+        const foot = at.clone().addScaledVector(dir, -0.12);
+        spike(cards, foot.setZ(Math.max(foot.z, 0)), end, 0.03, [inside, twig], light);
+        if (bloom) {
+            const petal = hash(at, seed) < 0.2 ? PINK : FLOWER;
+            spike(cards, at.clone().lerp(end, 0.3), end.clone().addScaledVector(dir, 0.04), 0.048, [petal.clone().lerp(twig, 0.35), petal], light);
+        }
     }
-    const core = soft(lathe([[0.92, -0.03], [0.88, 0.42], [0.55, 0.8], [0, 0.9]], 12, 3));
-    place(core, { scale: [0.9 * size.x, 0.9 * size.y, 0.9 * size.z] });
-    const shell = paint(relight(core, domed(v3(), size, 0.1)), (p) => inside.clone().lerp(mid, 0.3 * smooth(0.2, 0.8, p.z)));
-    return merge([shell, cards.build()]);
+    return merge([cushion(dome, 10, [deep.clone().multiplyScalar(0.8), inside, inside.clone().lerp(mid, 0.4)], 0.3, seed), cards.build()]);
 }
 
 export default {

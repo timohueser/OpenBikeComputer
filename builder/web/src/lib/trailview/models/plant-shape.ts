@@ -203,16 +203,17 @@ export function domeAt([x, y, r, h]: Tuft, a: number, polar: number): [V, V] {
 export const onDome = (tuft: Tuft, j: number, n: number, reach: number, turn = 0) => domeAt(tuft, turn + j * GOLDEN, reach * Math.sqrt((j + 0.5) / n));
 
 /**
- * A seed head or plume on `cards`: a spindle of `sides` sides from `base` on its stalk to `tip`, `r` at its widest,
- * `low` at its base and `high` from there on. 2 × `sides` triangles, lit as a round body that leans up.
+ * A seed head, plume or bud on `cards`: a spindle of `sides` sides from `base` on its stalk to `tip`, `r` at its
+ * widest, `low` at its base, `high` from there on and `end` at its tip. 2 × `sides` triangles, lit as a round body
+ * that leans up.
  */
-export function spindle(cards: Sheet, base: V, tip: V, r: number, sides: number, [low, high]: Colour[]): void {
+export function spindle(cards: Sheet, base: V, tip: V, r: number, sides: number, [low, high, end = high]: Colour[]): void {
     const axis = tip.clone().sub(base).normalize(), waist = base.clone().lerp(tip, 0.4), [u, w] = across(axis);
     const ring = (k: number) => waist.clone().addScaledVector(u, r * Math.cos((k / sides) * 2 * Math.PI)).addScaledVector(w, r * Math.sin((k / sides) * 2 * Math.PI));
     const light = (p: V) => p.clone().sub(waist).normalize().lerp(UP, 0.4).normalize();
     for (let k = 0; k < sides; k++) {
         cards.add([base, ring(k), ring(k + 1)], [low, high, high], light);
-        cards.add([ring(k), tip, ring(k + 1)], [high, high, high], light);
+        cards.add([ring(k), tip, ring(k + 1)], [high, end, high], light);
     }
 }
 
