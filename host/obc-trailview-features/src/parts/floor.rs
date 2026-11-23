@@ -292,34 +292,44 @@ pub(crate) fn floors(
             }
         }
         // The vertices: the curve's, and the ends of each stretch of the tube within the reach of a way that can lower
-        // the floor, each with its way.
+        // the floor, each with the sign of the metres out of the reach.
         let mut runs: BTreeMap<usize, Vec<[f64; 2]>> = BTreeMap::new();
         for &(o, _, r) in &reaches {
             runs.entry(o).or_default().push(r);
         }
-        let mut extra: Vec<(f64, usize)> = Vec::new();
-        for (o, mut list) in runs {
+        let mut extra: Vec<(f64, f64)> = Vec::new();
+        for (_, mut list) in runs {
             list.sort_by(|x, y| x[0].total_cmp(&y[0]));
             let mut run = list[0];
             for r in list.into_iter().skip(1).chain([[f64::INFINITY; 2]]) {
                 if r[0] <= run[1] + MERGE_M {
                     run[1] = run[1].max(r[1]);
                 } else {
-                    extra.extend(run.map(|x| (x, o)));
+                    extra.extend([(run[0], -1.0), (run[1], 1.0)]);
                     run = r;
                 }
             }
         }
         let (s0, s1) = (points[0].s, points[points.len() - 1].s);
-        // The openings and the joins of the ways stay; a point of the curve, then a point of a reach, nearer than
-        // `vertex_gap_m` to a vertex is that vertex.
+        // The openings and the joins of the ways stay; a point of the curve nearer than `vertex_gap_m` to a vertex is
+        // that vertex. An end of a reach nearer than that to a vertex inside the reach lies that far past the vertex,
+        // out of the reach, so a chord that leaves the reach there is short; nearer than that to another vertex, it is
+        // none.
         let joins = tube.curve.stretches.iter().map(|(_, ps)| ps[0].s).filter(|&x| x > s0 && x < s1);
         let fixed: Vec<f64> = [s0, s1].into_iter().chain(joins).collect();
         let curve: Vec<f64> = points.iter().map(|q| q.s).collect();
         extra.retain(|&(e, _)| e > s0 && e < s1);
         extra.sort_by(|x, y| x.0.total_cmp(&y.0));
-        let ends: Vec<f64> = extra.iter().map(|e| e.0).collect();
-        let mut s = spaced(&ends, spaced(&curve, fixed, b.vertex_gap_m), b.vertex_gap_m);
+        let mut s = spaced(&curve, fixed, b.vertex_gap_m);
+        for &(x, out) in &extra {
+            let at = s.partition_point(|&k| k < x);
+            let mut near = [at.checked_sub(1), (at < s.len()).then_some(at)].into_iter().flatten();
+            let inside = near.find(|&i| (s[i] - x).abs() < b.vertex_gap_m && (s[i] - x) * out < -MERGE_M);
+            let x = inside.map_or(x, |i| s[i] + out * b.vertex_gap_m);
+            if x > s0 && x < s1 {
+                s = spaced(&[x], s, b.vertex_gap_m);
+            }
+        }
         // Behind a seam no vertex lies within `clear` of the hole, so each ring lies wholly behind the line.
         let holes = [s0, s1].map(|x| tube.curve.at(x).0.p);
         let clear = rooms.clear[t];
@@ -335,8 +345,9 @@ pub(crate) fn floors(
         let (ls, lz): (Vec<f64>, Vec<f64>) = points.iter().map(|q| (q.s, q.z)).unzip();
         let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();
         let xy: Vec<[f64; 2]> = s.iter().map(|&x| tube.curve.at(x).0.p).collect();
-        // The foot of a point on the whole chain, past the openings to its ends: its metres and the road solver's
-        // height there. It lies within twice `m` of metres `at` where the point lies `m` from the chain there.
+        // The foot of a point on the whole chain, past the openings to its ends and past its ends along its end
+        // chords: its metres and the road solver's height there (at an end, the end's). It lies within twice `m` of
+        // metres `at` where the point lies `m` from the chain there.
         let chain = line(tube, [0.0, tube.curve.len]);
         let foot = |q: [f64; 2], (at, m): (f64, f64)| {
             let first = chain.partition_point(|v| v.s < at - 2.0 * m).saturating_sub(1);
@@ -348,7 +359,11 @@ pub(crate) fn floors(
                 })
                 .fold((f64::INFINITY, 0, 0.0), |a, x| if x.0 < a.0 { x } else { a });
             let (c, d) = (chain[j], chain[j + 1]);
-            (c.s + u * (d.s - c.s), c.z + u * (d.z - c.z))
+            let e = [d.p[0] - c.p[0], d.p[1] - c.p[1]];
+            let past =
+                ((q[0] - c.p[0]) * e[0] + (q[1] - c.p[1]) * e[1]) / (e[0] * e[0] + e[1] * e[1]).max(f64::MIN_POSITIVE);
+            let along = if (j == 0 && past < 0.0) || (j + 2 == chain.len() && past > 1.0) { past } else { u };
+            (c.s + along * (d.s - c.s), c.z + u * (d.z - c.z))
         };
         // Segment k of way o over metres x of the room: its nearest point to the room's point there, where the foot of
         // that point on the whole chain lies within the openings grown by the way's outer half-width; its height and
@@ -369,13 +384,16 @@ pub(crate) fn floors(
             let height = w.z[k] + u * (w.z[k + 1] - w.z[k]);
             Some((p, Above { way, height, upper, depth: w.depth, along, base, band: w.band.min(own_band) }))
         };
-        // A way caps both vertices of each chord that its reach overlaps, at its underside over the two ends of that
-        // overlap: over the overlap its nearest point moves along its segment one way, so its underside there lies at
-        // the lesser of the two or over it, and the floor, linear along the chord, lies under it. A reach that only
-        // touches a chord caps the vertex there. The clash count reads the crown at these ends.
+        // A way is read on each chord that its reach overlaps where its underside over the chord can bend: at the
+        // ends of the overlap, and where the nearest point of a segment of its curve is an end of that segment.
+        // Between these points the underside and the floor are both linear along the chord. A vertex at such a point
+        // reads the way there; a point inside the chord caps both vertices of the chord, so the floor lies under the
+        // way there too. The clash count reads the crown at these points.
         let mut above: Vec<Vec<Above>> = (0..s.len()).map(|_| Vec::new()).collect();
         let mut reads = Vec::new();
         for &(o, k, [a, e]) in &reaches {
+            let (w0, w1) = (overs[o].points[k], overs[o].points[k + 1]);
+            let d = [w1[0] - w0[0], w1[1] - w0[1]];
             let lo = s.partition_point(|&x| x <= a + MERGE_M).saturating_sub(1);
             let hi = s.partition_point(|&x| x < e - MERGE_M).min(s.len() - 1);
             for i in lo.saturating_sub(1)..=hi.min(s.len() - 2) {
@@ -383,12 +401,21 @@ pub(crate) fn floors(
                 if x > y + MERGE_M {
                     continue;
                 }
-                let whole = y - x > MERGE_M;
-                for x in if whole { vec![x, y] } else { vec![x] } {
-                    let Some((p, w)) = read((o, k), x) else { continue };
-                    let at = if whole { vec![i, i + 1] } else { vec![if x - s[i] <= MERGE_M { i } else { i + 1 }] };
-                    at.into_iter().for_each(|v| above[v].push(w.clone()));
-                    reads.push((i, x, p, w));
+                // The metres along the chord where the segment's nearest point is its end c.
+                let (p, q) = (xy[i], xy[i + 1]);
+                let along = (q[0] - p[0]) * d[0] + (q[1] - p[1]) * d[1];
+                let kink = |c: [f64; 2]| {
+                    let u = ((c[0] - p[0]) * d[0] + (c[1] - p[1]) * d[1]) / along;
+                    Some(s[i] + u * (s[i + 1] - s[i])).filter(|&m| along != 0.0 && m > x + MERGE_M && m < y - MERGE_M)
+                };
+                let mut at: Vec<f64> = [Some(x), Some(y), kink(w0), kink(w1)].into_iter().flatten().collect();
+                at.sort_by(f64::total_cmp);
+                at.dedup_by(|m, n| *m - *n <= MERGE_M);
+                for m in at {
+                    let Some((pt, r)) = read((o, k), m) else { continue };
+                    let vertex = [i, i + 1].into_iter().find(|&v| (s[v] - m).abs() <= MERGE_M);
+                    vertex.map_or(vec![i, i + 1], |v| vec![v]).into_iter().for_each(|v| above[v].push(r.clone()));
+                    reads.push((i, m, pt, r));
                 }
             }
         }

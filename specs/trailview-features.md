@@ -795,20 +795,23 @@ of it, its underside its floor less `slab_m`: by height it makes only the sectio
 floor the floor too. The bake solves the arms from the highest down: an arm after each arm of each room over a room
 that it runs in, and a room's floor with its last arm's.
 
-- The curve of a way with heights, not of the kind `gallery`, lies over both vertices of each chord of the tube that
-  its reach (its outer half-width + `half` + `shell_m`) overlaps, read at its nearest points to the two ends of that
-  overlap. Over the overlap its nearest point moves along each segment of its curve one way, so its underside there
-  lies at the lesser of the two or over it, and the floor, linear along the chord, lies under it. A reach that only
-  touches a chord reads the vertex there. A read counts where the foot of its point on the whole chain lies between
-  the openings, each grown by the way's outer half-width. The way lies on top where its height at that point is more
-  than the at-grade band over the road solver's height of the chain at the foot (the lesser `snap_height_m` of the two
-  classes, as at a crossing of the ground plan). A way that goes on from the chain's end meets it at the chain's
-  height, so it lies at grade. Its underside is its height less its `deck` on a bridge, else less `slab_m`.
+- The curve of a way with heights, not of the kind `gallery`, is read on each chord of the tube that its reach (its
+  outer half-width + `half` + `shell_m`) overlaps, at its nearest points to the points of the chord where its
+  underside over the chord can bend: the ends of the overlap, and where the nearest point of a segment of its curve is
+  an end of that segment. Between these points the underside and the floor are both linear along the chord. A vertex
+  at such a point reads the way there; a point inside the chord caps both vertices of the chord. So the floor lies
+  under the way along the whole chord. A read counts where the foot of its point on the whole chain, extended past
+  its ends along its end chords, lies between the openings, each grown by the way's outer half-width. The way lies on
+  top where its height at that point is more than the at-grade band over the road solver's height of the chain at the
+  foot (the lesser `snap_height_m` of the two classes, as at a crossing of the ground plan). A way that goes on from
+  the chain's end meets it at the chain's height, so it lies at grade. Its underside is its height less its `deck` on
+  a bridge, else less `slab_m`.
 - The tube gets a vertex where it enters and leaves the reach of each way within reach that is not of the kind
   `tunnel`, at grade or not. Its vertices lie at least `vertex_gap_m` apart, so each chord keeps its direction in
-  the units of a tile: the openings and the joins of its ways stay, and a point of the curve, then a point of a
-  reach, nearer than that to a vertex is that vertex. Behind a seam no vertex lies nearer to the hole than `clear`
-  (see Rooms).
+  the units of a tile: the openings and the joins of its ways stay, and a point of the curve nearer than that to a
+  vertex is that vertex. An end of a reach nearer than that to a vertex inside the reach lies that far past the vertex,
+  out of the reach, so a chord that leaves the reach there is short; nearer than that to another vertex, it is none.
+  Behind a seam no vertex lies nearer to the hole than `clear` (see Rooms).
 - A chord may rise by the `grade` of the class of the widest way (`grade_default` for a class with none) times its
   length, or by the rise of the road solver's chord there, the larger.
 - The cap at a vertex is the least underside of the ways on top there, less `shell_m` and `height`. The floor is the
@@ -819,7 +822,7 @@ that it runs in, and a room's floor with its last arm's.
   of the chord at its vertex.
 - The bake counts a clash, once per way, where a way lies over the floor (past an opening, the chain) by more than
   the at-grade band and the shell of the crown lies over its underside: the metres of the crown's top over the
-  underside, not the depth of a cut beside the tube. It reads each chord at these two ends, with the chord's height as
+  underside, not the depth of a cut beside the tube. It reads each chord at these points, with the chord's height as
   the builder draws it. This holds the ways on top that the floor could not
   clear, and a way that was at grade with the road solver's height where the floor went down under it. Another way of
   the kind `tunnel` lowers the floor only as a room over this one; its clashes are counted apart, as tube clashes.
