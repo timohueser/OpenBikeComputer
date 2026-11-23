@@ -52,7 +52,7 @@
     import { beforeReload } from '../../lib/planner/release';
     import { coordinateName, townName } from '../../lib/planner/point-names';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
+    import { profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
     import { nightKinds, nightWindows, proposal, proposeNights, suitable, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlan } from '../../lib/planner/search/plan';
@@ -106,8 +106,9 @@
         }
     });
     const distance = (km: number) => `${distanceIn(km * 1000).toFixed(1)} ${settings.units}`;
+    // The surface row shows the unknown surface and the pushing; only what no other part shows stands here.
     const routingMessage = $derived(session.dragging ? session.previewStatus : currentRoute
-        ? `${distance(currentRoute.unknownSurfaceKm)} unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${distance(currentRoute.pushingKm)} pushing` : ''}${currentRoute.unroutedKm ? ` · ${distance(currentRoute.unroutedKm)} manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
+        ? [currentRoute.unroutedKm && `${distance(currentRoute.unroutedKm)} manual / access unverified`, currentRoute.unknownElevationKm && 'elevation incomplete'].filter(Boolean).join(' · ')
         : routingStatus);
     // The compare screen of saved routes replaces the trip bar and the planner below it.
     let comparing = $state(false);
@@ -342,7 +343,6 @@
     }
     const highlighted = $derived(litSurface ? surfaceLines(visualRoute, litSurface) : shownNote?.coordinates ?? []);
     const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId && suits(stop, nightKinds(trip, pickerNight))) : undefined);
-    const routeHeights = $derived(currentRoute ? profileSamples(currentRoute) : []);
     const nights: NightChoices = {
         get choosing() { return pickerNight; },
         get stopId() { return openStop?.id ?? null; },
@@ -365,8 +365,6 @@
         },
         get campsites() { return campsites.length; },
         keepCampsites: () => keepCampsites(),
-        date: night => trip.startDate ? addDays(trip.startDate, night - 1) : undefined,
-        elevationAt: km => total ? profileHeightAt(km / total, routeHeights) : null,
         // The chosen night is the one a place callout and a map pick end, also in the day list.
         choose: number => { choosingNight = nightToShow = number; stopId = null; clearSelection(); if (number !== null) night = number; },
         open: id => { stopId = id; clearSelection(); const stop = pickerNight !== null ? readyStops(pickerNight).find(s => s.id === id) : undefined; if (stop) map?.fitCoordinates(suitable(stop, nights.kinds(pickerNight!)).map(p => p.place.coordinate)); },
@@ -1408,7 +1406,7 @@
             </Profile>
             {/if}
             <div class="status-line" role="status">
-                <span class:save-error={!!session.saveError}>{session.saveError || `${message} · ${routingMessage}`}</span>
+                <span class:save-error={!!session.saveError}>{session.saveError || [message, routingMessage].filter(Boolean).join(' · ')}</span>
                 {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan file</button>
                 {:else if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>
                 {:else if session.earlier}<span>· Earlier unsaved changes discarded ·</span><button type="button" class="planner-action" onclick={restoreDraft}>Undo</button>{/if}
@@ -1454,12 +1452,20 @@
         background: none;
         color: inherit;
     }
+    /* The surface of a card of the side panel, and the rim of a card or a filled control. A pale fill alone does not show
+       on every screen in the light theme, so the rim carries the edge there. */
     .planner-shell {
+        --card: color-mix(in srgb, var(--ink) 9%, var(--panel));
+        --rim: color-mix(in srgb, var(--ink) 18%, transparent);
         display: flex;
         flex-direction: column;
         height: 100%;
         min-width: 760px;
         min-height: 580px;
+    }
+    :global([data-theme="dark"]) .planner-shell {
+        --card: color-mix(in srgb, var(--ink) 7%, var(--panel));
+        --rim: transparent;
     }
     .planner-shell :global(.planner-action),
     .planner-shell :global(.planner-chip) {

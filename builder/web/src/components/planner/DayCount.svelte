@@ -56,6 +56,7 @@
         padding: 0 2px;
         border-radius: 8px;
         background: var(--parchment-2);
+        box-shadow: inset 0 0 0 1px var(--rim, transparent);
     }
     button {
         display: grid;

@@ -4,13 +4,12 @@
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { kindLabel, stayOptions } from '../../lib/planner/search/presentation';
     import { openingHoursRows } from '../../lib/planner/search/opening-hours';
-    import { clockTime, nightLow, sunsetAt } from '../../lib/planner/evening';
     import { stopCounts, stopKm, suitable, type Stop, type StopPlace } from '../../lib/planner/stops';
     import type { Day, Place, Stay } from '../../lib/planner/editor';
     import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
-    let { stop, kinds, days, back = 'All towns', shownId = null, theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
+    let { stop, kinds, days, back = 'All towns', shownId = null, theme, onBack, onEndHere, onStay, onSelectPlace }: {
         stop: Stop;
         /** The kinds of place to sleep of the night: the card lists only places of these kinds. */
         kinds: Stay[];
@@ -20,8 +19,6 @@
         /** The id of the place or point that the map shows. */
         shownId?: string | null;
         theme: 'light' | 'dark';
-        date?: string;
-        elevation: number | null;
         onBack: () => void;
         onEndHere: (stop: Stop) => void;
         onStay: (place: Place) => void;
@@ -47,17 +44,6 @@
     function again(entry: StopPlace | null) {
         if ((entry ?? undefined) === selected) select(entry);
     }
-    const center = $derived(stop.sleep[0].place.coordinate);
-    const sunset = $derived(date ? sunsetAt(center, date) : null);
-    let low = $state('');
-    $effect(() => {
-        low = '';
-        if (!date) return;
-        const abort = new AbortController();
-        nightLow(center, elevation, date, abort.signal).then(text => { if (!abort.signal.aborted) low = text; }, () => {});
-        return () => abort.abort();
-    });
-
     const kind = (p: StopPlace) => p.place.placeKind ? kindLabel(p.place.placeKind) : placeCategories[p.place.category].label.toLowerCase();
     // Search names an unnamed place after its kind.
     const named = (p: StopPlace) => p.place.label.toLowerCase() !== kind(p);
@@ -117,11 +103,6 @@
     <ul class="facts">
         <li><Icon path={placeCategories.food.icon} size={15} /><span><b>Food</b> {stop.food.length ? names(stop.food) : 'None mapped nearby'}</span></li>
         <li><Icon path={placeCategories.shop.icon} size={15} /><span><b>Shops</b> {stop.shop.length ? shops(stop.shop) : 'None mapped nearby'}</span></li>
-        {#if date}
-            <li><Icon name="moon" size={15} /><span><b>Night</b> {sunset ? `Sunset ${clockTime(sunset)}` : 'No sunset'}{low ? ` · ${low}` : ''}</span></li>
-        {:else}
-            <li><Icon name="moon" size={15} /><span>Set a start date to see the sunset and the usual night temperature.</span></li>
-        {/if}
     </ul>
     <!-- Sticky inside the scrolling side panel, so the one way to confirm stays in view; it ends the card, so it never
          covers the last row. -->

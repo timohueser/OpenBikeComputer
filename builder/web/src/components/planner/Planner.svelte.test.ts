@@ -129,7 +129,7 @@ describe('route stop handles', () => {
 function nightChoices(choices: Partial<NightChoices> = {}): NightChoices {
     return { choosing: null, stopId: null, shownId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined,
         campsites: 0, keepCampsites: vi.fn(),
-        date: () => undefined, elevationAt: () => null, choose: vi.fn(), open: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
+        choose: vi.fn(), open: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
         selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), setKinds: vi.fn(), release: vi.fn(), ...choices };
 }
 

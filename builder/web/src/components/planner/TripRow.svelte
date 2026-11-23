@@ -101,6 +101,7 @@
         border: 0;
         border-radius: 8px;
         background: var(--parchment-2);
+        box-shadow: inset 0 0 0 1px var(--rim, transparent);
         color: var(--ink);
         font: 600 13px var(--sans);
     }

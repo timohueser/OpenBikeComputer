@@ -92,9 +92,6 @@ export interface NightChoices {
     /** The suggested nights with a campsite. */
     campsites: number;
     keepCampsites(): void;
-    /** The date of the night, when the trip has a start date. */
-    date(night: number): string | undefined;
-    elevationAt(km: number): number | null;
     choose(night: number | null): void;
     open(id: string | null): void;
     endHere(night: number, stop: Stop): void;

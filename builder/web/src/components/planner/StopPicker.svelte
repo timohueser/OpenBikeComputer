@@ -11,7 +11,7 @@
     import { distanceIn } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
-    let { trip, line, night, back, theme, found, window, stopId, shownId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
+    let { trip, line, night, back, theme, found, window, stopId, shownId, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
         trip: Trip;
         line: RoutingLine;
         /** The day that ends at this night. */
@@ -25,9 +25,6 @@
         stopId: string | null;
         /** The id of the place or point that the map shows. */
         shownId: string | null;
-        /** The date of this night, when the trip has a start date. */
-        date?: string;
-        elevationAt: (km: number) => number | null;
         /** The kinds of place to sleep of this night. */
         kinds: Stay[];
         onOpen: (id: string | null) => void;
@@ -63,7 +60,7 @@
 </script>
 
 {#if open}
-    <StopCard stop={open} {kinds} days={daysAround(trip, line, night, open.km)} {back} {shownId} {theme} {date} elevation={elevationAt(open.km)}
+    <StopCard stop={open} {kinds} days={daysAround(trip, line, night, open.km)} {back} {shownId} {theme}
         onBack={() => { returnTo = open.id; onOpen(null); }} {onEndHere} {onStay} {onSelectPlace} />
 {:else}
     <div class="picker">

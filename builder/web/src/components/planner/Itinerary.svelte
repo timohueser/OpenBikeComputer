@@ -54,8 +54,6 @@
     const nightTowns = $derived(days.map(day => day.pinned ? day.pinned.locality ?? day.pinned.label : nights.around(day.number)?.stop.name));
     const fromOf = (day: Day) => day.number === 1 ? ends[0]?.label ?? '' : nightTowns[day.number - 2] ?? `Night ${day.number - 1}`;
     const toOf = (day: Day) => day.number === days.length ? (trip.loop ? ends[0] : ends.at(-1))?.label ?? '' : nightTowns[day.number - 1] ?? `Night ${day.number}`;
-    // A trial: `?cards=quiet` or `?cards=outline` in the address shows another look of the cards.
-    const look = new URLSearchParams(location.search).get('cards');
     const samples = $derived(profileSamples(line));
     const heights = $derived(heightRange(samples));
     const profileOf = (day: Day) => samples.length
@@ -143,7 +141,7 @@
     {@const window = nights.window(night)}
     {#if line && window}
         <StopPicker {trip} {line} {night} {back} {theme} found={nights.found(night)} {window} stopId={nights.stopId} shownId={nights.shownId}
-            date={nights.date(night)} elevationAt={nights.elevationAt} onOpen={id => nights.open(id)} onEndHere={stop => nights.endHere(night, stop)}
+            onOpen={id => nights.open(id)} onEndHere={stop => nights.endHere(night, stop)}
             onStay={place => nights.stay(night, place)} onSelectPlace={place => nights.selectPlace(place)} onPick={() => nights.pick()} onRetry={() => nights.retry(night)}
             onCancel={cancel ? () => nights.choose(null) : undefined} kinds={nights.kinds(night)} onKinds={kinds => nights.setKinds(night, kinds)}
             onRelease={days[night - 1].pinned || days[night - 1].split ? () => nights.release(night) : undefined} />
@@ -187,7 +185,7 @@
             >{#snippet picker()}{@render towns(day.number, !!day.pinned)}{/snippet}</DayRow>
         {:else}
             <DayCard {trip} {day} from={fromOf(day)} to={toOf(day)} last={day.number === days.length} {theme} ascentKnown={line?.unknownElevationKm === 0} {nights}
-                conflict={conflict ? conflict[0].night! : null} profile={profileOf(day)} look={look === 'quiet' || look === 'outline' ? look : 'neutral'}
+                conflict={conflict ? conflict[0].night! : null} profile={profileOf(day)}
                 onOpen={() => openDay(day.number)} onShowEnd={() => onShowEnd(day)} onShowConflict={() => conflict && onShowConflict(conflict)} />
         {/if}
     {/each}
