@@ -95,6 +95,14 @@ pub(super) fn foot(arms: &[Tube], (from, s): (usize, f64), to: usize, near: f64)
     crossing(&arms[to], p, left_of(d), near).map(|x| x.0)
 }
 
+/// How far the first vertex of a room behind a seam lies from its hole, the room `half` wide and its own line
+/// `sideways` metres from the hole's point: its first chord leaves the line within `pair_max_deg`, and its ring there,
+/// turned by that much at most, lies wholly behind the line.
+pub(super) fn clear(sideways: f64, half: f64, b: &obc_trailview_parts::Bake) -> f64 {
+    let tan = b.pair_max_deg.to_radians().tan();
+    (sideways / tan).max(half * tan).max(b.vertex_gap_m)
+}
+
 /// The tube of a room of one lane started at its end `end` at the hole's point p: no other vertex of its first way
 /// lies within `clear` metres of it.
 pub(super) fn started(t: &mut Tube, end: usize, p: [f64; 2], clear: f64) {
@@ -281,8 +289,8 @@ pub(super) fn room_of(
         })
         .collect();
     let clear = [0, 1].map(|end| {
-        let sideways = distance(end_rows[end].0, own_rows[end].0);
-        (sideways / b.pair_max_deg.to_radians().tan()).max(b.vertex_gap_m)
+        let half = own_rows[end].2.iter().map(|p| p.0.abs() + p.1).fold(0.0, f64::max);
+        clear(distance(end_rows[end].0, own_rows[end].0), half, b)
     });
     // The centre line: on each end's line, and at each vertex of the base and the foot of each vertex of another lane
     // between them, the middle between the outermost edges of the lanes; its vertices `vertex_gap_m` apart at least.

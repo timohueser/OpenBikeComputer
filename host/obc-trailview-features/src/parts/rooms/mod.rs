@@ -326,7 +326,7 @@ pub(crate) fn rooms(
         order.push(next);
     }
     let heading = |d: [f64; 2]| (d[1].atan2(d[0]) * 1000.0).round() / 1000.0;
-    let clear_of = |sideways: f64| (sideways / b.pair_max_deg.to_radians().tan()).max(b.vertex_gap_m);
+    let clear_of = |sideways: f64, half: f64| section::clear(sideways, half, b);
     let mut starts: BTreeMap<(usize, usize), Start> = BTreeMap::new();
     let mut made: Vec<Option<Made>> = vec![None; rooms.len()];
     for &r in &order {
@@ -362,7 +362,8 @@ pub(crate) fn rooms(
             for (e, st) in start.iter().enumerate() {
                 if let Some(st) = st {
                     let own = tube.curve.at(if e == 0 { 0.0 } else { tube.curve.len }).0.p;
-                    started(&mut tube, e, st.p, clear_of(distance(st.p, own)));
+                    let clear = clear_of(distance(st.p, own), tube.half);
+                    started(&mut tube, e, st.p, clear);
                 }
             }
             let opens = (l.ends.iter().flatten()).map(|&i| Opening {

@@ -745,7 +745,8 @@ a side that it shares with another, so the tubes behind stand a wall apart and n
 floors; the outer side of an outer lane lies at the room's wall. A side lies on a whole centimetre, so `across` and
 `half` of a hole or a door are whole millimetres, as each position on the line is. A room behind the line starts at its
 hole's point as the record gives it, with the places of the row kept inside the hole; its next vertex lies far enough
-that its first chord leaves the line within `pair_max_deg`, and `vertex_gap_m` at least. The room before the line is as
+that its first chord leaves the line within `pair_max_deg`, that its ring there, turned by as much, lies wholly behind
+the line (its `half` times the tangent of `pair_max_deg`), and `vertex_gap_m` at least. The room before the line is as
 wide as its own lanes. A seam whose row holds no hole for a room behind it, or whose rooms are not side by side in the
 row, is not whole.
 
