@@ -123,6 +123,9 @@ test('"Where" on the profile: the places of "Find" are dots, a drag sets a stret
   const panel = page.locator('#search-panel'), plot = panel.locator('.plot'), where = page.locator('[data-slot="where"] strong');
   const dots = () => panel.locator('.dot').evaluateAll(all => all.map(dot => dot.classList.contains('in')));
   await expect.poll(dots).toEqual([true, true, true, true]);
+  // The pointer names the place under it.
+  await panel.locator('.dot').first().hover();
+  await expect.poll(() => panel.locator('.dot').first().evaluate(dot => getComputedStyle(dot, '::after').content)).toContain('Brunnen 2');
   // A vertical swipe scrolls the panel; a horizontal drag sets the stretch.
   await expect(plot).toHaveCSS('touch-action', 'pan-y');
 

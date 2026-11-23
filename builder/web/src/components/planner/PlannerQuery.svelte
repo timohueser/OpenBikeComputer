@@ -208,7 +208,7 @@
             {#if id === 'find'}
                 <FindPanel find={slots.find} onchange={find => set({ ...slots, find })} />
             {:else if id === 'where'}
-                <WherePanel where={slots.where ?? VIEW} radius={slots.radius} plan={context.plan} found={alongRoute} {selection} onchange={(change, moving) => set({ ...slots, ...change }, moving)} />
+                <WherePanel where={slots.where ?? VIEW} radius={slots.radius} plan={context.plan} found={alongRoute} {selection} problem={searchState.error} onchange={(change, moving) => set({ ...slots, ...change }, moving)} />
             {:else}
                 <WhenPanel open={slots.open} onchange={open => set({ ...slots, open })} />
             {/if}

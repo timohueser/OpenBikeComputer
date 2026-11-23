@@ -141,6 +141,21 @@ describe('the planner search',()=>{
         expect(words('where')).toBe('Nearest to me');
     });
 
+    it('says in the panel of "Where" that "Near me" has no location, and offers no part of an area off the route', async () => {
+        const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+            const input = JSON.parse(String(init.body)), request = input.request ?? READ[input.q];
+            return { ok: true, json: async () => ({ type: 'places', request, results: [], ...request.where?.scope === 'here' ? { code: 'location' } : {} }) } as Response;
+        });
+        vi.stubGlobal('fetch', fetch);
+        const { target, enter, slot, press } = await setup({ onLocation: async () => 'denied' });
+        await enter('supermarket');
+        slot('where').click(); await tick();
+        const part = target.querySelector<HTMLFieldSetElement>('.search-panel fieldset')!;
+        expect([part.disabled, target.querySelector('.search-panel .note')]).toEqual([false, null]);
+        press('Near me'); await vi.advanceTimersByTimeAsync(0); await tick();
+        expect([part.disabled, target.querySelector('.search-panel .note')?.textContent]).toEqual([true, 'Allow location access to search near you.']);
+    });
+
     it('keeps a change of the plan when it searches again with the position of the rider', async () => {
         const route: QueryRequest = { type: 'route', from: { here: true }, to: { name: 'Konstanz' } };
         const fetch = vi.fn(async (_url: string, init: RequestInit) => {
