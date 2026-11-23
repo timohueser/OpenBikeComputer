@@ -96,12 +96,10 @@
     // While a part that a drag here started is selected, the profile keeps the stretch of the map from when it started.
     let held = $state<{ from: number; to: number }>();
     $effect.pre(() => { if (!part) held = undefined; });
-    // A trial for the owner to compare: with `?day=follow` in the address, the profile shows a day alone when it opens.
-    const follow = new URLSearchParams(location.search).get('day') === 'follow';
     // The open day that the rider chose to see alone. Another day, and the same day when it opens again, show the trip.
     let chosen = $state<string>();
     $effect.pre(() => { if (focus?.label !== chosen) chosen = undefined; });
-    const alone = $derived(focus && (follow ? range === 'map' : chosen === focus.label) ? focus : null);
+    const alone = $derived(focus && chosen === focus.label ? focus : null);
     const shown = $derived(alone ?? week ?? (focus || range === 'route' ? { from: 0, to: 1 } : part && held ? held : view));
     const origin = $derived(alone?.from ?? 0);
     const quiet = (day: ProfileDay) => !!focus && day.number !== activeNight;
@@ -186,7 +184,7 @@
         {#if totals}<PlanTotals {...totals} />{/if}
         {#if open}
         {#if !week || focus}<Segmented compact label="Profile range" value={focus ? alone ? 'map' : 'route' : range}
-            onChange={(value) => { if (focus && !follow) chosen = value === 'map' ? focus.label : undefined; else range = value; }}
+            onChange={(value) => { if (focus) chosen = value === 'map' ? focus.label : undefined; else range = value; }}
             options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: week ? `Days ${week.start}–${week.end}` : 'Whole route' }]} />{/if}
         <label class="grade-toggle"><input type="checkbox" checked={showGrade} onchange={(event) => gradeChoice = event.currentTarget.checked} />Grade</label>
         {#if seen}

@@ -500,16 +500,6 @@ describe('planner day views', () => {
             button('Day 2').click(); await tick();
             expect([range(), axis()]).toEqual(['Day 2', alone]);
         });
-
-        it('follows the day when it opens, with `?day=follow` in the address', async () => {
-            history.replaceState(null, '', '?day=follow');
-            onTestFinished(() => history.replaceState(null, '', location.pathname));
-            profile(() => 2);
-            await tick();
-            expect([range(), axis()]).toEqual(['Day 2', alone]);
-            button('Whole route').click(); await tick();
-            expect([range(), axis()]).toEqual(['Whole route', trip]);
-        });
     });
 
     it('writes miles and feet for a rider on miles, and a missing ascent as a dash', async () => {
