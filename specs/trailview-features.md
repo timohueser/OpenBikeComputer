@@ -758,9 +758,11 @@ that stays, form the next group.
 
 The bake counts, on the final floors, halves and heights as the builder draws them, each two rooms that draw and
 still come nearer than a wall and do not lie apart, read every metre from both rooms (`rooms_that_touch`, with places).
-Past a room's end its space ends at the face across that end: the gap there runs from the other room's section to that
-face. Two rooms of one seam meet on its line: their metres from the line to the first vertex of each room behind it
-(where that room tapers from its hole), and a metre past the end of one at that seam, do not count.
+Past a room's end its space ends at the face across that end. A room's chord at a seam runs from its outline on the
+line (its hole, or of the room before the line its own `half`) to its ring at the next vertex, the edges straight, as
+the builder draws it. Past an end and on such a chord the gap runs between the two sections. A room before a seam and
+a room behind it are open to each other through the hole: of the two, only the part of a section on the other's side
+of the line counts.
 
 #### The floor of a tube
 
