@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crate::mesh::{flagged, flat, left_of, outline, Builder, Corner, Paint, Station, BORE, LAMP, PAINT};
+use crate::mesh::{flagged, flat, left_of, outline, turned_run, Builder, Corner, Paint, Station, BORE, LAMP, PAINT};
 use crate::{built, metres_per_unit, Bore, Chord, End, Lane, Mouth, Part, Rules, Section};
 
 /// The openings of a head lie on one frame line within this: the bake leaves an opening this little past the line
@@ -402,11 +402,9 @@ impl<'a> Net<'a> {
     pub fn seam_cut(&self, r: usize) -> Option<SeamCut> {
         let list = &self.of_record[r];
         let line = self.line(r, 0.0);
-        // A ring's corners in the line's metres: the ring runs with the line or against it.
-        let sign = |st: &Station| if st.ax * line.ax + st.ay * line.ay >= 0.0 { 1.0 } else { -1.0 };
         let (cp, kp) = self.opening(list[0])?;
         let (chord, ring) = (&self.chords[cp], self.ring(cp, kp));
-        let sp = sign(&ring);
+        let sp = ring.sign(&line);
         // The sides of the holes behind the line, in the parent's metres.
         let mut sides: Vec<f64> = Vec::new();
         let mut outlines = Vec::new();
@@ -419,13 +417,10 @@ impl<'a> Net<'a> {
             let mut corners = vec![[-half, pieces[0].2]];
             corners.extend_from_slice(&o[1..o.len() - 1]);
             corners.push([half, pieces[pieces.len() - 1].2]);
-            let (sc, h) = (sign(&st), &self.holes[e]);
+            let (sc, h) = (st.sign(&line), &self.holes[e]);
             // In the line's metres from the right; the floor corners are the parent's.
-            let mut on: Vec<(Corner, [f64; 3])> =
-                corners.iter().map(|&q| ([mm(h.across + sc * q[0]), mm(h.up + q[1])], st.at(q))).collect();
-            if sc < 0.0 {
-                on.reverse();
-            }
+            let on: Vec<(Corner, [f64; 3])> =
+                turned_run(sc, corners, |q| ([mm(h.across + sc * q[0]), mm(h.up + q[1])], st.at(q)));
             sides.extend([on[0].0[0], on[on.len() - 1].0[0]].map(|x| sp * x));
             outlines.push(on);
         }
@@ -456,13 +451,7 @@ impl<'a> Net<'a> {
         top.extend(sides.iter().map(|&x| [x, top_at(&o, x).unwrap_or(0.0)]));
         top.sort_by(|a, b| a[0].total_cmp(&b[0]));
         top.dedup();
-        let in_line = |list: Vec<Corner>| {
-            let mut out: Vec<(Corner, [f64; 3])> = list.into_iter().map(|q| ([sp * q[0], q[1]], ring.at(q))).collect();
-            if sp < 0.0 {
-                out.reverse();
-            }
-            out
-        };
+        let in_line = |list: Vec<Corner>| turned_run(sp, list, |q| ([sp * q[0], q[1]], ring.at(q)));
         let (floor, top) = (in_line(floor), in_line(top));
         // A hole's floor corners are the parent's corners at its sides.
         for hole in &mut outlines {
@@ -486,18 +475,12 @@ impl<'a> Net<'a> {
             let Some((c, k)) = self.opening[e] else { continue };
             let (chord, st) = (&self.chords[c], self.frame(e, 0.0));
             // The chord runs against the way in where its ring is the frame turned: its right is the frame's left.
-            let ring = self.ring(c, k);
-            let sign = if ring.ax * st.ax + ring.ay * st.ay >= 0.0 { 1.0 } else { -1.0 };
-            let mut lanes: Vec<(f64, [f64; 2])> = (0..chord.lanes.len())
-                .map(|i| {
-                    let (off, (lo, hi)) = (chord.lanes[i].off[k], self.lane_edges(c, i, k));
-                    let jamb = if sign > 0.0 { [lo - off, hi - off] } else { [off - hi, off - lo] };
-                    (sign * off, jamb)
-                })
-                .collect();
-            if sign < 0.0 {
-                lanes.reverse();
-            }
+            let sign = self.ring(c, k).sign(&st);
+            let lanes = turned_run(sign, 0..chord.lanes.len(), |i| i).into_iter().map(|i| {
+                let (off, (lo, hi)) = (chord.lanes[i].off[k], self.lane_edges(c, i, k));
+                let jamb = if sign > 0.0 { [lo - off, hi - off] } else { [off - hi, off - lo] };
+                (sign * off, jamb)
+            });
             for (off, jamb) in lanes {
                 let p = st.at([off, 0.0]);
                 out.push(([p[0], p[1]], self.holes[e].way_in(), jamb));
@@ -551,25 +534,17 @@ fn behind(net: &Net, (r, h): (usize, usize), (c, k): (usize, usize), i: usize) -
     let (cp, kp) = net.opening(net.of_record[r][0])?;
     let hole = &net.holes[net.of_record[r][h]];
     let line = net.line(r, 0.0);
-    let sign = |st: Station| if st.ax * line.ax + st.ay * line.ay >= 0.0 { 1.0 } else { -1.0 };
-    let (sp, sc) = (sign(net.ring(cp, kp)), sign(net.ring(c, k)));
+    let (sp, sc) = (net.ring(cp, kp).sign(&line), net.ring(c, k).sign(&line));
     // A run of pieces from the right of one metres to the right of the other, by the sign between them.
-    let turn = |pieces: Vec<(f64, f64, f64)>, sign: f64, at: f64| -> Vec<(f64, f64, f64)> {
-        let moved =
-            pieces.into_iter().map(|(a, b, t)| if sign > 0.0 { (a - at, b - at, t) } else { (at - b, at - a, t) });
-        let mut out: Vec<_> = moved.collect();
-        if sign < 0.0 {
-            out.reverse();
-        }
-        out
+    let turn = |pieces: Vec<(f64, f64, f64)>, sign: f64, at: f64| {
+        turned_run(sign, pieces, |(a, b, t)| if sign > 0.0 { (a - at, b - at, t) } else { (at - b, at - a, t) })
     };
     let (lo, hi) = (hole.across - hole.half, hole.across + hole.half);
     // The lanes of the room before the line in the line's metres from the right, those in the hole.
-    let mut lanes: Vec<Vec<(f64, f64, f64)>> =
-        (0..net.chords[cp].lanes.len()).map(|j| turn(on_line(own_pieces(net, cp, j, kp)), sp, 0.0)).collect();
-    if sp < 0.0 {
-        lanes.reverse();
-    }
+    let mut lanes = turned_run(sp, 0..net.chords[cp].lanes.len(), |j| j)
+        .into_iter()
+        .map(|j| turn(on_line(own_pieces(net, cp, j, kp)), sp, 0.0))
+        .collect::<Vec<_>>();
     lanes.retain(|l| l[0].0 < hi && l[l.len() - 1].1 > lo);
     let n = net.chords[c].lanes.len();
     if lanes.len() != n {
@@ -611,12 +586,8 @@ pub fn floor_pieces(net: &Net, c: usize, k: usize) -> Vec<(f64, f64, f64)> {
 
 /// The floor of a room at vertex k of chord c across to the left of station `st`, its ring there or that turned.
 pub fn floor_along(net: &Net, c: usize, k: usize, st: &Station) -> Vec<(f64, f64, f64)> {
-    let (pieces, ring) = (floor_pieces(net, c, k), net.ring(c, k));
-    if ring.ax * st.ax + ring.ay * st.ay >= 0.0 {
-        pieces
-    } else {
-        pieces.into_iter().rev().map(|(a, b, top)| (-b, -a, top)).collect()
-    }
+    let sign = net.ring(c, k).sign(st);
+    turned_run(sign, floor_pieces(net, c, k), |(a, b, top)| if sign > 0.0 { (a, b, top) } else { (-b, -a, top) })
 }
 
 /// The segments of a chord's arch: `arch_segments` per lane, so a wide arch is as smooth as its lanes' tubes.
@@ -719,8 +690,7 @@ impl Corners<'_> {
         let (Some((r, h)), Some(cut)) = (net.seam_at(c, k), cut) else {
             return Corners { ring, parent: None, child: None };
         };
-        let line = net.line(r, 0.0);
-        let sign = if ring.ax * line.ax + ring.ay * line.ay >= 0.0 { 1.0 } else { -1.0 };
+        let sign = ring.sign(&net.line(r, 0.0));
         let mine = |list: &[(Corner, [f64; 3])]| {
             let mut out: Vec<Corner> = list.iter().map(|q| [sign * q.0[0], q.0[1]]).collect();
             out.sort_by(|a, b| a[0].total_cmp(&b[0]));
@@ -908,10 +878,6 @@ pub fn inside<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, c: usize) {
         b.strip_at((&sides[0].1, &sides[0].0), (&sides[1].1, &sides[1].0), bore(wall), to_middle(j));
     }
     for j in 1..n - 2 {
-        if rings.iter().all(|r| r.parent.is_none()) {
-            b.strip((&s, &outlines[0][j..j + 2]), (&t, &outlines[1][j..j + 2]), bore(vault), to_middle(j));
-            continue;
-        }
         let [qa, qz] = [0, 1].map(|k| rings[k].top_run(outlines[k][j], outlines[k][j + 1]));
         b.strip((&s, &qa), (&t, &qz), bore(vault), to_middle(j));
     }

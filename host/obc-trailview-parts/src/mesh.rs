@@ -39,6 +39,16 @@ pub struct Station {
 }
 
 impl Station {
+    /// 1 where this station runs across the way that `other` does, else −1: a metre across one is `sign` metres across
+    /// the other, and a run from the right of one is the other's in reverse (`turned_run`).
+    pub fn sign(&self, other: &Station) -> f64 {
+        if self.ax * other.ax + self.ay * other.ay >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        }
+    }
+
     /// The station on a unit direction `d` in world units, across to its left, `scale` metres per metre across.
     pub fn across(p: [f64; 2], z: f64, d: [f64; 2], scale: f64) -> Station {
         let (l, k) = (left_of(d), scale / metres_per_unit(p[1]));
@@ -221,4 +231,14 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         let w = [pd[0] - pb[0], pd[1] - pb[1], pd[2] - pb[2]];
         [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]]
     }
+}
+
+/// A run from the right in the metres of a station whose `sign` to another's is `sign`, from the right in the other's:
+/// each item `across` it, in reverse where the sign is −1.
+pub fn turned_run<T, U>(sign: f64, items: impl IntoIterator<Item = T>, across: impl Fn(T) -> U) -> Vec<U> {
+    let mut out: Vec<U> = items.into_iter().map(across).collect();
+    if sign < 0.0 {
+        out.reverse();
+    }
+    out
 }

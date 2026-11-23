@@ -58,12 +58,12 @@ pub(super) fn cut(
     for &(t, _, again) in turned {
         add(&mut cuts, t, again);
     }
-    // A cut inside a run cuts the other arm at its foot: the foot of a foot lies a little off where two arms are not
-    // parallel, so the cuts end.
+    // A cut inside a run cuts the other arm at its foot, until no cut is new. This ends: a new cut lies `vertex_gap_m`
+    // or more from each cut of its arm, so an arm holds at most its length over that.
     let inside = |x: f64, [p, q]: [f64; 2]| x > p.min(q) + 1e-6 && x < p.max(q) - 1e-6;
     let along =
         |x: f64, (from, to): ([f64; 2], [f64; 2])| to[0] + (to[1] - to[0]) * (x - from[0]) / (from[1] - from[0]);
-    for _ in 0..20 {
+    loop {
         let mut new = false;
         for r in runs {
             for x in cuts[r.a].clone().into_iter().filter(|&x| inside(x, r.sa)) {

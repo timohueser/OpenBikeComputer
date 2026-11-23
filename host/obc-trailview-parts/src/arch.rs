@@ -4,7 +4,7 @@
 //! opening ends in the hill, closed by a dark face, with no head.
 
 use crate::boxes;
-use crate::mesh::{flagged, flat, outline, Builder, Corner, Station, VOID};
+use crate::mesh::{flagged, flat, outline, turned_run, Builder, Corner, Station, VOID};
 use crate::seam;
 use crate::tube::{self, direction, inward, spring, top_at, Net};
 use crate::{Part, Section};
@@ -337,15 +337,8 @@ fn room(net: &Net, (c, k): (usize, usize), st: &Station) -> (Vec<Corner>, Vec<Co
     // At a seam before which the room ends, its floor and its outline with the seam's corners.
     if let Some((r, 0)) = net.seam_at(c, k) {
         if let Some(cut) = net.seam_cut(r) {
-            let line = net.line(r, 0.0);
-            let sign = if st.ax * line.ax + st.ay * line.ay >= 0.0 { 1.0 } else { -1.0 };
-            let mine = |list: &[(Corner, [f64; 3])]| {
-                let mut out: Vec<Corner> = list.iter().map(|q| [sign * q.0[0], q.0[1]]).collect();
-                if sign < 0.0 {
-                    out.reverse();
-                }
-                out
-            };
+            let sign = st.sign(&net.line(r, 0.0));
+            let mine = |list: &[(Corner, [f64; 3])]| turned_run(sign, list, |q| [sign * q.0[0], q.0[1]]);
             let (floor, top) = (mine(&cut.floor), mine(&cut.top));
             // On each wall the corners of a hole's side there, as the inside's wall has them.
             let wall = |from: Corner, to: Corner| {

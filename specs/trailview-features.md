@@ -588,9 +588,8 @@ in order:
    `rock_cover_max_m`; else `arch`.
 5. Else `free`.
 
-What draws is decided once, in the bake, by the rule of the builder. A room draws where each of its ends is a seam or
-an opening with a part of the kinds that the builder builds (`BUILT` of `host/obc-trailview-parts`), and where it is
-not taken out. The rooms of one seam, and the rooms of one arm, draw together or not at all. A room whose
+What draws is decided once, in the bake, by the rule of the builder (`built` of `host/obc-trailview-parts`). A room
+draws where each of its ends is a seam or an opening with a part, and where it is not taken out. The rooms of one seam, and the rooms of one arm, draw together or not at all. A room whose
 seam holds no hole for a room behind it, or whose arm has an opening in no room, does not draw; nor does a room whose
 line leaves the bake's region. Of two openings within `pair_max_m` and `pair_max_deg` (also the two ends of one room)
 whose rooms draw, that lie at one level (neither over the other, see Rooms) and less than two `shell_m` apart across,
@@ -687,7 +686,7 @@ heights of a tunnel way do not change with the parts.
 A way that ends at an opening of a built head widens its shoulder and the layers out of it, so its core's edge (where
 its wall or bank stands) reaches the jamb lines of its lane (the wall or the edge to the next lane, the farther of
 the two from its axis), and narrows back to its own width over `approach_m` of `design` in
-`data/trailview/parts.json`, or over the way where it is shorter. A change of `BUILT` bakes the layer again.
+`data/trailview/parts.json`, or over the way where it is shorter.
 
 #### Rooms
 

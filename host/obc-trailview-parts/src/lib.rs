@@ -51,12 +51,10 @@ impl Part {
     }
 }
 
-/// The kinds of part that the builder makes. A room draws as parts only where both of its ends are of these kinds.
-pub const BUILT: &[Part] = &[Part::Arch, Part::Rock, Part::Box, Part::Free, Part::Seam];
-
-/// Whether all ends of a chain are built; `None` is an end with no part of its own.
+/// Whether all ends of a chain are parts, which the builder builds; `None` is an end with no part of its own. A room
+/// draws as parts only where both of its ends are.
 pub fn built(ends: &[Option<Part>]) -> bool {
-    ends.iter().all(|e| e.is_some_and(|p| BUILT.contains(&p)))
+    ends.iter().all(Option::is_some)
 }
 
 /// The cross-section of a tube.

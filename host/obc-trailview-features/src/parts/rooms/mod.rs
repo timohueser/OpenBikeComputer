@@ -419,10 +419,6 @@ pub(crate) fn rooms(
     for s in 0..out.seams.len() {
         out.seams[s].whole &= out.seams[s].holes.len() == out.seams[s].children.len();
     }
-    // A room behind a seam made before the room in front of it has no hole.
-    for s in 0..out.seams.len() {
-        out.seams[s].whole &= out.seams[s].holes.len() == out.seams[s].children.len();
-    }
     // A room cannot draw where a seam at its ends is not whole, or an arm of it has an opening in no room.
     let mut opened = vec![false; arm_openings.len()];
     for l in out.lanes.iter().flatten() {
