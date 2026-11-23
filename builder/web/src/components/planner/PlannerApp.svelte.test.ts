@@ -544,7 +544,7 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.day h2')?.textContent).toContain(tilePlace.label);
     });
 
-    it('Escape closes the map selection before the selected part and the part before the open day, and a new line clears the part', async () => {
+    it('Escape closes the map selection before the selected part and the part before the open day, and a new line keeps the part', async () => {
         await startApp();
         await vi.waitFor(() => dayButton(1).click()); await tick();
         const part = () => document.querySelector('.elevation .part');
@@ -574,8 +574,11 @@ describe('planner app transitions', () => {
         expect(part()).not.toBeNull();
         await openPreferences();
         button('Activity').click(); await tick();
+        const lines = vi.mocked(routing.calculateLine).mock.calls.length;
         button('Gravel bike').click();
-        await vi.waitFor(() => expect(part()).toBeNull());
+        await vi.waitFor(() => expect(vi.mocked(routing.calculateLine).mock.calls.length).toBeGreaterThan(lines));
+        await vi.waitFor(() => expect(document.querySelector('.route-status')).toBeNull());
+        expect(part()).not.toBeNull();
     });
 
     it('rejects a malformed cached draft without crashing the planner', async () => {
