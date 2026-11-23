@@ -89,8 +89,6 @@ export interface NightChoices {
     release(night: number): void;
     /** The suggestion for a night that is not pinned: the proposal, or the town at a day end the rider set. */
     around(night: number): Proposal | undefined;
-    /** The towns before and after the suggestion that suit the rider. */
-    neighbours(night: number): [Stop | undefined, Stop | undefined];
     /** The suggested nights with a campsite. */
     campsites: number;
     keepCampsites(): void;
@@ -99,7 +97,6 @@ export interface NightChoices {
     elevationAt(km: number): number | null;
     choose(night: number | null): void;
     open(id: string | null): void;
-    step(night: number, direction: -1 | 1): void;
     endHere(night: number, stop: Stop): void;
     stay(night: number, place: Place): void;
     /** Shows a place on the map; null shows none and leaves the map where it is. */

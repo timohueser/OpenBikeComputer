@@ -126,9 +126,9 @@ describe('route stop handles', () => {
 });
 
 function nightChoices(choices: Partial<NightChoices> = {}): NightChoices {
-    return { choosing: null, stopId: null, shownId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
+    return { choosing: null, stopId: null, shownId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined,
         campsites: 0, keepCampsites: vi.fn(),
-        date: () => undefined, elevationAt: () => null, choose: vi.fn(), open: vi.fn(), step: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
+        date: () => undefined, elevationAt: () => null, choose: vi.fn(), open: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
         selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), setKinds: vi.fn(), release: vi.fn(), ...choices };
 }
 
@@ -290,6 +290,22 @@ describe('planner day views', () => {
         expect(keepCampsites).toHaveBeenCalledOnce();
     });
 
+    it('names a day by the towns of its nights, and a set night by its place', async () => {
+        const props = itineraryProps(null);
+        props.days = props.days.map(day => day.number === 1 ? { ...day, pinned: { id: 'night-1', kind: 'night', night: 1, coordinate: [8, 47], label: 'Fuxxbau', placeKind: 'alpine_hut', locality: 'Laufen' } } : day);
+        props.nights = nightChoices({ around: night => night === 2 ? proposal(town('Zwingen', 20), allStay) : undefined });
+        mounted.push(mount(Itinerary, { target: document.body, props }));
+        await tick();
+
+        const labels = [...document.querySelectorAll('[data-day]')].map(day => day.getAttribute('aria-label'));
+        expect(labels[0]).toMatch(/^Open day 1: .+ to Laufen$/);
+        expect(labels[1]).toBe('Open day 2: Laufen to Zwingen');
+        const [set, suggested] = document.querySelectorAll('.night');
+        expect([set.querySelector('strong')?.textContent, set.querySelector('small')?.textContent]).toEqual(['Fuxxbau', 'alpine hut · Laufen']);
+        expect(suggested.querySelector('strong')?.textContent).toBe('Sleep near Zwingen');
+        expect(button('Change night 1')).toBeDefined();
+    });
+
     it('steps between the days from an open day, and shows the finish', async () => {
         const props = itineraryProps(3);
         mounted.push(mount(Itinerary, { target: document.body, props }));
@@ -341,7 +357,7 @@ describe('planner day views', () => {
         await tick();
 
         expect([...document.querySelectorAll('.stats dd')].map(figure => figure.textContent).slice(0, 3)).toEqual(['29.8mi', '3281ft', '—ft']);
-        expect(document.querySelector('.title small')?.textContent).toContain('↑ — ft · ↓ — ft');
+        expect(document.querySelector('[data-day="1"] .figures')?.textContent).toContain('—ft');
         expect([...document.querySelectorAll('.ticks span')].map(tick => tick.textContent)).toEqual(['0 mi', '22 mi', '45 mi', '67 mi', '89 mi']);
         expect([...document.querySelectorAll('.height')].map(label => label.textContent)).toEqual(['100 ft', '0 ft']);
     });

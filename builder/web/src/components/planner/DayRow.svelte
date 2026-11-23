@@ -6,23 +6,20 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
     import { sleepIcon } from '../../lib/planner/search/presentation';
-    import { dayStops, duration, planView, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import { dayStops, planView, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
-    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { distanceIn } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
     let {
-        trip, line, day, days, theme, scale, expanded, choosing, conflict, selectedId, revealId, hoveredId = null, onHover,
-        onToggle, onInspect, onShowEnd, onChange, onShowConflict, picker, suggested = {},
+        trip, line, day, days, theme, choosing, conflict, selectedId, revealId, hoveredId = null, onHover,
+        onInspect, onShowEnd, onChange, onShowConflict, picker, suggested = {},
     }: {
         trip: Trip;
         line?: RoutingLine;
         day: Day;
         days: Day[];
         theme: 'light' | 'dark';
-        /** The riding hours of the full length bar: those of the longest day. */
-        scale: number;
-        expanded: boolean;
         /** The towns to sleep in show for this day. */
         choosing: boolean;
         /** The day whose overnight this day ends before. */
@@ -32,7 +29,6 @@
         onHover?: (id: string | null) => void;
         /** The point whose row scrolls into view and lights up for a moment. */
         revealId: string | null;
-        onToggle: () => void;
         onInspect: (point: RoutePoint) => void;
         onShowEnd: () => void;
         /** Opens the towns again for a pinned night. */
@@ -51,7 +47,7 @@
     const end = $derived(last ? finish.label : day.pinned?.label ?? suggested[day.number] ?? 'Overnight to choose');
     const endId = $derived(last ? finish.id : day.pinned?.id ?? null);
     const ascentKnown = $derived(line?.unknownElevationKm === 0);
-    const stops = $derived(expanded ? dayStops(trip, line, day) : []);
+    const stops = $derived(dayStops(trip, line, day));
     const title = $derived(`Day ${day.number}${trip.startDate ? ` · ${weekdayLabel(addDays(trip.startDate, day.number - 1))}` : ''}`);
     const stopKinds: Record<string, { label: string; icon: string }> = {
         waypoint: { label: 'Visit', icon: 'flag' },
@@ -67,64 +63,45 @@
     }
 </script>
 
-<section class="day" class:expanded style:--day-color={dayColor(day.number, theme)}>
-    {#if expanded}
-        <header class="detail-heading">
-            <span class="badge">{day.number}</span>
-            <div><small>{title}</small><h2>{start} → {end}</h2></div>
-        </header>
-        <RouteStats distance={day.distance} ascent={ascentKnown ? day.ascent : null} descent={ascentKnown ? day.descent : null} walking={trip.bike === 'hiking'} hours={line ? day.hours : null} />
-    {:else}
-    <button type="button" class="heading" data-day={day.number} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}`}>
-        <span class="heading-content">
+<section class="day" style:--day-color={dayColor(day.number, theme)}>
+    <header class="detail-heading">
         <span class="badge">{day.number}</span>
-        <span class="title">
-            <strong>{title}</strong>
-            <small>{duration(day.hours)} · ↑ {ascentKnown ? Math.round(heightIn(day.ascent)) : '—'} {heightUnit()} · ↓ {ascentKnown ? Math.round(heightIn(day.descent)) : '—'} {heightUnit()}</small>
-        </span>
-        <span class="distance">{distanceIn(day.distance * 1000).toFixed(1)}<small>{settings.units}</small></span>
-        <Icon name="chevron" size={14} />
-        </span>
-    <span class="bar" aria-hidden="true">
-        <span class="fill" style:width={`${Math.min(100, day.hours / scale * 100)}%`}></span>
-    </span>
-    </button>
-    {/if}
+        <div><small>{title}</small><h2>{start} → {end}</h2></div>
+    </header>
+    <RouteStats distance={day.distance} ascent={ascentKnown ? day.ascent : null} descent={ascentKnown ? day.descent : null} walking={trip.bike === 'hiking'} hours={line ? day.hours : null} />
     {#if conflict !== null}
         <p class="note warn"><Icon name="warning" size={15} />Ends before day {conflict}'s overnight · <button type="button" class="planner-action" onclick={onShowConflict}>Show</button></p>
     {/if}
-    {#if expanded}
-        <div class="body">
-            <h3>Stops along the day</h3>
-            {#if stops.length}<div class="stop"><span class="dot"></span><span>{start}</span><small>0 {settings.units}</small></div>{/if}
-            {#each stops as { point, km } (point.id)}
-                <button type="button" class="stop" class:chosen={selectedId === point.id || hoveredId === point.id} class:flash={revealId === point.id} onmouseenter={() => onHover?.(point.id)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(point.id)} onblur={() => onHover?.(null)} onclick={() => onInspect(point)} {@attach reveal(point.id)}>
-                    <Icon name={stopKinds[point.kind].icon} size={15} /><span>{point.label}</span>
-                    <small>{stopKinds[point.kind].label} · at {distanceIn(km * 1000).toFixed(1)} {settings.units}</small>
-                </button>
-            {/each}
-            {#if last || day.pinned}
-                <button type="button" class="stop end" class:chosen={hoveredId === endId} onmouseenter={() => onHover?.(endId)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(endId)} onblur={() => onHover?.(null)} class:flash={revealId === endId} onclick={onShowEnd} {@attach reveal(endId!)}>
-                    <Icon name={last ? 'flag' : sleepIcon(day.pinned?.placeKind)} size={15} /><span>{end}</span><small>{last ? 'Finish' : 'Pinned'}</small>
-                </button>
-            {/if}
-            {#if stops.length && !last && !day.pinned}
-                <button type="button" class="stop end" onclick={onShowEnd}><Icon name="camp" size={15} /><span>Suggested day end<small>Choose an overnight below</small></span><small>{distanceIn(day.distance * 1000).toFixed(1)} {settings.units}</small></button>
-            {/if}
-            {#if !stops.length}<p class="help">Click the map to add a stop.</p>{/if}
-            {#if choosing && !last}
-                <div class="choose">
-                    <div class="choose-head">
-                        <h3>Where to sleep</h3>
-                        <button type="button" class="planner-action" onclick={onShowEnd}>Show area</button>
-                    </div>
-                    {@render picker?.()}
+    <div class="body">
+        <h3>Stops along the day</h3>
+        {#if stops.length}<div class="stop"><span class="dot"></span><span>{start}</span><small>0 {settings.units}</small></div>{/if}
+        {#each stops as { point, km } (point.id)}
+            <button type="button" class="stop" class:chosen={selectedId === point.id || hoveredId === point.id} class:flash={revealId === point.id} onmouseenter={() => onHover?.(point.id)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(point.id)} onblur={() => onHover?.(null)} onclick={() => onInspect(point)} {@attach reveal(point.id)}>
+                <Icon name={stopKinds[point.kind].icon} size={15} /><span>{point.label}</span>
+                <small>{stopKinds[point.kind].label} · at {distanceIn(km * 1000).toFixed(1)} {settings.units}</small>
+            </button>
+        {/each}
+        {#if last || day.pinned}
+            <button type="button" class="stop end" class:chosen={hoveredId === endId} onmouseenter={() => onHover?.(endId)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(endId)} onblur={() => onHover?.(null)} class:flash={revealId === endId} onclick={onShowEnd} {@attach reveal(endId!)}>
+                <Icon name={last ? 'flag' : sleepIcon(day.pinned?.placeKind)} size={15} /><span>{end}</span><small>{last ? 'Finish' : 'Pinned'}</small>
+            </button>
+        {/if}
+        {#if stops.length && !last && !day.pinned}
+            <button type="button" class="stop end" onclick={onShowEnd}><Icon name="camp" size={15} /><span>Suggested day end<small>Choose an overnight below</small></span><small>{distanceIn(day.distance * 1000).toFixed(1)} {settings.units}</small></button>
+        {/if}
+        {#if !stops.length}<p class="help">Click the map to add a stop.</p>{/if}
+        {#if choosing && !last}
+            <div class="choose">
+                <div class="choose-head">
+                    <h3>Where to sleep</h3>
+                    <button type="button" class="planner-action" onclick={onShowEnd}>Show area</button>
                 </div>
-            {:else if day.pinned && !last}
-                <button type="button" class="planner-action change" onclick={onChange}>Change overnight</button>
-            {/if}
-        </div>
-    {/if}
+                {@render picker?.()}
+            </div>
+        {:else if day.pinned && !last}
+            <button type="button" class="planner-action change" onclick={onChange}>Change overnight</button>
+        {/if}
+    </div>
 </section>
 
 <style>
@@ -132,14 +109,11 @@
         padding: 4px 8px 12px;
         border-radius: 8px;
     }
-    .expanded { padding: 4px 8px 12px; }
-    .day:not(.expanded) { border-bottom: 1px solid var(--line); border-radius: 0; }
     .detail-heading { display: flex; align-items: center; gap: 10px; }
     .detail-heading small { display: block; font-size: 13px; color: var(--ink-soft); }
     h2 { margin: 0; font: 600 17px/1.35 var(--sans); overflow-wrap: anywhere; }
     h3 { margin: 0; font: 600 14px var(--sans); }
     .help { margin: 6px 0 12px; font-size: 13px; color: var(--ink-soft); }
-    .expanded .note { margin-left: 0; }
 
     button {
         border: 0;
@@ -147,23 +121,6 @@
         color: inherit;
         font: inherit;
         cursor: pointer;
-    }
-    .heading {
-        display: block;
-        width: calc(100% + 16px);
-        margin: 0 -8px;
-        padding: 8px;
-        border-radius: 6px;
-        text-align: left;
-        color: var(--ink);
-    }
-    .heading:hover {
-        background: var(--parchment-2);
-    }
-    .heading-content { display: flex; align-items: center; gap: 12px; }
-    .heading-content > :global(svg) {
-        flex: none;
-        color: var(--ink-faint);
     }
     .badge {
         width: 24px;
@@ -177,63 +134,12 @@
         font: 700 13px var(--sans);
         font-variant-numeric: tabular-nums;
     }
-    .title {
-        flex: 1;
-        min-width: 0;
-    }
-    .title strong,
-    .title small {
-        display: block;
-        overflow: hidden;
-    }
-    .title small {
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-    .title strong {
-        font: 600 14px/1.3 var(--sans);
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
-        line-clamp: 2;
-        overflow-wrap: anywhere;
-    }
-    .title small {
-        margin-top: 2px;
-        font-size: 13px;
-        color: var(--ink-soft);
-        font-variant-numeric: tabular-nums;
-    }
-    .distance {
-        flex: none;
-        font: 700 17px var(--sans);
-        font-variant-numeric: tabular-nums;
-    }
-    .distance small {
-        margin-left: 2px;
-        font: 400 13px var(--sans);
-        color: var(--ink-soft);
-    }
-    .bar {
-        display: block;
-        position: relative;
-        height: 4px;
-        margin: 8px 26px 4px 36px;
-        border-radius: 2px;
-        background: var(--parchment-3);
-    }
-    .fill {
-        position: absolute;
-        inset: 0 auto 0 0;
-        border-radius: 2px;
-        background: var(--day-color);
-    }
     .note {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         gap: 4px;
-        margin: 4px 0 0 36px;
+        margin: 4px 0 0;
         font-size: 13px;
         color: var(--ink-soft);
     }

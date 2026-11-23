@@ -58,7 +58,8 @@ longitude/latitude order. Longitude is from -180 to 180. Latitude is from -90 to
 
 The point `kind` is `start`, `finish`, `pass`, `via`, `waypoint`, `detour`, `night`, or `marker`.
 Optional fields are boolean `autoLabel`, string `placeKind`, string `placeId` (the search id of the
-mapped place that the point stands for, such as `n123`), a coordinate `anchor`, and `leg` (`routed`,
+mapped place that the point stands for, such as `n123`), string `locality` (the town of that place),
+a coordinate `anchor`, and `leg` (`routed`,
 `straight`, or `drawn`). A drawn leg can have a `drawn` array of coordinates between its endpoints. A
 drawn coordinate can have a third finite number, the elevation in metres. Optional `turnaround` is
 `true` when the point turns the route back. Any point can have an optional string `note`, such as

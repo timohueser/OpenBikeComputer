@@ -21,6 +21,8 @@ export interface RoutePoint {
     placeKind?: string;
     /** The search id of the mapped place the point was made from, such as `n123`; the point shows that place's details. */
     placeId?: string;
+    /** The town of the mapped place of a night; the day list names the day end by it. */
+    locality?: string;
     id: string;
     coordinate: Coordinate;
     label: string;
@@ -47,7 +49,6 @@ export interface RoutePoint {
 export type Place = RoutePoint & {
     category: PlaceCategory;
     description: string;
-    locality?: string;
     openingHours?: string;
     website?: string;
     phone?: string;
@@ -497,7 +498,7 @@ export function pinNights(trip: Trip, line: RoutingLine | undefined, nights: { n
 }
 
 /** The mapped place a point stands for. */
-export type PlaceRef = Pick<RoutePoint, 'placeKind' | 'placeId'>;
+export type PlaceRef = Pick<RoutePoint, 'placeKind' | 'placeId' | 'locality'>;
 
 /** Pins night `night`. Without `place`, the night keeps the place of the point it replaces. A kept night moved past a route
  * point finds its leg again. */
@@ -512,7 +513,7 @@ export function pinNight(trip: Trip, line: RoutingLine | undefined, night: numbe
         points: trip.points.filter(p => p.id !== id && p.id !== sourceId),
         routeOrder: sourceId ? trip.routeOrder.filter(pointId => pointId !== id || pointId === sourceId).map(pointId => pointId === sourceId ? id : pointId) : trip.routeOrder,
     };
-    const point: RoutePoint = { ...source, id, kind: 'night', night, coordinate, label, autoLabel: undefined, ...place && { placeKind: place.placeKind, placeId: place.placeId } };
+    const point: RoutePoint = { ...source, id, kind: 'night', night, coordinate, label, autoLabel: undefined, ...place && { placeKind: place.placeKind, placeId: place.placeId, locality: place.locality } };
     const route = orderedRoutePoints(trip), at = route.findIndex(p => p.id === id), legEnd = nearestLegEnd(trip, line, coordinate);
     const inPlace = others.routeOrder.includes(id) && (sourceId || !line || legEnd === id || legEnd === route[at + 1]?.id);
     // A moved night takes the mode of the leg it joins.

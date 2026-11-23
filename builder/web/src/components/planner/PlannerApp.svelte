@@ -115,7 +115,7 @@
     let searching = $state(false);
     let night = $state(1);
     let expandedDay = $state<number | null>(null);
-    // The night whose towns are listed: one opened in the ladder, or a pinned night the rider changes.
+    // The night whose towns are listed: one opened in the day list, or a pinned night the rider changes.
     let choosingNight = $state<number | null>(null);
     // A night that opened, until the map shows it.
     let nightToShow = $state<number | null>(null);
@@ -267,7 +267,7 @@
     $effect(() => {
         if (currentRoute && choosingNight !== null && choosingNight >= evenDays.length) untrack(stopChoosing);
     });
-    // Towns are searched for every night still to choose, of the rested week on a long trip, so the ladder can suggest a
+    // Towns are searched for every night still to choose, of the rested week on a long trip, so the day list can suggest a
     // place for each.
     const stopWindows = $derived(multi ? nightWindows(trip, session.line, pickerNight, weekOf(evenDays.length, restedStart)?.nights) : {});
     const routeKey = $derived(routingKey(trip));
@@ -340,7 +340,7 @@
         shownKey = note === shownNote ? null : noteKey(note);
         if (shownKey) map?.fitCoordinates(note.coordinates.flat());
     }
-    // The ladder and an open day light up the stretch whose towns they list.
+    // The day list and an open day light up the stretch whose towns they list.
     const nightBand = $derived.by(() => {
         const window = pickerNight !== null ? stopWindows[pickerNight] : undefined;
         return window && total ? { from: window[0] / total, to: window[1] / total, blocked: false } : null;
@@ -369,21 +369,13 @@
             const stop = readyStops(night).filter(stop => suits(stop, kinds) && Math.abs(stop.km - end) <= 3).sort((a, b) => Math.abs(a.km - end) - Math.abs(b.km - end))[0];
             return stop && proposal(stop, kinds, end);
         },
-        neighbours: night => {
-            const end = nights.around(night)?.stop.km ?? days[night - 1].to * total, stops = readyStops(night).filter(stop => suits(stop, nightKinds(trip, night)));
-            return [stops.filter(stop => stop.km < end - .5).at(-1), stops.find(stop => stop.km > end + .5)];
-        },
         get campsites() { return campsites.length; },
         keepCampsites: () => keepCampsites(),
         date: night => trip.startDate ? addDays(trip.startDate, night - 1) : undefined,
         elevationAt: km => total ? profileHeightAt(km / total, routeHeights) : null,
-        // The chosen night is the one a place callout and a map pick end, also in the ladder.
+        // The chosen night is the one a place callout and a map pick end, also in the day list.
         choose: number => { choosingNight = nightToShow = number; stopId = null; clearSelection(); if (number !== null) night = number; },
         open: id => { stopId = id; clearSelection(); const stop = pickerNight !== null ? readyStops(pickerNight).find(s => s.id === id) : undefined; if (stop) map?.fitCoordinates(suitable(stop, nights.kinds(pickerNight!)).map(p => p.place.coordinate)); },
-        step: (night, direction) => {
-            const stop = nights.neighbours(night)[direction < 0 ? 0 : 1];
-            if (stop) endDayIn(night, stop);
-        },
         endHere: (night, stop) => endDayIn(night, stop),
         stay: (night, place) => stayAt(night, place),
         selectPlace: place => {
@@ -989,7 +981,7 @@
         reveal(`night-${sleepDay}`, sleepDay);
     }
 
-    const placeRef = (place: Place): PlaceRef => ({ placeKind: place.placeKind, placeId: place.id });
+    const placeRef = (place: Place): PlaceRef => ({ placeKind: place.placeKind, placeId: place.id, locality: place.locality });
 
     function newPoint(coordinate: Coordinate, kind: EditableKind, label?: string): RoutePoint {
         const autoLabel = kind === 'waypoint' && label === undefined;

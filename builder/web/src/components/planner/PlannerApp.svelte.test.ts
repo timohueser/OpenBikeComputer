@@ -785,7 +785,7 @@ describe('planner app transitions', () => {
         // The list shows the week in focus; End on the strip moves it to the last days.
         document.querySelector('[role="slider"][aria-label="Week in focus"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
         await tick();
-        button(`Open day ${maxRidingDays}: Day ${maxRidingDays - 1} overnight to Thun`).click();
+        button(`Open day ${maxRidingDays}: Night ${maxRidingDays - 1} to Thun`).click();
         await tick();
         await search(`campsites day ${maxRidingDays}`);
         await vi.waitFor(() => expect(button(`Map place: ${tilePlace.label}`)).toBeDefined());
@@ -874,7 +874,7 @@ describe('planner app transitions', () => {
         // The trip row changes the rider's trip, so the suggested nights do not become day ends.
         expect(JSON.parse(written()!).splits).toBeUndefined();
         expect(button('Trip dates: Sat 19 – Mon 21 Jun')).toBeDefined();
-        expect(document.querySelector('[data-day="2"] strong')?.textContent).toBe('Day 2 · Sun 20');
+        expect(document.querySelector('[data-day="2"] .title small')?.textContent).toBe('Sun 20 Jun');
         dayButton(2).click(); await tick();
         expect(document.querySelector('.trip-row')).toBeNull();
         expect(document.querySelector('.plan-totals')?.textContent).toBe(totals);

@@ -32,6 +32,7 @@ function point(value: unknown): value is RoutePoint {
         && (value.anchor === undefined || coordinate(value.anchor))
         && (value.placeKind === undefined || typeof value.placeKind === 'string')
         && (value.placeId === undefined || typeof value.placeId === 'string')
+        && (value.locality === undefined || typeof value.locality === 'string')
         && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean')
         && (value.turnaround === undefined || value.turnaround === true)
         && (value.note === undefined || typeof value.note === 'string')

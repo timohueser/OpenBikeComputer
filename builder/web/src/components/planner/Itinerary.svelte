@@ -1,12 +1,12 @@
 <script lang="ts">
     import { tick, untrack } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
+    import DayCard from './DayCard.svelte';
     import DayRow from './DayRow.svelte';
-    import NightNode from './NightNode.svelte';
     import StopPicker from './StopPicker.svelte';
-    import { orderedRoutePoints, planView, type Day, type RoutePoint, type Trip } from '../../lib/planner/editor';
-    import { coordinateAt } from '../../lib/planner/geo';
+    import { orderedRoutePoints, type Day, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
+    import { heightRange, profilePaths, profileSamples, sampleSlice } from '../../lib/planner/profile-data';
     import { proposalTitle } from '../../lib/planner/stops';
     import type { RoutingLine } from '../../lib/planner/routing';
     import { step } from '../../lib/planner/week';
@@ -49,9 +49,17 @@
     const focused = $derived(days.find(day => day.number === expandedDay));
     const weekDays = $derived(week ? days.slice(week.start - 1, week.end) : days);
     const visible = $derived(focused ? [focused] : weekDays);
-    const scale = $derived(Math.max(0, ...days.map(day => day.hours)) || 1);
-    const total = $derived(planView(trip, line).total);
     const ends = $derived(orderedRoutePoints(trip));
+    /** The town of each night by the number of its day: of the place that the rider set, else of the suggestion. */
+    const nightTowns = $derived(days.map(day => day.pinned ? day.pinned.locality ?? day.pinned.label : nights.around(day.number)?.stop.name));
+    const fromOf = (day: Day) => day.number === 1 ? ends[0]?.label ?? '' : nightTowns[day.number - 2] ?? `Night ${day.number - 1}`;
+    const toOf = (day: Day) => day.number === days.length ? (trip.loop ? ends[0] : ends.at(-1))?.label ?? '' : nightTowns[day.number - 1] ?? `Night ${day.number}`;
+    // A trial of a second look: `?cards=profile` in the address shows the climb of each day in its card.
+    const climbs = new URLSearchParams(location.search).get('cards') === 'profile';
+    const samples = $derived(climbs ? profileSamples(line) : []);
+    const heights = $derived(heightRange(samples));
+    const profileOf = (day: Day) => samples.length
+        ? { ...profilePaths(sampleSlice(samples, day.from, day.to), heights.low, heights.high), view: `${day.from * 1000} 0 ${(day.to - day.from) * 1000} 105` } : undefined;
     const suggested = $derived(Object.fromEntries(days.flatMap(day => {
         const around = day.pinned ? undefined : nights.around(day.number);
         return around ? [[day.number, proposalTitle(around)]] : [];
@@ -164,32 +172,26 @@
         <button type="button" class="keep-all" aria-describedby="keep-campsites" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
     </div>
 {/if}
-<div class="itinerary" class:ladder={!focused} class:from-start={!week || week.start === 1} class:to-finish={!week || week.end === days.length} bind:this={root}>
-    {#if !focused && (!week || week.start === 1)}
-        <div class="endpoint"><span class="end-mark" aria-hidden="true"><Icon path="M8 5v14l11-7z" size={11} /></span><div><strong>{ends[0]?.label}</strong><small>Start</small></div></div>
-    {/if}
+<div class="itinerary" class:cards={!focused} bind:this={root}>
     {#key expandedDay}
     {#each visible as day (day.number)}
         {@const conflict = conflictOf(day.number)}
-        <DayRow
-            {trip} {line} {day} {days} {theme} {scale} {selectedId} {revealId} {hoveredId} {onHover} {suggested}
-            expanded={expandedDay === day.number}
-            choosing={expandedDay === day.number && nights.choosing === day.number}
-            conflict={conflict ? conflict[0].night! : null}
-            onToggle={() => openDay(day.number)}
-            {onInspect} onChange={() => nights.choose(day.number)}
-            onShowEnd={() => onShowEnd(day)}
-            onShowConflict={() => conflict && onShowConflict(conflict)}
-        >{#snippet picker()}{@render towns(day.number, !!day.pinned)}{/snippet}</DayRow>
-        {#if !focused && day.number < days.length}
-            <NightNode {day} {nights} end={line ? coordinateAt(line.coordinates, day.to) : undefined}
-                elevation={nights.elevationAt(day.to * total)} onShow={() => onShowEnd(day)} />
+        {#if focused}
+            <DayRow
+                {trip} {line} {day} {days} {theme} {selectedId} {revealId} {hoveredId} {onHover} {suggested}
+                choosing={nights.choosing === day.number}
+                conflict={conflict ? conflict[0].night! : null}
+                {onInspect} onChange={() => nights.choose(day.number)}
+                onShowEnd={() => onShowEnd(day)}
+                onShowConflict={() => conflict && onShowConflict(conflict)}
+            >{#snippet picker()}{@render towns(day.number, !!day.pinned)}{/snippet}</DayRow>
+        {:else}
+            <DayCard {trip} {day} from={fromOf(day)} to={toOf(day)} last={day.number === days.length} {theme} ascentKnown={line?.unknownElevationKm === 0} {nights}
+                conflict={conflict ? conflict[0].night! : null} profile={profileOf(day)}
+                onOpen={() => openDay(day.number)} onShowEnd={() => onShowEnd(day)} onShowConflict={() => conflict && onShowConflict(conflict)} />
         {/if}
     {/each}
     {/key}
-    {#if !focused && (!week || week.end === days.length)}
-        <div class="endpoint"><span class="end-mark" aria-hidden="true"><Icon name="flag" size={12} /></span><div><strong>{trip.loop ? ends[0]?.label : ends.at(-1)?.label}</strong><small>Finish</small></div></div>
-    {/if}
 </div>
 {/if}
 
@@ -233,7 +235,7 @@
     .night-page h2 { margin: 0; font: 600 17px/1.3 var(--sans); }
     .night-page header p { margin: 2px 0 0; font-size: 13px; color: var(--ink-soft); }
     .towns { padding: 4px 16px 16px; }
-    .keep { display: flex; align-items: center; gap: 12px; margin: 4px 8px 8px; padding: 10px 12px; border-radius: 8px; background: var(--parchment-2); }
+    .keep { display: flex; align-items: center; gap: 12px; margin: 4px 12px 8px; padding: 10px 12px; border-radius: 8px; background: var(--parchment-2); }
     .keep p { flex: 1; min-width: 0; margin: 0; }
     .keep strong { font: 600 14px/1.3 var(--sans); }
     .keep-all { flex: none; min-height: 32px; padding: 0 14px; border: 0; border-radius: 6px; background: var(--amber); color: var(--on-amber); font: inherit; font-weight: 600; cursor: pointer; }
@@ -245,67 +247,7 @@
         gap: 4px;
         padding: 4px 8px 16px;
     }
-    /* One rail joins start, days, nights and finish, through the centre of their marks. Without the start or the finish
-     * row, it runs from the edge of the first or the last row shown. */
-    .ladder {
-        position: relative;
-        gap: 0;
-    }
-    .ladder::before {
-        content: "";
-        position: absolute;
-        top: 4px;
-        bottom: 16px;
-        left: 27px;
-        width: 2px;
-        border-radius: 1px;
-        background: var(--line);
-    }
-    .ladder.from-start::before { top: 26px; }
-    .ladder.to-finish::before { bottom: 38px; }
-    .ladder :global(.day:not(.expanded)) {
-        border-bottom: 0;
-    }
-    .ladder :global(.badge),
-    .ladder :global(.night) {
-        position: relative;
-        z-index: 1;
-    }
-    .ladder > :global(.night),
-    .endpoint {
-        padding-left: 8px;
-    }
-    .endpoint {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        min-height: 44px;
-    }
-    .end-mark {
-        position: relative;
-        z-index: 1;
-        width: 24px;
-        height: 24px;
-        flex: none;
-        display: grid;
-        place-items: center;
-        border-radius: 50%;
-        background: var(--ink);
-        color: var(--panel);
-    }
-    .endpoint strong,
-    .endpoint small {
-        display: block;
-    }
-    .endpoint strong {
-        font: 600 14px/1.3 var(--sans);
-        overflow-wrap: anywhere;
-    }
-    .endpoint small {
-        margin-top: 2px;
-        font-size: 13px;
-        color: var(--ink-soft);
-    }
+    .cards { gap: 8px; padding: 4px 12px 16px; }
     button {
         border: 0;
         background: none;

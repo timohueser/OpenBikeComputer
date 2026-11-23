@@ -136,7 +136,7 @@ export function proposal(stop: Stop, kinds: Stay[], km = stop.km): Proposal {
     return { stop, place, km: place?.km ?? stop.km };
 }
 
-/** How the ladder names a suggested night: by the place it ends at, else by its town. */
+/** The name of a suggested night: the place it ends at, else its town. */
 export const proposalTitle = (p: Proposal) => p.place ? p.place.place.label : `Around ${p.stop.name}`;
 
 /** Whether a stop has a place of one of `kinds`. */
