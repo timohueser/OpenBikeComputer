@@ -1284,7 +1284,7 @@
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if itineraryShown}
                         <Itinerary
-                            bind:this={itinerary} trip={planned} line={visualRoute} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
+                            bind:this={itinerary} trip={planned} line={visualRoute} {days} {theme} {expandedDay} {nights} {conflicts} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
                             week={weekShown} onWeek={moveWeek}
                             onToggle={showDay} onOverview={showAllDays}
                             onInspect={inspectPoint}

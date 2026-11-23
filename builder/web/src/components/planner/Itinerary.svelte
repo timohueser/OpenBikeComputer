@@ -3,19 +3,19 @@
     import { fade } from 'svelte/transition';
     import Icon from '../../lib/ui/Icon.svelte';
     import DayCard from './DayCard.svelte';
-    import DayRow from './DayRow.svelte';
+    import DayLine from './DayLine.svelte';
     import NightSeam from './NightSeam.svelte';
     import { orderedRoutePoints, type Day, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
     import { heightRange, profilePaths, profileSamples, sampleSlice } from '../../lib/planner/profile-data';
-    import { daysAround, proposalTitle } from '../../lib/planner/stops';
+    import { daysAround } from '../../lib/planner/stops';
     import type { RoutingLine } from '../../lib/planner/routing';
     import { step } from '../../lib/planner/week';
     import { formatDistance, formatHeight } from '../../lib/settings/format';
     import { still } from '../../lib/ui/search-bar/motion';
 
     let {
-        trip, line, days, theme, expandedDay, nights, conflicts, selectedId, revealId, hoveredId = null, onHover,
+        trip, line, days, theme, expandedDay, nights, conflicts, revealId, hoveredId = null, onHover,
         onToggle, onOverview, onInspect, onShowEnd, onShowConflict, week = null, onWeek,
     }: {
         trip: Trip;
@@ -27,7 +27,6 @@
         expandedDay: number | null;
         nights: NightChoices;
         conflicts: [RoutePoint, RoutePoint][];
-        selectedId: string | null;
         hoveredId?: string | null;
         onHover?: (id: string | null) => void;
         /** The point whose row lights up for a moment; `night-2` lights night 2. */
@@ -45,7 +44,7 @@
 
     let root = $state<HTMLDivElement>();
     let back = $state<HTMLButtonElement>();
-    let dayPicker = $state<HTMLSelectElement>();
+    let stepper = $state<HTMLDivElement>();
     const focused = $derived(days.find(day => day.number === expandedDay));
     const weekDays = $derived(week ? days.slice(week.start - 1, week.end) : days);
     // The night whose seam is open between the cards of its two days; the list then shows only these.
@@ -74,10 +73,6 @@
     const heights = $derived(heightRange(samples));
     const profileOf = (day: Day) => samples.length
         ? { ...profilePaths(sampleSlice(samples, day.from, day.to), heights.low, heights.high), view: `${day.from * 1000} 0 ${(day.to - day.from) * 1000} 105` } : undefined;
-    const suggested = $derived(Object.fromEntries(days.flatMap(day => {
-        const around = day.pinned ? undefined : nights.around(day.number);
-        return around ? [[day.number, proposalTitle(around)]] : [];
-    })));
 
     // A number, so that a new week object with the same days does not scroll the list.
     const weekStart = $derived(week?.start);
@@ -154,10 +149,13 @@
         });
     });
 
+    /** Opens a day. The focus goes to the arrow of the next day, or of the day before on the last day, when the control
+     * that had it is gone or disabled. */
     async function openDay(day: number) {
         onToggle(day);
         await tick();
-        dayPicker?.focus({ preventScroll: true });
+        const arrows = [...stepper?.querySelectorAll('button') ?? []].filter(arrow => !arrow.disabled);
+        if (!arrows.some(arrow => arrow === document.activeElement)) arrows.at(-1)?.focus({ preventScroll: true });
     }
 
     async function overview() {
@@ -183,12 +181,10 @@
 {#if focused}
     <nav class="day-nav" aria-label="Day navigation" style:top={week ? '36px' : undefined}>
         <button type="button" class="overview" onclick={overview}><Icon name="back" size={16} />All days</button>
-        <div class="day-picker">
-            <button type="button" class="icon" aria-label="Previous riding day" disabled={focused.number === 1} onclick={() => onToggle(focused.number - 1)}><Icon name="back" size={16} /></button>
-            <select bind:this={dayPicker} aria-label="Selected day" value={focused.number} onchange={event => onToggle(Number(event.currentTarget.value))}>
-                {#each days as day}<option value={day.number}>Day {day.number}</option>{/each}
-            </select>
-            <button type="button" class="icon" aria-label="Next riding day" disabled={focused.number === days.length} onclick={() => onToggle(focused.number + 1)}><Icon name="arrow" size={16} /></button>
+        <div class="stepper" bind:this={stepper}>
+            <button type="button" class="icon" aria-label="Previous riding day" disabled={focused.number === 1} onclick={() => openDay(focused.number - 1)}><Icon path="m15 5-7 7 7 7" size={16} /></button>
+            <strong>Day {focused.number} of {days.length}</strong>
+            <button type="button" class="icon" aria-label="Next riding day" disabled={focused.number === days.length} onclick={() => openDay(focused.number + 1)}><Icon name="chevron" size={16} /></button>
         </div>
     </nav>
 {:else if chosen !== null}
@@ -201,18 +197,12 @@
         <button type="button" class="keep-all" aria-describedby="keep-campsites" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
     </div>
 {/if}
-<div class="itinerary" class:cards={!focused} bind:this={root}>
+<div class="itinerary" bind:this={root}>
     {#if focused}
-        {#key focused.number}
-            {@const conflict = conflictOf(focused.number)}
-            <DayRow
-                {trip} {line} day={focused} {days} {theme} {selectedId} {revealId} {hoveredId} {onHover} {suggested}
-                conflict={conflict ? conflict[0].night! : null}
-                {onInspect} onChange={() => nights.choose(focused.number)}
-                onShowEnd={() => onShowEnd(focused)}
-                onShowConflict={() => conflict && onShowConflict(conflict)}
-            />
-        {/key}
+        {@const conflict = conflictOf(focused.number)}
+        <DayCard {trip} day={focused} from={fromOf(focused)} to={toOf(focused)} {theme} ascentKnown={line?.unknownElevationKm === 0} {nights}
+            conflict={conflict ? conflict[0].night! : null} profile={profileOf(focused)} onShowConflict={() => conflict && onShowConflict(conflict)} />
+        <DayLine {trip} {line} day={focused} {days} from={fromOf(focused)} {theme} {nights} {revealId} {hoveredId} {onHover} {onInspect} onShowEnd={() => onShowEnd(focused)} />
     {:else}
         {#each visible as day (day.number)}
             {@const conflict = conflictOf(day.number)}
@@ -256,15 +246,13 @@
         background: var(--panel);
         font-size: 13px;
     }
-    .week strong { font: 600 14px var(--sans); }
+    .week strong, .stepper strong { font: 600 14px var(--sans); }
     .week span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-soft); }
     .week .icon { width: 28px; height: 28px; border: 1px solid var(--line-strong); }
-    .week .icon:disabled { opacity: .4; cursor: default; }
-    .overview, .day-picker { display: flex; align-items: center; gap: 8px; }
+    .overview, .stepper { display: flex; align-items: center; gap: 8px; }
     .overview { min-height: 36px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--ink); font-size: 13px; font-weight: 600; }
     .overview:hover { background: var(--parchment-2); }
-    .day-picker { gap: 2px; }
-    select { height: 34px; padding: 0 4px; border: 0; border-radius: 6px; color: var(--ink); background: var(--panel); font: 600 14px var(--sans); }
+    .stepper { gap: 2px; }
     .keep { display: flex; align-items: center; gap: 12px; margin: 4px 12px 8px; padding: 10px 12px; border-radius: 8px; background: var(--parchment-2); }
     .keep p { flex: 1; min-width: 0; margin: 0; }
     .keep strong { font: 600 14px/1.3 var(--sans); }
@@ -275,10 +263,9 @@
         position: relative;
         display: flex;
         flex-direction: column;
-        gap: 4px;
-        padding: 4px 8px 16px;
+        gap: 8px;
+        padding: 4px 12px 16px;
     }
-    .cards { gap: 8px; padding: 4px 12px 16px; }
     /* A card glides over a card that leaves and over the seam. */
     .slot { position: relative; z-index: 1; }
     .slot:global([inert]) { z-index: 0; }
@@ -297,8 +284,9 @@
         border-radius: 6px;
         color: var(--ink-soft);
     }
-    .icon:hover {
+    .icon:hover:not(:disabled) {
         background: var(--parchment-2);
         color: var(--ink);
     }
+    .icon:disabled { opacity: .4; cursor: default; }
 </style>

@@ -1,24 +1,47 @@
 <!-- A day of the day list: where it goes, its date, its figures and its climb, with the colour of its line on the map.
-     Its foot is the night that ends it, as a suggestion or as the place that the rider set. -->
-<script lang="ts">
-    import Icon from '../../lib/ui/Icon.svelte';
-    import { dayColor } from '../../lib/planner/day-colors';
-    import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
+     Its foot is the night that ends it, as a suggestion or as the place that the rider set. The card of the open day has
+     the descent too, and no foot. -->
+<script lang="ts" module>
+    import type { Day } from '../../lib/planner/editor';
+    import type { NightChoices } from '../../lib/planner/night-stops.svelte';
     import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
     import { stayNouns, stopCounts, suits } from '../../lib/planner/stops';
-    import { duration, type Day, type Trip } from '../../lib/planner/editor';
-    import type { NightChoices } from '../../lib/planner/night-stops.svelte';
-    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { distanceIn } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
-    let { trip, day, from, to, foot, flash = false, theme, ascentKnown, nights, conflict, profile, onOpen, onShowEnd, onShowConflict }: {
+    /** The night that ends `day`, as the icon of its mark, its name and its sub line: the place that the rider set, else
+     * the suggestion. */
+    export function nightText(day: Day, nights: NightChoices): { icon: string; label: string; sub: string } {
+        const pinned = day.pinned, kinds = nights.kinds(day.number);
+        if (pinned) return { icon: sleepIcon(pinned.placeKind), label: pinned.label,
+            sub: [pinned.placeKind && kindLabel(pinned.placeKind), pinned.locality !== pinned.label && pinned.locality].filter(Boolean).join(' · ') || `Night ${day.number}` };
+        const around = nights.around(day.number);
+        if (around) return { icon: 'moon', label: around.place?.place.label ?? `Sleep near ${around.stop.name}`, sub: !around.place ? stopCounts(around.stop, kinds, true)
+            : `${around.stop.name} · ${around.place.off < .15 ? 'on the route' : `${distanceIn(around.place.off * 1000).toFixed(1)} ${settings.units} off the route`}` };
+        const found = nights.found(day.number);
+        const towns = found?.state === 'ready' ? found.stops.filter(stop => suits(stop, kinds)).length : 0;
+        const wanted = kinds.length === 1 ? stayNouns[kinds[0]] : 'town with a place to sleep';
+        return { icon: 'moon', label: `Night ${day.number}`, sub: found?.state === 'loading' ? 'Finding towns nearby…' : found?.state === 'error' ? 'Towns could not load'
+            : towns ? `No ${wanted} near the day end · ${towns} ${towns === 1 ? 'town' : 'towns'} to choose from` : `No ${wanted} nearby` };
+    }
+</script>
+
+<script lang="ts">
+    import Icon from '../../lib/ui/Icon.svelte';
+    import NightButton from './NightButton.svelte';
+    import { dayColor } from '../../lib/planner/day-colors';
+    import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
+    import { duration, type Trip } from '../../lib/planner/editor';
+    import { heightIn, heightUnit } from '../../lib/settings/format';
+
+    let { trip, day, from, to, foot = false, flash = false, theme, ascentKnown, nights, conflict, profile, onOpen, onShowEnd, onShowConflict }: {
         trip: Trip;
         day: Day;
         /** Where the day starts and ends: a town, or the start or the finish of the trip. */
         from: string;
         to: string;
         /** The card shows the night that ends the day. The last day has none, and an open night stands under its card. */
-        foot: boolean;
+        foot?: boolean;
         /** The night lights up for a moment after the rider set it. */
         flash?: boolean;
         theme: 'light' | 'dark';
@@ -28,62 +51,63 @@
         conflict: number | null;
         /** The climb of the day as paths in the box `view`. */
         profile?: { line: string; area: string; view: string };
-        onOpen: () => void;
+        /** Opens the day. The card of the open day has none: it is not a button, and it shows the descent. */
+        onOpen?: () => void;
         /** Shows the place of a set night on the map. */
-        onShowEnd: () => void;
+        onShowEnd?: () => void;
         onShowConflict: () => void;
     } = $props();
 
-    const pinned = $derived(day.pinned);
-    const around = $derived(pinned ? undefined : nights.around(day.number));
-    const found = $derived(nights.found(day.number));
-    const kinds = $derived(nights.kinds(day.number));
-    const towns = $derived(found?.state === 'ready' ? found.stops.filter(stop => suits(stop, kinds)).length : 0);
-    const wanted = $derived(kinds.length === 1 ? stayNouns[kinds[0]] : 'town with a place to sleep');
-    const status = $derived(found?.state === 'loading' ? 'Finding towns nearby…' : found?.state === 'error' ? 'Towns could not load'
-        : towns ? `No ${wanted} near the day end · ${towns} ${towns === 1 ? 'town' : 'towns'} to choose from` : `No ${wanted} nearby`);
-    const detail = $derived(!around ? status
-        : around.place ? `${around.stop.name} · ${around.place.off < .15 ? 'on the route' : `${distanceIn(around.place.off * 1000).toFixed(1)} ${settings.units} off the route`}`
-        : stopCounts(around.stop, kinds, true));
-    const kind = $derived(pinned?.placeKind ? kindLabel(pinned.placeKind) : '');
+    const night = $derived(nightText(day, nights));
+    const height = (metres: number) => ascentKnown ? Math.round(heightIn(metres)) : '—';
 </script>
 
-<article class="day" style:--day-color={dayColor(day.number, theme)} style:--day-deep={dayColor(day.number, 'light')}>
-    <button type="button" class="main" data-day={day.number} onclick={onOpen} aria-label={`Open day ${day.number}: ${from} to ${to}`}>
-        <span class="badge">{day.number}</span>
-        <span class="title">
-            <strong>{from}<Icon name="arrow" size={14} />{to}</strong>
-            {#if trip.startDate}<small>{weekdayLabel(addDays(trip.startDate, day.number - 1), true)}</small>{/if}
-        </span>
-        <span class="figures">
-            <span><b>{distanceIn(day.distance * 1000).toFixed(1)}</b><small>{settings.units}</small></span>
-            <span><Icon path="M4 18 10 9l4 5 6-9" size={14} />{ascentKnown ? Math.round(heightIn(day.ascent)) : '—'}<small>{heightUnit()}</small></span>
-            <span><Icon name="clock" size={14} />{duration(day.hours)}</span>
+{#snippet main()}
+    <span class="badge">{day.number}</span>
+    <span class="title">
+        <strong>{from}<Icon name="arrow" size={14} />{to}</strong>
+        {#if trip.startDate}<small>{weekdayLabel(addDays(trip.startDate, day.number - 1), true)}</small>{/if}
+    </span>
+    <span class="figures" class:open={!onOpen}>
+        <span><b>{distanceIn(day.distance * 1000).toFixed(1)}</b><small>{settings.units}</small></span>
+        <span><Icon path="M4 18 10 9l4 5 6-9" size={14} /><b>{height(day.ascent)}</b><small>{heightUnit()}</small></span>
+        {#if onOpen}
+            <span><Icon name="clock" size={14} /><b>{duration(day.hours)}</b></span>
             <Icon name="chevron" size={14} />
-        </span>
-        {#if profile}
-            <svg class="profile" viewBox={profile.view} preserveAspectRatio="none" aria-hidden="true"><path class="area" d={profile.area} /><path class="line" d={profile.line} /></svg>
+        {:else}
+            <span><Icon path="M4 6 10 15l4-5 6 9" size={14} /><b>{height(day.descent)}</b><small>{heightUnit()}</small></span>
+            <span><Icon name="clock" size={14} /><b>{duration(day.hours)}</b></span>
         {/if}
-    </button>
+    </span>
+    {#if profile}
+        <svg class="profile" viewBox={profile.view} preserveAspectRatio="none" aria-hidden="true"><path class="area" d={profile.area} /><path class="line" d={profile.line} /></svg>
+    {/if}
+{/snippet}
+
+<article class="day" style:--day-color={dayColor(day.number, theme)} style:--day-deep={dayColor(day.number, 'light')}>
+    {#if onOpen}
+        <button type="button" class="main" data-day={day.number} onclick={onOpen} aria-label={`Open day ${day.number}: ${from} to ${to}`}>{@render main()}</button>
+    {:else}
+        <div class="main">{@render main()}</div>
+    {/if}
     {#if conflict !== null}
         <p class="warn"><Icon name="warning" size={15} />Ends before day {conflict}'s overnight · <button type="button" class="planner-action" onclick={onShowConflict}>Show</button></p>
     {/if}
     {#if foot}
-        <div class="night" class:set={!!pinned} class:flash>
-            <span class="mark" aria-hidden="true"><Icon name={pinned ? sleepIcon(pinned.placeKind) : 'moon'} size={14} /></span>
-            {#if pinned}
+        <div class="night" class:set={!!day.pinned} class:flash>
+            <span class="mark" aria-hidden="true"><Icon name={night.icon} size={14} /></span>
+            {#if day.pinned}
                 <button type="button" class="text" onclick={onShowEnd}>
-                    <strong>{pinned.label}</strong>
-                    <small class="kind">{[kind, pinned.locality !== pinned.label && pinned.locality].filter(Boolean).join(' · ') || `Night ${day.number}`}</small>
+                    <strong>{night.label}</strong>
+                    <small class="kind">{night.sub}</small>
                 </button>
             {:else}
                 <div class="text">
-                    <strong>{around ? around.place?.place.label ?? `Sleep near ${around.stop.name}` : `Night ${day.number}`}</strong>
-                    <small><span class="sr-only">Suggested. </span>{detail}</small>
+                    <strong>{night.label}</strong>
+                    <small><span class="sr-only">Suggested. </span>{night.sub}</small>
                 </div>
             {/if}
-            <button type="button" class={pinned ? 'change' : 'planner-action'} data-night={day.number} aria-label={`${pinned ? 'Change' : 'Choose'} night ${day.number}`}
-                onclick={() => nights.choose(day.number)}>{pinned ? 'Change' : 'Choose'}</button>
+            <NightButton night={day.number} set={!!day.pinned} onclick={() => nights.choose(day.number)} />
         </div>
     {/if}
 </article>
@@ -119,11 +143,12 @@
         grid-template-columns: 24px minmax(0, 1fr);
         gap: 8px 10px;
         width: 100%;
+        box-sizing: border-box;
         padding: 12px;
         border-radius: 12px;
         text-align: left;
     }
-    .main:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+    button.main:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
     .badge {
         width: 24px;
         height: 24px;
@@ -155,16 +180,18 @@
         color: var(--ink-soft);
     }
     .title small { flex: none; }
+    /* Each figure has its column, so the figures line up from card to card. */
     .figures {
         grid-column: 2;
         display: grid;
         grid-template-columns: 1.15fr 1fr 1fr 14px;
         align-items: baseline;
-        font-size: 14px;
-        font-variant-numeric: tabular-nums;
         white-space: nowrap;
     }
-    .figures b { font: 700 17px var(--sans); }
+    /* Four figures share the line: the gaps between them take what is left. */
+    .figures.open { grid-template-columns: repeat(4, auto); justify-content: space-between; }
+    /* `font` resets the tabular figures, so they follow it. */
+    .figures b { font: 600 15px var(--sans); font-variant-numeric: tabular-nums; }
     .figures small { margin-left: 2px; }
     .figures span :global(svg) { margin: 0 3px -2px 0; }
     .figures > :global(svg) { align-self: center; }
@@ -237,17 +264,6 @@
     .night strong { font: 500 14px/1.3 var(--sans); }
     .set strong { font-weight: 600; }
     .kind::first-letter { text-transform: uppercase; }
-    .night .planner-action { flex: none; min-height: 30px; font-size: 13px; }
-    .change {
-        flex: none;
-        min-height: 30px;
-        padding: 0 6px;
-        border-radius: 6px;
-        color: var(--ink-soft);
-        font-size: 13px;
-        font-weight: 600;
-    }
-    .change:hover { color: var(--ink); }
     .flash { animation: flash 1.2s ease-out; }
     @keyframes flash {
         from { background: color-mix(in srgb, var(--amber) 40%, transparent); }

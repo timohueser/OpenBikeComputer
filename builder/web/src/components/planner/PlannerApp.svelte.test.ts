@@ -103,6 +103,10 @@ const dayButton = (day: number) => {
     return found;
 };
 
+// The open day: its card is not a button, and the nav names it.
+const openTitle = () => document.querySelector('.day > div.main .title strong')?.textContent;
+const openDay = () => document.querySelector('[aria-label="Day navigation"] strong')?.textContent;
+
 function button(label: string, scope: ParentNode = document) {
     const found = [...scope.querySelectorAll('button')].find(button => (button.getAttribute('aria-label') ?? button.textContent?.trim()) === label);
     if (!found) throw new Error(`Missing button: ${label}`);
@@ -290,7 +294,7 @@ describe('planner app transitions', () => {
         await startApp(); await tick();
         const overnight = () => bodies().filter(body => body.request?.what?.includes?.('sleep')).length;
         dayButton(1).click(); await tick();
-        await vi.waitFor(() => expect(document.querySelector('.day h2')?.textContent).toContain('Tile town'));
+        await vi.waitFor(() => expect(openTitle()).toContain('Tile town'));
         const sent = overnight();
         expect(sent).toBeGreaterThan(0);
         button('Pan map').click(); await tick();
@@ -502,13 +506,13 @@ describe('planner app transitions', () => {
         await tick();
         dayButton(1).click();
         await tick();
-        await vi.waitFor(() => expect(document.querySelector('.day h2')?.textContent).toContain('Tile town'));
-        const title = document.querySelector('.day h2')!.textContent;
+        await vi.waitFor(() => expect(openTitle()).toContain('Tile town'));
+        const title = openTitle();
         const profile = document.querySelector('.elevation');
         const requests = vi.mocked(fetch).mock.calls.length;
         button('Pan map').click(); await tick();
         expect(fetch).toHaveBeenCalledTimes(requests);
-        expect(document.querySelector('.day h2')!.textContent).toBe(title);
+        expect(openTitle()).toBe(title);
         button('All days').click(); await tick();
         expect(document.querySelector('.elevation')).toBe(profile);
         dayButton(1).click(); await tick();
@@ -516,10 +520,8 @@ describe('planner app transitions', () => {
         await search('campsites day 2');
         button('Clear the search').click();
         await tick();
-        expect(document.querySelector<HTMLSelectElement>('[aria-label="Selected day"]')?.value).toBe('1');
-        const day = document.querySelector('.day')!;
-        expect(day.querySelector('h2')!.textContent).toBe(title);
-        expect(day.textContent).not.toContain('Meadow camp');
+        expect([openDay(), openTitle()]).toEqual(['Day 1 of 3', title]);
+        expect(document.querySelector('.itinerary')!.textContent).not.toContain('Meadow camp');
     });
 
     it('keeps the profile mounted while an overnight reroutes and when the reply arrives', async () => {
@@ -540,7 +542,7 @@ describe('planner app transitions', () => {
         finish({ ...line, stops: [line.stops[0], { id: 'night-1', distance: line.stops[1].distance * .25 }, line.stops[1]] });
         await vi.waitFor(() => expect(document.querySelector('.route-status')).toBeNull());
         expect(document.querySelector('.elevation')).toBe(profile);
-        expect(document.querySelector('.day h2')?.textContent).toContain(tilePlace.label);
+        expect(document.querySelector('.itinerary li:last-child strong')?.textContent).toBe(tilePlace.label);
     });
 
     it('Escape closes the map selection before the selected part and the part before the open day, and a new line keeps the part', async () => {
@@ -552,7 +554,7 @@ describe('planner app transitions', () => {
             for (let i = 0; i < 3; i++) { slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true, bubbles: true })); await tick(); }
         };
         const escape = async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await tick(); };
-        const dayOpen = () => !!document.querySelector('[aria-label="Selected day"]');
+        const dayOpen = () => !!openDay();
         await select();
         expect(part()).not.toBeNull();
         button('Map point: Basel').click(); await tick();
@@ -769,9 +771,9 @@ describe('planner app transitions', () => {
     it('chooses the night of an open day on its seam', async () => {
         await startApp();
         dayButton(1).click(); await tick();
-        [...document.querySelectorAll('button')].find(found => found.textContent?.startsWith('Suggested day end'))!.click(); await tick();
+        button('Choose night 1').click(); await tick();
         expect(document.querySelector('.night-seam h2')?.textContent).toBe('Where day 1 ends');
-        expect(document.querySelector('[aria-label="Selected day"]')).toBeNull();
+        expect(openDay()).toBeUndefined();
     });
 
     it('does not open a night again that an Undo removed', async () => {
@@ -874,10 +876,10 @@ describe('planner app transitions', () => {
     it('suggests the nights again when the preferences change the kinds of place to sleep, and names the kinds in the line', async () => {
         await startApp();
         dayButton(1).click(); await tick();
-        await vi.waitFor(() => expect(document.querySelector('.day h2')?.textContent).toContain('Tile town'));
+        await vi.waitFor(() => expect(openTitle()).toContain('Tile town'));
         await openPreferences();
         button('Campsites').click(); await tick();
-        expect(document.querySelector('.day h2')?.textContent).not.toContain('Tile town');
+        expect(openTitle()).not.toContain('Tile town');
         expect(JSON.parse(written()!).stay).toEqual(['hut', 'hostel', 'hotel', 'shelter']);
         expect(document.querySelector('.status-line')?.textContent).toContain('Sleeping in huts, hostels, hotels, shelters');
         expect(preferencesLine().textContent?.trim()).toBe('Route preferences: Touring bike · Balanced · Moderate pace · Huts, Hostels, Hotels, Shelters');
@@ -885,7 +887,7 @@ describe('planner app transitions', () => {
         button('Campsites').click(); await tick();
         expect('stay' in JSON.parse(written()!)).toBe(false);
         expect(preferencesLine().textContent?.trim()).toBe('Route preferences: Touring bike · Balanced · Moderate pace');
-        await vi.waitFor(() => expect(document.querySelector('.day h2')?.textContent).toContain('Tile town'));
+        await vi.waitFor(() => expect(openTitle()).toContain('Tile town'));
     });
 
     it('turns the route there and back and one way again in the trip row, each as one Undo step', async () => {
@@ -952,7 +954,7 @@ describe('planner app transitions', () => {
 
 describe('planner side panel', () => {
     const asRoute = (change: object = {}) => stored.set('trip', JSON.stringify({ ...testTrip(), mode: 'route', ...change }));
-    const dayOpen = () => !!document.querySelector('[aria-label="Selected day"]');
+    const dayOpen = () => !!openDay();
 
     it('makes the view follow the type after Undo and Redo', async () => {
         asRoute();
