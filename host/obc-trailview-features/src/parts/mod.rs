@@ -3,6 +3,7 @@
 //! tag `parts` of the tunnel ways (`specs/trailview-features.md`, Tunnel parts).
 
 mod floor;
+mod heads;
 mod ladder;
 mod measure;
 mod rooms;
@@ -482,10 +483,18 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
     // again. Of a head that the builder does not find whole, each opening there whose hole or chord end is not whole
     // has a head of its own (`apart`), so its room keeps its lanes. The rooms and the ladder are made again until each
     // joint is whole.
+    // An opening whose head stands in another room moves in along its way to the first whole metre where the head
+    // clears (`heads`): per arm opening the least metres along its way from its vertex.
     let mut lone = vec![false; tubes.len()];
     let mut apart = vec![false; openings.len()];
-    let (rooms, mut decided, placed, not_whole) = loop {
-        let (rooms, mut openings) = rooms::rooms(tubes.clone(), openings.clone(), &lone, input);
+    let mut pushed = vec![0.0f64; openings.len()];
+    let (rooms, mut decided, placed, not_whole, stands) = loop {
+        let moved: Vec<Opening> = (openings.iter().zip(&pushed))
+            .map(
+                |(o, &m)| if m > o.shift { Opening { others: o.others, ..o.at(&tubes[o.tube], m) } } else { o.clone() },
+            )
+            .collect();
+        let (rooms, mut openings) = rooms::rooms(tubes.clone(), moved, &lone, input);
         // A room draws only where its line lies in the bake's region, whose tiles hold its records; a tunnel of one way
         // anywhere.
         let leaves =
@@ -504,8 +513,19 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         for i in found.ends.iter().flat_map(|&(r, e)| rooms.lanes[r].iter().filter_map(move |l| l.ends[e])) {
             apart[i] = true;
         }
-        if (&lone, &apart) == (&before.0, &before.1) {
-            break (rooms, decided, placed, found.not_whole);
+        let stands = heads::standing(&rooms, &openings, &decided, input);
+        let was = pushed.clone();
+        for (s, m) in stands.iter().filter_map(|s| Some((s, s.clear?))) {
+            let n = decided.ends[s.opening].numbers.as_ref().expect("a head");
+            for h in &n.holes {
+                let o = &openings[h.opening];
+                for a in rooms.lanes[o.tube].iter().filter_map(|l| l.ends[o.end]) {
+                    pushed[a] = pushed[a].max(rooms.arm_openings[a].shift + m);
+                }
+            }
+        }
+        if (&lone, &apart, &pushed) == (&before.0, &before.1, &was) {
+            break (rooms, decided, placed, found.not_whole, stands);
         }
     };
     if let Value::Object(m) = &mut decided.metrics {
@@ -519,6 +539,16 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         m.insert("joints_not_whole".into(), not_whole.into());
         m.insert("arms_alone".into(), lone.iter().filter(|&&l| l).count().into());
         m.insert("openings_apart".into(), apart.iter().filter(|&&a| a).count().into());
+        let moved = (openings.iter().zip(&pushed)).filter(|(o, &p)| p > o.shift).map(|(o, &p)| p - o.shift);
+        let (heads_moved, farthest) = moved.fold((0, 0.0f64), |(n, f), m| (n + 1, f.max(m)));
+        m.insert("openings_moved_out_of_rooms".into(), heads_moved.into());
+        m.insert("farthest_move_out_of_rooms_m".into(), ((farthest * 100.0).round() / 100.0).into());
+        m.insert("heads_in_rooms".into(), stands.len().into());
+        let places = stands.iter().take(10).map(|s| {
+            let [lat, lon] = crate::degrees(s.at);
+            format!("{lat:.5},{lon:.5}")
+        });
+        m.insert("heads_in_rooms_places".into(), places.collect::<Vec<_>>().join("; ").into());
         let touching = rooms::touching(&rooms, (&decided.floors, &decided.draws), &decided.half, input);
         let places = touching.iter().take(10).map(|&p| {
             let [lat, lon] = crate::degrees(p);

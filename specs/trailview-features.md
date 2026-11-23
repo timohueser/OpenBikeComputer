@@ -565,6 +565,18 @@ half the chain and the length of its own way. Where the two openings of a chain 
 of the chain (`shift` 0). The ground plan builds the stretch from the vertex to the opening as a
 way on the ground (`graph::build_open`).
 
+A head and the shells of its collars stand in no other room that draws (see Rooms; the rooms of the head's holes and
+those open to them through a seam's hole are its own). Where a point of them lies in another room's space by more than
+the bake's centimetre (the room's outline swept along its axis, `half` to each side, from its floor to its arch), the
+openings of the head move in along their ways by the least whole metres that clear it, within the limits of a shift
+above, and the rooms and the ladder are made again. A head that no metre clears stays and is counted
+(`heads_in_rooms`, with places; `openings_moved_out_of_rooms` and `farthest_move_out_of_rooms_m` count the moves). The
+bake reads a head as the builder draws it: its wall from `-recess_m` to `face_m` − `recess_m` across its frame line,
+`half` + `shell_m` (a rim: and `frame_m`) past its outer holes and its wing rows past that, from its foot to `face` (a
+rim: to each hole's frame); per hole the shell of its collar, `half` + `shell_m` to each side of its room's axis, from
+the foot to `shell_m` over its crown, out to the builder's reach (of a box to the middle of its room). Its foot is the
+record's, or `foot_m` under the lowest floor of those collars.
+
 The bake measures each opening on the ground of the ground plan: each cell that holds a point to read is built as the
 viewer builds it, with the tags of the levels and the stretches to the openings on the ground, without the storey
 under the ground (the step's metric `ground_plan_bores` says which). The ladder reads a first measure with the
@@ -800,9 +812,9 @@ that it runs in, and a room's floor with its last arm's.
   outer half-width + `half` + `shell_m`) overlaps, at its nearest points to the points of the chord where its
   underside over the chord can bend: the ends of the overlap, and where the nearest point of a segment of its curve is
   an end of that segment or, of a room over this one, a vertex of that room's floor. Between these points the
-  underside and the floor are both linear along the chord. A vertex at such a point reads the way there. A point
-  inside the chord caps both vertices of the chord, unless both vertices read the way and its underside there lies at
-  or over the line between theirs. So the floor lies under the way along the whole chord. A read counts where the foot of its point on the whole chain, extended past an end with an opening
+  underside and the floor are both linear along the chord. A vertex at such a point reads the way there. A point inside the chord caps both vertices of the chord, unless both vertices
+  read the way and its underside there lies at or over the line between theirs. So the floor lies under the way along
+  the whole chord. A read counts where the foot of its point on the whole chain, extended past an end with an opening
   along its end chord, lies between the openings, each grown by the way's outer half-width; at a seam the foot stays
   on the line, as a way over the room before it lies over the room behind it too. The way lies on top where its height
   at that point is more than the at-grade band over the road solver's height of the chain at the foot (the lesser

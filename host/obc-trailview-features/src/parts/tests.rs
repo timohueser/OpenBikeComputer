@@ -1151,3 +1151,111 @@ fn a_rooms_spring_lies_at_or_over_its_floor_at_the_walls() {
     let outlines = rooms::hold(true, 10.0, design.spring, &lanes, 16, 0.0);
     assert!(design.spring * outlines < wall, "the outlines alone hold the walk: {outlines}");
 }
+
+/// The space of a chord in metres east and north: its two vertices, its floor and its height at each, its half-width
+/// and whether it is round.
+type Space = ([f64; 2], [f64; 2], [f64; 2], f64, [f64; 2], bool);
+
+/// Whether a point (metres east, north and its height) lies in a chord's space by more than 5 cm, under its arch.
+fn in_space(q: [f64; 3], (a, b, z, half, h, round): &Space) -> bool {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len = d[0].hypot(d[1]);
+    let along = ((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / len;
+    let lat = ((q[1] - a[1]) * d[0] - (q[0] - a[0]) * d[1]) / len;
+    let u = along / len;
+    let (floor, height) = (z[0] + u * (z[1] - z[0]), h[0] + u * (h[1] - h[0]));
+    let share = if *round { 0.6 + 0.4 * (1.0 - (lat / half).powi(2)).max(0.0).sqrt() } else { 1.0 };
+    let beside = along > 0.05 && along < len - 0.05 && lat.abs() < half - 0.05;
+    beside && q[2] > floor + 0.05 && q[2] < floor + height * share - 0.05
+}
+
+/// The faces of each head that lie in a room that is not its own, as the builder draws them: per record its wall,
+/// frame, sill and the shells of its collars alone (no face of a room), sampled, against each chord of another
+/// half-width.
+fn heads_in_rooms(placed: &Placed) -> Vec<String> {
+    let rules = obc_trailview_parts::Rules::embedded();
+    const U: f64 = (1u64 << 30) as f64;
+    let (mut ends, mut chords, mut spaces): (Vec<_>, Vec<_>, Vec<Space>) = (Vec::new(), Vec::new(), Vec::new());
+    for (kind, tags, part) in &placed.features {
+        let (z, w) = (part.z.as_ref().unwrap(), |k: usize| [part.points[k][0] * U, part.points[k][1] * U]);
+        if *kind == "tunnel-end" {
+            ends.push(obc_trailview_parts::End::from_tags(w(0), z[0], tags, rules).unwrap());
+        } else {
+            let (a, b) = (w(0), w(1));
+            let c = obc_trailview_parts::Chord::from_tags([a[0], a[1], z[0]], [b[0], b[1], z[1]], tags, rules).unwrap();
+            let round = tags["section"] == "round";
+            spaces.push((back(part.points[0]), back(part.points[1]), [z[0], z[1]], c.half, c.height, round));
+            chords.push(c);
+        }
+    }
+    let room = obc_trailview_parts::BORE | obc_trailview_parts::VOID | obc_trailview_parts::LAMP;
+    let mut out = Vec::new();
+    for (r, end) in ends.iter().enumerate().filter(|(_, e)| e.part != obc_trailview_parts::Part::Seam) {
+        let square = [end.at[0] - 1.0, end.at[1] - 1.0, end.at[0] + 1.0, end.at[1] + 1.0];
+        let mesh = obc_trailview_parts::meshes(square, &ends, &chords, rules);
+        let word = |i: u32, k: usize| mesh.vertices[i as usize * obc_trailview_parts::WORDS + k];
+        let point = |i: u32| {
+            let p = back([word(i, 0) as i32 as f64 / U, word(i, 1) as i32 as f64 / U]);
+            [p[0], p[1], f64::from(f32::from_bits(word(i, 2)))]
+        };
+        let other = |sp: &&Space| end.holes.iter().all(|h| (h.half - sp.3).abs() > 1e-6);
+        for t in mesh.indices.chunks(3).filter(|t| (word(t[0], 3) >> 24) & room == 0) {
+            let [a, b, c] = [t[0], t[1], t[2]].map(point);
+            let samples = (1..6).flat_map(|i| (1..6 - i).map(move |j| (f64::from(i) / 6.0, f64::from(j) / 6.0)));
+            for (s, v) in samples {
+                let q: [f64; 3] = std::array::from_fn(|k| a[k] + s * (b[k] - a[k]) + v * (c[k] - a[k]));
+                if let Some(sp) = spaces.iter().filter(other).find(|sp| in_space(q, sp)) {
+                    out.push(format!("record {r} at {q:.1?} in a room of half {}", sp.3));
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Two motorway tunnels east from `from` m to `to` m, one room of two lanes in a hill, and its half-width.
+fn hall(case: &mut Case, (from, to): (f64, f64)) -> f64 {
+    let mway = [("highway", "motorway"), ("tunnel", "yes")];
+    let half = widths().way("tunnel", &tags(&mway), false).half_m + 0.6;
+    for n in [-6.9, 6.9] {
+        case.ways.push(("tunnel", tags(&mway), vec![part(&[[from, n], [(from + to) / 2.0, n], [to, n]], &[500.0; 3])]));
+    }
+    6.9 + half
+}
+
+/// A footway underpass that opens 0.1 m beside the wall of a hall of two motorway lanes 40 m long, 2.6 m over its
+/// floor, its way 37 degrees off the hall's square: where it opens, its head stands in the hall. It opens further in,
+/// where its head clears the hall.
+#[test]
+fn a_box_whose_head_stands_in_a_hall_opens_where_it_clears() {
+    let mut case = Case::default();
+    let wall = hall(&mut case, (130.0, 170.0));
+    let (s, c) = 37f64.to_radians().sin_cos();
+    let foot =
+        [[150.0, wall + 0.1], [150.0 + 10.0 * s, wall + 0.1 + 10.0 * c], [150.0 + 20.0 * s, wall + 0.1 + 20.0 * c]];
+    case.ways.push(("tunnel", tags(&FOOT), vec![part(&foot, &[502.6; 3])]));
+    let placed = case.place(&site(&|_| 520.0, &[1.0], false), &mut Vec::new());
+    assert!(heads_in_rooms(&placed).is_empty(), "{:?}", heads_in_rooms(&placed));
+    let m = &placed.metrics;
+    assert_eq!((m["heads_in_rooms"].as_u64(), m["openings_moved_out_of_rooms"].as_u64()), (Some(0), Some(1)), "{m}");
+    let paths: Vec<&Tags> = records(&placed, "tunnel-end").into_iter().filter(|t| t["half"] == "0.9").collect();
+    assert!(paths.iter().any(|t| t["shift"].parse::<f64>().unwrap() >= 1.0), "{paths:?}");
+}
+
+/// A residential tunnel 5 m over a cycleway tunnel, their spaces 0.5 m over each other in plan, both 100 m long and
+/// opening side by side: the residential's head goes down to its foot through the cycleway's room at every metre it
+/// may move in. The bake counts it and does not move it.
+#[test]
+fn a_head_that_no_metre_in_clears_is_counted() {
+    const CYCLE: [(&str, &str); 2] = [("highway", "cycleway"), ("tunnel", "yes")];
+    let [road, cycle] = [&ROAD, &CYCLE].map(|t| widths().way("tunnel", &tags(t), false).half_m);
+    let mut case = Case::default();
+    case.ways.push(("tunnel", tags(&ROAD), vec![part(&[[0.0, 0.0], [50.0, 0.0], [100.0, 0.0]], &[505.0; 3])]));
+    let n = road + 0.6 + cycle + 0.3 - 0.5;
+    case.ways.push(("tunnel", tags(&CYCLE), vec![part(&[[-2.0, n], [50.0, n], [100.0, n]], &[500.0; 3])]));
+    let placed = case.place(&site(&ridge(100.0, 0.3), &[], false), &mut Vec::new());
+    let m = &placed.metrics;
+    assert_eq!((m["heads_in_rooms"].as_u64(), m["openings_moved_out_of_rooms"].as_u64()), (Some(2), Some(0)), "{m}");
+    assert!(!heads_in_rooms(&placed).is_empty());
+}

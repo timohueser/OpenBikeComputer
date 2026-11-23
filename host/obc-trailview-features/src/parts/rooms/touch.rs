@@ -61,13 +61,45 @@ pub(super) fn from_end(c: &EndChord, x: Section) -> f64 {
     edges.into_iter().map(|e| segments_m(x, e)).fold(f64::INFINITY, f64::min)
 }
 
-/// The sections of the rooms as the builder draws them.
-struct Sections<'a> {
-    tubes: &'a [Tube],
+/// The rooms that draw as the builder draws them: at their final floors, halves and heights (another room has no axis),
+/// with their chords at the seams and their axes.
+pub(crate) struct Drawn<'a> {
+    pub tubes: Vec<Tube>,
+    pub axes: Axes,
     ends: Vec<[Option<EndChord>; 2]>,
+    floors: &'a [Option<Floor>],
+    lanes: Vec<bool>,
 }
 
-impl Sections<'_> {
+impl<'a> Drawn<'a> {
+    pub fn new(rooms: &Rooms, (floors, built): (&'a [Option<Floor>], &[bool]), half: &[f64]) -> Drawn<'a> {
+        let tubes: Vec<Tube> = (rooms.tubes.iter().zip(floors).zip(half).zip(built))
+            .map(|(((t, f), &half), &built)| {
+                let mut t = t.clone();
+                let Some(f) = f.as_ref().filter(|_| built) else {
+                    t.curve.stretches.clear();
+                    return t;
+                };
+                let (s0, s1) = (f.s[0], f.s[f.s.len() - 1]);
+                let points: Vec<Point> =
+                    f.s.iter().zip(&f.f).map(|(&s, &z)| Point { z, s: s - s0, ..t.curve.at(s).0 }).collect();
+                t.curve = Curve { stretches: vec![(t.widest, points)], len: s1 - s0 };
+                Tube { half, ..t }
+            })
+            .collect();
+        let mitre = obc_trailview_parts::Rules::embedded().design.mitre_max;
+        let mut ends: Vec<[Option<EndChord>; 2]> = vec![[None; 2]; tubes.len()];
+        for seam in &rooms.seams {
+            let (pr, pe) = seam.parent;
+            ends[pr][pe] = end_chord(&tubes[pr], pe, (seam.dir, tubes[pr].half), mitre);
+            for (&(r, e), &(_, hole)) in seam.children.iter().zip(&seam.holes) {
+                ends[r][e] = end_chord(&tubes[r], e, (seam.dir, hole), mitre);
+            }
+        }
+        let axes = Axes::new(&tubes);
+        Drawn { tubes, axes, ends, floors, lanes: rooms.lanes.iter().map(|l| l.len() > 1).collect() }
+    }
+
     /// The chord at a seam that metres s of tube t lie on, and the share along it from the line.
     fn end_chord(&self, t: usize, s: f64) -> Option<(EndChord, f64)> {
         (0..2).find_map(|e| {
@@ -79,7 +111,7 @@ impl Sections<'_> {
 
     /// The section of tube t at metres s: on its chord at a seam between its outline on the line and its ring; else
     /// square to its axis, `half` to each side.
-    fn at(&self, t: usize, s: f64) -> Section {
+    pub fn at(&self, t: usize, s: f64) -> Section {
         if let Some((c, u)) = self.end_chord(t, s) {
             let mix = |a: [f64; 2], b: [f64; 2]| [a[0] + u * (b[0] - a[0]), a[1] + u * (b[1] - a[1])];
             return [mix(c.line[0], c.ring[0]), mix(c.line[1], c.ring[1])];
@@ -87,6 +119,20 @@ impl Sections<'_> {
         let tube = &self.tubes[t];
         let (p, l) = (tube.curve.at(s).0.p, left_of(tube.curve.dir(s)));
         [offset(p, l, -tube.half), offset(p, l, tube.half)]
+    }
+
+    /// A room's height at metres s as the builder draws it: of a room of lanes, between its vertices; of a lone tube,
+    /// its chord's.
+    pub fn height(&self, t: usize, s: f64) -> f64 {
+        self.floors[t].as_ref().map_or(0.0, |f| {
+            let s = s + f.s[0];
+            let k = f.s.partition_point(|&x| x <= s).clamp(1, f.s.len() - 1);
+            if self.lanes[t] {
+                f.at(s).1
+            } else {
+                f.h[k - 1].min(f.h[k])
+            }
+        })
     }
 }
 
@@ -126,47 +172,10 @@ pub(crate) fn touching(
     half: &[f64],
     input: &Input,
 ) -> Vec<[f64; 2]> {
-    let b = &input.rules.bake;
-    let wall = 2.0 * b.shell_m;
-    // The rooms that draw at their floors, with their halves; another room is none.
-    let tubes: Vec<Tube> = (rooms.tubes.iter().zip(floors).zip(half).zip(built))
-        .map(|(((t, f), &half), &built)| {
-            let mut t = t.clone();
-            let Some(f) = f.as_ref().filter(|_| built) else {
-                t.curve.stretches.clear();
-                return t;
-            };
-            let (s0, s1) = (f.s[0], f.s[f.s.len() - 1]);
-            let points: Vec<Point> =
-                f.s.iter().zip(&f.f).map(|(&s, &z)| Point { z, s: s - s0, ..t.curve.at(s).0 }).collect();
-            t.curve = Curve { stretches: vec![(t.widest, points)], len: s1 - s0 };
-            Tube { half, ..t }
-        })
-        .collect();
-    let mitre = obc_trailview_parts::Rules::embedded().design.mitre_max;
-    let mut ends: Vec<[Option<EndChord>; 2]> = vec![[None; 2]; tubes.len()];
-    for seam in &rooms.seams {
-        let (pr, pe) = seam.parent;
-        ends[pr][pe] = end_chord(&tubes[pr], pe, (seam.dir, tubes[pr].half), mitre);
-        for (&(r, e), &(_, hole)) in seam.children.iter().zip(&seam.holes) {
-            ends[r][e] = end_chord(&tubes[r], e, (seam.dir, hole), mitre);
-        }
-    }
-    let sections = Sections { tubes: &tubes, ends };
-    let axes = Axes::new(&tubes);
+    let wall = 2.0 * input.rules.bake.shell_m;
+    let drawn = Drawn::new(rooms, (floors, built), half);
+    let tubes = &drawn.tubes;
     let widest = tubes.iter().map(|t| t.half).fold(0.0, f64::max);
-    // A room's height as the builder draws it: of a room of lanes, between its vertices; of a lone tube, its chord's.
-    let height = |t: usize, s: f64| {
-        floors[t].as_ref().map_or(0.0, |f| {
-            let s = s + f.s[0];
-            let k = f.s.partition_point(|&x| x <= s).clamp(1, f.s.len() - 1);
-            if rooms.lanes[t].len() > 1 {
-                f.at(s).1
-            } else {
-                f.h[k - 1].min(f.h[k])
-            }
-        })
-    };
     // The seam that one of two rooms lies before and the other behind, and the side of each: 1 behind, −1 before.
     let across = |a: usize, c: usize| {
         let behind = |s: &Seam, r: usize| s.children.iter().any(|x| x.0 == r);
@@ -175,13 +184,12 @@ pub(crate) fn touching(
     };
     // The gap from room a at metres s to the room of foot f.
     let gap = |a: usize, s: f64, f: &Foot| {
-        let (x, y) = (sections.at(a, s), sections.at(f.tube, f.s));
+        let (x, y) = (drawn.at(a, s), drawn.at(f.tube, f.s));
         if let Some((seam, [side_a, side_b])) = across(a, f.tube) {
             let one = beyond(x, seam, side_b).map_or(f64::INFINITY, |x| segments_m(x, y));
             return one.min(beyond(y, seam, side_a).map_or(f64::INFINITY, |y| segments_m(x, y)));
         }
-        let drawn = f.past.is_some() || sections.end_chord(a, s).is_some() || sections.end_chord(f.tube, f.s).is_some();
-        if drawn {
+        if f.past.is_some() || drawn.end_chord(a, s).is_some() || drawn.end_chord(f.tube, f.s).is_some() {
             segments_m(x, y)
         } else {
             f.d - tubes[a].half - tubes[f.tube].half
@@ -193,12 +201,12 @@ pub(crate) fn touching(
         let vertices = t.curve.stretches.iter().flat_map(|(_, ps)| ps.iter().map(|q| q.s));
         for s in (0..=steps).map(|k| t.curve.len * k as f64 / steps as f64).chain(vertices) {
             let q = t.curve.at(s).0;
-            for f in axes.near(q.p, a, t.half + widest + wall) {
+            for f in drawn.axes.near(q.p, a, t.half + widest + wall) {
                 let pair = (a.min(f.tube), a.max(f.tube));
                 if out.contains_key(&pair) {
                     continue;
                 }
-                if !apart((gap(a, s, &f), f.z - q.z), (height(a, s), height(f.tube, f.s)), input) {
+                if !apart((gap(a, s, &f), f.z - q.z), (drawn.height(a, s), drawn.height(f.tube, f.s)), input) {
                     out.insert(pair, q.p);
                 }
             }
