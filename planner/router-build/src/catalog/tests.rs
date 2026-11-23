@@ -913,7 +913,8 @@ fn official_stages_take_the_places_of_the_stages_of_an_osm_trail() -> Result<(),
             stage(201, "Etappe 1")(path(&[0, 1, 2, 3])),
             stage(202, "Etappe 2")([path(&[3, 4, 5, 6]), vec![999]].concat()),
             stage(203, "Etappe 3")(path(&[6, 16, 26, 36])),
-            // Stage 2 over two official stages.
+            // Stage 2 over two official stages. The official trail of its name covers two thirds of it: a long
+            // record keeps four fifths, so both trails stay.
             trail(300, "Dreier", "T3", &[301, 302]),
             stage(301, "Dreier 1")(path(&[60, 61, 62, 63])),
             stage(302, "Dreier 2")(path(&[63, 64, 65, 66, 56, 46, 36])),
@@ -940,6 +941,7 @@ fn official_stages_take_the_places_of_the_stages_of_an_osm_trail() -> Result<(),
         [&stage["trail"], &stage["trail_stage"], &stage["parent"], &stage["stage"]],
         [&json!(trail), &json!(2), &json!(trail), &json!(2)]
     );
+    assert!(by_id.contains_key(&300) && by_id.contains_key(&source_id(1, 60, 0)), "both trails of one name stay");
     assert_eq!(parts(300), [(301, 1), (first, 2), (second, 2)]);
     assert_eq!((&by_id[&300]["stage_count"], &by_id[&300]["stages"]), (&json!(2), &json!([301, first, second])));
 
@@ -1039,6 +1041,22 @@ fn a_job_that_leaves_still_shows_and_no_route_takes_the_place_of_another() -> Re
     {
         assert_eq!(merge::refs_agree(a, b), agree, "{a} {b}");
     }
+    for (a, b, agree) in [
+        ("Cloefpfad", "Traumschleife Cloefpfad", true),
+        ("Auto-Pédestre Wahlhausen", "Wahlhausen", true),
+        ("Bliessteig Bliessteig - Etappe 4", "Bliessteig - Etappe 4 (Blieskastel - Kirkel)", true),
+        ("Eigertrail", "Eiger Trail", true),
+        ("Bliessteig", "Bliessteig - Etappe 4", false),
+        ("Bech", "B6 - Bech", false),
+        ("Rundwanderweg 11", "Rundwanderweg 12", false),
+        ("X Etappe 4", "Y - Etappe 4 (A - B)", false),
+        ("", "Boevange", false),
+        ("–", "–", false),
+        ("Etappe 04", "Etappe 4", false),
+        ("Weg II", "Weg 2", false),
+    ] {
+        assert_eq!(merge::names_agree(a, b), agree, "{a} | {b}");
+    }
     let national = |reference| vec![("route", "hiking"), ("ref", reference), ("network", "nwn")];
     let sources = sources_of(vec![vec![
         official(3, "hiking", 3, "3", "Drei", &[at(&[0, 1, 2, 3, 4])]),
@@ -1075,6 +1093,94 @@ fn a_job_that_leaves_still_shows_and_no_route_takes_the_place_of_another() -> Re
     // of a stage, so both stay, and the trail stays complete.
     assert!(by_id.contains_key(&source_id(1, 20, 0)));
     assert_eq!(by_id[&80]["stages"], json!([81, 82]));
+    Ok(())
+}
+
+#[test]
+fn a_stage_compares_the_name_of_its_trail_with_its_own_name_and_never_its_own_name_alone() -> Result<(), String> {
+    let walk = |key, name, nodes: &[i64]| official(key, "hiking", 0, "", name, &[at(nodes)]);
+    let sources = sources_of(vec![vec![
+        walk(10, "T - Etappe 2 (A - B)", &[43, 44, 45, 46]),
+        // On the same line with another stage number: a pair by (b) only.
+        walk(11, "T - Etappe 3 (B - C)", &[43, 44, 45, 46]),
+    ]]);
+    let trail = |id, name, children: &[i64]| -> Route {
+        (id, vec![("type", "superroute"), ("route", "hiking"), ("name", name)], members(children, Id::Relation))
+    };
+    let stage = |id, name, nodes: &[i64]| route(id, &[("route", "hiking"), ("name", name)], path(nodes));
+    // The stages of T have a ref of their own and the walks have none, so the names decide.
+    let numbered =
+        |id, name, nodes: &[i64]| route(id, &[("route", "hiking"), ("name", name), ("ref", "T")], path(nodes));
+    let marked = [("route", "hiking"), ("name", "T - Etappe 2"), ("ref", "T"), ("osmc:symbol", "red:white:red_bar")];
+    let (package, osm) = grid(vec![
+        trail(900, "T", &[901, 902, 903]),
+        numbered(901, "T - Etappe 1", &[40, 41, 42, 43]),
+        route(902, &marked, path(&[43, 44, 45, 46])),
+        numbered(903, "T - Etappe 3", &[46, 56, 66]),
+        // Walk 10 lies along all of stage 912, and it along three quarters of walk 10: "Etappe 2" alone, or
+        // after a trail name with no word, would make them a pair.
+        trail(910, "—", &[911, 912]),
+        stage(911, "Etappe 1", &[30, 31, 32, 33]),
+        stage(912, "Etappe 2", &[33, 43, 44, 45, 46]),
+    ]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let by_id = by_id(&records);
+    assert_eq!(report.dropped.get("Replaced"), Some(&vec![902]), "{:?}", report.dropped);
+    let (day, other) = (source_id(1, 10, 0), source_id(1, 11, 0));
+    let numbers = |id: i64| parts_of(by_id[&id]).into_iter().map(|(id, stage, _)| (id, stage)).collect::<Vec<_>>();
+    assert_eq!(numbers(900), [(901, 1), (day, 2), (903, 3)]);
+    assert_eq!(
+        (&by_id[&day]["name"], &by_id[&day]["symbol"]),
+        (&json!("T - Etappe 2 (A - B)"), &json!("red:white:red_bar"))
+    );
+    assert!(by_id[&other].get("trail").is_none() && by_id[&other].get("symbol").is_none());
+    assert_eq!(numbers(910), [(911, 1), (912, 2)]);
+    Ok(())
+}
+
+#[test]
+fn a_pair_by_the_words_of_the_names_needs_one_line_four_fifths_along_the_other() -> Result<(), String> {
+    let sources = sources_of(vec![vec![official(1, "hiking", 0, "", "Kehlen", &[at(&[20, 21, 22, 23, 24, 25])])]]);
+    let hiking = |name, symbol| vec![("route", "hiking"), ("name", name), ("osmc:symbol", symbol)];
+    let (package, osm) = grid(vec![
+        // Another route of the village: each line lies 0.6 along the other, so its name alone would make a
+        // pair that covers more than a half of it.
+        route(1, &hiking("Kehlen Promenade", "blue:white:blue_bar"), path(&[22, 23, 24, 25, 35, 45])),
+        route(2, &hiking("Auto-Pédestre Kehlen", "red:white:red_dot"), path(&[20, 21, 22, 23, 24, 25])),
+    ]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let by_id = by_id(&records);
+    assert_eq!(report.dropped.get("Replaced"), Some(&vec![2]), "{:?}", report.dropped);
+    assert!(by_id.contains_key(&1));
+    assert_eq!(by_id[&source_id(1, 1, 0)]["symbol"], "red:white:red_dot");
+    Ok(())
+}
+
+#[test]
+fn a_job_whose_pairs_agree_with_it_by_name_leaves_when_they_cover_a_half_of_it() -> Result<(), String> {
+    // Each official route lies along all of its OSM route, from its start to `end`.
+    let walk = |key, reference, name, nodes: &[i64], end: P| {
+        official(key, "hiking", 0, reference, name, &[[at(nodes), vec![end]].concat()])
+    };
+    let sources = sources_of(vec![vec![
+        walk(1, "", "Weg", &[10, 11, 12, 13], off(13, 140.0, 0.0)),
+        walk(2, "", "Weg", &[30, 31, 32], off(32, 295.0, 0.0)),
+        walk(3, "7", "Beta", &[50, 51, 52, 53], off(53, 140.0, 0.0)),
+    ]]);
+    let hiking = |id, pairs: &[(&'static str, &'static str)], row: i64| {
+        route(id, &[&[("route", "hiking")], pairs].concat(), path(&(row..row + 7).collect::<Vec<_>>()))
+    };
+    let (package, osm) = grid(vec![
+        // Covered 0.56 and 0.45.
+        hiking(1, &[("name", "Weg")], 10),
+        hiking(2, &[("name", "Weg")], 30),
+        // Covered 0.56 by a pair whose refs agree and whose names do not.
+        hiking(3, &[("name", "Alpha"), ("ref", "7")], 50),
+    ]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let by_id = by_id(&records);
+    assert_eq!(report.dropped.get("Replaced"), Some(&vec![1]), "{:?}", report.dropped);
+    assert!(by_id.contains_key(&2) && by_id.contains_key(&3));
     Ok(())
 }
 
@@ -1205,7 +1311,8 @@ fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), S
     let (package, osm) = grid(osm);
     let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources_of(sources), 2, SECTION_M)?;
     // The invariant: only OSM jobs and jobs of the second source leave, and each job that left shows by
-    // at least four fifths in the records of earlier origins in the catalog.
+    // at least a half in the records of earlier origins in the catalog, and by four fifths unless its
+    // names agree with theirs. No official name agrees with a name of a trail stage here.
     let origin = |id: i64| if id <= -sources::ORIGIN_ID { -id / sources::ORIGIN_ID } else { 3 };
     // A long record that leaves takes no record out of the catalog: the invariant holds for the jobs.
     let replaced: Vec<i64> =
@@ -1223,9 +1330,10 @@ fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), S
             .map(|r| decode(&r["line_udeg"]))
             .collect();
         let nears: Vec<shape::Near> = earlier.iter().map(|line| shape::Near::new(line)).collect();
-        let probe = merge::Probe::new(0, "hiking", 0, "", "", vec![lines[&id].clone()]);
+        let probe = merge::Probe::new(0, "hiking", 0, "", &[], vec![lines[&id].clone()]);
         let shown = merge::share(&probe, &nears.iter().collect::<Vec<_>>());
-        assert!(shown >= 0.8, "only {shown:.2} of the line of {id} shows in records of earlier origins");
+        let limit = if (201..=208).contains(&id) { 0.8 } else { 0.5 };
+        assert!(shown >= limit, "only {shown:.2} of the line of {id} shows in records of earlier origins");
     }
     Ok(())
 }

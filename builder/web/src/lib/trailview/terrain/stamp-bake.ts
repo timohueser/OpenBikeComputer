@@ -11,6 +11,7 @@ import { ANCHORED_VERTEX } from '../structures/anchored';
 import type { NodeMeshes } from '../structures/node';
 import type { NodeFeatures } from './stamps';
 import type { Request } from './stamp-worker';
+import { BUDGETS, MiB } from '../budget';
 
 const worker = self as unknown as { onmessage: (event: { data: unknown }) => void; postMessage: (message: { result?: unknown; error?: string }) => void };
 
@@ -26,7 +27,7 @@ function nodesOf(tile: Node): Node[] {
 function posted<T>(what: Request, tile: Node, node: Node, body: ArrayBuffer): Promise<T> {
     return new Promise((resolve, reject) => {
         worker.postMessage = ({ result, error }) => (error === undefined ? resolve(result as T) : reject(new Error(error)));
-        worker.onmessage({ data: { id: 0, tile, node, body, what, plan: true } });
+        worker.onmessage({ data: { id: 0, tile, node, body, what, plan: true, bytes: BUDGETS.desktop.caps.stamp * MiB } });
     });
 }
 

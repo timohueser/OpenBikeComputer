@@ -5,14 +5,22 @@ export default {
   name: 'Cork oak',
   latin: 'Quercus suber',
   // A dehesa tree: a short, thick bole and crooked limbs under a broad, rounded, open crown.
-  fork: 0.24,
-  crown: [0.6, 0.66, 0.62, 0.42],
+  fork: 0.3,
+  crown: [0.66, 0.62, 0.58, 0.36],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.3 + 0.7 * t)) ** 0.6,
+  clumps: 11,
   open: true,
-  trunk: 0.06,
+  dense: 0.95,
+  billows: 5,
+  bow: -0.45,
+  crook: 0.03,
+  flutes: 5,
+  neck: 0.8,
+  trunk: 0.07,
   flare: 1.5,
   // The lower bole stripped of its cork to red-orange, the limbs above in thick grey cork.
   bark: ['#b4542c', '#6e665c'],
-  fade: [0.2, 0.26],
+  fade: [0.72, 0.8],
   // Evergreen: dark leaves with grey felted undersides.
   leaves: {
     winter: ['#25301f', '#3c4a30', '#64724e'],

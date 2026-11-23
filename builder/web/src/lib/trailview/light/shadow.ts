@@ -75,6 +75,8 @@ interface Maps {
 export class Shadow {
     private resources?: Maps;
     private readonly states: State[] = CASCADES.map(() => ({ waiting: false, frames: 0, active: false }));
+    /** What changed for the casters on frames that drew nothing. */
+    private held: Casting = { casters: false, reshaped: Infinity };
     /** Per cascade the share that the receivers take from it by the eye's height, 0 without a map. */
     private readonly weights = CASCADES.map(() => 0);
 
@@ -137,9 +139,11 @@ export class Shadow {
      * The cascade whose map this frame draws, or -1: for the ground under the eye (east, north, height),
      * the eye's height above it, the direction to the sun, what changed and whether the eye moved. Of
      * the cascades that are due, the one that waited longest draws. A cascade that the eye's height fades
-     * out draws none, nor any under a sun that casts no object shadows.
+     * out draws none, nor any under a sun that casts no object shadows. It takes in what `hold()` kept.
      */
     due(ground: number[], above: number, sun: number[], casting: Casting, moving: boolean): number {
+        casting = { casters: casting.casters || this.held.casters, reshaped: Math.min(casting.reshaped, this.held.reshaped) };
+        this.held = { casters: false, reshaped: Infinity };
         let best = -1;
         CASCADES.forEach((c, k) => {
             const state = this.states[k], fade = 1 - smoothstep(c.above / 2, c.above, above);
@@ -163,6 +167,11 @@ export class Shadow {
         Object.assign(state, { centre: ground.slice(0, 3), sun: sun.slice(0, 3), waiting: false, frames: 0 });
         this.weights[best] = 1 - smoothstep(CASCADES[best].above / 2, CASCADES[best].above, above);
         return best;
+    }
+
+    /** Keeps what changed for the casters on a frame that draws nothing, for the next `due()`. */
+    hold({ casters, reshaped }: Casting): void {
+        this.held = { casters: this.held.casters || casters, reshaped: Math.min(this.held.reshaped, reshaped) };
     }
 
     /**

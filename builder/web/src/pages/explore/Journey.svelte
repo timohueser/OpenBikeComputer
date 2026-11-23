@@ -1,10 +1,11 @@
-<!-- Getting there: a line from the start point through the ways to travel that the rider ticks, Car, Train (later) and
+<!-- The panel of "From", getting there: a line from the start point through the ways to travel that the rider ticks, Car, Train (later) and
      Lifts, to one walk to the route. With no start point every hike of the map view counts, and only Lifts shows: it adds
      the lift shapes. A pinned car park or top station is the only start. The start point is picked on the map or comes
      from the browser. -->
 <script lang="ts">
     import type { FactsPlace } from '../../lib/planner/signed-routes';
     import Icon from '../../lib/ui/Icon.svelte';
+    import { unfold } from '../../lib/ui/search-bar/motion';
     import { DRIVE_KM, liftsOff, type Query } from './search';
     import { myLocation } from './search-map';
     import { placeName, shortDistance } from './words';
@@ -44,8 +45,7 @@
         : query.car || query.lift ? 'The last part, to the route' : 'From your start to the route');
 </script>
 
-<section>
-    <div class="head"><h3>Getting there</h3></div>
+<div class="from">
     <ol class="journey" class:alone={!from}>
         <li class="leg start">
             {#if query.pin}
@@ -82,7 +82,7 @@
                     {#if query.car}<b class="value">up to {drive} km</b>{/if}
                 </button>
                 {#if query.car}
-                    <div class="leg-body">
+                    <div class="leg-body" transition:unfold>
                         <input type="range" min={DRIVE_KM.min} max={cap} step={DRIVE_KM.step} value={drive} aria-label="Longest drive, one way" aria-valuetext="up to {drive} km"
                             oninput={event => onchange({ drive: Number(event.currentTarget.value) })} />
                     </div>
@@ -100,7 +100,7 @@
                     {#if query.lift === 'always'}<b class="value">always</b>{/if}
                 </button>
                 {#if query.lift}
-                    <div class="leg-body">
+                    <div class="leg-body" transition:unfold>
                         {#if from}
                             <div class="when"><span>Use a lift</span>
                                 <span class="choice" role="group" aria-label="Use a lift">
@@ -129,9 +129,23 @@
             <li class="leg end"><div class="leg-head"><span class="node ring"></span><span></span><span class="label">The route</span></div></li>
         {/if}
     </ol>
-</section>
+</div>
 
 <style>
+    .from {
+        width: 340px;
+        max-width: 100%;
+        padding: 14px 14px 8px;
+    }
+    .hint {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        margin: 0;
+        color: var(--ink-soft);
+        font-size: 13px;
+        line-height: 1.4;
+    }
     .journey {
         display: flex;
         flex-direction: column;
@@ -212,11 +226,18 @@
         border: 1.5px solid var(--line-strong);
         border-radius: 5px;
         color: var(--panel);
+        transition: background 120ms, border-color 120ms;
     }
     .box :global(svg) {
-        transform: scale(0);
-        transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
+        opacity: 0;
+        transform: scale(0.6);
+        transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1), opacity 120ms;
         stroke-width: 3;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .box :global(svg) {
+            transition: opacity 120ms;
+        }
     }
     .leg-head:hover .box {
         border-color: var(--ink-soft);
@@ -226,6 +247,7 @@
         background: var(--ink);
     }
     [aria-pressed="true"] > .box :global(svg) {
+        opacity: 1;
         transform: scale(1);
     }
     .dot::after {
@@ -348,6 +370,15 @@
         background: var(--panel);
         color: var(--ink);
         font: 600 12.5px var(--sans);
+        transition: background 120ms, border-color 120ms, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    .button:active {
+        transform: scale(0.97);
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .button {
+            transition-property: background, border-color;
+        }
     }
     .button :global(svg) {
         color: var(--ink-soft);

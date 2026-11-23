@@ -404,7 +404,7 @@ describe('trip timeline', () => {
 });
 
 describe('profile part', () => {
-    it('selects a part with Shift and an arrow key, shows its numbers with Clear, keeps its stretch while the map window changes, and clears at Escape, at Clear and at another range', async () => {
+    it('selects a part with Shift and an arrow key, shows its numbers with Clear, keeps its stretch while the map window changes and at another range, and clears at Escape and at Clear', async () => {
         const line: RoutingLine = {
             profile: 'touring', coordinates: [[8, 46], [8, 46.5], [8, 47]], elevation: [100, 600, 100], elapsed: [0, 1, 2], edges: {},
             stops: [], seconds: 2, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
@@ -441,10 +441,11 @@ describe('profile part', () => {
         expect(document.activeElement).toBe(slider);
         await select();
         button('Whole route').click(); await tick();
-        expect(part).toBeNull();
+        expect(part).not.toBeNull();
+        expect(document.querySelector('.title .part')).not.toBeNull();
     });
 
-    it('counts the part of an open day from its start, keeps it when the day end moves, and clears it at another day', async () => {
+    it('counts the part of an open day from its start, and shows the share of it in the day when the day end moves or another day opens', async () => {
         const line: RoutingLine = {
             profile: 'touring', coordinates: [[8, 46], [8, 46.5], [8, 47]], elevation: [100, 600, 100], elapsed: [0, 1, 2], edges: {},
             stops: [], seconds: 2, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
@@ -467,7 +468,9 @@ describe('profile part', () => {
         expect(part).toEqual([.45, .5]);
         expect(document.querySelectorAll('.pale')).toHaveLength(1);
         focus = { from: .6, to: .8, label: 'Day 3' }; await tick();
-        expect(part).toBeNull();
+        expect(part).toEqual([.45, .5]);
+        expect(document.querySelector('.title .part')).toBeNull();
+        expect(document.querySelectorAll('.pale')).toHaveLength(0);
     });
 });
 

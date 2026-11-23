@@ -4,13 +4,14 @@ export default {
   form: 'conifer',
   name: 'Sitka spruce',
   latin: 'Picea sitchensis',
-  // A plantation tree: dead lower branches, then a narrow cone of level, not hanging, branches.
+  // A plantation tree: dead lower branches, then a narrow cone of stiff, level branches whose side shoots hang.
   base: 0.16,
   radius: 0.16,
   shape: (t) => (1 - t) ** 0.9,
-  overlap: 1.7,
-  droop: 0.08,
-  lobes: 7,
+  whorls: 9,
+  overlap: 1.35,
+  droop: 0.35,
+  lobes: 9,
   jitter: 0.12,
   trunk: 0.02,
   flare: 1.7,

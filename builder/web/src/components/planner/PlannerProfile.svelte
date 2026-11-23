@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { untrack, type ComponentProps, type Snippet } from 'svelte';
+    import type { ComponentProps, Snippet } from 'svelte';
     import DrawerTitle from './DrawerTitle.svelte';
     import PlanTotals from './PlanTotals.svelte';
     import Surface from './PlannerSurface.svelte';
@@ -51,7 +51,7 @@
         onHover: (progress: number | null) => void;
         /** A data layer strip for the shown stretch and its rest columns, as route progress, and the hover callback. */
         strip?: Snippet<[number, number, number[], (progress: number | null) => void]>;
-        /** The selected part, as route progress. */
+        /** The selected part, as route progress. The profile shows the share of it in the shown stretch. */
         part?: [number, number] | null;
         onPart?: (part: [number, number] | null) => void;
         /** The place on the route under the pointer on the map, as route progress. */
@@ -97,8 +97,9 @@
         return () => observer.disconnect();
     });
 
-    // While a part is selected, the profile keeps the stretch of the map from when the part started.
+    // While a part that a drag here started is selected, the profile keeps the stretch of the map from when it started.
     let held = $state<{ from: number; to: number }>();
+    $effect.pre(() => { if (!part) held = undefined; });
     const whole = $derived(range === 'route' && !week);
     const shown = $derived(whole ? { from: 0, to: 1 } : focus ?? week ?? (part && held ? held : view));
     const origin = $derived(!whole && focus ? focus.from : 0);
@@ -128,9 +129,10 @@
         at: (px: number, width: number) => px < 0 || px > width ? px / width : (axisProgress(axis, px, width) - shown.from) / span,
     });
     const share = (progress: number) => Math.min(1, Math.max(0, (progress - shown.from) / span));
+    const seen = $derived<[number, number] | null>(part && part[1] > shown.from && part[0] < shown.to ? [Math.max(part[0], shown.from), Math.min(part[1], shown.to)] : null);
     // From the start of the open day, as the ticks and the readout.
-    const partText = $derived(part ? formatPart((part[0] - origin) * total * 1000, (part[1] - origin) * total * 1000,
-        known.length ? profileAscent(part[0], part[1], lineData) : null) : '');
+    const partText = $derived(seen ? formatPart((seen[0] - origin) * total * 1000, (seen[1] - origin) * total * 1000,
+        known.length ? profileAscent(seen[0], seen[1], lineData) : null) : '');
     // The day ends inside the shown stretch; with none inside, the nearest one on each side sits at the edge so it can still be dragged in.
     const handles = $derived.by(() => {
         const ends = days.slice(0, -1).map(day => ({ day, at: endAt(day) }));
@@ -169,15 +171,6 @@
         onPart?.(progress);
     }
 
-    // Another range, another day, another week, a closed drawer or no profile ends the part; a moved day end keeps it.
-    // Derived values, because the effect would run again at each new `focus` or `week` object.
-    const openDay = $derived(focus?.label);
-    const weekStart = $derived(week?.start);
-    $effect(() => {
-        void [range, open, openDay, weekStart];
-        return () => untrack(() => onPart?.(null));
-    });
-
     function inspect(progress: number | null) {
         pointer = progress;
         onHover(progress);
@@ -208,7 +201,7 @@
         {#if !week}<Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
             options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />{/if}
         <label class="grade-toggle"><input type="checkbox" checked={showGrade} onchange={(event) => gradeChoice = event.currentTarget.checked} />Grade</label>
-        {#if part}
+        {#if seen}
             <!-- Clear leaves the document, so the focus goes to the profile. -->
             <div class="selected"><SelectedPart text={partText} onclear={() => { select(null); rows?.querySelector<HTMLElement>('[role="slider"]')?.focus(); }} /></div>
         {/if}
@@ -280,7 +273,7 @@
     {/snippet}
     <div class="plot-rows" bind:this={rows}>
         <Lanes label="Profile" rows={[{ label: '', draw: profile, grow: true }]} {ticks} axis={lanesAxis} pointer={hover === null ? undefined : share(hover)}
-            chip={readout} onpointer={point} part={part && [share(part[0]), share(part[1])]} onpart={onPart && select} onclick={() => select(null)} />
+            chip={readout} onpointer={point} part={seen && [share(seen[0]), share(seen[1])]} onpart={onPart && select} onclick={() => { if (seen) select(null); }} />
     </div>
     <Surface {walking} line={lineData} from={shown.from} to={shown.to} rests={axis.rests} bind:lit={surface} onHover={inspect} />
     {@render strip?.(shown.from, shown.to, axis.rests, inspect)}

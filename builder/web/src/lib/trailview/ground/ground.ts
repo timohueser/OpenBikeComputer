@@ -1,3 +1,4 @@
+import type { Budget } from '../budget';
 import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
@@ -11,7 +12,7 @@ import { GroundPages, texelMetres, type Slot } from './pages';
 import { packRulesOn, slots } from './rules';
 
 /** Ground pages: whole layers of SIDE × SIDE pages, as GROUND_SIDE in look.wgsl. */
-const SIDE = 4, LAYER_PAGES = SIDE * SIDE, POOL = 192;
+const SIDE = 4, LAYER_PAGES = SIDE * SIDE;
 /** Compute jobs per frame at most: the pages that arrive and the pages whose heights changed, as `GroundPages` takes them. */
 const JOBS = 16, JOB_BYTES = 32;
 /** The work bits of a job, as `work` of Job in ground.wgsl. */
@@ -83,13 +84,13 @@ export class Ground {
     /** Whether the last frame draws another ground than the frame before it: new pages, a new map or a new date. */
     newContent = false;
 
-    constructor(private readonly source: GroundSource | undefined, changed: () => void) {
+    constructor(private readonly source: GroundSource | undefined, budget: Budget, changed: () => void) {
         this.rules = source?.rules ?? NEUTRAL;
         this.finest = source?.finest ?? COARSEST;
         const { materials, lithologies } = this.rules.vocabulary;
         this.codes = [this.finest, materials.length, lithologies.length, 0];
         const world = Math.max(0, this.rules.regions.findIndex(region => region.id === 'world'));
-        this.pages = new GroundPages(source, POOL, this.finest, world, changed);
+        this.pages = new GroundPages(source, budget.groundPages, this.finest, world, changed, budget.loads.ground);
     }
 
     get idle(): boolean {
@@ -123,7 +124,7 @@ export class Ground {
 
     get stats(): GroundStats {
         const { requests = 0, bytes = 0, failed = 0 } = this.source ?? {}, { wanted, shortage } = this.pages;
-        return { resident: this.pages.resident, capacity: POOL, wanted, shortage, colour: this.source?.colour ?? 'none', requests, bytes, failed };
+        return { resident: this.pages.resident, capacity: this.pages.capacity, wanted, shortage, colour: this.source?.colour ?? 'none', requests, bytes, failed };
     }
 
     get attribution(): string[] {
@@ -135,7 +136,7 @@ export class Ground {
      * terrain's group 1; `shadow` holds bindings 8 to 10 of the render group: the object shadows (shadow.ts).
      */
     async attach(gpu: Gpu, look: GPUBuffer, surface: GPUBindGroup, shadow: GPUBindGroupEntry[]): Promise<void> {
-        const { device } = gpu, layout = gpu.once(layouts), layers = POOL / LAYER_PAGES, side = PAGE * SIDE;
+        const { device } = gpu, layout = gpu.once(layouts), layers = this.pages.capacity / LAYER_PAGES, side = PAGE * SIDE;
         this.resources = undefined;
         this.lost();
         // The compute reads the codes, and a page can arrive before the first frame with an eye writes the look.

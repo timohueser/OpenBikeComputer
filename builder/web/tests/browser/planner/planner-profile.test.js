@@ -18,20 +18,18 @@ const plan = {
   },
 };
 const CAFE = { name: 'Linde', kind: 'cafe', lon: 8.12, lat: 47.001, precision: 'place' };
+/** Fountains at km 2, 5, 9 and 13 of the plan. */
+const FOUNTAINS = [2, 5, 9, 13].map(km => ({ source: `n/${km}`, name: `Brunnen ${km}`, kind: 'drinking_water', lon: 8 + km / 75.9, lat: 47.001,
+  precision: 'place', distance: 0.1, position: { along: km, distance: 0.1 } }));
 
-test('the planner profile: a drag selects a part that is the search area, a press on a day-end handle selects none, and Clear ends it', async ({ page }) => {
-  const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
-  // The map fits the part at once, so it is at rest when the drag ends.
+/** Opens the plan of two days. The search answers each request with `answer`, and the map fits a part at once, so it is
+ * at rest when a drag ends. */
+async function openPlan(page, answer) {
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  const areas = [];
   await page.route(url => url.hostname !== '127.0.0.1', route => {
     const request = route.request();
     if (request.method() === 'OPTIONS') return route.fulfill(CORS_PREFLIGHT);
-    if (request.url().endsWith('/query')) {
-      areas.push(request.postDataJSON().pointing);
-      return route.fulfill({ ...CORS_PREFLIGHT, status: 200, json: { type: 'places', request: { type: 'places', what: ['cafe'] }, results: [CAFE] } });
-    }
+    if (request.url().endsWith('/query')) return route.fulfill({ ...CORS_PREFLIGHT, status: 200, json: answer(request.postDataJSON()) });
     const response = respond(request);
     return response ? route.fulfill(response) : route.abort();
   });
@@ -43,31 +41,44 @@ test('the planner profile: a drag selects a part that is the search area, a pres
     await library.setState('active', record.id);
   }, plan);
   await page.goto('/planner.html#/planner');
+}
+/** Drags across `box` from the share `from` of its width to `to`. */
+async function drag(page, box, from, to) {
+  const { x, y, width, height } = await box.boundingBox();
+  await page.mouse.move(x + width * from, y + height / 2);
+  await page.mouse.down();
+  await page.mouse.move(x + width * (from + to) / 2, y + height / 2);
+  await page.mouse.move(x + width * to, y + height / 2);
+  await page.mouse.up();
+}
+
+test('the planner profile: a drag selects a part that is the search area, a press on a day-end handle selects none, and Clear ends it', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const areas = [];
+  await openPlan(page, input => {
+    areas.push(input.request?.where);
+    return { type: 'places', request: { type: 'places', what: ['cafe'] }, results: [CAFE] };
+  });
 
   const profile = page.locator('.elevation');
   const plot = profile.locator('.plot');
   await expect(plot).toBeVisible();
   // The map reports its view once when it has loaded; that report would count as a move after the search.
   await expect(page.getByLabel('Route map')).toHaveAttribute('aria-busy', 'false', { timeout: 30_000 });
-  await page.getByRole('textbox', { name: 'Find a place or ask about the route' }).fill('cafes');
+  await page.getByRole('combobox', { name: 'Find a place or ask about the route' }).fill('cafes');
   await page.keyboard.press('Enter');
   await expect(page.locator('.results')).toContainText('Linde');
 
-  const drag = async (from, to) => {
-    const box = await plot.boundingBox(), y = box.y + box.height / 2;
-    await page.mouse.move(box.x + box.width * from, y);
-    await page.mouse.down();
-    await page.mouse.move(box.x + box.width * (from + to) / 2, y);
-    await page.mouse.move(box.x + box.width * to, y);
-    await page.mouse.up();
-  };
   const part = profile.locator('.title .part');
   await profile.getByRole('radio', { name: 'Whole route' }).click();
-  await drag(0.4, 0.6);
-  await expect(part).toContainText(/^km\s6\.1 to km\s9\.1 · 3\.0\skm · \d+\sm up/);
+  await drag(page, plot, 0.4, 0.6);
+  // The ends of the stretch go out to a tenth of a km.
+  await expect(part).toContainText(/^km\s6\.0 to km\s9\.2 · 3\.2\skm · \d+\sm up/);
   await expect(profile.locator('.pale')).toHaveCount(2);
-  // The part is the search area, so the list of places along the route starts there.
-  await expect.poll(() => areas.at(-1)).toEqual({ along: { ref: 'km', from: { value: 6.1, unit: 'km' }, to: { value: 9.1, unit: 'km' } } });
+  // The part is the stretch of "Where", so the list of places along the route starts there.
+  await expect(page.locator('[data-slot="where"] strong')).toHaveText('6–9.2 km');
+  await expect.poll(() => areas.at(-1)).toEqual({ along: { ref: 'km', from: { value: 6, unit: 'km' }, to: { value: 9.2, unit: 'km' } } });
   // The fit of the map to the part is no move of the map by the rider.
   const searchView = page.getByRole('button', { name: 'Search this map view' });
   await page.waitForTimeout(500);
@@ -92,5 +103,56 @@ test('the planner profile: a drag selects a part that is the search area, a pres
   await page.mouse.up();
   await expect(part).toHaveCount(0);
   await expect(profile.locator('.pale')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('"Where" on the profile: the places of "Find" are dots, a drag sets a stretch that the list and the main profile show, and a day button sets a day', async ({ page }) => {
+  const errors = [], areas = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await openPlan(page, input => {
+    const request = input.request ?? { type: 'places', what: ['drinking_water'] }, along = request.where?.along;
+    if (input.limit !== 100) areas.push(request.where);
+    return { type: 'places', request, results: FOUNTAINS.filter(({ position }) => !along || (position.along >= along.from.value && position.along <= along.to.value)) };
+  });
+  await expect(page.getByLabel('Route map')).toHaveAttribute('aria-busy', 'false', { timeout: 30_000 });
+  await page.getByRole('combobox', { name: 'Find a place or ask about the route' }).fill('drinking water');
+  await page.keyboard.press('Enter');
+  const results = page.locator('.results');
+  await expect(results).toContainText('Brunnen 13');
+  await page.locator('[data-slot="where"]').click();
+  const panel = page.locator('#search-panel'), plot = panel.locator('.plot'), where = page.locator('[data-slot="where"] strong');
+  const dots = () => panel.locator('.dot').evaluateAll(all => all.map(dot => dot.classList.contains('in')));
+  await expect.poll(dots).toEqual([true, true, true, true]);
+  // The pointer names the place under it.
+  await panel.locator('.dot').first().hover();
+  await expect.poll(() => panel.locator('.dot').first().evaluate(dot => getComputedStyle(dot, '::after').content)).toContain('Brunnen 2');
+  // A vertical swipe scrolls the panel; a horizontal drag sets the stretch.
+  await expect(plot).toHaveCSS('touch-action', 'pan-y');
+
+  await drag(page, plot, 0.25, 0.7);
+  await expect(where).toHaveText(/^\d+\.\d–\d+\.\d km$/);
+  const [from, to] = (await where.textContent()).match(/[\d.]+/g).map(Number);
+  expect(from).toBeCloseTo(3.8, 0);
+  expect(to).toBeCloseTo(10.6, 0);
+  await expect.poll(dots).toEqual([false, true, true, false]);
+  await expect.poll(() => areas.at(-1)).toEqual({ along: { ref: 'km', from: { value: from, unit: 'km' }, to: { value: to, unit: 'km' } } });
+  await expect(results).not.toContainText('Brunnen 13');
+  await expect(results).toContainText('Brunnen 9');
+  await expect(page.locator('.elevation .title .part')).toContainText(new RegExp(`^km\\s${from} to km\\s${to} `));
+  // The handles are range inputs: an arrow key moves an end by 1 % of the route, and End takes it to the finish.
+  const end = panel.getByRole('slider', { name: 'End of the stretch' });
+  await end.press('ArrowLeft');
+  await expect(where).toHaveText(`${from}–${(Math.ceil((to - 0.152) * 10) / 10).toFixed(1)} km`);
+  await end.press('End');
+  await expect(where).toHaveText(`${from}–15.2 km`);
+  // The handle sits on the end of the stretch, at the finish.
+  expect(await end.evaluate(input => input.valueAsNumber / Number(input.max))).toBeCloseTo(1, 6);
+
+  await panel.getByRole('button', { name: 'Day 2' }).click();
+  await expect(where).toHaveText('Day 2');
+  await expect(panel.getByRole('button', { name: 'Day 2' })).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(dots).toEqual([false, false, true, true]);
+  await panel.getByRole('radio', { name: 'Middle' }).click();
+  await expect(where).toHaveText('Middle of Day 2');
   expect(errors).toEqual([]);
 });

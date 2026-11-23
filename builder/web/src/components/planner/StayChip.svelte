@@ -54,7 +54,7 @@
 
 <style>
     .stay-chip { display: contents; }
-    .planner-chip { --chip-ink: var(--query-place); white-space: nowrap; }
+    .planner-chip { --chip-ink: var(--place-disc); white-space: nowrap; }
     .panel {
         order: 2;
         flex-basis: 100%;

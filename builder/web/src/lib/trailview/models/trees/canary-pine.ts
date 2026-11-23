@@ -11,8 +11,10 @@ export default {
   droop: 0.6,
   lobes: 4,
   jitter: 0.4,
-  tufts: true,
-  sprouts: 8,
+  // Whorls of rising branches under mops of long needles that hang.
+  tufts: 0.42,
+  lift: 0.6,
+  sprouts: 6,
   trunk: 0.024,
   flare: 1.6,
   // Old fires char the foot of the trunk.

@@ -20,8 +20,10 @@
     const facts = $derived([showKind && (place.placeKind ? kindLabel(place.placeKind) : placeCategories[place.category].label), place.locality, detail].filter(Boolean).join(' · '));
 </script>
 
+<!-- A row that the map lights scrolls into view. The pointer on the row, or on its action beside it, lights it too, and
+     must not move it. -->
 <button type="button" class="place-row" class:selected class:hovered onmouseenter={() => onHover?.(place.id)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(place.id)} onblur={() => onHover?.(null)} onclick={() => onSelect(place)}
-    {@attach row => { if (hovered && !row.matches(':hover')) row.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
+    {@attach row => { if (hovered && !row.parentElement?.matches(':hover')) row.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
     <span class="place-icon"><Icon path={placeCategories[place.category].icon} size={17} /></span>
     <span class="name">
         <strong>{place.label}</strong>
@@ -70,7 +72,7 @@
         font: 400 13px/1.4 var(--sans);
         color: var(--ink-soft);
     }
-    .place-icon { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%; background: color-mix(in srgb, var(--query-place) 10%, var(--panel)); color: var(--query-place); }
+    .place-icon { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%; background: color-mix(in srgb, var(--place-disc) 10%, var(--panel)); color: var(--place-disc); }
     .distance { flex: none; text-align: right; font-variant-numeric: tabular-nums; }
     .distance b { display: block; font: 600 13px/1.5 var(--sans); }
     .distance span { display: block; margin-top: 2px; color: var(--ink-soft); font: 400 12px/1.5 var(--sans); }

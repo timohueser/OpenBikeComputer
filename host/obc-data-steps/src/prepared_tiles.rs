@@ -3,7 +3,7 @@
 //! outlines of the region of a version, the files that a version keeps of the version before, and
 //! the record of what a service gave on the day of a version.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -46,7 +46,8 @@ pub struct Tile {
 /// set aside, and the run goes on; once no other tile waits, each set-aside tile runs once more. A
 /// tile that fails again ends the run with an error that names it, and the version stays incomplete,
 /// so a resume makes only the tiles without marks. `in_a_row_at_most` failures in a row end the run
-/// at once.
+/// at once. `state/set-aside` names the set-aside tiles, so a run that was stopped and started again
+/// keeps them for that last pass and begins with the tiles that no run has tried.
 /// `command(job, name)` is the program that writes the files of tile `name` into `job.work`, then
 /// their marks, the mark of the last file last; or the empty `<name>.none` for a tile without data.
 /// Each line of its output, and its error, starts with `tile k/K <name>`: tile k of the K tiles of
@@ -77,7 +78,15 @@ pub fn make(
         }
         queue.push(k);
     }
-    let mut aside = Vec::new();
+    // The tiles that an earlier run set aside wait for the last pass, as they would have in that run.
+    let path = job.state.join(SET_ASIDE);
+    let earlier = match fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        read => read.map_err(|e| format!("{}: {e}", path.display()))?,
+    };
+    let earlier: BTreeSet<&str> = earlier.lines().collect();
+    let (mut aside, queue): (Vec<usize>, Vec<usize>) =
+        queue.into_iter().partition(|k| earlier.contains(tiles[*k].name.as_str()));
     let made = run(job, tiles, queue, (running_at_most, in_a_row_at_most), &command, &mut batch, &mut aside);
     made.map_err(|e| match aside.len() {
         0 => e,
@@ -96,8 +105,9 @@ pub fn make(
 }
 
 /// Run the program of each tile of `queue` (indices into `tiles`), `most.0` at a time, and keep in
-/// `aside` each tile whose program failed and has not ended well since. A first pass runs `queue`,
-/// then a second runs `aside` once; `most.1` failures in a row end the first pass.
+/// `aside`, which starts with the tiles that an earlier run set aside, each tile whose program failed
+/// and has not ended well since. A first pass runs `queue`, then a second runs `aside` once;
+/// `most.1` failures in a row end the first pass.
 fn run(
     job: &mut Job,
     tiles: &[Tile],
@@ -124,6 +134,7 @@ fn run(
                     in_a_row += 1;
                     aside.push(k);
                 }
+                remember(job, tiles, aside)?;
                 // The second pass runs only tiles that failed, so its failures in a row say nothing.
                 if !again && in_a_row == in_a_row_at_most {
                     return Err(format!("{in_a_row} tiles failed in a row"));
@@ -165,6 +176,17 @@ fn run(
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
+}
+
+/// The file in `state/` that names the set-aside tiles, one per line.
+const SET_ASIDE: &str = "set-aside";
+
+/// Write the names of the set-aside tiles into `state/set-aside`, whole or not at all. The folder is
+/// synced after the rename, so a power loss keeps the new list and not an older one.
+fn remember(job: &Job, tiles: &[Tile], aside: &[usize]) -> Result<(), String> {
+    let names: String = aside.iter().map(|k| format!("{}\n", tiles[*k].name)).collect();
+    obc_data::store::write_atomic(&job.state.join(SET_ASIDE), names.as_bytes())?;
+    fs::File::open(&job.state).and_then(|folder| folder.sync_all()).map_err(|e| format!("{}: {e}", job.state.display()))
 }
 
 /// Whether the home has the files of `tile`, or the tile has no data.

@@ -8,6 +8,10 @@ export default {
   // lean keeps it from reading as a beech.
   fork: 0.44,
   crown: [0.69, 0.4, 0.34, 0.32],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.15 + 0.85 * t)) ** 0.7,
+  clumps: 12,
+  billows: 4,
+  bow: 0.15,
   sweep: 0.06,
   trunk: 0.045,
   flare: 1.4,

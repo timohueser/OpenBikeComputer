@@ -56,11 +56,12 @@
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
     import { nightKinds, nightWindows, proposal, proposeNights, suitable, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlan } from '../../lib/planner/search/plan';
+    import { ACTS, sameValue, stretchOf, type Slots } from '../../lib/planner/search/slots';
     import { containing, weekOf } from '../../lib/planner/week';
-    import { placeDetails, withDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
+    import { placeDetails, withDetails, type QueryChange, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { placeSource } from '../../lib/planner/place-index';
     import { asPlace, category, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
-    import { applyQueryChanges } from '../../lib/planner/search/actions';
+    import { applyQueryChanges, placeChange, placeCheck } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import { appearance } from '../../lib/theme.svelte';
     import { routingKey, type RoutingLine, type Surface } from '../../lib/planner/routing';
@@ -153,16 +154,17 @@
     let layerDate = $state<string | null>(null);
     const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
     const shownDate = $derived(layerDate ?? trip.startDate ?? today);
-    let query = $state('');
     let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
     let searchBox = $state<Query>();
     let searchRevision = $state(0);
     let searchViewRevision = $state(0);
     let viewBounds = $state<[number, number, number, number]>(config.bounds);
     let here = $state<{ coordinate: Coordinate; at: number } | undefined>();
-    let pointing = $state<Where | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
+    /** What the last action on a place of the search changed, for the slots that listed the place, until the next edit,
+     * and the way back to Explore and the shown week before it, which its "Undo" brings back. */
+    let searchDone = $state.raw<{ text: string; slots: Slots; view: { exploreBack: unknown; weekStart: number; restedStart: number } } | null>(null);
     let message = $state(`Plan a ride in ${config.name}`);
     // The status line offers Undo after "Discard changes", until the next change.
     let statusUndo = $state<(() => void) | null>(null);
@@ -175,13 +177,6 @@
     // The surface that the rider points at in the surface legend, for the map. A legend that leaves the page lights nothing.
     let litSurface = $state<Surface>();
     $effect(() => { if (!visualRoute || !profileOpen) litSurface = undefined; });
-    // The part of the route the profile selects, as route progress. Another line ends it; the map fits each part.
-    let part = $state<[number, number] | null>(null);
-    $effect(() => { void visualRoute; part = null; });
-    $effect(() => {
-        const fit = part;
-        untrack(() => { if (fit) map?.fitCoordinates(routeSlice(coordinates, fit[0], fit[1]), true); });
-    });
     let sideWidth = $state(360);
     let profileHeight = $state(260);
     let profileOpen = $state(true);
@@ -214,14 +209,15 @@
         if (open) profileHeight = next;
     }
     const multi = $derived(multiDay(trip));
-    // The view follows the type on each path that changes it: the day count, Undo, Redo, a search, an import.
-    let viewMulti: boolean | undefined;
+    // The view follows the type on each path that changes it: the day count, Undo, Redo, a search, an import. An action
+    // on a place of the search and its "Undo" keep the search, whose list the rider still chooses from.
+    let viewMulti: boolean | undefined, keepSearch = false;
     $effect.pre(() => {
         if (viewMulti !== undefined && multi !== viewMulti) untrack(() => {
             night = 1;
             expandedDay = null;
             stopChoosing();
-            exitSearch();
+            if (!keepSearch) exitSearch();
             clearSelection();
         });
         viewMulti = multi;
@@ -318,13 +314,27 @@
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ day: d.number, after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
     const queryPlan = $derived(searchPlan(trip, view));
-    // While the profile selects a part, the part is the search area, so a list along the route starts there.
-    const kmAt = (progress: number) => ({ value: Math.round(progress * total * 10) / 10, unit: 'km' });
-    const searchArea = $derived<Where | undefined>(part ? { along: { ref: 'km', from: kmAt(part[0]), to: kmAt(part[1]) } } : pointing);
+    // The slots of the search. The stretch of "Where" is the part of the route that the profile selects and the map
+    // shows, as route progress; a stretch of the whole route is none.
+    let searchSlots = $state.raw<Slots>({});
+    const part = $derived.by<[number, number] | null>(() => {
+        const stretch = stretchOf(searchSlots.where, queryPlan);
+        return stretch && total && (stretch[0] > 0 || stretch[1] < total) ? [stretch[0] / total, stretch[1] / total] : null;
+    });
+    // The map fits the part when the rider changes the area, not when the route changes under it.
+    let fitted: Where | undefined;
+    $effect(() => {
+        const where = searchSlots.where;
+        untrack(() => {
+            if (sameValue(where, fitted)) return;
+            fitted = where;
+            if (part) map?.fitCoordinates(routeSlice(coordinates, part[0], part[1]), true);
+        });
+    });
     // The rider moves, so a position older than five minutes is left out and the search asks for a new one.
     // A getter, because time passing changes no dependency of the context.
     const searchContext = $derived<SearchContext>({ view: viewBounds, get here() { return here && Date.now() - here.at < 300_000 ? here.coordinate : undefined; },
-        pointing: searchArea, startDate: trip.startDate, plan: queryPlan });
+        startDate: trip.startDate, plan: queryPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(shown.trip, shown.line) : []);
     const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
     const gapLegs = $derived(visualRoute ? legGaps(visualStops, coordinates, visualRoute.gapLegs) : []);
@@ -508,7 +518,7 @@
     const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme }) : null);
 
     // A query runs again when anything it sends other than the map view changes.
-    $effect(() => { void [queryPlan, here, searchArea, trip.startDate]; untrack(() => searchRevision++); });
+    $effect(() => { void [queryPlan, here, trip.startDate]; untrack(() => searchRevision++); });
 
     onMount(() => {
         void session.start(library);
@@ -522,14 +532,13 @@
         statusUndo = null;
         clearSelection();
         exitSearch();
-        pointing = undefined;
         showRoute = true;
         night = 1;
         expandedDay = null;
         stopChoosing();
         visibleRange = null;
         hoverProgress = null;
-        part = null;
+        searchBox?.reset();
         restedStart = weekStart = 1;
         fitWeek = false;
         fitPlan = true;
@@ -686,6 +695,7 @@
         if (!hasEndpoints) { expandedDay = null; hoverProgress = null; }
         message = description;
         statusUndo = null;
+        searchDone = null;
     }
 
     function edit(change: Partial<Trip>, description: string) {
@@ -718,6 +728,7 @@
         clampNight();
         message = description;
         statusUndo = null;
+        searchDone = null;
         nameVisits(trip);
     }
 
@@ -751,12 +762,14 @@
     function exitSearch() {
         if (!searching) return;
         searching = false;
-        query = '';
+        searchDone = null;
+        searchBox?.reset();
     }
 
     function clearSearch() {
         if (!searching) return;
         searching = false;
+        searchDone = null;
         if (multi && expandedDay !== null) showDay(expandedDay);
         else { clearSelection(); map?.fitRoute(); }
     }
@@ -1060,7 +1073,6 @@
         if (!selectedPoint) return;
         const train = selectedPoint.kind === 'night' && trainAfter(trip, selectedPoint.night!);
         commit(removeRoutePoint(trip, selectedPoint.id, coordinate => map?.placeName(coordinate)), train ? 'Night and its train or bus removed' : 'Point removed');
-        pointing = undefined;
         clearSelection();
     }
 
@@ -1123,21 +1135,62 @@
         });
     }
 
-    async function applySearch() {
-        const answer = $state.snapshot(searchState.answer);
-        if (!answer?.changes || applyingQuery) return;
+    /** Applies the changes that `make` gives as one Undo step, and gives their description; none when they fail, or when the
+     * plan or what `still` checks changed meanwhile, with the reason in `queryApplyError`. */
+    async function applyChanges(make: () => Promise<{ changes: QueryChange[]; description: string }>, still = () => true): Promise<string | undefined> {
+        if (applyingQuery) return;
         const before = trip;
         applyingQuery = true; queryApplyError = '';
         try {
-            const next = await applyQueryChanges(before, session.line, answer.changes, plan => session.calculate(plan, new AbortController().signal));
-            if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The route changed. Review the search again.');
-            if (answer.changes.some(change => change.op === 'route')) { exploreBack = undefined; restedStart = weekStart = 1; fitWeek = false; }
+            const { changes, description } = await make();
+            const next = await applyQueryChanges(before, session.line, changes, plan => session.calculate(plan, new AbortController().signal));
+            if (before !== trip) throw new Error('The route changed. Review the search again.');
+            if (!still()) throw new Error('The search changed.');
+            if (changes.some(change => change.op === 'route')) { exploreBack = undefined; restedStart = weekStart = 1; fitWeek = false; }
             session.commit(next.trip, next.line);
-            showInWeek(answer.changes.find(change => change.day !== undefined)?.day);
-            afterEdit(answer.description ?? 'Query applied');
-            exitSearch(); clearSelection();
+            showInWeek(changes.find(change => change.day !== undefined)?.day);
+            afterEdit(description);
+            return description;
         } catch (error) { queryApplyError = (error as Error).message; }
         finally { applyingQuery = false; }
+    }
+
+    /** "Apply" of a change of the plan that the slots cannot hold. The search ends. */
+    async function applySearch() {
+        const answer = $state.snapshot(searchState.answer), changes = answer?.changes;
+        if (!changes) return;
+        const applied = await applyChanges(async () => ({ changes, description: answer.description ?? 'Query applied' }),
+            () => JSON.stringify(changes) === JSON.stringify(searchState.answer?.changes));
+        if (applied) { exitSearch(); clearSelection(); }
+    }
+
+    /** Runs an edit of the plan from the list of the search, and keeps the search when the plan changes its type. */
+    async function keepingSearch(edit: () => unknown) {
+        keepSearch = true;
+        try { await edit(); await tick(); }
+        finally { keepSearch = false; }
+    }
+
+    /** The action of "Find" on a place of the list; "Find" itself adds it as a stop. The list stays, with what changed. */
+    function actOn(place: SearchPlace) {
+        const slots = searchSlots, view = { exploreBack, weekStart, restedStart };
+        return keepingSearch(async () => {
+            const text = await applyChanges(async () => {
+                // A route goes from the rider, else from the start: with no start, the page asks for the position first.
+                if (slots.act === 'route' && !searchContext.here && !queryPlan.points.some(point => point.kind === 'start')) await locate();
+                return placeChange(slots.act ?? 'add_point', $state.snapshot(place), queryPlan, $state.snapshot(searchContext.here));
+            });
+            if (text) searchDone = { text, slots, view };
+        });
+    }
+
+    /** "Undo" of the line after an action. */
+    function undoAction() {
+        const view = searchDone?.view;
+        return keepingSearch(() => {
+            undo();
+            if (view) ({ exploreBack, weekStart, restedStart } = view);
+        });
     }
 
     function nameRest(index: number, name: string) {
@@ -1240,14 +1293,17 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={nightPage !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => { pointing = where; part = null; }} /></div>
+            <div class="query-slot" style:display={nightPage !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:searchState={searchState} bind:slots={searchSlots} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} {searching} revision={searchRevision} viewRevision={searchViewRevision} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} /></div>
             {#if !searching && nightPage === null}{#key planId}<RoutePreferences {trip} onChange={edit} />{/key}{/if}
             {#if exploreBack && hasEndpoints && !searching && nightPage === null}
                 <button type="button" class="back-to-routes" onclick={() => router.go(ROUTES.explore, { explore: exploreBack })}><Icon name="back" size={15} />Find another route</button>
             {/if}
             {#if searching}
                 <div class="pane-scroll">
-                    <QueryResults attribution={config.attribution} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { part = null; pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
+                    <QueryResults attribution={config.attribution} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch}
+                        action={searchSlots.act || hasEndpoints ? { button: ACTS[searchSlots.act ?? 'add_point'].button, chosen: !!searchSlots.act,
+                            check: place => placeCheck(searchSlots.act ?? 'add_point', place, queryPlan, trip) } : undefined}
+                        done={searchDone && sameValue(searchDone.slots, searchSlots) ? searchDone.text : ''} onAct={actOn} onUndo={undoAction} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={stretch => searchBox?.setStretch(stretch)} />
                 </div>
             {:else if !hasEndpoints}
                 <div class="start-plan pane-scroll">
@@ -1397,7 +1453,7 @@
                 activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {rests} {totals}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
-                {part} onPart={next => { if (active) part = next; }} marker={mapHover} bind:surface={litSurface} week={weekShown}
+                {part} onPart={next => { if (active && (next || part)) searchBox?.setStretch(next && [next[0] * total, next[1] * total]); }} marker={mapHover} bind:surface={litSurface} week={weekShown}
             >
                 {#snippet tripStrip()}
                     {#if week}<TripStrip {itinerary} {week} {theme} startDate={trip.startDate} onMove={moveWeek} onHover={riding => litDay = riding} bind:dragging={stripDragging} />{/if}
@@ -1455,19 +1511,11 @@
         color: inherit;
     }
     .planner-shell {
-        --query-place: #3b654c;
-        --query-area: #365f84;
-        --query-time: #965125;
         display: flex;
         flex-direction: column;
         height: 100%;
         min-width: 760px;
         min-height: 580px;
-    }
-    :global([data-theme="dark"]) .planner-shell {
-        --query-place: #aed0b5;
-        --query-area: #a9cce9;
-        --query-time: #edb58b;
     }
     .planner-shell :global(.planner-action),
     .planner-shell :global(.planner-chip) {

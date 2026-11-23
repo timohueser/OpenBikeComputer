@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { worldPixel } from '../../planner/layers/mercator';
+import { BUDGETS } from '../budget';
 import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
-import { cdlod, distances, EYE_M, key, MAP, RANGE, select, size, type Node } from './lod';
+import { cdlod, distances, EYE_M, key, MAP, select, size, type Node } from './lod';
 import { ARRIVALS, MODE, Pages, touches, type StampSource, type Work } from './pages';
+
+const { least, morph } = BUDGETS.desktop.lod;
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
@@ -41,7 +44,7 @@ async function settle(pages: Pages, wanted: Node[], frames = 300, eye = new Set<
 }
 
 describe('the page pools', () => {
-    const { wanted } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, () => true);
+    const { wanted } = select(cdlod({ anchor, above: 1.6 }, least, morph), BOUNDS, () => true);
     wanted.sort((a, b) => a.level - b.level);
     const eye = new Set(wanted.filter(node => distances({ anchor, above: 0 }, node)[0] <= EYE_M).map(key));
 
@@ -239,7 +242,7 @@ describe('the page pools', () => {
 
     it('name in each frame the pages under every box whose read key changes: arrivals, syntheses, evictions and restamps', async () => {
         const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1], s = size(16), order = (a: Node, b: Node) => a.level - b.level;
-        const half = (east: boolean) => select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, ({ level, x }) => (east ? (x + 1) * size(level) > ex : x * size(level) < ex)).wanted.sort(order);
+        const half = (east: boolean) => select(cdlod({ anchor, above: 1.6 }, least, morph), BOUNDS, ({ level, x }) => (east ? (x + 1) * size(level) > ex : x * size(level) < ex)).wanted.sort(order);
         const boxes = [-1, 0, 1].flatMap(j => [-1, 0, 1].map((i): [number, number, number, number] => {
             const x = (Math.floor(ex / s) + i) * s, y = (Math.floor(ey / s) + j) * s;
             return [x + 100, y + 100, x + s - 100, y + s - 100];
@@ -298,7 +301,7 @@ describe('the page pools', () => {
 });
 
 describe('the stamps', () => {
-    const { wanted } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, () => true);
+    const { wanted } = select(cdlod({ anchor, above: 1.6 }, least, morph), BOUNDS, () => true);
     wanted.sort((a, b) => a.level - b.level);
     /** Every node has a feature near it; its stamps are known one frame after a page asks for them. */
     const stamps = (): StampSource => {
@@ -345,7 +348,7 @@ describe('a turn', () => {
     // A flight 1 km above the ground over Engelberg, in the whole box of the bakes.
     const [w, n] = worldPixel([7.6, 47.25], UNITS), [e, s] = worldPixel([8.95, 46.46], UNITS);
     const box: [number, number, number, number] = [w, n, e, s];
-    const rule = cdlod({ anchor, above: 1000 }, RANGE.least);
+    const rule = cdlod({ anchor, above: 1000 }, least, morph);
     const ex = anchor.whole[0] + anchor.part[0];
     const side = (east: boolean) => select(rule, box, ({ level, x }) => (east ? (x + 1) * size(level) > ex : x * size(level) < ex));
 

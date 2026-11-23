@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { worldPixel } from '../../planner/layers/mercator';
+import { BUDGETS } from '../budget';
 import { anchorAt, lodSpace, UNITS } from '../frame/space';
-import { cdlod, GRID, MAP, RANGE, select, size, type Eye, type Node, type Rule } from './lod';
+import { cdlod, GRID, MAP, select, size, type Eye, type Node, type Rule } from './lod';
 
 const BOX = [7.6, 46.46, 8.95, 47.25] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
 const BOUNDS: [number, number, number, number] = [west, north, east, south];
 const eye = (lon: number, lat: number, above: number): Eye => ({ anchor: anchorAt(lon, lat), above });
 const EYES = [eye(8.403, 46.8205, 1.6), eye(8.39, 46.8, 900), eye(8.415, 46.7, 12_000), eye(8.2, 46.85, 60_000)];
-const RULES: [string, (eye: Eye) => Rule][] = [
-    ...[RANGE.least, RANGE.most].map((factor): [string, (eye: Eye) => Rule] => [`cdlod ${factor}`, e => cdlod(e, factor)]),
-];
+const RULES = Object.entries(BUDGETS).flatMap(([tier, { lod }]) =>
+    [...new Set([lod.least, lod.most])].map((factor): [string, (eye: Eye) => Rule] => [`${tier} ${factor}`, e => cdlod(e, factor, lod.morph)]),
+);
+const DESKTOP = BUDGETS.desktop.lod;
 
 /** The LOD at the grid vertex (i, j) of a node, from whole units, as the vertex shader has it. */
 const vertexLod = (rule: Rule, e: Eye, { level, x, y }: Node, i: number, j: number) => {
@@ -64,7 +66,7 @@ describe.each(RULES)('the %s selection', (_, make) => {
 
 describe('the CDLOD selection', () => {
     it('culls a subtree that is not visible, and wants the pages of the drawn nodes and of the parents that they morph to', () => {
-        const walk = EYES[0], rule = cdlod(walk, RANGE.least);
+        const walk = EYES[0], rule = cdlod(walk, DESKTOP.least, DESKTOP.morph);
         const all = select(rule, BOUNDS, () => true);
         const east = select(rule, BOUNDS, ({ level, x }) => (x + 1) * size(level) > walk.anchor.whole[0]);
         expect(east.nodes.length).toBeLessThan(all.nodes.length);

@@ -4,12 +4,21 @@ export default {
   form: 'broadleaf',
   name: 'Olive',
   latin: 'Olea europaea',
-  // Limbs lean out from one gnarled foot under a wide, low crown.
-  fork: 0.26,
-  crown: [0.6, 0.56, 0.52, 0.38],
-  stems: 3,
-  trunk: 0.05,
-  flare: 1.8,
+  // One short, gnarled bole that twists, under a wide, low, open crown.
+  fork: 0.3,
+  crown: [0.64, 0.56, 0.52, 0.34],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.3 + 0.7 * t)) ** 0.5,
+  clumps: 12,
+  open: true,
+  dense: 0.75,
+  billows: 5,
+  bow: 0.25,
+  crook: 0.04,
+  flutes: 5,
+  twist: 0.5,
+  neck: 0.75,
+  trunk: 0.065,
+  flare: 1.6,
   bark: ['#5e5a52', '#8a857a'],
   // Evergreen, silver-grey from the pale leaf undersides.
   leaves: {

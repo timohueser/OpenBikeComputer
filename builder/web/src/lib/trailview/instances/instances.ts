@@ -2,6 +2,7 @@ import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
+import { quantize, VERTEX_BYTES, type Mesh, type Shape } from '../models/model-file';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 
 /** Draws per model: up to three mesh tiers and the impostor tier, as TIERS in emit.wgsl. */
@@ -15,8 +16,8 @@ const DRAWS = MODELS * TIERS;
  * 70 500 on the kit's flights (M1 Pro, measured), the near map's up to 3 100.
  */
 const CAPACITY = 2 ** 17, SUN_CAPACITY = 2 ** 17;
-/** Bytes of `Instance`, `Model`, `Tally`, `Mesh` and `Params` in the WGSL, and of a vertex. */
-const INSTANCE_BYTES = 32, MODEL_BYTES = 80, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, PARAMS_BYTES = 32, VERTEX_BYTES = 16;
+/** Bytes of `Instance`, `Model`, `Tally`, `Mesh` and `Params` in the WGSL. */
+const INSTANCE_BYTES = 32, MODEL_BYTES = 80, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, PARAMS_BYTES = 32;
 /** The phases of a tree's year, as PHASES of phenology.wgsl, and the bytes of a colour matrix (`mat3x3f`). */
 const PHASES = 4, TONE_BYTES = 48;
 /** Lanes of the sort, as LANES in sort.wgsl. */
@@ -30,8 +31,6 @@ const VERTEX_POOL = 6 * 2 ** 20, INDEX_POOL = 6 * 2 ** 20;
  * draws on a share of its pixels stages in a farther tier.
  */
 const WHOLE_TIERS = 2;
-/** A tree's sink table (`sinks`): its slopes, SINK_STEP apart from SINK_STEP, as in emit.wgsl. */
-const SINK_STEP = 0.25, SINK_SLOPES = 8;
 /** The render height in pixels that the tier distances are for. */
 const REFERENCE_PIXELS = 1120;
 /** The share of the capacity that the detail keeps to. */
@@ -45,28 +44,24 @@ const SLOTS = 32, ATLAS = 256, ATLAS_LEVELS = 6, FRAMES = 64, UNUSED_FRAMES = 60
 /** Texels a side of level 0 of the depth pyramid, its levels, and the bytes of `Occlusion` in emit.wgsl. */
 const PYRAMID = 512, PYRAMID_LEVELS = 10, OCCLUSION_BYTES = 96;
 /** The quad of an impostor: corners at ±1, and a middle row at y 0 that impostor.wgsl places at the crown's base. */
-const QUAD = { position: [-1, -1, 0, 1, -1, 0, -1, 0, 0, 1, 0, 0, -1, 1, 0, 1, 1, 0], normal: new Array(6).fill([0, 0, 1]).flat(), color: new Array(18).fill(1), index: [0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5] };
+const QUAD: Mesh = {
+    vertices: quantize({ position: [-1, -1, 0, 1, -1, 0, -1, 0, 0, 1, 0, 0, -1, 1, 0, 1, 1, 0], normal: new Array(6).fill([0, 0, 1]).flat(), color: new Array(18).fill(1), index: [] }, 1),
+    index: Uint32Array.from([0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5]),
+};
 
 /**
- * A mesh: per vertex a position, a normal and a linear colour, in a model 1 tall; three indices per
- * triangle. A tree's first `trunk` vertices are its trunk, which stretches to meet its crown when the
- * crown lifts (draw.wgsl).
- */
-export interface Mesh { position: ArrayLike<number>; normal: ArrayLike<number>; color: ArrayLike<number>; index: ArrayLike<number>; trunk?: number; glow?: ArrayLike<number>; rise?: ArrayLike<number> }
-
-/**
- * A model: its mesh per tier, finest first, and the distance in metres where each tier ends; then,
- * optionally, an impostor baked from mesh tier `from` until its own distance.
+ * A model: its mesh per tier from a model file, finest first, and the distance in metres where each tier ends; its shape,
+ * which the build measured, where it has tiers; then, optionally, an impostor baked from its last mesh tier until its own
+ * distance.
  */
 export interface ModelSpec {
     tiers: { mesh: Mesh; until: number }[];
+    shape?: Shape;
     /** False for a model that casts no shadow. */
     casts?: boolean;
-    impostor?: { from: number; until: number };
+    impostor?: { until: number };
     /** The share of a tier's end distance over which its instances switch to the next tier. */
     fade?: number;
-    /** A tree's crown: its lowest point in model units (draw.wgsl). */
-    crown?: number;
     /** How far it takes its hue from the ground under it, 0 to 1 (draw.wgsl). */
     tie?: number;
     /** The height in metres of an instance whose tiers end at `until`; the tiers of others end in proportion. */
@@ -205,8 +200,6 @@ export class Instances {
     /** Models whose layer needs a bake. */
     private readonly unbaked = new Set<number>();
     private readonly producers: Producer[] = [];
-    /** The impostor outlines of each mesh and radius (`outline`). */
-    private readonly outlined = new WeakMap<Mesh, { radius: number; outlines: Float32Array<ArrayBuffer> }>();
     /** What `attach` took, for a producer that comes later. */
     private attached?: [Gpu, Surfaces];
     /** Whether the last frame baked an impostor: what the frames draw changed. */
@@ -417,12 +410,12 @@ export class Instances {
         if (!r || !this.uploaded) return;
         for (const model of this.unbaked) {
             const slot = this.atlas.get(model)?.slot, spec = this.specs[model], placed = this.placed[model];
-            if (slot === undefined || !spec?.impostor || !placed.length) continue;
-            const [first, count, base] = placed[spec.impostor.from];
-            r.gpu.device.queue.writeBuffer(r.outlines, model * FRAMES * 16, this.outline(spec.tiers[spec.impostor.from].mesh, radius(spec)));
+            if (slot === undefined || !spec?.impostor || !spec.shape || !placed.length) continue;
+            const [first, count, base] = placed[placed.length - 1];
+            r.gpu.device.queue.writeBuffer(r.outlines, model * FRAMES * 16, spec.shape.outlines);
             const data = new ArrayBuffer(16);
             new Uint32Array(data).set([model, 0, slot]);
-            new Float32Array(data)[1] = radius(spec);
+            new Float32Array(data)[1] = spec.shape.radius;
             r.gpu.device.queue.writeBuffer(r.bakes, slot * STRIDE, data);
             const layer = (texture: GPUTexture) => texture.createView({ dimension: '2d', baseArrayLayer: slot, arrayLayerCount: 1, mipLevelCount: 1 });
             const pass = encoder.beginRenderPass({
@@ -573,15 +566,6 @@ export class Instances {
         r.gpu.device.queue.writeBuffer(r.slots, 0, slots);
     }
 
-    /** The outlines of a mesh's impostor (`outlines`), once per mesh and radius. */
-    private outline(mesh: Mesh, radius: number): Float32Array<ArrayBuffer> {
-        const known = this.outlined.get(mesh);
-        if (known?.radius === radius) return known.outlines;
-        const made = outlines(mesh, radius);
-        this.outlined.set(mesh, { radius, outlines: made });
-        return made;
-    }
-
     /**
      * Writes the models into the pools. A mesh stays where an earlier upload wrote it, so an upload writes only
      * the meshes that are new; a model that finds no room packs the pools again from empty, without the meshes
@@ -590,42 +574,40 @@ export class Instances {
     private upload(r: Resources, packed = false): void {
         const models = new ArrayBuffer(MODELS * MODEL_BYTES), f = new Float32Array(models);
         const meshes = new Int32Array(DRAWS * MESH_BYTES / 4), pool = this.pool;
-        const fits = (tiers: Mesh[]) => {
-            const count = tiers.reduce((sum, mesh) => sum + mesh.position.length / 3, 0), indices = tiers.reduce((sum, mesh) => sum + mesh.index.length, 0);
+        // The meshes that an upload writes: those that the pools do not hold.
+        const room = (tiers: Mesh[]) => {
+            const fresh = tiers.filter(mesh => !pool.at.has(mesh));
+            const count = fresh.reduce((sum, mesh) => sum + mesh.vertices.length / VERTEX_BYTES, 0), indices = fresh.reduce((sum, mesh) => sum + mesh.index.length, 0);
             return (pool.vertex + count) * VERTEX_BYTES <= VERTEX_POOL && (pool.index + indices) * 4 <= INDEX_POOL;
         };
         // A mesh that models share, such as a tree as a tree and as a shrub, lies once in the pools.
-        const put = (mesh: Mesh, extent: number): [number, number, number] => {
+        const put = (mesh: Mesh): [number, number, number] => {
             const known = pool.at.get(mesh);
-            if (known?.extent === extent) return known.at;
-            const count = mesh.position.length / 3;
-            r.gpu.device.queue.writeBuffer(r.vertices, pool.vertex * VERTEX_BYTES, quantize(mesh, extent));
-            r.gpu.device.queue.writeBuffer(r.indices, pool.index * 4, Uint32Array.from(mesh.index));
+            if (known) return known;
+            r.gpu.device.queue.writeBuffer(r.vertices, pool.vertex * VERTEX_BYTES, mesh.vertices);
+            r.gpu.device.queue.writeBuffer(r.indices, pool.index * 4, mesh.index);
             const at: [number, number, number] = [pool.index, mesh.index.length, pool.vertex];
-            pool.vertex += count;
+            pool.vertex += mesh.vertices.length / VERTEX_BYTES;
             pool.index += mesh.index.length;
-            pool.at.set(mesh, { extent, at });
+            pool.at.set(mesh, at);
             return at;
         };
-        this.quad = put(QUAD, 1);
+        this.quad = put(QUAD);
         const dropped: number[] = [];
-        // The meshes that an upload writes: those that the pools do not hold at this extent.
-        const room = (meshes: Mesh[], extent: number) => fits(meshes.filter(mesh => pool.at.get(mesh)?.extent !== extent));
         this.placed = this.specs.map((spec, m) => {
-            const { tiers } = spec;
-            if (!tiers.length) return [];
-            const extent = Math.max(...tiers.map(({ mesh }) => scan(mesh).largest));
-            if (!room(tiers.map(({ mesh }) => mesh), extent)) return void dropped.push(m), [];
+            const { tiers, shape } = spec;
+            if (!tiers.length || !shape) return [];
+            if (!room(tiers.map(({ mesh }) => mesh))) return void dropped.push(m), [];
             const placed = tiers.map(({ mesh, until }, t) => {
-                const at = put(mesh, extent);
+                const at = put(mesh);
                 meshes.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
                 f[m * 20 + t] = until;
                 return at;
             });
             if (spec.impostor) f[m * 20 + tiers.length] = spec.impostor.until;
-            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0, spec.sized ?? 0, ...sinks(spec)], m * 20 + 4);
+            f.set([shape.extent, shape.radius, spec.fade ?? 0.15, shape.spread, shape.crown ?? -1, shape.trunk ? 1 : 0, spec.tie ?? 0, spec.sized ?? 0, ...shape.sinks], m * 20 + 4);
             if (spec.impostor) {
-                const mesh = tiers[spec.impostor.from].mesh, record = f.slice(m * 20, m * 20 + 20), last = this.baked.get(m);
+                const mesh = tiers[tiers.length - 1].mesh, record = f.slice(m * 20, m * 20 + 20), last = this.baked.get(m);
                 if (last?.mesh !== mesh || !last.record.every((value, i) => Object.is(value, record[i]))) {
                     this.baked.set(m, { mesh, record });
                     if (this.atlas.has(m)) this.unbaked.add(m);
@@ -661,9 +643,9 @@ export class Instances {
             const coarsest = this.placed[m].at(-1);
             if (!coarsest) return;
             if (spec.impostor) coarse.set([coarsest[1], coarsest[0], coarsest[2], 0], (m * TIERS + spec.tiers.length) * 4);
-            const hull = scan(spec.tiers.at(-1)!.mesh).proxy, fitted = hull && room([hull], f[m * 20 + 4]);
+            const hull = spec.shape?.proxy, fitted = hull && room([hull]);
             hullless ||= !!hull && !fitted;
-            const at = fitted ? put(hull, f[m * 20 + 4]) : coarsest;
+            const at = fitted ? put(hull) : coarsest;
             for (let t = 0; t < TIERS; t++) proxies.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
         });
         // A shadow proxy without room packs the pools once too, as a model without room does.
@@ -767,158 +749,6 @@ function attachProducer(producer: Producer, ...args: Parameters<Producer['attach
     return producer.attach(...args).catch(error => console.error('A producer of instances failed to attach:', error));
 }
 
-/**
- * The proxy of a crown in the far shadow map: a diamond of 8 faces about its crown's vertices, from its
- * lowest to its highest point and widest where its widest vertex lies. A mesh whose faces cover less
- * than half of the diamond's outline seen from above, such as a bare crown's branches, has none.
- */
-export function proxy(mesh: Mesh): Mesh | undefined {
-    const p = mesh.position, from = mesh.trunk ?? 0, count = p.length / 3;
-    if (count <= from) return undefined;
-    let [low, high, middle, widest] = [Infinity, -Infinity, 0, 0];
-    const side = [0, 0, 0, 0];
-    for (let k = from; k < count; k++) {
-        const [x, y, z] = [p[3 * k], p[3 * k + 1], p[3 * k + 2]];
-        [low, high] = [Math.min(low, z), Math.max(high, z)];
-        side[0] = Math.max(side[0], x), side[1] = Math.max(side[1], y), side[2] = Math.max(side[2], -x), side[3] = Math.max(side[3], -y);
-        if (Math.hypot(x, y) > widest) [widest, middle] = [Math.hypot(x, y), z];
-    }
-    let cover = 0;
-    for (let i = 0; i < mesh.index.length; i += 3) {
-        const [a, b, c] = [mesh.index[i], mesh.index[i + 1], mesh.index[i + 2]].map(v => 3 * v);
-        if (Math.min(a, b, c) < 3 * from) continue;
-        cover += Math.abs((p[b] - p[a]) * (p[c + 1] - p[a + 1]) - (p[c] - p[a]) * (p[b + 1] - p[a + 1])) / 2;
-    }
-    if (cover < (side[0] + side[2]) * (side[1] + side[3]) / 4) return undefined;
-    const position = [0, 0, high, 0, 0, low, side[0], 0, middle, 0, side[1], middle, -side[2], 0, middle, 0, -side[3], middle];
-    return { position, normal: new Array(18).fill(0), color: new Array(18).fill(1), index: [0, 2, 3, 0, 3, 4, 0, 4, 5, 0, 5, 2, 1, 3, 2, 1, 4, 3, 1, 5, 4, 1, 2, 5] };
-}
-
-/** The largest absolute value. */
-function largest(values: ArrayLike<number>): number {
-    let most = 0;
-    for (let i = 0; i < values.length; i++) most = Math.max(most, Math.abs(values[i]));
-    return most;
-}
-
-/** The radius of a sphere about (0, 0, 0.5) that holds every mesh of a model, in model units; a sized plant may stand taller than 1. */
-function radius(spec: ModelSpec): number {
-    return Math.max(0, ...spec.tiers.map(({ mesh }) => scan(mesh).radius));
-}
 
 /** A pool keyed weakly: a mesh that no model draws any more does not stay in memory for the pool's sake. */
-const emptyPool = () => ({ at: new WeakMap<Mesh, { extent: number; at: [number, number, number] }>(), vertex: 0, index: 0 });
-
-/** What an upload reads of a mesh, made once per mesh: a mesh does not change once made. */
-const scans = new WeakMap<Mesh, { largest: number; radius: number; spread: number; proxy?: Mesh }>();
-
-function scan(mesh: Mesh): { largest: number; radius: number; spread: number; proxy?: Mesh } {
-    let known = scans.get(mesh);
-    if (!known) {
-        const p = mesh.position;
-        let most = 0, spread = 0;
-        for (let i = 0; i < p.length; i += 3) {
-            most = Math.max(most, Math.hypot(p[i], p[i + 1], p[i + 2] - 0.5));
-            spread = Math.max(spread, Math.hypot(p[i], p[i + 1]));
-        }
-        scans.set(mesh, (known = { largest: largest(p), radius: most, spread, proxy: proxy(mesh) }));
-    }
-    return known;
-}
-
-/**
- * Per frame of a model's impostor (8 × 8, FRAMES of hemi.wgsl), the trapezoid of the frame's square
- * (−1 to 1 over the sphere of `radius` about (0, 0, 0.5)) that holds the mesh seen along the frame: its
- * bottom and top, and its half widths there, the least in area.
- */
-export function outlines(mesh: Mesh, radius: number): Float32Array<ArrayBuffer> {
-    const BANDS = 32, p = mesh.position, n = p.length / 3, out = new Float32Array(FRAMES * 4);
-    const xs = new Float64Array(n), ys = new Float64Array(n);
-    for (let frame = 0; frame < FRAMES; frame++) {
-        // hemi_decode and view_axes of hemi.wgsl.
-        const ex = (frame % 8) / 3.5 - 1, ey = Math.floor(frame / 8) / 3.5 - 1, px = (ex + ey) / 2, py = (ex - ey) / 2;
-        const pz = 1 - Math.abs(px) - Math.abs(py), norm = Math.hypot(px, py, pz), d = [px / norm, py / norm, pz / norm];
-        const flat = Math.hypot(d[0], d[1]), right = Math.abs(d[2]) < 0.999 ? [-d[1] / flat, d[0] / flat, 0] : [1, 0, 0];
-        const up = [d[1] * right[2] - d[2] * right[1], d[2] * right[0] - d[0] * right[2], d[0] * right[1] - d[1] * right[0]];
-        let low = Infinity, high = -Infinity;
-        for (let k = 0; k < n; k++) {
-            const x = p[3 * k], y = p[3 * k + 1], z = p[3 * k + 2] - 0.5;
-            xs[k] = Math.abs(x * right[0] + y * right[1] + z * right[2]) / radius;
-            ys[k] = (x * up[0] + y * up[1] + z * up[2]) / radius;
-            low = Math.min(low, ys[k]);
-            high = Math.max(high, ys[k]);
-        }
-        // The widest |x| in each of BANDS bands of height, which the trapezoid holds at both ends of the band.
-        const span = Math.max(high - low, 1e-6), widest = new Float64Array(BANDS).fill(-1);
-        for (let k = 0; k < n; k++) {
-            const band = Math.min(BANDS - 1, Math.floor(((ys[k] - low) / span) * BANDS));
-            widest[band] = Math.max(widest[band], xs[k]);
-        }
-        // The least w0 + w1 where w0 (1 − t) + w1 t ≥ the widest at both ends t of every band: convex in w1.
-        const bottom = (top: number) => {
-            let w = 0;
-            for (let band = 0; band < BANDS; band++) {
-                const x = widest[band];
-                if (x < 0) continue;
-                // At the band's foot; its top binds harder unless it is the trapezoid's top.
-                w = Math.max(w, (x - (top * band) / BANDS) / (1 - band / BANDS));
-                if (band < BANDS - 1) w = Math.max(w, (x - (top * (band + 1)) / BANDS) / (1 - (band + 1) / BANDS));
-            }
-            return w;
-        };
-        // The top band's top needs w1 at least its widest.
-        let a = widest[BANDS - 1], b = Math.max(...widest);
-        for (let step = 0; step < 24; step++) {
-            const m1 = a + (b - a) / 3, m2 = b - (b - a) / 3;
-            if (m1 + bottom(m1) <= m2 + bottom(m2)) b = m2;
-            else a = m1;
-        }
-        out.set([low, high, bottom(b) + 1e-4, b + 1e-4], 4 * frame);
-    }
-    return out;
-}
-
-/** The farthest that a vertex of a model lies from its axis. */
-function spread(spec: ModelSpec): number {
-    return Math.max(0, ...spec.tiers.map(({ mesh }) => scan(mesh).spread));
-}
-
-/**
- * A tree's sink table (slope_sink of emit.wgsl): per slope SINK_STEP × (k + 1), the most that the drop
- * of the ground under a crown vertex, the slope × its reach, exceeds its height above the crown's base;
- * a vertex below the base counts as at it. Over the vertices of every tier but their trunks'.
- */
-export function sinks(spec: ModelSpec): number[] {
-    const out = new Array<number>(SINK_SLOPES).fill(0), crown = spec.crown;
-    if (crown === undefined) return out;
-    for (const { mesh: { position: p, trunk = 0 } } of spec.tiers)
-        for (let i = 3 * trunk; i < p.length; i += 3) {
-            const reach = Math.hypot(p[i], p[i + 1]), above = Math.max(0, p[i + 2] - crown);
-            for (let k = 0; k < SINK_SLOPES; k++) out[k] = Math.max(out[k], SINK_STEP * (k + 1) * reach - above);
-        }
-    return out;
-}
-
-/**
- * The vertices of a mesh as the instance pipeline reads them, 16 bytes each: the position over
- * `extent` as snorm16 × 3 and, for a vertex of the trunk, the trunk's top in model units (else 0); the
- * normal as snorm8 × 3 and whether it rises at dusk; and the colour in sRGB as unorm8 × 3 with 1 − its glow at night.
- */
-function quantize(mesh: Mesh, extent: number): ArrayBuffer {
-    const count = mesh.position.length / 3, out = new ArrayBuffer(count * VERTEX_BYTES);
-    const i16 = new Int16Array(out), i8 = new Int8Array(out), u8 = new Uint8Array(out), trunk = mesh.trunk ?? 0;
-    let top = 0;
-    for (let k = 0; k < trunk; k++) top = Math.max(top, mesh.position[3 * k + 2]);
-    const srgb = (c: number) => Math.round(255 * Math.min(1, Math.max(0, c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055)));
-    for (let k = 0; k < count; k++) {
-        for (let d = 0; d < 3; d++) {
-            i16[8 * k + d] = Math.round(32767 * mesh.position[3 * k + d] / extent);
-            i8[16 * k + 8 + d] = Math.round(127 * (mesh.normal[3 * k + d] ?? 0));
-            u8[16 * k + 12 + d] = srgb(mesh.color[3 * k + d] ?? 1);
-        }
-        i8[16 * k + 11] = Math.round(127 * (mesh.rise?.[k] ?? 0));
-        i16[8 * k + 3] = k < trunk ? Math.max(1, Math.round(32767 * Math.min(1, top))) : 0;
-        u8[16 * k + 15] = 255 - Math.round(255 * (mesh.glow?.[k] ?? 0));
-    }
-    return out;
-}
+const emptyPool = () => ({ at: new WeakMap<Mesh, [number, number, number]>(), vertex: 0, index: 0 });

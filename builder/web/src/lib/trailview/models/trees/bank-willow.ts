@@ -5,10 +5,10 @@ export default {
   name: 'Bank willow',
   latin: 'Salix eleagnos',
   // Many upright rods from one stool, leafy to the ground, taller than wide.
-  fork: 0.1,
-  crown: [0.44, 0.34, 0.32, 0.5],
-  stems: 6,
-  trunk: 0.02,
+  fork: 0.06,
+  crown: [0.5, 0.34, 0.32, 0.5],
+  rods: 18,
+  trunk: 0.022,
   flare: 1.2,
   bark: ['#4e463c', '#72685a'],
   // Narrow leaves, white-felted beneath, grey the crown.

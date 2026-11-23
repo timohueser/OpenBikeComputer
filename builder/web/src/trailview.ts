@@ -4,11 +4,11 @@ import { TrailView } from './lib/trailview/engine';
 import { Gpu } from './lib/trailview/gpu/device';
 import { hud } from './lib/trailview/hud';
 import { preload } from './lib/trailview/plan/bridge';
-import { WORKERS } from './lib/trailview/terrain/model';
 import { scaleOf } from './lib/trailview/resolve/targets';
 import { canRenderStills, credits, still, type StillJob } from './lib/trailview/still';
 import { coverView } from './lib/trailview/still-view';
-import { defaultView, finestOf, formatView, groundPlanOf, parseView, poolOf } from './lib/trailview/view';
+import { BUDGETS } from './lib/trailview/budget';
+import { defaultView, finestOf, formatView, groundPlanOf, parseView, tierOf } from './lib/trailview/view';
 
 /** The address follows the view at most this often. */
 const ADDRESS_MS = 200;
@@ -33,7 +33,7 @@ async function open(plan = false): Promise<{ gpu: Promise<Gpu>; release: Planner
     config.catch(() => {});
     // `start` reports a failed load. The pipelines compile at the attach: a compile from the device on would hold the
     // start of the ground's workers, whose WebGL waits for the same GPU process.
-    if (plan) preload(WORKERS);
+    if (plan) preload(BUDGETS[tierOf(location.search)].planWorkers);
     const gpu = Gpu.request().then(gpu => {
         if (!gpu) throw new Error(NO_WEBGPU);
         return gpu;
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     if (!opened) return;
     const { gpu, release } = opened;
     const view = parseView(location.search, defaultView(release.bounds));
-    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search), { plan, finest: finestOf(location.search), pool: poolOf(location.search) });
+    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search), { plan, finest: finestOf(location.search), tier: tierOf(location.search) });
 
     const address = () => `${location.origin}${location.pathname}${formatView(engine.view, location.search)}`;
     let writing: ReturnType<typeof setTimeout> | undefined;

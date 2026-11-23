@@ -36,7 +36,7 @@
   "cattle": { "model": "highland-cow", "latin": "Bos taurus (Marchigiana)", "groups": 2, "size": [4, 15], "on": ["pasture", "grassland", "arable"] },
   "horse": { "groups": 2, "size": [3, 12], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
   "goat": { "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
-  "pyrenean-chamois": { "model": "goat", "latin": "Rupicapra pyrenaica", "groups": 1, "size": [3, 12], "on": ["bare-rock", "scree", "sparse", "rough-grass", "wet-grassland", "grassland"] }
+  "pyrenean-chamois": { "model": "chamois", "latin": "Rupicapra pyrenaica", "groups": 1, "size": [3, 12], "on": ["bare-rock", "scree", "sparse", "rough-grass", "wet-grassland", "grassland"] }
  },
  "style": { "it-45": "slate-stone-house", "it-52": "slate-stone-house", "*": "stone-house" }
 }
