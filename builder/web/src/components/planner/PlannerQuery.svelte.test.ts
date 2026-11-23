@@ -60,6 +60,24 @@ describe('the planner search',()=>{
         ]);
     });
 
+    it('shows the slots only while the rider searches: from the focus of the field, with a value, and not after the cross', async () => {
+        vi.stubGlobal('fetch', server());
+        const { target, input, enter, slot, words } = await setup();
+        /** Tab takes the focus out of the bar. */
+        const leave = async () => { input.blur(); document.body.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', bubbles: true })); await tick(); };
+        expect(slot('find')).toBeNull();
+        input.focus(); await tick();
+        expect(words('find')).toBe('Choose');
+        await leave();
+        expect(slot('find')).toBeNull();
+        input.focus(); await tick();
+        await enter('supermarket');
+        await leave();
+        expect(words('find')).toBe('Supermarket');
+        target.querySelector<HTMLButtonElement>('[aria-label="Clear the search"]')!.click(); await tick();
+        expect(slot('find')).toBeNull();
+    });
+
     it('reads a sentence of only search areas and times from the word list, with no model', async () => {
         const fetch = server();
         vi.stubGlobal('fetch', fetch);
@@ -186,7 +204,7 @@ describe('the planner search',()=>{
         const view = fromStore(writable(context)), revision = fromStore(writable(0));
         let state: SearchState = { loading: false, error: '', answer: null };
         const onLocation = vi.fn(async () => { view.current = { ...context, here: [7.85, 48] }; revision.current++; return undefined; });
-        const { target, enter, words } = await setup({ get context() { return view.current; }, get revision() { return revision.current; }, onLocation,
+        const { target, enter, slot, words } = await setup({ get context() { return view.current; }, get revision() { return revision.current; }, onLocation,
             get searchState() { return state; }, set searchState(next: SearchState) { state = next; } });
         await enter('supermarket');
         await enter('route from my location to Konstanz'); await vi.advanceTimersByTimeAsync(250); await tick();
@@ -198,7 +216,7 @@ describe('the planner search',()=>{
         expect(target.querySelector('[role="listbox"]')).toBeNull();
         // The cross takes the change away, and "Undo" asks for it again.
         target.querySelector<HTMLButtonElement>('[aria-label="Clear the search"]')!.click(); await tick();
-        expect([state.answer, words('find')]).toEqual([null, 'Choose']);
+        expect([state.answer, slot('find')]).toEqual([null, null]);
         target.querySelector<HTMLButtonElement>('.undo')!.click(); await vi.advanceTimersByTimeAsync(0); await tick();
         expect(sent(fetch).at(-1)).toMatchObject({ request: route });
         expect([state.answer?.type, words('find')]).toEqual(['change', 'Supermarket']);
@@ -232,7 +250,7 @@ describe('the planner search',()=>{
         const pending: ((response:Response)=>void)[]=[];
         const fetch=vi.fn(()=>new Promise<Response>(resolve=>pending.push(resolve)));
         vi.stubGlobal('fetch',fetch);
-        const {target,enter,words}=await setup();
+        const {target,enter,slot,words}=await setup();
         await enter('first sentence');await enter('second sentence');
         pending[1](reply({type:'places',what:['hotel']}));await vi.advanceTimersByTimeAsync(0);await tick();
         pending[0](reply({type:'places',what:['campsite']}));await vi.advanceTimersByTimeAsync(0);await tick();
@@ -240,7 +258,8 @@ describe('the planner search',()=>{
         await enter('third sentence');
         target.querySelector<HTMLButtonElement>('[aria-label="Clear the search"]')!.click();await tick();
         pending[2](reply({type:'places',what:['campsite']}));await vi.advanceTimersByTimeAsync(0);await tick();
-        expect(words('find')).toBe('Choose');
+        // A slot with a value shows.
+        expect(slot('find')).toBeNull();
     });
 
     it('asks for the position of the rider once and searches again when the context has it',async()=>{

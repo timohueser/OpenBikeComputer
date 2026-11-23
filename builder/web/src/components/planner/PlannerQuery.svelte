@@ -17,10 +17,12 @@
     import WherePanel from './WherePanel.svelte';
     import WhenPanel from './WhenPanel.svelte';
 
-    let { searchState = $bindable({ loading: false, error: '', answer: null }), slots = $bindable({}), context, selection, revision = 0, viewRevision = 0, onSearch, onClear, onLocation }: {
+    let { searchState = $bindable({ loading: false, error: '', answer: null }), slots = $bindable({}), context, selection, searching = false, revision = 0, viewRevision = 0, onSearch, onClear, onLocation }: {
         searchState?: SearchState; slots?: Slots; context: SearchContext;
         /** The point that the map selects, which "Where" can search near. */
         selection?: Where;
+        /** The page shows the answer of the search: the slots stay. */
+        searching?: boolean;
         revision?: number; viewRevision?: number; onSearch: () => void; onClear: () => void; onLocation: () => Promise<'denied' | 'unavailable' | undefined>;
     } = $props();
 
@@ -206,7 +208,7 @@
 </script>
 
 <div class="planner-query">
-    <SearchBar label="Search the route" slots={bar} {field} bind:open bind:text={typed} empty={!slots.find && !slots.act && !slots.where && !slots.radius && !slots.open && !planned}
+    <SearchBar label="Search the route" slots={bar} {field} folds={!searching} bind:open bind:text={typed} empty={!slots.find && !slots.act && !slots.where && !slots.radius && !slots.open && !planned}
         onreset={id => set(resetSlot(slots, id as SlotId))} onclear={clear} onundo={undo}>
         {#snippet panel(id)}
             {#if id === 'find'}
