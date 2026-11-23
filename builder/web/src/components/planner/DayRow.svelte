@@ -1,5 +1,4 @@
 <script lang="ts">
-    import type { Snippet } from 'svelte';
     import type { Attachment } from 'svelte/attachments';
     import Icon from '../../lib/ui/Icon.svelte';
     import RouteStats from './RouteStats.svelte';
@@ -12,16 +11,14 @@
     import { settings } from '../../lib/settings/settings.svelte';
 
     let {
-        trip, line, day, days, theme, choosing, conflict, selectedId, revealId, hoveredId = null, onHover,
-        onInspect, onShowEnd, onChange, onShowConflict, picker, suggested = {},
+        trip, line, day, days, theme, conflict, selectedId, revealId, hoveredId = null, onHover,
+        onInspect, onShowEnd, onChange, onShowConflict, suggested = {},
     }: {
         trip: Trip;
         line?: RoutingLine;
         day: Day;
         days: Day[];
         theme: 'light' | 'dark';
-        /** The towns to sleep in show for this day. */
-        choosing: boolean;
         /** The day whose overnight this day ends before. */
         conflict: number | null;
         selectedId: string | null;
@@ -31,10 +28,9 @@
         revealId: string | null;
         onInspect: (point: RoutePoint) => void;
         onShowEnd: () => void;
-        /** Opens the towns again for a pinned night. */
+        /** Chooses where the day ends. */
         onChange: () => void;
         onShowConflict: () => void;
-        picker?: Snippet;
         /** The suggested night of each day by number, such as "Around Engen", where no night is pinned. */
         suggested?: Record<number, string>;
     } = $props();
@@ -86,19 +82,11 @@
                 <Icon name={last ? 'flag' : sleepIcon(day.pinned?.placeKind)} size={15} /><span>{end}</span><small>{last ? 'Finish' : 'Pinned'}</small>
             </button>
         {/if}
-        {#if stops.length && !last && !day.pinned}
-            <button type="button" class="stop end" onclick={onShowEnd}><Icon name="camp" size={15} /><span>Suggested day end<small>Choose an overnight below</small></span><small>{distanceIn(day.distance * 1000).toFixed(1)} {settings.units}</small></button>
+        {#if !last && !day.pinned}
+            <button type="button" class="stop end" onclick={onChange}><Icon name="camp" size={15} /><span>Suggested day end<small>Choose where to sleep</small></span><small>{distanceIn(day.distance * 1000).toFixed(1)} {settings.units}</small></button>
         {/if}
         {#if !stops.length}<p class="help">Click the map to add a stop.</p>{/if}
-        {#if choosing && !last}
-            <div class="choose">
-                <div class="choose-head">
-                    <h3>Where to sleep</h3>
-                    <button type="button" class="planner-action" onclick={onShowEnd}>Show area</button>
-                </div>
-                {@render picker?.()}
-            </div>
-        {:else if day.pinned && !last}
+        {#if day.pinned && !last}
             <button type="button" class="planner-action change" onclick={onChange}>Change overnight</button>
         {/if}
     </div>
@@ -208,18 +196,6 @@
     }
     .end {
         font-weight: 600;
-    }
-    .choose {
-        margin-top: 16px;
-        padding-top: 12px;
-        border-top: 1px solid var(--line);
-    }
-    .choose-head {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        gap: 8px;
-        margin-bottom: 6px;
     }
     .change {
         margin-top: 4px;

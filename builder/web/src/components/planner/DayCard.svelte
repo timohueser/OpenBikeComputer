@@ -11,14 +11,16 @@
     import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
-    let { trip, day, from, to, last, theme, ascentKnown, nights, conflict, profile, onOpen, onShowEnd, onShowConflict }: {
+    let { trip, day, from, to, foot, flash = false, theme, ascentKnown, nights, conflict, profile, onOpen, onShowEnd, onShowConflict }: {
         trip: Trip;
         day: Day;
         /** Where the day starts and ends: a town, or the start or the finish of the trip. */
         from: string;
         to: string;
-        /** The day ends at the finish and has no night. */
-        last: boolean;
+        /** The card shows the night that ends the day. The last day has none, and an open night stands under its card. */
+        foot: boolean;
+        /** The night lights up for a moment after the rider set it. */
+        flash?: boolean;
         theme: 'light' | 'dark';
         ascentKnown: boolean;
         nights: NightChoices;
@@ -66,8 +68,8 @@
     {#if conflict !== null}
         <p class="warn"><Icon name="warning" size={15} />Ends before day {conflict}'s overnight · <button type="button" class="planner-action" onclick={onShowConflict}>Show</button></p>
     {/if}
-    {#if !last}
-        <div class="night" class:set={!!pinned}>
+    {#if foot}
+        <div class="night" class:set={!!pinned} class:flash>
             <span class="mark" aria-hidden="true"><Icon name={pinned ? sleepIcon(pinned.placeKind) : 'moon'} size={14} /></span>
             {#if pinned}
                 <button type="button" class="text" onclick={onShowEnd}>
@@ -247,6 +249,17 @@
         font-weight: 600;
     }
     .change:hover { color: var(--ink); }
+    .flash { animation: flash 1.2s ease-out; }
+    @keyframes flash {
+        from { background: color-mix(in srgb, var(--amber) 40%, transparent); }
+        to { background: transparent; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .flash {
+            animation: none;
+            background: color-mix(in srgb, var(--amber) 40%, transparent);
+        }
+    }
     .sr-only {
         position: absolute;
         width: 1px;

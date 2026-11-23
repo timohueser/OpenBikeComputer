@@ -2,13 +2,11 @@ import { allStay, overnightWindow, planView, provisionalDays, type Day, type Pla
 import { movingSecondsAt, type RoutingLine } from './routing';
 import { asPlace, stayKind } from './search/presentation';
 import type { SearchPlace } from './search/types';
-import { distanceIn } from '../settings/format';
-import { settings } from '../settings/settings.svelte';
 
 /** A place of a stop with its position along the route and its straight-line distance off it, in km. */
 export interface StopPlace { place: Place; km: number; off: number }
 
-/** A town along the route where the rider can sleep: its places to sleep, and food and shops around them. */
+/** A town along the route where the rider can sleep, with its places to sleep. */
 export interface Stop {
     id: string;
     name: string;
@@ -17,25 +15,20 @@ export interface Stop {
     from: number;
     to: number;
     sleep: StopPlace[];
-    food: StopPlace[];
-    shop: StopPlace[];
 }
 
 /** Places to sleep further apart along the route than this belong to different stops, unless they are in the same
  * town and no further apart than `townGap`. A stop of places in different towns spans at most `townGap`, so a valley of
  * villages does not chain into one stop. */
 const stopGap = 2.5, townGap = 6;
-/** Food and shops count for a stop within this distance of its places, along and off the route. */
-const serviceReach = 1.5;
 
 const stopPlace = (result: SearchPlace): StopPlace | null => result.position
     ? { place: asPlace(result), km: result.position.along, off: result.position.distance } : null;
 
-/** Groups places to sleep into stops by their gaps along the route, and gives each stop the services around it. A stop
- * takes the name of the town most of its places are in. */
-export function groupStops(sleep: SearchPlace[], services: SearchPlace[]): Stop[] {
+/** Groups places to sleep into stops by their gaps along the route. A stop takes the name of the town most of its places
+ * are in. */
+export function groupStops(sleep: SearchPlace[]): Stop[] {
     const places = sleep.map(stopPlace).filter((p): p is StopPlace => !!p).sort((a, b) => a.km - b.km);
-    const nearby = services.map(stopPlace).filter((p): p is StopPlace => !!p && p.off <= serviceReach);
     const groups: StopPlace[][] = [];
     for (const place of places) {
         const group = groups.at(-1);
@@ -43,16 +36,10 @@ export function groupStops(sleep: SearchPlace[], services: SearchPlace[]): Stop[
         if ((gap <= stopGap && place.km - group![0].km <= townGap) || (gap <= townGap && !!place.place.locality && group!.some(p => p.place.locality === place.place.locality))) group!.push(place);
         else groups.push([place]);
     }
-    return groups.map(group => {
-        const from = group[0].km, to = group.at(-1)!.km;
-        const around = nearby.filter(p => p.km >= from - serviceReach && p.km <= to + serviceReach).sort((a, b) => a.off - b.off);
-        return {
-            id: group[0].place.id, name: townName(group), km: group[Math.floor(group.length / 2)].km, from, to,
-            sleep: [...group].sort((a, b) => a.off - b.off),
-            food: around.filter(p => p.place.category === 'food'),
-            shop: around.filter(p => p.place.category === 'shop'),
-        };
-    });
+    return groups.map(group => ({
+        id: group[0].place.id, name: townName(group), km: group[Math.floor(group.length / 2)].km, from: group[0].km, to: group.at(-1)!.km,
+        sleep: [...group].sort((a, b) => a.off - b.off),
+    }));
 }
 
 /** The singular noun of each kind of place to sleep. */
@@ -73,12 +60,6 @@ export function stopCounts(stop: Stop, kinds: Stay[], short = false): string {
         return n ? [`${n} ${stayNouns[kind]}${n === 1 ? '' : 's'}`] : [];
     });
     return short && counts.length > 2 ? `${places.length} places to sleep` : counts.join(' · ');
-}
-
-/** Where the places of `kinds` of a stop are along the route, in the units of the rider: "km 42–46". */
-export function stopKm(stop: Stop, kinds: Stay[]): string {
-    const at = suitable(stop, kinds).map(p => Math.round(distanceIn(p.km * 1000))), from = Math.min(...at), to = Math.max(...at);
-    return `${settings.units} ${from}${to !== from ? `–${to}` : ''}`;
 }
 
 function townName(group: StopPlace[]): string {

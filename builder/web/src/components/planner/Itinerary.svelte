@@ -1,19 +1,21 @@
 <script lang="ts">
     import { tick, untrack } from 'svelte';
+    import { fade } from 'svelte/transition';
     import Icon from '../../lib/ui/Icon.svelte';
     import DayCard from './DayCard.svelte';
     import DayRow from './DayRow.svelte';
-    import StopPicker from './StopPicker.svelte';
+    import NightSeam from './NightSeam.svelte';
     import { orderedRoutePoints, type Day, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
     import { heightRange, profilePaths, profileSamples, sampleSlice } from '../../lib/planner/profile-data';
-    import { proposalTitle } from '../../lib/planner/stops';
+    import { daysAround, proposalTitle } from '../../lib/planner/stops';
     import type { RoutingLine } from '../../lib/planner/routing';
     import { step } from '../../lib/planner/week';
     import { formatDistance, formatHeight } from '../../lib/settings/format';
+    import { still } from '../../lib/ui/search-bar/motion';
 
     let {
-        trip, line, days, theme, expandedDay, nightPage, nights, conflicts, selectedId, revealId, hoveredId = null, onHover,
+        trip, line, days, theme, expandedDay, nights, conflicts, selectedId, revealId, hoveredId = null, onHover,
         onToggle, onOverview, onInspect, onShowEnd, onShowConflict, week = null, onWeek,
     }: {
         trip: Trip;
@@ -23,14 +25,12 @@
         theme: 'light' | 'dark';
         /** Number of the open day. */
         expandedDay: number | null;
-        /** Number of the night whose page replaces the day list. */
-        nightPage: number | null;
         nights: NightChoices;
         conflicts: [RoutePoint, RoutePoint][];
         selectedId: string | null;
         hoveredId?: string | null;
         onHover?: (id: string | null) => void;
-        /** The point whose row lights up for a moment. */
+        /** The point whose row lights up for a moment; `night-2` lights night 2. */
         revealId: string | null;
         onToggle: (day: number) => void;
         onOverview: () => void;
@@ -44,14 +44,22 @@
     } = $props();
 
     let root = $state<HTMLDivElement>();
-    let page = $state<HTMLDivElement>();
+    let back = $state<HTMLButtonElement>();
     let dayPicker = $state<HTMLSelectElement>();
     const focused = $derived(days.find(day => day.number === expandedDay));
     const weekDays = $derived(week ? days.slice(week.start - 1, week.end) : days);
-    const visible = $derived(focused ? [focused] : weekDays);
+    // The night whose seam is open between the cards of its two days; the list then shows only these.
+    const chosen = $derived(focused ? null : nights.choosing);
+    const visible = $derived(chosen !== null ? days.slice(chosen - 1, chosen + 1) : weekDays);
+    // Where the day ends in view on the seam; the two cards show the days with that end.
+    let end = $state<{ km: number; town: string } | null>(null);
+    const around = $derived(chosen !== null && end ? daysAround(trip, line, chosen, end.km) : null);
+    const shown = (day: Day) => around?.[day.number - chosen!] ?? day;
     const ends = $derived(orderedRoutePoints(trip));
-    /** The town of each night by the number of its day: of the place that the rider set, else of the suggestion. */
-    const nightTowns = $derived(days.map(day => day.pinned ? day.pinned.locality ?? day.pinned.label : nights.around(day.number)?.stop.name));
+    /** The town of each night by the number of its day: of the day end in view, of the place that the rider set, else of
+     * the suggestion. */
+    const nightTowns = $derived(days.map(day => around && day.number === chosen ? end!.town
+        : day.pinned ? day.pinned.locality ?? day.pinned.label : nights.around(day.number)?.stop.name));
     const fromOf = (day: Day) => day.number === 1 ? ends[0]?.label ?? '' : nightTowns[day.number - 2] ?? `Night ${day.number - 1}`;
     const toOf = (day: Day) => day.number === days.length ? (trip.loop ? ends[0] : ends.at(-1))?.label ?? '' : nightTowns[day.number - 1] ?? `Night ${day.number}`;
     const samples = $derived(profileSamples(line));
@@ -73,24 +81,63 @@
         });
     });
 
-    // The day list keeps its scroll position under a night page; a page opened from an open day returns to the top of the
-    // list, as leaving the day does. The page and its towns open at the top. A closed page gives the focus back to the
-    // button that opens it.
-    let shownPage: number | null = null, shownDay: number | null = null, listTop = 0, scroller: Element | null = null;
-    const pane = () => scroller ??= [root, page].find(node => node?.isConnected)?.closest('.pane-scroll') ?? null;
+    // The list takes its new layout at once when a night or a stop opens or closes, and moves only by transform and
+    // opacity, which stay smooth while the map moves. The parts with `data-glide` that stay glide from where they stood
+    // to their new places; a part that leaves fades where it stood. `hold` takes the places before the change. The panel
+    // above the list changes with the night, so the page calls `hold` before any of it moves; the first call counts.
+    let stood = new Map<Element, number>();
+    const glides = new WeakMap<Element, Animation>();
+    const parts = () => [...root?.querySelectorAll<HTMLElement>('[data-glide]') ?? []];
+    export function hold() {
+        if (stood.size) return;
+        stood = new Map(parts().map(part => [part, part.getBoundingClientRect().top]));
+        // After the list has its new layout, scroll position and focus, and before it shows.
+        requestAnimationFrame(glide);
+    }
+    // A stop that opens or closes, and the stops that arrive, move the parts under them.
     $effect.pre(() => {
-        const next = nightPage, day = expandedDay, town = next !== null && nights.stopId !== null;
+        void [nights.stopId, chosen !== null && nights.found(chosen)?.state];
+        untrack(hold);
+    });
+    function glide() {
+        const from = stood, top = root?.getBoundingClientRect().top ?? 0;
+        stood = new Map();
+        if (!from.size || still()) return;
+        // A part that leaves is inert. Out of the flow, it lets the parts that stay close its gap.
+        for (const part of parts()) {
+            const was = from.get(part);
+            Object.assign(part.style, part.inert && was !== undefined ? { position: 'absolute', top: `${was - top}px`, width: `${part.offsetWidth}px` } : { position: '', top: '', width: '' });
+        }
+        for (const part of parts()) {
+            glides.get(part)?.cancel();
+            const was = from.get(part), by = part.inert || was === undefined ? 0 : was - part.getBoundingClientRect().top;
+            // A part that glides passes over the others.
+            part.style.zIndex = by ? '4' : '';
+            if (!by) continue;
+            const move = part.animate([{ transform: `translateY(${by}px)` }, { transform: 'none' }], { duration: 240, easing: 'cubic-bezier(.23, 1, .32, 1)' });
+            move.onfinish = () => part.style.zIndex = '';
+            glides.set(part, move);
+        }
+    }
+    const ms = (duration: number) => still() ? 0 : duration;
+
+    // The day list keeps its scroll position under an open night; a night opened from an open day returns to the top of
+    // the list, as leaving the day does. The night opens at the top. A closed night gives the focus back to the button
+    // that opens it.
+    let wasNight: number | null = null, wasDay: number | null = null, listTop = 0;
+    $effect.pre(() => {
+        const next = nights.choosing, day = expandedDay;
         untrack(() => {
-            const was = shownPage, fromDay = shownDay !== null;
-            shownPage = next;
-            shownDay = day;
-            if (was === next && !town) return;
-            if (was === null) listTop = fromDay ? 0 : pane()?.scrollTop ?? 0;
+            const was = wasNight, fromDay = wasDay !== null;
+            wasNight = next;
+            wasDay = day;
+            if (was === next) return;
+            const scroll = root?.closest('.pane-scroll');
+            if (was === null) listTop = fromDay ? 0 : scroll?.scrollTop ?? 0;
             tick().then(() => {
-                const scroll = pane();
                 if (next !== null) {
                     if (scroll) scroll.scrollTop = 0;
-                    if (was !== next) page?.querySelector<HTMLElement>('.overview')?.focus({ preventScroll: true });
+                    back?.focus({ preventScroll: true });
                 } else if (!focused) {
                     if (scroll) scroll.scrollTop = listTop;
                     root?.querySelector<HTMLElement>(`[data-night="${was}"]`)?.focus();
@@ -117,7 +164,7 @@
     }
 </script>
 
-{#if week && nightPage === null}
+{#if week && chosen === null}
     <nav class="week" aria-label="Week">
         <button type="button" class="icon" aria-label="7 days back" disabled={week.start === 1} onclick={() => onWeek?.(step(days.length, week.start, -7))}><Icon path="m15 5-7 7 7 7" size={16} /></button>
         <strong>Days {week.start}–{week.end}</strong>
@@ -136,62 +183,44 @@
             <button type="button" class="icon" aria-label="Next riding day" disabled={focused.number === days.length} onclick={() => onToggle(focused.number + 1)}><Icon name="arrow" size={16} /></button>
         </div>
     </nav>
-{/if}
-{#snippet towns(night: number, cancel = false, back?: string)}
-    {@const window = nights.window(night)}
-    {#if line && window}
-        <StopPicker {trip} {line} {night} {back} {theme} found={nights.found(night)} {window} stopId={nights.stopId} shownId={nights.shownId}
-            onOpen={id => nights.open(id)} onEndHere={stop => nights.endHere(night, stop)}
-            onStay={place => nights.stay(night, place)} onSelectPlace={place => nights.selectPlace(place)} onPick={() => nights.pick()} onRetry={() => nights.retry(night)}
-            onCancel={cancel ? () => nights.choose(null) : undefined} kinds={nights.kinds(night)} onKinds={kinds => nights.setKinds(night, kinds)}
-            onRelease={days[night - 1].pinned || days[night - 1].split ? () => nights.release(night) : undefined} />
-    {:else}
-        <p class="hint">The towns to sleep in appear when the route is ready.</p>
-    {/if}
-{/snippet}
-
-{#if nightPage !== null}
-    <div class="night-page" bind:this={page}>
-        {#if nights.stopId === null}
-            <nav class="day-nav" aria-label="Night navigation">
-                <button type="button" class="overview" onclick={() => nights.choose(null)}><Icon name="back" size={16} />All days</button>
-            </nav>
-            <header>
-                <h2>Night {nightPage}</h2>
-                <p>Where day {nightPage} ends and day {nightPage + 1} starts</p>
-            </header>
-        {/if}
-        <div class="towns">{@render towns(nightPage, false, `Night ${nightPage}`)}</div>
-    </div>
-{:else}
-{#if !focused && nights.campsites}
+{:else if chosen !== null}
+    <nav class="day-nav" aria-label="Night navigation">
+        <button type="button" class="overview" bind:this={back} onclick={() => nights.choose(null)}><Icon name="back" size={16} />All days</button>
+    </nav>
+{:else if nights.campsites}
     <div class="keep">
         <p id="keep-campsites"><strong>{nights.campsites} {nights.campsites === 1 ? 'campsite' : 'campsites'} suggested</strong></p>
         <button type="button" class="keep-all" aria-describedby="keep-campsites" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
     </div>
 {/if}
 <div class="itinerary" class:cards={!focused} bind:this={root}>
-    {#key expandedDay}
-    {#each visible as day (day.number)}
-        {@const conflict = conflictOf(day.number)}
-        {#if focused}
+    {#if focused}
+        {#key focused.number}
+            {@const conflict = conflictOf(focused.number)}
             <DayRow
-                {trip} {line} {day} {days} {theme} {selectedId} {revealId} {hoveredId} {onHover} {suggested}
-                choosing={nights.choosing === day.number}
+                {trip} {line} day={focused} {days} {theme} {selectedId} {revealId} {hoveredId} {onHover} {suggested}
                 conflict={conflict ? conflict[0].night! : null}
-                {onInspect} onChange={() => nights.choose(day.number)}
-                onShowEnd={() => onShowEnd(day)}
+                {onInspect} onChange={() => nights.choose(focused.number)}
+                onShowEnd={() => onShowEnd(focused)}
                 onShowConflict={() => conflict && onShowConflict(conflict)}
-            >{#snippet picker()}{@render towns(day.number, !!day.pinned)}{/snippet}</DayRow>
-        {:else}
-            <DayCard {trip} {day} from={fromOf(day)} to={toOf(day)} last={day.number === days.length} {theme} ascentKnown={line?.unknownElevationKm === 0} {nights}
-                conflict={conflict ? conflict[0].night! : null} profile={profileOf(day)}
-                onOpen={() => openDay(day.number)} onShowEnd={() => onShowEnd(day)} onShowConflict={() => conflict && onShowConflict(conflict)} />
-        {/if}
-    {/each}
-    {/key}
+            />
+        {/key}
+    {:else}
+        {#each visible as day (day.number)}
+            {@const conflict = conflictOf(day.number)}
+            <div class="slot" data-glide in:fade={{ duration: ms(160) }} out:fade={{ duration: ms(120) }}>
+                <DayCard {trip} day={shown(day)} from={fromOf(day)} to={toOf(day)} foot={chosen === null && day.number !== days.length} flash={revealId === `night-${day.number}`}
+                    {theme} ascentKnown={line?.unknownElevationKm === 0} {nights} conflict={conflict ? conflict[0].night! : null} profile={profileOf(shown(day))}
+                    onOpen={() => openDay(day.number)} onShowEnd={() => onShowEnd(day)} onShowConflict={() => conflict && onShowConflict(conflict)} />
+            </div>
+            {#if day.number === chosen}
+                <div class="seam" data-glide in:fade={{ duration: ms(180) }} out:fade={{ duration: ms(120) }}>
+                    <NightSeam {trip} {line} {day} {theme} {nights} onEnd={value => end = value} />
+                </div>
+            {/if}
+        {/each}
+    {/if}
 </div>
-{/if}
 
 <style>
     .day-nav {
@@ -228,11 +257,6 @@
     .overview:hover { background: var(--parchment-2); }
     .day-picker { gap: 2px; }
     select { height: 34px; padding: 0 4px; border: 0; border-radius: 6px; color: var(--ink); background: var(--panel); font: 600 14px var(--sans); }
-    .hint { margin: 4px 8px 8px; font-size: 13px; color: var(--ink-soft); }
-    .night-page header { padding: 12px 16px 8px; }
-    .night-page h2 { margin: 0; font: 600 17px/1.3 var(--sans); }
-    .night-page header p { margin: 2px 0 0; font-size: 13px; color: var(--ink-soft); }
-    .towns { padding: 4px 16px 16px; }
     .keep { display: flex; align-items: center; gap: 12px; margin: 4px 12px 8px; padding: 10px 12px; border-radius: 8px; background: var(--parchment-2); }
     .keep p { flex: 1; min-width: 0; margin: 0; }
     .keep strong { font: 600 14px/1.3 var(--sans); }
@@ -240,12 +264,16 @@
     .keep-all:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
     .itinerary {
+        position: relative;
         display: flex;
         flex-direction: column;
         gap: 4px;
         padding: 4px 8px 16px;
     }
     .cards { gap: 8px; padding: 4px 12px 16px; }
+    /* A card glides over a card that leaves and over the seam. */
+    .slot { position: relative; z-index: 1; }
+    .slot:global([inert]) { z-index: 0; }
     button {
         border: 0;
         background: none;
