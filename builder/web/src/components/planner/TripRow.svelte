@@ -54,9 +54,10 @@
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     {#if icon === 'loop'}
                         <path d="M5 19c-3-6 1-14 8-14s9 8 4 12-9 2-12 2Z" /><circle cx="5" cy="19" r="1.7" fill="currentColor" />
+                    {:else if icon === 'back'}
+                        <path d="M4 8.5h15m-4-4 4 4-4 4M20 15.5H5m4-4-4 4 4 4" />
                     {:else}
-                        <path d="M5 19c3-3 3-8 7-9s5-3 7-5" /><circle cx="5" cy="19" r="1.7" fill="currentColor" />
-                        {#if icon === 'back'}<circle cx="19" cy="5" r="1.7" />{:else}<path d="M14.5 4.5H19.5V9.5" />{/if}
+                        <circle cx="4.5" cy="12" r="1.7" fill="currentColor" /><path d="M9 12h11m-4.5-4.5L20 12l-4.5 4.5" />
                     {/if}
                 </svg>{#if chosen}{label}{/if}
             </button>
