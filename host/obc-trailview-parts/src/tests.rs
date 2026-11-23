@@ -911,21 +911,21 @@ fn a_line_with_holes_is_closed_and_has_no_t_vertex() {
 }
 
 #[test]
-fn a_tube_of_one_lane_draws_as_before_lanes() {
-    // The counts of vertices and indices and an FNV-1a digest of all words of the meshes of the one-lane fixtures, as
-    // the builder drew them before rooms had lanes.
+fn a_tube_of_one_lane_draws_its_known_mesh() {
+    // The counts of vertices and indices and an FNV-1a digest of all words of the meshes of the one-lane fixtures: a
+    // change to a room of lanes does not change them.
     let rules = Rules::embedded();
     let (ends, mut rock) = bent(30.0, 20.0);
     rock.iter_mut().for_each(|c| c.lanes[0].class = "footway".into());
     for (name, (ends, chords), want) in [
-        ("tube", tube(), (1692, 2760, 0x76ca59c6c0417d99)),
-        ("bent", bent(30.0, 20.0), (1796, 2922, 0x32770b2e08b39be2)),
-        ("rock", (ends, rock), (1596, 2604, 0x7985ddc9a6419370)),
+        ("tube", tube(), (1688, 2760, 0xebd718d64727151d)),
+        ("bent", bent(30.0, 20.0), (1792, 2922, 0xb0f10b8c2f2687f5)),
+        ("rock", (ends, rock), (1592, 2604, 0x84ad2ef78d123c9f)),
         ("underpass", underpass(tube(), "primary"), (804, 1308, 0x605ceef7d1cd5375)),
         ("path underpass", underpass(bent(30.0, 20.0), "footway"), (676, 1116, 0x8b983f3aff05a770)),
         ("one chord", one_chord(), (532, 876, 0xe9940653d7761b90)),
         ("short", short(), (1326, 2136, 0xdc35cfb127bf2d81)),
-        ("graded", graded(60.0, 0.15), (1556, 2538, 0x775cdd3aa508c8eb)),
+        ("graded", graded(60.0, 0.15), (1552, 2538, 0x7d578a04ddf76557)),
     ] {
         let m = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);
         let mut h: u64 = 0xcbf29ce484222325;
@@ -1099,6 +1099,38 @@ fn from_each_lane_a_way_up_meets_the_vault_and_a_way_across_the_far_wall() {
                     assert!(got.is_some_and(|h| h.1 && h.0 > l), "{name}, chord {c}, lane {i}: across {got:?}");
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn the_face_that_closes_a_shell_lies_outside_its_room() {
+    // A room of two lanes 80 m east, the left lane up: the part of each end ends 20 m in, where a face closes its shell.
+    let road = |off: fn(f64) -> f64, up: fn(f64) -> f64| Way { class: "primary", road: 3.5, half: 4.2, off, up };
+    let line: Vec<[f64; 2]> = (0..=8).map(|i| [10.0 * f64::from(i), 0.0]).collect();
+    let (ends, chords) = room(&[road(|_| -4.5, |_| 0.0), road(|_| 4.5, |_| 0.8)], &line, 0.0);
+    let rules = Rules::embedded();
+    let net = Net::new(&ends, &chords, rules);
+    let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], &ends, &chords, rules);
+    // The room's floor and outline across, the same at each vertex, over the floor at 500 m, with a centimetre clear.
+    let (pieces, outline, half) = (tube::floor_pieces(&net, 1, 0), tube::outline_of(&net, 1), chords[1].half);
+    let inside = |[east, north, z]: [f64; 3]| {
+        let floor = pieces.iter().filter(|p| north >= p.0 && north <= p.1).map(|p| p.2).fold(f64::NAN, f64::max);
+        let top = tube::top_at(&outline, north).unwrap_or(f64::NAN);
+        east > 0.01 && east < 79.99 && north.abs() < half - 0.01 && z - 500.0 > floor + 0.01 && z - 500.0 < top - 0.01
+    };
+    let point = |i: u32| {
+        let w = &mesh.vertices[i as usize * WORDS..];
+        let p = metric([w[0] as i32 as f64, w[1] as i32 as f64]);
+        [p[0], p[1], f64::from(f32::from_bits(w[2]))]
+    };
+    let room_face =
+        |i: u32| (mesh.vertices[i as usize * WORDS + 3] >> 24) & (mesh::BORE | mesh::VOID | mesh::LAMP) != 0;
+    for t in mesh.indices.chunks(3).filter(|t| !room_face(t[0])) {
+        let [a, b, c] = [t[0], t[1], t[2]].map(point);
+        for (u, v) in (1..10).flat_map(|i| (1..10 - i).map(move |j| (f64::from(i) / 10.0, f64::from(j) / 10.0))) {
+            let p: [f64; 3] = std::array::from_fn(|k| a[k] + u * (b[k] - a[k]) + v * (c[k] - a[k]));
+            assert!(!inside(p), "a face of the part lies in the room at {p:?}: {a:?} {b:?} {c:?}");
         }
     }
 }

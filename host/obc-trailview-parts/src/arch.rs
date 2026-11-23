@@ -293,9 +293,9 @@ fn closed<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize, foot:
 }
 
 /// The face that closes the shell at station `t` at vertex k of chord c: from the outside of the shell, down to `foot`,
-/// to the inside of the chord there and under its floor; facing `out`. Two strips from the shell's right foot and the
-/// inside's right floor corner: one up the right and over the top to the left spring, one across the foot and the
-/// floor and up the left to the left spring.
+/// to the inside of the chord there and under its floor; facing `out`. One ring cut into ears: the shell from its right
+/// foot over the top to its left foot and along the foot back, then the room's outline the other way round from its
+/// right foot. The room is the ring's hole, so no face lies in it, whatever the shape of its floor.
 fn end_face<L: Fn([f64; 3]) -> f64>(
     b: &mut Builder<L>,
     net: &Net,
@@ -308,23 +308,13 @@ fn end_face<L: Fn([f64; 3]) -> f64>(
     let chord = &net.chords[c];
     let (section, segments) = (chord.section, tube::segments(net, chord));
     let shell = tube::shell_outline(net, (section, segments), chord.half, chord.height[k], foot - t.z);
-    let n = shell.len();
     let (right, left) = room(net, (c, k), t);
-    let bottom = [shell[0], shell[n - 1], shell[n - 2]];
-    // At a seam the floor has a corner at each hole's side and step: the two halves are cut into ears, as the seam face
-    // is, so no corner lies on an edge of a strip.
-    if net.seam_at(c, k).is_some() {
-        for (outer, inner) in [(&shell[..n - 1], &right), (&bottom[..], &left)] {
-            let poly: Vec<Corner> = outer.iter().chain(inner.iter().rev()).copied().collect();
-            for tri in b.ear_clip(&poly) {
-                let v = tri.map(|i| b.at(t, poly[i], colour));
-                b.triangle(v[0], v[1], v[2], out);
-            }
-        }
-        return;
+    let ring: Vec<Corner> =
+        shell.iter().chain(&shell[..1]).chain(&left).chain(right.iter().rev().skip(1)).copied().collect();
+    let v: Vec<u32> = ring.iter().map(|&q| b.at(t, q, colour)).collect();
+    for [i, j, l] in b.ear_clip(&ring) {
+        b.triangle(v[i], v[j], v[l], out);
     }
-    b.strip((t, &shell[..n - 1]), (t, &right), colour, out);
-    b.strip((t, &bottom), (t, &left), colour, out);
 }
 
 /// The room of chord c at its vertex k, as the inside draws it there, across to the left of station `st` there, in two
