@@ -478,22 +478,18 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         }
     }
     // What the rooms cannot build draws as tunnels of one way: the arms of a room that cannot draw on its own account,
-    // or whose joint the builder does not find whole, run beside no other (`lone`); the other rooms are made again. Of a joint of tunnels of one way that is not whole,
-    // each opening has a head of its own (`apart`), and a tunnel of one way whose own head is not whole does not draw
-    // (`gone`). The rooms and the ladder are made again until each joint is whole.
-    let (mut lone, mut gone) = (vec![false; tubes.len()], vec![false; tubes.len()]);
+    // or whose joint the builder does not find whole, run beside no other (`lone`); the other rooms are made again. Of
+    // a joint of tunnels of one way that is not whole, each opening has a head of its own (`apart`). The rooms and the
+    // ladder are made again until each joint is whole.
+    let mut lone = vec![false; tubes.len()];
     let mut apart = vec![false; openings.len()];
-    let mut faults = Faults::default();
-    let (rooms, mut decided, placed) = loop {
+    let (rooms, mut decided, placed, not_whole) = loop {
         let (rooms, mut openings) = rooms::rooms(tubes.clone(), openings.clone(), &lone, input);
-        // A room of lanes draws only where its line lies in the bake's region, whose tiles hold its records; a tunnel of
-        // one way, where it is not gone.
-        let out: Vec<bool> = (0..rooms.tubes.len())
-            .map(|r| match &rooms.lanes[r][..] {
-                [l] if rooms.alone[r] => gone[l.arm],
-                _ => rooms.tubes[r].curve.stretches.iter().flat_map(|(_, ps)| ps).any(|q| !input.tiles.holds(q.p)),
-            })
-            .collect();
+        // A room draws only where its line lies in the bake's region, whose tiles hold its records; a tunnel of one way
+        // anywhere.
+        let leaves =
+            |r: usize| rooms.tubes[r].curve.stretches.iter().flat_map(|(_, ps)| ps).any(|q| !input.tiles.holds(q.p));
+        let out: Vec<bool> = (0..rooms.tubes.len()).map(|r| !rooms.alone[r] && leaves(r)).collect();
         let own_head = |o: &Opening| match &rooms.lanes[o.tube][..] {
             [l] if rooms.alone[o.tube] => l.ends[o.end].is_some_and(|i| apart[i]),
             _ => false,
@@ -501,22 +497,17 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         let apart_now: Vec<bool> = openings.iter().map(own_head).collect();
         let decided = ladder::decide(&rooms.tubes, &mut openings, input, measure, (&rooms, &out, &apart_now));
         let (placed, found) = records(&rooms, &openings, &decided, input);
-        faults.not_whole += found.not_whole;
-        let before = (lone.clone(), gone.clone(), apart.clone());
+        let before = (lone.clone(), apart.clone());
         let kind = |t: usize, e: usize| decided.ends[openings.iter().position(|o| o.tube == t && o.end == e)?].kind;
         let own = rooms.own(&kind, &decided.out);
         for r in (0..rooms.tubes.len()).filter(|&r| !rooms.alone[r] && (!own[r] || found.rooms.contains(&r))) {
             rooms.lanes[r].iter().for_each(|l| lone[l.arm] = true);
         }
-        for &(r, e) in found.ends.iter().filter(|&&(r, _)| rooms.alone[r]) {
-            let l = &rooms.lanes[r][0];
-            match e.and_then(|e| l.ends[e]) {
-                Some(i) => apart[i] = true,
-                None => gone[l.arm] = true,
-            }
+        for i in found.ends.iter().filter_map(|&(r, e)| rooms.lanes[r][0].ends[e]) {
+            apart[i] = true;
         }
-        if (&lone, &gone, &apart) == (&before.0, &before.1, &before.2) {
-            break (rooms, decided, placed);
+        if (&lone, &apart) == (&before.0, &before.1) {
+            break (rooms, decided, placed, found.not_whole);
         }
     };
     if let Value::Object(m) = &mut decided.metrics {
@@ -527,10 +518,9 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         m.insert("tunnel_ways_without_id".into(), without_id.into());
         m.insert("chains_without_tube".into(), lost.into());
         m.insert("rooms".into(), rooms.metrics.clone());
-        m.insert("joints_not_whole".into(), faults.not_whole.into());
+        m.insert("joints_not_whole".into(), not_whole.into());
         m.insert("arms_alone".into(), lone.iter().filter(|&&l| l).count().into());
         m.insert("openings_apart".into(), apart.iter().filter(|&&a| a).count().into());
-        m.insert("arms_gone".into(), gone.iter().filter(|&&g| g).count().into());
         let touching = rooms::touching(&rooms, (&decided.floors, &decided.draws), &decided.half, input);
         let places = touching.iter().take(10).map(|&p| {
             let [lat, lon] = crate::degrees(p);
@@ -568,27 +558,28 @@ pub(crate) fn ceil_cm(v: f64) -> f64 {
     ((v * 100.0) - 1e-4).ceil() / 100.0
 }
 
-/// A hole of a joint by its room and that room's end there; of a chord, its room and no end.
+/// A hole of a joint, or a vertex of a chord, by its room and that room's end there; none at a chord's inner vertex.
 type HoleOf = (usize, Option<usize>);
 
-/// The joints that the records would not hold whole: the rooms of lanes that cannot draw; of a tunnel of one way, its
-/// room and the end whose head it shares with others, or None where its own head or a chord is not whole; and how many
-/// records and chords the builder did not find whole.
+/// The joints that the records would not hold whole: the rooms of lanes there; of a tunnel of one way, its room and
+/// the end whose head it shares with others; and how many records and chords the builder did not find whole.
 #[derive(Default)]
 struct Faults {
     rooms: Vec<usize>,
-    ends: Vec<HoleOf>,
+    ends: Vec<(usize, usize)>,
     not_whole: usize,
 }
 
 impl Faults {
-    /// A hole of a joint that is not whole, by its room and end, or a chord that does not close (its room, no end); a
-    /// hole of a joint `shared` with other holes.
+    /// A hole of a joint or an end of a chord that the builder does not find whole, by its room and end (none inside
+    /// the room); `shared` where its head has other holes. Of a tunnel of one way only such a shared end is not whole:
+    /// its chords are shorter than the tiles' buffer (`CHORD_M` of the ways' curves), so a tile that holds one holds the
+    /// chords at its vertices and a head of one hole at its end.
     fn add(&mut self, rooms: &rooms::Rooms, (r, e): HoleOf, shared: bool) {
-        if rooms.alone[r] {
-            self.ends.push((r, e.filter(|_| shared)));
-        } else {
+        if !rooms.alone[r] {
             self.rooms.push(r);
+        } else if let Some(e) = e.filter(|_| shared) {
+            self.ends.push((r, e));
         }
     }
 }
@@ -665,7 +656,7 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
             behind[pr][pe].push((sign * across, half, up, ceil_cm(fc.h[ic]), segments));
         }
     }
-    // Per feature, the room of a chord, and per hole of a joint its room and end.
+    // Per feature, per vertex of a chord its room and that room's end there, and per hole of a joint its room and end.
     let mut of_feature: Vec<Vec<HoleOf>> = Vec::new();
     for (ti, t) in tubes.iter().enumerate() {
         let kinds = ends_of[ti];
@@ -679,12 +670,15 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         common.insert("half".into(), num(if multi { ceil_cm(decided.half[ti]) } else { decided.half[ti] }));
         common.insert("look".into(), group.look.clone());
         let fl = decided.floors[ti].as_ref();
+        let first = features.len();
         if multi {
             room(rooms, ti, kinds, (fl, &common, &behind[ti]), input, &mut features);
         } else {
             lone(t, kinds, (fl, &common), &input.tunnels[&t.widest].0, &mut features);
         }
-        of_feature.resize(features.len(), vec![(ti, None)]);
+        let ends = fl.map(|f| [f.s[0], f.s[f.s.len() - 1]].map(|s| t.curve.at(s).0.p));
+        let end = |p: [f64; 2]| ends.and_then(|e| e.iter().position(|&q| q == p));
+        of_feature.extend(features[first..].iter().map(|f| f.2.points.iter().map(|&p| (ti, end(p))).collect()));
     }
     for (o, d) in openings.iter().zip(&decided.ends) {
         let (Some(kind), Some(n)) = (d.kind, &d.numbers) else { continue };
@@ -767,14 +761,20 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         features.push(("tunnel-end", t, part));
         of_feature.push(members);
     }
-    // Read back as the tiles hold them: each hole and chord of rooms that draw that the builder does not find whole is a
-    // fault.
+    // Per hole of a joint, how many holes its head has.
+    let mut in_head: HashMap<(usize, usize), usize> = HashMap::new();
+    for (holes, _) in of_feature.iter().zip(&features).filter(|(_, f)| f.0 == "tunnel-end") {
+        in_head.extend(holes.iter().filter_map(|&(r, e)| Some(((r, e?), holes.len()))));
+    }
+    // Read back as the tiles hold them: each hole and chord end of rooms that draw that the builder does not find whole
+    // is a fault, at its room's end where it is one.
     for (f, found) in not_whole(&features, input.tiles) {
         let holes = &of_feature[f];
         if holes.iter().all(|h| draws[h.0]) {
             faults.not_whole += 1;
-            for (&h, _) in holes.iter().zip(&found).filter(|(_, &ok)| !ok) {
-                faults.add(rooms, h, holes.len() > 1);
+            for (&(r, e), _) in holes.iter().zip(&found).filter(|(_, &ok)| !ok) {
+                let shared = e.is_some_and(|e| in_head.get(&(r, e)).is_some_and(|&n| n > 1));
+                faults.add(rooms, (r, e), shared);
             }
         }
     }
@@ -796,7 +796,8 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
 
 /// What the builder does not find whole in the part records as the zoom-13 tiles of the region hold them, each tile
 /// with its buffer: per record that it does not find whole in the tile that owns its point, whether it finds each of
-/// its holes there, and per chord that does not close in the tile that owns its `a`, `[false]`; by feature.
+/// its holes there, and per chord that does not close in the tile that owns its `a`, whether each of its ends closes
+/// there; by feature.
 pub(crate) fn not_whole(features: &[(&'static str, Tags, Part)], region: &Tiles) -> Vec<(usize, Vec<bool>)> {
     use crate::tiles::{decode, Geometry, EXTENT, MAX_ZOOM};
     let rules = obc_trailview_parts::Rules::embedded();
@@ -835,8 +836,8 @@ pub(crate) fn not_whole(features: &[(&'static str, Tags, Part)], region: &Tiles)
             }
         }
         for ((c, ok), &f) in chords.iter().zip(closed).zip(&of_chord) {
-            if owns([c.a[0], c.a[1]]) && !ok {
-                out.push((f, vec![false]));
+            if owns([c.a[0], c.a[1]]) && ok.contains(&false) {
+                out.push((f, ok.to_vec()));
             }
         }
     }

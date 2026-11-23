@@ -943,3 +943,37 @@ fn a_room_behind_a_seam_whose_first_way_is_short_starts_clear_of_the_line() {
         assert!(records_that_touch(&placed).is_empty(), "split {x}: {:?}", records_that_touch(&placed));
     }
 }
+
+/// Four motorway tunnels 1.5 m apart open on one frame line at 10 degrees to a tile edge: their head spans 44 m. The
+/// tile west of the edge holds the first hole's chord and the head, not the last hole's chord, so there the builder
+/// does not build the head and the chord does not close. That opening has a head of its own, and the others share one.
+#[test]
+fn a_head_that_a_tile_does_not_hold_whole_gives_the_opening_there_a_head_of_its_own() {
+    let mway = [("highway", "motorway"), ("tunnel", "yes")];
+    let spacing = 2.0 * (widths().way("tunnel", &tags(&mway), false).half_m + 0.6) + 1.5;
+    // The first opening 1 m east of the edge; its tunnel goes in 10 degrees west of south, so its first chord (10 m)
+    // starts in the tile west of the edge; the last opening lies 44.4 m east of the edge, past that tile's buffer.
+    let (s, c) = 10f64.to_radians().sin_cos();
+    let first = [tile_edge_east() + 1.0, 0.0];
+    let at = |u: f64, v: f64| [first[0] - u * s + v * c, first[1] - u * c - v * s];
+    let mut case = Case::default();
+    for k in 0..4 {
+        let v = k as f64 * spacing;
+        case.ways.push(("tunnel", tags(&mway), vec![part(&[at(200.0, v), at(100.0, v), at(0.0, v)], &[500.0; 3])]));
+    }
+    let hill = move |p: [f64; 2]| {
+        let u = (first[0] - p[0]) * s + (first[1] - p[1]) * c;
+        500.0 + u.min(200.0 - u).max(0.0)
+    };
+    let placed = case.place(&site(&hill, &[], false), &mut Vec::new());
+    let m = &placed.metrics;
+    assert_eq!((m["openings_apart"].as_u64(), m["joints_not_whole"].as_u64()), (Some(1), Some(0)), "{m}");
+    assert!(not_whole_in_tiles(&placed, BOUNDS).is_empty(), "{:?}", not_whole_in_tiles(&placed, BOUNDS));
+    let heads: Vec<(f64, Option<&String>)> = (placed.features.iter())
+        .filter(|f| f.0 == "tunnel-end" && back(f.2.points[0])[1].abs() < 10.0)
+        .map(|f| ((back(f.2.points[0])[0] - first[0]).abs(), f.1.get("across")))
+        .collect();
+    assert_eq!(heads.len(), 2, "{heads:?}");
+    assert!(heads.iter().any(|h| h.0 < 0.01 && h.1.is_none()), "the first opening's own head: {heads:?}");
+    assert!(heads.iter().any(|h| h.1.is_some_and(|a| a == "0 14.7 29.4")), "the others' head: {heads:?}");
+}
