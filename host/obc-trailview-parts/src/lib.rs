@@ -363,6 +363,8 @@ impl Chord {
 pub struct Mesh {
     pub vertices: Vec<u32>,
     pub indices: Vec<u32>,
+    /// The faces whose polygon the builder does not cut into triangles whole, so their edges stay open.
+    pub unfilled: usize,
 }
 
 /// The volumes of parts: the boxes in which the ground does not draw (`BOX` words each) and the floor segments

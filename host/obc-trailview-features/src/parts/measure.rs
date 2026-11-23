@@ -266,39 +266,44 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
 }
 
 /// The sites of the asks, each measured once for one ask and the open ends that its cells hold: as `sites` gives them,
-/// as the rooms are made again with the same openings.
+/// as the rooms are made again with the same openings; and the cells of all the asks, as `sites` counts them.
 #[derive(Default)]
 pub(crate) struct Memo(std::cell::RefCell<Vec<(Ask, Vec<OpenEnd>, Site)>>);
 
 impl Memo {
     pub fn sites(&self, asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize) -> (Vec<Site>, usize) {
-        // The open ends that the cells of an ask build with.
-        let held = |a: &Ask| -> Vec<OpenEnd> {
+        // The cells of an ask.
+        let cells_of = |a: &Ask| -> Vec<CellKey> {
             let left = left_of(a.dir);
             let rows = (0..=(a.right + a.left)).map(|j| offset(a.p, left, f64::from(j) - f64::from(a.right)));
             let mut keys: Vec<CellKey> =
                 a.stations.iter().flatten().copied().chain(rows).map(|p| key_of(frame(p))).collect();
             keys.sort_unstable();
             keys.dedup();
-            let inside = |e: &&OpenEnd, k: &CellKey| {
-                let [x0, y0, x1, y1] = k.grown();
-                (x0..=x1).contains(&e.way.x) && (y0..=y1).contains(&e.way.y)
-            };
-            ends.iter().filter(|e| keys.iter().any(|k| inside(e, k))).copied().collect()
+            keys
         };
-        let near: Vec<Vec<OpenEnd>> = asks.iter().map(held).collect();
+        let cells: Vec<Vec<CellKey>> = asks.iter().map(cells_of).collect();
+        // The open ends that the cells of an ask build with.
+        let inside = |e: &&OpenEnd, k: &CellKey| {
+            let [x0, y0, x1, y1] = k.grown();
+            (x0..=x1).contains(&e.way.x) && (y0..=y1).contains(&e.way.y)
+        };
+        let near: Vec<Vec<OpenEnd>> = cells
+            .iter()
+            .map(|keys| ends.iter().filter(|e| keys.iter().any(|k| inside(e, k))).copied().collect())
+            .collect();
         let mut memo = self.0.borrow_mut();
         let known = |memo: &[(Ask, Vec<OpenEnd>, Site)], i: usize| {
             memo.iter().position(|(x, m, _)| *x == asks[i] && *m == near[i])
         };
         let missing: Vec<usize> = (0..asks.len()).filter(|&i| known(&memo, i).is_none()).collect();
-        let (measured, cells) =
-            sites(&missing.iter().map(|&i| asks[i].clone()).collect::<Vec<_>>(), input, ends, memory);
+        let (measured, _) = sites(&missing.iter().map(|&i| asks[i].clone()).collect::<Vec<_>>(), input, ends, memory);
         for (&i, site) in missing.iter().zip(measured) {
             memo.push((asks[i].clone(), near[i].clone(), site));
         }
         let out = (0..asks.len()).map(|i| memo[known(&memo, i).expect("measured")].2.clone()).collect();
-        (out, cells)
+        let all: std::collections::BTreeSet<CellKey> = cells.into_iter().flatten().collect();
+        (out, all.len())
     }
 }
 

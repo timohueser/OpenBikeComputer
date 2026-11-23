@@ -72,7 +72,7 @@ pub fn face<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize) {
         while poly.len() > 1 && poly[0].0 == poly[poly.len() - 1].0 {
             poly.pop();
         }
-        for [i, j, k] in ear_clip(&poly.iter().map(|q| q.0).collect::<Vec<Corner>>()) {
+        for [i, j, k] in b.ear_clip(&poly.iter().map(|q| q.0).collect::<Vec<Corner>>()) {
             let v = [i, j, k].map(|n| b.vertex(poly[n].1, colour, crate::mesh::PLAIN));
             b.triangle(v[0], v[1], v[2], out);
         }
@@ -86,8 +86,9 @@ const CLEAR_M: f64 = 0.02;
 /// The triangles of a simple polygon by its corners, each corner of the polygon a corner of a triangle beside it: cut
 /// off one ear at a time, a corner whose triangle with its two neighbours turns the polygon's way and holds no other
 /// corner, not even on its edges, and whose new edge passes no other corner within `CLEAR_M`; of those the ear of the
-/// best shape (its area over the squares of its sides).
-pub(crate) fn ear_clip(poly: &[Corner]) -> Vec<[usize; 3]> {
+/// best shape (its area over the squares of its sides). Whether it cuts the whole polygon: a polygon that is not simple
+/// can leave no ear.
+pub(crate) fn ear_clip(poly: &[Corner]) -> (Vec<[usize; 3]>, bool) {
     let cross = |a: Corner, b: Corner, c: Corner| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
     let area: f64 = (0..poly.len()).map(|i| cross([0.0, 0.0], poly[i], poly[(i + 1) % poly.len()])).sum();
     let way = if area >= 0.0 { 1.0 } else { -1.0 };
@@ -130,7 +131,7 @@ pub(crate) fn ear_clip(poly: &[Corner]) -> Vec<[usize; 3]> {
         let best = pick(CLEAR_M).or_else(|| pick(0.0));
         let Some((i, _)) = best else {
             debug_assert!(false, "a polygon with no ear: {poly:?}");
-            break;
+            return (out, false);
         };
         let (a, b, c) = ear(i);
         out.push([a, b, c]);
@@ -140,5 +141,5 @@ pub(crate) fn ear_clip(poly: &[Corner]) -> Vec<[usize; 3]> {
     if left.len() == 3 && way * cross(poly[left[0]], poly[left[1]], poly[left[2]]) > 1e-12 {
         out.push([left[0], left[1], left[2]]);
     }
-    out
+    (out, true)
 }

@@ -116,12 +116,20 @@ pub struct Builder<L: Fn([f64; 3]) -> f64> {
     indices: Vec<u32>,
     points: Vec<[f64; 3]>,
     daylight: L,
+    unfilled: usize,
 }
 
 impl<L: Fn([f64; 3]) -> f64> Builder<L> {
     /// A builder whose vertices take their daylight from `daylight` of their world point.
     pub fn new(daylight: L) -> Self {
-        Builder { words: Vec::new(), indices: Vec::new(), points: Vec::new(), daylight }
+        Builder { words: Vec::new(), indices: Vec::new(), points: Vec::new(), daylight, unfilled: 0 }
+    }
+
+    /// The triangles of a face's polygon (`seam::ear_clip`); a face that it does not cut whole counts as unfilled.
+    pub fn ear_clip(&mut self, poly: &[Corner]) -> Vec<[usize; 3]> {
+        let (out, whole) = crate::seam::ear_clip(poly);
+        self.unfilled += usize::from(!whole);
+        out
     }
 
     pub fn vertex(&mut self, p: [f64; 3], colour: u32, paint: Paint) -> u32 {
@@ -215,7 +223,7 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
     }
 
     pub fn mesh(self) -> Mesh {
-        Mesh { vertices: self.words, indices: self.indices }
+        Mesh { vertices: self.words, indices: self.indices, unfilled: self.unfilled }
     }
 
     /// The normal of a, b, c, d by their diagonals, in metres east, north and up.

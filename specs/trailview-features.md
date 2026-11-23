@@ -589,12 +589,13 @@ in order:
 5. Else `free`.
 
 What draws is decided once, in the bake, by the rule of the builder (`built` of `host/obc-trailview-parts`). A room
-draws where each of its ends is a seam or an opening with a part, and where it is not taken out. The rooms of one seam, and the rooms of one arm, draw together or not at all. A room whose
-seam holds no hole for a room behind it, or whose arm has an opening in no room, does not draw; nor does a room whose
-line leaves the bake's region. Of two openings within `pair_max_m` and `pair_max_deg` (also the two ends of one room)
-whose rooms draw, that lie at one level (neither over the other, see Rooms) and less than two `shell_m` apart across,
-the narrower room does not draw, then the one with the higher id. These rules repeat until no room leaves. A room that
-does not draw writes no record, and its ways have no tag `parts`, but for a room alone (below).
+draws where each of its ends is a seam or an opening with a part, and where it is not taken out. The rooms of one seam,
+and the rooms of one arm, draw together or not at all. A room whose seam holds no hole for a room behind it, or whose
+arm has an opening in no room, does not draw; nor does a room whose line leaves the bake's region. Of two openings
+within `pair_max_m` and `pair_max_deg` (also the two ends of one room) whose rooms draw, that lie at one level (neither
+over the other, see Rooms) and less than two `shell_m` apart across, the narrower room does not draw, then the one with
+the higher id. These rules repeat until no room leaves. A room that does not draw writes no record, and its ways have no
+tag `parts`, but for a room alone (below).
 
 What the rooms cannot build draws as a tunnel of one way: the arms of a room that does not draw run beside no other, and
 the rooms are made again, until each room draws or is alone, the whole of one chain with no seam. A room alone draws by

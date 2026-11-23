@@ -5,7 +5,6 @@
 
 use crate::boxes;
 use crate::mesh::{flagged, flat, outline, turned_run, Builder, Corner, Station, VOID};
-use crate::seam;
 use crate::tube::{self, direction, inward, spring, top_at, Net};
 use crate::{Part, Section};
 
@@ -287,7 +286,7 @@ fn closed<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize, foot:
     round.extend(left[1..left.len() - 1].iter().rev());
     round.dedup();
     let dark = net.rules.inside.void;
-    for tri in seam::ear_clip(&round) {
+    for tri in b.ear_clip(&round) {
         let v = tri.map(|i| b.at(&ring, round[i], dark));
         b.triangle(v[0], v[1], v[2], flat(into));
     }
@@ -317,7 +316,7 @@ fn end_face<L: Fn([f64; 3]) -> f64>(
     if net.seam_at(c, k).is_some() {
         for (outer, inner) in [(&shell[..n - 1], &right), (&bottom[..], &left)] {
             let poly: Vec<Corner> = outer.iter().chain(inner.iter().rev()).copied().collect();
-            for tri in seam::ear_clip(&poly) {
+            for tri in b.ear_clip(&poly) {
                 let v = tri.map(|i| b.at(t, poly[i], colour));
                 b.triangle(v[0], v[1], v[2], out);
             }
