@@ -355,6 +355,17 @@ SHARED_MARKS = {
     "lunch": "kind",        # "lunch" alone asks for food; "midday" is the middle of a day
     "mornings": "day",      # each morning, not the start of one day ("morning" + "s")
 }
+# The phrases of the actions on a place, by request type, which the field marks as the label of
+# "Find", and the words of the nearest place ahead ("the next supermarket"), which the query model
+# reads as no field.
+ACTION_MARKS = {
+    "route": ["route to", "navigate to", "directions to", "take me to", "bring me to", "get me to",
+              "go to", "ride to", "cycle to"],
+    "add_point": ["add", "add a stop", "add a stop at", "add stop at", "stop at", "add a break at"],
+    "end_day": ["end the day at", "end day at", "finish the day at", "sleep at", "stay at",
+                "overnight at", "camp at", "spend the night at"],
+}
+NEAREST_MARKS = ["nearest", "closest", "next"]
 # Words that change the meaning of the words around them: a sentence with one goes to the query
 # model, also when the field marks all its other words.
 MEANINGFUL = {"before", "after", "between", "until", "till", "from", "to", "since", "through",
@@ -387,6 +398,7 @@ def marks_json() -> str:
         "scope": en("scope"),
         "now": en("now"),
         "weekday": en("weekday"),
+        "action": {act: terms(ts) for act, ts in ACTION_MARKS.items()},
     }
     for term, category in SHARED_MARKS.items():
         for other in set(values) - {category}:
@@ -402,6 +414,7 @@ def marks_json() -> str:
     doc = {
         **values,
         "day_noun": en("day_noun")["day"],
+        "nearest": NEAREST_MARKS,
         "ordinal": en("ordinal"),
         "number": {v: [t for t in ts if " " not in t and t not in schema.ARTICLES]
                    for v, ts in en("number").items() if v.isdigit() and v != "0"},

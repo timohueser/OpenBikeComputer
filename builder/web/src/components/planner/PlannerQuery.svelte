@@ -9,9 +9,9 @@
     import type { FieldProps, Place } from '../../lib/ui/search-bar/Field.svelte';
     import { unfold } from '../../lib/ui/search-bar/motion';
     import type { Value } from '../../lib/ui/search-bar/read';
-    import { areasAndTimes, oftenNext, PLANNER_WORDS, type Mark } from '../../lib/planner/search/marks';
+    import { areasAndTimes, oftenNext, PLANNER_WORDS, saysNearest, type Mark } from '../../lib/planner/search/marks';
     import { kindLabel } from '../../lib/planner/search/presentation';
-    import { fill, requestOf, resetSlot, sameValue, slotsOf, slotWords, stretchWhere, whereWords, type SlotId, type Slots, type Stretch } from '../../lib/planner/search/slots';
+    import { ACTS, fill, NEAREST, requestOf, resetSlot, sameValue, slotsOf, slotWords, stretchWhere, whereWords, withAct, type SlotId, type Slots, type Stretch } from '../../lib/planner/search/slots';
     import { searchPlaces, type QueryRequest, type SearchAnswer, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
     import FindPanel from './FindPanel.svelte';
     import WherePanel from './WherePanel.svelte';
@@ -25,7 +25,8 @@
     } = $props();
 
     const VIEW: Where = { scope: 'view' };
-    const EXAMPLES = ['drinking water in the middle of day 1', 'climbs over 300 m on day 2', 'supermarket open now'];
+    /** One of a place, one of a fact of the route, and one of an action: the label "Find" does not say that it can be one. */
+    const EXAMPLES = ['drinking water in the middle of day 1', 'climbs over 300 m on day 2', 'route to the next supermarket'];
     const ICONS: Record<SlotId, string> = { find: 'search', where: 'route', when: 'clock' };
 
     const request = $derived(requestOf(slots, context.plan));
@@ -75,8 +76,8 @@
             searchState = { loading: false, answer: searchState.answer, error: error instanceof TypeError ? 'Search is unavailable. Check your connection and retry.' : (error as Error).message };
         }
     }
-    /** The query model read `q`: the request of its answer fills the slots. A request that changes the plan fills none.
-     * When the slots then give another request, they search again with no model. */
+    /** The query model read `q`: the request of its answer fills the slots. A request that changes the plan and that the
+     * slots cannot hold fills none. When the slots then give another request, they search again with no model. */
     function took(q: string, answer: SearchAnswer) {
         const found = slotsOf(answer.request);
         [sentence, edited, left, planned] = [q, false, found.left, undefined];
@@ -84,6 +85,9 @@
             planned = answer.request;
             return;
         }
+        // "The next supermarket" is the nearest one ahead on the route: the model reads "next" as no search area.
+        const kind = found.slots.find && 'kind' in found.slots.find;
+        if (kind && !found.slots.where && context.plan.km.length > 1 && saysNearest(q)) found.slots.where = NEAREST;
         slots = fill(slots, found.slots);
         const { ignored: _, ...asked } = answer.request;
         if (!sameValue(requestOf(slots, context.plan), asked)) run(limit, context, answer);
@@ -167,14 +171,14 @@
     const words = $derived(slotWords(slots));
     const named = $derived(request?.type === 'place'), fact = $derived(request?.type === 'stretches');
     const bar = $derived<Slot[]>([
-        { id: 'find', icon: ICONS.find, label: 'Find', words: words.find, unset: 'Choose', set: !!slots.find, wide: true },
+        { id: 'find', icon: ICONS.find, label: slots.act ? ACTS[slots.act].label : 'Find', words: words.find, unset: 'Choose', set: !!slots.find || !!slots.act, wide: true },
         // A named place is searched near a place or in the map view.
         { id: 'where', icon: ICONS.where, label: 'Where', words: words.where, unset: whereWords(VIEW)[0], set: !!slots.where || !!slots.radius, wide: true,
             off: named ? whereWords(request?.near ? { near: [request.near] } : VIEW)[0] : undefined },
         { id: 'when', icon: ICONS.when, label: 'When', words: words.when, unset: 'Any time', set: !!slots.open, off: named || fact ? 'Any time' : undefined },
     ]);
     const summary = (kept: Slots) => Object.values(slotWords(kept)).flat().join(' · ');
-    /** The answer has a line under the bar: the kinds left out, a notice, or a change of the plan with "Apply change". An
+    /** The answer has a line under the bar: the kinds left out, a notice, or a change of the plan with "Apply". An
      * empty field then offers nothing, as its list would cover the line. */
     const noted = $derived(!!planned || left.length > 0 || !!searchState.answer?.notice);
     const field = $derived<FieldProps<Mark, Place>>({
@@ -202,11 +206,11 @@
 </script>
 
 <div class="planner-query">
-    <SearchBar label="Search the route" slots={bar} {field} bind:open bind:text={typed} empty={!slots.find && !slots.where && !slots.radius && !slots.open && !planned}
+    <SearchBar label="Search the route" slots={bar} {field} bind:open bind:text={typed} empty={!slots.find && !slots.act && !slots.where && !slots.radius && !slots.open && !planned}
         onreset={id => set(resetSlot(slots, id as SlotId))} onclear={clear} onundo={undo}>
         {#snippet panel(id)}
             {#if id === 'find'}
-                <FindPanel find={slots.find} onchange={find => set({ ...slots, find })} />
+                <FindPanel find={slots.find} act={slots.act} onchange={find => set({ ...slots, find })} onact={act => set(withAct(slots, act))} />
             {:else if id === 'where'}
                 <WherePanel where={slots.where ?? VIEW} radius={slots.radius} plan={context.plan} found={alongRoute} {selection} problem={searchState.error} onchange={(change, moving) => set({ ...slots, ...change }, moving)} />
             {:else}

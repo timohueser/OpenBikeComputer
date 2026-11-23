@@ -1,15 +1,17 @@
 /** The three slots of the planner search, "Find", "Where" and "When": the fields of a request that each slot holds, the
  * request that the slots give, their words, and how the request of an answer of the query model fills them. */
 import { contract, kindLabel, pointLabel } from './presentation';
-import type { QueryDay, QueryRequest, Quantity, SearchContext, Where } from './types';
+import type { QueryDay, QueryPoint, QueryRequest, Quantity, SearchContext, Where } from './types';
 
 export type SlotId = 'find' | 'where' | 'when';
 /** One thing to find: a kind of place, with the cuisine of a kind of food; a place by its name; or a fact of the route,
  * with its least size. */
 export type Find = { kind: string; cuisine?: string } | { name: string } | { fact: string; min?: Quantity };
 export type Open = NonNullable<QueryRequest['open']>;
-/** The values of the slots. "Where" holds `where` and `radius`. */
-export interface Slots { find?: Find; where?: Where; radius?: Quantity; open?: Open }
+/** What a press on a place of the list does, by the request type of the change; with none, "Find" adds it as a stop. */
+export type Act = 'route' | 'add_point' | 'end_day';
+/** The values of the slots. "Find" holds `find` and `act`, "Where" holds `where` and `radius`. */
+export interface Slots { find?: Find; act?: Act; where?: Where; radius?: Quantity; open?: Open }
 
 /** The request of the slots, with the fields that its type takes; none without a thing to find. A named place takes only
  * the first place that it is near. A search area on the route goes as its stretch from km to km on the route of `plan`. */
@@ -86,9 +88,25 @@ export function oneKind(kinds: string[]): { kind: string; left: string[] } {
     return shared ? { kind: shared, left: [] } : { kind: kinds[0], left: kinds.slice(1) };
 }
 
+/** The action of a request that changes the plan, with the request of the places that it lists: a kind, in the area of
+ * the request, or a name. None when the slots cannot hold the request, such as a route with a start or a day count, a
+ * stop every 30 km, or a day end at a km mark. */
+function actionOf({ type, to, point, at, day, where, ...rest }: QueryRequest): { act: Act; listed: QueryRequest } | undefined {
+    const [act, place, area]: [Act?, QueryPoint?, Where?] =
+        type === 'route' && !rest.from && !rest.via && !rest.bike && !rest.goal && !rest.days && !rest.per_day ? [type, to]
+        : type === 'add_point' && !rest.every && rest.kind !== 'pass' ? [type, point, where]
+        // A day end is near the end of its day.
+        : type === 'end_day' && day !== undefined && day !== 'every' ? [type, at, { day, part: 'end' }] : [];
+    if (act && place && 'kind' in place) return { act, listed: { type: 'places', what: [place.kind], ...area ? { where: area } : {} } };
+    if (act && place && 'name' in place) return { act, listed: { type: 'place', name: place.name } };
+}
+
 /** The values of the slots that a request holds, and the kinds that one thing to find left out. A request that changes
- * the plan holds none. */
-export function slotsOf({ type, what, cuisine, name, near, where: area, radius, open, min }: QueryRequest): { slots: Slots; left: string[] } {
+ * the plan holds its action and the places that it lists, or no value. */
+export function slotsOf(request: QueryRequest): { slots: Slots; left: string[] } {
+    const action = actionOf(request), listed = action && slotsOf(action.listed);
+    if (listed) return { ...listed, slots: { ...listed.slots, act: action!.act } };
+    const { type, what, cuisine, name, near, where: area, radius, open, min } = request;
     // A part goes with an area on the route: the server reads none near a place, the rider or a point.
     const { part: _, ...loose } = area ?? {}, where = area?.part && (area.near || area.anchor || area.scope === 'here') ? loose : area;
     if (type === 'places' && what?.length) {
@@ -104,12 +122,17 @@ export function slotsOf({ type, what, cuisine, name, near, where: area, radius, 
  * theirs. A named place keeps no search area: it is searched near the place that its answer names, else in the map view. */
 export function fill(slots: Slots, found: Slots): Slots {
     const area = found.where || found.radius || (found.find && 'name' in found.find) ? found : slots;
-    return { find: found.find ?? slots.find, where: area.where, radius: area.radius, open: found.open ?? slots.open };
+    const what = found.find ? found : slots;
+    return { find: what.find, act: what.act, where: area.where, radius: area.radius, open: found.open ?? slots.open };
 }
+
+/** The slots with action `act`, or none for "Find". An action is on a place, so a fact of the route leaves "Find". */
+export const withAct = (slots: Slots, act: Act | undefined): Slots =>
+    ({ ...slots, act, ...act && slots.find && 'fact' in slots.find ? { find: undefined } : {} });
 
 /** The slots with the values of `slot` at their defaults. */
 export function resetSlot(slots: Slots, slot: SlotId): Slots {
-    return slot === 'find' ? { ...slots, find: undefined } : slot === 'where' ? { ...slots, where: undefined, radius: undefined } : { ...slots, open: undefined };
+    return slot === 'find' ? { ...slots, find: undefined, act: undefined } : slot === 'where' ? { ...slots, where: undefined, radius: undefined } : { ...slots, open: undefined };
 }
 
 /** The same value, whatever the order of the keys of its objects. */
@@ -119,6 +142,13 @@ export const sameValue = (a: unknown, b: unknown) => {
 };
 
 // ── Words ───────────────────────────────────────────────────────────────────
+
+/** The label of "Find" with an action, the button of the action on a place, and its icon. */
+export const ACTS: Record<Act, { label: string; button: string; icon: string }> = {
+    route: { label: 'Route to', button: 'Route here', icon: 'route' },
+    add_point: { label: 'Add a stop at', button: 'Add as a stop', icon: 'plus' },
+    end_day: { label: 'End the day at', button: 'End the day here', icon: 'moon' },
+};
 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 /** The name of a kind of place, such as "Drinking water". */

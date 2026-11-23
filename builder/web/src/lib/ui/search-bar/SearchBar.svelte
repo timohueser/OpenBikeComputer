@@ -153,7 +153,8 @@
             {#each slots as slot (slot.id)}
                 <button type="button" class="slot" class:unset={!slot.words.length || !!slot.off} data-slot={slot.id} disabled={!!slot.off}
                     aria-expanded={open === slot.id} aria-controls="search-panel" onclick={() => open = open === slot.id ? undefined : slot.id}>
-                    <span class="label"><Icon name={slot.icon} size={14} />{slot.label}</span>
+                    <!-- A label that changes, as the one that names an action, rises into its place. -->
+                    <span class="label"><Icon name={slot.icon} size={14} />{#key slot.label}<span in:rise>{slot.label}</span>{/key}</span>
                     <!-- A slot that gets or loses a value shows it; a value that only changes, as under a slider, stays still. -->
                     {#key slot.words.length}<strong in:rise>{slot.off ?? (text(slot.words) || slot.unset)}</strong>{/key}
                 </button>
@@ -385,6 +386,10 @@
         }
         .slot:first-child {
             border-left: 0;
+        }
+        /* A label such as "End the day at" needs the room of its icon. */
+        .label :global(svg) {
+            display: none;
         }
         .slot:last-child {
             margin-right: 0;

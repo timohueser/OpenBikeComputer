@@ -12,9 +12,11 @@ import {
   type Trip,
   type RoutePoint,
 } from '../editor';
+import { nearestProgress, type Coordinate } from '../geo';
 import { planPreset } from '../riding-profiles';
 import { routingKey, type RoutingLine } from '../routing';
-import type { QueryChange, ResolvedPoint } from './types';
+import type { Act } from './slots';
+import type { QueryChange, ResolvedPoint, SearchContext, SearchPlace } from './types';
 
 const makePoint = (p: ResolvedPoint, kind: RoutePoint['kind']): RoutePoint => ({
   id: crypto.randomUUID(),
@@ -137,4 +139,54 @@ export async function applyQueryChanges(
     trip = await refresh(trip);
   }
   return { trip, line };
+}
+
+/** The riding days of the plan, and the one in which a place of the list lies: by its km along the route, else by the
+ * nearest point of the route. */
+function dayOf(place: SearchPlace, plan: SearchContext['plan']) {
+  const riding = plan.days.filter((day) => !day.rest);
+  const along = place.position?.along ?? nearestProgress(plan.coordinates, [place.lon, place.lat]) * (plan.km.at(-1) ?? 0);
+  return { riding, day: riding.find((d) => along <= d.to) ?? riding.at(-1) };
+}
+
+/**
+ * Why action `act` cannot apply to a place of the list (`reason`), or, for a stop, the point that the plan has at the
+ * place already (`point`), in words. A route always applies: it goes from the rider or the start.
+ */
+export function placeCheck(act: Act, place: SearchPlace, plan: SearchContext['plan'], trip: Trip): { reason?: string; point?: string } {
+  if (act === 'route') return {};
+  const { riding, day } = dayOf(place, plan);
+  if (!day || !hasEndpoints(trip)) return { reason: 'Choose a start and finish first.' };
+  const kind = act === 'add_point' ? trip.points.find((p) => p.placeId === place.source)?.kind : undefined;
+  const stop = riding.length > 1 ? `Stop on Day ${day.number}` : 'Stop on the route';
+  const words: Partial<Record<RoutePoint['kind'], string>> = { start: 'Start', finish: 'Finish', night: `Night of Day ${day.number}`, waypoint: stop, pass: stop, via: stop, detour: stop };
+  if (kind && words[kind]) return { point: words[kind] };
+  return act === 'end_day' && day === riding.at(-1) ? { reason: 'The last day ends at the finish.' } : {};
+}
+
+/**
+ * The change of action `act` on a place of the search list, and the line that says what it changed. A route goes from
+ * the rider, else from the start of the plan, as the server routes. A stop and a day end go to the riding day in which
+ * the place lies.
+ */
+export function placeChange(
+  act: Act,
+  place: SearchPlace,
+  plan: SearchContext['plan'],
+  here?: Coordinate,
+): { changes: QueryChange[]; description: string } {
+  const point: ResolvedPoint = { coordinate: [place.lon, place.lat], label: place.name, source: place.source, kind: place.kind };
+  if (act === 'route') {
+    const start = plan.points.find((p) => p.kind === 'start');
+    const from = here ? { coordinate: here, label: 'Your location' } : start && { coordinate: start.coordinate, label: start.label };
+    if (!from) throw new Error('Set a start, or allow location access, to route to a place.');
+    return { changes: [{ op: 'route', points: [from, point] }], description: `The route now ends at ${place.name}` };
+  }
+  const { riding, day } = dayOf(place, plan);
+  if (!day) throw new Error('Choose a start and finish before editing the route.');
+  if (act === 'end_day') return { changes: [{ op: 'end_day', day: day.number, point }], description: `Day ${day.number} now ends at ${place.name}` };
+  return {
+    changes: [{ op: 'add_point', kind: 'stop', point }],
+    description: riding.length > 1 ? `${place.name} is now a stop on Day ${day.number}` : `${place.name} is now a stop`,
+  };
 }

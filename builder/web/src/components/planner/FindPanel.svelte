@@ -1,13 +1,14 @@
-<!-- The panel of "Find": one kind of place, with the kinds under it once it is chosen, or one fact of the route, with
-     "At least" for a fact that has a size. A press on the chosen row removes it. -->
+<!-- The panel of "Find": what a press on a place of the list does, then one kind of place, with the kinds under it once it
+     is chosen, or one fact of the route, with "At least" for a fact that has a size. An action is on a place, so with one
+     the facts do not show. A press on the chosen row removes it. -->
 <script lang="ts">
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { category, contract } from '../../lib/planner/search/presentation';
-    import { factIcon, factWord, kindsUnder, kindWord, topKind, type Find } from '../../lib/planner/search/slots';
+    import { ACTS, factIcon, factWord, kindsUnder, kindWord, topKind, type Act, type Find } from '../../lib/planner/search/slots';
     import Segmented from '../../lib/ui/Segmented.svelte';
     import QueryChoice from './QueryChoice.svelte';
 
-    let { find, onchange }: { find?: Find; onchange: (find: Find | undefined) => void } = $props();
+    let { find, act, onchange, onact }: { find?: Find; act?: Act; onchange: (find: Find | undefined) => void; onact: (act: Act | undefined) => void } = $props();
 
     const kinds: Record<string, { parent: string | null }> = contract.kinds;
     const PLACES = Object.keys(kinds).filter(kind => !kinds[kind].parent);
@@ -25,8 +26,12 @@
     const least = $derived(moving ?? (fact?.min && fact.min.unit === SIZES[fact.fact]?.unit ? fact.min.value : 0));
 </script>
 
+<div class="act">
+    <Segmented label="What to do with the place" wrap value={act ?? 'find'} onChange={value => onact(value === 'find' ? undefined : value)}
+        options={[{ value: 'find' as const, label: 'Find' }, ...(Object.keys(ACTS) as Act[]).map(value => ({ value, label: ACTS[value].label }))]} />
+</div>
 <!-- The chosen row shows when the panel opens, also a fact under the long list of places. -->
-<div class="groups" {@attach node => node.querySelector('[aria-pressed="true"]')?.scrollIntoView({ block: 'nearest' })}>
+<div class="groups" class:places={!!act} {@attach node => node.querySelector('[aria-pressed="true"]')?.scrollIntoView({ block: 'nearest' })}>
     <section aria-labelledby="find-place">
         <h3 id="find-place">A place</h3>
         {#each PLACES as one (one)}
@@ -40,7 +45,7 @@
             </QueryChoice>
         {/each}
     </section>
-    <section aria-labelledby="find-route">
+    {#if !act}<section aria-labelledby="find-route">
         <h3 id="find-route">The route itself</h3>
         {#each FACTS as one (one)}
             {@const on = fact?.fact === one}
@@ -56,10 +61,15 @@
                 {/if}
             </QueryChoice>
         {/each}
-    </section>
+    </section>{/if}
 </div>
 
 <style>
+    .act {
+        width: 560px;
+        max-width: 100%;
+        padding: 10px 12px 0;
+    }
     .groups {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -71,6 +81,18 @@
     section {
         display: flex;
         flex-direction: column;
+    }
+    /* With an action, the places take the room of the facts too. */
+    .places section {
+        display: block;
+        columns: 2 220px;
+        column-gap: 18px;
+    }
+    .places h3 {
+        column-span: all;
+    }
+    .places section > :global(.choice) {
+        break-inside: avoid;
     }
     h3 {
         margin: 0 0 4px;
