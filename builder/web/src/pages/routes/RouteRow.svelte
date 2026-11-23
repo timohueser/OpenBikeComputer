@@ -76,7 +76,8 @@
     .row:hover, .row:global([data-hover]) {
         background: var(--parchment);
     }
-    .row[aria-current="true"] {
+    /* A press answers at once: a tap has no hover. */
+    .row[aria-current="true"], .row:active {
         background: var(--parchment-2);
     }
     .thumb {

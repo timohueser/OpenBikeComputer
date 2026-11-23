@@ -55,7 +55,8 @@
         open = undefined;
         if (focus && id) button(id)?.focus();
     }
-    function clear() {
+    /** The cross. A page calls it for a control of its own that clears the search, so that control has "Undo" too. */
+    export function clear() {
         open = undefined;
         [clearedText, typed] = [typed, ''];
         onclear();

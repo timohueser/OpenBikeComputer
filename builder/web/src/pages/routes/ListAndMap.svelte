@@ -3,8 +3,11 @@
      A row and the lines of its row light together: under the pointer on either side, or when a key focuses the row. -->
 <script lang="ts">
     import { tick, type Snippet } from 'svelte';
+    import { cubicOut } from 'svelte/easing';
     import { on } from 'svelte/events';
+    import type { TransitionConfig } from 'svelte/transition';
     import Card from '../../lib/ui/Card.svelte';
+    import { still } from '../../lib/ui/search-bar/motion';
     import type { Box, Item } from './filter';
     import type { MapOverlay } from './RoutesMap.svelte';
     import { HoverState } from './hover.svelte';
@@ -44,6 +47,9 @@
          * button goes with it. */
         card?: Snippet<[() => void]>;
     } = $props();
+
+    /** The card leaves faster than it comes: it sinks a little, and with reduced motion it only fades. */
+    const leave = (_node: Element): TransitionConfig => ({ duration: 120, easing: cubicOut, css: t => `opacity: ${t}; transform: translateY(${still() ? 0 : (1 - t) * 4}px)` });
 
     /** The height of the selected card, which covers the bottom of the map. */
     let cardHeight = $state(0);
@@ -152,7 +158,7 @@
             {/await}
             {#if mapButtons}<div class="map-buttons" bind:clientWidth={buttonsWidth}>{@render mapButtons()}</div>{/if}
             {#if card}
-                <div class="selected" bind:offsetHeight={cardHeight}>{@render card(toRow)}</div>
+                <div class="selected" bind:offsetHeight={cardHeight} out:leave>{@render card(toRow)}</div>
             {/if}
         </div>
     </div>
@@ -236,14 +242,15 @@
         outline-offset: -2px;
         box-shadow: none;
     }
-    /* The whole card with its close button stays in the map: its long text scrolls inside it. */
+    /* The whole card with its close button stays in the map: its long text scrolls inside it. A card with a long text
+       leaves a third of the map free for the line of its route, unless that leaves the card too little room. */
     .selected {
         position: absolute;
         z-index: 2;
         right: 12px;
         bottom: 12px;
         left: 12px;
-        --card-height: calc(100cqh - 24px);
+        --card-height: min(100cqh - 24px, max(65cqh, 330px));
     }
     /* A low window of a computer: the page is tighter, so the map leaves the card room for its text. */
     @media (max-height: 480px) and (min-width: 761px) {
@@ -279,8 +286,8 @@
             z-index: 20;
             bottom: max(12px, env(safe-area-inset-bottom));
             /* The card is never higher than the screen, and leaves a part of the page over it: its long text scrolls
-               inside it, so its buttons stay on the screen. */
-            --card-height: calc(100dvh - 96px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+               inside it, so its buttons stay on the screen. On a high screen it leaves more of the page. */
+            --card-height: min(100dvh - 96px - env(safe-area-inset-top) - env(safe-area-inset-bottom), max(60dvh, 360px));
         }
         :global(body) {
             padding-bottom: var(--card-room, 0);

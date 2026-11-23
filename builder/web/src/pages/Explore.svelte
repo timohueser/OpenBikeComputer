@@ -20,6 +20,7 @@
     import Icon from '../lib/ui/Icon.svelte';
     import Menu from '../lib/ui/Menu.svelte';
     import type { FieldProps, Place as NamedPlace } from '../lib/ui/search-bar/Field.svelte';
+    import { rise, still } from '../lib/ui/search-bar/motion';
     import SearchBar, { type Slot } from '../lib/ui/search-bar/SearchBar.svelte';
     import Segmented from '../lib/ui/Segmented.svelte';
     import type { TrailViewRoute } from '../components/planner/TrailViewWindow.svelte';
@@ -279,6 +280,11 @@
         void answer;
         untrack(() => { if (chosenAt < 0) restart(); });
     });
+    // A new search or order, and a list that comes, show as a short fade of the list.
+    $effect(() => {
+        void [searching && query, sort];
+        if (!still()) rows?.animate({ opacity: [0.55, 1] }, { duration: 180, easing: 'ease-out' });
+    });
     // The selected route has its row and shows it: after a selection on the map or in TrailView, and in a new list,
     // which can move the route. Only the list scrolls, not the page.
     $effect(() => {
@@ -357,7 +363,12 @@
         { id: 'way', icon: 'mountain', label: 'On the way', words: words.way, unset: 'Anything', set: slotSet(shownQuery, 'way', day), off: offText },
     ]);
     /** The open panel of the bar, and the query before the cross for its "Undo". */
-    let openSlot = $state<string>(), cleared = $state.raw<Query>();
+    let openSlot = $state<string>(), cleared = $state.raw<Query>(), bar = $state<SearchBar<Choice, FoundPlace & NamedPlace>>();
+    /** A change from the empty list takes its button away: the focus goes to the first row of the new list. */
+    function fromEmpty(change: () => void) {
+        change();
+        void tick().then(() => rows?.querySelector<HTMLElement>('.row')?.focus({ preventScroll: true }));
+    }
     /** "Reset" of a slot. On the long trails tab "Hike" shows only the hardest grade, so its reset keeps the other values of
      * the day search. */
     const reset = (id: SlotId, from: Query): Query => tab === 'long' ? { ...from, grade: [from.grade[0], GRADE_TOP] } : resetSlot(from, id, day);
@@ -530,7 +541,7 @@
 {#snippet list()}
     {#if searching && listed}
         <div class="top">
-            <h2 aria-live="polite">{hikes(found.length)}</h2>
+            <h2 aria-live="polite">{#key found.length}<span in:rise>{hikes(found.length)}</span>{/key}</h2>
             {#if found.length}
                 <Menu label="Sort by: {SORT_WORDS[sort]}" buttonClass="sort"
                     items={Object.entries(SORT_WORDS).map(([value, label]) => ({ label, checked: value === sort, run: () => sort = value as Sort }))} />
@@ -578,17 +589,17 @@
         <span>One change would help:</span>
         <span class="helps">
             {#each helps as help, i (i)}
-                <button type="button" onclick={() => setQuery(help.query)}>{suggestionText(help, dayQuery, placeById)}<span class="n">{hikes(help.count)}</span></button>
+                <button type="button" onclick={() => fromEmpty(() => setQuery(help.query))}>{suggestionText(help, dayQuery, placeById)}<span class="n">{hikes(help.count)}</span></button>
             {/each}
         </span>
     {:else}
-        <span>Widen the length or the climb.</span>
+        <span>{dayQuery.length || dayQuery.climb ? 'Widen the length or the climb.' : 'One change is not enough.'}</span>
     {/if}
-    <button type="button" class="text" onclick={() => query = defaultQuery(day)}>Reset the filters</button>
+    <button type="button" class="text" onclick={() => fromEmpty(() => bar?.clear())}>Clear the search</button>
 {/snippet}
 
 {#snippet searchBar()}
-    <SearchBar label="Search the hikes" {slots} {field} bind:open={openSlot} empty={!slots.some(slot => slot.set && !slot.off)} onreset={id => setQuery(reset(id as SlotId, query))}
+    <SearchBar bind:this={bar} label="Search the hikes" {slots} {field} bind:open={openSlot} empty={!slots.some(slot => slot.set && !slot.off)} onreset={id => setQuery(reset(id as SlotId, query))}
         onclear={clear} onundo={() => { if (cleared) query = cleared; }}>
         {#snippet panel(id)}
             {#if id === 'from'}
@@ -647,13 +658,18 @@
     .count {
         font-size: 13px;
     }
-    /* As high as the button of "Sort by", so the rows do not move when it goes. */
-    .top {
+    /* As high as the button of "Sort by", so the rows do not move when it goes or when the count comes. */
+    .top, p.note {
         display: flex;
         align-items: center;
-        justify-content: space-between;
         gap: 12px;
         min-height: 30px;
+    }
+    .top {
+        justify-content: space-between;
+    }
+    p.note {
+        gap: 6px;
     }
     h2 {
         margin: 0;
@@ -661,7 +677,11 @@
         font-weight: 700;
         white-space: nowrap;
     }
-    /* Quiet buttons: the button of "Sort by" and "Reset the filters". */
+    /* A box, so the new count can rise into its place. */
+    h2 span {
+        display: inline-block;
+    }
+    /* Quiet buttons: the button of "Sort by" and "Clear the search". */
     .top :global(.sort), .text {
         min-height: 30px;
         padding: 0 8px;
@@ -670,6 +690,7 @@
         background: none;
         color: var(--ink-soft);
         font-size: 13px;
+        transition: background 120ms, color 120ms;
     }
     .top :global(.sort) {
         margin-right: -8px;
@@ -689,7 +710,11 @@
         background: none;
         color: var(--ink);
         font: inherit;
-        text-decoration: underline;
+        text-decoration: underline var(--line-strong);
+        text-underline-offset: 2px;
+    }
+    .retry:hover {
+        text-decoration-color: currentColor;
     }
     /* The map's controls keep their light look in both themes; this is the colour of their icons and text. */
     .trailview {
@@ -783,15 +808,16 @@
         color: var(--ink);
         font-size: 15px;
     }
+    /* As wide as the longest change, with the counts in one column. */
     .helps {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
+        display: grid;
         gap: 6px;
+        max-width: 100%;
     }
     .helps button {
-        display: inline-flex;
-        gap: 6px;
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
         min-height: 32px;
         align-items: center;
         padding: 0 12px;
@@ -801,12 +827,14 @@
         color: var(--ink);
         font-size: 13px;
         text-align: left;
+        transition: background 120ms;
     }
     .helps button:hover {
         background: var(--parchment-2);
     }
     .n {
         color: var(--ink-soft);
+        white-space: nowrap;
     }
     .text {
         margin-left: -8px;
@@ -814,12 +842,20 @@
     .waiting {
         overflow: hidden;
     }
+    /* The box of a row of `RouteRow`: a row that comes is where its grey row was. */
     .waiting li {
         display: grid;
         grid-template-columns: var(--row-picture-width) 1fr;
-        align-items: center;
-        gap: 12px;
-        padding: 6px;
+        align-items: start;
+        gap: 14px;
+        padding: 7px;
+        animation: wait 1.1s ease-in-out infinite alternate;
+    }
+    @keyframes wait {
+        to { opacity: 0.5; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .waiting li { animation: none; }
     }
     .waiting .thumb {
         height: var(--row-picture-height);
@@ -828,7 +864,8 @@
     }
     /* Two bars, where the name and the numbers of a row are. */
     .waiting .lines {
-        height: 30px;
+        height: 32px;
+        margin-top: 10px;
         background: linear-gradient(var(--parchment-2), var(--parchment-2)) 0 0 / 62% 12px no-repeat,
             linear-gradient(var(--parchment-2), var(--parchment-2)) 0 100% / 38% 10px no-repeat;
     }

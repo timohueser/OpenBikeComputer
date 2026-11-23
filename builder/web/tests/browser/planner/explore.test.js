@@ -73,10 +73,13 @@ test('the Explore page searches the day hikes of the map view, plans one and com
   await page.keyboard.press('Escape');
   await expect(page.locator('#search-panel')).toHaveCount(0);
   // A row opens the card of its route over the map, with the facts of its shape and the link to the page of the route.
+  const wide = viewOf(page);
   await rows.filter({ hasText: 'Westweg 2' }).click();
   const card = page.getByRole('region', { name: 'Westweg 2' });
   await expect(card).toContainText('There and back, 2.5 km each way');
   await expect(card.getByRole('link', { name: 'Westweg 2' })).toHaveAttribute('href', '#/signed/9-267-177/202');
+  // The card with its long text leaves a part of the map free, and the map moves the route there.
+  await expect.poll(() => viewOf(page)).not.toEqual(wide);
   const kept = await page.evaluate(() => new Promise(done => setTimeout(() => done(history.state.explore), 500)));
   expect(kept.query).toBe('shapes=back,liftDown,liftUp');
 
@@ -353,6 +356,22 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   await expect.poll(() => viewOf(page)[3]).toBeGreaterThan(48);
   expect(height(viewOf(page))).toBeGreaterThanOrEqual(before - 1e-4);
   expect(errors).toEqual([]);
+});
+
+test('an empty list names the changes that help, and its "Clear the search" has the Undo of the bar', async ({ page }) => {
+  await stub(page);
+  await page.goto('/planner.html#/explore?must=peak&shapes=back&view=7.8,47.96,7.92,48.02');
+  const list = listOf(page), rows = rowsOf(page);
+  await expect(list.getByRole('heading')).toHaveText('0 hikes');
+  await expect(list.locator('.helps button')).toHaveText([/^Summit as a wish only\s*1 hike$/, /^Loop too\s*1 hike$/]);
+  await list.getByRole('button', { name: 'Clear the search' }).click();
+  await expect(rows).toHaveCount(2);
+  await page.getByRole('button', { name: 'Undo' }).click();
+  await expect(rows).toHaveCount(0);
+  // A change takes its button away: the first row of the new list has the focus.
+  await list.getByRole('button', { name: /^Loop too/ }).press('Enter');
+  await expect(rows).toHaveText([/Schlossberg loop/]);
+  await expect(rows.first()).toBeFocused();
 });
 
 /** Opens the panel of a slot of the search bar, if it is not open. */

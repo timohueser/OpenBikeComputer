@@ -14,7 +14,8 @@
         place: (id: string) => FactsPlace | undefined;
     } = $props();
 
-    const how = $derived(accessText(row, place));
+    const shape = $derived(shapeText(row)), how = $derived(accessText(row, place));
+    const wishes = $derived(row.met.length + row.missed.length + row.unknown.length > 0);
     const lines = $derived.by(() => {
         const facts = row.facts, snow = snowText(facts?.snow_free);
         const names = (facts?.places ?? []).map(([id]) => placeName(place(id)));
@@ -31,17 +32,19 @@
 </script>
 
 <div class="hike">
-    <div class="words">
-        <p>{shapeText(row)}</p>
-        {#if how}<p>{how}</p>{/if}
-        {#if row.met.length + row.missed.length + row.unknown.length}
-            <p class="tags">
-                {#each row.met as wish (wish)}<span><Icon name="check" size={13} />{wishLabel(wish, place, true)}</span>{/each}
-                {#each row.missed as wish (wish)}<span class="no"><Icon name="close" size={11} /><span class="hidden">{'no '}</span>{wishLabel(wish, place, true)}</span>{/each}
-                {#each row.unknown as wish (wish)}<span class="no"><span aria-hidden="true">?</span>{wishLabel(wish, place, true)}<span class="hidden">{': no data'}</span></span>{/each}
-            </p>
-        {/if}
-    </div>
+    {#if shape || how || wishes}
+        <div class="words">
+            {#if shape}<p>{shape}</p>{/if}
+            {#if how}<p>{how}</p>{/if}
+            {#if wishes}
+                <p class="tags">
+                    {#each row.met as wish (wish)}<span><Icon name="check" size={13} />{wishLabel(wish, place, true)}</span>{/each}
+                    {#each row.missed as wish (wish)}<span class="no"><Icon name="close" size={11} /><span class="hidden">{'no '}</span>{wishLabel(wish, place, true)}</span>{/each}
+                    {#each row.unknown as wish (wish)}<span class="no"><span aria-hidden="true">?</span>{wishLabel(wish, place, true)}<span class="hidden">{': no data'}</span></span>{/each}
+                </p>
+            {/if}
+        </div>
+    {/if}
     {#if lines.length}
         <ul>
             {#each lines as line (line.icon)}<li><Icon name={line.icon} size={16} />{line.text}</li>{/each}

@@ -21,7 +21,7 @@
         state?: string;
         failure?: string;
         picture: Snippet;
-        /** Before the name. */
+        /** Before the name, on its first line. A mark that draws nothing takes no room. */
         mark?: Snippet;
         /** A second line over the full width of the card. */
         more?: Snippet;
@@ -38,7 +38,7 @@
     <section class="card" aria-label={name}>
         <div class="picture">{@render picture()}</div>
         <div class="text">
-            <h2>{@render mark?.()}{#if href}<a class="open" {href}>{name}</a>{:else}{name}{/if}</h2>
+            <h2>{#if mark}<span class="mark">{@render mark()}</span>{/if}{#if href}<a class="open" {href}>{name}</a>{:else}{name}{/if}</h2>
             {#if metaParts.length}<p class="meta">{#if icon}<span class="icon"><Icon name={icon} size={15} /></span>{/if}{#each metaParts as part, i (i)}{i ? ' ' : ''}<span>{#if typeof part === 'string'}{part}{:else}<button type="button" class="link" onclick={part.onclick}>{part.text}</button>{/if}{i < metaParts.length - 1 ? ' ·' : ''}</span>{/each}</p>{/if}
             {#if numbers.length}<p class="numbers">{#each numbers as number, i (i)}<span>{number}</span>{/each}</p>{/if}
             {#if state}<p class="state">{state}</p>{/if}
@@ -92,7 +92,7 @@
         border: 1px solid var(--line);
         border-radius: 10px;
         background: var(--panel);
-        box-shadow: 0 6px 20px rgb(28 27 20 / 0.18);
+        box-shadow: var(--planner-shadow);
     }
     /* A low limit of the card's height makes the picture lower, so the card holds it: less the padding and the borders,
        and with `more` also its gap and about three lines. */
@@ -121,6 +121,14 @@
         -webkit-box-orient: vertical;
         -webkit-line-clamp: 2;
         line-clamp: 2;
+    }
+    .mark {
+        display: inline-block;
+        margin-right: 8px;
+        vertical-align: -5px;
+    }
+    .mark:empty {
+        display: none;
     }
     p {
         margin: 2px 0 0;
@@ -253,6 +261,24 @@
         min-height: 0;
         overflow-y: auto;
     }
+    /* A text that goes on under the card fades out at its end, until the rider scrolls to its last line. A text that
+       fits has no scroll, so the timeline does not run and nothing fades. */
+    @supports (animation-timeline: scroll()) {
+        .more {
+            mask-image: linear-gradient(black calc(100% - var(--more-fade)), transparent);
+            animation: more-fade linear both;
+            animation-timeline: scroll(self);
+        }
+    }
+    @property --more-fade {
+        syntax: '<length>';
+        inherits: false;
+        initial-value: 0px;
+    }
+    @keyframes more-fade {
+        from, 90% { --more-fade: 18px; }
+        to { --more-fade: 0px; }
+    }
     .close {
         position: absolute;
         z-index: 2;
@@ -267,6 +293,7 @@
         border-radius: 50%;
         background: none;
         color: var(--ink-soft);
+        transition: background 120ms, color 120ms;
     }
     .close:hover {
         background: var(--parchment-2);
@@ -348,10 +375,14 @@
             align-self: start;
             justify-self: start;
         }
-        /* In a low window the picture is no higher than the text beside it. */
+        /* In a low window the picture is no higher than the text beside it, and the numbers are closer, so four of
+           them are one line. */
         @media (max-height: 480px) {
             .card:has(.more) .picture {
                 height: 64px;
+            }
+            .card:has(.more) .numbers {
+                column-gap: 12px;
             }
         }
     }

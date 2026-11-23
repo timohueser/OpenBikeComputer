@@ -59,13 +59,15 @@
     const website = $derived(routeWebsite(record.website));
     const description = $derived(shownDescription(record, recordOf));
     const about = $derived(!!(description || record.operator || website || record.credit));
+    // A row has the word of a loop only: another shape of a row has its sentence in the facts.
+    const shape = $derived(row ? row.shape === 'loop' && 'Loop' : record.loop ? 'Loop' : 'One way');
     const kind = $derived('made' in record ? `Our ${record.loop ? 'loop' : 'route'}, made from signed hiking paths` : kindName(record));
 </script>
 
-<RouteCard name={item.name} {href} meta={[!row && (record.loop ? 'Loop' : 'One way'), part, trailName, kind]} numbers={row ? hikeNumbers(row, 'Grade unknown') : signedNumbers(record)}
+<RouteCard name={item.name} {href} meta={[shape, part, trailName, kind]} numbers={row ? hikeNumbers(row, 'Grade unknown') : signedNumbers(record)}
     profile={item.profile} more={about || row ? more : undefined} {onclose}>
     {#snippet picture()}<SignedPicture {item} {oncover} />{/snippet}
-    {#snippet mark()}<span class="mark"><TrailMarker symbol={record.symbol} ref={record.ref} /></span>{/snippet}
+    {#snippet mark()}<TrailMarker symbol={record.symbol} ref={record.ref} />{/snippet}
     {#snippet buttons()}<button type="button" class="button primary" onclick={onplan}>Plan this route</button>{/snippet}
 </RouteCard>
 
@@ -82,12 +84,6 @@
 {/snippet}
 
 <style>
-    /* The mark stands on the first line of the name. */
-    .mark {
-        display: inline-block;
-        margin-right: 8px;
-        vertical-align: -5px;
-    }
     .about {
         display: flex;
         flex-wrap: wrap;

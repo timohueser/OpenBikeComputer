@@ -135,12 +135,12 @@ export function accessText(row: Row, place: Place): string {
     }
 }
 
-/** What the shape means for the rider, with the numbers that a row does not show. */
+/** What the shape means for the rider, with the numbers that a row does not show. A loop needs no more than its word. */
 export function shapeText(row: Row): string {
     if (row.shape === 'back') return `There and back, ${formatDistance(row.length_m / 2)} each way; length and climb count both ways`;
     if (row.shape === 'liftDown') return `Hike up ${formatHeight(row.ascent_m)} and down ${formatHeight(row.descent_m)}, then the lift down; park at the valley station`;
     if (row.shape === 'liftUp') return `The lift up, then hike down ${formatHeight(row.descent_m)} and up ${formatHeight(row.ascent_m)}; park at the valley station`;
-    return 'Loop';
+    return '';
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
