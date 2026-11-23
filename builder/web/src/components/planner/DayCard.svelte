@@ -94,8 +94,7 @@
         --climb-fill: color-mix(in srgb, var(--day-color) 24%, transparent);
         overflow: hidden;
         border-radius: 12px;
-        background: var(--card, var(--parchment-2));
-        box-shadow: inset 0 0 0 1px var(--rim, transparent);
+        background: color-mix(in srgb, var(--ink) 7%, var(--panel));
         color: var(--ink);
     }
     :global([data-theme="dark"]) .day {

@@ -1417,7 +1417,6 @@
                         <button type="button" class="planner-action quiet" aria-label="Dismiss" onclick={dismissDraft}><Icon name="close" size={14} /></button>
                     </span>
                 {/if}
-                <span class="lab-note">Regional map, search and routing</span>
             </div>
         </section>
     </main>
@@ -1452,20 +1451,12 @@
         background: none;
         color: inherit;
     }
-    /* The surface of a card of the side panel, and the rim of a card or a filled control. A pale fill alone does not show
-       on every screen in the light theme, so the rim carries the edge there. */
     .planner-shell {
-        --card: color-mix(in srgb, var(--ink) 9%, var(--panel));
-        --rim: color-mix(in srgb, var(--ink) 18%, transparent);
         display: flex;
         flex-direction: column;
         height: 100%;
         min-width: 760px;
         min-height: 580px;
-    }
-    :global([data-theme="dark"]) .planner-shell {
-        --card: color-mix(in srgb, var(--ink) 7%, var(--panel));
-        --rim: transparent;
     }
     .planner-shell :global(.planner-action),
     .planner-shell :global(.planner-chip) {
@@ -1627,9 +1618,6 @@
         align-items: center;
         gap: 6px;
     }
-    .lab-note {
-        margin-left: auto;
-    }
     @media (max-width: 760px) {
         .planner-shell { min-width: 0; height: auto; min-height: 100%; }
         main { grid-template-columns: minmax(0, 1fr); }
@@ -1638,6 +1626,5 @@
         .planner-pane { max-height: 50dvh; overflow-y: auto; }
         .geography { height: 75dvh; }
         .status-line { height: auto; min-height: 38px; flex-wrap: wrap; padding-block: 8px; }
-        .lab-note { display: none; }
     }
 </style>
