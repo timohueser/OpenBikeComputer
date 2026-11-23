@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { mount, tick, unmount } from 'svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import QueryResults from './QueryResults.svelte';
 import { dayColor } from '../../lib/planner/day-colors';
 import type { SearchPlace } from '../../lib/planner/search/types';
@@ -41,5 +41,16 @@ describe('search results', () => {
     it('shows the area of an empty list without a count', async () => {
         await show([]);
         expect(document.querySelector('.result-heading')?.textContent).toBe('Along the route');
+    });
+    it('gives a stretch of the list as its km from the answer, also where the route passes the same road twice', async () => {
+        const onStretch = vi.fn();
+        // Out and back: the climb at km 40–45 lies on the road of km 15–20.
+        const line: [number, number][] = [[8.02, 47], [8.01, 47]];
+        component = mount(QueryResults, { target: document.body, props: { attribution: 'OSM', days, theme: 'light', selectedId: null,
+            state: { loading: false, error: '', answer: { type: 'stretches', request: { type: 'stretches', what: 'climb' }, stretches: [{ from: 40, to: 45, label: 'Climb', coordinates: line }] } },
+            onSelect() {}, onApply() {}, onMore() {}, onRetry() {}, onStretch } });
+        await tick();
+        document.querySelector<HTMLButtonElement>('.stretch')!.click();
+        expect(onStretch).toHaveBeenCalledWith([40, 45]);
     });
 });

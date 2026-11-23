@@ -88,7 +88,9 @@ export function oneKind(kinds: string[]): { kind: string; left: string[] } {
 
 /** The values of the slots that a request holds, and the kinds that one thing to find left out. A request that changes
  * the plan holds none. */
-export function slotsOf({ type, what, cuisine, name, near, where, radius, open, min }: QueryRequest): { slots: Slots; left: string[] } {
+export function slotsOf({ type, what, cuisine, name, near, where: area, radius, open, min }: QueryRequest): { slots: Slots; left: string[] } {
+    // A part goes with an area on the route: the server reads none near a place, the rider or a point.
+    const { part: _, ...loose } = area ?? {}, where = area?.part && (area.near || area.anchor || area.scope === 'here') ? loose : area;
     if (type === 'places' && what?.length) {
         const { kind, left } = oneKind([what].flat());
         return { slots: { find: { kind, ...cuisine ? { cuisine } : {} }, where, radius, open }, left };

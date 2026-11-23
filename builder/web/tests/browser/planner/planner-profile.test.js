@@ -139,9 +139,14 @@ test('"Where" on the profile: the places of "Find" are dots, a drag sets a stret
   await expect(results).not.toContainText('Brunnen 13');
   await expect(results).toContainText('Brunnen 9');
   await expect(page.locator('.elevation .title .part')).toContainText(new RegExp(`^km\\s${from} to km\\s${to} `));
-  // The handles are range inputs: the keys move an end.
-  await panel.getByRole('slider', { name: 'End of the stretch' }).press('ArrowLeft');
-  await expect(where).toHaveText(`${from}–${(to - 0.1).toFixed(1)} km`);
+  // The handles are range inputs: an arrow key moves an end by 1 % of the route, and End takes it to the finish.
+  const end = panel.getByRole('slider', { name: 'End of the stretch' });
+  await end.press('ArrowLeft');
+  await expect(where).toHaveText(`${from}–${(Math.ceil((to - 0.152) * 10) / 10).toFixed(1)} km`);
+  await end.press('End');
+  await expect(where).toHaveText(`${from}–15.2 km`);
+  // The handle sits on the end of the stretch, at the finish.
+  expect(await end.evaluate(input => input.valueAsNumber / Number(input.max))).toBeCloseTo(1, 6);
 
   await panel.getByRole('button', { name: 'Day 2' }).click();
   await expect(where).toHaveText('Day 2');

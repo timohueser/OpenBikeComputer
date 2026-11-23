@@ -4,7 +4,6 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import type { SearchPlace, SearchState } from '../../lib/planner/search/types';
     import type { Place } from '../../lib/planner/editor';
-    import type { Coordinate } from '../../lib/planner/geo';
     import { distanceIn } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
     import { rise, still } from '../../lib/ui/search-bar/motion';
@@ -15,7 +14,9 @@
         /** The riding days in km, with the day numbers of the day list. */
         days: { number: number; from: number; to: number }[]; theme: 'light' | 'dark';
         state: SearchState; selectedId: string | null; hoveredId?: string | null; onHover?: (id: string | null) => void; applying?: boolean; applyError?: string;
-        onSelect: (place: Place) => void; onApply: () => void; onMore: () => void; onRetry: () => void; onStretch: (line: Coordinate[]) => void;
+        onSelect: (place: Place) => void; onApply: () => void; onMore: () => void; onRetry: () => void;
+        /** A stretch of the list, from and to in km of the route. */
+        onStretch: (stretch: [from: number, to: number]) => void;
     } = $props();
     const answer = $derived(state.answer);
     const results = $derived(answer?.type === 'places' ? answer.results ?? [] : []);
@@ -68,7 +69,7 @@
             {#if applyError}<p role="alert">{applyError}</p>{/if}
         {:else if answer.type === 'stretches'}
             {@render heading(answer.stretches?.length ?? 0)}
-            {#each answer.stretches ?? [] as stretch}<button type="button" class="stretch" onclick={() => onStretch(stretch.coordinates)}>{stretch.label}<span>{settings.units} {tenths(stretch.from)}–{tenths(stretch.to)} · {tenths(stretch.to - stretch.from)} {settings.units}</span></button>{/each}
+            {#each answer.stretches ?? [] as stretch}<button type="button" class="stretch" onclick={() => onStretch([stretch.from, stretch.to])}>{stretch.label}<span>{settings.units} {tenths(stretch.from)}–{tenths(stretch.to)} · {tenths(stretch.to - stretch.from)} {settings.units}</span></button>{/each}
             {#if !answer.stretches?.length}<p>No matching stretch in this route data.</p>{/if}
         {:else if answer.type === 'places'}
             {@render heading(results.length)}

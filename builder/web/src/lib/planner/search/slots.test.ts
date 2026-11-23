@@ -16,6 +16,8 @@ describe('the slots of the planner search', () => {
         expect(requestOf(named)).toEqual({ type: 'place', name: 'Bahnhof', near: { name: 'Teningen' } });
         const climbs = fill(slots, slotsOf({ type: 'stretches', what: 'climb', min: { value: 300, unit: 'm' } }).slots);
         expect(requestOf(climbs)).toEqual({ type: 'stretches', what: 'climb', where: { day: 1, part: 'middle' }, min: { value: 300, unit: 'm' } });
+        // A part goes with an area on the route only.
+        expect(slotsOf({ type: 'places', what: ['water'], where: { near: [{ name: 'Teningen' }], part: 'end' } }).slots.where).toEqual({ near: [{ name: 'Teningen' }] });
         // A change of the plan fills no slot.
         expect(slotsOf({ type: 'route', to: { name: 'Konstanz' } }).slots).toEqual({});
     });

@@ -1251,7 +1251,7 @@
             {/if}
             {#if searching}
                 <div class="pane-scroll">
-                    <QueryResults attribution={config.attribution} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => searchBox?.setStretch([nearestProgress(coordinates, line[0]) * total, nearestProgress(coordinates, line.at(-1)!) * total])} />
+                    <QueryResults attribution={config.attribution} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={stretch => searchBox?.setStretch(stretch)} />
                 </div>
             {:else if !hasEndpoints}
                 <div class="start-plan pane-scroll">

@@ -28,12 +28,10 @@
         onchange: (change: { where: Where | undefined } | { radius: Quantity | undefined }, moving?: boolean) => void;
     } = $props();
 
-    /** A drag starts after DRAG_PX; a handle moves by STEP km and stops a STEP before the other one. Each day button shows
-     * only its number when there are more than WORDS_DAYS days. */
+    /** A drag starts after DRAG_PX; a handle stops STEP km before the other one. Each day button shows only its number
+     * when there are more than WORDS_DAYS days. */
     const DRAG_PX = 4, STEP = .1, WORDS_DAYS = 5;
     const total = $derived(plan.km.at(-1) ?? 0);
-    /** The first step of a handle at or after the end of the route, so the keys reach the end. */
-    const max = $derived(Math.ceil(total / STEP - 1e-6) * STEP);
     const days = $derived(plan.days.filter(day => !day.rest));
     const base = $derived(baseOf(where, plan));
     const stretch = $derived(base && partOf(base, where.part));
@@ -141,10 +139,11 @@
                 {/if}
             {/each}
         </div>
-        <!-- The handle that can move away is on top where the two meet. -->
+        <!-- The handle that can move away is on top where the two meet. With no step, a handle sits on its end of the
+             stretch, also at an end of the route that is no step; an arrow key moves it by 1 % of the route. -->
         <div class="ends">
-            <input type="range" min="0" {max} step={STEP} value={lo} style:z-index={from > total / 2 ? 1 : 0} aria-label="Start of the stretch" aria-valuetext={formatAlong(from * 1000)} oninput={event => end(event, false)} />
-            <input type="range" min="0" {max} step={STEP} value={hi} aria-label="End of the stretch" aria-valuetext={formatAlong(to * 1000)} oninput={event => end(event, true)} />
+            <input type="range" min="0" max={total} step="any" value={lo} style:z-index={from > total / 2 ? 1 : 0} aria-label="Start of the stretch" aria-valuetext={formatAlong(from * 1000)} oninput={event => end(event, false)} />
+            <input type="range" min="0" max={total} step="any" value={hi} aria-label="End of the stretch" aria-valuetext={formatAlong(to * 1000)} oninput={event => end(event, true)} />
         </div>
         {#if days.length > 1}
             <div class="days">
