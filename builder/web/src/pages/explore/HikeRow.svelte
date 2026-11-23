@@ -39,7 +39,9 @@
             {#each nice as wish (wish)}
                 {@const met = row.met.includes(wish)}
                 {@const unknown = row.unknown.includes(wish)}
-                <span class:met>{#if met}<Icon name="check" size={13} />{:else if unknown}?{:else}<Icon name="close" size={11} /><span class="hidden">{'no '}</span>{/if}{wishLabel(wish, place, true)}</span>
+                <span class:met>
+                    {#if met}<Icon name="check" size={13} />{:else if unknown}<span aria-hidden="true">?</span>{:else}<Icon name="close" size={11} /><span class="hidden">{'no '}</span>{/if}{wishLabel(wish, place, true)}{#if unknown}<span class="hidden">{': no data'}</span>{/if}
+                </span>
             {/each}
         </span>
     {/if}

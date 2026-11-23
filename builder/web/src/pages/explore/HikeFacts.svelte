@@ -38,7 +38,7 @@
             <p class="tags">
                 {#each row.met as wish (wish)}<span><Icon name="check" size={13} />{wishLabel(wish, place, true)}</span>{/each}
                 {#each row.missed as wish (wish)}<span class="no"><Icon name="close" size={11} /><span class="hidden">{'no '}</span>{wishLabel(wish, place, true)}</span>{/each}
-                {#each row.unknown as wish (wish)}<span class="no">?{wishLabel(wish, place, true)}</span>{/each}
+                {#each row.unknown as wish (wish)}<span class="no"><span aria-hidden="true">?</span>{wishLabel(wish, place, true)}<span class="hidden">{': no data'}</span></span>{/each}
             </p>
         {/if}
     </div>

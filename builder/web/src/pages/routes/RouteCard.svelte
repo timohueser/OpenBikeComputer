@@ -327,6 +327,13 @@
             }
         }
     }
+    /* In a low window the card is tighter, so it keeps lines of `more` on the screen. */
+    @media (max-height: 480px) {
+        .card:has(.more) {
+            row-gap: 6px;
+            padding: 6px;
+        }
+    }
     @container (max-width: 480px) {
         .card {
             grid-template-columns: 120px minmax(0, 1fr);
@@ -340,6 +347,12 @@
         .buttons {
             align-self: start;
             justify-self: start;
+        }
+        /* In a low window the picture is no higher than the text beside it. */
+        @media (max-height: 480px) {
+            .card:has(.more) .picture {
+                height: 64px;
+            }
         }
     }
 </style>

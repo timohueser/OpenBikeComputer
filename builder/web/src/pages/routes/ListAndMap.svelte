@@ -245,6 +245,19 @@
         left: 12px;
         --card-height: calc(100cqh - 24px);
     }
+    /* A low window of a computer: the page is tighter, so the map leaves the card room for its text. */
+    @media (max-height: 480px) and (min-width: 761px) {
+        .routes-page {
+            gap: 8px;
+            padding-block: 8px;
+        }
+        .selected {
+            right: 8px;
+            bottom: 8px;
+            left: 8px;
+            --card-height: calc(100cqh - 16px);
+        }
+    }
     @media (max-width: 760px) {
         .routes-page {
             height: auto;

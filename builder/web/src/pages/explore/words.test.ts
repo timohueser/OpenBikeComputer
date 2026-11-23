@@ -33,10 +33,11 @@ describe('getting there', () => {
     });
 });
 
-it('gives the numbers of a row in its shape: the descent of a lift shape, the time and a known grade', () => {
+it('gives the numbers of a row in its shape: the descent of a lift shape, the time and the grade', () => {
     const way: Way = { kind: 'any', cost: 0 };
     expect(hikeNumbers(row(way, { moving_s: 9000, record: { ...record, hardest: 1 } }))).toEqual(['8.0\u00a0km', '500\u00a0m up', '2h 30m', 'T2']);
     expect(hikeNumbers(row(way, { shape: 'liftDown', ascent_m: 900, descent_m: 100 }))).toEqual(['8.0\u00a0km', '900\u00a0m up', '100\u00a0m down']);
+    expect(hikeNumbers(row(way), 'Grade unknown')).toEqual(['8.0\u00a0km', '500\u00a0m up', 'Grade unknown']);
 });
 
 it('names each change that helps an empty list', () => {

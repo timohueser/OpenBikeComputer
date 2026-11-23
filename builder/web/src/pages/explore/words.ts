@@ -1,6 +1,6 @@
 /** The words of the day-hike search: the names of the wishes, shapes, grades and orders, the numbers of a row, how a row
  * is reached and the changes that help an empty list. */
-import type { CatalogFacts, FactsPlace } from '../../lib/planner/signed-routes';
+import { gradeName, type CatalogFacts, type FactsPlace } from '../../lib/planner/signed-routes';
 import { distanceIn, formatDistance, formatHeight, formatHours } from '../../lib/settings/format';
 import { settings } from '../../lib/settings/settings.svelte';
 import { rangeText } from '../routes/filter';
@@ -53,11 +53,13 @@ export const SORT_WORDS: Record<Sort, string> = {
     match: 'Best match', name: 'Name', shape: 'Shape', length: 'Length', climb: 'Climb', time: 'Time', grade: 'Grade', access: 'Getting there',
 };
 
-/** The numbers of a row in its shape: the length, the climb, the descent of a lift shape, the time and the grade. */
-export function hikeNumbers(row: Row): string[] {
+/** The numbers of a row in its shape: the length, the climb, the descent of a lift shape, the time and the grade, or
+ * `unknown` for a route with no grade. */
+export function hikeNumbers(row: Row, unknown = ''): string[] {
     const lift = row.shape === 'liftDown' || row.shape === 'liftUp', hardest = row.record.hardest;
+    const grade = hardest === undefined ? unknown : gradeName('hiking', hardest);
     return [formatDistance(row.length_m), `${formatHeight(row.ascent_m)} up`, ...lift ? [`${formatHeight(row.descent_m)} down`] : [],
-        ...row.moving_s === undefined ? [] : [formatHours(row.moving_s)], ...hardest === undefined ? [] : [`T${hardest + 1}`]];
+        ...row.moving_s === undefined ? [] : [formatHours(row.moving_s)], ...grade ? [grade] : []];
 }
 
 /** The name and the description of each hiking grade, T1 to T6. */

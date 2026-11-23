@@ -264,12 +264,20 @@
     function drawMore() {
         if (rows && rowLimit < (tab === 'day' ? found : longList).length && rows.scrollTop + rows.clientHeight > rows.scrollHeight - 600) rowLimit += ROWS;
     }
-    // A new list starts at its top with its first rows: a new answer or tab, a new search or order of the day routes, or a
-    // new grade of the long trails.
-    $effect.pre(() => {
-        void [answer, tab, query.grade, searching && query, sort];
-        rowLimit = firstRows(untrack(() => chosenAt));
+    /** Starts the list at its top with its first rows. */
+    function restart() {
+        rowLimit = firstRows(chosenAt);
         if (rows) rows.scrollTop = 0;
+    }
+    // A new tab, a new search or order of the day routes, or a new grade of the long trails starts the list again.
+    $effect.pre(() => {
+        void [tab, query.grade, searching && query, sort];
+        untrack(restart);
+    });
+    // So does a new answer, unless it holds the selected row: a selection that moves the map keeps the list where it is.
+    $effect.pre(() => {
+        void answer;
+        untrack(() => { if (chosenAt < 0) restart(); });
     });
     // The selected route has its row and shows it: after a selection on the map or in TrailView, and in a new list,
     // which can move the route. Only the list scrolls, not the page.
@@ -542,7 +550,7 @@
         <ul bind:this={rows} onscroll={drawMore}>
             {#if searching}
                 {#each dayDrawn as row (`${row.record.id}/${row.shape}`)}
-                    <li>
+                    <li class="hike">
                         <HikeRow {row} item={signedOf(row.record)} {nice} place={placeById} current={row === opened} {oncover}
                             onclick={() => [selected, shape] = [String(row.record.id), row.shape]} />
                     </li>
@@ -752,6 +760,11 @@
     li {
         content-visibility: auto;
         contain-intrinsic-size: auto calc(var(--row-picture-height) + 14px);
+    }
+    /* A hike row has more lines than its picture, and as many as its wishes need: it draws, so the list has its real
+       height when it scrolls to the selected row. */
+    li.hike {
+        content-visibility: visible;
     }
     li.note {
         padding: 6px;

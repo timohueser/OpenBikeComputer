@@ -455,7 +455,7 @@ test('on a phone, the card of a hike with a long text and no profile stays on th
 });
 
 // 844 px wide has the layout of a computer, and 667 px wide that of a phone.
-for (const [width, height] of [[844, 470], [667, 375]]) {
+for (const [width, height] of [[844, 390], [667, 375]]) {
   test(`in a window of ${width} × ${height} px, the card of a hike with a profile shows no strip, and two lines of its text that scroll`, async ({ page }) => {
     const card = await openCard(page, 'Schlossberg loop', width, height);
     await expect(card.locator('.profile')).toBeHidden();
@@ -464,7 +464,7 @@ for (const [width, height] of [[844, 470], [667, 375]]) {
 }
 
 test('in a wide and low window, the card is in the map with its close button, and a lower picture leaves three lines of its text', async ({ page }) => {
-  const card = await openCard(page, 'Westweg 2', 1440, 480);
+  const card = await openCard(page, 'Westweg 2', 1440, 420);
   await textScrolls(page, card, 3);
   const close = card.getByRole('button', { name: 'Close' });
   await expect.poll(async () => {

@@ -62,7 +62,7 @@
     const kind = $derived('made' in record ? `Our ${record.loop ? 'loop' : 'route'}, made from signed hiking paths` : kindName(record));
 </script>
 
-<RouteCard name={item.name} {href} meta={[!row && (record.loop ? 'Loop' : 'One way'), part, trailName, kind]} numbers={row ? hikeNumbers(row) : signedNumbers(record)}
+<RouteCard name={item.name} {href} meta={[!row && (record.loop ? 'Loop' : 'One way'), part, trailName, kind]} numbers={row ? hikeNumbers(row, 'Grade unknown') : signedNumbers(record)}
     profile={item.profile} more={about || row ? more : undefined} {onclose}>
     {#snippet picture()}<SignedPicture {item} {oncover} />{/snippet}
     {#snippet mark()}<span class="mark"><TrailMarker symbol={record.symbol} ref={record.ref} /></span>{/snippet}
