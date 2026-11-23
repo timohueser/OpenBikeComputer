@@ -17,7 +17,7 @@ use crate::tiles::{Tile, MAX_ZOOM};
 /// What to read about one opening: its point and unit direction into the tube, the metres across its frame row to the
 /// right and to the left, per metre in from it the points of the centre line and of both outer walls, and the ids of
 /// its chain's ways.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Ask {
     pub p: [f64; 2],
     pub dir: [f64; 2],
@@ -263,6 +263,43 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
         site.rooms.sort_by(f64::total_cmp);
     }
     (sites, cells)
+}
+
+/// The sites of the asks, each measured once for one ask and the open ends that its cells hold: as `sites` gives them,
+/// as the rooms are made again with the same openings.
+#[derive(Default)]
+pub(crate) struct Memo(std::cell::RefCell<Vec<(Ask, Vec<OpenEnd>, Site)>>);
+
+impl Memo {
+    pub fn sites(&self, asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize) -> (Vec<Site>, usize) {
+        // The open ends that the cells of an ask build with.
+        let held = |a: &Ask| -> Vec<OpenEnd> {
+            let left = left_of(a.dir);
+            let rows = (0..=(a.right + a.left)).map(|j| offset(a.p, left, f64::from(j) - f64::from(a.right)));
+            let mut keys: Vec<CellKey> =
+                a.stations.iter().flatten().copied().chain(rows).map(|p| key_of(frame(p))).collect();
+            keys.sort_unstable();
+            keys.dedup();
+            let inside = |e: &&OpenEnd, k: &CellKey| {
+                let [x0, y0, x1, y1] = k.grown();
+                (x0..=x1).contains(&e.way.x) && (y0..=y1).contains(&e.way.y)
+            };
+            ends.iter().filter(|e| keys.iter().any(|k| inside(e, k))).copied().collect()
+        };
+        let near: Vec<Vec<OpenEnd>> = asks.iter().map(held).collect();
+        let mut memo = self.0.borrow_mut();
+        let known = |memo: &[(Ask, Vec<OpenEnd>, Site)], i: usize| {
+            memo.iter().position(|(x, m, _)| *x == asks[i] && *m == near[i])
+        };
+        let missing: Vec<usize> = (0..asks.len()).filter(|&i| known(&memo, i).is_none()).collect();
+        let (measured, cells) =
+            sites(&missing.iter().map(|&i| asks[i].clone()).collect::<Vec<_>>(), input, ends, memory);
+        for (&i, site) in missing.iter().zip(measured) {
+            memo.push((asks[i].clone(), near[i].clone(), site));
+        }
+        let out = (0..asks.len()).map(|i| memo[known(&memo, i).expect("measured")].2.clone()).collect();
+        (out, cells)
+    }
 }
 
 /// The ask of an opening: `in_m` metres in along its chain from `s` (in `sign` of the chain's metres), with its walls at
