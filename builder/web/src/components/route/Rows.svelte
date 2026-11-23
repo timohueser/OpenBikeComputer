@@ -80,7 +80,7 @@
     const samples = $derived(profileSamples(profile));
     const grades = $derived(profileGrades(samples, cumulative(profile.coordinates).at(-1) ?? 0));
     const totalM = $derived(line ? planView(trip, line).total * 1000 : summary.lengthM);
-    const days = $derived(facts?.days.filter(item => !item.rest) ?? []);
+    const days = $derived(facts?.days ?? []);
     const shown = $derived(days.find(item => String(item.number) === day) ?? { from: 0, to: 1 });
     const span = $derived(Math.max(1e-6, shown.to - shown.from));
     const x = (share: number) => (share - shown.from) / span;

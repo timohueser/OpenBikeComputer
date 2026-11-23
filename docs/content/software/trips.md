@@ -61,32 +61,32 @@ route's line as a drawn leg.
 
 ### Days in the planner
 
-In the web planner, one bar above the stops holds the day count, the start date and, for a trip, the
-stay kinds. Its "+" makes a route a multi-day trip, and "−" from the lowest count undoes it. With a
-start date, each day shows its weekday. The elevation profile is the timeline: days by colour, night
-markers and rest-day columns. From 15 riding days, a strip of all days frames one week: the list,
-profile, map and town search show only that week; the map draws the other days thin and grey. A trip
-has at most 64 riding days. Above 32, the device gets two trips: "Alps 1/2" and "Alps 2/2".
+In the web planner, one row above the stops holds the route shape, the day count and the start
+date. "There and back" returns the route through the same points, so the rider plans only the way
+out. "+" makes a route a multi-day trip, and "−" from the lowest count undoes it. With a start date,
+each day shows its date. The stay kinds are in the route preferences.
+In the list, a day is a card. Its number has the colour of its line on the
+map. The card shows where the day starts and ends, its distance, climb and riding time, its elevation
+profile, and below them its night. The elevation profile is the timeline: days by colour and
+night markers. From 15 riding days, a strip of all days frames one week: the list, profile, map and
+town search show only that week; the map draws the other days thin and grey. A trip has at most 64
+riding days. Above 32, the device gets two trips: "Alps 1/2" and "Alps 2/2".
 
 A guessed day count is grey and dotted; a set one is dark. The planner guesses the day count from
 the riding time at the plan's pace. After each route or pace change, it guesses the count and the
 suggested nights again. Pinned nights and a set count stay. When the guess has fewer nights,
-what the rider set on a lost night goes with it; Undo brings it back. A riding-time bar on each day
-shows hard days.
+what the rider set on a lost night goes with it; Undo brings it back.
 
-"Choose" or "Change" on a night, or its profile marker, shows only that night in the panel. A town
-replaces its town list, also in an open day. A back row or Escape goes back one level. One button
-ends the day at the town or at a place selected in it. The town moves the night, as does a drag of
-the day end. A campsite or a hotel keeps it. A kept night is a place, with a filled marker. A moved
-night is a point on the route, with a dotted marker. "Let the planner choose" makes the night a
-suggestion again. The town list sets other kinds for its night only. A night of one kind only
-(campsites, huts or shelters) ends at a place of that kind. Other nights end in the town, as "Around
-Ulrichen", because the planner cannot pick a hotel in the rider's price range. With a start date,
-each night shows its sunset and usual night temperature.
-
-The plus sign between two days adds a rest day or a train or bus. The next day starts where the
-train or bus arrives. When it arrives on the route ahead, it skips the route between. A night that a
-train or bus leaves from is kept, and it cannot move until the rider removes the train or bus.
+"Choose" or "Change" on a night, or its profile marker, opens the night between the cards of its
+two days. Its stops are in route order: towns, and places on their own. The two cards show the
+days as they become with the stop under the pointer, so the rider compares before a click. A stop
+opens in place, and one button ends the day in the town or at a place selected in it. "All days" or
+Escape goes back one level. The town moves the night, as does a drag of the day end. A campsite or
+a hotel keeps it. A kept night is a place, with a filled marker. A moved night is a point on the
+route, with a dotted marker. "Let the planner choose" makes the night a suggestion again. The night
+sets other kinds for itself only. A night of one kind only (campsites, huts or shelters) ends at a
+place of that kind. Other nights end in the town, as "Sleep near Ulrichen", because the planner
+cannot pick a hotel in the rider's price range.
 
 The plan stores which values the rider set ([planner plan](src:specs/planner-plan.md)).
 
@@ -112,11 +112,10 @@ a bus or a ferry. The phone and the device derive this from the two day routes. 
 has no field for it. 200 m is also the distance at which the device's START RIDE asks how to get
 to the start, so that prompt covers the way to the next start.
 
-In the plan, a transfer is a leg mode: "Transfer (not ridden)" in the leg menu, or "Train or bus"
-between two days of the day list. The planner draws it as a muted dashed straight line and does not
-count it in distance, time, climb or the day figures; the profile has a gap there. A trip saved
-from the plan has a gap in its line at each transfer, so the day routes and the trip totals do not
-contain it.
+In the phone's planner, a transfer is a leg mode: "Transfer (not ridden)" in the leg menu. The
+planner draws it as a muted dashed straight line and does not count it in distance, time, climb or
+the day figures; the profile has a gap there. A trip saved from the plan has a gap in its line at
+each transfer, so the day routes and the trip totals do not contain it.
 
 In the journal, the rider can label a transfer as Train, Bus, Ferry or Car. The label never goes
 to the device.

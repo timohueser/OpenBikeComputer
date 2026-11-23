@@ -1,27 +1,25 @@
 <script lang="ts">
     import { tick } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
+    import RouteRow, { hint, stopSign } from './RouteRow.svelte';
     import type { RoutePoint } from '../../lib/planner/editor';
-    import { distanceIn } from '../../lib/settings/format';
-    import { settings } from '../../lib/settings/settings.svelte';
+    import { formatAlong } from '../../lib/settings/format';
 
-    let { stops, onInspect, onReorder, onLoop, measured = true, loop = false, hoveredId = null, onHover }: {
+    let { stops, onInspect, onReorder, measured = true, loop = false, hoveredId = null, onHover }: {
         hoveredId?: string | null;
-        /** The last stop returns to the start, which has one row. */
+        /** The route returns to the start, which is its last row too. */
         loop?: boolean;
         onHover?: (id: string | null) => void;
         measured?: boolean;
         stops: { point: RoutePoint; distance: number }[];
         onInspect: (point: RoutePoint) => void;
         onReorder: (id: string, offset: number) => void;
-        /** "Back to start", offered for an open plan with a finish. */
-        onLoop?: () => void;
     } = $props();
 
     const helpId = $props.id();
-    const listed = $derived(stops.filter((stop, i) => stop.point.kind !== 'via' && !(loop && i === stops.length - 1)));
-    // Rows 1 to `last - 1` can move; a loop has no finish row.
-    const last = $derived(loop ? listed.length : listed.length - 1);
+    const listed = $derived(stops.filter(stop => stop.point.kind !== 'via'));
+    // The rows between the first and the last can move.
+    const last = $derived(listed.length - 1);
     let list: HTMLOListElement;
     let drag = $state<{ id: string; from: number; to: number; y: number; delta: number; centers: number[] } | null>(null);
     let announcement = $state('');
@@ -64,19 +62,12 @@
 <svelte:window onkeydown={(event) => { if (event.key === 'Escape') drag = null; }} onblur={() => drag = null} />
 
 <ol class="route" bind:this={list}>
-    {#each listed as { point, distance }, index (point.id)}
-        <li class:dragging={drag?.id === point.id && Math.abs(drag.delta) > 4}
-            class:drop-before={drag?.to === index && drag.to < drag.from}
-            class:drop-after={drag?.to === index && drag.to > drag.from}
-            style:--drag-y={`${drag?.id === point.id ? drag.delta : 0}px`}>
-            <button type="button" class="stop" class:highlighted={hoveredId === point.id} onclick={() => onInspect(point)}
-                onmouseenter={() => onHover?.(point.id)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(point.id)} onblur={() => onHover?.(null)}>
-                <Icon name={point.kind === 'start' || point.kind === 'finish' ? 'pin' : 'flag'} size={17} />
-                <span>
-                    <strong>{point.label}</strong>
-                    {#if measured}<small>{distanceIn(distance * 1000).toFixed(1)} {settings.units}</small>{/if}
-                </span>
-            </button>
+    {#each listed as { point, distance }, index (index === last && loop ? 'end' : point.id)}
+        <RouteRow sign={index === 0 ? 'start' : index === last ? 'finish' : stopSign(point)} label={point.label}
+            along={index === 0 ? 'Start' : measured ? formatAlong(distance * 1000) : index === last ? 'Finish' : ''}
+            lit={hoveredId === point.id} onclick={() => onInspect(point)} onHover={on => onHover?.(on ? point.id : null)}
+            class={{ dragging: drag?.id === point.id && index < last && Math.abs(drag.delta) > 4, 'drop-before': drag?.to === index && drag.to < drag.from, 'drop-after': drag?.to === index && drag.to > drag.from }}
+            style={`--drag-y: ${drag?.id === point.id && index < last ? drag.delta : 0}px`}>
             {#if index > 0 && index < last}
                 <button type="button" class="handle" data-point={point.id} aria-label={`Reorder ${point.label}`} aria-describedby={helpId}
                     title="Drag to reorder · use ↑ or ↓ when focused" disabled={last < 3}
@@ -87,97 +78,44 @@
                             event.preventDefault();
                             move(point.id, index, index + (event.key === 'ArrowUp' ? -1 : 1), true);
                         }
-                    }}><Icon name="grip" size={20} /></button>
-            {:else}
-                <small class="end">{point.kind === 'start' ? loop ? 'Start and finish' : 'Start' : 'Finish'}</small>
+                    }}><Icon name="grip" size={18} /></button>
             {/if}
-        </li>
+        </RouteRow>
+        {#if index === 0 && last === 1}<RouteRow {...hint} />{/if}
     {/each}
 </ol>
-{#if onLoop && !loop && listed.at(-1)?.point.kind === 'finish'}
-    <button type="button" class="stop back" onclick={onLoop}><Icon name="loop" size={17} />Back to start</button>
-{/if}
 <span class="sr-only" id={helpId}>Drag to reorder. Use the up and down arrow keys when focused.</span>
 <span class="sr-only" role="status">{announcement}</span>
 
 <style>
     .route {
         margin: 0;
-        padding: 4px 16px 0;
+        padding: 4px 12px 16px;
         list-style: none;
     }
-    li {
-        position: relative;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 4px;
-    }
-    li.dragging { z-index: 1; transform: translateY(var(--drag-y)); background: var(--panel); border-radius: 6px; box-shadow: var(--planner-shadow); pointer-events: none; }
-    li.drop-before::before, li.drop-after::after { content: ''; position: absolute; left: 0; right: 0; height: 2px; background: var(--forest); }
-    li.drop-before::before { top: -3px; }
-    li.drop-after::after { bottom: -3px; }
-    button {
-        border: 0;
-        background: none;
-        color: var(--ink);
-        font: inherit;
-        cursor: pointer;
-    }
-    .stop {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        margin-left: -8px;
-        padding: 8px;
-        border-radius: 6px;
-        text-align: left;
-    }
-    .stop.back {
-        width: calc(100% - 16px);
-        margin: 4px 8px 0;
-        color: var(--ink-soft);
-        font: 600 14px var(--sans);
-    }
-    .stop.back:hover { color: var(--ink); }
-    .stop:hover, .stop.highlighted {
-        background: var(--parchment-2);
-    }
-    .stop > :global(svg) {
-        flex: none;
-        color: var(--ink-soft);
-    }
-    strong,
-    small {
-        display: block;
-    }
-    strong {
-        font: 600 14px var(--sans);
-    }
-    small {
-        margin-top: 2px;
-        font-size: 13px;
-        color: var(--ink-soft);
-        font-variant-numeric: tabular-nums;
-    }
-    .end {
-        margin: 0;
-    }
+    /* Each row keeps the column of the handle, so the distances line up. */
+    .route > :global(li) { grid-template-columns: minmax(0, 1fr) 24px; }
+    .route > :global(li.dragging) { z-index: 1; transform: translateY(var(--drag-y)); background: var(--panel); box-shadow: var(--planner-shadow); pointer-events: none; }
+    .route > :global(li.dragging::before) { display: none; }
+    .route > :global(li.drop-before::after), .route > :global(li.drop-after::after) { content: ''; position: absolute; left: 0; right: 0; height: 2px; background: var(--forest); }
+    .route > :global(li.drop-before::after) { top: -1px; }
+    .route > :global(li.drop-after::after) { bottom: -1px; }
     .handle {
         display: grid;
         place-items: center;
-        width: 32px;
+        width: 24px;
         height: 36px;
+        padding: 0;
+        border: 0;
         border-radius: 6px;
-        color: var(--ink-soft);
+        background: none;
+        color: var(--ink-faint);
+        font: inherit;
         cursor: grab;
         touch-action: none;
     }
+    .handle:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
     .handle:active { cursor: grabbing; }
-    .handle:hover:not(:disabled) {
-        background: var(--parchment-2);
-    }
+    .handle:hover:not(:disabled) { background: var(--parchment-2); color: var(--ink-soft); }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 </style>

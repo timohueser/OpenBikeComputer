@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { pinNight, addRestDay, setDrawnLeg } from './editor';
+import { pinNight, setDrawnLeg } from './editor';
 import { exportPlan, importPlan, newPlan, planSummary, savedWhen } from './library';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 
 describe('plan file', () => {
-    it('round-trips nights, dates, the pace, rest days and drawings under a new identity', () => {
-        const trip = { ...addRestDay(pinNight(testTrip(), undefined, 1, [7.2, 47.5], 'Camp'), 1), startDate: '2026-10-04', pace: 'easy' as const };
+    it('round-trips nights, dates, the pace and drawings under a new identity', () => {
+        const trip = { ...pinNight(testTrip(), undefined, 1, [7.2, 47.5], 'Camp'), startDate: '2026-10-04', pace: 'easy' as const };
         const plan = newPlan(setDrawnLeg(trip, 'finish', [[7, 47.5]]), 'Autumn tour');
         const imported = importPlan(exportPlan(plan));
         expect(imported.id).not.toBe(plan.id);

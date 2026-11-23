@@ -18,7 +18,7 @@
     import { settings } from '../../lib/settings/settings.svelte';
 
     let {
-        kind, trip, line, days, detailsError = '', dayLabels, night, point, place, coordinate, legMode, takeFocus = true,
+        kind, trip, line, days, detailsError = '', night, point, place, coordinate, legMode, takeFocus = true,
         onClose, onEndpoint, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onChooseNight, onStay, onAddVisit, onRename, onKind, onRemove, children,
     }: {
         detailsError?: string;
@@ -27,9 +27,7 @@
         /** The line of the trip, once it is calculated. */
         line?: RoutingLine;
         days: Day[];
-        /** Riding number → calendar number. */
-        dayLabels: Record<number, number>;
-        /** The riding day the rider works on. */
+        /** The day the rider works on. */
         night: number;
         point?: RoutePoint;
         /** The place of a place callout, or the mapped place a point was made from. */
@@ -72,7 +70,6 @@
         { value: 'routed', label: 'Follow roads' },
         { value: 'straight', label: 'Straight lines' },
         { value: 'drawn', label: 'Freehand' },
-        { value: 'transfer', label: 'Transfer (not ridden)' },
     ];
 
     let renaming = $state(false);
@@ -121,7 +118,7 @@
             <p class="hint">The start moves to this point. The stops keep their order.</p>
         {/if}
     {:else if kind === 'dayend'}
-        <h2>Day {dayLabels[night]} ends here for now</h2>
+        <h2>Day {night} ends here for now</h2>
         <button type="button" class="secondary" onclick={onChooseNight}>Choose where to sleep</button>
         <button type="button" class="planner-action" onclick={onPick}>Pick another spot on the map</button>
         <p class="hint">Drag the marker along the route to move the day end.</p>
@@ -136,12 +133,12 @@
             <label class="field">End of day
                 <select bind:value={sleepDay}>
                     {#each days as day (day.number)}
-                        <option value={day.number} disabled={day.number >= maxRidingDays}>Day {dayLabels[day.number]}{day.pinned ? ` · replaces ${day.pinned.label}` : day.number >= maxRidingDays ? ' · day limit reached' : day.number === days.length ? ' · adds a night' : ''}</option>
+                        <option value={day.number} disabled={day.number >= maxRidingDays}>Day {day.number}{day.pinned ? ` · replaces ${day.pinned.label}` : day.number >= maxRidingDays ? ' · day limit reached' : day.number === days.length ? ' · adds a night' : ''}</option>
                     {/each}
                 </select>
             </label>
             {#if preview}
-                <p class="predict">Day {dayLabels[sleepDay]} would be ≈ <strong>{distanceIn(preview.distance * 1000).toFixed(1)} {settings.units} ↑ {Math.round(heightIn(preview.ascent))} {heightUnit()}</strong></p>
+                <p class="predict">Day {sleepDay} would be ≈ <strong>{distanceIn(preview.distance * 1000).toFixed(1)} {settings.units} ↑ {Math.round(heightIn(preview.ascent))} {heightUnit()}</strong></p>
             {/if}
             {#if sleepDay >= maxRidingDays}<p class="hint">A trip can have up to {maxRidingDays} riding days. Choose an earlier day for this overnight.</p>{/if}
             <button type="button" class="primary" disabled={sleepDay >= maxRidingDays} onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>

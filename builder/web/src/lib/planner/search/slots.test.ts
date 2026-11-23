@@ -51,8 +51,8 @@ describe('the slots of the planner search', () => {
     it('gives an area on the route as its stretch: a part is 20 % of it at an end, at least 10 km, and its middle 40 %', () => {
         expect([partOf([0, 100], 'start'), partOf([0, 100], 'end'), partOf([0, 100], 'middle')]).toEqual([[0, 20], [80, 100], [30, 70]]);
         expect([partOf([20, 40], 'start'), partOf([20, 26], 'end')]).toEqual([[20, 30], [20, 26]]);
-        const plan = { km: [0, 60], days: [{ number: 1, from: 0, to: 30, rest: false }, { number: 2, from: 30, to: 30, rest: true }, { number: 3, from: 30, to: 60, rest: false }] };
-        expect([stretchOf({ day: 3, part: 'end' }, plan), stretchOf({ scope: 'route' }, plan), stretchOf({ day: 2 }, plan)]).toEqual([[50, 60], [0, 60], undefined]);
+        const plan = { km: [0, 60], days: [{ number: 1, from: 0, to: 30 }, { number: 2, from: 30, to: 60 }] };
+        expect([stretchOf({ day: 2, part: 'end' }, plan), stretchOf({ scope: 'route' }, plan), stretchOf({ day: 3 }, plan)]).toEqual([[50, 60], [0, 60], undefined]);
         expect([NEAREST, { scope: 'view' }, { near: [{ name: 'Freiburg' }] }].map(where => stretchOf(where, plan))).toEqual([undefined, undefined, undefined]);
         // With no route, the request keeps the area as the slot holds it.
         const slots = { find: { kind: 'water' }, where: { day: 1, part: 'start' } };
@@ -70,7 +70,7 @@ describe('the slots of the planner search', () => {
     });
 
     it('reads an open stretch and a limit "after" or "before" a point as the server does, and leaves a place to it', () => {
-        const plan = { km: [0, 60], days: [{ number: 1, from: 0, to: 30, rest: false }, { number: 2, from: 30, to: 60, rest: false }] };
+        const plan = { km: [0, 60], days: [{ number: 1, from: 0, to: 30 }, { number: 2, from: 30, to: 60 }] };
         const km = (value: number) => ({ value, unit: 'km' }), mark = (value: number) => ({ along: { ref: 'km', at: km(value) } });
         // "water after km 10" runs to the finish; "before km 20" from the start.
         expect([stretchOf({ after: mark(10) }, plan), stretchOf({ before: mark(20) }, plan)]).toEqual([[10, 60], [0, 20]]);

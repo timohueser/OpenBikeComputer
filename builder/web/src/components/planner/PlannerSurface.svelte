@@ -4,15 +4,13 @@
     import type { RoutingLine, Surface } from '../../lib/planner/routing';
     import { axisLeft, axisProgress, axisWidth } from '../../lib/planner/profile-axis';
     import { noteDistance } from '../../lib/planner/route-closures';
-    let { line, from, to, rests = [], walking = false, lit = $bindable(), onHover }: {
+    let { line, from, to, walking = false, lit = $bindable(), onHover }: {
         walking?: boolean; line?: RoutingLine; from: number; to: number;
         /** The surface of the legend entry under the pointer or with the focus. */
         lit?: Surface;
-        /** The rest columns of the profile, as route progress. */
-        rests?: number[];
         onHover: (progress: number | null) => void;
     } = $props();
-    const axis = $derived({ from, to, rests });
+    const axis = $derived({ from, to });
     const helpId = $props.id();
     const runs = $derived(surfaceRuns(line));
     const visible = $derived(surfaceWindow(runs, from, to));
@@ -54,14 +52,14 @@
         onpointerleave={leave} onfocus={() => inspect(from)} onblur={() => { position = null; onHover(null); }} onkeydown={key}>
         <div class="track">
             {#each visible as run, i (i)}
-                <span class:dim={lit && run.surface !== lit} style:left={axisLeft(axis, run.from, true)} style:width={axisWidth(axis, run.from, run.to)} style:background={colors[run.surface]}></span>
+                <span class:dim={lit && run.surface !== lit} style:left={axisLeft(axis, run.from)} style:width={axisWidth(axis, run.from, run.to)} style:background={colors[run.surface]}></span>
             {/each}
         </div>
         {#if hasPushing}
             <span class="push-label" aria-hidden="true">Push</span>
             <div class="push-track" aria-hidden="true">
                 {#each visible.filter(run => run.pushing) as run, i (i)}
-                    <span style:left={axisLeft(axis, run.from, true)} style:width={axisWidth(axis, run.from, run.to)}></span>
+                    <span style:left={axisLeft(axis, run.from)} style:width={axisWidth(axis, run.from, run.to)}></span>
                 {/each}
             </div>
         {/if}

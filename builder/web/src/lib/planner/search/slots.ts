@@ -73,7 +73,7 @@ export function baseOf(where: Where | undefined, { km, days }: Plan): Stretch | 
     const { along, day, scope, before, after } = where;
     let base: Stretch | undefined;
     if (typeof day === 'number') {
-        const found = days.find(one => one.number === day && !one.rest);
+        const found = days.find(one => one.number === day);
         base = found && [found.from, found.to];
     } else if (day === undefined && (scope === 'route' || along || before || after)) base = [0, total];
     if (base && along) base = alongIn(along, base);

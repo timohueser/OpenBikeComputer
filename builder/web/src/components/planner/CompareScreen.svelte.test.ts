@@ -22,8 +22,7 @@ afterEach(async () => {
 });
 
 const route = (id: string, name: string, trip: Trip): Plan => ({ ...newPlan(trip, name), id });
-// Six calendar days: five riding days and a rest day after day 2; four riding days; and three.
-const long = { ...testTrip(), days: 5, restAfter: [2] }, short = { ...testTrip(), days: 4 }, shortest = { ...testTrip(), days: 3 };
+const long = { ...testTrip(), days: 6 }, short = { ...testTrip(), days: 4 }, shortest = { ...testTrip(), days: 3 };
 const lines = Object.fromEntries([long, short, shortest].map(trip => [routingKey(trip), testLine(trip)]));
 
 function open(routes = [route('short', 'Fast', short), route('long', 'Slow', long)], props: { changed?: boolean; onFindLines?: (trips: Trip[]) => void } = {}) {
@@ -57,11 +56,10 @@ describe('compare screen', () => {
         expect(document.querySelector('.note')?.textContent).toBe('‘Slow’ shows its saved state. Your latest changes could not be saved.');
     });
 
-    it('gives each calendar day one row, and the shorter route "Finished" after its last day', () => {
+    it('gives each day one row, and the shorter route "Finished" after its last day', () => {
         open();
         expect([...document.querySelectorAll('.rows .label')].map(label => label.textContent)).toEqual(['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Day 6']);
-        expect(column(0, '.rest')).toHaveLength(1);
-        expect(column(0, '.ride')).toHaveLength(5);
+        expect(column(0, '.ride')).toHaveLength(6);
         expect(column(1, '.ride')).toHaveLength(4);
         expect(column(1, '.finished').map(cell => cell.textContent)).toEqual(['Finished', 'Finished']);
         expect(column(0, '.ride').at(-1)!.textContent).toContain('→ Thun');

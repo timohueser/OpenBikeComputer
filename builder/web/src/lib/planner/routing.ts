@@ -79,7 +79,7 @@ export interface RoutingLine {
     unknownSurfaceKm: number;
     pushingKm: number;
     unroutedKm: number;
-    /** Ridden kilometres whose ascent is unknown; a transfer is not ridden, so it never counts. */
+    /** Kilometres whose ascent is unknown. */
     unknownElevationKm: number;
     /** The plan points at which a leg with no legal path ends, as `legEndId`. Such a leg is a straight line with no time and no
      * climb, and it counts in no unknown or unrouted figure. */
@@ -209,20 +209,17 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
     // Seconds per kilometre on a manual leg or connector.
     const pace = 3600 / ridingProfiles[trip.bike ?? 'touring'].engineKmh;
     let distance = 0;
-    let afterTransfer = false;
-    function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], edges: Edges, transfer = false) {
+    function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], edges: Edges) {
         const last = result.coordinates.at(-1);
         const gap = last ? cumulative([last, line[0]])[1] : 0;
-        // A join to a manually drawn leg is itself an explicit, unverified connector. A join to a transfer is not ridden.
-        if (gap > 0 && !transfer && !afterTransfer) {
+        // A join to a manually drawn leg is itself an explicit, unverified connector.
+        if (gap > 0) {
             result.unroutedKm += gap; result.unknownSurfaceKm += gap; result.seconds += gap * pace;
             if (result.elevation.at(-1) === null || elevation[0] === null) result.unknownElevationKm += gap;
         }
         distance += gap;
-        // After a transfer the next leg repeats its first vertex, so no segment joins the heights at the two ends of the transfer.
-        const offset = last && gap === 0 && !afterTransfer ? 1 : 0;
+        const offset = last && gap === 0 ? 1 : 0;
         const connector = last && !offset ? 1 : 0;
-        afterTransfer = transfer;
         const length = Math.max(result.coordinates.length - 1, 0);
         appendEdges(result.edges, length, undefined, 0, connector);
         appendEdges(result.edges, length + connector, edges, 0, line.length - 1);
@@ -250,12 +247,11 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
             if (line.length > 2 && same(0, 1)) heights[0] ??= heights[1];
             if (line.length > 2 && same(line.length - 1, line.length - 2)) heights[line.length - 1] ??= heights[line.length - 2];
             const lengths = cumulative(line);
-            const ridden = end.leg !== 'transfer';
-            append(line, heights, lengths.map(km => ridden ? km * pace : 0), {}, !ridden);
-            const km = ridden ? lengths.at(-1)! : 0;
+            append(line, heights, lengths.map(km => km * pace), {});
+            const km = lengths.at(-1)!;
             result.unknownSurfaceKm += km;
             result.unroutedKm += km;
-            if (ridden) heights.forEach((h, k) => { if (k && (h === null || heights[k - 1] === null)) result.unknownElevationKm += lengths[k] - lengths[k - 1]; });
+            heights.forEach((h, k) => { if (k && (h === null || heights[k - 1] === null)) result.unknownElevationKm += lengths[k] - lengths[k - 1]; });
             result.stops.push({ id: end.id, distance });
             i++;
             continue;

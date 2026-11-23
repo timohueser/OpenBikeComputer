@@ -32,26 +32,19 @@ describe('GPX import', () => {
         expect(readTracks([{ name: 'a.gpx', text: gpx(line, 'Jura crossing') }])[0].name).toBe('Jura crossing');
     });
 
-    it('makes a trip with a night at each day end and a transfer that is not ridden or climbed', async () => {
+    it('makes a trip with a night at each day end and a routed leg to a day that starts elsewhere', async () => {
         const first = track([7.6, 47.5], 20), second = track([first.at(-1)![0] + .001, 47.5], 20), third = track([7.8, 47.6], 20);
-        // Each day climbs 19 m; day 3 starts 362 m higher, across the transfer.
+        // Each day climbs 19 m, and day 2 starts at the height where day 1 ends.
         const heights = [100, 119, 500].map((base, day) => [first, second, third][day].map(([lon, lat], i): DrawnCoordinate => [lon, lat, base + i]));
         const lines = readTracks(heights.map((line, i) => ({ name: `day-${i + 1}.gpx`, text: gpx(line) })));
         const trip = importedTrip({}, lines);
         expect(isTrip(trip)).toBe(true);
         expect(trip).toMatchObject({ mode: 'trip', days: 3 });
         expect(orderedRoutePoints(trip).map(p => [p.id.startsWith('night') ? p.id : p.kind, p.leg]))
-            .toEqual([['start', undefined], ['night-1', 'drawn'], ['night-2', 'drawn'], ['via', 'transfer'], ['finish', 'drawn']]);
-        const line = await calculateLine(trip, new AbortController().signal, new LegCache());
-        const ridden = planView(trip, line).total - kilometres(second.at(-1)!, third[0]);
-        expect(planView(trip, line).summary.distance).toBeCloseTo(ridden, 9);
-        expect(line.seconds).toBeCloseTo(ridden / 19 * 3600, 6);
-        expect(line.unroutedKm).toBeCloseTo(ridden, 9);
+            .toEqual([['start', undefined], ['night-1', 'drawn'], ['night-2', 'drawn'], ['via', undefined], ['finish', 'drawn']]);
+        const joined = importedTrip({}, lines.slice(0, 2)), line = await calculateLine(joined, new AbortController().signal, new LegCache());
         expect(line.unknownElevationKm).toBe(0);
-        expect(profileAscent(0, 1, line)).toBe(57);
-        const days = planView(trip, line).days;
-        expect(days.reduce((km, day) => km + day.distance, 0)).toBeCloseTo(ridden, 9);
-        expect(days[2].hours).toBeCloseTo(cumulative(third).at(-1)! / 19, 6);
+        expect(profileAscent(0, 1, line)).toBe(38);
     });
 
     it('guesses the days of a kept line at the pace of its activity', async () => {

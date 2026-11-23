@@ -7,7 +7,7 @@ import { NEAREST } from '../../lib/planner/search/slots';
 import type { SearchContext, SearchState, QueryRequest } from '../../lib/planner/search/types';
 import '../../../test-support/planner/animations';
 
-const context: SearchContext = {view:[7.8,47.9,8,48.1],plan:{coordinates:[[7.8,48],[7.9,48]],km:[0,7.44],days:[{number:1,from:0,to:4,rest:false},{number:2,from:4,to:7,rest:false}],points:[]}};
+const context: SearchContext = {view:[7.8,47.9,8,48.1],plan:{coordinates:[[7.8,48],[7.9,48]],km:[0,7.44],days:[{number:1,from:0,to:4},{number:2,from:4,to:7}],points:[]}};
 const reply = (request: QueryRequest) => ({ok:true,json:async()=>({type:'places',request,results:[]})}) as Response;
 /** The requests of the query model for the sentences of these tests. */
 const READ: Record<string, QueryRequest> = {

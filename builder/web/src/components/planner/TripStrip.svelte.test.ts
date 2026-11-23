@@ -12,10 +12,10 @@ afterEach(async () => { if (strip) await unmount(strip); document.body.replaceCh
 /** A strip of a 32-day trip, 32 slots of 30 px with 2 px gaps: day d spans 32 (d − 1) to 32 (d − 1) + 30 px. */
 function mountStrip() {
     const trip: Trip = { ...testTrip(), days: 32 };
-    const itinerary = planView(trip, testLine(trip)).itinerary;
+    const days = planView(trip, testLine(trip)).days;
     let start = $state(1);
     const moves: number[] = [];
-    strip = mount(TripStrip, { target: document.body, props: { itinerary, get week() { return weekOf(itinerary, start)!; }, theme: 'light',
+    strip = mount(TripStrip, { target: document.body, props: { days, get week() { return weekOf(days.length, start)!; }, theme: 'light',
         onMove: (next: number) => { moves.push(next); start = next; } } });
     flushSync();
     const slider = document.querySelector<HTMLElement>('[role="slider"]')!;
