@@ -7,8 +7,8 @@
     import PlannerIcon from '../../lib/ui/Icon.svelte';
     import SearchBar, { type Slot } from '../../lib/ui/search-bar/SearchBar.svelte';
     import type { FieldProps, Place } from '../../lib/ui/search-bar/Field.svelte';
-    import { scan, type Value } from '../../lib/ui/search-bar/read';
-    import { oftenNext, PLANNER_WORDS, type Mark } from '../../lib/planner/search/marks';
+    import type { Value } from '../../lib/ui/search-bar/read';
+    import { areasAndTimes, oftenNext, PLANNER_WORDS, type Mark } from '../../lib/planner/search/marks';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { fill, requestOf, resetSlot, sameValue, slotsOf, slotWords, whereWords, type SlotId, type Slots } from '../../lib/planner/search/slots';
     import { searchPlaces, type QueryRequest, type SearchAnswer, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
@@ -27,6 +27,10 @@
 
     let slots = $state.raw<Slots>({});
     const request = $derived(requestOf(slots));
+    /** The request of a change of the plan that the list shows: it fills no slot, so a new search asks for it again. */
+    let planned = $state.raw<QueryRequest>();
+    /** The text of the field. */
+    let typed = $state('');
     /** The last sentence that the query model read, and whether a slot changed since. */
     let sentence = '', edited = false;
     /** The kinds that one thing to find left out of the last answer. */
@@ -38,12 +42,13 @@
     let serial = 0, limit = 20;
     let requestContext: SearchContext | undefined;
     let searchedView = $state(0);
-    const usesView = $derived(request?.type === 'place' ? !request.near : !!request && (request.where ?? context.pointing ?? VIEW).scope === 'view');
+    const usesView = $derived(!planned && (request?.type === 'place' ? !request.near : !!request && (request.where ?? context.pointing ?? VIEW).scope === 'view'));
     const movedView = $derived(usesView && !!searchState.answer && viewRevision !== searchedView);
     const days = $derived(context.plan.days.filter(day => !day.rest).map(day => day.number));
 
-    /** Asks the server. With `sent`, the server reads no sentence; without it, the query model reads `q`. */
-    async function search(q: string, sent: QueryRequest | undefined, nextLimit: number, searchContext = context): Promise<SearchAnswer | undefined> {
+    /** Asks the server. With `sent`, the server reads no sentence; without it, the query model reads `q`. The answer shows
+     * with the `notice` of `told`, the answer of the model that this search repeats with the values of the slots. */
+    async function search(q: string, sent: QueryRequest | undefined, nextLimit: number, searchContext = context, told?: SearchAnswer): Promise<SearchAnswer | undefined> {
         clearTimeout(timer); controller?.abort(); const id = ++serial;
         controller = new AbortController(); limit = nextLimit; requestContext = searchContext;
         const signal = controller.signal;
@@ -61,7 +66,7 @@
                 if (id !== serial || !failure) return answer;
                 throw new Error(failure === 'denied' ? 'Allow location access to search near you.' : 'Your position is not available.');
             }
-            searchState = { loading: false, error: '', answer };
+            searchState = { loading: false, error: '', answer: told ? { ...answer, notice: told.notice, canRetry: told.canRetry } : answer };
             return answer;
         } catch (error) {
             if (id !== serial || signal.aborted) return;
@@ -72,16 +77,24 @@
      * When the slots then give another request, they search again with no model. */
     function took(q: string, answer: SearchAnswer) {
         const found = slotsOf(answer.request);
-        [sentence, edited, left] = [q, false, found.left];
-        if (!found.slots.find && !found.slots.where && !found.slots.open) return;
+        [sentence, edited, left, planned] = [q, false, found.left, undefined];
+        if (!found.slots.find && !found.slots.where && !found.slots.open) {
+            planned = answer.request;
+            return;
+        }
         slots = fill(slots, found.slots);
         const { ignored: _, ...asked } = answer.request;
-        if (!sameValue(requestOf(slots), asked)) run(limit);
+        if (!sameValue(requestOf(slots), asked)) run(limit, context, answer);
     }
     /** Searches with the request of the slots and no model. With no thing to find there is no search. */
-    function run(nextLimit = 20, searchContext = context) {
+    function run(nextLimit = 20, searchContext = context, told?: SearchAnswer) {
         if (!request) return stop();
-        void search(request.type === 'place' ? request.name! : sentence, request, nextLimit, searchContext);
+        void search(request.type === 'place' ? request.name! : sentence, request, nextLimit, searchContext, told);
+    }
+    /** Searches again for what the list shows, a change of the plan or the request of the slots, with no model. */
+    function again(nextLimit = limit, searchContext = context) {
+        if (planned) void search(sentence, planned, nextLimit, searchContext);
+        else run(nextLimit, searchContext);
     }
     function stop() {
         clearTimeout(timer); controller?.abort(); serial++;
@@ -89,7 +102,7 @@
     }
     /** New values of the slots from a panel, a suggestion or "Undo". */
     function set(next: Slots) {
-        [slots, edited, left] = [next, true, []];
+        [slots, edited, left, planned] = [next, true, [], undefined];
         if (request) return run();
         stop();
         onClear();
@@ -97,8 +110,8 @@
     /** Enter. A sentence of only search areas and opening times sets them from the word list; any other sentence goes to
      * the query model. */
     async function read(text: string): Promise<{ kept: string; values: Value[] } | undefined> {
-        const before = slots, parts = scan(text, PLANNER_WORDS), marks = parts.flatMap(part => part.kind === 'value' ? [part.value] : []);
-        if (marks.length && parts.every(part => part.kind === 'glue' || (part.kind === 'value' && part.value.slot !== 'find'))) {
+        const before = slots, marks = areasAndTimes(text);
+        if (marks) {
             set(marks.reduce((next, mark) => mark.set(next), slots));
             return { kept: '', values: landed(before) };
         }
@@ -115,21 +128,21 @@
         reset();
         onClear();
     }
-    /** Empties the search with no "Undo", such as after a change of the plan. */
+    /** Empties the search and the field with no "Undo", such as after a change of the plan. */
     export function reset() {
         stop();
-        [slots, sentence, left] = [{}, '', []];
+        [slots, sentence, left, planned, typed] = [{}, '', [], undefined, ''];
     }
     export function more() { run(Math.min(100, Math.max(20, limit + 20)), requestContext); }
     /** A failed or a temporary answer: the query model reads the sentence again, unless a slot changed since. */
     export function retry() {
         if (!edited && sentence) void search(sentence, undefined, Math.max(20, limit), requestContext);
-        else run(Math.max(20, limit), requestContext);
+        else again(Math.max(20, limit), requestContext);
     }
     $effect(() => {
         // Map movement advances viewRevision instead, so the searched area stays until the rider searches the new view.
         void revision;
-        untrack(() => { if (request) { clearTimeout(timer); controller?.abort(); serial++; searchState = { ...searchState, loading: true, error: '' }; timer = setTimeout(() => run(limit), 200); } });
+        untrack(() => { if (planned || request) { clearTimeout(timer); controller?.abort(); serial++; searchState = { ...searchState, loading: true, error: '' }; timer = setTimeout(() => again(), 200); } });
     });
     onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 
@@ -144,7 +157,7 @@
     ]);
     const summary = (kept: Slots) => Object.values(slotWords(kept)).flat().join(' · ');
     const field = $derived<FieldProps<Mark, Place>>({
-        table: PLANNER_WORDS, label: 'Find a place or ask about the route', placeholder: 'Ask, such as “water on day 2”', examples: searches.length ? [] : EXAMPLES,
+        table: PLANNER_WORDS, label: 'Find a place or ask about the route', placeholder: 'Ask, such as “water on day 2”', maxlength: 240, examples: searches.length ? [] : EXAMPLES,
         recent: searches.filter(kept => !sameValue(kept, slots)).map(kept => ({ text: summary(kept), run: () => set(kept) })),
         often: () => oftenNext(slots, days.length), changes: mark => !sameValue(mark.set(slots), slots),
         onvalues: marks => set(marks.reduce((next, mark) => mark.set(next), slots)), read,
@@ -154,7 +167,7 @@
 </script>
 
 <div class="planner-query">
-    <SearchBar label="Search the route" slots={bar} {field} bind:open empty={!slots.find && !slots.where && !slots.radius && !slots.open}
+    <SearchBar label="Search the route" slots={bar} {field} bind:open bind:text={typed} empty={!slots.find && !slots.where && !slots.radius && !slots.open}
         onreset={id => set(resetSlot(slots, id as SlotId))} onclear={clear} onundo={() => set(cleared)}>
         {#snippet panel(id)}
             {#if id === 'find'}

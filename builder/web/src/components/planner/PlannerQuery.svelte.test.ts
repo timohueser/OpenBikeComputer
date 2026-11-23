@@ -3,7 +3,7 @@ import { mount, tick, unmount } from 'svelte';
 import { writable, fromStore } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Query from './PlannerQuery.svelte';
-import type { SearchContext, QueryRequest } from '../../lib/planner/search/types';
+import type { SearchContext, SearchState, QueryRequest } from '../../lib/planner/search/types';
 import '../../../test-support/planner/animations';
 
 const context: SearchContext = {view:[7.8,47.9,8,48.1],plan:{coordinates:[[7.8,48],[7.9,48]],km:[0,7.44],days:[{number:1,from:0,to:4,rest:false},{number:2,from:4,to:7,rest:false}],points:[]}};
@@ -91,6 +91,53 @@ describe('the planner search',()=>{
         press('Climbs'); await vi.advanceTimersByTimeAsync(0); await tick();
         expect(sent(fetch).at(-1).request).toEqual({ type: 'stretches', what: 'climb', where: { anchor: [7.9, 48] } });
         expect(slot('when').disabled).toBe(true);
+    });
+
+    it('keeps a change of the plan when it searches again with the position of the rider', async () => {
+        const route: QueryRequest = { type: 'route', from: { here: true }, to: { name: 'Konstanz' } };
+        const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+            const input = JSON.parse(String(init.body));
+            if (input.request?.type !== 'route' && input.q !== 'route from my location to Konstanz') return reply(input.request ?? READ[input.q]);
+            return { ok: true, json: async () => input.here ? { type: 'change', request: route, description: 'Route from Your location to Konstanz', changes: [] }
+                : { type: 'unresolved', code: 'location', request: route, results: [] } } as Response;
+        });
+        vi.stubGlobal('fetch', fetch);
+        const view = fromStore(writable(context)), revision = fromStore(writable(0));
+        let state: SearchState = { loading: false, error: '', answer: null };
+        const onLocation = vi.fn(async () => { view.current = { ...context, here: [7.85, 48] }; revision.current++; return undefined; });
+        const { enter, words } = await setup({ get context() { return view.current; }, get revision() { return revision.current; }, onLocation,
+            get searchState() { return state; }, set searchState(next: SearchState) { state = next; } });
+        await enter('supermarket');
+        await enter('route from my location to Konstanz'); await vi.advanceTimersByTimeAsync(250); await tick();
+        expect(onLocation).toHaveBeenCalledOnce();
+        expect(sent(fetch).at(-1)).toMatchObject({ here: [7.85, 48], request: route });
+        expect(state).toMatchObject({ loading: false, answer: { type: 'change' } });
+        // The slots keep the search before.
+        expect(words('find')).toBe('Supermarket');
+    });
+
+    it('searches a name in the map view, and keeps the notice of an answer without the model when the slots search again', async () => {
+        const notice = 'The query model is unavailable. Showing ordinary place search.';
+        const answers: Record<string, object> = {
+            'pharmacy in Teningen': { request: { type: 'places', what: ['pharmacy'], where: { near: [{ name: 'Teningen' }] } } },
+            'cafes': { request: { type: 'places', what: ['cafe'] }, notice, canRetry: true },
+            'Freiburg Hauptbahnhof': { request: { type: 'place', name: 'Freiburg Hauptbahnhof' }, notice, canRetry: true },
+        };
+        const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+            const input = JSON.parse(String(init.body));
+            return { ok: true, json: async () => ({ type: 'places', results: [], ...input.request ? { request: input.request } : answers[input.q] }) } as Response;
+        });
+        vi.stubGlobal('fetch', fetch);
+        let state: SearchState = { loading: false, error: '', answer: null };
+        const { enter, words } = await setup({ get searchState() { return state; }, set searchState(next: SearchState) { state = next; } });
+        await enter('pharmacy in Teningen');
+        await enter('cafes');
+        expect(sent(fetch).at(-1).request).toEqual({ type: 'places', what: ['cafe'], where: { near: [{ name: 'Teningen' }] } });
+        expect(state.answer).toMatchObject({ notice, canRetry: true });
+        await enter('Freiburg Hauptbahnhof');
+        expect(fetch).toHaveBeenCalledTimes(4);
+        expect(words('where')).toBe('In this map view');
+        expect(state.answer).toMatchObject({ request: { type: 'place', name: 'Freiburg Hauptbahnhof' }, notice, canRetry: true });
     });
 
     it('discards stale responses and keeps a cleared search empty',async()=>{

@@ -15,6 +15,8 @@
         table: Table<V>;
         label: string;
         placeholder: string;
+        /** The most characters of the text, such as the limit of a server that reads it. */
+        maxlength?: number;
         /** Sentences for an empty field before the first search: a click types one and presses Enter. */
         examples: string[];
         /** The last searches, the newest first, and what brings one back. */
@@ -46,7 +48,7 @@
     import { drop, pop, still } from './motion';
     import { fold, scan, suggest, typing, type Part } from './read';
 
-    let { table, label, placeholder, examples, recent, often, changes, onvalues, read, places, onplace, placesLabel, onsearch, text = $bindable(), listing = $bindable(), slots, land }: FieldProps<V, P> & {
+    let { table, label, placeholder, maxlength, examples, recent, often, changes, onvalues, read, places, onplace, placesLabel, onsearch, text = $bindable(), listing = $bindable(), slots, land }: FieldProps<V, P> & {
         text: string;
         /** The list is open. */
         listing: boolean;
@@ -297,7 +299,7 @@
         <Icon name="search" size={17} />
         <span class="type">
             <span class="mirror" aria-hidden="true" bind:this={mirror}>{#each pieces as piece, i (i)}{#if piece.kind}<span class="m-{piece.kind}" data-part={piece.at}>{piece.text}</span>{:else}{piece.text}{/if}{/each}</span>
-            <input bind:this={input} bind:value={text} type="text" role="combobox" aria-label={label} {placeholder} aria-expanded={shown && list.rows.length > 0} aria-controls="search-list"
+            <input bind:this={input} bind:value={text} type="text" role="combobox" aria-label={label} {placeholder} {maxlength} aria-expanded={shown && list.rows.length > 0} aria-controls="search-list"
                 aria-autocomplete="list" aria-activedescendant={active >= 0 ? `search-option-${active}` : undefined} autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"
                 onfocus={() => { if (!listing) [listing, session] = [true, false]; }} onblur={() => listing = false} onclick={() => listing = true}
                 oninput={() => { stop(); listing = true; }} onkeydown={keydown} onscroll={() => { if (mirror && input) mirror.scrollLeft = input.scrollLeft; }} />

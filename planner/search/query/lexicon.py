@@ -346,13 +346,24 @@ def build() -> None:
 
 
 MARKS = Path(__file__).with_name("marks.json")
+# Terms of two values in the lists of the field, and the category whose value the field gives
+# them. The query model reads them by the other words of the sentence.
+SHARED_MARKS = {
+    "hill": "stretch",      # "hills on day 2" asks for climbs; a summit is "summit" or "peak"
+    "lunch": "kind",        # "lunch" alone asks for food; "midday" is the middle of a day
+    "mornings": "day",      # each morning, not the start of one day
+}
+# Prepositions that change the meaning of the words after them: a sentence with one goes to the
+# query model, also when the field marks all its other words.
+MEANINGFUL = {"before", "after", "between", "until", "till", "from", "to", "since", "through",
+              "past", "beyond", "via", "near", "towards", "toward"}
 
 
 def marks_json() -> str:
     """The English words that the search field of the web planner marks and suggests while the
     rider types, by their value. The query model reads the sentence at Enter, so the list holds
     only the words of single values. Terms are folded, with a space for a hyphen, as the field
-    compares them."""
+    compares them. Raises ValueError for a term of two values that SHARED_MARKS does not name."""
     from decode import _DAY_VALUES  # decode imports this module
 
     def terms(ts) -> list[str]:
@@ -362,21 +373,38 @@ def marks_json() -> str:
         return {str(v): terms(per["en"]) for v, per in WORDS[category].items()
                 if per and per.get("en")}
 
-    glue = {t for c in ("stop", "nearest", "prep") for ts in en(c).values()
-            for term in ts for t in term.split()}
-    doc = {
+    def tokens(*categories: str) -> set[str]:
+        return {t for c in categories for ts in en(c).values() for term in ts for t in term.split()
+                if re.fullmatch(r"[\w']+", t)}
+
+    values = {
         "kind": {k: terms(ts) for k, ts in _load_kinds()["terms"]["en"].items() if ts},
         "stretch": en("stretch"),
         "part": en("part"),
         "day": {" ".join(p for p in _DAY_VALUES[v] if p): ts for v, ts in en("day_value").items()},
+        "scope": en("scope"),
+        "now": en("now"),
+        "weekday": en("weekday"),
+    }
+    owners: dict[str, set[str]] = defaultdict(set)
+    for category, by_value in values.items():
+        for term in {t for ts in by_value.values() for t in ts}:
+            owners[term].add(category)
+    for term, categories in sorted(owners.items()):
+        if len(categories) > 1 and SHARED_MARKS.get(term) not in categories:
+            raise ValueError(f"marks: {term!r} has a value in {sorted(categories)}; add it to SHARED_MARKS")
+    for term, category in SHARED_MARKS.items():
+        for other in set(values) - {category}:
+            values[other] = {v: [t for t in ts if t != term] for v, ts in values[other].items()}
+    doc = {
+        **values,
         "day_noun": en("day_noun")["day"],
         "ordinal": en("ordinal"),
         "number": {v: [t for t in ts if " " not in t and t not in schema.ARTICLES]
                    for v, ts in en("number").items() if v.isdigit() and v != "0"},
-        "scope": en("scope"),
-        "open": terms(en("open")["open"] + en("now")["now"]),
-        "weekday": en("weekday"),
-        "glue": sorted(t for t in glue if re.fullmatch(r"[\w']+", t)),
+        # The faint words, and those of them that carry no meaning.
+        "glue": sorted(tokens("stop", "nearest", "prep")),
+        "stop": sorted(tokens("stop") - MEANINGFUL),
     }
     return json.dumps(doc, ensure_ascii=False, indent=1) + "\n"
 

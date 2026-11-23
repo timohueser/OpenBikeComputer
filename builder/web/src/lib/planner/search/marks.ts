@@ -2,7 +2,7 @@
  * facts of the route, days and their parts, search areas and opening times. The lexicon builder of the query model
  * writes them to `marks.json`. Each gives the value of one slot; the query model reads a sentence at Enter. */
 import marks from '../../../../../../planner/search/query/marks.json' with { type: 'json' };
-import type { Table, Value } from '../../ui/search-bar/read';
+import { fold, scan, type Table, type Value } from '../../ui/search-bar/read';
 import { placeCategories } from '../poi-kinds';
 import { category } from './presentation';
 import { factIcon, factWord, kindWord, openWords, whereWords, type SlotId, type Slots } from './slots';
@@ -36,7 +36,6 @@ export const OPEN_NOW = when({ now: true });
 function table(): Table<Mark> {
     const phrases: Table<Mark>['phrases'] = [];
     const add = (terms: string[], value: Mark) => phrases.push(...terms.map(words => ({ words, value })));
-    // A word of two values takes the first: "hills" are climbs, not summits.
     for (const [fact, terms] of Object.entries(marks.stretch)) add(terms, factMark(fact));
     for (const [kind, terms] of Object.entries(marks.kind)) add(terms, kindMark(kind));
     for (const [part, terms] of Object.entries(marks.part)) add(terms, partMark(part));
@@ -47,7 +46,7 @@ function table(): Table<Mark> {
     for (const [n, terms] of Object.entries(marks.ordinal)) add(terms.flatMap(term => marks.day_noun.map(noun => `${term} ${noun}`)), dayMark(Number(n)));
     for (const [n, terms] of Object.entries(marks.number)) add(terms.flatMap(term => marks.day_noun.map(noun => `${noun} ${term}`)), dayMark(Number(n)));
     for (const [scope, terms] of Object.entries(marks.scope)) add(terms, scopeMark(scope));
-    add(marks.open, OPEN_NOW);
+    add(marks.now.now, OPEN_NOW);
     for (const [weekday, terms] of Object.entries(marks.weekday)) add(terms.flatMap(term => [term, `open ${term}`, `open on ${term}`]), when({ weekday }));
     const nouns = marks.day_noun.join('|');
     return {
@@ -57,6 +56,19 @@ function table(): Table<Mark> {
 }
 /** The words of the planner search for the reader of the text field. */
 export const PLANNER_WORDS = table();
+
+const STOP = new Set(marks.stop);
+/** The marks of a sentence of only search areas and opening times whose other words carry no meaning, which the page can
+ * read with no model; undefined for any other sentence, such as one with "after" or "between". */
+export function areasAndTimes(text: string): Mark[] | undefined {
+    const found: Mark[] = [];
+    for (const part of scan(text, PLANNER_WORDS)) {
+        const words = fold(text.slice(part.from, part.to));
+        if (part.kind === 'value' && part.value.slot !== 'find') found.push(part.value);
+        else if (part.kind !== 'glue' || !(STOP.has(words) || /^[,;.!?]$/.test(words))) return undefined;
+    }
+    return found.length ? found : undefined;
+}
 
 /** The values that riders often add next: a thing to find, then a day, the opening time and a search area. */
 export function oftenNext(slots: Slots, days: number): Mark[] {

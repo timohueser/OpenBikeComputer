@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { scan } from '../../ui/search-bar/read';
-import { PLANNER_WORDS, type Mark } from './marks';
+import { areasAndTimes, PLANNER_WORDS, type Mark } from './marks';
 
 /** Each marked phrase of a text with the label and the slot of its value. */
 const marked = (text: string) => scan(text, PLANNER_WORDS).flatMap(part => part.kind === 'value' ? [[text.slice(part.from, part.to), (part.value as Mark).label, part.value.slot]] : []);
@@ -20,5 +20,10 @@ describe('the words of the planner search', () => {
         expect(applied('second day, at the end')).toEqual({ where: { day: 2, part: 'end' } });
         expect(applied('the end of the route')).toEqual({ where: { scope: 'route', part: 'end' } });
         expect(applied('tonight')).toEqual({ where: { day: 'today', part: 'end' } });
+    });
+
+    it('reads with no model only a sentence of areas and times whose other words carry no meaning', () => {
+        expect(areasAndTimes('on day 2, open now')?.map(mark => mark.label)).toEqual(['Day 2', 'Open now']);
+        for (const text of ['open tomorrow', 'open on day 2', 'after day 2', 'between day 1 and day 2', 'water on day 2']) expect(areasAndTimes(text), text).toBeUndefined();
     });
 });

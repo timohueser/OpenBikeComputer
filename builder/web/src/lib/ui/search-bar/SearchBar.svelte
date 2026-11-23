@@ -15,7 +15,7 @@
     import { drop, rise, still } from './motion';
     import type { Value } from './read';
 
-    let { label, slots, field, panel, onreset, empty, onclear, onundo, open = $bindable() }: {
+    let { label, slots, field, panel, onreset, empty, onclear, onundo, open = $bindable(), text: typed = $bindable('') }: {
         label: string;
         slots: Slot[];
         field: FieldProps<V, P>;
@@ -29,6 +29,8 @@
         onundo: () => void;
         /** The id of the slot whose panel is open. */
         open?: string;
+        /** The text of the field. */
+        text?: string;
     } = $props();
 
     const UNDO_MS = 8000, SHOWN = 2;
@@ -37,8 +39,8 @@
     const NARROW_PX = 720;
     /** "Undo" shows after the cross until its time ends or the search holds a value again. */
     let undoing = $state(false), timer: ReturnType<typeof setTimeout> | undefined;
-    /** The text of the field, the text before the cross, and whether the list of the field is open. */
-    let typed = $state(''), clearedText = '', listing = $state(false);
+    /** The text before the cross, and whether the list of the field is open. */
+    let clearedText = '', listing = $state(false);
     const blank = $derived(empty && !typed);
     const current = $derived(slots.find(slot => slot.id === open && !slot.off));
     const button = (id: string) => bar?.querySelector<HTMLElement>(`[data-slot="${CSS.escape(id)}"]`);

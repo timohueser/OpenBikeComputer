@@ -50,9 +50,9 @@ export function slotsOf({ type, what, cuisine, name, near, where, radius, open, 
 }
 
 /** The slots after an answer of the query model: each slot that the answer holds a value of takes it, and the others keep
- * theirs. */
+ * theirs. A named place keeps no search area: it is searched near the place that its answer names, else in the map view. */
 export function fill(slots: Slots, found: Slots): Slots {
-    const area = found.where || found.radius ? found : slots;
+    const area = found.where || found.radius || (found.find && 'name' in found.find) ? found : slots;
     return { find: found.find ?? slots.find, where: area.where, radius: area.radius, open: found.open ?? slots.open };
 }
 
