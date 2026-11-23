@@ -264,6 +264,11 @@ pub(crate) fn floors(
         &segments.iter().map(|&(o, k)| grown(&overs[o].points[k..k + 2], overs[o].outer)).collect::<Vec<_>>(),
     );
     // Per room with a part, its vertices and the ways over them.
+    // Per room whether its ends lie behind a seam.
+    let mut behind = vec![[false; 2]; tubes.len()];
+    for &(r, e) in rooms.seams.iter().flat_map(|seam| &seam.children) {
+        behind[r][e] = true;
+    }
     let site_of = |k: usize| -> Site {
         let t = with[k];
         let (points, (ps, shell_half)) = (&lines[k], &boxes[k]);
@@ -312,7 +317,14 @@ pub(crate) fn floors(
         extra.retain(|&(e, _)| e > s0 && e < s1);
         extra.sort_by(|x, y| x.0.total_cmp(&y.0));
         let ends: Vec<f64> = extra.iter().map(|e| e.0).collect();
-        let s = spaced(&ends, spaced(&curve, fixed, b.vertex_gap_m), b.vertex_gap_m);
+        let mut s = spaced(&ends, spaced(&curve, fixed, b.vertex_gap_m), b.vertex_gap_m);
+        // A room behind a seam keeps its first chord whole, from its hole to the first vertex of its curve: its ring
+        // there lies wholly behind the line (`section::clear`); a ring between would not.
+        let n = curve.len();
+        let first = [curve[1.min(n - 1)], curve[n.saturating_sub(2)]];
+        s.retain(|&x| {
+            !(behind[t][0] && x > s0 && x < first[0] - MERGE_M || behind[t][1] && x < s1 && x > first[1] + MERGE_M)
+        });
         // The vertex that took the end of a reach, and its way: the way lies over it within its reach and
         // `vertex_gap_m`, so it keeps the cap of that end.
         let took: Vec<(usize, usize)> = (extra.iter())
