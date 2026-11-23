@@ -22,14 +22,14 @@ type Section = [[f64; 2]; 2];
 /// The chord of a room at a seam as the builder draws it: from the room's outline on the seam's line (its hole, or of
 /// the room before the line its own half-width) to its ring at the next vertex, the edges straight; and its metres.
 #[derive(Clone, Copy)]
-struct EndChord {
+pub(super) struct EndChord {
     line: Section,
     ring: Section,
     len: f64,
 }
 
 /// The chord of tube t at its end e on a seam's line of direction `dir`, its outline there `half` to each side.
-fn end_chord(t: &Tube, e: usize, (dir, half): ([f64; 2], f64), mitre: f64) -> Option<EndChord> {
+pub(super) fn end_chord(t: &Tube, e: usize, (dir, half): ([f64; 2], f64), mitre: f64) -> Option<EndChord> {
     let ps = &t.curve.stretches.first()?.1;
     let n = ps.len();
     let at = |k: usize| if e == 0 { ps[k] } else { ps[n - 1 - k] };
@@ -52,6 +52,13 @@ fn end_chord(t: &Tube, e: usize, (dir, half): ([f64; 2], f64), mitre: f64) -> Op
     let side = |c: [f64; 2], l: [f64; 2], h: f64| [offset(c, l, -h), offset(c, l, h)];
     let ring = side(v1.p, left_of(m), t.half * scale);
     Some(EndChord { line: side(v0.p, left_of(dir), half), ring, len: (v1.s - v0.s).abs() })
+}
+
+/// The metres from a section that lies behind a seam's line to the space of a chord at that seam: to its outline on
+/// the line and its two edges.
+pub(super) fn from_end(c: &EndChord, x: Section) -> f64 {
+    let edges = [c.line, [c.line[0], c.ring[0]], [c.line[1], c.ring[1]]];
+    edges.into_iter().map(|e| segments_m(x, e)).fold(f64::INFINITY, f64::min)
 }
 
 /// The sections of the rooms as the builder draws them.
@@ -108,11 +115,11 @@ fn beyond([x, y]: Section, seam: &Seam, sign: f64) -> Option<Section> {
 }
 
 /// Per two rooms that draw (`built`) and come beside each other (not `apart`), the first place where they do: each
-/// room's centre line read every metre against the axes near it, from both rooms, on the final floors, halves and
-/// heights. The gap is the metres between the spaces (each room's half to each side of its axis); past a room's end,
-/// and on a chord at a seam, between the sections as the builder draws them. A room before a seam and a room behind it
-/// are open to each other through the hole: of the two only the part of a section on the other's side of the line
-/// counts.
+/// room's centre line read every metre and at each vertex against the axes near it, from both rooms, on the final
+/// floors, halves and heights. The gap is the metres between the spaces (each room's half to each side of its axis);
+/// past a room's end, and on a chord at a seam, between the sections as the builder draws them. A room before a seam
+/// and a room behind it are open to each other through the hole: of the two only the part of a section on the other's
+/// side of the line counts.
 pub(crate) fn touching(
     rooms: &Rooms,
     (floors, built): (&[Option<Floor>], &[bool]),
@@ -183,8 +190,8 @@ pub(crate) fn touching(
     let mut out: BTreeMap<(usize, usize), [f64; 2]> = BTreeMap::new();
     for (a, t) in tubes.iter().enumerate().filter(|(_, t)| !t.curve.stretches.is_empty()) {
         let steps = t.curve.len.ceil().max(1.0) as usize;
-        for k in 0..=steps {
-            let s = t.curve.len * k as f64 / steps as f64;
+        let vertices = t.curve.stretches.iter().flat_map(|(_, ps)| ps.iter().map(|q| q.s));
+        for s in (0..=steps).map(|k| t.curve.len * k as f64 / steps as f64).chain(vertices) {
             let q = t.curve.at(s).0;
             for f in axes.near(q.p, a, t.half + widest + wall) {
                 let pair = (a.min(f.tube), a.max(f.tube));

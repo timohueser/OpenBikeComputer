@@ -708,10 +708,7 @@ fn rooms_keep_apart() {
             (Some(rooms), Some(seams)),
             "{name}: {m}"
         );
-        // The lane that turns away starts its room with a cap 0.18 m from the left corner of the room before the line,
-        // past its door: two dark ends, a known place.
-        let known = u64::from(name == "one that turns away");
-        assert_eq!(m["rooms_that_touch"].as_u64(), Some(known), "{name}: {}", m["rooms_that_touch_places"]);
+        assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "{name}: {}", m["rooms_that_touch_places"]);
         let touch = records_that_touch(&placed);
         assert!(touch.is_empty(), "{name}: the records come nearer than a wall at {touch:?}");
     }
@@ -961,6 +958,65 @@ fn a_room_behind_a_seam_whose_first_way_is_short_starts_clear_of_the_line() {
         let m = &placed.metrics;
         assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "split {x}: {}", m["rooms_that_touch_places"]);
         assert!(records_that_touch(&placed).is_empty(), "split {x}: {:?}", records_that_touch(&placed));
+    }
+}
+
+/// The faces that the builder draws of the records, each corner in metres east and north and its height.
+fn faces(placed: &Placed) -> Vec<[[f64; 3]; 3]> {
+    let rules = obc_trailview_parts::Rules::embedded();
+    const U: f64 = (1u64 << 30) as f64;
+    let (mut ends, mut chords) = (Vec::new(), Vec::new());
+    for (kind, tags, part) in &placed.features {
+        let (z, w) = (part.z.as_ref().unwrap(), |k: usize| [part.points[k][0] * U, part.points[k][1] * U]);
+        if *kind == "tunnel-end" {
+            ends.push(obc_trailview_parts::End::from_tags(w(0), z[0], tags, rules).unwrap());
+        } else {
+            let (a, b) = (w(0), w(1));
+            chords.push(
+                obc_trailview_parts::Chord::from_tags([a[0], a[1], z[0]], [b[0], b[1], z[1]], tags, rules).unwrap(),
+            );
+        }
+    }
+    let mesh = obc_trailview_parts::meshes([0.0, 0.0, U, U], &ends, &chords, rules);
+    let point = |i: u32| {
+        let v = &mesh.vertices[i as usize * obc_trailview_parts::WORDS..];
+        let p = back([v[0] as i32 as f64 / U, v[1] as i32 as f64 / U]);
+        [p[0], p[1], f64::from(f32::from_bits(v[2]))]
+    };
+    mesh.indices.chunks(3).map(|t| [point(t[0]), point(t[1]), point(t[2])]).collect()
+}
+
+/// A road tunnel that parts from the one beside it at 20 degrees 60 m in and opens 1.5 m, 3 m or 5 m later. No face
+/// that the builder draws crosses the seam's line inside the room before it, and a room behind the seam too short to
+/// hold a vertex outside its clear does not draw.
+#[test]
+fn a_room_behind_a_seam_crosses_no_line() {
+    for len in [1.5f64, 3.0, 5.0] {
+        let mut case = Case::default();
+        case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+        let (sn, cs) = 20f64.to_radians().sin_cos();
+        let line = [[0.0, 7.0], [60.0, 7.0], [60.0 + len * cs, 7.0 + len * sn]];
+        case.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[500.0; 3])]));
+        let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+        let m = &placed.metrics;
+        assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "{len} m: {}", m["rooms_that_touch_places"]);
+        assert!(records_that_touch(&placed).is_empty(), "{len} m: {:?}", records_that_touch(&placed));
+        assert_eq!(m["rooms"]["seams"].as_u64(), Some(u64::from(len > 2.0)), "{len} m: {m}");
+        let faces = faces(&placed);
+        for seam in placed.features.iter().filter(|f| f.1.get("part").is_some_and(|p| p == "seam")) {
+            let (p, h) = (back(seam.2.points[0]), seam.1["heading"].parse::<f64>().unwrap());
+            let half: f64 = seam.1["half"].split(' ').next().unwrap().parse().unwrap();
+            // Metres along the heading (east and north) behind the line, and across it.
+            let (along, across) = (
+                |q: &[f64; 3]| (q[0] - p[0]) * h.cos() - (q[1] - p[1]) * h.sin(),
+                |q: &[f64; 3]| (q[0] - p[0]) * h.sin() + (q[1] - p[1]) * h.cos(),
+            );
+            for f in faces.iter().filter(|f| f.iter().any(|q| across(q).abs() < half)) {
+                let (lo, hi) =
+                    f.iter().map(along).fold((f64::INFINITY, f64::NEG_INFINITY), |a, x| (a.0.min(x), a.1.max(x)));
+                assert!(lo > -0.01 || hi < 0.01, "{len} m: a face crosses the seam's line: {f:?}");
+            }
+        }
     }
 }
 

@@ -324,10 +324,12 @@ pub(crate) fn floors(
         let clear = rooms.clear[t];
         let off = |x: f64, e: usize| clear[e].is_none_or(|c| distance(tube.curve.at(x).0.p, holes[e]) >= c);
         s.retain(|&x| x == s0 || x == s1 || (off(x, 0) && off(x, 1)));
-        // A room of one lane at a seam has a vertex between its ends: behind the line the part of its other end stops
-        // there (`boxes::stops`).
+        // A room of one lane at a seam has a vertex between its ends, in the middle of its metres outside the clear of
+        // each end (`vertex_gap_m` at an end with none): behind the line the part of its other end stops there
+        // (`boxes::stops`). A room behind a seam that holds no such metres does not draw.
         if s.len() == 2 && rooms.lanes[t].len() < 2 && (0..2).any(|e| rooms.seam_at(t, e)) {
-            s.insert(1, (s0 + s1) / 2.0);
+            let [c0, c1] = clear.map(|c| c.unwrap_or(b.vertex_gap_m));
+            s.insert(1, (s0 + c0 + s1 - c1) / 2.0);
         }
         let (ls, lz): (Vec<f64>, Vec<f64>) = points.iter().map(|q| (q.s, q.z)).unzip();
         let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();

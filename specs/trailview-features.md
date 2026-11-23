@@ -591,7 +591,8 @@ in order:
 What draws is decided once, in the bake, by the rule of the builder (`built` of `host/obc-trailview-parts`). A room
 draws where each of its ends is a seam or an opening with a part, and where it is not taken out. The rooms of one seam,
 and the rooms of one arm, draw together or not at all. A room whose seam holds no hole for a room behind it, or whose
-arm has an opening in no room, does not draw; nor does a room whose line leaves the bake's region. Of two openings
+arm has an opening in no room, does not draw; nor does a room whose line leaves the bake's region, a room behind a seam
+that is too short for its `clear`, or a room whose cap finds no place a wall from its door (see Rooms). Of two openings
 within `pair_max_m` and `pair_max_deg` (also the two ends of one room) whose rooms draw, that lie at one level (neither
 over the other, see Rooms) and less than two `shell_m` apart across, the narrower room does not draw, then the one with
 the higher id. These rules repeat until no room leaves. A room that does not draw writes no record, and its ways have no
@@ -684,8 +685,9 @@ dark, as a closed end. The builder draws a door dark, up to the spring of the ro
 Each `tunnel-tube` has the two vertices of one chord of the room from end to end (an opening or a seam), in the rising
 metres along the stroke of its base lane's way, so a tile that holds a piece of the room holds whole records. A room
 end with no opening and no seam holds its end vertex. The two chords at a vertex write the same values for it. A tube
-of one lane behind a seam has a vertex between its ends. Today's app reads neither kind. The tag `levels` and the
-heights of a tunnel way do not change with the parts.
+of one lane at a seam has a vertex between its ends, in the middle of its metres outside the `clear` of each end
+(`vertex_gap_m` at an end with none). Today's app reads neither kind. The tag `levels` and the heights of a tunnel way
+do not change with the parts.
 
 A way that ends at an opening of a built head widens its shoulder and the layers out of it, so its core's edge (where
 its wall or bank stands) reaches the jamb lines of its lane (the wall or the edge to the next lane, the farther of
@@ -718,7 +720,8 @@ the heights of the road solver. At a metre another arm is, tested in this order:
   at its last metre, with a seam. Where the next metres are across, of the two arms the narrower (then the higher id)
   turns away: its lane ends on the seam's line with a door, and its arm is in no room until the first metre
   `vertex_gap_m` or more past the line where it is with or across no arm (`lanes_in_a_wall`); there its room starts
-  with a cap.
+  with a cap. The cap moves on along the arm a metre at a time until its face lies a wall from the room before the
+  door, as the builder draws that room's chord at the seam (see below); a room with no such metre does not draw.
 - A stretch of metres over or across that no run holds, as either arm's metres read it, is over and under: by height
   where its metres are all over, else by the floor (they cross; where the two arms read it apart, they cross). Next to
   a run only a stretch with metres over counts, by height.
@@ -751,8 +754,10 @@ hole's point as the record gives it, with the places of the row kept inside the 
 nearer to the hole than `clear`: its metres sideways from its own line over the sine of `pair_max_deg`, so that its
 first chord leaves that line within `pair_max_deg`; its `half` times the tangent of `pair_max_deg`, so that its ring
 there, turned by as much, lies wholly behind the line; and `vertex_gap_m` at least. A join of two ways nearer than that
-is no vertex either. The room before the line is as wide as its own lanes. A seam whose row holds no hole for a room
-behind it, or whose rooms are not side by side in the row, is not whole.
+is no vertex either. A room behind a seam that is shorter than the `clear` of its two ends together (`vertex_gap_m` at
+an end with none) holds no vertex outside them, and its ring at its other end can reach before the line: it does not
+draw. The room before the line is as wide as its own lanes. A seam whose row holds no hole for a room behind it, or
+whose rooms are not side by side in the row, is not whole.
 
 A group of openings that links join (see the rungs) has the frame line of its far opening: one whose line no opening
 of the group within `pair_max_m` and `pair_max_deg` of it lies past by more than 0.2 m, the one with the most such
@@ -761,7 +766,8 @@ its heading; one whose way does not reach the line, or that lies past it, stays.
 that stays, form the next group.
 
 The bake counts, on the final floors, halves and heights as the builder draws them, each two rooms that draw and
-still come nearer than a wall and do not lie apart, read every metre from both rooms (`rooms_that_touch`, with places).
+still come nearer than a wall and do not lie apart, read every metre and at each vertex from both rooms
+(`rooms_that_touch`, with places).
 Past a room's end its space ends at the face across that end. A room's chord at a seam runs from its outline on the
 line (its hole, or of the room before the line its own `half`) to its ring at the next vertex, the edges straight, as
 the builder draws it. Past an end and on such a chord the gap runs between the two sections. A room before a seam and

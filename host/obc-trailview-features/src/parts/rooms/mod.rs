@@ -211,7 +211,8 @@ pub(crate) enum Bound {
 }
 
 /// A room as `rooms` makes it: its tube, the metres along its arm where a room of one lane starts, its lanes, its
-/// section per vertex, its openings, its two ends and the `clear` of each end behind a seam.
+/// section per vertex, its openings, its two ends, the `clear` of each end behind a seam, and whether its cap has no
+/// metres to lie a wall from the room before its door.
 #[derive(Clone)]
 struct Made {
     tube: Tube,
@@ -221,6 +222,7 @@ struct Made {
     openings: Vec<Opening>,
     bounds: [Bound; 2],
     clear: [Option<f64>; 2],
+    cramped: bool,
 }
 
 /// The rooms of the arms (`cuts`), from the runs of two arms (`runs`). A run ends where an arm opens, at the openings of
@@ -277,7 +279,8 @@ pub(crate) fn rooms(
     let metres = runs::metres(&arms, &live, input);
     let (found, over_arms, short) = runs::runs(&metres, &live, input);
     let turned = runs::turned(&found, &metres, (&arms, &live), input);
-    let cuts::Cut { mut rooms, seams, walls, no_parent } = cuts::cut(&arms, (&spans, &at_end), &found, &turned, input);
+    let cuts::Cut { mut rooms, seams, mut walls, no_parent } =
+        cuts::cut(&arms, (&spans, &at_end), &found, &turned, input);
     let place = |p: [f64; 2]| {
         let [lat, lon] = degrees(p);
         format!("{lat:.5},{lon:.5}")
@@ -314,12 +317,36 @@ pub(crate) fn rooms(
             }
         }
     }
-    // Each room after the room before each seam at which it lies behind the line: a seam's holes come from the row of
-    // the room before it, and a room behind the line starts at its hole. A room of one lane is its arm, or the stretch
-    // of its arm from its metres there on.
+    // The metres along arm `arm` of its door at seam sd: where its lane in the room before the line ends there, and it
+    // is in no room behind it.
+    let door_at = |sd: usize, arm: usize| {
+        let seam = &out.seams[sd];
+        let behind = seam.children.iter().any(|c| rooms[c.0].0.iter().any(|l| l.arm == arm));
+        let lane =
+            rooms[seam.parent.0].0.iter().find(|l| l.arm == arm).filter(|_| !seam.children.is_empty() && !behind);
+        lane.map(|l| l.span[seam.parent.1])
+    };
+    // Per room of one lane, each end at a cap, with the cap's seam, and the seam of the door on its arm nearest it and
+    // the door's metres.
+    let caps: Vec<Vec<(usize, usize, usize, f64)>> = (0..rooms.len())
+        .map(|r| {
+            let [l] = &rooms[r].0[..] else { return Vec::new() };
+            let cap = |e: usize| {
+                let Bound::Seam(sc) = rooms[r].1[e] else { return None };
+                let doors = (0..out.seams.len()).filter_map(|sd| Some((sd, door_at(sd, l.arm)?)));
+                let near = doors.min_by(|x, y| (x.1 - l.span[e]).abs().total_cmp(&(y.1 - l.span[e]).abs()));
+                near.filter(|_| out.seams[sc].children.is_empty()).map(|(sd, from)| (e, sc, sd, from))
+            };
+            (0..2).filter_map(cap).collect()
+        })
+        .collect();
+    // Each room after the room before each seam at which it lies behind the line, and a room with a cap after the room
+    // before its door: a seam's holes come from the row of the room before it, a room behind the line starts at its
+    // hole, and a cap lies a wall from the room before its door. A room of one lane is its arm, or the stretch of its
+    // arm from its metres there on.
     let parents = |r: usize| {
         let seams = out.seams.iter().filter(move |s| s.children.iter().any(|c| c.0 == r));
-        seams.map(|s| s.parent.0).collect::<Vec<usize>>()
+        seams.map(|s| s.parent.0).chain(caps[r].iter().map(|c| out.seams[c.2].parent.0)).collect::<Vec<usize>>()
     };
     let mut order: Vec<usize> = Vec::new();
     let mut done = vec![false; rooms.len()];
@@ -331,6 +358,12 @@ pub(crate) fn rooms(
     }
     let heading = |d: [f64; 2]| (d[1].atan2(d[0]) * 1000.0).round() / 1000.0;
     let clear_of = |sideways: f64, half: f64| section::clear(sideways, half, b);
+    // A room's half-width as its records hold it: up to the centimetre for a room of lanes.
+    let records_half = |m: &Made| {
+        let half = if m.lanes.len() < 2 { m.tube.half } else { super::ceil_cm(m.tube.half) };
+        (half * 100.0).round() / 100.0
+    };
+    let mitre = obc_trailview_parts::Rules::embedded().design.mitre_max;
     let mut starts: BTreeMap<(usize, usize), Start> = BTreeMap::new();
     let mut made: Vec<Option<Made>> = vec![None; rooms.len()];
     for &r in &order {
@@ -356,11 +389,46 @@ pub(crate) fn rooms(
                     None => {}
                 }
             }
-            Made { tube, from: 0.0, lanes: ordered, table, openings: opens, bounds, clear }
+            Made { tube, from: 0.0, lanes: ordered, table, openings: opens, bounds, clear, cramped: false }
         } else {
-            let l = &lanes[0];
+            let mut l = lanes[0].clone();
             let t = &arms[l.arm];
             let [s0, s1] = spans[l.arm].unwrap();
+            // A cap moves on along its arm, a metre at a time, until its face lies a wall from the room before its door
+            // as the builder draws that room's chord at the door's seam; a room with no metres for that cannot draw.
+            let mut cramped = false;
+            for &(e, sc, sd, from) in &caps[r] {
+                let door = out.seams[sd].clone();
+                let Some(before) = made[door.parent.0].as_ref() else { continue };
+                let Some(end) = touch::end_chord(&before.tube, door.parent.1, (door.dir, records_half(before)), mitre)
+                else {
+                    continue;
+                };
+                let face = |s: f64| {
+                    let (p, left) = (t.curve.at(s).0.p, left_of(t.curve.dir(s)));
+                    [offset(p, left, -t.half), offset(p, left, t.half)]
+                };
+                let (away, step) = ((l.span[e] - from).signum(), (s1 - s0) / (s1 - s0).ceil().max(1.0));
+                let mut at = l.span[e];
+                while !cramped && touch::from_end(&end, face(at)) < 2.0 * b.shell_m - MERGE_M {
+                    at += away * step;
+                    cramped = away * (l.span[1 - e] - at) < b.vertex_gap_m;
+                }
+                if cramped {
+                    continue;
+                }
+                if let Some(w) =
+                    walls.iter_mut().find(|w| w.0 == l.arm && w.1.iter().any(|&x| (x - l.span[e]).abs() < 1e-6))
+                {
+                    let k = usize::from((w.1[1] - l.span[e]).abs() < 1e-6);
+                    w.1[k] = at;
+                }
+                l.span[e] = at;
+                let (p, d, toward) = (t.curve.at(at).0.p, t.curve.dir(at), t.curve.at(l.span[1 - e]).0.p);
+                out.seams[sc].p = p;
+                out.seams[sc].dir = if along_dir(p, toward, d) < 0.0 { d } else { [-d[0], -d[1]] };
+            }
+            let l = &l;
             let whole = (l.span[0] - s0).abs() < 1e-6 && (l.span[1] - s1).abs() < 1e-6;
             let (mut tube, from) = if whole { (t.clone(), 0.0) } else { (stretch(t, l.span), l.span[0]) };
             let mut clear = [None; 2];
@@ -377,7 +445,8 @@ pub(crate) fn rooms(
                 s: arm_openings[i].s - from,
                 ..arm_openings[i].clone()
             });
-            Made { tube, from, lanes: vec![l.clone()], table: Vec::new(), openings: opens.collect(), bounds, clear }
+            let openings = opens.collect();
+            Made { tube, from, lanes: vec![l.clone()], table: Vec::new(), openings, bounds, clear, cramped }
         };
         // The holes of the seams before which this room ends, from its row there.
         let before: Vec<usize> = (0..out.seams.len()).filter(|&s| out.seams[s].parent.0 == r).collect();
@@ -396,10 +465,7 @@ pub(crate) fn rooms(
             let children: Vec<Vec<usize>> =
                 seam.children.iter().map(|&(c, _)| rooms[c].0.iter().map(|l| l.arm).collect()).collect();
             let h = heading(seam.dir);
-            // The room's half-width as its records hold it: up to the centimetre for a room of lanes.
-            let half = if room.lanes.len() < 2 { room.tube.half } else { super::ceil_cm(room.tube.half) };
-            let half = (half * 100.0).round() / 100.0;
-            match holes_of(&row, (&children, half), b.shell_m).filter(|_| !children.is_empty()) {
+            match holes_of(&row, (&children, records_half(&room)), b.shell_m).filter(|_| !children.is_empty()) {
                 Some(Holes { holes, doors }) => {
                     for (&child, (across, half, mut st)) in seam.children.iter().zip(holes) {
                         st.p = offset(at, left_of([h.cos(), h.sin()]), across);
@@ -413,7 +479,9 @@ pub(crate) fn rooms(
         }
         made[r] = Some(room);
     }
+    let mut cramped = Vec::new();
     for room in made.into_iter().map(|m| m.expect("each room is made")) {
+        cramped.push(room.cramped);
         openings.extend(room.openings);
         out.tubes.push(room.tube);
         out.from.push(room.from);
@@ -426,7 +494,9 @@ pub(crate) fn rooms(
     for s in 0..out.seams.len() {
         out.seams[s].whole &= out.seams[s].holes.len() == out.seams[s].children.len();
     }
-    // A room cannot draw where a seam at its ends is not whole, or an arm of it has an opening in no room.
+    // A room cannot draw where a seam at its ends is not whole, an arm of it has an opening in no room, its cap has no
+    // metres to lie a wall from the room before its door, or it lies behind a seam and is shorter than the clear of its
+    // two ends (`vertex_gap_m` at an end with none): it holds no vertex outside them.
     let mut opened = vec![false; arm_openings.len()];
     for l in out.lanes.iter().flatten() {
         l.ends.iter().flatten().for_each(|&i| opened[i] = true);
@@ -435,7 +505,9 @@ pub(crate) fn rooms(
         .map(|r| {
             let seam = (0..2).any(|e| matches!(out.bounds[r][e], Bound::Seam(s) if !out.seams[s].whole));
             let arm = out.lanes[r].iter().any(|l| at_end[l.arm].iter().flatten().any(|&i| !opened[i]));
-            seam || arm
+            let [c0, c1] = out.clear[r].map(|c| c.unwrap_or(b.vertex_gap_m));
+            let short = out.clear[r].iter().any(Option::is_some) && out.tubes[r].curve.len < c0 + c1;
+            seam || arm || cramped[r] || short
         })
         .collect();
     out.alone = (0..out.tubes.len())
