@@ -14,6 +14,12 @@ export function drop(_node: Element, { leave = false } = {}): TransitionConfig {
 /** A control opens under its row and closes again. */
 export const unfold = (node: Element): TransitionConfig => slide(node, { duration: still() ? 0 : 180, easing: cubicOut });
 
+/** A row under another unfolds with a fade and folds back faster. With reduced motion it only fades. */
+export function reveal(node: Element, { leave = false } = {}): TransitionConfig {
+    const { css, ...motion } = slide(node, { duration: leave ? 150 : 200, easing: cubicOut });
+    return { ...motion, css: (t, u) => `${still() ? '' : `${css!(t, u)};`}opacity: ${t}` };
+}
+
 /** A value that is new rises into its place. */
 export function rise(_node: Element): TransitionConfig {
     const shift = still() ? 0 : 4;

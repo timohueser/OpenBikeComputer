@@ -616,9 +616,8 @@
     @container (max-width: 720px) {
         .field {
             flex: 1 1 100%;
-            min-height: 46px;
+            min-height: 45px;
             padding-right: 46px;
-            border-bottom: 1px solid var(--line);
         }
         .list {
             width: auto;

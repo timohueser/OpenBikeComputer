@@ -1,7 +1,8 @@
 <!-- A search bar: a text field, then fixed slots. Each slot shows its values as words and opens one panel under it; the
      list of the text field is a panel too, and one panel is open at a time. Enter in the field sends the words of each
      value to its slot. The cross empties the search, and "Undo" brings it back for a short time. The bar lays out by
-     its own width: a narrow bar has the field in one row and the slots in the next. -->
+     its own width: a narrow bar has the field in one row and the slots in the next. A page can let the row of the slots
+     fold away while the rider does not search. -->
 <script lang="ts" module>
     /** `words` are the values of the slot in their order; `unset` shows when it has none. `set` says that a value differs
      * from its default, also one with no word, so "Reset" has work. A slot with `off` is disabled and shows `off`. The
@@ -13,10 +14,10 @@
     import { untrack, type Snippet } from 'svelte';
     import Icon from '../Icon.svelte';
     import Field, { type FieldProps, type Place } from './Field.svelte';
-    import { drop, rise, still } from './motion';
+    import { drop, reveal, rise, still } from './motion';
     import type { Value } from './read';
 
-    let { label, slots, field, panel, onreset, empty, onclear, onundo, open = $bindable(), text: typed = $bindable('') }: {
+    let { label, slots, field, panel, onreset, empty, onclear, onundo, folds = false, open = $bindable(), text: typed = $bindable('') }: {
         label: string;
         slots: Slot[];
         field: FieldProps<V, P>;
@@ -28,6 +29,9 @@
         empty: boolean;
         onclear: () => void;
         onundo: () => void;
+        /** The row of the slots of a narrow bar shows only while the rider searches: the bar has the focus, or the search
+         * holds a value. */
+        folds?: boolean;
         /** The id of the slot whose panel is open. */
         open?: string;
         /** The text of the field. */
@@ -54,7 +58,13 @@
     /** The text before the cross, and whether the list of the field is open. */
     let clearedText = '', listing = $state(false);
     const blank = $derived(empty && !typed);
-    const current = $derived(slots.find(slot => slot.id === open && !slot.off));
+    /** The bar has the focus, or the last press ended in it: in some browsers a click gives a button no focus. */
+    let within = $state(false);
+    // At the end of a press or a key, not at the blur: the slots fold after the click, so nothing moves under the pointer.
+    const settle = (event: Event) => within = [document.activeElement, event.target].some(at => bar?.contains(at as Node | null));
+    /** The slots show. A wide bar has them beside the field, so they take no room of their own. */
+    const shown = $derived(!folds || barWidth > NARROW_PX || within || !blank);
+    const current = $derived(shown ? slots.find(slot => slot.id === open && !slot.off) : undefined);
     const button = (id: string) => bar?.querySelector<HTMLElement>(`[data-slot="${CSS.escape(id)}"]`);
     /** The panel starts under its slot and stays inside the bar. */
     const left = $derived.by(() => {
@@ -72,6 +82,8 @@
     }
     /** The cross. A page calls it for a control of its own that clears the search, so that control has "Undo" too. */
     export function clear() {
+        // The press on the cross was in the bar, and the cross leaves with the focus, which no event says.
+        within = false;
         open = undefined;
         [clearedText, typed] = [typed, ''];
         onclear();
@@ -129,7 +141,7 @@
         node.animate([{ backgroundColor: `color-mix(in srgb, ${amber} 40%, ${panel})` }, {}], { duration: FLY_MS, easing: 'ease-out' });
     }
     $effect(() => () => clearTimeout(timer));
-    // The page can turn the slot of the open panel off.
+    // The page can turn the slot of the open panel off, and the slots can fold away.
     $effect(() => {
         if (open && !current) open = undefined;
     });
@@ -144,12 +156,15 @@
 </script>
 
 <!-- A press outside the bar closes the panel and still acts where it lands, such as a pick on the map. -->
-<svelte:window onkeydowncapture={escape} onresize={measure} onpointerdown={event => { if (open && !bar?.contains(event.target as Node)) close(false); }} />
+<svelte:window onkeydowncapture={escape} onresize={measure} onpointerdown={event => { if (open && !bar?.contains(event.target as Node)) close(false); }}
+    onpointerup={settle} onkeyup={settle} />
 
-<div class="search-bar" role="search" aria-label={label} bind:this={bar} bind:clientWidth={barWidth} style:--below="{below}px" style:--beside="{beside}px">
+<div class="search-bar" role="search" aria-label={label} bind:this={bar} bind:clientWidth={barWidth} style:--below="{below}px" style:--beside="{beside}px"
+    onfocusin={() => within = true}>
     <div class="strip">
         <Field {...field} bind:text={typed} bind:listing {slots} {land} />
-        <div class="slots">
+        <!-- The list of the field opens with the row, and measured its room under the folded bar. -->
+        {#if shown}<div class="slots" in:reveal out:reveal={{ leave: true }} onintroend={measure}>
             {#each slots as slot (slot.id)}
                 <button type="button" class="slot" class:unset={!slot.words.length || !!slot.off} data-slot={slot.id} disabled={!!slot.off}
                     aria-expanded={open === slot.id} aria-controls="search-panel" onclick={() => open = open === slot.id ? undefined : slot.id}>
@@ -159,7 +174,7 @@
                     {#key slot.words.length}<strong in:rise>{slot.off ?? (text(slot.words) || slot.unset)}</strong>{/key}
                 </button>
             {/each}
-        </div>
+        </div>{/if}
         {#if undoing && blank}
             <div class="tail"><button type="button" class="undo" onclick={undo}>Undo</button></div>
         {:else if !blank}
@@ -375,9 +390,11 @@
     @container (max-width: 720px) {
         .strip {
             flex-wrap: wrap;
+            min-height: 0;
         }
         .slots {
             flex: 1 1 100%;
+            border-top: 1px solid var(--line);
         }
         /* A value can take two lines here: the labels stay on one line. */
         .slot {
