@@ -896,39 +896,49 @@ fn the_builder_reads_each_joint_back_from_the_tiles() {
     }
 }
 
-/// A footway on top at 13 m, 13.3 m and 16 m east, its underside at 502 m, over the first chord of the footway's room
-/// behind the seam of "a footway at 3 degrees beside a road": under the whole width of the way the crown lies under its
-/// underside, also where the chord's far vertex lies out of the way's reach.
+/// A footway on top over the first chord of the footway's room behind the seam of "a footway at 3 degrees beside a
+/// road": across it at 13 m, 13.3 m and 16 m east, its underside at 502 m, and one that starts over the chord at 13.2 m
+/// and climbs 3 m. Wherever the way lies over the crown, the crown lies under its underside, also where the chord's far
+/// vertex lies out of the way's reach.
 #[test]
 fn a_way_over_the_first_chord_behind_a_seam_holds_the_floor_down() {
-    let outer = widths().way("road", &tags(&[("highway", "footway")]), false).outer_m();
-    for x in [13.0, 13.3, 16.0] {
+    let reach = widths().way("road", &tags(&[("highway", "footway")]), false).outer_m() + 0.9 + 0.5;
+    let across = |x: f64| ([x, 4.6], [x, 30.0], 0.0);
+    for (a, b, climb) in [across(13.0), across(13.3), across(16.0), ([13.2, 4.6], [16.8, 30.0], 3.0)] {
         let mut case = layouts().into_iter().find(|l| l.0 == "a footway at 3 degrees beside a road").unwrap().1;
-        let on_top = part(&[[x, 4.6], [x, 30.0]], &[502.5; 2]);
-        case.ways.push(("road", tags(&[("highway", "footway")]), vec![on_top]));
+        case.ways.push(("road", tags(&[("highway", "footway")]), vec![part(&[a, b], &[502.5, 502.5 + climb])]));
         let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
         let seams: Vec<f64> = (placed.features.iter())
             .filter(|f| f.1.get("part").is_some_and(|p| p == "seam"))
             .map(|f| back(f.2.points[0])[0])
             .collect();
-        let chords: Vec<(f64, f64, Vec<f64>, f64)> = (placed.features.iter())
+        let chords: Vec<_> = (placed.features.iter())
             .filter(|f| f.0 == "tunnel-tube" && f.1["half"] == "0.9")
             .map(|f| {
-                (back(f.2.points[0])[0], back(f.2.points[1])[0], f.2.z.clone().unwrap(), f.1["height"].parse().unwrap())
+                (
+                    back(f.2.points[0]),
+                    back(f.2.points[1]),
+                    f.2.z.clone().unwrap(),
+                    f.1["height"].parse::<f64>().unwrap(),
+                )
             })
             .collect();
-        assert_eq!(seams.len(), 1, "way at {x}");
-        let first = chords.iter().find(|c| c.0 <= x && x <= c.1).unwrap();
-        assert!(
-            (first.0 - seams[0]).abs() < 0.01,
-            "way at {x}: the chord from {:.2} m starts at the seam's line",
-            first.0
-        );
-        // The crown's shell (0.5 m) over the floor and the height, at 41 points over the way's width.
-        for e in (0..=40).map(|k| x - outer + 2.0 * outer * f64::from(k) / 40.0) {
-            for (a, b, z, height) in chords.iter().filter(|c| c.0 <= e && e <= c.1) {
-                let crown = z[0] + (e - a) / (b - a) * (z[1] - z[0]) + height + 0.5;
-                assert!(crown <= 502.0 + 0.005, "way at {x}: the crown at {e:.2} m is {crown:.2} m");
+        assert_eq!(seams.len(), 1, "way at {a:?}");
+        let first = chords.iter().find(|c| c.0[0] <= a[0] && a[0] <= c.1[0]).unwrap();
+        assert!((first.0[0] - seams[0]).abs() < 0.01, "way at {a:?}: the chord from {:?} starts at the line", first.0);
+        // The crown's shell (0.5 m) over the floor and the height, at 101 points of each chord within the way's reach.
+        let d = [b[0] - a[0], b[1] - a[1]];
+        for (p, q, z, height) in &chords {
+            for u in (0..=100).map(|k| f64::from(k) / 100.0) {
+                let e = [p[0] + u * (q[0] - p[0]), p[1] + u * (q[1] - p[1])];
+                let t = (((e[0] - a[0]) * d[0] + (e[1] - a[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0.0, 1.0);
+                if (e[0] - a[0] - t * d[0]).hypot(e[1] - a[1] - t * d[1]) <= reach {
+                    let (crown, under) = (z[0] + u * (z[1] - z[0]) + height + 0.5, 502.0 + t * climb);
+                    assert!(
+                        crown <= under + 0.005,
+                        "way at {a:?}: the crown at {e:?} is {crown:.3} m, the way {under:.3} m"
+                    );
+                }
             }
         }
     }

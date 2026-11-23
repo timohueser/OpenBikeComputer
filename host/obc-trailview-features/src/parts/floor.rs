@@ -34,6 +34,7 @@ struct Upper {
 /// over this one, the road solver's: its floor where that room has one, at its metres `upper`) and its depth, the
 /// metres along the chain of that point's foot and the road solver's height of the chain there, and the at-grade band
 /// of the way and the room.
+#[derive(Clone)]
 struct Above {
     way: usize,
     height: f64,
@@ -368,21 +369,26 @@ pub(crate) fn floors(
             let height = w.z[k] + u * (w.z[k + 1] - w.z[k]);
             Some((p, Above { way, height, upper, depth: w.depth, along, base, band: w.band.min(own_band) }))
         };
-        // A way caps both vertices of each chord that its reach overlaps, so the floor, linear along the chord, lies
-        // under it; the crown is read at the two ends of the chord's metres within its reach.
+        // A way caps both vertices of each chord that its reach overlaps, at its underside over the two ends of that
+        // overlap: over the overlap its nearest point moves along its segment one way, so its underside there lies at
+        // the lesser of the two or over it, and the floor, linear along the chord, lies under it. A reach that only
+        // touches a chord caps the vertex there. The clash count reads the crown at these ends.
         let mut above: Vec<Vec<Above>> = (0..s.len()).map(|_| Vec::new()).collect();
         let mut reads = Vec::new();
         for &(o, k, [a, e]) in &reaches {
             let lo = s.partition_point(|&x| x <= a + MERGE_M).saturating_sub(1);
             let hi = s.partition_point(|&x| x < e - MERGE_M).min(s.len() - 1);
-            for i in lo..=hi {
-                above[i].extend(read((o, k), s[i]).map(|r| r.1));
-            }
             for i in lo.saturating_sub(1)..=hi.min(s.len() - 2) {
                 let (x, y) = (a.max(s[i]), e.min(s[i + 1]));
-                if x <= y + MERGE_M {
-                    let at = if y - x > MERGE_M { vec![x, y] } else { vec![x] };
-                    reads.extend(at.into_iter().filter_map(|x| read((o, k), x).map(|(p, w)| (i, x, p, w))));
+                if x > y + MERGE_M {
+                    continue;
+                }
+                let whole = y - x > MERGE_M;
+                for x in if whole { vec![x, y] } else { vec![x] } {
+                    let Some((p, w)) = read((o, k), x) else { continue };
+                    let at = if whole { vec![i, i + 1] } else { vec![if x - s[i] <= MERGE_M { i } else { i + 1 }] };
+                    at.into_iter().for_each(|v| above[v].push(w.clone()));
+                    reads.push((i, x, p, w));
                 }
             }
         }
