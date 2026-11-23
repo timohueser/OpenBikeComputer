@@ -1,6 +1,7 @@
 <!-- A search bar: a text field, then fixed slots. Each slot shows its values as words and opens one panel under it; the
      list of the text field is a panel too, and one panel is open at a time. Enter in the field sends the words of each
-     value to its slot. The cross empties the search, and "Undo" brings it back for a short time. The bar lays out by
+     value to its slot. The cross empties the search, and on a page that asks for it "Undo" brings it back for a short
+     time. The bar lays out by
      its own width: a narrow bar has the field in one row and the slots in the next. A page can let the row of the slots
      fold away while the rider does not search. -->
 <script lang="ts" module>
@@ -28,7 +29,8 @@
         /** No slot that is on holds a value: with an empty field, the cross hides. */
         empty: boolean;
         onclear: () => void;
-        onundo: () => void;
+        /** Brings back the search that the cross emptied. Without it, the cross has no "Undo". */
+        onundo?: () => void;
         /** The row of the slots of a narrow bar shows only while the rider searches: the bar has the focus, or the search
          * holds a value. */
         folds?: boolean;
@@ -87,6 +89,7 @@
         open = undefined;
         [clearedText, typed] = [typed, ''];
         onclear();
+        if (!onundo) return;
         undoing = true;
         clearTimeout(timer);
         timer = setTimeout(() => undoing = false, UNDO_MS);
@@ -95,7 +98,7 @@
         undoing = false;
         clearTimeout(timer);
         typed = clearedText;
-        onundo();
+        onundo?.();
     }
     // Any change that gives the search a value ends "Undo".
     $effect(() => {

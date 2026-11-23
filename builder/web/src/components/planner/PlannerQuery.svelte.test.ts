@@ -214,12 +214,10 @@ describe('the planner search',()=>{
         // The slots keep the search before, and the empty field offers nothing over "Apply".
         expect(words('find')).toBe('Supermarket');
         expect(target.querySelector('[role="listbox"]')).toBeNull();
-        // The cross takes the change away, and "Undo" asks for it again.
+        // The cross takes the change away and closes the search: it leaves no "Undo".
         target.querySelector<HTMLButtonElement>('[aria-label="Clear the search"]')!.click(); await tick();
         expect([state.answer, slot('find')]).toEqual([null, null]);
-        target.querySelector<HTMLButtonElement>('.undo')!.click(); await vi.advanceTimersByTimeAsync(0); await tick();
-        expect(sent(fetch).at(-1)).toMatchObject({ request: route });
-        expect([state.answer?.type, words('find')]).toEqual(['change', 'Supermarket']);
+        expect(target.querySelector('.undo')).toBeNull();
     });
 
     it('searches a name in the map view, and keeps the notice of an answer without the model when the slots search again', async () => {

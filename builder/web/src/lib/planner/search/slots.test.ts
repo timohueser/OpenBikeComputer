@@ -68,4 +68,14 @@ describe('the slots of the planner search', () => {
         expect(stretchWhere([1.23, 7.43])).toEqual(along(1.2, 7.5));
         expect(stretchWhere([4.9, 6.1])).toEqual(along(4.9, 6.1));
     });
+
+    it('reads an open stretch and a limit "after" or "before" a point as the server does, and leaves a place to it', () => {
+        const plan = { km: [0, 60], days: [{ number: 1, from: 0, to: 30, rest: false }, { number: 2, from: 30, to: 60, rest: false }] };
+        const km = (value: number) => ({ value, unit: 'km' }), mark = (value: number) => ({ along: { ref: 'km', at: km(value) } });
+        // "water after km 10" runs to the finish; "before km 20" from the start.
+        expect([stretchOf({ after: mark(10) }, plan), stretchOf({ before: mark(20) }, plan)]).toEqual([[10, 60], [0, 20]]);
+        expect(stretchOf({ along: { ref: 'start', from: km(10) } }, plan)).toEqual([10, 60]);
+        expect([stretchOf({ day: 2, after: mark(40) }, plan), stretchOf({ after: { day: 1 } }, plan)]).toEqual([[40, 60], [30, 60]]);
+        expect([stretchOf({ after: { name: 'Titisee' } }, plan), stretchOf({ along: { ref: 'km', from: { value: 2, unit: 'h' } } }, plan)]).toEqual([undefined, undefined]);
+    });
 });
