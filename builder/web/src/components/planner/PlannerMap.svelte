@@ -211,16 +211,15 @@
         fitBounds(places, 13, motionDuration(), false, openTownGrowth);
     }
 
-    /** Shows the end of a day and the places of the towns listed for its night, nearest first, as `nightView` says. */
+    /** Shows the end of a day and the places of the stops of its night, as `nightView` says. The fit leaves room for the
+     * areas of the towns and their names, and goes no closer than zoom 13. */
     export function showNight(spot: Coordinate, towns: Coordinate[][]) {
         if (!map) return;
         const shown = nightView(paddedView(), spot, towns);
         if (shown.action === 'stay') return;
         wholeRoute = false;
-        const [west, south, east, north] = shown.box, { top, right, bottom, left } = padding();
-        // The centre of the box goes to the centre of the padded view.
-        if (shown.action === 'pan') map.panTo([(west + east) / 2, (south + north) / 2], { offset: [(left - right) / 2, (top - bottom) / 2], duration: motionDuration() });
-        else fitBounds([[west, south], [east, north]], map.getZoom(), motionDuration());
+        const [west, south, east, north] = shown.box;
+        fitBounds([[west, south], [east, north]], 13, motionDuration(), false, 48);
     }
 
     /** Fits the line of a week, unless the padded view shows all of it. */
@@ -826,7 +825,7 @@
             const button = document.createElement("button");
             button.type = 'button';
             button.draggable = false;
-            button.className = `planner-map-pin ${point.kind} ${point.appearance ?? ""}${point.stop ? " lone" : ""}${draggable ? " draggable" : ""}`;
+            button.className = `planner-map-pin ${point.kind} ${point.appearance ?? ""}${point.stop ? " lone" : ""}${point.named ? " named" : ""}${draggable ? " draggable" : ""}`;
             if (point.color) button.style.setProperty("--pin-color", point.color);
             button.setAttribute("aria-label", point.kind === "start" ? `Start: ${point.label}` : point.kind === "finish" ? `Finish: ${point.label}` : point.label);
             const title = dayEnd ? `${point.appearance === "moved" ? "Day end you moved" : "Day end suggested"} · drag along the route` : point.label + (draggable ? " · drag to move" : "");
@@ -839,10 +838,8 @@
             } else {
                 button.textContent = point.markerLabel ?? (point.kind === "night" ? String(nightNumber) : "");
             }
-            if (point.stop) {
-                button.dataset.stop = point.stop;
-                button.append(Object.assign(document.createElement("span"), { textContent: point.label }));
-            }
+            if (point.stop) button.dataset.stop = point.stop;
+            if (point.stop || point.named) button.append(Object.assign(document.createElement("span"), { textContent: point.label }));
             button.addEventListener("click", (event) => {
                 event.stopPropagation();
                 overlaySelection = null;
@@ -988,13 +985,15 @@
     :global(.planner-map-pin.matched) { border: 3px solid var(--amber, #f4a81d); }
     :global(.planner-map-pin.selected) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
     :global(.planner-map-pin.highlighted) { outline: 3px solid var(--ink, #1c1b14); outline-offset: 3px; }
+    /* A place of the open stop of a night under the pointer has a soft ring: less than the ink of the selected one. */
+    :global(.planner-map-pin.option.highlighted:not(.named)) { outline: 0; box-shadow: 0 0 0 5px color-mix(in srgb, var(--ink) 20%, transparent); }
     /* A lone place of a night is a small pin with its name in the style of a map label. Lit, both are ink. */
     :global(.planner-map-pin.lone) { width: 18px; height: 18px; border: 1.5px solid var(--ink-soft); box-shadow: none; }
     :global(.planner-map-pin.lone svg) { width: 11px; height: 11px; }
-    :global(.planner-map-pin.lone span) { position: absolute; left: 100%; margin-left: 1px; padding: 1px 5px; border-radius: 6px; color: var(--ink); font: 500 12.5px var(--sans); white-space: nowrap; paint-order: stroke; -webkit-text-stroke: 3.5px color-mix(in srgb, var(--panel) 92%, transparent); }
-    :global(.planner-map-pin.lone.highlighted) { border-color: var(--ink); background: var(--ink); color: var(--panel); }
+    :global(.planner-map-pin:is(.lone, .named) span) { position: absolute; left: 100%; margin-left: 1px; padding: 1px 5px; border-radius: 6px; color: var(--ink); font: 500 12.5px var(--sans); white-space: nowrap; paint-order: stroke; -webkit-text-stroke: 3.5px color-mix(in srgb, var(--panel) 92%, transparent); }
+    :global(.planner-map-pin:is(.lone.highlighted, .named)) { border-color: var(--ink); background: var(--ink); color: var(--panel); }
     :global(.planner-map-pin.lone.highlighted:not(:focus-visible)) { outline: 0; }
-    :global(.planner-map-pin.lone.highlighted span), :global(.planner-map-town.lit) { background: var(--ink); color: var(--panel); -webkit-text-stroke: 0; box-shadow: 0 2px 8px rgba(28, 27, 20, .25); }
+    :global(.planner-map-pin:is(.lone.highlighted, .named) span), :global(.planner-map-town.lit) { background: var(--ink); color: var(--panel); -webkit-text-stroke: 0; box-shadow: 0 2px 8px rgba(28, 27, 20, .25); }
     /* The name of a town beside its area. The padding is that of the pill of the lit name, so the name stays in place. */
     :global(.planner-map-town) { padding: 2px 9px; border-radius: 6px; color: var(--ink); font: 700 14px var(--sans); white-space: nowrap; paint-order: stroke; -webkit-text-stroke: 4px color-mix(in srgb, var(--panel) 92%, transparent); cursor: pointer; }
     :global(.planner-map-town.left) { translate: -100%; }

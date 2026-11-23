@@ -534,7 +534,7 @@ describe('planner app transitions', () => {
         button('Choose night 1').click(); await tick();
         const profile = document.querySelector('.elevation');
         await vi.waitFor(() => button(`Map place: ${tilePlace.label}`).click()); await tick();
-        button('Stay here').click(); await tick();
+        button(`Sleep at ${tilePlace.label}`).click(); await tick();
         expect(document.querySelector('.elevation')).toBe(profile);
         expect(document.querySelector('.route-status')?.textContent).toContain('Calculating route');
         button('Pan map').click(); await tick();
@@ -542,7 +542,7 @@ describe('planner app transitions', () => {
         finish({ ...line, stops: [line.stops[0], { id: 'night-1', distance: line.stops[1].distance * .25 }, line.stops[1]] });
         await vi.waitFor(() => expect(document.querySelector('.route-status')).toBeNull());
         expect(document.querySelector('.elevation')).toBe(profile);
-        expect(document.querySelector('.itinerary li:last-child strong')?.textContent).toBe(tilePlace.label);
+        expect(document.querySelector('.night strong')?.textContent).toBe(tilePlace.label);
     });
 
     it('moves the map to a day that opens, and keeps the profile and the totals on the trip', async () => {
@@ -629,7 +629,7 @@ describe('planner app transitions', () => {
         await vi.waitFor(() => expect(contacts()).toContain('href="https://camp.example/"'));
     });
 
-    it('offers a place for the night the rider chose in the overview', async () => {
+    it('opens the stop of a lone place of the chosen night from its pin on the map, with no callout', async () => {
         // The camp lies in the stretch that each search for places to sleep asks for.
         const answer = fetch;
         vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
@@ -643,7 +643,8 @@ describe('planner app transitions', () => {
         button('Choose night 2').click();
         await vi.waitFor(() => expect(button(`Map place: ${tilePlace.label}`)).toBeDefined());
         button(`Map place: ${tilePlace.label}`).click(); await tick();
-        expect(document.querySelector<HTMLSelectElement>('.callout select')!.value).toBe('2');
+        expect(document.querySelector('.night-seam .confirm')?.textContent?.trim()).toBe(`Sleep at ${tilePlace.label}`);
+        expect(document.querySelector('.callout')).toBeNull();
     });
 
     /** Holds every search for places to sleep open until the returned function releases it, as a failure if `fail`. */
@@ -755,7 +756,7 @@ describe('planner app transitions', () => {
         };
         expect([radios.length, document.activeElement, confirm()]).toEqual([3, radios[0], 'Sleep in Tile town']);
         await arrow(radios[1]);
-        expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
+        expect(document.querySelector('[role="dialog"]')).toBeNull();
         expect(document.activeElement).toBe(radios[1]);
         expect(confirm()).toBe(`Sleep at ${tilePlace.label}`);
         const moved = moves.count;

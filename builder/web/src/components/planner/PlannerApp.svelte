@@ -122,6 +122,8 @@
     let nightToShow = $state<number | null>(null);
     let stopId = $state<string | null>(null);
     let litStop = $state<string | null>(null);
+    // The place that the rider selected in the open stop of a night.
+    let seamPlace = $state<string | null>(null);
     const stopFinder = new StopFinder();
     let selectedId = $state<string | null>(null);
     // The point whose panel row lights up for a moment after it was added or pinned.
@@ -139,8 +141,6 @@
     let spot = $state<{ coordinate: Coordinate; legEndId?: string } | null>(null);
     // The selected place when it is not a fixture: a basemap place.
     let mapPlace = $state<Place | null>(null);
-    // A place selected in an open stop opens its callout without the focus, so the arrow keys stay in the stop.
-    let quietCallout = $state(false);
     const theme = $derived<'light' | 'dark'>(appearance.dark ? 'dark' : 'light');
     let hoveredId = $state<string | null>(null);
     let hillshade = $state(true);
@@ -346,7 +346,7 @@
     const nights: NightChoices = {
         get choosing() { return seamNight; },
         get stopId() { return openStop?.id ?? null; },
-        get shownId() { return selectedId; },
+        get shownId() { return openStop ? seamPlace : selectedId; },
         get lit() { return litStop; },
         light: id => litStop = id,
         found: nightStops,
@@ -368,15 +368,12 @@
         get campsites() { return campsites.length; },
         keepCampsites: () => keepCampsites(),
         // The chosen night is the one a place callout and a map pick end. Its seam takes the place of an open day.
-        choose: number => { choosingNight = nightToShow = number; stopId = litStop = null; clearSelection(); if (number !== null) { night = number; expandedDay = null; } },
-        open: id => { stopId = id; litStop = null; clearSelection(); const stop = seamNight !== null ? readyStops(seamNight).find(s => s.id === id) : undefined; if (stop) map?.showStop(suitable(stop, nights.kinds(seamNight!)).map(p => p.place.coordinate)); },
+        choose: number => { choosingNight = nightToShow = number; stopId = litStop = seamPlace = null; clearSelection(); if (number !== null) { night = number; expandedDay = null; } },
+        open: id => { stopId = id; litStop = seamPlace = null; clearSelection(); const stop = seamNight !== null ? readyStops(seamNight).find(s => s.id === id) : undefined; if (stop) map?.showStop(suitable(stop, nights.kinds(seamNight!)).map(p => p.place.coordinate)); },
         endHere: (night, stop) => endDayIn(night, stop),
         stay: (night, place) => stayAt(night, place),
-        selectPlace: place => {
-            if (!place) return clearSelection();
-            selectPlace(place);
-            quietCallout = true;
-        },
+        // The place selected in an open stop is named on the map; it has no callout, and the map stays on the stop.
+        selectPlace: place => { clearSelection(); seamPlace = place?.id ?? null; },
         pick: () => pickOnMap(),
         retry: night => { const window = stopWindows[night]; if (window) stopFinder.retry(stretchKey(routeKey, window)); },
     };
@@ -439,7 +436,7 @@
         const places = [...new Map([...visiblePlaces, ...(selectedPlace ? [selectedPlace] : [])].map(place => [place.id, place])).values()];
         const lone = new Map(openStop ? [] : seamStops.flatMap(stop => stop.places.length === 1 ? [[stop.places[0].id, stop.id] as const] : []));
         for (const p of places) {
-            if (p.id === selectedId || !pins.some(pin => pin.coordinate[0] === p.coordinate[0] && pin.coordinate[1] === p.coordinate[1])) pins.push({ ...p, stop: lone.get(p.id) });
+            if (p.id === selectedId || !pins.some(pin => pin.coordinate[0] === p.coordinate[0] && pin.coordinate[1] === p.coordinate[1])) pins.push({ ...p, stop: lone.get(p.id), named: p.id === seamPlace || undefined, appearance: openStop && !searching ? 'option' : undefined });
         }
         if (pending) pins.push({ id: 'pending', coordinate: pending, label: 'Overnight spot', kind: 'place', appearance: 'suggested' });
         // Day ends come last, so they stay on top of a candidate place at the same spot and can be dragged.
@@ -697,7 +694,6 @@
         pending = null;
         pendingSource = null;
         spot = null;
-        quietCallout = false;
     }
 
     function clearSelection() {
@@ -811,6 +807,9 @@
     function selectPoint(id: string) {
         if (id === 'pending') return;
         const place = visiblePlaces.find(p => p.id === id) ?? (mapPlace?.id === id ? mapPlace : undefined);
+        // A pin of an open night selects its place in the list, or opens the stop of a lone place.
+        const stop = place && seamNight !== null ? openStop ?? seamStops.find(stop => stop.places.some(p => p.id === id)) : undefined;
+        if (stop) { if (openStop) seamPlace = id; else nights.open(stop.id); return; }
         if (place) { choosePlace(place); return; }
         clearSelection();
         selectedId = id;
@@ -1329,7 +1328,7 @@
                         {#if calloutKind}
                             {#key selectedId}
                                 <MapCallout
-                                    kind={calloutKind} trip={withProposals(trip, session.line, proposals)} line={session.line} {days} {night} {legMode} takeFocus={!quietCallout}
+                                    kind={calloutKind} trip={withProposals(trip, session.line, proposals)} line={session.line} {days} {night} {legMode}
                                     onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPoint ? pointPlace : selectedPlace} coordinate={previewCoordinate} {detailsError}
                                     onClose={clearSelection}
                                     onAddHere={addHere}

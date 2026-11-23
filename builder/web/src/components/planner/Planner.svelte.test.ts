@@ -138,7 +138,7 @@ describe('route stop handles', () => {
 
         mounted.push(mount(RouteList, { target: document.body, props: { stops: [stops[0], stops[4]], onReorder: vi.fn(), onInspect: vi.fn() } }));
         await tick();
-        expect(document.querySelector('.hint')?.textContent).toBe('Add a stopClick the map, or search');
+        expect(document.querySelector('.hint')?.textContent).toBe('To add a stop, click the map or search');
     });
 });
 
@@ -457,7 +457,7 @@ describe('planner day views', () => {
         button('Next riding day').click(); await settle();
         expect([shown(), button('Next riding day').disabled]).toEqual(['Day 3 of 3', true]);
         expect(document.activeElement).toBe(button('Previous riding day'));
-        expect(lineRows()).toEqual([['suggested', 'Night 2Night 2 · suggested', ''], ['add', 'Add a stopClick the map, or search', ''],
+        expect(lineRows()).toEqual([['suggested', 'Night 2Night 2 · suggested', ''], ['add', 'To add a stop, click the map or search', ''],
             ['finish', 'Thun', formatAlong(props.days[2].distance * 1000)]]);
         lastRow().click();
         expect(props.onShowEnd).toHaveBeenCalledWith(props.days[2]);

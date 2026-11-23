@@ -8,7 +8,7 @@ export interface MapPoint {
     label: string;
     kind: "start" | "finish" | "via" | "night" | "place" | "waypoint" | "detour" | "pass" | "marker" | "dayend";
     /** A `suggested` pin is not part of the route yet; a `moved` day end was dragged by the rider. */
-    appearance?: "suggested" | "moved";
+    appearance?: "suggested" | "moved" | "option";
     /** The place category a `place` or `night` pin shows. */
     category?: PlaceCategory;
     color?: string;
@@ -21,6 +21,8 @@ export interface MapPoint {
     day?: number;
     /** The stop of a night that a lone place is: a small pin with its name, which lights with its stop. */
     stop?: string;
+    /** The place selected in the open stop of a night: an ink pin with its name. */
+    named?: boolean;
 }
 
 /** A town of a night: the map draws an area over its places to sleep, with its name. */

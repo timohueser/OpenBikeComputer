@@ -15,13 +15,16 @@
     import { settings } from '../../lib/settings/settings.svelte';
     import { still, unfold } from '../../lib/ui/search-bar/motion';
 
-    let { trip, line, day, theme, nights, onEnd }: {
+    let { trip, line, day, theme, nights, hoveredId = null, onHover, onEnd }: {
         trip: Trip;
         line?: RoutingLine;
         /** The day that ends at this night, as the trip has it. */
         day: Day;
         theme: 'light' | 'dark';
         nights: NightChoices;
+        /** The place of the open stop under the pointer, in the list or on the map. */
+        hoveredId?: string | null;
+        onHover?: (id: string | null) => void;
         /** Tells where the day ends in view, in km, and the town there; null is the day end of the trip. */
         onEnd: (end: { km: number; town: string } | null) => void;
     } = $props();
@@ -126,11 +129,14 @@
         for (let part: Element | null = node; part instanceof HTMLElement && part !== root; part = part.offsetParent) top += part.offsetTop;
         return top;
     }
-    // The mark glides to another row for 160 ms, and stays on its row when the rows around it move.
+    // The mark glides for 160 ms to the row of a choice: an opened stop or a selected place. It goes at once to the row
+    // under the pointer, and stays on its row when the rows around it move.
     let y = $state(0), glides = $state(false);
-    let marked: string | null | undefined, glideEnd = 0;
+    let marked: string | null | undefined, chosen = '', glideEnd = 0;
     function place(row: string | null) {
-        if (marked !== undefined && row !== marked) glideEnd = performance.now() + 160;
+        const choice = `${open?.stop.id ?? ''} ${selected?.place.id ?? ''}`;
+        if (marked !== undefined && row !== marked && choice !== chosen) glideEnd = performance.now() + 160;
+        chosen = choice;
         marked = row;
         glides = performance.now() < glideEnd;
         y = level();
@@ -158,7 +164,7 @@
 </script>
 
 {#snippet option(p: StopPlace)}
-    <label class="row place" class:at={p === selected} {@attach appear}>
+    <label class="row place" class:at={p === selected} class:lit={hoveredId === p.place.id} onmouseenter={() => onHover?.(p.place.id)} onmouseleave={() => onHover?.(null)} {@attach appear}>
         <input type="radio" name={id} checked={p === selected} onchange={() => select(p)} onclick={() => again(p)} />
         <span class="node"></span>
         <Icon name={sleepIcon(p.place.placeKind)} size={16} />
@@ -434,6 +440,8 @@
         min-height: 46px;
     }
     .place > :global(svg) { color: var(--ink-soft); }
+    /* The place under the pointer, here or on the map: lighter than the selected one. */
+    .place.lit:not(.at) { border-radius: 10px; background: color-mix(in srgb, var(--panel) 60%, transparent); }
     /* The selected row keeps its node on the rail inside its ring. */
     label.at {
         width: calc(100% - 8px);

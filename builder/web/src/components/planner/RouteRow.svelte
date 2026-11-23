@@ -6,7 +6,7 @@
     /** The sign of a stop between the ends of a line. */
     export const stopSign = (point: RoutePoint) => point.turnaround ? 'turn' : point.kind === 'pass' ? 'pass' : point.kind === 'marker' ? 'marker' : 'visit';
     /** The row that a line with no stop shows between its ends. */
-    export const hint = { sign: 'add', label: 'Add a stop', sub: 'Click the map, or search' } as const;
+    export const hint = { sign: 'add', label: 'To add a stop, click the map or search' } as const;
 </script>
 
 <script lang="ts">
@@ -39,7 +39,7 @@
 
     const icons: Record<string, { name?: string; path?: string } | undefined> = {
         start: { path: 'M8 5v14l11-7z' }, finish: { name: 'flag' }, visit: { name: 'flag' }, turn: { path: 'M7 20V9a5 5 0 0 1 10 0v6m-3-3 3 3 3-3' },
-        suggested: { name: 'moon' }, add: { name: 'plus' },
+        suggested: { name: 'moon' },
     };
     const mark = $derived(sign === 'night' ? { name: icon } : icons[sign]);
     const note = $derived(sub ?? (sign === 'turn' ? 'Turns back here' : ''));
@@ -119,10 +119,12 @@
     .marker { width: 12px; height: 12px; border: 1.5px solid var(--ink-soft); background: var(--parchment-2); box-shadow: 0 0 0 2px var(--panel); }
     .night { background: var(--ink); color: var(--panel); box-shadow: 0 0 0 2px var(--panel); }
     .suggested { border: 1.5px dashed var(--ink-soft); background: var(--panel); color: var(--ink-soft); }
-    .add { border: 1.5px dashed var(--line-strong); background: var(--panel); color: var(--ink-soft); }
+    /* The hint is a note on the line, not a control: a small empty mark and soft text. */
+    .add { width: 10px; height: 10px; border: 1.5px solid var(--line-strong); background: var(--panel); box-shadow: 0 0 0 2px var(--panel); }
     strong, small { display: block; }
     strong { font: 600 14px/1.3 var(--sans); overflow-wrap: anywhere; }
-    .hint strong { font-weight: 500; color: var(--ink-soft); }
+    .hint strong { font: 400 13px/1.35 var(--sans); color: var(--ink-soft); }
+    .hint .stop { min-height: 36px; }
     small {
         font-size: 13px;
         color: var(--ink-soft);

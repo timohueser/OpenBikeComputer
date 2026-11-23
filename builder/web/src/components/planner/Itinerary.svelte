@@ -213,7 +213,7 @@
             </div>
             {#if day.number === chosen}
                 <div class="seam" data-glide in:fade={{ duration: ms(180) }} out:fade={{ duration: ms(120) }}>
-                    <NightSeam {trip} {line} {day} {theme} {nights} onEnd={value => end = value} />
+                    <NightSeam {trip} {line} {day} {theme} {nights} {hoveredId} {onHover} onEnd={value => end = value} />
                 </div>
             {/if}
         {/each}
