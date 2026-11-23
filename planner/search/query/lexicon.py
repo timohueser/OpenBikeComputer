@@ -6,6 +6,8 @@ lexicon/kinds.json from lexicon/src/ and lexicon/kinds.yaml. lexicon/src/ is not
 presets.json and translations/{en,de,fr,it,es,nl}.json from
 https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema@6.19.2/dist/. All other lists are hand-written in
 lexicon/words.yaml. Lookup is a union over all languages: the box does not know the language.
+`python lexicon.py marks` writes marks.json, the English words of the search field of the web planner; `build` writes
+it too.
 
     WORDS[category][value][lang] -> [term]      hand-written lists (words.yaml)
     KIND_TERMS[lang][kind] -> [term]            kind terms (kinds.json; en de fr it, plus es nl)
@@ -343,5 +345,75 @@ def build() -> None:
         print("  contested:", x)
 
 
+MARKS = Path(__file__).with_name("marks.json")
+# Terms of two values in the lists of the field, and the category whose value the field gives
+# them. The query model reads them by the other words of the sentence.
+# The field reads a last word with a plural "s" or "es" as the word too, and a term that it
+# matches exactly wins: name a plural pair by its exact term.
+SHARED_MARKS = {
+    "hill": "stretch",      # "hills on day 2" asks for climbs; a summit is "summit" or "peak"
+    "lunch": "kind",        # "lunch" alone asks for food; "midday" is the middle of a day
+    "mornings": "day",      # each morning, not the start of one day ("morning" + "s")
+}
+# Words that change the meaning of the words around them: a sentence with one goes to the query
+# model, also when the field marks all its other words.
+MEANINGFUL = {"before", "after", "between", "until", "till", "from", "to", "since", "through",
+              "past", "beyond", "via", "near", "towards", "toward", "over", "around", "and", "or"}
+
+
+def marks_json() -> str:
+    """The English words that the search field of the web planner marks and suggests while the
+    rider types, by their value. The query model reads the sentence at Enter, so the list holds
+    only the words of single values. Terms are folded, with a space for a hyphen, as the field
+    compares them. Raises ValueError for a term of two values that SHARED_MARKS does not name."""
+    from decode import _DAY_VALUES  # decode imports this module
+
+    def terms(ts) -> list[str]:
+        return list(dict.fromkeys(" ".join(fold(t).replace("-", " ").split()) for t in ts))
+
+    def en(category: str) -> dict[str, list[str]]:
+        return {str(v): terms(per["en"]) for v, per in WORDS[category].items()
+                if per and per.get("en")}
+
+    def tokens(*categories: str) -> set[str]:
+        return {t for c in categories for ts in en(c).values() for term in ts for t in term.split()
+                if re.fullmatch(r"[\w']+", t)}
+
+    values = {
+        "kind": {k: terms(ts) for k, ts in _load_kinds()["terms"]["en"].items() if ts},
+        "stretch": en("stretch"),
+        "part": en("part"),
+        "day": {" ".join(p for p in _DAY_VALUES[v] if p): ts for v, ts in en("day_value").items()},
+        "scope": en("scope"),
+        "now": en("now"),
+        "weekday": en("weekday"),
+    }
+    for term, category in SHARED_MARKS.items():
+        for other in set(values) - {category}:
+            values[other] = {v: [t for t in ts if t != term] for v, ts in values[other].items()}
+    owners: dict[str, set[str]] = defaultdict(set)
+    for category, by_value in values.items():
+        for term in {t for ts in by_value.values() for t in ts}:
+            for form in (term, term + "s", term + "es"):
+                owners[form].add(category)
+    for term, categories in sorted(owners.items()):
+        if len(categories) > 1 and SHARED_MARKS.get(term) not in categories:
+            raise ValueError(f"marks: {term!r} has a value in {sorted(categories)}; add it to SHARED_MARKS")
+    doc = {
+        **values,
+        "day_noun": en("day_noun")["day"],
+        "ordinal": en("ordinal"),
+        "number": {v: [t for t in ts if " " not in t and t not in schema.ARTICLES]
+                   for v, ts in en("number").items() if v.isdigit() and v != "0"},
+        # The faint words, and those of them that carry no meaning.
+        "glue": sorted(tokens("stop", "nearest", "prep")),
+        "stop": sorted(tokens("stop") - MEANINGFUL),
+    }
+    return json.dumps(doc, ensure_ascii=False, indent=1) + "\n"
+
+
 if __name__ == "__main__" and sys.argv[1:] == ["build"]:
     build()
+    MARKS.write_text(marks_json())
+elif __name__ == "__main__" and sys.argv[1:] == ["marks"]:
+    MARKS.write_text(marks_json())

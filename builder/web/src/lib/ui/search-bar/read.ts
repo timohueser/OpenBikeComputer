@@ -1,8 +1,9 @@
 /** The reader of the text field of the search bar: it marks the phrases of a text that a page's table knows, finds the
  * words that the rider still types, and suggests values for them. It knows no page and sends no request. */
 
-/** A value that words give: its words in a row of the list, the slot that it goes to, and its icon. */
-export interface Value { label: string; slot: string; icon: string }
+/** A value that words give: its words in a row of the list, the slot that it goes to, and its icon, or the 24 px stroke
+ * `path` of one. */
+export interface Value { label: string; slot: string; icon: string; path?: string }
 
 /** What some words mean: a value, or a note that says why they stay in the field. */
 export type Meaning<V extends Value> = V | string;
@@ -74,15 +75,16 @@ function known<V extends Value>(table: Table<V>, list: Token[], i: number): bool
         || phrases.some(phrase => same(token.word, phrase.words[0], phrase.words.length === 1));
 }
 
-/** The longest phrase or quantity that starts at token `i`: where it ends, the next token, and what it means. A number
+/** The longest phrase or quantity that starts at token `i`: where it ends, the next token, and what it means. Of two
+ * phrases as long, one with the exact words wins over one with a plural: "mornings" is a phrase of its own. A number
  * with no unit means nothing before an unknown word: "4 hours" is no length. */
 function longest<V extends Value>(table: Table<V>, folded: string, list: Token[], i: number) {
-    let best: { to: number; next: number; value?: Meaning<V>; not?: Meaning<V> } | undefined;
+    let best: { to: number; next: number; value?: Meaning<V>; not?: Meaning<V>; exact?: boolean } | undefined;
     for (const phrase of compiled(table).phrases) {
         const count = phrase.words.length;
         if (i + count > list.length || !phrase.words.every((word, j) => !list[i + j].stop && same(list[i + j].word, word, j === count - 1))) continue;
-        const to = list[i + count - 1].to;
-        if (!best || to > best.to) best = { to, next: i + count, value: phrase.value, not: phrase.not };
+        const to = list[i + count - 1].to, exact = list[i + count - 1].word === phrase.words[count - 1];
+        if (!best || to > best.to || (to === best.to && exact && !best.exact)) best = { to, next: i + count, value: phrase.value, not: phrase.not, exact };
     }
     for (const pattern of table.patterns) {
         const match = pattern.match.exec(folded.slice(list[i].from)), values = match && pattern.values(match);

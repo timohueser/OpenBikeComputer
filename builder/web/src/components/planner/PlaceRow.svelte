@@ -70,7 +70,7 @@
         font: 400 13px/1.4 var(--sans);
         color: var(--ink-soft);
     }
-    .place-icon { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%; background: color-mix(in srgb, var(--query-place) 10%, var(--panel)); color: var(--query-place); }
+    .place-icon { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%; background: color-mix(in srgb, var(--place-disc) 10%, var(--panel)); color: var(--place-disc); }
     .distance { flex: none; text-align: right; font-variant-numeric: tabular-nums; }
     .distance b { display: block; font: 600 13px/1.5 var(--sans); }
     .distance span { display: block; margin-top: 2px; color: var(--ink-soft); font: 400 12px/1.5 var(--sans); }

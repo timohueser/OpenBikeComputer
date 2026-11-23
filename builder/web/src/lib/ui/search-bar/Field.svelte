@@ -1,8 +1,9 @@
 <!-- The text field of the search bar and its list under the bar. While the rider types, the field marks each phrase that
      the table of the page knows, shows the glue words faint and underlines the unknown words. Enter sends each marked
-     phrase to its slot, and the unknown words stay. The list suggests values for the words in progress and places of
-     the server for a typed name, and its first row says which marked value goes to which slot; with an empty field, it
-     offers the values often added next, the last searches or examples. -->
+     phrase to its slot, and the unknown words stay; a page that reads the text itself at Enter gives the words that
+     stay. The list suggests values for the words in progress and places of the server for a typed name, and its first
+     row says which marked value goes to which slot; with an empty field, it offers the values often added next, the
+     last searches or examples. -->
 <script lang="ts" module>
     import type { Table, Value } from './read';
 
@@ -14,6 +15,8 @@
         table: Table<V>;
         label: string;
         placeholder: string;
+        /** The most characters of the text, such as the limit of a server that reads it. */
+        maxlength?: number;
         /** Sentences for an empty field before the first search: a click types one and presses Enter. */
         examples: string[];
         /** The last searches, the newest first, and what brings one back. */
@@ -24,12 +27,16 @@
         changes: (value: V) => boolean;
         /** Sends values to the search, in the order of the text. */
         onvalues: (values: V[]) => void;
+        /** Reads the whole text at Enter in place of the marks, such as on a server, and applies what it understood. It
+         * answers the words that it did not understand, which stay in the field, and the values that went to their
+         * slots; undefined when a newer search replaced it. Until Enter, no word is unknown, as the page can read any. */
+        read?: (text: string) => Promise<{ kept: string; values: Value[] } | undefined>;
         /** The places of the server for a typed name. Enter never takes one; a click goes to `onplace`. A new function
          * is a new search, such as that of a new map view: the field asks again. */
-        places: (name: string, signal: AbortSignal) => Promise<P[]>;
-        onplace: (place: P) => void;
+        places?: (name: string, signal: AbortSignal) => Promise<P[]>;
+        onplace?: (place: P) => void;
         /** The words over the places in the list, which say what a click does. */
-        placesLabel: string;
+        placesLabel?: string;
         /** Enter ended a search, or a panel closed: the page can keep the search. */
         onsearch: () => void;
     }
@@ -41,19 +48,19 @@
     import { drop, pop, still } from './motion';
     import { fold, scan, suggest, typing, type Part } from './read';
 
-    let { table, label, placeholder, examples, recent, often, changes, onvalues, places, onplace, placesLabel, onsearch, text = $bindable(), listing = $bindable(), slots, land }: FieldProps<V, P> & {
+    let { table, label, placeholder, maxlength, examples, recent, often, changes, onvalues, read, places, onplace, placesLabel, onsearch, text = $bindable(), listing = $bindable(), slots, land }: FieldProps<V, P> & {
         text: string;
         /** The list is open. */
         listing: boolean;
         /** The slots of the bar, in their order. */
         slots: { id: string; icon: string; label: string }[];
         /** The words of a value fly from `from` to its slot after `delay` ms. */
-        land: (value: V, from: DOMRect | undefined, delay: number) => void;
+        land: (value: Value, from: DOMRect | undefined, delay: number) => void;
     } = $props();
 
     /** A row of the list. Enter takes a row with `value` in place of the words in progress, with the rest of the text.
      * `to` is the row of the marked values, by slot; `about` is some quiet words after the name of a place. */
-    type Row = { icon: string; text: string; typed?: number; side?: string; about?: string; to?: typeof reading; value?: V; pick: (from?: DOMRect) => void };
+    type Row = { icon: string; path?: string; text: string; typed?: number; side?: string; about?: string; to?: typeof reading; value?: V; pick: (from?: DOMRect) => void };
     type Line = { text: string; remove?: Part<V>[] };
 
     const WAIT_MS = 300, KEY_MS = 48, SPACE_MS = 120;
@@ -64,6 +71,8 @@
     let sealed = $state(false);
     /** A value went to its slot since the list opened: an empty field then offers the values often added next. */
     let session = $state(false);
+    /** The words that `read` did not understand at the last Enter. */
+    let kept = $state('');
 
     const start = $derived(sealed ? text.length : typing(text, table));
     const fragment = $derived(text.slice(start).trim());
@@ -73,13 +82,14 @@
         const out: { text: string; kind?: Part<V>['kind']; at?: number }[] = [];
         let at = 0;
         parts.forEach((part, i) => {
-            out.push({ text: text.slice(at, part.from) }, { text: text.slice(part.from, part.to), kind: plain(part) && placed ? undefined : part.kind, at: i });
+            out.push({ text: text.slice(at, part.from) }, { text: text.slice(part.from, part.to), kind: quiet(part) ? undefined : part.kind, at: i });
             at = part.to;
         });
         return [...out, { text: text.slice(at) }];
     });
     /** The words at the end that no phrase knows: a name, which the server can find as a place. */
     const name = $derived.by(() => {
+        if (!places) return { from: text.length, words: '' };
         const all = scan(text, table);
         let from = text.length;
         for (let i = all.length - 1; i >= 0; i--) {
@@ -101,6 +111,8 @@
     const placed = $derived(!!name.words && (asking || offered.some(begins)));
     /** A word of the name, which no phrase knows. */
     const plain = (part: Part<V>) => part.kind === 'unknown' && !part.note && part.from >= name.from;
+    /** An unknown word that is not marked: a name that the server looks for, or a word that `read` can still read. */
+    const quiet = (part: Part<V>) => (plain(part) && placed) || (!!read && part.kind === 'unknown' && !part.note && text !== kept);
 
     /** The marked values of each slot, in the order of the bar: what the first row of the list sends, and where. */
     const reading = $derived(slots.map(slot => ({ slot, labels: parts.flatMap(part => part.kind === 'value' && part.value.slot === slot.id ? [part.value.label] : []) }))
@@ -109,14 +121,14 @@
     /** The lines about the unknown words: their notes, and the words that no phrase knows. */
     function lines(all: Part<V>[]): Line[] {
         const unknown = all.flatMap(part => part.kind === 'unknown' ? [part] : []);
-        const lost = unknown.filter(part => !part.note && !(placed && plain(part)));
+        const lost = unknown.filter(part => !part.note && !quiet(part));
         const notes = [...new Set(unknown.flatMap(part => part.note ? [part.note] : []))].map(note => ({ text: note }));
         const words = lost.map(part => `“${text.slice(part.from, part.to)}”`).join(', ');
         return words ? [...notes, { text: `Not understood: ${words}. It changes nothing.`, remove: lost }] : notes;
     }
     const valueRow = (value: V, pick: (from?: DOMRect) => void): Row => {
         const typed = fold(value.label).startsWith(fold(fragment)) ? fragment.length : 0;
-        return { icon: value.icon, text: value.label, typed, side: slots.find(slot => slot.id === value.slot)?.label, value, pick };
+        return { icon: value.icon, path: value.path, text: value.label, typed, side: slots.find(slot => slot.id === value.slot)?.label, value, pick };
     };
     /** The rows in their order: the marked values, the suggestions, then `places` rows of places. */
     const list = $derived.by((): { title?: string; rows: Row[]; places: number; lines: Line[]; keys?: boolean } => {
@@ -156,8 +168,8 @@
     // the request.
     $effect(() => {
         const asked = name.words, by = places;
-        if (!asked) [found, answered] = [[], undefined];
-        if (!untrack(() => asking)) return;
+        if (!asked || !by) [found, answered] = [[], undefined];
+        if (!by || !untrack(() => asking)) return;
         const controller = new AbortController();
         const answer = (list: P[]) => { if (!controller.signal.aborted) [found, answered] = [list, { words: asked, by }]; };
         const timer = setTimeout(() => by(asked, controller.signal).then(answer, () => answer([])), WAIT_MS);
@@ -182,8 +194,11 @@
     }
     /** Enter: each marked phrase goes to its slot, and the unknown words stay. `last` takes the place of the words in
      * progress, so all values go in one call, in the order of the text. Without `whole`, the words in progress are not
-     * read: they stay too. */
+     * read: they stay too. With `read`, the page reads the whole text; the words of `last` complete the words in progress
+     * only when they begin with them, as "Drinking water" does "drinking wat": "Day 1" for the "1" of "day 1" would repeat
+     * a word. */
     function commit(last?: [V, DOMRect | undefined], whole = true) {
+        if (read) return void ask(last && fold(last[0].label).startsWith(fold(fragment)) ? text.trimEnd() + last[0].label.slice(fragment.length) : text);
         if (last) text = text.slice(0, start);
         sealed = whole;
         flushSync();
@@ -195,6 +210,21 @@
         send(values);
         onsearch();
     }
+    /** The page reads `sentence`. The words of each marked slot fly from where they were, and the words that the page
+     * did not understand stay, unless the rider changed the text meanwhile. */
+    async function ask(sentence: string) {
+        if (!sentence.trim()) return onsearch();
+        [text, sealed] = [sentence, true];
+        flushSync();
+        const from = new Map(parts.flatMap((part, i) => part.kind === 'value' ? [[part.value.slot, mirror?.querySelector(`[data-part="${i}"]`)?.getBoundingClientRect()] as const] : []).reverse());
+        sealed = false;
+        const answer = await read!(sentence);
+        if (!answer) return;
+        if (text === sentence) text = kept = answer.kept;
+        answer.values.forEach((value, i) => land(value, from.get(value.slot), i * 70));
+        session = true;
+        onsearch();
+    }
     function enter() {
         const row = list.rows[active];
         if (row?.value && fragment) return commit([row.value, optionRect(active)]);
@@ -204,7 +234,7 @@
     function choose(place: P) {
         text = text.slice(0, name.from);
         listing = false;
-        onplace(place);
+        onplace?.(place);
     }
     function remove(spans: Part<V>[]) {
         let next = text;
@@ -269,7 +299,7 @@
         <Icon name="search" size={17} />
         <span class="type">
             <span class="mirror" aria-hidden="true" bind:this={mirror}>{#each pieces as piece, i (i)}{#if piece.kind}<span class="m-{piece.kind}" data-part={piece.at}>{piece.text}</span>{:else}{piece.text}{/if}{/each}</span>
-            <input bind:this={input} bind:value={text} type="text" role="combobox" aria-label={label} {placeholder} aria-expanded={shown && list.rows.length > 0} aria-controls="search-list"
+            <input bind:this={input} bind:value={text} type="text" role="combobox" aria-label={label} {placeholder} {maxlength} aria-expanded={shown && list.rows.length > 0} aria-controls="search-list"
                 aria-autocomplete="list" aria-activedescendant={active >= 0 ? `search-option-${active}` : undefined} autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"
                 onfocus={() => { if (!listing) [listing, session] = [true, false]; }} onblur={() => listing = false} onclick={() => listing = true}
                 oninput={() => { stop(); listing = true; }} onkeydown={keydown} onscroll={() => { if (mirror && input) mirror.scrollLeft = input.scrollLeft; }} />
@@ -292,7 +322,7 @@
             <!-- Enter does what this row does only with no words in progress and no other row chosen. -->
             {#if !fragment && active <= 0}<kbd>Enter</kbd>{/if}
         {:else}
-            <Icon name={row.icon} size={16} />
+            <Icon name={row.icon} path={row.path} size={16} />
             <span class="what">{#if row.typed}{row.text.slice(0, row.typed)}<b>{row.text.slice(row.typed)}</b>{:else}{row.text}{/if}{#if row.about}<i>{row.about}</i>{/if}</span>
             {#if row.side}<small>{row.side}</small>{/if}
         {/if}
@@ -583,7 +613,7 @@
         color: var(--ink-soft);
         font: 11.5px var(--sans);
     }
-    @media (max-width: 760px) {
+    @container (max-width: 720px) {
         .field {
             flex: 1 1 100%;
             min-height: 46px;
@@ -592,6 +622,10 @@
         }
         .list {
             width: auto;
+        }
+        /* One line has room for the hints of Enter and Tab only. */
+        .keys span:last-child {
+            display: none;
         }
     }
 </style>

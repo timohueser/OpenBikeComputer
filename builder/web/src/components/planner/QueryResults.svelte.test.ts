@@ -38,4 +38,8 @@ describe('search results', () => {
         expect(document.querySelector('.day-head')).toBeNull();
         expect(await show([place('a', 'hotel'), place('b', 'campsite')])).toEqual([['hotel · Eich', '2.3 km'], ['campsite · Eich', '2.3 km']]);
     });
+    it('shows the area of an empty list without a count', async () => {
+        await show([]);
+        expect(document.querySelector('.result-heading')?.textContent).toBe('Along the route');
+    });
 });

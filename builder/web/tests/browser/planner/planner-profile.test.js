@@ -49,7 +49,7 @@ test('the planner profile: a drag selects a part that is the search area, a pres
   await expect(plot).toBeVisible();
   // The map reports its view once when it has loaded; that report would count as a move after the search.
   await expect(page.getByLabel('Route map')).toHaveAttribute('aria-busy', 'false', { timeout: 30_000 });
-  await page.getByRole('textbox', { name: 'Find a place or ask about the route' }).fill('cafes');
+  await page.getByRole('combobox', { name: 'Find a place or ask about the route' }).fill('cafes');
   await page.keyboard.press('Enter');
   await expect(page.locator('.results')).toContainText('Linde');
 

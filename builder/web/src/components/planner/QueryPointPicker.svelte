@@ -16,11 +16,11 @@
 <label>Point reference<select value={mode} onchange={e => choose(e.currentTarget.value)}>
     <option value="name">Named place</option><option value="kind">Nearest place of a type</option><option value="day">Day boundary</option><option value="along">Route position</option><option value="here">My location</option><option value="start">Route start</option><option value="end">Route end</option>
 </select></label>
-{#if 'name' in value}<label>Place name<input value={'name' in value ? value.name : ''} oninput={e => onChange({name:e.currentTarget.value})} /></label>
+{#if 'name' in value}<label>Place name<input value={'name' in value ? value.name : ''} onchange={e => onChange({name:e.currentTarget.value})} /></label>
 {:else if 'kind' in value}<label>Place type<select value={value.kind} onchange={e => onChange({kind:e.currentTarget.value})}>{#each allKinds as kind}<option value={kind}>{kindLabel(kind)}</option>{/each}</select></label>
 {:else if 'day' in value}
     <label class="half">Day<select value={String(value.day)} onchange={e => onChange({...value,day: /^\d+$/.test(e.currentTarget.value) ? Number(e.currentTarget.value) : e.currentTarget.value as QueryDay})}>
-        {#each days as day}<option value={day}>Day {day}</option>{/each}<option value="today">Today</option><option value="tomorrow">Tomorrow</option>
+        {#each days as day}<option value={String(day)}>Day {day}</option>{/each}<option value="today">Today</option><option value="tomorrow">Tomorrow</option>
     </select></label>
     <label class="half">Part<select value={value.part ?? 'end'} onchange={e => onChange({...value,part:e.currentTarget.value as 'start' | 'middle' | 'end'})}><option value="start">Start</option><option value="middle">Middle</option><option value="end">End</option></select></label>
 {:else if 'along' in value}<QueryAlong value={value.along} onChange={along => onChange({along})} />{/if}

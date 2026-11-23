@@ -7,6 +7,7 @@
     import type { Coordinate } from '../../lib/planner/geo';
     import { distanceIn } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
+    import { rise, still } from '../../lib/ui/search-bar/motion';
     const tenths = (km: number) => distanceIn(km * 1000).toFixed(1);
     let { state, days, theme, selectedId, hoveredId = null, onHover, applying = false, applyError = '', onSelect, onApply, onMore, onRetry, onStretch, attribution }: {
         /** The map data credit of the release. */
@@ -28,19 +29,34 @@
     const distanceOf = ({ position, distance }: SearchPlace) => position
         ? { main: `${settings.units} ${tenths(position.along)}`, sub: position.distance < 0.05 ? 'on route' : `${tenths(position.distance)} ${settings.units} off` }
         : { main: `${tenths(distance)} ${settings.units}` };
-    const count = $derived(answer?.type === 'places' ? `${answer.results?.length ?? 0}${answer.hasMore ? '+' : ''}` : '');
-    const summary = $derived(answer?.type === 'places' ? `${count} ${count === '1' ? 'place' : 'places'} found.`
-        : answer?.type === 'stretches' ? `${answer.stretches?.length ?? 0} stretches.` : answer?.type === 'change' ? answer.description : '');
+    /** The size of the list with its noun, such as "3 places", "20+ places" when the server has more, or "1 stretch". */
+    const count = $derived.by(() => {
+        if (answer?.type === 'stretches') return answer.stretches?.length === 1 ? '1 stretch' : `${answer.stretches?.length ?? 0} stretches`;
+        if (answer?.type !== 'places') return '';
+        return results.length === 1 && !answer.hasMore ? '1 place' : `${results.length}${answer.hasMore ? '+' : ''} places`;
+    });
+    const summary = $derived(answer?.type === 'change' ? answer.description : count && `${count} found.`);
     // The one live region of the results; the notice and note show without a role so they are read once.
     const announcement = $derived(state.loading && !answer ? 'Searching…' : [answer?.notice, summary, answer?.note].filter(Boolean).join(' '));
+    /** A new answer shows as a short fade of the list, as on Explore. */
+    function fade(list: HTMLElement) {
+        void answer;
+        if (!still()) list.animate?.({ opacity: [0.55, 1] }, { duration: 180, easing: 'ease-out' });
+    }
 </script>
-<div class="results" aria-busy={state.loading}>
+<!-- The line over a list: its size, and the area that the search used, which an empty list shows too. -->
+{#snippet heading(size: number)}
+    {#if size || answer?.area}
+        <div class="result-heading">{#if size}<h2>{#key count}<span in:rise>{count}</span>{/key}</h2>{/if}{#if answer?.area}<span>{answer.area}</span>{/if}</div>
+    {/if}
+{/snippet}
+<div class="results" aria-busy={state.loading} {@attach fade}>
     <span class="sr-only" role="status">{announcement}</span>
     {#if state.loading && !answer}<p aria-hidden="true">Searching…</p>
     {/if}
     {#if state.error}<p role="alert">{state.error}</p><button type="button" onclick={onRetry}>Retry search</button>{/if}
     {#if answer}
-        {#if answer.notice}<p class="note">{answer.notice}</p>{/if}
+        {#if answer.notice}<p>{answer.notice}</p>{/if}
         {#if answer.canRetry}<button type="button" onclick={onRetry}>Retry interpretation</button>{/if}
         {#if answer.type === 'change'}
             <p class="description">{answer.description}</p>
@@ -51,11 +67,11 @@
             <button type="button" class="apply" disabled={applying} onclick={onApply}>{applying ? 'Applying…' : 'Apply change'}</button>
             {#if applyError}<p role="alert">{applyError}</p>{/if}
         {:else if answer.type === 'stretches'}
-            <p class="count">{answer.stretches?.length ?? 0} stretches · {answer.area}</p>
+            {@render heading(answer.stretches?.length ?? 0)}
             {#each answer.stretches ?? [] as stretch}<button type="button" class="stretch" onclick={() => onStretch(stretch.coordinates)}>{stretch.label}<span>{settings.units} {tenths(stretch.from)}–{tenths(stretch.to)} · {tenths(stretch.to - stretch.from)} {settings.units}</span></button>{/each}
             {#if !answer.stretches?.length}<p>No matching stretch in this route data.</p>{/if}
         {:else if answer.type === 'places'}
-            <div class="result-heading"><p class="count">{answer.area}</p><span>{count}</span></div>
+            {@render heading(results.length)}
             {#each results as result, index (result.source)}
                 {#if grouped && resultDays[index] !== resultDays[index - 1]}
                     <h3 class="day-head"><span style:background={dayColor(resultDays[index] + 1, theme)}></span>Day {days[resultDays[index]].number}</h3>
@@ -72,10 +88,15 @@
     .results { padding: 12px 16px 16px; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     p { margin: 0 0 10px; font-size: 13px; line-height: 1.45; color: var(--ink-soft); overflow-wrap: anywhere; }
-    .result-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
-    .result-heading p { margin: 0; }
-    .result-heading > span { color: var(--ink-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
-    .count, .description { color: var(--ink); font-weight: 600; }
+    /* A search that takes long dims the list that it replaces. */
+    .results { transition: opacity 160ms; }
+    .results[aria-busy="true"] { opacity: .55; transition-delay: 240ms; }
+    .result-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+    h2 { margin: 0; color: var(--ink); font: 700 15px/1.4 var(--sans); font-variant-numeric: tabular-nums; }
+    /* A box, so the new count can rise into its place. */
+    h2 span { display: inline-block; }
+    .result-heading > span { color: var(--ink-soft); font-size: 13px; }
+    .description { color: var(--ink); font-weight: 600; }
     /* The negative margin covers the bleed of the rows that scroll under the heading. */
     .day-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; margin: 0 -8px; padding: 9px 8px 5px; background: var(--panel); color: var(--ink-soft); font: 600 11px/1.4 var(--sans); letter-spacing: .06em; text-transform: uppercase; }
     .day-head span { width: 8px; height: 8px; border-radius: 50%; }
@@ -85,12 +106,14 @@
     .results :global(.place-row:is(:hover, .selected, .hovered)), .results :global(.place-row:is(:hover, .selected, .hovered) + .place-row) { box-shadow: none; }
     .note { margin-top: 12px; }
     ol { padding-inline-start: 22px; font-size: 13px; }
-    button { min-height: 36px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; }
-    button:hover { border-color: var(--ink-soft); }
-    .apply { background: var(--amber); color: var(--black, #171717); margin-block: 10px; }
+    button { display: block; min-height: 36px; margin-block: 10px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; transition: background 120ms, border-color 120ms; }
+    button:hover:not(:disabled) { border-color: var(--ink-faint); background: var(--parchment-2); }
+    .apply { padding-inline: 14px; border-color: var(--amber); background: var(--amber); color: var(--on-amber); font-weight: 600; }
+    .apply:hover:not(:disabled) { border-color: transparent; background: color-mix(in srgb, var(--amber) 86%, var(--ink)); }
     button:disabled { cursor: wait; opacity: .6; }
     button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-    .stretch { width: 100%; text-align: start; margin-block: 4px; }
+    .stretch { width: 100%; text-align: start; margin-block: 6px; }
+    .result-heading + .stretch { margin-top: 10px; }
     .stretch span { display: block; color: var(--ink-soft); margin-top: 4px; }
     .attribution { font-size: 11px; margin-top: 16px; }
     a { color: inherit; text-underline-offset: 2px; }

@@ -1,10 +1,12 @@
 <!-- A search bar: a text field, then fixed slots. Each slot shows its values as words and opens one panel under it; the
      list of the text field is a panel too, and one panel is open at a time. Enter in the field sends the words of each
-     value to its slot. The cross empties the search, and "Undo" brings it back for a short time. -->
+     value to its slot. The cross empties the search, and "Undo" brings it back for a short time. The bar lays out by
+     its own width: a narrow bar has the field in one row and the slots in the next. -->
 <script lang="ts" module>
     /** `words` are the values of the slot in their order; `unset` shows when it has none. `set` says that a value differs
-     * from its default, also one with no word, so "Reset" has work. A slot with `off` is disabled and shows `off`. */
-    export interface Slot { id: string; icon: string; label: string; words: string[]; unset: string; set: boolean; off?: string }
+     * from its default, also one with no word, so "Reset" has work. A slot with `off` is disabled and shows `off`. The
+     * panel of a `wide` slot can be wider than a narrow bar, over what is beside the bar, where the window has room. */
+    export interface Slot { id: string; icon: string; label: string; words: string[]; unset: string; set: boolean; off?: string; wide?: boolean }
 </script>
 
 <script lang="ts" generics="V extends Value, P extends Place">
@@ -14,7 +16,7 @@
     import { drop, rise, still } from './motion';
     import type { Value } from './read';
 
-    let { label, slots, field, panel, onreset, empty, onclear, onundo, open = $bindable() }: {
+    let { label, slots, field, panel, onreset, empty, onclear, onundo, open = $bindable(), text: typed = $bindable('') }: {
         label: string;
         slots: Slot[];
         field: FieldProps<V, P>;
@@ -28,16 +30,29 @@
         onundo: () => void;
         /** The id of the slot whose panel is open. */
         open?: string;
+        /** The text of the field. */
+        text?: string;
     } = $props();
 
     const UNDO_MS = 8000, SHOWN = 2;
-    let bar = $state<HTMLElement>(), panelWidth = $state(0), barWidth = $state(0), innerWidth = $state(0);
-    /** The width of a narrow window, in which the panel is as wide as the bar. */
-    const NARROW_PX = 760;
+    let bar = $state<HTMLElement>(), panelWidth = $state(0), barWidth = $state(0);
+    /** The width of a narrow bar, whose panels are as wide as the bar; the CSS of the two rows has it too. */
+    const NARROW_PX = 720;
+    /** The room under the bar and from its left edge, less a margin: a panel fits in it. The room ends at the box that
+     * clips a panel, which is the nearest box around the bar that scrolls, else the window. */
+    let below = $state(0), beside = $state(0);
+    function measure() {
+        if (!bar) return;
+        let clip = bar.parentElement;
+        while (clip && getComputedStyle(clip).overflowY === 'visible') clip = clip.parentElement;
+        const box = bar.getBoundingClientRect(), frame = clip?.getBoundingClientRect();
+        below = Math.min(innerHeight, frame?.bottom ?? innerHeight) - box.bottom - 18;
+        beside = Math.min(innerWidth, frame?.right ?? innerWidth) - box.left - 16;
+    }
     /** "Undo" shows after the cross until its time ends or the search holds a value again. */
     let undoing = $state(false), timer: ReturnType<typeof setTimeout> | undefined;
-    /** The text of the field, the text before the cross, and whether the list of the field is open. */
-    let typed = $state(''), clearedText = '', listing = $state(false);
+    /** The text before the cross, and whether the list of the field is open. */
+    let clearedText = '', listing = $state(false);
     const blank = $derived(empty && !typed);
     const current = $derived(slots.find(slot => slot.id === open && !slot.off));
     const button = (id: string) => bar?.querySelector<HTMLElement>(`[data-slot="${CSS.escape(id)}"]`);
@@ -78,6 +93,10 @@
     $effect(() => {
         if (listing) untrack(() => open = undefined);
     });
+    // Before the panel or the list shows, so it comes in its final size.
+    $effect.pre(() => {
+        if (open || listing) untrack(measure);
+    });
     let was: string | undefined;
     $effect(() => {
         const now = open;
@@ -86,14 +105,14 @@
         was = now;
     });
 
-    /** The words of a value that fly from the field to their slot, one after the other. */
-    let ghosts = $state<{ id: number; slot: string; label: string; from: DOMRect; to: DOMRect; delay: number }[]>([]), flights = 0;
+    /** The words of a value that fly from the field to their slot, one after the other. `left` and `top` are in the bar. */
+    let ghosts = $state<{ id: number; slot: string; label: string; left: number; top: number; from: DOMRect; to: DOMRect; delay: number }[]>([]), flights = 0;
     const FLY_MS = 360;
     /** The words of a value fly from `from` to its slot, which then flashes. With reduced motion, only the slot flashes. */
-    function land(value: V, from: DOMRect | undefined, delay: number) {
-        const to = button(value.slot)?.querySelector('strong')?.getBoundingClientRect();
-        if (!from || !to || still()) return flash(value.slot);
-        ghosts.push({ id: flights++, slot: value.slot, label: value.label, from, to, delay });
+    function land(value: Value, from: DOMRect | undefined, delay: number) {
+        const to = button(value.slot)?.querySelector('strong')?.getBoundingClientRect(), box = bar?.getBoundingClientRect();
+        if (!from || !to || !box || still()) return flash(value.slot);
+        ghosts.push({ id: flights++, slot: value.slot, label: value.label, left: from.left - box.left, top: from.top - box.top, from, to, delay });
     }
     function fly(node: HTMLElement, ghost: typeof ghosts[number]) {
         const { from, to, delay } = ghost;
@@ -125,9 +144,9 @@
 </script>
 
 <!-- A press outside the bar closes the panel and still acts where it lands, such as a pick on the map. -->
-<svelte:window bind:innerWidth onkeydowncapture={escape} onpointerdown={event => { if (open && !bar?.contains(event.target as Node)) close(false); }} />
+<svelte:window onkeydowncapture={escape} onresize={measure} onpointerdown={event => { if (open && !bar?.contains(event.target as Node)) close(false); }} />
 
-<div class="search-bar" role="search" aria-label={label} bind:this={bar} bind:clientWidth={barWidth}>
+<div class="search-bar" role="search" aria-label={label} bind:this={bar} bind:clientWidth={barWidth} style:--below="{below}px" style:--beside="{beside}px">
     <div class="strip">
         <Field {...field} bind:text={typed} bind:listing {slots} {land} />
         <div class="slots">
@@ -147,7 +166,7 @@
         {/if}
     </div>
     {#if current}
-        <div class="search-panel" id="search-panel" role="group" aria-label={current.label} bind:offsetWidth={panelWidth} style:left={innerWidth > NARROW_PX ? `${left}px` : undefined}
+        <div class="search-panel" class:wide={current.wide} id="search-panel" role="group" aria-label={current.label} bind:offsetWidth={panelWidth} style:left={barWidth > NARROW_PX ? `${left}px` : undefined}
             in:drop out:drop={{ leave: true }}>
             {@render panel(current.id)}
             <div class="foot">
@@ -157,14 +176,17 @@
         </div>
     {/if}
     {#each ghosts as ghost (ghost.id)}
-        <span class="ghost" style:left="{ghost.from.left}px" style:top="{ghost.from.top}px" use:fly={ghost}>{ghost.label}</span>
+        <span class="ghost" style:left="{ghost.left}px" style:top="{ghost.top}px" use:fly={ghost}>{ghost.label}</span>
     {/each}
 </div>
 
 <style>
+    /* A query container also contains the layout in some browsers, so the ghosts are placed in the bar, not in the
+       window. */
     .search-bar {
         position: relative;
         z-index: 5;
+        container-type: inline-size;
     }
     .strip {
         display: flex;
@@ -297,7 +319,7 @@
         top: calc(100% + 6px);
         min-width: 340px;
         max-width: 100%;
-        max-height: min(560px, 74vh);
+        max-height: min(640px, max(200px, var(--below)));
         overflow: auto;
         border: 1px solid var(--line-strong);
         border-radius: 10px;
@@ -333,7 +355,7 @@
         opacity: 0.4;
     }
     .ghost {
-        position: fixed;
+        position: absolute;
         z-index: 1;
         padding: 3px 9px;
         border-radius: 6px;
@@ -349,14 +371,16 @@
         }
     }
     /* The field takes the first row and the slots the second; the cross stays at the end of the field. */
-    @media (max-width: 760px) {
+    @container (max-width: 720px) {
         .strip {
             flex-wrap: wrap;
         }
         .slots {
             flex: 1 1 100%;
         }
+        /* A value can take two lines here: the labels stay on one line. */
         .slot {
+            justify-content: flex-start;
             padding: 7px 10px;
         }
         .slot:first-child {
@@ -385,6 +409,12 @@
             right: 0;
             left: 0;
             min-width: 0;
+        }
+        .search-bar .wide {
+            right: auto;
+            width: max-content;
+            min-width: 100%;
+            max-width: max(100%, var(--beside));
         }
     }
 </style>

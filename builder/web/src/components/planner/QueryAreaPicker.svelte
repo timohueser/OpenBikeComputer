@@ -6,8 +6,8 @@
     let { value, days, selection, onChange }: { value: Where; days: number[]; selection?: Where; onChange: (value: Where) => void } = $props();
     const mode = $derived(value.near ? 'near' : value.along ? 'interval' : value.day ? 'day' : value.anchor ? 'anchor' : value.scope ?? 'view');
     const options = $derived([
-        {id:'view', label:'Map view', icon:'fit'}, {id:'route', label:'Route', icon:'route'},
-        {id:'near', label:'Near a place', icon:'pin'}, {id:'here', label:'My location', icon:'locate'},
+        {id:'view', label:'Map view', icon:'fit'}, {id:'route', label:'Whole route', icon:'route'},
+        {id:'near', label:'Near a place', icon:'pin'}, {id:'here', label:'Near me', icon:'locate'},
         ...(days.length ? [{id:'day',label:'Trip day',icon:'calendar'}] : []), {id:'interval',label:'Route section',icon:'sliders'},
         ...(value.anchor || selection ? [{id:'anchor',label:'Selected point',icon:'pin'}] : []),
     ]);
@@ -23,7 +23,7 @@
 </div>
 {#if value.day}
     <label class="half">Day<select value={String(value.day)} onchange={e => onChange({...value,day: /^\d+$/.test(e.currentTarget.value) ? Number(e.currentTarget.value) : e.currentTarget.value as QueryDay})}>
-        {#each days as day}<option value={day}>Day {day}</option>{/each}<option value="every">Every day</option><option value="today">Today</option><option value="tomorrow">Tomorrow</option>
+        {#each days as day}<option value={String(day)}>Day {day}</option>{/each}<option value="every">Every day</option><option value="today">Today</option><option value="tomorrow">Tomorrow</option>
     </select></label>
 {/if}
 {#if value.day || mode === 'route'}
@@ -40,10 +40,13 @@
 {/each}
 <style>
     .scopes { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 6px; }
-    .scopes button { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+    /* The look of the shape tiles of Explore. */
+    .scopes button { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 10px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink-soft); font: 13.5px/1.2 var(--sans); text-align: left; cursor: pointer; transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background 120ms, border-color 120ms, color 120ms; }
     .scopes button :global(svg) { flex: none; }
-    .scopes button.chosen { background: var(--filter-tint); border-color: var(--filter-ink); color: var(--filter-ink); }
-    .scopes button:hover { border-color: var(--filter-ink); }
+    .scopes button.chosen { background: var(--parchment-2); border-color: var(--ink-soft); color: var(--ink); font-weight: 600; }
+    .scopes button:hover { border-color: var(--ink-soft); }
+    .scopes button:active { transform: scale(0.97); }
+    @media (prefers-reduced-motion: reduce) { .scopes button { transition-property: background, border-color, color; } }
     .scopes button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     .point { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; grid-column: 1 / -1; min-width: 0; }
     strong { grid-column: 1 / -1; font-size: 12px; }

@@ -1,0 +1,1429 @@
+{
+ "kind": {
+  "atm": [
+   "atm",
+   "atms",
+   "cash machine",
+   "cash machines",
+   "cash point",
+   "cashpoint",
+   "cash",
+   "money",
+   "bank",
+   "banks"
+  ],
+  "bakery": [
+   "bakery",
+   "bakeries",
+   "baker",
+   "bakers",
+   "baker's",
+   "bread",
+   "pastry shop",
+   "pastry shops",
+   "patisserie",
+   "bread shop",
+   "bread shops",
+   "buy bread",
+   "get bread",
+   "bakeshop",
+   "cake shop"
+  ],
+  "bar": [
+   "bar",
+   "bars",
+   "pub",
+   "pubs",
+   "beer",
+   "a beer",
+   "beers",
+   "beer garden",
+   "beer gardens",
+   "brewery",
+   "breweries",
+   "wine bar",
+   "bier",
+   "biergarten"
+  ],
+  "beach": [
+   "beach",
+   "beaches",
+   "seaside",
+   "beach resort"
+  ],
+  "bike": [
+   "bike help",
+   "bike service",
+   "bike services",
+   "bike stuff",
+   "bike repair",
+   "bike repairs",
+   "bicycle repair",
+   "repair",
+   "repairs",
+   "fix my bike",
+   "fix the bike",
+   "repair my bike",
+   "repair the bike",
+   "get my bike fixed",
+   "fix a flat",
+   "fix my puncture"
+  ],
+  "bike_shop": [
+   "bike shop",
+   "bike shops",
+   "bicycle shop",
+   "bicycle shops",
+   "bike store",
+   "bike stores",
+   "cycle shop",
+   "cycle shops",
+   "bike mechanic",
+   "bike mechanics",
+   "lbs",
+   "bike repair shop",
+   "bike repair shops",
+   "bicycle repair shop",
+   "bicycle repair shops",
+   "repair shop",
+   "repair shops",
+   "bike parts",
+   "spare parts",
+   "inner tube",
+   "inner tubes",
+   "bicycle store"
+  ],
+  "bridge": [
+   "bridge",
+   "bridges",
+   "viaduct"
+  ],
+  "bus_stop": [
+   "bus stop",
+   "bus stops",
+   "bus",
+   "buses",
+   "bus station",
+   "coach"
+  ],
+  "butcher": [
+   "butcher",
+   "butchers",
+   "butcher's",
+   "butcher shop"
+  ],
+  "cafe": [
+   "cafe",
+   "cafes",
+   "coffee",
+   "a coffee",
+   "coffee shop",
+   "coffee shops",
+   "tea room",
+   "tearoom",
+   "bistro"
+  ],
+  "campsite": [
+   "campsite",
+   "campsites",
+   "camp site",
+   "camp sites",
+   "campground",
+   "campgrounds",
+   "camping",
+   "camp",
+   "camps",
+   "camping spot",
+   "camping spots",
+   "tent spot",
+   "tent spots",
+   "pitch",
+   "pitches",
+   "wild camping",
+   "wild camp",
+   "pitch a tent",
+   "pitch my tent",
+   "put up my tent",
+   "put up a tent",
+   "tenting",
+   "place to camp",
+   "places to camp",
+   "somewhere to camp",
+   "spot to camp",
+   "camp spot",
+   "camp ground",
+   "camp pitch"
+  ],
+  "castle": [
+   "castle",
+   "castles",
+   "palace",
+   "palaces",
+   "fortress",
+   "fortresses",
+   "fort",
+   "forts",
+   "chateau"
+  ],
+  "charging": [
+   "charging",
+   "charging station",
+   "charging stations",
+   "charger",
+   "chargers",
+   "charging point",
+   "e bike charging",
+   "power outlet",
+   "socket",
+   "plug",
+   "charge my phone",
+   "recharge"
+  ],
+  "church": [
+   "church",
+   "churches",
+   "chapel",
+   "chapels",
+   "cathedral",
+   "cathedrals",
+   "basilica",
+   "place of worship"
+  ],
+  "convenience": [
+   "convenience store",
+   "convenience stores",
+   "corner shop",
+   "corner shops",
+   "corner store",
+   "mini market",
+   "minimarket",
+   "village shop",
+   "village shops",
+   "general store",
+   "kiosk",
+   "kiosks",
+   "deli",
+   "delis",
+   "mini mart",
+   "small town store"
+  ],
+  "doctor": [
+   "doctor",
+   "doctors",
+   "doctor's",
+   "gp",
+   "physician",
+   "medic",
+   "clinic",
+   "clinics",
+   "medical practice",
+   "doctor's office",
+   "urgent care",
+   "gps",
+   "family doctor",
+   "general practitioner"
+  ],
+  "drinking_water": [
+   "drinking water",
+   "potable water",
+   "drinkable water",
+   "drinking fountain",
+   "drinking fountains",
+   "water fountain",
+   "water fountains",
+   "drinking water fountain",
+   "drinking water fountains",
+   "potable water source"
+  ],
+  "fast_food": [
+   "fast food",
+   "takeaway",
+   "take away",
+   "takeout",
+   "burger",
+   "burgers",
+   "kebab",
+   "kebabs",
+   "snack bar",
+   "snack bars",
+   "kebab shop",
+   "kebab shops",
+   "chippy",
+   "chip shop"
+  ],
+  "ferry": [
+   "ferry",
+   "ferries",
+   "ferry terminal",
+   "ferry port",
+   "boat"
+  ],
+  "food": [
+   "food",
+   "eat",
+   "eating",
+   "something to eat",
+   "a bite",
+   "bite to eat",
+   "a bite to eat",
+   "meal",
+   "meals",
+   "lunch",
+   "dinner",
+   "breakfast",
+   "supper",
+   "grub",
+   "food stop",
+   "place to eat",
+   "places to eat",
+   "somewhere to eat",
+   "eat out",
+   "eating out",
+   "go out to eat",
+   "grab a bite",
+   "food court"
+  ],
+  "fountain": [
+   "fountain",
+   "fountains",
+   "village fountain",
+   "village fountains"
+  ],
+  "fuel": [
+   "gas station",
+   "gas stations",
+   "petrol station",
+   "petrol stations",
+   "fuel station",
+   "fuel stations",
+   "service station",
+   "service stations",
+   "filling station"
+  ],
+  "guest_house": [
+   "guest house",
+   "guest houses",
+   "guesthouse",
+   "guesthouses",
+   "b&b",
+   "b&bs",
+   "bed and breakfast",
+   "bnb",
+   "pension",
+   "b & b",
+   "b and b"
+  ],
+  "hospital": [
+   "hospital",
+   "hospitals",
+   "emergency room",
+   "emergency department",
+   "a&e",
+   "emergency",
+   "infirmary"
+  ],
+  "hostel": [
+   "hostel",
+   "hostels",
+   "youth hostel",
+   "youth hostels",
+   "backpackers",
+   "backpacker"
+  ],
+  "hotel": [
+   "hotel",
+   "hotels",
+   "inn",
+   "inns"
+  ],
+  "hut": [
+   "hut",
+   "huts",
+   "mountain hut",
+   "mountain huts",
+   "alpine hut",
+   "alpine huts",
+   "refuge",
+   "refuges",
+   "mountain refuge",
+   "mountain lodge"
+  ],
+  "ice_cream": [
+   "ice cream",
+   "ice creams",
+   "ice cream shop",
+   "gelato",
+   "gelateria"
+  ],
+  "lake": [
+   "lake",
+   "lakes",
+   "pond",
+   "ponds",
+   "lakeside",
+   "reservoir"
+  ],
+  "laundry": [
+   "laundry",
+   "laundromat",
+   "laundromats",
+   "launderette",
+   "laundrette",
+   "laundries",
+   "wash clothes",
+   "washing machine",
+   "do laundry",
+   "do my laundry",
+   "wash my clothes"
+  ],
+  "lodging": [
+   "accommodation",
+   "accommodations",
+   "lodging",
+   "lodgings",
+   "room",
+   "rooms",
+   "a room",
+   "bed",
+   "beds",
+   "a bed",
+   "place to stay",
+   "places to stay",
+   "somewhere to stay",
+   "where to stay",
+   "holiday apartment",
+   "holiday home",
+   "cabin",
+   "cabins",
+   "chalet",
+   "airbnb",
+   "rental",
+   "holiday cottage",
+   "holiday cabin",
+   "vacation cabin",
+   "vacation home"
+  ],
+  "marketplace": [
+   "market",
+   "markets",
+   "marketplace",
+   "farmers market",
+   "farmers' market",
+   "weekly market",
+   "market hall",
+   "bazaar"
+  ],
+  "medical": [
+   "medical",
+   "medical help",
+   "medical care",
+   "first aid",
+   "health care",
+   "healthcare",
+   "medical centre",
+   "medical center",
+   "medical facility"
+  ],
+  "monastery": [
+   "monastery",
+   "monasteries",
+   "abbey",
+   "abbeys",
+   "convent",
+   "priory"
+  ],
+  "motel": [
+   "motel",
+   "motels",
+   "motor hotel"
+  ],
+  "museum": [
+   "museum",
+   "museums",
+   "gallery",
+   "galleries",
+   "art gallery",
+   "art galleries"
+  ],
+  "pass": [
+   "pass",
+   "passes",
+   "mountain pass",
+   "mountain passes",
+   "col",
+   "cols",
+   "saddle"
+  ],
+  "pharmacy": [
+   "pharmacy",
+   "pharmacies",
+   "chemist",
+   "chemists",
+   "chemist's",
+   "drugstore",
+   "drugstores",
+   "drug store",
+   "apothecary",
+   "dispensary"
+  ],
+  "repair_station": [
+   "repair station",
+   "repair stations",
+   "bike repair station",
+   "bike repair stations",
+   "bike pump",
+   "pump",
+   "pumps",
+   "air pump",
+   "public pump",
+   "fix it station",
+   "compressed air",
+   "bike repair stand",
+   "bike tools",
+   "cycle pump",
+   "air compressor",
+   "tire inflation"
+  ],
+  "restaurant": [
+   "restaurant",
+   "restaurants",
+   "pizzeria",
+   "trattoria",
+   "eatery",
+   "eateries",
+   "tavern",
+   "taverns",
+   "inn restaurant",
+   "brasserie"
+  ],
+  "resupply": [
+   "shop",
+   "shops",
+   "store",
+   "stores",
+   "groceries",
+   "grocery",
+   "food shop",
+   "food shops",
+   "food store",
+   "food stores",
+   "resupply",
+   "resupplies",
+   "resupply point",
+   "buy food",
+   "get food",
+   "food supplies",
+   "supplies",
+   "provisions",
+   "shopping",
+   "buy groceries",
+   "stock up",
+   "farm shop",
+   "farm shops",
+   "resupply points",
+   "supply point",
+   "supply points",
+   "greengrocer"
+  ],
+  "ruins": [
+   "ruins",
+   "ruin",
+   "ancient ruins"
+  ],
+  "shelter": [
+   "shelter",
+   "shelters",
+   "bivouac",
+   "bivouacs",
+   "bivvy",
+   "bivy",
+   "bothy",
+   "bothies",
+   "lean to",
+   "emergency shelter",
+   "wilderness hut",
+   "wilderness huts",
+   "sleeping shelter",
+   "covered shelter",
+   "biwakschachtel"
+  ],
+  "shower": [
+   "shower",
+   "showers",
+   "public shower",
+   "hot shower",
+   "take a shower",
+   "have a shower",
+   "get a shower",
+   "shower facilities"
+  ],
+  "sight": [
+   "sights",
+   "sight",
+   "sightseeing",
+   "attraction",
+   "attractions",
+   "tourist attraction",
+   "tourist attractions",
+   "things to see",
+   "something to see",
+   "points of interest",
+   "poi",
+   "pois",
+   "monument",
+   "monuments",
+   "landmark",
+   "landmarks"
+  ],
+  "sleep": [
+   "sleep",
+   "sleeping",
+   "place to sleep",
+   "places to sleep",
+   "somewhere to sleep",
+   "spot to sleep",
+   "spots to sleep",
+   "sleeping spot",
+   "sleeping spots",
+   "overnight stay",
+   "overnight stays",
+   "stay the night",
+   "spend the night",
+   "bed for the night",
+   "crash"
+  ],
+  "spring": [
+   "spring",
+   "springs",
+   "natural spring",
+   "water spring"
+  ],
+  "summit": [
+   "summit",
+   "summits",
+   "peak",
+   "peaks",
+   "mountain",
+   "mountains",
+   "top",
+   "hilltop",
+   "hill top",
+   "volcano",
+   "mount"
+  ],
+  "supermarket": [
+   "supermarket",
+   "supermarkets",
+   "grocery store",
+   "grocery stores",
+   "hypermarket",
+   "groceries store"
+  ],
+  "swimming": [
+   "swim",
+   "swimming",
+   "swim spot",
+   "swim spots",
+   "swimming spot",
+   "swimming spots",
+   "place to swim",
+   "places to swim",
+   "bathing",
+   "bathing spot",
+   "go for a swim",
+   "a swim",
+   "dip",
+   "wild swimming",
+   "natural swimming area"
+  ],
+  "swimming_pool": [
+   "swimming pool",
+   "swimming pools",
+   "pool",
+   "pools",
+   "outdoor pool",
+   "public pool",
+   "water park"
+  ],
+  "toilets": [
+   "toilet",
+   "toilets",
+   "restroom",
+   "restrooms",
+   "public toilet",
+   "public toilets",
+   "wc",
+   "loo",
+   "loos",
+   "bathroom",
+   "bathrooms",
+   "lavatory",
+   "pee",
+   "have a pee",
+   "wee",
+   "go to the toilet",
+   "go to the loo",
+   "latrine",
+   "outhouse",
+   "public restroom",
+   "w.c.",
+   "water closet"
+  ],
+  "tower": [
+   "tower",
+   "towers",
+   "lookout tower",
+   "observation tower"
+  ],
+  "town": [
+   "town",
+   "towns",
+   "village",
+   "villages",
+   "city",
+   "cities",
+   "hamlet",
+   "settlement"
+  ],
+  "train_station": [
+   "train station",
+   "train stations",
+   "railway station",
+   "railway stations",
+   "station",
+   "stations",
+   "train",
+   "trains",
+   "rail station",
+   "railway",
+   "train stop",
+   "train stops",
+   "take the train",
+   "take a train",
+   "catch a train",
+   "train station building"
+  ],
+  "transport": [
+   "public transport",
+   "transit",
+   "public transportation",
+   "train or bus",
+   "transport",
+   "transportation",
+   "take public transport",
+   "public transit"
+  ],
+  "viewpoint": [
+   "viewpoint",
+   "viewpoints",
+   "view point",
+   "lookout",
+   "lookouts",
+   "overlook",
+   "overlooks",
+   "scenic view",
+   "scenic views",
+   "panorama",
+   "vista point",
+   "vantage point",
+   "vista"
+  ],
+  "water": [
+   "water",
+   "water source",
+   "water sources",
+   "water point",
+   "water points",
+   "water refill",
+   "water refills",
+   "refill water",
+   "refill",
+   "refills",
+   "refill bottles",
+   "fill bottles",
+   "fill up water",
+   "fill up",
+   "get water",
+   "top up water",
+   "top up",
+   "well",
+   "wells",
+   "water stop",
+   "water stops",
+   "refill point",
+   "refill points",
+   "refill station",
+   "refill stations",
+   "fill my bottles",
+   "fill up my bottles",
+   "refill my bottles",
+   "fill my bidons",
+   "get some water"
+  ],
+  "water_tap": [
+   "water tap",
+   "water taps",
+   "tap",
+   "taps",
+   "faucet",
+   "faucets",
+   "spigot",
+   "standpipe",
+   "water faucet",
+   "water spigot"
+  ],
+  "waterfall": [
+   "waterfall",
+   "waterfalls",
+   "falls",
+   "cascade"
+  ]
+ },
+ "stretch": {
+  "climb": [
+   "climb",
+   "climbs",
+   "climbing",
+   "ascent",
+   "ascents",
+   "uphill",
+   "uphills",
+   "ascend",
+   "hill",
+   "hills"
+  ],
+  "descent": [
+   "descent",
+   "descents",
+   "downhill",
+   "downhills",
+   "descend",
+   "descending"
+  ],
+  "steep": [
+   "steep",
+   "steep bits",
+   "steep parts",
+   "steep sections",
+   "steep stretches",
+   "steepest",
+   "gradient",
+   "gradients",
+   "steep climbs"
+  ],
+  "unpaved": [
+   "unpaved",
+   "gravel",
+   "gravel sections",
+   "gravel roads",
+   "dirt",
+   "dirt roads",
+   "dirt track",
+   "dirt tracks",
+   "off road",
+   "offroad",
+   "unsealed",
+   "rough roads"
+  ],
+  "unknown_surface": [
+   "unknown surface",
+   "unknown surfaces",
+   "surface unknown",
+   "unclear surface",
+   "unknown road surface"
+  ],
+  "pushing": [
+   "pushing",
+   "push",
+   "hike a bike",
+   "hab",
+   "carry",
+   "carrying",
+   "walking the bike",
+   "push the bike"
+  ],
+  "closure": [
+   "closure",
+   "closures",
+   "closed",
+   "road closure",
+   "road closures",
+   "closed roads",
+   "blocked",
+   "roadworks"
+  ]
+ },
+ "part": {
+  "start": [
+   "start",
+   "beginning",
+   "begin",
+   "morning",
+   "early",
+   "first thing",
+   "start of"
+  ],
+  "middle": [
+   "middle",
+   "midday",
+   "noon",
+   "lunchtime",
+   "halfway",
+   "half way",
+   "halfway through",
+   "mid",
+   "midway",
+   "mid day"
+  ],
+  "end": [
+   "end",
+   "finish",
+   "ending",
+   "evening",
+   "night",
+   "the end",
+   "end of",
+   "overnight",
+   "end point",
+   "finish line"
+  ]
+ },
+ "day": {
+  "today": [
+   "today",
+   "this day"
+  ],
+  "tomorrow": [
+   "tomorrow",
+   "tomorrows",
+   "tomorrow's",
+   "next day"
+  ],
+  "today end": [
+   "tonight",
+   "this evening",
+   "this night"
+  ],
+  "today middle": [
+   "today at noon",
+   "this noon",
+   "at noon today",
+   "lunchtime today"
+  ],
+  "today start": [
+   "this morning"
+  ],
+  "every": [
+   "daily",
+   "every day",
+   "each day",
+   "all days",
+   "every stage",
+   "each stage"
+  ],
+  "every start": [
+   "every morning",
+   "each morning",
+   "mornings"
+  ],
+  "every end": [
+   "nightly",
+   "every night",
+   "each night",
+   "every evening",
+   "each evening"
+  ]
+ },
+ "scope": {
+  "route": [
+   "route",
+   "the route",
+   "my route",
+   "along route",
+   "on route",
+   "along the way",
+   "along my way",
+   "on my way",
+   "my way",
+   "plan",
+   "the plan",
+   "my plan",
+   "trip",
+   "the trip",
+   "my trip",
+   "tour",
+   "track",
+   "gpx",
+   "the way",
+   "along the route",
+   "on the route",
+   "on my route",
+   "along my route",
+   "the whole route",
+   "whole route",
+   "the line",
+   "course"
+  ],
+  "view": [
+   "map view",
+   "the map view",
+   "map",
+   "the map",
+   "on the map",
+   "view",
+   "the view",
+   "this area",
+   "visible area",
+   "on screen",
+   "the screen",
+   "screen",
+   "my screen",
+   "what i see",
+   "this section of the map",
+   "current view"
+  ],
+  "here": [
+   "here",
+   "right here",
+   "exactly here",
+   "around here",
+   "nearby",
+   "near here",
+   "near me",
+   "close by",
+   "close to me",
+   "around me",
+   "near my location",
+   "in the area",
+   "close",
+   "local",
+   "local area"
+  ]
+ },
+ "now": {
+  "now": [
+   "now",
+   "right now",
+   "currently",
+   "at the moment",
+   "open now",
+   "still open now"
+  ]
+ },
+ "weekday": {
+  "mon": [
+   "monday",
+   "mondays"
+  ],
+  "tue": [
+   "tuesday",
+   "tuesdays"
+  ],
+  "wed": [
+   "wednesday",
+   "wednesdays"
+  ],
+  "thu": [
+   "thursday",
+   "thursdays"
+  ],
+  "fri": [
+   "friday",
+   "fridays"
+  ],
+  "sat": [
+   "saturday",
+   "saturdays"
+  ],
+  "sun": [
+   "sunday",
+   "sundays"
+  ]
+ },
+ "day_noun": [
+  "day",
+  "days",
+  "stage",
+  "stages",
+  "leg",
+  "daily stage"
+ ],
+ "ordinal": {
+  "1": [
+   "first",
+   "1st"
+  ],
+  "2": [
+   "second",
+   "2nd"
+  ],
+  "3": [
+   "third",
+   "3rd"
+  ],
+  "4": [
+   "fourth",
+   "4th"
+  ],
+  "5": [
+   "fifth",
+   "5th"
+  ],
+  "6": [
+   "sixth",
+   "6th"
+  ],
+  "7": [
+   "seventh",
+   "7th"
+  ],
+  "8": [
+   "eighth",
+   "8th"
+  ],
+  "9": [
+   "ninth",
+   "9th"
+  ],
+  "10": [
+   "tenth",
+   "10th"
+  ],
+  "11": [
+   "eleventh"
+  ],
+  "12": [
+   "twelfth"
+  ]
+ },
+ "number": {
+  "1": [
+   "one"
+  ],
+  "2": [
+   "two",
+   "couple"
+  ],
+  "3": [
+   "three"
+  ],
+  "4": [
+   "four"
+  ],
+  "5": [
+   "five"
+  ],
+  "6": [
+   "six"
+  ],
+  "7": [
+   "seven"
+  ],
+  "8": [
+   "eight"
+  ],
+  "9": [
+   "nine"
+  ],
+  "10": [
+   "ten"
+  ],
+  "11": [
+   "eleven"
+  ],
+  "12": [
+   "twelve",
+   "dozen"
+  ],
+  "13": [
+   "thirteen"
+  ],
+  "14": [
+   "fourteen"
+  ],
+  "15": [
+   "fifteen"
+  ],
+  "16": [
+   "sixteen"
+  ],
+  "17": [
+   "seventeen"
+  ],
+  "18": [
+   "eighteen"
+  ],
+  "19": [
+   "nineteen"
+  ],
+  "20": [
+   "twenty"
+  ],
+  "30": [
+   "thirty"
+  ],
+  "40": [
+   "forty",
+   "fourty"
+  ],
+  "50": [
+   "fifty"
+  ],
+  "60": [
+   "sixty"
+  ],
+  "70": [
+   "seventy"
+  ],
+  "80": [
+   "eighty"
+  ],
+  "90": [
+   "ninety"
+  ],
+  "100": [
+   "hundred"
+  ]
+ },
+ "glue": [
+  "'s",
+  "a",
+  "about",
+  "after",
+  "ahead",
+  "all",
+  "along",
+  "also",
+  "an",
+  "and",
+  "any",
+  "anywhere",
+  "approx",
+  "approximately",
+  "are",
+  "area",
+  "around",
+  "as",
+  "at",
+  "before",
+  "behind",
+  "beside",
+  "between",
+  "beyond",
+  "buy",
+  "by",
+  "ca",
+  "can",
+  "circa",
+  "close",
+  "closest",
+  "complete",
+  "could",
+  "do",
+  "does",
+  "entire",
+  "exactly",
+  "find",
+  "finding",
+  "for",
+  "from",
+  "full",
+  "get",
+  "give",
+  "going",
+  "grab",
+  "had",
+  "has",
+  "have",
+  "having",
+  "hello",
+  "hey",
+  "hi",
+  "i",
+  "i'd",
+  "i'm",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
+  "just",
+  "leaving",
+  "let",
+  "let's",
+  "lets",
+  "like",
+  "list",
+  "look",
+  "looking",
+  "maybe",
+  "me",
+  "municipal",
+  "my",
+  "near",
+  "nearby",
+  "nearest",
+  "need",
+  "needs",
+  "next",
+  "of",
+  "ok",
+  "okay",
+  "on",
+  "one",
+  "only",
+  "onto",
+  "or",
+  "our",
+  "out",
+  "over",
+  "passing",
+  "past",
+  "please",
+  "pls",
+  "possible",
+  "prior",
+  "public",
+  "right",
+  "roughly",
+  "search",
+  "show",
+  "some",
+  "somewhere",
+  "starting",
+  "still",
+  "take",
+  "test",
+  "thank",
+  "thanks",
+  "that",
+  "the",
+  "there",
+  "these",
+  "this",
+  "those",
+  "through",
+  "till",
+  "to",
+  "toward",
+  "towards",
+  "until",
+  "up",
+  "us",
+  "via",
+  "want",
+  "wants",
+  "way",
+  "we",
+  "what",
+  "where",
+  "which",
+  "whole",
+  "with",
+  "would",
+  "you",
+  "your"
+ ],
+ "stop": [
+  "'s",
+  "a",
+  "about",
+  "all",
+  "along",
+  "also",
+  "an",
+  "any",
+  "anywhere",
+  "approx",
+  "approximately",
+  "are",
+  "as",
+  "at",
+  "buy",
+  "by",
+  "ca",
+  "can",
+  "circa",
+  "complete",
+  "could",
+  "do",
+  "does",
+  "entire",
+  "exactly",
+  "find",
+  "finding",
+  "for",
+  "full",
+  "get",
+  "give",
+  "grab",
+  "had",
+  "has",
+  "have",
+  "hello",
+  "hey",
+  "hi",
+  "i",
+  "i'd",
+  "i'm",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
+  "just",
+  "let",
+  "let's",
+  "lets",
+  "like",
+  "list",
+  "look",
+  "looking",
+  "maybe",
+  "me",
+  "municipal",
+  "my",
+  "need",
+  "needs",
+  "of",
+  "ok",
+  "okay",
+  "on",
+  "only",
+  "onto",
+  "our",
+  "please",
+  "pls",
+  "possible",
+  "public",
+  "right",
+  "roughly",
+  "search",
+  "show",
+  "some",
+  "somewhere",
+  "still",
+  "take",
+  "test",
+  "thank",
+  "thanks",
+  "that",
+  "the",
+  "there",
+  "these",
+  "this",
+  "those",
+  "up",
+  "us",
+  "want",
+  "wants",
+  "we",
+  "what",
+  "where",
+  "which",
+  "whole",
+  "would",
+  "you",
+  "your"
+ ]
+}
