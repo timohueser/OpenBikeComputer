@@ -476,8 +476,8 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
             openings.push(o);
         }
     }
-    // What the rooms cannot build draws as tunnels of one way: the arms of a room that does not draw, or whose joint the
-    // builder does not find whole, run beside no other (`lone`). Of a joint of tunnels of one way that is not whole,
+    // What the rooms cannot build draws as tunnels of one way: the arms of a room that cannot draw on its own account,
+    // or whose joint the builder does not find whole, run beside no other (`lone`); the other rooms are made again. Of a joint of tunnels of one way that is not whole,
     // each opening has a head of its own (`apart`), and a tunnel of one way whose own head is not whole does not draw
     // (`gone`). The rooms and the ladder are made again until each joint is whole.
     let (mut lone, mut gone) = (vec![false; tubes.len()], vec![false; tubes.len()]);
@@ -503,8 +503,9 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         faults.not_whole += found.not_whole;
         faults.too_wide += found.too_wide;
         let before = (lone.clone(), gone.clone(), apart.clone());
-        for r in (0..rooms.tubes.len()).filter(|&r| !rooms.alone[r] && (!decided.draws[r] || found.rooms.contains(&r)))
-        {
+        let kind = |t: usize, e: usize| decided.ends[openings.iter().position(|o| o.tube == t && o.end == e)?].kind;
+        let own = rooms.own(&kind, &decided.out);
+        for r in (0..rooms.tubes.len()).filter(|&r| !rooms.alone[r] && (!own[r] || found.rooms.contains(&r))) {
             rooms.lanes[r].iter().for_each(|l| lone[l.arm] = true);
         }
         for &(r, e) in found.ends.iter().filter(|&&(r, _)| rooms.alone[r]) {

@@ -83,15 +83,18 @@ impl Rooms {
         matches!(self.bounds[t][e], Bound::Seam(_))
     }
 
-    /// Per room whether it draws as parts: it is not `out` nor `broken`, and each of its ends is a seam or of a built
-    /// kind (`kind` of its opening), as the builder builds a chord. The rooms of one seam and the rooms of one arm draw
-    /// together or not at all.
+    /// Per room whether it can draw as parts on its own account: it is not `out` nor `broken`, and each of its ends is a
+    /// seam or of a built kind (`kind` of its opening), as the builder builds a chord.
+    pub fn own(&self, kind: &dyn Fn(usize, usize) -> Option<Kind>, out: &[bool]) -> Vec<bool> {
+        let end = |t: usize, e: usize| self.seam_at(t, e) || obc_trailview_parts::built(&[kind(t, e)]);
+        (0..self.tubes.len()).map(|t| !out[t] && !self.broken[t] && (0..2).all(|e| end(t, e))).collect()
+    }
+
+    /// Per room whether it draws as parts: where it can on its own account (`own`), and so can each room of its seams
+    /// and of its arms. The rooms of one seam and the rooms of one arm draw together or not at all.
     pub fn built(&self, kind: &dyn Fn(usize, usize) -> Option<Kind>, out: &[bool]) -> Vec<bool> {
         let n = self.tubes.len();
-        let own = |t: usize| {
-            let end = |e: usize| self.seam_at(t, e) || obc_trailview_parts::built(&[kind(t, e)]);
-            !out[t] && !self.broken[t] && (0..2).all(end)
-        };
+        let own = self.own(kind, out);
         let mut root: Vec<usize> = (0..n).collect();
         let find = |root: &mut Vec<usize>, mut i: usize| {
             while root[i] != i {
@@ -118,7 +121,7 @@ impl Rooms {
             join(&mut rooms.iter().copied());
         }
         let mut ok = vec![true; n];
-        for t in (0..n).filter(|&t| !own(t)) {
+        for t in (0..n).filter(|&t| !own[t]) {
             let r = find(&mut root, t);
             ok[r] = false;
         }
