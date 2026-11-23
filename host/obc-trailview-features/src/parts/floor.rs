@@ -264,11 +264,6 @@ pub(crate) fn floors(
         &segments.iter().map(|&(o, k)| grown(&overs[o].points[k..k + 2], overs[o].outer)).collect::<Vec<_>>(),
     );
     // Per room with a part, its vertices and the ways over them.
-    // Per room whether its ends lie behind a seam.
-    let mut behind = vec![[false; 2]; tubes.len()];
-    for &(r, e) in rooms.seams.iter().flat_map(|seam| &seam.children) {
-        behind[r][e] = true;
-    }
     let site_of = |k: usize| -> Site {
         let t = with[k];
         let (points, (ps, shell_half)) = (&lines[k], &boxes[k]);
@@ -318,23 +313,30 @@ pub(crate) fn floors(
         extra.sort_by(|x, y| x.0.total_cmp(&y.0));
         let ends: Vec<f64> = extra.iter().map(|e| e.0).collect();
         let mut s = spaced(&ends, spaced(&curve, fixed, b.vertex_gap_m), b.vertex_gap_m);
-        // A room behind a seam keeps its first chord whole, from its hole to the first vertex of its curve: its ring
-        // there lies wholly behind the line (`section::clear`); a ring between would not.
-        let n = curve.len();
-        let first = [curve[1.min(n - 1)], curve[n.saturating_sub(2)]];
-        s.retain(|&x| {
-            !(behind[t][0] && x > s0 && x < first[0] - MERGE_M || behind[t][1] && x < s1 && x > first[1] + MERGE_M)
-        });
-        // The vertex that took the end of a reach, and its way: the way lies over it within its reach and
-        // `vertex_gap_m`, so it keeps the cap of that end.
-        let took: Vec<(usize, usize)> = (extra.iter())
-            .filter_map(|&(e, o)| {
-                let at = s.partition_point(|&x| x < e);
-                let near = [at.checked_sub(1), (at < s.len()).then_some(at)].into_iter().flatten();
-                let i = near.min_by(|&x, &y| (s[x] - e).abs().total_cmp(&(s[y] - e).abs()))?;
-                (s[i] != e).then_some((i, o))
-            })
-            .collect();
+        // Behind a seam no vertex lies within `clear` of the hole, so each ring lies wholly behind the line.
+        let holes = [s0, s1].map(|x| tube.curve.at(x).0.p);
+        let clear = rooms.clear[t];
+        let off = |x: f64, e: usize| clear[e].is_none_or(|c| distance(tube.curve.at(x).0.p, holes[e]) >= c);
+        s.retain(|&x| x == s0 || x == s1 || (off(x, 0) && off(x, 1)));
+        // A room of one lane at a seam has a vertex between its ends: behind the line the part of its other end stops
+        // there (`boxes::stops`).
+        if s.len() == 2 && rooms.lanes[t].len() < 2 && (0..2).any(|e| rooms.seam_at(t, e)) {
+            s.insert(1, (s0 + s1) / 2.0);
+        }
+        // Each end of a reach that is no vertex is taken by its nearest vertex, which reads that way within its reach
+        // and the metres to that end: by the triangle inequality the way lies there within that.
+        let mut took: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+        for &(e, o) in &extra {
+            let at = s.partition_point(|&x| x < e);
+            let near = [at.checked_sub(1), (at < s.len()).then_some(at)].into_iter().flatten();
+            if let Some(i) = near.min_by(|&x, &y| (s[x] - e).abs().total_cmp(&(s[y] - e).abs())) {
+                let m = took.entry((i, o)).or_insert(0.0);
+                *m = m.max(distance(tube.curve.at(s[i]).0.p, tube.curve.at(e).0.p));
+            }
+        }
+        // Per vertex the most metres to an end of a reach that it took.
+        let more: Vec<f64> =
+            (0..s.len()).map(|i| took.range((i, 0)..(i + 1, 0)).map(|(_, &m)| m).fold(0.0, f64::max)).collect();
         let (ls, lz): (Vec<f64>, Vec<f64>) = points.iter().map(|q| (q.s, q.z)).unzip();
         let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();
         let xy: Vec<[f64; 2]> = s.iter().map(|&x| tube.curve.at(x).0.p).collect();
@@ -361,7 +363,7 @@ pub(crate) fn floors(
         for (i, &p) in xy.iter().enumerate() {
             // Per way its nearest segment: metres, segment and share along it.
             let mut best: BTreeMap<usize, (f64, usize, f64)> = BTreeMap::new();
-            for (o, k) in near(grown(&[p], *shell_half)) {
+            for (o, k) in near(grown(&[p], *shell_half + more[i])) {
                 let (m, u) = nearest(p, overs[o].points[k], overs[o].points[k + 1]);
                 let e = best.entry(o).or_insert((f64::INFINITY, 0, 0.0));
                 if m < e.0 {
@@ -370,12 +372,12 @@ pub(crate) fn floors(
             }
             for (o, (m, k, u)) in best {
                 let w = &overs[o];
-                let past = if took.contains(&(i, o)) { b.vertex_gap_m } else { MERGE_M };
-                if m > reach_of(w) + past {
+                let reach = reach_of(w) + took.get(&(i, o)).copied().unwrap_or(0.0);
+                if m > reach + MERGE_M {
                     continue;
                 }
                 let (a, e) = (w.points[k], w.points[k + 1]);
-                let (along, base) = foot([a[0] + u * (e[0] - a[0]), a[1] + u * (e[1] - a[1])], (s[i], reach_of(w)));
+                let (along, base) = foot([a[0] + u * (e[0] - a[0]), a[1] + u * (e[1] - a[1])], (s[i], reach));
                 if along >= s0 - w.outer - MERGE_M && along <= s1 + w.outer + MERGE_M {
                     let c = local.len();
                     let way = *local.entry(o).or_insert(c);

@@ -743,11 +743,12 @@ lane that ends on the line; a side between two lanes lies in the middle between 
 a side that it shares with another, so the tubes behind stand a wall apart and no side stands on the step between two
 floors; the outer side of an outer lane lies at the room's wall. A side lies on a whole centimetre, so `across` and
 `half` of a hole or a door are whole millimetres, as each position on the line is. A room behind the line starts at its
-hole's point as the record gives it, with the places of the row kept inside the hole; its next vertex lies far enough
-that its first chord leaves the line within `pair_max_deg`, that its ring there, turned by as much, lies wholly behind
-the line (its `half` times the tangent of `pair_max_deg`), and `vertex_gap_m` at least. The room before the line is as
-wide as its own lanes. A seam whose row holds no hole for a room behind it, or whose rooms are not side by side in the
-row, is not whole.
+hole's point as the record gives it, with the places of the row kept inside the hole. No vertex but its other end lies
+nearer to the hole than `clear`: its metres sideways from its own line over the sine of `pair_max_deg`, so that its
+first chord leaves that line within `pair_max_deg`; its `half` times the tangent of `pair_max_deg`, so that its ring
+there, turned by as much, lies wholly behind the line; and `vertex_gap_m` at least. A join of two ways nearer than that
+is no vertex either. The room before the line is as wide as its own lanes. A seam whose row holds no hole for a room
+behind it, or whose rooms are not side by side in the row, is not whole.
 
 A group of openings that links join (see the rungs) has the frame line of its far opening: one whose line no opening
 of the group within `pair_max_m` and `pair_max_deg` of it lies past by more than 0.2 m, the one with the most such
@@ -782,17 +783,18 @@ of it, its underside its floor less `slab_m`: by height it makes only the sectio
 floor the floor too. The bake solves the arms from the highest down: an arm after each arm of each room over a room
 that it runs in, and a room's floor with its last arm's.
 
-- The curve of a way with heights, not of the kind `gallery`, lies over a vertex of the tube where the vertex is
-  within its reach (its outer half-width + `half` + `shell_m`; at a vertex that took an end of the way's reach,
-  its reach + `vertex_gap_m`, so that vertex keeps the cap of that end) and the foot of its nearest point on the whole chain
-  lies between the openings, each grown by the way's outer half-width. It lies on top where its height at that point
-  is more than the at-grade band over the road solver's height of the chain at the foot (the lesser `snap_height_m`
-  of the two classes, as at a crossing of the ground plan). A way that goes on from the chain's end meets it at the
-  chain's height, so it lies at grade. Its underside is its height less its `deck` on a bridge, else less `slab_m`.
+- The curve of a way with heights, not of the kind `gallery`, lies over a vertex of the tube where the vertex is within
+  its reach (its outer half-width + `half` + `shell_m`; at a vertex that took an end of the way's reach, its reach plus
+  the metres to that end, so that vertex keeps the cap of that end) and the foot of its nearest point on the whole chain
+  lies between the openings, each grown by the way's outer half-width. It lies on top where its height at that point is
+  more than the at-grade band over the road solver's height of the chain at the foot (the lesser `snap_height_m` of the
+  two classes, as at a crossing of the ground plan). A way that goes on from the chain's end meets it at the chain's
+  height, so it lies at grade. Its underside is its height less its `deck` on a bridge, else less `slab_m`.
 - The tube gets a vertex where it enters and leaves the reach of each way within reach that is not of the kind
   `tunnel`, at grade or not. Its vertices lie at least `vertex_gap_m` apart, so each chord keeps its direction in
   the units of a tile: the openings and the joins of its ways stay, and a point of the curve, then a point of a
-  reach, nearer than that to a vertex is that vertex.
+  reach, nearer than that to a vertex is that vertex. Behind a seam no vertex lies nearer to the hole than `clear`
+  (see Rooms). An end of a reach that is no vertex is taken by its nearest vertex.
 - A chord may rise by the `grade` of the class of the widest way (`grade_default` for a class with none) times its
   length, or by the rise of the road solver's chord there, the larger.
 - The cap at a vertex is the least underside of the ways on top there, less `shell_m` and `height`. The floor is the

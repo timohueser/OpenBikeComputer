@@ -95,29 +95,53 @@ pub(super) fn foot(arms: &[Tube], (from, s): (usize, f64), to: usize, near: f64)
     crossing(&arms[to], p, left_of(d), near).map(|x| x.0)
 }
 
-/// How far the first vertex of a room behind a seam lies from its hole, the room `half` wide and its own line
-/// `sideways` metres from the hole's point: its first chord leaves the line within `pair_max_deg`, and its ring there,
-/// turned by that much at most, lies wholly behind the line.
+/// How far each vertex of a room behind a seam lies from its hole at least, the room `half` wide and its own line
+/// `sideways` metres from the hole's point: its first chord, as long as this or longer, leaves its own line within
+/// `pair_max_deg`, and its ring at its first vertex, turned by that much at most, lies wholly behind the line.
 pub(super) fn clear(sideways: f64, half: f64, b: &obc_trailview_parts::Bake) -> f64 {
-    let tan = b.pair_max_deg.to_radians().tan();
-    (sideways / tan).max(half * tan).max(b.vertex_gap_m)
+    let a = b.pair_max_deg.to_radians();
+    (sideways / a.sin()).max(half * a.tan()).max(b.vertex_gap_m)
 }
 
-/// The tube of a room of one lane started at its end `end` at the hole's point p: no other vertex of its first way
-/// lies within `clear` metres of it.
+/// The tube of a room of one lane started at its end `end` at the hole's point p: no vertex but its other end lies
+/// within `clear` metres of p, a join of two ways neither. A way with no vertex left has no stretch; a stretch whose
+/// first vertex went starts at the vertex before, at its metres along this way's stroke.
 pub(super) fn started(t: &mut Tube, end: usize, p: [f64; 2], clear: f64) {
-    let stretches = &mut t.curve.stretches;
-    let k = if end == 0 { 0 } else { stretches.len() - 1 };
-    let ps = &mut stretches[k].1;
-    let first = if end == 0 { 0 } else { ps.len() - 1 };
-    ps[first].p = p;
-    let other = if end == 0 { ps.len() - 1 } else { 0 };
-    let keep: Vec<bool> = (0..ps.len()).map(|i| i == first || i == other || distance(p, ps[i].p) >= clear).collect();
-    let mut i = 0;
-    ps.retain(|_| {
-        i += 1;
-        keep[i - 1]
-    });
+    let curve = &mut t.curve;
+    if end == 1 {
+        flip(curve);
+    }
+    let len = curve.len;
+    let mut out: Vec<(u32, Vec<Point>)> = Vec::new();
+    let mut last = Point { p, ..curve.stretches[0].1[0] };
+    for (way, ps) in &curve.stretches {
+        let kept: Vec<Point> = ps[1..].iter().filter(|q| q.s >= len || distance(p, q.p) >= clear).copied().collect();
+        if kept.is_empty() {
+            continue;
+        }
+        let start = if last.s == ps[0].s {
+            Point { p: last.p, ..ps[0] }
+        } else {
+            let sign = if ps[ps.len() - 1].along >= ps[0].along { 1.0 } else { -1.0 };
+            Point { along: ps[0].along + sign * (last.s - ps[0].s), ..last }
+        };
+        last = kept[kept.len() - 1];
+        out.push((*way, [start].into_iter().chain(kept).collect()));
+    }
+    curve.stretches = out;
+    if end == 1 {
+        flip(curve);
+    }
+}
+
+/// The curve run from its other end: its stretches and their points in turn, their metres from that end.
+fn flip(curve: &mut Curve) {
+    let len = curve.len;
+    curve.stretches.reverse();
+    for (_, ps) in &mut curve.stretches {
+        ps.reverse();
+        ps.iter_mut().for_each(|q| q.s = len - q.s);
+    }
 }
 
 /// The tube of a stretch of an arm from metres s0 to s1: its points between, its metres from s0 on.
@@ -145,10 +169,17 @@ type EndRow = ([f64; 2], [f64; 2], Vec<(f64, f64, f64)>);
 
 /// What `room_of` gives: the room's tube, its lanes from the right wall to the left, its section per vertex of its
 /// centre line, its openings at its ends with openings, each lane opening moved onto its frame line (its place among
-/// the arms' openings, the moved opening and the metres moved), and the place of each lane whose way does not reach
-/// the line.
-pub(super) type Built =
-    (Tube, Vec<Lane>, Vec<(f64, Vec<Place>)>, [Option<Opening>; 2], Vec<(usize, Opening, f64)>, Vec<[f64; 2]>);
+/// the arms' openings, the moved opening and the metres moved), the place of each lane whose way does not reach the
+/// line, and per end behind a seam the metres from its hole within which no vertex lies (`clear`).
+pub(super) type Built = (
+    Tube,
+    Vec<Lane>,
+    Vec<(f64, Vec<Place>)>,
+    [Option<Opening>; 2],
+    Vec<(usize, Opening, f64)>,
+    Vec<[f64; 2]>,
+    [Option<f64>; 2],
+);
 
 /// Room r of `lanes`, the first its base, with its two ends (`bounds`, the seams' lines): at an end with openings,
 /// the lanes' openings move in onto the frame line of the one that none lies past by more than `PAST_M`, then the
@@ -318,8 +349,8 @@ pub(super) fn room_of(
         let (q, d) = (base_arm.curve.at(s).0.p, base_arm.curve.dir(s));
         let Some(places) = across(q, left_of(d), d, &near_of(s)) else { continue };
         let c = offset(q, left_of(d), middle(&places));
-        let gap = if points.len() == 1 { clear[0] } else { b.vertex_gap_m };
-        if distance(points[points.len() - 1], c) >= gap && distance(c, stop) >= clear[1] {
+        let spaced = distance(points[points.len() - 1], c) >= b.vertex_gap_m;
+        if spaced && distance(start, c) >= clear[0] && distance(c, stop) >= clear[1] {
             points.push(c);
         }
     }
@@ -402,5 +433,6 @@ pub(super) fn room_of(
         ends_open[end].then(|| Opening { shift: 0.0, s, p, floor: tube.curve.at(s).0.z, ..far.clone() })
     };
     let ends = [room_opening(0), room_opening(1)];
-    (tube, ordered, table, ends, moves, off_line)
+    let behind = [0, 1].map(|end| starts[end].map(|_| clear[end]));
+    (tube, ordered, table, ends, moves, off_line, behind)
 }
