@@ -6,18 +6,18 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
     import { sleepIcon } from '../../lib/planner/search/presentation';
-    import { dayStops, duration, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import { dayStops, duration, planView, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
     import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
     let {
-        trip, line, day, days, theme, scale, expanded, choosing, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
+        trip, line, day, days, theme, scale, expanded, choosing, conflict, selectedId, revealId, hoveredId = null, onHover,
         onToggle, onInspect, onShowEnd, onChange, onShowConflict, picker, suggested = {},
     }: {
         trip: Trip;
         line?: RoutingLine;
-        day: ItineraryDay;
+        day: Day;
         days: Day[];
         theme: 'light' | 'dark';
         /** The riding hours of the full length bar: those of the longest day. */
@@ -25,15 +25,13 @@
         expanded: boolean;
         /** The towns to sleep in show for this day. */
         choosing: boolean;
-        /** The calendar day whose overnight this day ends before. */
+        /** The day whose overnight this day ends before. */
         conflict: number | null;
         selectedId: string | null;
         hoveredId?: string | null;
         onHover?: (id: string | null) => void;
         /** The point whose row scrolls into view and lights up for a moment. */
         revealId: string | null;
-        /** Riding number → calendar number. */
-        calendar: Record<number, number>;
         onToggle: () => void;
         onInspect: (point: RoutePoint) => void;
         onShowEnd: () => void;
@@ -41,17 +39,16 @@
         onChange: () => void;
         onShowConflict: () => void;
         picker?: Snippet;
-        /** The suggested night of each riding day by number, such as "Around Engen", where no night is pinned. */
+        /** The suggested night of each day by number, such as "Around Engen", where no night is pinned. */
         suggested?: Record<number, string>;
     } = $props();
 
-    const riding = $derived(day.ridingNumber);
-    const last = $derived(riding === days.length);
-    const previous = $derived(days[riding - 2]);
-    const start = $derived(riding === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? suggested[riding - 1] ?? `Day ${calendar[riding - 1]} overnight`);
+    const last = $derived(day.number === days.length);
+    const previous = $derived(days[day.number - 2]);
+    const start = $derived(day.number === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? suggested[day.number - 1] ?? `Day ${day.number - 1} overnight`);
     const view = $derived(planView(trip, line));
     const finish = $derived(view.stops.at(-1)!.point);
-    const end = $derived(last ? finish.label : day.pinned?.label ?? suggested[riding] ?? 'Overnight to choose');
+    const end = $derived(last ? finish.label : day.pinned?.label ?? suggested[day.number] ?? 'Overnight to choose');
     const endId = $derived(last ? finish.id : day.pinned?.id ?? null);
     const ascentKnown = $derived(line?.unknownElevationKm === 0);
     const stops = $derived(expanded ? dayStops(trip, line, day) : []);
@@ -70,7 +67,7 @@
     }
 </script>
 
-<section class="day" class:expanded style:--day-color={dayColor(riding, theme)}>
+<section class="day" class:expanded style:--day-color={dayColor(day.number, theme)}>
     {#if expanded}
         <header class="detail-heading">
             <span class="badge">{day.number}</span>
@@ -78,7 +75,7 @@
         </header>
         <RouteStats distance={day.distance} ascent={ascentKnown ? day.ascent : null} descent={ascentKnown ? day.descent : null} walking={trip.bike === 'hiking'} hours={line ? day.hours : null} />
     {:else}
-    <button type="button" class="heading" data-day={riding} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}`}>
+    <button type="button" class="heading" data-day={day.number} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}`}>
         <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">

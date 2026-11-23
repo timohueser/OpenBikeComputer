@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, emptyTrip, loopTrip, maxRidingDays, pinNight, planView, removeRoutePoint, type RoutePoint, type Trip } from '../editor';
+import { emptyTrip, loopTrip, maxRidingDays, pinNight, planView, removeRoutePoint, type RoutePoint, type Trip } from '../editor';
 import { isTrip } from '../trip-validation';
 import { coordinateAt, type Coordinate } from '../geo';
 import { testLine, testTrip } from '../../../../test-support/planner/trip';
@@ -55,12 +55,11 @@ describe('query edits', () => {
         await expect(applyQueryChanges(before.trip, before.line, [{ op: 'split', range: [0,total], count: 5 }, { op:'remove_point', id:'absent' }])).rejects.toThrow('changed');
         expect(before.trip).toEqual(saved);
     });
-    it('resolves calendar days around rest days and moves a boundary without changing the line', async () => {
-        const trip = addRestDay(testTrip(),1), line = testLine(trip), km = view({ trip, line }).total*.7;
-        const next = await applyQueryChanges(trip, line, [{ op:'end_day', day:3, point:{coordinate:coordinateAt(line.coordinates,.7),label:'km mark',along:km} }]);
+    it('moves a day boundary without changing the line', async () => {
+        const trip = testTrip(), line = testLine(trip), km = view({ trip, line }).total*.7;
+        const next = await applyQueryChanges(trip, line, [{ op:'end_day', day:2, point:{coordinate:coordinateAt(line.coordinates,.7),label:'km mark',along:km} }]);
         expect(next.trip.splits?.[2]).toBeCloseTo(.7);
         expect(next.line).toBe(line);
-        await expect(applyQueryChanges(trip, line, [{op:'end_day',day:2,point:{coordinate:[8,48],label:'Inn'}}])).rejects.toThrow('riding day');
     });
     it('ends a day at a kilometre instead of its pinned night, which leaves the route', async () => {
         vi.stubGlobal('fetch', vi.fn(routeService()));
@@ -103,10 +102,10 @@ describe('query edits', () => {
 });
 
 describe('the action on a place of the search list', () => {
-    // A riding day, a rest day and a riding day on a line of 15 km.
+    // Two days on a line of 15 km.
     const plan: SearchContext['plan'] = { coordinates: [[8, 48], [8.1, 48], [8.2, 48]], km: [0, 7.45, 14.9],
         points: [{ id: 'start', label: 'Freiburg', coordinate: [8, 48], kind: 'start' }, { id: 'finish', label: 'Konstanz', coordinate: [8.2, 48], kind: 'finish' }],
-        days: [{ number: 1, from: 0, to: 7.45, rest: false }, { number: 2, from: 7.45, to: 7.45, rest: true }, { number: 3, from: 7.45, to: 14.9, rest: false }] };
+        days: [{ number: 1, from: 0, to: 7.45 }, { number: 2, from: 7.45, to: 14.9 }] };
     const place = (position?: SearchPlace['position']): SearchPlace => ({ source: 'n/1', name: 'Rewe', kind: 'supermarket', lon: 8.15, lat: 48.001, city: '', region: '', distance: 0, precision: 'place', position });
     const point = { coordinate: [8.15, 48.001], label: 'Rewe', source: 'n/1', kind: 'supermarket' };
     it('routes from the rider, else from the start, and puts a stop and a day end in the riding day of the place', () => {
@@ -115,7 +114,7 @@ describe('the action on a place of the search list', () => {
         expect(() => placeChange('route', place(), { ...plan, points: [] })).toThrow('allow location access');
         expect(placeChange('add_point', place({ along: 3, distance: 0 }), plan)).toEqual({ changes: [{ op: 'add_point', kind: 'stop', point }], description: 'Rewe is now a stop on Day 1' });
         // With no place along the route, the nearest point of the route gives the day.
-        expect(placeChange('end_day', place(), plan)).toEqual({ changes: [{ op: 'end_day', day: 3, point }], description: 'Day 3 now ends at Rewe' });
+        expect(placeChange('end_day', place(), plan)).toEqual({ changes: [{ op: 'end_day', day: 2, point }], description: 'Day 2 now ends at Rewe' });
     });
     it('applies a day end only before the last riding day, a stop or a day end only with a start and a finish or a loop, and names a point of the plan', () => {
         const trip = (points: Trip['points'], loop?: boolean): Trip => ({ ...emptyTrip(), points, ...loop ? { loop: true } : {} });
@@ -126,7 +125,7 @@ describe('the action on a place of the search list', () => {
         expect(placeCheck('end_day', place({ along: 3, distance: 0 }), plan, trip([start, finish]))).toEqual({});
         expect(placeCheck('end_day', late, plan, trip([start, finish]))).toEqual({ reason: 'The last day ends at the finish.' });
         expect([placeCheck('add_point', late, plan, at('waypoint')), placeCheck('add_point', late, plan, at('night')), placeCheck('end_day', late, plan, at('waypoint'))])
-            .toEqual([{ point: 'Stop on Day 3' }, { point: 'Night of Day 3' }, { reason: 'The last day ends at the finish.' }]);
+            .toEqual([{ point: 'Stop on Day 2' }, { point: 'Night of Day 2' }, { reason: 'The last day ends at the finish.' }]);
         // A loop has a start and no finish.
         expect(placeCheck('add_point', late, plan, trip([start], true))).toEqual({});
         expect(placeCheck('add_point', place(), plan, trip([start]))).toEqual({ reason: 'Choose a start and finish first.' });

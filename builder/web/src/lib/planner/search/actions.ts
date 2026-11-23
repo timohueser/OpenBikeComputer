@@ -58,13 +58,6 @@ export async function applyQueryChanges(
     if (change.op !== 'route' && !hasEndpoints(trip))
       throw new Error('Choose a start and finish before editing the route.');
     const { total } = planView(trip, line);
-    const ridingDay = (number: number) => {
-      const day = planView(trip, line).itinerary.find(
-        (d) => d.number === number && !d.rest,
-      );
-      if (!day) throw new Error(`Day ${number} is no longer a riding day.`);
-      return day.ridingNumber;
-    };
     if (change.op === 'add_point') {
       trip = addPointNear(trip, line, makePoint(change.point!, change.kind === 'pass' ? 'pass' : 'waypoint'));
     } else if (change.op === 'remove_point') {
@@ -76,7 +69,7 @@ export async function applyQueryChanges(
         throw new Error('The selected point has changed. Search again.');
       trip = removeRoutePoint(trip, change.id!);
     } else if (change.op === 'end_day') {
-      const n = ridingDay(change.day!),
+      const n = change.day!,
         p = change.point!;
       if (n >= planView(trip, line).days.length)
         throw new Error('The last day ends at the finish.');
@@ -122,8 +115,6 @@ export async function applyQueryChanges(
         routeOrder: points.slice(1, -1).map((p) => p.id),
         splits: undefined,
         nightStay: undefined,
-        restAfter: [],
-        restNames: [],
         bike,
         preset: preset && planPreset(bike, preset),
       });
@@ -141,12 +132,10 @@ export async function applyQueryChanges(
   return { trip, line };
 }
 
-/** The riding days of the plan, and the one in which a place of the list lies: by its km along the route, else by the
- * nearest point of the route. */
+/** The day of the plan in which a place of the list lies: by its km along the route, else by the nearest point of the route. */
 function dayOf(place: SearchPlace, plan: SearchContext['plan']) {
-  const riding = plan.days.filter((day) => !day.rest);
   const along = place.position?.along ?? nearestProgress(plan.coordinates, [place.lon, place.lat]) * (plan.km.at(-1) ?? 0);
-  return { riding, day: riding.find((d) => along <= d.to) ?? riding.at(-1) };
+  return plan.days.find((d) => along <= d.to) ?? plan.days.at(-1);
 }
 
 /**
@@ -155,19 +144,19 @@ function dayOf(place: SearchPlace, plan: SearchContext['plan']) {
  */
 export function placeCheck(act: Act, place: SearchPlace, plan: SearchContext['plan'], trip: Trip): { reason?: string; point?: string } {
   if (act === 'route') return {};
-  const { riding, day } = dayOf(place, plan);
+  const day = dayOf(place, plan);
   if (!day || !hasEndpoints(trip)) return { reason: 'Choose a start and finish first.' };
   const kind = act === 'add_point' ? trip.points.find((p) => p.placeId === place.source)?.kind : undefined;
-  const stop = riding.length > 1 ? `Stop on Day ${day.number}` : 'Stop on the route';
+  const stop = plan.days.length > 1 ? `Stop on Day ${day.number}` : 'Stop on the route';
   const words: Partial<Record<RoutePoint['kind'], string>> = { start: 'Start', finish: 'Finish', night: `Night of Day ${day.number}`, waypoint: stop, pass: stop, via: stop, detour: stop };
   if (kind && words[kind]) return { point: words[kind] };
-  return act === 'end_day' && day === riding.at(-1) ? { reason: 'The last day ends at the finish.' } : {};
+  return act === 'end_day' && day === plan.days.at(-1) ? { reason: 'The last day ends at the finish.' } : {};
 }
 
 /**
  * The change of action `act` on a place of the search list, and the line that says what it changed. A route goes from
- * the rider, else from the start of the plan, as the server routes. A stop and a day end go to the riding day in which
- * the place lies.
+ * the rider, else from the start of the plan, as the server routes. A stop and a day end go to the day in which the
+ * place lies.
  */
 export function placeChange(
   act: Act,
@@ -182,11 +171,11 @@ export function placeChange(
     if (!from) throw new Error('Set a start, or allow location access, to route to a place.');
     return { changes: [{ op: 'route', points: [from, point] }], description: `The route now ends at ${place.name}` };
   }
-  const { riding, day } = dayOf(place, plan);
+  const day = dayOf(place, plan);
   if (!day) throw new Error('Choose a start and finish before editing the route.');
   if (act === 'end_day') return { changes: [{ op: 'end_day', day: day.number, point }], description: `Day ${day.number} now ends at ${place.name}` };
   return {
     changes: [{ op: 'add_point', kind: 'stop', point }],
-    description: riding.length > 1 ? `${place.name} is now a stop on Day ${day.number}` : `${place.name} is now a stop`,
+    description: plan.days.length > 1 ? `${place.name} is now a stop on Day ${day.number}` : `${place.name} is now a stop`,
   };
 }

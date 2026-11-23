@@ -24,7 +24,7 @@ const drawn = (id, kind, lon, from, to, extra = {}) => ({
 const twoDays = {
   id: 'two', name: 'Two days', updatedAt: 0,
   trip: {
-    mode: 'trip', bike: 'touring', days: 2, daysSet: true, restAfter: [], routeOrder: ['night-1'], points: [
+    mode: 'trip', bike: 'touring', days: 2, daysSet: true, routeOrder: ['night-1'], points: [
       drawn('start', 'start', 8, 400, 400), drawn('night-1', 'night', 8.1, 400, 600, { night: 1, label: 'Inn' }), drawn('finish', 'finish', 8.2, 600, 400),
     ],
   },

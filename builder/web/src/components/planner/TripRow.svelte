@@ -21,7 +21,7 @@
     let root = $state<HTMLDivElement>();
     const multi = $derived(multiDay(trip));
     const stay = $derived(trip.stay ?? allStay);
-    const last = $derived(trip.startDate && addDays(trip.startDate, multi ? trip.days + (trip.restAfter?.length ?? 0) - 1 : 0));
+    const last = $derived(trip.startDate && addDays(trip.startDate, multi ? trip.days - 1 : 0));
     const range = $derived(!trip.startDate || !last ? 'Any date' : last === trip.startDate ? weekdayLabel(last, true)
         : `${weekdayLabel(trip.startDate, trip.startDate.slice(0, 7) !== last.slice(0, 7))} – ${weekdayLabel(last, true)}`);
     // The cell is narrow: "19–25 Jun", or "29 Jun – 3 Jul" across two months.

@@ -9,19 +9,15 @@
     import { distanceIn } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
-    let { day, label, nights, end, elevation, onShow, onActive }: {
-        /** The riding day that ends at this night. */
+    let { day, nights, end, elevation, onShow }: {
+        /** The day that ends at this night. */
         day: Day;
-        /** Calendar number of the night. */
-        label: number;
         nights: NightChoices;
         /** Where the day ends on the route, and its height there. */
         end?: Coordinate;
         elevation: number | null;
         /** Shows the place of a pinned night. */
         onShow: () => void;
-        /** The pointer or the keyboard focus enters or leaves the row. */
-        onActive?: (active: boolean) => void;
     } = $props();
 
     const pinned = $derived(day.pinned);
@@ -49,30 +45,28 @@
     });
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="night" class:chosen={!!pinned} onmouseenter={() => onActive?.(true)} onmouseleave={() => onActive?.(false)}
-    onfocusin={() => onActive?.(true)} onfocusout={() => onActive?.(false)}>
-    <span class="mark" aria-hidden="true">{#if pinned}<Icon name={icon} size={14} />{:else}{label}{/if}</span>
+<div class="night" class:chosen={!!pinned}>
+    <span class="mark" aria-hidden="true">{#if pinned}<Icon name={icon} size={14} />{:else}{day.number}{/if}</span>
     {#if pinned}
         <button type="button" class="text" onclick={onShow}>
             <strong>{pinned.label}</strong>
-            <small>Night {label}{pinned.placeKind ? ` · ${kindLabel(pinned.placeKind)}` : ''}</small>
+            <small>Night {day.number}{pinned.placeKind ? ` · ${kindLabel(pinned.placeKind)}` : ''}</small>
             {@render evening()}
         </button>
     {:else}
         <div class="text">
-            <strong>{around ? proposalTitle(around) : `Night ${label}`}</strong>
+            <strong>{around ? proposalTitle(around) : `Night ${day.number}`}</strong>
             <small><span class="sr-only">Suggested. </span>{detail}</small>
             {@render evening()}
         </div>
-        {@const back = earlier ? `Move night ${label} to ${earlier.name}` : 'No earlier town'}
-        {@const ahead = later ? `Move night ${label} to ${later.name}` : 'No later town'}
+        {@const back = earlier ? `Move night ${day.number} to ${earlier.name}` : 'No earlier town'}
+        {@const ahead = later ? `Move night ${day.number} to ${later.name}` : 'No later town'}
         <span class="step">
             <button type="button" class="icon" disabled={!earlier} aria-label={back} title={back} onclick={() => nights.step(day.number, -1)}><Icon name="back" size={15} /></button>
             <button type="button" class="icon" disabled={!later} aria-label={ahead} title={ahead} onclick={() => nights.step(day.number, 1)}><Icon name="arrow" size={15} /></button>
         </span>
     {/if}
-    <button type="button" class="choose" data-night={day.number} aria-label={`${pinned ? 'Change' : 'Choose'} night ${label}`} onclick={() => nights.choose(day.number)}>{pinned ? 'Change' : 'Choose'}<Icon name="down" size={13} /></button>
+    <button type="button" class="choose" data-night={day.number} aria-label={`${pinned ? 'Change' : 'Choose'} night ${day.number}`} onclick={() => nights.choose(day.number)}>{pinned ? 'Change' : 'Choose'}<Icon name="down" size={13} /></button>
 </div>
 {#snippet evening()}
     {#if date && end}<small class="evening">{sunset ? `Sunset ${clockTime(sunset)}` : 'No sunset'}{low ? ` · ${low}` : ''}</small>{/if}

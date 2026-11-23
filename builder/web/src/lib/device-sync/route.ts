@@ -3,7 +3,7 @@
 import { lineToObcr, type LineWaypoint } from '../convert/bridge';
 import { DISPLAY_NAME_MAX } from '../device/write';
 import { truncateUtf8 } from '../format';
-import { dayStops, partDays, planTitle, planView, trainAfter, type RoutePoint } from '../planner/editor';
+import { dayStops, partDays, planTitle, planView, type RoutePoint } from '../planner/editor';
 import { cumulative, firstIndex, type Coordinate } from '../planner/geo';
 import type { Plan } from '../planner/library';
 import { poiKinds, type PlaceCategory } from '../planner/poi-kinds';
@@ -33,19 +33,16 @@ export interface DeviceRoute {
 /** The routes of `plan` along `line`, the line that `calculateLine` gave for it, in ride order. A plan of one riding day
  * is one route with the plan name. Else each riding day is a route "Day k ‹place›", with the label of its kept night as the
  * place; the last day and a day with no kept night are "Day k". k counts the riding days of its part (`partDays`), as the
- * device numbers them. A day after a train or bus starts where it arrives, as the phone cuts; a transfer inside a day
- * stays a straight segment. The waypoints are the stops of the day, at most `MAX_WAYPOINTS`, with distances from the
- * start of its route. */
+ * device numbers them. The waypoints are the stops of the day, at most `MAX_WAYPOINTS`, with distances from the start of
+ * its route. */
 export async function dayRoutes(plan: Plan, line: RoutingLine): Promise<DeviceRoute[]> {
-    const trip = plan.trip, { days, stops, total } = planView(trip, line), last = days.length - 1;
+    const trip = plan.trip, { days, total } = planView(trip, line), last = days.length - 1;
     return Promise.all(days.map(async (day, i) => {
-        const night = stops.findIndex(stop => stop.point.id === `night-${i}`);
-        const from = i > 0 && trainAfter(trip, i) ? stops[night + 1].distance : day.from * total, transfer = from - day.from * total;
         const waypoints = dayStops(trip, line, day).map(({ point, km }): LineWaypoint => ({ lon: micro(point.coordinate[0]),
-            lat: micro(point.coordinate[1]), distanceM: Math.max(0, km - transfer) * 1000, category: categoryOf(point), name: point.label }));
+            lat: micro(point.coordinate[1]), distanceM: km * 1000, category: categoryOf(point), name: point.label }));
         const place = i < last ? day.pinned?.label : undefined;
         const name = !last ? plan.name || planTitle(trip) : truncateUtf8(place ? `Day ${i % partDays + 1} ${place}` : `Day ${i % partDays + 1}`, DISPLAY_NAME_MAX).trimEnd();
-        const part = cut(line, from, day.to * total);
+        const part = cut(line, day.from * total, day.to * total);
         const bytes = await lineToObcr({
             coordinates: Int32Array.from(part.coordinates.flatMap(([lon, lat]) => [micro(lon), micro(lat)])),
             heights: part.heights,

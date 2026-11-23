@@ -34,8 +34,8 @@
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onMoveStart, onRouteHover, onDayClick, popup,
     }: {
         /** Lines that take no edits, such as the days of two saved routes, each in its colour and width; a later line
-         * draws on top. A transfer draws dashed. */
-        lines?: { coordinates: Coordinate[]; color: string; width: number; transfer: boolean }[];
+         * draws on top. */
+        lines?: { coordinates: Coordinate[]; color: string; width: number }[];
         /**
          * While set, a click on the map or a pin goes to it alone, with the coordinate and its viewport point: no place,
          * line, overlay or route takes the click. Enter on the focused map gives it the map's centre.
@@ -277,7 +277,7 @@
     }
 
     function linesData() {
-        return lineData(lines.map(({ coordinates, color, width, transfer }, order) => ({ ...lineFeature(coordinates), properties: { color, width, transfer, order } })));
+        return lineData(lines.map(({ coordinates, color, width }, order) => ({ ...lineFeature(coordinates), properties: { color, width, order } })));
     }
 
     function highlightData() {
@@ -317,17 +317,13 @@
         map.addLayer({ id: "trip-casing", type: "line", source: "trip", filter: ["==", ["get", "leg"], "routed"], layout: round, paint: { "line-color": casing, "line-width": casingWidth } });
         map.addLayer({ id: "trip-casing-drawn", type: "line", source: "trip", filter: ["==", ["get", "leg"], "drawn"], layout: { "line-join": "round" }, paint: { "line-color": look(dark ? "#bdb47e" : "#5c5a2e", casing), "line-width": casingWidth, "line-dasharray": [1, 0.8] } });
         map.addLayer({ id: "trip-gap", type: "line", source: "trip", filter: ["==", ["get", "leg"], "gap"], paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 3, "line-dasharray": [1, 0.8] } });
-        map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!", ["in", ["get", "leg"], ["literal", ["gap", "transfer"]]]], layout: round, paint: { "line-color": look(["get", "color"], dark ? "#6f6a55" : "#a9a593"), "line-width": look(4, 2.5, 6) } });
-        // Under the transfers, so a train outside the part keeps its dashes.
+        map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!=", ["get", "leg"], "gap"], layout: round, paint: { "line-color": look(["get", "color"], dark ? "#6f6a55" : "#a9a593"), "line-width": look(4, 2.5, 6) } });
         map.addSource("trip-rest", { type: "geojson", data: restData() });
         map.addLayer({ id: "trip-rest", type: "line", source: "trip-rest", layout: round, paint: { "line-color": casing, "line-width": 5, "line-opacity": .65 } });
-        map.addLayer({ id: "trip-transfer", type: "line", source: "trip", filter: ["==", ["get", "leg"], "transfer"], paint: { "line-color": dark ? "#8f8a6e" : "#9a9681", "line-width": 3, "line-dasharray": [2, 2] } });
         map.addSource("lines", { type: "geojson", data: linesData() });
-        const ridden: maplibregl.FilterSpecification = ["!", ["get", "transfer"]];
         const sorted: maplibregl.LineLayerSpecification["layout"] = { ...round, "line-sort-key": ["get", "order"] };
-        map.addLayer({ id: "lines-casing", type: "line", source: "lines", filter: ridden, layout: sorted, paint: { "line-color": casing, "line-width": ["+", ["get", "width"], 3] } });
-        map.addLayer({ id: "lines", type: "line", source: "lines", filter: ridden, layout: sorted, paint: { "line-color": ["get", "color"], "line-width": ["get", "width"] } });
-        map.addLayer({ id: "lines-transfer", type: "line", source: "lines", filter: ["get", "transfer"], layout: { "line-sort-key": ["get", "order"] }, paint: { "line-color": ["get", "color"], "line-width": 3, "line-dasharray": [2, 2] } });
+        map.addLayer({ id: "lines-casing", type: "line", source: "lines", layout: sorted, paint: { "line-color": casing, "line-width": ["+", ["get", "width"], 3] } });
+        map.addLayer({ id: "lines", type: "line", source: "lines", layout: sorted, paint: { "line-color": ["get", "color"], "line-width": ["get", "width"] } });
         map.addSource("planner-sketch", { type: "geojson", data: lineData([]) });
         map.addLayer({ id: "planner-sketch", type: "line", source: "planner-sketch", layout: round, paint: { "line-color": dark ? "#f175c5" : "#cc2a93", "line-width": 3, "line-dasharray": [1.5, 1.5] } });
         syncRouteVisibility();
@@ -335,7 +331,7 @@
 
     function syncRouteVisibility() {
         if (!map?.getLayer("trip-line")) return;
-        for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-transfer", "trip-rest", "trip-highlight"]) {
+        for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-rest", "trip-highlight"]) {
             map.setLayoutProperty(id, "visibility", showRoute ? "visible" : "none");
         }
     }

@@ -59,7 +59,7 @@ test('the planner search: a sentence marks its words, and Enter puts what the mo
 // A plan of two days with drawn legs, so its line needs no routing request: 15.2 km along the parallel 47.
 const PLAN = {
   id: 'two', name: 'Two days', updatedAt: 0, summary: null,
-  trip: { mode: 'trip', bike: 'touring', days: 2, daysSet: true, restAfter: [], routeOrder: ['night-1'], points: [
+  trip: { mode: 'trip', bike: 'touring', days: 2, daysSet: true, routeOrder: ['night-1'], points: [
     { id: 'start', kind: 'start', label: 'Freiburg', coordinate: [8, 47] },
     { id: 'night-1', kind: 'night', night: 1, label: 'Inn', coordinate: [8.1, 47], leg: 'drawn', drawn: [[8.05, 47, 500], [8.1, 47, 600]] },
     { id: 'finish', kind: 'finish', label: 'Konstanz', coordinate: [8.2, 47], leg: 'drawn', drawn: [[8.15, 47, 500], [8.2, 47, 400]] },

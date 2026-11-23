@@ -43,8 +43,6 @@ does not require them and the web planner ignores their values. A reader ignores
 | `pace` | Optional pace of a ride: `easy`, `moderate`, `sporty` or `fast`. A reader shows the times at `moderate` for a missing or unknown value |
 | `startDate` | Optional valid calendar date in `YYYY-MM-DD` form |
 | `loop` | Optional `true`; the start also ends the route |
-| `restAfter` | Optional array of riding-day numbers from 1 to `days` |
-| `restNames` | Optional array of strings |
 | `splits` | Optional object from night numbers to progress from 0 to 1 |
 | `stay` | Optional stay array: the kinds of place that the suggested nights look for. Without it, all five kinds apply. |
 | `nightStay` | Optional object from night numbers to stay arrays: the kinds of place for that night only, instead of `stay` |
@@ -53,7 +51,7 @@ A stay array has at least one of `camp`, `hut`, `hostel`, `hotel` and `shelter`,
 time.
 
 A night number N, from 1 to `days - 1`, is the end of riding day N in `night-N`, `splits` and
-`nightStay`. A rest day after riding day N is N in `restAfter`.
+`nightStay`.
 
 Each point has a unique non-empty string `id`, a string `label`, and a two-number `coordinate` in
 longitude/latitude order. Longitude is from -180 to 180. Latitude is from -90 to 90.
@@ -61,11 +59,10 @@ longitude/latitude order. Longitude is from -180 to 180. Latitude is from -90 to
 The point `kind` is `start`, `finish`, `pass`, `via`, `waypoint`, `detour`, `night`, or `marker`.
 Optional fields are boolean `autoLabel`, string `placeKind`, string `placeId` (the search id of the
 mapped place that the point stands for, such as `n123`), a coordinate `anchor`, and `leg` (`routed`,
-`straight`, `drawn`, or `transfer`). A drawn leg can have a `drawn` array of coordinates between its
-endpoints. A drawn coordinate can have a third finite number, the elevation in metres. A transfer
-leg is a straight line that the rider does not ride, such as a train. It adds no ridden distance or
-time. Optional `turnaround` is `true` when the point turns the route back. Any point can have an
-optional string `note`, such as the description of a route file's waypoint.
+`straight`, or `drawn`). A drawn leg can have a `drawn` array of coordinates between its endpoints. A
+drawn coordinate can have a third finite number, the elevation in metres. Optional `turnaround` is
+`true` when the point turns the route back. Any point can have an optional string `note`, such as
+the description of a route file's waypoint.
 
 A marker can have a string `legEnd`: the ID of the route point that ends the leg the marker belongs
 to. In a loop, the start ends the closing leg. The route can pass a marker more than once. A pass at

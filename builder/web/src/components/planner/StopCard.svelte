@@ -10,13 +10,12 @@
     import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
-    let { stop, kinds, days, labels, back = 'All towns', shownId = null, theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
+    let { stop, kinds, days, back = 'All towns', shownId = null, theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
         stop: Stop;
         /** The kinds of place to sleep of the night: the card lists only places of these kinds. */
         kinds: Stay[];
         /** The day that ends here and the day that starts here. */
         days: [Day, Day];
-        labels: [number, number];
         back?: string;
         /** The id of the place or point that the map shows. */
         shownId?: string | null;
@@ -86,14 +85,14 @@
     <dl class="days">
         {#each days as day, i}
             <div style:--day={dayColor(day.number, theme)}>
-                <dt><span class="badge">{labels[i]}</span>Day {labels[i]} {i ? 'starts here' : 'ends here'}</dt>
+                <dt><span class="badge">{day.number}</span>Day {day.number} {i ? 'starts here' : 'ends here'}</dt>
                 <dd>{distanceIn(day.distance * 1000).toFixed(1)} {settings.units} · {duration(day.hours)} · ↑ {Math.round(heightIn(day.ascent))} {heightUnit()}</dd>
             </div>
         {/each}
     </dl>
 
     <h4>Where you sleep</h4>
-    <div role="radiogroup" aria-label={`Where you sleep on night ${labels[0]}`}>
+    <div role="radiogroup" aria-label={`Where you sleep on night ${days[0].number}`}>
         <label class="option" class:checked={!selected}>
             <input type="radio" name={radios} checked={!selected} onchange={() => select(null)} onclick={() => again(null)} />
             <span><strong>Somewhere in {stop.name}</strong><small>decide the place later</small></span>
@@ -128,7 +127,7 @@
          covers the last row. -->
     <div class="confirm">
         <button type="button" onclick={() => selected ? onStay(selected.place) : onEndHere(stop)}>
-            End day {labels[0]} {selected ? `at ${named(selected) ? selected.place.label : `this ${kind(selected)}`}` : `in ${stop.name}`}
+            End day {days[0].number} {selected ? `at ${named(selected) ? selected.place.label : `this ${kind(selected)}`}` : `in ${stop.name}`}
         </button>
     </div>
 </div>

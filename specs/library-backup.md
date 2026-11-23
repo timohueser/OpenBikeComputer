@@ -84,7 +84,7 @@ A reader ignores the fields `open` and `revision` of a route record of an older 
 | `highestM` | Whole metres, or `null` when no height is known |
 | `seconds` | Number. For a route, the riding time that the routing gives. For a ride, the time from the first point to the last. |
 | `bike` | `"road"`, `"gravel"`, `"touring"`, `"mtb"` or `"hiking"` |
-| `days` | Route only: integer, 1 or more, rest days included |
+| `days` | Route only: integer, 1 or more |
 | `start` | Ride only: Unix time in seconds of the first point |
 | `movingS` | Ride only: the moving time |
 

@@ -26,7 +26,7 @@ export interface MapSegment {
     coordinates: Coordinate[];
     color: string;
     legEndId: string;
-    /** The riding number of its day. */
+    /** The number of its day. */
     day: number;
     /** A gap is a leg with no legal path, drawn as a dashed straight line. */
     leg: import("./editor").LegMode | "gap";

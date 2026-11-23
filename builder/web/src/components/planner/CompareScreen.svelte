@@ -7,7 +7,7 @@
     import { coordinateAt } from '../../lib/planner/geo';
     import { dayColor } from '../../lib/planner/day-colors';
     import { compareDays, compareSummary } from '../../lib/planner/compare-days';
-    import { heightRange, profileHeightAt, profilePaths, profileSamples } from '../../lib/planner/profile-data';
+    import { heightRange, profilePaths, profileSamples } from '../../lib/planner/profile-data';
     import { StopFinder, stretchKey } from '../../lib/planner/night-stops.svelte';
     import { nightWindows, proposeNights, withProposals } from '../../lib/planner/stops';
     import { searchPlan } from '../../lib/planner/search/plan';
@@ -83,7 +83,7 @@
             return found && found.state === 'ready' ? found.stops : [];
         });
         const view = planView(withProposals(side.trip, side.line, proposals), side.line);
-        return { view, ...compareDays(side.trip, view, proposals), samples: profileSamples(side.line) };
+        return { view, days: compareDays(side.trip, view, proposals), samples: profileSamples(side.line) };
     }));
     const rows = $derived(Array.from({ length: Math.max(0, ...shown.map(s => s?.days.length ?? 0)) }, (_, i) => i));
     const longestDay = $derived(Math.max(0, ...shown.flatMap(s => s?.view.days.map(d => d.hours) ?? [])) || 1);
@@ -110,11 +110,11 @@
     function keep(side: number, day: number | null = null) {
         kept = kept?.side === side && kept.day === day ? null : { side, day };
     }
-    const isMarked = (side: number, riding: number) => focus?.side === side && marked && !marked.rest && marked.day.ridingNumber === riding;
+    const isMarked = (side: number, day: number) => focus?.side === side && marked?.day.number === day;
 
     /** The focused route shows its day colours and the other one grey; without a focus, each has its own colour. */
-    function color(side: number, riding: number): string {
-        return !focus ? tones[side] : focus.side === side ? dayColor(riding, theme) : grey;
+    function color(side: number, day: number): string {
+        return !focus ? tones[side] : focus.side === side ? dayColor(day, theme) : grey;
     }
     const tone = (side: number) => focus && focus.side !== side ? grey : tones[side];
     // The map takes colour values, not CSS variables.
@@ -124,11 +124,11 @@
 
     // Route B draws wide and route A narrow on top of it, so a road that both use shows both colours.
     const mapLines = $derived.by(() => { void theme; return [1, 0].flatMap(i => shown[i] ? daySegments(shown[i].view).map(segment => ({
-        coordinates: segment.coordinates, color: value(color(i, segment.day)), width: (i ? 9 : 4) + (isMarked(i, segment.day) ? 3 : 0), transfer: segment.leg === 'transfer',
+        coordinates: segment.coordinates, color: value(color(i, segment.day)), width: (i ? 9 : 4) + (isMarked(i, segment.day) ? 3 : 0),
     })) : []); });
-    const pins = $derived(shown.flatMap((s, i): MapPoint[] => s ? s.view.itinerary.filter(d => !d.rest && d.ridingNumber < s.view.days.length).map(d => ({
-        id: `${i}-night-${d.ridingNumber}`, kind: 'night', coordinate: coordinateAt(s.view.coordinates, d.to), label: `${sides[i].title}: night ${d.number}`,
-        markerLabel: String(d.number), color: color(i, d.ridingNumber), fixed: true,
+    const pins = $derived(shown.flatMap((s, i): MapPoint[] => s ? s.view.days.slice(0, -1).map(d => ({
+        id: `${i}-night-${d.number}`, kind: 'night', coordinate: coordinateAt(s.view.coordinates, d.to), label: `${sides[i].title}: night ${d.number}`,
+        markerLabel: String(d.number), color: color(i, d.number), fixed: true,
     })) : []));
     const ends = $derived.by(() => {
         const points = sides.flatMap(side => side.line ? [side.trip.points.find(p => p.kind === 'start'), side.trip.points.find(p => p.kind === 'finish')] : []);
@@ -147,20 +147,11 @@
     let back = $state<HTMLButtonElement>();
     onMount(() => back?.focus());
 
-    /** What a profile row draws: the riding stretches of each day, each train or bus, the nights, the rest days and the
-     * highest ridden point. */
+    /** What a profile row draws: the days and the highest point. */
     function profile(side: number) {
-        const { view, samples } = shown[side]!, transfers = shown[side]!.transfers.map(({ from, to }) => [from, to]);
-        const ridden = (progress: number) => !transfers.some(([from, to]) => progress > from && progress < to);
-        const days = view.days.map(day => {
-            const cuts = transfers.filter(([from, to]) => from < day.to && to > day.from);
-            const ends = [day.from, ...cuts.flat(), day.to];
-            return { day, pieces: ends.flatMap((from, i) => i % 2 || i === ends.length - 1 ? [] : [[Math.max(day.from, from), Math.min(day.to, ends[i + 1])]]) };
-        });
-        const top = samples.filter(s => s.height !== null && ridden(s.progress)).reduce<typeof samples[number] | null>((best, s) => !best || s.height! > best.height! ? s : best, null);
-        const rests = [...new Set(view.itinerary.filter(d => d.rest).map(d => view.days[d.ridingNumber - 1].to))];
-        return { paths: profilePaths(samples, heights.low, heights.high, view.total / longestRoute), days, top, rests,
-            trains: transfers.map(([from, to]) => `M${x(side, from)} ${y(profileHeightAt(from, samples))}L${x(side, to)} ${y(profileHeightAt(to, samples))}`) };
+        const { view, samples } = shown[side]!;
+        const top = samples.filter(s => s.height !== null).reduce<typeof samples[number] | null>((best, s) => !best || s.height! > best.height! ? s : best, null);
+        return { paths: profilePaths(samples, heights.low, heights.high, view.total / longestRoute), days: view.days, top };
     }
 </script>
 
@@ -219,21 +210,13 @@
                             <div class="cell"></div>
                         {:else if !cell}
                             <div class="cell finished" class:dim data-side={i} {...pointer(i)}>Finished</div>
-                        {:else if cell.rest}
-                            <div class="cell rest" class:dim data-side={i} {...pointer(i)}>
-                                {#if cell.date}<small>{cell.date}</small>{/if}
-                                <strong><Icon name="pause" size={13} />{cell.name}</strong>
-                                <span class="stay"><Icon name={cell.stay.icon} size={14} />{cell.stay.label}</span>
-                            </div>
                         {:else}
-                            {@const riding = cell.day.ridingNumber}
-                            <button type="button" class="cell ride" class:dim class:marked={isMarked(i, riding)} data-side={i} aria-pressed={kept?.side === i && kept.day === row}
+                            <button type="button" class="cell ride" class:dim class:marked={isMarked(i, cell.day.number)} data-side={i} aria-pressed={kept?.side === i && kept.day === row}
                                 {...pointer(i, row)} onclick={() => keep(i, row)}>
                                 {#if cell.date}<small>{cell.date}</small>{/if}
                                 <strong>{cell.from} → {cell.to}</strong>
                                 <span class="figures">{km(distanceIn(cell.day.distance * 1000))} {settings.units} · {duration(cell.day.hours)}{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(heightIn(cell.day.ascent))} ${heightUnit()}` : ''}</span>
-                                <span class="time" aria-hidden="true"><span style:width={`${cell.day.hours / longestDay * 100}%`} style:background={color(i, riding)}></span></span>
-                                {#each cell.trains as train (train)}<span class="stay"><Icon name="train" size={14} />Train or bus {train}</span>{/each}
+                                <span class="time" aria-hidden="true"><span style:width={`${cell.day.hours / longestDay * 100}%`} style:background={color(i, cell.day.number)}></span></span>
                                 <span class="stay"><Icon name={cell.stay.icon} size={14} />{cell.stay.label}</span>
                             </button>
                         {/if}
@@ -264,18 +247,16 @@
                         {@const drawn = profile(i)}
                         <div class="profile" class:focused={focus?.side === i} {...pointer(i)}>
                             <svg viewBox="0 0 1000 112" preserveAspectRatio="none" aria-hidden="true">
-                                {#if marked && focus?.side === i && !marked.rest}<rect class="band" x={x(i, marked.day.from)} width={x(i, marked.day.to) - x(i, marked.day.from)} y="0" height="112" />{/if}
-                                {#each drawn.days as { day, pieces } (day.number)}
-                                    <clipPath id={`${uid}-${i}-${day.number}`}>{#each pieces as [from, to], k (k)}<rect x={x(i, from)} width={x(i, to) - x(i, from)} y="0" height="112" />{/each}</clipPath>
+                                {#if marked && focus?.side === i}<rect class="band" x={x(i, marked.day.from)} width={x(i, marked.day.to) - x(i, marked.day.from)} y="0" height="112" />{/if}
+                                {#each drawn.days as day (day.number)}
+                                    <clipPath id={`${uid}-${i}-${day.number}`}><rect x={x(i, day.from)} width={x(i, day.to) - x(i, day.from)} y="0" height="112" /></clipPath>
                                     <g clip-path={`url(#${uid}-${i}-${day.number})`} style:--tone={color(i, day.number)}>
                                         <path d={drawn.paths.area} class="area" />
                                         <path d={drawn.paths.line} class="line" />
                                     </g>
                                 {/each}
-                                {#each drawn.trains as train (train)}<path d={train} class="train" style:--tone={tone(i)} />{/each}
                             </svg>
-                            {#each drawn.days.slice(0, -1) as { day } (day.number)}<span class="night" style:left={`${x(i, day.to) / 10}%`}></span>{/each}
-                            {#each drawn.rests as at (at)}<span class="rest-mark" style:left={`${x(i, at) / 10}%`}>Rest</span>{/each}
+                            {#each drawn.days.slice(0, -1) as day (day.number)}<span class="night" style:left={`${x(i, day.to) / 10}%`}></span>{/each}
                             {#if drawn.top}<span class="top" style:left={`${x(i, drawn.top.progress) / 10}%`} style:top={`${y(drawn.top.height) / 112 * 100}%`}>{km(heightIn(drawn.top.height!))} {heightUnit()}</span>{/if}
                             <span class="caption"><span class="dot" style:background={tone(i)}></span><strong>{side.title}</strong> · {km(distanceIn(shown[i].view.summary.distance * 1000))} {settings.units} ridden</span>
                         </div>
@@ -322,7 +303,6 @@
     .time { display: block; height: 4px; margin: 2px 0; padding: 0; border: 0; border-radius: 2px; background: var(--parchment-2); }
     .time span { display: block; height: 100%; border-radius: 2px; }
     .stay { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 12px; }
-    .rest { justify-content: center; border-color: transparent; background: var(--parchment-2); }
     .finished { justify-content: center; align-items: center; border: 1.5px dashed var(--line-strong); font-size: 12px; color: var(--ink-soft); }
     .geography { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     .map-area { position: relative; flex: 1; min-height: 240px; }
@@ -342,11 +322,9 @@
     path { fill: none; vector-effect: non-scaling-stroke; }
     .area { fill: var(--tone); fill-opacity: .25; }
     .line { stroke: var(--tone); stroke-width: 2; }
-    .train { stroke: var(--tone); stroke-width: 2; stroke-dasharray: 4 4; }
     .band { fill: var(--ink); fill-opacity: .08; }
     .night { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--line-strong); }
-    .rest-mark, .top, .caption { position: absolute; font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-    .rest-mark { top: 2px; padding: 0 4px; border-radius: 4px; background: var(--parchment-2); transform: translateX(-50%); }
+    .top, .caption { position: absolute; font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .top { transform: translate(4px, -100%); font-weight: 600; }
     .caption { left: 0; top: 0; display: flex; align-items: center; gap: 6px; color: var(--ink-soft); }
     .caption strong { color: var(--ink); }

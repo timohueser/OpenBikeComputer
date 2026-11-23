@@ -32,7 +32,7 @@
      * when there are more than WORDS_DAYS days. */
     const DRAG_PX = 4, STEP = .1, WORDS_DAYS = 5;
     const total = $derived(plan.km.at(-1) ?? 0);
-    const days = $derived(plan.days.filter(day => !day.rest));
+    const days = $derived(plan.days);
     const base = $derived(baseOf(where, plan));
     const stretch = $derived(base && partOf(base, where.part));
     const [from, to] = $derived(stretch ?? [0, total]);

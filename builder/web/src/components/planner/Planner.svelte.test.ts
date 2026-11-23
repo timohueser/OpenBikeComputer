@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { addRestDay, allStay, planView, type Place, type Stay, type Trip } from '../../lib/planner/editor';
+import { allStay, planView, type Place, type Stay, type Trip } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 import { proposal, type Stop } from '../../lib/planner/stops';
@@ -136,23 +136,22 @@ const town = (name: string, km: number): Stop => ({ id: name, name, km, from: km
     sleep: [{ place: { id: `${name}-camp`, kind: 'place', category: 'camp', placeKind: 'campsite', label: `${name} camping`, description: '', coordinate: [7.6, 47.2], locality: name }, km, off: .2 }] });
 
 function itineraryProps(expandedDay: number | null) {
-    const trip = addRestDay(testTrip(), 1), line = testLine(trip);
+    const trip = testTrip(), line = testLine(trip);
     return {
-        trip, line, expandedDay, nightPage: null as number | null, itinerary: planView(trip, line).itinerary, days: planView(trip, line).days, theme: 'light' as const,
+        trip, line, expandedDay, nightPage: null as number | null, days: planView(trip, line).days, theme: 'light' as const,
         nights: nightChoices(), conflicts: [], selectedId: null, revealId: null,
         onToggle: vi.fn(), onOverview: vi.fn(), onInspect: vi.fn(), onShowEnd: vi.fn(),
-        onShowConflict: vi.fn(), onAddRest: vi.fn(), onTransfer: vi.fn(), onRemoveRest: vi.fn(), onNameRest: vi.fn(),
+        onShowConflict: vi.fn(),
     };
 }
 
 describe('planner day views', () => {
-    it('keeps every riding day in the overview and opens the right day after a rest', async () => {
+    it('keeps every day in the overview and opens a day', async () => {
         const props = itineraryProps(null);
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 
         expect(document.querySelectorAll('[data-day]')).toHaveLength(3);
-        expect(document.body.textContent).toContain('Day 2 · Rest');
         expect(document.body.textContent).not.toContain('Where to sleep');
         document.querySelector<HTMLButtonElement>('[data-day="2"]')!.click();
         await tick();
@@ -179,7 +178,7 @@ describe('planner day views', () => {
         const rows = () => [...document.querySelectorAll<HTMLButtonElement>('ul[aria-label="Towns for night 1"] button.town')];
         const towns = rows();
         expect(towns.map(b => b.querySelector('strong')?.textContent)).toEqual(['Laufen', 'BernEven days']);
-        expect(towns[1].getAttribute('aria-label')).toMatch(/^Bern, 1 campsite\. Day 1 \d+h \d\dm, day 3 \d+h \d\dm\. Even days$/);
+        expect(towns[1].getAttribute('aria-label')).toMatch(/^Bern, 1 campsite\. Day 1 \d+h \d\dm, day 2 \d+h \d\dm\. Even days$/);
         expect(document.querySelector('.tools')!.compareDocumentPosition(towns[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(document.querySelectorAll('ul[aria-label="Towns for night 1"] li button')).toHaveLength(towns.length);
 
@@ -255,7 +254,7 @@ describe('planner day views', () => {
         expect(pane.scrollTop).toBe(0);
     });
 
-    it('adds a rest day or a train after a night, and sets the kinds of place of one night', async () => {
+    it('sets the kinds of place of one night', async () => {
         const props = itineraryProps(null), setKinds = vi.fn(), release = vi.fn();
         const kept = { id: 'night-2', kind: 'night' as const, night: 2, label: 'Olten', coordinate: [7.6, 47.3] as [number, number] };
         props.trip = { ...props.trip, nightStay: { 2: ['camp'] } };
@@ -265,18 +264,11 @@ describe('planner day views', () => {
         mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get nightPage() { return page; } } }));
         await tick();
 
-        // Night 1 has a rest day after it already.
-        expect(document.querySelector('[aria-label="Rest day after night 1"]')).toBeNull();
-        button('Train or bus after night 1').click();
-        expect(props.onTransfer).toHaveBeenCalledWith(1);
-        button('Rest day after night 3').click();
-        expect(props.onAddRest).toHaveBeenCalledWith(2);
-
         page = 2; await tick();
-        expect(document.querySelector('h2')?.textContent).toBe('Night 3');
-        expect(document.querySelector('h2 + p')?.textContent).toBe('Where day 3 ends and day 4 starts');
+        expect(document.querySelector('h2')?.textContent).toBe('Night 2');
+        expect(document.querySelector('h2 + p')?.textContent).toBe('Where day 2 ends and day 3 starts');
         expect(document.querySelector('[role="status"]')?.textContent).toBe('No campsite between km 0 and 50.');
-        button('Places to sleep on night 3: Campsites').click(); await tick();
+        button('Places to sleep on night 2: Campsites').click(); await tick();
         const huts = [...document.querySelectorAll('label')].find(row => row.textContent === 'Huts')!.querySelector('input')!;
         huts.click();
         expect(setKinds).toHaveBeenCalledWith(2, ['camp', 'hut']);
@@ -298,12 +290,12 @@ describe('planner day views', () => {
         expect(keepCampsites).toHaveBeenCalledOnce();
     });
 
-    it('keeps calendar labels separate from riding-day navigation and the finish', async () => {
+    it('steps between the days from an open day, and shows the finish', async () => {
         const props = itineraryProps(3);
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 
-        expect(document.querySelector('select')?.selectedOptions[0].textContent).toBe('Day 4');
+        expect(document.querySelector('select')?.selectedOptions[0].textContent).toBe('Day 3');
         expect(document.querySelectorAll('h2')).toHaveLength(1);
         expect(button('Next riding day').disabled).toBe(true);
         button('Previous riding day').click();
@@ -319,7 +311,7 @@ describe('planner day views', () => {
         mounted.push(mount(Profile, {
             target: document.body,
             props: {
-                total: 144, days: planView(testTrip(), testLine(testTrip())).days, dayLabels: { 1: 1, 2: 3, 3: 4 },
+                total: 144, days: planView(testTrip(), testLine(testTrip())).days,
                 activeNight: 2, band: null, focus: { from: 1 / 3, to: 2 / 3, label: 'Day 3' },
                 window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
             },
@@ -342,7 +334,7 @@ describe('planner day views', () => {
         mounted.push(mount(Profile, {
             target: document.body,
             props: {
-                total: 144, days: planView(testTrip(), testLine(testTrip())).days, dayLabels: { 1: 1, 2: 3, 3: 4 },
+                total: 144, days: planView(testTrip(), testLine(testTrip())).days,
                 activeNight: 2, band: null, window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
             },
         }));
@@ -363,7 +355,7 @@ describe('trip pace', () => {
         const onChange = vi.fn((change: Partial<Trip>) => { trip = { ...trip, ...change }; });
         mounted.push(mount(RoutePreferences, { target: document.body, props: { get trip() { return trip; }, onChange } }));
         mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get trip() { return trip; },
-            get itinerary() { return planView(trip, props.line).itinerary; }, get days() { return planView(trip, props.line).days; } } }));
+            get days() { return planView(trip, props.line).days; } } }));
         await tick();
         const firstDay = () => document.querySelector('[data-day="1"]')!.textContent;
         const moderate = firstDay();
@@ -385,24 +377,6 @@ describe('trip pace', () => {
     });
 });
 
-describe('trip timeline', () => {
-    it('puts a rest column after its night', async () => {
-        const trip = { ...testTrip(), restAfter: [2] };
-        mounted.push(mount(Profile, { target: document.body, props: {
-            total: 89, days: planView(trip, testLine(trip)).days, dayLabels: { 1: 1, 2: 2, 3: 4 }, singleRoute: false,
-            rests: [{ day: 3, after: 2, name: 'Spa day', town: 'Olten' }], activeNight: 0, band: null, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
-        } }));
-        await tick();
-        button('Whole route').click(); await tick();
-
-        // profile-axis.test.ts measures where the column sits; here it is the one column, of the night after day 2. It
-        // stands over the plot only, and the rest night gets no badge.
-        expect([...document.querySelectorAll('.plot .rest')].map(rest => rest.textContent)).toEqual(['Spa dayOlten']);
-        expect(document.querySelectorAll('.rest')).toHaveLength(1);
-        expect([...document.querySelectorAll('.plot .handle')].map(handle => handle.textContent)).toEqual(['1', '2']);
-    });
-});
-
 describe('profile part', () => {
     it('selects a part with Shift and an arrow key, shows its numbers with Clear, keeps its stretch while the map window changes and at another range, and clears at Escape and at Clear', async () => {
         const line: RoutingLine = {
@@ -412,7 +386,7 @@ describe('profile part', () => {
         let view = $state({ from: 0, to: .5 });
         let part = $state<[number, number] | null>(null);
         mounted.push(mount(Profile, { target: document.body, props: {
-            lineData: line, total: 100, days: [], dayLabels: {}, activeNight: 0, band: null, get window() { return view; },
+            lineData: line, total: 100, days: [], activeNight: 0, band: null, get window() { return view; },
             get part() { return part; }, onPart: next => { part = next; }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
         } }));
         await tick();
@@ -453,7 +427,7 @@ describe('profile part', () => {
         let part = $state<[number, number] | null>(null);
         let focus = $state({ from: .4, to: .6, label: 'Day 2' });
         mounted.push(mount(Profile, { target: document.body, props: {
-            lineData: line, total: 100, days: [], dayLabels: {}, activeNight: 0, band: null, get focus() { return focus; },
+            lineData: line, total: 100, days: [], activeNight: 0, band: null, get focus() { return focus; },
             get part() { return part; }, onPart: next => { part = next; }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
         } }));
         await tick();
@@ -483,7 +457,7 @@ describe('profile access', () => {
         };
         const onHover = vi.fn();
         mounted.push(mount(Profile, { target: document.body, props: {
-            lineData: line, total: .15, days: [], dayLabels: {}, activeNight: 0, band: null,
+            lineData: line, total: .15, days: [], activeNight: 0, band: null,
             onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover,
         } }));
         await tick();
@@ -508,7 +482,7 @@ describe('profile access', () => {
             stops: [], seconds: 60, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
         };
         mounted.push(mount(Profile, { target: document.body, props: {
-            lineData: line, total: .225, days: [], dayLabels: {}, activeNight: 0, band: null, window: { from: 0, to: .5 },
+            lineData: line, total: .225, days: [], activeNight: 0, band: null, window: { from: 0, to: .5 },
             onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
         } }));
         await tick();
@@ -540,7 +514,7 @@ describe('planner recovery', () => {
         mounted.push(mount(MapCallout, {
             target: document.body,
             props: {
-                kind: 'place', trip, days: planView(trip, undefined).days, dayLabels: { 1: 1, 2: 2, 3: 3 }, night: 1,
+                kind: 'place', trip, days: planView(trip, undefined).days, night: 1,
                 place: { ...places[0], website: 'camp.example', phone: '+49 (123) 45-67', description: 'Small tents only.\n<script>Ask at reception.</script>' },
                 coordinate: places[0].coordinate, legMode: 'routed',
                 onClose, onAddHere: vi.fn(), onLegMode: vi.fn(), onInsert: vi.fn(), onPick: vi.fn(),

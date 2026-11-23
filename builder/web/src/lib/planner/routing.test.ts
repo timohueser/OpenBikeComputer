@@ -58,7 +58,7 @@ describe('routing integration', () => {
     });
     it('keeps itinerary edits, labels and markers outside the routing key', () => {
         const plan = trip();
-        const edited = { ...plan, days: 5, splits: { 1: .4 }, restAfter: [1], daysSet: true as const, points: plan.points.map(p => ({ ...p, label: 'Renamed' })) };
+        const edited = { ...plan, days: 5, splits: { 1: .4 }, daysSet: true as const, points: plan.points.map(p => ({ ...p, label: 'Renamed' })) };
         expect(routingKey(edited)).toBe(routingKey(plan));
         expect(routingKey(setEndpoint(edited, 'start', edited.points[0].coordinate, 'New label'))).toBe(routingKey(plan));
         const marked = { ...edited, points: [...edited.points, { ...edited.points[0], id: 'note', kind: 'marker' as const }] };
@@ -217,13 +217,9 @@ describe('joins beside manual legs', () => {
     const point = (id: string, kind: RoutePoint['kind'], lon: number, extra: Partial<RoutePoint> = {}): RoutePoint =>
         ({ id, kind, label: id, coordinate: [lon, 48], ...extra });
 
-    it('knows the heights of a routed day beside a transfer or a drawn line with heights', async () => {
+    it('knows the heights of a routed day beside a drawn line with heights', async () => {
         vi.stubGlobal('fetch', vi.fn(snapping));
         const signal = new AbortController().signal;
-        const roads: Trip = { ...trip(), mode: 'trip', days: 2, routeOrder: ['night-1', 'via'], points: [point('start', 'start', 7.8),
-            point('night-1', 'night', 7.85, { night: 1 }), point('via', 'via', 7.95, { leg: 'transfer' }), point('finish', 'finish', 8)] };
-        const transferred = await calculateLine(roads, signal, new LegCache());
-        expect(transferred).toMatchObject({ unknownElevationKm: 0, unroutedKm: 0 });
         const kept: Trip = { ...trip(), mode: 'trip', days: 2, routeOrder: ['night-1'], points: [point('start', 'start', 7.8),
             point('night-1', 'night', 7.85, { night: 1 }), point('finish', 'finish', 7.9, { leg: 'drawn', drawn: [[7.85, 48, 200], [7.88, 48, 210], [7.9, 48, 220]] })] };
         expect((await calculateLine(kept, signal, new LegCache())).unknownElevationKm).toBe(0);
@@ -437,7 +433,7 @@ describe('runs longer than one request', () => {
             const view = planView(visit, await calculateLine(visit, signal, new LegCache()));
             return routeGaps(view.stops, view.coordinates).map(gapLabel);
         };
-        expect(await Promise.all([note(48.0054, 'routed'), note(48.0054, 'transfer'), note(48.02, 'routed'), note(48.02, 'transfer')])).toEqual([[], [],
+        expect(await Promise.all([note(48.0054, 'routed'), note(48.0054, 'straight'), note(48.02, 'routed'), note(48.02, 'straight')])).toEqual([[], [],
             ['Passes 2.2 km from your point'], ['Passes 2.2 km from your point']]);
     });
 

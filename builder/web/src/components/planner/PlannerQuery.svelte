@@ -49,7 +49,7 @@
     let searchedView = $state(0);
     const usesView = $derived(!planned && (request?.type === 'place' ? !request.near : !!request && (request.where ?? VIEW).scope === 'view'));
     const movedView = $derived(usesView && !!searchState.answer && viewRevision !== searchedView);
-    const days = $derived(context.plan.days.filter(day => !day.rest).map(day => day.number));
+    const days = $derived(context.plan.days.map(day => day.number));
 
     /** Asks the server. With `sent`, the server reads no sentence; without it, the query model reads `q`. The answer shows
      * with the `notice` of `told`, the answer of the model that this search repeats with the values of the slots. */

@@ -11,13 +11,11 @@
     import { distanceIn } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
-    let { trip, line, night, labels, back, theme, found, window, stopId, shownId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
+    let { trip, line, night, back, theme, found, window, stopId, shownId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
         trip: Trip;
         line: RoutingLine;
-        /** The riding day that ends at this night. */
+        /** The day that ends at this night. */
         night: number;
-        /** Calendar numbers of the day that ends and the day that starts here. */
-        labels: [number, number];
         /** The text of the back row of a town card. */
         back?: string;
         theme: 'light' | 'dark';
@@ -65,12 +63,12 @@
 </script>
 
 {#if open}
-    <StopCard stop={open} {kinds} days={daysAround(trip, line, night, open.km)} {labels} {back} {shownId} {theme} {date} elevation={elevationAt(open.km)}
+    <StopCard stop={open} {kinds} days={daysAround(trip, line, night, open.km)} {back} {shownId} {theme} {date} elevation={elevationAt(open.km)}
         onBack={() => { returnTo = open.id; onOpen(null); }} {onEndHere} {onStay} {onSelectPlace} />
 {:else}
     <div class="picker">
         <div class="tools">
-            <StayChip value={kinds} label={`Places to sleep on night ${labels[0]}`} onChange={onKinds} onReset={trip.nightStay?.[night] ? () => onKinds(null) : undefined} resetLabel="Same as the trip" />
+            <StayChip value={kinds} label={`Places to sleep on night ${night}`} onChange={onKinds} onReset={trip.nightStay?.[night] ? () => onKinds(null) : undefined} resetLabel="Same as the trip" />
             <div class="actions">
                 <button type="button" class="planner-action" onclick={onPick}>Pick on the map</button>
                 {#if onCancel}<button type="button" class="planner-action quiet" onclick={onCancel}>Cancel</button>{/if}
@@ -78,11 +76,11 @@
         </div>
         {#if found?.state === 'ready'}
             {#if rows.length}
-                <ul aria-label={`Towns for night ${labels[0]}`}>
+                <ul aria-label={`Towns for night ${night}`}>
                     {#each rows as { stop, days } (stop.id)}
                         <li>
                             <button type="button" class="town" onclick={() => onOpen(stop.id)} {@attach node => { if (stop.id === returnTo) { returnTo = null; node.focus(); } }}
-                                aria-label={`${stop.name}, ${stopCounts(stop, kinds)}. Day ${labels[0]} ${duration(days[0].hours)}, day ${labels[1]} ${duration(days[1].hours)}${stop === even ? '. Even days' : ''}`}>
+                                aria-label={`${stop.name}, ${stopCounts(stop, kinds)}. Day ${night} ${duration(days[0].hours)}, day ${night + 1} ${duration(days[1].hours)}${stop === even ? '. Even days' : ''}`}>
                                 <strong>{stop.name}{#if stop === even}<em>Even days</em>{/if}</strong>
                                 <small>{stopKm(stop, kinds)} · {stopCounts(stop, kinds, true)}
                                     <span class="services" aria-hidden="true">{#each services as service}{#if stop[service].length}<Icon path={placeCategories[service].icon} size={13} />{/if}{/each}</span>
@@ -91,7 +89,7 @@
                                     <span style:width={`${days[0].hours / longest * 100}%`} style:background={dayColor(night, theme)}></span>
                                     <span style:width={`${days[1].hours / longest * 100}%`} style:background={dayColor(night + 1, theme)}></span>
                                 </span>
-                                <small class="hours" aria-hidden="true"><span>Day {labels[0]} · {duration(days[0].hours)}</span><span>Day {labels[1]} · {duration(days[1].hours)}</span></small>
+                                <small class="hours" aria-hidden="true"><span>Day {night} · {duration(days[0].hours)}</span><span>Day {night + 1} · {duration(days[1].hours)}</span></small>
                             </button>
                         </li>
                     {/each}

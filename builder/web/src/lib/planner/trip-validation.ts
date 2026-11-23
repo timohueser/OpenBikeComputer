@@ -26,7 +26,7 @@ function point(value: unknown): value is RoutePoint {
     return record(value) && typeof value.id === 'string' && value.id.length > 0 && typeof value.label === 'string'
         && coordinate(value.coordinate)
         && typeof value.kind === 'string' && ['start', 'finish', 'pass', 'via', 'waypoint', 'detour', 'night', 'marker'].includes(value.kind)
-        && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn', 'transfer'].includes(value.leg)))
+        && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn'].includes(value.leg)))
         && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(c =>
             Array.isArray(c) && (coordinate(c) || (c.length === 3 && coordinate(c.slice(0, 2)) && finite(c[2]))))))
         && (value.anchor === undefined || coordinate(value.anchor))
@@ -66,8 +66,6 @@ export function isTrip(value: unknown): value is Trip {
     // With unique point IDs, this makes the route order a permutation of the points between the start and the finish.
     const order = value.routeOrder, middle = route.filter(point => point.kind !== 'start' && point.kind !== 'finish');
     if (!Array.isArray(order) || order.length !== middle.length || !middle.every(point => order.includes(point.id))) return false;
-    if (value.restAfter !== undefined && (!Array.isArray(value.restAfter) || !value.restAfter.every(after => integer(after, 1, days)))) return false;
-    if (value.restNames !== undefined && (!Array.isArray(value.restNames) || !value.restNames.every(name => typeof name === 'string'))) return false;
     if (value.splits !== undefined && (!record(value.splits) || !Object.entries(value.splits).every(([night, progress]) =>
         integer(Number(night), 1, days - 1) && finite(progress) && progress >= 0 && progress <= 1))) return false;
     if (value.nightStay !== undefined && (!record(value.nightStay) || !Object.entries(value.nightStay).every(([night, kinds]) =>

@@ -42,6 +42,6 @@ const DELAY_SECONDS = 10;
 export function searchPlan(trip: Trip, view: PlanView): SearchContext['plan'] {
     const { coordinates, line, total } = view;
     return { coordinates, km: cumulative(coordinates), seconds: line?.unroutedKm === 0 ? line.elapsed : undefined, line,
-        days: view.itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
+        days: view.days.map(d => ({ number: d.number, from: d.from * total, to: d.to * total })),
         points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) };
 }
