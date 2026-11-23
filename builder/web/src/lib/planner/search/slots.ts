@@ -1,7 +1,7 @@
 /** The three slots of the planner search, "Find", "Where" and "When": the fields of a request that each slot holds, the
  * request that the slots give, their words, and how the request of an answer of the query model fills them. */
 import { contract, kindLabel, pointLabel } from './presentation';
-import type { QueryDay, QueryRequest, Quantity, Where } from './types';
+import type { QueryDay, QueryRequest, Quantity, SearchContext, Where } from './types';
 
 export type SlotId = 'find' | 'where' | 'when';
 /** One thing to find: a kind of place, with the cuisine of a kind of food; a place by its name; or a fact of the route,
@@ -12,12 +12,55 @@ export type Open = NonNullable<QueryRequest['open']>;
 export interface Slots { find?: Find; where?: Where; radius?: Quantity; open?: Open }
 
 /** The request of the slots, with the fields that its type takes; none without a thing to find. A named place takes only
- * the first place that it is near. */
-export function requestOf({ find, where, radius, open }: Slots): QueryRequest | undefined {
+ * the first place that it is near. A search area on the route goes as its stretch from km to km on the route of `plan`. */
+export function requestOf({ find, where: area, radius, open }: Slots, plan?: Plan): QueryRequest | undefined {
     if (!find) return undefined;
-    if ('name' in find) return { type: 'place', name: find.name, ...where?.near ? { near: where.near[0] } : {} };
+    if ('name' in find) return { type: 'place', name: find.name, ...area?.near ? { near: area.near[0] } : {} };
+    const stretch = plan && stretchOf(area, plan), where = stretch ? stretchWhere(stretch) : area;
     if ('fact' in find) return { type: 'stretches', what: find.fact, ...where ? { where } : {}, ...find.min ? { min: find.min } : {} };
     return { type: 'places', what: [find.kind], ...find.cuisine ? { cuisine: find.cuisine } : {}, ...where ? { where } : {}, ...radius ? { radius } : {}, ...open ? { open } : {} };
+}
+
+// ── The search area on the route ────────────────────────────────────────────
+
+/** A stretch of the route, in km from its start. */
+export type Stretch = [from: number, to: number];
+/** The route and its days, in km. */
+export type Plan = Pick<SearchContext['plan'], 'km' | 'days'>;
+
+const tenth = (km: number) => Math.round(km * 10) / 10;
+/** The search area of a stretch, to a tenth of a km and at least that long. */
+export const stretchWhere = ([from, to]: Stretch): Where =>
+    ({ along: { ref: 'km', from: { value: tenth(from), unit: 'km' }, to: { value: tenth(Math.max(to, from + .1)), unit: 'km' } } });
+/** The route ahead of the rider, from the place of the rider on it. */
+export const NEAREST: Where = { along: { ref: 'here', from: { value: 0, unit: 'km' } } };
+
+/** The stretch that a search area on the route covers before its part: the whole route, a day of the plan, or a stretch
+ * from km to km. None for any other area. */
+export function baseOf(where: Where | undefined, { km, days }: Plan): Stretch | undefined {
+    const total = km.at(-1) ?? 0;
+    if (!where || !total || where.near || where.anchor || where.before || where.after) return undefined;
+    const { along, day, scope } = where;
+    if (along) return along.ref === 'km' && along.from?.unit === 'km' && along.to?.unit === 'km' ? [along.from.value, along.to.value] : undefined;
+    if (typeof day === 'number') {
+        const found = days.find(one => one.number === day && !one.rest);
+        return found && [found.from, found.to];
+    }
+    return scope === 'route' && day === undefined ? [0, total] : undefined;
+}
+
+/** A part of a stretch: at an end, `max(10 km, 20 %)` of it; in the middle, its middle 40 %. */
+export function partOf([from, to]: Stretch, part?: string): Stretch {
+    const length = to - from, edge = Math.min(length, Math.max(10, length * .2));
+    if (part === 'start') return [from, from + edge];
+    if (part === 'end') return [to - edge, to];
+    return part === 'middle' ? [from + length * .3, from + length * .7] : [from, to];
+}
+
+/** The stretch of a search area on the route, after its part. */
+export function stretchOf(where: Where | undefined, plan: Plan): Stretch | undefined {
+    const base = baseOf(where, plan);
+    return base && partOf(base, where!.part);
 }
 
 /** A kind and the kinds over it, the nearest first. */
@@ -95,7 +138,7 @@ export function whereWords(where: Where | undefined): string[] {
         where.scope === 'here' && 'Near me',
         where.scope === 'view' && 'In this map view',
         where.near && `${where.near.length > 1 ? 'Between' : 'Near'} ${where.near.map(pointLabel).join(' and ')}`,
-        where.along && pointLabel({ along: where.along }),
+        where.along && (sameValue(where, NEAREST) ? 'Nearest to me' : where.part ? `${capital(where.part)} of ${pointLabel({ along: where.along })}` : pointLabel({ along: where.along })),
         where.before && `Before ${pointLabel(where.before)}`,
         where.after && `After ${pointLabel(where.after)}`,
     ];

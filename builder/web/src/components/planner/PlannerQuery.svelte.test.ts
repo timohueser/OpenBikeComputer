@@ -35,6 +35,8 @@ async function setup(props: Record<string, unknown> = {}) {
     return {target,input,enter,slot,words,press,component};
 }
 const sent = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+/** The search area of the stretch from km `from` to km `to`. */
+const km = (from: number, to: number) => ({ along: { ref: 'km', from: { value: from, unit: 'km' }, to: { value: to, unit: 'km' } } });
 
 describe('the planner search',()=>{
     it('fills the slots from what the query model read, and a slot that the answer leaves empty keeps its value', async () => {
@@ -46,10 +48,12 @@ describe('the planner search',()=>{
         expect(input.value).toBe('');
         await enter('supermarket');
         expect([words('find'), words('where')]).toEqual(['Supermarket', 'Middle of Day 1']);
-        // The answer searched without the area that the slot kept, so the slots search again, with no model.
+        // The slots send the middle of day 1 as its stretch, and the area that the slot kept, so they search again with no
+        // model after each answer.
         expect(sent(fetch).map(body => [body.q, body.request])).toEqual([
-            ['drinking water in the middle of day 1', undefined], ['supermarket', undefined],
-            ['supermarket', { type: 'places', what: ['supermarket'], where: { day: 1, part: 'middle' } }],
+            ['drinking water in the middle of day 1', undefined],
+            ['drinking water in the middle of day 1', { type: 'places', what: ['drinking_water'], where: km(1.2, 2.8) }],
+            ['supermarket', undefined], ['supermarket', { type: 'places', what: ['supermarket'], where: km(1.2, 2.8) }],
         ]);
     });
 
@@ -60,8 +64,8 @@ describe('the planner search',()=>{
         await enter('drinking water in the middle of day 1');
         await enter('on day 2, open now');
         expect([words('where'), words('when')]).toEqual(['Middle of Day 2', 'Open now']);
-        expect(sent(fetch).at(-1).request).toEqual({ type: 'places', what: ['drinking_water'], where: { day: 2, part: 'middle' }, open: { now: true } });
-        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(sent(fetch).at(-1).request).toEqual({ type: 'places', what: ['drinking_water'], where: km(4.9, 6.1), open: { now: true } });
+        expect(fetch).toHaveBeenCalledTimes(3);
     });
 
     it('keeps the words that the model ignored and finds one thing, the first of two kinds with no kind over both', async () => {
@@ -78,19 +82,47 @@ describe('the planner search',()=>{
     it('searches with the request of a panel and no model, and turns "When" off for a fact of the route', async () => {
         const fetch = server();
         vi.stubGlobal('fetch', fetch);
-        const { enter, slot, words, press } = await setup({ selection: { anchor: [7.9, 48] } });
-        await enter('supermarket');
+        const { enter, slot, press } = await setup();
+        await enter('supermarket open now');
         slot('find').click(); await tick();
         press('Food'); await vi.advanceTimersByTimeAsync(0); await tick();
-        expect(sent(fetch).at(-1)).toMatchObject({ q: 'supermarket', request: { type: 'places', what: ['food'] } });
-        slot('where').click(); await tick();
-        press('Selected point'); await vi.advanceTimersByTimeAsync(0); await tick();
-        expect(sent(fetch).at(-1).request).toEqual({ type: 'places', what: ['food'], where: { anchor: [7.9, 48] } });
-        expect(words('where')).toBe('Near the selected point');
-        slot('find').click(); await tick();
+        expect(sent(fetch).at(-1)).toMatchObject({ q: 'supermarket open now', request: { type: 'places', what: ['food'] } });
         press('Climbs'); await vi.advanceTimersByTimeAsync(0); await tick();
-        expect(sent(fetch).at(-1).request).toEqual({ type: 'stretches', what: 'climb', where: { anchor: [7.9, 48] } });
+        expect(sent(fetch).at(-1).request).toEqual({ type: 'stretches', what: 'climb' });
         expect(slot('when').disabled).toBe(true);
+    });
+
+    it('sets "Where" on the profile of the route: a day, a part of it, a handle, and the places of "Find" along the route as dots', async () => {
+        const along = (km: number) => ({ name: `${km} km`, kind: 'supermarket', lon: 7.8, lat: 48, distance: 0, position: { along: km, distance: 0 } });
+        const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+            const input = JSON.parse(String(init.body)), request = input.request ?? READ[input.q];
+            return { ok: true, json: async () => ({ type: 'places', request, results: input.limit === 100 ? [along(1), along(5)] : [] }) } as Response;
+        });
+        vi.stubGlobal('fetch', fetch);
+        const { target, enter, slot, words, press } = await setup();
+        await enter('supermarket');
+        slot('where').click(); await vi.advanceTimersByTimeAsync(0); await tick();
+        // The panel asks for the places along the whole route; with no stretch, each is in the area.
+        expect(sent(fetch).at(-1)).toMatchObject({ limit: 100, request: { type: 'places', what: ['supermarket'], where: km(0, 7.4) } });
+        const dots = () => [...target.querySelectorAll('.dot')].map(dot => dot.classList.contains('in'));
+        expect(dots()).toEqual([true, true]);
+        const search = async (button: string) => { press(button); await vi.advanceTimersByTimeAsync(0); await tick(); return sent(fetch).at(-1).request.where; };
+        expect(await search('Day 2')).toEqual(km(4, 7));
+        expect([words('where'), dots()]).toEqual(['Day 2', [false, true]]);
+        expect(await search('Middle')).toEqual(km(4.9, 6.1));
+        expect(words('where')).toBe('Middle of Day 2');
+        // A second press removes the day and keeps the part, of the whole route.
+        expect(await search('Day 2')).toEqual(km(2.2, 5.2));
+        expect(words('where')).toBe('Middle of the route');
+        // A handle searches when it rests.
+        const end = target.querySelector<HTMLInputElement>('input[aria-label="End of the stretch"]')!;
+        const searches = fetch.mock.calls.length;
+        for (const value of ['4', '3']) { end.value = value; end.dispatchEvent(new Event('input', { bubbles: true })); await tick(); }
+        expect(fetch).toHaveBeenCalledTimes(searches);
+        await vi.advanceTimersByTimeAsync(250); await tick();
+        expect(fetch).toHaveBeenCalledTimes(searches + 1);
+        expect(sent(fetch).at(-1).request.where).toEqual(km(2.2, 3));
+        expect([words('where'), dots()]).toEqual(['2.2–3 km', [false, false]]);
     });
 
     it('keeps a change of the plan when it searches again with the position of the rider', async () => {

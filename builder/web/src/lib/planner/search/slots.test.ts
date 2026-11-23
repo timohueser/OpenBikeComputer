@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fill, oneKind, requestOf, slotsOf, slotWords } from './slots';
+import { fill, NEAREST, oneKind, partOf, requestOf, slotsOf, slotWords, stretchOf } from './slots';
 
 describe('the slots of the planner search', () => {
     it('takes one thing to find: the nearest kind over all kinds, else the first', () => {
@@ -25,5 +25,18 @@ describe('the slots of the planner search', () => {
             .toEqual({ find: ['Drinking water'], where: ['Middle of Day 1'], when: ['Open on Sunday'] });
         expect(slotWords(slotsOf({ type: 'stretches', what: 'gap:water', where: { scope: 'route', part: 'end' }, min: { value: 20, unit: 'km' } }).slots))
             .toEqual({ find: ['Longest stretch without water', 'At least 20 km'], where: ['End of the route'], when: [] });
+    });
+
+    it('gives an area on the route as its stretch: a part is 20 % of it at an end, at least 10 km, and its middle 40 %', () => {
+        expect([partOf([0, 100], 'start'), partOf([0, 100], 'end'), partOf([0, 100], 'middle')]).toEqual([[0, 20], [80, 100], [30, 70]]);
+        expect([partOf([20, 40], 'start'), partOf([20, 26], 'end')]).toEqual([[20, 30], [20, 26]]);
+        const plan = { km: [0, 60], days: [{ number: 1, from: 0, to: 30, rest: false }, { number: 2, from: 30, to: 30, rest: true }, { number: 3, from: 30, to: 60, rest: false }] };
+        expect([stretchOf({ day: 3, part: 'end' }, plan), stretchOf({ scope: 'route' }, plan), stretchOf({ day: 2 }, plan)]).toEqual([[50, 60], [0, 60], undefined]);
+        expect([NEAREST, { scope: 'view' }, { near: [{ name: 'Freiburg' }] }].map(where => stretchOf(where, plan))).toEqual([undefined, undefined, undefined]);
+        // With no route, the request keeps the area as the slot holds it.
+        const slots = { find: { kind: 'water' }, where: { day: 1, part: 'start' } };
+        expect(requestOf(slots, plan)?.where).toEqual({ along: { ref: 'km', from: { value: 0, unit: 'km' }, to: { value: 10, unit: 'km' } } });
+        expect(requestOf(slots, { km: [], days: [] })?.where).toEqual({ day: 1, part: 'start' });
+        expect(slotWords({ where: NEAREST }).where).toEqual(['Nearest to me']);
     });
 });

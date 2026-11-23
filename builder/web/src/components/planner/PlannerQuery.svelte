@@ -1,7 +1,7 @@
 <!-- The planner search: the search bar with "Find", "Where" and "When". At Enter the query model reads the sentence on the
      server, and the request of its answer fills the slots; a slot that the answer leaves empty keeps its value. A
      sentence of only search areas and opening times, a suggestion and each change in a panel search with the request of
-     the slots and no model. -->
+     the slots and no model. The page reads the slots for the stretch of "Where", and sets it with `setStretch`. -->
 <script lang="ts">
     import { onDestroy, untrack } from 'svelte';
     import PlannerIcon from '../../lib/ui/Icon.svelte';
@@ -11,14 +11,14 @@
     import type { Value } from '../../lib/ui/search-bar/read';
     import { areasAndTimes, oftenNext, PLANNER_WORDS, type Mark } from '../../lib/planner/search/marks';
     import { kindLabel } from '../../lib/planner/search/presentation';
-    import { fill, requestOf, resetSlot, sameValue, slotsOf, slotWords, whereWords, type SlotId, type Slots } from '../../lib/planner/search/slots';
+    import { fill, requestOf, resetSlot, sameValue, slotsOf, slotWords, stretchWhere, whereWords, type SlotId, type Slots, type Stretch } from '../../lib/planner/search/slots';
     import { searchPlaces, type QueryRequest, type SearchAnswer, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
     import FindPanel from './FindPanel.svelte';
     import WherePanel from './WherePanel.svelte';
     import WhenPanel from './WhenPanel.svelte';
 
-    let { searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, revision = 0, viewRevision = 0, onSearch, onClear, onLocation }: {
-        searchState?: SearchState; context: SearchContext; selection?: Where;
+    let { searchState = $bindable({ loading: false, error: '', answer: null }), slots = $bindable({}), context, revision = 0, viewRevision = 0, onSearch, onClear, onLocation }: {
+        searchState?: SearchState; slots?: Slots; context: SearchContext;
         revision?: number; viewRevision?: number; onSearch: () => void; onClear: () => void; onLocation: () => Promise<'denied' | 'unavailable' | undefined>;
     } = $props();
 
@@ -26,8 +26,7 @@
     const EXAMPLES = ['drinking water in the middle of day 1', 'climbs over 300 m on day 2', 'supermarket open now'];
     const ICONS: Record<SlotId, string> = { find: 'search', where: 'route', when: 'clock' };
 
-    let slots = $state.raw<Slots>({});
-    const request = $derived(requestOf(slots));
+    const request = $derived(requestOf(slots, context.plan));
     /** The request of a change of the plan that the list shows: it fills no slot, so a new search asks for it again. */
     let planned = $state.raw<QueryRequest>();
     /** The text of the field. */
@@ -85,7 +84,7 @@
         }
         slots = fill(slots, found.slots);
         const { ignored: _, ...asked } = answer.request;
-        if (!sameValue(requestOf(slots), asked)) run(limit, context, answer);
+        if (!sameValue(requestOf(slots, context.plan), asked)) run(limit, context, answer);
     }
     /** Searches with the request of the slots and no model. With no thing to find there is no search. */
     function run(nextLimit = 20, searchContext = context, told?: SearchAnswer) {
@@ -101,12 +100,22 @@
         clearTimeout(timer); controller?.abort(); serial++;
         searchState = { loading: false, error: '', answer: null };
     }
-    /** New values of the slots from a panel, a suggestion or "Undo". */
-    function set(next: Slots) {
+    /** Searches again when the changes rest, such as at the end of a drag. */
+    function later() {
+        clearTimeout(timer); controller?.abort(); serial++;
+        searchState = { ...searchState, loading: true, error: '' };
+        timer = setTimeout(() => again(), 200);
+    }
+    /** New values of the slots from a panel, a suggestion or "Undo"; `moving` while a drag changes them. */
+    function set(next: Slots, moving = false) {
         [slots, edited, left, planned] = [next, true, [], undefined];
-        if (request) return run();
+        if (request) return moving ? later() : run();
         stop();
         onClear();
+    }
+    /** A stretch from km to km of the route is the area of "Where", such as from a drag on the profile of the page. */
+    export function setStretch(stretch: Stretch | null) {
+        set({ ...slots, where: stretch ? stretchWhere(stretch) : undefined }, !!stretch);
     }
     /** Enter. A sentence of only search areas and opening times sets them from the word list; any other sentence goes to
      * the query model. */
@@ -149,7 +158,7 @@
     $effect(() => {
         // Map movement advances viewRevision instead, so the searched area stays until the rider searches the new view.
         void revision;
-        untrack(() => { if (planned || request) { clearTimeout(timer); controller?.abort(); serial++; searchState = { ...searchState, loading: true, error: '' }; timer = setTimeout(() => again(), 200); } });
+        untrack(() => { if (planned || request) later(); });
     });
     onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 
@@ -158,7 +167,7 @@
     const bar = $derived<Slot[]>([
         { id: 'find', icon: ICONS.find, label: 'Find', words: words.find, unset: 'Choose', set: !!slots.find, wide: true },
         // A named place is searched near a place or in the map view.
-        { id: 'where', icon: ICONS.where, label: 'Where', words: words.where, unset: whereWords(context.pointing ?? VIEW)[0], set: !!slots.where || !!slots.radius,
+        { id: 'where', icon: ICONS.where, label: 'Where', words: words.where, unset: whereWords(context.pointing ?? VIEW)[0], set: !!slots.where || !!slots.radius, wide: true,
             off: named ? whereWords(request?.near ? { near: [request.near] } : VIEW)[0] : undefined },
         { id: 'when', icon: ICONS.when, label: 'When', words: words.when, unset: 'Any time', set: !!slots.open, off: named || fact ? 'Any time' : undefined },
     ]);
@@ -174,6 +183,20 @@
         onsearch: () => { if (slots.find) searches = [slots, ...searches.filter(kept => !sameValue(kept, slots))].slice(0, 3); },
     });
     let open = $state<string>();
+
+    /** The request of "Find" and "When" along the whole route while the panel of "Where" is open, as text, so that a
+     * drag, which changes only the area, asks nothing. */
+    const wholeRoute = $derived(open === 'where' && context.plan.km.length > 1 && slots.find && !('name' in slots.find)
+        ? JSON.stringify(requestOf({ ...slots, where: { scope: 'route' }, radius: undefined }, context.plan)) : '');
+    /** Its answer: the profile of "Where" shows its places or stretches. */
+    let alongRoute = $state.raw<SearchAnswer>();
+    $effect(() => {
+        alongRoute = undefined;
+        if (!wholeRoute) return;
+        const asked = new AbortController();
+        searchPlaces('', untrack(() => context), 100, asked.signal, JSON.parse(wholeRoute)).then(answer => alongRoute = answer, () => {});
+        return () => asked.abort();
+    });
 </script>
 
 <div class="planner-query">
@@ -183,7 +206,7 @@
             {#if id === 'find'}
                 <FindPanel find={slots.find} onchange={find => set({ ...slots, find })} />
             {:else if id === 'where'}
-                <WherePanel where={slots.where ?? context.pointing ?? VIEW} radius={slots.radius} {days} {selection} onchange={change => set({ ...slots, ...change })} />
+                <WherePanel where={slots.where ?? context.pointing ?? VIEW} radius={slots.radius} plan={context.plan} found={alongRoute} onchange={(change, moving) => set({ ...slots, ...change }, moving)} />
             {:else}
                 <WhenPanel open={slots.open} onchange={open => set({ ...slots, open })} />
             {/if}
