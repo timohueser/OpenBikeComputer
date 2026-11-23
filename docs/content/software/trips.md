@@ -84,8 +84,7 @@ the day end. A campsite or a hotel keeps it. A kept night is a place, with a fil
 night is a point on the route, with a dotted marker. "Let the planner choose" makes the night a
 suggestion again. The town list sets other kinds for its night only. A night of one kind only
 (campsites, huts or shelters) ends at a place of that kind. Other nights end in the town, as "Sleep
-near Ulrichen", because the planner cannot pick a hotel in the rider's price range. With a start date,
-the card of a town shows its sunset and usual night temperature.
+near Ulrichen", because the planner cannot pick a hotel in the rider's price range.
 
 The plan stores which values the rider set ([planner plan](src:specs/planner-plan.md)).
 
