@@ -52,16 +52,17 @@ impl Above {
     }
 }
 
+/// A read of a way over a chord: the metres along the room, the point there and the way.
+type Read = (f64, [f64; 2], Above);
+
 /// A room with a part where the floor pass reads it: its vertices (metres along its curve), the road solver's
-/// heights and the points there, per vertex the ways that cap it, per chord the ways over the two ends of its metres
-/// within their reach (the chord, the metres, the point there and the way), and those ways among `overs` in their
-/// numbers.
+/// heights and the points there, the reads of the ways over it (per chord and segment of a way, the chord and its
+/// reads along it), and those ways among `overs` in their numbers.
 struct Site {
     s: Vec<f64>,
     z: Vec<f64>,
     xy: Vec<[f64; 2]>,
-    above: Vec<Vec<Above>>,
-    reads: Vec<(usize, f64, [f64; 2], Above)>,
+    reads: Vec<(usize, Vec<Read>)>,
     ways: Vec<usize>,
 }
 
@@ -267,8 +268,35 @@ pub(crate) fn floors(
     let index = Boxes::new(
         &segments.iter().map(|&(o, k)| grown(&overs[o].points[k..k + 2], overs[o].outer)).collect::<Vec<_>>(),
     );
-    // Per room with a part, its vertices and the ways over them.
-    let site_of = |k: usize| -> Site {
+    let arms_of = |t: usize| rooms.lanes[t].iter().map(|l| l.arm);
+    let mut lanes_of: Vec<Vec<(usize, usize)>> = vec![Vec::new(); rooms.arms.len()];
+    for &t in &with {
+        for (k, arm) in arms_of(t).enumerate() {
+            lanes_of[arm].push((t, k));
+        }
+    }
+    // From the highest arm down: an arm after each arm of each room over a room that it runs in, so the floors of those
+    // rooms are known; arms over each other in turn in their order. A room's floor comes with its last arm's.
+    let mut above: Vec<Vec<usize>> = vec![Vec::new(); rooms.arms.len()];
+    for (&u, under) in &uppers {
+        for x in under.iter().flat_map(|&(t, _)| arms_of(t)) {
+            above[x].extend(arms_of(u).filter(|&y| y != x));
+        }
+    }
+    let arms: Vec<usize> = (0..rooms.arms.len()).filter(|&x| !lanes_of[x].is_empty()).collect();
+    let (mut order, mut placed) = (Vec::new(), vec![false; rooms.arms.len()]);
+    while order.len() < arms.len() {
+        let next = (arms.iter().copied())
+            .find(|&x| !placed[x] && above[x].iter().all(|&y| placed[y]))
+            .or_else(|| arms.iter().copied().find(|&x| !placed[x]))
+            .unwrap();
+        placed[next] = true;
+        order.push(next);
+    }
+    let index_of = |t: usize| with.iter().position(|&w| w == t).unwrap();
+    // Per room with a part, its vertices and the ways over them. A room over this one is read where its floor bends:
+    // at its vertices, which its site holds.
+    let site_of = |k: usize, sites: &[Option<Site>]| -> Site {
         let t = with[k];
         let (points, (ps, shell_half)) = (&lines[k], &boxes[k]);
         let tube = &tubes[t];
@@ -391,16 +419,20 @@ pub(crate) fn floors(
             Some((p, Above { way, height, upper, depth: w.depth, along, base, band: w.band.min(own_band) }))
         };
         // A way is read on each chord that its reach overlaps where its underside over the chord can bend: at the
-        // ends of the overlap, and where the nearest point of a segment of its curve is an end of that segment.
-        // Between these points the underside and the floor are both linear along the chord. A vertex at such a point
-        // reads the way there; a point inside the chord caps both vertices of the chord, so the floor lies under the
-        // way there too, unless both vertices read the way and its underside there lies at or over the line between
-        // theirs. The clash count reads the crown at these points.
-        let mut above: Vec<Vec<Above>> = (0..s.len()).map(|_| Vec::new()).collect();
+        // ends of the overlap, and where the nearest point of a segment of its curve is an end of that segment or, of
+        // a room over this one, a vertex of its floor. Between these points the underside and the floor are both
+        // linear along the chord (`tops` caps the vertices). The clash count reads the crown at these points.
         let mut reads = Vec::new();
         for &(o, k, [a, e]) in &reaches {
             let (w0, w1) = (overs[o].points[k], overs[o].points[k + 1]);
             let d = [w1[0] - w0[0], w1[1] - w0[1]];
+            let bends: Vec<[f64; 2]> = (overs[o].room.as_ref())
+                .and_then(|r| Some((&r.s, sites[index_of(r.room)].as_ref()?)))
+                .map_or(Vec::new(), |(rs, upper)| {
+                    let (lo, hi) = (rs[k], rs[k + 1]);
+                    let on = upper.s.iter().filter(|&&v| v > lo && v < hi);
+                    on.map(|&v| [w0[0] + (v - lo) / (hi - lo) * d[0], w0[1] + (v - lo) / (hi - lo) * d[1]]).collect()
+                });
             let lo = s.partition_point(|&x| x <= a + MERGE_M).saturating_sub(1);
             let hi = s.partition_point(|&x| x < e - MERGE_M).min(s.len() - 1);
             for i in lo.saturating_sub(1)..=hi.min(s.len() - 2) {
@@ -415,40 +447,30 @@ pub(crate) fn floors(
                     let u = ((c[0] - p[0]) * d[0] + (c[1] - p[1]) * d[1]) / along;
                     Some(s[i] + u * (s[i + 1] - s[i])).filter(|&m| along != 0.0 && m > x + MERGE_M && m < y - MERGE_M)
                 };
-                let mut at: Vec<f64> = [Some(x), Some(y), kink(w0), kink(w1)].into_iter().flatten().collect();
+                let mut at: Vec<f64> = [x, y]
+                    .into_iter()
+                    .chain([w0, w1].into_iter().chain(bends.iter().copied()).filter_map(kink))
+                    .collect();
                 at.sort_by(f64::total_cmp);
                 at.dedup_by(|m, n| *m - *n <= MERGE_M);
-                let got: Vec<(f64, [f64; 2], Above)> =
-                    at.into_iter().filter_map(|m| read((o, k), m).map(|(pt, r)| (m, pt, r))).collect();
-                let vertex = |m: f64| [i, i + 1].into_iter().find(|&v| (s[v] - m).abs() <= MERGE_M);
-                // Where both vertices read the way, a point whose underside lies at or over the line between theirs is
-                // held by them.
-                let ends = match (got.first(), got.last()) {
-                    (Some(a), Some(b)) if vertex(a.0) == Some(i) && vertex(b.0) == Some(i + 1) => {
-                        Some((a.2.height, b.2.height))
-                    }
-                    _ => None,
-                };
-                let held = |m: f64, h: f64| {
-                    ends.is_some_and(|(a, b)| h >= a + (b - a) * (m - s[i]) / (s[i + 1] - s[i]) - MERGE_M)
-                };
-                for (m, pt, r) in got {
-                    let to = match vertex(m) {
-                        Some(v) => vec![v],
-                        None if held(m, r.height) => Vec::new(),
-                        None => vec![i, i + 1],
-                    };
-                    to.into_iter().for_each(|v| above[v].push(r.clone()));
-                    reads.push((i, m, pt, r));
-                }
+                reads.push((i, at.into_iter().filter_map(|m| read((o, k), m).map(|(pt, r)| (m, pt, r))).collect()));
             }
         }
         let mut ways: Vec<(usize, usize)> = local.iter().map(|(&o, &c)| (c, o)).collect();
         ways.sort_unstable();
-        Site { s, z, xy, above, reads, ways: ways.into_iter().map(|(_, o)| o).collect() }
+        Site { s, z, xy, reads, ways: ways.into_iter().map(|(_, o)| o).collect() }
     };
-    let sites: Vec<Site> = (0..with.len()).map(site_of).collect();
-    let site = |t: usize| &sites[with.iter().position(|&w| w == t).unwrap()];
+    // The sites from the highest room down, in the order of their arms.
+    let mut rank = vec![0; rooms.arms.len()];
+    order.iter().enumerate().for_each(|(i, &x)| rank[x] = i);
+    let mut first: Vec<usize> = (0..with.len()).collect();
+    first.sort_by_key(|&k| arms_of(with[k]).map(|x| rank[x]).min());
+    let mut sites: Vec<Option<Site>> = (0..with.len()).map(|_| None).collect();
+    for k in first {
+        sites[k] = Some(site_of(k, &sites));
+    }
+    let sites: Vec<Site> = sites.into_iter().map(Option::unwrap).collect();
+    let site = |t: usize| &sites[index_of(t)];
     // A tube's grade of its class and its group's least height.
     let rule = |t: &Tube| {
         let rank = input.class_names.iter().position(|c| *c == t.class);
@@ -457,19 +479,39 @@ pub(crate) fn floors(
     };
     // Per vertex of room t, the undersides of the ways on top, and the least underside of a room on top beside it,
     // which only lowers its section: a way lies on top where it lies over the road solver's height of the room by more
-    // than the at-grade band.
+    // than the at-grade band. A read at a vertex caps that vertex; a read inside a chord caps both, unless both
+    // vertices read the way and its underside there lies at or over the line between theirs.
     let tops = |t: usize, out: &[Option<Floor>]| -> (Vec<Vec<f64>>, Vec<f64>) {
         let site = site(t);
         let beside = |a: &Above| overs[site.ways[a.way]].room.as_ref().is_some_and(|u| u.under.contains(&(t, true)));
-        let caps = (site.above.iter())
-            .map(|v| {
-                let on = v.iter().filter(|a| !beside(a) && a.height(out) - a.base > a.band);
-                on.map(|a| a.height(out) - a.depth).collect()
-            })
-            .collect();
-        let ceilings = (site.above.iter())
-            .map(|v| v.iter().filter(|a| beside(a)).map(|a| a.height(out) - a.depth).fold(f64::INFINITY, f64::min))
-            .collect();
+        let n = site.s.len();
+        let (mut caps, mut ceilings) = (vec![Vec::new(); n], vec![f64::INFINITY; n]);
+        for (i, got) in &site.reads {
+            let (i, s) = (*i, &site.s);
+            let vertex = |m: f64| [i, i + 1].into_iter().find(|&v| (s[v] - m).abs() <= MERGE_M);
+            let ends = match (got.first(), got.last()) {
+                (Some(a), Some(b)) if vertex(a.0) == Some(i) && vertex(b.0) == Some(i + 1) => {
+                    Some((a.2.height(out), b.2.height(out)))
+                }
+                _ => None,
+            };
+            for (m, _, a) in got {
+                let h = a.height(out);
+                let held = ends.is_some_and(|(p, q)| h >= p + (q - p) * (m - s[i]) / (s[i + 1] - s[i]) - MERGE_M);
+                let to = match vertex(*m) {
+                    Some(v) => v..v + 1,
+                    None if held => i..i,
+                    None => i..i + 2,
+                };
+                for v in to {
+                    if beside(a) {
+                        ceilings[v] = ceilings[v].min(h - a.depth);
+                    } else if h - a.base > a.band {
+                        caps[v].push(h - a.depth);
+                    }
+                }
+            }
+        }
         (caps, ceilings)
     };
     // The metres along its arm of each lane of room t at the room's metres s.
@@ -480,30 +522,6 @@ pub(crate) fn floors(
             rooms.places(t, s).iter().map(|p| p.s).collect()
         }
     };
-    let mut lanes_of: Vec<Vec<(usize, usize)>> = vec![Vec::new(); rooms.arms.len()];
-    for &t in &with {
-        for (k, l) in rooms.lanes[t].iter().enumerate() {
-            lanes_of[l.arm].push((t, k));
-        }
-    }
-    // From the highest arm down: an arm after each arm of each room over a room that it runs in, so the floors of those
-    // rooms are known; arms over each other in turn in their order. A room's floor comes with its last arm's.
-    let mut above: Vec<Vec<usize>> = vec![Vec::new(); rooms.arms.len()];
-    for (&u, under) in &uppers {
-        for x in under.iter().flat_map(|&(t, _)| rooms.lanes[t].iter().map(|l| l.arm)) {
-            above[x].extend(rooms.lanes[u].iter().map(|l| l.arm).filter(|&y| y != x));
-        }
-    }
-    let arms: Vec<usize> = (0..rooms.arms.len()).filter(|&x| !lanes_of[x].is_empty()).collect();
-    let (mut order, mut placed) = (Vec::new(), vec![false; rooms.arms.len()]);
-    while order.len() < arms.len() {
-        let next = (arms.iter().copied())
-            .find(|&x| !placed[x] && above[x].iter().all(|&y| placed[y]))
-            .or_else(|| arms.iter().copied().find(|&x| !placed[x]))
-            .unwrap();
-        placed[next] = true;
-        order.push(next);
-    }
     // The floor of an arm: the rule at the vertices of each room that it runs in, under the ways on top there; a
     // vertex of two rooms (on a seam's line) once, under the ways of both.
     let arm_floor = |arm: usize, out: &[Option<Floor>]| -> Floor {
@@ -568,10 +586,12 @@ pub(crate) fn floors(
                 f + if fl.lanes.is_empty() { fl.h[i].min(fl.h[i + 1]) } else { h } + b.shell_m
             };
             let mut over: Vec<Option<(f64, [f64; 2])>> = vec![None; site.ways.len()];
-            for (i, x, p, a) in site.reads.iter().filter(|r| r.3.height(&out) - ground(&r.3) > r.3.band) {
-                let m = crown(*i, *x) - (a.height(&out) - a.depth);
-                if over[a.way].is_none_or(|o| m > o.0) {
-                    over[a.way] = Some((m, *p));
+            for (i, got) in &site.reads {
+                for (x, p, a) in got.iter().filter(|r| r.2.height(&out) - ground(&r.2) > r.2.band) {
+                    let m = crown(*i, *x) - (a.height(&out) - a.depth);
+                    if over[a.way].is_none_or(|o| m > o.0) {
+                        over[a.way] = Some((m, *p));
+                    }
                 }
             }
             lowered += usize::from(fl.f.iter().zip(&fl.z).any(|(f, z)| *f < z - 0.005));

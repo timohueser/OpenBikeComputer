@@ -499,6 +499,54 @@ fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height
     assert_eq!(placed.metrics["floor_clashes"].as_u64(), Some(1));
 }
 
+#[test]
+fn the_crown_under_a_room_over_it_lies_under_that_rooms_floor_where_it_bends() {
+    // A footway tunnel at 506.2 m crosses the road tunnel at 20 degrees, and a footway at 508.7 m crosses on top of it,
+    // square to the road tunnel at `x` m east: the upper floor dips under that footway between two of its vertices.
+    // Wherever the upper axis lies within the road tunnel's half and shell, the road tunnel's crown lies under the upper
+    // underside (its floor less the slab), or the bake counts a tube clash. A tube record: its two points (metres east
+    // and north), their floors and its height.
+    type Tube = ([f64; 2], [f64; 2], Vec<f64>, f64);
+    let reach = widths().way("tunnel", &tags(&ROAD), false).half_m + 0.6 + 0.5;
+    for x in [95.0, 96.5, 104.0, 104.5] {
+        let mut case = Case::default();
+        case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+        let (s, c) = 20f64.to_radians().sin_cos();
+        let up = |u: f64| [100.0 + u * c, u * s];
+        case.ways.push(("tunnel", tags(&FOOT), vec![part(&[up(-80.0), up(0.0), up(80.0)], &[506.2; 3])]));
+        case.ways.push(("road", tags(&[("highway", "footway")]), vec![part(&[[x, -40.0], [x, 40.0]], &[508.7; 2])]));
+        let placed = case.place(&site(&|_| 530.0, &[], false), &mut Vec::new());
+        let tubes = |class: &str| -> Vec<Tube> {
+            (placed.features.iter())
+                .filter(|f| f.0 == "tunnel-tube" && f.1["class"] == class)
+                .map(|f| {
+                    (back(f.2.points[0]), back(f.2.points[1]), f.2.z.clone().unwrap(), f.1["height"].parse().unwrap())
+                })
+                .collect()
+        };
+        let (lower, upper) = (tubes("residential"), tubes("footway"));
+        let mut worst = f64::NEG_INFINITY;
+        for (a, b, z, height) in &lower {
+            for u in (0..=200).map(|k| f64::from(k) / 200.0) {
+                let q = [a[0] + u * (b[0] - a[0]), a[1] + u * (b[1] - a[1])];
+                // The upper underside at the nearest point of its axis.
+                let near = upper.iter().map(|(p, r, zu, _)| {
+                    let d = [r[0] - p[0], r[1] - p[1]];
+                    let t =
+                        (((q[0] - p[0]) * d[0] + (q[1] - p[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0.0, 1.0);
+                    ((q[0] - p[0] - t * d[0]).hypot(q[1] - p[1] - t * d[1]), zu[0] + t * (zu[1] - zu[0]) - 0.5)
+                });
+                if let Some((_, under)) = near.min_by(|x, y| x.0.total_cmp(&y.0)).filter(|n| n.0 <= reach) {
+                    worst = worst.max(z[0] + u * (z[1] - z[0]) + height + 0.5 - under);
+                }
+            }
+        }
+        let clashes = placed.metrics["tube_clashes"].as_u64().unwrap();
+        assert!(worst.is_finite(), "x {x}: no point of the road tunnel lies under the upper");
+        assert!(worst <= 0.005 || clashes > 0, "x {x}: the crown lies {worst:+.3} m over the upper underside");
+    }
+}
+
 /// The pairs of tube records of two rooms that come nearer than a wall at one level, as a tile holds them: each point
 /// rounded to the tile's grid (8 world units of 2^30), which with the decimals of the heights is the only allowance. A
 /// point reads another chord where its foot lies on it; two chords that end on one seam's line meet there.

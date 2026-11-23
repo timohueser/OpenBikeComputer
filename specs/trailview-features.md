@@ -798,8 +798,8 @@ that it runs in, and a room's floor with its last arm's.
 - The curve of a way with heights, not of the kind `gallery`, is read on each chord of the tube that its reach (its
   outer half-width + `half` + `shell_m`) overlaps, at its nearest points to the points of the chord where its
   underside over the chord can bend: the ends of the overlap, and where the nearest point of a segment of its curve is
-  an end of that segment. Between these points the underside and the floor are both linear along the chord. A vertex
-  at such a point reads the way there. A point inside the chord caps both vertices of the chord, unless both vertices
+  an end of that segment or, of a room over this one, a vertex of that room's floor. Between these points the
+  underside and the floor are both linear along the chord. A vertex at such a point reads the way there. A point inside the chord caps both vertices of the chord, unless both vertices
   read the way and its underside there lies at or over the line between theirs. So the floor lies under the way along
   the whole chord. A read counts where the foot of its point on the whole chain, extended past an end with an opening
   along its end chord, lies between the openings, each grown by the way's outer half-width; at a seam the foot stays
