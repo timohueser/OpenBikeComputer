@@ -51,9 +51,9 @@ fn stops(net: &Net, e: usize) -> Vec<f64> {
     out
 }
 
-/// The first stop at `metres` or past it; the last stop where none is.
-fn at_or_past(stops: &[f64], metres: f64) -> f64 {
-    stops.iter().copied().find(|&s| s >= metres).unwrap_or(stops[stops.len() - 1])
+/// The index of the first stop at `metres` or past it; the last stop where none is.
+fn at_or_past(stops: &[f64], metres: f64) -> usize {
+    stops.iter().position(|&s| s >= metres).unwrap_or(stops.len() - 1)
 }
 
 /// The reach of built end e. Its part runs to the first vertex of its tube at `need` or past it. Where the parts of the
@@ -63,14 +63,16 @@ fn at_or_past(stops: &[f64], metres: f64) -> f64 {
 pub fn reach(net: &Net, e: usize) -> Reach {
     let walk = net.walk(e, f64::INFINITY);
     let at = stops(net, e);
-    let (total, own) = (at[at.len() - 1], at_or_past(&at, need(net, e)));
+    let (total, own) = (at[at.len() - 1], at[at_or_past(&at, need(net, e))]);
     // A seam has no part: a part that runs to one ends there with a face, on the seam's corners.
     let other = walk.last().and_then(|&(c, forward, _)| net.end_at(c, usize::from(forward)));
     let other = other.filter(|&o| net.holes[o].part != Part::Seam);
     let alone = Reach { boxes: own, shell: own, closed: true, then: Meets::default() };
     let Some(o) = other.filter(|&o| o != e) else { return alone };
+    // The parts meet where their last stops reach the same vertex or past it, counted in stops: the metres from the
+    // two ends need not add up to the same sum.
     let theirs = at_or_past(&stops(net, o), need(net, o));
-    if own + theirs < total {
+    if at_or_past(&at, need(net, e)) + theirs < at.len() - 1 {
         return alone;
     }
     // The vertex nearest the middle; of two as near, the one with the least key, so both ends find the same.
@@ -108,7 +110,10 @@ pub fn foot(net: &Net, e: usize) -> f64 {
     let r = net.holes[e].record;
     let end = &net.records[r];
     let low = (net.of_record[r].iter())
-        .flat_map(|&e| net.walk(e, at_or_past(&stops(net, e), need(net, e))))
+        .flat_map(|&e| {
+            let at = stops(net, e);
+            net.walk(e, at[at_or_past(&at, need(net, e))])
+        })
         .map(|(c, ..)| net.chords[c].a[2].min(net.chords[c].b[2]))
         .fold(f64::INFINITY, f64::min);
     (end.z + end.foot).min(low - net.rules.ladder.bake.foot_m)
