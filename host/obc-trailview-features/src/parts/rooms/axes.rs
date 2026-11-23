@@ -26,7 +26,7 @@ pub(crate) struct Axes {
 const CELL_M: f64 = 32.0;
 
 /// Another axis near a point: its tube, the metres to it, its height and its metres along there, its unit direction
-/// there in world units, and whether the foot lies past an end of the axis, so that the end is the nearest point.
+/// there in world units, and the end of the axis that the foot lies past, so that the end is the nearest point.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Foot {
     pub tube: usize,
@@ -34,7 +34,7 @@ pub(crate) struct Foot {
     pub z: f64,
     pub s: f64,
     pub dir: [f64; 2],
-    pub past: bool,
+    pub past: Option<usize>,
 }
 
 impl Axes {
@@ -105,7 +105,11 @@ impl Axes {
                     let q = [(p[0] - seg.a[0]) * m, (p[1] - seg.a[1]) * m];
                     let l2 = d[0] * d[0] + d[1] * d[1];
                     let u = (q[0] * d[0] + q[1] * d[1]) / l2;
-                    let past = (u < 0.0 && seg.s[0] <= 1e-9) || (u > 1.0 && seg.s[1] >= self.len[seg.tube] - 1e-9);
+                    let past = if u < 0.0 && seg.s[0] <= 1e-9 {
+                        Some(0)
+                    } else {
+                        (u > 1.0 && seg.s[1] >= self.len[seg.tube] - 1e-9).then_some(1)
+                    };
                     let u = u.clamp(0.0, 1.0);
                     let dist = (q[0] - u * d[0]).hypot(q[1] - u * d[1]);
                     if dist > reach || best.get(&seg.tube).is_some_and(|f| f.d <= dist) {

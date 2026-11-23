@@ -54,7 +54,7 @@ pub(super) fn metres(arms: &[Tube], spans: &[Option<[f64; 2]>], input: &Input) -
                 let other = &arms[f.tube];
                 let rise = f.z - q.z;
                 let lower = if rise > 0.0 { arm } else { other };
-                let state = if f.past || f.s < o0 - 1e-6 || f.s > o1 + 1e-6 {
+                let state = if f.past.is_some() || f.s < o0 - 1e-6 || f.s > o1 + 1e-6 {
                     State::Open
                 } else if f.d - arm.half - other.half >= wall - MERGE_M {
                     State::Apart
@@ -97,12 +97,12 @@ pub(super) struct Run {
 pub(super) type Over = (usize, [f64; 2], usize, [f64; 2], bool);
 
 /// The runs of the arms (stretches of metres `with` each other, holes shorter than `room_join_m` closed), the arms over
-/// one another (stretches of metres over or across that no run holds), and the count of runs shorter than
-/// `vertex_gap_m`, which are crossings.
+/// one another (stretches of metres over or across that no run holds, read from the metres of both arms), and the
+/// count of runs shorter than `vertex_gap_m`, which are crossings.
 pub(super) fn runs(metres: &Metres, spans: &[Option<[f64; 2]>], input: &Input) -> (Vec<Run>, Vec<Over>, usize) {
     let b = &input.rules.bake;
     let (mut out, mut over, mut short) = (Vec::new(), Vec::new(), 0);
-    for (&(a, o), list) in metres.iter().filter(|((a, o), _)| a < o) {
+    for (&(a, o), list) in metres {
         let [s0, s1] = spans[a].expect("an arm with metres");
         // The metres between two of an arm's metres.
         let step = (s1 - s0) / (s1 - s0).ceil().max(1.0) + 1e-6;
@@ -132,11 +132,15 @@ pub(super) fn runs(metres: &Metres, spans: &[Option<[f64; 2]>], input: &Input) -
         for g in groups {
             let (first, last) = (list[g[0]], list[g[1]]);
             if last.s - first.s < b.vertex_gap_m {
-                short += 1;
+                short += usize::from(a < o);
                 continue;
             }
             (g[0]..=g[1]).for_each(|i| held[i] = true);
             [next(g[0], 0), next(g[1], 1)].into_iter().flatten().for_each(|j| next_to[j] = true);
+            // Each run once: as the arm of the lower id reads it.
+            if a > o {
+                continue;
+            }
             let mut ends = [why(g[0], 0), why(g[1], 1)];
             let (mut sa, mut sb) = ([first.s, last.s], [first.foot, last.foot]);
             let forward = last.foot >= first.foot;

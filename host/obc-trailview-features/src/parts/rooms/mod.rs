@@ -481,8 +481,9 @@ pub(crate) fn rooms(
             over.extend(of_arm(lower, low).into_iter().filter(|&t| t != u).map(|t| (u, t, height_only)));
         }
     }
+    // Each two rooms once; where one arm reads them as crossing, they cross.
     over.sort_unstable_by_key(|o| (o.0, o.1, o.2));
-    over.dedup();
+    over.dedup_by_key(|o| (o.0, o.1));
     out.over = over;
     out.arms = arms;
     out.arm_openings = moved_openings;

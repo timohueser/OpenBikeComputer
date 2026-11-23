@@ -551,7 +551,7 @@ pub(crate) fn decide(
         let q = super::offset(o.p, left_of(o.dir), x);
         let own: Vec<usize> = list.iter().map(|&k| openings[k].tube).collect();
         let room = (axes.near(q, usize::MAX, widest + wall).iter())
-            .any(|f| !f.past && !own.contains(&f.tube) && f.d < half[f.tube] + wall - 0.01);
+            .any(|f| f.past.is_none() && !own.contains(&f.tube) && f.d < half[f.tube] + wall - 0.01);
         let head = (0..n).filter(|k| !list.contains(k) && !kinds[*k].is_empty()).any(|k| {
             let p = &openings[k];
             along_dir(p.p, q, p.dir).abs() <= design.face_m

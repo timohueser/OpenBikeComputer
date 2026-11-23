@@ -716,8 +716,9 @@ the heights of the road solver. At a metre another arm is, tested in this order:
   turns away: its lane ends on the seam's line with a door, and its arm is in no room until the first metre
   `vertex_gap_m` or more past the line where it is with or across no arm (`lanes_in_a_wall`); there its room starts
   with a cap.
-- A stretch of metres over or across that no run holds is over and under: by height where its metres are all over,
-  else by the floor (they cross). Next to a run only a stretch with metres over counts, by height.
+- A stretch of metres over or across that no run holds, as either arm's metres read it, is over and under: by height
+  where its metres are all over, else by the floor (they cross; where the two arms read it apart, they cross). Next to
+  a run only a stretch with metres over counts, by height.
 - Each arm is cut where a run ends in the hill and where a lane that turned away is a room again; a cut inside a run
   cuts the other arm at its foot, until no cut is new, and a cut within `vertex_gap_m` of another is that cut. The
   stretches between the cuts are lanes, and the lanes that a run joins are one room.
@@ -754,8 +755,11 @@ openings, then the farthest in along the group's way. Those openings move in ont
 its heading; one whose way does not reach the line, or that lies past it, stays. The others of the group, with each
 that stays, form the next group.
 
-The bake counts, on the final floors, halves and heights, each two rooms that draw, but those of one seam, that still
-come nearer than a wall and do not lie apart (`rooms_that_touch`, with places).
+The bake counts, on the final floors, halves and heights as the builder draws them, each two rooms that draw and
+still come nearer than a wall and do not lie apart, read every metre from both rooms (`rooms_that_touch`, with places).
+Past a room's end its space ends at the face across that end: the gap there runs from the other room's section to that
+face. Two rooms of one seam meet on its line: their metres from the line to the first vertex of each room behind it
+(where that room tapers from its hole), and a metre past the end of one at that seam, do not count.
 
 #### The floor of a tube
 
