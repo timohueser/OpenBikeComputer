@@ -169,13 +169,13 @@ fn first_covered(site: &Site, floors: &[f64], need: f64) -> Option<usize> {
 }
 
 /// The kinds, numbers and counts of the openings; a pair moves its nearer opening in onto the frame line of the other.
-/// The rooms `out` do not draw.
+/// The rooms `out` do not draw, and the openings `apart` share no head.
 pub(crate) fn decide(
     tubes: &[Tube],
     openings: &mut [Opening],
     input: &Input,
     measure: &Measure,
-    (rooms, out): (&Rooms, &[bool]),
+    (rooms, out, apart): (&Rooms, &[bool], &[bool]),
 ) -> Decided {
     let b = &input.rules.bake;
     let n = openings.len();
@@ -328,17 +328,7 @@ pub(crate) fn decide(
             let parts = !kinds[i].is_empty() && !kinds[k].is_empty();
             if parts && draws[ti] && draws[tk] && across(i, k) < wall - 0.01 && level(i, k) {
                 let narrower = |t: usize| (tubes[t].half, std::cmp::Reverse(t));
-                let (t, o) = if narrower(ti) <= narrower(tk) { (ti, i) } else { (tk, k) };
-                // A room alone keeps its tube and loses the part at that end while its other end keeps one; its last
-                // part stays, as the head of a tunnel of one way did.
-                let other = (0..2).filter_map(|e| at_end[t][e]).any(|x| x != o && !kinds[x].is_empty());
-                if !rooms.alone[t] {
-                    out[t] = true;
-                } else if other {
-                    kinds[o].clear();
-                } else {
-                    continue;
-                }
+                out[if narrower(ti) <= narrower(tk) { ti } else { tk }] = true;
                 held_out.push(openings[i].p);
                 left = false;
             }
@@ -348,7 +338,7 @@ pub(crate) fn decide(
         }
     };
     // The pairs, nearest first, each end in one pair at most: two hill ends of one family a wall apart across, each of
-    // a room that draws and with a part, their axes within `JOINT_MAX_M` across: the tiles' buffer holds a head and its holes' tubes.
+    // a room that draws, with a part and not apart, their axes within `JOINT_MAX_M` across.
     let mut mate: Vec<Option<usize>> = vec![None; n];
     let is_hill = |i: usize| hill.contains(&i);
     let within = |x: &&Near| {
@@ -360,6 +350,8 @@ pub(crate) fn decide(
         let (ta, tc) = (openings[a].tube, openings[c].tube);
         if mate[a].is_some()
             || mate[c].is_some()
+            || apart[a]
+            || apart[c]
             || !draws[ta]
             || !draws[tc]
             || kinds[a].is_empty()
@@ -372,12 +364,12 @@ pub(crate) fn decide(
             (mate[a], mate[c]) = (Some(c), Some(a));
         }
     }
-    // Two openings whose frames would overlap share a head too: their rooms draw, both have a part, they lie at one
-    // level and nearer than two frames and shells.
+    // Two openings whose frames would overlap share a head too: their rooms draw, both have a part and neither is
+    // apart, they lie at one level and nearer than two frames and shells.
     let design = &obc_trailview_parts::Rules::embedded().design;
     let overlap = |i: usize, k: usize| {
         let (ti, tk) = (openings[i].tube, openings[k].tube);
-        let parts = !kinds[i].is_empty() && !kinds[k].is_empty();
+        let parts = !kinds[i].is_empty() && !kinds[k].is_empty() && !apart[i] && !apart[k];
         parts && draws[ti] && draws[tk] && level(i, k) && across(i, k) < 2.0 * (design.frame_m + b.shell_m)
     };
     // One frame line for each group of openings that pairs and overlaps link: the line of the group's far opening,

@@ -476,41 +476,46 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
             openings.push(o);
         }
     }
-    // The arms of a room that cannot draw run beside no other, until each room draws or is the whole of one arm: what
-    // the rooms cannot build draws as tunnels of one way.
-    let mut lone = vec![false; tubes.len()];
-    let (rooms, mut decided, placed, faults) = loop {
+    // What the rooms cannot build draws as tunnels of one way: the arms of a room that does not draw, or whose joint the
+    // builder does not find whole, run beside no other (`lone`). Of a joint of tunnels of one way that is not whole,
+    // each opening has a head of its own (`apart`), and a tunnel of one way whose own head is not whole does not draw
+    // (`gone`). The rooms and the ladder are made again until each joint is whole.
+    let (mut lone, mut gone) = (vec![false; tubes.len()], vec![false; tubes.len()]);
+    let mut apart = vec![false; openings.len()];
+    let mut faults = Faults::default();
+    let (rooms, mut decided, placed) = loop {
         let (rooms, mut openings) = rooms::rooms(tubes.clone(), openings.clone(), &lone, input);
-        // A room draws only where its line lies in the bake's region, whose tiles hold its records.
-        let outside: Vec<bool> = (rooms.tubes.iter().zip(&rooms.alone))
-            .map(|(t, &alone)| {
-                !alone && t.curve.stretches.iter().flat_map(|(_, ps)| ps).any(|q| !input.tiles.holds(q.p))
+        // A room of lanes draws only where its line lies in the bake's region, whose tiles hold its records; a tunnel of
+        // one way, where it is not gone.
+        let out: Vec<bool> = (0..rooms.tubes.len())
+            .map(|r| match &rooms.lanes[r][..] {
+                [l] if rooms.alone[r] => gone[l.arm],
+                _ => rooms.tubes[r].curve.stretches.iter().flat_map(|(_, ps)| ps).any(|q| !input.tiles.holds(q.p)),
             })
             .collect();
-        let mut decided = ladder::decide(&rooms.tubes, &mut openings, input, measure, (&rooms, &outside));
-        let kinds: Vec<Option<Kind>> = decided.ends.iter().map(|e| e.kind).collect();
-        let kind = |t: usize, e: usize| kinds[openings.iter().position(|o| o.tube == t && o.end == e)?];
-        // A joint that the builder would not find whole, or one too wide for the tiles' buffer, takes its rooms out,
-        // until each joint is whole.
-        let (mut placed, mut faults) = (None, Faults::default());
-        while placed.is_none() {
-            let (written, found) = records(&rooms, &openings, &decided, input);
-            if found.rooms.is_empty() {
-                placed = Some(written);
-            }
-            for &r in &found.rooms {
-                decided.out[r] = true;
-            }
-            faults.not_whole += found.not_whole;
-            faults.too_wide += found.too_wide;
-            decided.draws = rooms.built(&kind, &decided.out);
-        }
-        let before = lone.clone();
-        for r in (0..rooms.tubes.len()).filter(|&r| !decided.draws[r] && !rooms.alone[r]) {
+        let own_head = |o: &Opening| match &rooms.lanes[o.tube][..] {
+            [l] if rooms.alone[o.tube] => l.ends[o.end].is_some_and(|i| apart[i]),
+            _ => false,
+        };
+        let apart_now: Vec<bool> = openings.iter().map(own_head).collect();
+        let decided = ladder::decide(&rooms.tubes, &mut openings, input, measure, (&rooms, &out, &apart_now));
+        let (placed, found) = records(&rooms, &openings, &decided, input);
+        faults.not_whole += found.not_whole;
+        faults.too_wide += found.too_wide;
+        let before = (lone.clone(), gone.clone(), apart.clone());
+        for r in (0..rooms.tubes.len()).filter(|&r| !rooms.alone[r] && (!decided.draws[r] || found.rooms.contains(&r)))
+        {
             rooms.lanes[r].iter().for_each(|l| lone[l.arm] = true);
         }
-        if lone == before {
-            break (rooms, decided, placed, faults);
+        for &(r, e) in found.ends.iter().filter(|&&(r, _)| rooms.alone[r]) {
+            let l = &rooms.lanes[r][0];
+            match e.and_then(|e| l.ends[e]) {
+                Some(i) => apart[i] = true,
+                None => gone[l.arm] = true,
+            }
+        }
+        if (&lone, &gone, &apart) == (&before.0, &before.1, &before.2) {
+            break (rooms, decided, placed);
         }
     };
     if let Value::Object(m) = &mut decided.metrics {
@@ -523,6 +528,8 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         m.insert("rooms".into(), rooms.metrics.clone());
         m.insert("joints_not_whole".into(), faults.not_whole.into());
         m.insert("arms_alone".into(), lone.iter().filter(|&&l| l).count().into());
+        m.insert("openings_apart".into(), apart.iter().filter(|&&a| a).count().into());
+        m.insert("arms_gone".into(), gone.iter().filter(|&&g| g).count().into());
         m.insert("joints_too_wide".into(), faults.too_wide.into());
         let touching = rooms::touching(&rooms, (&decided.floors, &decided.draws), &decided.half, input);
         let places = touching.iter().take(10).map(|&p| {
@@ -553,9 +560,7 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         });
         m.insert("largest_step_places".into(), places.collect::<Vec<_>>().join("; ").into());
     }
-    let mut placed = placed.expect("written");
-    placed.metrics = decided.metrics;
-    placed
+    Placed { metrics: decided.metrics, ..placed }
 }
 
 /// A length up to the next centimetre: a room's numbers that must hold its lanes and the rooms behind a seam.
@@ -563,13 +568,30 @@ pub(crate) fn ceil_cm(v: f64) -> f64 {
     ((v * 100.0) - 1e-4).ceil() / 100.0
 }
 
-/// The joints that the records would not hold whole: the rooms to take out, and how many joints the builder did not
-/// find whole and how many were too wide for the tiles' buffer.
+/// A hole of a joint by its room and that room's end there; of a chord, its room and no end.
+type HoleOf = (usize, Option<usize>);
+
+/// The joints that the records would not hold whole: the rooms of lanes that cannot draw; of a tunnel of one way, its
+/// room and the end whose head it shares with others, or None where its own head or a chord is not whole; and how many
+/// joints the builder did not find whole and how many were too wide for the tiles' buffer.
 #[derive(Default)]
 struct Faults {
     rooms: Vec<usize>,
+    ends: Vec<HoleOf>,
     not_whole: usize,
     too_wide: usize,
+}
+
+impl Faults {
+    /// A hole of a joint that is not whole, by its room and end, or a chord that does not close (its room, no end); a
+    /// hole of a joint `shared` with other holes.
+    fn add(&mut self, rooms: &rooms::Rooms, (r, e): HoleOf, shared: bool) {
+        if rooms.alone[r] {
+            self.ends.push((r, e.filter(|_| shared)));
+        } else {
+            self.rooms.push(r);
+        }
+    }
 }
 
 /// A hole lies at most this far from its record's point: the tiles' buffer (`BUFFER_M`) less the longest chord and a
@@ -584,13 +606,17 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
     let (mut features, mut tags) = (Vec::new(), HashMap::new());
     let mut faults = Faults::default();
     let draws = &decided.draws;
+    // A tunnel of one way that does not draw keeps its records where an end has a part: its chords name `none` at the
+    // other end, so the builder builds neither them nor that part's head.
+    let writes: Vec<bool> =
+        (0..tubes.len()).map(|t| draws[t] || (rooms.alone[t] && !decided.out[t] && !rooms.broken[t])).collect();
     let open_kind = |t: usize, e: usize| {
         let j = openings.iter().position(|o| o.tube == t && o.end == e)?;
         decided.ends[j].kind
     };
     let kind_at = |t: usize, e: usize| if rooms.seam_at(t, e) { Some(Kind::Seam) } else { open_kind(t, e) };
     let ends_of: Vec<[Option<Kind>; 2]> =
-        (0..tubes.len()).map(|t| if draws[t] { [kind_at(t, 0), kind_at(t, 1)] } else { [None; 2] }).collect();
+        (0..tubes.len()).map(|t| if writes[t] { [kind_at(t, 0), kind_at(t, 1)] } else { [None; 2] }).collect();
     let mut boxed = vec![false; tubes.len()];
     for (o, d) in openings.iter().zip(&decided.ends) {
         boxed[o.tube] |= d.kind == Some(Kind::Box);
@@ -598,7 +624,7 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
     let boxed = rooms.one_section(boxed);
     // The tag `parts` of each tunnel way of a room that draws: the parts at its arm's two ends.
     let mut arm_kinds: Vec<Option<[Option<Kind>; 2]>> = vec![None; rooms.arms.len()];
-    for (t, lanes) in rooms.lanes.iter().enumerate().filter(|&(t, _)| draws[t]) {
+    for (t, lanes) in rooms.lanes.iter().enumerate().filter(|&(t, _)| writes[t]) {
         for l in lanes {
             let kinds = arm_kinds[l.arm].get_or_insert([None; 2]);
             for (i, kind) in l.ends.iter().zip(ends_of[t]) {
@@ -609,7 +635,9 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         }
     }
     let part_name = |k: Option<Kind>| k.map_or("none", Kind::name);
-    for (arm, kinds) in rooms.arms.iter().zip(&arm_kinds).filter_map(|(a, k)| Some((a, (*k)?))) {
+    let with_parts =
+        rooms.arms.iter().zip(&arm_kinds).filter_map(|(a, k)| Some((a, (*k)?)).filter(|x| x.1 != [None; 2]));
+    for (arm, kinds) in with_parts {
         for (way, ps) in &arm.curve.stretches {
             let rising = ps.last().unwrap().along >= ps[0].along;
             let order = if rising { [kinds[0], kinds[1]] } else { [kinds[1], kinds[0]] };
@@ -634,8 +662,8 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
             behind[pr][pe].push((sign * across, half, fc.f[ic] - fp.f[ip], fc.h[ic]));
         }
     }
-    // Per feature, the room of a chord and the rooms of a joint.
-    let mut of_feature: Vec<Vec<usize>> = Vec::new();
+    // Per feature, the room of a chord, and per hole of a joint its room and end.
+    let mut of_feature: Vec<Vec<HoleOf>> = Vec::new();
     for (ti, t) in tubes.iter().enumerate() {
         let kinds = ends_of[ti];
         if kinds.iter().all(Option::is_none) {
@@ -653,28 +681,25 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         } else {
             lone(t, kinds, (fl, &common), &input.tunnels[&t.widest].0, &mut features);
         }
-        of_feature.resize(features.len(), vec![ti]);
+        of_feature.resize(features.len(), vec![(ti, None)]);
     }
-    // A fault takes out the rooms of lanes it touches; a room alone draws on, as a tunnel of one way did.
-    let take = |faults: &mut Faults, of: &[usize]| faults.rooms.extend(of.iter().filter(|&&r| !rooms.alone[r]));
-    let joint = |faults: &mut Faults, members: Vec<usize>, across: &[f64]| {
+    let joint = |faults: &mut Faults, holes: &[HoleOf], across: &[f64]| {
         let wide = across.iter().any(|a| a.abs() > JOINT_MAX_M);
         faults.too_wide += usize::from(wide);
         if wide {
-            take(faults, &members);
+            holes.iter().for_each(|&h| faults.add(rooms, h, holes.len() > 1));
         }
         !wide
     };
     for (o, d) in openings.iter().zip(&decided.ends) {
         let (Some(kind), Some(n)) = (d.kind, &d.numbers) else { continue };
         let tube = |h: &ladder::Hole| openings[h.opening].tube;
-        let members: Vec<usize> = n.holes.iter().map(tube).collect();
-        // A head holds only holes of rooms that draw.
-        if members.iter().any(|&t| !draws[t]) {
-            take(&mut faults, &members.iter().copied().filter(|&t| draws[t]).collect::<Vec<_>>());
+        // A head holds only rooms that draw, or the one tunnel of one way that keeps its records.
+        if n.holes.iter().any(|h| !writes[tube(h)]) {
             continue;
         }
-        if !joint(&mut faults, members.clone(), &n.holes.iter().map(|h| h.across).collect::<Vec<_>>()) {
+        let holes: Vec<HoleOf> = n.holes.iter().map(|h| (tube(h), Some(openings[h.opening].end))).collect();
+        if !joint(&mut faults, &holes, &n.holes.iter().map(|h| h.across).collect::<Vec<_>>()) {
             continue;
         }
         let row = |f: &dyn Fn(&ladder::Hole) -> String| n.holes.iter().map(f).collect::<Vec<_>>().join(" ");
@@ -709,26 +734,27 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         }
         let part = Part { outer: false, points: vec![o.p], z: Some(vec![o.floor]), plan: None };
         features.push(("tunnel-end", t, part));
-        of_feature.push(members);
+        of_feature.push(holes);
     }
     // The seams of rooms that draw: at the axis of the room before the line, a hole per room, the room before first,
     // then those behind from the right.
     for seam in rooms.seams.iter().filter(|seam| draws[seam.parent.0]) {
         let (pr, pe) = seam.parent;
         let (Some(fp), Some(ip)) = (floors[pr].as_ref(), at_end(pr, pe)) else { continue };
-        let members: Vec<usize> = [seam.parent].iter().chain(&seam.children).map(|m| m.0).collect();
-        if !joint(&mut faults, members.clone(), &seam.holes.iter().map(|h| h.0).collect::<Vec<_>>()) {
+        let members: Vec<HoleOf> = [seam.parent].iter().chain(&seam.children).map(|&(r, e)| (r, Some(e))).collect();
+        if !joint(&mut faults, &members, &seam.holes.iter().map(|h| h.0).collect::<Vec<_>>()) {
             continue;
         }
         let at = tubes[pr].curve.at(if pe == 0 { 0.0 } else { tubes[pr].curve.len }).0.p;
-        let mut holes: Vec<[f64; 4]> = Vec::new();
+        let mut holes: Vec<([f64; 4], HoleOf)> = Vec::new();
         for (&(r, e), &(across, half)) in seam.children.iter().zip(&seam.holes) {
             let (Some(fc), Some(ic)) = (floors[r].as_ref(), at_end(r, e)) else { continue };
-            holes.push([across, fc.f[ic] - fp.f[ip], half, fc.h[ic]]);
+            holes.push(([across, fc.f[ic] - fp.f[ip], half, fc.h[ic]], (r, Some(e))));
         }
-        holes.sort_by(|x, y| x[0].total_cmp(&y[0]));
+        holes.sort_by(|x, y| x.0[0].total_cmp(&y.0[0]));
         let half_p = if rooms.lanes[pr].len() > 1 { ceil_cm(decided.half[pr]) } else { decided.half[pr] };
-        holes.insert(0, [0.0, 0.0, half_p, fp.h[ip]]);
+        holes.insert(0, ([0.0, 0.0, half_p, fp.h[ip]], (pr, Some(pe))));
+        let (holes, members): (Vec<[f64; 4]>, Vec<HoleOf>) = holes.into_iter().unzip();
         // A hole's middle and half-width are whole millimetres, so its sides are those of the bake.
         let row = |k: usize| holes.iter().map(move |h| if k.is_multiple_of(2) { mm(h[k]) } else { num(h[k]) });
         let row = |k: usize| row(k).collect::<Vec<_>>().join(" ");
@@ -753,15 +779,20 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         features.push(("tunnel-end", t, part));
         of_feature.push(members);
     }
-    // Read back as a tile holds them: each record and chord that the builder does not find whole takes its rooms out.
-    // A joint that this pass did not write leaves its chords open: those rooms are out already.
+    // Read back as a tile holds them: each record and chord of rooms that draw that the builder does not find whole is a
+    // fault. A joint that this pass did not write leaves its chords open: those rooms are faults already.
     let (ends, chords, index) = as_tile(&features);
-    let (whole, closed) = obc_trailview_parts::read_back(&ends, &chords, obc_trailview_parts::Rules::embedded());
-    let known = faults.rooms.clone();
-    for (&f, ok) in index.iter().zip(whole.iter().chain(&closed)) {
-        if !ok && !of_feature[f].iter().all(|r| known.contains(r) || rooms.alone[*r]) {
-            faults.not_whole += 1;
-            take(&mut faults, &of_feature[f]);
+    let (found, closed) = obc_trailview_parts::read_back(&ends, &chords, obc_trailview_parts::Rules::embedded());
+    let known: Vec<usize> = faults.rooms.iter().chain(faults.ends.iter().map(|e| &e.0)).copied().collect();
+    let holes_found = found.into_iter().chain(closed.into_iter().map(|ok| vec![ok]));
+    for (&f, ok) in index.iter().zip(holes_found) {
+        let holes = &of_feature[f];
+        if ok.iter().all(|&ok| ok) || !holes.iter().all(|h| draws[h.0]) || holes.iter().all(|h| known.contains(&h.0)) {
+            continue;
+        }
+        faults.not_whole += 1;
+        for (&h, _) in holes.iter().zip(&ok).filter(|(_, &ok)| !ok) {
+            faults.add(rooms, h, holes.len() > 1);
         }
     }
     faults.rooms.sort_unstable();

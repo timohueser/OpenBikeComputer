@@ -831,10 +831,12 @@ fn not_whole_in_tiles(placed: &Placed, bounds: [f64; 4]) -> Vec<String> {
                 chords.push(Chord::from_tags([a[0], a[1], z[0]], [b[0], b[1], z[1]], &f.tags, rules).unwrap());
             }
         }
-        let (whole, closed) = read_back(&ends, &chords, rules);
+        let (found, closed) = read_back(&ends, &chords, rules);
         let place = |p: [f64; 2]| back([p[0] / (1u64 << 30) as f64, p[1] / (1u64 << 30) as f64]);
-        for (e, ok) in ends.iter().zip(&whole).filter(|(e, ok)| owns(e.at) && !**ok) {
-            out.push(format!("tile {col} {row}: record {} at {:?} ({ok})", e.part.name(), place(e.at)));
+        // A record of whose holes the builder finds some, not all: their chords draw with no head.
+        let part = |ok: &[bool]| ok.contains(&true) && ok.contains(&false);
+        for (e, ok) in ends.iter().zip(&found).filter(|(e, ok)| owns(e.at) && part(ok)) {
+            out.push(format!("tile {col} {row}: record {} at {:?} ({ok:?})", e.part.name(), place(e.at)));
         }
         for (c, _) in chords.iter().zip(&closed).filter(|(c, ok)| owns([c.a[0], c.a[1]]) && !**ok) {
             out.push(format!("tile {col} {row}: chord at {:?} open", place([c.a[0], c.a[1]])));
@@ -891,6 +893,8 @@ fn what_the_rooms_cannot_build_draws_alone() {
     for (name, case) in [("the V", v), ("the pair", pair), ("the folded V", fold), ("the bounds", cut)] {
         let placed = case.place(&ground, &mut Vec::new());
         assert!(!records(&placed, "tunnel-tube").is_empty(), "{name}: nothing draws: {}", placed.metrics);
+        let faults = not_whole_in_tiles(&placed, case.bounds.unwrap_or(BOUNDS));
+        assert!(faults.is_empty(), "{name}: {faults:?}");
         match name {
             "the V" => assert!(placed.tags.contains_key(&through), "{name}"),
             "the pair" => assert_eq!(placed.tags[&single]["parts"], "arch arch"),

@@ -73,6 +73,9 @@ pub struct Net<'a> {
     at: HashMap<[u64; 2], Vec<usize>>,
     /// Per hole, the chord and vertex at its opening, where its record and its chain are built.
     opening: Vec<Option<(usize, usize)>>,
+    /// Per hole, the chord and vertex at its opening where its chain is built, whether the other holes of its record
+    /// are found or not.
+    pub found: Vec<Option<(usize, usize)>>,
     /// The hole at each opening's chord vertex.
     /// Per chord and vertex the built hole whose opening it is.
     end_at: Vec<[Option<usize>; 2]>,
@@ -147,6 +150,7 @@ impl<'a> Net<'a> {
                 nearest(o, first).filter(|&(c, _)| built(&[Some(o.part)]) && built(&chords[c].ends))
             })
             .collect();
+        let found = opening.clone();
         // A record is built where each of its holes is.
         for list in &of_record {
             if list.iter().any(|&e| opening[e].is_none()) {
@@ -159,8 +163,8 @@ impl<'a> Net<'a> {
                 end_at[c][k] = Some(e);
             }
         }
-        let mut net =
-            Net { records, holes, of_record, chords, rules, at, opening, end_at, slope: vec![0.0; records.len()] };
+        let slope = vec![0.0; records.len()];
+        let mut net = Net { records, holes, of_record, chords, rules, at, opening, found, end_at, slope };
         let run = rules.design.face_m;
         net.slope = (net.of_record.iter())
             .map(|list| {

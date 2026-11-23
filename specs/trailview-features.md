@@ -568,9 +568,8 @@ way on the ground (`graph::build_open`).
 The bake measures each opening on the ground of the ground plan: each cell that holds a point to read is built as the
 viewer builds it, with the tags of the levels and the stretches to the openings on the ground, without the storey
 under the ground (the step's metric `ground_plan_bores` says which). The ladder reads a first measure with the
-stretches of all openings. The numbers read the stretches that the device opens: of each opening of a chain whose two
-ends are of the kinds that the viewer builds (`BUILT` of `host/obc-trailview-parts`); the openings near a stretch that
-the first measure opened otherwise are measured again. Where that
+stretches of all openings. The numbers read the stretches that the device opens: of each opening of a room that draws
+(see below); the openings near a stretch that the first measure opened otherwise are measured again. Where that
 ground no longer fits the kind (no cover, or cover past the limit), the end takes its next kind, and a pair with such
 an end is no pair. The cover at a metre in is the least ground
 over the centre line and both outer walls (`half` + `shell_m` across), less the floor; the metre is covered where
@@ -589,19 +588,20 @@ in order:
    `rock_cover_max_m`; else `arch`.
 5. Else `free`.
 
-What draws is decided once, in the bake. A room draws where each of its ends is a seam or an opening with a part, and
-where it is not taken out. The rooms of one seam, and the rooms of one arm, draw together or not at all. A room whose
+What draws is decided once, in the bake, by the rule of the builder. A room draws where each of its ends is a seam or
+an opening with a part of the kinds that the builder builds (`BUILT` of `host/obc-trailview-parts`), and where it is
+not taken out. The rooms of one seam, and the rooms of one arm, draw together or not at all. A room whose
 seam holds no hole for a room behind it, or whose arm has an opening in no room, does not draw; nor does a room whose
 line leaves the bake's region. Of two openings within `pair_max_m` and `pair_max_deg` (also the two ends of one room)
 whose rooms draw, that lie at one level (neither over the other, see Rooms) and less than two `shell_m` apart across,
 the narrower room does not draw, then the one with the higher id. These rules repeat until no room leaves. A room that
-does not draw writes no record, and its ways have no tag `parts`.
+does not draw writes no record, and its ways have no tag `parts`, but for a room alone (below).
 
 What the rooms cannot build draws as a tunnel of one way: the arms of a room that does not draw run beside no other, and
-the rooms are made again, until each room draws or is alone, the whole of one chain with no seam. A room alone draws
-where one of its ends has a part; a seam, the region and a joint that the builder does not find whole never take it out;
-of two crowded openings it loses only its part, and keeps its last part. Its ways have the tag `parts` of both ends, `none` where an end has no
-part.
+the rooms are made again, until each room draws or is alone, the whole of one chain with no seam. A room alone draws by
+the same rule; the region does not take it out. A room alone that does not draw, and is not taken out, writes the
+records of a tunnel of one way where an end has a part: its chords and its ways' tag `parts` name `none` at the other
+end, so the builder builds neither them nor that part's head, and the head is in no link.
 
 Openings on one frame line share one head, a hole per opening, of rooms that draw:
 
@@ -613,9 +613,10 @@ Openings on one frame line share one head, a hole per opening, of rooms that dra
 
 `JOINT_MAX_M` (`parts`) is 29 m: `BUFFER_M` less the longest chord (10 m) and a metre for the rounding and the reach
 of the builder. So the tile that owns a chord of a hole holds its record, and the tile that owns a record holds the
-chords of its holes. The bake reads each head and seam back as a tile holds it, with the builder's `read_back` of
-`host/obc-trailview-parts`; a joint that is not whole, or has a hole more than `JOINT_MAX_M` from its point, takes its
-rooms out (`joints_not_whole`, `joints_too_wide`).
+chords of its holes. The bake reads each head and seam of rooms that draw back as a tile holds it, with the builder's
+`read_back` of `host/obc-trailview-parts`. A joint that is not whole, or has a hole more than `JOINT_MAX_M` from its
+point, is made again (`joints_not_whole`, `joints_too_wide`): the arms of a room of lanes there run beside no other; of
+a room alone, the opening has a head of its own, and where that head is its own, the room does not draw.
 
 The openings that these links join lie on the frame line of their group's far opening (see Rooms): the others move in
 along their ways to it. Where a way does not reach that line within `pair_max_m`, half its chain and its own way, its

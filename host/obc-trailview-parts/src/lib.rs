@@ -413,14 +413,16 @@ pub fn meshes(square: [f64; 4], ends: &[End], chords: &[Chord], rules: &Rules) -
     b.mesh()
 }
 
-/// What the builder finds in records as a tile holds them: per record whether it finds each of its holes, and per chord
-/// whether it closes, as a chord that does not draw does: a chord of a built chain closes where each of its ends is a
-/// hole that the builder finds or meets another such chord. The bake reads its records back with it.
-pub fn read_back(ends: &[End], chords: &[Chord], rules: &Rules) -> (Vec<bool>, Vec<bool>) {
+/// What the builder finds in records as a tile holds them: per record whether it finds each of its holes (a record is
+/// built where it finds all), and per chord whether it closes, as a chord that does not draw does, where each record
+/// were built: a chord of a built chain closes where each of its ends is a hole that the builder finds or meets
+/// another such chord. The bake reads its records back with it.
+pub fn read_back(ends: &[End], chords: &[Chord], rules: &Rules) -> (Vec<Vec<bool>>, Vec<bool>) {
     let net = Net::new(ends, chords, rules);
-    let records = (0..ends.len()).map(|r| net.built_record(r)).collect();
+    let records = net.of_record.iter().map(|list| list.iter().map(|&e| net.found[e].is_some()).collect()).collect();
+    let found: std::collections::HashSet<(usize, usize)> = net.found.iter().flatten().copied().collect();
     let closed = (0..chords.len())
-        .map(|c| !net.built_chord(c) || (0..2).all(|k| net.opening_at(c, k) || net.meets(c, k)))
+        .map(|c| !net.built_chord(c) || (0..2).all(|k| found.contains(&(c, k)) || net.meets(c, k)))
         .collect();
     (records, closed)
 }

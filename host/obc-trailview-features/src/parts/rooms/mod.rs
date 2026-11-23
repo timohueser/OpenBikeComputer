@@ -59,8 +59,7 @@ pub(crate) struct Rooms {
     /// Per room whether the rooms alone keep it from drawing: a seam at one of its ends holds no hole for a room behind
     /// it, or an arm of it has an opening in no room.
     pub broken: Vec<bool>,
-    /// Per room whether it is the whole of one arm, with no seam: it draws as a tunnel of one way, where an end has a
-    /// part.
+    /// Per room whether it is the whole of one arm, with no seam: a tunnel of one way.
     pub alone: Vec<bool>,
     /// Per stretch of two arms over one another: the room over, the room under, and whether only the section of the
     /// room under goes lower (else its floor too: they cross).
@@ -85,13 +84,13 @@ impl Rooms {
     }
 
     /// Per room whether it draws as parts: it is not `out` nor `broken`, and each of its ends is a seam or of a built
-    /// kind (`kind` of its opening); a room `alone` needs one end of a built kind. The rooms of one seam and the rooms of
-    /// one arm draw together or not at all.
+    /// kind (`kind` of its opening), as the builder builds a chord. The rooms of one seam and the rooms of one arm draw
+    /// together or not at all.
     pub fn built(&self, kind: &dyn Fn(usize, usize) -> Option<Kind>, out: &[bool]) -> Vec<bool> {
         let n = self.tubes.len();
         let own = |t: usize| {
             let end = |e: usize| self.seam_at(t, e) || obc_trailview_parts::built(&[kind(t, e)]);
-            !out[t] && !self.broken[t] && if self.alone[t] { (0..2).any(end) } else { (0..2).all(end) }
+            !out[t] && !self.broken[t] && (0..2).all(end)
         };
         let mut root: Vec<usize> = (0..n).collect();
         let find = |root: &mut Vec<usize>, mut i: usize| {
