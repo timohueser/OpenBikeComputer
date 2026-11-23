@@ -616,10 +616,10 @@ the zoom-13 tiles of its region hold them, each tile with its buffer, with the b
 `host/obc-trailview-parts`: each record in the tile that owns its point, each chord in the tile that owns its first
 vertex. The builder closes an end of a chord at the opening of a record that it builds, one whose holes it all finds,
 or where another chord meets it. Where it does not find a hole, or an end of a chord does not close, the joint is made
-again: the arms of a room of lanes there run beside no other; of a room alone, the opening has a head of its own
-(`openings_apart`). A head of one hole and the inner vertices of a room alone are whole in each tile: its chords are
-shorter than `BUFFER_M`. `joints_not_whole` counts the records and chords that the written placement does not hold
-whole.
+again: at a head, each such opening has a head of its own (`openings_apart`), and its room keeps its lanes; at a seam
+or inside a room of lanes, the arms of that room run beside no other. A head of one hole and the inner vertices of a
+room alone are whole in each tile: its chords are shorter than `BUFFER_M`. `joints_not_whole` counts the records and
+chords that the written placement does not hold whole.
 
 The openings that these links join lie on the frame line of their group's far opening (see Rooms): the others move in
 along their ways to it. Where a way does not reach that line within `pair_max_m`, half its chain and its own way, its

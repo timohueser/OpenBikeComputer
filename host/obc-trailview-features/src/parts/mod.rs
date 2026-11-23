@@ -478,9 +478,10 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         }
     }
     // What the rooms cannot build draws as tunnels of one way: the arms of a room that cannot draw on its own account,
-    // or whose joint the builder does not find whole, run beside no other (`lone`); the other rooms are made again. Of
-    // a joint of tunnels of one way that is not whole, each opening has a head of its own (`apart`). The rooms and the
-    // ladder are made again until each joint is whole.
+    // or whose seam or inside the builder does not find whole, run beside no other (`lone`); the other rooms are made
+    // again. Of a head that the builder does not find whole, each opening there whose hole or chord end is not whole
+    // has a head of its own (`apart`), so its room keeps its lanes. The rooms and the ladder are made again until each
+    // joint is whole.
     let mut lone = vec![false; tubes.len()];
     let mut apart = vec![false; openings.len()];
     let (rooms, mut decided, placed, not_whole) = loop {
@@ -490,10 +491,7 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         let leaves =
             |r: usize| rooms.tubes[r].curve.stretches.iter().flat_map(|(_, ps)| ps).any(|q| !input.tiles.holds(q.p));
         let out: Vec<bool> = (0..rooms.tubes.len()).map(|r| !rooms.alone[r] && leaves(r)).collect();
-        let own_head = |o: &Opening| match &rooms.lanes[o.tube][..] {
-            [l] if rooms.alone[o.tube] => l.ends[o.end].is_some_and(|i| apart[i]),
-            _ => false,
-        };
+        let own_head = |o: &Opening| rooms.lanes[o.tube].iter().any(|l| l.ends[o.end].is_some_and(|i| apart[i]));
         let apart_now: Vec<bool> = openings.iter().map(own_head).collect();
         let decided = ladder::decide(&rooms.tubes, &mut openings, input, measure, (&rooms, &out, &apart_now));
         let (placed, found) = records(&rooms, &openings, &decided, input);
@@ -503,7 +501,7 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         for r in (0..rooms.tubes.len()).filter(|&r| !rooms.alone[r] && (!own[r] || found.rooms.contains(&r))) {
             rooms.lanes[r].iter().for_each(|l| lone[l.arm] = true);
         }
-        for i in found.ends.iter().filter_map(|&(r, e)| rooms.lanes[r][0].ends[e]) {
+        for i in found.ends.iter().flat_map(|&(r, e)| rooms.lanes[r].iter().filter_map(move |l| l.ends[e])) {
             apart[i] = true;
         }
         if (&lone, &apart) == (&before.0, &before.1) {
@@ -561,8 +559,9 @@ pub(crate) fn ceil_cm(v: f64) -> f64 {
 /// A hole of a joint, or a vertex of a chord, by its room and that room's end there; none at a chord's inner vertex.
 type HoleOf = (usize, Option<usize>);
 
-/// The joints that the records would not hold whole: the rooms of lanes there; of a tunnel of one way, its room and
-/// the end whose head it shares with others; and how many records and chords the builder did not find whole.
+/// The joints that the records would not hold whole: the rooms of lanes whose seam or inside is not whole; the room
+/// and the end of each opening whose head it shares with others; and how many records and chords the builder did not
+/// find whole.
 #[derive(Default)]
 struct Faults {
     rooms: Vec<usize>,
@@ -572,14 +571,14 @@ struct Faults {
 
 impl Faults {
     /// A hole of a joint or an end of a chord that the builder does not find whole, by its room and end (none inside
-    /// the room); `shared` where its head has other holes. Of a tunnel of one way only such a shared end is not whole:
-    /// its chords are shorter than the tiles' buffer (`CHORD_M` of the ways' curves), so a tile that holds one holds the
-    /// chords at its vertices and a head of one hole at its end.
+    /// the room); `shared` where its head has other holes. At an opening only a shared head is not whole, and of a
+    /// tunnel of one way nothing else: its chords are shorter than the tiles' buffer (`CHORD_M` of the ways' curves),
+    /// so a tile that holds one holds the chords at its vertices and a head of one hole at its end.
     fn add(&mut self, rooms: &rooms::Rooms, (r, e): HoleOf, shared: bool) {
-        if !rooms.alone[r] {
-            self.rooms.push(r);
-        } else if let Some(e) = e.filter(|_| shared) {
-            self.ends.push((r, e));
+        match e.filter(|&e| !rooms.seam_at(r, e)) {
+            Some(e) if shared => self.ends.push((r, e)),
+            None if !rooms.alone[r] => self.rooms.push(r),
+            _ => {}
         }
     }
 }
@@ -886,8 +885,9 @@ fn lone(t: &Tube, kinds: [Option<Kind>; 2], (fl, common): (Option<&Floor>, &Tags
 /// Per room end, the outlines on its line of the rooms behind a seam there.
 type Behind = [Vec<rooms::Outline>; 2];
 
-/// The chords of room r of lanes, along its centre line from end to end as its floor, with a row per lane from the right
-/// wall to the left. At each vertex a chord is as high as the room there, and at a seam as the rooms behind it need.
+/// The chords of room r of lanes, along its centre line from end to end as its floor, with a row per lane from the
+/// right wall to the left. At each vertex a chord is as high as the room there, and at a seam as the rooms behind it
+/// need.
 fn room(
     rooms: &rooms::Rooms,
     r: usize,

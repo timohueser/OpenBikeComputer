@@ -956,27 +956,36 @@ fn a_room_behind_a_seam_whose_first_way_is_short_starts_clear_of_the_line() {
     }
 }
 
-/// Four motorway tunnels 1.5 m apart open on one frame line at 10 degrees to a tile edge: their head spans 44 m. The
-/// tile west of the edge holds the first hole's chord and the head, not the last hole's chord, so there the builder
-/// does not build the head and the chord does not close. That opening has a head of its own, and the others share one.
-#[test]
-fn a_head_that_a_tile_does_not_hold_whole_gives_the_opening_there_a_head_of_its_own() {
+/// Motorway tunnels 200 m long east of south, 10 degrees to a tile edge, their openings on one frame line: the first
+/// `east` metres east of the edge, the next ones each `gaps` metres beside the space of the one before; the hill over
+/// them, and the first opening's point.
+fn motorways(east: f64, gaps: &[f64]) -> (Case, impl Fn([f64; 2]) -> f64, [f64; 2]) {
     let mway = [("highway", "motorway"), ("tunnel", "yes")];
-    let spacing = 2.0 * (widths().way("tunnel", &tags(&mway), false).half_m + 0.6) + 1.5;
-    // The first opening 1 m east of the edge; its tunnel goes in 10 degrees west of south, so its first chord (10 m)
-    // starts in the tile west of the edge; the last opening lies 44.4 m east of the edge, past that tile's buffer.
+    let wide = 2.0 * (widths().way("tunnel", &tags(&mway), false).half_m + 0.6);
     let (s, c) = 10f64.to_radians().sin_cos();
-    let first = [tile_edge_east() + 1.0, 0.0];
+    let first = [tile_edge_east() + east, 0.0];
     let at = |u: f64, v: f64| [first[0] - u * s + v * c, first[1] - u * c - v * s];
     let mut case = Case::default();
-    for k in 0..4 {
-        let v = k as f64 * spacing;
+    let mut v = 0.0;
+    for k in 0..=gaps.len() {
+        v += if k > 0 { wide + gaps[k - 1] } else { 0.0 };
         case.ways.push(("tunnel", tags(&mway), vec![part(&[at(200.0, v), at(100.0, v), at(0.0, v)], &[500.0; 3])]));
     }
     let hill = move |p: [f64; 2]| {
         let u = (first[0] - p[0]) * s + (first[1] - p[1]) * c;
         500.0 + u.min(200.0 - u).max(0.0)
     };
+    (case, hill, first)
+}
+
+/// Four motorway tunnels 1.5 m apart open on one frame line at 10 degrees to a tile edge: their head spans 44 m. The
+/// tile west of the edge holds the first hole's chord and the head, not the last hole's chord, so there the builder
+/// does not build the head and the chord does not close. That opening has a head of its own, and the others share one.
+#[test]
+fn a_head_that_a_tile_does_not_hold_whole_gives_the_opening_there_a_head_of_its_own() {
+    // The first opening 1 m east of the edge; its tunnel goes in 10 degrees west of south, so its first chord (10 m)
+    // starts in the tile west of the edge; the last opening lies 44.4 m east of the edge, past that tile's buffer.
+    let (case, hill, first) = motorways(1.0, &[1.5; 3]);
     let placed = case.place(&site(&hill, &[], false), &mut Vec::new());
     let m = &placed.metrics;
     assert_eq!((m["openings_apart"].as_u64(), m["joints_not_whole"].as_u64()), (Some(1), Some(0)), "{m}");
@@ -988,4 +997,22 @@ fn a_head_that_a_tile_does_not_hold_whole_gives_the_opening_there_a_head_of_its_
     assert_eq!(heads.len(), 2, "{heads:?}");
     assert!(heads.iter().any(|h| h.0 < 0.01 && h.1.is_none()), "the first opening's own head: {heads:?}");
     assert!(heads.iter().any(|h| h.1.is_some_and(|a| a == "0 14.7 29.4")), "the others' head: {heads:?}");
+}
+
+/// The first two of five such tunnels lie 0.4 m apart, one room of two lanes, the first opening 7 m west of the edge:
+/// the tile west of it does not hold the head of four holes whole. The room's opening has a head of its own, and each
+/// tunnel draws.
+#[test]
+fn a_room_of_lanes_in_a_head_that_a_tile_does_not_hold_whole_keeps_its_tunnels() {
+    let (case, hill, _) = motorways(-7.0, &[0.4, 1.5, 1.5, 1.5]);
+    let placed = case.place(&site(&hill, &[], false), &mut Vec::new());
+    let m = &placed.metrics;
+    assert_eq!(m["rooms"]["rooms"].as_u64(), Some(1), "{m}");
+    assert_eq!((m["arms_alone"].as_u64(), m["joints_not_whole"].as_u64()), (Some(0), Some(0)), "{m}");
+    assert!(m["openings_apart"].as_u64() >= Some(1), "{m}");
+    assert!(not_whole_in_tiles(&placed, BOUNDS).is_empty(), "{:?}", not_whole_in_tiles(&placed, BOUNDS));
+    for id in 0..5 {
+        let parts = placed.tags.get(&id).and_then(|t| t.get("parts"));
+        assert!(parts.is_some_and(|p| !p.contains("none")), "tunnel {id} does not draw: {parts:?}");
+    }
 }
