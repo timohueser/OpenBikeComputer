@@ -323,10 +323,10 @@
         const dark = theme === "dark", ink = dark ? "#f2efe3" : "#1c1b14";
         const warm: maplibregl.ExpressionSpecification = ["get", "lit"], round = { "line-cap": "round", "line-join": "round" } as const;
         map.addSource("towns", { type: "geojson", data: lineData([]) });
-        map.addLayer({ id: "towns-fill", type: "fill", source: "towns", paint: { "fill-color": ["case", warm, dark ? "#5a4622" : "#fff2d1", dark ? "#201f17" : "#ffffff"], "fill-opacity": ["case", warm, .82, .32] } });
+        map.addLayer({ id: "towns-fill", type: "fill", source: "towns", paint: { "fill-color": ["case", warm, dark ? "#5a4622" : "#fff2d1", dark ? "#201f17" : "#ffffff"], "fill-opacity": ["case", warm, .82, .45] } });
         // MapLibre measures a dash in line widths, and a round cap adds half a width to each end.
-        map.addLayer({ id: "towns-edge", type: "line", source: "towns", filter: ["!", warm], layout: round, paint: { "line-color": ink, "line-opacity": .75, "line-width": 1.5, "line-dasharray": [2.3, 3.7] } });
-        map.addLayer({ id: "towns-edge-lit", type: "line", source: "towns", filter: warm, layout: round, paint: { "line-color": ink, "line-width": 2 } });
+        map.addLayer({ id: "towns-edge", type: "line", source: "towns", filter: ["!", warm], layout: round, paint: { "line-color": ink, "line-width": 2, "line-dasharray": [1.75, 3.25] } });
+        map.addLayer({ id: "towns-edge-lit", type: "line", source: "towns", filter: warm, layout: round, paint: { "line-color": ink, "line-width": 2.5 } });
     }
 
     /** Draws each town as the hull of its places on the screen, grown by a fixed number of pixels, so the areas are drawn
