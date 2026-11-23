@@ -1,51 +1,67 @@
 import type { Plant } from '../plant-library';
-import { core, domed, GOLDEN, hex, ramp, random, sheet, smooth, tufts, v3, type Geometry, type Ramp } from '../plant-shape';
+import { domed, GOLDEN, hex, leaf, ramp, random, sheet, smooth, spike, spindle, v3, type Geometry, type Ramp, type V } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
-/** Bog myrtle leaves: grey-green, dull olive-yellow in autumn; in winter the bare red-brown twigs. */
-const MYRTLE: Record<Season, Ramp> = {
-    winter: ['#3a2420', '#6a3a2c', '#8a5040'],
+/** Bog myrtle leaves: grey-green, dull olive-yellow in autumn, shed in winter. */
+const MYRTLE: Record<Season, Ramp | 'bare'> = {
+    winter: 'bare',
     spring: ['#40503a', '#68785a', '#9aa686'],
     summer: ['#3c4a36', '#64725a', '#98a488'],
     autumn: ['#585230', '#867c46', '#ae9e62'],
 };
 
-/** Orange-brown catkins on the twig tips before the leaves: their share of the tips, by season. */
-const CATKINS: Record<Season, number> = { winter: 0.15, spring: 0.35, summer: 0, autumn: 0 };
-const CATKIN = hex('#b06a3a');
+const CATKIN = ['#7a4426', '#b06a3a'].map(hex);
+
+const STEMS = 9;
 
 /**
- * Bog myrtle: a dense, upright bush a little taller than wide, five clumps of twigs round dark
- * cores. Each twig is one triangle from a narrow foot to a ragged top on its clump's dome, wide
- * with leaves, thin when bare. 180 triangles.
+ * Bog myrtle: an upright broom of nine stiff red-brown stems, a little taller than wide, each with a fork. Narrow
+ * leaves, widest near their tips, stand up round the stems. In spring an orange-brown catkin ends each stem before
+ * half of the leaves are out; winter leaves the twigs bare, with more forks and the small catkin buds.
  */
 function bogMyrtle(season: Season, rand: () => number): Geometry {
-    const [deep, mid, tip] = ramp(MYRTLE[season]);
-    const bare = season === 'winter';
-    const shade = deep.clone().multiplyScalar(0.7);
+    const leaves = MYRTLE[season];
+    const [wood, bark] = [hex('#3a2420'), hex('#7a4634')];
+    const light = domed(v3(0, 0, 0.3), v3(0.5, 0.5, 0.8), 0.35);
     const cards = sheet();
-    for (const clump of tufts([0, 0, 0.45, 1], 4, 0.7, [0.38, 0.32, 0.65], [0.1, 0.08, 0.25], rand)) {
-        const [x, y, r, h] = clump;
-        const light = domed(v3(x, y, 0), v3(r, r, h), 0.3);
-        core(cards, clump, shade, deep, 0.7, 0.8);
-        for (let j = 0; j < 30; j++) {
-            const a = j * GOLDEN + rand() * 0.6;
-            const polar = 1.4 * Math.sqrt((j + 0.5) / 30);
-            const k = 0.9 + 0.15 * rand();
-            const top = v3(x + r * k * Math.sin(polar) * Math.cos(a), y + r * k * Math.sin(polar) * Math.sin(a), h * k * Math.cos(polar) ** 0.5);
-            // Twigs stand nearly upright, as the bush's stiff shoots do.
-            const lean = 0.25 * polar;
-            const foot = top.clone().addScaledVector(v3(Math.sin(lean) * Math.cos(a), Math.sin(lean) * Math.sin(a), Math.cos(lean)), -h * (0.5 + 0.2 * rand()));
-            foot.z = Math.max(foot.z, 0);
-            const turn = a + Math.PI / 2 + (rand() - 0.5) * 0.8;
-            const side = v3(Math.cos(turn), Math.sin(turn), 0).multiplyScalar((bare ? 0.03 : 0.1) * (0.8 + 0.4 * rand()));
-            const low = 1 - smooth(0.2, 0.9, top.z / h);
-            const twig = mid.clone().lerp(tip, 0.5 * rand()).lerp(deep, 0.4 * low);
-            if (rand() < CATKINS[season] * (1 - low)) twig.lerp(CATKIN, 0.7);
-            const corners = [top.clone().add(side), top.clone().sub(side)];
-            for (const c of corners) c.z -= 0.06 * h * rand();
-            cards.add([foot, ...corners], [shade, twig, twig.clone().lerp(mid, 0.3)], light);
+    // The leaves draw from their own numbers, so the stems stand the same in every season.
+    const vary = random(Math.floor(rand() * 1e6));
+    const catkin = (at: V, dir: V, size: number) => spindle(cards, at, at.clone().addScaledVector(dir, 0.17 * size), 0.045 * size, 3, CATKIN);
+    for (let k = 0; k < STEMS; k++) {
+        const a = k * GOLDEN + rand() * 0.5;
+        const out = v3(Math.cos(a), Math.sin(a), 0), side = v3(-out.y, out.x, 0);
+        const tilt = 0.06 + 0.42 * Math.sqrt((k + 0.5) / STEMS);
+        const length = (1 - (0.2 * k) / STEMS) * (0.86 + 0.12 * rand());
+        const dir = out.clone().multiplyScalar(Math.sin(tilt)).setZ(Math.cos(tilt));
+        const s = k % 2 ? 1 : -1;
+        const on = (t: number) => dir.clone().multiplyScalar(t * length);
+        const twig = (t: number, to: number, reach: number) => {
+            const way = dir.clone().addScaledVector(side, 0.7 * to).normalize(), end = on(t).addScaledVector(way, reach * length);
+            spike(cards, on(t), end, 0.02, [bark, bark]);
+            return [end, way];
+        };
+        // Leaf `i` of a twig stands up from it, to the next side round it.
+        const blade = (at: V, way: V, i: number) => {
+            if (leaves === 'bare') return;
+            const [deep, mid, tip] = ramp(leaves);
+            const [u, w] = [side, v3().crossVectors(way, side)], t = (i + 3 * k) * GOLDEN;
+            const body = mid.clone().lerp(tip, 0.7 * vary()).lerp(deep, 0.4 * (1 - smooth(0.3, 0.8, at.z)));
+            leaf(cards, at, way.clone().addScaledVector(u, 0.65 * Math.cos(t)).addScaledVector(w, 0.65 * Math.sin(t)).normalize(), 0.25 + 0.05 * vary(), 0.13, 0.65, [deep, body, body.clone().lerp(tip, 0.4)], light);
+        };
+        spike(cards, v3(), on(1), 0.032, [wood, bark]);
+        const [fork, way] = twig(0.45, s, 0.42);
+        if (leaves === 'bare') {
+            const [second] = twig(0.62, -s, 0.3);
+            twig(0.78, s, 0.2);
+            catkin(on(1), dir, 0.7);
+            if (k % 3 === 0) catkin(k % 2 ? second : fork, dir, 0.7);
+            continue;
         }
+        const early = season === 'spring';
+        if (early) catkin(on(1), dir, 1);
+        else blade(on(1), dir, 0);
+        (early ? [0.6, 0.82] : [0.5, 0.66, 0.82]).forEach((t, i) => blade(on(t), dir, i + 1));
+        (early ? [0.6, 1] : [0.4, 0.75, 1]).forEach((t, i) => blade(on(0.45).lerp(fork, t), way, i + 4));
     }
     return cards.build();
 }

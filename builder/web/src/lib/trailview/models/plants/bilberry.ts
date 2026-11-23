@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { domed, GOLDEN, hex, merge, paint, ramp, random, ribbon, sheet, smooth, soft, tetrahedron, UP, v3, type Geometry, type Ramp, type V, type Vec, translate } from '../plant-shape';
+import { domed, GOLDEN, hex, merge, octahedron, paint, place, ramp, random, sheet, smooth, soft, turnFromTo, UP, v3, type Geometry, type Ramp, type V } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** Bilberry leaves: bright green, flame red to crimson in autumn, shed in winter. */
@@ -18,64 +18,77 @@ const BILBERRY_STEM: Record<Season, [string, string]> = {
     autumn: ['#5a4a30', '#6e7a38'],
 };
 
+/** Stems of a bush, and the stems that carry a berry in summer in place of a leaf. */
+const STEMS = 10, BERRIES = 4;
+
 /**
- * Bilberry: a broom of thin stems, the inner ones upright and the outer ones leaning, each forking
- * once at an angle and set along most of its length with small pointed leaves held out flat; lit
- * as one round tuft. Winter leaves the green-brown stems bare; summer hangs dark blue berries
- * under the leaves.
+ * Bilberry: a round broom of thin green stems, the inner ones upright and the outer ones leaning,
+ * each with a fork. Broad pointed leaves sit on the stem and the fork to alternate sides, folded
+ * along the midrib, and one ends each of them; the bush lights as one round tuft. Winter leaves the
+ * stems bare, each with three angular twigs; in summer a dark blue berry hangs under the fork of
+ * every second stem.
  */
 function bilberry(season: Season, rand: () => number): Geometry {
     const leaves = BILBERRY[season];
     const [foot, top] = BILBERRY_STEM[season].map(hex);
     const stem = (p: V) => foot.clone().lerp(top, smooth(0, 0.7, p.z));
-    const [berry, bloom] = [hex('#262c54'), hex('#58628e')];
-    const light = domed(v3(0, 0, 0.25), v3(0.5, 0.5, 0.75), 0.4);
+    const [berry, bloom] = [hex('#232a5c'), hex('#6672a8')];
+    const light = domed(v3(0, 0, 0.15), v3(0.6, 0.6, 0.85), 0.35);
     const cards = sheet();
     const parts: Geometry[] = [];
-    const leaf = (at: V, out: V) => {
-        // Drawn even when bare, so the stems stand the same in every season.
-        const [tone, length] = [rand(), 0.17 + 0.05 * rand()];
+    // The leaves draw from their own numbers, so the stems stand the same in every season.
+    const vary = random(Math.floor(rand() * 1e6));
+    /** A stem that tapers from `width` at `from` to a point at `to`. */
+    const twig = (from: V, to: V, flat: V, width: number) => cards.add([from.clone().addScaledVector(flat, width / 2), from.clone().addScaledVector(flat, -width / 2), to], [stem(from), stem(from), stem(to)], light);
+    /** A leaf from `at` toward `toward`, rising `lift`; each half leans from the midrib. */
+    const leaf = (at: V, toward: V, lift: number) => {
         if (leaves === 'bare') return;
         const [deep, mid, tip] = ramp(leaves);
-        const dir = out.clone().setZ(0).normalize().multiplyScalar(0.94).setZ(0.34);
-        const side = v3().crossVectors(dir, UP).setLength(0.055);
-        const body = mid.clone().lerp(tip, 0.8 * tone).lerp(deep, 0.5 * (1 - smooth(0.1, 0.6, at.z)));
-        const base = body.clone().lerp(deep, 0.5);
-        cards.add([at.clone().add(side), at.clone().sub(side), at.clone().addScaledVector(dir, length)], [base, base, body.lerp(tip, 0.3)], light);
+        const length = 0.24 + 0.07 * vary();
+        const dir = toward.clone().setZ(0).normalize().setZ(lift).normalize();
+        const side = v3().crossVectors(dir, UP).setLength(0.36 * length);
+        const body = mid.clone().lerp(tip, 0.7 * vary()).lerp(deep, 0.5 * (1 - smooth(0.1, 0.6, at.z)));
+        const [base, end] = [body.clone().lerp(deep, 0.5), body.clone().lerp(tip, 0.4)];
+        const [waist, point] = [at.clone().addScaledVector(dir, 0.45 * length), at.clone().addScaledVector(dir, length)];
+        for (const half of [-1, 1]) {
+            const edge = waist.clone().addScaledVector(side, half).setZ(waist.z + 0.1 * length);
+            cards.add([at, edge, point], [base, body, end], (p) => light(p).addScaledVector(side, (-1.2 * half) / length).normalize());
+        }
     };
-    const count = 10;
-    let berries = season === 'summer' ? 6 : 0;
-    for (let k = 0; k < count; k++) {
+    for (let k = 0; k < STEMS; k++) {
         const a = k * GOLDEN + rand() * 0.5;
         const out = v3(Math.cos(a), Math.sin(a), 0);
         const across = v3(-out.y, out.x, 0);
-        const tilt = 0.12 + 0.65 * Math.sqrt((k + 0.5) / count);
-        const length = (1 - (0.35 * k) / count) * (0.88 + 0.12 * rand());
+        const tilt = 0.12 + 0.7 * Math.sqrt((k + 0.5) / STEMS);
+        const length = (1 - (0.35 * k) / STEMS) * (0.8 + 0.12 * rand());
         const dir = out.clone().multiplyScalar(Math.sin(tilt)).setZ(Math.cos(tilt));
         const root = out.clone().multiplyScalar(0.04);
         const end = root.clone().addScaledVector(dir, length);
-        const turn = rand() * Math.PI;
-        const flat: Vec = [Math.cos(turn), Math.sin(turn), 0];
-        parts.push(paint(ribbon([root.toArray(), end.toArray()], flat, (t) => 0.02 - 0.008 * t, 1), stem));
-        // The twig forks off at an angle, so the tuft reads as a broom of angular stems.
+        const flat = across.clone().applyAxisAngle(dir, (rand() - 0.5) * 1.6);
         const s = k % 2 ? 1 : -1;
-        const kink = root.clone().addScaledVector(dir, 0.4 * length);
-        const fork = dir.clone().addScaledVector(across, 0.8 * s).normalize();
-        const twig = kink.clone().addScaledVector(fork, 0.45 * length);
-        parts.push(paint(ribbon([kink.toArray(), twig.toArray()], flat, () => 0.014, 1), stem));
-        for (const [i, t] of [0.3, 0.45, 0.6, 0.75, 0.9, 1].entries()) {
-            const at = root.clone().addScaledVector(dir, t * length);
-            const spread = across.clone().multiplyScalar(i % 2 ? s : -s).applyAxisAngle(UP, (rand() - 0.5) * 0.8).addScaledVector(out, 0.3);
-            leaf(at, spread);
-            if (berries && i === 2) {
-                berries--;
-                const hang = at.clone().addScaledVector(spread.normalize(), 0.04).setZ(at.z - 0.05);
-                const ball = translate(soft(tetrahedron(0.04)), hang.x, hang.y, hang.z);
-                parts.push(paint(ball, (p) => berry.clone().lerp(bloom, smooth(hang.z - 0.02, hang.z + 0.03, p.z))));
-            }
+        const on = (t: number) => root.clone().addScaledVector(dir, t * length);
+        const fork = (t: number, side: number, reach: number) => {
+            const tip = on(t).addScaledVector(dir.clone().addScaledVector(across, 0.9 * side).normalize(), reach * length);
+            twig(on(t), tip, flat, 0.024);
+            return tip;
+        };
+        twig(root, end, flat, 0.04);
+        const tip = fork(0.35, s, 0.5);
+        if (leaves === 'bare') {
+            fork(0.55, -s, 0.32);
+            fork(0.75, s, 0.2);
+            continue;
         }
-        leaf(kink.clone().lerp(twig, 0.5), across.clone().multiplyScalar(-s).addScaledVector(out, 0.5));
-        leaf(twig, fork);
+        leaf(end, out, 0.7);
+        leaf(tip, tip.clone().sub(root), 0.5);
+        leaf(on(0.35).lerp(tip, 0.45), across.clone().multiplyScalar(-s).addScaledVector(out, 0.6), 0.4);
+        leaf(on(0.75), across.clone().multiplyScalar(s).addScaledVector(out, 0.5), 0.45);
+        if (season === 'summer' && k % 2 && k < 2 * BERRIES) {
+            // It hangs under the fork, touching it, a face outward: from beside the bush its outline is six-sided.
+            const hang = on(0.35).lerp(tip, 0.8);
+            const ball = place(soft(octahedron(0.055)), { at: [hang.x, hang.y, hang.z - 0.05], turn: turnFromTo(v3(1, 1, 1).normalize(), out) });
+            parts.push(paint(ball, (p) => berry.clone().lerp(bloom, smooth(hang.z - 0.08, hang.z, p.z))));
+        } else leaf(on(0.55), across.clone().multiplyScalar(-s).addScaledVector(out, 0.5), 0.45);
     }
     parts.push(cards.build());
     return merge(parts);

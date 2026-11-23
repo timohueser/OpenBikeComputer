@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { core, domed, GOLDEN, hex, merge, paint, ramp, random, sheet, smooth, soft, tetrahedron, tufts, v3, type Geometry, type Ramp, type V, place } from '../plant-shape';
+import { cushion, domed, hex, leaf, merge, onDome, paint, place, ramp, random, sheet, smooth, soft, tetrahedron, UP, v3, type Geometry, type Ramp, type Tuft, type V } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** Crowberry needles: dark green with fresh yellow-green shoot tips, bronzed olive-brown in winter. */
@@ -19,69 +19,51 @@ const BERRY = hex('#141418');
 const SHINE = hex('#4a4e60');
 
 /**
- * Crowberry: a low, flat mat about four times as wide as tall, six clumps of needle shoots round
- * dark cores that lie out over each other like shingles, red-brown stems that creep out from the
- * rim, and glossy black berries on top. Each shoot is one triangle from a narrow foot to a wide
- * tip. 228 triangles in summer.
+ * Crowberry: a low mat about four times as wide as tall, three broad cushions grown together and two small ones at
+ * their rim. Short needle shoots stand close on the cushions, the fresh ones yellow-green; red-brown stems creep
+ * out from under the rim and turn up into a shoot, and glossy black berries sit on the cushions' tops.
  */
-function crowberry(season: Season, rand: () => number): Geometry {
+function crowberry(season: Season, seed: number, rand: () => number): Geometry {
     const [deep, mid, tip] = ramp(CROWBERRY[season]);
-    const shade = deep.clone().multiplyScalar(0.8);
+    const colours = [deep.clone().multiplyScalar(0.8), deep.clone().lerp(mid, 0.5), mid];
     const cards = sheet();
-    const parts: Geometry[] = [];
-    const shoot = (foot: V, top: V, heading: number, low: number, light: (p: V) => V) => {
-        const turn = heading + Math.PI / 2 + (rand() - 0.5) * 0.8;
-        const side = v3(Math.cos(turn), Math.sin(turn), 0).multiplyScalar(0.16 * (0.8 + 0.4 * rand()));
-        const fresh = rand() < FRESH[season] * (1 - low);
-        const colour = mid.clone().lerp(tip, fresh ? 0.7 + 0.3 * rand() : 0.25 * rand()).lerp(deep, 0.45 * low);
-        const corners = [top.clone().add(side), top.clone().sub(side)];
-        for (const c of corners) c.z -= 0.05 * rand();
-        cards.add([foot, ...corners], [shade.clone().lerp(STEM, 0.3 * rand()), colour, colour.clone().lerp(mid, 0.3 * rand())], light);
+    const turn = rand() * 2 * Math.PI;
+    const mat = (k: number, of: number, d: number, r: number, h: number): Tuft => {
+        const a = turn + ((k + 0.4 * rand()) / of) * 2 * Math.PI;
+        return [d * Math.cos(a), d * Math.sin(a), r * (1 + 0.2 * rand()), h * (1 + 0.2 * rand())];
     };
-    const clumps = tufts([0, 0, 0.8, 1], 5, 0.6, [0.85, 0.6, 0.65], [0.15, 0.15, 0.2], rand);
-    const tops: V[] = [];
-    for (const clump of clumps) {
-        const [x, y, r, h] = clump;
-        const light = domed(v3(x, y, 0), v3(r, r, h), 0.4);
-        core(cards, clump, deep, deep.clone().lerp(mid, 0.6), 0.5, 0.4);
-        for (let j = 0; j < 22; j++) {
-            const a = j * GOLDEN + rand() * 0.6;
-            const s = Math.sqrt((j + 0.5) / 22);
-            const polar = 1.5 * s;
-            const k = 0.9 + 0.15 * rand();
-            // A flat top that rolls down to the ground at the edge, so the rim hides the core.
-            const top = v3(x + r * k * s * Math.cos(a), y + r * k * s * Math.sin(a), h * k * (1 - s ** 3));
-            // Shoots lie out along the dome more than heather's sprays, so the mat reads as a carpet.
-            const lean = 0.65 * polar;
-            const foot = top.clone().addScaledVector(v3(Math.sin(lean) * Math.cos(a), Math.sin(lean) * Math.sin(a), Math.cos(lean)), -0.55 * r * (0.8 + 0.4 * rand()));
-            foot.z = Math.max(foot.z, 0);
-            shoot(foot, top, a, 1 - smooth(0.2, 0.9, top.z / h), light);
-            if (polar < 0.9) tops.push(top);
+    const broad = [0, 1, 2].map((k) => mat(k, 3, 0.7, 0.85, 0.62));
+    const small = [0, 1].map((k) => mat(3 * k + 1, 6, 1.4, 0.5, 0.35));
+    const parts = [...broad.map((m, k) => cushion(m, 8, colours, 0.4, seed + k)), ...small.map((m, k) => cushion(m, 6, colours, 0.4, seed + 3 + k))];
+    const needles = (low: number) => mid.clone().lerp(tip, rand() < FRESH[season] * (1 - low) ? 0.7 + 0.3 * rand() : 0.3 * rand());
+    const spots: V[] = [];
+    broad.forEach((m, k) => {
+        const [x, y, r, h] = m, light = domed(v3(x, y, 0), v3(r, r, h), 0.4), shoots = k ? 9 : 11, spin = rand() * 2 * Math.PI;
+        for (let j = 0; j < shoots; j++) {
+            const [foot, out] = onDome(m, j, shoots, 1.3, spin);
+            const body = needles(0);
+            leaf(cards, foot, out.clone().multiplyScalar(0.7).add(UP).normalize(), 0.34 + 0.12 * rand(), 0.24, 0.5, [colours[1], body, body.clone().lerp(tip, 0.4)], light);
         }
-    }
+        for (let j = 0; j < 4; j++) spots.push(onDome(m, j, 4, 0.75, spin + 1.2)[0]);
+    });
     // Red-brown stems creep out from under the rim and turn up into a shoot.
     const rim = domed(v3(), v3(1.7, 1.7, 0.6), 0.5);
     for (let j = 0; j < 10; j++) {
-        const a = ((j + rand() * 0.7) / 10) * 2 * Math.PI;
-        const out = v3(Math.cos(a), Math.sin(a), 0);
-        const side = v3(-out.y, out.x, 0).multiplyScalar(0.025);
-        const [from, bend] = [out.clone().multiplyScalar(1.0).setZ(0.15), out.clone().multiplyScalar(1.45 + 0.2 * rand()).setZ(0.04)];
-        cards.add([from.clone().add(side), from.clone().sub(side), bend], [STEM.clone().multiplyScalar(0.6), STEM.clone().multiplyScalar(0.6), STEM], rim);
-        shoot(bend, bend.clone().addScaledVector(out, 0.3).setZ(0.2 + 0.08 * rand()), a, 0.2, rim);
+        const a = ((j + rand() * 0.7) / 10) * 2 * Math.PI, out = v3(Math.cos(a), Math.sin(a), 0.12).normalize();
+        leaf(cards, out.clone().multiplyScalar(1.1).setZ(0.02), out, 0.65 + 0.25 * rand(), 0.22, 0.7, [STEM, STEM.clone().lerp(mid, 0.6), needles(0.3)], rim);
     }
-    // Berries sit in the needles on the clumps' tops, a little proud of them.
-    for (let b = 0; b < BERRIES[season] && tops.length; b++) {
-        const at = tops.splice(Math.floor(rand() * tops.length), 1)[0];
-        const ball = place(soft(tetrahedron(0.1)), { at: [at.x, at.y, at.z + 0.03], rot: [0, 0, rand() * Math.PI] });
-        parts.push(paint(ball, (p) => BERRY.clone().lerp(SHINE, smooth(at.z, at.z + 0.12, p.z))));
+    // Berries sit on the cushions' tops, half in the needles.
+    for (let b = 0; b < BERRIES[season]; b++) {
+        const at = spots.splice(Math.floor(rand() * spots.length), 1)[0];
+        const ball = place(soft(tetrahedron(0.15)), { at: [at.x, at.y, at.z + 0.09], rot: [0, 0, rand() * Math.PI] });
+        parts.push(paint(ball, (p) => BERRY.clone().lerp(SHINE, smooth(at.z + 0.05, at.z + 0.22, p.z))));
     }
-    parts.push(cards.build());
-    return merge(parts);
+    return merge([...parts, cards.build()]);
 }
 
 export default {
     name: 'Crowberry',
     latin: 'Empetrum nigrum subsp. hermaphroditum',
-    build: (season, seed) => crowberry(season, random(seed)),
+    build: (season, seed) => crowberry(season, seed, random(seed)),
     ground: { on: ['#moor', 'moss'], height: [0.1, 0.25], share: 0.3, own: true },
 } satisfies Plant;

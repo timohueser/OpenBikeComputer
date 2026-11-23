@@ -17,7 +17,7 @@
   "lentisk": { "model": "holm-oak", "latin": "Pistacia lentiscus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 2 },
   "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 1 },
   "spanish-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 },
-  "oleander": { "model": "laurel", "latin": "Nerium oleander", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
+  "oleander": { "latin": "Nerium oleander", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
   "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [700, 2100], "weight": 1 },
   "cretan-barberry": { "model": "garrigue", "latin": "Berberis cretica", "leaf": "broadleaved", "cover": "shrub", "elevation": [1300, 2300], "weight": 2 }
  },

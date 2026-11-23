@@ -30,7 +30,7 @@ has a new address. The module `virtual:models` of the build is the manifest (`Mo
 | --- | --- | --- |
 | A tree species' summer crown | 1, with 3 tiers | `trees[id].summer`, with `keepsHeading` and, per phase (winter, spring, summer, autumn), the colour matrix (3 × 3, columns first) that turns the summer crown into the phase's, or null |
 | A tree species' crown of its own in a phase | 1, with 3 tiers | `trees[id].crowns[phase]`, null for a phase without one |
-| A plant in a season | 3 shapes (seeds 1, 2, 3), 1 tier each | `plants[id].seasons[season]`, with the plant's `ground` |
+| A plant in a season | 3 shapes (seeds 1, 2, 3), 1 tier each | `plants[id].seasons[season]`, with the plant's `ground`; a season in which the plant has no model has no file and no key |
 | A breed of animal | 1 per coat and pose, coat by coat (model `coat × poses + pose`), 2 tiers each | `breeds[name].file`, with `height`, `coats` and `poses` |
 | The objects | the rocks (3 slabs, 3 boulders), then the models of the kinds in the order of `POINT_MODELS` | `objects.file`, with `rocks` and per kind model the end of each tier in metres (`until`) and `casts` |
 

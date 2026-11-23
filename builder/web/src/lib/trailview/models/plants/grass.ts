@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { blade, byHeight, merge, paint, ramp, random, type Geometry, type Ramp, type Vec } from '../plant-shape';
+import { byHeight, merge, paint, ramp, random, ribbon, type Geometry, type Ramp, type Vec } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** The grass's colours, root to tip, by season. */
@@ -10,15 +10,22 @@ const GRASS: Record<Season, Ramp> = {
     autumn: ['#6a7038', '#97935a', '#c4b47a'],
 };
 
-/** Nine tapering blades, 27 triangles. */
+/**
+ * Nine blades, each bent once at its middle: three stand in the middle and nod, and six shorter ones leave the
+ * foot at a slant and bow over round them, so the tuft is a small fountain.
+ */
 function grass(season: Season, rand: () => number): Geometry {
     const colour = byHeight(ramp(GRASS[season]), 0.9);
     const parts: Geometry[] = [];
     for (let k = 0; k < 9; k++) {
-        const a = (k / 9) * 2 * Math.PI + rand() * 0.6;
-        const base: Vec = [0.05 * Math.cos(a), 0.05 * Math.sin(a), 0];
-        const geo = blade(base, a, 0.75 + 0.25 * rand(), 0.2 + 0.45 * rand(), 0.35, (t) => 0.1 * (1 - t), 2);
-        parts.push(paint(geo, colour));
+        const inner = k < 3, a = (inner ? k / 3 : (k + 0.5) / 6) * 2 * Math.PI + rand() * 0.6;
+        const [c, s] = [Math.cos(a), Math.sin(a)], half = (inner ? 0.5 : 0.42) * (1 + 0.25 * rand());
+        const [rise, bow] = inner ? [0.05 + 0.2 * rand(), 0.35 + 0.25 * rand()] : [0.4 + 0.25 * rand(), 1.1 + 0.3 * rand()];
+        const d = inner ? 0 : 0.05, reach = half * (Math.sin(rise) + Math.sin(bow));
+        const middle: Vec = [(d + half * Math.sin(rise)) * c, (d + half * Math.sin(rise)) * s, half * Math.cos(rise)];
+        const tip: Vec = [(d + reach) * c, (d + reach) * s, half * (Math.cos(rise) + Math.cos(bow))];
+        const width = 0.1 + 0.03 * rand();
+        parts.push(paint(ribbon([[d * c, d * s, 0], middle, tip], [-s, c, 0], (t) => width * (1 - t * t), 2), colour));
     }
     return merge(parts);
 }

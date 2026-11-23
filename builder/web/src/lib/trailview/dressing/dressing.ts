@@ -6,7 +6,9 @@ import { wgsl } from '../gpu/wgsl';
 import { Instances, VIEWS, type ModelSpec, type Producer, type Surfaces } from '../instances/instances';
 import type { ModelFiles } from '../instances/model-files';
 import type { Packed } from '../models/model-file';
-import { bits, named, SEASONS, type Rules } from '../rules/regions';
+import { bits, named, seasonOf, SEASONS, type Rules, type Season } from '../rules/regions';
+import { today } from '../view';
+import { SEEDS } from '../vegetation/plants';
 import type { Reach } from '../vegetation/tree-models';
 
 /** Herds stand within this many metres, rocks within this many; as HERDS of dressing.wgsl and ROCK_REACH_M of rocks.wgsl. */
@@ -23,19 +25,21 @@ const HERD_WORDS = 8, DRESSING_BYTES = 64;
  * of the herds, a row of models across the view toward `heading` (degrees from north) at (lat, lon), each facing right
  * and turned SHOW_TURN toward the eye. An entry is a breed, which stands all its models, or `breed.k`, its model k, an
  * animal SHOW_SPACING times its height wide; with `tier` 1 every animal draws its far tier at any distance. An entry
- * `tree.<id>.<tier>[.<room>]` stands that tier of a tree species, SHOW_TREE_M tall, in `room` metres of the row (SHOW_TREE_M
- * by default), in the crown of the date's phase.
- * A showroom stands on the ground but does not read its colour, so its trees take no satellite hue: they show their own colours.
+ * `tree.<id>.<tier>[.<room>]` stands that tier of a tree species, SHOW_TREE_M tall, in the crown of the date's phase; an
+ * entry `plant.<id>.<seed>[.<room>]` stands that shape of a plant (seed 1 to 3) as tall as the top of its `ground.height`,
+ * in the date's season (`date` of the address). Either takes `room` metres of the row, its height by default.
+ * A showroom stands on the ground but does not read its colour, so its trees and plants take no satellite hue: they show
+ * their own colours.
  */
-interface Showroom { lonLat: [number, number]; heading: number; entries: string[]; tier: number }
+interface Showroom { lonLat: [number, number]; heading: number; entries: string[]; tier: number; season: Season }
 const SHOW_SPACING = 2.3, SHOW_TURN = 0.45, SHOW_TREE_M = 10;
 
 function showroom(): Showroom | undefined {
-    const value = globalThis.location ? new URLSearchParams(globalThis.location.search).get('showroom') : null;
+    const q = new URLSearchParams(globalThis.location?.search ?? ''), value = q.get('showroom');
     if (!value) return undefined;
     const [lat, lon, heading, entries, tier] = value.split(',');
     if (!entries) return undefined;
-    return { lonLat: [Number(lon), Number(lat)], heading: (Number(heading) * Math.PI) / 180, entries: entries.split('|'), tier: Number(tier ?? 0) };
+    return { lonLat: [Number(lon), Number(lat)], heading: (Number(heading) * Math.PI) / 180, entries: entries.split('|'), tier: Number(tier ?? 0), season: seasonOf(q.get('date') ?? today()) };
 }
 
 interface Resources { gpu: Gpu; herds: GPUComputePipeline; rocks: GPUComputePipeline; groups: GPUBindGroup[]; params: GPUBuffer; table: GPUBuffer }
@@ -67,15 +71,21 @@ export class Dressing implements Producer {
 
     constructor(private readonly rules: Rules, private readonly instances: Instances, private readonly files: ModelFiles) {
         instances.produce(this);
-        const { objects, breeds: breedModels } = files.models;
+        const { objects, breeds: breedModels, plants } = files.models;
         const spec = ({ tiers: [mesh], shape }: Packed, until: number): ModelSpec => ({ tiers: [{ mesh, until }], shape });
         // No fade of the rocks' tier: rocks_of ends each rock at its own distance before the reach.
         this.rockModel = this.load(objects.file, objects.rocks, model => ({ ...spec(model, ROCK_REACH_M), fade: 0 }));
         // The showroom's models: an entry of a breed stands each of its models.
-        const row = (this.show?.entries ?? []).map(entry => entry.split('.')).flatMap(([name, k, tier, room]) => {
-            const first = name === 'tree' ? this.tree(k, Number(tier ?? 0)) : this.breed(name);
+        const row = (this.show?.entries ?? []).map(entry => entry.split('.')).flatMap(([name, k, n, ...room]) => {
+            if (name === 'tree' || name === 'plant') {
+                const first = name === 'tree' ? this.tree(k, Number(n ?? 0)) : this.plant(k, Number(n));
+                if (first === undefined) return [];
+                const height = name === 'tree' ? SHOW_TREE_M : plants[k].ground.height[1];
+                // A decimal room, such as 1.5, came apart in the split on '.'.
+                return [{ model: first, height, room: Number(room.join('.')) || height }];
+            }
+            const first = this.breed(name);
             if (first === undefined) return [];
-            if (name === 'tree') return [{ model: first, height: SHOW_TREE_M, room: Number(room) || SHOW_TREE_M }];
             const { coats, poses, height } = breedModels[name];
             return (k ? [Number(k)] : Array.from({ length: coats * poses }, (_, m) => m)).map(m => ({ model: first + m, height, room: SHOW_SPACING * height }));
         });
@@ -122,6 +132,13 @@ export class Dressing implements Producer {
         return summer;
     }
 
+    /** The instance model of a showroom plant's shape `seed`, in the showroom's season, drawn as a ground plant to HERD_REACH_M; none in a season without a model. */
+    private plant(id: string, seed: number): number | undefined {
+        const file = this.files.models.plants[id]?.seasons[this.show!.season];
+        if (!file || !(seed >= 1 && seed <= SEEDS)) return undefined;
+        return this.load(file, 1, ({ tiers: [mesh], shape }) => ({ tiers: [{ mesh, until: HERD_REACH_M }], shape }), seed - 1);
+    }
+
     /** Writes the herds of region `r` into the table, in the order of its pack: those whose breed has its models. */
     private place(r: number): void {
         this.placed.add(r);
@@ -136,13 +153,13 @@ export class Dressing implements Producer {
         });
     }
 
-    /** The first of `count` models of the instances, which take the first `count` models of a file once it arrives. */
-    private load(file: string, count: number, spec: (model: Packed) => ModelSpec): number | undefined {
+    /** The first of `count` models of the instances, which take `count` models of a file from its model `from` once it arrives. */
+    private load(file: string, count: number, spec: (model: Packed) => ModelSpec, from = 0): number | undefined {
         const first = this.instances.add(...Array.from({ length: count }, () => ({ tiers: [] })));
         this.urls.push(file);
         void this.files.load(file).then(models => {
             if (first === undefined || !models) return;
-            for (let k = 0; k < count; k++) this.instances.replace(first + k, spec(models[k]));
+            for (let k = 0; k < count; k++) this.instances.replace(first + k, spec(models[from + k]));
         });
         return first;
     }

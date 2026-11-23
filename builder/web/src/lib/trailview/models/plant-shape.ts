@@ -1,7 +1,6 @@
-// The primitives that the plant models add to shape.ts, without three.js: the prototype's tubes,
-// ribbons and blades along smooth paths, tufts and their cores, and three.js's small solids.
+// The parts that the plant models build from, on top of shape.ts.
 
-import { computeNormals, domed, place, soft, smooth, UP, v3, type Colour, type Geometry, type Sheet, type V, type Vec } from './shape';
+import { computeNormals, GOLDEN, paint, place, revolve, soft, smooth, UP, v3, type Colour, type Geometry, type Sheet, type V, type Vec } from './shape';
 
 export * from './shape';
 
@@ -16,7 +15,7 @@ export function rampAt([shade, body, tip]: Colour[], t: number): Colour {
 }
 
 /** three.js's CatmullRomCurve3, centripetal, open: points by arc length with `at`. */
-export function curve(points: V[]) {
+function curve(points: V[]) {
     const n = points.length;
     const point = (t: number): V => {
         const p = (n - 1) * t;
@@ -151,11 +150,95 @@ export function tufts(middle: Tuft, count: number, turn: number, [d, r, h]: Vec,
     return out;
 }
 
-/** A low six-sided cone, `size` of the tuft wide and `height` of it tall, that fills the gaps in a tuft with shade. */
-export function core(cards: Sheet, [x, y, r, h]: Tuft, foot: Colour, top: Colour, size: number, height: number): void {
-    const light = domed(v3(x, y, 0), v3(r, r, h), 0.3);
-    const ring = (s: number) => v3(x + size * r * Math.cos((s * Math.PI) / 3), y + size * r * Math.sin((s * Math.PI) / 3), -0.02);
-    for (let s = 0; s < 6; s++) cards.add([ring(s), ring(s + 1), v3(x, y, height * h)], [foot, foot, top], light);
+/**
+ * A fern's feather on `cards` along `path`, level across `side`: `pairs` broad teeth on each flank,
+ * those of one flank half a step past those of the other, so the feather is whole along its length,
+ * with a ridge. A tooth `t` along it reaches `reach(t)` out and drops `droop` of that; `colour(s)`
+ * along the ridge, its point turned toward `tip`. The point stands on the chord of its step, or
+ * with `onPath` on the path; `under` lights the face that looks down. 2 × `pairs` triangles.
+ */
+export function feather(cards: Sheet, path: (s: number) => V, side: V, pairs: number, reach: (t: number) => number, droop: number, colour: (s: number) => Colour, tip: Colour, { onPath = false, under = false } = {}): void {
+    for (const flank of [-1, 1]) for (let i = 0; i < pairs; i++) {
+        const [s0, s1] = [i, i + 1].map((k) => (k + (flank > 0 ? 0.5 : 0)) / (pairs + 0.5)), t = (s0 + s1) / 2, r = reach(t);
+        const [from, to] = [path(s0), path(s1)];
+        const up = v3().crossVectors(side, to.clone().sub(from)).normalize();
+        if (up.z < 0 !== under) up.negate();
+        const end = (onPath ? path(t + 0.2 * (s1 - s0)) : from.clone().lerp(to, 0.75)).addScaledVector(side, flank * r).addScaledVector(up, -droop * r);
+        end.z = Math.max(0.01, end.z);
+        const light = (p: V) => (p === end ? up.clone().addScaledVector(side, 0.6 * flank) : up.clone()).normalize().lerp(UP, 0.3).normalize();
+        cards.add([from, to, end], [colour(s0), colour(s1), colour(t).lerp(tip, 0.6)], light);
+    }
+}
+
+/** A blade on `cards`: a kite from `foot` to `tip`, twice `half` across at its `waist`. 2 triangles. */
+export function kite(cards: Sheet, foot: V, waist: V, tip: V, half: V, [root, body, end]: Colour[], light?: (p: V) => V): void {
+    const [left, right] = [waist.clone().add(half), waist.clone().sub(half)];
+    cards.add([foot, left, right], [root, body, body], light);
+    cards.add([left, tip, right], [body, end, body], light);
+}
+
+/** A leaf on `cards`: a kite from `at` along the unit `dir`, `length` long and `width` across at `waist` of its length, level across. 2 triangles. */
+export function leaf(cards: Sheet, at: V, dir: V, length: number, width: number, waist: number, colours: Colour[], light?: (p: V) => V): void {
+    const half = v3().crossVectors(dir, UP);
+    if (half.lengthSq() < 1e-6) half.set(1, 0, 0);
+    kite(cards, at, at.clone().addScaledVector(dir, waist * length), at.clone().addScaledVector(dir, length), half.setLength(width / 2), colours, light);
+}
+
+/** Two unit vectors across the unit `axis`, square to each other. */
+export function across(axis: V): [V, V] {
+    const u = v3().crossVectors(axis, Math.abs(axis.z) < 0.9 ? UP : v3(1, 0, 0)).normalize();
+    return [u, v3().crossVectors(axis, u)];
+}
+
+/**
+ * A stem, twig, spine or spray on `cards`: a three-sided point from `foot`, `r` thick there, to `tip`, `root` at its
+ * foot and `end` at its tip. 3 triangles, lit as a round stick that leans the way `lean` gives, so sprays on a dome
+ * shade with it.
+ */
+export function spike(cards: Sheet, foot: V, tip: V, r: number, [root, end]: Colour[], lean: (p: V) => V = () => UP): void {
+    const axis = tip.clone().sub(foot).normalize(), [u, w] = across(axis);
+    const ring = [0, 1, 2, 0].map((k) => foot.clone().addScaledVector(u, r * Math.cos((k * 2 * Math.PI) / 3)).addScaledVector(w, r * Math.sin((k * 2 * Math.PI) / 3)));
+    const light = (p: V) => p.clone().sub(foot).projectOnPlane(axis).normalize().addScaledVector(axis, 0.3).add(lean(p)).normalize();
+    for (let k = 0; k < 3; k++) cards.add([ring[k], ring[k + 1], tip], [root, root, end], light);
+}
+
+/**
+ * The place on a tuft's dome toward angle `a`, `polar` radians down from its top: the point, a little inside the
+ * skin of a `cushion` so that what grows there joins it, and the way out.
+ */
+export function domeAt([x, y, r, h]: Tuft, a: number, polar: number): [V, V] {
+    const out = v3(Math.sin(polar) * Math.cos(a), Math.sin(polar) * Math.sin(a), Math.cos(polar));
+    return [v3(x + 0.88 * r * out.x, y + 0.88 * r * out.y, 0.88 * h * out.z), out];
+}
+
+/** Place `j` of `n` on a tuft's dome, spread by the golden angle from its top down to `reach` radians and turned by `turn`. */
+export const onDome = (tuft: Tuft, j: number, n: number, reach: number, turn = 0) => domeAt(tuft, turn + j * GOLDEN, reach * Math.sqrt((j + 0.5) / n));
+
+/**
+ * A seed head, plume or bud on `cards`: a spindle of `sides` sides from `base` on its stalk to `tip`, `r` at its
+ * widest, `at` of the way up, `low` at its base, `high` from there on and `end` at its tip. 2 × `sides` triangles, lit as a round body
+ * that leans up.
+ */
+export function spindle(cards: Sheet, base: V, tip: V, r: number, sides: number, [low, high, end = high]: Colour[], at = 0.4): void {
+    const axis = tip.clone().sub(base).normalize(), waist = base.clone().lerp(tip, at), [u, w] = across(axis);
+    const ring = (k: number) => waist.clone().addScaledVector(u, r * Math.cos((k / sides) * 2 * Math.PI)).addScaledVector(w, r * Math.sin((k / sides) * 2 * Math.PI));
+    const light = (p: V) => p.clone().sub(waist).normalize().lerp(UP, 0.4).normalize();
+    for (let k = 0; k < sides; k++) {
+        cards.add([base, ring(k), ring(k + 1)], [low, high, high], light);
+        cards.add([ring(k), tip, ring(k + 1)], [high, end, high], light);
+    }
+}
+
+/**
+ * A round cushion of a mat, sunk a little into the ground: a dome `sides` round, of 3 × `sides` triangles, its rim
+ * knobbly, `deep` in the crease at its rim and `tip` on its top. Its light leans `lift` of the way up, so cushions
+ * that grow into each other shade softly into one mat.
+ */
+export function cushion([x, y, r, h]: Tuft, sides: number, [deep, mid, tip]: Colour[], lift: number, seed: number): Geometry {
+    const dome = soft(revolve([[r, 0], [0.74 * r, 0.62 * h], [0, h]], sides), 0.1 * r, 5 / r, seed);
+    relight(dome, (p) => v3(p.x / r, p.y / r, p.z / h).normalize().lerp(UP, lift).normalize());
+    place(dome, { at: [x, y, -0.12 * h], rot: [0, 0, seed] });
+    return paint(dome, (p) => deep.clone().lerp(mid, smooth(-0.12, 0.4, p.z / h)).lerp(tip, smooth(0.35, 0.85, p.z / h)));
 }
 
 /** A solid of three.js's PolyhedronGeometry at detail 0: its corners on a sphere of radius r, flat faces. */
@@ -170,19 +253,3 @@ function polyhedron(corners: number[], faces: number[], r: number): Geometry {
 
 export const tetrahedron = (r: number) => polyhedron([1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1], [2, 1, 0, 0, 3, 2, 1, 3, 0, 2, 3, 1], r);
 export const octahedron = (r: number) => polyhedron([1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1], [0, 2, 4, 0, 4, 3, 0, 3, 5, 0, 5, 2, 1, 2, 5, 1, 5, 3, 1, 3, 4, 1, 4, 2], r);
-
-/** three.js's CircleGeometry: a flat disc of `segments` triangles about the origin, facing up. */
-export function circle(r: number, segments: number): Geometry {
-    const geo: Geometry = { position: [0, 0, 0], normal: [0, 0, 1], color: [], index: [] };
-    for (let i = 0; i <= segments; i++) {
-        const a = (i / segments) * 2 * Math.PI;
-        geo.position.push(r * Math.cos(a), r * Math.sin(a), 0);
-        geo.normal.push(0, 0, 1);
-    }
-    for (let i = 1; i <= segments; i++) geo.index.push(i, i + 1, 0);
-    return geo;
-}
-
-/** Moves a part. */
-export const translate = (geo: Geometry, x: number, y: number, z: number) => place(geo, { at: [x, y, z] });
-

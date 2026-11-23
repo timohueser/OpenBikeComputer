@@ -25,7 +25,7 @@
   "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 2 },
   "grey-willow": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
   "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 2 },
-  "western-gorse": { "model": "gorse", "latin": "Ulex gallii", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 550], "weight": 1 },
+  "western-gorse": { "latin": "Ulex gallii", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 550], "weight": 1 },
   "common-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
   "rhododendron": { "model": "alpenrose", "latin": "Rhododendron ponticum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 1 }
  },
@@ -40,7 +40,7 @@
   "bilberry": {},
   "fern": {},
   "bluebell": { "model": "alpine-flowers", "latin": "Hyacinthoides non-scripta", "on": ["tree"], "height": [0.2, 0.4], "share": 0.3, "clumped": true },
-  "foxglove": { "model": "alpine-flowers", "latin": "Digitalis purpurea", "on": ["grass", "shrub"], "height": [0.8, 1.5], "share": 0.03, "clumped": true },
+  "foxglove": { "latin": "Digitalis purpurea", "on": ["grass", "shrub"], "height": [0.8, 1.5], "share": 0.03, "clumped": true },
   "common-reed": { "on": ["wetland"], "off": ["#moor"], "height": [1.5, 2.5], "share": 0.5, "clumped": true },
   "marram-grass": { "model": "esparto", "latin": "Ammophila arenaria", "on": ["bare"], "height": [0.5, 1.0], "share": 0.3 },
   "grass": { "off": ["#moor"] }

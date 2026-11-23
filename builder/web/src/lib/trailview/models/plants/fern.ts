@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { blade, byHeight, merge, paint, ramp, random, smooth, type Geometry, type Ramp } from '../plant-shape';
+import { feather, merge, paint, ramp, random, ribbon, sheet, smooth, v3, type Colour, type Geometry, type Ramp, type Sheet, type Vec } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 const FERN: Record<Season, Ramp> = {
@@ -9,15 +9,40 @@ const FERN: Record<Season, Ramp> = {
     autumn: ['#7a4a22', '#a8682c', '#cf9448'],
 };
 
-/** Nine fronds rising out of the crown like a shuttlecock, their tips nodding; the edge steps in and out like the pinnae. */
+/**
+ * A frond from the crown toward angle `a`, `length` along the ground: it leaves the crown steeply,
+ * arches out and ends level. `pairs` pinnae sit on each side of the rachis, the longest below the
+ * middle, each a broad tooth that curls up from the rachis. Those of one side stand half a step past
+ * those of the other, so the frond is whole along its length: a zigzag feather with a ridge. It is
+ * dark at the crown and light at its tip and its edge.
+ */
+function frond(cards: Sheet, a: number, length: number, rise: number, pairs: number, [deep, mid, tip]: Colour[]): void {
+    const out = v3(Math.cos(a), Math.sin(a), 0);
+    const at = (s: number) => out.clone().multiplyScalar((0.45 * s + 0.55 * s * s) * length).setZ((1.7 * s - 0.7 * s * s) * rise);
+    const colour = (s: number) => deep.clone().lerp(mid, smooth(0, 0.2, s)).lerp(tip, 0.8 * smooth(0.2, 0.9, s));
+    feather(cards, at, v3(-out.y, out.x, 0), pairs, (t) => 0.36 * length * smooth(-0.1, 0.35, t) * (1 - t) ** 0.5, 0.3, colour, tip, { onPath: true, under: true });
+}
+
+/**
+ * Male fern: a shuttlecock of six arching fronds round three young ones that stand in the middle.
+ * In spring the young ones are crosiers, still rolled up at the tip.
+ */
 function fern(season: Season, rand: () => number): Geometry {
-    const colour = byHeight(ramp(FERN[season]), 0.7);
-    const width = (t: number) => 0.45 * smooth(0.02, 0.35, t) * (1 - t) ** 0.6 * (Math.round(t * 6) % 2 ? 0.6 : 1);
-    const parts: Geometry[] = [];
-    for (let k = 0; k < 9; k++) {
-        const a = (k / 9) * 2 * Math.PI + rand() * 0.5;
-        parts.push(paint(blade([0, 0, 0], a, 1.1 + 0.3 * rand(), 0.3 + 0.35 * rand(), 0.5, width, 6), colour));
+    const colours = ramp(FERN[season]);
+    const cards = sheet(), parts: Geometry[] = [];
+    for (let k = 0; k < 6; k++) frond(cards, (k / 6) * 2 * Math.PI + rand() * 0.5, 0.78 + 0.2 * rand(), 0.85 + 0.15 * rand(), 6, colours);
+    for (let k = 0; k < 3; k++) {
+        const a = ((k + 0.5) / 3) * 2 * Math.PI + rand() * 0.8, h = 0.6 + 0.15 * rand();
+        if (season !== 'spring') {
+            frond(cards, a, 0.3 + 0.1 * rand(), h, 3, colours);
+            continue;
+        }
+        // The stalk leans out, and its tip rolls back over toward the crown.
+        const crook = ([d, z]: [number, number]): Vec => [h * d * Math.cos(a), h * d * Math.sin(a), h * z];
+        const path = ([[0, 0], [0.14, 0.5], [0.24, 0.92], [0.1, 1], [0.08, 0.8]] as [number, number][]).map(crook);
+        parts.push(paint(ribbon(path, [-Math.sin(a), Math.cos(a), 0], (t) => 0.06 + 0.07 * t, 3, 0.3), (p) => colours[1].clone().lerp(colours[2], smooth(0, h, p.z))));
     }
+    parts.push(cards.build());
     return merge(parts);
 }
 
