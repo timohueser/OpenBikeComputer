@@ -30,7 +30,7 @@ struct Upper {
     under: Vec<(usize, bool)>,
 }
 
-/// A way over a vertex of a room: its number among the ways over the room, its height at its nearest point (of a room
+/// A way over a point of a room: its number among the ways over the room, its height at its nearest point (of a room
 /// over this one, the road solver's: its floor where that room has one, at its metres `upper`) and its depth, the
 /// metres along the chain of that point's foot and the road solver's height of the chain there, and the at-grade band
 /// of the way and the room.
@@ -52,12 +52,15 @@ impl Above {
 }
 
 /// A room with a part where the floor pass reads it: its vertices (metres along its curve), the road solver's
-/// heights and the points there, per vertex the ways over it, and those ways among `overs` in their numbers.
+/// heights and the points there, per vertex the ways that cap it, per chord the ways over the two ends of its metres
+/// within their reach (the chord, the metres, the point there and the way), and those ways among `overs` in their
+/// numbers.
 struct Site {
     s: Vec<f64>,
     z: Vec<f64>,
     xy: Vec<[f64; 2]>,
     above: Vec<Vec<Above>>,
+    reads: Vec<(usize, f64, [f64; 2], Above)>,
     ways: Vec<usize>,
 }
 
@@ -276,21 +279,24 @@ pub(crate) fn floors(
                 .flat_map(|o| (0..overs[o].points.len() - 1).map(move |k| (o, k)));
             (index.overlapping(area).into_iter()).map(|i| segments[i]).chain(rooms).filter(move |&(o, _)| on(o))
         };
-        // The vertices: the curve's, and the ends of each stretch of the tube within the reach of a way that can lower
-        // the floor.
-        let mut runs: BTreeMap<usize, Vec<[f64; 2]>> = BTreeMap::new();
-        // The ends of the reaches, each with its way.
-        let mut extra: Vec<(f64, usize)> = Vec::new();
+        // Per segment of a way near the line, the metres of the line within its reach.
+        let mut reaches: Vec<(usize, usize, [f64; 2])> = Vec::new();
         for j in 0..ps.len() - 1 {
             let ds = points[j + 1].s - points[j].s;
             for (o, k) in near(grown(&ps[j..j + 2], *shell_half)) {
                 let w = &overs[o];
-                let reach = reach_of(w);
-                if let Some([a, e]) = within(ps[j], ps[j + 1], (w.points[k], w.points[k + 1]), reach) {
-                    runs.entry(o).or_default().push([points[j].s + a * ds, points[j].s + e * ds]);
+                if let Some([a, e]) = within(ps[j], ps[j + 1], (w.points[k], w.points[k + 1]), reach_of(w)) {
+                    reaches.push((o, k, [points[j].s + a * ds, points[j].s + e * ds]));
                 }
             }
         }
+        // The vertices: the curve's, and the ends of each stretch of the tube within the reach of a way that can lower
+        // the floor, each with its way.
+        let mut runs: BTreeMap<usize, Vec<[f64; 2]>> = BTreeMap::new();
+        for &(o, _, r) in &reaches {
+            runs.entry(o).or_default().push(r);
+        }
+        let mut extra: Vec<(f64, usize)> = Vec::new();
         for (o, mut list) in runs {
             list.sort_by(|x, y| x[0].total_cmp(&y[0]));
             let mut run = list[0];
@@ -323,29 +329,15 @@ pub(crate) fn floors(
         if s.len() == 2 && rooms.lanes[t].len() < 2 && (0..2).any(|e| rooms.seam_at(t, e)) {
             s.insert(1, (s0 + s1) / 2.0);
         }
-        // Each end of a reach that is no vertex is taken by its nearest vertex, which reads that way within its reach
-        // and the metres to that end: by the triangle inequality the way lies there within that.
-        let mut took: BTreeMap<(usize, usize), f64> = BTreeMap::new();
-        for &(e, o) in &extra {
-            let at = s.partition_point(|&x| x < e);
-            let near = [at.checked_sub(1), (at < s.len()).then_some(at)].into_iter().flatten();
-            if let Some(i) = near.min_by(|&x, &y| (s[x] - e).abs().total_cmp(&(s[y] - e).abs())) {
-                let m = took.entry((i, o)).or_insert(0.0);
-                *m = m.max(distance(tube.curve.at(s[i]).0.p, tube.curve.at(e).0.p));
-            }
-        }
-        // Per vertex the most metres to an end of a reach that it took.
-        let more: Vec<f64> =
-            (0..s.len()).map(|i| took.range((i, 0)..(i + 1, 0)).map(|(_, &m)| m).fold(0.0, f64::max)).collect();
         let (ls, lz): (Vec<f64>, Vec<f64>) = points.iter().map(|q| (q.s, q.z)).unzip();
         let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();
         let xy: Vec<[f64; 2]> = s.iter().map(|&x| tube.curve.at(x).0.p).collect();
         // The foot of a point on the whole chain, past the openings to its ends: its metres and the road solver's
-        // height there. It lies within twice the reach of the vertex that the point is near.
+        // height there. It lies within twice `m` of metres `at` where the point lies `m` from the chain there.
         let chain = line(tube, [0.0, tube.curve.len]);
-        let foot = |q: [f64; 2], (at, reach): (f64, f64)| {
-            let first = chain.partition_point(|v| v.s < at - 2.0 * reach).saturating_sub(1);
-            let last = chain.partition_point(|v| v.s <= at + 2.0 * reach).min(chain.len() - 1);
+        let foot = |q: [f64; 2], (at, m): (f64, f64)| {
+            let first = chain.partition_point(|v| v.s < at - 2.0 * m).saturating_sub(1);
+            let last = chain.partition_point(|v| v.s <= at + 2.0 * m).min(chain.len() - 1);
             let (_, j, u) = (first..last.max(first + 1))
                 .map(|j| {
                     let (m, u) = nearest(q, chain[j].p, chain[j + 1].p);
@@ -355,42 +347,46 @@ pub(crate) fn floors(
             let (c, d) = (chain[j], chain[j + 1]);
             (c.s + u * (d.s - c.s), c.z + u * (d.z - c.z))
         };
-        // Per vertex each way over it: within its reach, with the foot of its nearest point within the openings
-        // grown by its outer half-width; its height and depth there, the foot and the at-grade band of the two.
+        // Segment k of way o over metres x of the room: its nearest point to the room's point there, where the foot of
+        // that point on the whole chain lies within the openings grown by the way's outer half-width; its height and
+        // depth there, the foot and the at-grade band of the two.
         let own_band = sections.way("tunnel", &input.tunnels[&tube.widest].0, false).snap_height_m;
         let mut local: BTreeMap<usize, usize> = BTreeMap::new();
-        let mut above: Vec<Vec<Above>> = (0..s.len()).map(|_| Vec::new()).collect();
-        for (i, &p) in xy.iter().enumerate() {
-            // Per way its nearest segment: metres, segment and share along it.
-            let mut best: BTreeMap<usize, (f64, usize, f64)> = BTreeMap::new();
-            for (o, k) in near(grown(&[p], *shell_half + more[i])) {
-                let (m, u) = nearest(p, overs[o].points[k], overs[o].points[k + 1]);
-                let e = best.entry(o).or_insert((f64::INFINITY, 0, 0.0));
-                if m < e.0 {
-                    *e = (m, k, u);
-                }
+        let mut read = |(o, k): (usize, usize), x: f64| -> Option<([f64; 2], Above)> {
+            let (w, p) = (&overs[o], tube.curve.at(x).0.p);
+            let (a, e) = (w.points[k], w.points[k + 1]);
+            let (m, u) = nearest(p, a, e);
+            let (along, base) = foot([a[0] + u * (e[0] - a[0]), a[1] + u * (e[1] - a[1])], (x, m.max(reach_of(w))));
+            if along < s0 - w.outer - MERGE_M || along > s1 + w.outer + MERGE_M {
+                return None;
             }
-            for (o, (m, k, u)) in best {
-                let w = &overs[o];
-                let reach = reach_of(w) + took.get(&(i, o)).copied().unwrap_or(0.0);
-                if m > reach + MERGE_M {
-                    continue;
-                }
-                let (a, e) = (w.points[k], w.points[k + 1]);
-                let (along, base) = foot([a[0] + u * (e[0] - a[0]), a[1] + u * (e[1] - a[1])], (s[i], reach));
-                if along >= s0 - w.outer - MERGE_M && along <= s1 + w.outer + MERGE_M {
-                    let c = local.len();
-                    let way = *local.entry(o).or_insert(c);
-                    let upper = w.room.as_ref().map(|r| (r.room, r.s[k] + u * (r.s[k + 1] - r.s[k])));
-                    let height = w.z[k] + u * (w.z[k + 1] - w.z[k]);
-                    let band = w.band.min(own_band);
-                    above[i].push(Above { way, height, upper, depth: w.depth, along, base, band });
+            let c = local.len();
+            let way = *local.entry(o).or_insert(c);
+            let upper = w.room.as_ref().map(|r| (r.room, r.s[k] + u * (r.s[k + 1] - r.s[k])));
+            let height = w.z[k] + u * (w.z[k + 1] - w.z[k]);
+            Some((p, Above { way, height, upper, depth: w.depth, along, base, band: w.band.min(own_band) }))
+        };
+        // A way caps both vertices of each chord that its reach overlaps, so the floor, linear along the chord, lies
+        // under it; the crown is read at the two ends of the chord's metres within its reach.
+        let mut above: Vec<Vec<Above>> = (0..s.len()).map(|_| Vec::new()).collect();
+        let mut reads = Vec::new();
+        for &(o, k, [a, e]) in &reaches {
+            let lo = s.partition_point(|&x| x <= a + MERGE_M).saturating_sub(1);
+            let hi = s.partition_point(|&x| x < e - MERGE_M).min(s.len() - 1);
+            for i in lo..=hi {
+                above[i].extend(read((o, k), s[i]).map(|r| r.1));
+            }
+            for i in lo.saturating_sub(1)..=hi.min(s.len() - 2) {
+                let (x, y) = (a.max(s[i]), e.min(s[i + 1]));
+                if x <= y + MERGE_M {
+                    let at = if y - x > MERGE_M { vec![x, y] } else { vec![x] };
+                    reads.extend(at.into_iter().filter_map(|x| read((o, k), x).map(|(p, w)| (i, x, p, w))));
                 }
             }
         }
         let mut ways: Vec<(usize, usize)> = local.iter().map(|(&o, &c)| (c, o)).collect();
         ways.sort_unstable();
-        Site { s, z, xy, above, ways: ways.into_iter().map(|(_, o)| o).collect() }
+        Site { s, z, xy, above, reads, ways: ways.into_iter().map(|(_, o)| o).collect() }
     };
     let sites: Vec<Site> = (0..with.len()).map(site_of).collect();
     let site = |t: usize| &sites[with.iter().position(|&w| w == t).unwrap()];
@@ -504,16 +500,19 @@ pub(crate) fn floors(
                 lanes_floor(rooms, (t, !boxed[t]), (&site.s, &lanes, &leasts), tops(t, &out), input)
             };
             // Over the floor as it is (past an opening, the chain), per way the most metres that the shell of the crown
-            // rises over its underside where it lies over the floor by more than the band, and the vertex there.
+            // rises over its underside where it lies over the floor by more than the band, and the point there. The
+            // crown of chord i at metres x: its floor there and its height as the builder draws it.
             let ground =
                 |a: &Above| if a.along >= s0 && a.along <= s1 { interp(a.along, &fl.s, &fl.f) } else { a.base };
-            let mut over: Vec<Option<(f64, usize)>> = vec![None; site.ways.len()];
-            for (i, v) in site.above.iter().enumerate() {
-                for a in v.iter().filter(|a| a.height(&out) - ground(a) > a.band) {
-                    let m = fl.f[i] + fl.h[i] + b.shell_m - (a.height(&out) - a.depth);
-                    if over[a.way].is_none_or(|o| m > o.0) {
-                        over[a.way] = Some((m, i));
-                    }
+            let crown = |i: usize, x: f64| {
+                let (f, h) = fl.at(x);
+                f + if fl.lanes.is_empty() { fl.h[i].min(fl.h[i + 1]) } else { h } + b.shell_m
+            };
+            let mut over: Vec<Option<(f64, [f64; 2])>> = vec![None; site.ways.len()];
+            for (i, x, p, a) in site.reads.iter().filter(|r| r.3.height(&out) - ground(&r.3) > r.3.band) {
+                let m = crown(*i, *x) - (a.height(&out) - a.depth);
+                if over[a.way].is_none_or(|o| m > o.0) {
+                    over[a.way] = Some((m, *p));
                 }
             }
             lowered += usize::from(fl.f.iter().zip(&fl.z).any(|(f, z)| *f < z - 0.005));
@@ -537,11 +536,11 @@ pub(crate) fn floors(
                 }
             }
             for (c, &o) in site.ways.iter().enumerate() {
-                let Some((m, i)) = over[c] else { continue };
+                let Some((m, p)) = over[c] else { continue };
                 tops_count += usize::from(overs[o].room.is_none());
                 if m > 0.005 {
                     let list = if overs[o].room.is_some() { &mut tube_clashes } else { &mut clashes };
-                    list.push((m, site.xy[i], &tube.class));
+                    list.push((m, p, &tube.class));
                 }
             }
             out[t] = Some(fl);

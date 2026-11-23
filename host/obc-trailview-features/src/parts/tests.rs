@@ -891,30 +891,42 @@ fn the_builder_reads_each_joint_back_from_the_tiles() {
     }
 }
 
-/// A footway on top at 16 m east, its underside at 502 m, over the first chord of the footway's room behind the seam of
-/// "a footway at 3 degrees beside a road": the floor under it goes down as elsewhere.
+/// A footway on top at 13 m, 13.3 m and 16 m east, its underside at 502 m, over the first chord of the footway's room
+/// behind the seam of "a footway at 3 degrees beside a road": under the whole width of the way the crown lies under its
+/// underside, also where the chord's far vertex lies out of the way's reach.
 #[test]
 fn a_way_over_the_first_chord_behind_a_seam_holds_the_floor_down() {
-    let mut case = layouts().into_iter().find(|l| l.0 == "a footway at 3 degrees beside a road").unwrap().1;
-    let on_top = part(&[[16.0, 4.6], [16.0, 30.0]], &[502.5; 2]);
-    case.ways.push(("road", tags(&[("highway", "footway")]), vec![on_top]));
-    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
-    let seam = records(&placed, "tunnel-end").iter().filter(|t| t["part"] == "seam").count();
-    let line = (placed.features.iter()).find(|f| f.1.get("part").is_some_and(|p| p == "seam")).unwrap();
-    let (a, b, z, height) = (placed.features.iter())
-        .filter(|f| f.0 == "tunnel-tube" && f.1["half"] == "0.9")
-        .map(|f| (back(f.2.points[0])[0], back(f.2.points[1])[0], f.2.z.clone().unwrap(), f.1["height"].clone()))
-        .find(|c| c.0 <= 16.0 && 16.0 <= c.1)
-        .unwrap();
-    assert_eq!(seam, 1);
-    assert!((a - back(line.2.points[0])[0]).abs() < 0.01, "the chord from {a:.2} m starts at the seam's line");
-    // The crown's shell (0.5 m) over the floor and the height lies at the way's underside or under it.
-    let crown = z[0] + (16.0 - a) / (b - a) * (z[1] - z[0]) + height.parse::<f64>().unwrap() + 0.5;
-    assert!(
-        crown <= 502.0 + 0.005,
-        "the crown at 16 m: {crown:.2} m, floor clashes {}",
-        placed.metrics["floor_clashes"]
-    );
+    let outer = widths().way("road", &tags(&[("highway", "footway")]), false).outer_m();
+    for x in [13.0, 13.3, 16.0] {
+        let mut case = layouts().into_iter().find(|l| l.0 == "a footway at 3 degrees beside a road").unwrap().1;
+        let on_top = part(&[[x, 4.6], [x, 30.0]], &[502.5; 2]);
+        case.ways.push(("road", tags(&[("highway", "footway")]), vec![on_top]));
+        let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+        let seams: Vec<f64> = (placed.features.iter())
+            .filter(|f| f.1.get("part").is_some_and(|p| p == "seam"))
+            .map(|f| back(f.2.points[0])[0])
+            .collect();
+        let chords: Vec<(f64, f64, Vec<f64>, f64)> = (placed.features.iter())
+            .filter(|f| f.0 == "tunnel-tube" && f.1["half"] == "0.9")
+            .map(|f| {
+                (back(f.2.points[0])[0], back(f.2.points[1])[0], f.2.z.clone().unwrap(), f.1["height"].parse().unwrap())
+            })
+            .collect();
+        assert_eq!(seams.len(), 1, "way at {x}");
+        let first = chords.iter().find(|c| c.0 <= x && x <= c.1).unwrap();
+        assert!(
+            (first.0 - seams[0]).abs() < 0.01,
+            "way at {x}: the chord from {:.2} m starts at the seam's line",
+            first.0
+        );
+        // The crown's shell (0.5 m) over the floor and the height, at 41 points over the way's width.
+        for e in (0..=40).map(|k| x - outer + 2.0 * outer * f64::from(k) / 40.0) {
+            for (a, b, z, height) in chords.iter().filter(|c| c.0 <= e && e <= c.1) {
+                let crown = z[0] + (e - a) / (b - a) * (z[1] - z[0]) + height + 0.5;
+                assert!(crown <= 502.0 + 0.005, "way at {x}: the crown at {e:.2} m is {crown:.2} m");
+            }
+        }
+    }
 }
 
 /// The road of "a footway at 3 degrees beside a road" split into two ways 0.46 m and 0.96 m behind the seam's line:
