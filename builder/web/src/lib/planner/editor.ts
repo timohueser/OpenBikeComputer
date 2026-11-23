@@ -113,7 +113,7 @@ export const endpointLabel = (kind: 'start' | 'finish') => kind === 'start' ? st
 /** The title of a plan: the name of its signed route, else its start and finish. */
 export function planTitle(trip: Trip): string {
     const start = trip.points.find(p => p.kind === 'start'), finish = trip.points.find(p => p.kind === 'finish');
-    return trip.name ? trip.name : start && trip.loop ? `Loop from ${start.label}` : start && finish ? `${start.label} → ${finish.label}`
+    return trip.name ? trip.name : start && trip.loop ? `${isThereAndBack(trip) ? 'There and back' : 'Loop'} from ${start.label}` : start && finish ? `${start.label} → ${finish.label}`
         : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New route';
 }
 

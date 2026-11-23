@@ -130,7 +130,7 @@
         font: 600 13px var(--sans);
         cursor: pointer;
     }
-    .stay button[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: var(--panel); }
+    .stay button[aria-pressed="true"] { border-color: var(--ink); background: var(--parchment-2); color: var(--ink); }
     .stay button:disabled { cursor: default; }
     .stay button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 </style>

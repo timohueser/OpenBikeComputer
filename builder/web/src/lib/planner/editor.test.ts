@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { releaseNight, reverseTrip, repartitionDays, closeLoop, isThereAndBack, loopTrip, oneWay, startLoopHere, thereAndBack, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addClickedPoint, addPointNear, dayStops, guessDays, guessedTrip, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planView, replacePoint, routeLegsAround, dragPointOut, fewerDays, multiDay, routeToTrip, setDrawnLeg, setDays, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
+import { releaseNight, reverseTrip, repartitionDays, closeLoop, isThereAndBack, loopTrip, oneWay, startLoopHere, thereAndBack, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addClickedPoint, addPointNear, dayStops, guessDays, guessedTrip, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planTitle, planView, replacePoint, routeLegsAround, dragPointOut, fewerDays, multiDay, routeToTrip, setDrawnLeg, setDays, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, kilometres, type Coordinate } from './geo';
 import { calculateLine, type RoutingLine } from './routing';
 import { LegCache } from './route-legs';
@@ -556,6 +556,7 @@ describe('loops', () => {
         expect(back.points).toHaveLength(marked.points.length + 3);
         expect(back.points.filter(p => p.turnaround).map(p => [p.id, p.kind])).toEqual([['start', 'start'], ['finish', 'waypoint']]);
         expect([back.loop, back.splits, isTrip(back)]).toEqual([true, undefined, true]);
+        expect(planTitle(back)).toBe(planTitle(closeLoop(open)).replace('Loop', 'There and back'));
         // Each leg of the way back is its leg of the way out, reversed.
         expect(route.slice(5).map(p => [p.leg, p.drawn])).toEqual([['straight', undefined], ['straight', undefined], ['drawn', drawing.slice().reverse()], ['straight', undefined]]);
         expect(total(back)).toBeCloseTo(2 * total(open));

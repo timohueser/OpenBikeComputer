@@ -424,7 +424,10 @@
         return new Map(visualStops.map(stop => [stop.point.id, days.find(day => stop.distance / length <= day.to)?.number]));
     });
     const mapPoints = $derived.by(() => {
-        const pins: MapPoint[] = trip.points.map(p => ({
+        // A shaping point of the way back lies on a stop of the way out: the map draws the stop only.
+        const stops = trip.points.filter(p => p.kind !== 'via' && p.kind !== 'marker');
+        const covered = (p: RoutePoint) => p.kind === 'via' && stops.some(stop => stop.coordinate[0] === p.coordinate[0] && stop.coordinate[1] === p.coordinate[1]);
+        const pins: MapPoint[] = trip.points.filter(p => !covered(p)).map(p => ({
             ...p,
             day: pointDays.get(p.id),
             kind: !multi && p.kind === 'night' ? 'waypoint' : p.kind,
