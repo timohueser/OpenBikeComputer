@@ -329,7 +329,7 @@ describe('planner day views', () => {
             target: document.body,
             props: {
                 total: 144, days: planView(testTrip(), testLine(testTrip())).days,
-                activeNight: 2, band: null, focus: { from: 1 / 3, to: 2 / 3, label: 'Day 3' },
+                activeNight: 2, focus: { from: 1 / 3, to: 2 / 3, label: 'Day 3' },
                 window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
             },
         }));
@@ -352,7 +352,7 @@ describe('planner day views', () => {
             target: document.body,
             props: {
                 total: 144, days: planView(testTrip(), testLine(testTrip())).days,
-                activeNight: 2, band: null, window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+                activeNight: 2, window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
             },
         }));
         await tick();
@@ -419,7 +419,7 @@ describe('profile part', () => {
         let view = $state({ from: 0, to: .5 });
         let part = $state<[number, number] | null>(null);
         mounted.push(mount(Profile, { target: document.body, props: {
-            lineData: line, total: 100, days: [], activeNight: 0, band: null, get window() { return view; },
+            lineData: line, total: 100, days: [], activeNight: 0, get window() { return view; },
             get part() { return part; }, onPart: next => { part = next; }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
         } }));
         await tick();
@@ -460,7 +460,7 @@ describe('profile part', () => {
         let part = $state<[number, number] | null>(null);
         let focus = $state({ from: .4, to: .6, label: 'Day 2' });
         mounted.push(mount(Profile, { target: document.body, props: {
-            lineData: line, total: 100, days: [], activeNight: 0, band: null, get focus() { return focus; },
+            lineData: line, total: 100, days: [], activeNight: 0, get focus() { return focus; },
             get part() { return part; }, onPart: next => { part = next; }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
         } }));
         await tick();
@@ -490,7 +490,7 @@ describe('profile access', () => {
         };
         const onHover = vi.fn();
         mounted.push(mount(Profile, { target: document.body, props: {
-            lineData: line, total: .15, days: [], activeNight: 0, band: null,
+            lineData: line, total: .15, days: [], activeNight: 0,
             onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover,
         } }));
         await tick();
@@ -515,7 +515,7 @@ describe('profile access', () => {
             stops: [], seconds: 60, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
         };
         mounted.push(mount(Profile, { target: document.body, props: {
-            lineData: line, total: .225, days: [], activeNight: 0, band: null, window: { from: 0, to: .5 },
+            lineData: line, total: .225, days: [], activeNight: 0, window: { from: 0, to: .5 },
             onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
         } }));
         await tick();

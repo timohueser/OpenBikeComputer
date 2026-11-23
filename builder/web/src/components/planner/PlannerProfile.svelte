@@ -19,7 +19,7 @@
     type ProfileDay = Pick<Day, 'number' | 'from' | 'to' | 'pinned' | 'split'>;
 
     let {
-        lineData, total, days, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260, open = true,
+        lineData, total, days, walking = false, singleRoute = true, theme = 'light', activeNight, focus = null, window: view = { from: 0, to: 1 }, height = 260, open = true,
         totals = null, onToggle, onNight, onDayEndDrag, onHover, strip, part = null, onPart, marker = null, surface = $bindable(),
         week = null, tripStrip,
     }: {
@@ -32,8 +32,6 @@
         theme?: 'light' | 'dark';
         activeNight: number;
         focus?: { from: number; to: number; label: string } | null;
-        /** The suggested overnight stretch, as route progress. */
-        band: { from: number; to: number; blocked: boolean } | null;
         /** The stretch of the route the map shows, as route progress. */
         window?: { from: number; to: number };
         height?: number;
@@ -199,7 +197,7 @@
         <span class="height" style:top="5%">{Math.round(heightIn(high))} {heightUnit()}</span>
         <span class="height" style:top="94%">{Math.round(heightIn(low))} {heightUnit()}</span>
         <svg viewBox={`${shown.from * 1000} 0 ${span * 1000} 112`} preserveAspectRatio="none"
-            role="img" aria-label={`${focus && !whole ? focus.label : 'Route'} elevation profile. Distances start at ${origin > 0 ? 'the day start' : 'the route start'}. The shaded band is the suggested overnight stretch.`}>
+            role="img" aria-label={`${focus && !whole ? focus.label : 'Route'} elevation profile. Distances start at ${origin > 0 ? 'the day start' : 'the route start'}.`}>
             {#if singleRoute}
                 <path d={area} class="terrain-fill" />
             {:else}
@@ -211,7 +209,6 @@
             {/if}
             <path d="M0 25H1000M0 65H1000M0 105H1000" class="grid" />
 
-            {#if band && !band.blocked}<rect x={band.from * 1000} width={Math.max(0, band.to - band.from) * 1000} y="0" height="112" class="band" />{/if}
             {#if showGrade}
                 {#each bandPaths as path, i (i)}
                     <path d={path} style:stroke={color(i)} class="grade-line" />
@@ -260,7 +257,6 @@
 <style>
     .elevation {
         --terrain: color-mix(in srgb, var(--ink-faint) 10%, var(--panel));
-        --band: color-mix(in srgb, var(--amber) 24%, var(--panel));
         display: flex;
         flex-direction: column;
         /* At a short window, the map holds its minimum height and the body scrolls. */
@@ -349,9 +345,6 @@
     }
     .terrain-fill { fill: var(--terrain); }
     .day-fill { fill: color-mix(in srgb, var(--day-color) 60%, var(--ink-faint)); opacity: .10; }
-    .band {
-        fill: var(--band);
-    }
     path:not(.grid):not(.terrain-fill):not(.day-fill) {
         fill: none;
         stroke-width: 2;

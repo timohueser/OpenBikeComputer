@@ -340,13 +340,7 @@
         shownKey = note === shownNote ? null : noteKey(note);
         if (shownKey) map?.fitCoordinates(note.coordinates.flat());
     }
-    // The day list and an open day light up the stretch whose towns they list.
-    const nightBand = $derived.by(() => {
-        const window = pickerNight !== null ? stopWindows[pickerNight] : undefined;
-        return window && total ? { from: window[0] / total, to: window[1] / total, blocked: false } : null;
-    });
-    const highlighted = $derived(litSurface ? surfaceLines(visualRoute, litSurface)
-        : nightBand ? [routeSlice(coordinates, nightBand.from, nightBand.to)] : shownNote?.coordinates ?? []);
+    const highlighted = $derived(litSurface ? surfaceLines(visualRoute, litSurface) : shownNote?.coordinates ?? []);
     const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId && suits(stop, nightKinds(trip, pickerNight))) : undefined);
     const routeHeights = $derived(currentRoute ? profileSamples(currentRoute) : []);
     const nights: NightChoices = {
@@ -1400,7 +1394,7 @@
             {:else}
             <Profile
                 lineData={visualRoute} walking={shown.trip.bike === 'hiking'} singleRoute={!multi} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} {total} {days} {theme}
-                activeNight={focusedDay?.number ?? 0} band={nightBand} window={profileWindow} {totals}
+                activeNight={focusedDay?.number ?? 0} window={profileWindow} {totals}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
                 {part} onPart={next => { if (active && (next || part)) searchBox?.setStretch(next && [next[0] * total, next[1] * total]); }} marker={mapHover} bind:surface={litSurface} week={weekShown}
