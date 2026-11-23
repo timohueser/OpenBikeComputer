@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use obc_ground_plan::faces::Rules as PlanRules;
 use serde_json::{json, Value};
 
-use super::rooms::{hold, Outline, Place, Rooms};
+use super::rooms::{hold, Bound, Outline, Place, Rooms};
 use super::{distance, segment_m, Input, Point, Tube};
 use crate::geometry::{bounds, interp, Boxes};
 use crate::{degrees, metres, roads};
@@ -345,9 +345,10 @@ pub(crate) fn floors(
         let (ls, lz): (Vec<f64>, Vec<f64>) = points.iter().map(|q| (q.s, q.z)).unzip();
         let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();
         let xy: Vec<[f64; 2]> = s.iter().map(|&x| tube.curve.at(x).0.p).collect();
-        // The foot of a point on the whole chain, past the openings to its ends and past its ends along its end
-        // chords: its metres and the road solver's height there (at an end, the end's). It lies within twice `m` of
-        // metres `at` where the point lies `m` from the chain there.
+        // The foot of a point on the whole chain, past the openings to its ends, and at an end with an opening past
+        // it along its end chord: its metres and the road solver's height there (past an end, the end's). It lies
+        // within twice `m` of metres `at` where the point lies `m` from the chain there. At a seam the foot stays on
+        // the line: a way over the room before it lies over this room too.
         let chain = line(tube, [0.0, tube.curve.len]);
         let foot = |q: [f64; 2], (at, m): (f64, f64)| {
             let first = chain.partition_point(|v| v.s < at - 2.0 * m).saturating_sub(1);
@@ -362,7 +363,12 @@ pub(crate) fn floors(
             let e = [d.p[0] - c.p[0], d.p[1] - c.p[1]];
             let past =
                 ((q[0] - c.p[0]) * e[0] + (q[1] - c.p[1]) * e[1]) / (e[0] * e[0] + e[1] * e[1]).max(f64::MIN_POSITIVE);
-            let along = if (j == 0 && past < 0.0) || (j + 2 == chain.len() && past > 1.0) { past } else { u };
+            let open = |e: usize| matches!(rooms.bounds[t][e], Bound::Open);
+            let along = if (j == 0 && past < 0.0 && open(0)) || (j + 2 == chain.len() && past > 1.0 && open(1)) {
+                past
+            } else {
+                u
+            };
             (c.s + along * (d.s - c.s), c.z + u * (d.z - c.z))
         };
         // Segment k of way o over metres x of the room: its nearest point to the room's point there, where the foot of
@@ -388,7 +394,8 @@ pub(crate) fn floors(
         // ends of the overlap, and where the nearest point of a segment of its curve is an end of that segment.
         // Between these points the underside and the floor are both linear along the chord. A vertex at such a point
         // reads the way there; a point inside the chord caps both vertices of the chord, so the floor lies under the
-        // way there too. The clash count reads the crown at these points.
+        // way there too, unless both vertices read the way and its underside there lies at or over the line between
+        // theirs. The clash count reads the crown at these points.
         let mut above: Vec<Vec<Above>> = (0..s.len()).map(|_| Vec::new()).collect();
         let mut reads = Vec::new();
         for &(o, k, [a, e]) in &reaches {
@@ -411,10 +418,27 @@ pub(crate) fn floors(
                 let mut at: Vec<f64> = [Some(x), Some(y), kink(w0), kink(w1)].into_iter().flatten().collect();
                 at.sort_by(f64::total_cmp);
                 at.dedup_by(|m, n| *m - *n <= MERGE_M);
-                for m in at {
-                    let Some((pt, r)) = read((o, k), m) else { continue };
-                    let vertex = [i, i + 1].into_iter().find(|&v| (s[v] - m).abs() <= MERGE_M);
-                    vertex.map_or(vec![i, i + 1], |v| vec![v]).into_iter().for_each(|v| above[v].push(r.clone()));
+                let got: Vec<(f64, [f64; 2], Above)> =
+                    at.into_iter().filter_map(|m| read((o, k), m).map(|(pt, r)| (m, pt, r))).collect();
+                let vertex = |m: f64| [i, i + 1].into_iter().find(|&v| (s[v] - m).abs() <= MERGE_M);
+                // Where both vertices read the way, a point whose underside lies at or over the line between theirs is
+                // held by them.
+                let ends = match (got.first(), got.last()) {
+                    (Some(a), Some(b)) if vertex(a.0) == Some(i) && vertex(b.0) == Some(i + 1) => {
+                        Some((a.2.height, b.2.height))
+                    }
+                    _ => None,
+                };
+                let held = |m: f64, h: f64| {
+                    ends.is_some_and(|(a, b)| h >= a + (b - a) * (m - s[i]) / (s[i + 1] - s[i]) - MERGE_M)
+                };
+                for (m, pt, r) in got {
+                    let to = match vertex(m) {
+                        Some(v) => vec![v],
+                        None if held(m, r.height) => Vec::new(),
+                        None => vec![i, i + 1],
+                    };
+                    to.into_iter().for_each(|v| above[v].push(r.clone()));
                     reads.push((i, m, pt, r));
                 }
             }

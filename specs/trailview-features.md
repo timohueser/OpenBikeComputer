@@ -799,13 +799,15 @@ that it runs in, and a room's floor with its last arm's.
   outer half-width + `half` + `shell_m`) overlaps, at its nearest points to the points of the chord where its
   underside over the chord can bend: the ends of the overlap, and where the nearest point of a segment of its curve is
   an end of that segment. Between these points the underside and the floor are both linear along the chord. A vertex
-  at such a point reads the way there; a point inside the chord caps both vertices of the chord. So the floor lies
-  under the way along the whole chord. A read counts where the foot of its point on the whole chain, extended past
-  its ends along its end chords, lies between the openings, each grown by the way's outer half-width. The way lies on
-  top where its height at that point is more than the at-grade band over the road solver's height of the chain at the
-  foot (the lesser `snap_height_m` of the two classes, as at a crossing of the ground plan). A way that goes on from
-  the chain's end meets it at the chain's height, so it lies at grade. Its underside is its height less its `deck` on
-  a bridge, else less `slab_m`.
+  at such a point reads the way there. A point inside the chord caps both vertices of the chord, unless both vertices
+  read the way and its underside there lies at or over the line between theirs. So the floor lies under the way along
+  the whole chord. A read counts where the foot of its point on the whole chain, extended past an end with an opening
+  along its end chord, lies between the openings, each grown by the way's outer half-width; at a seam the foot stays
+  on the line, as a way over the room before it lies over the room behind it too. The way lies on top where its height
+  at that point is more than the at-grade band over the road solver's height of the chain at the foot (the lesser
+  `snap_height_m` of the two classes, as at a crossing of the ground plan). A way that goes on from the chain's end
+  meets it at the chain's height, so it lies at grade. Its underside is its height less its `deck` on a bridge, else
+  less `slab_m`.
 - The tube gets a vertex where it enters and leaves the reach of each way within reach that is not of the kind
   `tunnel`, at grade or not. Its vertices lie at least `vertex_gap_m` apart, so each chord keeps its direction in
   the units of a tile: the openings and the joins of its ways stay, and a point of the curve nearer than that to a

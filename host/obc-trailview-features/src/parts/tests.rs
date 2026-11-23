@@ -897,14 +897,14 @@ fn the_builder_reads_each_joint_back_from_the_tiles() {
 }
 
 /// A footway on top over the first chord of the footway's room behind the seam of "a footway at 3 degrees beside a
-/// road": across it at 13 m, 13.3 m and 16 m east, its underside at 502 m, and one that starts over the chord at 13.2 m
-/// and climbs 3 m. Wherever the way lies over the crown, the crown lies under its underside, also where the chord's far
-/// vertex lies out of the way's reach.
+/// road": across it at 13 m, 13.3 m and 16 m east, its underside at 502 m, across the room before the line at 12.1 m,
+/// and one that starts over the chord at 13.2 m and climbs 3 m. Wherever the way lies over the crown, the crown lies
+/// under its underside, also where the chord's far vertex lies out of the way's reach.
 #[test]
 fn a_way_over_the_first_chord_behind_a_seam_holds_the_floor_down() {
     let reach = widths().way("road", &tags(&[("highway", "footway")]), false).outer_m() + 0.9 + 0.5;
     let across = |x: f64| ([x, 4.6], [x, 30.0], 0.0);
-    for (a, b, climb) in [across(13.0), across(13.3), across(16.0), ([13.2, 4.6], [16.8, 30.0], 3.0)] {
+    for (a, b, climb) in [across(12.1), across(13.0), across(13.3), across(16.0), ([13.2, 4.6], [16.8, 30.0], 3.0)] {
         let mut case = layouts().into_iter().find(|l| l.0 == "a footway at 3 degrees beside a road").unwrap().1;
         case.ways.push(("road", tags(&[("highway", "footway")]), vec![part(&[a, b], &[502.5, 502.5 + climb])]));
         let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
@@ -924,8 +924,7 @@ fn a_way_over_the_first_chord_behind_a_seam_holds_the_floor_down() {
             })
             .collect();
         assert_eq!(seams.len(), 1, "way at {a:?}");
-        let first = chords.iter().find(|c| c.0[0] <= a[0] && a[0] <= c.1[0]).unwrap();
-        assert!((first.0[0] - seams[0]).abs() < 0.01, "way at {a:?}: the chord from {:?} starts at the line", first.0);
+        assert!(chords.iter().any(|c| (c.0[0] - seams[0]).abs() < 0.01), "way at {a:?}: no chord starts at the line");
         // The crown's shell (0.5 m) over the floor and the height, at 101 points of each chord within the way's reach.
         let d = [b[0] - a[0], b[1] - a[1]];
         for (p, q, z, height) in &chords {
