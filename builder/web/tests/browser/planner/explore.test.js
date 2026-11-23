@@ -28,15 +28,23 @@ test('the Explore page searches the day hikes of the map view, plans one and com
 
   // The whole area of the test build needs more catalog files than one view may load.
   await page.goto('/planner.html#/explore');
-  const results = page.locator('.results'), rows = results.locator('tr.row');
-  await expect(results.getByText('Zoom in to search.')).toBeVisible();
+  const list = listOf(page), rows = rowsOf(page);
+  await expect(list.getByText('Zoom in to search.')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Explore' })).toHaveAttribute('aria-current', 'page');
 
   await page.getByRole('combobox', { name: 'Say what you want' }).fill('Freiburg');
   await page.getByRole('option', { name: /^Freiburg/ }).click();
   // The least paved first; the long route is no row, the bike routes are not for hiking, and the stage is there and back.
-  await expect(results.locator('.count')).toHaveText('2 hikes');
-  await expect(rows).toHaveText([/Schlossberg loop\s*Loop\s*1\.2\skm\s*150\sm\s*–\s*T2\s*PLarge car park/, /Westweg 2\s*There and back\s*5\.0\skm\s*100\sm\s*2h 50m\s*T1\s*No car park/]);
+  await expect(list.getByRole('heading')).toHaveText('2 hikes');
+  await expect(rows).toHaveText([/^\s*Schlossberg loop\s*Loop · 1\.2\skm · 150\sm up · T2\s*PLarge car park\s*$/,
+    /^\s*Westweg 2\s*There and back · 5\.0\skm · 100\sm up · 2h 50m · T1\s*No car park\s*$/]);
+  // "Sort by" orders the rows and marks its order.
+  await list.getByRole('button', { name: 'Sort by: Best match' }).click();
+  await page.getByRole('button', { name: 'Climb' }).click();
+  await expect(rows).toHaveText([/^\s*Westweg 2/, /^\s*Schlossberg loop/]);
+  await list.getByRole('button', { name: 'Sort by: Climb' }).click();
+  await expect(page.locator('menu button', { hasText: '✓' })).toHaveText('✓Climb');
+  await page.getByRole('button', { name: 'Best match' }).click();
   await page.getByRole('button', { name: 'TrailView' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'TrailView' })).toHaveText('TrailView has no view of this area.');
 
@@ -64,15 +72,21 @@ test('the Explore page searches the day hikes of the map view, plans one and com
   // Escape closes the panel and leaves the search as it is.
   await page.keyboard.press('Escape');
   await expect(page.locator('#search-panel')).toHaveCount(0);
-  // A row opens in place, with the link to the page of its route.
-  await rows.getByRole('button', { name: /Westweg 2/ }).click();
-  const open = results.locator('tr.more');
-  await expect(open).toContainText('There and back, 2.5 km each way');
-  await expect(open.getByRole('link', { name: 'Westweg 2' })).toHaveAttribute('href', '#/signed/9-267-177/202');
+  // A row opens the card of its route over the map, with the facts of its shape and the link to the page of the route.
+  // The view is the map's own only after the map loads: before it, the view of the history can still change.
+  await expect(page.locator('.routes-map')).toHaveAttribute('data-loaded', 'true');
+  await page.waitForTimeout(500);
+  const wide = viewOf(page);
+  await rows.filter({ hasText: 'Westweg 2' }).click();
+  const card = page.getByRole('region', { name: 'Westweg 2' });
+  await expect(card).toContainText('There and back, 2.5 km each way');
+  await expect(card.getByRole('link', { name: 'Westweg 2' })).toHaveAttribute('href', '#/signed/9-267-177/202');
+  // The card with its long text leaves a part of the map free, and the map moves the route there.
+  await expect.poll(() => viewOf(page)).not.toEqual(wide);
   const kept = await page.evaluate(() => new Promise(done => setTimeout(() => done(history.state.explore), 500)));
   expect(kept.query).toBe('shapes=back,liftDown,liftUp');
 
-  await open.getByRole('button', { name: 'Plan this route' }).click();
+  await card.getByRole('button', { name: 'Plan this route' }).click();
   await expect(page).toHaveURL(/#\/planner$/);
   await expect(page.getByText(/Westweg 2 planned/)).toBeVisible();
   // The planned route is not stored until the rider saves it.
@@ -84,12 +98,16 @@ test('the Explore page searches the day hikes of the map view, plans one and com
   await page.getByRole('button', { name: 'Find another route' }).click();
 
   await expect(page).toHaveURL(/#\/explore\?shapes=back,liftDown,liftUp&view=/);
-  await expect(results.locator('tr.row.open')).toContainText('Westweg 2');
+  await expect(currentRow(page)).toContainText('Westweg 2');
+  await expect(card).toBeVisible();
   // Until the map loads, the page keeps the view of the history; after it, the view is the map's own.
   await expect(page.locator('.routes-map')).toHaveAttribute('data-loaded', 'true');
   const back = await page.evaluate(() => new Promise(done => setTimeout(() => done(history.state.explore), 500)));
   expect([back.query, back.selected, back.shape]).toEqual([kept.query, '202', 'back']);
   for (const [i, value] of kept.view.entries()) expect(back.view[i]).toBeCloseTo(value, 4);
+  // Escape closes the card.
+  await page.keyboard.press('Escape');
+  await expect(card).toHaveCount(0);
 
   // Explore searches hikes only: the bike kinds are greyed out.
   await openSlot(page, 'hike');
@@ -112,7 +130,7 @@ test('the text field sends each typed phrase to its slot, takes one suggestion w
   await findFreiburg(page, 1440, 900);
   // A typed name asks the server for places of that name only, so the server runs no model.
   expect(asked).toEqual([{ type: 'place', name: 'Freiburg' }]);
-  const rows = page.locator('.results tr.row'), field = page.getByRole('combobox', { name: 'Say what you want' });
+  const rows = rowsOf(page), field = page.getByRole('combobox', { name: 'Say what you want' });
   await expect(rows).toHaveCount(2);
 
   // The words stay while the rider types, and the field marks each phrase that it understands.
@@ -156,16 +174,19 @@ test('the text field sends each typed phrase to its slot, takes one suggestion w
   expect(errors).toEqual([]);
 });
 
-test('the name of an open row opens the page of the route, and Back and "‹ Explore" open the row again', async ({ page }) => {
+test('the name on the card of a hike opens the page of the route, and Back and "‹ Explore" open the card again', async ({ page }) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  const open = await openRow(page, 'Westweg 2', 1440, 900);
-  // A nice wish is the last search of the browser. The tick is a must first, which closes the row of the stage.
+  const open = await openCard(page, 'Westweg 2', 1440, 900);
+  // A nice wish is the last search of the browser. The tick is a must first, which closes the card of the stage.
   await openSlot(page, 'way');
   await page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Summit' }).click();
+  await expect(open).toHaveCount(0);
   await page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Must' }).click();
   await page.keyboard.press('Escape');
-  await page.locator('.results').getByRole('button', { name: /Westweg 2/ }).click();
+  // A row shows each nice wish, with a tick when it meets it.
+  await expect(rowsOf(page)).toHaveText([/Large car park\s*Summit\s*$/, /No car park\s*no Summit\s*$/]);
+  await rowsOf(page).filter({ hasText: 'Westweg 2' }).click();
   let answer;
   const held = new Promise(done => answer = done);
   await page.route(url => url.pathname.endsWith('/v1/route'), async route => { await held; await route.fallback(); });
@@ -200,18 +221,19 @@ test('the name of an open row opens the page of the route, and Back and "‹ Exp
     await expect(page.getByRole('heading', { name })).toBeVisible();
     await page.getByRole('link', { name: '‹ Explore' }).click();
     await expect(page).toHaveURL(/#\/explore(\?.*)?$/);
-    await expect(page.locator('.results tr.row.open')).toContainText(name);
+    await expect(currentRow(page)).toContainText(name);
+    await expect(page.getByRole('region', { name })).toBeVisible();
     await expect(slotText(page, 'way')).toHaveText('Summit if possible');
   }
 
-  // A last search that leaves the route out gives way to the default search, so the row of the route opens.
+  // A last search that leaves the route out gives way to the default search, so the card of the route opens.
   await openSlot(page, 'way');
   await page.locator('.wish', { hasText: 'Summit' }).getByRole('button', { name: 'Must' }).click();
   await expect(page).toHaveURL(/must=peak/);
   await page.goto('/planner.html#/signed/9-267-177/202');
   await page.reload();
   await page.getByRole('link', { name: '‹ Explore' }).click();
-  await expect(page.locator('.results tr.row.open')).toContainText('Westweg 2');
+  await expect(currentRow(page)).toContainText('Westweg 2');
   await expect(slotText(page, 'way')).toHaveText('Anything');
 
   // So does a last search with a start point far from the route, once the answer for the view of the route has come.
@@ -219,7 +241,7 @@ test('the name of an open row opens the page of the route, and Back and "‹ Exp
   await page.goto('/planner.html#/signed/9-267-177/101');
   await page.reload();
   await page.getByRole('link', { name: '‹ Explore' }).click();
-  await expect(page.locator('.results tr.row.open')).toContainText('Schlossberg loop');
+  await expect(currentRow(page)).toContainText('Schlossberg loop');
   await expect(slotText(page, 'from')).toHaveText('Anywhere on the map');
 
   await page.goto('/planner.html#/signed/9-267-177/999');
@@ -234,7 +256,7 @@ test('with a start point, a view of more than 12 cells searches the cells in rea
   // The whole area of the test build. At Freiburg the drive is at most 40 km; the stage is 2 km away and has no car park.
   await page.goto('/planner.html#/explore?start=7.85,47.99&car=1&drive=45&view=7.45,47.5,10.5,49.85');
   await expect(slotText(page, 'from')).toHaveText('Start point · By car, up to 40 km');
-  await expect(page.locator('.results tr.row')).toHaveText([/Schlossberg loop/]);
+  await expect(rowsOf(page)).toHaveText([/Schlossberg loop/]);
   expect(errors).toEqual([]);
 });
 
@@ -242,20 +264,21 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await findFreiburg(page, 1440, 1000);
-  const results = page.locator('.results'), rows = results.locator('tr.row');
+  const rows = rowsOf(page);
   await expect(rows).toHaveCount(2);
   await expect(page.locator('.routes-map')).toHaveAttribute('data-loaded', 'true');
 
-  // A row whose route the map shows opens with no move of the map, so the list keeps its rows.
+  // A selected row moves the map only to show its route over the card: it pans or zooms out, never in, so the list keeps
+  // its rows. Whether the card covers the loop depends on the height of its text, so the test asks only for that rule.
   await expect(page).toHaveURL(/view=/);
   await page.waitForTimeout(500);
-  const shown = viewOf(page);
-  await rows.getByRole('button', { name: /Schlossberg loop/ }).click();
-  await expect(results.locator('tr.more')).toBeVisible();
+  const shown = viewOf(page), span = ([west, south, east, north]) => [east - west, north - south];
+  await rows.filter({ hasText: 'Schlossberg loop' }).click();
+  await expect(page.getByRole('region', { name: 'Schlossberg loop' })).toBeVisible();
   await page.waitForTimeout(500);
-  expect(viewOf(page)).toEqual(shown);
+  span(viewOf(page)).forEach((size, i) => expect(size).toBeGreaterThanOrEqual(span(shown)[i] - 1e-4));
   await expect(rows).toHaveCount(2);
-  await rows.getByRole('button', { name: /Schlossberg loop/ }).click();
+  await page.getByRole('button', { name: 'Close' }).click();
 
   // A summit shows on the map while Summit is a wish; a click on it asks for the hikes that pass it.
   await openSlot(page, 'way');
@@ -333,10 +356,26 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   await expect(page.locator('.routes-map')).toHaveAttribute('data-loaded', 'true');
   await page.waitForTimeout(500);
   const height = ([, south, , north]) => north - south, before = height(viewOf(page));
-  await rows.getByRole('button', { name: /Westweg 2/ }).click();
+  await rows.filter({ hasText: 'Westweg 2' }).click();
   await expect.poll(() => viewOf(page)[3]).toBeGreaterThan(48);
   expect(height(viewOf(page))).toBeGreaterThanOrEqual(before - 1e-4);
   expect(errors).toEqual([]);
+});
+
+test('an empty list names the changes that help, and its "Clear the search" has the Undo of the bar', async ({ page }) => {
+  await stub(page);
+  await page.goto('/planner.html#/explore?must=peak&shapes=back&view=7.8,47.96,7.92,48.02');
+  const list = listOf(page), rows = rowsOf(page);
+  await expect(list.getByRole('heading')).toHaveText('0 hikes');
+  await expect(list.locator('.helps button')).toHaveText([/^Summit as a wish only\s*1 hike$/, /^Loop too\s*1 hike$/]);
+  await list.getByRole('button', { name: 'Clear the search' }).click();
+  await expect(rows).toHaveCount(2);
+  await page.getByRole('button', { name: 'Undo' }).click();
+  await expect(rows).toHaveCount(0);
+  // A change takes its button away: the first row of the new list has the focus.
+  await list.getByRole('button', { name: /^Loop too/ }).press('Enter');
+  await expect(rows).toHaveText([/Schlossberg loop/]);
+  await expect(rows.first()).toBeFocused();
 });
 
 /** Opens the panel of a slot of the search bar, if it is not open. */
@@ -348,6 +387,11 @@ async function openSlot(page, id) {
 
 /** The words of a slot of the search bar. */
 const slotText = (page, id) => page.locator(`.search-bar [data-slot="${id}"] strong`);
+
+/** The list beside the map, its rows, and the row of the selected route. */
+const listOf = page => page.locator('.cards > .list');
+const rowsOf = page => listOf(page).locator('.row');
+const currentRow = page => listOf(page).locator('.row[aria-current="true"]');
 
 /** The map view in the page address. */
 const viewOf = page => new URL(page.url()).hash.match(/view=([-\d.,]+)/)[1].split(',').map(Number);
@@ -397,11 +441,11 @@ test('the trail name on a stage page opens the page of the trail, whose rows ope
   expect(errors).toEqual([]);
 });
 
-/** Opens the row of the day hike `name` in a window of `width` × `height` px, and gives its open part. */
-async function openRow(page, name, width, height) {
+/** Opens the card of the day hike `name` in a window of `width` × `height` px. */
+async function openCard(page, name, width, height) {
   await findFreiburg(page, width, height);
-  await page.locator('.results').getByRole('button', { name: new RegExp(name) }).click();
-  return page.locator('.results tr.more');
+  await rowsOf(page).filter({ hasText: name }).click();
+  return page.getByRole('region', { name });
 }
 
 async function findFreiburg(page, width, height) {
@@ -411,3 +455,45 @@ async function findFreiburg(page, width, height) {
   await page.getByRole('combobox', { name: 'Say what you want' }).fill('Freiburg');
   await page.getByRole('option', { name: /^Freiburg/ }).click();
 }
+
+/** The text of the card shows at least `lines` lines on the screen, and the wheel over it scrolls it. */
+async function textScrolls(page, card, lines) {
+  const more = card.locator('.more');
+  await expect.poll(() => more.evaluate((node, lines) => {
+    const box = node.getBoundingClientRect(), line = parseFloat(getComputedStyle(node.firstElementChild).lineHeight);
+    return Math.min(box.bottom, innerHeight) - Math.max(box.top, 0) >= lines * line;
+  }, lines)).toBe(true);
+  const box = await more.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, 100);
+  await expect.poll(() => more.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+}
+
+test('on a phone, the card of a hike with a long text and no profile stays on the screen, and its text scrolls', async ({ page }) => {
+  const card = await openCard(page, 'Westweg 2', 390, 844);
+  // The card is never higher than the screen less 96 px.
+  await expect.poll(() => card.evaluate(node => [!node.querySelector('.profile'), node.getBoundingClientRect().height <= innerHeight - 96]))
+    .toEqual([true, true]);
+  await textScrolls(page, card, 1);
+});
+
+// 844 px wide has the layout of a computer, and 667 px wide that of a phone.
+for (const [width, height] of [[844, 390], [667, 375]]) {
+  test(`in a window of ${width} × ${height} px, the card of a hike with a profile shows no strip, and two lines of its text that scroll`, async ({ page }) => {
+    const card = await openCard(page, 'Schlossberg loop', width, height);
+    await expect(card.locator('.profile')).toBeHidden();
+    await textScrolls(page, card, 2);
+  });
+}
+
+test('in a wide and low window, the card is in the map with its close button, and a lower picture leaves three lines of its text', async ({ page }) => {
+  const card = await openCard(page, 'Westweg 2', 1440, 420);
+  await textScrolls(page, card, 3);
+  const close = card.getByRole('button', { name: 'Close' });
+  await expect.poll(async () => {
+    const [map, button] = await Promise.all([page.locator('.map').boundingBox(), close.boundingBox()]);
+    return button.y >= map.y && button.y + button.height <= map.y + map.height;
+  }).toBe(true);
+  await close.click();
+  await expect(card).toHaveCount(0);
+});

@@ -1,5 +1,5 @@
-<!-- A row of a list of routes: a picture, the name, a line of numbers, and a badge. The row shows its picture only
-     while it is near the view, so a long list draws few pictures. -->
+<!-- A row of a list of routes: a picture, the name, a line of numbers, more lines of the page, and a badge. The row shows
+     its picture only while it is near the view, so a long list draws few pictures. -->
 <script module lang="ts">
     const rows = new WeakMap<Element, (near: boolean) => void>();
     let observer: IntersectionObserver | undefined;
@@ -9,7 +9,7 @@
     import type { Snippet } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
 
-    let { name, icon, current, line, onclick, lead = '', parts, tail, badge, room, picture }: {
+    let { name, icon, current, line, onclick, lead = '', parts, tail, badge, room, picture, children }: {
         name: string;
         /** The name of an icon of `Icon.svelte`, before the name. */
         icon?: string;
@@ -28,6 +28,8 @@
         room?: string;
         /** A cover, whose root has the class `cover`. */
         picture: Snippet;
+        /** Lines under the numbers, of phrasing content: the row is a button. */
+        children?: Snippet;
     } = $props();
 
     let near = $state(false);
@@ -47,7 +49,7 @@
         <strong>{#if icon}<span class="icon"><Icon name={icon} size={16} /></span>{/if}{name}</strong>
         {#if parts}
             <span class="meta">{lead}{#each parts.filter(Boolean) as part, i (i)}{i || lead ? ' · ' : ''}<span>{part}</span>{/each}{#if tail}{' · '}{tail}{/if}</span>
-        {/if}
+        {/if}{#if children}{@render children()}{/if}
         {#if badge}<span class="badge {badge.kind}">{badge.text}</span>{/if}
     </span>{#if room}<span class="room" aria-hidden="true">{room}</span>{/if}
 </button>
@@ -74,7 +76,8 @@
     .row:hover, .row:global([data-hover]) {
         background: var(--parchment);
     }
-    .row[aria-current="true"] {
+    /* A press answers at once: a tap has no hover. */
+    .row[aria-current="true"], .row:active {
         background: var(--parchment-2);
     }
     .thumb {

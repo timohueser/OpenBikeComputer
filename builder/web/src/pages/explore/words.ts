@@ -1,14 +1,14 @@
-/** The words of the day-hike search: the names of the wishes, shapes and grades, how a row is reached and the changes
- * that help an empty list. */
-import type { CatalogFacts, FactsPlace } from '../../lib/planner/signed-routes';
-import { distanceIn, formatDistance, formatHeight } from '../../lib/settings/format';
+/** The words of the day-hike search: the names of the wishes, shapes, grades and orders, the numbers of a row, how a row
+ * is reached and the changes that help an empty list. */
+import { gradeName, type CatalogFacts, type FactsPlace } from '../../lib/planner/signed-routes';
+import { distanceIn, formatDistance, formatHeight, formatHours } from '../../lib/settings/format';
 import { settings } from '../../lib/settings/settings.svelte';
 import { rangeText } from '../routes/filter';
-import { WISHES, type Query, type Row, type Shape, type Suggestion, type Way, type Wish } from './search';
+import { WISHES, type Query, type Row, type Shape, type Sort, type Suggestion, type Way, type Wish } from './search';
 
 type Place = (id: string) => FactsPlace | undefined;
 
-/** The label of each wish, a short one for the table, and its icon. */
+/** The label of each wish, a short one for a row and the card, and its icon. */
 const WISH_WORDS: Record<typeof WISHES[number], { label: string; short?: string; icon: string }> = {
     peak: { label: 'Summit', icon: 'mountain' },
     lake: { label: 'Lake', icon: 'lake' },
@@ -30,7 +30,7 @@ const KIND_WORDS: Record<FactsPlace['kind'], string> = { parking: 'Car park', li
 const KIND_ICONS: Record<FactsPlace['kind'], string> = { parking: 'car', lift: 'lift', peak: 'mountain', hut: 'hut', lake: 'lake', waterfall: 'waterfall' };
 export const placeName = (place: FactsPlace | undefined) => place?.name ?? KIND_WORDS[place?.kind ?? 'peak'];
 
-/** "Summit", "Passes Pilatus"; `short` for the table and the line over it. */
+/** "Summit", "Passes Pilatus"; `short` for a row and the card. */
 export function wishLabel(wish: Wish, place: Place, short = false): string {
     if (wish.startsWith('via:')) return `Passes ${placeName(place(wish.slice(4)))}`;
     const words = WISH_WORDS[wish as typeof WISHES[number]];
@@ -47,6 +47,20 @@ export const SHAPE_WORDS: Record<Shape, { label: string; tag: string }> = {
     liftDown: { label: 'Hike up, lift down', tag: 'Lift down' },
     liftUp: { label: 'Lift up, hike down', tag: 'Lift up' },
 };
+
+/** The orders of "Sort by". */
+export const SORT_WORDS: Record<Sort, string> = {
+    match: 'Best match', name: 'Name', shape: 'Shape', length: 'Length', climb: 'Climb', time: 'Time', grade: 'Grade', access: 'Getting there',
+};
+
+/** The numbers of a row in its shape: the length, the climb, the descent of a lift shape, the time and the grade, or
+ * `unknown` for a route with no grade. */
+export function hikeNumbers(row: Row, unknown = ''): string[] {
+    const lift = row.shape === 'liftDown' || row.shape === 'liftUp', hardest = row.record.hardest;
+    const grade = hardest === undefined ? unknown : gradeName('hiking', hardest);
+    return [formatDistance(row.length_m), `${formatHeight(row.ascent_m)} up`, ...lift ? [`${formatHeight(row.descent_m)} down`] : [],
+        ...row.moving_s === undefined ? [] : [formatHours(row.moving_s)], ...grade ? [grade] : []];
+}
 
 /** The name and the description of each hiking grade, T1 to T6. */
 export const GRADES: [name: string, about: string][] = [
@@ -78,7 +92,7 @@ export function parkAt(facts: CatalogFacts | undefined, place: Place): string | 
 export const liftAt = (facts: CatalogFacts | undefined) => (facts?.lifts ?? []).find(([, metres]) => metres <= 300)?.[0];
 const size = (park: FactsPlace | undefined) => park?.size === 'large' ? 'large' : 'small';
 
-/** The steps of the cheapest way to a row, as the column "Getting there" shows them. */
+/** The steps of the cheapest way to a row, as the row shows them. */
 export function accessSteps(row: Row, place: Place): Step[] {
     const way = row.ways[0], walk: Step[] = 'walk' in way && way.walk >= SHOWN_WALK_M ? [{ icon: 'walk', text: walked(way.walk) }] : [];
     const drive = (metres: number): Step => ({ icon: 'car', text: formatDistance(metres) });
@@ -100,7 +114,7 @@ export function accessSteps(row: Row, place: Place): Step[] {
     }
 }
 
-/** The way to a row in one sentence, for the open row. */
+/** The way to a row in one sentence, for the card. */
 export function accessText(row: Row, place: Place): string {
     const way: Way = row.ways[0];
     const then = 'walk' in way ? way.walk >= SHOWN_WALK_M ? `, then walk ${walked(way.walk)} to the route` : ', the route starts there' : '';
@@ -121,12 +135,12 @@ export function accessText(row: Row, place: Place): string {
     }
 }
 
-/** What the shape means for the rider, with the numbers that the table does not show. */
+/** What the shape means for the rider, with the numbers that a row does not show. A loop needs no more than its word. */
 export function shapeText(row: Row): string {
     if (row.shape === 'back') return `There and back, ${formatDistance(row.length_m / 2)} each way; length and climb count both ways`;
     if (row.shape === 'liftDown') return `Hike up ${formatHeight(row.ascent_m)} and down ${formatHeight(row.descent_m)}, then the lift down; park at the valley station`;
     if (row.shape === 'liftUp') return `The lift up, then hike down ${formatHeight(row.descent_m)} and up ${formatHeight(row.ascent_m)}; park at the valley station`;
-    return 'Loop';
+    return '';
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

@@ -1,17 +1,18 @@
 <!-- The frame of a page with a list beside a map: the header with the title, the list in a card, the map, and the card
-     of the selected item over the map, or a table under the map. On a phone the map is under the list, and the card is at
-     the bottom of the screen. A row and the lines of its row light together: under the pointer on either side, or when a
-     key focuses the row. -->
+     of the selected item over the map. On a phone the map is under the list, and the card is at the bottom of the screen.
+     A row and the lines of its row light together: under the pointer on either side, or when a key focuses the row. -->
 <script lang="ts">
     import { tick, type Snippet } from 'svelte';
+    import { cubicOut } from 'svelte/easing';
     import { on } from 'svelte/events';
-    import PanelResize from '../../components/planner/PanelResize.svelte';
+    import type { TransitionConfig } from 'svelte/transition';
     import Card from '../../lib/ui/Card.svelte';
+    import { still } from '../../lib/ui/search-bar/motion';
     import type { Box, Item } from './filter';
     import type { MapOverlay } from './RoutesMap.svelte';
     import { HoverState } from './hover.svelte';
 
-    let { title, failure, items, shown, selected, marked, fit, place, look, credits, together, onselect, onview, overlay, pick, tabs, actions, bar, list, table, mapButtons, card }: {
+    let { title, failure, items, shown, selected, marked, fit, place, look, credits, together, onselect, onview, overlay, pick, tabs, actions, bar, list, mapButtons, card }: {
         title: string;
         failure?: string;
         /** The props of the map. */
@@ -37,11 +38,8 @@
         actions?: Snippet;
         /** Between the header and the cards, as wide as the page. */
         bar?: Snippet;
-        /** The content of the list card. Each row has the id of its lead line in `data-line`. Without it, the map takes
-         * the width of the page. */
-        list?: Snippet;
-        /** Under the map, with a handle that sets its height. Its rows have `data-line` too. */
-        table?: Snippet;
+        /** The content of the list card. Each row has the id of its lead line in `data-line`. */
+        list: Snippet;
         /** At the top right of the map, left of its zoom buttons. */
         mapButtons?: Snippet;
         /** The card of the selected item. The page gives it only while an item is selected. It gets a function that
@@ -50,18 +48,14 @@
         card?: Snippet<[() => void]>;
     } = $props();
 
+    /** The card leaves faster than it comes: it sinks a little, and with reduced motion it only fades. */
+    const leave = (_node: Element): TransitionConfig => ({ duration: 120, easing: cubicOut, css: t => `opacity: ${t}; transform: translateY(${still() ? 0 : (1 - t) * 4}px)` });
+
     /** The height of the selected card, which covers the bottom of the map. */
     let cardHeight = $state(0);
     /** The width of the buttons of the page on the map: the credits of the map end before them. */
     let buttonsWidth = $state(0);
-    let listBox = $state<HTMLElement | null>(), tableBox = $state<HTMLElement | null>();
-    // A box that goes is null.
-    const boxes = $derived([listBox, tableBox].filter(box => !!box));
-    /** The table opens at 46 % of the height of the map and the table; the map keeps at least `MAP_MIN`. */
-    const TABLE_MIN = 120, MAP_MIN = 160, HANDLE = 8;
-    let geoHeight = $state(0), wanted = $state<number>();
-    const tableMax = $derived(Math.max(TABLE_MIN, geoHeight - HANDLE - MAP_MIN));
-    const tableHeight = $derived(Math.round(Math.min(tableMax, Math.max(TABLE_MIN, wanted ?? geoHeight * 0.46))));
+    let listBox = $state<HTMLElement>();
     const hover = new HoverState();
     /** The lead line of the lit row: another line of the same row changes nothing on the map or in the list. */
     const lead = $derived(hover.id === undefined ? undefined : (together?.(hover.id) ?? [hover.id])[0]);
@@ -70,7 +64,7 @@
     // With no scroll: on a phone the list is above the map, and the rider who closes the card looks at the map.
     function toRow() {
         quiet = true;
-        for (const box of boxes) box.querySelector<HTMLElement>('[aria-current="true"]')?.focus({ preventScroll: true });
+        listBox?.querySelector<HTMLElement>('[aria-current="true"]')?.focus({ preventScroll: true });
         quiet = false;
     }
 
@@ -108,10 +102,12 @@
         void shown;
         void tick().then(lookup);
     });
-    // The listeners only watch the rows: a box of rows is no control, so they are not attributes that ask for a role.
+    // The listeners only watch the rows: the list box is no control, so they are not attributes that ask for a role.
     $effect(() => {
-        const stops = boxes.flatMap(box => [on(box, 'pointerover', onpointerover), on(box, 'pointermove', onpointermove), on(box, 'pointerleave', onpointerleave),
-            on(box, 'scroll', onscroll, { capture: true }), on(box, 'focusin', onfocusin), on(box, 'focusout', () => hover.blur())]);
+        const box = listBox;
+        if (!box) return;
+        const stops = [on(box, 'pointerover', onpointerover), on(box, 'pointermove', onpointermove), on(box, 'pointerleave', onpointerleave),
+            on(box, 'scroll', onscroll, { capture: true }), on(box, 'focusin', onfocusin), on(box, 'focusout', () => hover.blur())];
         return () => { for (const stop of stops) stop(); cancelAnimationFrame(frame); };
     });
 
@@ -121,7 +117,7 @@
     $effect(() => {
         const line = lead;
         for (const row of lit) row.removeAttribute('data-hover');
-        lit = line === undefined ? [] : boxes.flatMap(box => [...box.querySelectorAll(`[data-line="${CSS.escape(line)}"]`)]);
+        lit = line === undefined || !listBox ? [] : [...listBox.querySelectorAll(`[data-line="${CSS.escape(line)}"]`)];
         for (const row of lit) row.setAttribute('data-hover', '');
     });
 
@@ -149,29 +145,20 @@
     {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
 
     {@render bar?.()}
-    <div class="cards" class:below={!!table} class:alone={!list}>
-        {#if list}
-            <div class="list" bind:this={listBox}>
-                <Card>{@render list()}</Card>
-            </div>
-        {/if}
-        <!-- One element in both forms, so that a new form keeps the map. -->
-        <div class="geo" bind:clientHeight={geoHeight} style:--table-height={table ? `${tableHeight}px` : null}>
-            <div class="map" style:--map-buttons={mapButtons ? `${buttonsWidth + 10}px` : null}>
-                {#await import('./RoutesMap.svelte') then { default: RoutesMap }}
-                    <RoutesMap {items} {shown} {selected} {marked} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} {credits}
-                        {look} {together} {overlay} {pick} hovered={lead} onhover={id => id === undefined ? hover.leave('map') : hover.point(id, 'map')} {onselect} {onview} />
-                {:catch error}
-                    <p class="note">{error instanceof Error ? error.message : String(error)}</p>
-                {/await}
-                {#if mapButtons}<div class="map-buttons" bind:clientWidth={buttonsWidth}>{@render mapButtons()}</div>{/if}
-                {#if card}
-                    <div class="selected" bind:offsetHeight={cardHeight}>{@render card(toRow)}</div>
-                {/if}
-            </div>
-            {#if table}
-                <PanelResize value={tableHeight} min={TABLE_MIN} max={tableMax} axis="y" label="Height of the list" onResize={value => wanted = value} />
-                <div class="table" bind:this={tableBox}>{@render table()}</div>
+    <div class="cards">
+        <div class="list" bind:this={listBox}>
+            <Card>{@render list()}</Card>
+        </div>
+        <div class="map" style:--map-buttons={mapButtons ? `${buttonsWidth + 10}px` : null}>
+            {#await import('./RoutesMap.svelte') then { default: RoutesMap }}
+                <RoutesMap {items} {shown} {selected} {marked} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} {credits}
+                    {look} {together} {overlay} {pick} hovered={lead} onhover={id => id === undefined ? hover.leave('map') : hover.point(id, 'map')} {onselect} {onview} />
+            {:catch error}
+                <p class="note">{error instanceof Error ? error.message : String(error)}</p>
+            {/await}
+            {#if mapButtons}<div class="map-buttons" bind:clientWidth={buttonsWidth}>{@render mapButtons()}</div>{/if}
+            {#if card}
+                <div class="selected" bind:offsetHeight={cardHeight} out:leave>{@render card(toRow)}</div>
             {/if}
         </div>
     </div>
@@ -218,12 +205,6 @@
         gap: 14px;
         min-height: 0;
     }
-    .below {
-        grid-template-columns: 340px 1fr;
-    }
-    .alone {
-        grid-template-columns: 1fr;
-    }
     .list > :global(section) {
         display: flex;
         flex-direction: column;
@@ -231,32 +212,14 @@
         height: 100%;
         min-height: 0;
     }
-    /* The map, and the table under it, in one panel. */
-    .geo {
-        display: flex;
-        flex-direction: column;
-        min-width: 0;
-        min-height: 0;
-        overflow: hidden;
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        background: var(--panel);
-    }
     /* A size container, so the height limit of the card over it follows its height. */
     .map {
         position: relative;
-        flex: 1;
-        min-height: 160px;
         overflow: hidden;
         container-type: size;
+        border: 1px solid var(--line);
+        border-radius: 10px;
         background: var(--parchment);
-    }
-    .table {
-        display: flex;
-        flex: none;
-        flex-direction: column;
-        height: var(--table-height);
-        min-height: 0;
     }
     .note {
         margin: 32px 16px;
@@ -279,18 +242,27 @@
         outline-offset: -2px;
         box-shadow: none;
     }
-    /* The whole card with its close button stays in the map: its long text scrolls inside it. */
+    /* The whole card with its close button stays in the map: its long text scrolls inside it. A card with a long text
+       leaves a third of the map free for the line of its route, unless that leaves the card too little room. */
     .selected {
         position: absolute;
         z-index: 2;
         right: 12px;
         bottom: 12px;
         left: 12px;
-        --card-height: calc(100cqh - 24px);
+        --card-height: min(100cqh - 24px, max(65cqh, 330px));
     }
-    @media (max-width: 1180px) {
-        .below:not(.alone) {
-            grid-template-columns: 312px 1fr;
+    /* A low window of a computer: the page is tighter, so the map leaves the card room for its text. */
+    @media (max-height: 480px) and (min-width: 761px) {
+        .routes-page {
+            gap: 8px;
+            padding-block: 8px;
+        }
+        .selected {
+            right: 8px;
+            bottom: 8px;
+            left: 8px;
+            --card-height: calc(100cqh - 16px);
         }
     }
     @media (max-width: 760px) {
@@ -302,21 +274,11 @@
             grid-template-columns: 1fr;
             grid-template-rows: auto;
         }
-        .geo > :global([role="separator"]) {
-            display: none;
-        }
-        .table {
-            height: 60vh;
-        }
         .map {
-            flex: none;
             height: 70vh;
             /* Some browsers give a size container layout containment, which makes the map the containing block of the
                fixed card. */
             container-type: normal;
-        }
-        .below .map {
-            height: min(56vh, 440px);
         }
         /* The map is under the list, so a card over the map is below the screen after a tap on a row. */
         .selected {
@@ -324,8 +286,8 @@
             z-index: 20;
             bottom: max(12px, env(safe-area-inset-bottom));
             /* The card is never higher than the screen, and leaves a part of the page over it: its long text scrolls
-               inside it, so its buttons stay on the screen. */
-            --card-height: calc(100dvh - 96px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+               inside it, so its buttons stay on the screen. On a high screen it leaves more of the page. */
+            --card-height: min(100dvh - 96px - env(safe-area-inset-top) - env(safe-area-inset-bottom), max(60dvh, 360px));
         }
         :global(body) {
             padding-bottom: var(--card-room, 0);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CatalogFacts, CatalogRecord, FactsPlace } from '../../lib/planner/signed-routes';
 import { defaultQuery, type Query, type Row, type Way } from './search';
-import { accessSteps, accessText, snowText, suggestionText } from './words';
+import { accessSteps, accessText, hikeNumbers, snowText, suggestionText } from './words';
 
 const PLACES: Record<string, FactsPlace> = {
     w1: { kind: 'parking', size: 'small', at_udeg: [0, 0] }, w2: { kind: 'parking', size: 'large', name: 'Talboden', at_udeg: [0, 0] },
@@ -31,6 +31,13 @@ describe('getting there', () => {
         expect(accessText(row({ kind: 'valley', lift: 'n3', before: 0, drive: 9000, cost: 10 }, { shape: 'liftDown' }), place))
             .toBe('Drive 9.0 km to the valley station of Brunni.');
     });
+});
+
+it('gives the numbers of a row in its shape: the descent of a lift shape, the time and the grade', () => {
+    const way: Way = { kind: 'any', cost: 0 };
+    expect(hikeNumbers(row(way, { moving_s: 9000, record: { ...record, hardest: 1 } }))).toEqual(['8.0\u00a0km', '500\u00a0m up', '2h 30m', 'T2']);
+    expect(hikeNumbers(row(way, { shape: 'liftDown', ascent_m: 900, descent_m: 100 }))).toEqual(['8.0\u00a0km', '900\u00a0m up', '100\u00a0m down']);
+    expect(hikeNumbers(row(way), 'Grade unknown')).toEqual(['8.0\u00a0km', '500\u00a0m up', 'Grade unknown']);
 });
 
 it('names each change that helps an empty list', () => {
