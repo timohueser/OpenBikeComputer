@@ -15,7 +15,8 @@
 
     let { label, options, value, onChange, compact = false, columns = 0, wrap = false }: {
         label: string;
-        options: { value: T; label: string; icon?: string }[];
+        /** `name` is the name of an option for a screen reader when its label is short, such as "Sunday" for "Sun". */
+        options: { value: T; label: string; icon?: string; name?: string }[];
         value: T;
         onChange: (value: T) => void;
         compact?: boolean;
@@ -35,6 +36,7 @@
             type="button"
             role="radio"
             aria-checked={value === option.value}
+            aria-label={option.name}
             tabindex={stop === option.value ? 0 : -1}
             onclick={() => onChange(option.value)}
             onkeydown={(event) => radioKey(event, index, options.length, next => onChange(options[next].value))}

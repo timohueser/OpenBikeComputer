@@ -8,8 +8,8 @@ import { category } from './presentation';
 import { factIcon, factWord, kindWord, openWords, whereWords, type SlotId, type Slots } from './slots';
 import type { QueryDay, Where } from './types';
 
-/** A value of some words: a change of the slots. */
-export interface Mark extends Value { slot: SlotId; set: (slots: Slots) => Slots }
+/** A value of some words: a change of the slots. `kind` is the kind of a search area or an opening time. */
+export interface Mark extends Value { slot: SlotId; kind?: 'day' | 'part' | 'scope' | 'open'; set: (slots: Slots) => Slots }
 
 export const kindMark = (kind: string): Mark =>
     ({ label: kindWord(kind), slot: 'find', icon: 'search', path: placeCategories[category(kind)].icon, set: slots => ({ ...slots, find: { kind } }) });
@@ -17,20 +17,20 @@ export const factMark = (fact: string): Mark => ({ label: factWord(fact), slot: 
 
 /** A search area from a day, a part or a scope, which the other words of a sentence complete: "middle" and "day 1" give
  * the middle of day 1, and a part with no day is a part of the route. */
-function area(label: string, icon: string, place: (where: Where | undefined) => Where): Mark {
-    return { label, slot: 'where', icon, set: slots => ({ ...slots, where: place(slots.where) }) };
+function area(kind: 'day' | 'part' | 'scope', label: string, icon: string, place: (where: Where | undefined) => Where): Mark {
+    return { label, slot: 'where', kind, icon, set: slots => ({ ...slots, where: place(slots.where) }) };
 }
-export const dayMark = (day: QueryDay, part?: string) => area(whereWords({ day, part })[0], 'calendar', where => {
+export const dayMark = (day: QueryDay, part?: string) => area('day', whereWords({ day, part })[0], 'calendar', where => {
     const kept = part ?? where?.part;
     return kept ? { day, part: kept } : { day };
 });
 const partMark = (part: string) =>
-    area(part.charAt(0).toUpperCase() + part.slice(1), 'route', where => where?.day !== undefined ? { day: where.day, part } : { scope: 'route', part });
-export const scopeMark = (scope: string) => area(whereWords({ scope })[0], scope === 'here' ? 'locate' : scope === 'view' ? 'fit' : 'route',
+    area('part', part.charAt(0).toUpperCase() + part.slice(1), 'route', where => where?.day !== undefined ? { day: where.day, part } : { scope: 'route', part });
+export const scopeMark = (scope: string) => area('scope', whereWords({ scope })[0], scope === 'here' ? 'locate' : scope === 'view' ? 'fit' : 'route',
     where => scope === 'route' && where?.part && where.day === undefined ? { scope, part: where.part } : { scope });
 
 const when = (open: NonNullable<Slots['open']>): Mark =>
-    ({ label: openWords(open)[0], slot: 'when', icon: open.now ? 'clock' : 'calendar', set: slots => ({ ...slots, open }) });
+    ({ label: openWords(open)[0], slot: 'when', kind: 'open', icon: open.now ? 'clock' : 'calendar', set: slots => ({ ...slots, open }) });
 export const OPEN_NOW = when({ now: true });
 
 function table(): Table<Mark> {
@@ -58,13 +58,16 @@ function table(): Table<Mark> {
 export const PLANNER_WORDS = table();
 
 const STOP = new Set(marks.stop);
-/** The marks of a sentence of only search areas and opening times whose other words carry no meaning, one mark for each
- * slot, which the page can read with no model; undefined for any other sentence, such as one with "after" or two days. */
+/** Two values that one search area or opening time cannot hold together: two of one kind, or a scope and a day. A part
+ * goes with a day or a scope. */
+const clash = (a: Mark, b: Mark) => a.kind === b.kind || (a.kind === 'scope' && b.kind === 'day') || (a.kind === 'day' && b.kind === 'scope');
+/** The marks of a sentence of only search areas and opening times whose other words carry no meaning, which the page can
+ * read with no model; undefined for any other sentence, such as one with "after" or two days. */
 export function areasAndTimes(text: string): Mark[] | undefined {
     const found: Mark[] = [];
     for (const part of scan(text, PLANNER_WORDS)) {
         const words = fold(text.slice(part.from, part.to));
-        if (part.kind === 'value' && part.value.slot !== 'find' && !found.some(mark => mark.slot === part.value.slot)) found.push(part.value);
+        if (part.kind === 'value' && part.value.slot !== 'find' && !found.some(mark => clash(mark, part.value))) found.push(part.value);
         else if (part.kind !== 'glue' || !(STOP.has(words) || /^[,;.!?]$/.test(words))) return undefined;
     }
     return found.length ? found : undefined;

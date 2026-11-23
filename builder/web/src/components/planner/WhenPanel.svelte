@@ -14,7 +14,7 @@
     <QueryChoice label="Open now" icon="clock" on={!!open?.now} onclick={() => onchange(open?.now ? undefined : { now: true })} />
     <QueryChoice label="Open on a day of the week" icon="calendar" on={!!open?.weekday} onclick={() => onchange(open?.weekday ? undefined : { weekday: 'sun' })}>
         <Segmented label="Day of the week" columns={7} value={open?.weekday ?? 'sun'} onChange={weekday => onchange({ weekday })}
-            options={contract.weekdays.map(day => ({ value: day, label: weekdayWord(day).slice(0, 3) }))} />
+            options={contract.weekdays.map(day => ({ value: day, label: weekdayWord(day).slice(0, 3), name: weekdayWord(day) }))} />
     </QueryChoice>
     {#if open?.day !== undefined}<QueryChoice label={openWords(open)[0]} icon="calendar" on onclick={() => onchange(undefined)} />{/if}
 </div>

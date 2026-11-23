@@ -44,9 +44,11 @@
         if (!still()) list.animate?.({ opacity: [0.55, 1] }, { duration: 180, easing: 'ease-out' });
     }
 </script>
-<!-- The line over a list: its size, and the area that the search used. -->
-{#snippet heading()}
-    <div class="result-heading"><h2>{#key count}<span in:rise>{count}</span>{/key}</h2>{#if answer?.area}<span>{answer.area}</span>{/if}</div>
+<!-- The line over a list: its size, and the area that the search used, which an empty list shows too. -->
+{#snippet heading(size: number)}
+    {#if size || answer?.area}
+        <div class="result-heading">{#if size}<h2>{#key count}<span in:rise>{count}</span>{/key}</h2>{/if}{#if answer?.area}<span>{answer.area}</span>{/if}</div>
+    {/if}
 {/snippet}
 <div class="results" aria-busy={state.loading} {@attach fade}>
     <span class="sr-only" role="status">{announcement}</span>
@@ -65,11 +67,11 @@
             <button type="button" class="apply" disabled={applying} onclick={onApply}>{applying ? 'Applying…' : 'Apply change'}</button>
             {#if applyError}<p role="alert">{applyError}</p>{/if}
         {:else if answer.type === 'stretches'}
-            {#if answer.stretches?.length}{@render heading()}{/if}
+            {@render heading(answer.stretches?.length ?? 0)}
             {#each answer.stretches ?? [] as stretch}<button type="button" class="stretch" onclick={() => onStretch(stretch.coordinates)}>{stretch.label}<span>{settings.units} {tenths(stretch.from)}–{tenths(stretch.to)} · {tenths(stretch.to - stretch.from)} {settings.units}</span></button>{/each}
             {#if !answer.stretches?.length}<p>No matching stretch in this route data.</p>{/if}
         {:else if answer.type === 'places'}
-            {#if results.length}{@render heading()}{/if}
+            {@render heading(results.length)}
             {#each results as result, index (result.source)}
                 {#if grouped && resultDays[index] !== resultDays[index - 1]}
                     <h3 class="day-head"><span style:background={dayColor(resultDays[index] + 1, theme)}></span>Day {days[resultDays[index]].number}</h3>
