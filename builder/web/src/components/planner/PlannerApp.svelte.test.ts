@@ -545,6 +545,22 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.itinerary li:last-child strong')?.textContent).toBe(tilePlace.label);
     });
 
+    it('moves the map to a day that opens, and keeps the profile and the totals on the trip', async () => {
+        await startApp(); await tick();
+        const range = () => document.querySelector('.elevation [role="radio"][aria-checked="true"]')?.textContent?.trim();
+        const axis = () => [...document.querySelectorAll('.elevation .ticks span')].map(tick => tick.textContent);
+        const totals = document.querySelector('.plan-totals')!.textContent;
+        button('Whole route').click(); await tick();
+        const trip = axis();
+        button('Map view').click(); await tick();
+        const moved = moves.count;
+        dayButton(2).click(); await tick();
+        expect(moves.count).toBe(moved + 1);
+        expect([range(), axis(), document.querySelector('.plan-totals')!.textContent]).toEqual(['Whole route', trip, totals]);
+        button('All days').click(); await tick();
+        expect(range()).toBe('Map view');
+    });
+
     it('Escape closes the map selection before the selected part and the part before the open day, and a new line keeps the part', async () => {
         await startApp();
         await vi.waitFor(() => dayButton(1).click()); await tick();

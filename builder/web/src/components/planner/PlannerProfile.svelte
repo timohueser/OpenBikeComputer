@@ -31,6 +31,8 @@
         walking?: boolean;
         theme?: 'light' | 'dark';
         activeNight: number;
+        /** The open day. The profile stays on the trip, with the other days quiet, until the rider chooses the day in the
+         * range switch. */
         focus?: { from: number; to: number; label: string } | null;
         /** The stretch of the route the map shows, as route progress. */
         window?: { from: number; to: number };
@@ -53,7 +55,7 @@
         /** The surface that the rider points at in the surface legend. */
         surface?: SurfaceKind;
         /** The week in focus of a long trip: its days, and its stretch as route progress. The profile then shows
-         * the week, or the open day, and has no range switch. */
+         * the week, and has a range switch only while a day is open. */
         week?: { start: number; end: number; from: number; to: number } | null;
         /** The strip of all days, under the title row while there is a week. */
         tripStrip?: Snippet;
@@ -94,9 +96,15 @@
     // While a part that a drag here started is selected, the profile keeps the stretch of the map from when it started.
     let held = $state<{ from: number; to: number }>();
     $effect.pre(() => { if (!part) held = undefined; });
-    const whole = $derived(range === 'route' && !week);
-    const shown = $derived(whole ? { from: 0, to: 1 } : focus ?? week ?? (part && held ? held : view));
-    const origin = $derived(!whole && focus ? focus.from : 0);
+    // A trial for the owner to compare: with `?day=follow` in the address, the profile shows a day alone when it opens.
+    const follow = new URLSearchParams(location.search).get('day') === 'follow';
+    // The open day that the rider chose to see alone. Another day, and the same day when it opens again, show the trip.
+    let chosen = $state<string>();
+    $effect.pre(() => { if (focus?.label !== chosen) chosen = undefined; });
+    const alone = $derived(focus && (follow ? range === 'map' : chosen === focus.label) ? focus : null);
+    const shown = $derived(alone ?? week ?? (focus || range === 'route' ? { from: 0, to: 1 } : part && held ? held : view));
+    const origin = $derived(alone?.from ?? 0);
+    const quiet = (day: ProfileDay) => !!focus && day.number !== activeNight;
     const span = $derived(Math.max(1e-6, shown.to - shown.from));
     const shownDays = $derived(days.flatMap((day, i) => day.to > shown.from && day.from < shown.to ? [{ day, paths: dayPaths[i] }] : []));
     // The pointer in the profile, else the pointer on the map while it is in the shown stretch.
@@ -177,8 +185,9 @@
         <DrawerTitle title="Elevation" {open} {onToggle} iconOnly={!!totals} />
         {#if totals}<PlanTotals {...totals} />{/if}
         {#if open}
-        {#if !week}<Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
-            options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />{/if}
+        {#if !week || focus}<Segmented compact label="Profile range" value={focus ? alone ? 'map' : 'route' : range}
+            onChange={(value) => { if (focus && !follow) chosen = value === 'map' ? focus.label : undefined; else range = value; }}
+            options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: week ? `Days ${week.start}–${week.end}` : 'Whole route' }]} />{/if}
         <label class="grade-toggle"><input type="checkbox" checked={showGrade} onchange={(event) => gradeChoice = event.currentTarget.checked} />Grade</label>
         {#if seen}
             <!-- Clear leaves the document, so the focus goes to the profile. -->
@@ -197,13 +206,13 @@
         <span class="height" style:top="5%">{Math.round(heightIn(high))} {heightUnit()}</span>
         <span class="height" style:top="94%">{Math.round(heightIn(low))} {heightUnit()}</span>
         <svg viewBox={`${shown.from * 1000} 0 ${span * 1000} 112`} preserveAspectRatio="none"
-            role="img" aria-label={`${focus && !whole ? focus.label : 'Route'} elevation profile. Distances start at ${origin > 0 ? 'the day start' : 'the route start'}.`}>
+            role="img" aria-label={`${alone?.label ?? 'Route'} elevation profile. Distances start at ${origin > 0 ? 'the day start' : 'the route start'}.`}>
             {#if singleRoute}
                 <path d={area} class="terrain-fill" />
             {:else}
                 {#each shownDays as { day, paths } (day.number)}
                     <svg x={day.from * 1000} width={Math.max(0, day.to - day.from) * 1000} height="112" viewBox={`${day.from * 1000} 0 ${Math.max(0, day.to - day.from) * 1000} 112`} preserveAspectRatio="none" overflow="hidden">
-                        <path d={paths.area} style:--day-color={dayColor(day.number, theme)} class="day-fill" />
+                        <path d={paths.area} style:--day-color={dayColor(day.number, theme)} class="day-fill" class:quiet={quiet(day)} />
                     </svg>
                 {/each}
             {/if}
@@ -216,7 +225,7 @@
             {:else}
                 {#each shownDays as { day, paths } (day.number)}
                     <svg x={day.from * 1000} width={Math.max(0, day.to - day.from) * 1000} height="112" viewBox={`${day.from * 1000} 0 ${Math.max(0, day.to - day.from) * 1000} 112`} preserveAspectRatio="none" overflow="hidden">
-                        <path d={paths.line} fill="none" style:stroke={dayColor(day.number, theme)} />
+                        <path d={paths.line} fill="none" style:stroke={quiet(day) ? 'var(--quiet)' : dayColor(day.number, theme)} />
                     </svg>
                 {/each}
             {/if}
@@ -242,7 +251,7 @@
     </div>
     {/snippet}
     {#snippet readout()}
-        {distanceIn(((hover ?? 0) - origin) * total * 1000).toFixed(1)} {settings.units}{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(heightIn(hoverHeight))} ${heightUnit()}`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}
+        {distanceIn(((hover ?? 0) - origin) * total * 1000).toFixed(1)} {settings.units}{origin > 0 ? ` into ${alone!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(heightIn(hoverHeight))} ${heightUnit()}`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}
     {/snippet}
     <div class="plot-rows" bind:this={rows}>
         <Lanes label="Profile" rows={[{ label: '', draw: profile, grow: true }]} {ticks} pointer={hover === null ? undefined : share(hover)}
@@ -257,6 +266,8 @@
 <style>
     .elevation {
         --terrain: color-mix(in srgb, var(--ink-faint) 10%, var(--panel));
+        /* The grey of a quiet day on the map. */
+        --quiet: color-mix(in srgb, var(--ink-faint) 55%, var(--panel));
         display: flex;
         flex-direction: column;
         /* At a short window, the map holds its minimum height and the body scrolls. */
@@ -345,6 +356,7 @@
     }
     .terrain-fill { fill: var(--terrain); }
     .day-fill { fill: color-mix(in srgb, var(--day-color) 60%, var(--ink-faint)); opacity: .10; }
+    .day-fill.quiet { fill: var(--ink-faint); }
     path:not(.grid):not(.terrain-fill):not(.day-fill) {
         fill: none;
         stroke-width: 2;

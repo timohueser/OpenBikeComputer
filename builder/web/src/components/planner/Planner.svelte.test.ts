@@ -458,22 +458,47 @@ describe('planner day views', () => {
         expect(document.activeElement).toBe(document.querySelector('[data-day="1"]'));
     });
 
-    it('measures a focused profile from the day start and can show the whole route', async () => {
-        mounted.push(mount(Profile, {
-            target: document.body,
-            props: {
-                total: 144, days: planView(testTrip(), testLine(testTrip())).days,
-                activeNight: 2, focus: { from: 1 / 3, to: 2 / 3, label: 'Day 3' },
-                window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
-            },
-        }));
-        await tick();
-
+    describe('the profile with a day open', () => {
+        const days = planView(testTrip(), testLine(testTrip())).days;
         const axis = () => [...document.querySelectorAll('.ticks span')].map(tick => tick.textContent);
-        expect(axis()).toEqual(['0 km', '12 km', '24 km', '36 km', '48 km']);
-        button('Whole route').click();
-        await tick();
-        expect(axis()).toEqual(['0 km', '36 km', '72 km', '108 km', '144 km']);
+        const range = () => document.querySelector('[role="radio"][aria-checked="true"]')?.textContent?.trim();
+        const trip = ['0 km', '36 km', '72 km', '108 km', '144 km'], alone = ['0 km', '12 km', '24 km', '36 km', '48 km'];
+        function profile(day: () => number, week?: { start: number; end: number; from: number; to: number }) {
+            mounted.push(mount(Profile, { target: document.body, props: {
+                total: 144, days, week, singleRoute: false, window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+                get activeNight() { return day(); }, get focus() { return { from: days[day() - 1].from, to: days[day() - 1].to, label: `Day ${day()}` }; },
+            } }));
+        }
+
+        it('stays on the trip with the other days quiet, and shows the day alone, from its start, while that day is open', async () => {
+            let day = $state(2);
+            profile(() => day);
+            await tick();
+            expect([range(), axis()]).toEqual(['Whole route', trip]);
+            expect([...document.querySelectorAll('.day-fill')].map(fill => fill.classList.contains('quiet'))).toEqual([true, false, true]);
+            button('Day 2').click(); await tick();
+            expect([range(), axis()]).toEqual(['Day 2', alone]);
+            day = 3; await tick();
+            expect([range(), axis()]).toEqual(['Whole route', trip]);
+        });
+
+        it('stays on the week of a long trip, and offers the day beside it', async () => {
+            profile(() => 2, { start: 1, end: 2, from: 0, to: days[1].to });
+            await tick();
+            expect([range(), axis()]).toEqual(['Days 1–2', ['0 km', '24 km', '48 km', '72 km', '96 km']]);
+            button('Day 2').click(); await tick();
+            expect([range(), axis()]).toEqual(['Day 2', alone]);
+        });
+
+        it('follows the day when it opens, with `?day=follow` in the address', async () => {
+            history.replaceState(null, '', '?day=follow');
+            onTestFinished(() => history.replaceState(null, '', location.pathname));
+            profile(() => 2);
+            await tick();
+            expect([range(), axis()]).toEqual(['Day 2', alone]);
+            button('Whole route').click(); await tick();
+            expect([range(), axis()]).toEqual(['Whole route', trip]);
+        });
     });
 
     it('writes miles and feet for a rider on miles, and a missing ascent as a dash', async () => {
@@ -584,7 +609,7 @@ describe('profile part', () => {
         expect(document.querySelector('.title .part')).not.toBeNull();
     });
 
-    it('counts the part of an open day from its start, and shows the share of it in the day when the day end moves or another day opens', async () => {
+    it('counts the part of a day shown alone from its start, shows the share of it in the day when the day end moves, and the whole part when another day opens', async () => {
         const line: RoutingLine = {
             profile: 'touring', coordinates: [[8, 46], [8, 46.5], [8, 47]], elevation: [100, 600, 100], elapsed: [0, 1, 2], edges: {},
             stops: [], seconds: 2, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, gapLegs: [],
@@ -596,8 +621,10 @@ describe('profile part', () => {
             get part() { return part; }, onPart: next => { part = next; }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
         } }));
         await tick();
+        const text = () => document.querySelector('.title .part')?.textContent?.replace(/\s/g, ' ');
+        button('Day 2').click();
         part = [.45, .5]; await tick();
-        expect(document.querySelector('.title .part')?.textContent?.replace(/\s/g, ' ')).toBe('km 5.0 to km 10.0 · 5.0 km · 50 m upClear');
+        expect(text()).toBe('km 5.0 to km 10.0 · 5.0 km · 50 m upClear');
         expect(document.querySelector('.ticks span')?.textContent).toBe('0 km');
 
         focus = { from: .4, to: .55, label: 'Day 2' }; await tick();
@@ -606,10 +633,10 @@ describe('profile part', () => {
         focus = { from: .4, to: .47, label: 'Day 2' }; await tick();
         expect(part).toEqual([.45, .5]);
         expect(document.querySelectorAll('.pale')).toHaveLength(1);
+        // Another day shows the trip, and the part counts from the route start.
         focus = { from: .6, to: .8, label: 'Day 3' }; await tick();
         expect(part).toEqual([.45, .5]);
-        expect(document.querySelector('.title .part')).toBeNull();
-        expect(document.querySelectorAll('.pale')).toHaveLength(0);
+        expect(text()).toBe('km 45.0 to km 50.0 · 5.0 km · 50 m upClear');
     });
 });
 
