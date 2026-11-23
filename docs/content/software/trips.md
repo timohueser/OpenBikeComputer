@@ -63,7 +63,8 @@ route's line as a drawn leg.
 
 In the web planner, one bar above the stops holds the day count, the start date and, for a trip, the
 stay kinds. Its "+" makes a route a multi-day trip, and "−" from the lowest count undoes it. With a
-start date, each day shows its weekday. The elevation profile is the timeline: days by colour and
+start date, each day shows its date. In the list, a day is a card in the colour of its line on the map:
+where it starts and ends, its distance, climb and riding time, and below them its night. The elevation profile is the timeline: days by colour and
 night markers. From 15 riding days, a strip of all days frames one week: the list, profile, map and
 town search show only that week; the map draws the other days thin and grey. A trip has at most 64
 riding days. Above 32, the device gets two trips: "Alps 1/2" and "Alps 2/2".
@@ -71,8 +72,7 @@ riding days. Above 32, the device gets two trips: "Alps 1/2" and "Alps 2/2".
 A guessed day count is grey and dotted; a set one is dark. The planner guesses the day count from
 the riding time at the plan's pace. After each route or pace change, it guesses the count and the
 suggested nights again. Pinned nights and a set count stay. When the guess has fewer nights,
-what the rider set on a lost night goes with it; Undo brings it back. A riding-time bar on each day
-shows hard days.
+what the rider set on a lost night goes with it; Undo brings it back.
 
 "Choose" or "Change" on a night, or its profile marker, shows only that night in the panel. A town
 replaces its town list, also in an open day. A back row or Escape goes back one level. One button
@@ -80,9 +80,9 @@ ends the day at the town or at a place selected in it. The town moves the night,
 the day end. A campsite or a hotel keeps it. A kept night is a place, with a filled marker. A moved
 night is a point on the route, with a dotted marker. "Let the planner choose" makes the night a
 suggestion again. The town list sets other kinds for its night only. A night of one kind only
-(campsites, huts or shelters) ends at a place of that kind. Other nights end in the town, as "Around
-Ulrichen", because the planner cannot pick a hotel in the rider's price range. With a start date,
-each night shows its sunset and usual night temperature.
+(campsites, huts or shelters) ends at a place of that kind. Other nights end in the town, as "Sleep
+near Ulrichen", because the planner cannot pick a hotel in the rider's price range. With a start date,
+the card of a town shows its sunset and usual night temperature.
 
 The plan stores which values the rider set ([planner plan](src:specs/planner-plan.md)).
 
