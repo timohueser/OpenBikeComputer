@@ -8,11 +8,12 @@ import { category } from './presentation';
 import { ACTS, factIcon, factWord, kindWord, NEAREST, openWords, whereWords, withAct, type Act, type SlotId, type Slots } from './slots';
 import type { QueryDay, Where } from './types';
 
-/** A value of some words: a change of the slots. `kind` is the kind of a search area or an opening time. */
-export interface Mark extends Value { slot: SlotId; kind?: 'day' | 'part' | 'scope' | 'open'; set: (slots: Slots) => Slots }
+/** A value of some words: a change of the slots. `kind` is the kind of a search area or an opening time, or `place` for a
+ * kind of place. */
+export interface Mark extends Value { slot: SlotId; kind?: 'place' | 'day' | 'part' | 'scope' | 'open'; set: (slots: Slots) => Slots }
 
 export const kindMark = (kind: string): Mark =>
-    ({ label: kindWord(kind), slot: 'find', icon: 'search', path: placeCategories[category(kind)].icon, set: slots => ({ ...slots, find: { kind } }) });
+    ({ label: kindWord(kind), slot: 'find', kind: 'place', icon: 'search', path: placeCategories[category(kind)].icon, set: slots => ({ ...slots, find: { kind } }) });
 export const factMark = (fact: string): Mark => ({ label: factWord(fact), slot: 'find', icon: factIcon(fact), set: slots => ({ ...slots, find: { fact } }) });
 const actMark = (act: Act): Mark => ({ label: ACTS[act].label, slot: 'find', icon: ACTS[act].icon, set: slots => withAct(slots, act) });
 
@@ -57,8 +58,8 @@ function table(): Table<Mark> {
         phrases, starts: [], units: [], not: [], glue: marks.glue,
         patterns: [
             { match: new RegExp(`^(?:${nouns})\\s+(\\d{1,2})(?![\\p{L}\\d])`, 'u'), values: ([, n]) => [dayMark(Number(n))] },
-            // "The next 20 km" is a stretch, which the query model reads.
-            { match: new RegExp(`^(?:${marks.nearest.join('|')})(?![\\p{L}\\d]|\\s*\\d)`, 'u'), values: () => [NEAREST_MARK] },
+            // Only before a kind of place: "next to", "next Sunday" and "the next 20 km" are other things.
+            { match: new RegExp(`^(?:${marks.nearest.join('|')})(?![\\p{L}\\d])`, 'u'), values: match => placeFollows(match.input.slice(match[0].length)) ? [NEAREST_MARK] : [] },
         ],
     };
 }
@@ -69,6 +70,11 @@ export const PLANNER_WORDS = table();
 export const saysNearest = (text: string) => scan(text, PLANNER_WORDS).some(part => part.kind === 'value' && part.value === NEAREST_MARK);
 
 const STOP = new Set(marks.stop);
+/** A folded text starts with a kind of place, after words that carry no meaning. */
+function placeFollows(text: string): boolean {
+    const next = scan(text, PLANNER_WORDS).find(part => part.kind !== 'glue' || !STOP.has(text.slice(part.from, part.to)));
+    return next?.kind === 'value' && next.value.kind === 'place';
+}
 /** Two values that one search area or opening time cannot hold together: two of one kind, or a scope and a day. A part
  * goes with a day or a scope. */
 const clash = (a: Mark, b: Mark) => a.kind === b.kind || (a.kind === 'scope' && b.kind === 'day') || (a.kind === 'day' && b.kind === 'scope');

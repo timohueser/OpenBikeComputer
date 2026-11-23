@@ -177,7 +177,7 @@
         { id: 'when', icon: ICONS.when, label: 'When', words: words.when, unset: 'Any time', set: !!slots.open, off: named || fact ? 'Any time' : undefined },
     ]);
     const summary = (kept: Slots) => Object.values(slotWords(kept)).flat().join(' · ');
-    /** The answer has a line under the bar: the kinds left out, a notice, or a change of the plan with "Apply change". An
+    /** The answer has a line under the bar: the kinds left out, a notice, or a change of the plan with "Apply". An
      * empty field then offers nothing, as its list would cover the line. */
     const noted = $derived(!!planned || left.length > 0 || !!searchState.answer?.notice);
     const field = $derived<FieldProps<Mark, Place>>({

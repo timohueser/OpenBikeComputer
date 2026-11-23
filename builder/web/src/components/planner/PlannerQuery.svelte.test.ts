@@ -193,7 +193,7 @@ describe('the planner search',()=>{
         expect(onLocation).toHaveBeenCalledOnce();
         expect(sent(fetch).at(-1)).toMatchObject({ here: [7.85, 48], request: route });
         expect(state).toMatchObject({ loading: false, answer: { type: 'change' } });
-        // The slots keep the search before, and the empty field offers nothing over "Apply change".
+        // The slots keep the search before, and the empty field offers nothing over "Apply".
         expect(words('find')).toBe('Supermarket');
         expect(target.querySelector('[role="listbox"]')).toBeNull();
         // The cross takes the change away, and "Undo" asks for it again.

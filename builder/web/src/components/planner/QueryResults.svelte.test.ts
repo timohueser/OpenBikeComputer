@@ -38,18 +38,27 @@ describe('search results', () => {
         expect(document.querySelector('.day-head')).toBeNull();
         expect(await show([place('a', 'hotel'), place('b', 'campsite')])).toEqual([['hotel · Eich', '2.3 km'], ['campsite · Eich', '2.3 km']]);
     });
-    it('gives each place the action of "Find", amber on the first when the rider chose it, and says what an action changed with "Undo"', async () => {
-        const onAct = vi.fn(), onUndo = vi.fn();
-        const actions = () => [...document.querySelectorAll<HTMLButtonElement>('.result .act')].map(button => [button.textContent, button.classList.contains('primary')]);
-        await show([place('a', 'hotel'), place('b', 'hotel')], { action: { button: 'Add as a stop', chosen: false } });
-        expect(actions()).toEqual([['Add as a stop', false], ['Add as a stop', false]]);
-        await show([place('a', 'hotel'), place('b', 'hotel')], { action: { button: 'Route here', chosen: true }, done: 'The route now ends at a', onAct, onUndo });
-        expect(actions()).toEqual([['Route here', true], ['Route here', false]]);
+    it('gives each place the action of "Find", amber on the first where it applies, and says what an action changed with "Undo"', async () => {
+        const onAct = vi.fn(), onUndo = vi.fn(), none = () => ({});
+        const actions = () => [...document.querySelectorAll<HTMLButtonElement>('.result .act')]
+            .map(button => [button.getAttribute('aria-label'), button.classList.contains('primary'), button.disabled]);
+        await show([place('a', 'hotel'), place('b', 'hotel')], { action: { button: 'Add as a stop', chosen: false, check: none } });
+        expect(actions()).toEqual([['Add as a stop: a', false, false], ['Add as a stop: b', false, false]]);
+        // A place where the action cannot apply has it off, with the reason once; a place that is a stop already has none.
+        const check = ({ source }: SearchPlace) => source === 'a' ? { reason: 'The last day ends at the finish.' } : source === 'c' ? { stop: 'Stop on Day 3' } : {};
+        await show([place('a', 'hotel'), place('b', 'hotel'), place('c', 'hotel')], { action: { button: 'End the day here', chosen: true, check }, done: 'Day 1 now ends at b', onAct, onUndo });
+        expect(actions()).toEqual([['End the day here: a', false, true], ['End the day here: b', true, false]]);
+        expect([document.querySelector('.reason')?.textContent, document.querySelector('.result .stop')?.textContent]).toEqual(['The last day ends at the finish.', 'Stop on Day 3']);
         document.querySelectorAll<HTMLButtonElement>('.result .act')[1].click();
         expect(onAct).toHaveBeenCalledWith(expect.objectContaining({ source: 'b' }));
-        expect(document.querySelector('.done')?.textContent).toBe('The route now ends at aUndo');
+        expect(document.querySelector('.done')?.textContent).toBe('Day 1 now ends at bUndo');
+        // "Undo" takes its line away, so the focus goes to the first place.
         document.querySelector<HTMLButtonElement>('.done button')!.click();
-        expect(onUndo).toHaveBeenCalledOnce();
+        expect([onUndo.mock.calls.length, document.activeElement]).toEqual([1, document.querySelector('.place-row')]);
+        // While the list loads, no action applies to a place that may have moved.
+        await show([place('b', 'hotel')], { action: { button: 'Route here', chosen: true, check: none }, state: { loading: true, error: '',
+            answer: { type: 'places', request: { type: 'places', what: ['hotel'] }, results: [place('b', 'hotel')] } } });
+        expect(actions()).toEqual([['Route here: b', true, true]]);
     });
     it('shows a change of the plan that the slots cannot hold as one action row with "Apply"', async () => {
         const onApply = vi.fn();

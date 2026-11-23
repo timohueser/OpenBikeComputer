@@ -103,9 +103,9 @@ test('the planner search: "route to the next supermarket" lists the supermarkets
   const distance = page.locator('[aria-label="Whole plan"] dd').first();
   await expect(distance).toHaveText('15.2 km');
 
-  // The action marks as the action, not as "Whole route", and "next" as the nearest one ahead.
+  // The action marks as the action, not as "Whole route"; "next" marks as the nearest one ahead once a kind follows it.
   await field.pressSequentially('route to the next supermarket');
-  await expect(page.locator('.mirror .m-value')).toHaveText(['route to', 'next']);
+  await expect(page.locator('.mirror .m-value')).toHaveText(['route to']);
   await field.press('Enter');
   await expect(page.locator('[data-slot="find"] .label')).toHaveText('Route to');
   await expect(page.locator('[data-slot="find"] strong')).toHaveText('Supermarket');

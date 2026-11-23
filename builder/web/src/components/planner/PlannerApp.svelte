@@ -61,7 +61,7 @@
     import { placeDetails, withDetails, type QueryChange, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { placeSource } from '../../lib/planner/place-index';
     import { asPlace, category, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
-    import { applyQueryChanges, placeChange } from '../../lib/planner/search/actions';
+    import { applyQueryChanges, placeChange, placeCheck } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import { appearance } from '../../lib/theme.svelte';
     import { routingKey, type RoutingLine, type Surface } from '../../lib/planner/routing';
@@ -162,8 +162,9 @@
     let here = $state<{ coordinate: Coordinate; at: number } | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
-    /** What the last action on a place of the search changed, for the slots that listed the place, until the next edit. */
-    let searchDone = $state.raw<{ text: string; slots: Slots } | null>(null);
+    /** What the last action on a place of the search changed, for the slots that listed the place, until the next edit,
+     * and the way back to Explore and the shown week before it, which its "Undo" brings back. */
+    let searchDone = $state.raw<{ text: string; slots: Slots; view: { exploreBack: unknown; weekStart: number; restedStart: number } } | null>(null);
     let message = $state(`Plan a ride in ${config.name}`);
     // The status line offers Undo after "Discard changes", until the next change.
     let statusUndo = $state<(() => void) | null>(null);
@@ -1134,16 +1135,16 @@
         });
     }
 
-    /** Applies the changes that `make` gives as one Undo step, and gives their description; none when they fail or the
-     * plan changed meanwhile, with the reason in `queryApplyError`. */
-    async function applyChanges(make: () => { changes: QueryChange[]; description: string }): Promise<string | undefined> {
+    /** Applies the changes that `make` gives as one Undo step, and gives their description; none when they fail, or when the
+     * plan or what `still` checks changed meanwhile, with the reason in `queryApplyError`. */
+    async function applyChanges(make: () => Promise<{ changes: QueryChange[]; description: string }>, still = () => true): Promise<string | undefined> {
         if (applyingQuery) return;
         const before = trip;
         applyingQuery = true; queryApplyError = '';
         try {
-            const { changes, description } = make();
+            const { changes, description } = await make();
             const next = await applyQueryChanges(before, session.line, changes, plan => session.calculate(plan, new AbortController().signal));
-            if (before !== trip) throw new Error('The route changed. Review the search again.');
+            if (before !== trip || !still()) throw new Error('The route changed. Review the search again.');
             if (changes.some(change => change.op === 'route')) { exploreBack = undefined; restedStart = weekStart = 1; fitWeek = false; }
             session.commit(next.trip, next.line);
             showInWeek(changes.find(change => change.day !== undefined)?.day);
@@ -1155,9 +1156,11 @@
 
     /** "Apply" of a change of the plan that the slots cannot hold. The search ends. */
     async function applySearch() {
-        const answer = $state.snapshot(searchState.answer);
-        if (!answer?.changes) return;
-        if (await applyChanges(() => ({ changes: answer.changes!, description: answer.description ?? 'Query applied' }))) { exitSearch(); clearSelection(); }
+        const answer = $state.snapshot(searchState.answer), changes = answer?.changes;
+        if (!changes) return;
+        const applied = await applyChanges(async () => ({ changes, description: answer.description ?? 'Query applied' }),
+            () => JSON.stringify(changes) === JSON.stringify(searchState.answer?.changes));
+        if (applied) { exitSearch(); clearSelection(); }
     }
 
     /** Runs an edit of the plan from the list of the search, and keeps the search when the plan changes its type. */
@@ -1169,14 +1172,28 @@
 
     /** The action of "Find" on a place of the list; "Find" itself adds it as a stop. The list stays, with what changed. */
     function actOn(place: SearchPlace) {
-        const slots = searchSlots;
+        const slots = searchSlots, view = { exploreBack, weekStart, restedStart };
         return keepingSearch(async () => {
-            // A route goes from the rider, else from the start: with no start, the page asks for the position first.
-            if (slots.act === 'route' && !searchContext.here && !queryPlan.points.some(point => point.kind === 'start')) await locate();
-            const text = await applyChanges(() => placeChange(slots.act ?? 'add_point', $state.snapshot(place), queryPlan, $state.snapshot(searchContext.here)));
-            if (text) searchDone = { text, slots };
+            const text = await applyChanges(async () => {
+                // A route goes from the rider, else from the start: with no start, the page asks for the position first.
+                if (slots.act === 'route' && !searchContext.here && !queryPlan.points.some(point => point.kind === 'start')) await locate();
+                return placeChange(slots.act ?? 'add_point', $state.snapshot(place), queryPlan, $state.snapshot(searchContext.here));
+            });
+            if (text) searchDone = { text, slots, view };
         });
     }
+
+    /** "Undo" of the line after an action. */
+    function undoAction() {
+        const view = searchDone?.view;
+        return keepingSearch(() => {
+            undo();
+            if (view) ({ exploreBack, weekStart, restedStart } = view);
+        });
+    }
+
+    /** The ids of the places that the plan has as points. */
+    const planPlaces = $derived(new Set(trip.points.flatMap(point => point.placeId ? [point.placeId] : [])));
 
     function nameRest(index: number, name: string) {
         const names = (trip.restAfter ?? []).map((_, i) => i === index ? name.trim() : trip.restNames?.[i] ?? '');
@@ -1286,8 +1303,9 @@
             {#if searching}
                 <div class="pane-scroll">
                     <QueryResults attribution={config.attribution} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch}
-                        action={searchSlots.act ? { button: ACTS[searchSlots.act].button, chosen: true } : hasEndpoints ? { button: ACTS.add_point.button, chosen: false } : undefined}
-                        done={searchDone && sameValue(searchDone.slots, searchSlots) ? searchDone.text : ''} onAct={actOn} onUndo={() => keepingSearch(undo)} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={stretch => searchBox?.setStretch(stretch)} />
+                        action={searchSlots.act || hasEndpoints ? { button: ACTS[searchSlots.act ?? 'add_point'].button, chosen: !!searchSlots.act,
+                            check: place => placeCheck(searchSlots.act ?? 'add_point', place, queryPlan, planPlaces) } : undefined}
+                        done={searchDone && sameValue(searchDone.slots, searchSlots) ? searchDone.text : ''} onAct={actOn} onUndo={undoAction} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={stretch => searchBox?.setStretch(stretch)} />
                 </div>
             {:else if !hasEndpoints}
                 <div class="start-plan pane-scroll">

@@ -141,6 +141,26 @@ export async function applyQueryChanges(
   return { trip, line };
 }
 
+/** The riding days of the plan, and the one in which a place of the list lies: by its km along the route, else by the
+ * nearest point of the route. */
+function dayOf(place: SearchPlace, plan: SearchContext['plan']) {
+  const riding = plan.days.filter((day) => !day.rest);
+  const along = place.position?.along ?? nearestProgress(plan.coordinates, [place.lon, place.lat]) * (plan.km.at(-1) ?? 0);
+  return { riding, day: riding.find((d) => along <= d.to) ?? riding.at(-1) };
+}
+
+/**
+ * Why action `act` cannot apply to a place of the list (`reason`), or the stop that the plan has at the place already
+ * (`stop`), by the ids of the places of the plan points. A route always applies: it goes from the rider or the start.
+ */
+export function placeCheck(act: Act, place: SearchPlace, plan: SearchContext['plan'], stops: ReadonlySet<string>): { reason?: string; stop?: string } {
+  if (act === 'route') return {};
+  const { riding, day } = dayOf(place, plan);
+  if (!day || !['start', 'finish'].every((kind) => plan.points.some((p) => p.kind === kind))) return { reason: 'Choose a start and finish first.' };
+  if (act === 'add_point' && stops.has(place.source)) return { stop: riding.length > 1 ? `Stop on Day ${day.number}` : 'Stop on the route' };
+  return act === 'end_day' && day === riding.at(-1) ? { reason: 'The last day ends at the finish.' } : {};
+}
+
 /**
  * The change of action `act` on a place of the search list, and the line that says what it changed. A route goes from
  * the rider, else from the start of the plan, as the server routes. A stop and a day end go to the riding day in which
@@ -159,9 +179,7 @@ export function placeChange(
     if (!from) throw new Error('Set a start, or allow location access, to route to a place.');
     return { changes: [{ op: 'route', points: [from, point] }], description: `The route now ends at ${place.name}` };
   }
-  const riding = plan.days.filter((day) => !day.rest);
-  const along = place.position?.along ?? nearestProgress(plan.coordinates, point.coordinate) * (plan.km.at(-1) ?? 0);
-  const day = riding.find((d) => along <= d.to) ?? riding.at(-1);
+  const { riding, day } = dayOf(place, plan);
   if (!day) throw new Error('Choose a start and finish before editing the route.');
   if (act === 'end_day') return { changes: [{ op: 'end_day', day: day.number, point }], description: `Day ${day.number} now ends at ${place.name}` };
   return {

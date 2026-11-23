@@ -6,7 +6,7 @@ import { testLine, testTrip } from '../../../../test-support/planner/trip';
 import { calculateLine, type RoutingLine } from '../routing';
 import { LegCache } from '../route-legs';
 import { routeService } from '../../../../test-support/planner/route-service';
-import { applyQueryChanges, placeChange } from './actions';
+import { applyQueryChanges, placeChange, placeCheck } from './actions';
 import type { QueryChange, SearchContext, SearchPlace } from './types';
 
 const view = ({ trip, line }: { trip: Trip; line?: RoutingLine }) => planView(trip, line);
@@ -104,7 +104,8 @@ describe('query edits', () => {
 
 describe('the action on a place of the search list', () => {
     // A riding day, a rest day and a riding day on a line of 15 km.
-    const plan: SearchContext['plan'] = { coordinates: [[8, 48], [8.1, 48], [8.2, 48]], km: [0, 7.45, 14.9], points: [{ id: 'start', label: 'Freiburg', coordinate: [8, 48], kind: 'start' }],
+    const plan: SearchContext['plan'] = { coordinates: [[8, 48], [8.1, 48], [8.2, 48]], km: [0, 7.45, 14.9],
+        points: [{ id: 'start', label: 'Freiburg', coordinate: [8, 48], kind: 'start' }, { id: 'finish', label: 'Konstanz', coordinate: [8.2, 48], kind: 'finish' }],
         days: [{ number: 1, from: 0, to: 7.45, rest: false }, { number: 2, from: 7.45, to: 7.45, rest: true }, { number: 3, from: 7.45, to: 14.9, rest: false }] };
     const place = (position?: SearchPlace['position']): SearchPlace => ({ source: 'n/1', name: 'Rewe', kind: 'supermarket', lon: 8.15, lat: 48.001, city: '', region: '', distance: 0, precision: 'place', position });
     const point = { coordinate: [8.15, 48.001], label: 'Rewe', source: 'n/1', kind: 'supermarket' };
@@ -115,5 +116,15 @@ describe('the action on a place of the search list', () => {
         expect(placeChange('add_point', place({ along: 3, distance: 0 }), plan)).toEqual({ changes: [{ op: 'add_point', kind: 'stop', point }], description: 'Rewe is now a stop on Day 1' });
         // With no place along the route, the nearest point of the route gives the day.
         expect(placeChange('end_day', place(), plan)).toEqual({ changes: [{ op: 'end_day', day: 3, point }], description: 'Day 3 now ends at Rewe' });
+    });
+    it('applies a day end only before the last riding day, a stop or a day end only with a start and a finish, and no second stop', () => {
+        const stops = new Set(['n/1']);
+        expect(placeCheck('end_day', place({ along: 3, distance: 0 }), plan, stops)).toEqual({});
+        expect(placeCheck('end_day', place({ along: 9, distance: 0 }), plan, stops)).toEqual({ reason: 'The last day ends at the finish.' });
+        expect(placeCheck('add_point', place({ along: 9, distance: 0 }), plan, stops)).toEqual({ stop: 'Stop on Day 3' });
+        expect(placeCheck('add_point', place({ along: 9, distance: 0 }), plan, new Set())).toEqual({});
+        const empty = { ...plan, points: [] };
+        expect(placeCheck('add_point', place(), empty, stops)).toEqual({ reason: 'Choose a start and finish first.' });
+        expect(placeCheck('route', place(), empty, stops)).toEqual({});
     });
 });

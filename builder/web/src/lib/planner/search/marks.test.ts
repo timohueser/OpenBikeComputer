@@ -22,8 +22,11 @@ describe('the words of the planner search', () => {
         expect(marked('add a stop at a bakery')).toEqual([['add a stop at', 'Add a stop at', 'find'], ['bakery', 'Bakery', 'find']]);
         expect(marked('sleep at a campsite')).toEqual([['sleep at', 'End the day at', 'find'], ['campsite', 'Campsite', 'find']]);
         expect(saysNearest('the closest cafe')).toBe(true);
-        // "The next 20 km" is a stretch, which the query model reads.
-        expect([saysNearest('water in the next 20 km'), marked('water in the next 20 km')]).toEqual([false, [['water', 'Water', 'find']]]);
+        // Only before a kind of place: "the next 20 km" is a stretch, which the query model reads.
+        for (const text of ['campsite next to a lake', 'bakery open next sunday', 'water in the next twenty km', 'water in the next 20 km', 'next week'])
+            expect(saysNearest(text), text).toBe(false);
+        // "Next Sunday" alone goes to the query model.
+        expect(areasAndTimes('next sunday')).toBeUndefined();
     });
 
     it('puts a part and a day of a sentence together in one search area', () => {

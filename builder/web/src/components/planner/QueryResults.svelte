@@ -17,8 +17,9 @@
         /** The riding days in km, with the day numbers of the day list. */
         days: { number: number; from: number; to: number }[]; theme: 'light' | 'dark';
         state: SearchState; selectedId: string | null; hoveredId?: string | null; onHover?: (id: string | null) => void; applying?: boolean; applyError?: string;
-        /** The button of the action on each place. When the rider chose the action, it is amber on the first place. */
-        action?: { button: string; chosen: boolean };
+        /** The button of the action on each place, and why it cannot apply to a place or the stop that the plan has there.
+         * When the rider chose the action, it is amber on the first place where it applies. */
+        action?: { button: string; chosen: boolean; check: (place: SearchPlace) => { reason?: string; stop?: string } };
         /** What the last action changed. */
         done?: string;
         onSelect: (place: Place) => void; onApply: () => void; onAct?: (place: SearchPlace) => void; onUndo?: () => void; onMore: () => void; onRetry: () => void;
@@ -44,6 +45,16 @@
         return results.length === 1 && !answer.hasMore ? '1 place' : `${results.length}${answer.hasMore ? '+' : ''} places`;
     });
     const summary = $derived(answer?.type === 'change' ? answer.description : count && `${count} found.`);
+    const checks = $derived(results.map(result => action?.check(result) ?? {}));
+    const lead = $derived(action?.chosen ? checks.findIndex(check => !check.reason && !check.stop) : -1);
+    /** Each reason once, in one line over the list. */
+    const reasons = $derived([...new Set(checks.flatMap(check => check.reason ? [check.reason] : []))].join(' '));
+    let list: HTMLElement | undefined;
+    /** "Undo" takes its line away, so the focus goes to the list. */
+    function undo() {
+        onUndo?.();
+        list?.querySelector<HTMLElement>('.place-row')?.focus();
+    }
     const points = $derived((answer?.changes ?? []).flatMap(change => change.points ?? (change.point ? [change.point] : []))
         .map(point => point.detail ? `${point.label}, ${point.detail}` : point.label).join(' · '));
     // The one live region of the results; the notice, the line after an action and the note show without a role so they
@@ -61,7 +72,7 @@
         <div class="result-heading">{#if size}<h2>{#key count}<span in:rise>{count}</span>{/key}</h2>{/if}{#if answer?.area}<span>{answer.area}</span>{/if}</div>
     {/if}
 {/snippet}
-<div class="results" aria-busy={state.loading} {@attach fade}>
+<div class="results" aria-busy={state.loading} bind:this={list} {@attach fade}>
     <span class="sr-only" role="status">{announcement}</span>
     {#if state.loading && !answer}<p aria-hidden="true">Searching…</p>
     {/if}
@@ -82,15 +93,18 @@
             {#if !answer.stretches?.length}<p>No matching stretch in this route data.</p>{/if}
         {:else if answer.type === 'places'}
             {@render heading(results.length)}
-            {#if done}<p class="done" in:unfold><Icon name="check" size={16} /><span>{done}</span><button type="button" class="act" onclick={onUndo}>Undo</button></p>{/if}
+            {#if done}<p class="done" in:unfold><Icon name="check" size={16} /><span>{done}</span><button type="button" class="act" onclick={undo}>Undo</button></p>{/if}
             {#if applyError}<p role="alert">{applyError}</p>{/if}
+            {#if reasons}<p class="reason" id="action-reason">{reasons}</p>{/if}
             {#each results as result, index (result.source)}
                 {#if grouped && resultDays[index] !== resultDays[index - 1]}
                     <h3 class="day-head"><span style:background={dayColor(resultDays[index] + 1, theme)}></span>Day {days[resultDays[index]].number}</h3>
                 {/if}
                 <div class="result">
                     <PlaceRow place={asPlace(result)} distance={distanceOf(result)} detail={result.precision === 'street' ? 'Street location only' : ''} {showKind} selected={selectedId === result.source} hovered={hoveredId === result.source} {onHover} {onSelect} />
-                    {#if action}<button type="button" class="act" class:primary={action.chosen && index === 0} disabled={applying} onclick={() => onAct?.(result)}>{action.button}</button>{/if}
+                    {#if checks[index].stop}<span class="stop">{checks[index].stop}</span>
+                    {:else if action}<button type="button" class="act" class:primary={index === lead} aria-label="{action.button}: {result.name}"
+                        aria-describedby={checks[index].reason ? 'action-reason' : undefined} disabled={applying || state.loading || !!checks[index].reason} onclick={() => onAct?.(result)}>{action.button}</button>{/if}
                 </div>
             {:else}<p>No mapped places match this request in this package.</p>{/each}
             {#if answer.hasMore && (answer.results?.length ?? 0) < 100}<button type="button" onclick={onMore}>Show more results</button>{:else if answer.hasMore}<p>Zoom in or narrow the request to see more places.</p>{/if}
@@ -130,6 +144,9 @@
     .done { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; padding: 6px 6px 6px 12px; border-radius: 8px; background: var(--parchment-2); color: var(--ink); font-weight: 600; }
     .done span { flex: 1; min-width: 0; }
     .done > :global(svg) { flex: none; color: var(--ink-soft); }
+    .reason { margin: 10px 0 4px; }
+    .act:disabled { cursor: default; }
+    .stop { flex: none; color: var(--ink-soft); font-size: 12.5px; white-space: nowrap; }
     .action-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
     .action-icon { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%; background: var(--parchment-2); color: var(--ink-soft); }
     .action-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
