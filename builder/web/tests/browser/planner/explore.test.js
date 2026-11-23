@@ -268,14 +268,15 @@ test('the map asks for the hikes that pass a place, pins a car park as the only 
   await expect(rows).toHaveCount(2);
   await expect(page.locator('.routes-map')).toHaveAttribute('data-loaded', 'true');
 
-  // A row whose route the map shows over the card opens with no move of the map, so the list keeps its rows.
+  // A selected row moves the map only to show its route over the card: it pans or zooms out, never in, so the list keeps
+  // its rows. Whether the card covers the loop depends on the height of its text, so the test asks only for that rule.
   await expect(page).toHaveURL(/view=/);
   await page.waitForTimeout(500);
-  const shown = viewOf(page);
+  const shown = viewOf(page), span = ([west, south, east, north]) => [east - west, north - south];
   await rows.filter({ hasText: 'Schlossberg loop' }).click();
   await expect(page.getByRole('region', { name: 'Schlossberg loop' })).toBeVisible();
   await page.waitForTimeout(500);
-  expect(viewOf(page)).toEqual(shown);
+  span(viewOf(page)).forEach((size, i) => expect(size).toBeGreaterThanOrEqual(span(shown)[i] - 1e-4));
   await expect(rows).toHaveCount(2);
   await page.getByRole('button', { name: 'Close' }).click();
 
