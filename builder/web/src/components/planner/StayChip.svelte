@@ -18,7 +18,7 @@
     let trigger: HTMLButtonElement;
     let panel = $state<HTMLDivElement>();
     const chosen = $derived(stayOptions.filter(option => value.includes(option.kind)));
-    const text = $derived(chosen.length === allStay.length ? 'Any place' : chosen.length === 1 ? chosen[0].label : `${chosen[0]?.label} +${chosen.length - 1}`);
+    const text = $derived(chosen.length === allStay.length ? 'All kinds' : chosen.length === 1 ? chosen[0].label : `${chosen[0]?.label} +${chosen.length - 1}`);
 
     async function toggle() {
         if (expanded) { close(); return; }
@@ -38,7 +38,7 @@
 <!-- The panel is a flex item of the wrapping row around the chip, so it takes a full line below it and never overflows a narrow side panel. -->
 <div class="stay-chip" bind:this={root}>
     <button bind:this={trigger} type="button" class="planner-chip" aria-label={`${label}: ${text}`} aria-expanded={expanded} onclick={toggle}>
-        <Icon name={stayIcon(chosen[0]?.kind)} size={14} />{text}
+        <Icon name={chosen.length === allStay.length ? 'sliders' : stayIcon(chosen[0]?.kind)} size={14} />{text}
     </button>
     {#if expanded}
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->

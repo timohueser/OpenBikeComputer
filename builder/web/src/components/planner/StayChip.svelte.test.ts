@@ -19,7 +19,7 @@ describe('stay chip', () => {
         value = ['camp', 'hostel', 'hotel']; flushSync();
         expect(trigger().textContent).toBe('Campsites +2');
         value = allStay; flushSync();
-        expect(trigger().textContent).toBe('Any place');
+        expect(trigger().textContent).toBe('All kinds');
     });
 
     it('keeps the last checked kind', () => {

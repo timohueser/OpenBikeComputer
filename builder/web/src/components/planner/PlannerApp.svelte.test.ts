@@ -661,7 +661,7 @@ describe('planner app transitions', () => {
         await vi.waitFor(() => expect(nightCalls).toHaveLength(1));
         expect(nightCalls[0][1]).toEqual([[tilePlace.coordinate]]);
         const seam = document.querySelector('.night-seam')!;
-        button('Places to sleep on night 1: Any place', seam).click(); await tick();
+        button('Places to sleep on night 1: All kinds', seam).click(); await tick();
         stayBox('Huts', seam).click(); await tick();
         expect(stayBox('Huts', seam).checked).toBe(false);
         button('All days').click();

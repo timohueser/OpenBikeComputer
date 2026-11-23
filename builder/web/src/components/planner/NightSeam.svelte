@@ -411,7 +411,6 @@
         margin: 2px 0;
         border-radius: 12px;
         background: var(--parchment-2);
-        box-shadow: inset 0 0 0 1px var(--rim, transparent);
     }
     .head {
         display: grid;
