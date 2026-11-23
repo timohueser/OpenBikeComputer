@@ -38,7 +38,7 @@ export interface RoutePoint {
     drawn?: DrawnCoordinate[];
     /** A visit-and-return rejoins this exact position on the planned line. */
     anchor?: Coordinate;
-    /** The route turns back at this shaping point. */
+    /** The route turns back at this point. On the start of a loop, it counts once the start moves (`startLoopHere`). */
     turnaround?: true;
     /** A line about the place, such as a route file's waypoint description. */
     note?: string;
@@ -632,6 +632,45 @@ export function closeLoop(trip: Trip): Trip {
     if (trip.loop || !finish || !hasEndpoints(trip)) return trip;
     return { ...trip, loop: true, splits: undefined, routeOrder: orderedRoutePoints(trip).slice(1).map(p => p.id),
         points: trip.points.map(p => p.id === finish.id ? { ...p, kind: 'waypoint' as const } : p) };
+}
+
+/** A loop that turns back at a point between its start and its return to the start. */
+export function isThereAndBack(trip: Trip): boolean {
+    return !!trip.loop && orderedRoutePoints(trip).slice(1, -1).some(p => p.turnaround);
+}
+
+/** "There and back": the route turns at its far point and returns to the start through the points of the way out, as
+ * shaping points on legs of the same mode. The far point is the finish, or the last point of a loop before its start. */
+export function thereAndBack(trip: Trip): Trip {
+    const route = orderedRoutePoints(trip).slice(0, trip.loop ? -1 : undefined), far = route.at(-1)!;
+    if (!hasEndpoints(trip) || isThereAndBack(trip) || far.kind === 'start') return trip;
+    // A point holds the leg that ends at it, so a point of the way back takes the leg of the point after it on the way out.
+    const mirrored = (i: number) => ({ leg: route[i + 1].leg, drawn: route[i + 1].drawn?.slice().reverse() });
+    // The way back passes the anchor of a visit-and-return, not its place.
+    const back = route.slice(1, -1).map((p, i): RoutePoint => ({ id: crypto.randomUUID(), kind: 'via', label: shapeLabel,
+        coordinate: [...p.anchor ?? p.coordinate], ...p.turnaround && { turnaround: true as const }, ...mirrored(i + 1) })).reverse();
+    // A loop has no finish, and a visit-and-return has a turn of its own at its place: both become a visit.
+    const turn = (p: RoutePoint): RoutePoint => p === far
+        ? { ...p, turnaround: true, ...(p.kind === 'finish' || p.kind === 'detour') && { kind: 'waypoint' as const, anchor: undefined } }
+        : p.kind === 'start' ? { ...p, turnaround: true, ...mirrored(0) } : p;
+    return { ...trip, loop: true, splits: undefined, points: [...trip.points.map(turn), ...back],
+        routeOrder: [...route.slice(1), ...back].map(p => p.id) };
+}
+
+/** "One way": a there-and-back trip ends at its far point, and the points of the way back go with their nights. */
+export function oneWay(trip: Trip): Trip {
+    if (!isThereAndBack(trip)) return trip;
+    const route = orderedRoutePoints(trip).slice(0, -1);
+    // The way back repeats each turn of the way out, so the far point is the middle turn.
+    const turns = route.flatMap((p, i) => i && p.turnaround ? [i] : []), at = turns[turns.length >> 1], far = route[at];
+    const gone = new Set(route.slice(at + 1).map(p => p.id));
+    const finish: RoutePoint = { ...far, kind: 'finish', turnaround: undefined, anchor: undefined,
+        // `night-N` names a night, and a shaping point has no name of its own.
+        ...far.kind === 'night' && { id: crypto.randomUUID(), night: undefined },
+        ...far.kind === 'via' && { label: endpointLabel('finish'), autoLabel: true } };
+    return { ...trip, loop: undefined, splits: undefined, routeOrder: route.slice(1, at).map(p => p.id),
+        points: trip.points.filter(p => !gone.has(p.id)).map(p => p.id === far.id ? finish
+            : p.kind === 'start' ? { ...p, turnaround: undefined, leg: undefined, drawn: undefined } : p) };
 }
 
 /** A loop from the first coordinate through the others as shaping points. */

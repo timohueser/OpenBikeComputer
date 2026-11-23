@@ -19,7 +19,7 @@ const stayKinds: Record<string, Stay> = { campsite: 'camp', hut: 'hut', hostel: 
 export const stayKind = (placeKind?: string): Stay | undefined => placeKind && Object.hasOwn(stayKinds, placeKind) ? stayKinds[placeKind] : undefined;
 /** The map category of a place to sleep, such as `camp`; undefined for any other kind, such as a town. */
 export const sleepCategory = (placeKind?: string): PlaceCategory | undefined => stayKind(placeKind) ? category(placeKind!) : undefined;
-/** The five kinds of place to sleep as the trip row and a night list them. */
+/** The five kinds of place to sleep as the route preferences and a night list them. */
 export const stayOptions: { kind: Stay; label: string }[] = [
     { kind: 'camp', label: 'Campsites' }, { kind: 'hut', label: 'Huts' }, { kind: 'hostel', label: 'Hostels' },
     { kind: 'hotel', label: 'Hotels' }, { kind: 'shelter', label: 'Shelters' },

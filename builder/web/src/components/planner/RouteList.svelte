@@ -5,7 +5,7 @@
     import { distanceIn } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
-    let { stops, onInspect, onReorder, onLoop, measured = true, loop = false, hoveredId = null, onHover }: {
+    let { stops, onInspect, onReorder, measured = true, loop = false, hoveredId = null, onHover }: {
         hoveredId?: string | null;
         /** The last stop returns to the start, which has one row. */
         loop?: boolean;
@@ -14,8 +14,6 @@
         stops: { point: RoutePoint; distance: number }[];
         onInspect: (point: RoutePoint) => void;
         onReorder: (id: string, offset: number) => void;
-        /** "Back to start", offered for an open plan with a finish. */
-        onLoop?: () => void;
     } = $props();
 
     const helpId = $props.id();
@@ -94,9 +92,6 @@
         </li>
     {/each}
 </ol>
-{#if onLoop && !loop && listed.at(-1)?.point.kind === 'finish'}
-    <button type="button" class="stop back" onclick={onLoop}><Icon name="loop" size={17} />Back to start</button>
-{/if}
 <span class="sr-only" id={helpId}>Drag to reorder. Use the up and down arrow keys when focused.</span>
 <span class="sr-only" role="status">{announcement}</span>
 
@@ -135,13 +130,6 @@
         border-radius: 6px;
         text-align: left;
     }
-    .stop.back {
-        width: calc(100% - 16px);
-        margin: 4px 8px 0;
-        color: var(--ink-soft);
-        font: 600 14px var(--sans);
-    }
-    .stop.back:hover { color: var(--ink); }
     .stop:hover, .stop.highlighted {
         background: var(--parchment-2);
     }

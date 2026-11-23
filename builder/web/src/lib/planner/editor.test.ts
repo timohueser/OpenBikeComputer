@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { releaseNight, reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addClickedPoint, addPointNear, dayStops, guessDays, guessedTrip, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planView, replacePoint, routeLegsAround, dragPointOut, fewerDays, multiDay, routeToTrip, setDrawnLeg, setDays, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
+import { releaseNight, reverseTrip, repartitionDays, closeLoop, isThereAndBack, loopTrip, oneWay, startLoopHere, thereAndBack, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addClickedPoint, addPointNear, dayStops, guessDays, guessedTrip, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planView, replacePoint, routeLegsAround, dragPointOut, fewerDays, multiDay, routeToTrip, setDrawnLeg, setDays, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, kilometres, type Coordinate } from './geo';
 import { calculateLine, type RoutingLine } from './routing';
 import { LegCache } from './route-legs';
@@ -543,6 +543,44 @@ describe('loops', () => {
         const shaped = setLegMode(made, made.points[0].id, 'straight');
         expect(removeRoutePoint(shaped, made.points[1].id)).toMatchObject({ loop: undefined, points: [{ kind: 'start', leg: undefined }] });
         expect(loopTrip(emptyTrip(), [[7.8, 48]])).toEqual(emptyTrip());
+    });
+
+    it('turns at the finish and returns through the points of the way out', () => {
+        const drawing: Coordinate[] = [[7.812, 48.02], [7.816, 48.03]];
+        const open = setDrawnLeg({ ...plan(), splits: { 1: .4 } }, 'b', drawing);
+        const marked = { ...open, points: [...open.points, { id: 'm', kind: 'marker' as const, label: 'm', coordinate: at(open, 'a') }] };
+        const back = thereAndBack(marked), route = orderedRoutePoints(back);
+        expect(route.map(p => p.kind)).toEqual(['start', 'waypoint', 'waypoint', 'via', 'waypoint', 'via', 'via', 'via', 'start']);
+        expect(route.slice(5, 8).map(p => p.coordinate)).toEqual(['shape', 'b', 'a'].map(id => at(open, id)));
+        expect(new Set(route.map(p => p.id)).size).toBe(8);
+        expect(back.points).toHaveLength(marked.points.length + 3);
+        expect(back.points.filter(p => p.turnaround).map(p => [p.id, p.kind])).toEqual([['start', 'start'], ['finish', 'waypoint']]);
+        expect([back.loop, back.splits, isTrip(back)]).toEqual([true, undefined, true]);
+        // Each leg of the way back is its leg of the way out, reversed.
+        expect(route.slice(5).map(p => [p.leg, p.drawn])).toEqual([['straight', undefined], ['straight', undefined], ['drawn', drawing.slice().reverse()], ['straight', undefined]]);
+        expect(total(back)).toBeCloseTo(2 * total(open));
+        expect([open, closeLoop(open), back].map(isThereAndBack)).toEqual([false, false, true]);
+        expect(thereAndBack(back)).toBe(back);
+        expect(thereAndBack(emptyTrip())).toEqual(emptyTrip());
+    });
+
+    it('turns a loop at its last point, which stays a night', () => {
+        const loop = pinNight({ ...closeLoop(plan()), mode: 'trip' }, undefined, 2, at(plan(), 'finish'), 'Camp', 'finish');
+        const back = thereAndBack(loop);
+        expect(ids(back).slice(0, 5)).toEqual(['start', 'a', 'b', 'shape', 'night-2']);
+        expect(orderedRoutePoints(back).slice(4).map(p => [p.kind, p.turnaround])).toEqual([['night', true], ['via', undefined], ['via', undefined], ['via', undefined], ['start', true]]);
+        // As a finish, the night is a point with no night number.
+        const open = oneWay(back), finish = open.points.find(p => p.kind === 'finish')!;
+        expect([finish.label, finish.night, finish.id === 'night-2', open.days, isTrip(open)]).toEqual(['Camp', undefined, false, 3, true]);
+    });
+
+    it('ends one way at the far point, without the way back and its nights', () => {
+        // The way out turns at its shaping point, so the far point is the middle turn.
+        const open: Trip = { ...plan(), mode: 'trip', points: plan().points.map(p => p.id === 'shape' ? { ...p, turnaround: true as const } : p) };
+        const back = thereAndBack(open), copy = ids(back)[6];
+        expect(oneWay(back)).toEqual(open);
+        expect(oneWay(pinNight(back, undefined, 2, at(open, 'b'), 'Camp', copy))).toEqual(open);
+        expect(oneWay(open)).toBe(open);
     });
 });
 

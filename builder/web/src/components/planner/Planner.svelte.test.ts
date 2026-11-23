@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { allStay, planView, type Place, type Stay, type Trip } from '../../lib/planner/editor';
+import { allStay, closeLoop, planView, type Place, type Stay, type Trip } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 import { proposal, type Stop } from '../../lib/planner/stops';
@@ -13,6 +13,7 @@ import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
 import RouteStats from './RouteStats.svelte';
 import TripBar from './TripBar.svelte';
+import TripRow from './TripRow.svelte';
 import RoutePreferences from './RoutePreferences.svelte';
 import { coordinateName } from '../../lib/planner/point-names';
 import SaveWindow, { type SaveMode } from './SaveWindow.svelte';
@@ -360,6 +361,22 @@ describe('planner day views', () => {
         expect(document.querySelector('[data-day="1"] .figures')?.textContent).toContain('—ft');
         expect([...document.querySelectorAll('.ticks span')].map(tick => tick.textContent)).toEqual(['0 mi', '22 mi', '45 mi', '67 mi', '89 mi']);
         expect([...document.querySelectorAll('.height')].map(label => label.textContent)).toEqual(['100 ft', '0 ft']);
+    });
+});
+
+describe('route shape', () => {
+    it('names the route as planned a loop when it ends where it starts, and one way beside there and back', async () => {
+        let trip = $state.raw<Trip>(closeLoop({ ...testTrip(), mode: 'route' }));
+        const noop = () => {};
+        mounted.push(mount(TripRow, { target: document.body, props: { get trip() { return trip; }, line: undefined, onChange: noop, onDays: noop, onLimit: noop,
+            onShape: (next: Trip) => { trip = next; } } }));
+        await tick();
+        const shapes = () => [...document.querySelectorAll('[role="radio"]')].map(radio => [radio.getAttribute('aria-checked'), radio.textContent?.trim(), radio.getAttribute('title')]);
+        expect(shapes()).toEqual([['true', 'Loop', null], ['false', '', 'There and back']]);
+        // The arrow keys choose, as in each radio group.
+        document.querySelector('[role="radio"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); await tick();
+        expect(shapes()).toEqual([['false', '', 'One way'], ['true', 'There and back', null]]);
+        expect(document.activeElement).toBe(document.querySelectorAll('[role="radio"]')[1]);
     });
 });
 

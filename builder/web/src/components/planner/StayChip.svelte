@@ -4,10 +4,10 @@
     import { allStay, type Stay } from '../../lib/planner/editor';
     import { stayIcon, stayOptions } from '../../lib/planner/search/presentation';
 
-    let { value, label = 'Places to sleep', onChange, onReset, resetLabel }: {
+    let { value, label, onChange, onReset, resetLabel }: {
         value: Stay[];
         /** The accessible name of the chip and its list, before the value. */
-        label?: string;
+        label: string;
         onChange: (kinds: Stay[]) => void;
         onReset?: () => void;
         resetLabel?: string;

@@ -832,9 +832,9 @@ describe('planner app transitions', () => {
         await vi.waitFor(() => expect(count()).not.toBe(3));
         const guessed = count();
         expect(draft().days).toBe(3);
-        button('Places to sleep: Any place').click(); await tick();
-        for (const kind of ['Huts', 'Hostels', 'Hotels', 'Shelters']) { stayBox(kind).click(); await tick(); }
-        expect(stayBox('Campsites').disabled).toBe(true);
+        await openPreferences();
+        for (const kind of ['Huts', 'Hostels', 'Hotels', 'Shelters']) { button(kind).click(); await tick(); }
+        expect(button('Campsites').disabled).toBe(true);
         expect(draft()).toMatchObject({ days: guessed, stay: ['camp'] });
         expect(draft().daysSet).toBeUndefined();
         const moved = moves.count;
@@ -843,6 +843,47 @@ describe('planner app transitions', () => {
         expect(draft()).toMatchObject({ days: guessed, daysSet: true });
         // Each change of days moves every day end, so the map shows the whole trip.
         expect(moves.count).toBe(moved + 2);
+    });
+
+    it('suggests the nights again when the preferences change the kinds of place to sleep, and names the kinds in the line', async () => {
+        await startApp();
+        dayButton(1).click(); await tick();
+        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
+        await openPreferences();
+        button('Campsites').click(); await tick();
+        expect(document.querySelector('.choose')?.textContent).not.toContain('Tile town');
+        expect(JSON.parse(written()!).stay).toEqual(['hut', 'hostel', 'hotel', 'shelter']);
+        expect(document.querySelector('.status-line')?.textContent).toContain('Sleeping in huts, hostels, hotels, shelters');
+        expect(preferencesLine().textContent?.trim()).toBe('Route preferences: Touring bike · Balanced · Moderate pace · Huts, Hostels, Hotels, Shelters');
+        // All kinds on is any place: the plan stores no choice, and the line names none.
+        button('Campsites').click(); await tick();
+        expect('stay' in JSON.parse(written()!)).toBe(false);
+        expect(preferencesLine().textContent?.trim()).toBe('Route preferences: Touring bike · Balanced · Moderate pace');
+        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
+    });
+
+    it('turns the route there and back and one way again in the trip row, each as one Undo step', async () => {
+        await startApp();
+        const shapes = () => [...document.querySelectorAll('[aria-label="Route shape"] [role="radio"]')]
+            .map(radio => [radio.getAttribute('aria-checked'), radio.textContent?.trim(), radio.getAttribute('aria-label')]);
+        const route = () => { const trip = JSON.parse(written()!); return [trip.loop, ...trip.points.map((p: { kind: string; turnaround?: true }) => [p.kind, p.turnaround])]; };
+        const status = () => document.querySelector('.status-line')?.textContent;
+        const open = route();
+        expect(shapes()).toEqual([['true', 'One way', null], ['false', '', 'There and back']]);
+        button('There and back').click(); await tick();
+        expect(shapes()).toEqual([['false', '', 'One way'], ['true', 'There and back', null]]);
+        expect(route()).toEqual([true, ['start', true], ['waypoint', true]]);
+        expect(status()).toContain('There and back · the route returns the same way');
+        button('Undo').click(); await tick();
+        expect(route()).toEqual(open);
+        button('Redo').click(); await tick();
+        button('One way').click(); await tick();
+        expect(route()).toEqual(open);
+        expect(status()).toContain('One way · the route ends at the far point');
+        // The chosen shape does nothing.
+        const edits = vi.mocked(routing.calculateLine).mock.calls.length;
+        button('One way').click(); await tick();
+        expect([status(), vi.mocked(routing.calculateLine).mock.calls.length]).toEqual([expect.stringContaining('One way · '), edits]);
     });
 
     it('opens a night of the timeline in the day list and sets the start date in the trip row', async () => {

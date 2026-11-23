@@ -1075,6 +1075,13 @@
         clampNight();
     }
 
+    /** "One way" removes the points of the way back, and can make a shaping point the finish. */
+    function changeShape(next: Trip, description: string) {
+        clearSelection();
+        changePlan(next, description);
+        nameVisits(next);
+    }
+
     function locate() {
         return new Promise<'denied' | 'unavailable' | undefined>(resolve => {
             if (!navigator.geolocation) { resolve('unavailable'); return; }
@@ -1275,7 +1282,7 @@
                 {#if !focusedDay && nightPage === null}
                     <RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />
                     <!-- The rider's trip, not `planned`: a change must not keep the suggested nights as day ends. -->
-                    <div class="trip-settings"><TripRow {trip} line={session.line} onChange={changePlan}
+                    <div class="trip-settings"><TripRow {trip} line={session.line} onChange={changePlan} onShape={changeShape}
                         onDays={(next, description) => { changePlan(next, description); if (!multiDay(next)) statusUndo = undo; map?.fitRoute(); }}
                         onLimit={() => message = `${maxRidingDays} riding days is the most a trip can have`} />
                         {#if multi && trip.days > partDays}<p class="device-parts">Goes to the bike computer in 2 parts</p>{/if}</div>
@@ -1291,7 +1298,7 @@
                             onShowConflict={([before, after]) => map?.fitCoordinates([before.coordinate, after.coordinate])}
                         />
                     {:else}
-                        <RouteList {stops} loop={!!trip.loop} onLoop={multi ? undefined : closeToStart} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
+                        <RouteList {stops} loop={!!trip.loop} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
                             onReorder={reorder} />
                     {/if}
                 </div>
@@ -1624,7 +1631,7 @@
         .planner-shell { min-width: 0; height: auto; min-height: 100%; }
         main { grid-template-columns: minmax(0, 1fr); }
         main > :global([aria-label="Sidebar width"]) { display: none; }
-        /* An open stay list or date popover of the trip bar can be taller than the pane: the pane scrolls. */
+        /* The open date popover of the trip row can be taller than the pane: the pane scrolls. */
         .planner-pane { max-height: 50dvh; overflow-y: auto; }
         .geography { height: 75dvh; }
         .status-line { height: auto; min-height: 38px; flex-wrap: wrap; padding-block: 8px; }
