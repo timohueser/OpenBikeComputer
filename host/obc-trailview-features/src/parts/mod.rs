@@ -653,14 +653,19 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
     let floors = &decided.floors;
     let at_end = |r: usize, e: usize| floors[r].as_ref().map(|f| if e == 0 { 0 } else { f.s.len() - 1 });
     let mut behind: Vec<Behind> = vec![[Vec::new(), Vec::new()]; tubes.len()];
+    let arch_segments = obc_trailview_parts::Rules::embedded().design.arch_segments;
     for seam in &rooms.seams {
         let (pr, pe) = seam.parent;
         let (Some(fp), Some(ip)) = (floors[pr].as_ref(), at_end(pr, pe)) else { continue };
         for (&(r, e), &(across, half)) in seam.children.iter().zip(&seam.holes) {
             let (Some(fc), Some(ic)) = (floors[r].as_ref(), at_end(r, e)) else { continue };
-            // The room behind the line in the parent's way: across to the parent's left there.
+            // The room behind the line in the parent's way: across to the parent's left there; its floor and its
+            // height as its records give them, the most that its chord there is high, and its arch as the builder
+            // draws it.
             let sign = if pe == 1 { 1.0 } else { -1.0 };
-            behind[pr][pe].push((sign * across, half, fc.f[ic] - fp.f[ip], fc.h[ic]));
+            let up = (100.0 * (fc.f[ic] - fp.f[ip])).round() / 100.0;
+            let segments = arch_segments * rooms.lanes[r].len();
+            behind[pr][pe].push((sign * across, half, up, ceil_cm(fc.h[ic]), segments));
         }
     }
     // Per feature, the room of a chord, and per hole of a joint its room and end.
@@ -887,9 +892,8 @@ fn lone(t: &Tube, kinds: [Option<Kind>; 2], (fl, common): (Option<&Floor>, &Tags
     }
 }
 
-/// Per room end, the outlines on its line of the rooms behind a seam there: metres across, half-width, floor over the
-/// room's, height.
-type Behind = [Vec<(f64, f64, f64, f64)>; 2];
+/// Per room end, the outlines on its line of the rooms behind a seam there.
+type Behind = [Vec<rooms::Outline>; 2];
 
 /// The chords of room r of lanes, along its centre line from end to end as its floor, with a row per lane from the right
 /// wall to the left. At each vertex a chord is as high as the room there, and at a seam as the rooms behind it need.
@@ -924,11 +928,11 @@ fn room(
         let seam = |k: usize| [(0, 0), (1, last)].into_iter().find(|&(end, at)| k == at && !behind[end].is_empty());
         let need = |((_, places, ups), k): (&(Point, Vec<rooms::Place>, Vec<f64>), usize)| {
             let Some((end, _)) = seam(k) else { return fl.h[k] };
-            let mut outlines: Vec<(f64, f64, f64, f64)> = (places.iter().zip(ups).zip(&fl.lanes))
-                .map(|((p, &up), lane)| (p.off, p.half, up, lane.1[k]))
+            let mut outlines: Vec<rooms::Outline> = (places.iter().zip(ups).zip(&fl.lanes))
+                .map(|((p, &up), lane)| (p.off, p.half, up, lane.1[k], segments))
                 .collect();
             outlines.extend_from_slice(&behind[end]);
-            rooms::hold(round, t.half, spring, &outlines, (segments * lanes.len(), segments)).max(fl.h[k])
+            rooms::hold(round, t.half, spring, &outlines, segments * lanes.len()).max(fl.h[k])
         };
         let mut heights = [need((&a, i)), need((&b, i + 1))];
         let mut floors = [fl.f[i], fl.f[i + 1]];

@@ -128,7 +128,10 @@ pub(crate) fn ear_clip(poly: &[Corner]) -> Vec<[usize; 3]> {
         let pick =
             |clear: f64| (0..n).filter_map(|i| shape(i, clear).map(|q| (i, q))).max_by(|x, y| x.1.total_cmp(&y.1));
         let best = pick(CLEAR_M).or_else(|| pick(0.0));
-        let Some((i, _)) = best else { break };
+        let Some((i, _)) = best else {
+            debug_assert!(false, "a polygon with no ear: {poly:?}");
+            break;
+        };
         let (a, b, c) = ear(i);
         out.push([a, b, c]);
         left.remove(i);

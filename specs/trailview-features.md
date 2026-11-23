@@ -774,7 +774,9 @@ vertex is its lowest lane's, and a lane's `up` its floor over that. A room of la
 least that holds the outline of each lane on its floor there, read at the corners of the room's outline as the
 builder draws it (a box section: the highest lane's top). Where the shell of its crown would rise over a way on top,
 every lane there is lower by as much, each to its least height, and the room is as high as the ways on top let it be,
-at least as high as its lowered lanes need. At a seam's line it is as high as the rooms behind it need. A lone tube's
+at least as high as its lowered lanes need. At a seam's line it is as high as the rooms behind it need, each read at
+the corners of its outline as the builder draws it (`arch_segments` per lane), at its floor and its height as the
+records give them. A lone tube's
 chord takes the lesser height of its two vertices. A room over another in a stretch of over and under is a way on top
 of it, its underside its floor less `slab_m`: by height it makes only the section of the room under lower, by the
 floor the floor too. The bake solves the arms from the highest down: an arm after each arm of each room over a room

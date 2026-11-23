@@ -449,17 +449,11 @@ impl<'a> Net<'a> {
         }
         floor.sort_by(|a, b| a[0].total_cmp(&b[0]));
         floor.dedup();
-        // The parent's outline from spring to spring, with a corner over each hole's side, as high as the hole there.
+        // The parent's outline from spring to spring, with a corner over each hole's side.
         let o: Vec<Corner> =
             inside_outline(self, chord, kp, self.half_at(cp, kp)).into_iter().map(|q| q.map(mm)).collect();
         let mut top: Vec<Corner> = o[1..o.len() - 1].to_vec();
-        for (i, &x) in sides.iter().enumerate() {
-            let hole = &outlines[i / 2];
-            let spring_at = hole.iter().find(|q| (sp * q.0[0] - x).abs() < 1e-9).map(|q| q.0[1]).unwrap_or(0.0);
-            let below =
-                hole.iter().filter(|q| (sp * q.0[0] - x).abs() < 1e-9).map(|q| q.0[1]).fold(spring_at, f64::max);
-            top.push([x, top_at(&o, x).unwrap_or(0.0).max(below)]);
-        }
+        top.extend(sides.iter().map(|&x| [x, top_at(&o, x).unwrap_or(0.0)]));
         top.sort_by(|a, b| a[0].total_cmp(&b[0]));
         top.dedup();
         let in_line = |list: Vec<Corner>| {

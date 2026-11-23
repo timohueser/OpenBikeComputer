@@ -276,19 +276,20 @@ fn head<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, r: usize, (foot, 
 /// dark face that the viewer always draws, seen from inside.
 fn closed<L: Fn([f64; 3]) -> f64>(b: &mut Builder<L>, net: &Net, e: usize, foot: f64) {
     let Some((c, k)) = net.opening(e) else { return };
-    let (end, chord) = (&net.holes[e], &net.chords[c]);
+    let end = &net.holes[e];
     let (ring, into) = (net.frame(e, 0.0), end.way_in());
     let look = &net.rules.looks[&net.records[end.record].look];
     end_face(b, net, (c, k), &ring, foot, look.shell, flat([-into[0], -into[1]]));
-    // The room's outline round, from the right wall's foot: up and over, down the left wall, back across the floor.
+    // The room's outline round, from the right wall's foot: up and over, down the left wall, back across the floor; cut
+    // into ears, as a riser between two lanes can stand on the axis.
     let (right, left) = room(net, (c, k), &ring);
     let mut round = right;
     round.extend(left[1..left.len() - 1].iter().rev());
+    round.dedup();
     let dark = net.rules.inside.void;
-    let centre = b.at(&ring, [0.0, chord.height[k] / 2.0], dark);
-    let rim: Vec<u32> = round.iter().map(|&c| b.at(&ring, c, dark)).collect();
-    for k in 0..rim.len() {
-        b.triangle(centre, rim[k], rim[(k + 1) % rim.len()], flat(into));
+    for tri in seam::ear_clip(&round) {
+        let v = tri.map(|i| b.at(&ring, round[i], dark));
+        b.triangle(v[0], v[1], v[2], flat(into));
     }
 }
 

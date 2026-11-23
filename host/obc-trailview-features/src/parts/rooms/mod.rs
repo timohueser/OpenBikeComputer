@@ -21,7 +21,7 @@ use runs::End;
 use section::{crossing, room_of, started, stretch};
 
 pub(crate) use axes::Axes;
-pub(crate) use section::{hold, onto};
+pub(crate) use section::{hold, onto, Outline};
 pub(crate) use touch::touching;
 
 /// The bake's centimetre (`MERGE_M` of the floor pass).

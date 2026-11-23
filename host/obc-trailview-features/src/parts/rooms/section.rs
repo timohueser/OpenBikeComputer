@@ -51,19 +51,16 @@ pub(super) fn crossing(arm: &Tube, p: [f64; 2], d: [f64; 2], near: f64) -> Optio
     best
 }
 
+/// An outline in a room: its metres across, its half-width, its floor over the room's, its height and the segments of
+/// its arch, as the builder draws it (`arch_segments` per lane of its room).
+pub(crate) type Outline = (f64, f64, f64, f64, usize);
+
 /// The least height over the floor at which a room's outline (round or of box section, half-width `half`, its arch in
-/// `segments` springing at the share `spring` of its height) holds the outline of each lane on its floor: per lane its
-/// metres across, its half-width, its floor over the room's and its height; a lane's arch in `arch_segments`. A
-/// round room is read at the corners of its outline, as the device draws it.
-pub(crate) fn hold(
-    round: bool,
-    half: f64,
-    spring: f64,
-    lanes: &[(f64, f64, f64, f64)],
-    (segments, arch_segments): (usize, usize),
-) -> f64 {
+/// `segments` springing at the share `spring` of its height) holds each outline on its floor. A round room is read at
+/// the corners of its outline and of theirs, as the builder draws them.
+pub(crate) fn hold(round: bool, half: f64, spring: f64, outlines: &[Outline], segments: usize) -> f64 {
     if !round {
-        return lanes.iter().map(|l| l.2 + l.3).fold(0.0, f64::max);
+        return outlines.iter().map(|l| l.2 + l.3).fold(0.0, f64::max);
     }
     // The room's outline of height 1 from its right spring to its left, and its top at x.
     let arch = |n: usize, half: f64, sp: f64, h: f64| -> Vec<[f64; 2]> {
@@ -82,11 +79,10 @@ pub(crate) fn hold(
         p[1] + (q[1] - p[1]) * ((x - p[0]) / (q[0] - p[0]).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0)
     };
     let mut need: f64 = 0.0;
-    for &(off, h, up, height) in lanes {
-        let sp = spring * height;
-        let corners = arch(arch_segments, h, sp, height).into_iter().chain([[-h, 0.0], [h, 0.0]]);
+    for &(off, h, up, height, n) in outlines {
+        let corners = arch(n, h, spring * height, height).into_iter().chain([[-h, 0.0], [h, 0.0]]);
         for [x, y] in corners {
-            need = need.max((up + y.max(sp.min(y))) / top(off + x));
+            need = need.max((up + y) / top(off + x));
         }
     }
     need
@@ -366,14 +362,14 @@ pub(super) fn room_of(
     // The tube of the room: its centre line at the least height of its lanes, as wide as they need and at its ends as
     // high as their outlines need at the heights of the road solver, the height that its openings read.
     let design = &obc_trailview_parts::Rules::embedded().design;
-    let segments = (design.arch_segments * lanes.len(), design.arch_segments);
+    let segments = design.arch_segments * lanes.len();
     let mut height: f64 = 0.0;
     let mut curve_points = Vec::with_capacity(n);
     for (i, (m, row)) in table.iter().enumerate() {
         let z: Vec<f64> = (ordered.iter().zip(row)).map(|(l, p)| arms[l.arm].curve.at(p.s).0.z).collect();
         let low = z.iter().copied().fold(f64::INFINITY, f64::min);
-        let outlines: Vec<(f64, f64, f64, f64)> = (ordered.iter().zip(row).zip(&z))
-            .map(|((l, p), &zl)| (p.off, p.half, zl - low, arms[l.arm].height))
+        let outlines: Vec<Outline> = (ordered.iter().zip(row).zip(&z))
+            .map(|((l, p), &zl)| (p.off, p.half, zl - low, arms[l.arm].height, design.arch_segments))
             .collect();
         if i == 0 || i + 1 == n {
             height = height.max(hold(true, half, design.spring, &outlines, segments));

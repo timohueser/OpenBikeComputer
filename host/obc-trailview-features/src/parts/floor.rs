@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use obc_ground_plan::faces::Rules as PlanRules;
 use serde_json::{json, Value};
 
-use super::rooms::{hold, Place, Rooms};
+use super::rooms::{hold, Outline, Place, Rooms};
 use super::{distance, segment_m, Input, Point, Tube};
 use crate::geometry::{bounds, interp, Boxes};
 use crate::{degrees, metres, roads};
@@ -577,10 +577,11 @@ fn lanes_floor(
     let n = s.len();
     let low = |k: usize| (0..n).map(|i| lanes.iter().map(|l| l[k][i]).fold(f64::INFINITY, f64::min)).collect();
     let (f, z): (Vec<f64>, Vec<f64>) = (low(0), low(2));
-    let segments = (design.arch_segments * lanes.len(), design.arch_segments);
+    let (segments, arch) = (design.arch_segments * lanes.len(), design.arch_segments);
     let hold_at = |i: usize, heights: &[f64]| {
-        let outlines: Vec<(f64, f64, f64, f64)> =
-            (places[i].iter().zip(lanes).zip(heights)).map(|((p, l), &h)| (p.off, p.half, l[0][i] - f[i], h)).collect();
+        let outlines: Vec<Outline> = (places[i].iter().zip(lanes).zip(heights))
+            .map(|((p, l), &h)| (p.off, p.half, l[0][i] - f[i], h, arch))
+            .collect();
         hold(round, rooms.tubes[r].half, design.spring, &outlines, segments)
     };
     let mut heights: Vec<Vec<f64>> = lanes.iter().map(|l| l[1].clone()).collect();
