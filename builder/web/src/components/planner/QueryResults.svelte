@@ -18,9 +18,9 @@
         /** The riding days in km, with the day numbers of the day list. */
         days: { number: number; from: number; to: number }[]; theme: 'light' | 'dark';
         state: SearchState; selectedId: string | null; hoveredId?: string | null; onHover?: (id: string | null) => void; applying?: boolean; applyError?: string;
-        /** The button of the action on each place, and why it cannot apply to a place or the stop that the plan has there.
+        /** The button of the action on each place, and why it cannot apply to a place or the point that the plan has there.
          * When the rider chose the action, it is amber on the first place where it applies. */
-        action?: { button: string; chosen: boolean; check: (place: SearchPlace) => { reason?: string; stop?: string } };
+        action?: { button: string; chosen: boolean; check: (place: SearchPlace) => { reason?: string; point?: string } };
         /** What the last action changed. */
         done?: string;
         onSelect: (place: Place) => void; onApply: () => void; onAct?: (place: SearchPlace) => unknown; onUndo?: () => void; onMore: () => void; onRetry: () => void;
@@ -47,14 +47,18 @@
     });
     const summary = $derived(answer?.type === 'change' ? answer.description : count && `${count} found.`);
     const checks = $derived(results.map(result => action?.check(result) ?? {}));
-    const lead = $derived(action?.chosen ? checks.findIndex(check => !check.reason && !check.stop) : -1);
+    const lead = $derived(action?.chosen ? checks.findIndex(check => !check.reason && !check.point) : -1);
     /** Each reason once, in one line over the first place that it is for. */
     const reasons = $derived([...new Set(checks.flatMap(check => check.reason ? [check.reason] : []))].join(' '));
     const firstOff = $derived(checks.findIndex(check => check.reason));
     let list: HTMLElement | undefined;
     /** The place of the last action. Its row takes the focus when a press or "Undo" takes away the control that has it. */
     let acted = '';
-    const row = () => list?.querySelectorAll<HTMLElement>('.place-row')[Math.max(0, results.findIndex(result => result.source === acted))];
+    /** The row of that place, else the heading of the list. */
+    function row() {
+        const index = results.findIndex(result => result.source === acted);
+        return index < 0 ? list?.querySelector<HTMLElement>('.result-heading') : list?.querySelectorAll<HTMLElement>('.place-row')[index];
+    }
     async function act(place: SearchPlace) {
         acted = place.source;
         await onAct?.(place);
@@ -79,7 +83,7 @@
 <!-- The line over a list: its size, and the area that the search used, which an empty list shows too. -->
 {#snippet heading(size: number)}
     {#if size || answer?.area}
-        <div class="result-heading">{#if size}<h2>{#key count}<span in:rise>{count}</span>{/key}</h2>{/if}{#if answer?.area}<span>{answer.area}</span>{/if}</div>
+        <div class="result-heading" tabindex="-1">{#if size}<h2>{#key count}<span in:rise>{count}</span>{/key}</h2>{/if}{#if answer?.area}<span>{answer.area}</span>{/if}</div>
     {/if}
 {/snippet}
 <div class="results" aria-busy={state.loading} bind:this={list} {@attach fade}>
@@ -112,7 +116,7 @@
                 {#if index === firstOff}<p class="reason" id="action-reason"><Icon name="info" size={14} />{reasons}</p>{/if}
                 <div class="result" class:acts={!!action}>
                     <PlaceRow place={asPlace(result)} distance={distanceOf(result)} detail={result.precision === 'street' ? 'Street location only' : ''} {showKind} selected={selectedId === result.source} hovered={hoveredId === result.source} {onHover} {onSelect} />
-                    {#if checks[index].stop}<span class="stop" in:rise><Icon name="check" size={14} />{checks[index].stop}</span>
+                    {#if checks[index].point}<span class="point" in:rise><Icon name="check" size={14} />{checks[index].point}</span>
                     {:else if action}<button type="button" class="act" class:primary={index === lead} aria-label="{action.button}: {result.name}"
                         aria-describedby={checks[index].reason ? 'action-reason' : undefined} disabled={applying || state.loading || !!checks[index].reason} onclick={() => act(result)}
                         onmouseenter={() => onHover?.(result.source)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(result.source)} onblur={() => onHover?.(null)}>{action.button}</button>{/if}
@@ -148,7 +152,7 @@
     .acts :global(.place-icon) { grid-area: 1 / 1; }
     .acts :global(.name) { grid-area: 1 / 2 / -1; }
     .acts :global(.distance) { grid-area: 1 / 3; }
-    .acts > :is(.act, .stop) { grid-area: 2 / 3; place-self: start end; margin: 6px 0 8px; }
+    .acts > :is(.act, .point) { grid-area: 2 / 3; place-self: start end; margin: 6px 0 8px; }
     .result + .result { box-shadow: 0 -1px 0 var(--line); }
     .result:has(> :global(.place-row:is(:hover, .selected, .hovered))), .result:has(> :global(.place-row:is(:hover, .selected, .hovered))) + .result { box-shadow: none; }
     .note { margin-top: 12px; }
@@ -168,7 +172,7 @@
     .done > :global(svg), .reason > :global(svg) { flex: none; color: var(--ink-soft); }
     .reason { display: flex; gap: 6px; margin: 8px 0 2px; }
     .reason > :global(svg) { margin-top: 2px; }
-    .stop { display: flex; align-items: center; gap: 4px; min-height: 30px; color: var(--ink-soft); font-size: 12.5px; white-space: nowrap; }
+    .point { display: flex; align-items: center; gap: 4px; min-height: 30px; color: var(--ink-soft); font-size: 12.5px; white-space: nowrap; }
     .action-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
     .action-icon { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%; background: var(--parchment-2); color: var(--ink-soft); }
     .action-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }

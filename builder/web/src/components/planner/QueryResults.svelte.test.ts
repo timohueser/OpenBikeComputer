@@ -46,11 +46,11 @@ describe('search results', () => {
         expect(actions()).toEqual([['Add as a stop: a', false, false], ['Add as a stop: b', false, false]]);
         // A place where the action cannot apply has it off, with the reason once, over the first such place; a place that
         // is a stop already has none.
-        const check = ({ source }: SearchPlace) => source === 'a' ? { reason: 'The last day ends at the finish.' } : source === 'c' ? { stop: 'Stop on Day 3' } : {};
+        const check = ({ source }: SearchPlace) => source === 'a' ? { reason: 'The last day ends at the finish.' } : source === 'c' ? { point: 'Stop on Day 3' } : {};
         await show([place('c', 'hotel'), place('b', 'hotel'), place('a', 'hotel')], { action: { button: 'End the day here', chosen: true, check }, done: 'Day 1 now ends at b', onAct, onUndo });
         expect(actions()).toEqual([['End the day here: b', true, false], ['End the day here: a', false, true]]);
         const reason = document.querySelector('.reason')!;
-        expect([reason.textContent, reason.nextElementSibling!.querySelector('strong')?.textContent, document.querySelector('.result .stop')?.textContent]).toEqual(['The last day ends at the finish.', 'a', 'Stop on Day 3']);
+        expect([reason.textContent, reason.nextElementSibling!.querySelector('strong')?.textContent, document.querySelector('.result .point')?.textContent]).toEqual(['The last day ends at the finish.', 'a', 'Stop on Day 3']);
         document.querySelector<HTMLButtonElement>('.result .act')!.click();
         expect(onAct).toHaveBeenCalledWith(expect.objectContaining({ source: 'b' }));
         expect(document.querySelector('.done')?.textContent).toBe('Day 1 now ends at bUndo');

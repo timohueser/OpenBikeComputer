@@ -150,14 +150,17 @@ function dayOf(place: SearchPlace, plan: SearchContext['plan']) {
 }
 
 /**
- * Why action `act` cannot apply to a place of the list (`reason`), or the stop that the plan has at the place already
- * (`stop`), by the ids of the places of the plan points. A route always applies: it goes from the rider or the start.
+ * Why action `act` cannot apply to a place of the list (`reason`), or, for a stop, the point that the plan has at the
+ * place already (`point`), in words. A route always applies: it goes from the rider or the start.
  */
-export function placeCheck(act: Act, place: SearchPlace, plan: SearchContext['plan'], stops: ReadonlySet<string>): { reason?: string; stop?: string } {
+export function placeCheck(act: Act, place: SearchPlace, plan: SearchContext['plan'], trip: Trip): { reason?: string; point?: string } {
   if (act === 'route') return {};
   const { riding, day } = dayOf(place, plan);
-  if (!day || !['start', 'finish'].every((kind) => plan.points.some((p) => p.kind === kind))) return { reason: 'Choose a start and finish first.' };
-  if (act === 'add_point' && stops.has(place.source)) return { stop: riding.length > 1 ? `Stop on Day ${day.number}` : 'Stop on the route' };
+  if (!day || !hasEndpoints(trip)) return { reason: 'Choose a start and finish first.' };
+  const kind = act === 'add_point' ? trip.points.find((p) => p.placeId === place.source)?.kind : undefined;
+  const stop = riding.length > 1 ? `Stop on Day ${day.number}` : 'Stop on the route';
+  const words: Partial<Record<RoutePoint['kind'], string>> = { start: 'Start', finish: 'Finish', night: `Night of Day ${day.number}`, waypoint: stop, pass: stop, via: stop, detour: stop };
+  if (kind && words[kind]) return { point: words[kind] };
   return act === 'end_day' && day === riding.at(-1) ? { reason: 'The last day ends at the finish.' } : {};
 }
 

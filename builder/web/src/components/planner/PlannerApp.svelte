@@ -1144,7 +1144,8 @@
         try {
             const { changes, description } = await make();
             const next = await applyQueryChanges(before, session.line, changes, plan => session.calculate(plan, new AbortController().signal));
-            if (before !== trip || !still()) throw new Error('The route changed. Review the search again.');
+            if (before !== trip) throw new Error('The route changed. Review the search again.');
+            if (!still()) throw new Error('The search changed.');
             if (changes.some(change => change.op === 'route')) { exploreBack = undefined; restedStart = weekStart = 1; fitWeek = false; }
             session.commit(next.trip, next.line);
             showInWeek(changes.find(change => change.day !== undefined)?.day);
@@ -1191,9 +1192,6 @@
             if (view) ({ exploreBack, weekStart, restedStart } = view);
         });
     }
-
-    /** The ids of the places that the plan has as points. */
-    const planPlaces = $derived(new Set(trip.points.flatMap(point => point.placeId ? [point.placeId] : [])));
 
     function nameRest(index: number, name: string) {
         const names = (trip.restAfter ?? []).map((_, i) => i === index ? name.trim() : trip.restNames?.[i] ?? '');
@@ -1304,7 +1302,7 @@
                 <div class="pane-scroll">
                     <QueryResults attribution={config.attribution} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch}
                         action={searchSlots.act || hasEndpoints ? { button: ACTS[searchSlots.act ?? 'add_point'].button, chosen: !!searchSlots.act,
-                            check: place => placeCheck(searchSlots.act ?? 'add_point', place, queryPlan, planPlaces) } : undefined}
+                            check: place => placeCheck(searchSlots.act ?? 'add_point', place, queryPlan, trip) } : undefined}
                         done={searchDone && sameValue(searchDone.slots, searchSlots) ? searchDone.text : ''} onAct={actOn} onUndo={undoAction} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={stretch => searchBox?.setStretch(stretch)} />
                 </div>
             {:else if !hasEndpoints}
