@@ -116,7 +116,7 @@
     let searching = $state(false);
     let night = $state(1);
     let expandedDay = $state<number | null>(null);
-    // The night whose towns are listed: one opened in the day list, or a pinned night the rider changes.
+    // The night that the rider chooses: its seam is open in the day list.
     let choosingNight = $state<number | null>(null);
     // A night that opened, until the map shows it.
     let nightToShow = $state<number | null>(null);
@@ -138,7 +138,7 @@
     let spot = $state<{ coordinate: Coordinate; legEndId?: string } | null>(null);
     // The selected place when it is not a fixture: a basemap place.
     let mapPlace = $state<Place | null>(null);
-    // A place selected in a town card opens its callout without the focus, so the arrow keys stay in the card.
+    // A place selected in an open stop opens its callout without the focus, so the arrow keys stay in the stop.
     let quietCallout = $state(false);
     const theme = $derived<'light' | 'dark'>(appearance.dark ? 'dark' : 'light');
     let hoveredId = $state<string | null>(null);
@@ -257,12 +257,11 @@
         fitWeek = false;
         if (week && day !== undefined) weekStart = containing(evenDays.length, week.start, day);
     }
-    // The page of the night the rider opened replaces the day list. It stays while the route is recalculated.
-    const nightPage = $derived(multi && !searching && expandedDay === null && choosingNight !== null && choosingNight < evenDays.length ? choosingNight : null);
-    // An open day lists the towns of its night until that night is pinned; a night page lists its own night.
-    const pickerNight = $derived(!multi || !currentRoute || searching ? null
-        : expandedDay !== null ? (night < evenDays.length && (!evenDays[night - 1]?.pinned || choosingNight === night) ? night : null)
-        : nightPage);
+    // The open night: the day list shows its seam in place of the other days. It stays while the route is recalculated.
+    const seamNight = $derived(multi && !searching && choosingNight !== null && choosingNight < evenDays.length ? choosingNight : null);
+    let itinerary = $state<Itinerary>();
+    // Before the night changes the panel: the day list takes the places of its cards, which then glide from there.
+    $effect.pre(() => { void seamNight; untrack(() => itinerary?.hold()); });
     // A night that the plan no longer has must not open again when a later change brings its day back. A route that is
     // still calculated keeps the night, so the page stays open while it is recalculated.
     $effect(() => {
@@ -270,7 +269,7 @@
     });
     // Towns are searched for every night still to choose, of the rested week on a long trip, so the day list can suggest a
     // place for each.
-    const stopWindows = $derived(multi ? nightWindows(trip, session.line, pickerNight, weekOf(evenDays.length, restedStart)?.nights) : {});
+    const stopWindows = $derived(multi ? nightWindows(trip, session.line, seamNight, weekOf(evenDays.length, restedStart)?.nights) : {});
     const routeKey = $derived(routingKey(trip));
     $effect(() => {
         const stretches = Object.values(stopWindows), route = routeKey, context = searchContext;
@@ -282,9 +281,9 @@
     // waits while its towns load; a move of the rider or the close of the night drops the wait, so the map never jumps late.
     $effect(() => {
         const number = nightToShow;
-        if (number === null || (number === pickerNight && stopWindows[number] && (nightStops(number)?.state ?? 'loading') === 'loading')) return;
+        if (number === null || (number === seamNight && stopWindows[number] && (nightStops(number)?.state ?? 'loading') === 'loading')) return;
         nightToShow = null;
-        if (number === pickerNight) untrack(() => { const area = nightArea(number); if (area) map?.showNight(...area); });
+        if (number === seamNight) untrack(() => { const area = nightArea(number); if (area) map?.showNight(...area); });
     });
     const proposals = $derived(multi ? proposeNights(trip, session.line, readyStops) : new Map<number, Proposal>());
     const campsites = $derived([...proposals].flatMap(([night, { place }]) => place && stayKind(place.place.placeKind) === 'camp' ? [{ night, place: place.place }] : []));
@@ -342,9 +341,9 @@
         if (shownKey) map?.fitCoordinates(note.coordinates.flat());
     }
     const highlighted = $derived(litSurface ? surfaceLines(visualRoute, litSurface) : shownNote?.coordinates ?? []);
-    const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId && suits(stop, nightKinds(trip, pickerNight))) : undefined);
+    const openStop = $derived(seamNight !== null ? readyStops(seamNight).find(stop => stop.id === stopId && suits(stop, nightKinds(trip, seamNight))) : undefined);
     const nights: NightChoices = {
-        get choosing() { return pickerNight; },
+        get choosing() { return seamNight; },
         get stopId() { return openStop?.id ?? null; },
         get shownId() { return selectedId; },
         found: nightStops,
@@ -365,9 +364,9 @@
         },
         get campsites() { return campsites.length; },
         keepCampsites: () => keepCampsites(),
-        // The chosen night is the one a place callout and a map pick end, also in the day list.
-        choose: number => { choosingNight = nightToShow = number; stopId = null; clearSelection(); if (number !== null) night = number; },
-        open: id => { stopId = id; clearSelection(); const stop = pickerNight !== null ? readyStops(pickerNight).find(s => s.id === id) : undefined; if (stop) map?.fitCoordinates(suitable(stop, nights.kinds(pickerNight!)).map(p => p.place.coordinate)); },
+        // The chosen night is the one a place callout and a map pick end. Its seam takes the place of an open day.
+        choose: number => { choosingNight = nightToShow = number; stopId = null; clearSelection(); if (number !== null) { night = number; expandedDay = null; } },
+        open: id => { stopId = id; clearSelection(); const stop = seamNight !== null ? readyStops(seamNight).find(s => s.id === id) : undefined; if (stop) map?.fitCoordinates(suitable(stop, nights.kinds(seamNight!)).map(p => p.place.coordinate)); },
         endHere: (night, stop) => endDayIn(night, stop),
         stay: (night, place) => stayAt(night, place),
         selectPlace: place => {
@@ -381,8 +380,8 @@
     // One stretch per leg and day, so the map can tell legs apart and colour days.
     const segments = $derived<MapSegment[]>(daySegments(view).map(segment => ({ ...segment, color: dayColor(segment.day, theme) })));
     const results = $derived((searchState.answer?.results ?? []).map(result => ({ place: asPlace(result) })));
-    const visiblePlaces = $derived(searching ? results.map(result => result.place) : pickerNight === null ? []
-        : (openStop ? [openStop] : readyStops(pickerNight)).flatMap(stop => suitable(stop, nights.kinds(pickerNight)).map(p => p.place)));
+    const visiblePlaces = $derived(searching ? results.map(result => result.place) : seamNight === null ? []
+        : (openStop ? [openStop] : readyStops(seamNight)).flatMap(stop => suitable(stop, nights.kinds(seamNight)).map(p => p.place)));
     const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
     const shownPlace = $derived((mapPlace?.id === selectedId ? mapPlace : undefined) ?? visiblePlaces.find(p => p.id === selectedId));
     // List searches leave out details such as the website and phone; they load per place id, and null means search has none.
@@ -766,12 +765,11 @@
         map?.fitCoordinates(routeSlice(coordinates, Math.max(0, day.from - .04), Math.min(1, day.to + .04)));
     }
 
-    /** Opens a night in the day list, with its towns. */
+    /** Opens a night in the day list. */
     function openNight(number: number) {
         fitWeek = false;
         // The night before the week stands at the left edge of the profile: it is one of the week's nights already.
         if (!week?.nights.includes(number)) showInWeek(number);
-        expandedDay = null;
         exitSearch();
         nights.choose(number);
     }
@@ -913,6 +911,7 @@
             : setSplit(trip, session.line, number, end.km / total);
         commit(next, `Day ${number} ends in ${stop.name}`);
         stopChoosing();
+        reveal(`night-${number}`, null);
     }
 
     function reorder(id: string, offset: number) {
@@ -940,7 +939,7 @@
         commit(next, `Night ${sleepDay} at ${place.label}`);
         stopChoosing();
         clearSelection();
-        if (expandedDay !== null) reveal(`night-${sleepDay}`, sleepDay);
+        reveal(`night-${sleepDay}`, null);
     }
 
     /** Where the rider sleeps on night `number`: the planned end of its day, at its pinned or suggested place if it has one.
@@ -1173,14 +1172,14 @@
             if (event.shiftKey) redo();
             else undo();
         }
-        // Escape goes back one level wherever the focus is: a town, then a night page, then an open day. The map
+        // Escape goes back one level wherever the focus is: an open stop, then its night, then an open day. The map
         // prevents the default when Escape closes its route details or its place list: that is the level. A map selection
         // or mode closes before the selected part, which `Lanes` clears unless the default is prevented.
         if (event.key === 'Escape' && !event.defaultPrevented) {
             if (selectedId || mapMode) event.preventDefault();
             else if (!part) {
                 if (openStop) stopId = null;
-                else if (nightPage !== null) stopChoosing();
+                else if (seamNight !== null) stopChoosing();
                 else if (focusedDay) showAllDays();
             }
             clearSelection();
@@ -1240,9 +1239,9 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={nightPage !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:searchState={searchState} bind:slots={searchSlots} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} {searching} revision={searchRevision} viewRevision={searchViewRevision} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} /></div>
-            {#if !searching && nightPage === null}{#key planId}<RoutePreferences {trip} onChange={edit} />{/key}{/if}
-            {#if exploreBack && hasEndpoints && !searching && nightPage === null}
+            <div class="query-slot" style:display={seamNight !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:searchState={searchState} bind:slots={searchSlots} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} {searching} revision={searchRevision} viewRevision={searchViewRevision} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} /></div>
+            {#if !searching && seamNight === null}{#key planId}<RoutePreferences {trip} onChange={edit} />{/key}{/if}
+            {#if exploreBack && hasEndpoints && !searching && seamNight === null}
                 <button type="button" class="back-to-routes" onclick={() => router.go(ROUTES.explore, { explore: exploreBack })}><Icon name="back" size={15} />Find another route</button>
             {/if}
             {#if searching}
@@ -1274,7 +1273,7 @@
                         {/if}
                     </div>
                 {/if}
-                {#if !focusedDay && nightPage === null}
+                {#if !focusedDay && seamNight === null}
                     <RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />
                     <!-- The rider's trip, not `planned`: a change must not keep the suggested nights as day ends. -->
                     <div class="trip-settings"><TripRow {trip} line={session.line} onChange={changePlan} onShape={changeShape}
@@ -1285,7 +1284,7 @@
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if itineraryShown}
                         <Itinerary
-                            trip={planned} line={visualRoute} {days} {theme} {expandedDay} {nightPage} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
+                            bind:this={itinerary} trip={planned} line={visualRoute} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
                             week={weekShown} onWeek={moveWeek}
                             onToggle={showDay} onOverview={showAllDays}
                             onInspect={inspectPoint}
@@ -1329,7 +1328,7 @@
                                     onLoop={closeToStart}
                                     onLoopStart={() => { const { legEndId, coordinate } = spot!; clearSelection(); commit(startLoopHere(trip, legEndId!, coordinate, map?.placeName(coordinate)), 'Loop start moved'); }}
                                     onPick={pickOnMap}
-                                    onChooseNight={() => { const number = night; clearSelection(); if (expandedDay === null) nights.choose(number); else choosingNight = number; }}
+                                    onChooseNight={() => nights.choose(night)}
                                     onStay={stayHere}
                                     onAddVisit={addVisit}
                                     onRename={rename}

@@ -290,7 +290,7 @@ describe('planner app transitions', () => {
         await startApp(); await tick();
         const overnight = () => bodies().filter(body => body.request?.what?.includes?.('sleep')).length;
         dayButton(1).click(); await tick();
-        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
+        await vi.waitFor(() => expect(document.querySelector('.day h2')?.textContent).toContain('Tile town'));
         const sent = overnight();
         expect(sent).toBeGreaterThan(0);
         button('Pan map').click(); await tick();
@@ -502,13 +502,13 @@ describe('planner app transitions', () => {
         await tick();
         dayButton(1).click();
         await tick();
-        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
-        const choices = document.querySelector('.choose')!.textContent;
+        await vi.waitFor(() => expect(document.querySelector('.day h2')?.textContent).toContain('Tile town'));
+        const title = document.querySelector('.day h2')!.textContent;
         const profile = document.querySelector('.elevation');
         const requests = vi.mocked(fetch).mock.calls.length;
         button('Pan map').click(); await tick();
         expect(fetch).toHaveBeenCalledTimes(requests);
-        expect(document.querySelector('.choose')!.textContent).toBe(choices);
+        expect(document.querySelector('.day h2')!.textContent).toBe(title);
         button('All days').click(); await tick();
         expect(document.querySelector('.elevation')).toBe(profile);
         dayButton(1).click(); await tick();
@@ -518,7 +518,7 @@ describe('planner app transitions', () => {
         await tick();
         expect(document.querySelector<HTMLSelectElement>('[aria-label="Selected day"]')?.value).toBe('1');
         const day = document.querySelector('.day')!;
-        expect(day.querySelector('.choose')!.textContent).toBe(choices);
+        expect(day.querySelector('h2')!.textContent).toBe(title);
         expect(day.textContent).not.toContain('Meadow camp');
     });
 
@@ -529,10 +529,9 @@ describe('planner app transitions', () => {
             .mockImplementationOnce(async (...args) => line = await measured(...args))
             .mockImplementation(() => new Promise(resolve => finish = resolve));
         await startApp();
-        await vi.waitFor(() => dayButton(1).click()); await tick();
-        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
+        button('Choose night 1').click(); await tick();
         const profile = document.querySelector('.elevation');
-        button(`Map place: ${tilePlace.label}`).click(); await tick();
+        await vi.waitFor(() => button(`Map place: ${tilePlace.label}`).click()); await tick();
         button('Stay here').click(); await tick();
         expect(document.querySelector('.elevation')).toBe(profile);
         expect(document.querySelector('.route-status')?.textContent).toContain('Calculating route');
@@ -661,16 +660,16 @@ describe('planner app transitions', () => {
         release(false);
         await vi.waitFor(() => expect(nightCalls).toHaveLength(1));
         expect(nightCalls[0][1]).toEqual([[tilePlace.coordinate]]);
-        const page = document.querySelector('.night-page')!;
-        button('Places to sleep on night 1: Any place', page).click(); await tick();
-        stayBox('Huts', page).click(); await tick();
-        expect(stayBox('Huts', page).checked).toBe(false);
-        button('All days', page).click(); await tick();
-        expect(document.querySelector('.night-page')).toBeNull();
+        const seam = document.querySelector('.night-seam')!;
+        button('Places to sleep on night 1: Any place', seam).click(); await tick();
+        stayBox('Huts', seam).click(); await tick();
+        expect(stayBox('Huts', seam).checked).toBe(false);
+        button('All days').click();
+        await vi.waitFor(() => expect(document.querySelector('.night-seam')).toBeNull());
         expect(nightCalls).toHaveLength(1);
     });
 
-    it('keeps a night page while the route is recalculated', async () => {
+    it('keeps an open night while the route is recalculated', async () => {
         const measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
         let line!: RoutingLine, finish!: (line: RoutingLine) => void;
         vi.mocked(routing.calculateLine)
@@ -680,55 +679,67 @@ describe('planner app transitions', () => {
         button('Choose night 1').click(); await tick();
         button('Move start').click(); await tick();
         expect(document.querySelector('.route-status')?.textContent).toContain('Calculating route');
-        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');
+        expect(document.querySelector('.night-seam h2')?.textContent).toBe('Where day 1 ends');
         finish(line);
         await vi.waitFor(() => expect(document.querySelector('.route-status')).toBeNull());
-        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');
+        expect(document.querySelector('.night-seam h2')?.textContent).toBe('Where day 1 ends');
     });
 
-    it('goes back one level with Escape wherever the focus is: the pick on the map, the callout, then the night page', async () => {
+    it('goes back one level with Escape wherever the focus is: the pick on the map, the callout, the open stop, then the night', async () => {
         await startApp();
         button('Choose night 1').click(); await tick();
         await vi.waitFor(() => button('Pick on the map').click()); await tick();
         escape(button('Pick on the map')); await tick();
-        expect(document.querySelector('.night-page')).not.toBeNull();
+        expect(document.querySelector('.night-seam')).not.toBeNull();
         button('Pick map location').click(); await tick();
         expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('Add point here');
         escape(button('Pan map')); await tick();
-        expect(document.querySelector('.night-page')).not.toBeNull();
-        escape(button('Pan map')); await tick(); await tick();
-        expect(document.querySelector('.night-page')).toBeNull();
+        document.querySelector<HTMLButtonElement>('.night-seam button.row')!.click(); await tick();
+        expect(document.querySelector('.night-seam [role="radiogroup"]')).not.toBeNull();
+        escape(button('Pan map')); await tick();
+        expect(document.querySelector('.night-seam [role="radiogroup"]')).toBeNull();
+        expect(document.querySelector('.night-seam')).not.toBeNull();
+        escape(button('Pan map'));
+        await vi.waitFor(() => expect(document.querySelector('.night-seam')).toBeNull());
         expect(document.activeElement).toBe(button('Choose night 1'));
     });
 
-    it('keeps the night page when the map takes Escape to close its route details', async () => {
+    it('keeps the open night when the map takes Escape to close its route details', async () => {
         await startApp();
         button('Choose night 1').click(); await tick();
         // As `PlannerMap` does while its details are open: in the capture phase, before the page.
         window.addEventListener('keydown', event => event.preventDefault(), { capture: true, once: true });
         escape(button('Pan map')); await tick();
-        expect(document.querySelector('.night-page')).not.toBeNull();
-        escape(button('Pan map')); await tick(); await tick();
-        expect(document.querySelector('.night-page')).toBeNull();
+        expect(document.querySelector('.night-seam')).not.toBeNull();
+        escape(button('Pan map'));
+        await vi.waitFor(() => expect(document.querySelector('.night-seam')).toBeNull());
     });
 
-    it('selects where to sleep in a town with the arrow keys and on the map, with the focus kept in the card', async () => {
+    it('selects where to sleep in an open stop with the arrow keys and on the map, with the focus kept in the stop', async () => {
+        // A second place makes the stop a town.
+        const answer = fetch;
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+            const response = await answer(url, init);
+            if (!JSON.parse(String(init.body)).request?.what?.includes('sleep')) return response;
+            const { results, ...rest } = await response.json();
+            return { ok: true, json: async () => ({ ...rest, results: [...results, { ...results[0], source: 'poi-inn', name: 'Tile inn', kind: 'hotel' }] }) };
+        }));
         await startApp();
         button('Choose night 1').click(); await tick();
-        await vi.waitFor(() => document.querySelector<HTMLButtonElement>('button.town')!.click()); await tick();
+        await vi.waitFor(() => document.querySelector<HTMLButtonElement>('.night-seam button.row')!.click()); await tick();
         const radios = [...document.querySelectorAll<HTMLInputElement>('[role="radiogroup"] input')];
-        const confirm = () => document.querySelector('.confirm button')!.textContent!.trim();
+        const confirm = () => document.querySelector('.night-seam .confirm')!.textContent!.trim();
         // An arrow key focuses and checks the next radio, and fires its change.
         const arrow = async (radio: HTMLInputElement) => {
             radio.focus(); radio.checked = true;
             radio.dispatchEvent(new Event('change', { bubbles: true }));
             await tick(); await new Promise(requestAnimationFrame);
         };
-        expect(confirm()).toBe('End day 1 in Tile town');
+        expect([radios.length, document.activeElement, confirm()]).toEqual([3, radios[0], 'Sleep in Tile town']);
         await arrow(radios[1]);
         expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
         expect(document.activeElement).toBe(radios[1]);
-        expect(confirm()).toBe(`End day 1 at ${tilePlace.label}`);
+        expect(confirm()).toBe(`Sleep at ${tilePlace.label}`);
         const moved = moves.count;
         await arrow(radios[0]);
         expect(document.activeElement).toBe(radios[0]);
@@ -736,27 +747,42 @@ describe('planner app transitions', () => {
         expect(moves.count).toBe(moved);
         button(`Map place: ${tilePlace.label}`).click(); await tick();
         expect(radios[1].checked).toBe(true);
-        expect(confirm()).toBe(`End day 1 at ${tilePlace.label}`);
+        expect(confirm()).toBe(`Sleep at ${tilePlace.label}`);
+        // Escape in the stop closes the stop only, and its row takes the focus.
+        escape(radios[1]); await tick();
+        expect(document.activeElement).toBe(document.querySelector('.night-seam button.row'));
     });
 
-    it('closes only the town with Escape on its card in an open day', async () => {
+    it('ends the day at the place of an open stop, lights the night in the day list, and Undo gives the suggestion back', async () => {
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        await vi.waitFor(() => document.querySelector<HTMLButtonElement>('.night-seam button.row')!.click()); await tick();
+        button(`Sleep at ${tilePlace.label}`).click();
+        await vi.waitFor(() => expect(document.querySelector('.night.flash strong')?.textContent).toBe(tilePlace.label));
+        expect(document.querySelector('.night-seam')).toBeNull();
+        expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ kind: 'night', night: 1, placeId: tilePlace.id }));
+        button('Undo').click(); await tick();
+        expect(JSON.parse(written()!).points.map((p: { kind: string }) => p.kind)).not.toContain('night');
+        await vi.waitFor(() => expect(button('Choose night 1')).toBeDefined());
+    });
+
+    it('chooses the night of an open day on its seam', async () => {
         await startApp();
         dayButton(1).click(); await tick();
-        await vi.waitFor(() => document.querySelector<HTMLButtonElement>('.choose button.town')!.click()); await tick();
-        escape(button('All towns')); await tick();
-        expect(document.querySelector('.choose button.town')).not.toBeNull();
-        expect(document.querySelector('[aria-label="Selected day"]')).not.toBeNull();
+        [...document.querySelectorAll('button')].find(found => found.textContent?.startsWith('Suggested day end'))!.click(); await tick();
+        expect(document.querySelector('.night-seam h2')?.textContent).toBe('Where day 1 ends');
+        expect(document.querySelector('[aria-label="Selected day"]')).toBeNull();
     });
 
     it('does not open a night again that an Undo removed', async () => {
         await startApp();
         await setRidingDays(4);
         button('Choose night 3').click(); await tick();
-        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 3');
-        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true })); await tick();
-        expect(document.querySelector('.night-page')).toBeNull();
+        expect(document.querySelector('.night-seam h2')?.textContent).toBe('Where day 3 ends');
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true }));
+        await vi.waitFor(() => expect(document.querySelector('.night-seam')).toBeNull());
         await setRidingDays(4);
-        expect(document.querySelector('.night-page')).toBeNull();
+        expect(document.querySelector('.night-seam')).toBeNull();
     });
 
     it('compares two saved routes with a start and a finish, and opens one in the planner', async () => {
@@ -804,7 +830,7 @@ describe('planner app transitions', () => {
         strip.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true })); await tick();
         expect(strip.getAttribute('aria-valuetext')).toBe('Days 8 to 14');
         button('Day 7 ends here, suggested. Show the day.').click(); await tick();
-        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 7');
+        expect(document.querySelector('.night-seam h2')?.textContent).toBe('Where day 7 ends');
         expect(strip.getAttribute('aria-valuetext')).toBe('Days 8 to 14');
     });
 
@@ -848,10 +874,10 @@ describe('planner app transitions', () => {
     it('suggests the nights again when the preferences change the kinds of place to sleep, and names the kinds in the line', async () => {
         await startApp();
         dayButton(1).click(); await tick();
-        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
+        await vi.waitFor(() => expect(document.querySelector('.day h2')?.textContent).toContain('Tile town'));
         await openPreferences();
         button('Campsites').click(); await tick();
-        expect(document.querySelector('.choose')?.textContent).not.toContain('Tile town');
+        expect(document.querySelector('.day h2')?.textContent).not.toContain('Tile town');
         expect(JSON.parse(written()!).stay).toEqual(['hut', 'hostel', 'hotel', 'shelter']);
         expect(document.querySelector('.status-line')?.textContent).toContain('Sleeping in huts, hostels, hotels, shelters');
         expect(preferencesLine().textContent?.trim()).toBe('Route preferences: Touring bike · Balanced · Moderate pace · Huts, Hostels, Hotels, Shelters');
@@ -859,7 +885,7 @@ describe('planner app transitions', () => {
         button('Campsites').click(); await tick();
         expect('stay' in JSON.parse(written()!)).toBe(false);
         expect(preferencesLine().textContent?.trim()).toBe('Route preferences: Touring bike · Balanced · Moderate pace');
-        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
+        await vi.waitFor(() => expect(document.querySelector('.day h2')?.textContent).toContain('Tile town'));
     });
 
     it('turns the route there and back and one way again in the trip row, each as one Undo step', async () => {
@@ -895,15 +921,17 @@ describe('planner app transitions', () => {
         });
         await startApp();
         await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(2));
-        const hidden = ['[data-day]', '.trip-row', '.route-notes'];
+        const hidden = ['.trip-row', '.route-notes'];
         for (const row of hidden) expect(document.querySelector(row)).not.toBeNull();
-        // The totals of the whole plan stay in the drawer on a night page and with a day open.
+        // The totals of the whole plan stay in the drawer under an open night and with a day open.
         const totals = document.querySelector('.plan-totals')!.textContent;
         document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick(); await tick();
-        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');
+        expect(document.querySelector('.night-seam h2')?.textContent).toBe('Where day 1 ends');
         expect(document.querySelector('.plan-totals')?.textContent).toBe(totals);
         expect(document.activeElement).toBe(button('All days'));
         for (const row of hidden) expect(document.querySelector(row)).toBeNull();
+        // The other days leave the list.
+        await vi.waitFor(() => expect(document.querySelectorAll('[data-day]')).toHaveLength(2));
         expect(document.querySelector<HTMLElement>('.query-slot')!.style.display).toBe('none');
         button('All days').click(); await tick(); await tick();
         expect(document.activeElement).toBe(button('Choose night 1'));
@@ -940,7 +968,7 @@ describe('planner side panel', () => {
         expect(document.querySelector('[aria-label="Number of days"]')?.textContent).toContain('3 days');
     });
 
-    it('closes the map selection and the night page when the type changes', async () => {
+    it('closes the map selection and the open night when the type changes', async () => {
         stored.set('trip', JSON.stringify({ ...testTrip(), days: 2 }));
         await startApp();
         await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(1));
@@ -949,12 +977,12 @@ describe('planner side panel', () => {
         expect(document.querySelector('.callout')).not.toBeNull();
         button('One day more').click(); await tick();
         expect(document.querySelector('.callout')).toBeNull();
-        // The night page hides the day count; Undo changes the type there.
+        // The open night hides the day count; Undo changes the type there.
         await vi.waitFor(() => expect(document.querySelector('.handle')).not.toBeNull());
         document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick();
-        expect(document.querySelector('.night-page')).not.toBeNull();
+        expect(document.querySelector('.night-seam')).not.toBeNull();
         button('Undo').click(); await tick();
-        expect(document.querySelector('.night-page')).toBeNull();
+        expect(document.querySelector('.night-seam')).toBeNull();
     });
 
     it('opens the preferences line in the page, keeps it open after a pick, and closes it on Escape only', async () => {

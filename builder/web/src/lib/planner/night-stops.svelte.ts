@@ -12,7 +12,7 @@ export const stretchKey = (route: string, [from, to]: [number, number]) => `${ro
 // Answers kept for stretches no longer wanted, so Undo and a step back do not search again.
 const kept = 40;
 
-/** The stops along stretches of routes: one search for places to sleep and one for food and shops per stretch. */
+/** The stops along stretches of routes: one search for places to sleep per stretch. */
 export class StopFinder {
     found = $state.raw<Record<string, NightStops>>({});
     private aborts = new Map<string, AbortController>();
@@ -62,20 +62,18 @@ export class StopFinder {
             this.aborts.delete(key);
             this.found = { ...this.found, [key]: answer };
         };
-        Promise.all([
-            searchPlaces('', context, 80, abort.signal, { type: 'places', what: ['sleep'], where }),
-            searchPlaces('', context, 100, abort.signal, { type: 'places', what: ['food', 'resupply'], where }),
-        ]).then(([sleep, services]) => settle({ state: 'ready', stops: groupStops(inside(sleep.results), inside(services.results)) }),
-            () => settle({ state: 'error', message: 'Places to sleep could not load. Check your connection and retry.' }));
+        searchPlaces('', context, 80, abort.signal, { type: 'places', what: ['sleep'], where })
+            .then(sleep => settle({ state: 'ready', stops: groupStops(inside(sleep.results)) }),
+                () => settle({ state: 'error', message: 'Places to sleep could not load. Check your connection and retry.' }));
     }
 }
 
-/** What the itinerary needs to choose where to sleep: the towns of each night and the actions on them. A night is the
+/** What the itinerary needs to choose where to sleep: the stops of each night and the actions on them. A night is the
  * riding day that ends there. */
 export interface NightChoices {
-    /** The night whose towns are listed. */
+    /** The night whose stops are listed between its two days. */
     choosing: number | null;
-    /** The open town of that night. */
+    /** The open stop of that night. */
     stopId: string | null;
     /** The id of the place or point that the map shows. */
     shownId: string | null;

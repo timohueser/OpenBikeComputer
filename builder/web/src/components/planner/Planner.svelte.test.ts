@@ -3,6 +3,7 @@
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { allStay, closeLoop, planView, type Place, type Stay, type Trip } from '../../lib/planner/editor';
+import '../../../test-support/planner/animations';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 import { proposal, type Stop } from '../../lib/planner/stops';
@@ -149,13 +150,14 @@ function nightChoices(choices: Partial<NightChoices> = {}): NightChoices {
         selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), setKinds: vi.fn(), release: vi.fn(), ...choices };
 }
 
-const town = (name: string, km: number): Stop => ({ id: name, name, km, from: km, to: km, food: [], shop: [],
-    sleep: [{ place: { id: `${name}-camp`, kind: 'place', category: 'camp', placeKind: 'campsite', label: `${name} camping`, description: '', coordinate: [7.6, 47.2], locality: name }, km, off: .2 }] });
+const sleep = (town: string, name: string, placeKind: string, km: number, off = .2): Stop['sleep'][number] => ({ km, off,
+    place: { id: `${town}-${name}`, kind: 'place', category: placeKind === 'campsite' ? 'camp' : 'hotel', placeKind, label: name, description: '', coordinate: [7.6, 47.2], locality: town } });
+const town = (name: string, km: number, ...more: Stop['sleep']): Stop => ({ id: name, name, km, from: km, to: km, sleep: [sleep(name, `${name} camping`, 'campsite', km), ...more] });
 
 function itineraryProps(expandedDay: number | null) {
     const trip = testTrip(), line = testLine(trip);
     return {
-        trip, line, expandedDay, nightPage: null as number | null, days: planView(trip, line).days, theme: 'light' as const,
+        trip, line, expandedDay, days: planView(trip, line).days, theme: 'light' as const,
         nights: nightChoices(), conflicts: [], selectedId: null, revealId: null,
         onToggle: vi.fn(), onOverview: vi.fn(), onInspect: vi.fn(), onShowEnd: vi.fn(),
         onShowConflict: vi.fn(),
@@ -163,127 +165,190 @@ function itineraryProps(expandedDay: number | null) {
 }
 
 describe('planner day views', () => {
+    const seam = () => document.querySelector('.night-seam')!;
+    const stopRows = () => [...seam().querySelectorAll<HTMLButtonElement>('ul[aria-label="Stops for night 1"] button.row')];
+    const cards = () => [...document.querySelectorAll('[data-day]')].map(card => card.getAttribute('aria-label'));
+    const option = (name: string) => [...seam().querySelectorAll('label')].find(row => row.textContent?.includes(name))!.querySelector('input')!;
+    const confirm = () => seam().querySelector<HTMLButtonElement>('.confirm')!;
+    const settle = async () => { await tick(); await tick(); };
+
     it('keeps every day in the overview and opens a day', async () => {
         const props = itineraryProps(null);
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 
         expect(document.querySelectorAll('[data-day]')).toHaveLength(3);
-        expect(document.body.textContent).not.toContain('Where to sleep');
+        expect(document.querySelector('.night-seam')).toBeNull();
         document.querySelector<HTMLButtonElement>('[data-day="2"]')!.click();
         await tick();
         expect(props.onToggle).toHaveBeenCalledWith(2);
     });
 
-    it('lists the towns of a night on its own page, by the kinds of place of the night, and goes back one level', async () => {
+    it('opens a night as the seam between the cards of its two days, with the stops of the kinds of the night, and goes back one level', async () => {
         const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
-        const [laufen, olten, bern] = [town('Laufen', total * .2), town('Olten', total * .3), town('Bern', total * .45)];
-        Object.assign(olten.sleep[0].place, { placeKind: 'hotel', category: 'hotel' });
-        bern.sleep.push({ ...olten.sleep[0], km: bern.km });
-        const stops = [laufen, olten, bern];
+        const bern = town('Bern', total * .45, sleep('Bern', 'Eichholz', 'campsite', total * .46), sleep('Bern', 'Hotel Bären', 'hotel', total * .45));
+        const stops = [town('Laufen', total * .2), { ...town('Olten', total * .3), sleep: [sleep('Olten', 'Hotel Olten', 'hotel', total * .3)] }, bern];
         const nights: NightChoices = $state(nightChoices({ choosing: 1, campsites: 2, kinds: () => ['camp'], around: () => proposal(bern, ['camp']),
             found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open: id => { nights.stopId = id; },
-            choose: night => { nights.choosing = page = night; } }));
-        let page = $state<number | null>(1);
+            choose: night => { nights.choosing = night; } }));
         props.nights = nights;
-        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get nightPage() { return page; } } }));
-        await tick(); await tick();
+        mounted.push(mount(Itinerary, { target: document.body, props }));
+        await settle();
 
-        expect(document.querySelector('[data-day]')).toBeNull();
+        // The two cards stay, without their nights, and the seam stands between them.
+        expect(cards()).toEqual([expect.stringMatching(/^Open day 1: .+ to Bern$/), expect.stringMatching(/^Open day 2: Bern to /)]);
+        const [first, second] = document.querySelectorAll('[data-day]');
+        expect(first.compareDocumentPosition(seam()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(second.compareDocumentPosition(seam()) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+        expect(document.querySelector('.night')).toBeNull();
         expect(document.querySelector('.keep')).toBeNull();
         expect(document.activeElement).toBe(button('All days'));
-        const rows = () => [...document.querySelectorAll<HTMLButtonElement>('ul[aria-label="Towns for night 1"] button.town')];
-        const towns = rows();
-        expect(towns.map(b => b.querySelector('strong')?.textContent)).toEqual(['Laufen', 'BernEven days']);
-        expect(towns[1].getAttribute('aria-label')).toMatch(/^Bern, 1 campsite\. Day 1 \d+h \d\dm, day 2 \d+h \d\dm\. Even days$/);
-        expect(document.querySelector('.tools')!.compareDocumentPosition(towns[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-        expect(document.querySelectorAll('ul[aria-label="Towns for night 1"] li button')).toHaveLength(towns.length);
+        expect(seam().querySelector('h2')?.textContent).toBe('Where day 1 ends');
 
-        towns[0].click(); await tick();
-        expect(document.querySelector('h2')).toBeNull();
-        button('Night 1').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await tick();
+        // A stop with one place of the kinds of the night is that place; the day ends at the suggested stop.
+        const [laufen, town2] = stopRows();
+        expect(stopRows().map(row => row.querySelector('strong')?.textContent)).toEqual(['Laufen camping', 'BernEven days']);
+        expect([laufen.classList.contains('lone'), laufen.querySelector('small')?.textContent]).toEqual([true, 'campsite · near Laufen']);
+        expect(town2.getAttribute('aria-label')).toMatch(/^Bern, 2 campsites\. Day 1 \d+h \d+m, day 2 \d+h \d+m\. Even days$/);
+        expect([seam().querySelector('.at'), seam().querySelector('.mark')?.textContent]).toEqual([town2, '1']);
+
+        // The cards show the days that end at the stop under the pointer or the focus.
+        const distance = () => first.querySelector('.figures b')?.textContent;
+        const even = distance();
+        for (const event of ['mouseenter', 'focus']) {
+            laufen.dispatchEvent(new Event(event)); await settle();
+            expect(cards()).toEqual([expect.stringMatching(/^Open day 1: .+ to Laufen$/), expect.stringMatching(/^Open day 2: Laufen to /)]);
+            expect([distance(), seam().querySelector('.at')]).toEqual([laufen.querySelector('.fig b')?.firstChild?.textContent, laufen]);
+            laufen.dispatchEvent(new Event(event === 'focus' ? 'blur' : 'mouseleave')); await settle();
+            expect([distance(), seam().querySelector('.at')]).toEqual([even, town2]);
+        }
+
+        // A stop opens in place, and Escape closes it first.
+        town2.click(); await settle();
+        expect(nights.stopId).toBe('Bern');
+        expect(stopRows()).toEqual([laufen]);
+        expect(document.activeElement).toBe(option('Anywhere in Bern'));
+        option('Anywhere in Bern').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await settle();
         expect(nights.stopId).toBeNull();
-        expect(document.activeElement).toBe(rows()[0]);
+        expect(document.activeElement).toBe(stopRows()[1]);
 
         button('All days').click();
-        await tick(); await tick();
+        await settle();
         expect(document.querySelectorAll('[data-day]')).toHaveLength(3);
+        expect(document.querySelector('.night-seam')).toBeNull();
         expect(document.querySelector('.keep')).not.toBeNull();
         expect(document.activeElement).toBe(button('Choose night 1'));
     });
 
-    it('selects where to sleep in a town, and one button ends the day there', async () => {
+    it('selects where to sleep in an open stop, shows the days with that end, and one button ends the day there', async () => {
         const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
-        const bern = town('Bern', total * .45);
-        const hotel: Place = { id: 'Bern-hotel', kind: 'place', category: 'hotel', placeKind: 'hotel', label: 'Hotel Bären', description: '', coordinate: [7.6, 47.2], locality: 'Bern' };
-        bern.sleep.push({ place: hotel, km: bern.km, off: 1 }, { place: { ...bern.sleep[0].place, id: 'Bern-unnamed', label: 'campsite' }, km: bern.km, off: .5 });
+        const hotel = sleep('Bern', 'Hotel Bären', 'hotel', total * .4, 1), unnamed = sleep('Bern', 'campsite', 'campsite', total * .5, .5);
+        const bern = town('Bern', total * .45, unnamed, hotel);
         let kinds = $state<Stay[]>(['camp', 'hotel']);
         const endHere = vi.fn(), stay = vi.fn(), selectPlace = vi.fn();
         props.nights = nightChoices({ choosing: 1, stopId: 'Bern', kinds: () => kinds, found: () => ({ state: 'ready', stops: [bern] }),
             window: () => [0, total * .6], endHere, stay, selectPlace });
-        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, nightPage: 1 } }));
-        await tick();
-        const confirm = () => document.querySelector<HTMLButtonElement>('.confirm button')!;
-        const radio = (name: string) => [...document.querySelectorAll('label')].find(row => row.textContent?.includes(name))!.querySelector('input')!;
+        mounted.push(mount(Itinerary, { target: document.body, props }));
+        await settle();
+        const distance = () => document.querySelector('[data-day] .figures b')?.textContent;
 
-        expect(document.querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('Where you sleep on night 1');
-        expect(radio('Somewhere in Bern').checked).toBe(true);
-        expect(document.body.textContent).not.toContain('Water');
-        expect(confirm().textContent?.trim()).toBe('End day 1 in Bern');
+        expect(seam().querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('Where you sleep on night 1');
+        expect(option('Anywhere in Bern').checked).toBe(true);
+        // The places stand in route order, each with the distance of the day that ends there.
+        const places = [...seam().querySelectorAll('label.place')];
+        expect(places.map(row => [row.querySelector('strong')?.textContent, row.querySelector('small')?.textContent])).toEqual([
+            ['Hotel Bären', 'hotel · 1.0 km off the route'], ['Bern camping', 'campsite · 0.2 km off the route'], ['Unnamed campsite', '0.5 km off the route']]);
+        expect(confirm().textContent?.trim()).toBe('Sleep in Bern');
         confirm().click();
         expect(endHere).toHaveBeenCalledWith(1, bern);
 
-        radio('Hotel Bären').click(); await tick();
-        expect(selectPlace).toHaveBeenCalledExactlyOnceWith(hotel);
-        expect(confirm().textContent?.trim()).toBe('End day 1 at Hotel Bären');
+        const inTown = distance();
+        option('Hotel Bären').click(); await settle();
+        expect(selectPlace).toHaveBeenCalledExactlyOnceWith(hotel.place);
+        expect([distance(), seam().querySelector('.at')]).toEqual([places[0].querySelector('.fig b')?.firstChild?.textContent, places[0]]);
+        expect(distance()).not.toBe(inTown);
+        expect(confirm().textContent?.trim()).toBe('Sleep at Hotel Bären');
         confirm().click();
-        expect(stay).toHaveBeenCalledWith(1, hotel);
+        expect(stay).toHaveBeenCalledWith(1, hotel.place);
         // A click on the checked place shows it on the map again.
-        radio('Hotel Bären').click(); await tick();
+        option('Hotel Bären').click(); await settle();
         expect(selectPlace).toHaveBeenCalledTimes(2);
-        radio('Somewhere in Bern').click(); await tick();
+        option('Anywhere in Bern').click(); await settle();
         expect(selectPlace).toHaveBeenLastCalledWith(null);
-        radio('Unnamed campsite').click(); await tick();
-        expect(confirm().textContent?.trim()).toBe('End day 1 at this campsite');
+        option('Unnamed campsite').click(); await settle();
+        expect(confirm().textContent?.trim()).toBe('Sleep at this campsite');
 
-        radio('Hotel Bären').click(); await tick();
-        kinds = ['camp']; await tick(); await tick();
-        expect(radio('Somewhere in Bern').checked).toBe(true);
-        expect(confirm().textContent?.trim()).toBe('End day 1 in Bern');
+        option('Hotel Bären').click(); await settle();
+        kinds = ['camp']; await settle();
+        expect(option('Anywhere in Bern').checked).toBe(true);
+        expect(confirm().textContent?.trim()).toBe('Sleep in Bern');
     });
 
-    it('keeps the scroll position of the day list under a night page, but not of an open day', async () => {
+    it('opens a place on its own with that place selected, folds the shelters of a town, and marks the stop of a set night', async () => {
+        const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
+        const huts = (name: string, km: number) => [1, 2, 3].map(n => sleep(name, `${name} shelter ${n}`, 'shelter', km + n / 10));
+        const laufen = town('Laufen', total * .2), bern = town('Bern', total * .45, ...huts('Bern', total * .45));
+        const olten = { ...town('Olten', total * .3), sleep: huts('Olten', total * .3) };
+        const stay = vi.fn();
+        const nights: NightChoices = $state(nightChoices({ choosing: 1, found: () => ({ state: 'ready', stops: [laufen, olten, bern] }), window: () => [0, total * .6],
+            open: id => { nights.stopId = id; }, stay }));
+        props.nights = nights;
+        props.days = props.days.map(day => day.number === 1 ? { ...day, pinned: { id: 'night-1', kind: 'night', night: 1, coordinate: [7.6, 47.2], label: 'Bern shelter 2', placeId: 'Bern-Bern shelter 2' } } : day);
+        mounted.push(mount(Itinerary, { target: document.body, props }));
+        await settle();
+        const shown = () => [...seam().querySelectorAll('label.place strong')].map(name => name.textContent);
+
+        expect(seam().querySelector('.at')).toBe(stopRows()[2]);
+        stopRows()[0].click(); await settle();
+        expect(option('Laufen camping').checked).toBe(true);
+        expect(shown()).toEqual([]);
+        expect(confirm().textContent?.trim()).toBe('Sleep at Laufen camping');
+        confirm().click();
+        expect(stay).toHaveBeenCalledWith(1, laufen.sleep[0].place);
+
+        // A stop of shelters only lists them; beside other places they fold into one row.
+        stopRows()[0].click(); await settle();
+        expect(shown()).toEqual(['Olten shelter 1', 'Olten shelter 2', 'Olten shelter 3']);
+        stopRows()[1].click(); await settle();
+        expect(shown()).toEqual(['Bern camping']);
+        const fold = button('3 shelters');
+        expect(fold.getAttribute('aria-expanded')).toBe('false');
+        fold.click(); await settle();
+        expect([fold.getAttribute('aria-expanded'), shown()]).toEqual(['true', ['Bern camping', 'Bern shelter 1', 'Bern shelter 2', 'Bern shelter 3']]);
+    });
+
+    it('keeps the scroll position of the day list under an open night, but not of an open day', async () => {
         const pane = document.body.appendChild(Object.assign(document.createElement('div'), { className: 'pane-scroll' }));
         Object.defineProperty(pane, 'scrollTop', { value: 0, writable: true });
-        let page = $state<number | null>(null), day = $state<number | null>(null);
-        mounted.push(mount(Itinerary, { target: pane, props: { ...itineraryProps(null), get nightPage() { return page; }, get expandedDay() { return day; } } }));
-        const settle = async () => { await tick(); await tick(); };
+        const nights = $state(nightChoices());
+        let day = $state<number | null>(null);
+        mounted.push(mount(Itinerary, { target: pane, props: { ...itineraryProps(null), nights, get expandedDay() { return day; } } }));
         await settle();
         pane.scrollTop = 400;
-        page = 1; await settle();
+        nights.choosing = 1; await settle();
         expect(pane.scrollTop).toBe(0);
-        page = null; await settle();
+        nights.choosing = null; await settle();
         expect(pane.scrollTop).toBe(400);
         day = 2; await settle();
         pane.scrollTop = 300;
-        day = null; page = 1; await settle();
-        page = null; await settle();
+        day = null; nights.choosing = 1; await settle();
+        nights.choosing = null; await settle();
         expect(pane.scrollTop).toBe(0);
     });
 
-    it('sets the kinds of place of one night', async () => {
-        const props = itineraryProps(null), setKinds = vi.fn(), release = vi.fn();
+    it('sets the kinds of place of one night, and gives a set night back to the planner', async () => {
+        const props = itineraryProps(null), setKinds = vi.fn(), release = vi.fn(), pick = vi.fn();
         const kept = { id: 'night-2', kind: 'night' as const, night: 2, label: 'Olten', coordinate: [7.6, 47.3] as [number, number] };
         props.trip = { ...props.trip, nightStay: { 2: ['camp'] } };
         props.days = props.days.map(day => day.number === 2 ? { ...day, pinned: kept } : day);
-        props.nights = nightChoices({ choosing: 2, kinds: () => ['camp'], window: () => [0, 50], found: () => ({ state: 'ready', stops: [] }), setKinds, release });
-        let page = $state<number | null>(null);
-        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get nightPage() { return page; } } }));
+        const nights = $state(nightChoices({ kinds: () => ['camp'], window: () => [0, 50], found: () => ({ state: 'ready', stops: [] }), setKinds, release, pick }));
+        props.nights = nights;
+        mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 
-        page = 2; await tick();
-        expect(document.querySelector('h2')?.textContent).toBe('Night 2');
-        expect(document.querySelector('h2 + p')?.textContent).toBe('Where day 2 ends and day 3 starts');
+        nights.choosing = 2; await settle();
+        expect(seam().querySelector('h2')?.textContent).toBe('Where day 2 ends');
+        expect(cards()).toEqual([expect.stringMatching(/^Open day 2: /), expect.stringMatching(/^Open day 3: Olten to /)]);
         expect(document.querySelector('[role="status"]')?.textContent).toBe('No campsite between km 0 and 50.');
         button('Places to sleep on night 2: Campsites').click(); await tick();
         const huts = [...document.querySelectorAll('label')].find(row => row.textContent === 'Huts')!.querySelector('input')!;
@@ -291,6 +356,8 @@ describe('planner day views', () => {
         expect(setKinds).toHaveBeenCalledWith(2, ['camp', 'hut']);
         button('Same as the trip').click();
         expect(setKinds).toHaveBeenLastCalledWith(2, null);
+        button('Pick on the map').click();
+        expect(pick).toHaveBeenCalledOnce();
         button('Let the planner choose').click();
         expect(release).toHaveBeenCalledWith(2);
     });

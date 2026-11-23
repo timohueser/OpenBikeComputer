@@ -77,14 +77,16 @@ the riding time at the plan's pace. After each route or pace change, it guesses 
 suggested nights again. Pinned nights and a set count stay. When the guess has fewer nights,
 what the rider set on a lost night goes with it; Undo brings it back.
 
-"Choose" or "Change" on a night, or its profile marker, shows only that night in the panel. A town
-replaces its town list, also in an open day. A back row or Escape goes back one level. One button
-ends the day at the town or at a place selected in it. The town moves the night, as does a drag of
-the day end. A campsite or a hotel keeps it. A kept night is a place, with a filled marker. A moved
-night is a point on the route, with a dotted marker. "Let the planner choose" makes the night a
-suggestion again. The town list sets other kinds for its night only. A night of one kind only
-(campsites, huts or shelters) ends at a place of that kind. Other nights end in the town, as "Sleep
-near Ulrichen", because the planner cannot pick a hotel in the rider's price range.
+"Choose" or "Change" on a night, or its profile marker, opens the night between the cards of its
+two days. Its stops are in route order: towns, and places on their own. The two cards show the
+days as they become with the stop under the pointer, so the rider compares before a click. A stop
+opens in place, and one button ends the day in the town or at a place selected in it. "All days" or
+Escape goes back one level. The town moves the night, as does a drag of the day end. A campsite or
+a hotel keeps it. A kept night is a place, with a filled marker. A moved night is a point on the
+route, with a dotted marker. "Let the planner choose" makes the night a suggestion again. The night
+sets other kinds for itself only. A night of one kind only (campsites, huts or shelters) ends at a
+place of that kind. Other nights end in the town, as "Sleep near Ulrichen", because the planner
+cannot pick a hotel in the rider's price range.
 
 The plan stores which values the rider set ([planner plan](src:specs/planner-plan.md)).
 
