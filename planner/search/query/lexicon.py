@@ -6,6 +6,8 @@ lexicon/kinds.json from lexicon/src/ and lexicon/kinds.yaml. lexicon/src/ is not
 presets.json and translations/{en,de,fr,it,es,nl}.json from
 https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema@6.19.2/dist/. All other lists are hand-written in
 lexicon/words.yaml. Lookup is a union over all languages: the box does not know the language.
+`python lexicon.py marks` writes marks.json, the English words of the search field of the web planner; `build` writes
+it too.
 
     WORDS[category][value][lang] -> [term]      hand-written lists (words.yaml)
     KIND_TERMS[lang][kind] -> [term]            kind terms (kinds.json; en de fr it, plus es nl)
@@ -343,5 +345,44 @@ def build() -> None:
         print("  contested:", x)
 
 
+MARKS = Path(__file__).with_name("marks.json")
+
+
+def marks_json() -> str:
+    """The English words that the search field of the web planner marks and suggests while the
+    rider types, by their value. The query model reads the sentence at Enter, so the list holds
+    only the words of single values. Terms are folded, with a space for a hyphen, as the field
+    compares them."""
+    from decode import _DAY_VALUES  # decode imports this module
+
+    def terms(ts) -> list[str]:
+        return list(dict.fromkeys(" ".join(fold(t).replace("-", " ").split()) for t in ts))
+
+    def en(category: str) -> dict[str, list[str]]:
+        return {str(v): terms(per["en"]) for v, per in WORDS[category].items()
+                if per and per.get("en")}
+
+    glue = {t for c in ("stop", "nearest", "prep") for ts in en(c).values()
+            for term in ts for t in term.split()}
+    doc = {
+        "kind": {k: terms(ts) for k, ts in _load_kinds()["terms"]["en"].items() if ts},
+        "stretch": en("stretch"),
+        "part": en("part"),
+        "day": {" ".join(p for p in _DAY_VALUES[v] if p): ts for v, ts in en("day_value").items()},
+        "day_noun": en("day_noun")["day"],
+        "ordinal": en("ordinal"),
+        "number": {v: [t for t in ts if " " not in t and t not in schema.ARTICLES]
+                   for v, ts in en("number").items() if v.isdigit() and v != "0"},
+        "scope": en("scope"),
+        "open": terms(en("open")["open"] + en("now")["now"]),
+        "weekday": en("weekday"),
+        "glue": sorted(t for t in glue if re.fullmatch(r"[\w']+", t)),
+    }
+    return json.dumps(doc, ensure_ascii=False, indent=1) + "\n"
+
+
 if __name__ == "__main__" and sys.argv[1:] == ["build"]:
     build()
+    MARKS.write_text(marks_json())
+elif __name__ == "__main__" and sys.argv[1:] == ["marks"]:
+    MARKS.write_text(marks_json())

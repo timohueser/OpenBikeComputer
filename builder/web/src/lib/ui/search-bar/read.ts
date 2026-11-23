@@ -1,8 +1,9 @@
 /** The reader of the text field of the search bar: it marks the phrases of a text that a page's table knows, finds the
  * words that the rider still types, and suggests values for them. It knows no page and sends no request. */
 
-/** A value that words give: its words in a row of the list, the slot that it goes to, and its icon. */
-export interface Value { label: string; slot: string; icon: string }
+/** A value that words give: its words in a row of the list, the slot that it goes to, and its icon, or the 24 px stroke
+ * `path` of one. */
+export interface Value { label: string; slot: string; icon: string; path?: string }
 
 /** What some words mean: a value, or a note that says why they stay in the field. */
 export type Meaning<V extends Value> = V | string;

@@ -1,6 +1,6 @@
 import type { Place, Stay } from '../editor';
 import { placeCategories, poiKinds, type PlaceCategory } from '../poi-kinds';
-import type { QueryPoint, Where, QueryRequest, SearchPlace } from './types';
+import type { QueryPoint, SearchPlace } from './types';
 import contract from '../../../../../../planner/search/query/contract.json' with { type: 'json' };
 
 /** The query language that search accepts. */
@@ -43,20 +43,4 @@ export function pointLabel(p: QueryPoint): string {
     if ('day' in p) return `Day ${p.day} ${p.part ?? 'end'}`;
     const a = p.along;
     return `${a.ref === 'km' ? '' : `From ${a.ref}: `}${a.at ? `${a.at.value} ${a.at.unit}` : `${a.from?.value ?? 0}–${a.to?.value ?? 'end'} ${a.to?.unit ?? a.from?.unit ?? 'km'}`}`;
-}
-export function whereLabel(w: Where): string {
-    if (w.anchor) return 'Near the selected point';
-    return [w.day ? `Day ${w.day}${w.part ? ` ${w.part}` : ''}` : w.scope === 'route' ? w.part ? `Near route ${w.part}` : 'Along the route' : w.scope === 'here' ? 'Near your location' : '',
-        w.near ? `${w.near.length > 1 ? 'Between' : 'Near'} ${w.near.map(pointLabel).join(' and ')}` : '',
-        w.along ? pointLabel({ along: w.along }) : '', w.before ? `Before ${pointLabel(w.before)}` : '', w.after ? `After ${pointLabel(w.after)}` : '',
-    ].filter(Boolean).join(' · ') || 'In this map view';
-}
-export function fieldLabel(key: string, value: unknown): string {
-    if (key === 'where') return whereLabel(value as Where);
-    if (['from','to','point','at','near'].includes(key)) return `${key}: ${pointLabel(value as QueryPoint)}`;
-    if (key === 'via') return `Via ${(value as QueryPoint[]).map(pointLabel).join(', ')}`;
-    if (key === 'what') return Array.isArray(value) ? value.map(kindLabel).join(', ') : kindLabel(String(value));
-    if (key === 'open') { const o = value as QueryRequest['open']; return o?.now ? 'Open now' : `Open ${o?.weekday ?? `on Day ${o?.day}`}`; }
-    if (typeof value === 'object' && value && 'unit' in value && 'value' in value) return `${kindLabel(key)}: ${value.value} ${value.unit}`;
-    return `${kindLabel(key)}: ${kindLabel(String(value))}`;
 }

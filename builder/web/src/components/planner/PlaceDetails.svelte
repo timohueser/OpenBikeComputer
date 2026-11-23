@@ -50,12 +50,12 @@
 <style>
     .place-heading { display: flex; gap: 12px; align-items: flex-start; margin-right: 16px; }
     .place-heading h2 { margin: 0 12px 5px 0; font: 600 17px/1.3 var(--sans); overflow-wrap: anywhere; }
-    .place-symbol { display: grid; place-items: center; width: 40px; height: 40px; flex: none; border-radius: 50%; color: var(--query-place); background: color-mix(in srgb, var(--query-place) 10%, var(--panel)); }
+    .place-symbol { display: grid; place-items: center; width: 40px; height: 40px; flex: none; border-radius: 50%; color: var(--place-disc); background: color-mix(in srgb, var(--place-disc) 10%, var(--panel)); }
     .kind { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
     .place-note { margin: 10px 0; color: var(--ink); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
     .contacts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 12px 0; overflow-wrap: anywhere; }
     .contacts a { color: var(--ink); text-underline-offset: 3px; padding: 4px 0; }
-    .contacts a:hover { color: var(--query-place); }
-    .contacts a:focus-visible { outline: 2px solid var(--query-place); outline-offset: 3px; border-radius: 2px; }
+    .contacts a:hover { color: var(--link); }
+    .contacts a:focus-visible { outline: 2px solid var(--link); outline-offset: 3px; border-radius: 2px; }
     .hint { margin: 4px 0 0; color: var(--ink-soft); }
 </style>

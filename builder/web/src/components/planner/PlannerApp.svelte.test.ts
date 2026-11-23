@@ -10,6 +10,7 @@ import { newPlan, type Plan } from '../../lib/planner/library';
 import type { RoutingLine } from '../../lib/planner/routing';
 
 import { moves, nightCalls, tiles, weekFits } from '../../../test-support/planner/MapStub.svelte';
+import '../../../test-support/planner/animations';
 import { routeService } from '../../../test-support/planner/route-service';
 import { testTrip } from '../../../test-support/planner/trip';
 import { testConfig } from '../../../test-support/planner/config';
@@ -125,7 +126,8 @@ async function search(text: string, label = tilePlace.label) {
     const input = document.querySelector<HTMLInputElement>('[aria-label="Find a place or ask about the route"]')!;
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await tick();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     await vi.waitFor(() => expect(document.querySelector('.results')?.textContent).toContain(label));
 }
 
@@ -312,7 +314,7 @@ describe('planner app transitions', () => {
         pin.click(); await tick();
         await search('Döner');
         expect(bodies().find(body => body.q === 'Döner').pointing).toBeUndefined();
-        expect(document.querySelector('.meaning')?.textContent).toContain('In this map view');
+        expect(document.querySelector('[data-slot="where"]')?.textContent).toContain('In this map view');
     });
 
     it('says that a reorder cleared shapes only when it removed a shaping point', async () => {
@@ -512,7 +514,7 @@ describe('planner app transitions', () => {
         dayButton(1).click(); await tick();
         expect(fetch).toHaveBeenCalledTimes(requests);
         await search('campsites day 2');
-        button('Clear search').click();
+        button('Clear the search').click();
         await tick();
         expect(document.querySelector<HTMLSelectElement>('[aria-label="Selected day"]')?.value).toBe('1');
         const day = document.querySelector('.day')!;

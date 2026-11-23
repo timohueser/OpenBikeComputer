@@ -153,7 +153,6 @@
     let layerDate = $state<string | null>(null);
     const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
     const shownDate = $derived(layerDate ?? trip.startDate ?? today);
-    let query = $state('');
     let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
     let searchBox = $state<Query>();
     let searchRevision = $state(0);
@@ -751,7 +750,7 @@
     function exitSearch() {
         if (!searching) return;
         searching = false;
-        query = '';
+        searchBox?.reset();
     }
 
     function clearSearch() {
@@ -1240,7 +1239,7 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={nightPage !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => { pointing = where; part = null; }} /></div>
+            <div class="query-slot" style:display={nightPage !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} /></div>
             {#if !searching && nightPage === null}{#key planId}<RoutePreferences {trip} onChange={edit} />{/key}{/if}
             {#if exploreBack && hasEndpoints && !searching && nightPage === null}
                 <button type="button" class="back-to-routes" onclick={() => router.go(ROUTES.explore, { explore: exploreBack })}><Icon name="back" size={15} />Find another route</button>
@@ -1455,19 +1454,11 @@
         color: inherit;
     }
     .planner-shell {
-        --query-place: #3b654c;
-        --query-area: #365f84;
-        --query-time: #965125;
         display: flex;
         flex-direction: column;
         height: 100%;
         min-width: 760px;
         min-height: 580px;
-    }
-    :global([data-theme="dark"]) .planner-shell {
-        --query-place: #aed0b5;
-        --query-area: #a9cce9;
-        --query-time: #edb58b;
     }
     .planner-shell :global(.planner-action),
     .planner-shell :global(.planner-chip) {

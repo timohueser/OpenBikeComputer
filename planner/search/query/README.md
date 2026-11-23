@@ -58,7 +58,9 @@ into the parent `data/model/`, then restart the local server. Setup restores the
 model, so do not run setup after this replacement. Do not commit generated model files.
 
 `schema.py` owns the finite model language. After a change, run `python3 schema.py` to
-write `contract.json`; `test_artifacts.py` fails while the file is stale. `decode.py`
+write `contract.json`; `test_artifacts.py` fails while the file is stale. After a change of the
+English words, run `python3 lexicon.py marks` to write `marks.json`, the words that the web planner marks while the
+rider types; the same test fails while it is stale. `decode.py`
 converts word tags to requests.
 `runtime.py` runs CPU inference through ONNX Runtime. The local service also supports
 UI-only map anchors and cuisine filters; the model does not emit these fields.
