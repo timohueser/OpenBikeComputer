@@ -1137,3 +1137,17 @@ fn a_room_of_lanes_in_a_head_that_a_tile_does_not_hold_whole_keeps_its_tunnels()
         assert!(parts.is_some_and(|p| !p.contains("none")), "tunnel {id} does not draw: {parts:?}");
     }
 }
+
+/// A footway 5 m over a primary in one room, its outline 4.4 m inside the right wall, as a room that the primary makes
+/// wide on its other side: the walk at that wall lies at 5.15 m. The room's spring lies at or over it, so each wall
+/// rises from the floor to the spring; the outlines alone let the spring lie under the walk.
+#[test]
+fn a_rooms_spring_lies_at_or_over_its_floor_at_the_walls() {
+    let design = &obc_trailview_parts::Rules::embedded().design;
+    let lanes = [(-4.0, 1.6, 5.0, 2.4, 8), (4.0, 6.0, 0.0, 5.0, 8)];
+    let wall = 5.0 + design.kerb_m;
+    let h = rooms::hold(true, 10.0, design.spring, &lanes, 16, wall);
+    assert!(design.spring * h >= wall - 1e-9, "the spring {:.2} lies under the walk {wall}", design.spring * h);
+    let outlines = rooms::hold(true, 10.0, design.spring, &lanes, 16, 0.0);
+    assert!(design.spring * outlines < wall, "the outlines alone hold the walk: {outlines}");
+}

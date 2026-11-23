@@ -57,8 +57,9 @@ pub(crate) type Outline = (f64, f64, f64, f64, usize);
 
 /// The least height over the floor at which a room's outline (round or of box section, half-width `half`, its arch in
 /// `segments` springing at the share `spring` of its height) holds each outline on its floor. A round room is read at
-/// the corners of its outline and of theirs, as the builder draws them.
-pub(crate) fn hold(round: bool, half: f64, spring: f64, outlines: &[Outline], segments: usize) -> f64 {
+/// the corners of its outline and of theirs, as the builder draws them; its spring lies at least `wall` over the floor,
+/// the highest floor at its walls, so each wall rises from the floor to the spring.
+pub(crate) fn hold(round: bool, half: f64, spring: f64, outlines: &[Outline], segments: usize, wall: f64) -> f64 {
     if !round {
         return outlines.iter().map(|l| l.2 + l.3).fold(0.0, f64::max);
     }
@@ -78,7 +79,7 @@ pub(crate) fn hold(round: bool, half: f64, spring: f64, outlines: &[Outline], se
         let (p, q) = (unit[k - 1], unit[k]);
         p[1] + (q[1] - p[1]) * ((x - p[0]) / (q[0] - p[0]).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0)
     };
-    let mut need: f64 = 0.0;
+    let mut need = wall / spring;
     for &(off, h, up, height, n) in outlines {
         let corners = arch(n, h, spring * height, height).into_iter().chain([[-h, 0.0], [h, 0.0]]);
         for [x, y] in corners {
@@ -411,7 +412,8 @@ pub(super) fn room_of(
             .map(|((l, p), &zl)| (p.off, p.half, zl - low, arms[l.arm].height, design.arch_segments))
             .collect();
         if i == 0 || i + 1 == n {
-            height = height.max(hold(true, half, design.spring, &outlines, segments));
+            let wall = (outlines[0].2).max(outlines[outlines.len() - 1].2) + design.kerb_m;
+            height = height.max(hold(true, half, design.spring, &outlines, segments, wall));
         }
         let along = arms[ordered[0].arm].curve.at(row[0].s).0.along;
         curve_points.push(Point { p: points[i], z: low, s: *m, along });

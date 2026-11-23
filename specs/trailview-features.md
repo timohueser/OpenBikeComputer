@@ -785,7 +785,8 @@ ways on top of that room read over its `half`, with the arm's heights, grade and
 (on a seam's line) once, under the ways of both. So a lane has one floor on both sides of a seam. A room's floor at a
 vertex is its lowest lane's, and a lane's `up` its floor over that. A room of lanes is as high at a vertex as the
 least that holds the outline of each lane on its floor there, read at the corners of the room's outline as the
-builder draws it (a box section: the highest lane's top). Where the shell of its crown would rise over a way on top,
+builder draws it (a box section: the highest lane's top), and whose spring lies `kerb_m` or more over the floor of the
+lane at each wall, so each wall rises from the floor to the spring. Where the shell of its crown would rise over a way on top,
 every lane there is lower by as much, each to its least height, and the room is as high as the ways on top let it be,
 at least as high as its lowered lanes need. At a seam's line it is as high as the rooms behind it need, each read at
 the corners of its outline as the builder draws it (`arch_segments` per lane), at its floor and its height as the
@@ -799,9 +800,9 @@ that it runs in, and a room's floor with its last arm's.
   outer half-width + `half` + `shell_m`) overlaps, at its nearest points to the points of the chord where its
   underside over the chord can bend: the ends of the overlap, and where the nearest point of a segment of its curve is
   an end of that segment or, of a room over this one, a vertex of that room's floor. Between these points the
-  underside and the floor are both linear along the chord. A vertex at such a point reads the way there. A point inside the chord caps both vertices of the chord, unless both vertices
-  read the way and its underside there lies at or over the line between theirs. So the floor lies under the way along
-  the whole chord. A read counts where the foot of its point on the whole chain, extended past an end with an opening
+  underside and the floor are both linear along the chord. A vertex at such a point reads the way there. A point
+  inside the chord caps both vertices of the chord, unless both vertices read the way and its underside there lies at
+  or over the line between theirs. So the floor lies under the way along the whole chord. A read counts where the foot of its point on the whole chain, extended past an end with an opening
   along its end chord, lies between the openings, each grown by the way's outer half-width; at a seam the foot stays
   on the line, as a way over the room before it lies over the room behind it too. The way lies on top where its height
   at that point is more than the at-grade band over the road solver's height of the chain at the foot (the lesser

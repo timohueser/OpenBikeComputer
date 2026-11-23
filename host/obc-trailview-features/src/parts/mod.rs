@@ -899,7 +899,8 @@ fn room(
     let part_name = |k: Option<Kind>| k.map_or("none", Kind::name);
     let (t, lanes) = (&rooms.tubes[r], &rooms.lanes[r]);
     let Some(fl) = fl else { return };
-    let spring = obc_trailview_parts::Rules::embedded().design.spring;
+    let (spring, kerb) =
+        (obc_trailview_parts::Rules::embedded().design.spring, obc_trailview_parts::Rules::embedded().design.kerb_m);
     let round = common["section"] == "round";
     let segments = obc_trailview_parts::Rules::embedded().design.arch_segments;
     let surface = |l: &rooms::Lane| input.tunnels[&rooms.arms[l.arm].widest].0.get("surface").cloned();
@@ -922,8 +923,9 @@ fn room(
             let mut outlines: Vec<rooms::Outline> = (places.iter().zip(ups).zip(&fl.lanes))
                 .map(|((p, &up), lane)| (p.off, p.half, up, lane.1[k], segments))
                 .collect();
+            let wall = (outlines[0].2).max(outlines[outlines.len() - 1].2) + kerb;
             outlines.extend_from_slice(&behind[end]);
-            rooms::hold(round, t.half, spring, &outlines, segments * lanes.len()).max(fl.h[k])
+            rooms::hold(round, t.half, spring, &outlines, segments * lanes.len(), wall).max(fl.h[k])
         };
         let mut heights = [need((&a, i)), need((&b, i + 1))];
         let mut floors = [fl.f[i], fl.f[i + 1]];

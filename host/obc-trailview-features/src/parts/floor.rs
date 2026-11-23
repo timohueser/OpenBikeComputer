@@ -66,6 +66,13 @@ struct Site {
     ways: Vec<usize>,
 }
 
+/// Per vertex of a room the undersides of the ways on top, and the least underside of a room on top beside it.
+type Capped = (Vec<Vec<f64>>, Vec<f64>);
+
+/// Per room with a part, each segment of a way within reach of its line (the way, the segment and the metres of the
+/// line within its reach) and its vertices.
+type Reaches = (Vec<(usize, usize, [f64; 2])>, Vec<f64>);
+
 /// The floor of a room: per vertex its metres, the road solver's height, the floor and the inside height; of a room of
 /// lanes, per lane its floor and its inside height at each vertex.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -294,9 +301,9 @@ pub(crate) fn floors(
         order.push(next);
     }
     let index_of = |t: usize| with.iter().position(|&w| w == t).unwrap();
-    // Per room with a part, its vertices and the ways over them. A room over this one is read where its floor bends:
-    // at its vertices, which its site holds.
-    let site_of = |k: usize, sites: &[Option<Site>]| -> Site {
+    // Per room with a part, the segments of the ways within reach of its line and its vertices; they read no way, so
+    // a room over another is read where its floor bends: at its vertices.
+    let vertices_of = |k: usize| -> Reaches {
         let t = with[k];
         let (points, (ps, shell_half)) = (&lines[k], &boxes[k]);
         let tube = &tubes[t];
@@ -370,6 +377,17 @@ pub(crate) fn floors(
             let [c0, c1] = clear.map(|c| c.unwrap_or(b.vertex_gap_m));
             s.insert(1, (s0 + c0 + s1 - c1) / 2.0);
         }
+        (reaches, s)
+    };
+    let vertices: Vec<Reaches> = (0..with.len()).map(vertices_of).collect();
+    // Per room with a part, its site: its vertices and the ways over them.
+    let site_of = |k: usize| -> Site {
+        let t = with[k];
+        let (points, (_, shell_half)) = (&lines[k], &boxes[k]);
+        let tube = &tubes[t];
+        let reach_of = |o: &Over| o.outer + shell_half;
+        let (reaches, s) = (&vertices[k].0, vertices[k].1.clone());
+        let (s0, s1) = (points[0].s, points[points.len() - 1].s);
         let (ls, lz): (Vec<f64>, Vec<f64>) = points.iter().map(|q| (q.s, q.z)).unzip();
         let z: Vec<f64> = s.iter().map(|&x| interp(x, &ls, &lz)).collect();
         let xy: Vec<[f64; 2]> = s.iter().map(|&x| tube.curve.at(x).0.p).collect();
@@ -423,16 +441,17 @@ pub(crate) fn floors(
         // a room over this one, a vertex of its floor. Between these points the underside and the floor are both
         // linear along the chord (`tops` caps the vertices). The clash count reads the crown at these points.
         let mut reads = Vec::new();
-        for &(o, k, [a, e]) in &reaches {
+        for &(o, k, [a, e]) in reaches {
             let (w0, w1) = (overs[o].points[k], overs[o].points[k + 1]);
             let d = [w1[0] - w0[0], w1[1] - w0[1]];
-            let bends: Vec<[f64; 2]> = (overs[o].room.as_ref())
-                .and_then(|r| Some((&r.s, sites[index_of(r.room)].as_ref()?)))
-                .map_or(Vec::new(), |(rs, upper)| {
+            let bends: Vec<[f64; 2]> = (overs[o].room.as_ref()).map(|r| (&r.s, &vertices[index_of(r.room)].1)).map_or(
+                Vec::new(),
+                |(rs, upper)| {
                     let (lo, hi) = (rs[k], rs[k + 1]);
-                    let on = upper.s.iter().filter(|&&v| v > lo && v < hi);
+                    let on = upper.iter().filter(|&&v| v > lo && v < hi);
                     on.map(|&v| [w0[0] + (v - lo) / (hi - lo) * d[0], w0[1] + (v - lo) / (hi - lo) * d[1]]).collect()
-                });
+                },
+            );
             let lo = s.partition_point(|&x| x <= a + MERGE_M).saturating_sub(1);
             let hi = s.partition_point(|&x| x < e - MERGE_M).min(s.len() - 1);
             for i in lo.saturating_sub(1)..=hi.min(s.len() - 2) {
@@ -460,16 +479,7 @@ pub(crate) fn floors(
         ways.sort_unstable();
         Site { s, z, xy, reads, ways: ways.into_iter().map(|(_, o)| o).collect() }
     };
-    // The sites from the highest room down, in the order of their arms.
-    let mut rank = vec![0; rooms.arms.len()];
-    order.iter().enumerate().for_each(|(i, &x)| rank[x] = i);
-    let mut first: Vec<usize> = (0..with.len()).collect();
-    first.sort_by_key(|&k| arms_of(with[k]).map(|x| rank[x]).min());
-    let mut sites: Vec<Option<Site>> = (0..with.len()).map(|_| None).collect();
-    for k in first {
-        sites[k] = Some(site_of(k, &sites));
-    }
-    let sites: Vec<Site> = sites.into_iter().map(Option::unwrap).collect();
+    let sites: Vec<Site> = (0..with.len()).map(site_of).collect();
     let site = |t: usize| &sites[index_of(t)];
     // A tube's grade of its class and its group's least height.
     let rule = |t: &Tube| {
@@ -481,7 +491,7 @@ pub(crate) fn floors(
     // which only lowers its section: a way lies on top where it lies over the road solver's height of the room by more
     // than the at-grade band. A read at a vertex caps that vertex; a read inside a chord caps both, unless both
     // vertices read the way and its underside there lies at or over the line between theirs.
-    let tops = |t: usize, out: &[Option<Floor>]| -> (Vec<Vec<f64>>, Vec<f64>) {
+    let tops = |t: usize, out: &[Option<Floor>]| -> Capped {
         let site = site(t);
         let beside = |a: &Above| overs[site.ways[a.way]].room.as_ref().is_some_and(|u| u.under.contains(&(t, true)));
         let n = site.s.len();
@@ -524,10 +534,10 @@ pub(crate) fn floors(
     };
     // The floor of an arm: the rule at the vertices of each room that it runs in, under the ways on top there; a
     // vertex of two rooms (on a seam's line) once, under the ways of both.
-    let arm_floor = |arm: usize, out: &[Option<Floor>]| -> Floor {
+    let arm_floor = |arm: usize, topped: &[Option<Capped>]| -> Floor {
         let mut samples: Vec<(f64, Vec<f64>, f64)> = Vec::new();
         for &(t, k) in &lanes_of[arm] {
-            let (caps, ceilings) = tops(t, out);
+            let (caps, ceilings) = topped[t].clone().expect("the tops of a room of the arm");
             for ((&s, cap), ceiling) in site(t).s.iter().zip(caps).zip(ceilings) {
                 samples.push((lane_metres(t, s)[k], cap, ceiling));
             }
@@ -552,10 +562,17 @@ pub(crate) fn floors(
     };
     let mut out: Vec<Option<Floor>> = vec![None; tubes.len()];
     let mut arm_floors: Vec<Option<Floor>> = vec![None; rooms.arms.len()];
+    // The tops of each room, read once, when its first arm comes: each room over it is solved by then.
+    let mut topped: Vec<Option<Capped>> = vec![None; tubes.len()];
     let (mut lowered, mut low, mut at_least, mut lows) = (0, 0, 0, Vec::new());
     let (mut tops_count, mut clashes, mut tube_clashes) = (0, Vec::new(), Vec::new());
     for &x in &order {
-        arm_floors[x] = Some(arm_floor(x, &out));
+        for &(t, _) in &lanes_of[x] {
+            if topped[t].is_none() {
+                topped[t] = Some(tops(t, &out));
+            }
+        }
+        arm_floors[x] = Some(arm_floor(x, &topped));
         let ready = |t: usize| out[t].is_none() && rooms.lanes[t].iter().all(|l| arm_floors[l.arm].is_some());
         let rooms_now: Vec<usize> = lanes_of[x].iter().map(|l| l.0).filter(|&t| ready(t)).collect();
         for t in rooms_now {
@@ -574,7 +591,7 @@ pub(crate) fn floors(
                 Floor { s: site.s.clone(), z: site.z.clone(), f: f.clone(), h: h.clone(), lanes: Vec::new() }
             } else {
                 let leasts: Vec<f64> = rooms.lanes[t].iter().map(|l| rule(&rooms.arms[l.arm]).1).collect();
-                lanes_floor(rooms, (t, !boxed[t]), (&site.s, &lanes, &leasts), tops(t, &out), input)
+                lanes_floor(rooms, (t, !boxed[t]), (&site.s, &lanes, &leasts), topped[t].clone().expect("tops"), input)
             };
             // Over the floor as it is (past an opening, the chain), per way the most metres that the shell of the crown
             // rises over its underside where it lies over the floor by more than the band, and the point there. The
@@ -660,7 +677,7 @@ fn lanes_floor(
     rooms: &Rooms,
     (r, round): (usize, bool),
     (s, lanes, leasts): (&[f64], &[LaneFloor], &[f64]),
-    under: (Vec<Vec<f64>>, Vec<f64>),
+    under: Capped,
     input: &Input,
 ) -> Floor {
     let design = &obc_trailview_parts::Rules::embedded().design;
@@ -674,7 +691,8 @@ fn lanes_floor(
         let outlines: Vec<Outline> = (places[i].iter().zip(lanes).zip(heights))
             .map(|((p, l), &h)| (p.off, p.half, l[0][i] - f[i], h, arch))
             .collect();
-        hold(round, rooms.tubes[r].half, design.spring, &outlines, segments)
+        let wall = (outlines[0].2).max(outlines[outlines.len() - 1].2) + design.kerb_m;
+        hold(round, rooms.tubes[r].half, design.spring, &outlines, segments, wall)
     };
     let mut heights: Vec<Vec<f64>> = lanes.iter().map(|l| l[1].clone()).collect();
     let h: Vec<f64> = (0..n)
