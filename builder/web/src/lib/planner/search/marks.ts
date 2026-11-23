@@ -58,13 +58,13 @@ function table(): Table<Mark> {
 export const PLANNER_WORDS = table();
 
 const STOP = new Set(marks.stop);
-/** The marks of a sentence of only search areas and opening times whose other words carry no meaning, which the page can
- * read with no model; undefined for any other sentence, such as one with "after" or "between". */
+/** The marks of a sentence of only search areas and opening times whose other words carry no meaning, one mark for each
+ * slot, which the page can read with no model; undefined for any other sentence, such as one with "after" or two days. */
 export function areasAndTimes(text: string): Mark[] | undefined {
     const found: Mark[] = [];
     for (const part of scan(text, PLANNER_WORDS)) {
         const words = fold(text.slice(part.from, part.to));
-        if (part.kind === 'value' && part.value.slot !== 'find') found.push(part.value);
+        if (part.kind === 'value' && part.value.slot !== 'find' && !found.some(mark => mark.slot === part.value.slot)) found.push(part.value);
         else if (part.kind !== 'glue' || !(STOP.has(words) || /^[,;.!?]$/.test(words))) return undefined;
     }
     return found.length ? found : undefined;

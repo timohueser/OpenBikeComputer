@@ -348,15 +348,17 @@ def build() -> None:
 MARKS = Path(__file__).with_name("marks.json")
 # Terms of two values in the lists of the field, and the category whose value the field gives
 # them. The query model reads them by the other words of the sentence.
+# The field reads a last word with a plural "s" or "es" as the word too, and a term that it
+# matches exactly wins: name a plural pair by its exact term.
 SHARED_MARKS = {
     "hill": "stretch",      # "hills on day 2" asks for climbs; a summit is "summit" or "peak"
     "lunch": "kind",        # "lunch" alone asks for food; "midday" is the middle of a day
-    "mornings": "day",      # each morning, not the start of one day
+    "mornings": "day",      # each morning, not the start of one day ("morning" + "s")
 }
-# Prepositions that change the meaning of the words after them: a sentence with one goes to the
-# query model, also when the field marks all its other words.
+# Words that change the meaning of the words around them: a sentence with one goes to the query
+# model, also when the field marks all its other words.
 MEANINGFUL = {"before", "after", "between", "until", "till", "from", "to", "since", "through",
-              "past", "beyond", "via", "near", "towards", "toward"}
+              "past", "beyond", "via", "near", "towards", "toward", "over", "around", "and", "or"}
 
 
 def marks_json() -> str:
@@ -386,16 +388,17 @@ def marks_json() -> str:
         "now": en("now"),
         "weekday": en("weekday"),
     }
-    owners: dict[str, set[str]] = defaultdict(set)
-    for category, by_value in values.items():
-        for term in {t for ts in by_value.values() for t in ts}:
-            owners[term].add(category)
-    for term, categories in sorted(owners.items()):
-        if len(categories) > 1 and SHARED_MARKS.get(term) not in categories:
-            raise ValueError(f"marks: {term!r} has a value in {sorted(categories)}; add it to SHARED_MARKS")
     for term, category in SHARED_MARKS.items():
         for other in set(values) - {category}:
             values[other] = {v: [t for t in ts if t != term] for v, ts in values[other].items()}
+    owners: dict[str, set[str]] = defaultdict(set)
+    for category, by_value in values.items():
+        for term in {t for ts in by_value.values() for t in ts}:
+            for form in (term, term + "s", term + "es"):
+                owners[form].add(category)
+    for term, categories in sorted(owners.items()):
+        if len(categories) > 1 and SHARED_MARKS.get(term) not in categories:
+            raise ValueError(f"marks: {term!r} has a value in {sorted(categories)}; add it to SHARED_MARKS")
     doc = {
         **values,
         "day_noun": en("day_noun")["day"],

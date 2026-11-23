@@ -24,6 +24,9 @@ describe('the words of the planner search', () => {
 
     it('reads with no model only a sentence of areas and times whose other words carry no meaning', () => {
         expect(areasAndTimes('on day 2, open now')?.map(mark => mark.label)).toEqual(['Day 2', 'Open now']);
-        for (const text of ['open tomorrow', 'open on day 2', 'after day 2', 'between day 1 and day 2', 'water on day 2']) expect(areasAndTimes(text), text).toBeUndefined();
+        for (const text of ['open tomorrow', 'open on day 2', 'after day 2', 'between day 1 and day 2', 'water on day 2', 'day 1 or day 2',
+            'tonight and tomorrow', 'over day 2', 'around day 2', 'middle of day 1']) expect(areasAndTimes(text), text).toBeUndefined();
+        // An exact term wins over a plural of another: each morning, not the start of a day.
+        expect(marked('mornings')).toEqual([['mornings', 'Start of every day', 'where']]);
     });
 });

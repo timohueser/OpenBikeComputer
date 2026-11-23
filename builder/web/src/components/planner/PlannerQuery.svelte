@@ -167,7 +167,7 @@
 </script>
 
 <div class="planner-query">
-    <SearchBar label="Search the route" slots={bar} {field} bind:open bind:text={typed} empty={!slots.find && !slots.where && !slots.radius && !slots.open}
+    <SearchBar label="Search the route" slots={bar} {field} bind:open bind:text={typed} empty={!slots.find && !slots.where && !slots.radius && !slots.open && !planned}
         onreset={id => set(resetSlot(slots, id as SlotId))} onclear={clear} onundo={() => set(cleared)}>
         {#snippet panel(id)}
             {#if id === 'find'}
