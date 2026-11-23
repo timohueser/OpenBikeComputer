@@ -19,6 +19,17 @@ export interface MapPoint {
     night?: number;
     /** The riding day of a route point. */
     day?: number;
+    /** The stop of a night that a lone place is: a small pin with its name, which lights with its stop. */
+    stop?: string;
+}
+
+/** A town of a night: the map draws an area over its places to sleep, with its name. */
+export interface MapTown {
+    id: string;
+    name: string;
+    places: Coordinate[];
+    /** The open town is larger and takes no pointer. */
+    open?: boolean;
 }
 
 /** One stretch of the drawn route: a leg, cut at day ends. */

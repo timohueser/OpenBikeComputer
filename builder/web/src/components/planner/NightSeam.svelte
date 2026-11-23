@@ -64,11 +64,16 @@
     const length = (km: number) => distanceIn(km * 1000).toFixed(1);
 
     const id = $props.id();
-    // The stop under the pointer or the focus, and the selected place of the open stop; no place selects its town.
-    let lit = $state<string | null>(null);
+    // The selected place of the open stop; no place selects its town.
     let picked = $state<string | null>(null);
     let sheltersOpen = $state(false);
     const open = $derived(rows.find(row => row.stop.id === nights.stopId));
+    // The list or the map opens a stop: it opens with its town selected and its shelters folded.
+    $effect.pre(() => {
+        void nights.stopId;
+        picked = null;
+        sheltersOpen = false;
+    });
     const selected = $derived(open && (open.lone ?? open.places.find(p => p.place.id === picked)));
     // A place of the open stop picked on the map selects it here too; a closed callout keeps the selection.
     $effect(() => {
@@ -85,7 +90,7 @@
         if (!pinned) return rows.find(row => row.stop.id === nights.around(night)?.stop.id);
         return rows.find(({ stop }) => stop.name === pinned.label || stop.sleep.some(p => p.place.id === pinned.placeId));
     });
-    const viewed = $derived(open ?? rows.find(row => row.stop.id === lit));
+    const viewed = $derived(open ?? rows.find(row => row.stop.id === nights.lit));
     // The row of the day end in view carries the mark.
     const at = $derived(viewed ?? current);
     $effect(() => {
@@ -95,11 +100,6 @@
 
     // The stop whose block closed, so its row takes the focus back.
     let returnTo: string | null = null;
-    function show(row: Row) {
-        lit = picked = null;
-        sheltersOpen = false;
-        nights.open(row.stop.id);
-    }
     function close(row: Row) {
         returnTo = row.stop.id;
         nights.open(null);
@@ -215,8 +215,8 @@
                                 </div>
                             </div>
                         {:else}
-                            <button type="button" class="row" class:lone class:at={row === at} onclick={() => show(row)}
-                                onmouseenter={() => lit = stop.id} onmouseleave={() => lit = null} onfocus={() => lit = stop.id} onblur={() => lit = null}
+                            <button type="button" class="row" class:lone class:at={row === at} onclick={() => nights.open(stop.id)}
+                                onmouseenter={() => nights.light(stop.id)} onmouseleave={() => nights.light(null)} onfocus={() => nights.light(stop.id)} onblur={() => nights.light(null)}
                                 {@attach node => { if (stop.id === returnTo) { returnTo = null; node.focus(); } }}
                                 aria-label={`${title}, ${lone ? near(row) : stopCounts(stop, kinds)}. Day ${night} ${duration(days[0].hours)}, day ${night + 1} ${duration(days[1].hours)}${stop === even ? '. Even days' : ''}`}>
                                 <span class="node"></span>

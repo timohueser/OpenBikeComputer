@@ -62,7 +62,7 @@
     import { placeSource } from '../../lib/planner/place-index';
     import { asPlace, category, sleepCategory, stayKind, stayOptions } from '../../lib/planner/search/presentation';
     import { applyQueryChanges, placeChange, placeCheck } from '../../lib/planner/search/actions';
-    import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
+    import type { MapPoint, MapSegment, MapTown } from '../../lib/planner/map-types';
     import { appearance } from '../../lib/theme.svelte';
     import { routingKey, type RoutingLine, type Surface } from '../../lib/planner/routing';
     import { surfaceLines } from '../../lib/planner/surface-data';
@@ -121,6 +121,7 @@
     // A night that opened, until the map shows it.
     let nightToShow = $state<number | null>(null);
     let stopId = $state<string | null>(null);
+    let litStop = $state<string | null>(null);
     const stopFinder = new StopFinder();
     let selectedId = $state<string | null>(null);
     // The point whose panel row lights up for a moment after it was added or pinned.
@@ -346,6 +347,8 @@
         get choosing() { return seamNight; },
         get stopId() { return openStop?.id ?? null; },
         get shownId() { return selectedId; },
+        get lit() { return litStop; },
+        light: id => litStop = id,
         found: nightStops,
         window: night => stopWindows[night] ?? null,
         kinds: night => nightKinds(trip, night),
@@ -365,8 +368,8 @@
         get campsites() { return campsites.length; },
         keepCampsites: () => keepCampsites(),
         // The chosen night is the one a place callout and a map pick end. Its seam takes the place of an open day.
-        choose: number => { choosingNight = nightToShow = number; stopId = null; clearSelection(); if (number !== null) { night = number; expandedDay = null; } },
-        open: id => { stopId = id; clearSelection(); const stop = seamNight !== null ? readyStops(seamNight).find(s => s.id === id) : undefined; if (stop) map?.fitCoordinates(suitable(stop, nights.kinds(seamNight!)).map(p => p.place.coordinate)); },
+        choose: number => { choosingNight = nightToShow = number; stopId = litStop = null; clearSelection(); if (number !== null) { night = number; expandedDay = null; } },
+        open: id => { stopId = id; litStop = null; clearSelection(); const stop = seamNight !== null ? readyStops(seamNight).find(s => s.id === id) : undefined; if (stop) map?.showStop(suitable(stop, nights.kinds(seamNight!)).map(p => p.place.coordinate)); },
         endHere: (night, stop) => endDayIn(night, stop),
         stay: (night, place) => stayAt(night, place),
         selectPlace: place => {
@@ -380,8 +383,13 @@
     // One stretch per leg and day, so the map can tell legs apart and colour days.
     const segments = $derived<MapSegment[]>(daySegments(view).map(segment => ({ ...segment, color: dayColor(segment.day, theme) })));
     const results = $derived((searchState.answer?.results ?? []).map(result => ({ place: asPlace(result) })));
-    const visiblePlaces = $derived(searching ? results.map(result => result.place) : seamNight === null ? []
-        : (openStop ? [openStop] : readyStops(seamNight)).flatMap(stop => suitable(stop, nights.kinds(seamNight)).map(p => p.place)));
+    // The map shows the stops of the open night as the list does: a town as an area and a lone place as a pin. The open stop
+    // is alone on the map, with a pin for each of its places.
+    const seamStops = $derived(seamNight === null ? [] : (openStop ? [openStop] : readyStops(seamNight))
+        .map(stop => ({ id: stop.id, name: stop.name, places: suitable(stop, nights.kinds(seamNight)).map(p => p.place) })));
+    const towns = $derived<MapTown[]>(seamStops.filter(stop => stop.places.length > 1)
+        .map(({ id, name, places }) => ({ id, name, places: places.map(place => place.coordinate), open: !!openStop })));
+    const visiblePlaces = $derived(searching ? results.map(result => result.place) : seamStops.filter(stop => openStop || stop.places.length === 1).flatMap(stop => stop.places));
     const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
     const shownPlace = $derived((mapPlace?.id === selectedId ? mapPlace : undefined) ?? visiblePlaces.find(p => p.id === selectedId));
     // List searches leave out details such as the website and phone; they load per place id, and null means search has none.
@@ -429,8 +437,9 @@
             fixed: p.kind === 'night',
         }));
         const places = [...new Map([...visiblePlaces, ...(selectedPlace ? [selectedPlace] : [])].map(place => [place.id, place])).values()];
+        const lone = new Map(openStop ? [] : seamStops.flatMap(stop => stop.places.length === 1 ? [[stop.places[0].id, stop.id] as const] : []));
         for (const p of places) {
-            if (p.id === selectedId || !pins.some(pin => pin.coordinate[0] === p.coordinate[0] && pin.coordinate[1] === p.coordinate[1])) pins.push({ ...p });
+            if (p.id === selectedId || !pins.some(pin => pin.coordinate[0] === p.coordinate[0] && pin.coordinate[1] === p.coordinate[1])) pins.push({ ...p, stop: lone.get(p.id) });
         }
         if (pending) pins.push({ id: 'pending', coordinate: pending, label: 'Overnight spot', kind: 'place', appearance: 'suggested' });
         // Day ends come last, so they stay on top of a candidate place at the same spot and can be dragged.
@@ -928,7 +937,7 @@
 
     function stopChoosing() {
         choosingNight = nightToShow = null;
-        stopId = null;
+        stopId = litStop = null;
     }
 
     function stayAt(sleepDay: number, place: Place) {
@@ -1314,6 +1323,7 @@
                     onVisibleRange={(range) => visibleRange = range}
                     onRiderMove={() => nightToShow = null} onMoveStart={() => fitWeek = false} onRouteHover={progress => mapHover = progress}
                     {week} lit={week ? litDay : null} onDayClick={showDay}
+                    {towns} {litStop} onStopHover={id => litStop = id} onStopOpen={id => nights.open(id)}
                 >
                     {#snippet popup()}
                         {#if calloutKind}

@@ -2,7 +2,7 @@
     import { onMount, tick, untrack, type Snippet } from "svelte";
     import * as maplibregl from "maplibre-gl";
     import type { GeoJSONSource } from "maplibre-gl";
-    import type { Feature, FeatureCollection, LineString } from "geojson";
+    import type { Feature, FeatureCollection, LineString, Polygon } from "geojson";
     import { ClosedAttribution, styleConfig, terrain, useMapProtocols } from "../../lib/planner/map-setup";
     import { config } from "../../lib/planner/map-data";
     import { regionPlace } from "../../lib/planner/config";
@@ -15,7 +15,8 @@
     import { FIT_LEVEL, LAST_LEVEL, opens, type TilePlace } from "../../lib/planner/place-groups";
     import type { Place } from "../../lib/planner/editor";
     import { coordinateAt, kilometres, nearestOnScreen, nearestProgress, routeSlice } from "../../lib/planner/geo";
-    import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
+    import type { Coordinate, MapPoint, MapSegment, MapTown } from "../../lib/planner/map-types";
+    import { grownHull, span } from "../../lib/planner/town-area";
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection, type RouteHint } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
     import { nightView } from "../../lib/planner/view-change";
@@ -30,8 +31,8 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         placeKinds = [], highlightedKind = null, mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        lines = [], onPick = null, part = null, week = null, lit = null,
-        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onMoveStart, onRouteHover, onDayClick, popup,
+        lines = [], onPick = null, part = null, week = null, lit = null, towns = [], litStop = null,
+        onStopHover, onStopOpen, onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onMoveStart, onRouteHover, onDayClick, popup,
     }: {
         /** Lines that take no edits, such as the days of two saved routes, each in its colour and width; a later line
          * draws on top. */
@@ -68,6 +69,12 @@
         week?: Week | null;
         /** The riding day that the strip lights. */
         lit?: number | null;
+        /** The towns of the open night, and the stop of that night that is lit: a town or the place of a lone pin. */
+        towns?: MapTown[]; litStop?: string | null;
+        /** The stop of the night under the pointer: a town by its area or its name, a lone place by its pin. */
+        onStopHover?: (id: string | null) => void;
+        /** A click on the area or the name of a town. */
+        onStopOpen?: (id: string) => void;
         center?: Coordinate; zoom?: number;
         /** A click on no point or line; null outside the region. */
         onEmptyClick?: (coordinate: Coordinate | null) => void;
@@ -100,6 +107,8 @@
     const controlsWidth = 68;
     const fitPadding = { top: 60, right: 90, bottom: 40, left: 40 };
     const calloutOffset = 20;
+    // How far the area of a town reaches beyond its places, in px: the open town holds a pin for each place.
+    const townGrowth = 15, openTownGrowth = 34;
 
     let container: HTMLDivElement;
     let frameWidth = $state(0);
@@ -125,6 +134,8 @@
     // Raw: a deep proxy of the hit would make each read of its coordinate in the route search a proxy call.
     let hover = $state.raw<LineHit | null>(null);
     let overOverlay = $state(false);
+    let overStop = $state<string | null>(null);
+    const townNames = new Map<string, maplibregl.Marker>();
     let insertDot: maplibregl.Marker;
     let hoverDot: maplibregl.Marker;
     let press: { hit: LineHit; start: maplibregl.Point; moved: boolean } | null = null;
@@ -193,6 +204,13 @@
         fitBounds(region, 13, motionDuration(), preserveSearch);
     }
 
+    /** Fits the places of a stop that opens, with room for the area of a town. */
+    export function showStop(places: Coordinate[]) {
+        if (!map || !places.length) return;
+        wholeRoute = false;
+        fitBounds(places, 13, motionDuration(), false, openTownGrowth);
+    }
+
     /** Shows the end of a day and the places of the towns listed for its night, nearest first, as `nightView` says. */
     export function showNight(spot: Coordinate, towns: Coordinate[][]) {
         if (!map) return;
@@ -253,8 +271,9 @@
     const boundsOf = (region: Coordinate[]) => region.reduce((bounds, coordinate) => bounds.extend(coordinate), new maplibregl.LngLatBounds());
     const padding = () => ({ ...fitPadding, bottom: fitPadding.bottom + bottomInset });
 
-    function fitBounds(region: Coordinate[], maxZoom: number, duration: number, preserveSearch = false) {
-        map!.fitBounds(boundsOf(region), { padding: padding(), maxZoom, duration }, { preserveSearch });
+    function fitBounds(region: Coordinate[], maxZoom: number, duration: number, preserveSearch = false, room = 0) {
+        const { top, right, bottom, left } = padding();
+        map!.fitBounds(boundsOf(region), { padding: { top: top + room, right: right + room, bottom: bottom + room, left: left + room }, maxZoom, duration }, { preserveSearch });
     }
 
     function motionDuration() {
@@ -297,6 +316,61 @@
         if (fittedInitialRoute || !map || coordinates.length < 2) return;
         fittedInitialRoute = true;
         fitRoute();
+    }
+
+    /** The areas of the towns, under the route. A lit area is warm with a solid edge; the others have a dashed edge. */
+    function installTowns() {
+        if (!map || map.getSource("towns")) return;
+        const dark = theme === "dark", ink = dark ? "#f2efe3" : "#1c1b14";
+        const warm: maplibregl.ExpressionSpecification = ["get", "lit"], round = { "line-cap": "round", "line-join": "round" } as const;
+        map.addSource("towns", { type: "geojson", data: lineData([]) });
+        map.addLayer({ id: "towns-fill", type: "fill", source: "towns", paint: { "fill-color": ["case", warm, dark ? "#5a4622" : "#fff2d1", dark ? "#201f17" : "#ffffff"], "fill-opacity": ["case", warm, .82, .32] } });
+        // MapLibre measures a dash in line widths, and a round cap adds half a width to each end.
+        map.addLayer({ id: "towns-edge", type: "line", source: "towns", filter: ["!", warm], layout: round, paint: { "line-color": ink, "line-opacity": .75, "line-width": 1.5, "line-dasharray": [2.3, 3.7] } });
+        map.addLayer({ id: "towns-edge-lit", type: "line", source: "towns", filter: warm, layout: round, paint: { "line-color": ink, "line-width": 2 } });
+    }
+
+    /** Draws each town as the hull of its places on the screen, grown by a fixed number of pixels, so the areas are drawn
+     * again at each zoom. The name stands beside the middle of the area, on the side with more room. */
+    function drawTowns() {
+        const source = map?.getSource("towns") as GeoJSONSource | undefined;
+        if (!map || !source) return;
+        for (const [id, marker] of townNames) if (!towns.some(town => town.id === id)) { marker.remove(); townNames.delete(id); }
+        const room = container.clientWidth - controlsWidth, features: Feature<Polygon>[] = [];
+        for (const { id, name, places, open = false } of towns) {
+            const ring = grownHull(places.map(place => map!.project(place)), open ? openTownGrowth : townGrowth);
+            const ys = ring.map(point => point.y), middle = (Math.min(...ys) + Math.max(...ys)) / 2, [west, east] = span(ring, middle), left = west > room - east;
+            const outline = ring.map(({ x, y }) => map!.unproject([x, y]).toArray());
+            features.push({ type: "Feature", properties: { id, open, lit: open || id === litStop }, geometry: { type: "Polygon", coordinates: [[...outline, outline[0]]] } });
+            let marker = townNames.get(id);
+            if (!marker) {
+                // The list holds each stop for the keyboard and for a screen reader.
+                const element = Object.assign(document.createElement("div"), { className: "planner-map-town", ariaHidden: "true" });
+                element.dataset.stop = id;
+                townNames.set(id, marker = new maplibregl.Marker({ element, anchor: "left" }).setLngLat([0, 0]).addTo(map));
+            }
+            const element = marker.getElement();
+            element.textContent = name;
+            // The list of the open town holds its places.
+            if (!open) element.append(Object.assign(document.createElement("em"), { textContent: String(places.length) }));
+            element.classList.toggle("left", left);
+            element.classList.toggle("lit", !open && id === litStop);
+            element.classList.toggle("open", open);
+            marker.setLngLat(map.unproject([left ? west - 5 : east + 5, middle]));
+        }
+        source.setData({ type: "FeatureCollection", features });
+    }
+
+    /** The town whose area is under a point of the map. The area takes the pointer from the line of the route under it. */
+    function townAt(point: maplibregl.Point): string | null {
+        return map?.getLayer("towns-fill") ? map.queryRenderedFeatures(point, { layers: ["towns-fill"], filter: ["!", ["get", "open"]] })[0]?.properties.id ?? null : null;
+    }
+
+    /** The stop of a night under the pointer: a town by its area or its name, a lone place by its pin. */
+    function stopAt(event: maplibregl.MapMouseEvent): string | null {
+        const target = event.originalEvent.target;
+        if (drawing || picking || !(target instanceof Element)) return null;
+        return target === map!.getCanvas() ? townAt(event.point) : target.closest<HTMLElement>("[data-stop]")?.dataset.stop ?? null;
     }
 
     // The look of each riding day that is set as a feature state of `trip`; a day with none is in its colour.
@@ -363,7 +437,7 @@
 
     /** The nearest point on a leg within reach of a screen position. */
     function lineHit(point: maplibregl.Point): LineHit | null {
-        if (!map || !showRoute) return null;
+        if (!map || !showRoute || townAt(point)) return null;
         const best = nearestOnScreen(segments, coordinate => map!.project(coordinate), at => map!.unproject([at.x, at.y]).toArray(), point, lineReach, segment => quiet(segment.day));
         if (!best) return null;
         const at = map.unproject([best.x, best.y]);
@@ -435,7 +509,8 @@
         } else {
             const onMap = event.originalEvent.target === map.getCanvas();
             hover = onMap && !dragging && !draggingPin && !drawing && !picking ? lineHit(event.point) : null;
-            overOverlay = overlayLayer?.hover(onMap && !hover && !dragging && !draggingPin && !drawing && !picking ? event : undefined) ?? false;
+            overStop = dragging || draggingPin ? null : stopAt(event);
+            overOverlay = overlayLayer?.hover(onMap && !hover && !overStop && !dragging && !draggingPin && !drawing && !picking ? event : undefined) ?? false;
         }
     }
 
@@ -494,7 +569,7 @@
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
             map.dragRotate.disable();
             map.touchZoomRotate.disableRotation();
-            map.on("style.load", () => { ready = true; installRoute(); syncTerrainAndOverlays(); syncDataLayer(); });
+            map.on("style.load", () => { ready = true; installTowns(); installRoute(); syncTerrainAndOverlays(); syncDataLayer(); });
             map.once("load", () => { basemapComplete = true; syncTerrainAndOverlays(); });
             map.setMissingStyleImageResolver((id) => {
                 const icon = mapIcon(id);
@@ -526,6 +601,8 @@
                 if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target))) return;
                 const at = place(event.lngLat);
                 if (onPick) { if (at) onPick(at, [event.originalEvent.clientX, event.originalEvent.clientY]); return; }
+                const stop = stopAt(event);
+                if (stop) { onStopOpen?.(stop); return; }
                 const hit = pickMode ? null : lineHit(event.point);
                 const overlay = pickMode ? null : overlayLayer?.hit(event);
                 overlaySelection = null;
@@ -552,10 +629,12 @@
             map.on("mousemove", trackPointer);
             map.on("mouseup", releaseMap);
             map.on("mouseout", () => {
-                if (!press) hover = null; overOverlay = false; overlayLayer?.hover();
+                if (!press) hover = null; overOverlay = false; overStop = null; overlayLayer?.hover();
             });
             map.on("movestart", (event) => { onMoveStart?.(); if (event.originalEvent) { wholeRoute = false; onRiderMove?.(); } overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
+            map.on("zoom", drawTowns);
+            map.on("moveend", drawTowns);
             map.on("idle", () => loading = false);
             map.on("dataloading", () => loading = true);
             map.on("movestart", () => loading = true);
@@ -586,6 +665,7 @@
             observer.disconnect();
             clearTimeout(refit);
             pins.forEach(({ marker }) => marker.remove());
+            townNames.forEach(marker => marker.remove());
             insertDot.remove();
             hoverDot.remove();
             calloutPopup?.remove();
@@ -625,6 +705,8 @@
             map!.setFeatureState({ source: "trip", id: i + 1 }, { look });
         });
     });
+    $effect(() => { void [towns, litStop]; if (ready) untrack(drawTowns); });
+    $effect(() => { const stop = overStop; untrack(() => onStopHover?.(stop)); });
     $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { void showRoute; if (ready) syncRouteVisibility(); });
@@ -692,7 +774,7 @@
         setSketch([]);
     });
     $effect(() => {
-        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || picking ? "crosshair" : hover || overOverlay ? "pointer" : "grab";
+        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || picking ? "crosshair" : hover || overOverlay || overStop ? "pointer" : "grab";
     });
 
     function markerIcon(path: string) {
@@ -744,7 +826,7 @@
             const button = document.createElement("button");
             button.type = 'button';
             button.draggable = false;
-            button.className = `planner-map-pin ${point.kind} ${point.appearance ?? ""}${draggable ? " draggable" : ""}`;
+            button.className = `planner-map-pin ${point.kind} ${point.appearance ?? ""}${point.stop ? " lone" : ""}${draggable ? " draggable" : ""}`;
             if (point.color) button.style.setProperty("--pin-color", point.color);
             button.setAttribute("aria-label", point.kind === "start" ? `Start: ${point.label}` : point.kind === "finish" ? `Finish: ${point.label}` : point.label);
             const title = dayEnd ? `${point.appearance === "moved" ? "Day end you moved" : "Day end suggested"} · drag along the route` : point.label + (draggable ? " · drag to move" : "");
@@ -756,6 +838,10 @@
                 button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" draggable="false">${endpointIcons[point.kind]}</svg>`;
             } else {
                 button.textContent = point.markerLabel ?? (point.kind === "night" ? String(nightNumber) : "");
+            }
+            if (point.stop) {
+                button.dataset.stop = point.stop;
+                button.append(Object.assign(document.createElement("span"), { textContent: point.label }));
             }
             button.addEventListener("click", (event) => {
                 event.stopPropagation();
@@ -795,7 +881,7 @@
             // The selected pin stays shown, so its callout never points at a hidden pin.
             const { id } = point, look = id === selectedId ? "shown" : pinLook(week, point);
             button.classList.toggle("selected", id === selectedId);
-            button.classList.toggle('highlighted', id === hoveredId);
+            button.classList.toggle('highlighted', id === hoveredId || (!!point.stop && point.stop === litStop));
             button.classList.toggle("matched", highlightedPlaceIds.includes(id));
             button.setAttribute("aria-pressed", String(id === selectedId));
             button.classList.toggle("dot", look === "dot");
@@ -902,6 +988,19 @@
     :global(.planner-map-pin.matched) { border: 3px solid var(--amber, #f4a81d); }
     :global(.planner-map-pin.selected) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
     :global(.planner-map-pin.highlighted) { outline: 3px solid var(--ink, #1c1b14); outline-offset: 3px; }
+    /* A lone place of a night is a small pin with its name in the style of a map label. Lit, both are ink. */
+    :global(.planner-map-pin.lone) { width: 18px; height: 18px; border: 1.5px solid var(--ink-soft); box-shadow: none; }
+    :global(.planner-map-pin.lone svg) { width: 11px; height: 11px; }
+    :global(.planner-map-pin.lone span) { position: absolute; left: 100%; margin-left: 1px; padding: 1px 5px; border-radius: 6px; color: var(--ink); font: 500 12.5px var(--sans); white-space: nowrap; paint-order: stroke; -webkit-text-stroke: 3.5px color-mix(in srgb, var(--panel) 92%, transparent); }
+    :global(.planner-map-pin.lone.highlighted) { border-color: var(--ink); background: var(--ink); color: var(--panel); }
+    :global(.planner-map-pin.lone.highlighted:not(:focus-visible)) { outline: 0; }
+    :global(.planner-map-pin.lone.highlighted span), :global(.planner-map-town.lit) { background: var(--ink); color: var(--panel); -webkit-text-stroke: 0; box-shadow: 0 2px 8px rgba(28, 27, 20, .25); }
+    /* The name of a town beside its area. The padding is that of the pill of the lit name, so the name stays in place. */
+    :global(.planner-map-town) { padding: 2px 9px; border-radius: 6px; color: var(--ink); font: 700 14px var(--sans); white-space: nowrap; paint-order: stroke; -webkit-text-stroke: 4px color-mix(in srgb, var(--panel) 92%, transparent); cursor: pointer; }
+    :global(.planner-map-town.left) { translate: -100%; }
+    :global(.planner-map-town.open) { pointer-events: none; }
+    :global(.planner-map-town em) { margin-left: 5px; color: var(--ink-soft); font: 500 12.5px var(--sans); }
+    :global(.planner-map-town.lit em) { color: color-mix(in srgb, var(--panel) 75%, transparent); }
     :global(.planner-map-pin:hover) { filter: brightness(1.08); }
     :global(.planner-map-pin:focus-visible) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
     :global(.planner-map-note) { padding: 2px 8px; border-radius: 6px; color: var(--ink, #1c1b14); background: var(--panel, #fff); font: 600 12px/20px var(--sans, sans-serif); font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }

@@ -77,6 +77,9 @@ export interface NightChoices {
     stopId: string | null;
     /** The id of the place or point that the map shows. */
     shownId: string | null;
+    /** The stop under the pointer or the focus, in the list or on the map. */
+    lit: string | null;
+    light(id: string | null): void;
     found(night: number): NightStops | undefined;
     window(night: number): [number, number] | null;
     /** The kinds of place to sleep of a night (`nightKinds`). */

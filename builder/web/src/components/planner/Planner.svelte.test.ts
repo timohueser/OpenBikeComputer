@@ -143,7 +143,7 @@ describe('route stop handles', () => {
 });
 
 function nightChoices(choices: Partial<NightChoices> = {}): NightChoices {
-    return { choosing: null, stopId: null, shownId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined,
+    return { choosing: null, stopId: null, shownId: null, lit: null, light: vi.fn(), kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined,
         campsites: 0, keepCampsites: vi.fn(),
         choose: vi.fn(), open: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
         selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), setKinds: vi.fn(), release: vi.fn(), ...choices };
@@ -189,7 +189,7 @@ describe('planner day views', () => {
         const stops = [town('Laufen', total * .2), { ...town('Olten', total * .3), sleep: [sleep('Olten', 'Hotel Olten', 'hotel', total * .3)] }, bern];
         const nights: NightChoices = $state(nightChoices({ choosing: 1, campsites: 2, kinds: () => ['camp'], around: () => proposal(bern, ['camp']),
             found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open: id => { nights.stopId = id; },
-            choose: night => { nights.choosing = night; } }));
+            light: id => { nights.lit = id; }, choose: night => { nights.choosing = night; } }));
         props.nights = nights;
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await settle();
@@ -221,6 +221,10 @@ describe('planner day views', () => {
             laufen.dispatchEvent(new Event(event === 'focus' ? 'blur' : 'mouseleave')); await settle();
             expect([distance(), seam().querySelector('.at')]).toEqual([even, town2]);
         }
+        // The stop under the pointer on the map is in view as well.
+        nights.lit = 'Laufen'; await settle();
+        expect([distance(), seam().querySelector('.at')]).toEqual([laufen.querySelector('.fig b')?.firstChild?.textContent, laufen]);
+        nights.lit = null; await settle();
 
         // A stop opens in place, and Escape closes it first.
         town2.click(); await settle();
@@ -230,6 +234,13 @@ describe('planner day views', () => {
         option('Anywhere in Bern').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await settle();
         expect(nights.stopId).toBeNull();
         expect(document.activeElement).toBe(stopRows()[1]);
+        // The map opens a stop too; a stop opens with its town selected.
+        nights.stopId = 'Bern'; await settle();
+        option('Eichholz').click(); await settle();
+        nights.stopId = null; await settle();
+        nights.stopId = 'Bern'; await settle();
+        expect(option('Anywhere in Bern').checked).toBe(true);
+        nights.stopId = null; await settle();
 
         button('All days').click();
         await settle();

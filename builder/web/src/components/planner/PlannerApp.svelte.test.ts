@@ -771,6 +771,39 @@ describe('planner app transitions', () => {
         expect(document.activeElement).toBe(document.querySelector('.night-seam button.row'));
     });
 
+    it('shows the stops of an open night on the map as the list does: a town as an area, a lone place as a pin, lit with their rows', async () => {
+        // A town of two places further along the route, beside the lone place.
+        const answer = fetch;
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+            const response = await answer(url, init);
+            if (!JSON.parse(String(init.body)).request?.what?.includes('sleep')) return response;
+            const { results, ...rest } = await response.json(), position = { along: results[0].position.along * 1.4, distance: .1 };
+            const inFar = (name: string, kind: string, [lon, lat]: Coordinate) => ({ ...results[0], source: `poi-${name}`, name, kind, city: 'Far town', lon, lat, position });
+            return { ok: true, json: async () => ({ ...rest, results: [...results, inFar('Far camp', 'campsite', coordinateAt(routeLine, .35)), inFar('Far inn', 'hotel', coordinateAt(routeLine, .36))] }) };
+        }));
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        const rows = () => [...document.querySelectorAll<HTMLButtonElement>('.night-seam button.row')];
+        const town = () => button('Map town: Far town'), lone = () => button(`Map place: ${tilePlace.label}`);
+        const pins = () => [...document.querySelectorAll('[aria-label^="Map place"]')].map(pin => pin.textContent);
+        await vi.waitFor(() => expect(rows()).toHaveLength(2));
+        // The places of a town have no pins.
+        expect([pins(), lone().classList.contains('lone'), town().textContent]).toEqual([[tilePlace.label], true, '2']);
+        for (const [row, mark] of [[rows()[0], lone], [rows()[1], town]] as const) {
+            row.dispatchEvent(new Event('mouseenter')); await tick();
+            expect(mark().classList.contains('lit')).toBe(true);
+            row.dispatchEvent(new Event('mouseleave')); await tick();
+            expect(mark().classList.contains('lit')).toBe(false);
+            mark().dispatchEvent(new Event('mouseenter')); await tick();
+            expect(document.querySelector('.night-seam .at')).toBe(row);
+            mark().dispatchEvent(new Event('mouseleave')); await tick();
+        }
+        // A click on the area opens the town: it is alone on the map, with a pin for each of its places.
+        town().click(); await tick();
+        expect(document.querySelector('.night-seam [role="radiogroup"]')?.textContent).toContain('Anywhere in Far town');
+        expect([town().classList.contains('open'), pins()]).toEqual([true, ['Far camp', 'Far inn']]);
+    });
+
     it('ends the day at the place of an open stop, lights the night in the day list, and Undo gives the suggestion back', async () => {
         await startApp();
         button('Choose night 1').click(); await tick();
