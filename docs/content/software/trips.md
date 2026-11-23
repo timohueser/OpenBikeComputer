@@ -65,8 +65,9 @@ In the web planner, one row above the stops holds the route shape, the day count
 date. "There and back" returns the route through the same points, so the rider plans only the way
 out. "+" makes a route a multi-day trip, and "−" from the lowest count undoes it. With a start date,
 each day shows its date. The stay kinds are in the route preferences.
-In the list, a day is a card in the colour of its line on the map:
-where it starts and ends, its distance, climb and riding time, and below them its night. The elevation profile is the timeline: days by colour and
+In the list, a day is a card. Its number has the colour of its line on the
+map. The card shows where the day starts and ends, its distance, climb and riding time, its elevation
+profile, and below them its night. The elevation profile is the timeline: days by colour and
 night markers. From 15 riding days, a strip of all days frames one week: the list, profile, map and
 town search show only that week; the map draws the other days thin and grey. A trip has at most 64
 riding days. Above 32, the device gets two trips: "Alps 1/2" and "Alps 2/2".
