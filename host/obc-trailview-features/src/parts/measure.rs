@@ -161,13 +161,23 @@ enum Read {
 /// The reads in one cell, each with its world point.
 type Reads = Vec<(Read, [f64; 2])>;
 
+/// The points that ask k reads: its stations, then its row.
+fn reads(k: usize, a: &Ask) -> impl Iterator<Item = (Read, [f64; 2])> + '_ {
+    let stations = (a.stations.iter().enumerate())
+        .flat_map(move |(i, st)| st.iter().enumerate().map(move |(w, &p)| (Read::Station(k, i, w), p)));
+    let left = left_of(a.dir);
+    let row = (0..=(a.right + a.left))
+        .map(move |j| (Read::Row(k, j as usize), offset(a.p, left, f64::from(j) - f64::from(a.right))));
+    stations.chain(row)
+}
+
 /// What a cell answers: the ground at its points, and per ask that reads in it the decks over its row, the rooms of the
 /// ways on top of its chain and whether a building holds a station of its centre line in the cell.
 type Answers = (Vec<(Read, Option<f64>)>, Vec<(usize, Vec<(f64, f64)>, Vec<f64>, bool)>);
 
 /// The sites of the asks. Each cell that holds a point to read is built once: a job takes the cells of one zoom-13
 /// tile, one at a time; as many jobs run at once as `memory` holds.
-pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize) -> (Vec<Site>, usize) {
+pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize) -> Vec<Site> {
     let z13 = |c: u32, r: u32| input.tiles.tiles.get(&(MAX_ZOOM, c, r));
     let id = |c: u32, r: u32, index: u32| z13(c, r).and_then(|t: &Tile| t.id(index));
     let mut sites: Vec<Site> = (asks.iter())
@@ -179,19 +189,9 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
         .collect();
     // The reads by cell, the cells by zoom-13 tile.
     let mut by_cell: BTreeMap<CellKey, Reads> = BTreeMap::new();
-    for (k, a) in asks.iter().enumerate() {
-        for (i, st) in a.stations.iter().enumerate() {
-            for (w, &p) in st.iter().enumerate() {
-                by_cell.entry(key_of(frame(p))).or_default().push((Read::Station(k, i, w), p));
-            }
-        }
-        let left = left_of(a.dir);
-        for j in 0..=(a.right + a.left) {
-            let p = offset(a.p, left, f64::from(j) - f64::from(a.right));
-            by_cell.entry(key_of(frame(p))).or_default().push((Read::Row(k, j as usize), p));
-        }
+    for (r, p) in asks.iter().enumerate().flat_map(|(k, a)| reads(k, a)) {
+        by_cell.entry(key_of(frame(p))).or_default().push((r, p));
     }
-    let cells = by_cell.len();
     let shift = obc_ground_plan::frame::CELL_ZOOM - u32::from(MAX_ZOOM);
     let mut jobs: BTreeMap<(u32, u32), Vec<(CellKey, Reads)>> = BTreeMap::new();
     for (key, reads) in by_cell {
@@ -262,11 +262,11 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
         site.decks.dedup();
         site.rooms.sort_by(f64::total_cmp);
     }
-    (sites, cells)
+    sites
 }
 
 /// The sites of the asks, each measured once for one ask and the open ends that its cells hold: as `sites` gives them,
-/// as the rooms are made again with the same openings; and the cells of all the asks, as `sites` counts them.
+/// as the rooms are made again with the same openings; and the cells of all the asks.
 #[derive(Default)]
 pub(crate) struct Memo(std::cell::RefCell<Vec<(Ask, Vec<OpenEnd>, Site)>>);
 
@@ -274,10 +274,7 @@ impl Memo {
     pub fn sites(&self, asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize) -> (Vec<Site>, usize) {
         // The cells of an ask.
         let cells_of = |a: &Ask| -> Vec<CellKey> {
-            let left = left_of(a.dir);
-            let rows = (0..=(a.right + a.left)).map(|j| offset(a.p, left, f64::from(j) - f64::from(a.right)));
-            let mut keys: Vec<CellKey> =
-                a.stations.iter().flatten().copied().chain(rows).map(|p| key_of(frame(p))).collect();
+            let mut keys: Vec<CellKey> = reads(0, a).map(|(_, p)| key_of(frame(p))).collect();
             keys.sort_unstable();
             keys.dedup();
             keys
@@ -297,7 +294,7 @@ impl Memo {
             memo.iter().position(|(x, m, _)| *x == asks[i] && *m == near[i])
         };
         let missing: Vec<usize> = (0..asks.len()).filter(|&i| known(&memo, i).is_none()).collect();
-        let (measured, _) = sites(&missing.iter().map(|&i| asks[i].clone()).collect::<Vec<_>>(), input, ends, memory);
+        let measured = sites(&missing.iter().map(|&i| asks[i].clone()).collect::<Vec<_>>(), input, ends, memory);
         for (&i, site) in missing.iter().zip(measured) {
             memo.push((asks[i].clone(), near[i].clone(), site));
         }

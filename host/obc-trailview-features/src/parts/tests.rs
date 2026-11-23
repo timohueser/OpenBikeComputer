@@ -355,6 +355,14 @@ fn every_road_class_has_one_group() {
     }
 }
 
+/// A chord of a tunnel of one way, at most `CHORD_M` and a vertex gap long, lies within the tiles' buffer, so the
+/// read-back finds the chords at its vertices and a head of one hole at its end whole (`Faults::add`).
+#[test]
+fn a_chord_of_one_way_is_shorter_than_the_tiles_buffer() {
+    let rules = Ladder::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))));
+    assert!(crate::roads::CHORD_M + rules.unwrap().bake.vertex_gap_m < crate::tiles::BUFFER_M);
+}
+
 /// The tube records in metres east, west first: the east of both vertices, their floors and the record's height.
 fn chords(placed: &Placed) -> Vec<([f64; 2], [f64; 2], f64)> {
     let mut out: Vec<([f64; 2], [f64; 2], f64)> = (placed.features.iter())

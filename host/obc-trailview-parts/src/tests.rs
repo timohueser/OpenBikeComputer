@@ -481,7 +481,8 @@ fn open_edges(mesh: &Mesh) -> (Edges, Edges) {
 }
 
 /// The open edges of the parts of a tube that do not lie at the foot of an end, and the edges that more than two faces
-/// share but at the face that closes a shell: there the inside of the tube goes on past it.
+/// share but at the face that closes a shell: there the inside of the tube goes on past it. Each face's polygon is cut
+/// whole (`Mesh::unfilled`).
 fn not_closed(ends: &[End], chords: &[Chord]) -> (Edges, Edges) {
     let rules = Rules::embedded();
     let net = Net::new(ends, chords, rules);
@@ -506,6 +507,7 @@ fn not_closed(ends: &[End], chords: &[Chord]) -> (Edges, Edges) {
         })
     };
     let mesh = meshes([0.0, 0.0, 1.07e9, 1.07e9], ends, chords, rules);
+    assert_eq!(mesh.unfilled, 0, "faces that the ear clip does not cut whole");
     let (open, crowded) = open_edges(&mesh);
     (
         open.into_iter().filter(|e| !(at_foot(e[0]) && at_foot(e[1]))).collect(),
