@@ -777,7 +777,8 @@ every lane there is lower by as much, each to its least height, and the room is 
 at least as high as its lowered lanes need. At a seam's line it is as high as the rooms behind it need. A lone tube's
 chord takes the lesser height of its two vertices. A room over another in a stretch of over and under is a way on top
 of it, its underside its floor less `slab_m`: by height it makes only the section of the room under lower, by the
-floor the floor too. The bake solves the rooms from the highest down.
+floor the floor too. The bake solves the arms from the highest down: an arm after each arm of each room over a room
+that it runs in, and a room's floor with its last arm's.
 
 - The curve of a way with heights, not of the kind `gallery`, lies over a vertex of the tube where the vertex is
   within its reach (its outer half-width + `half` + `shell_m`; at a vertex that took an end of the way's reach,
