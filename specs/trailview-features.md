@@ -611,12 +611,12 @@ Openings on one frame line share one head, a hole per opening, of rooms that dra
 - Two openings of any kinds within `pair_max_m` and `pair_max_deg` whose rooms lie at one level and less than two
   `frame_m` and two `shell_m` apart across.
 
-`JOINT_MAX_M` (`parts`) is 29 m: `BUFFER_M` less the longest chord (10 m) and a metre for the rounding and the reach
-of the builder. So the tile that owns a chord of a hole holds its record, and the tile that owns a record holds the
-chords of its holes. The bake reads each head and seam of rooms that draw back as a tile holds it, with the builder's
-`read_back` of `host/obc-trailview-parts`. A joint that is not whole, or has a hole more than `JOINT_MAX_M` from its
-point, is made again (`joints_not_whole`, `joints_too_wide`): the arms of a room of lanes there run beside no other; of
-a room alone, the opening has a head of its own, and where that head is its own, the room does not draw.
+`JOINT_MAX_M` (`parts`) is 29 m, well under `BUFFER_M` (40 m). The bake reads the records of rooms that draw back as
+the zoom-13 tiles of its region hold them, each tile with its buffer, with the builder's `read_back` of
+`host/obc-trailview-parts`: each record in the tile that owns its point, each chord in the tile that owns its first
+vertex. Where the builder does not find a hole, or a chord does not close, the joint is made again
+(`joints_not_whole`): the arms of a room of lanes there run beside no other; of a room alone, the opening has a head of
+its own, and where that head is its own, or a chord does not close, the room does not draw.
 
 The openings that these links join lie on the frame line of their group's far opening (see Rooms): the others move in
 along their ways to it. Where a way does not reach that line within `pair_max_m`, half its chain and its own way, its

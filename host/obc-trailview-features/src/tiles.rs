@@ -76,7 +76,6 @@ pub struct Quantized {
 }
 
 /// A feature of a tile, as `decode` gives it and `encode` takes it.
-#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Feature {
     pub kind: String,
@@ -293,7 +292,6 @@ pub fn encode(features: &[Feature]) -> Vec<u8> {
 }
 
 /// The features of a tile, through the reader of `obc-ground-plan`.
-#[cfg(test)]
 pub fn decode(data: &[u8]) -> Result<Vec<Feature>, String> {
     use obc_ground_plan::tile::{self, Geometry as Read};
     let features = tile::decode(data).map_err(|e| e.to_string())?;
@@ -354,6 +352,11 @@ impl Tiles {
         let [west, south, east, north] = bounds;
         let ([x0, y0], [x1, y1]) = (world(west, north), world(east, south));
         Tiles { region: [x0, y0, x1, y1], tiles: HashMap::new(), pads: HashMap::new() }
+    }
+
+    /// No tiles, of the same region.
+    pub fn empty(&self) -> Self {
+        Tiles { region: self.region, tiles: HashMap::new(), pads: HashMap::new() }
     }
 
     /// Whether the region holds a world point.

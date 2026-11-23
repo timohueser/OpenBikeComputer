@@ -802,47 +802,15 @@ fn a_seams_record_is_whole() {
     }
 }
 
-/// The records that the builder does not find whole as the tiles hold them: per tile of the zoom-13 tiles of `bounds`,
-/// each record whose point it owns that the builder does not find whole, and each chord whose `a` it owns that does
-/// not close.
+/// The records and chords that the builder does not find whole as the zoom-13 tiles of `bounds` hold them (`not_whole`):
+/// each chord that does not close, and each record of whose holes it finds some, not all, so their chords draw with no
+/// head.
 fn not_whole_in_tiles(placed: &Placed, bounds: [f64; 4]) -> Vec<String> {
-    use obc_trailview_parts::{read_back, Chord, End, Rules};
-    let mut tiles = Tiles::new(bounds);
-    for (kind, tags, part) in &placed.features {
-        let geometry = if part.points.len() == 1 { Geometry::Point } else { Geometry::Line };
-        tiles.add(MAX_ZOOM, kind, geometry, tags, std::slice::from_ref(part), None);
-    }
-    let (rules, side, unit) = (Rules::embedded(), f64::from(crate::tiles::EXTENT), 8.0);
-    let mut out = Vec::new();
-    for (&(_, col, row), tile) in &tiles.tiles {
-        let (x0, y0) = (f64::from(col) * side, f64::from(row) * side);
-        let world = |xy: [i64; 2]| [(x0 + xy[0] as f64) * unit, (y0 + xy[1] as f64) * unit];
-        let owns = |p: [f64; 2]| {
-            let q = [p[0] / unit - x0, p[1] / unit - y0];
-            (0.0..side).contains(&q[0]) && (0.0..side).contains(&q[1])
-        };
-        let (mut ends, mut chords) = (Vec::new(), Vec::new());
-        for f in decode(&tile.bytes()).unwrap() {
-            let (xy, z) = (&f.parts[0].xy, f.parts[0].z.clone().unwrap());
-            if f.kind == "tunnel-end" {
-                ends.push(End::from_tags(world(xy[0]), z[0], &f.tags, rules).unwrap());
-            } else if f.kind == "tunnel-tube" {
-                let (a, b) = (world(xy[0]), world(xy[1]));
-                chords.push(Chord::from_tags([a[0], a[1], z[0]], [b[0], b[1], z[1]], &f.tags, rules).unwrap());
-            }
-        }
-        let (found, closed) = read_back(&ends, &chords, rules);
-        let place = |p: [f64; 2]| back([p[0] / (1u64 << 30) as f64, p[1] / (1u64 << 30) as f64]);
-        // A record of whose holes the builder finds some, not all: their chords draw with no head.
-        let part = |ok: &[bool]| ok.contains(&true) && ok.contains(&false);
-        for (e, ok) in ends.iter().zip(&found).filter(|(e, ok)| owns(e.at) && part(ok)) {
-            out.push(format!("tile {col} {row}: record {} at {:?} ({ok:?})", e.part.name(), place(e.at)));
-        }
-        for (c, _) in chords.iter().zip(&closed).filter(|(c, ok)| owns([c.a[0], c.a[1]]) && !**ok) {
-            out.push(format!("tile {col} {row}: chord at {:?} open", place([c.a[0], c.a[1]])));
-        }
-    }
-    out
+    let f = &placed.features;
+    (not_whole(f, &Tiles::new(bounds)).into_iter())
+        .filter(|(i, found)| f[*i].0 == "tunnel-tube" || found.contains(&true))
+        .map(|(i, found)| format!("{} at {:?} ({found:?})", f[i].0, back(f[i].2.points[0])))
+        .collect()
 }
 
 /// The case moved `east` metres east.

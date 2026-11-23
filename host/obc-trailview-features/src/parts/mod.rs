@@ -501,7 +501,6 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         let decided = ladder::decide(&rooms.tubes, &mut openings, input, measure, (&rooms, &out, &apart_now));
         let (placed, found) = records(&rooms, &openings, &decided, input);
         faults.not_whole += found.not_whole;
-        faults.too_wide += found.too_wide;
         let before = (lone.clone(), gone.clone(), apart.clone());
         let kind = |t: usize, e: usize| decided.ends[openings.iter().position(|o| o.tube == t && o.end == e)?].kind;
         let own = rooms.own(&kind, &decided.out);
@@ -531,7 +530,6 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         m.insert("arms_alone".into(), lone.iter().filter(|&&l| l).count().into());
         m.insert("openings_apart".into(), apart.iter().filter(|&&a| a).count().into());
         m.insert("arms_gone".into(), gone.iter().filter(|&&g| g).count().into());
-        m.insert("joints_too_wide".into(), faults.too_wide.into());
         let touching = rooms::touching(&rooms, (&decided.floors, &decided.draws), &decided.half, input);
         let places = touching.iter().take(10).map(|&p| {
             let [lat, lon] = crate::degrees(p);
@@ -574,13 +572,12 @@ type HoleOf = (usize, Option<usize>);
 
 /// The joints that the records would not hold whole: the rooms of lanes that cannot draw; of a tunnel of one way, its
 /// room and the end whose head it shares with others, or None where its own head or a chord is not whole; and how many
-/// joints the builder did not find whole and how many were too wide for the tiles' buffer.
+/// records and chords the builder did not find whole.
 #[derive(Default)]
 struct Faults {
     rooms: Vec<usize>,
     ends: Vec<HoleOf>,
     not_whole: usize,
-    too_wide: usize,
 }
 
 impl Faults {
@@ -595,13 +592,12 @@ impl Faults {
     }
 }
 
-/// A hole lies at most this far from its record's point: the tiles' buffer (`BUFFER_M`) less the longest chord and a
-/// metre for the rounding and the reach, so a tile that owns a chord of a hole holds its record and the reverse.
-pub(crate) const JOINT_MAX_M: f64 = crate::tiles::BUFFER_M - 10.0 - 1.0;
+/// The holes of a pair lie at most this far apart across: well under the tiles' buffer (`BUFFER_M`, 40 m), so the tiles
+/// that hold a hole's chord hold its head where the chords are short; the read-back proves each joint in each tile.
+pub(crate) const JOINT_MAX_M: f64 = 29.0;
 
-/// The features of the rooms that draw and the tag `parts` of their tunnel ways, and the joints that they would not
-/// hold whole: a head with a hole of a room that does not draw, a joint with a hole more than `JOINT_MAX_M` from its
-/// point, and each record or chord that the builder does not find whole in them as a tile holds them.
+/// The features of the rooms that draw and the tag `parts` of their tunnel ways, and each hole and chord of rooms that
+/// draw that the builder does not find whole as the tiles hold them.
 fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided, input: &Input) -> (Placed, Faults) {
     let tubes = &rooms.tubes;
     let (mut features, mut tags) = (Vec::new(), HashMap::new());
@@ -689,14 +685,6 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         }
         of_feature.resize(features.len(), vec![(ti, None)]);
     }
-    let joint = |faults: &mut Faults, holes: &[HoleOf], across: &[f64]| {
-        let wide = across.iter().any(|a| a.abs() > JOINT_MAX_M);
-        faults.too_wide += usize::from(wide);
-        if wide {
-            holes.iter().for_each(|&h| faults.add(rooms, h, holes.len() > 1));
-        }
-        !wide
-    };
     for (o, d) in openings.iter().zip(&decided.ends) {
         let (Some(kind), Some(n)) = (d.kind, &d.numbers) else { continue };
         let tube = |h: &ladder::Hole| openings[h.opening].tube;
@@ -705,9 +693,6 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
             continue;
         }
         let holes: Vec<HoleOf> = n.holes.iter().map(|h| (tube(h), Some(openings[h.opening].end))).collect();
-        if !joint(&mut faults, &holes, &n.holes.iter().map(|h| h.across).collect::<Vec<_>>()) {
-            continue;
-        }
         let row = |f: &dyn Fn(&ladder::Hole) -> String| n.holes.iter().map(f).collect::<Vec<_>>().join(" ");
         let kind_of = |h: &ladder::Hole| decided.ends[h.opening].kind.unwrap_or(kind);
         // A room of lanes rounds its numbers up to the centimetre, as its chords do.
@@ -747,10 +732,6 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
     for seam in rooms.seams.iter().filter(|seam| draws[seam.parent.0]) {
         let (pr, pe) = seam.parent;
         let (Some(fp), Some(ip)) = (floors[pr].as_ref(), at_end(pr, pe)) else { continue };
-        let members: Vec<HoleOf> = [seam.parent].iter().chain(&seam.children).map(|&(r, e)| (r, Some(e))).collect();
-        if !joint(&mut faults, &members, &seam.holes.iter().map(|h| h.0).collect::<Vec<_>>()) {
-            continue;
-        }
         let at = tubes[pr].curve.at(if pe == 0 { 0.0 } else { tubes[pr].curve.len }).0.p;
         let mut holes: Vec<([f64; 4], HoleOf)> = Vec::new();
         for (&(r, e), &(across, half)) in seam.children.iter().zip(&seam.holes) {
@@ -785,20 +766,15 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         features.push(("tunnel-end", t, part));
         of_feature.push(members);
     }
-    // Read back as a tile holds them: each record and chord of rooms that draw that the builder does not find whole is a
-    // fault. A joint that this pass did not write leaves its chords open: those rooms are faults already.
-    let (ends, chords, index) = as_tile(&features);
-    let (found, closed) = obc_trailview_parts::read_back(&ends, &chords, obc_trailview_parts::Rules::embedded());
-    let known: Vec<usize> = faults.rooms.iter().chain(faults.ends.iter().map(|e| &e.0)).copied().collect();
-    let holes_found = found.into_iter().chain(closed.into_iter().map(|ok| vec![ok]));
-    for (&f, ok) in index.iter().zip(holes_found) {
+    // Read back as the tiles hold them: each hole and chord of rooms that draw that the builder does not find whole is a
+    // fault.
+    for (f, found) in not_whole(&features, input.tiles) {
         let holes = &of_feature[f];
-        if ok.iter().all(|&ok| ok) || !holes.iter().all(|h| draws[h.0]) || holes.iter().all(|h| known.contains(&h.0)) {
-            continue;
-        }
-        faults.not_whole += 1;
-        for (&h, _) in holes.iter().zip(&ok).filter(|(_, &ok)| !ok) {
-            faults.add(rooms, h, holes.len() > 1);
+        if holes.iter().all(|h| draws[h.0]) {
+            faults.not_whole += 1;
+            for (&h, _) in holes.iter().zip(&found).filter(|(_, &ok)| !ok) {
+                faults.add(rooms, h, holes.len() > 1);
+            }
         }
     }
     faults.rooms.sort_unstable();
@@ -817,37 +793,54 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
     (placed, faults)
 }
 
-/// The part records as a tile holds them, in the builder's world units (2^30 per side): points on the grid of a zoom-13
-/// tile, heights in whole centimetres; the ends, the chords, and per end then per chord its feature.
-fn as_tile(
-    features: &[(&'static str, Tags, Part)],
-) -> (Vec<obc_trailview_parts::End>, Vec<obc_trailview_parts::Chord>, Vec<usize>) {
+/// What the builder does not find whole in the part records as the zoom-13 tiles of the region hold them, each tile
+/// with its buffer: per record that it does not find whole in the tile that owns its point, whether it finds each of
+/// its holes there, and per chord that does not close in the tile that owns its `a`, `[false]`; by feature.
+pub(crate) fn not_whole(features: &[(&'static str, Tags, Part)], region: &Tiles) -> Vec<(usize, Vec<bool>)> {
+    use crate::tiles::{decode, Geometry, EXTENT, MAX_ZOOM};
     let rules = obc_trailview_parts::Rules::embedded();
-    let grid = (1u64 << (crate::tiles::MAX_ZOOM as u32 + crate::tiles::EXTENT.trailing_zeros())) as f64;
-    let unit = (1u64 << 30) as f64 / grid;
-    let point = |p: [f64; 2]| p.map(|v| (v * grid).round_ties_even() * unit);
-    let height = |z: f64| crate::tiles::height_code(z) as f64 / 100.0;
-    let (mut ends, mut chords, mut of_end, mut of_chord) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut tiles = region.empty();
     for (f, (kind, tags, part)) in features.iter().enumerate() {
-        let z = part.z.as_ref().expect("a part record has heights");
-        let at = |k: usize| {
-            let [x, y] = point(part.points[k]);
-            [x, y, height(z[k])]
-        };
-        match *kind {
-            "tunnel-end" => {
-                let [x, y, z] = at(0);
-                ends.push(obc_trailview_parts::End::from_tags([x, y], z, tags, rules).expect("a whole end record"));
-                of_end.push(f);
+        let geometry = if part.points.len() == 1 { Geometry::Point } else { Geometry::Line };
+        tiles.add(MAX_ZOOM, kind, geometry, tags, std::slice::from_ref(part), Some(f as u32));
+    }
+    // The builder's world units (2^30 per side) per tile unit.
+    let side = f64::from(EXTENT);
+    let unit = (1u64 << 30) as f64 / ((1u64 << MAX_ZOOM) as f64 * side);
+    let mut out = Vec::new();
+    for (&(_, col, row), tile) in &tiles.tiles {
+        let (x0, y0) = (f64::from(col) * side, f64::from(row) * side);
+        let world = |xy: [i64; 2]| [(x0 + xy[0] as f64) * unit, (y0 + xy[1] as f64) * unit];
+        let owns = |p: [f64; 2]| [p[0] / unit - x0, p[1] / unit - y0].iter().all(|v| (0.0..side).contains(v));
+        let (mut ends, mut chords, mut of_end, mut of_chord) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (i, f) in decode(&tile.bytes()).expect("a tile of part records").into_iter().enumerate() {
+            let id = tile.id(i as u32).expect("a part record of the bake") as usize;
+            let (xy, z) = (&f.parts[0].xy, f.parts[0].z.as_ref().expect("a part record has heights"));
+            if f.kind == "tunnel-end" {
+                ends.push(obc_trailview_parts::End::from_tags(world(xy[0]), z[0], &f.tags, rules).expect("an end"));
+                of_end.push(id);
+            } else {
+                let (a, b) = (world(xy[0]), world(xy[1]));
+                let chord =
+                    obc_trailview_parts::Chord::from_tags([a[0], a[1], z[0]], [b[0], b[1], z[1]], &f.tags, rules);
+                chords.push(chord.expect("a chord"));
+                of_chord.push(id);
             }
-            _ => {
-                chords.push(obc_trailview_parts::Chord::from_tags(at(0), at(1), tags, rules).expect("a whole chord"));
-                of_chord.push(f);
+        }
+        let (found, closed) = obc_trailview_parts::read_back(&ends, &chords, rules);
+        for ((e, holes), &f) in ends.iter().zip(found).zip(&of_end) {
+            if owns(e.at) && holes.contains(&false) {
+                out.push((f, holes));
+            }
+        }
+        for ((c, ok), &f) in chords.iter().zip(closed).zip(&of_chord) {
+            if owns([c.a[0], c.a[1]]) && !ok {
+                out.push((f, vec![false]));
             }
         }
     }
-    of_end.extend(of_chord);
-    (ends, chords, of_end)
+    out.sort_unstable();
+    out
 }
 
 /// The features of the placement.
