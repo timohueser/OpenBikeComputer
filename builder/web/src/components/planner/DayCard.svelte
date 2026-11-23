@@ -1,5 +1,5 @@
-<!-- A day of the day list: where it goes, its date and its figures, in the colour of its line on the map. Its foot is the
-     night that ends it, as a suggestion or as the place that the rider set. -->
+<!-- A day of the day list: where it goes, its date, its figures and its climb, with the colour of its line on the map.
+     Its foot is the night that ends it, as a suggestion or as the place that the rider set. -->
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
@@ -11,7 +11,7 @@
     import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
-    let { trip, day, from, to, last, theme, ascentKnown, nights, conflict, profile, onOpen, onShowEnd, onShowConflict }: {
+    let { trip, day, from, to, last, theme, ascentKnown, nights, conflict, profile, look = 'neutral', onOpen, onShowEnd, onShowConflict }: {
         trip: Trip;
         day: Day;
         /** Where the day starts and ends: a town, or the start or the finish of the trip. */
@@ -26,6 +26,8 @@
         conflict: number | null;
         /** The climb of the day as paths in the box `view`. */
         profile?: { line: string; area: string; view: string };
+        /** A trial of looks: the climb in the day colour on a neutral card, the climb in grey, or a card with a rim and no fill. */
+        look?: 'neutral' | 'quiet' | 'outline';
         onOpen: () => void;
         /** Shows the place of a set night on the map. */
         onShowEnd: () => void;
@@ -46,7 +48,7 @@
     const kind = $derived(pinned?.placeKind ? kindLabel(pinned.placeKind) : '');
 </script>
 
-<article class="day" style:--day-color={dayColor(day.number, theme)}>
+<article class={['day', look]} style:--day-color={dayColor(day.number, theme)} style:--day-deep={dayColor(day.number, 'light')}>
     <button type="button" class="main" data-day={day.number} onclick={onOpen} aria-label={`Open day ${day.number}: ${from} to ${to}`}>
         <span class="badge">{day.number}</span>
         <span class="title">
@@ -87,11 +89,34 @@
 </article>
 
 <style>
+    /* The number of the day carries the colour of the light theme, which is deep enough for white text in both themes.
+       The climb carries the colour of the line on the map; the dark theme mutes it. */
     .day {
+        --surface: color-mix(in srgb, var(--ink) 7%, var(--panel));
+        --rule: var(--line);
+        --climb: var(--day-color);
+        --climb-fill: color-mix(in srgb, var(--day-color) 24%, transparent);
         overflow: hidden;
         border-radius: 12px;
-        background: color-mix(in srgb, var(--day-color) 9%, var(--panel));
+        background: var(--surface);
         color: var(--ink);
+    }
+    :global([data-theme="dark"]) .day {
+        --climb: color-mix(in srgb, var(--day-color) 62%, var(--panel));
+        --climb-fill: color-mix(in srgb, var(--day-color) 16%, transparent);
+    }
+    .quiet {
+        --climb: var(--ink-faint);
+        --climb-fill: color-mix(in srgb, var(--ink) 9%, transparent);
+    }
+    :global([data-theme="dark"]) .quiet {
+        --climb: var(--ink-faint);
+        --climb-fill: color-mix(in srgb, var(--ink) 9%, transparent);
+    }
+    .outline {
+        --surface: var(--panel);
+        --rule: var(--line-strong);
+        box-shadow: inset 0 0 0 1px var(--line-strong);
     }
     button {
         border: 0;
@@ -113,15 +138,15 @@
         border-radius: 12px;
         text-align: left;
     }
-    .main:hover { background: color-mix(in srgb, var(--day-color) 6%, transparent); }
+    .main:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
     .badge {
         width: 24px;
         height: 24px;
         display: grid;
         place-items: center;
         border-radius: 50%;
-        background: var(--day-color);
-        color: var(--panel);
+        background: var(--day-deep);
+        color: #fff;
         font: 700 13px var(--sans);
         font-variant-numeric: tabular-nums;
     }
@@ -139,7 +164,7 @@
         overflow-wrap: anywhere;
     }
     .title strong :global(svg) { margin: 0 4px -2px; }
-    .title :global(svg), .figures :global(svg) { color: color-mix(in srgb, var(--day-color) 70%, var(--ink)); }
+    .title :global(svg), .figures :global(svg) { color: var(--ink-faint); }
     small {
         font-size: 13px;
         color: var(--ink-soft);
@@ -157,7 +182,7 @@
     .figures b { font: 700 17px var(--sans); }
     .figures small { margin-left: 2px; }
     .figures span :global(svg) { margin: 0 3px -2px 0; }
-    .figures > :global(svg) { align-self: center; color: var(--ink-faint); }
+    .figures > :global(svg) { align-self: center; }
     /* The climb reaches the edges of the card. */
     .profile {
         grid-column: 1 / -1;
@@ -166,14 +191,15 @@
         height: 38px;
         margin: 0 -12px -12px;
     }
-    .profile .area { fill: color-mix(in srgb, var(--day-color) 24%, transparent); }
+    .profile .area { fill: var(--climb-fill); }
     .profile .line {
         fill: none;
-        stroke: var(--day-color);
+        stroke: var(--climb);
         stroke-width: 2;
         stroke-linejoin: round;
         vector-effect: non-scaling-stroke;
     }
+    .quiet .profile .line { stroke-width: 1.5; }
     .warn {
         display: flex;
         flex-wrap: wrap;
@@ -191,7 +217,7 @@
         gap: 10px;
         min-height: 48px;
         padding: 6px 12px;
-        border-top: 1px solid color-mix(in srgb, var(--day-color) 22%, transparent);
+        border-top: 1px solid var(--rule);
     }
     .mark {
         width: 24px;
@@ -200,9 +226,9 @@
         display: grid;
         place-items: center;
         box-sizing: border-box;
-        border: 1.5px dashed color-mix(in srgb, var(--day-color) 70%, var(--ink));
+        border: 1.5px dashed var(--ink-soft);
         border-radius: 50%;
-        color: color-mix(in srgb, var(--day-color) 70%, var(--ink));
+        color: var(--ink-soft);
     }
     .set .mark {
         border: 0;
@@ -219,7 +245,7 @@
         border-radius: 6px;
         text-align: left;
     }
-    button.text:hover { background: color-mix(in srgb, var(--day-color) 8%, transparent); }
+    button.text:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
     .night strong, .night small {
         display: block;
         overflow-wrap: anywhere;

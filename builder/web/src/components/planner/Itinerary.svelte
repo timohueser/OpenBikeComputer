@@ -54,9 +54,9 @@
     const nightTowns = $derived(days.map(day => day.pinned ? day.pinned.locality ?? day.pinned.label : nights.around(day.number)?.stop.name));
     const fromOf = (day: Day) => day.number === 1 ? ends[0]?.label ?? '' : nightTowns[day.number - 2] ?? `Night ${day.number - 1}`;
     const toOf = (day: Day) => day.number === days.length ? (trip.loop ? ends[0] : ends.at(-1))?.label ?? '' : nightTowns[day.number - 1] ?? `Night ${day.number}`;
-    // A trial of a second look: `?cards=profile` in the address shows the climb of each day in its card.
-    const climbs = new URLSearchParams(location.search).get('cards') === 'profile';
-    const samples = $derived(climbs ? profileSamples(line) : []);
+    // A trial: `?cards=quiet` or `?cards=outline` in the address shows another look of the cards.
+    const look = new URLSearchParams(location.search).get('cards');
+    const samples = $derived(profileSamples(line));
     const heights = $derived(heightRange(samples));
     const profileOf = (day: Day) => samples.length
         ? { ...profilePaths(sampleSlice(samples, day.from, day.to), heights.low, heights.high), view: `${day.from * 1000} 0 ${(day.to - day.from) * 1000} 105` } : undefined;
@@ -187,7 +187,7 @@
             >{#snippet picker()}{@render towns(day.number, !!day.pinned)}{/snippet}</DayRow>
         {:else}
             <DayCard {trip} {day} from={fromOf(day)} to={toOf(day)} last={day.number === days.length} {theme} ascentKnown={line?.unknownElevationKm === 0} {nights}
-                conflict={conflict ? conflict[0].night! : null} profile={profileOf(day)}
+                conflict={conflict ? conflict[0].night! : null} profile={profileOf(day)} look={look === 'quiet' || look === 'outline' ? look : 'neutral'}
                 onOpen={() => openDay(day.number)} onShowEnd={() => onShowEnd(day)} onShowConflict={() => conflict && onShowConflict(conflict)} />
         {/if}
     {/each}
