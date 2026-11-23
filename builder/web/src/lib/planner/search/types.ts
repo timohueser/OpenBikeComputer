@@ -22,7 +22,7 @@ export interface QueryRequest {
     ignored?: string[];
 }
 export interface SearchContext {
-    view: [number, number, number, number]; here?: Coordinate; startDate?: string; pointing?: Where;
+    view: [number, number, number, number]; here?: Coordinate; startDate?: string;
     /** The full route: `km` and `seconds` hold one value per coordinate. `line` is the routed line of these coordinates. */
     plan: { coordinates: Coordinate[]; km: readonly number[]; seconds?: number[]; line?: RoutingLine; days: { number: number; from: number; to: number; rest: boolean }[];
         points: { id: string; label: string; coordinate: Coordinate; kind: string; placeKind?: string }[] };

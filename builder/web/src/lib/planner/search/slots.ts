@@ -28,25 +28,31 @@ export type Stretch = [from: number, to: number];
 /** The route and its days, in km. */
 export type Plan = Pick<SearchContext['plan'], 'km' | 'days'>;
 
-const tenth = (km: number) => Math.round(km * 10) / 10;
-/** The search area of a stretch, to a tenth of a km and at least that long. */
-export const stretchWhere = ([from, to]: Stretch): Where =>
-    ({ along: { ref: 'km', from: { value: tenth(from), unit: 'km' }, to: { value: tenth(Math.max(to, from + .1)), unit: 'km' } } });
-/** The route ahead of the rider, from the place of the rider on it. */
-export const NEAREST: Where = { along: { ref: 'here', from: { value: 0, unit: 'km' } } };
+/** The search area of a stretch, at least a tenth of a km long. Its ends go out to a tenth of a km, so a place at an end
+ * stays in it; the server limits the stretch to the route. */
+export function stretchWhere([from, to]: Stretch): Where {
+    const start = Math.floor(from * 10 + 1e-6) / 10, end = Math.max(Math.ceil(to * 10 - 1e-6) / 10, start + .1);
+    return { along: { ref: 'km', from: { value: start, unit: 'km' }, to: { value: Math.round(end * 10) / 10, unit: 'km' } } };
+}
+/** How far ahead of the rider "Nearest to me" searches, in km. The owner has not chosen this length yet. */
+const NEAREST_KM = 20;
+/** The route ahead of the rider, from the place of the rider on it; the server ends it at the end of the route. */
+export const NEAREST: Where = { along: { ref: 'here', from: { value: 0, unit: 'km' }, to: { value: NEAREST_KM, unit: 'km' } } };
 
 /** The stretch that a search area on the route covers before its part: the whole route, a day of the plan, or a stretch
- * from km to km. None for any other area. */
+ * from km to km, within the route. None for any other area, or a stretch that the route does not reach. */
 export function baseOf(where: Where | undefined, { km, days }: Plan): Stretch | undefined {
     const total = km.at(-1) ?? 0;
     if (!where || !total || where.near || where.anchor || where.before || where.after) return undefined;
     const { along, day, scope } = where;
-    if (along) return along.ref === 'km' && along.from?.unit === 'km' && along.to?.unit === 'km' ? [along.from.value, along.to.value] : undefined;
-    if (typeof day === 'number') {
+    let base: Stretch | undefined;
+    if (along) base = along.ref === 'km' && along.from?.unit === 'km' && along.to?.unit === 'km' ? [along.from.value, along.to.value] : undefined;
+    else if (typeof day === 'number') {
         const found = days.find(one => one.number === day && !one.rest);
-        return found && [found.from, found.to];
-    }
-    return scope === 'route' && day === undefined ? [0, total] : undefined;
+        base = found && [found.from, found.to];
+    } else if (scope === 'route' && day === undefined) base = [0, total];
+    const [from, to] = [Math.max(0, base?.[0] ?? 0), Math.min(total, base?.[1] ?? 0)];
+    return base && from < to ? [from, to] : undefined;
 }
 
 /** A part of a stretch: at an end, `max(10 km, 20 %)` of it; in the middle, its middle 40 %. */

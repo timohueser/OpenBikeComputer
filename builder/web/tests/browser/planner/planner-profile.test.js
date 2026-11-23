@@ -73,11 +73,12 @@ test('the planner profile: a drag selects a part that is the search area, a pres
   const part = profile.locator('.title .part');
   await profile.getByRole('radio', { name: 'Whole route' }).click();
   await drag(page, plot, 0.4, 0.6);
-  await expect(part).toContainText(/^km\s6\.1 to km\s9\.1 · 3\.0\skm · \d+\sm up/);
+  // The ends of the stretch go out to a tenth of a km.
+  await expect(part).toContainText(/^km\s6\.0 to km\s9\.2 · 3\.2\skm · \d+\sm up/);
   await expect(profile.locator('.pale')).toHaveCount(2);
   // The part is the stretch of "Where", so the list of places along the route starts there.
-  await expect(page.locator('[data-slot="where"] strong')).toHaveText('6.1–9.1 km');
-  await expect.poll(() => areas.at(-1)).toEqual({ along: { ref: 'km', from: { value: 6.1, unit: 'km' }, to: { value: 9.1, unit: 'km' } } });
+  await expect(page.locator('[data-slot="where"] strong')).toHaveText('6–9.2 km');
+  await expect.poll(() => areas.at(-1)).toEqual({ along: { ref: 'km', from: { value: 6, unit: 'km' }, to: { value: 9.2, unit: 'km' } } });
   // The fit of the map to the part is no move of the map by the rider.
   const searchView = page.getByRole('button', { name: 'Search this map view' });
   await page.waitForTimeout(500);

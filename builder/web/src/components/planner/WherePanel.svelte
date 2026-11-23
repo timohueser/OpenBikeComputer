@@ -1,6 +1,6 @@
 <!-- The panel of "Where": the elevation profile of the route with its days. A drag across the profile sets a stretch, its
      two handles move the ends, and a tap or a day button sets that day. Under it are the part of the stretch or the day,
-     and the areas by the place of the rider. The places of "Find" along the route are dots on the profile and its facts
+     and the areas by the place of the rider or near the point that the map selects. The places of "Find" along the route are dots on the profile and its facts
      are bars at its foot; the ones in the stretch are marked. -->
 <script lang="ts">
     import { dayColor } from '../../lib/planner/day-colors';
@@ -11,8 +11,10 @@
     import Segmented from '../../lib/ui/Segmented.svelte';
     import { appearance } from '../../lib/theme.svelte';
 
-    let { where, radius, plan, found, onchange }: {
+    let { where, radius, plan, found, selection, onchange }: {
         where: Where; radius?: Quantity; plan: SearchContext['plan'];
+        /** The point that the map selects. */
+        selection?: Where;
         /** The places or the stretches of "Find" along the whole route. */
         found?: SearchAnswer;
         /** A new area or a new radius; `moving` while a drag or a handle changes the area. */
@@ -72,14 +74,19 @@
         input.valueAsNumber = km;
         onchange({ where: stretchWhere(last ? [from, km] : [km, to]) }, true);
     }
-    /** A part of the area on the route, else of the whole route. */
+    /** A part of the area on the route, such as of today, else of the whole route. */
     function setPart(part: string) {
-        const { part: _, ...rest } = where;
-        if (part !== (where.part ?? 'any')) onchange({ where: part === 'any' ? rest : base ? { ...rest, part } : { scope: 'route', part } });
+        const { part: _, ...rest } = where, onRoute = base || where.day !== undefined || where.along;
+        if (part !== (where.part ?? 'any')) onchange({ where: part === 'any' ? rest : onRoute ? { ...rest, part } : { scope: 'route', part } });
     }
-    const around = $derived(where.scope === 'route' ? 'route' : where.scope === 'here' ? 'here' : sameValue(where, NEAREST) ? 'nearest' : '');
+    const around = $derived(where.scope === 'route' ? 'route' : where.scope === 'here' ? 'here' : sameValue(where, NEAREST) ? 'nearest' : where.anchor ? 'anchor' : '');
+    const areas = $derived([
+        ...total ? [{ value: 'route', label: 'Whole route' }] : [], { value: 'here', label: 'Near me' }, ...total ? [{ value: 'nearest', label: 'Nearest to me' }] : [],
+        ...where.anchor || selection ? [{ value: 'anchor', label: 'Selected point' }] : [],
+    ]);
     function setAround(next: string) {
-        if (next !== around) onchange({ where: next === 'route' ? { scope: 'route', ...where.part ? { part: where.part } : {} } : next === 'here' ? { scope: 'here' } : NEAREST });
+        if (next === around) return;
+        onchange({ where: next === 'route' ? { scope: 'route', ...where.part ? { part: where.part } : {} } : next === 'here' ? { scope: 'here' } : next === 'nearest' ? NEAREST : selection ?? where });
     }
 </script>
 
@@ -122,8 +129,7 @@
     {:else}
         <p class="hint">With a route, the panel shows its profile and days.</p>
     {/if}
-    <Segmented label="Area" value={around} onChange={setAround}
-        options={total ? [{ value: 'route', label: 'Whole route' }, { value: 'here', label: 'Near me' }, { value: 'nearest', label: 'Nearest to me' }] : [{ value: 'here', label: 'Near me' }]} />
+    <Segmented label="Area" value={around} onChange={setAround} wrap={areas.length > 3} options={areas} />
     {#if radius}
         <label class="radius">Within, in km<input type="number" min="0.1" max="100" step="0.1" value={radius.value}
             onchange={event => { const value = event.currentTarget.valueAsNumber; onchange({ radius: value > 0 ? { value, unit: 'km' } : undefined }); }} /></label>

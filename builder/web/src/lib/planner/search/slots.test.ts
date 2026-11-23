@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fill, NEAREST, oneKind, partOf, requestOf, slotsOf, slotWords, stretchOf } from './slots';
+import { fill, NEAREST, oneKind, partOf, requestOf, slotsOf, slotWords, stretchOf, stretchWhere } from './slots';
 
 describe('the slots of the planner search', () => {
     it('takes one thing to find: the nearest kind over all kinds, else the first', () => {
@@ -38,5 +38,13 @@ describe('the slots of the planner search', () => {
         expect(requestOf(slots, plan)?.where).toEqual({ along: { ref: 'km', from: { value: 0, unit: 'km' }, to: { value: 10, unit: 'km' } } });
         expect(requestOf(slots, { km: [], days: [] })?.where).toEqual({ day: 1, part: 'start' });
         expect(slotWords({ where: NEAREST }).where).toEqual(['Nearest to me']);
+    });
+
+    it('keeps a stretch within the route, and sends its ends out to a tenth of a km', () => {
+        const plan = { km: [0, 25], days: [] }, along = (from: number, to: number) => ({ along: { ref: 'km', from: { value: from, unit: 'km' }, to: { value: to, unit: 'km' } } });
+        // The finish moved: a stretch past the end of the route is cut at it, and one that the route does not reach is none.
+        expect([stretchOf(along(20, 38), plan), stretchOf(along(30, 38), plan)]).toEqual([[20, 25], undefined]);
+        expect(stretchWhere([1.23, 7.43])).toEqual(along(1.2, 7.5));
+        expect(stretchWhere([4.9, 6.1])).toEqual(along(4.9, 6.1));
     });
 });

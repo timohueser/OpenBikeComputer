@@ -17,8 +17,10 @@
     import WherePanel from './WherePanel.svelte';
     import WhenPanel from './WhenPanel.svelte';
 
-    let { searchState = $bindable({ loading: false, error: '', answer: null }), slots = $bindable({}), context, revision = 0, viewRevision = 0, onSearch, onClear, onLocation }: {
+    let { searchState = $bindable({ loading: false, error: '', answer: null }), slots = $bindable({}), context, selection, revision = 0, viewRevision = 0, onSearch, onClear, onLocation }: {
         searchState?: SearchState; slots?: Slots; context: SearchContext;
+        /** The point that the map selects, which "Where" can search near. */
+        selection?: Where;
         revision?: number; viewRevision?: number; onSearch: () => void; onClear: () => void; onLocation: () => Promise<'denied' | 'unavailable' | undefined>;
     } = $props();
 
@@ -42,7 +44,7 @@
     let serial = 0, limit = 20;
     let requestContext: SearchContext | undefined;
     let searchedView = $state(0);
-    const usesView = $derived(!planned && (request?.type === 'place' ? !request.near : !!request && (request.where ?? context.pointing ?? VIEW).scope === 'view'));
+    const usesView = $derived(!planned && (request?.type === 'place' ? !request.near : !!request && (request.where ?? VIEW).scope === 'view'));
     const movedView = $derived(usesView && !!searchState.answer && viewRevision !== searchedView);
     const days = $derived(context.plan.days.filter(day => !day.rest).map(day => day.number));
 
@@ -167,7 +169,7 @@
     const bar = $derived<Slot[]>([
         { id: 'find', icon: ICONS.find, label: 'Find', words: words.find, unset: 'Choose', set: !!slots.find, wide: true },
         // A named place is searched near a place or in the map view.
-        { id: 'where', icon: ICONS.where, label: 'Where', words: words.where, unset: whereWords(context.pointing ?? VIEW)[0], set: !!slots.where || !!slots.radius, wide: true,
+        { id: 'where', icon: ICONS.where, label: 'Where', words: words.where, unset: whereWords(VIEW)[0], set: !!slots.where || !!slots.radius, wide: true,
             off: named ? whereWords(request?.near ? { near: [request.near] } : VIEW)[0] : undefined },
         { id: 'when', icon: ICONS.when, label: 'When', words: words.when, unset: 'Any time', set: !!slots.open, off: named || fact ? 'Any time' : undefined },
     ]);
@@ -206,7 +208,7 @@
             {#if id === 'find'}
                 <FindPanel find={slots.find} onchange={find => set({ ...slots, find })} />
             {:else if id === 'where'}
-                <WherePanel where={slots.where ?? context.pointing ?? VIEW} radius={slots.radius} plan={context.plan} found={alongRoute} onchange={(change, moving) => set({ ...slots, ...change }, moving)} />
+                <WherePanel where={slots.where ?? VIEW} radius={slots.radius} plan={context.plan} found={alongRoute} {selection} onchange={(change, moving) => set({ ...slots, ...change }, moving)} />
             {:else}
                 <WhenPanel open={slots.open} onchange={open => set({ ...slots, open })} />
             {/if}

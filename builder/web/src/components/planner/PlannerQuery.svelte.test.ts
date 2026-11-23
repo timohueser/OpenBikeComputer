@@ -13,6 +13,7 @@ const READ: Record<string, QueryRequest> = {
     'drinking water in the middle of day 1': { type: 'places', what: ['drinking_water'], where: { day: 1, part: 'middle' } },
     'supermarket': { type: 'places', what: ['supermarket'] },
     'sunny cafe or bakery': { type: 'places', what: ['cafe', 'bakery'], ignored: ['sunny'] },
+    'water today': { type: 'places', what: ['water'], where: { day: 'today' } },
 };
 /** A server that answers the request it was sent, else the request that the model reads. */
 const server = () => vi.fn(async (_url: string, init: RequestInit) => { const input = JSON.parse(String(init.body)); return reply(input.request ?? READ[input.q] ?? { type: 'place', name: input.q }); });
@@ -103,7 +104,7 @@ describe('the planner search',()=>{
         await enter('supermarket');
         slot('where').click(); await vi.advanceTimersByTimeAsync(0); await tick();
         // The panel asks for the places along the whole route; with no stretch, each is in the area.
-        expect(sent(fetch).at(-1)).toMatchObject({ limit: 100, request: { type: 'places', what: ['supermarket'], where: km(0, 7.4) } });
+        expect(sent(fetch).at(-1)).toMatchObject({ limit: 100, request: { type: 'places', what: ['supermarket'], where: km(0, 7.5) } });
         const dots = () => [...target.querySelectorAll('.dot')].map(dot => dot.classList.contains('in'));
         expect(dots()).toEqual([true, true]);
         const search = async (button: string) => { press(button); await vi.advanceTimersByTimeAsync(0); await tick(); return sent(fetch).at(-1).request.where; };
@@ -112,7 +113,7 @@ describe('the planner search',()=>{
         expect(await search('Middle')).toEqual(km(4.9, 6.1));
         expect(words('where')).toBe('Middle of Day 2');
         // A second press removes the day and keeps the part, of the whole route.
-        expect(await search('Day 2')).toEqual(km(2.2, 5.2));
+        expect(await search('Day 2')).toEqual(km(2.2, 5.3));
         expect(words('where')).toBe('Middle of the route');
         // A handle searches when it rests.
         const end = target.querySelector<HTMLInputElement>('input[aria-label="End of the stretch"]')!;
@@ -123,6 +124,21 @@ describe('the planner search',()=>{
         expect(fetch).toHaveBeenCalledTimes(searches + 1);
         expect(sent(fetch).at(-1).request.where).toEqual(km(2.2, 3));
         expect([words('where'), dots()]).toEqual(['2.2–3 km', [false, false]]);
+    });
+
+    it('keeps a part on a day that the profile cannot show, and searches near the selected point and ahead of the rider', async () => {
+        const fetch = server();
+        vi.stubGlobal('fetch', fetch);
+        const { enter, slot, words, press } = await setup({ selection: { anchor: [7.9, 48] } });
+        await enter('water today');
+        slot('where').click(); await tick();
+        const search = async (button: string) => { press(button); await vi.advanceTimersByTimeAsync(0); await tick(); return sent(fetch).at(-1).request.where; };
+        expect(await search('Start')).toEqual({ day: 'today', part: 'start' });
+        expect(words('where')).toBe('Start of today');
+        expect(await search('Selected point')).toEqual({ anchor: [7.9, 48] });
+        expect(words('where')).toBe('Near the selected point');
+        expect(await search('Nearest to me')).toEqual({ along: { ref: 'here', from: { value: 0, unit: 'km' }, to: { value: 20, unit: 'km' } } });
+        expect(words('where')).toBe('Nearest to me');
     });
 
     it('keeps a change of the plan when it searches again with the position of the rider', async () => {

@@ -160,7 +160,6 @@
     let searchViewRevision = $state(0);
     let viewBounds = $state<[number, number, number, number]>(config.bounds);
     let here = $state<{ coordinate: Coordinate; at: number } | undefined>();
-    let pointing = $state<Where | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
     let message = $state(`Plan a ride in ${config.name}`);
@@ -331,7 +330,7 @@
     // The rider moves, so a position older than five minutes is left out and the search asks for a new one.
     // A getter, because time passing changes no dependency of the context.
     const searchContext = $derived<SearchContext>({ view: viewBounds, get here() { return here && Date.now() - here.at < 300_000 ? here.coordinate : undefined; },
-        pointing, startDate: trip.startDate, plan: queryPlan });
+        startDate: trip.startDate, plan: queryPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(shown.trip, shown.line) : []);
     const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
     const gapLegs = $derived(visualRoute ? legGaps(visualStops, coordinates, visualRoute.gapLegs) : []);
@@ -515,7 +514,7 @@
     const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme }) : null);
 
     // A query runs again when anything it sends other than the map view changes.
-    $effect(() => { void [queryPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
+    $effect(() => { void [queryPlan, here, trip.startDate]; untrack(() => searchRevision++); });
 
     onMount(() => {
         void session.start(library);
@@ -529,7 +528,6 @@
         statusUndo = null;
         clearSelection();
         exitSearch();
-        pointing = undefined;
         showRoute = true;
         night = 1;
         expandedDay = null;
@@ -1067,7 +1065,6 @@
         if (!selectedPoint) return;
         const train = selectedPoint.kind === 'night' && trainAfter(trip, selectedPoint.night!);
         commit(removeRoutePoint(trip, selectedPoint.id, coordinate => map?.placeName(coordinate)), train ? 'Night and its train or bus removed' : 'Point removed');
-        pointing = undefined;
         clearSelection();
     }
 
@@ -1247,14 +1244,14 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={nightPage !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:searchState={searchState} bind:slots={searchSlots} context={searchContext} revision={searchRevision} viewRevision={searchViewRevision} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} /></div>
+            <div class="query-slot" style:display={nightPage !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:searchState={searchState} bind:slots={searchSlots} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} /></div>
             {#if !searching && nightPage === null}{#key planId}<RoutePreferences {trip} onChange={edit} />{/key}{/if}
             {#if exploreBack && hasEndpoints && !searching && nightPage === null}
                 <button type="button" class="back-to-routes" onclick={() => router.go(ROUTES.explore, { explore: exploreBack })}><Icon name="back" size={15} />Find another route</button>
             {/if}
             {#if searching}
                 <div class="pane-scroll">
-                    <QueryResults attribution={config.attribution} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
+                    <QueryResults attribution={config.attribution} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => searchBox?.setStretch([nearestProgress(coordinates, line[0]) * total, nearestProgress(coordinates, line.at(-1)!) * total])} />
                 </div>
             {:else if !hasEndpoints}
                 <div class="start-plan pane-scroll">

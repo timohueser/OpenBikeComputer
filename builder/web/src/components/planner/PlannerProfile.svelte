@@ -273,7 +273,7 @@
     {/snippet}
     <div class="plot-rows" bind:this={rows}>
         <Lanes label="Profile" rows={[{ label: '', draw: profile, grow: true }]} {ticks} axis={lanesAxis} pointer={hover === null ? undefined : share(hover)}
-            chip={readout} onpointer={point} part={seen && [share(seen[0]), share(seen[1])]} onpart={onPart && select} onclick={() => select(null)} />
+            chip={readout} onpointer={point} part={seen && [share(seen[0]), share(seen[1])]} onpart={onPart && select} onclick={() => { if (seen) select(null); }} />
     </div>
     <Surface {walking} line={lineData} from={shown.from} to={shown.to} rests={axis.rests} bind:lit={surface} onHover={inspect} />
     {@render strip?.(shown.from, shown.to, axis.rests, inspect)}
