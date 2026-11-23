@@ -1,7 +1,7 @@
 /** The three slots of the planner search, "Find", "Where" and "When": the fields of a request that each slot holds, the
  * request that the slots give, their words, and how the request of an answer of the query model fills them. */
 import { contract, kindLabel, pointLabel } from './presentation';
-import type { QueryDay, QueryPoint, QueryRequest, Quantity, SearchContext, Where } from './types';
+import type { Along, QueryDay, QueryPoint, QueryRequest, Quantity, SearchContext, Where } from './types';
 
 export type SlotId = 'find' | 'where' | 'when';
 /** One thing to find: a kind of place, with the cuisine of a kind of food; a place by its name; or a fact of the route,
@@ -41,18 +41,47 @@ const NEAREST_KM = 20;
 /** The route ahead of the rider, from the place of the rider on it; the server ends it at the end of the route. */
 export const NEAREST: Where = { along: { ref: 'here', from: { value: 0, unit: 'km' }, to: { value: NEAREST_KM, unit: 'km' } } };
 
-/** The stretch that a search area on the route covers before its part: the whole route, a day of the plan, or a stretch
- * from km to km, within the route. None for any other area, or a stretch that the route does not reach. */
+/** A distance of the request in km; none for a time. */
+const kmOf = (quantity: Quantity | undefined) => quantity?.unit === 'km' ? quantity.value : undefined;
+
+/** The part of `base` that `along` names, in km from the start of the route; none for a time, a mark, or a distance from
+ * the finish or the rider. An open end stays the end of `base`, as on the server: "after km 10" runs to the finish. */
+function alongIn({ ref, at, from, to }: Along, base: Stretch): Stretch | undefined {
+    if ((ref !== 'km' && ref !== 'start') || at) return undefined;
+    const start = from ? kmOf(from) : base[0], end = to ? kmOf(to) : base[1];
+    return start === undefined || end === undefined ? undefined : [start, end];
+}
+
+/** The km of a point that limits a stretch: a mark from the start, the start or the finish, or the end of a day for
+ * "after" and its start for "before". None for a place, which only the server finds. */
+function limitKm(point: QueryPoint, key: 'after' | 'before', total: number, days: Plan['days']): number | undefined {
+    if ('along' in point) return point.along.ref === 'km' || point.along.ref === 'start' ? kmOf(point.along.at) : undefined;
+    if ('plan' in point) return point.plan === 'start' ? 0 : total;
+    if ('day' in point && typeof point.day === 'number' && !point.part) {
+        const day = days.find(one => one.number === point.day);
+        return day && (key === 'after' ? day.to : day.from);
+    }
+    return undefined;
+}
+
+/** The stretch that a search area on the route covers before its part, within the route: the whole route or a day of the
+ * plan, narrowed by `along` and by a point "after" or "before" it, as the server reads it. None for an area near a place,
+ * the rider or a point, for a limit that only the server can place, or for a stretch that the route does not reach. */
 export function baseOf(where: Where | undefined, { km, days }: Plan): Stretch | undefined {
     const total = km.at(-1) ?? 0;
-    if (!where || !total || where.near || where.anchor || where.before || where.after) return undefined;
-    const { along, day, scope } = where;
+    if (!where || !total || where.near || where.anchor) return undefined;
+    const { along, day, scope, before, after } = where;
     let base: Stretch | undefined;
-    if (along) base = along.ref === 'km' && along.from?.unit === 'km' && along.to?.unit === 'km' ? [along.from.value, along.to.value] : undefined;
-    else if (typeof day === 'number') {
+    if (typeof day === 'number') {
         const found = days.find(one => one.number === day && !one.rest);
         base = found && [found.from, found.to];
-    } else if (scope === 'route' && day === undefined) base = [0, total];
+    } else if (day === undefined && (scope === 'route' || along || before || after)) base = [0, total];
+    if (base && along) base = alongIn(along, base);
+    for (const [key, point] of [['after', after], ['before', before]] as const) {
+        if (!base || !point) continue;
+        const at = limitKm(point, key, total, days);
+        base = at === undefined ? undefined : key === 'after' ? [Math.max(base[0], at), base[1]] : [base[0], Math.min(base[1], at)];
+    }
     const [from, to] = [Math.max(0, base?.[0] ?? 0), Math.min(total, base?.[1] ?? 0)];
     return base && from < to ? [from, to] : undefined;
 }

@@ -41,7 +41,7 @@
     /** The kinds that one thing to find left out of the last answer. */
     let left = $state<string[]>([]);
     /** The search before the cross, for "Undo", and the last searches, the newest first. */
-    let cleared: { slots: Slots; planned?: QueryRequest; sentence: string } = { slots: {}, sentence: '' }, searches = $state.raw<Slots[]>([]);
+    let searches = $state.raw<Slots[]>([]);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
     let serial = 0, limit = 20;
@@ -141,18 +141,12 @@
         const was = slotWords(before), now = slotWords(slots);
         return (['find', 'where', 'when'] as const).flatMap(slot => now[slot].length && !sameValue(now[slot], was[slot]) ? [{ slot, label: now[slot].join(' · '), icon: ICONS[slot] }] : []);
     }
+    /** The cross closes the search; it has no "Undo". */
     function clear() {
-        cleared = { slots, planned, sentence };
         reset();
         onClear();
     }
-    /** "Undo" brings back the slots, or the change of the plan with the slots under it. */
-    function undo() {
-        if (!cleared.planned) return set(cleared.slots);
-        ({ slots, planned, sentence } = cleared);
-        again(20);
-    }
-    /** Empties the search and the field with no "Undo", such as after a change of the plan. */
+    /** Empties the search and the field, such as after a change of the plan. */
     export function reset() {
         stop();
         [slots, sentence, left, planned, typed] = [{}, '', [], undefined, ''];
@@ -209,7 +203,7 @@
 
 <div class="planner-query">
     <SearchBar label="Search the route" slots={bar} {field} folds={!searching} bind:open bind:text={typed} empty={!slots.find && !slots.act && !slots.where && !slots.radius && !slots.open && !planned}
-        onreset={id => set(resetSlot(slots, id as SlotId))} onclear={clear} onundo={undo}>
+        onreset={id => set(resetSlot(slots, id as SlotId))} onclear={clear}>
         {#snippet panel(id)}
             {#if id === 'find'}
                 <FindPanel find={slots.find} act={slots.act} onchange={find => set({ ...slots, find })} onact={act => set(withAct(slots, act))} />
