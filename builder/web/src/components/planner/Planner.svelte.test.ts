@@ -11,6 +11,7 @@ import Profile from './PlannerProfile.svelte';
 import MapCallout from './MapCallout.svelte';
 import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
+import { formatAlong } from '../../lib/settings/format';
 import RouteStats from './RouteStats.svelte';
 import TripBar from './TripBar.svelte';
 import TripRow from './TripRow.svelte';
@@ -123,6 +124,21 @@ describe('route stop handles', () => {
         expect(onReorder).not.toHaveBeenCalled();
         button('Reorder Second').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
         expect(onReorder).toHaveBeenCalledExactlyOnceWith('Second', -1);
+    });
+
+    it('ends a route that returns with its start, marks where it turns back, and offers a stop on a route with none', async () => {
+        const [start, first, second] = stops;
+        const back = [start, first, { ...second, point: { ...second.point, turnaround: true as const } }, { point: start.point, distance: 40 }];
+        mounted.push(mount(RouteList, { target: document.body, props: { stops: back, loop: true, onReorder: vi.fn(), onInspect: vi.fn() } }));
+        await tick();
+        const rows = [...document.querySelectorAll('.stop')].map(row => [row.querySelector('.sign')!.classList[1], row.querySelector('.name')!.textContent, row.querySelector('.along')!.textContent]);
+        expect(rows).toEqual([['start', 'Start', 'Start'], ['visit', 'First', formatAlong(10_000)], ['turn', 'SecondTurns back here', formatAlong(20_000)], ['finish', 'Start', formatAlong(40_000)]]);
+        expect(document.querySelector('.hint')).toBeNull();
+        unmount(mounted.pop()!);
+
+        mounted.push(mount(RouteList, { target: document.body, props: { stops: [stops[0], stops[4]], onReorder: vi.fn(), onInspect: vi.fn() } }));
+        await tick();
+        expect(document.querySelector('.hint')?.textContent).toBe('Add a stopClick the map, or search');
     });
 });
 
