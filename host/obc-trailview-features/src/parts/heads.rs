@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use super::ladder::{Decided, Hole, Kind, Numbers};
 use super::rooms::{Drawn, Rooms};
-use super::{distance, first_way_m, left_of, offset, segment_m, Input, Opening};
+use super::{distance, first_way_m, left_of, offset, Input, Opening};
 use crate::metres;
 
 /// A head that stands in another room: its record's opening, the place, and the least whole metres more that its
@@ -64,10 +64,11 @@ pub(crate) fn standing(rooms: &Rooms, openings: &[Opening], decided: &Decided, i
             parts.iter().any(|&(p, bottom, top)| {
                 let q = [p[0] + by[0], p[1] + by[1]];
                 drawn.axes.near(q, usize::MAX, widest + 1.0).iter().any(|f| {
+                    // The room's section at the foot of the point, and its arch over the point.
                     let sec = drawn.at(f.tube, f.s);
-                    let inside =
-                        segment_m(q, sec[0], sec[1]) <= 1e-6 && distance(q, sec[0]).min(distance(q, sec[1])) > MERGE_M;
-                    let (h, half) = (drawn.height(f.tube, f.s), drawn.tubes[f.tube].half);
+                    let (len, half) = (drawn.tubes[f.tube].curve.len, distance(sec[0], sec[1]) / 2.0);
+                    let inside = f.past.is_none() && f.s > MERGE_M && f.s < len - MERGE_M && f.d < half - MERGE_M;
+                    let h = drawn.height(f.tube, f.s);
                     let arch = (1.0 - (f.d / half).powi(2)).max(0.0).sqrt();
                     let share = if boxed[f.tube] { 1.0 } else { spring + (1.0 - spring) * arch };
                     !own.contains(&f.tube) && inside && bottom < f.z + h * share - MERGE_M && top > f.z + MERGE_M
