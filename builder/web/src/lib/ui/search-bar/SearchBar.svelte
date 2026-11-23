@@ -4,8 +4,9 @@
      its own width: a narrow bar has the field in one row and the slots in the next. -->
 <script lang="ts" module>
     /** `words` are the values of the slot in their order; `unset` shows when it has none. `set` says that a value differs
-     * from its default, also one with no word, so "Reset" has work. A slot with `off` is disabled and shows `off`. */
-    export interface Slot { id: string; icon: string; label: string; words: string[]; unset: string; set: boolean; off?: string }
+     * from its default, also one with no word, so "Reset" has work. A slot with `off` is disabled and shows `off`. The
+     * panel of a `wide` slot can be wider than a narrow bar, over what is beside the bar, where the window has room. */
+    export interface Slot { id: string; icon: string; label: string; words: string[]; unset: string; set: boolean; off?: string; wide?: boolean }
 </script>
 
 <script lang="ts" generics="V extends Value, P extends Place">
@@ -37,6 +38,17 @@
     let bar = $state<HTMLElement>(), panelWidth = $state(0), barWidth = $state(0);
     /** The width of a narrow bar, whose panels are as wide as the bar; the CSS of the two rows has it too. */
     const NARROW_PX = 720;
+    /** The room under the bar and from its left edge, less a margin: a panel fits in it. The room ends at the box that
+     * clips a panel, which is the nearest box around the bar that scrolls, else the window. */
+    let below = $state(0), beside = $state(0);
+    function measure() {
+        if (!bar) return;
+        let clip = bar.parentElement;
+        while (clip && getComputedStyle(clip).overflowY === 'visible') clip = clip.parentElement;
+        const box = bar.getBoundingClientRect(), frame = clip?.getBoundingClientRect();
+        below = Math.min(innerHeight, frame?.bottom ?? innerHeight) - box.bottom - 18;
+        beside = Math.min(innerWidth, frame?.right ?? innerWidth) - box.left - 16;
+    }
     /** "Undo" shows after the cross until its time ends or the search holds a value again. */
     let undoing = $state(false), timer: ReturnType<typeof setTimeout> | undefined;
     /** The text before the cross, and whether the list of the field is open. */
@@ -80,6 +92,10 @@
     // The list of the field and the panel of a slot close each other. A panel that closes ends a search.
     $effect(() => {
         if (listing) untrack(() => open = undefined);
+    });
+    // Before the panel or the list shows, so it comes in its final size.
+    $effect.pre(() => {
+        if (open || listing) untrack(measure);
     });
     let was: string | undefined;
     $effect(() => {
@@ -128,9 +144,9 @@
 </script>
 
 <!-- A press outside the bar closes the panel and still acts where it lands, such as a pick on the map. -->
-<svelte:window onkeydowncapture={escape} onpointerdown={event => { if (open && !bar?.contains(event.target as Node)) close(false); }} />
+<svelte:window onkeydowncapture={escape} onresize={measure} onpointerdown={event => { if (open && !bar?.contains(event.target as Node)) close(false); }} />
 
-<div class="search-bar" role="search" aria-label={label} bind:this={bar} bind:clientWidth={barWidth}>
+<div class="search-bar" role="search" aria-label={label} bind:this={bar} bind:clientWidth={barWidth} style:--below="{below}px" style:--beside="{beside}px">
     <div class="strip">
         <Field {...field} bind:text={typed} bind:listing {slots} {land} />
         <div class="slots">
@@ -150,7 +166,7 @@
         {/if}
     </div>
     {#if current}
-        <div class="search-panel" id="search-panel" role="group" aria-label={current.label} bind:offsetWidth={panelWidth} style:left={barWidth > NARROW_PX ? `${left}px` : undefined}
+        <div class="search-panel" class:wide={current.wide} id="search-panel" role="group" aria-label={current.label} bind:offsetWidth={panelWidth} style:left={barWidth > NARROW_PX ? `${left}px` : undefined}
             in:drop out:drop={{ leave: true }}>
             {@render panel(current.id)}
             <div class="foot">
@@ -303,7 +319,7 @@
         top: calc(100% + 6px);
         min-width: 340px;
         max-width: 100%;
-        max-height: min(560px, 74vh);
+        max-height: min(640px, max(200px, var(--below)));
         overflow: auto;
         border: 1px solid var(--line-strong);
         border-radius: 10px;
@@ -362,7 +378,9 @@
         .slots {
             flex: 1 1 100%;
         }
+        /* A value can take two lines here: the labels stay on one line. */
         .slot {
+            justify-content: flex-start;
             padding: 7px 10px;
         }
         .slot:first-child {
@@ -391,6 +409,12 @@
             right: 0;
             left: 0;
             min-width: 0;
+        }
+        .search-bar .wide {
+            right: auto;
+            width: max-content;
+            min-width: 100%;
+            max-width: max(100%, var(--beside));
         }
     }
 </style>

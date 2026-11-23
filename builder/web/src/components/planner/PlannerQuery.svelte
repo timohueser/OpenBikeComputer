@@ -7,6 +7,7 @@
     import PlannerIcon from '../../lib/ui/Icon.svelte';
     import SearchBar, { type Slot } from '../../lib/ui/search-bar/SearchBar.svelte';
     import type { FieldProps, Place } from '../../lib/ui/search-bar/Field.svelte';
+    import { unfold } from '../../lib/ui/search-bar/motion';
     import type { Value } from '../../lib/ui/search-bar/read';
     import { areasAndTimes, oftenNext, PLANNER_WORDS, type Mark } from '../../lib/planner/search/marks';
     import { kindLabel } from '../../lib/planner/search/presentation';
@@ -35,8 +36,8 @@
     let sentence = '', edited = false;
     /** The kinds that one thing to find left out of the last answer. */
     let left = $state<string[]>([]);
-    /** The slots before the cross, for "Undo", and the last searches, the newest first. */
-    let cleared: Slots = {}, searches = $state.raw<Slots[]>([]);
+    /** The search before the cross, for "Undo", and the last searches, the newest first. */
+    let cleared: { slots: Slots; planned?: QueryRequest; sentence: string } = { slots: {}, sentence: '' }, searches = $state.raw<Slots[]>([]);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
     let serial = 0, limit = 20;
@@ -124,9 +125,15 @@
         return (['find', 'where', 'when'] as const).flatMap(slot => now[slot].length && !sameValue(now[slot], was[slot]) ? [{ slot, label: now[slot].join(' · '), icon: ICONS[slot] }] : []);
     }
     function clear() {
-        cleared = slots;
+        cleared = { slots, planned, sentence };
         reset();
         onClear();
+    }
+    /** "Undo" brings back the slots, or the change of the plan with the slots under it. */
+    function undo() {
+        if (!cleared.planned) return set(cleared.slots);
+        ({ slots, planned, sentence } = cleared);
+        again(20);
     }
     /** Empties the search and the field with no "Undo", such as after a change of the plan. */
     export function reset() {
@@ -149,17 +156,20 @@
     const words = $derived(slotWords(slots));
     const named = $derived(request?.type === 'place'), fact = $derived(request?.type === 'stretches');
     const bar = $derived<Slot[]>([
-        { id: 'find', icon: ICONS.find, label: 'Find', words: words.find, unset: 'Choose', set: !!slots.find },
+        { id: 'find', icon: ICONS.find, label: 'Find', words: words.find, unset: 'Choose', set: !!slots.find, wide: true },
         // A named place is searched near a place or in the map view.
         { id: 'where', icon: ICONS.where, label: 'Where', words: words.where, unset: whereWords(context.pointing ?? VIEW)[0], set: !!slots.where || !!slots.radius,
             off: named ? whereWords(request?.near ? { near: [request.near] } : VIEW)[0] : undefined },
         { id: 'when', icon: ICONS.when, label: 'When', words: words.when, unset: 'Any time', set: !!slots.open, off: named || fact ? 'Any time' : undefined },
     ]);
     const summary = (kept: Slots) => Object.values(slotWords(kept)).flat().join(' · ');
+    /** The answer has a line under the bar: the kinds left out, a notice, or a change of the plan with "Apply change". An
+     * empty field then offers nothing, as its list would cover the line. */
+    const noted = $derived(!!planned || left.length > 0 || !!searchState.answer?.notice);
     const field = $derived<FieldProps<Mark, Place>>({
-        table: PLANNER_WORDS, label: 'Find a place or ask about the route', placeholder: 'Ask, such as “water on day 2”', maxlength: 240, examples: searches.length ? [] : EXAMPLES,
-        recent: searches.filter(kept => !sameValue(kept, slots)).map(kept => ({ text: summary(kept), run: () => set(kept) })),
-        often: () => oftenNext(slots, days.length), changes: mark => !sameValue(mark.set(slots), slots),
+        table: PLANNER_WORDS, label: 'Find a place or ask about the route', placeholder: 'Ask, such as “water on day 2”', maxlength: 240, examples: searches.length || noted ? [] : EXAMPLES,
+        recent: noted ? [] : searches.filter(kept => !sameValue(kept, slots)).map(kept => ({ text: summary(kept), run: () => set(kept) })),
+        often: () => noted ? [] : oftenNext(slots, days.length), changes: mark => !sameValue(mark.set(slots), slots),
         onvalues: marks => set(marks.reduce((next, mark) => mark.set(next), slots)), read,
         onsearch: () => { if (slots.find) searches = [slots, ...searches.filter(kept => !sameValue(kept, slots))].slice(0, 3); },
     });
@@ -168,7 +178,7 @@
 
 <div class="planner-query">
     <SearchBar label="Search the route" slots={bar} {field} bind:open bind:text={typed} empty={!slots.find && !slots.where && !slots.radius && !slots.open && !planned}
-        onreset={id => set(resetSlot(slots, id as SlotId))} onclear={clear} onundo={() => set(cleared)}>
+        onreset={id => set(resetSlot(slots, id as SlotId))} onclear={clear} onundo={undo}>
         {#snippet panel(id)}
             {#if id === 'find'}
                 <FindPanel find={slots.find} onchange={find => set({ ...slots, find })} />
@@ -179,8 +189,8 @@
             {/if}
         {/snippet}
     </SearchBar>
-    {#if movedView}<button type="button" class="search-view" disabled={searchState.loading} onclick={() => run(limit)}><PlannerIcon name="search" size={14} />Search this map view</button>{/if}
-    {#if left.length}<p class="note" role="status">One thing at a time: {left.map(kindLabel).join(', ')} {left.length > 1 ? 'were' : 'was'} left out.</p>{/if}
+    {#if movedView}<button type="button" class="search-view" in:unfold disabled={searchState.loading} onclick={() => run(limit)}><PlannerIcon name="search" size={14} />Search this map view</button>{/if}
+    {#if left.length}<p class="note" role="status" in:unfold>One thing at a time: {left.map(kindLabel).join(', ')} {left.length > 1 ? 'were' : 'was'} left out.</p>{/if}
 </div>
 
 <style>

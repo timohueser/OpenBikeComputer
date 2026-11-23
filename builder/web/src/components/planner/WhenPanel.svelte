@@ -3,6 +3,7 @@
 <script lang="ts">
     import { contract } from '../../lib/planner/search/presentation';
     import { openWords, weekdayWord, type Open } from '../../lib/planner/search/slots';
+    import Segmented from '../../lib/ui/Segmented.svelte';
     import QueryChoice from './QueryChoice.svelte';
 
     let { open, onchange }: { open?: Open; onchange: (open: Open | undefined) => void } = $props();
@@ -12,11 +13,8 @@
     <QueryChoice label="Any time" icon="clock" on={!open} onclick={() => onchange(undefined)} />
     <QueryChoice label="Open now" icon="clock" on={!!open?.now} onclick={() => onchange(open?.now ? undefined : { now: true })} />
     <QueryChoice label="Open on a day of the week" icon="calendar" on={!!open?.weekday} onclick={() => onchange(open?.weekday ? undefined : { weekday: 'sun' })}>
-        <div class="pills" role="group" aria-label="Day of the week">
-            {#each contract.weekdays as day (day)}
-                <button type="button" aria-pressed={open?.weekday === day} aria-label={weekdayWord(day)} onclick={() => onchange({ weekday: day })}>{weekdayWord(day).slice(0, 3)}</button>
-            {/each}
-        </div>
+        <Segmented label="Day of the week" columns={7} value={open?.weekday ?? 'sun'} onChange={weekday => onchange({ weekday })}
+            options={contract.weekdays.map(day => ({ value: day, label: weekdayWord(day).slice(0, 3) }))} />
     </QueryChoice>
     {#if open?.day !== undefined}<QueryChoice label={openWords(open)[0]} icon="calendar" on onclick={() => onchange(undefined)} />{/if}
 </div>

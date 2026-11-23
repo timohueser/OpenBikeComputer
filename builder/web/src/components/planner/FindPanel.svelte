@@ -4,6 +4,7 @@
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { category, contract } from '../../lib/planner/search/presentation';
     import { factIcon, factWord, kindsUnder, kindWord, topKind, type Find } from '../../lib/planner/search/slots';
+    import Segmented from '../../lib/ui/Segmented.svelte';
     import QueryChoice from './QueryChoice.svelte';
 
     let { find, onchange }: { find?: Find; onchange: (find: Find | undefined) => void } = $props();
@@ -33,11 +34,8 @@
             {@const under = kindsUnder(one)}
             <QueryChoice label={kindWord(one)} path={placeCategories[category(one)].icon} {on} onclick={() => onchange(on ? undefined : { kind: one })}>
                 {#if under.length}
-                    <div class="pills" role="group" aria-label="Which {kindWord(one).toLowerCase()}">
-                        {#each [one, ...under] as sub (sub)}
-                            <button type="button" aria-pressed={kind === sub} onclick={() => onchange({ kind: sub })}>{sub === one ? 'Any' : kindWord(sub)}</button>
-                        {/each}
-                    </div>
+                    <Segmented label="Which {kindWord(one).toLowerCase()}" wrap value={kind ?? one} onChange={sub => onchange({ kind: sub })}
+                        options={[{ value: one, label: 'Any' }, ...under.map(sub => ({ value: sub, label: kindWord(sub) }))]} />
                 {/if}
             </QueryChoice>
         {/each}

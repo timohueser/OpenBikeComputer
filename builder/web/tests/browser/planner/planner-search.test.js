@@ -48,5 +48,10 @@ test('the planner search: a sentence marks its words, and Enter puts what the mo
     ['drinking water in the middle of day 1', { type: 'places', what: ['drinking_water'], where, open: now }],
     ['drinking water in the middle of day 1', { type: 'places', what: ['food'], where, open: now }],
   ]);
+  // In a short window the open panel ends over the bottom of the page. The panel of "Find" is wider than the side panel.
+  await page.setViewportSize({ width: 1280, height: 600 });
+  const panel = page.locator('#search-panel');
+  await expect(panel.getByRole('button', { name: 'Done' })).toBeInViewport({ ratio: 1 });
+  expect((await panel.boundingBox()).width).toBeGreaterThan((await page.locator('.search-bar').boundingBox()).width);
   expect(errors).toEqual([]);
 });

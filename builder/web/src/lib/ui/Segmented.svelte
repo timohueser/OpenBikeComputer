@@ -13,7 +13,7 @@
 <script lang="ts" generics="T extends string">
     import Icon from './Icon.svelte';
 
-    let { label, options, value, onChange, compact = false, columns = 0 }: {
+    let { label, options, value, onChange, compact = false, columns = 0, wrap = false }: {
         label: string;
         options: { value: T; label: string; icon?: string }[];
         value: T;
@@ -21,13 +21,15 @@
         compact?: boolean;
         /** Lays the options out in a grid of this many columns instead of one row. */
         columns?: number;
+        /** Lets the options take more rows, each option as wide as its label needs. */
+        wrap?: boolean;
     } = $props();
 
     // A radio group keeps one tab stop, also when no option matches.
     const stop = $derived(options.some(option => option.value === value) ? value : options[0]?.value);
 </script>
 
-<div class="segmented" class:compact class:grid={columns > 0} style:grid-template-columns={columns > 0 ? `repeat(${columns}, 1fr)` : undefined} role="radiogroup" aria-label={label}>
+<div class="segmented" class:compact class:wrap class:grid={columns > 0} style:grid-template-columns={columns > 0 ? `repeat(${columns}, 1fr)` : undefined} role="radiogroup" aria-label={label}>
     {#each options as option, index (option.value)}
         <button
             type="button"
@@ -76,6 +78,12 @@
     }
     .grid {
         display: grid;
+    }
+    .wrap {
+        flex-wrap: wrap;
+    }
+    .wrap button {
+        flex: 1 1 auto;
     }
     .compact button {
         min-height: 26px;

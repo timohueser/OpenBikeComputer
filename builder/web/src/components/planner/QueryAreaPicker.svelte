@@ -40,10 +40,13 @@
 {/each}
 <style>
     .scopes { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 6px; }
-    .scopes button { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+    /* The look of the shape tiles of Explore. */
+    .scopes button { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 10px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink-soft); font: 13.5px/1.2 var(--sans); text-align: left; cursor: pointer; transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background 120ms, border-color 120ms, color 120ms; }
     .scopes button :global(svg) { flex: none; }
-    .scopes button.chosen { background: var(--parchment-2); border-color: var(--ink); font-weight: 600; }
-    .scopes button:hover { border-color: var(--ink-faint); }
+    .scopes button.chosen { background: var(--parchment-2); border-color: var(--ink-soft); color: var(--ink); font-weight: 600; }
+    .scopes button:hover { border-color: var(--ink-soft); }
+    .scopes button:active { transform: scale(0.97); }
+    @media (prefers-reduced-motion: reduce) { .scopes button { transition-property: background, border-color, color; } }
     .scopes button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     .point { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; grid-column: 1 / -1; min-width: 0; }
     strong { grid-column: 1 / -1; font-size: 12px; }

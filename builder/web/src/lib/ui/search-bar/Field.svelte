@@ -623,5 +623,9 @@
         .list {
             width: auto;
         }
+        /* One line has room for the hints of Enter and Tab only. */
+        .keys span:last-child {
+            display: none;
+        }
     }
 </style>

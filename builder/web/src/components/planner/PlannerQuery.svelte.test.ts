@@ -105,15 +105,22 @@ describe('the planner search',()=>{
         const view = fromStore(writable(context)), revision = fromStore(writable(0));
         let state: SearchState = { loading: false, error: '', answer: null };
         const onLocation = vi.fn(async () => { view.current = { ...context, here: [7.85, 48] }; revision.current++; return undefined; });
-        const { enter, words } = await setup({ get context() { return view.current; }, get revision() { return revision.current; }, onLocation,
+        const { target, enter, words } = await setup({ get context() { return view.current; }, get revision() { return revision.current; }, onLocation,
             get searchState() { return state; }, set searchState(next: SearchState) { state = next; } });
         await enter('supermarket');
         await enter('route from my location to Konstanz'); await vi.advanceTimersByTimeAsync(250); await tick();
         expect(onLocation).toHaveBeenCalledOnce();
         expect(sent(fetch).at(-1)).toMatchObject({ here: [7.85, 48], request: route });
         expect(state).toMatchObject({ loading: false, answer: { type: 'change' } });
-        // The slots keep the search before.
+        // The slots keep the search before, and the empty field offers nothing over "Apply change".
         expect(words('find')).toBe('Supermarket');
+        expect(target.querySelector('[role="listbox"]')).toBeNull();
+        // The cross takes the change away, and "Undo" asks for it again.
+        target.querySelector<HTMLButtonElement>('[aria-label="Clear the search"]')!.click(); await tick();
+        expect([state.answer, words('find')]).toEqual([null, 'Choose']);
+        target.querySelector<HTMLButtonElement>('.undo')!.click(); await vi.advanceTimersByTimeAsync(0); await tick();
+        expect(sent(fetch).at(-1)).toMatchObject({ request: route });
+        expect([state.answer?.type, words('find')]).toEqual(['change', 'Supermarket']);
     });
 
     it('searches a name in the map view, and keeps the notice of an answer without the model when the slots search again', async () => {

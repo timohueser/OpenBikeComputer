@@ -70,31 +70,4 @@
     .under {
         padding: 0 0 10px 26px;
     }
-    /* A row of small choices under the chosen row, such as the kinds under a kind or the days of the week. */
-    .under :global(.pills) {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-    }
-    .under :global(.pills button) {
-        width: auto;
-        min-height: 28px;
-        padding: 0 10px;
-        border: 1px solid var(--line-strong);
-        border-radius: 14px;
-        background: var(--panel);
-        color: var(--ink-soft);
-        font: 12.5px var(--sans);
-        transition: background 120ms, border-color 120ms, color 120ms;
-    }
-    .under :global(.pills button:hover) {
-        border-color: var(--ink-faint);
-        color: var(--ink);
-    }
-    .under :global(.pills button[aria-pressed="true"]) {
-        border-color: var(--ink);
-        background: var(--ink);
-        color: var(--panel);
-        font-weight: 600;
-    }
 </style>
