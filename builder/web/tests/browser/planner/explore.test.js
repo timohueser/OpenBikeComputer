@@ -73,6 +73,9 @@ test('the Explore page searches the day hikes of the map view, plans one and com
   await page.keyboard.press('Escape');
   await expect(page.locator('#search-panel')).toHaveCount(0);
   // A row opens the card of its route over the map, with the facts of its shape and the link to the page of the route.
+  // The view is the map's own only after the map loads: before it, the view of the history can still change.
+  await expect(page.locator('.routes-map')).toHaveAttribute('data-loaded', 'true');
+  await page.waitForTimeout(500);
   const wide = viewOf(page);
   await rows.filter({ hasText: 'Westweg 2' }).click();
   const card = page.getByRole('region', { name: 'Westweg 2' });
