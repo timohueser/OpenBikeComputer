@@ -25,7 +25,8 @@
     } = $props();
 
     const VIEW: Where = { scope: 'view' };
-    const EXAMPLES = ['drinking water in the middle of day 1', 'climbs over 300 m on day 2', 'supermarket open now'];
+    /** One of a place, one of a fact of the route, and one of an action: the label "Find" does not say that it can be one. */
+    const EXAMPLES = ['drinking water in the middle of day 1', 'climbs over 300 m on day 2', 'route to the next supermarket'];
     const ICONS: Record<SlotId, string> = { find: 'search', where: 'route', when: 'clock' };
 
     const request = $derived(requestOf(slots, context.plan));

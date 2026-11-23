@@ -27,7 +27,7 @@
 </script>
 
 <div class="act">
-    <Segmented label="What to do with the place" value={act ?? 'find'} onChange={value => onact(value === 'find' ? undefined : value)}
+    <Segmented label="What to do with the place" wrap value={act ?? 'find'} onChange={value => onact(value === 'find' ? undefined : value)}
         options={[{ value: 'find' as const, label: 'Find' }, ...(Object.keys(ACTS) as Act[]).map(value => ({ value, label: ACTS[value].label }))]} />
 </div>
 <!-- The chosen row shows when the panel opens, also a fact under the long list of places. -->

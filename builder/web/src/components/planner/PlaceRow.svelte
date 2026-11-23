@@ -20,8 +20,10 @@
     const facts = $derived([showKind && (place.placeKind ? kindLabel(place.placeKind) : placeCategories[place.category].label), place.locality, detail].filter(Boolean).join(' · '));
 </script>
 
+<!-- A row that the map lights scrolls into view. The pointer on the row, or on its action beside it, lights it too, and
+     must not move it. -->
 <button type="button" class="place-row" class:selected class:hovered onmouseenter={() => onHover?.(place.id)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(place.id)} onblur={() => onHover?.(null)} onclick={() => onSelect(place)}
-    {@attach row => { if (hovered && !row.matches(':hover')) row.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
+    {@attach row => { if (hovered && !row.parentElement?.matches(':hover')) row.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
     <span class="place-icon"><Icon path={placeCategories[place.category].icon} size={17} /></span>
     <span class="name">
         <strong>{place.label}</strong>
