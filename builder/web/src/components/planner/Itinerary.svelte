@@ -59,7 +59,15 @@
     /** The town of each night by the number of its day: of the day end in view, of the place that the rider set, else of
      * the suggestion. */
     const nightTowns = $derived(days.map(day => around && day.number === chosen ? end!.town
-        : day.pinned ? day.pinned.locality ?? day.pinned.label : nights.around(day.number)?.stop.name));
+        : day.pinned ? day.pinned.locality ?? day.pinned.label : nights.around(day.number)?.stop.name ?? lastTown(day.number)));
+    // A night keeps the town of its last suggestion until its stops are found again, so that a title does not read
+    // "Night 1" for the moment in which the route is calculated.
+    const towns = new Map<number, string>();
+    function lastTown(night: number) {
+        const state = nights.found(night)?.state;
+        return state === 'ready' || state === 'error' ? undefined : towns.get(night);
+    }
+    $effect(() => { for (const day of days) { const town = nights.around(day.number)?.stop.name; if (town) towns.set(day.number, town); } });
     const fromOf = (day: Day) => day.number === 1 ? ends[0]?.label ?? '' : nightTowns[day.number - 2] ?? `Night ${day.number - 1}`;
     const toOf = (day: Day) => day.number === days.length ? (trip.loop ? ends[0] : ends.at(-1))?.label ?? '' : nightTowns[day.number - 1] ?? `Night ${day.number}`;
     const samples = $derived(profileSamples(line));
