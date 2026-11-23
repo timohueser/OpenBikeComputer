@@ -1040,6 +1040,37 @@
    "sundays"
   ]
  },
+ "action": {
+  "route": [
+   "route to",
+   "navigate to",
+   "directions to",
+   "take me to",
+   "bring me to",
+   "get me to",
+   "go to",
+   "ride to",
+   "cycle to"
+  ],
+  "add_point": [
+   "add",
+   "add a stop",
+   "add a stop at",
+   "add stop at",
+   "stop at",
+   "add a break at"
+  ],
+  "end_day": [
+   "end the day at",
+   "end day at",
+   "finish the day at",
+   "sleep at",
+   "stay at",
+   "overnight at",
+   "camp at",
+   "spend the night at"
+  ]
+ },
  "day_noun": [
   "day",
   "days",
@@ -1047,6 +1078,11 @@
   "stages",
   "leg",
   "daily stage"
+ ],
+ "nearest": [
+  "nearest",
+  "closest",
+  "next"
  ],
  "ordinal": {
   "1": [

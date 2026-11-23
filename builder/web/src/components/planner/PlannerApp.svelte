@@ -56,12 +56,12 @@
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
     import { nightKinds, nightWindows, proposal, proposeNights, suitable, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlan } from '../../lib/planner/search/plan';
-    import { sameValue, stretchOf, type Slots } from '../../lib/planner/search/slots';
+    import { ACTS, sameValue, stretchOf, type Slots } from '../../lib/planner/search/slots';
     import { containing, weekOf } from '../../lib/planner/week';
-    import { placeDetails, withDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
+    import { placeDetails, withDetails, type QueryChange, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { placeSource } from '../../lib/planner/place-index';
     import { asPlace, category, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
-    import { applyQueryChanges } from '../../lib/planner/search/actions';
+    import { applyQueryChanges, placeChange } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import { appearance } from '../../lib/theme.svelte';
     import { routingKey, type RoutingLine, type Surface } from '../../lib/planner/routing';
@@ -162,6 +162,8 @@
     let here = $state<{ coordinate: Coordinate; at: number } | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
+    /** What the last action on a place of the search changed, for the slots that listed the place, until the next edit. */
+    let searchDone = $state.raw<{ text: string; slots: Slots } | null>(null);
     let message = $state(`Plan a ride in ${config.name}`);
     // The status line offers Undo after "Discard changes", until the next change.
     let statusUndo = $state<(() => void) | null>(null);
@@ -206,14 +208,15 @@
         if (open) profileHeight = next;
     }
     const multi = $derived(multiDay(trip));
-    // The view follows the type on each path that changes it: the day count, Undo, Redo, a search, an import.
-    let viewMulti: boolean | undefined;
+    // The view follows the type on each path that changes it: the day count, Undo, Redo, a search, an import. An action
+    // on a place of the search and its "Undo" keep the search, whose list the rider still chooses from.
+    let viewMulti: boolean | undefined, keepSearch = false;
     $effect.pre(() => {
         if (viewMulti !== undefined && multi !== viewMulti) untrack(() => {
             night = 1;
             expandedDay = null;
             stopChoosing();
-            exitSearch();
+            if (!keepSearch) exitSearch();
             clearSelection();
         });
         viewMulti = multi;
@@ -691,6 +694,7 @@
         if (!hasEndpoints) { expandedDay = null; hoverProgress = null; }
         message = description;
         statusUndo = null;
+        searchDone = null;
     }
 
     function edit(change: Partial<Trip>, description: string) {
@@ -723,6 +727,7 @@
         clampNight();
         message = description;
         statusUndo = null;
+        searchDone = null;
         nameVisits(trip);
     }
 
@@ -756,12 +761,14 @@
     function exitSearch() {
         if (!searching) return;
         searching = false;
+        searchDone = null;
         searchBox?.reset();
     }
 
     function clearSearch() {
         if (!searching) return;
         searching = false;
+        searchDone = null;
         if (multi && expandedDay !== null) showDay(expandedDay);
         else { clearSelection(); map?.fitRoute(); }
     }
@@ -1127,21 +1134,48 @@
         });
     }
 
-    async function applySearch() {
-        const answer = $state.snapshot(searchState.answer);
-        if (!answer?.changes || applyingQuery) return;
+    /** Applies the changes that `make` gives as one Undo step, and gives their description; none when they fail or the
+     * plan changed meanwhile, with the reason in `queryApplyError`. */
+    async function applyChanges(make: () => { changes: QueryChange[]; description: string }): Promise<string | undefined> {
+        if (applyingQuery) return;
         const before = trip;
         applyingQuery = true; queryApplyError = '';
         try {
-            const next = await applyQueryChanges(before, session.line, answer.changes, plan => session.calculate(plan, new AbortController().signal));
-            if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The route changed. Review the search again.');
-            if (answer.changes.some(change => change.op === 'route')) { exploreBack = undefined; restedStart = weekStart = 1; fitWeek = false; }
+            const { changes, description } = make();
+            const next = await applyQueryChanges(before, session.line, changes, plan => session.calculate(plan, new AbortController().signal));
+            if (before !== trip) throw new Error('The route changed. Review the search again.');
+            if (changes.some(change => change.op === 'route')) { exploreBack = undefined; restedStart = weekStart = 1; fitWeek = false; }
             session.commit(next.trip, next.line);
-            showInWeek(answer.changes.find(change => change.day !== undefined)?.day);
-            afterEdit(answer.description ?? 'Query applied');
-            exitSearch(); clearSelection();
+            showInWeek(changes.find(change => change.day !== undefined)?.day);
+            afterEdit(description);
+            return description;
         } catch (error) { queryApplyError = (error as Error).message; }
         finally { applyingQuery = false; }
+    }
+
+    /** "Apply" of a change of the plan that the slots cannot hold. The search ends. */
+    async function applySearch() {
+        const answer = $state.snapshot(searchState.answer);
+        if (!answer?.changes) return;
+        if (await applyChanges(() => ({ changes: answer.changes!, description: answer.description ?? 'Query applied' }))) { exitSearch(); clearSelection(); }
+    }
+
+    /** Runs an edit of the plan from the list of the search, and keeps the search when the plan changes its type. */
+    async function keepingSearch(edit: () => unknown) {
+        keepSearch = true;
+        try { await edit(); await tick(); }
+        finally { keepSearch = false; }
+    }
+
+    /** The action of "Find" on a place of the list; "Find" itself adds it as a stop. The list stays, with what changed. */
+    function actOn(place: SearchPlace) {
+        const slots = searchSlots;
+        return keepingSearch(async () => {
+            // A route goes from the rider, else from the start: with no start, the page asks for the position first.
+            if (slots.act === 'route' && !searchContext.here && !queryPlan.points.some(point => point.kind === 'start')) await locate();
+            const text = await applyChanges(() => placeChange(slots.act ?? 'add_point', $state.snapshot(place), queryPlan, $state.snapshot(searchContext.here)));
+            if (text) searchDone = { text, slots };
+        });
     }
 
     function nameRest(index: number, name: string) {
@@ -1251,7 +1285,9 @@
             {/if}
             {#if searching}
                 <div class="pane-scroll">
-                    <QueryResults attribution={config.attribution} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={stretch => searchBox?.setStretch(stretch)} />
+                    <QueryResults attribution={config.attribution} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch}
+                        action={searchSlots.act ? { button: ACTS[searchSlots.act].button, chosen: true } : hasEndpoints ? { button: ACTS.add_point.button, chosen: false } : undefined}
+                        done={searchDone && sameValue(searchDone.slots, searchSlots) ? searchDone.text : ''} onAct={actOn} onUndo={() => keepingSearch(undo)} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={stretch => searchBox?.setStretch(stretch)} />
                 </div>
             {:else if !hasEndpoints}
                 <div class="start-plan pane-scroll">

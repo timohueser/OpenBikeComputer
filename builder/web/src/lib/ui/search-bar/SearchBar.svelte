@@ -386,6 +386,10 @@
         .slot:first-child {
             border-left: 0;
         }
+        /* A label such as "End the day at" needs the room of its icon. */
+        .label :global(svg) {
+            display: none;
+        }
         .slot:last-child {
             margin-right: 0;
         }

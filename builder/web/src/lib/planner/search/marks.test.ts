@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { scan } from '../../ui/search-bar/read';
-import { areasAndTimes, PLANNER_WORDS, type Mark } from './marks';
+import { areasAndTimes, PLANNER_WORDS, saysNearest, type Mark } from './marks';
+import { NEAREST } from './slots';
 
 /** Each marked phrase of a text with the label and the slot of its value. */
 const marked = (text: string) => scan(text, PLANNER_WORDS).flatMap(part => part.kind === 'value' ? [[text.slice(part.from, part.to), (part.value as Mark).label, part.value.slot]] : []);
@@ -13,6 +14,16 @@ describe('the words of the planner search', () => {
         expect(marked('climbs over 300 m on day 2')).toEqual([['climbs', 'Climbs', 'find'], ['day 2', 'Day 2', 'where']]);
         expect(marked('supermarket open now')).toEqual([['supermarket', 'Supermarket', 'find'], ['open now', 'Open now', 'when']]);
         expect(marked('a cafe open on Sundays near me')).toEqual([['cafe', 'Cafe', 'find'], ['open on Sundays', 'Open on Sunday', 'when'], ['near me', 'Near me', 'where']]);
+    });
+
+    it('marks an action as the label of "Find", and "the next" of a place as the nearest one ahead, not a stretch', () => {
+        expect(marked('route to the next supermarket')).toEqual([['route to', 'Route to', 'find'], ['next', 'Nearest to me', 'where'], ['supermarket', 'Supermarket', 'find']]);
+        expect(applied('route to the next supermarket')).toEqual({ act: 'route', find: { kind: 'supermarket' }, where: NEAREST });
+        expect(marked('add a stop at a bakery')).toEqual([['add a stop at', 'Add a stop at', 'find'], ['bakery', 'Bakery', 'find']]);
+        expect(marked('sleep at a campsite')).toEqual([['sleep at', 'End the day at', 'find'], ['campsite', 'Campsite', 'find']]);
+        expect(saysNearest('the closest cafe')).toBe(true);
+        // "The next 20 km" is a stretch, which the query model reads.
+        expect([saysNearest('water in the next 20 km'), marked('water in the next 20 km')]).toEqual([false, [['water', 'Water', 'find']]]);
     });
 
     it('puts a part and a day of a sentence together in one search area', () => {

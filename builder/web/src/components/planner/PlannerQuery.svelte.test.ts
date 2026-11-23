@@ -3,6 +3,7 @@ import { mount, tick, unmount } from 'svelte';
 import { writable, fromStore } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Query from './PlannerQuery.svelte';
+import { NEAREST } from '../../lib/planner/search/slots';
 import type { SearchContext, SearchState, QueryRequest } from '../../lib/planner/search/types';
 import '../../../test-support/planner/animations';
 
@@ -14,6 +15,7 @@ const READ: Record<string, QueryRequest> = {
     'supermarket': { type: 'places', what: ['supermarket'] },
     'sunny cafe or bakery': { type: 'places', what: ['cafe', 'bakery'], ignored: ['sunny'] },
     'water today': { type: 'places', what: ['water'], where: { day: 'today' } },
+    'route to the next supermarket': { type: 'route', to: { kind: 'supermarket' } },
 };
 /** A server that answers the request it was sent, else the request that the model reads. */
 const server = () => vi.fn(async (_url: string, init: RequestInit) => { const input = JSON.parse(String(init.body)); return reply(input.request ?? READ[input.q] ?? { type: 'place', name: input.q }); });
@@ -78,6 +80,22 @@ describe('the planner search',()=>{
         expect(words('find')).toBe('Cafe');
         expect(target.querySelector('[role="status"]')?.textContent).toBe('One thing at a time: bakery was left out.');
         expect(sent(fetch).at(-1).request).toEqual({ type: 'places', what: ['cafe'] });
+    });
+
+    it('reads an action on a kind as the label of "Find", "the next" as the nearest one ahead, and sets the action in its panel', async () => {
+        const fetch = server();
+        vi.stubGlobal('fetch', fetch);
+        const { target, enter, slot, words, press } = await setup();
+        const label = () => slot('find').querySelector('.label')!.textContent;
+        await enter('route to the next supermarket');
+        expect([label(), words('find'), words('where')]).toEqual(['Route to', 'Supermarket', 'Nearest to me']);
+        expect(sent(fetch).at(-1).request).toEqual({ type: 'places', what: ['supermarket'], where: NEAREST });
+        // An action is on a place: its panel offers no fact of the route.
+        slot('find').click(); await tick();
+        expect(target.querySelector('#find-route')).toBeNull();
+        press('End the day at'); await vi.advanceTimersByTimeAsync(0); await tick();
+        press('Find'); await vi.advanceTimersByTimeAsync(0); await tick();
+        expect([label(), words('find'), target.querySelector('#find-route')?.textContent]).toEqual(['Find', 'Supermarket', 'The route itself']);
     });
 
     it('searches with the request of a panel and no model, and turns "When" off for a fact of the route', async () => {
