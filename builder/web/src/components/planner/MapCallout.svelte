@@ -155,7 +155,7 @@
         </div>
     {/if}
 {/snippet}
-<Callout label="Map details" {onClose} {takeFocus}>
+<Callout label="Map details" {onClose} onDelete={kind === 'point' ? onRemove : undefined} {takeFocus}>
     {#if kind === 'add'}
         <header><h2>{hasEndpoints ? 'Add point here' : 'Plan from here'}</h2></header>
         {#if hasEndpoints}
@@ -211,7 +211,7 @@
             {#if point.kind === 'finish' && hasEndpoints}
                 <button type="button" class="row" aria-label="Back to start" aria-describedby="{uid}-loop" onclick={onLoop}><Icon name="loop" size={16} /><span>Back to start</span><small id="{uid}-loop">Makes the route a loop</small></button>
             {/if}
-            <button type="button" class="row danger" onclick={onRemove}><Icon name="trash" size={16} /><span>Remove point</span></button>
+            <button type="button" class="row danger" aria-label="Remove point" aria-keyshortcuts="Delete Backspace" onclick={onRemove}><Icon name="trash" size={16} /><span>Remove point</span><small><kbd>Delete</kbd></small></button>
         </div>
     {/if}
     {@render children?.()}

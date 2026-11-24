@@ -6,7 +6,14 @@
      * false and gives back to the opener on close. It never takes the focus from a control that the rider chose before
      * its first frame. Its style gives the parts of each popup one look: a `header` with the title and a `.meta` line,
      * `.buttons`, the `.rows` of a menu or a list, a `.rule` over a new group, and a `footer` of main actions. */
-    let { label, onClose, takeFocus = true, children }: { label: string; onClose: () => void; takeFocus?: boolean; children: Snippet } = $props();
+    let { label, onClose, onDelete, takeFocus = true, children }: {
+        label: string;
+        onClose: () => void;
+        /** Delete or Backspace in the popup, outside a field: removes the thing of the popup. */
+        onDelete?: () => void;
+        takeFocus?: boolean;
+        children: Snippet;
+    } = $props();
 
     let root: HTMLDivElement;
     let opener: HTMLElement | null = null;
@@ -29,9 +36,14 @@
     }
 
     function key(event: KeyboardEvent) {
-        if (event.key !== 'Escape' || (event.target as HTMLElement).closest('input, select')) return;
-        event.stopPropagation();
-        close();
+        if ((event.target as HTMLElement).closest('input, select')) return;
+        if (event.key === 'Escape') {
+            event.stopPropagation();
+            close();
+        } else if (onDelete && (event.key === 'Delete' || event.key === 'Backspace')) {
+            event.preventDefault();
+            onDelete();
+        }
     }
 </script>
 
@@ -164,8 +176,18 @@
     .callout :global(.row small) {
         flex-shrink: 100;
         margin-left: auto;
+        /* Room for the frame of a key, which the cut of a long note would clip. */
+        padding-block: 2px;
         color: var(--ink-soft);
         font: 400 13px var(--sans);
+    }
+    /* The key of a row, as its note. */
+    .callout :global(kbd) {
+        padding: 1px 5px;
+        border: 1px solid var(--line-strong);
+        border-radius: 4px;
+        color: var(--ink-soft);
+        font: 600 11px var(--mono);
     }
     .callout :global(.row.danger),
     .callout :global(.row.danger svg) {
