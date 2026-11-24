@@ -369,7 +369,8 @@ class Requests(unittest.TestCase):
             fake.answer = lambda box, n: None
             fake.fetch(BOX, Path(directory) / "read")
             # The pool keeps whichever box came back first; the broken boxes are the others.
-            broken = [box for box in boxes if label(box) != fake.known().read_text()]
+            known = tuple(float(value) for value in fake.known().read_text().split(","))
+            broken = [box for box in boxes if tuple(box) != known]
             self.assertEqual(len(broken), len(boxes) - 1)
 
             fake.missing, fake.asked = [], []

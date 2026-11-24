@@ -287,7 +287,8 @@ class TiledService(Source):
             return
         self.known().parent.mkdir(parents=True, exist_ok=True)
         part = self.known().with_name(f"{self.key}.{os.getpid()}.{threading.get_ident()}")
-        part.write_text(label(box), encoding="utf-8")
+        # Exact, because a rounded edge box can fall under the two-pixel rule of `Wcs10Source`.
+        part.write_text(",".join(repr(value) for value in box), encoding="utf-8")
         os.replace(part, self.known())
 
     def reads(self) -> bool:
