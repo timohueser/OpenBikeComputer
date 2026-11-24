@@ -3,7 +3,7 @@
 
 use crate::mesh::{left_of, Station};
 use crate::tube::{direction, spring, Meets, Net};
-use crate::{metres_per_unit, Part, Section};
+use crate::{metres_per_unit, Design, Part, Section};
 
 /// Words of a box: the middle of its start (world units), its unit way in, its depth and its half-width (m), the
 /// heights of its roof, its floor and its spring on its start plane, their rise per metre in, and the slopes of its
@@ -24,17 +24,23 @@ pub struct Reach {
     pub then: Meets,
 }
 
-/// The metres from end e's frame line that its part must reach: as today's box of a portal, a level-17 cell's
-/// diagonal and a metre past the start of the cover over the tube, `portal_cells` cells in or a metre past the
-/// collar. An underpass is one part for its chain: a `box` end runs to where it meets the other end's part, as the
-/// ground can dip between two ways on top.
-fn need(net: &Net, e: usize) -> f64 {
-    let (end, design) = (&net.holes[e], &net.rules.design);
-    if end.part == Part::Box {
+/// The metres from the frame line of an end of `part` with `collar`, at world row y, that its part must reach: as
+/// today's box of a portal, a level-17 cell's diagonal and a metre past the start of the cover over the tube,
+/// `portal_cells` cells in or a metre past the collar. An underpass is one part for its chain: a `box` end runs to
+/// where it meets the other end's part, as the ground can dip between two ways on top. The bake reads a head to the
+/// same reach.
+pub fn need(part: Part, collar: f64, y: f64, design: &Design) -> f64 {
+    if part == Part::Box {
         return f64::INFINITY;
     }
-    let cell = design.mesh_texels * 32.0 * metres_per_unit(end.at[1]);
-    (design.portal_cells * cell).max(end.collar + 1.0) + std::f64::consts::SQRT_2 * cell + 1.0
+    let cell = design.mesh_texels * 32.0 * metres_per_unit(y);
+    (design.portal_cells * cell).max(collar + 1.0) + std::f64::consts::SQRT_2 * cell + 1.0
+}
+
+/// The `need` of end e.
+fn need_of(net: &Net, e: usize) -> f64 {
+    let end = &net.holes[e];
+    need(end.part, end.collar, end.at[1], &net.rules.design)
 }
 
 /// The metres in from end e's opening of each vertex of its walk to the other end of its tube: 0, then the far vertex
@@ -63,7 +69,7 @@ fn at_or_past(stops: &[f64], metres: f64) -> usize {
 pub fn reach(net: &Net, e: usize) -> Reach {
     let walk = net.walk(e, f64::INFINITY);
     let at = stops(net, e);
-    let (total, own) = (at[at.len() - 1], at[at_or_past(&at, need(net, e))]);
+    let (total, own) = (at[at.len() - 1], at[at_or_past(&at, need_of(net, e))]);
     // A seam has no part: a part that runs to one ends there with a face, on the seam's corners.
     let other = walk.last().and_then(|&(c, forward, _)| net.end_at(c, usize::from(forward)));
     let other = other.filter(|&o| net.holes[o].part != Part::Seam);
@@ -71,8 +77,8 @@ pub fn reach(net: &Net, e: usize) -> Reach {
     let Some(o) = other.filter(|&o| o != e) else { return alone };
     // The parts meet where their last stops reach the same vertex or past it, counted in stops: the metres from the
     // two ends need not add up to the same sum.
-    let theirs = at_or_past(&stops(net, o), need(net, o));
-    if at_or_past(&at, need(net, e)) + theirs < at.len() - 1 {
+    let theirs = at_or_past(&stops(net, o), need_of(net, o));
+    if at_or_past(&at, need_of(net, e)) + theirs < at.len() - 1 {
         return alone;
     }
     // The vertex nearest the middle; of two as near, the one with the least key, so both ends find the same.
@@ -112,7 +118,7 @@ pub fn foot(net: &Net, e: usize) -> f64 {
     let low = (net.of_record[r].iter())
         .flat_map(|&e| {
             let at = stops(net, e);
-            net.walk(e, at[at_or_past(&at, need(net, e))])
+            net.walk(e, at[at_or_past(&at, need_of(net, e))])
         })
         .map(|(c, ..)| net.chords[c].a[2].min(net.chords[c].b[2]))
         .fold(f64::INFINITY, f64::min);

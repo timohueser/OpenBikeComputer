@@ -1,12 +1,11 @@
-//! The check of the heads (Tunnel parts in the spec): a head, with the shells of its collars down to its foot, stands
-//! in no other room that draws; and how far its openings move in along their ways so that it clears.
+//! The check of the heads (Tunnel parts in the spec): whether a head, with the shells of its collars down to its foot,
+//! stands in another room that draws, and how far its openings move in along their ways so that it clears.
 
 use std::collections::BTreeSet;
 
 use super::ladder::{Decided, Hole, Kind, Numbers};
 use super::rooms::{Drawn, Rooms};
 use super::{distance, first_way_m, left_of, offset, Input, Opening};
-use crate::metres;
 
 /// A head that stands in another room: its record's opening, the place, and the least whole metres more that its
 /// openings move in so that it clears; None where no metre within their limits does.
@@ -27,10 +26,10 @@ const MERGE_M: f64 = 0.01;
 /// than a centimetre. A part is its head wall from `-recess_m` to `face_m - recess_m` across its frame line, `half` +
 /// `shell_m` (a rim: + `frame_m`) past its outer holes and its wing rows past that, from its foot to `face` (a rim: to
 /// each hole's frame); and per hole the shell of its collar, `half` + `shell_m` to each side of its room's axis, from
-/// the foot to `shell_m` over its crown, out to the first vertex of its floor at the builder's reach (`need` of
-/// `obc-trailview-parts`), of a box to the middle of its room. The foot is the record's, or `foot_m` under the lowest
-/// floor of those collars, as the builder's (`boxes::foot`). The rooms of a head's holes are its own, and the rooms
-/// open to them through the hole of a seam.
+/// the foot to `shell_m` over its crown, out to the first vertex of its floor at the builder's reach
+/// (`obc_trailview_parts::need`), of a box to the middle of its room. The foot is the record's, or `foot_m` under the
+/// lowest floor of each hole's room out to that reach (of a box, the whole room), as the builder's (`boxes::foot`).
+/// The rooms of a head's holes are its own, and the rooms open to them through the hole of a seam.
 pub(crate) fn standing(rooms: &Rooms, openings: &[Opening], decided: &Decided, input: &Input) -> Vec<Stand> {
     let b = &input.rules.bake;
     let spring = obc_trailview_parts::Rules::embedded().design.spring;
@@ -118,29 +117,26 @@ fn samples(
     let kind_of = |h: &Hole| decided.ends[h.opening].kind.unwrap_or(kind);
     let rim = n.holes.iter().all(|h| matches!(kind_of(h), Kind::Rock | Kind::Free));
     let closed = |h: &Hole| kind_of(h) == Kind::Free && h.collar < 0.005;
-    // A level-17 cell of the builder in metres: `mesh_texels` texels of 32 of its world units, 2^30 per side.
-    let cell = design.mesh_texels * 32.0 / (1u64 << 30) as f64 * metres(o.p[1]);
-    // Per hole its opening, its way into the room, the metres to the end of its collar and the lowest floor to there.
+    // Per hole its opening, its way into the room, the metres to the end of its collar's shell, and the lowest floor
+    // out to the builder's reach (`need`; of a box, the whole room). A box's shell meets the other end's at the middle.
     let reach: Vec<(usize, f64, f64, f64)> = (n.holes.iter())
         .filter_map(|h| {
             let q = &openings[h.opening];
             let f = decided.floors[q.tube].as_ref()?;
             let (s0, s1) = (f.s[0], f.s[f.s.len() - 1]);
             let sign = if q.end == 0 { 1.0 } else { -1.0 };
-            let need = if kind_of(h) == Kind::Box {
-                (s1 - s0) / 2.0
-            } else {
-                (design.portal_cells * cell).max(h.collar + 1.0) + std::f64::consts::SQRT_2 * cell + 1.0
+            // The metres in to the first vertex of the floor at `m` or past it, within the room.
+            let to = |m: f64| {
+                let past = (f.s.iter().map(|&s| sign * (s - q.s))).filter(|&x| x >= m - 1e-6);
+                past.fold(f64::INFINITY, f64::min).min(if sign > 0.0 { s1 - q.s } else { q.s - s0 })
             };
-            // The first vertex of the floor at `need` or past it, within the room.
-            let past =
-                (f.s.iter().map(|&s| sign * (s - q.s))).filter(|&m| m >= need - 1e-6).fold(f64::INFINITY, f64::min);
-            let to = past.min(if sign > 0.0 { s1 - q.s } else { q.s - s0 });
+            let foot = to(obc_trailview_parts::need(kind_of(h), h.collar, q.p[1] * (1u64 << 30) as f64, design));
             let low = (f.s.iter().zip(&f.f))
-                .filter(|(&s, _)| (0.0..=to).contains(&(sign * (s - q.s))))
+                .filter(|(&s, _)| (0.0..=foot).contains(&(sign * (s - q.s))))
                 .map(|(_, &z)| z)
-                .fold(f.at(q.s).0.min(f.at(q.s + sign * to).0), f64::min);
-            Some((h.opening, sign, to, low))
+                .fold(f.at(q.s).0.min(f.at(q.s + sign * foot).0), f64::min);
+            let shell = if kind_of(h) == Kind::Box { to((s1 - s0) / 2.0) } else { foot };
+            Some((h.opening, sign, shell, low))
         })
         .collect();
     let low = reach.iter().map(|r| r.3).fold(f64::INFINITY, f64::min);

@@ -55,6 +55,7 @@ fn part(points: &[[f64; 2]], z: &[f64]) -> Part {
 
 const ROAD: [(&str, &str); 2] = [("highway", "residential"), ("tunnel", "yes")];
 const FOOT: [(&str, &str); 2] = [("highway", "footway"), ("tunnel", "yes")];
+const CYCLE: [(&str, &str); 2] = [("highway", "cycleway"), ("tunnel", "yes")];
 
 /// The ways of a test: (kind, tags, parts) by id; the tunnels are the ways of kind `tunnel`.
 #[derive(Default)]
@@ -1248,7 +1249,6 @@ fn a_box_whose_head_stands_in_a_hall_opens_where_it_clears() {
 /// may move in. The bake counts it and does not move it.
 #[test]
 fn a_head_that_no_metre_in_clears_is_counted() {
-    const CYCLE: [(&str, &str); 2] = [("highway", "cycleway"), ("tunnel", "yes")];
     let [road, cycle] = [&ROAD, &CYCLE].map(|t| widths().way("tunnel", &tags(t), false).half_m);
     let mut case = Case::default();
     case.ways.push(("tunnel", tags(&ROAD), vec![part(&[[0.0, 0.0], [50.0, 0.0], [100.0, 0.0]], &[505.0; 3])]));
@@ -1258,4 +1258,22 @@ fn a_head_that_no_metre_in_clears_is_counted() {
     let m = &placed.metrics;
     assert_eq!((m["heads_in_rooms"].as_u64(), m["openings_moved_out_of_rooms"].as_u64()), (Some(2), Some(0)), "{m}");
     assert!(!heads_in_rooms(&placed).is_empty());
+}
+
+/// A footway underpass east from 0 m to 20 m, its floor 504 m, 502 m and 496 m, over a cycleway tunnel under its west
+/// end at 496.5 m: the builder draws the west head down to `foot_m` under the lowest floor of the whole underpass, into
+/// the cycleway's room. The bake reads the same foot: the head opens where it clears.
+#[test]
+fn a_box_head_reaches_down_to_the_lowest_floor_of_its_underpass() {
+    let mut case = Case::default();
+    case.ways.push((
+        "tunnel",
+        tags(&FOOT),
+        vec![part(&[[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]], &[504.0, 502.0, 496.0])],
+    ));
+    case.ways.push(("tunnel", tags(&CYCLE), vec![part(&[[0.2, -50.0], [0.2, 0.0], [0.2, 50.0]], &[496.5; 3])]));
+    let placed = case.place(&site(&|_| 520.0, &[1.0], false), &mut Vec::new());
+    assert!(heads_in_rooms(&placed).is_empty(), "{:?}", heads_in_rooms(&placed));
+    let m = &placed.metrics;
+    assert_eq!((m["heads_in_rooms"].as_u64(), m["openings_moved_out_of_rooms"].as_u64()), (Some(0), Some(1)), "{m}");
 }

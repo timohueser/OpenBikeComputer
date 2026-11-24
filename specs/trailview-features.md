@@ -574,8 +574,9 @@ above, and the rooms and the ladder are made again. A head that no metre clears 
 bake reads a head as the builder draws it: its wall from `-recess_m` to `face_m` − `recess_m` across its frame line,
 `half` + `shell_m` (a rim: and `frame_m`) past its outer holes and its wing rows past that, from its foot to `face` (a
 rim: to each hole's frame); per hole the shell of its collar, `half` + `shell_m` to each side of its room's axis, from
-the foot to `shell_m` over its crown, out to the builder's reach (of a box to the middle of its room). Its foot is the
-record's, or `foot_m` under the lowest floor of those collars.
+the foot to `shell_m` over its crown, out to the builder's reach (`need` of `obc-trailview-parts`; a box meets the
+other end's part at the middle of its room). Its foot is the record's, or `foot_m` under the lowest floor of each
+hole's room out to that `need` (of a box, the whole room).
 
 The bake measures each opening on the ground of the ground plan: each cell that holds a point to read is built as the
 viewer builds it, with the tags of the levels and the stretches to the openings on the ground, without the storey
