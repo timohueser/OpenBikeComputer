@@ -500,7 +500,7 @@
         layer.sample({ coordinates: [at], elevation: [null] }, abort.signal, { date: shownDate, theme }).then(samples => { if (!abort.signal.aborted) pinSamples = { layer, at, samples }; }, () => {});
         return () => abort.abort();
     });
-    const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme: 'dark' }) : null);
+    const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme }) : null);
 
     // A query runs again when anything it sends other than the map view changes.
     $effect(() => { void [queryPlan, here, trip.startDate]; untrack(() => searchRevision++); });

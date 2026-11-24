@@ -80,23 +80,8 @@ summary:focus-visible {
     left: auto;
 }
 
-/* The popup of a map (`mapCallout`) is an ink palette in both themes. Inside it the tokens of the page take its
-   colours, so each part keeps its own rules. MapLibre puts it inside the map container, which can pass on its
-   user-select: none. */
+/* The popup of a map (`mapCallout`). MapLibre puts it inside the map container, which can pass on its user-select: none. */
 .maplibregl-popup.map-callout {
-    --panel: var(--hud);
-    --ink: #f6f3e8;
-    --ink-soft: #c6bf9a;
-    --ink-faint: #c6bf9a;
-    --line: rgb(255 255 255 / .15);
-    --line-strong: rgb(255 255 255 / .3);
-    --parchment-2: rgb(255 255 255 / .09);
-    --coral: #f0a07a;
-    --forest: #f2a93a;
-    --link: #ffc76d;
-    --water: #8be3bc;
-    --place-disc: #d8763a;
-    color-scheme: dark;
     user-select: text;
     -webkit-user-select: text;
 }

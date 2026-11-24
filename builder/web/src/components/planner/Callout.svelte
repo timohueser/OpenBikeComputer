@@ -7,7 +7,7 @@
     import { onMount, type Snippet } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
 
-    /** The frame of a map popup: an ink palette with a close button, Escape, and the focus, which it takes on mount
+    /** The frame of a map popup: a palette on the panel colour of the theme, with a close button, Escape, and the focus, which it takes on mount
      * unless `takeFocus` is false and gives back to the opener on close. It never takes the focus from a control that
      * the rider chose before its first frame. Its style gives the parts of each popup one look: a `header` with a
      * `.glyph`, the title and a `.meta` line, `.facts`, `.subs` of second actions, and a `.dock` at the bottom with the
@@ -89,6 +89,25 @@
         color: var(--ink);
         font: 400 13px/1.4 var(--sans);
         outline: none;
+        /* The ground of a tile, of the track of a choice, of the chosen tile in it, and of a small button in a track. */
+        --tile: var(--parchment-2);
+        --tile-over: var(--parchment-3);
+        --track: var(--parchment-2);
+        --lit: var(--panel);
+        --on-lit: var(--ink);
+        --lit-ring: var(--line-strong);
+        --knob: var(--panel);
+    }
+    /* On the dark panel the greens of the page are too near it: the tiles are lighter than the panel, the track is
+       darker, and the chosen tile is the light one. */
+    :global(:root[data-theme="dark"]) .callout {
+        --tile: rgb(255 255 255 / .09);
+        --tile-over: rgb(255 255 255 / .16);
+        --track: rgb(0 0 0 / .28);
+        --lit: var(--ink);
+        --on-lit: var(--panel);
+        --lit-ring: transparent;
+        --knob: var(--tile);
     }
     .callout > :global(*) {
         flex: none;
@@ -118,7 +137,7 @@
         color: var(--ink-soft);
     }
     .close:hover {
-        background: var(--parchment-2);
+        background: var(--tile);
         color: var(--ink);
     }
 
@@ -141,7 +160,7 @@
         width: 30px;
         height: 30px;
         border-radius: 50%;
-        background: var(--parchment-2);
+        background: var(--tile);
         font: 700 13px var(--sans);
     }
     /* The symbol in the colour of its thing on the map: a place, a warning, the route. */
@@ -151,7 +170,7 @@
     }
     .callout :global(.glyph.warn) {
         background: var(--coral);
-        color: var(--hud);
+        color: var(--panel);
     }
     .callout :global(.glyph.on-route) {
         background: var(--route);
@@ -196,12 +215,12 @@
         min-height: 66px;
         padding: 10px 2px 9px;
         border-radius: 10px;
-        background: var(--parchment-2);
+        background: var(--tile);
         font: 600 12px/1.2 var(--sans);
         text-align: center;
     }
     .callout :global(.tile:hover:not(:disabled)) {
-        background: rgb(255 255 255 / .16);
+        background: var(--tile-over);
     }
     .callout :global(.tile.go) {
         background: var(--amber);
@@ -227,7 +246,7 @@
         gap: 2px;
         padding: 3px;
         border-radius: 12px;
-        background: rgb(0 0 0 / .28);
+        background: var(--track);
     }
     .callout :global(.track .tile) {
         min-height: 60px;
@@ -236,12 +255,13 @@
         color: var(--ink-soft);
     }
     .callout :global(.track .tile:hover) {
-        background: var(--parchment-2);
+        background: none;
         color: var(--ink);
     }
     .callout :global(.track .tile[aria-checked="true"]) {
-        background: var(--ink);
-        color: var(--hud);
+        background: var(--lit);
+        color: var(--on-lit);
+        box-shadow: inset 0 0 0 1px var(--lit-ring);
     }
     /* The track and, at the far end, the tile that removes. */
     .callout :global(.split) {
@@ -303,7 +323,7 @@
         text-align: left;
     }
     .callout :global(.sub:hover) {
-        background: var(--parchment-2);
+        background: var(--tile);
     }
     .callout :global(.sub svg) {
         flex: none;
@@ -330,12 +350,12 @@
         min-height: 42px;
         padding: 0 10px;
         border-radius: 10px;
-        background: var(--parchment-2);
+        background: var(--tile);
         font: 600 13px var(--sans);
         text-align: left;
     }
     .callout :global(.row:hover) {
-        background: rgb(255 255 255 / .16);
+        background: var(--tile-over);
     }
     .callout :global(.row svg) {
         flex: none;

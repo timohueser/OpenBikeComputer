@@ -307,7 +307,7 @@
         color: var(--ink-soft);
     }
     .icon:hover {
-        background: var(--parchment-2);
+        background: var(--tile);
         color: var(--ink);
     }
     /* The field takes the place of the title, with its text where the title was. */
@@ -341,7 +341,7 @@
         gap: 2px;
         padding: 2px;
         border-radius: 9px;
-        background: rgb(0 0 0 / .28);
+        background: var(--track);
         font: 600 12px var(--sans);
         font-variant-numeric: tabular-nums;
     }
@@ -354,10 +354,8 @@
         width: 28px;
         height: 28px;
         border-radius: 7px;
-        background: var(--parchment-2);
-    }
-    .stepper button:hover:not(:disabled) {
-        background: rgb(255 255 255 / .16);
+        background: var(--knob);
+        box-shadow: inset 0 0 0 1px var(--lit-ring);
     }
     .stepper button:disabled {
         opacity: .35;

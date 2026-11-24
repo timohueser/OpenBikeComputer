@@ -79,7 +79,7 @@
     dl { margin: 0; overflow-wrap: anywhere; }
     dd { margin: 0; }
     .permissions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-    .permissions div { display: grid; gap: 2px; padding: 8px 10px; border-radius: 10px; background: var(--parchment-2); font-size: 12px; }
+    .permissions div { display: grid; gap: 2px; padding: 8px 10px; border-radius: 10px; background: var(--tile); font-size: 12px; }
     .permissions dt { color: var(--ink-soft); font-size: 11px; }
     .permissions dd { display: flex; align-items: center; gap: 5px; font-weight: 600; }
     .yes dd { color: var(--water); }
