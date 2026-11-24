@@ -267,9 +267,8 @@ describe('planner app transitions', () => {
         dayButton(1).click(); await tick();
         await search('Fuxxbau', 'Fuxxbau');
         button('Map place: Fuxxbau').click(); await tick();
-        const select = document.querySelector<HTMLSelectElement>('.callout select')!;
-        expect(select.value).toBe('1');
-        button('Stay here').click(); await tick();
+        expect(document.querySelector('.callout .stepper span')?.textContent).toBe('Day 1');
+        button('Sleep here').click(); await tick();
         const draft = JSON.parse(written()!);
         expect(draft).toMatchObject({ mode: 'trip', days: saved.days });
         expect(draft.points).toContainEqual(expect.objectContaining({ kind: 'night', night: 1, label: 'Fuxxbau', coordinate: [8.088, 48.279] }));
@@ -473,7 +472,7 @@ describe('planner app transitions', () => {
         expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
         vi.useRealTimers();
         const moved = moves.count;
-        button('Add as visit').click();
+        button('Add visit').click();
         await tick();
         expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ label: tilePlace.label, kind: 'waypoint' }));
         // The card closes so that it does not cover the new route, the map moves to it, and the new stop stays lit.
@@ -617,10 +616,10 @@ describe('planner app transitions', () => {
         dayButton(1).click(); await tick();
         await search('campsites', camp.name);
         button(`Map place: ${camp.name}`).click();
-        const contacts = () => document.querySelector('[role="dialog"] .contacts')?.innerHTML ?? '';
+        const contacts = () => document.querySelector('[role="dialog"] .facts')?.innerHTML ?? '';
         await vi.waitFor(() => expect(contacts()).toContain('href="https://camp.example/"'));
         expect(contacts()).toContain('href="tel:+49761123"');
-        button('Stay here').click(); await tick();
+        button('Sleep here').click(); await tick();
         expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ kind: 'night', placeId: 'n42', placeKind: 'campsite' }));
         // A reopened plan has no details yet, so the night asks for its place.
         await unmount(app!);
@@ -711,7 +710,7 @@ describe('planner app transitions', () => {
         escape(button('Pick on the map')); await tick();
         expect(document.querySelector('.night-seam')).not.toBeNull();
         button('Pick map location').click(); await tick();
-        expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('Add point here');
+        expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('Add a point');
         escape(button('Pan map')); await tick();
         document.querySelector<HTMLButtonElement>('.night-seam button.row')!.click(); await tick();
         expect(document.querySelector('.night-seam [role="radiogroup"]')).not.toBeNull();
@@ -870,8 +869,8 @@ describe('planner app transitions', () => {
         button(`Map place: ${tilePlace.label}`).click();
         await tick();
         const dialog = document.querySelector('[role="dialog"]')!;
-        expect(button('Stay here', dialog).disabled).toBe(true);
-        expect(dialog.querySelector<HTMLOptionElement>(`option[value="${maxRidingDays}"]`)?.disabled).toBe(true);
+        expect(button('Sleep here', dialog).disabled).toBe(true);
+        expect(button('Later day', dialog).disabled).toBe(true);
         expect(dialog.textContent).toContain(`up to ${maxRidingDays} riding days`);
     });
 

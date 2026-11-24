@@ -39,9 +39,10 @@
 </section>
 
 <style>
-    .place-content { margin-block: 12px; }
-    p { margin-block: 8px; white-space: pre-line; }
-    img { display: block; width: 100%; max-height: 240px; object-fit: contain; margin-block: 12px 8px; }
+    .place-content { display: grid; gap: 8px; }
+    p { white-space: pre-line; }
+    .place-content p + p { margin-top: 8px; }
+    img { display: block; width: 100%; max-height: 240px; object-fit: contain; }
     .credit { font-size: 11px; line-height: 1.5; color: var(--ink-soft); }
     a { color: inherit; text-underline-offset: 2px; }
     a:focus-visible { outline: 2px solid var(--ochre); outline-offset: 2px; }

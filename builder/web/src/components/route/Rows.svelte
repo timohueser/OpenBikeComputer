@@ -13,7 +13,7 @@
     import { distanceTicks, fitTicks } from './ticks';
     import type { RouteSummary } from '../../lib/library/records';
     import { lineCoordinates } from '../../lib/library/summary';
-    import { phoneLink, phoneNumbers, websiteLink } from '../../lib/planner/contact-links';
+    import { phoneLink, phoneNumbers, websiteLabel, websiteLink } from '../../lib/planner/contact-links';
     import { orderedRoutePoints, planView, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { cumulative, nearestProgress, routeSlice } from '../../lib/planner/geo';
     import { profileGrades } from '../../lib/planner/grade-data';
@@ -244,7 +244,7 @@
         {#if hours}<OpeningHours value={hours} />{/if}
         {#if website || phone}
             <p class="contacts">
-                {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Website</a>{/if}
+                {#if website}<a href={website} target="_blank" rel="noopener noreferrer">{websiteLabel(website)}</a>{/if}
                 {#each phoneNumbers(phone) as number (number)}
                     {@const link = phoneLink(number)}
                     {#if link}<a href={link}>{number}</a>{:else}<span>{number}</span>{/if}
@@ -434,8 +434,10 @@
         flex-wrap: wrap;
         gap: 4px 12px;
     }
+    /* A long address has no place to break, so it breaks anywhere inside the panel. */
     .contacts a {
         color: var(--forest);
+        overflow-wrap: anywhere;
     }
     /* The bar stands beside its label; its legend follows under it. */
     .bar {

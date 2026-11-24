@@ -1344,9 +1344,11 @@
                                     onKind={changeKind}
                                     onRemove={removePoint}
                                 >
-                                    {#if dataLayer && calloutKind === 'add'}
-                                        <LayerInspect compact chart={pinChart} date={shownDate} icon={dataLayer.icon} error={dataLayer.error} />
-                                    {/if}
+                                    {#snippet extra()}
+                                        {#if dataLayer && calloutKind === 'add'}
+                                            <LayerInspect compact chart={pinChart} date={shownDate} icon={dataLayer.icon} error={dataLayer.error} />
+                                        {/if}
+                                    {/snippet}
                                 </MapCallout>
                             {/key}
                         {/if}
