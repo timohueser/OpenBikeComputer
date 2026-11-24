@@ -29,7 +29,7 @@ function recordsOf(list: Feature[], tile: Node): string | null {
         for (const { xy, z } of kind === 'tunnel-end' || kind === 'tunnel-tube' ? parts : []) {
             if (!z) continue;
             if (kind === 'tunnel-end') ends.push({ at: worldPoint(tile, xy, 0), z: z[0], tags });
-            else chords.push({ a: [...worldPoint(tile, xy, 0), z[0]], b: [...worldPoint(tile, xy, 1), z[1]], tags, ...classPaint(tags.class, tags.surface) });
+            else chords.push({ a: [...worldPoint(tile, xy, 0), z[0]], b: [...worldPoint(tile, xy, 1), z[1]], tags, ...lanePaint(tags) });
         }
     }
     known = ends.length ? `"ends":${JSON.stringify(ends)},"chords":${JSON.stringify(chords)}` : null;
@@ -37,12 +37,19 @@ function recordsOf(list: Feature[], tile: Node): string | null {
     return known;
 }
 
+/** The surface code and the lines of each lane of a chord, by the rows `class` and `surface` (`-` for no surface). */
+function lanePaint(tags: Record<string, string>): { code: number[]; marked: boolean[] } {
+    const surfaces = tags.surface?.split(' ');
+    const paints = tags.class.split(' ').map((cls, i) => classPaint(cls, surfaces && surfaces[i] !== '-' ? surfaces[i] : undefined));
+    return { code: paints.map(p => p.code), marked: paints.map(p => p.marked) };
+}
+
 /** A node's square [x0, y0, x1, y1] in world units, as the bridge reads it. */
 const squareOf = ({ level, x, y }: Node) => [x, y, x + 1, y + 1].map(v => v * 2 ** (30 - level));
 
 /**
  * The input of the bridge for `node` of its feature tile: the node's square and the tile's part records in world
- * units, each chord with the surface code and the lines of a way of its class and surface; null for a tile without a
+ * units, each chord with the surface code and the lines of a way of each lane's class and surface; null for a tile without a
  * `tunnel-end`, which has no part.
  */
 export function partInput(list: Feature[], tile: Node, node: Node): string | null {
@@ -101,9 +108,9 @@ const lengthOf = (line: Line) => line.z.slice(1).reduce((sum, _, v) => sum + Mat
 
 /**
  * What the parts of a tile stamp with the ground plan (`PartStamps` of bins.ts), made once. A tunnel line of a chain that
- * draws as parts stamps nothing from each end vertex of the ways of its openings (`shift` metres before the opening) to
- * the start of its part's cover, `collar` + COVER_START_M past the opening, along the chain into its next line: there the
- * ground is the ground of the ground plan that the bake's measure read to fit the parts.
+ * draws as parts stamps nothing from the end vertex of each way that enters a head (`shift` metres before the opening)
+ * to the start of the head's cover, its longest `collar` + COVER_START_M past the opening, along the chain into its next
+ * line: there the ground is the ground of the ground plan that the bake's measure read to fit the parts.
  */
 export function partStamps(list: Feature[], tile: Node, lines: Line[]): PartStamps {
     const known = stamped.get(list);
@@ -135,12 +142,15 @@ export function partStamps(list: Feature[], tile: Node, lines: Line[]): PartStam
         }
     };
     for (const { kind, tags } of list) {
-        if (kind !== 'tunnel-end') continue;
-        for (const [way, shift] of [[tags.way, tags.shift], [tags.mate_way, tags.mate_shift]]) {
-            // `way` is in the frame of the ground plan, 16 units to a world unit.
-            const [x, y] = way?.split(' ').map(Number) ?? [];
-            for (const [line, end] of at.get(`${x / 16},${y / 16}`) ?? []) stop(line, end, Number(shift) + Number(tags.collar) + COVER_START_M);
-        }
+        // A seam has no way that enters it.
+        if (kind !== 'tunnel-end' || !tags.way) continue;
+        // Per way that enters the head its end vertex (`x y` in the frame of the ground plan, 16 units to a world unit)
+        // and its shift; the longest collar of the head's holes.
+        const ways = tags.way.split(' ').map(Number), shifts = tags.shift.split(' ').map(Number);
+        const collar = Math.max(...tags.collar.split(' ').map(Number));
+        shifts.forEach((shift, w) => {
+            for (const [line, end] of at.get(`${ways[2 * w] / 16},${ways[2 * w + 1] / 16}`) ?? []) stop(line, end, shift + collar + COVER_START_M);
+        });
     }
     return out;
 }
