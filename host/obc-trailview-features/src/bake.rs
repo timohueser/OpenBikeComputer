@@ -256,9 +256,12 @@ pub fn bake(
         road_metrics.insert("cut_features".into(), cut_features.into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
         let underpasses: Vec<usize> = solved.underpasses.iter().map(|&i| kept[i]).collect();
+        // A vertex on a bed lies at the height of its leader, which the census reads.
+        let mut on_bed: HashSet<[u64; 2]> = HashSet::new();
         for (&f, parts) in kept.iter().zip(solved.ways) {
             for (part, way) in ways[f].2.iter_mut().zip(parts) {
                 if let Some(way) = way {
+                    on_bed.extend(way.points.iter().zip(&way.bed).filter(|(_, &bed)| bed).map(|(&p, _)| key(p)));
                     (part.points, part.z, part.plan) = (way.points, Some(way.z), Some(way.plan));
                 }
             }
@@ -355,7 +358,8 @@ pub fn bake(
                 }
                 if entry.kind != "tunnel" && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
                     let half = options.widths.way(&kinds[*e].kind, tags, false).half_m;
-                    ground_census.add(&entry.kind, &parts, half, terrain, &|p| on_deck.contains(&key(p)));
+                    let skip = |p: [f64; 2]| on_deck.contains(&key(p)) || on_bed.contains(&key(p));
+                    ground_census.add(&entry.kind, &parts, half, terrain, &skip);
                 }
                 let mut all = tags.clone();
                 all.extend(extra.get(&n).cloned().unwrap_or_default());
@@ -831,13 +835,14 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
         "clearances_low_cm": m.clearances_low_cm, "passes": m.passes, "passes_near_cm": m.passes_near_cm,
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
         "grade_excess_over_1cm": m.grade_excess_over_1cm, "grounded": m.grounded,
+        "bed_m": m.bed_m.round(), "beds_apart": m.beds_apart,
         "residual_p99_m": round(m.residual_p99_m, 2),
         "refinements_unconverged": m.refinements_unconverged, "covers": m.covers, "covers_lifted": m.covers_lifted,
         "covers_untagged": m.covers_untagged, "covers_untagged_lifted": m.covers_untagged_lifted,
         "covers_capped": m.covers_capped, "covers_untagged_capped": m.covers_untagged_capped,
         "cover_lift_top_m": round(m.cover_lift_top_m, 2),
         "sidewalk_tagged_m": m.sidewalks.tagged_m.round(), "sidewalk_built_m": m.sidewalks.built_m.round(),
-        "sidewalk_bend_m": m.sidewalks.bend_m.round(), "sidewalk_bed_m": m.sidewalks.bed_m.round(),
+        "sidewalk_bend_m": m.sidewalks.bend_m.round(), "sidewalk_footprint_m": m.sidewalks.footprint_m.round(),
         "sidewalk_short_m": m.sidewalks.short_m.round(),
     });
     value.as_object().unwrap().clone()

@@ -2,7 +2,7 @@
 //!
 //! A side can have a sidewalk on a way on the ground whose class has a `sidewalk_m`. OSM's tags decide
 //! first; a side without a tag has one where TOWN_BUILDINGS buildings stand within TOWN_M of the road. A
-//! tight bend and the bed of another way take it off. Only a tag, a class without a sidewalk and a tight
+//! tight bend and the footprint of another way take it off. Only a tag, a class without a sidewalk and a tight
 //! bend stop a sidewalk for good: a gap under GAP_M closes, a piece that ends within JUNCTION_M of a
 //! junction runs on to it, and a piece that leaves a junction and stops within JUNCTION_M of it goes. Once
 //! every stroke of a solve has its sides, a run on one side that is shorter than PIECE_M and stops at both
@@ -28,18 +28,18 @@ const TOWN_M: f64 = 25.0;
 const GAP_M: f64 = 40.0;
 const PIECE_M: f64 = 50.0;
 const JUNCTION_M: f64 = 15.0;
-/// Another way does not count as a bed within this many metres of a point where it meets the road, as
+/// Another way does not count as a footprint within this many metres of a point where it meets the road, as
 /// JOIN_M of bins.ts: the corner shapes the mouth there.
 const JOIN_M: f64 = 12.0;
 
 /// Metres of sidewalk by the rule that decides them: kept by a tag or by buildings, and taken by a bend,
-/// by another way's bed and by a piece too short.
+/// by another way's footprint and by a piece too short.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Walks {
     pub tagged_m: f64,
     pub built_m: f64,
     pub bend_m: f64,
-    pub bed_m: f64,
+    pub footprint_m: f64,
     pub short_m: f64,
 }
 
@@ -48,7 +48,7 @@ impl Walks {
         self.tagged_m += other.tagged_m;
         self.built_m += other.built_m;
         self.bend_m += other.bend_m;
-        self.bed_m += other.bed_m;
+        self.footprint_m += other.footprint_m;
         self.short_m += other.short_m;
     }
 }
@@ -62,10 +62,10 @@ pub(crate) struct Piece {
     pub last: usize,
 }
 
-/// A bed on the ground: a segment, its half-width, its way, None for a waterway, per end whether it is
-/// a culvert's mouth there, where a waterway's bed ends, and the pipes of untagged culverts under it as
+/// A footprint on the ground: a segment, its half-width, its way, None for a waterway, per end whether it is
+/// a culvert's mouth there, where a waterway's channel ends, and the pipes of untagged culverts under it as
 /// (point, metres along the water that the pipe runs each way).
-struct Bed {
+struct Footprint {
     p: [f64; 2],
     q: [f64; 2],
     half: f64,
@@ -77,7 +77,7 @@ struct Bed {
 /// What the sidewalks of a solve read besides the strokes.
 pub(crate) struct Town<'a> {
     buildings: Option<&'a RTree<Rectangle<[f64; 2]>>>,
-    beds: Vec<Bed>,
+    footprints: Vec<Footprint>,
     boxes: Boxes,
     /// Per way, the variables and points of its OSM vertices that other ways share.
     joins: Vec<Vec<(usize, [f64; 2])>>,
@@ -87,7 +87,7 @@ pub(crate) struct Town<'a> {
 
 impl<'a> Town<'a> {
     /// The pipe of an untagged culvert runs under its road and the road's sidewalks: as far along the
-    /// water from the crossing as the road's outer half-width, its widening and the bed's half-width
+    /// water from the crossing as the road's outer half-width, its widening and the channel's half-width
     /// reach at the angle of the crossing.
     pub fn new(
         net: &Network,
@@ -96,11 +96,11 @@ impl<'a> Town<'a> {
         buildings: Option<&'a RTree<Rectangle<[f64; 2]>>>,
     ) -> Self {
         let mouths: HashSet<[u64; 2]> = culverts.iter().flat_map(|c| &c.points).map(|&p| key(p)).collect();
-        let mut beds: Vec<Bed> = Vec::new();
+        let mut footprints: Vec<Footprint> = Vec::new();
         for (s, &w) in net.segment_way.iter().enumerate().filter(|&(_, &w)| !net.free[w]) {
             let v = net.segment_start[s];
             let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
-            beds.push(Bed { p, q, half: net.half[w], way: Some(w), mouth: [false; 2], pipes: Vec::new() });
+            footprints.push(Footprint { p, q, half: net.half[w], way: Some(w), mouth: [false; 2], pipes: Vec::new() });
         }
         for (r, river) in rivers.iter().enumerate() {
             let mouth = |point: &[f64; 2]| mouths.contains(&key(*point));
@@ -112,9 +112,9 @@ impl<'a> Town<'a> {
                     (c.point, reach / c.sin)
                 })
                 .collect();
-            let bed = |p: &[[f64; 2]]| {
+            let channel = |p: &[[f64; 2]]| {
                 let near = |&&(at, reach): &&([f64; 2], f64)| distance(at, p[0], p[1]) * metres(at[1]) < reach;
-                Bed {
+                Footprint {
                     p: p[0],
                     q: p[1],
                     half: river.half,
@@ -123,11 +123,11 @@ impl<'a> Town<'a> {
                     pipes: pipes.iter().filter(near).copied().collect(),
                 }
             };
-            beds.extend(river.points.windows(2).map(bed));
+            footprints.extend(river.points.windows(2).map(channel));
         }
-        let boxes: Vec<[f64; 4]> = beds
+        let boxes: Vec<[f64; 4]> = footprints
             .iter()
-            .map(|&Bed { p, q, half, .. }| {
+            .map(|&Footprint { p, q, half, .. }| {
                 let r = (half + SIDEWALK_MAX_M / 2.0) / metres(p[1]);
                 [p[0].min(q[0]) - r, p[1].min(q[1]) - r, p[0].max(q[0]) + r, p[1].max(q[1]) + r]
             })
@@ -143,7 +143,7 @@ impl<'a> Town<'a> {
             }
         }
         let junction = out.iter().map(|&c| c >= 3).collect();
-        Town { buildings, beds, boxes: Boxes::new(&boxes), joins, junction }
+        Town { buildings, footprints, boxes: Boxes::new(&boxes), joins, junction }
     }
 
     /// Per sample of a stroke, the sides of the segment from it to the next sample that have a sidewalk:
@@ -210,14 +210,14 @@ impl<'a> Town<'a> {
                 let k = sign * curve.curvature[i];
                 k > 0.0 && 1.0 / k < half(i) + width[i] + rule(i).sidewalk_margin_m
             };
-            let bed = |i: usize| !self.clear(net, way(i), beside(i, half(i) + width[i] / 2.0), width[i]);
+            let covered = |i: usize| !self.clear(net, way(i), beside(i, half(i) + width[i] / 2.0), width[i]);
             for (i, on) in on.iter_mut().enumerate().filter(|(_, on)| **on) {
-                if bend(i) || bed(i) {
-                    count(if bend(i) { &mut walks.bend_m } else { &mut walks.bed_m }, i);
+                if bend(i) || covered(i) {
+                    count(if bend(i) { &mut walks.bend_m } else { &mut walks.footprint_m }, i);
                     *on = false;
                 }
             }
-            // A sidewalk crosses another way's bed and a stretch without buildings to its next piece or to a
+            // A sidewalk crosses another way's footprint and a stretch without buildings to its next piece or to a
             // junction; inside a tight bend it would fold over itself.
             let stops = |i: usize| width[i] == 0.0 || tag(i) == Some(false) || bend(i);
             for (a, b) in runs(&on, false) {
@@ -260,7 +260,7 @@ impl<'a> Town<'a> {
         buildings.locate_within_distance(point, r * r).take(TOWN_BUILDINGS).count() == TOWN_BUILDINGS
     }
 
-    /// Whether a sidewalk `width` metres wide, of way `w`, with its middle at `point`, keeps off the beds
+    /// Whether a sidewalk `width` metres wide, of way `w`, with its middle at `point`, keeps off the footprints
     /// of the other ways and the waterways, but near a point where such a way meets `w`.
     fn clear(&self, net: &Network, w: usize, point: [f64; 2], width: f64) -> bool {
         let scale = metres(point[1]);
@@ -270,14 +270,14 @@ impl<'a> Town<'a> {
             })
         };
         self.boxes.overlapping([point[0], point[1], point[0], point[1]]).into_iter().all(|b| {
-            let Bed { p, q, half, way, mouth, ref pipes } = self.beds[b];
+            let Footprint { p, q, half, way, mouth, ref pipes } = self.footprints[b];
             if way.is_some_and(|o| net.way_feature[o].0 == net.way_feature[w].0 || joined(o)) {
                 return true;
             }
             let (d, reach) = (sub(q, p), half + width / 2.0);
             let t = (dot(sub(point, p), d) / dot(d, d).max(1e-300)).clamp(0.0, 1.0);
             let foot = [p[0] + t * d[0], p[1] + t * d[1]];
-            // An open waterway's bed ends at a culvert's mouth: the pipe runs on under the road and its sidewalks.
+            // An open waterway's channel ends at a culvert's mouth: the pipe runs on under the road and its sidewalks.
             let at_mouth = [p, q].iter().zip(mouth).any(|(&end, m)| m && hypot(sub(foot, end)) * scale < reach);
             let piped = pipes.iter().any(|&(at, length)| hypot(sub(foot, at)) * scale < length);
             at_mouth || piped || hypot(sub(foot, point)) * scale >= reach
@@ -498,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_gap_closes_a_short_piece_goes_and_a_piece_runs_on_to_a_junction_across_a_bed_near_it() {
+    fn a_short_gap_closes_a_short_piece_goes_and_a_piece_runs_on_to_a_junction_across_a_footprint_near_it() {
         let place = engelberg();
         let road = |corners: &[(f64, f64)]| way("residential", place.line(corners, Some(20.0)), plain);
         let features = [
@@ -506,7 +506,7 @@ mod tests {
             road(&[(0.0, 500.0), (300.0, 500.0)]),
             road(&[(0.0, 1000.0), (300.0, 1000.0), (400.0, 1000.0)]),
             road(&[(300.0, 1000.0), (300.0, 1006.0), (300.0, 1100.0)]),
-            // A footway that leaves the side road 6 m from the junction: its bed lies on the main road's north
+            // A footway that leaves the side road 6 m from the junction: its footprint lies on the main road's north
             // sidewalk for its last 13 m.
             way("footway", place.line(&[(300.0, 1006.0), (290.0, 1006.0)], Some(5.0)), plain),
         ];
@@ -525,7 +525,7 @@ mod tests {
             assert!(one(&runs, (90.0, 300.0)), "{runs:?}");
         }
         assert!(solved.metrics.sidewalks.short_m > 55.0);
-        assert!(solved.metrics.sidewalks.bed_m > 2.0, "the footway's bed lies on the north sidewalk");
+        assert!(solved.metrics.sidewalks.footprint_m > 2.0, "the footway's footprint lies on the north sidewalk");
     }
 
     #[test]

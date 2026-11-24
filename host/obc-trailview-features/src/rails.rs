@@ -13,7 +13,7 @@ use crate::{metres, Part, Tags};
 
 /// The most metres between two masts of a track, and how far beside the track's middle a mast
 /// stands, for a standard and for a narrow gauge. On a deck a mast stands against the deck's edge: the
-/// half-width of the track's bed in the engine (SURFACES of bins.ts) and half the mast's side. A mast
+/// half-width of the track's footprint in the engine (SURFACES of bins.ts) and half the mast's side. A mast
 /// within MAST_GAP_M of one placed before it, as at a switch, is left out.
 const MAST_M: f64 = 50.0;
 const MAST_GAP_M: f64 = 8.0;

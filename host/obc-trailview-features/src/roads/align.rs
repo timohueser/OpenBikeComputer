@@ -40,7 +40,7 @@ const RUNOFF_M: f64 = 22.0;
 const WIDEN_SMOOTH_M: f64 = 12.0;
 const CURVE_SMOOTH_M: f64 = 6.0;
 /// Two ends join into a stroke within 60° of straight on.
-const JOIN_COS: f64 = -0.5;
+pub(crate) const JOIN_COS: f64 = -0.5;
 /// The vertex after a junction ends the approach of a side road when it lies this close past it.
 const APPROACH_SLACK_M: f64 = 0.5;
 /// The longest chord of a `polyline`.
@@ -55,7 +55,7 @@ type End = ((usize, usize), bool);
 /// ways at a point, the two of the best class within 60° of straight on join, also across a change of
 /// class, where the through roads of the solve end. The solve asks which road a junction serves; this
 /// asks where one line runs on as one curve.
-fn joins(net: &Network) -> Vec<[Option<(usize, bool)>; 2]> {
+pub(crate) fn joins(net: &Network) -> Vec<[Option<(usize, bool)>; 2]> {
     let ways = net.way_first.len();
     let last_occurrence = |w: usize| net.osm_first.get(w + 1).map_or(net.osm_xy.len(), |&o| o) - 1;
     let mut ends: HashMap<usize, Vec<(usize, bool, [f64; 2])>> = HashMap::new();
@@ -200,6 +200,8 @@ struct Samples {
     rule: Vec<usize>,
     /// The samples of the vertices of the solve.
     vertex: Vec<usize>,
+    /// Whether a sample lies on a bed.
+    bed: Vec<bool>,
 }
 
 impl Samples {
@@ -399,7 +401,7 @@ fn kept(list: &[usize], stops: &[usize], curve: &Curve, z: &[f64], keep_m: f64, 
 }
 
 /// Per way, its kept vertices and alignment, the joins of the strokes at the vertices of `mine`, and
-/// the metres of its sidewalks there. `heights` and `known` are per variable of the solve. `stay` holds
+/// the metres of its sidewalks there. `heights`, `known` and `bed` are per variable of the solve. `stay` holds
 /// the variables whose height a row fixes, and `water` those that a way shares with a river or a
 /// stream. `ground` holds the ways on the ground, a culvert's too.
 #[allow(clippy::too_many_arguments)]
@@ -407,6 +409,7 @@ pub(crate) fn align(
     net: &Network,
     heights: &[f64],
     known: &[bool],
+    bed: &[bool],
     stay: &[bool],
     water: &[bool],
     ground: &[bool],
@@ -463,6 +466,7 @@ pub(crate) fn align(
                         let t = i as f64 / steps as f64;
                         list.push((samples.x.len(), false, 0));
                         samples.push([a[0] + d[0] * t, a[1] + d[1] * t], b + (z - b) * t, false, free, false, rule);
+                        samples.bed.push(bed[net.vertex_var[u]] && bed[net.vertex_var[v]]);
                         meets.push(false);
                         owned.push(mine[u]);
                         vars.push(None);
@@ -474,6 +478,7 @@ pub(crate) fn align(
                 samples.vertex.push(samples.x.len());
                 list.push((samples.x.len(), net.vertex_osm[v], side[v]));
                 samples.push(xy, z, pin, calm, wet, rule);
+                samples.bed.push(bed[net.vertex_var[v]]);
             }
             if !forward {
                 list.reverse();
@@ -595,6 +600,7 @@ fn place(net: &Network, classes: &Classes, stroke: &Stroke, ways: &mut [Way]) {
                     walk: walk(k),
                 });
                 way.osm.push(osm);
+                way.bed.push(samples.bed[i]);
             }
         }
         ways[w] = way;
