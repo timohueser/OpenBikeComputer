@@ -3,7 +3,7 @@
 
 use crate::mesh::{left_of, Station};
 use crate::tube::{direction, spring, Meets, Net};
-use crate::{metres_per_unit, Part, Section};
+use crate::{metres_per_unit, Design, Part, Section};
 
 /// Words of a box: the middle of its start (world units), its unit way in, its depth and its half-width (m), the
 /// heights of its roof, its floor and its spring on its start plane, their rise per metre in, and the slopes of its
@@ -14,7 +14,7 @@ use crate::{metres_per_unit, Part, Section};
 /// to the roof; where the spring is the roof the box is flat.
 pub const BOX: usize = 12;
 
-/// How far end e's part runs in from its frame line: its boxes, and its shell, which ends with a face (`closed`) or
+/// How far hole e's part runs in from its frame line: its boxes, and its shell, which ends with a face (`closed`) or
 /// meets the shell of the tube's other end (`then`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reach {
@@ -24,31 +24,42 @@ pub struct Reach {
     pub then: Meets,
 }
 
-/// The metres from end e's frame line that its part must reach: as today's box of a portal, a level-17 cell's
-/// diagonal and a metre past the start of the cover over the tube, `portal_cells` cells in or a metre past the
-/// collar. An underpass is one part for its chain: a `box` end runs to where it meets the other end's part, as the
-/// ground can dip between two ways on top.
-fn need(net: &Net, e: usize) -> f64 {
-    let (end, design) = (&net.ends[e], &net.rules.design);
-    if end.part == Part::Box {
+/// The metres from the frame line of an end of `part` with `collar`, at world row y, that its part must reach: as
+/// today's box of a portal, a level-17 cell's diagonal and a metre past the start of the cover over the tube,
+/// `portal_cells` cells in or a metre past the collar. An underpass is one part for its chain: a `box` end runs to
+/// where it meets the other end's part, as the ground can dip between two ways on top. The bake reads a head to the
+/// same reach.
+pub fn need(part: Part, collar: f64, y: f64, design: &Design) -> f64 {
+    if part == Part::Box {
         return f64::INFINITY;
     }
-    let cell = design.mesh_texels * 32.0 * metres_per_unit(end.at[1]);
-    (design.portal_cells * cell).max(end.collar + 1.0) + std::f64::consts::SQRT_2 * cell + 1.0
+    let cell = design.mesh_texels * 32.0 * metres_per_unit(y);
+    (design.portal_cells * cell).max(collar + 1.0) + std::f64::consts::SQRT_2 * cell + 1.0
+}
+
+/// The `need` of end e.
+fn need_of(net: &Net, e: usize) -> f64 {
+    let end = &net.holes[e];
+    need(end.part, end.collar, end.at[1], &net.rules.design)
 }
 
 /// The metres in from end e's opening of each vertex of its walk to the other end of its tube: 0, then the far vertex
-/// of each chord.
+/// of each chord. Behind a seam a walk ends at the vertex before it (the bake writes one): the seam face lies in the
+/// seam's plane, and only the room before the line closes a shell there.
 fn stops(net: &Net, e: usize) -> Vec<f64> {
     let walk = net.walk(e, f64::INFINITY);
     let mut out = vec![0.0];
     out.extend(walk.iter().map(|&(c, _, start)| start + direction(&net.chords[c]).1));
+    let last = walk.last().and_then(|&(c, forward, _)| net.seam_at(c, usize::from(forward)));
+    if last.is_some_and(|(_, h)| h > 0) {
+        out.pop();
+    }
     out
 }
 
-/// The first stop at `metres` or past it; the last stop where none is.
-fn at_or_past(stops: &[f64], metres: f64) -> f64 {
-    stops.iter().copied().find(|&s| s >= metres).unwrap_or(stops[stops.len() - 1])
+/// The index of the first stop at `metres` or past it; the last stop where none is.
+fn at_or_past(stops: &[f64], metres: f64) -> usize {
+    stops.iter().position(|&s| s >= metres).unwrap_or(stops.len() - 1)
 }
 
 /// The reach of built end e. Its part runs to the first vertex of its tube at `need` or past it. Where the parts of the
@@ -58,12 +69,16 @@ fn at_or_past(stops: &[f64], metres: f64) -> f64 {
 pub fn reach(net: &Net, e: usize) -> Reach {
     let walk = net.walk(e, f64::INFINITY);
     let at = stops(net, e);
-    let (total, own) = (at[at.len() - 1], at_or_past(&at, need(net, e)));
+    let (total, own) = (at[at.len() - 1], at[at_or_past(&at, need_of(net, e))]);
+    // A seam has no part: a part that runs to one ends there with a face, on the seam's corners.
     let other = walk.last().and_then(|&(c, forward, _)| net.end_at(c, usize::from(forward)));
+    let other = other.filter(|&o| net.holes[o].part != Part::Seam);
     let alone = Reach { boxes: own, shell: own, closed: true, then: Meets::default() };
     let Some(o) = other.filter(|&o| o != e) else { return alone };
-    let theirs = at_or_past(&stops(net, o), need(net, o));
-    if own + theirs < total {
+    // The parts meet where their last stops reach the same vertex or past it, counted in stops: the metres from the
+    // two ends need not add up to the same sum.
+    let theirs = at_or_past(&stops(net, o), need_of(net, o));
+    if at_or_past(&at, need_of(net, e)) + theirs < at.len() - 1 {
         return alone;
     }
     // The vertex nearest the middle; of two as near, the one with the least key, so both ends find the same.
@@ -83,11 +98,11 @@ pub fn reach(net: &Net, e: usize) -> Reach {
     });
     let (meet, lower) = match mid {
         Some(mid) => {
-            let (here, there) = (&net.chords[walk[mid - 1].0], &net.chords[walk[mid].0]);
-            (
-                at[mid],
-                (there.height < here.height && there.section == here.section).then_some((there.height, there.section)),
-            )
+            // The heights of the two chords at their vertex there.
+            let ((c, forward, _), (o, ahead, _)) = (walk[mid - 1], walk[mid]);
+            let (here, there) = (&net.chords[c], &net.chords[o]);
+            let (h, next) = (here.height[usize::from(forward)], there.height[usize::from(!ahead)]);
+            (at[mid], (next < h && there.section == here.section).then_some((next, there.section)))
         }
         None => (total / 2.0, None),
     };
@@ -95,13 +110,18 @@ pub fn reach(net: &Net, e: usize) -> Reach {
     Reach { boxes: meet, shell: meet, closed: false, then: Meets { foot, lower } }
 }
 
-/// The level that end e's head wall and shell go down to, a world height: its `foot`, or `foot_m` under the lowest
-/// floor of the chords that its part runs over, the lower.
+/// The level that the head and the shells of hole e's record go down to, a world height: its `foot`, or `foot_m` under
+/// the lowest floor of the chords that the parts of its holes run over, the lower.
 pub fn foot(net: &Net, e: usize) -> f64 {
-    let end = &net.ends[e];
-    let own = at_or_past(&stops(net, e), need(net, e));
-    let walk = net.walk(e, own);
-    let low = walk.iter().map(|&(c, ..)| net.chords[c].a[2].min(net.chords[c].b[2])).fold(f64::INFINITY, f64::min);
+    let r = net.holes[e].record;
+    let end = &net.records[r];
+    let low = (net.of_record[r].iter())
+        .flat_map(|&e| {
+            let at = stops(net, e);
+            net.walk(e, at[at_or_past(&at, need_of(net, e))])
+        })
+        .map(|(c, ..)| net.chords[c].a[2].min(net.chords[c].b[2]))
+        .fold(f64::INFINITY, f64::min);
     (end.z + end.foot).min(low - net.rules.ladder.bake.foot_m)
 }
 
@@ -191,11 +211,11 @@ impl Line {
 }
 
 /// The boxes of built end e: the opening's, from the front of the head wall to the frame line, its outline grown to
-/// the middle of the wall round it; then one per straight piece of the tube's axis out to its reach, each at the
-/// middle of the wall of its section, its ends in the planes of the tube's rings there.
+/// the middle of the wall round it, but at a closed end; then one per straight piece of the tube's axis out to its
+/// reach, each at the middle of the wall of its section, its ends in the planes of the tube's rings there.
 pub fn boxes(net: &Net, e: usize) -> Vec<[f64; BOX]> {
-    let Some((c0, _)) = net.opening(e) else { return Vec::new() };
-    let (end, design, bake) = (&net.ends[e], &net.rules.design, &net.rules.ladder.bake);
+    let Some((c0, k0)) = net.opening(e) else { return Vec::new() };
+    let (end, design, bake) = (&net.holes[e], &net.rules.design, &net.rules.ladder.bake);
     let (wall, lift) = (bake.shell_m / 2.0, design.lift_m);
     let first = &net.chords[c0];
     let (front, ring) = (net.frame(e, -design.recess_m), net.frame(e, 0.0));
@@ -204,40 +224,35 @@ pub fn boxes(net: &Net, e: usize) -> Vec<[f64; BOX]> {
         let roof = z + h + grow;
         (roof, if section == Section::Box { roof } else { z + sp })
     };
-    let sp = spring(net, first.section, first.height);
-    let (roof, spring_at) = roof_of(front.z, first.height, sp, first.section, design.frame_m + wall);
+    let sp = spring(net, first.section, first.height[k0]);
+    let (roof, spring_at) = roof_of(front.z, first.height[k0], sp, first.section, design.frame_m + wall);
     let (half, rise) = (first.half + design.frame_m + wall, (ring.z - front.z) / design.recess_m);
-    let mut out = vec![[
-        front.x,
-        front.y,
-        into[0],
-        into[1],
-        design.recess_m,
-        half,
-        roof,
-        front.z + lift,
-        rise,
-        spring_at,
-        0.0,
-        0.0,
-    ]];
+    let opening =
+        [front.x, front.y, into[0], into[1], design.recess_m, half, roof, front.z + lift, rise, spring_at, 0.0, 0.0];
+    // A closed end has no opening.
+    let mut out = if net.closed(e) { Vec::new() } else { vec![opening] };
     // The axis from the frame line: per chord of the walk its far vertex, with the height and section that end there.
+    // A chord whose height changes is cut where it has changed by an eighth of a shell, so each box's roof, the highest
+    // of its piece, lies inside the shell by the margin of a box.
     let reach = reach(net, e).boxes;
     let mut axis = vec![Axis { p: end.at, z: end.z, ring }];
-    let mut sections = vec![(first.height, first.section, first.half)];
+    let mut sections = vec![(first.height[k0], first.section, first.half)];
     for (c, forward, start) in net.walk(e, reach) {
         let chord = &net.chords[c];
-        let (v, len) = (if forward { chord.b } else { chord.a }, direction(chord).1);
-        let far = net.ring_along(c, usize::from(forward), forward);
+        let len = direction(chord).1;
+        let (k0, k1) = if forward { (0, 1) } else { (1, 0) };
+        let (near, far) = (net.ring_along(c, k0, forward), net.ring_along(c, k1, forward));
         // A reach inside a chord ends at a ring there, as the shell does (`arch::collar`).
-        let end = if start + len > reach {
-            let ring = net.ring_along(c, usize::from(!forward), forward).mix(&far, (reach - start) / len);
-            Axis { p: [ring.x, ring.y], z: ring.z, ring }
-        } else {
-            Axis { p: [v[0], v[1]], z: v[2], ring: far }
-        };
-        axis.push(end);
-        sections.push((chord.height, chord.section, chord.half));
+        let end = ((reach - start) / len).min(1.0);
+        let (h0, h1) = (chord.height[k0], chord.height[k1]);
+        let parts = ((h1 - h0).abs() * end / (bake.shell_m / 8.0)).ceil().max(1.0) as usize;
+        for j in 1..=parts {
+            let u = end * j as f64 / parts as f64;
+            let ring = if u >= 1.0 { far } else { near.mix(&far, u) };
+            let high = h0.max(h1).min(h0 + (h1 - h0) * u).max(h0 + (h1 - h0) * end * (j - 1) as f64 / parts as f64);
+            axis.push(Axis { p: [ring.x, ring.y], z: ring.z, ring });
+            sections.push((high, chord.section, chord.half));
+        }
         if start + len >= reach {
             break;
         }

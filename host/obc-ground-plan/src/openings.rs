@@ -1,6 +1,6 @@
 //! The built tunnel ends of a cell's input (`obc-trailview-parts`): the openings that its ground reaches.
 
-use obc_trailview_parts::{built_ends, Chord, End, Rules};
+use obc_trailview_parts::{mouths, Chord, End, Rules};
 
 use crate::frame::GlobalPoint;
 use crate::graph::OpenEnd;
@@ -10,13 +10,13 @@ use crate::CellInput;
 /// Frame units per world unit of the viewer (2^30 per side).
 const FRAME: f64 = 16.0;
 
-/// The opening of a built end: its point in frame units, its unit way into the tube, and its inner half-width in
-/// metres, to the jamb lines of its head wall.
+/// A way that enters a built head: its point on the frame line in frame units, its unit way into the tube, and the
+/// metres from its point to the jamb lines of its hole on each side (to the right negative).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mouth {
     pub at: [f64; 2],
     pub into: [f64; 2],
-    pub half_m: f64,
+    pub jamb_m: [f64; 2],
 }
 
 /// The built ends of a cell's input: their openings on the ground (`open`), where the end vertex of the opening's way
@@ -48,19 +48,15 @@ pub fn built(input: &CellInput) -> Built {
             _ => {}
         }
     }
-    let built = built_ends(&ends, &chords, rules);
     let [x0, y0, x1, y1] = input.key.grown();
-    let (mut open, mut mouths) = (Vec::new(), Vec::new());
-    for (end, _) in ends.iter().zip(&built).filter(|(_, &b)| b) {
-        mouths.push(Mouth { at: end.at.map(|v| v * FRAME), into: end.way_in(), half_m: end.half });
-        let ways = [Some((end.way, end.shift)), end.mate_way.zip(end.mate_shift)];
-        for (way, shift_m) in ways.into_iter().flatten() {
-            if (x0..=x1).contains(&way[0]) && (y0..=y1).contains(&way[1]) {
-                open.push(OpenEnd { way: GlobalPoint { x: way[0], y: way[1] }, shift_m });
-            }
+    let (mut open, mut out) = (Vec::new(), Vec::new());
+    for m in mouths(&ends, &chords, rules) {
+        out.push(Mouth { at: m.at.map(|v| v * FRAME), into: m.into, jamb_m: m.jamb });
+        if (x0..=x1).contains(&m.way[0]) && (y0..=y1).contains(&m.way[1]) {
+            open.push(OpenEnd { way: GlobalPoint { x: m.way[0], y: m.way[1] }, shift_m: m.shift });
         }
     }
-    Built { open, mouths }
+    Built { open, mouths: out }
 }
 
 #[cfg(test)]
@@ -220,7 +216,7 @@ mod tests {
 
     #[test]
     fn a_chain_with_an_end_that_is_not_built_keeps_its_tunnel_way() {
-        let (graph, mesh) = build(&input(Some("arch free")));
+        let (graph, mesh) = build(&input(Some("arch none")));
         let (develop_graph, develop) = build(&input(None));
         assert_eq!((&graph.ways, &graph.samples), (&develop_graph.ways, &develop_graph.samples));
         assert_eq!(mesh.to_bytes(), develop.to_bytes());

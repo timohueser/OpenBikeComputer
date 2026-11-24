@@ -44,7 +44,7 @@ const JOIN_COS: f64 = -0.5;
 /// The vertex after a junction ends the approach of a side road when it lies this close past it.
 const APPROACH_SLACK_M: f64 = 0.5;
 /// The longest chord of a `polyline`.
-const CHORD_M: f64 = 10.0;
+pub(crate) const CHORD_M: f64 = 10.0;
 
 /// Two ways of a stroke where they meet, each as (way, at its last vertex).
 pub(crate) type Join = [(usize, bool); 2];

@@ -37,6 +37,8 @@ use rstar::primitives::Rectangle;
 use rstar::RTree;
 
 pub use align::polyline;
+#[cfg(test)]
+pub(crate) use align::CHORD_M;
 pub use area::{context, solve_by_area};
 use fit::{fit, settle, Block, Graph, Limits, Rows, Term};
 use network::{hypot, sub, Network};
