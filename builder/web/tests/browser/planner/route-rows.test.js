@@ -226,7 +226,7 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await places.first().click();
   await expect(popup).toContainText('Linde');
   await expect(popup).toContainText('km 2.3 · 111 m from the route');
-  await expect(popup.getByRole('link', { name: 'Website' })).toHaveAttribute('href', 'https://linde.example/');
+  await expect(popup.getByRole('link', { name: 'linde.example' })).toHaveAttribute('href', 'https://linde.example/');
   await places.last().click();
   await expect(places.last()).toContainText('35');
   await expect(lanes.locator('.list button')).toHaveCount(30);

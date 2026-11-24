@@ -58,17 +58,22 @@
         children?: Snippet;
     } = $props();
 
+    /** A row has its name for a screen reader, and its note as the description. */
+    const uid = $props.id();
+    /** The triangle of the start, as on its row of the list. */
+    const START = 'M8 5v14l11-7z';
     const hasEndpoints = $derived(endpointsChosen(trip));
+    const hasStart = $derived(trip.points.some(p => p.kind === 'start'));
     const multi = $derived(multiDay(trip));
     const types = $derived(([
-        { value: 'via', label: 'Shape', icon: 'route' },
-        { value: 'waypoint', label: 'Visit', icon: 'flag' },
-        { value: 'night', label: 'Sleep', icon: 'camp' },
-        { value: 'marker', label: 'Marker', icon: 'pin' },
-    ] as { value: EditableKind; label: string; icon: string }[]).filter(type => multi || type.value !== 'night'));
+        { value: 'via', label: 'Shape', icon: 'route', note: 'The route passes here' },
+        { value: 'waypoint', label: 'Visit', icon: 'flag', note: 'A stop on the route' },
+        { value: 'night', label: 'Sleep', icon: 'camp', note: 'The end of a day' },
+        { value: 'marker', label: 'Marker', icon: 'pin', note: 'A note beside the route' },
+    ] as { value: EditableKind; label: string; icon: string; note: string }[]).filter(type => multi || type.value !== 'night'));
     const legModes: { value: LegMode; label: string }[] = [
         { value: 'routed', label: 'Follow roads' },
-        { value: 'straight', label: 'Straight lines' },
+        { value: 'straight', label: 'Straight line' },
         { value: 'drawn', label: 'Freehand' },
     ];
 
@@ -78,6 +83,8 @@
     let sleepDay = $state(night);
 
     const sleeps = $derived(hasEndpoints && days.length > 0 && multi);
+    /** A spot picked for the night, or a place with beds or pitches: the night is its likely use. */
+    const sleepFirst = $derived(!place || ['camp', 'hotel', 'shelter'].includes(place.category));
     const preview = $derived.by(() => {
         if (!coordinate || sleepDay >= days.length) return null;
         return provisionalDays(trip, line, sleepDay, nearestProgress(planView(trip, line).coordinates, coordinate))[sleepDay - 1];
@@ -90,236 +97,191 @@
     }
 </script>
 
+<!-- Before the route has its two ends, they are the next step. After that, they move an end. -->
 {#snippet endpoints()}
-    {#if onEndpoint}<div class="add-types endpoints">
-        <button type="button" onclick={() => onEndpoint?.('start')}><Icon name="pin" size={15} />Start here</button>
-        <button type="button" onclick={() => onEndpoint?.('finish')}><Icon name="flag" size={15} />Finish here</button>
-    </div>{/if}
-{/snippet}
-<Callout label="Map details" {onClose} {takeFocus}>
-    {#if kind === 'add'}
-        <h2>{hasEndpoints ? 'Add point here' : 'Plan from here'}</h2>
-        {@render endpoints()}
-        {#if hasEndpoints}
-        <div class="add-types">
-            {#each types.filter(type => type.value !== 'marker') as type (type.value)}
-                <button type="button" onclick={() => onAddHere(type.value)}><Icon name={type.icon} size={15} />{type.label}</button>
-            {/each}
+    {#if onEndpoint && hasEndpoints}
+        <div class="rows two rule">
+            <button type="button" class="row" onclick={() => onEndpoint('start')}><Icon path={START} size={16} /><span>Start here</span></button>
+            <button type="button" class="row" onclick={() => onEndpoint('finish')}><Icon name="flag" size={16} /><span>Finish here</span></button>
         </div>
-        <button type="button" class="quiet" onclick={() => onAddHere('marker')}><Icon name="pin" size={15} />Add a marker</button>
-        {/if}
-    {:else if kind === 'leg'}
-        <h2>This leg</h2>
-        <Segmented label="Leg mode" columns={2} options={legModes} value={legMode} onChange={onLegMode} />
-        <p class="hint">Straight lines join shaping points without following roads.</p>
-        <button type="button" class="secondary" onclick={onInsert}>Insert point here</button>
-        {#if canMoveLoopStart(trip)}
-            <button type="button" class="secondary" onclick={onLoopStart}>Start the loop here</button>
-            <p class="hint">The start moves to this point. The stops keep their order.</p>
-        {/if}
-    {:else if kind === 'dayend'}
-        <h2>Day {night} ends here for now</h2>
-        <button type="button" class="secondary" onclick={onChooseNight}>Choose where to sleep</button>
-        <button type="button" class="planner-action" onclick={onPick}>Pick another spot on the map</button>
-        <p class="hint">Drag the marker along the route to move the day end.</p>
-    {:else if kind === 'place'}
-        {#if place}
-            <PlaceDetails {place} error={detailsError} />
-            {@render endpoints()}
-        {:else}
-            <h2 class="spot">Overnight spot</h2>
-        {/if}
-        {#if sleeps}
-            <label class="field">End of day
-                <select bind:value={sleepDay}>
-                    {#each days as day (day.number)}
-                        <option value={day.number} disabled={day.number >= maxRidingDays}>Day {day.number}{day.pinned ? ` · replaces ${day.pinned.label}` : day.number >= maxRidingDays ? ' · day limit reached' : day.number === days.length ? ' · adds a night' : ''}</option>
-                    {/each}
-                </select>
-            </label>
-            {#if preview}
-                <p class="predict">Day {sleepDay} would be ≈ <strong>{distanceIn(preview.distance * 1000).toFixed(1)} {settings.units} ↑ {Math.round(heightIn(preview.ascent))} {heightUnit()}</strong></p>
-            {/if}
-            {#if sleepDay >= maxRidingDays}<p class="hint">A trip can have up to {maxRidingDays} riding days. Choose an earlier day for this overnight.</p>{/if}
-            <button type="button" class="primary" disabled={sleepDay >= maxRidingDays} onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>
-            {#if place}<button type="button" class="secondary" onclick={() => onAddVisit(place)}>Add as visit</button>{/if}
-        {:else if place && hasEndpoints}
-            <button type="button" class="primary" onclick={() => onAddVisit(place)}>{place.category === 'peak' ? 'Ride over it' : 'Add visit'}<Icon name="plus" size={15} /></button>
-        {/if}
-    {:else if kind === 'point' && point}
+    {:else if onEndpoint}
+        <div class="buttons">
+            <button type="button" class={['planner-action', !hasStart && 'primary']} onclick={() => onEndpoint('start')}><Icon path={START} size={15} />Start here</button>
+            <button type="button" class={['planner-action', hasStart && 'primary']} onclick={() => onEndpoint('finish')}><Icon name="flag" size={15} />Finish here</button>
+        </div>
+    {/if}
+{/snippet}
+{#snippet visit()}
+    {#if place}
+        <button type="button" class={['planner-action', !(sleeps && sleepFirst) && 'primary']} onclick={() => onAddVisit(place)}><Icon name="flag" size={15} />{place.category === 'peak' ? 'Ride over it' : 'Add visit'}</button>
+    {/if}
+{/snippet}
+{#snippet stay()}
+    {#if sleeps}
+        <div class="buttons">
+            <button type="button" class={['planner-action', sleepFirst && 'primary']} disabled={sleepDay >= maxRidingDays} onclick={() => onStay(sleepDay)}><Icon name="camp" size={15} />{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}</button>
+            <select class="day" aria-label="End of day" bind:value={sleepDay}>
+                {#each days as day (day.number)}
+                    <option value={day.number} disabled={day.number >= maxRidingDays}>Day {day.number}{day.pinned ? ` · replaces ${day.pinned.label}` : day.number >= maxRidingDays ? ' · day limit reached' : day.number === days.length ? ' · adds a night' : ''}</option>
+                {/each}
+            </select>
+        </div>
+        {#if sleepDay >= maxRidingDays}<p class="meta">A trip can have up to {maxRidingDays} riding days. Choose an earlier day for this overnight.</p>
+        {:else if preview}<p class="meta predict">Day {sleepDay} would be ≈ <strong>{distanceIn(preview.distance * 1000).toFixed(1)} {settings.units} ↑ {Math.round(heightIn(preview.ascent))} {heightUnit()}</strong></p>{/if}
+    {/if}
+{/snippet}
+{#snippet title()}
+    {#if point}
         <div class="title">
-            <h2>{point.kind === 'via' ? 'Shaping point' : point.label}</h2>
+            {#if renaming}
+                <!-- svelte-ignore a11y_autofocus -->
+                <input class="rename" aria-label="Point name" value={point.label} autofocus
+                    onchange={(event) => rename(event.currentTarget.value)}
+                    onkeydown={(event) => {
+                        if (event.key === 'Enter') rename(event.currentTarget.value);
+                        if (event.key === 'Escape') {
+                            // Removing a focused input may fire its change event; the old value keeps the cancelled name out.
+                            event.currentTarget.value = point.label;
+                            renaming = false;
+                        }
+                        if (!renaming) tick().then(() => renameButton?.focus());
+                    }} />
+            {:else}
+                <h2>{point.kind === 'via' ? 'Shaping point' : point.label}</h2>
+            {/if}
             {#if point.kind !== 'via'}
                 <button type="button" class="icon" bind:this={renameButton} aria-label="Rename point" aria-expanded={renaming} onclick={() => renaming = !renaming}><Icon name="pencil" size={15} /></button>
             {/if}
         </div>
-        {#if renaming}
-            <!-- svelte-ignore a11y_autofocus -->
-            <input class="rename" aria-label="Point name" value={point.label} autofocus
-                onchange={(event) => rename(event.currentTarget.value)}
-                onkeydown={(event) => {
-                    if (event.key === 'Enter') rename(event.currentTarget.value);
-                    if (event.key === 'Escape') {
-                        // Removing a focused input may fire its change event; the old value keeps the cancelled name out.
-                        event.currentTarget.value = point.label;
-                        renaming = false;
-                    }
-                    if (!renaming) tick().then(() => renameButton?.focus());
-                }} />
+    {/if}
+{/snippet}
+<Callout label="Map details" {onClose} {takeFocus}>
+    {#if kind === 'add'}
+        <header><h2>{hasEndpoints ? 'Add point here' : 'Plan from here'}</h2></header>
+        {#if hasEndpoints}
+            <div class="rows">
+                {#each types as type (type.value)}
+                    <button type="button" class="row" aria-label={type.label} aria-describedby="{uid}-{type.value}" onclick={() => onAddHere(type.value)}><Icon name={type.icon} size={16} /><span>{type.label}</span><small id="{uid}-{type.value}">{type.note}</small></button>
+                {/each}
+            </div>
         {/if}
-        {#if place}<PlaceDetails {place} titled={false} error={detailsError} />{/if}
+        {@render endpoints()}
+    {:else if kind === 'leg'}
+        <header><h2>This leg</h2></header>
+        <Segmented label="Leg mode" options={legModes} value={legMode} onChange={onLegMode} />
+        <div class="rows">
+            <button type="button" class="row" onclick={onInsert}><Icon name="route" size={16} /><span>Add shaping point</span></button>
+            {#if canMoveLoopStart(trip)}
+                <button type="button" class="row" aria-label="Start the loop here" aria-describedby="{uid}-loop" onclick={onLoopStart}><Icon name="loop" size={16} /><span>Start the loop here</span><small id="{uid}-loop">The stops keep their order</small></button>
+            {/if}
+        </div>
+    {:else if kind === 'dayend'}
+        <header>
+            <h2>Day {night} ends here for now</h2>
+            <p class="meta">Drag the marker along the route to move it.</p>
+        </header>
+        <div class="buttons stack">
+            <button type="button" class="planner-action primary" onclick={onChooseNight}>Choose where to sleep</button>
+            <button type="button" class="planner-action" onclick={onPick}>Pick a spot on the map</button>
+        </div>
+    {:else if kind === 'place'}
+        {#if place}
+            <PlaceDetails {place} error={detailsError} />
+        {:else}
+            <header><h2>Overnight spot</h2></header>
+        {/if}
+        {#if !hasEndpoints}
+            {#if place}<footer>{@render endpoints()}</footer>{/if}
+        {:else if place || sleeps}
+            <footer>
+                {#if sleepFirst}{@render stay()}{@render visit()}{:else}{@render visit()}{@render stay()}{/if}
+            </footer>
+            {#if place}{@render endpoints()}{/if}
+        {/if}
+    {:else if kind === 'point' && point}
+        {#if place}
+            <PlaceDetails {place} {title} error={detailsError} />
+        {:else}
+            <header>{@render title()}</header>
+        {/if}
         {#if hasEndpoints && point.kind !== 'start' && point.kind !== 'finish'}
-            <Segmented label="Point type" options={types} columns={types.length > 3 ? 2 : 0} value={point.kind === 'detour' ? 'waypoint' : point.kind as EditableKind} onChange={onKind} />
+            <Segmented label="Point type" options={types.map(({ value, label }) => ({ value, label }))} value={point.kind === 'detour' ? 'waypoint' : point.kind as EditableKind} onChange={onKind} />
         {/if}
-        {#if point.kind === 'finish' && hasEndpoints}
-            <button type="button" class="secondary" onclick={onLoop}>Back to start</button>
-            <p class="hint">The route returns to the start, and this point becomes the last stop.</p>
-        {/if}
-        <button type="button" class="quiet" onclick={onRemove}><Icon name="trash" size={15} />Remove point</button>
+        <div class="rows">
+            {#if point.kind === 'finish' && hasEndpoints}
+                <button type="button" class="row" aria-label="Back to start" aria-describedby="{uid}-loop" onclick={onLoop}><Icon name="loop" size={16} /><span>Back to start</span><small id="{uid}-loop">Makes the route a loop</small></button>
+            {/if}
+            <button type="button" class="row danger" onclick={onRemove}><Icon name="trash" size={16} /><span>Remove point</span></button>
+        </div>
     {/if}
     {@render children?.()}
 </Callout>
 
 <style>
-    h2 {
-        margin: 0 28px 12px 0;
-        font: 600 14px var(--sans);
+    .title {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        min-height: 28px;
+        margin: -4px 28px -4px 0;
     }
-    button {
+    .title :global(h2) {
+        margin: 0;
+    }
+    .icon {
+        flex: none;
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
         border: 0;
+        border-radius: 6px;
         background: none;
-        color: inherit;
-        font: inherit;
+        color: var(--ink-soft);
         cursor: pointer;
-    }
-    /* As the name of a place, which this title stands for. */
-    .spot {
-        margin-bottom: 5px;
-        font-size: 17px;
-        line-height: 1.3;
     }
     .icon:hover {
         background: var(--parchment-2);
         color: var(--ink);
     }
-    .title {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        margin: 0 28px 12px 0;
-    }
-    .title h2 {
-        margin: 0;
-    }
-    .icon {
-        display: grid;
-        place-items: center;
-        width: 28px;
-        height: 28px;
-        border-radius: 6px;
-        color: var(--ink-soft);
-    }
-    .endpoints { margin-bottom: 12px; }
-    .add-types {
-        display: flex;
-        gap: 8px;
-    }
-    .add-types button {
-        flex: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        height: 36px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        font-weight: 600;
-    }
-    .add-types button:hover {
-        background: var(--parchment-2);
-    }
-    .quiet {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        margin-top: 12px;
-        padding: 4px 0;
-        color: var(--ink-soft);
-    }
-    .quiet:hover {
-        color: var(--ink);
-    }
+    /* The field takes the place of the title, with its text where the title was. */
     .rename {
-        width: 100%;
-        height: 32px;
-        margin-bottom: 12px;
-        padding: 0 8px;
+        flex: 1;
+        min-width: 0;
+        height: 28px;
+        margin-left: -7px;
+        padding: 0 6px;
         border: 1px solid var(--line-strong);
         border-radius: 6px;
         background: var(--panel);
         color: var(--ink);
-        font-size: 14px;
+        font: 600 16px var(--sans);
     }
-    .hint {
-        margin: 4px 0 0;
-        color: var(--ink-soft);
+    .rows.two {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
-    .field {
-        display: flex;
+    .stack {
         flex-direction: column;
-        gap: 4px;
-        color: var(--ink-soft);
     }
-    .field select {
-        height: 32px;
+    /* The day of the night, beside the button that ends it here. */
+    .day {
+        flex: 0 1 auto;
+        min-width: 0;
+        max-width: 50%;
+        height: 36px;
         padding: 0 8px;
         border: 1px solid var(--line-strong);
         border-radius: 6px;
         background: var(--panel);
         color: var(--ink);
         font: 600 13px var(--sans);
+        cursor: pointer;
     }
     .predict {
-        margin: 12px 0 0;
-        color: var(--ink-soft);
         font-variant-numeric: tabular-nums;
     }
     .predict strong {
         font-weight: 600;
         color: var(--ink);
-    }
-    .primary,
-    .secondary {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 8px;
-        width: 100%;
-        height: 36px;
-        margin-top: 12px;
-        border-radius: 6px;
-        font-weight: 600;
-    }
-    /* A long place scrolls the callout; its main action stays in view at the bottom, over a band of the panel. */
-    .primary {
-        position: sticky;
-        bottom: 0;
-        background: var(--amber);
-        color: var(--on-amber);
-        box-shadow: 0 16px 0 var(--panel), 0 -8px 0 var(--panel);
-    }
-    .primary:hover {
-        filter: brightness(.95);
-    }
-    .secondary {
-        margin-top: 8px;
-        border: 1px solid var(--line-strong);
-    }
-    .secondary:hover {
-        background: var(--parchment-2);
-    }
-    /* Clear of the band under the main action, which would hide the top of this button. */
-    .primary + .secondary {
-        margin-top: 16px;
     }
 </style>

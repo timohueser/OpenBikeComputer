@@ -17,7 +17,7 @@
     } = $props();
 </script>
 
-<section class="inspect" class:compact aria-label="Layer at this place">
+<section class="inspect" class:compact class:rule={compact} aria-label="Layer at this place">
     {#if compact}
         <p class="headline"><Icon name={icon} size={15} />{chart?.headline ?? (error || 'Loading layer data…')}</p>
     {:else}
@@ -42,7 +42,8 @@
 
 <style>
     .inspect { width: 340px; max-width: 100%; padding: 12px 14px; font-size: 13px; color: var(--ink); }
-    .compact { width: auto; margin-top: 14px; padding: 12px 0 0; border-top: 1px solid var(--line); font-size: inherit; }
+    /* The popup draws the rule over this group. */
+    .compact { width: auto; max-width: none; font-size: inherit; }
     p { margin: 0; }
     .title { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
     .title strong { font-size: 14px; font-weight: 600; }

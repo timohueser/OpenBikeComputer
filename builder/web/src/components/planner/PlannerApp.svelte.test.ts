@@ -473,7 +473,7 @@ describe('planner app transitions', () => {
         expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
         vi.useRealTimers();
         const moved = moves.count;
-        button('Add as visit').click();
+        button('Add visit').click();
         await tick();
         expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ label: tilePlace.label, kind: 'waypoint' }));
         // The card closes so that it does not cover the new route, the map moves to it, and the new stop stays lit.
