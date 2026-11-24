@@ -157,7 +157,7 @@ The road solver:
   of the range from the lowest to the highest terrain at the sample and at ± the half-width of the
   way, square to it. On a slope the terrain under the centre line is not the bed of the road. Past
   5 m the bound gives way to the other limits, and past 8 m only to the pins of the approaches, the
-  fords and the ways side by side, which cost as much, so a segment can pass the grade of its class
+  fords and the beds, which cost as much, so a segment can pass the grade of its class
   there. A sample of a segment that ends where a bridge runs through has no bound: steps or a ramp
   that meet a deck there take its height. The end of a bridge that meets no way or a tunnel (a
   portal) stands on the terrain the same way,
@@ -171,20 +171,40 @@ The road solver:
   length, so the grade does not pull a portal off the terrain. A side tunnel or a shaft that ends on
   another tunnel has the grade that its ends give it, so it never lifts that tunnel. A tunnel that
   branches inside the mountain holds the grade only on its straightest line from portal to portal,
-- holds a way of a class without a grade, where it leaves a road of a class with one, as a ramp:
-  for 15 m from the junction, where no pin of the approach holds it, its grade differs from the
-  terrain's under it by at most 25 %. The ramps are solved last, with every other height fixed, so a
-  ramp bends its way and moves no road and no junction. Over unknown terrain, a way has no ramp,
+- holds a way of a class without a grade, where it leaves a road of a class with one or a bed, as a
+  ramp: for 15 m from the junction or the end of the bed, where no pin of the approach holds it, its
+  grade differs from the terrain's under it by at most 25 %. The ramps are solved last, with every
+  other height fixed, so a ramp bends its way and moves no road and no junction. Over unknown
+  terrain, a way has no ramp,
 - gives ways that share a vertex one height there, and puts the first 4 m of a side road on the
   surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
   way between two junctions. The through road is the first class of the table at the junction, and
   of two ways of that class, the pair that runs most nearly straight on,
-- puts each vertex of a way on the ground at the height of the nearest way on the ground of the same
-  layer that runs the same way beside it, not past the first or the last vertex of that way: a track
-  within 6 m of a track, so that the tracks of a double line lie at one height, and a road or path
-  where its carriageway overlaps that of another road or path, so that the two have one surface. A way follows only a way after it in the bake's
-  order. A vertex keeps its own height where the terrain under the two ways differs by more than
-  0.5 m, there or within 100 m along its way: a ramp or a flyover,
+- puts ways side by side on one bed. A vertex of a way is beside the nearest way that meets each of
+  these conditions. That way runs within 26° of the way, it is not of the way's stroke (the ways that
+  run on from each other, see Alignment), and the foot of the vertex on it is not past an end of its
+  stroke. It is in the same state (on the ground, in a tunnel, on a bridge) and on the same `layer`;
+  where one of the two opens into another state or layer within 10 m along it, the other opens into
+  that state within 10 m too. So two openings up to 10 m apart join, and a way that opens alone
+  leaves. It comes first: a class earlier in the table, or of one class a way earlier in the bake's
+  order. It is the leader. No other way of the two groups (tracks; roads with `highway=track`;
+  paths) lies nearer on that side, and a way that meets the vertex does not count. It is near: for a
+  path beside a road or a `highway=track`, the edges of the two carriageways lie at most 2 m apart; a
+  track lies within 6 m of a track; two other ways of one group have carriageways that overlap. On a
+  run of such vertices along a way, d is the terrain under the way less the terrain under the foot,
+  every 2 m on the ground, and d30 is the median of d over the 30 m around a vertex. A vertex of two
+  tracks where d30 lies more than 3 m from the median of d over the run is not beside, and nor is a
+  vertex of two roads or two paths where d30 lies more than 0.5 m from 0: the terrain cannot tell
+  two levels with a steady offset from a slope. A run where the line of least squares through d
+  climbs by more than 5 % (3 % where most of the run lies beside a way of its own group), over 15 m
+  of the ground or more, is not beside: the legs of a zigzag climb against each other, and a ramp
+  leaves at its own grade. Runs that meet where a way runs on into the next, as the strokes join,
+  make a stretch. A stretch of 30 m or more that has a run on the ground is a bed. So a bed in a
+  tunnel or on a bridge continues a bed on the ground. On a bed the way has the height of its leader
+  at its foot and no forces of its own: no terrain sample, no ground bound, no grade and no
+  smoothness between vertices of the bed, no line of its tunnel chain (a chain stops at the end of a
+  bed), no approach, and no ford, cover, deck or pass that holds a vertex of the bed. Where a way
+  leaves a bed, its first 15 m are a ramp as below, also on the ways that it runs on into,
 - ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel keeps to
   a straight line between the two ends of its chain of tunnel ways that meet end to end, so a side
   tunnel or a shaft that joins it follows it and does not lift it. The line weighs less than the
@@ -244,9 +264,10 @@ move by 1 cm, which on a long stiff deck can leave the heights metres from that 
 limits 100 times more, and the ground past 8 m 100 times more again. A first solve without limits
 gives the weights of the fit, the culverts and the covers that hold; the ramps act after the rest.
 
-The bake fails when a vertex of a way on the ground (not a bridge and not a tunnel, and not where a
-deck runs through it) lies more than 10 m past the terrain across its way, the range of the ground
-bound above: the owner's gate; the message names the worst places. Its metrics hold this census, and
+The bake fails when a vertex of a way on the ground (not a bridge and not a tunnel, not where a
+deck runs through it, and not on a bed, where its leader holds it) lies more than 10 m past the
+terrain across its way, the range of the ground bound above: the owner's gate; the message names the
+worst places. Its metrics hold this census, and
 the same one of the rivers and streams, which does not fail the bake. The bake log and the metrics
 also count the places (one per position, where several ways share a vertex) more than 10 m off the
 terrain under their centre line, which the gate does not.

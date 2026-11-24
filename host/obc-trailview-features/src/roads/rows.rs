@@ -1,15 +1,16 @@
 //! The rows that tie the heights of a solve to each other: the approaches of side roads, the fords,
-//! the chains of tunnels and bridges, the tracks side by side, the decks over what they cross, and
-//! the ways that pass over each other.
+//! the chains of tunnels and bridges, the beds of ways side by side, the decks over what they cross,
+//! and the ways that pass over each other.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use rstar::primitives::GeomWithData;
 use rstar::{RTree, AABB};
 
+use super::align::joins;
 use super::network::{dot, hypot, sub, Network};
 use super::*;
-use crate::geometry::key;
+use crate::geometry::{key, percentile};
 use crate::{metres, Terrain};
 use obc_ground_plan::frame::GlobalPoint;
 use obc_ground_plan::graph::end_on_chord;
@@ -232,112 +233,305 @@ fn straight(net: &Network, chain: &[usize], pins: &mut Pins<3>) {
     }
 }
 
-/// Rows z_P − (1 − τ)·z_A − τ·z_B = 0 for each vertex P of a way on the ground and the nearest
-/// segment A-B beside it that runs its way, of a way on the ground of the same layer, of the same
-/// group (tracks, or roads and paths) and with a higher way number: within PARALLEL_M of a track, or
-/// where the carriageways of two roads or paths overlap. τ is the foot of P on A-B, where the terrain
-/// at P and at its foot is known and differs by no more than PARALLEL_RISE_M, here and within
-/// PARALLEL_FREE_M along P's way. Each way follows only ways after it, so no two rows pull against
-/// each other, and the tracks of a double line or a station, and two ways that share their
-/// carriageway, lie at one height.
-pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain) -> Pins<3> {
-    let ground: Vec<bool> = net.free.iter().map(|&free| !free).collect();
-    let rail = |w: usize| classes.rows[net.rule[w]].rail;
-    let segments: Vec<usize> = (0..net.segment_way.len()).filter(|&s| ground[net.segment_way[s]]).collect();
-    if segments.is_empty() {
-        return Pins::default();
+/// The groups of the bed rule: tracks, roads with the farm tracks, and paths.
+const TRACKS: usize = 0;
+const ROADS: usize = 1;
+const PATHS: usize = 2;
+
+fn group(net: &Network, classes: &Classes, w: usize) -> usize {
+    if classes.rows[net.rule[w]].rail {
+        TRACKS
+    } else if net.rule[w] >= classes.path {
+        PATHS
+    } else {
+        ROADS
     }
-    let pa: Vec<[f64; 2]> = segments.iter().map(|&s| net.vertex_xy[net.segment_start[s]]).collect();
-    let d: Vec<[f64; 2]> =
-        segments.iter().zip(&pa).map(|(&s, &a)| sub(net.vertex_xy[net.segment_start[s] + 1], a)).collect();
-    let length: Vec<f64> = d.iter().map(|&d| hypot(d)).collect();
+}
+
+/// What the beds give a solve.
+pub(crate) struct Beds {
+    /// Per vertex of a follower on a bed, z_v − (1 − τ)·z_a − τ·z_b = 0: a-b is the segment of its leader at
+    /// its foot, and τ the place of the foot on it.
+    pub pins: Pins<3>,
+    /// Per variable, whether a bed holds it.
+    pub held: Vec<bool>,
+    /// Per segment, whether it lies within RAMP_M past the end of a bed, along its way and the ways that run
+    /// on from it: there the follower leaves as a ramp.
+    pub ramp: Vec<bool>,
+}
+
+/// Ways side by side lie on one bed. A vertex has the way beside it as its leader (`leaders`). On a run of
+/// vertices with a leader along one way, the terrain is the witness: d is the terrain under the follower
+/// less the terrain under the foot, every SAMPLE_M on the ground, and d30 is the median of d over
+/// BESIDE_MIN_M around a vertex. A vertex of two tracks whose d30 lies more than BESIDE_RISE_M from the median
+/// of d over its run, and one of two roads or two paths whose d30 lies more than PARALLEL_RISE_M from 0, has
+/// no leader: these lie at two levels. A run whose d climbs by more than BESIDE_TREND per metre, or
+/// BESIDE_TREND_GROUP where most of it lies beside a way of its own group, along half of BESIDE_MIN_M of the
+/// ground or more, has none: the legs of a zigzag climb against each other, and a ramp leaves at its own
+/// grade. The runs that meet where a way runs on into the next (`align::joins`), through an opening too, make
+/// a stretch; a stretch of BESIDE_MIN_M or more with a run on the ground is a bed. So a bed in a tunnel or on
+/// a bridge continues a bed on the ground, where the terrain can witness it.
+pub(crate) fn beds(net: &Network, classes: &Classes, terrain: &dyn Terrain) -> Beds {
+    let total = net.vertex_xy.len();
+    let links = joins(net);
+    let mut leader = leaders(net, classes, &links);
+    let mut along = vec![0.0; total];
+    for (s, &v) in net.segment_start.iter().enumerate() {
+        along[v + 1] = along[v] + net.length[s];
+    }
+    // The samples of the runs on the ground, in the middle of each step: metres along and d; per vertex, the
+    // samples of its segment on.
+    let (mut s, mut steps, mut points) = (Vec::new(), vec![0..0; total], Vec::new());
+    let foot = |v: usize| {
+        let (k, tau) = leader[v].unwrap();
+        lerp(net.vertex_xy[net.segment_start[k]], net.vertex_xy[net.segment_start[k] + 1], tau)
+    };
+    for (w, first, last) in runs(net, &leader).into_iter().filter(|&(w, ..)| !net.free[w]) {
+        for v in first..last {
+            let length = net.length[v - w];
+            let k = (length / SAMPLE_M).ceil().max(1.0) as usize;
+            let start = s.len();
+            for j in 0..k {
+                let t = (j as f64 + 0.5) / k as f64;
+                points.extend([lerp(net.vertex_xy[v], net.vertex_xy[v + 1], t), lerp(foot(v), foot(v + 1), t)]);
+                s.push(along[v] + t * length);
+            }
+            steps[v] = start..s.len();
+        }
+    }
+    let d: Vec<f64> = terrain.heights(&points).chunks(2).map(|h| h[0] - h[1]).collect();
+    let samples = |first: usize, last: usize| -> Vec<usize> {
+        let range = if last > first { steps[first].start..steps[last - 1].end } else { 0..0 };
+        range.filter(|&i| d[i].is_finite()).collect()
+    };
+    let median = |mut values: Vec<f64>| percentile(&mut values, 50.0);
+    let leading =
+        |leader: &[Option<(usize, f64)>], v: usize| group(net, classes, net.segment_way[leader[v].unwrap().0]);
+    for (w, first, last) in runs(net, &leader).into_iter().filter(|&(w, ..)| !net.free[w]) {
+        let run = samples(first, last);
+        let middle = median(run.iter().map(|&i| d[i]).collect());
+        for v in first..=last {
+            let near = run.iter().filter(|&&i| (s[i] - along[v]).abs() <= BESIDE_MIN_M / 2.0).map(|&i| d[i]);
+            let (Some(d30), Some(middle)) = (median(near.collect()), middle) else { continue };
+            let apart = match (group(net, classes, w), leading(&leader, v)) {
+                (TRACKS, TRACKS) => (d30 - middle).abs() > BESIDE_RISE_M,
+                (mine, theirs) => mine == theirs && d30.abs() > PARALLEL_RISE_M,
+            };
+            if apart {
+                leader[v] = None;
+            }
+        }
+    }
+    // The runs that the trend keeps, each with whether it has a sample on the ground.
+    let mut kept = Vec::new();
+    for (w, first, last) in runs(net, &leader) {
+        let run = samples(first, last);
+        let own =
+            (first..=last).filter(|&v| leading(&leader, v) == group(net, classes, w)).count() * 2 > last - first + 1;
+        let span = run.last().map_or(0.0, |&i| s[i] - s[run[0]]);
+        if span >= BESIDE_MIN_M / 2.0 && trend(&run, &s, &d).abs() > if own { BESIDE_TREND_GROUP } else { BESIDE_TREND }
+        {
+            leader[first..=last].fill(None);
+            continue;
+        }
+        kept.push((w, first, last, !run.is_empty()));
+    }
+    let mut parent: Vec<usize> = (0..kept.len()).collect();
+    let mut ends: HashMap<(usize, bool), usize> = HashMap::new();
+    for (i, &(w, first, last, _)) in kept.iter().enumerate() {
+        for (at_last, at) in [(false, net.way_first[w]), (true, net.way_last[w])] {
+            if at == if at_last { last } else { first } {
+                ends.insert((w, at_last), i);
+            }
+        }
+    }
+    for (&(w, at_last), &i) in &ends {
+        if let Some(&k) = links[w][usize::from(at_last)].and_then(|end| ends.get(&end)) {
+            union(&mut parent, i, k);
+        }
+    }
+    let (mut length, mut witness) = (vec![0.0; kept.len()], vec![false; kept.len()]);
+    for (i, &(_, first, last, ground)) in kept.iter().enumerate() {
+        let r = root(&mut parent, i);
+        length[r] += along[last] - along[first];
+        witness[r] |= ground;
+    }
+    let mut out = Beds { pins: Pins::default(), held: vec![false; net.count], ramp: vec![false; net.length.len()] };
+    let mut bed = Vec::new();
+    for (i, &(w, first, last, _)) in kept.iter().enumerate() {
+        let r = root(&mut parent, i);
+        if length[r] < BESIDE_MIN_M || !witness[r] {
+            continue;
+        }
+        for (v, l) in leader.iter().enumerate().take(last + 1).skip(first) {
+            let (k, tau) = l.unwrap();
+            out.pins.push([net.vertex_var[v], net.a[k], net.b[k]], [1.0, -(1.0 - tau), -tau], 0.0);
+            out.held[net.vertex_var[v]] = true;
+        }
+        bed.push((w, first, last));
+    }
+    for (w, first, last) in bed {
+        for (mut w, mut v, mut step) in [(w, last, 1i64), (w, first, -1)] {
+            let mut left = RAMP_M;
+            while left > 0.0 {
+                if v == if step > 0 { net.way_last[w] } else { net.way_first[w] } {
+                    let Some((next, at_last)) = links[w][usize::from(step > 0)] else { break };
+                    let end = if at_last { net.way_last[next] } else { net.way_first[next] };
+                    (w, v, step) = (next, end, if at_last { -1 } else { 1 });
+                }
+                let u = (v as i64 + step) as usize;
+                if out.held[net.vertex_var[u]] {
+                    break;
+                }
+                out.ramp[v.min(u) - w] = true;
+                left -= net.length[v.min(u) - w];
+                v = u;
+            }
+        }
+    }
+    out
+}
+
+/// Per vertex, its leader: the segment of the way that it lies beside, and the place of its foot on it. That
+/// way is the nearest of another stroke (the ways that run on from each other, `align::joins`) that runs
+/// within PARALLEL_COS of its way, with the foot not past an end of that stroke; in the state of its way (on
+/// the ground, in a tunnel or on a bridge) and on its layer, where an opening of its way within VERTEX_M (into
+/// a way of another state or layer) has one of that way within VERTEX_M too: two openings that far apart
+/// join, and a way that opens alone leaves; before its way, by the class of the table, then by the order of
+/// the ways; with no way of the two groups nearer on that side; and near: a path beside a road or a farm track
+/// where their edges lie at most BESIDE_GAP_M apart, two tracks within PARALLEL_M, and two other ways of one
+/// group where their carriageways overlap.
+fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]]) -> Vec<Option<(usize, f64)>> {
+    let total = net.vertex_xy.len();
+    // The state of a way (on the ground, on a bridge, in a tunnel) and its layer, as a bit.
+    let state = |w: usize| {
+        1u64 << (16 * (u64::from(net.free[w]) + u64::from(net.tunnel[w])) + (net.layer[w].clamp(-8, 7) + 8) as u64)
+    };
+    let mut stroke: Vec<usize> = (0..links.len()).collect();
+    for (w, ends) in links.iter().enumerate() {
+        for &(next, _) in ends.iter().flatten() {
+            union(&mut stroke, w, next);
+        }
+    }
+    let stroke: Vec<usize> = (0..links.len()).map(|w| root(&mut stroke, w)).collect();
+    // Per vertex, the states of the ways that its way runs on into through an opening within VERTEX_M.
+    let mut opening = vec![0u64; total];
+    for (w, ends) in links.iter().enumerate() {
+        for (end, &link) in ends.iter().enumerate() {
+            let Some((next, _)) = link.filter(|&(next, _)| state(next) != state(w)) else { continue };
+            let (mut v, step) = if end == 1 { (net.way_last[w], -1i64) } else { (net.way_first[w], 1) };
+            let mut left = VERTEX_M;
+            while left >= 0.0 {
+                opening[v] |= state(next);
+                let u = v as i64 + step;
+                if u < net.way_first[w] as i64 || u > net.way_last[w] as i64 {
+                    break;
+                }
+                left -= net.length[v.min(u as usize) - w];
+                v = u as usize;
+            }
+        }
+    }
+    let pa: Vec<[f64; 2]> = net.segment_start.iter().map(|&v| net.vertex_xy[v]).collect();
+    let d: Vec<[f64; 2]> = net.segment_start.iter().zip(&pa).map(|(&v, &a)| sub(net.vertex_xy[v + 1], a)).collect();
     let unit: Vec<f64> = pa.iter().map(|p| metres(p[1])).collect();
-    let widest = (0..ground.len()).filter(|&w| ground[w]).map(|w| net.half[w]).fold(0.0, f64::max);
-    let reach = (PARALLEL_M.max(2.0 * widest) + VERTEX_M / 2.0) / unit.iter().copied().fold(f64::INFINITY, f64::min);
+    let widest = net.half.iter().copied().fold(0.0, f64::max);
+    let reach = (PARALLEL_M.max(2.0 * widest + BESIDE_GAP_M) + VERTEX_M / 2.0)
+        / unit.iter().copied().fold(f64::INFINITY, f64::min);
     let tree: RTree<GeomWithData<[f64; 2], usize>> = RTree::bulk_load(
-        (0..segments.len())
-            .map(|k| GeomWithData::new([pa[k][0] + d[k][0] / 2.0, pa[k][1] + d[k][1] / 2.0], k))
-            .collect(),
+        (0..pa.len()).map(|k| GeomWithData::new([pa[k][0] + d[k][0] / 2.0, pa[k][1] + d[k][1] / 2.0], k)).collect(),
     );
-    let mut found = Vec::new();
-    for w in (0..ground.len()).filter(|&w| ground[w]) {
+    let mut out = vec![None; total];
+    for w in 0..net.way_first.len() {
+        let mine = group(net, classes, w);
         for v in net.way_first[w]..=net.way_last[w] {
             let p = net.vertex_xy[v];
-            let u = if v < net.way_last[w] { v + 1 } else { v - 1 };
-            let o = sub(net.vertex_xy[u], p);
-            let norm = hypot(o).max(1e-300);
-            let own = [o[0] / norm, o[1] / norm];
+            let o = sub(net.vertex_xy[if v < net.way_last[w] { v + 1 } else { v - 1 }], p);
+            let own = [o[0] / hypot(o).max(1e-300), o[1] / hypot(o).max(1e-300)];
             let mut near: Vec<usize> = tree
                 .locate_in_envelope(&AABB::from_corners([p[0] - reach, p[1] - reach], [p[0] + reach, p[1] + reach]))
                 .map(|g| g.data)
                 .collect();
             near.sort_unstable();
-            let mut best: Option<(f64, usize, f64)> = None;
+            // Per way beside v in its state: (metres, segment, foot, way, side); and per group and side the nearest.
+            let (mut found, mut nearest) = (Vec::new(), [[f64::INFINITY; 2]; 3]);
             for k in near {
-                let other = net.segment_way[segments[k]];
-                if other <= w
-                    || rail(other) != rail(w)
-                    || net.layer[other] != net.layer[w]
-                    || (dot(own, d[k]) / length[k].max(1e-300)).abs() < PARALLEL_COS
-                {
+                let other = net.segment_way[k];
+                // Two openings within VERTEX_M of each other join; a way that opens alone leaves.
+                let around = opening[net.segment_start[k]] | opening[net.segment_start[k] + 1];
+                let fits = state(other) == state(w) && opening[v] & !(state(other) | around) == 0
+                    || opening[v] & state(other) != 0 && around & state(w) != 0;
+                // A way that meets v there leaves it: it lies neither beside v nor between.
+                let meets = net.a[k] == net.vertex_var[v] || net.b[k] == net.vertex_var[v];
+                let parallel = (dot(own, d[k]) / hypot(d[k]).max(1e-300)).abs() >= PARALLEL_COS;
+                if stroke[other] == stroke[w] || meets || !fits || !parallel {
                     continue;
                 }
-                // A foot past the first or the last vertex of the other way is the way that continues
-                // this one, not a way beside it.
-                let t = dot(sub(p, pa[k]), d[k]) / (length[k] * length[k]).max(1e-300);
-                let first = net.segment_start[segments[k]] == net.way_first[other];
-                let last = net.segment_start[segments[k]] + 1 == net.way_last[other];
+                // A foot past an end of the other stroke is a way that continues this one, not a way beside it.
+                let t = dot(sub(p, pa[k]), d[k]) / dot(d[k], d[k]).max(1e-300);
+                let first = net.segment_start[k] == net.way_first[other] && links[other][0].is_none();
+                let last = net.segment_start[k] + 1 == net.way_last[other] && links[other][1].is_none();
                 if t < 0.0 && first || t > 1.0 && last {
                     continue;
                 }
                 let t = t.clamp(0.0, 1.0);
-                let gap = hypot([p[0] - pa[k][0] - t * d[k][0], p[1] - pa[k][1] - t * d[k][1]]) * unit[k];
-                let limit = if rail(w) { PARALLEL_M } else { net.half[w] + net.half[other] };
-                if gap <= limit && best.is_none_or(|b| gap < b.0) {
-                    best = Some((gap, k, t));
-                }
+                let off = sub(lerp(pa[k], net.vertex_xy[net.segment_start[k] + 1], t), p);
+                let (gap, side) = (hypot(off) * unit[k], usize::from(own[0] * off[1] - own[1] * off[0] > 0.0));
+                let theirs = group(net, classes, other);
+                nearest[theirs][side] = nearest[theirs][side].min(gap);
+                found.push((gap, k, t, other, side));
             }
-            if let Some((_, k, t)) = best {
-                found.push((v, k, t));
-            }
+            let close = |other: usize, gap: f64| match (mine, group(net, classes, other)) {
+                (TRACKS, TRACKS) => gap <= PARALLEL_M,
+                (PATHS, ROADS) => gap - net.half[w] - net.half[other] <= BESIDE_GAP_M,
+                (mine, theirs) => mine == theirs && gap <= net.half[w] + net.half[other],
+            };
+            let candidates = found.into_iter().filter(|&(gap, _, _, other, side)| {
+                let between = nearest[mine][side].min(nearest[group(net, classes, other)][side]);
+                (net.rule[other], other) < (net.rule[w], w) && close(other, gap) && gap <= between + 0.01
+            });
+            out[v] = candidates.min_by(|x, y| x.0.total_cmp(&y.0)).map(|(_, k, t, ..)| (k, t));
         }
     }
-    if found.is_empty() {
-        return Pins::default();
-    }
-    let at: Vec<[f64; 2]> = found.iter().map(|&(v, _, _)| net.vertex_xy[v]).collect();
-    let feet: Vec<[f64; 2]> = found.iter().map(|&(_, k, t)| [pa[k][0] + t * d[k][0], pa[k][1] + t * d[k][1]]).collect();
-    let (here, there) = (terrain.heights(&at), terrain.heights(&feet));
-    let mut level: Vec<bool> = here.iter().zip(&there).map(|(&h, &f)| (h - f).abs() <= PARALLEL_RISE_M).collect();
-    // Metres along its way at each vertex, and the pins of each way that lie too near a parting.
-    let mut steps = vec![0.0; net.vertex_xy.len()];
-    for (s, &v) in net.segment_start.iter().enumerate() {
-        steps[v + 1] = net.length[s];
-    }
-    let mut along = steps;
-    for v in 1..along.len() {
-        along[v] += along[v - 1];
-    }
-    let mut way = vec![0; net.vertex_xy.len()];
+    out
+}
+
+/// The runs of vertices with a leader along each way: (way, first vertex, last vertex).
+fn runs(net: &Network, leader: &[Option<(usize, f64)>]) -> Vec<(usize, usize, usize)> {
+    let mut out = Vec::new();
     for w in 0..net.way_first.len() {
-        way[net.way_first[w]..=net.way_last[w]].fill(w);
-    }
-    let at_along = |v: usize| along[v] - along[net.way_first[way[v]]];
-    let parted: BTreeSet<usize> = found.iter().zip(&level).filter(|(_, &l)| !l).map(|(f, _)| way[f.0]).collect();
-    for w in parted {
-        let mine: Vec<usize> = (0..found.len()).filter(|&i| way[found[i].0] == w).collect();
-        let partings: Vec<f64> = mine.iter().filter(|&&i| !level[i]).map(|&i| at_along(found[i].0)).collect();
-        for &i in &mine {
-            let s = at_along(found[i].0);
-            level[i] &= partings.iter().map(|&p| (s - p).abs()).fold(f64::INFINITY, f64::min) > PARALLEL_FREE_M;
+        let mut start = None;
+        for (v, l) in leader.iter().enumerate().take(net.way_last[w] + 1).skip(net.way_first[w]) {
+            match (l.is_some(), start) {
+                (true, None) => start = Some(v),
+                (false, Some(first)) => {
+                    out.push((w, first, v - 1));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(first) = start {
+            out.push((w, first, net.way_last[w]));
         }
     }
-    let mut pins = Pins::default();
-    for (&(v, k, t), _) in found.iter().zip(&level).filter(|(_, &l)| l) {
-        let s = segments[k];
-        pins.push([net.vertex_var[v], net.a[s], net.b[s]], [1.0, -(1.0 - t), -t], 0.0);
+    out
+}
+
+/// The slope of the line of least squares through the samples `run` of d along s.
+fn trend(run: &[usize], s: &[f64], d: &[f64]) -> f64 {
+    let n = run.len() as f64;
+    let (ms, md) = (run.iter().map(|&i| s[i]).sum::<f64>() / n, run.iter().map(|&i| d[i]).sum::<f64>() / n);
+    let (mut sd, mut ss) = (0.0, 0.0);
+    for &i in run {
+        sd += (s[i] - ms) * (d[i] - md);
+        ss += (s[i] - ms) * (s[i] - ms);
     }
-    pins
+    sd / ss.max(1e-300)
+}
+
+fn lerp(p: [f64; 2], q: [f64; 2], t: f64) -> [f64; 2] {
+    [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])]
 }
 
 /// The arms at a point: per OSM variable, of the ways of roads and paths and of the railways; per

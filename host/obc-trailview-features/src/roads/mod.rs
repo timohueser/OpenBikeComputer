@@ -14,9 +14,8 @@
 //! passes over the other, at one layer the better class, and of one class the later one. A path's ford,
 //! and a ford over water wider than a culvert's, lies FORD_M below the water it crosses, and a road, a
 //! track or a railway on the ground lies over the cover of a culvert part or of narrow water that it
-//! crosses, tagged as a ford or not. Tracks side by side, as OSM maps each track of a double line,
-//! lie at one height: their beds are one bed. So do roads and paths whose carriageways overlap. A way
-//! on a ramp beside another keeps its own height.
+//! crosses, tagged as a ford or not. Ways side by side lie on one bed (`rows::beds`): there a way has the
+//! height of the way beside it that comes first in the table, and nothing else of its own.
 //! Each solve ends with the alignment of its ways (`align`): a fitted plan, and the vertices that hold it.
 
 mod align;
@@ -85,14 +84,27 @@ pub const DECK_M: f64 = 1.0;
 pub const DECK_PATH_M: f64 = 0.4;
 /// A road or a path over a tunnel lies at least this far over its bore.
 pub const COVER_M: f64 = 1.0;
-/// A track within PARALLEL_M beside another, or a road or path whose carriageway overlaps another's,
-/// and within PARALLEL_COS of its direction, lies at its height, unless the terrain under the two
-/// differs by more than PARALLEL_RISE_M within PARALLEL_FREE_M along it: a ramp or a flyover, whose
-/// climb the smoothing of a track spreads that far.
+/// The bed rule (`rows::beds`). A way lies beside another within PARALLEL_COS of its direction: a track
+/// within PARALLEL_M of a track, a path beside a road or a farm track where their edges lie at most
+/// BESIDE_GAP_M apart, and two other ways of one group where their carriageways overlap. BESIDE_GAP_M is
+/// the owner's choice from the census of box B: at 3 m, lakeside paths that lie lower rise to the road.
 const PARALLEL_M: f64 = 6.0;
 const PARALLEL_COS: f64 = 0.9;
+const BESIDE_GAP_M: f64 = 2.0;
+/// A stretch shorter than BESIDE_MIN_M is no bed: such stretches are forks for the most part.
+const BESIDE_MIN_M: f64 = 30.0;
+/// The most that the terrain under a follower may climb per metre against that under its leader on a bed,
+/// BESIDE_TREND_GROUP for two ways of one group. Owner's choice from the census of box B: sidewalks reach
+/// 4.9 %, two levels of a path and a road start at 6.2 %, and a rack line that climbs to its bridge has 3.3 %.
+const BESIDE_TREND: f64 = 0.05;
+const BESIDE_TREND_GROUP: f64 = 0.03;
+/// Two tracks lie at two levels where the terrain difference leaves the median of their run by more than
+/// BESIDE_RISE_M, under half the 7 m of a track over a track; two roads or two paths, where it is more
+/// than PARALLEL_RISE_M: the terrain cannot tell a steady offset of two levels from a slope otherwise.
+const BESIDE_RISE_M: f64 = 3.0;
 const PARALLEL_RISE_M: f64 = 0.5;
-const PARALLEL_FREE_M: f64 = 100.0;
+/// A follower on a bed lies within APART_M of the height of its leader at its foot (`Metrics::beds_apart`).
+const APART_M: f64 = 0.05;
 /// Weights against one metre of terrain samples: the terrain under a bridge or tunnel that meets no
 /// road, a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or
 /// tunnel the preference for level, so that one that meets a road at one end only is level from there.
@@ -219,13 +231,15 @@ pub struct Near<'a> {
 }
 
 /// A way after the solve: its kept vertices on the fitted curve, their heights (NaN where unknown) and
-/// alignment, and the index of the OSM vertex that each follows, which names the job that owns it.
+/// alignment, the index of the OSM vertex that each follows, which names the job that owns it, and whether
+/// each lies on a bed, where its leader holds it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Way {
     pub points: Vec<[f64; 2]>,
     pub z: Vec<f64>,
     pub plan: Vec<Plan>,
     pub osm: Vec<usize>,
+    pub bed: Vec<bool>,
 }
 
 impl Way {
@@ -234,6 +248,7 @@ impl Way {
         self.z.push(other.z[i]);
         self.plan.push(other.plan[i]);
         self.osm.push(other.osm[i]);
+        self.bed.push(other.bed[i]);
     }
 }
 
@@ -266,6 +281,9 @@ pub struct Metrics {
     pub grade_excess_over_1cm: usize,
     /// The samples that the ground holds GROUND_M off the terrain.
     pub grounded: usize,
+    /// The metres of the ways on a bed, and the vertices on a bed more than APART_M off their leader.
+    pub bed_m: f64,
+    pub beds_apart: usize,
     pub residual_p99_m: f64,
     pub refinements_unconverged: usize,
     pub covers: usize,
@@ -301,6 +319,7 @@ impl Metrics {
             (&mut self.passes_near_cm, other.passes_near_cm),
             (&mut self.grade_excess_over_1cm, other.grade_excess_over_1cm),
             (&mut self.grounded, other.grounded),
+            (&mut self.beds_apart, other.beds_apart),
             (&mut self.refinements_unconverged, other.refinements_unconverged),
             (&mut self.covers, other.covers),
             (&mut self.covers_lifted, other.covers_lifted),
@@ -313,6 +332,7 @@ impl Metrics {
             *sum += value;
         }
         self.sidewalks.add(&other.sidewalks);
+        self.bed_m += other.bed_m;
         self.rounds = self.rounds.max(other.rounds);
         for k in 0..SCALES.len() {
             self.capped[k] += other.capped[k];
@@ -470,10 +490,23 @@ pub fn solve(
     let held_network = supported(&support);
     let known: Vec<bool> = (0..n).map(|v| support[v] > 0.0 || on_free[v] && held_network[component[v]]).collect();
     let all_known = |variables: &[usize]| variables.iter().all(|&v| known[v]);
+    // A follower on a bed has the height of its leader and nothing of its own: no row whose variables all lie
+    // on a bed, and no row that pins or bounds a variable on a bed against what it crosses: such a row, on a
+    // segment that leaves a bed, would lever its other end.
+    let beds = rows::beds(&net, classes, terrain);
+    let on_bed = |variables: &[usize]| variables.iter().all(|&v| beds.held[v]);
+    let touches = |variables: &[usize]| variables.iter().any(|&v| beds.held[v]);
+    let bedded = |s: usize| beds.held[a[s]] && beds.held[b[s]];
+    for i in (0..seg.len()).filter(|&i| bedded(seg[i])) {
+        weight[i] = 0.0;
+    }
 
     // Rows that pin a combination of variables to a value: the approaches of side roads, the fords,
-    // the bores, the tracks side by side.
-    let (approach, approached, ramp) = rows::approaches(&net, classes);
+    // the bores, the beds.
+    let (approach, approached, mut ramp) = rows::approaches(&net, classes);
+    for (ramp, &leaves) in ramp.iter_mut().zip(&beds.ramp) {
+        *ramp |= leaves;
+    }
     let fords = rows::fords(&net, rivers, classes, terrain);
     let untagged = rows::untagged_crossings(&net, rivers, classes, terrain);
     // A way on the ground meets a tunnel where it comes out of the ground: at a portal, which ends its chain.
@@ -482,17 +515,18 @@ pub fn solve(
         grounded[a[s]] = true;
         grounded[b[s]] = true;
     }
-    let (bores, tunnels) = rows::chains(&net, &net.tunnel, &grounded);
-    let beside = rows::parallels(&net, classes, terrain);
+    // A chain stops at the end of a bed.
+    let stops: Vec<bool> = (0..n).map(|v| grounded[v] || beds.held[v]).collect();
+    let (bores, tunnels) = rows::chains(&net, &net.tunnel, &stops);
     let bridge: Vec<bool> = (0..net.free.len()).map(|w| net.free[w] && !net.tunnel[w]).collect();
     // The decks over what they cross and the bridges that do not sag: each ≥ its value.
     let (above, deck_ways) = rows::clearances(&net, rivers, classes, terrain);
-    let (sags, _) = rows::chains(&net, &bridge, &[]);
+    let (sags, _) = rows::chains(&net, &bridge, &beds.held);
     // The covers over the culverts, tagged and untagged: each ≥ its value where its way lies on the ground.
     let (cover, cover_ways, cover_untagged) = rows::covers(&net, (&near.culverts, rivers), &untagged, classes, terrain);
     let (mut k_rows, mut k_least, mut k_way, mut k_first) = (Rows::default(), Vec::new(), Vec::new(), Vec::new());
     let mut k_untagged = Vec::new();
-    for i in (0..cover.values.len()).filter(|&i| all_known(&cover.variables[i])) {
+    for i in (0..cover.values.len()).filter(|&i| all_known(&cover.variables[i]) && !touches(&cover.variables[i])) {
         k_rows.push(cover.variables[i].into_iter().zip(cover.coefficients[i]));
         k_least.push(cover.values[i]);
         k_way.push(cover_ways[i]);
@@ -502,7 +536,8 @@ pub fn solve(
     let mut c_rows = Rows::default();
     let (mut least, mut deck_way, mut deck_first) = (Vec::new(), Vec::new(), Vec::new());
     for (i, &w) in deck_ways.iter().enumerate() {
-        if all_known(&above.variables[i]) {
+        let v = above.variables[i];
+        if all_known(&v) && !touches(&v) {
             c_rows.push(above.variables[i].into_iter().zip(above.coefficients[i]));
             least.push(above.values[i]);
             deck_way.push(Some(w));
@@ -518,8 +553,12 @@ pub fn solve(
         }
     }
     let under = rows::passes(&net, classes);
-    let held_up: Vec<bool> =
-        (0..under.margin.len()).map(|i| all_known(&under.upper[i].0) && all_known(&under.lower[i].0)).collect();
+    let held_up: Vec<bool> = (0..under.margin.len())
+        .map(|i| {
+            let (upper, lower) = (&under.upper[i].0, &under.lower[i].0);
+            all_known(upper) && all_known(lower) && !touches(upper) && !touches(lower)
+        })
+        .collect();
     let (mut u_rows, mut l_rows, mut apart) = (Rows::default(), Rows::default(), Rows::default());
     let (mut need, mut moves) = (Vec::new(), Vec::new());
     let mut pass_first = Vec::new();
@@ -535,10 +574,16 @@ pub fn solve(
     }
     let mut p_rows = Rows::default();
     let (mut values, mut counted, mut p_w) = (Vec::new(), Vec::new(), Vec::new());
-    for (k, pins) in [&approach, &fords, &bores, &beside].into_iter().enumerate() {
+    for (k, pins) in [&approach, &fords, &bores, &beds.pins].into_iter().enumerate() {
         let mut count = 0;
         for i in 0..pins.values.len() {
-            if all_known(&pins.variables[i]) {
+            let v = &pins.variables[i];
+            let follower = match k {
+                0 => beds.held[v[0]],
+                1 => touches(v),
+                _ => false,
+            };
+            if all_known(v) && !follower {
                 p_rows.push(pins.variables[i].into_iter().zip(pins.coefficients[i]));
                 values.push(pins.values[i]);
                 p_w.push(if k == 2 { BORE } else { PIN });
@@ -569,6 +614,7 @@ pub fn solve(
             && known[b[i]]
             && known[b[i + 1]]
             && !mouth[net.segment_start[i] + 1]
+            && !on_bed(&[a[i], b[i], b[i + 1]])
         {
             add_bend([a[i], b[i], b[i + 1]], length[i], length[i + 1], smooth(net.rule[net.segment_way[i]]));
         }
@@ -580,7 +626,7 @@ pub fn solve(
         let j = net.osm_position[o1];
         let (p, q) = ((j as i64 + s1) as usize, (net.osm_position[o2] as i64 + s2) as usize);
         let across = [net.vertex_var[p], net.vertex_var[j], net.vertex_var[q]];
-        if all_known(&across) {
+        if all_known(&across) && !on_bed(&across) {
             add_bend(across, span(p, j), span(q, j), smooth(net.rule[net.osm_way[o1]]));
         }
     }
@@ -634,6 +680,7 @@ pub fn solve(
                 && known[a[s]]
                 && known[b[s]]
                 && !(pinned[a[s]] && pinned[b[s]])
+                && !bedded(s)
         })
         .collect();
     // The ground: a way on the ground lies within GROUND_M of the terrain across it at each of its samples, and
@@ -650,6 +697,7 @@ pub fn solve(
         finite[i]
             && known[a[s]]
             && known[b[s]]
+            && !bedded(s)
             && if free[s] { loose[at_end(i)] && ends } else { decked[a[s]] < 2 && decked[b[s]] < 2 }
     };
     let ground_samples: Vec<usize> = (0..seg.len()).filter(|&i| on_ground(i)).collect();
@@ -705,7 +753,7 @@ pub fn solve(
         out
     };
     let (mut level_rows, mut level_w) = (Rows::default(), Vec::new());
-    for s in (0..a.len()).filter(|&s| free[s] && known[a[s]] && known[b[s]]) {
+    for s in (0..a.len()).filter(|&s| free[s] && known[a[s]] && known[b[s]] && !bedded(s)) {
         level_rows.push([(a[s], -1.0), (b[s], 1.0)]);
         level_w.push(LEVEL / length[s].max(0.01));
     }
@@ -750,9 +798,11 @@ pub fn solve(
     let terms = terms(&fixed, samples, (&w, &h));
     let all: Vec<usize> = (0..n).collect();
     let limit = |cost| Limits { rows: &limits, lo: &lows, hi: &hi, cost };
-    // Nothing anchors a bridge or a tunnel but its ends: a region takes it whole.
-    let edges: Vec<(usize, usize, f64)> =
+    // Nothing anchors a bridge or a tunnel but its ends: a region takes it whole. A follower on a bed moves
+    // with its leader.
+    let mut edges: Vec<(usize, usize, f64)> =
         (0..a.len()).map(|s| (a[s], b[s], if free[s] { 1e-6 } else { length[s].max(0.01) })).collect();
+    edges.extend(beds.pins.variables.iter().flat_map(|&[v, a, b]| [(v, a, 1e-6), (v, b, 1e-6)]));
     let graph = (&Graph::new(n, &edges), REGION_M);
     let solved_rest = settle(&terms, &limit(&rest), &mut z, &all, graph, &SCALES);
     let (mut rounds, mut at_cap) = (solved_rest.rounds, solved_rest.capped);
@@ -762,7 +812,7 @@ pub fn solve(
     let mut ramp_region: Vec<usize> = (0..limited.len())
         .filter(|&i| is_ramp[i])
         .flat_map(|i| limits.row(i).map(|(v, _)| v))
-        .filter(|&v| !net.junction.get(v).copied().unwrap_or(false) && !pinned[v])
+        .filter(|&v| !net.junction.get(v).copied().unwrap_or(false) && !pinned[v] && !beds.held[v])
         .collect();
     ramp_region.sort_unstable();
     ramp_region.dedup();
@@ -796,7 +846,8 @@ pub fn solve(
     let piped: Vec<rows::UntaggedCrossing> =
         (0..k_least.len()).filter(|&i| holds[i]).filter_map(|i| Some(untagged[k_untagged[i]?])).collect();
     let town = Town::new(&net, (rivers, &near.culverts), (&piped, classes), near.buildings);
-    let (ways, joins, walks) = align::align(&net, &z, &known, &stay, &water, &ground, classes, &mine, &town);
+    let (ways, joins, walks) =
+        align::align(&net, &z, &known, &beds.held, &stay, &water, &ground, classes, &mine, &town);
     for (way, &(f, p)) in ways.into_iter().zip(&net.way_feature) {
         solved.ways[f][p] = Some(way);
     }
@@ -846,6 +897,11 @@ pub fn solve(
         grade_excess_at: worst.map_or([0.0, 0.0], |(_, s)| degrees(net.vertex_xy[net.segment_start[s]])),
         grade_excess_over_1cm: excess.iter().filter(|e| e.0 > 0.01).count(),
         residual_p99_m: percentile(&mut residual, 99.0).unwrap_or(0.0),
+        bed_m: (0..a.len()).filter(|&s| bedded(s) && segment_mine[s]).map(|s| length[s]).sum(),
+        beds_apart: count(&mut (0..beds.pins.values.len()).map(|i| {
+            let (v, c) = (beds.pins.variables[i], beds.pins.coefficients[i]);
+            all_known(&v) && var_mine[v[0]] && (0..3).map(|j| c[j] * z[v[j]]).sum::<f64>().abs() > APART_M
+        })),
         refinements_unconverged: unconverged,
         covers: count(&mut (0..k_least.len()).map(|i| holds[i] && var_mine[k_first[i]])),
         covers_lifted: count(&mut (0..k_least.len()).map(|i| lifted[i] && var_mine[k_first[i]])),
