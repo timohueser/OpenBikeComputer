@@ -565,18 +565,18 @@ half the chain and the length of its own way. Where the two openings of a chain 
 of the chain (`shift` 0). The ground plan builds the stretch from the vertex to the opening as a
 way on the ground (`graph::build_open`).
 
-A head and the shells of its collars stand in no other room that draws (see Rooms; the rooms of the head's holes and
-those open to them through a seam's hole are its own). Where a point of them lies in another room's space by more than
-the bake's centimetre (the room's outline swept along its axis, `half` to each side, from its floor to its arch), the
-openings of the head move in along their ways by the least whole metres that clear it, within the limits of a shift
-above, and the rooms and the ladder are made again. A head that no metre clears stays and is counted
-(`heads_in_rooms`, with places; `openings_moved_out_of_rooms` and `farthest_move_out_of_rooms_m` count the moves). The
-bake reads a head as the builder draws it: its wall from `-recess_m` to `face_m` − `recess_m` across its frame line,
-`half` + `shell_m` (a rim: and `frame_m`) past its outer holes and its wing rows past that, from its foot to `face` (a
-rim: to each hole's frame); per hole the shell of its collar, `half` + `shell_m` to each side of its room's axis, from
-the foot to `shell_m` over its crown, out to the builder's reach (`need` of `obc-trailview-parts`; a box meets the
-other end's part at the middle of its room). Its foot is the record's, or `foot_m` under the lowest floor of each
-hole's room out to that `need` (of a box, the whole room).
+A head and the shells of its collars move out of each other room that draws where a move clears them (see Rooms; the
+rooms of the head's holes and those open to them through a seam's hole are its own). Where a point of them lies in
+another room's space by more than the bake's centimetre (the room's outline swept along its axis, `half` to each side,
+from its floor to its arch), the openings of the head move in along their ways by the least whole metres that clear it,
+within the limits of a shift above, and the rooms and the ladder are made again. A head that no metre clears stays and
+is counted (`heads_in_rooms`, with places; `openings_moved_out_of_rooms` and `farthest_move_out_of_rooms_m` count the
+moves). The bake reads a head as the builder draws it: its wall from `-recess_m` to `face_m` − `recess_m` across its
+frame line, `half` + `shell_m` (a rim: and `frame_m`) past its outer holes and its wing rows past that, from its foot to
+`face` (a rim: to each hole's frame); per hole the shell of its collar, `half` + `shell_m` to each side of its room's
+axis, from the foot to `shell_m` over its crown, out to the builder's reach (`need` of `obc-trailview-parts`; a box
+meets the other end's part at the middle of its room). Its foot is the record's, or `foot_m` under the lowest floor of
+each hole's room out to that `need` (of a box, the whole room).
 
 The bake measures each opening on the ground of the ground plan: each cell that holds a point to read is built as the
 viewer builds it, with the tags of the levels and the stretches to the openings on the ground, without the storey
@@ -793,35 +793,34 @@ Between its openings, the floor of a tube touches no other way. The bake lowers 
 lies under each way on top. The heights of a `tunnel-tube` are this floor, and the `z` of a `tunnel-end` is the height
 of the road solver there. The bake sets the floor before the numbers of the openings.
 
-The rule runs once per arm from opening to opening, at the vertices of each room that the arm runs in, under the
-ways on top of that room read over its `half`, with the arm's heights, grade and least height; a vertex of two rooms
-(on a seam's line) once, under the ways of both. So a lane has one floor on both sides of a seam. A room's floor at a
-vertex is its lowest lane's, and a lane's `up` its floor over that. A room of lanes is as high at a vertex as the
-least that holds the outline of each lane on its floor there, read at the corners of the room's outline as the
-builder draws it (a box section: the highest lane's top), and whose spring lies `kerb_m` or more over the floor of the
-lane at each wall, so each wall rises from the floor to the spring. Where the shell of its crown would rise over a way on top,
-every lane there is lower by as much, each to its least height, and the room is as high as the ways on top let it be,
-at least as high as its lowered lanes need. At a seam's line it is as high as the rooms behind it need, each read at
-the corners of its outline as the builder draws it (`arch_segments` per lane), at its floor and its height as the
-records give them. A lone tube's
-chord takes the lesser height of its two vertices. A room over another in a stretch of over and under is a way on top
-of it, its underside its floor less `slab_m`: by height it makes only the section of the room under lower, by the
-floor the floor too. The bake solves the arms from the highest down: an arm after each arm of each room over a room
+The rule runs once per arm from opening to opening, at the vertices of each room that the arm runs in, under the ways on
+top of that room read over its `half`, with the arm's heights, grade and least height; a vertex of two rooms (on a
+seam's line) once, under the ways of both. So a lane has one floor on both sides of a seam. A room's floor at a vertex
+is its lowest lane's, and a lane's `up` its floor over that. A room of lanes is as high at a vertex as the least that
+holds the outline of each lane on its floor there, read at the corners of the room's outline as the builder draws it (a
+box section: the highest lane's top), and whose spring lies `kerb_m` or more over the floor of the lane at each wall, so
+each wall rises from the floor to the spring. Where the shell of its crown would rise over a way on top, every lane
+there is lower by as much, each to its least height, and the room is as high as the ways on top let it be, at least as
+high as its lowered lanes need. At a seam's line it is as high as the rooms behind it need, each read at the corners of
+its outline as the builder draws it (`arch_segments` per lane), at its floor and its height as the records give them. A
+lone tube's chord takes the lesser height of its two vertices. A room over another in a stretch of over and under is a
+way on top of it, its underside its floor less `slab_m`: by height it makes only the section of the room under lower, by
+the floor the floor too. The bake solves the arms from the highest down: an arm after each arm of each room over a room
 that it runs in, and a room's floor with its last arm's.
 
 - The curve of a way with heights, not of the kind `gallery`, is read on each chord of the tube that its reach (its
-  outer half-width + `half` + `shell_m`) overlaps, at its nearest points to the points of the chord where its
-  underside over the chord can bend: the ends of the overlap, and where the nearest point of a segment of its curve is
-  an end of that segment or, of a room over this one, a vertex of that room's floor. Between these points the
-  underside and the floor are both linear along the chord. A vertex at such a point reads the way there. A point inside the chord caps both vertices of the chord, unless both vertices
-  read the way and its underside there lies at or over the line between theirs. So the floor lies under the way along
-  the whole chord. A read counts where the foot of its point on the whole chain, extended past an end with an opening
-  along its end chord, lies between the openings, each grown by the way's outer half-width; at a seam the foot stays
-  on the line, as a way over the room before it lies over the room behind it too. The way lies on top where its height
-  at that point is more than the at-grade band over the road solver's height of the chain at the foot (the lesser
-  `snap_height_m` of the two classes, as at a crossing of the ground plan). A way that goes on from the chain's end
-  meets it at the chain's height, so it lies at grade. Its underside is its height less its `deck` on a bridge, else
-  less `slab_m`.
+  outer half-width + `half` + `shell_m`) overlaps, at its nearest points to the points of the chord where its underside
+  over the chord can bend: the ends of the overlap, and where the nearest point of a segment of its curve is an end of
+  that segment or, of a room over this one, a vertex of that room's floor. Between these points the underside and the
+  floor are both linear along the chord. A vertex at such a point reads the way there. A point inside the chord caps
+  both vertices of the chord, unless both vertices read the way and its underside there lies at or over the line between
+  theirs. So the floor lies under the way along the whole chord. A read counts where the foot of its point on the whole
+  chain, extended past an end with an opening along its end chord, lies between the openings, each grown by the way's
+  outer half-width; at a seam the foot stays on the line, as a way over the room before it lies over the room behind it
+  too. The way lies on top where its height at that point is more than the at-grade band over the road solver's height
+  of the chain at the foot (the lesser `snap_height_m` of the two classes, as at a crossing of the ground plan). A way
+  that goes on from the chain's end meets it at the chain's height, so it lies at grade. Its underside is its height
+  less its `deck` on a bridge, else less `slab_m`.
 - The tube gets a vertex where it enters and leaves the reach of each way within reach that is not of the kind
   `tunnel`, at grade or not. Its vertices lie at least `vertex_gap_m` apart, so each chord keeps its direction in
   the units of a tile: the openings and the joins of its ways stay, and a point of the curve nearer than that to a
