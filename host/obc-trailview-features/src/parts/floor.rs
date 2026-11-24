@@ -534,10 +534,10 @@ pub(crate) fn floors(
     };
     // The floor of an arm: the rule at the vertices of each room that it runs in, under the ways on top there; a
     // vertex of two rooms (on a seam's line) once, under the ways of both.
-    let arm_floor = |arm: usize, topped: &[Option<Capped>]| -> Floor {
+    let arm_floor = |arm: usize, out: &[Option<Floor>]| -> Floor {
         let mut samples: Vec<(f64, Vec<f64>, f64)> = Vec::new();
         for &(t, k) in &lanes_of[arm] {
-            let (caps, ceilings) = topped[t].clone().expect("the tops of a room of the arm");
+            let (caps, ceilings) = tops(t, out);
             for ((&s, cap), ceiling) in site(t).s.iter().zip(caps).zip(ceilings) {
                 samples.push((lane_metres(t, s)[k], cap, ceiling));
             }
@@ -562,17 +562,10 @@ pub(crate) fn floors(
     };
     let mut out: Vec<Option<Floor>> = vec![None; tubes.len()];
     let mut arm_floors: Vec<Option<Floor>> = vec![None; rooms.arms.len()];
-    // The tops of each room, read once, when its first arm comes: each room over it is solved by then.
-    let mut topped: Vec<Option<Capped>> = vec![None; tubes.len()];
     let (mut lowered, mut low, mut at_least, mut lows) = (0, 0, 0, Vec::new());
     let (mut tops_count, mut clashes, mut tube_clashes) = (0, Vec::new(), Vec::new());
     for &x in &order {
-        for &(t, _) in &lanes_of[x] {
-            if topped[t].is_none() {
-                topped[t] = Some(tops(t, &out));
-            }
-        }
-        arm_floors[x] = Some(arm_floor(x, &topped));
+        arm_floors[x] = Some(arm_floor(x, &out));
         let ready = |t: usize| out[t].is_none() && rooms.lanes[t].iter().all(|l| arm_floors[l.arm].is_some());
         let rooms_now: Vec<usize> = lanes_of[x].iter().map(|l| l.0).filter(|&t| ready(t)).collect();
         for t in rooms_now {
@@ -591,7 +584,7 @@ pub(crate) fn floors(
                 Floor { s: site.s.clone(), z: site.z.clone(), f: f.clone(), h: h.clone(), lanes: Vec::new() }
             } else {
                 let leasts: Vec<f64> = rooms.lanes[t].iter().map(|l| rule(&rooms.arms[l.arm]).1).collect();
-                lanes_floor(rooms, (t, !boxed[t]), (&site.s, &lanes, &leasts), topped[t].clone().expect("tops"), input)
+                lanes_floor(rooms, (t, !boxed[t]), (&site.s, &lanes, &leasts), tops(t, &out), input)
             };
             // Over the floor as it is (past an opening, the chain), per way the most metres that the shell of the crown
             // rises over its underside where it lies over the floor by more than the band, and the point there. The
