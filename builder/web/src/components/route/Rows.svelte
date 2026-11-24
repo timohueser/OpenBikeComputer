@@ -434,8 +434,10 @@
         flex-wrap: wrap;
         gap: 4px 12px;
     }
+    /* A long address has no place to break, so it breaks anywhere inside the panel. */
     .contacts a {
         color: var(--forest);
+        overflow-wrap: anywhere;
     }
     /* The bar stands beside its label; its legend follows under it. */
     .bar {
