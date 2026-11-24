@@ -404,6 +404,21 @@ fn a_tunnel_that_ends_in_the_mountain_is_level_from_the_road_that_it_leaves() {
 }
 
 #[test]
+fn a_tunnel_that_ends_in_the_mountain_does_not_tilt_under_a_path_by_its_portal() {
+    // A path on the ground crosses 8 m from the portal, where the tunnel must lie under the portal's height
+    // to pass under it. Held only by its portal, the straight tunnel would tilt down to its dead end.
+    let place = engelberg();
+    let terrain = place.terrain(|e, _| 1000.0 + 0.3 * e.max(0.0));
+    let features = [
+        way("residential", place.line(&[(0.0, -300.0), (0.0, 300.0)], Some(20.0)), plain),
+        way("footway", place.line(&[(0.0, 0.0), (400.0, 0.0)], Some(5.0)), tunnel),
+        way("path", place.line(&[(8.0, -47.0), (8.0, 53.0)], None), plain),
+    ];
+    let (_, z) = along_east(&place, &run(&features, &terrain, &[]).ways[1][0]);
+    assert!((z[z.len() - 1] - z[0]).abs() < 0.5, "{} m at the dead end", z[z.len() - 1] - z[0]);
+}
+
+#[test]
 fn a_way_on_the_ground_of_a_higher_layer_passes_over_and_one_indoors_stays_on_the_terrain() {
     let place = engelberg();
     let terrain = place.terrain(|_, _| 1000.0);

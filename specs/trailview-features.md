@@ -210,9 +210,10 @@ The road solver:
   tunnel or a shaft that joins it follows it and does not lift it. The line weighs less than the
   ground: the ground at a portal and the limits along the tunnel bend it. A way on the ground that
   meets a tunnel ends its chain there: a portal, on the ground. A tunnel chain with an end that
-  meets no way runs level from its other end, or on the grade of the road that runs on into it
-  there. A bridge never sags under the straight line between the two ends of its chain of bridge
-  ways,
+  meets no way runs level from its other end: a row as heavy as the line holds that end at the
+  height of the other one, so a way that crosses over the chain near its other end bends it there
+  and does not tilt it. A bridge never sags under the straight line between the two ends of its
+  chain of bridge ways,
 - raises a bridge that is not a culvert where it crosses a waterway, or a road, a path or a track on
   the ground that it does not meet: its road lies at least 1.5 m (water), 4.5 m (road), 2.5 m (path)
   or 6 m (track) over it, plus a deck of 1 m, or 0.4 m for a path. The way below may sink to give

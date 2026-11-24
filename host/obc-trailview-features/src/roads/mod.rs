@@ -107,7 +107,7 @@ const PARALLEL_RISE_M: f64 = 0.5;
 const APART_M: f64 = 0.05;
 /// Weights against one metre of terrain samples: the terrain under a bridge or tunnel that meets no
 /// road, a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or
-/// tunnel the preference for level, so that one that meets a road at one end only is level from there.
+/// tunnel the preference for level.
 const FREE: f64 = 1e-4;
 const PIN: f64 = 1e8;
 /// The weight of a row that holds a tunnel on the straight line between the ends of its chain. It is a value

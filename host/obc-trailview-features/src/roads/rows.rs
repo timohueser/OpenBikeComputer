@@ -140,8 +140,10 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
 /// keeps a bridge from sagging. Where the ends of member ways meet, a chain runs on through the two
 /// that continue most nearly straight, and the others are side tunnels. So a side tunnel or a shaft
 /// follows the tunnel that it joins and never lifts it: nothing but its ends gives a long tunnel its
-/// heights. A chain ends at each variable that `stops` marks. The rows, and the vertices of each piece of a
-/// chain between two of its ends or stops.
+/// heights. A chain of tunnels with one end that meets no way runs level from its other end: a row holds that
+/// end at the height of the other one, as firmly as the line, since nothing else holds an end in the mountain
+/// and a way that crosses the chain near its other end would tilt it. (The free end of a bridge stands on the
+/// terrain.) A chain ends at each variable that `stops` marks. The rows, and the vertices of each piece of a chain between two of its ends or stops.
 pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> (Pins<3>, Vec<Vec<usize>>) {
     let chained: Vec<usize> = (0..members.len()).filter(|&w| members[w]).collect();
     let mut meetings: Vec<Vec<(usize, usize, [f64; 2])>> = Vec::new();
@@ -205,9 +207,11 @@ pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> (Pins<3
             (w, flipped) = (next, next_end == 1);
         }
         let cut = |i: usize| i + 1 < chain.len() && stops.get(net.vertex_var[chain[i]]).copied().unwrap_or(false);
+        let alone = |i: usize| net.tunnel[start] && !net.junction[net.vertex_var[chain[i]]];
         let mut first = 0;
         for last in (1..chain.len()).filter(|&i| i + 1 == chain.len() || cut(i)) {
-            straight(net, &chain[first..=last], &mut pins);
+            let open = (first == 0 && alone(0), last + 1 == chain.len() && alone(last));
+            straight(net, &chain[first..=last], open, &mut pins);
             pieces.push(chain[first..=last].to_vec());
             first = last;
         }
@@ -215,9 +219,12 @@ pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> (Pins<3
     (pins, pieces)
 }
 
-/// The rows of `chains` for one chain of vertices.
-fn straight(net: &Network, chain: &[usize], pins: &mut Pins<3>) {
+/// The rows of `chains` for one chain of vertices, whose first or last end may meet no way.
+fn straight(net: &Network, chain: &[usize], (open_a, open_b): (bool, bool), pins: &mut Pins<3>) {
     let (a, b) = (net.vertex_var[chain[0]], net.vertex_var[chain[chain.len() - 1]]);
+    if open_a != open_b && a != b {
+        pins.push([a, b, b], [1.0, -1.0, 0.0], 0.0);
+    }
     if chain.len() < 3 || a == b {
         return;
     }
