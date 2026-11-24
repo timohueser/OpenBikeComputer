@@ -497,6 +497,28 @@ fn a_path_keeps_its_ground_near_an_opening_that_it_does_not_share_with_the_road(
 }
 
 #[test]
+fn a_path_keeps_its_ground_by_its_own_portal_round_a_corner() {
+    // A footway on a shelf 5 m under a road, its edge 1.5 m from the road's, ends at the portal of its own
+    // tunnel. Nothing on the ground runs on from that end, so it is an opening at any angle of the tunnel.
+    let place = engelberg();
+    let terrain = place.terrain(|e, n| if (n - 5.0).abs() < 1.5 && e > -1.0 && e < 245.0 { 495.0 } else { 500.0 });
+    let line = |corners: &[(f64, f64)]| place.line(corners, Some(10.0));
+    for degrees in [0.0f64, 90.0] {
+        let far = (-100.0 * degrees.to_radians().cos(), 5.0 + 100.0 * degrees.to_radians().sin());
+        let features = [
+            way("residential", line(&[(-150.0, 0.0), (400.0, 0.0)]), |f| f.half = 2.5),
+            way("footway", line(&[far, (0.0, 5.0)]), |f| (f.free, f.tunnel, f.half) = (true, true, 1.0)),
+            way("footway", line(&[(0.0, 5.0), (240.0, 5.0)]), |f| f.half = 1.0),
+        ];
+        let solved = run(&features, &terrain, &[]);
+        let (along, z) = place.profile(&solved.ways[2][0]);
+        for e in [5.0, 20.0] {
+            assert!((interp(e, &along, &z) - 495.0).abs() < 0.3, "tunnel at {degrees}°: at {e} m east");
+        }
+    }
+}
+
+#[test]
 fn a_tunnel_or_a_bridge_that_leaves_at_a_split_does_not_part_a_bed() {
     // A footway 4 m beside a street, on a strip 1.5 m lower. At 100 m a subway leaves the footway square to
     // it, and a side street leaves the street there on a bridge. Neither runs on from the street or the

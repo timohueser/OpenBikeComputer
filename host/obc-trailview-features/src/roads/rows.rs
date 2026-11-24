@@ -423,8 +423,8 @@ fn walk(
 /// nearer on that side; and near: a path beside a road or a farm track where their edges lie at most
 /// BESIDE_GAP_M apart, two tracks within PARALLEL_M, and two other ways of one group where their carriageways
 /// overlap. An opening is an end of a way where a way in another state (on the ground, in a tunnel, on a
-/// bridge) runs on within JOIN_COS of straight on: a portal or the end of a bridge, not a tunnel or a bridge
-/// that leaves to the side. On the ground its reach runs from it along the stroke while the ground lasts, for
+/// bridge) runs on within JOIN_COS of straight on, or at any angle where no way in its own state runs on: a
+/// portal or the end of a bridge, not a tunnel or a bridge that leaves a way to the side. On the ground its reach runs from it along the stroke while the ground lasts, for
 /// the ramp length of the leader, whichever of the two has the opening: the length that its class needs to
 /// leave the terrain by HARD_M at its grade, at least VERTEX_M; on a bridge or in a tunnel, which leave the
 /// terrain anyway, for VERTEX_M. The two strokes share each opening that reaches either of them: the other
@@ -474,8 +474,8 @@ fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]
         (Vec::new(), vec![Vec::new(); links.len()], vec![Vec::new(); total]);
     for w in 0..links.len() {
         for (at, step) in [(net.way_first[w], 1), (net.way_last[w], -1)] {
-            // A way in another state runs on from the end within JOIN_COS of straight on, paired by the strokes
-            // or not.
+            // The end opens into a way in another state that runs on from it within JOIN_COS of straight on,
+            // paired by the strokes or not; and into each one at any angle where no way in its own state runs on.
             let inward = toward(at, (at as i64 + step) as usize);
             let runs_on = |&(u, x): &(usize, usize)| {
                 [x.wrapping_sub(1), x + 1]
@@ -483,10 +483,12 @@ fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]
                     .filter(|&y| y >= net.way_first[u] && y <= net.way_last[u])
                     .any(|y| dot(inward, toward(x, y)) <= JOIN_COS)
             };
-            let mut states: Vec<u64> = through[&net.vertex_var[at]]
+            let here = &through[&net.vertex_var[at]];
+            let ends = !here.iter().any(|e| e.0 != w && kind(e.0) == kind(w) && runs_on(e));
+            let mut states: Vec<u64> = here
                 .iter()
                 .filter(|&&(u, _)| kind(u) != kind(w))
-                .filter(|&&e| runs_on(&e))
+                .filter(|&&e| ends || runs_on(&e))
                 .map(|&(u, _)| state(w) | state(u))
                 .collect();
             states.sort_unstable();
