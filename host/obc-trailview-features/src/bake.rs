@@ -842,7 +842,7 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
         "covers_capped": m.covers_capped, "covers_untagged_capped": m.covers_untagged_capped,
         "cover_lift_top_m": round(m.cover_lift_top_m, 2),
         "sidewalk_tagged_m": m.sidewalks.tagged_m.round(), "sidewalk_built_m": m.sidewalks.built_m.round(),
-        "sidewalk_bend_m": m.sidewalks.bend_m.round(), "sidewalk_bed_m": m.sidewalks.bed_m.round(),
+        "sidewalk_bend_m": m.sidewalks.bend_m.round(), "sidewalk_footprint_m": m.sidewalks.footprint_m.round(),
         "sidewalk_short_m": m.sidewalks.short_m.round(),
     });
     value.as_object().unwrap().clone()
