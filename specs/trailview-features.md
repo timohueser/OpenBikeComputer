@@ -183,17 +183,19 @@ The road solver:
 - puts ways side by side on one bed. A vertex of a way is beside the nearest way that meets each of
   these conditions. That way runs within 26° of the way, it is not of the way's stroke (the ways that
   run on from each other, see Alignment), and the foot of the vertex on it is not past an end of its
-  stroke. An opening is an end where a stroke runs on into another state (on the ground, in a tunnel,
-  on a bridge): a portal or the end of a bridge. Within the reach of that way along either stroke, the
-  length that its class needs to leave the terrain by 8 m at its grade and at least 10 m, the two
-  share each opening: the other has one between the same two states on the same `layer`s beside it,
-  at most 10 m farther apart than the two ways. So two ways part before an opening of one alone, where
-  that one climbs or digs to it. The two are in the same state and on the same `layer`, or each lies
-  within 10 m of their shared opening between the two. It comes first: a class earlier in the table,
-  or of one class a way earlier in the bake's order. It is the leader. No other way of the two
-  groups (tracks; roads with `highway=track`; paths) lies nearer on that side, and a way that meets
-  the vertex does not count. It is near: for a
-  path beside a road or a `highway=track`, the edges of the two carriageways lie at most 2 m apart; a
+  stroke. An opening is an end of a way that a way in another state (on the ground, in a tunnel, on
+  a bridge) meets: a portal or the end of a bridge. On the ground its reach runs from it along the
+  stroke while the ground lasts, for the length that the class of that way needs to leave the
+  terrain by 8 m at its grade, at least 10 m; on a bridge or in a tunnel, which leave the terrain
+  anyway, for 10 m. The two share each opening that reaches either of them: the other has
+  one between the same two states on the same `layer`s beside it, at most 10 m farther apart than
+  the two ways. So two ways part before an opening of one alone, where that one climbs or digs to
+  it. The two are in the same state and on the same `layer`, or each lies within 10 m of their
+  shared opening between the two. It comes first: a class earlier in the table, or of one class a
+  way earlier in the bake's order. It is the leader. No other way of the two groups (tracks; roads
+  with `highway=track`; paths) lies nearer on that side, and a way that meets the vertex does not
+  count. It is near: for a path beside a road or a `highway=track`, the edges of the two carriageways
+  lie at most 2 m apart; a
   track lies within 6 m of a track; two other ways of one group have carriageways that overlap. On a
   run of such vertices along a way, d is the terrain under the way less the terrain under the foot,
   every 2 m on the ground, and d30 is the median of d over the 30 m around a vertex. A vertex of two
