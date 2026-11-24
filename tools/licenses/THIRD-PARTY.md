@@ -4669,7 +4669,7 @@ THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `form_urlencoded 1.2.2`
+Applies to: `form_urlencoded 1.2.3`
 
 ```text
 Copyright (c) 2013-2016 The rust-url developers
@@ -6339,7 +6339,7 @@ THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `form_urlencoded 1.2.2`
+Applies to: `form_urlencoded 1.2.3`
 
 ```text
 Copyright (c) 2013-2016 The rust-url developers
