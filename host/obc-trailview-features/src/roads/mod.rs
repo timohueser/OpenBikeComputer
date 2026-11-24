@@ -94,8 +94,7 @@ const BESIDE_GAP_M: f64 = 2.0;
 /// A stretch shorter than BESIDE_MIN_M is no bed: such stretches are forks for the most part.
 const BESIDE_MIN_M: f64 = 30.0;
 /// The most that the terrain under a follower may climb per metre against that under its leader on a bed,
-/// BESIDE_TREND_GROUP for two ways of one group. Owner's choice from the census of box B: sidewalks reach
-/// 4.9 %, two levels of a path and a road start at 6.2 %, and a rack line that climbs to its bridge has 3.3 %.
+/// BESIDE_TREND_GROUP for two ways of one group: the owner's choice from the census of box B.
 const BESIDE_TREND: f64 = 0.05;
 const BESIDE_TREND_GROUP: f64 = 0.03;
 /// Two tracks lie at two levels where the terrain difference leaves the median of their run by more than
@@ -515,7 +514,7 @@ pub fn solve(
         grounded[a[s]] = true;
         grounded[b[s]] = true;
     }
-    // A chain stops at the end of a bed.
+    // A chain stops at a portal and at each variable that a bed holds.
     let stops: Vec<bool> = (0..n).map(|v| grounded[v] || beds.held[v]).collect();
     let (bores, tunnels) = rows::chains(&net, &net.tunnel, &stops);
     let bridge: Vec<bool> = (0..net.free.len()).map(|w| net.free[w] && !net.tunnel[w]).collect();

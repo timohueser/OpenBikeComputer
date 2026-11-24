@@ -155,7 +155,7 @@ The road solver:
   go, so that it does not move the road,
 - holds each vertex of a way on the ground within 5 m of the terrain across the way at each sample:
   of the range from the lowest to the highest terrain at the sample and at ± the half-width of the
-  way, square to it. On a slope the terrain under the centre line is not the bed of the road. Past
+  way, square to it. On a slope the terrain under the centre line is not the base of the road. Past
   5 m the bound gives way to the other limits, and past 8 m only to the pins of the approaches, the
   fords and the beds, which cost as much, so a segment can pass the grade of its class
   there. A sample of a segment that ends where a bridge runs through has no bound: steps or a ramp
@@ -183,19 +183,20 @@ The road solver:
 - puts ways side by side on one bed. A vertex of a way is beside the nearest way that meets each of
   these conditions. That way runs within 26° of the way, it is not of the way's stroke (the ways that
   run on from each other, see Alignment), and the foot of the vertex on it is not past an end of its
-  stroke. An opening is an end of a way that a way in another state (on the ground, in a tunnel, on
-  a bridge) meets: a portal or the end of a bridge. On the ground its reach runs from it along the
-  stroke while the ground lasts, for the length that the class of that way needs to leave the
-  terrain by 8 m at its grade, at least 10 m; on a bridge or in a tunnel, which leave the terrain
-  anyway, for 10 m. The two share each opening that reaches either of them: the other has
-  one between the same two states on the same `layer`s beside it, at most 10 m farther apart than
-  the two ways. So two ways part before an opening of one alone, where that one climbs or digs to
-  it. The two are in the same state and on the same `layer`, or each lies within 10 m of their
-  shared opening between the two. It comes first: a class earlier in the table, or of one class a
-  way earlier in the bake's order. It is the leader. No other way of the two groups (tracks; roads
-  with `highway=track`; paths) lies nearer on that side, and a way that meets the vertex does not
-  count. It is near: for a path beside a road or a `highway=track`, the edges of the two carriageways
-  lie at most 2 m apart; a
+  stroke. An opening is an end of a way where a way in another state (on the ground, in a tunnel, on
+  a bridge) runs on within 60° of straight on: a portal or the end of a bridge, not a tunnel or a
+  bridge that leaves to the side. On the ground its reach runs from it along the stroke while the
+  ground lasts, for the ramp length of the leader, whichever of the two has the opening: the length
+  that the class of the leader needs to leave the terrain by 8 m at its grade, at least 10 m. On a
+  bridge or in a tunnel, which leave the terrain anyway, the reach is 10 m. The two share each
+  opening that reaches either of them: the other has one between the same two states on the same
+  `layer`s beside it, at most 10 m farther apart than the two ways. So two ways part before an
+  opening of one alone, where that one climbs or digs to it. The two are in the same state and on
+  the same `layer`, or each lies within 10 m of their shared opening between the two. It comes
+  first: a class earlier in the table, or of one class a way earlier in the bake's order. It is the
+  leader. No other way of the two groups (tracks; roads with `highway=track`; paths) lies nearer on
+  that side, and a way whose stroke meets the vertex does not count. It is near: for a path beside a
+  road or a `highway=track`, the edges of the two carriageways lie at most 2 m apart; a
   track lies within 6 m of a track; two other ways of one group have carriageways that overlap. On a
   run of such vertices along a way, d is the terrain under the way less the terrain under the foot,
   every 2 m on the ground, and d30 is the median of d over the 30 m around a vertex. A vertex of two
@@ -208,8 +209,8 @@ The road solver:
   make a stretch. A stretch of 30 m or more that has a run on the ground is a bed. So a bed in a
   tunnel or on a bridge continues a bed on the ground. On a bed the way has the height of its leader
   at its foot and no forces of its own: no terrain sample, no ground bound, no grade and no
-  smoothness between vertices of the bed, no line of its tunnel chain (a chain stops at the end of a
-  bed), no approach, and no ford, cover, deck or pass that holds a vertex of the bed. Where a way
+  smoothness between vertices of the bed, no line of its tunnel chain (a chain stops at each vertex of
+  a bed), no approach, and no ford, cover, deck or pass that holds a vertex of the bed. Where a way
   leaves a bed, its first 15 m are a ramp as below, also on the ways that it runs on into,
 - ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel keeps to
   a straight line between the two ends of its chain of tunnel ways that meet end to end, so a side
@@ -409,16 +410,16 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
 3. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
    sidewalk's width and `sidewalk_margin_m` of the class. The road's edge lies its half-width (see
    Heights) and its widening from its middle.
-4. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
-   river or a stream: within that way's half-width and half the sidewalk's width. A way that
-   meets the road does not count within 12 m of their junction, and a waterway's bed does not
-   count within that distance of a vertex that it shares with a culvert part, or where the water
-   lies under a road or a track that crosses it on a culvert by the rule of Heights and holds its
-   cover there: within the road's outer half-width, its widening and the bed's half-width, over
-   the sine of their angle, along the water from the crossing. The pipe runs on.
+4. A side has no sidewalk where its middle lies on the footprint of another way on the ground or on
+   the channel of a river or a stream: within that way's half-width and half the sidewalk's width. A
+   way that meets the road does not count within 12 m of their junction, and a waterway's channel
+   does not count within that distance of a vertex that it shares with a culvert part, or where the
+   water lies under a road or a track that crosses it on a culvert by the rule of Heights and holds
+   its cover there: within the road's outer half-width, its widening and the channel's half-width,
+   over the sine of their angle, along the water from the crossing. The pipe runs on.
 5. A gap under 40 m along the stroke between two pieces closes, where no tag `no`, no way without
-   a sidewalk and no bend of rule 3 lies in it. Rules 5 and 6 come after rule 4: the bed of another
-   way and a stretch without buildings do not stop them.
+   a sidewalk and no bend of rule 3 lies in it. Rules 5 and 6 come after rule 4: the footprint of
+   another way and a stretch without buildings do not stop them.
 6. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
    runs on to it, where no tag `no`, no way without a sidewalk and no bend of rule 3 lies between.
 7. A piece that ends at a junction at one end and inside the stroke off a junction at the other,
@@ -545,7 +546,7 @@ chord's direction at their shared vertex, and its tangents shorten until it leav
 centimetres. The rules of the ways at water (fords, covers, culverts) read the
 levels at the vertices of the map and the straight line between them: at a crossing between two of
 them, that level can lie off the level of the tiles. Near a junction, within the bank
-top's distance of the widest waterway there, the bank tops lie in the other waterway's bed and do
+top's distance of the widest waterway there, the bank tops lie in the other waterway's channel and do
 not count. A pit on the line lowers the level there and after it, until the terrain falls under it.
 The width w of a waterway is its `width` tag where it is above 0, else `width_m` of its `waterway`
 value in `data/trailview/waterways.json`, and its half-width is half of w. Waterways that share a vertex are one network: a
