@@ -248,7 +248,8 @@ class Requests(unittest.TestCase):
         self.assertEqual(subsets["N"], [lo_y, hi_y])
 
     def test_a_wcs_10_request_is_clipped_to_the_coverage_envelope(self):
-        """Denmark and Saxony-Anhalt refuse a bbox past the envelope, so it is clipped the same way."""
+        """Denmark and Saxony-Anhalt refuse a bbox past the envelope, so it is clipped the same way,
+        and Denmark refuses a clip under two pixels wide."""
 
         source = ingest.SOURCES["de-st"]
         box = split("de-st")[0]
@@ -264,6 +265,14 @@ class Requests(unittest.TestCase):
         _, values = query(source.url(box))
         self.assertEqual([float(v) for v in values["bbox"][0].split(",")], [mid_x, lo_y, hi_x, hi_y])
         self.assertEqual(int(values["width"][0]), round(whole / 2))
+
+        step = source.resolution_m
+        source.envelope = (lo_x - 1000, lo_y - 1000, lo_x + 1.3 * step, hi_y + 1000)
+        self.assertIsNone(source.url(box))
+        source.envelope = (lo_x - 1000, lo_y - 1000, lo_x + 2 * step, hi_y + 1000)
+        self.assertEqual(int(query(source.url(box))[1]["width"][0]), 2)
+        source.envelope = (lo_x - 1000, lo_y - 1000, hi_x + 1000, lo_y + 1.3 * step)
+        self.assertIsNone(source.url(box))
 
     def test_the_wcs_10_envelope_is_the_one_on_the_rows_grid(self):
         """Piedmont states its envelope in EPSG:4326 first, and Denmark writes the code in lower case."""
@@ -360,7 +369,8 @@ class Requests(unittest.TestCase):
             fake.answer = lambda box, n: None
             fake.fetch(BOX, Path(directory) / "read")
             # The pool keeps whichever box came back first; the broken boxes are the others.
-            broken = [box for box in boxes if label(box) != fake.known().read_text()]
+            known = tuple(float(value) for value in fake.known().read_text().split(","))
+            broken = [box for box in boxes if tuple(box) != known]
             self.assertEqual(len(broken), len(boxes) - 1)
 
             fake.missing, fake.asked = [], []
