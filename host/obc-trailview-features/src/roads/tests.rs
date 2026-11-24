@@ -151,7 +151,7 @@ fn a_hairpin_climbs_within_the_grade_of_its_class() {
 #[test]
 fn a_road_across_a_steep_slope_keeps_its_grade_where_the_terrain_under_its_line_humps() {
     // A slope that rises 2 m per metre north, with a nose 15 m high under the line of the road: the terrain
-    // across the road's width spans 16 m, and the nose is no bed for the road.
+    // across the road's width spans 16 m, and the nose is not the base of the road.
     let place = engelberg();
     let height = |e: f64, n: f64| 1000.0 + 2.0 * n + 15.0 * (-((e - 250.0) / 8.0).powi(2)).exp();
     let road = way("primary", place.line(&[(0.0, 0.0), (500.0, 0.0)], Some(20.0)), |f| f.half = 4.0);

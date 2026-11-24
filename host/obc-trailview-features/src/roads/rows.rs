@@ -424,8 +424,8 @@ fn walk(
 /// BESIDE_GAP_M apart, two tracks within PARALLEL_M, and two other ways of one group where their carriageways
 /// overlap. An opening is an end of a way where a way in another state (on the ground, in a tunnel, on a
 /// bridge) runs on within JOIN_COS of straight on, or at any angle where no way in its own state runs on: a
-/// portal or the end of a bridge, not a tunnel or a bridge that leaves a way to the side. On the ground its reach runs from it along the stroke while the ground lasts, for
-/// the ramp length of the leader, whichever of the two has the opening: the length that its class needs to
+/// portal or the end of a bridge, not a tunnel or a bridge that leaves a way to the side. On the ground its
+/// reach runs from it along the stroke while the ground lasts, for the ramp length of the leader, whichever of the two has the opening: the length that its class needs to
 /// leave the terrain by HARD_M at its grade, at least VERTEX_M; on a bridge or in a tunnel, which leave the
 /// terrain anyway, for VERTEX_M. The two strokes share each opening that reaches either of them: the other
 /// has one between the same two states on the same layers beside it, at most VERTEX_M farther apart than the
