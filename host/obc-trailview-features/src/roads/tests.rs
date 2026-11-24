@@ -496,6 +496,62 @@ fn a_path_keeps_its_ground_near_an_opening_that_it_does_not_share_with_the_road(
     assert!((solved.metrics.bed_m - 150.0).abs() < 0.1);
 }
 
+#[test]
+fn a_tunnel_or_a_bridge_that_leaves_at_a_split_does_not_part_a_bed() {
+    // A footway 4 m beside a street, on a strip 1.5 m lower. At 100 m a subway leaves the footway square to
+    // it, and a side street leaves the street there on a bridge. Neither runs on from the street or the
+    // footway, so the bed is the same whether OSM splits the footway or the street there or not.
+    let place = engelberg();
+    let terrain = place.terrain(|_, n| if (n - 4.0).abs() < 1.0 { 498.5 } else { 500.0 });
+    let line = |corners: &[(f64, f64)]| place.line(corners, Some(10.0));
+    let (street, walk) = (|f: &mut Feature| f.half = 2.5, |f: &mut Feature| f.half = 1.0);
+    let pieces = |split: bool, n: f64, west: f64, east: f64| -> Vec<Vec<[f64; 2]>> {
+        if split {
+            vec![line(&[(west, n), (100.0, n)]), line(&[(100.0, n), (east, n)])]
+        } else {
+            vec![line(&[(west, n), (100.0, n), (east, n)])]
+        }
+    };
+    let mut beds = Vec::new();
+    for (split_walk, split_street) in [(false, false), (true, false), (false, true)] {
+        let mut features: Vec<Feature> =
+            pieces(split_street, 0.0, -200.0, 400.0).into_iter().map(|p| way("residential", p, street)).collect();
+        let first_walk = features.len();
+        features.extend(pieces(split_walk, 4.0, -150.0, 350.0).into_iter().map(|p| way("footway", p, walk)));
+        features.extend([
+            way("footway", line(&[(100.0, 4.0), (100.0, 60.0)]), |f| (f.free, f.tunnel, f.half) = (true, true, 1.0)),
+            way("footway", line(&[(100.0, 60.0), (100.0, 120.0)]), walk),
+            way("residential", line(&[(100.0, 0.0), (100.0, -40.0)]), |f| (f.free, f.half) = (true, 2.5)),
+            way("residential", line(&[(100.0, -40.0), (100.0, -100.0)]), street),
+        ]);
+        let solved = run(&features, &terrain, &[]);
+        let [(ra, rz), (wa, wz)] = [0, first_walk].map(|f| along_east(&place, &solved.ways[f][0]));
+        for e in [60.0, 80.0] {
+            let off = interp(e, &wa, &wz) - interp(e, &ra, &rz);
+            assert!(off.abs() < 0.05, "split footway {split_walk}, street {split_street}: {off:.2} m at {e} m");
+        }
+        beds.push(solved.metrics.bed_m);
+    }
+    assert!(beds.iter().all(|&b| (b - beds[0]).abs() < 0.5), "{beds:?}");
+}
+
+#[test]
+fn a_sidewalk_that_merges_into_its_road_does_not_move_the_road() {
+    // The sidewalk ends on the road at 100 m, and the road has a vertex 3 m on: no segment of the road holds
+    // the junction that the road shares with the sidewalk, and the road keeps its own line.
+    let place = engelberg();
+    let terrain = place.terrain(|e, _| 500.0 + 0.1 * e);
+    let corners = [(-200.0, 0.0), (100.0, 0.0), (103.0, 0.0), (400.0, 0.0)];
+    let road = way("residential", place.line(&corners, Some(10.0)), |f| f.half = 2.5);
+    let sidewalk =
+        way("footway", place.line(&[(-100.0, 3.0), (90.0, 3.0), (100.0, 0.0)], Some(10.0)), |f| f.half = 1.0);
+    let alone = run(std::slice::from_ref(&road), &terrain, &[]);
+    let solved = run(&[road, sidewalk], &terrain, &[]);
+    let [(ra, rz), (aa, az)] = [&solved.ways[0][0], &alone.ways[0][0]].map(|part| along_east(&place, part));
+    assert!(ra.iter().zip(&rz).all(|(&e, &z)| (interp(e, &aa, &az) - z).abs() < 0.02));
+    assert!(solved.metrics.bed_m > 150.0);
+}
+
 /// Metres east and the heights of the kept vertices of a solved way.
 fn along_east(place: &Place, part: &Option<Way>) -> (Vec<f64>, Vec<f64>) {
     let way = part.as_ref().unwrap();

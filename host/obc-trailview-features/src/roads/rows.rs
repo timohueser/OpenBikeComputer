@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use rstar::primitives::GeomWithData;
 use rstar::{RTree, AABB};
 
-use super::align::joins;
+use super::align::{joins, JOIN_COS};
 use super::network::{dot, hypot, sub, Network};
 use super::*;
 use crate::geometry::{key, percentile};
@@ -143,7 +143,8 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
 /// heights. A chain of tunnels with one end that meets no way runs level from its other end: a row holds that
 /// end at the height of the other one, as firmly as the line, since nothing else holds an end in the mountain
 /// and a way that crosses the chain near its other end would tilt it. (The free end of a bridge stands on the
-/// terrain.) A chain ends at each variable that `stops` marks. The rows, and the vertices of each piece of a chain between two of its ends or stops.
+/// terrain.) A chain ends at each variable that `stops` marks. The rows, and the vertices of each piece of a chain
+/// between two of its ends or stops.
 pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> (Pins<3>, Vec<Vec<usize>>) {
     let chained: Vec<usize> = (0..members.len()).filter(|&w| members[w]).collect();
     let mut meetings: Vec<Vec<(usize, usize, [f64; 2])>> = Vec::new();
@@ -417,18 +418,19 @@ fn walk(
 
 /// Per vertex, its leader: the segment of the way that it lies beside, and the place of its foot on it. That
 /// way is the nearest of another stroke (the ways that run on from each other, `align::joins`) that runs
-/// within PARALLEL_COS of its way, with the foot not past an end of that stroke; before its way, by the class
-/// of the table, then by the order of the ways; with no way of the two groups nearer on that side; and near: a
-/// path beside a road or a farm track where their edges lie at most BESIDE_GAP_M apart, two tracks within
-/// PARALLEL_M, and two other ways of one group where their carriageways overlap. An opening is an end of a way
-/// that a way in another state (on the ground, in a tunnel, on a bridge) meets: a portal or the end of a bridge.
-/// On the ground its reach runs from it along the stroke while the ground lasts, for the length that the class
-/// of the leader needs to leave the terrain by HARD_M at its grade, at least VERTEX_M; on a bridge or in a
-/// tunnel, which leave the terrain anyway, for VERTEX_M. The two strokes share each opening
-/// that reaches either of them: the other has one between the same two states on the same layers beside it, at
-/// most VERTEX_M farther apart than the two ways. So two ways part before an opening of one alone, where that one
-/// climbs or digs to it. The two lie in one state and on one layer, or each within VERTEX_M of their shared
-/// opening between the two.
+/// within PARALLEL_COS of its way and does not meet the vertex, with the foot not past an end of that stroke;
+/// before its way, by the class of the table, then by the order of the ways; with no way of the two groups
+/// nearer on that side; and near: a path beside a road or a farm track where their edges lie at most
+/// BESIDE_GAP_M apart, two tracks within PARALLEL_M, and two other ways of one group where their carriageways
+/// overlap. An opening is an end of a way where a way in another state (on the ground, in a tunnel, on a
+/// bridge) runs on within JOIN_COS of straight on: a portal or the end of a bridge, not a tunnel or a bridge
+/// that leaves to the side. On the ground its reach runs from it along the stroke while the ground lasts, for
+/// the ramp length of the leader, whichever of the two has the opening: the length that its class needs to
+/// leave the terrain by HARD_M at its grade, at least VERTEX_M; on a bridge or in a tunnel, which leave the
+/// terrain anyway, for VERTEX_M. The two strokes share each opening that reaches either of them: the other
+/// has one between the same two states on the same layers beside it, at most VERTEX_M farther apart than the
+/// two ways. So two ways part before an opening of one alone, where that one climbs or digs to it. The two lie
+/// in one state and on one layer, or each within VERTEX_M of their shared opening between the two.
 fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]]) -> Vec<Option<(usize, f64)>> {
     let total = net.vertex_xy.len();
     // The state of a way (on the ground, on a bridge, in a tunnel) and its layer, as a bit.
@@ -447,25 +449,45 @@ fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]
     // The openings, each as its two states with their layers and its place, and per stroke its openings; per
     // vertex, the openings within the longest reach, each with the metres to it.
     let kind = |w: usize| (net.free[w], net.tunnel[w]);
-    let mut through: HashMap<usize, Vec<usize>> = (0..links.len())
+    // Per variable at a way's end, the ways through it with their vertex there; and per shared variable, the
+    // strokes through it.
+    let mut through: HashMap<usize, Vec<(usize, usize)>> = (0..links.len())
         .flat_map(|w| [net.way_first[w], net.way_last[w]])
         .map(|v| (net.vertex_var[v], vec![]))
         .collect();
-    for w in 0..links.len() {
+    let mut strokes_at: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (w, &s) in stroke.iter().enumerate() {
         for v in net.way_first[w]..=net.way_last[w] {
             if let Some(ways) = through.get_mut(&net.vertex_var[v]) {
-                ways.push(w);
+                ways.push((w, v));
+            }
+            if net.junction.get(net.vertex_var[v]).is_some_and(|&j| j) {
+                strokes_at.entry(net.vertex_var[v]).or_default().push(s);
             }
         }
     }
+    let toward = |v: usize, u: usize| {
+        let o = sub(net.vertex_xy[u], net.vertex_xy[v]);
+        [o[0] / hypot(o).max(1e-300), o[1] / hypot(o).max(1e-300)]
+    };
     let (mut openings, mut of_stroke, mut opened) =
         (Vec::new(), vec![Vec::new(); links.len()], vec![Vec::new(); total]);
     for w in 0..links.len() {
         for (at, step) in [(net.way_first[w], 1), (net.way_last[w], -1)] {
+            // A way in another state runs on from the end within JOIN_COS of straight on, paired by the strokes
+            // or not.
+            let inward = toward(at, (at as i64 + step) as usize);
+            let runs_on = |&(u, x): &(usize, usize)| {
+                [x.wrapping_sub(1), x + 1]
+                    .into_iter()
+                    .filter(|&y| y >= net.way_first[u] && y <= net.way_last[u])
+                    .any(|y| dot(inward, toward(x, y)) <= JOIN_COS)
+            };
             let mut states: Vec<u64> = through[&net.vertex_var[at]]
                 .iter()
-                .filter(|&&u| kind(u) != kind(w))
-                .map(|&u| state(w) | state(u))
+                .filter(|&&(u, _)| kind(u) != kind(w))
+                .filter(|&&e| runs_on(&e))
+                .map(|&(u, _)| state(w) | state(u))
                 .collect();
             states.sort_unstable();
             states.dedup();
@@ -510,8 +532,8 @@ fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]
             let (mut found, mut nearest) = (Vec::new(), [[f64::INFINITY; 2]; 3]);
             for k in near {
                 let other = net.segment_way[k];
-                // A way that meets v there leaves it: it lies neither beside v nor between.
-                let meets = net.a[k] == net.vertex_var[v] || net.b[k] == net.vertex_var[v];
+                // A way whose stroke meets v leaves it there: it lies neither beside v nor between.
+                let meets = strokes_at.get(&net.vertex_var[v]).is_some_and(|at| at.contains(&stroke[other]));
                 let parallel = (dot(own, d[k]) / hypot(d[k]).max(1e-300)).abs() >= PARALLEL_COS;
                 if stroke[other] == stroke[w] || meets || !parallel {
                     continue;

@@ -40,7 +40,7 @@ const RUNOFF_M: f64 = 22.0;
 const WIDEN_SMOOTH_M: f64 = 12.0;
 const CURVE_SMOOTH_M: f64 = 6.0;
 /// Two ends join into a stroke within 60° of straight on.
-const JOIN_COS: f64 = -0.5;
+pub(crate) const JOIN_COS: f64 = -0.5;
 /// The vertex after a junction ends the approach of a side road when it lies this close past it.
 const APPROACH_SLACK_M: f64 = 0.5;
 /// The longest chord of a `polyline`.
