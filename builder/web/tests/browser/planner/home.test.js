@@ -135,8 +135,8 @@ test('the text, the cards, the search and each button open what they name', asyn
   await expect(page).toHaveURL(/#\/planner$/);
   const canvas = page.locator('.maplibregl-canvas');
   await expect(canvas).toBeVisible();
-  // The map shows the box of the place: a start at the middle of the map is in the box.
-  await page.waitForLoadState('networkidle');
+  // The map shows the box of the place: a start at the middle of the map is in the box. The map is busy until it rests there.
+  await expect(page.locator('.map-canvas')).toHaveAttribute('aria-busy', 'false');
   const map = await canvas.boundingBox();
   await page.mouse.click(map.x + map.width / 2, map.y + map.height / 2);
   await page.getByRole('button', { name: 'Start here' }).click();

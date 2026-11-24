@@ -1,11 +1,12 @@
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
     import { openingHoursRows } from '../../lib/planner/search/opening-hours';
-    let { value }: { value?: string } = $props();
+    /** The week of hours of a place. Without `heading` it is the part under a line that names it. */
+    let { value, heading = true }: { value?: string; heading?: boolean } = $props();
     const rows = $derived(value ? openingHoursRows(value) : null);
 </script>
-<span class="hours">
-    <span class="heading" class:none={!value}><Icon name="clock" size={14} />{value ? 'Opening hours' : 'No opening hours listed'}</span>
+<span class="hours" class:bare={!heading}>
+    {#if heading}<span class="heading" class:none={!value}><Icon name="clock" size={14} />{value ? 'Opening hours' : 'No opening hours listed'}</span>{/if}
     {#if rows}
         <span class="schedule">
             {#each rows as row}
@@ -18,6 +19,8 @@
 </span>
 <style>
     .hours { display: block; padding-top: 12px; border-top: 1px solid var(--line); }
+    /* Under the symbol of its line, with no rule of its own. */
+    .bare { padding: 6px 0 2px 23px; border-top: 0; }
     .heading { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; color: var(--ink); font: 600 13px var(--sans); }
     .none { margin-bottom: 0; color: var(--ink-soft); font-weight: 400; }
     .schedule { display: grid; gap: 3px; }

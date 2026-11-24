@@ -500,7 +500,7 @@
         layer.sample({ coordinates: [at], elevation: [null] }, abort.signal, { date: shownDate, theme }).then(samples => { if (!abort.signal.aborted) pinSamples = { layer, at, samples }; }, () => {});
         return () => abort.abort();
     });
-    const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme }) : null);
+    const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme: 'dark' }) : null);
 
     // A query runs again when anything it sends other than the map view changes.
     $effect(() => { void [queryPlan, here, trip.startDate]; untrack(() => searchRevision++); });
@@ -1344,9 +1344,11 @@
                                     onKind={changeKind}
                                     onRemove={removePoint}
                                 >
-                                    {#if dataLayer && calloutKind === 'add'}
-                                        <LayerInspect compact chart={pinChart} date={shownDate} icon={dataLayer.icon} error={dataLayer.error} />
-                                    {/if}
+                                    {#snippet extra()}
+                                        {#if dataLayer && calloutKind === 'add'}
+                                            <LayerInspect compact chart={pinChart} date={shownDate} icon={dataLayer.icon} error={dataLayer.error} />
+                                        {/if}
+                                    {/snippet}
                                 </MapCallout>
                             {/key}
                         {/if}

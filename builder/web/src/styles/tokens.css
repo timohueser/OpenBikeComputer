@@ -18,6 +18,8 @@
     --speed: #3f68b0;
     --cadence: #74508f;
     --heart-rate: var(--rust);
+    /* The ink surface of a map popup, in the tone of the name labels of the pins. */
+    --hud: #22211a;
     /* The shadow of a control that floats over a map or a view. */
     --planner-shadow: 0 6px 18px rgba(28, 27, 20, .12);
     /* Links are rust in light and tan in dark, so amber stays the one action colour in both. */
@@ -37,6 +39,7 @@
 }
 
 :root[data-theme="dark"] {
+    --hud: #34332a;
     --planner-shadow: 0 6px 18px rgba(0, 0, 0, .4);
     --link: var(--wood);
     --compare-b: #e8964a;

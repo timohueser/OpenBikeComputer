@@ -5,23 +5,32 @@ import type { Coordinate } from './map-types';
 export type MapCallout = { show(at: Coordinate | null): void; refit(pan: boolean): void; remove(): void };
 
 /**
- * A popup with `content` on `map`, anchored where it fits inside `free()`, the free box of the map. The content gets
+ * A popup with `content` on `map`, anchored where it fits inside `free()`, the free box of the map. Above and below its
+ * point, its tip is under the part of the content marked `data-aim`, so that part is straight over the point. The content gets
  * the room of that box, less the offset and the tip, as `--callout-width` and `--callout-room`. A move of the map
  * anchors it again; a change of the size of the content, and the end of the move that `show` starts, also pan the map
  * the least distance when it fits nowhere. A pan never starts from a move, so one pan does not start another.
  */
 export function mapCallout(map: maplibregl.Map, content: HTMLElement, { free, offset }: { free: () => Box; offset: number }): MapCallout {
-    let popup: maplibregl.Popup | undefined, at: Coordinate | null = null;
+    let popup: maplibregl.Popup | undefined, at: Coordinate | null = null, shown: string | undefined;
 
     function refit(pan: boolean) {
         if (!popup || !at) return;
         const box = free(), { x, y } = map.project(at);
         content.style.setProperty('--callout-width', `${box.right - box.left}px`);
         content.style.setProperty('--callout-room', `${box.bottom - box.top - offset - TIP}px`);
-        const placed = placeCallout([x, y], [content.offsetWidth, content.offsetHeight], box, offset);
-        if (popup.options.anchor !== placed.anchor) {
+        const width = content.offsetWidth, aim = content.querySelector<HTMLElement>('[data-aim]');
+        const tip = aim ? aim.getBoundingClientRect().left + aim.offsetWidth / 2 - content.getBoundingClientRect().left : width / 2;
+        const placed = placeCallout([x, y], [width, content.offsetHeight], box, offset, tip);
+        const key = `${placed.anchor} ${tip} ${width}`;
+        if (key !== shown) {
+            shown = key;
             popup.options.anchor = placed.anchor;
-            popup.setOffset(offset);
+            // A number offset as MapLibre spreads it over the anchors, with the shift of the tip above and below.
+            const corner = Math.round(offset / Math.SQRT2), shift = width / 2 - tip;
+            popup.setOffset({ center: [0, 0], top: [shift, offset], bottom: [shift, -offset], left: [offset, 0], right: [-offset, 0],
+                'top-left': [corner, corner], 'top-right': [-corner, corner], 'bottom-left': [corner, -corner], 'bottom-right': [-corner, -corner] });
+            popup.getElement()?.style.setProperty('--callout-tip', `${tip}px`);
         }
         const duration = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 400;
         // The planner keeps its search through a move of this pan.
@@ -38,10 +47,10 @@ export function mapCallout(map: maplibregl.Map, content: HTMLElement, { free, of
             at = next;
             if (!at) {
                 popup?.remove();
-                popup = undefined;
+                [popup, shown] = [undefined, undefined];
                 return;
             }
-            popup ??= new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset, maxWidth: '340px', anchor: 'bottom', className: 'map-callout' })
+            popup ??= new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset, maxWidth: 'none', anchor: 'bottom', className: 'map-callout' })
                 .setDOMContent(content);
             popup.setLngLat(at).addTo(map);
             refit(false);

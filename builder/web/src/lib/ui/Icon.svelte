@@ -47,6 +47,7 @@
         lift: 'M2 3l20 5M12 5.5V10M7 10h10l-1 10H8zM7.5 14h9', info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 8v5m0-8.5v.01', paved: 'M3 19h18M3 14h18M6 9h12',
         // Mirror images of each other, so up and down read apart at 16 px.
         ascent: 'm3 17 6-6 4 4 8-8m-6 0h6v6', descent: 'm3 7 6 6 4-4 8 8m-6 0h6v-6',
+        straight: 'M5 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm14-14a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM6.5 17.5l11-11', map: 'm3 6 6-2 6 2 6-2v14l-6 2-6-2-6 2V6Zm6-2v14m6-12v14',
         globe: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z',
         phone: 'M6 3h3l2 5-2.5 1.5a12 12 0 0 0 6 6L16 13l5 2v3a3 3 0 0 1-3 3C10 21 3 14 3 6a3 3 0 0 1 3-3Z',
         lock: 'M6 11h12v9H6v-9Zm2 0V8a4 4 0 0 1 8 0v3', unlock: 'M6 11h12v9H6v-9Zm2 0V7a4 4 0 0 1 7.6-1.7',

@@ -20,7 +20,10 @@
 </script>
 
 <Callout label="Places here" {onClose} takeFocus={false}>
-    <header><h2>Places here</h2></header>
+    <header>
+        <span class="glyph place">{rows.length}</span>
+        <div><h2>{rows.length} places here</h2></div>
+    </header>
     <ul class="rows" bind:this={list}>
         {#each rows as place (place.id)}
             <li><button type="button" class="row" onclick={() => onPick(place)}>
