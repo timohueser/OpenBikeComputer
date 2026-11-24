@@ -469,6 +469,33 @@ fn a_road_whose_carriageway_overlaps_another_lies_at_its_height() {
     assert!(fa.iter().zip(&fz).all(|(&a, &z)| (interp(a, &sa, &sz) - z).abs() > 0.3));
 }
 
+#[test]
+fn a_path_keeps_its_ground_near_an_opening_that_it_does_not_share_with_the_road() {
+    // A footway on a shelf 5 m under a road, its edge 1.5 m from the road's: it leaves its own tunnel and
+    // ends 10 m before the road's bridge. Within the reach of each opening, 40 m for a residential road,
+    // it keeps its own ground; between them it lies on the road's bed.
+    let place = engelberg();
+    let terrain = place.terrain(|e, n| if (n - 5.0).abs() < 1.5 && e < 245.0 { 495.0 } else { 500.0 });
+    let line = |corners: &[(f64, f64)]| place.line(corners, Some(10.0));
+    let road = |f: &mut Feature| f.half = 2.5;
+    let path = |f: &mut Feature| f.half = 1.0;
+    let features = [
+        way("residential", line(&[(-50.0, 0.0), (250.0, 0.0)]), road),
+        way("residential", line(&[(250.0, 0.0), (270.0, 0.0)]), |f| (f.free, f.half) = (true, 2.5)),
+        way("residential", line(&[(270.0, 0.0), (400.0, 0.0)]), road),
+        way("footway", line(&[(-100.0, 5.0), (0.0, 5.0)]), |f| (f.free, f.tunnel, f.half) = (true, true, 1.0)),
+        way("footway", line(&[(0.0, 5.0), (240.0, 5.0)]), path),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    let (along, z) = place.profile(&solved.ways[4][0]);
+    for e in [20.0, 230.0] {
+        assert!((interp(e, &along, &z) - 495.0).abs() < 0.3, "at {e} m east");
+    }
+    // The bed runs from the first vertex more than 40 m past the footway's portal to the last one more than
+    // 40 m before the road's bridge.
+    assert!((solved.metrics.bed_m - 150.0).abs() < 0.1);
+}
+
 /// Metres east and the heights of the kept vertices of a solved way.
 fn along_east(place: &Place, part: &Option<Way>) -> (Vec<f64>, Vec<f64>) {
     let way = part.as_ref().unwrap();

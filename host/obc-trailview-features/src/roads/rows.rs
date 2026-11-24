@@ -378,36 +378,55 @@ pub(crate) fn beds(net: &Network, classes: &Classes, terrain: &dyn Terrain) -> B
         bed.push((w, first, last));
     }
     for (w, first, last) in bed {
-        for (mut w, mut v, mut step) in [(w, last, 1i64), (w, first, -1)] {
-            let mut left = RAMP_M;
-            while left > 0.0 {
-                if v == if step > 0 { net.way_last[w] } else { net.way_first[w] } {
-                    let Some((next, at_last)) = links[w][usize::from(step > 0)] else { break };
-                    let end = if at_last { net.way_last[next] } else { net.way_first[next] };
-                    (w, v, step) = (next, end, if at_last { -1 } else { 1 });
-                }
-                let u = (v as i64 + step) as usize;
-                if out.held[net.vertex_var[u]] {
-                    break;
-                }
-                out.ramp[v.min(u) - w] = true;
-                left -= net.length[v.min(u) - w];
-                v = u;
-            }
+        for start in [(w, last, 1), (w, first, -1)] {
+            walk(net, &links, start, RAMP_M, |s, u, _| {
+                let free = !out.held[net.vertex_var[u]];
+                out.ramp[s] |= free;
+                free
+            });
         }
     }
     out
 }
 
+/// Walks from vertex v of way w by `step` (1 or −1) along its stroke, on through the ends that run on
+/// (`align::joins`), while it has gone less than `metres`: per segment, visit(segment, its far vertex,
+/// metres to it) until visit returns false.
+fn walk(
+    net: &Network,
+    links: &[[Option<(usize, bool)>; 2]],
+    (mut w, mut v, mut step): (usize, usize, i64),
+    metres: f64,
+    mut visit: impl FnMut(usize, usize, f64) -> bool,
+) {
+    let mut gone = 0.0;
+    while gone < metres {
+        if v == if step > 0 { net.way_last[w] } else { net.way_first[w] } {
+            let Some((next, at_last)) = links[w][usize::from(step > 0)] else { return };
+            (w, v, step) =
+                (next, if at_last { net.way_last[next] } else { net.way_first[next] }, if at_last { -1 } else { 1 });
+        }
+        let u = (v as i64 + step) as usize;
+        gone += net.length[v.min(u) - w];
+        if !visit(v.min(u) - w, u, gone) {
+            return;
+        }
+        v = u;
+    }
+}
+
 /// Per vertex, its leader: the segment of the way that it lies beside, and the place of its foot on it. That
 /// way is the nearest of another stroke (the ways that run on from each other, `align::joins`) that runs
-/// within PARALLEL_COS of its way, with the foot not past an end of that stroke; in the state of its way (on
-/// the ground, in a tunnel or on a bridge) and on its layer, where an opening of its way within VERTEX_M (into
-/// a way of another state or layer) has one of that way within VERTEX_M too: two openings that far apart
-/// join, and a way that opens alone leaves; before its way, by the class of the table, then by the order of
-/// the ways; with no way of the two groups nearer on that side; and near: a path beside a road or a farm track
-/// where their edges lie at most BESIDE_GAP_M apart, two tracks within PARALLEL_M, and two other ways of one
-/// group where their carriageways overlap.
+/// within PARALLEL_COS of its way, with the foot not past an end of that stroke; before its way, by the class
+/// of the table, then by the order of the ways; with no way of the two groups nearer on that side; and near: a
+/// path beside a road or a farm track where their edges lie at most BESIDE_GAP_M apart, two tracks within
+/// PARALLEL_M, and two other ways of one group where their carriageways overlap. An opening is an end where a
+/// stroke runs on into another state (on the ground, in a tunnel, on a bridge): a portal or the end of a
+/// bridge. Within the reach of the leader, the length that its class needs to leave the terrain by HARD_M at
+/// its grade and at least VERTEX_M, the two strokes share each opening: the other has one between the same two
+/// states on the same layers beside it, at most VERTEX_M farther apart than the two ways. So two ways part before an opening of one
+/// alone, where that one climbs or digs to it. The two lie in one state and on one layer, or each within
+/// VERTEX_M of their shared opening between the two.
 fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]]) -> Vec<Option<(usize, f64)>> {
     let total = net.vertex_xy.len();
     // The state of a way (on the ground, on a bridge, in a tunnel) and its layer, as a bit.
@@ -421,21 +440,27 @@ fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]
         }
     }
     let stroke: Vec<usize> = (0..links.len()).map(|w| root(&mut stroke, w)).collect();
-    // Per vertex, the states of the ways that its way runs on into through an opening within VERTEX_M.
-    let mut opening = vec![0u64; total];
+    let reach_of = |w: usize| (HARD_M / classes.rows[net.rule[w]].grade).max(VERTEX_M);
+    let longest = (0..links.len()).map(reach_of).fold(VERTEX_M, f64::max);
+    // The openings, each as its two states with their layers and its place, and per stroke its openings; per
+    // vertex, the openings of its stroke within the longest reach, each with the metres to it.
+    let (mut openings, mut of_stroke, mut opened) =
+        (Vec::new(), vec![Vec::new(); links.len()], vec![Vec::new(); total]);
     for (w, ends) in links.iter().enumerate() {
         for (end, &link) in ends.iter().enumerate() {
-            let Some((next, _)) = link.filter(|&(next, _)| state(next) != state(w)) else { continue };
-            let (mut v, step) = if end == 1 { (net.way_last[w], -1i64) } else { (net.way_first[w], 1) };
-            let mut left = VERTEX_M;
-            while left >= 0.0 {
-                opening[v] |= state(next);
-                let u = v as i64 + step;
-                if u < net.way_first[w] as i64 || u > net.way_last[w] as i64 {
-                    break;
-                }
-                left -= net.length[v.min(u as usize) - w];
-                v = u as usize;
+            let opens = |next: usize| (net.free[next], net.tunnel[next]) != (net.free[w], net.tunnel[w]);
+            let Some((next, at_last)) = link.filter(|&(next, _)| next > w && opens(next)) else { continue };
+            let (o, at) = (openings.len(), if end == 1 { net.way_last[w] } else { net.way_first[w] });
+            openings.push((state(w) | state(next), net.vertex_xy[at]));
+            of_stroke[stroke[w]].push(o);
+            let there = if at_last { net.way_last[next] } else { net.way_first[next] };
+            for (way, v, step) in [(w, at, if end == 1 { -1 } else { 1 }), (next, there, if at_last { -1 } else { 1 })]
+            {
+                opened[v].push((o, 0.0));
+                walk(net, links, (way, v, step), longest, |_, u, gone| {
+                    opened[u].push((o, gone));
+                    true
+                });
             }
         }
     }
@@ -451,7 +476,7 @@ fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]
     let mut out = vec![None; total];
     for w in 0..net.way_first.len() {
         let mine = group(net, classes, w);
-        for v in net.way_first[w]..=net.way_last[w] {
+        for (v, leader) in out.iter_mut().enumerate().take(net.way_last[w] + 1).skip(net.way_first[w]) {
             let p = net.vertex_xy[v];
             let o = sub(net.vertex_xy[if v < net.way_last[w] { v + 1 } else { v - 1 }], p);
             let own = [o[0] / hypot(o).max(1e-300), o[1] / hypot(o).max(1e-300)];
@@ -464,14 +489,10 @@ fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]
             let (mut found, mut nearest) = (Vec::new(), [[f64::INFINITY; 2]; 3]);
             for k in near {
                 let other = net.segment_way[k];
-                // Two openings within VERTEX_M of each other join; a way that opens alone leaves.
-                let around = opening[net.segment_start[k]] | opening[net.segment_start[k] + 1];
-                let fits = state(other) == state(w) && opening[v] & !(state(other) | around) == 0
-                    || opening[v] & state(other) != 0 && around & state(w) != 0;
                 // A way that meets v there leaves it: it lies neither beside v nor between.
                 let meets = net.a[k] == net.vertex_var[v] || net.b[k] == net.vertex_var[v];
                 let parallel = (dot(own, d[k]) / hypot(d[k]).max(1e-300)).abs() >= PARALLEL_COS;
-                if stroke[other] == stroke[w] || meets || !fits || !parallel {
+                if stroke[other] == stroke[w] || meets || !parallel {
                     continue;
                 }
                 // A foot past an end of the other stroke is a way that continues this one, not a way beside it.
@@ -484,6 +505,23 @@ fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]
                 let t = t.clamp(0.0, 1.0);
                 let off = sub(lerp(pa[k], net.vertex_xy[net.segment_start[k] + 1], t), p);
                 let (gap, side) = (hypot(off) * unit[k], usize::from(own[0] * off[1] - own[1] * off[0] > 0.0));
+                // The two share each opening within the reach of the leader: one of the same two states lies
+                // beside it, at most VERTEX_M farther than the gap. They lie in two states only at such an
+                // opening between the two, within VERTEX_M of each.
+                let within = |v: usize| opened[v].iter().filter(move |e| e.1 <= reach_of(other));
+                let (at_v, at_foot) = (within(v), within(net.segment_start[k]).chain(within(net.segment_start[k] + 1)));
+                let shares = |o: usize, s: usize| {
+                    of_stroke[s].iter().any(|&p: &usize| {
+                        openings[p].0 == openings[o].0
+                            && hypot(sub(openings[o].1, openings[p].1)) * unit[k] <= gap + VERTEX_M
+                    })
+                };
+                let shared = at_v.clone().all(|&(o, _)| shares(o, stroke[other]))
+                    && at_foot.clone().all(|&(p, _)| shares(p, stroke[w]));
+                let join = |e: &(usize, f64)| e.1 <= VERTEX_M && openings[e.0].0 == state(w) | state(other);
+                if !shared || state(other) != state(w) && !(at_v.clone().any(join) && at_foot.clone().any(join)) {
+                    continue;
+                }
                 let theirs = group(net, classes, other);
                 nearest[theirs][side] = nearest[theirs][side].min(gap);
                 found.push((gap, k, t, other, side));
@@ -497,7 +535,7 @@ fn leaders(net: &Network, classes: &Classes, links: &[[Option<(usize, bool)>; 2]
                 let between = nearest[mine][side].min(nearest[group(net, classes, other)][side]);
                 (net.rule[other], other) < (net.rule[w], w) && close(other, gap) && gap <= between + 0.01
             });
-            out[v] = candidates.min_by(|x, y| x.0.total_cmp(&y.0)).map(|(_, k, t, ..)| (k, t));
+            *leader = candidates.min_by(|x, y| x.0.total_cmp(&y.0)).map(|(_, k, t, ..)| (k, t));
         }
     }
     out
