@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 
 use super::ladder::{Decided, Hole, Kind, Numbers};
-use super::rooms::{Drawn, Rooms};
+use super::rooms::{Drawn, Rooms, MERGE_M};
 use super::{distance, first_way_m, left_of, offset, Input, Opening};
 
 /// A head that stands in another room: its record's opening, the place, and the least whole metres more that its
@@ -17,9 +17,6 @@ pub(crate) struct Stand {
 
 /// A point of a part: in plan, and the heights of the part's bottom and top there.
 type Sample = ([f64; 2], f64, f64);
-
-/// A centimetre: a point lies in a room by more than this.
-const MERGE_M: f64 = 0.01;
 
 /// The heads that stand in another room that draws, on the final floors, halves and heights: a point of the part lies
 /// inside the room's space (its outline swept along its axis, `half` to each side, from its floor to its arch) by more

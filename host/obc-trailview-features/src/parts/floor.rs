@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use obc_ground_plan::faces::Rules as PlanRules;
 use serde_json::{json, Value};
 
-use super::rooms::{hold, Bound, Outline, Place, Rooms};
+use super::rooms::{hold, Bound, Outline, Place, Rooms, MERGE_M};
 use super::{distance, segment_m, Input, Point, Tube};
 use crate::geometry::{bounds, interp, Boxes};
 use crate::{degrees, metres, roads};
@@ -102,9 +102,6 @@ impl Floor {
         }
     }
 }
-
-/// A vertex nearer than this to another is that vertex, and a point this far past a reach is within it.
-const MERGE_M: f64 = 0.01;
 
 /// Per vertex the undersides of the ways on top, and the least underside of a room on top that only lowers the
 /// section.

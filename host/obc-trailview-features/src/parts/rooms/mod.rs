@@ -24,8 +24,9 @@ pub(crate) use axes::Axes;
 pub(crate) use section::{hold, onto, Outline};
 pub(crate) use touch::{touching, Drawn};
 
-/// The bake's centimetre (`MERGE_M` of the floor pass).
-const MERGE_M: f64 = 0.01;
+/// The bake's centimetre: a vertex nearer than this to another is that vertex, a point this far past a reach is within
+/// it, and a point lies in a room by more than this.
+pub(crate) const MERGE_M: f64 = 0.01;
 
 /// A lane of a room: its arm, and per room end its metres along the arm and the opening of the arm there.
 #[derive(Clone, Debug)]
