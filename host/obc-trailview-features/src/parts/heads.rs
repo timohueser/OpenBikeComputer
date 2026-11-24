@@ -47,12 +47,13 @@ pub(crate) fn standing(rooms: &Rooms, openings: &[Opening], decided: &Decided, i
         if n.holes.iter().any(|h| !decided.draws[tube(h)]) {
             continue;
         }
-        let mut own: BTreeSet<usize> = n.holes.iter().map(tube).collect();
+        let holes: BTreeSet<usize> = n.holes.iter().map(tube).collect();
+        let mut own = holes.clone();
         for seam in &rooms.seams {
             let (parent, mut children) = (seam.parent.0, seam.children.iter().map(|c| c.0));
-            if own.contains(&parent) {
+            if holes.contains(&parent) {
                 own.extend(children);
-            } else if children.any(|r| own.contains(&r)) {
+            } else if children.any(|r| holes.contains(&r)) {
                 own.insert(parent);
             }
         }
