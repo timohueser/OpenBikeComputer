@@ -271,6 +271,8 @@ class Requests(unittest.TestCase):
         self.assertIsNone(source.url(box))
         source.envelope = (lo_x - 1000, lo_y - 1000, lo_x + 2 * step, hi_y + 1000)
         self.assertEqual(int(query(source.url(box))[1]["width"][0]), 2)
+        source.envelope = (lo_x - 1000, lo_y - 1000, hi_x + 1000, lo_y + 1.3 * step)
+        self.assertIsNone(source.url(box))
 
     def test_the_wcs_10_envelope_is_the_one_on_the_rows_grid(self):
         """Piedmont states its envelope in EPSG:4326 first, and Denmark writes the code in lower case."""

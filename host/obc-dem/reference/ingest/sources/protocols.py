@@ -469,8 +469,8 @@ class Wcs10Source(CoverageService):
     names a format with the server's word for it rather than a media type: Kartverket
     answers to `GeoTIFF` and Denmark's MapServer to `GTiff`. A bbox past the envelope is
     refused: Denmark answers `InvalidBoundingBox`, Saxony-Anhalt `InvalidParameterValue`.
-    Denmark also refuses a box one pixel wide inside the envelope, so a clip that leaves a
-    side under two pixels is not asked for: it loses less than two pixels at the edge.
+    Denmark also refuses a box one pixel wide inside the envelope, so a box with a side under
+    two pixels is not asked for: such a box only comes from a clip at the edge.
     """
 
     def __init__(self, *args, image_format="GeoTIFF", **kw):
