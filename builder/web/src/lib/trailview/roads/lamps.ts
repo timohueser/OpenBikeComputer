@@ -1,8 +1,8 @@
 // Street lamps from the stations of a lit road: where the corridor draws its sidewalk or behind its shoulder.
-import { BRIDGE, cores, insideRings, isCore, junctions, linesNear, metresPerUnit, PATH, ringsDistance, ROAD, TUNNEL, walkOf, type Line, type Shapes } from '../terrain/bins';
+import { BRIDGE, cores, insideRings, isCore, junctions, linesNear, metresPerUnit, PATH, ringsDistance, ROAD, RULES, TUNNEL, walkOf, type Line, type Shapes } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
-import { add, along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from '../terrain/town';
-import { LANTERN, streetLamp } from '../models/amenities';
+import { add, along, BUILT_M, builtNear, gridOf, houseCover, LEFT, near, RIGHT, townOf, type Grid, type Town } from '../terrain/town';
+import { LANTERN, LANTERN_GLASS, streetLamp, streetLantern } from '../models/amenities';
 import { unitModel, type Build, type Kind, type Placement } from '../kinds/kind';
 import { classOf, shoulderOf } from './section';
 import { stationAt, stationsOf, type Station } from './stations';
@@ -15,17 +15,22 @@ import { stationAt, stationsOf, type Station } from './stations';
  */
 const SPACING_M = 32, SEARCH_M = 10, SIDEWALK_SHARE = 0.72, BEHIND_M = 0.5, CLEAR_M = 1.5, OFF_ROAD_M = 0.4, MOUTH_M = 4, APART_M = SPACING_M / 2;
 
-/** The roads that have lamps, and how far from the eye a lamp draws. */
+/** The roads that have lamps, how far from the eye a lamp draws, and from where it draws its far tier. */
 const LIT = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street']);
 
-const LAMP_REACH_M = 600;
-const lamp = unitModel(streetLamp, LAMP_REACH_M);
+const LAMP_REACH_M = 600, LAMP_NEAR_M = 150;
+const lamp = unitModel(streetLamp, LAMP_REACH_M, LAMP_NEAR_M), lantern = unitModel(streetLantern, LAMP_REACH_M, LAMP_NEAR_M);
+/**
+ * A lamp is a lantern in an old quarter: where houses cover at least OLD_COVER of the ground about it (`houseCover`),
+ * but not on a main road. The cover changes slowly from place to place, so a quarter's lamps agree.
+ */
+const MAIN = new Set(['trunk', 'trunk_link', 'primary', 'primary_link']), OLD_COVER = 0.33;
 
 /** The kind of the lit roads. `streetLamps` places their lamps, from the road's stations. */
 export const lampKind: Kind = {
     build() {},
-    models: { lamp: lamp.spec },
-    lights: { lamp: { colour: '#ffc98a', radius: 16, at: LANTERN, housed: true } },
+    models: { lamp: lamp.spec, lantern: lantern.spec },
+    lights: { lamp: { colour: '#ffc98a', radius: 16, at: LANTERN, housed: true }, lantern: { colour: '#ffc98a', radius: 10, at: LANTERN_GLASS, housed: true } },
 };
 
 /** The lamps of each tile, made once: the stations of its lit roads are many, its lamps few. */
@@ -86,7 +91,8 @@ function spot(places: Places, line: Line, st: Station[], metres: number): Placem
         const x = s.x + side * s.ax * a, y = s.y + side * s.ay * a;
         if ((!walked && !builtNear(places.town, s.x, s.y, BUILT_M / unit)) || !free(places, line, walk, x, y, unit)) continue;
         // The arm reaches toward −y of the model: over the road, toward the line's middle.
-        return { x, y, yaw: Math.atan2(-side * s.ax, -side * s.ay), height: lamp.height, model: 'lamp' };
+        const old = !MAIN.has(classOf(line)) && houseCover(places.town, x, y, unit, places.out.shapes.square, RULES.BUFFER_M / unit) >= OLD_COVER;
+        return { x, y, yaw: Math.atan2(-side * s.ax, -side * s.ay), height: (old ? lantern : lamp).height, model: old ? 'lantern' : 'lamp' };
     }
     return undefined;
 }

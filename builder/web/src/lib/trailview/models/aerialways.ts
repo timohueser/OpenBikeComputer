@@ -64,22 +64,43 @@ const MAST: Record<Exclude<Rig, 'cable_car'>, { r: [number, number]; wheels: num
     drag_lift: { r: [0.24, 0.17], wheels: 2, wheel: 0.16 },
 };
 
-/** A tubular mast with a T cross-arm, and at each end a sheave train under the cable. The arm stops inside the tracks: the hangers bend out past the sheaves. */
+/** A tubular mast with a T cross-arm, at each end a sheave train under the cable, and a lifting frame over them. The arm stops inside the tracks: the hangers bend out past the sheaves. */
 function mast(m: Model, rig: Exclude<Rig, 'cable_car'>, height: number, steel: number): void {
     const T = TRACK_HALF_M[rig], { r: [r0, r1], wheels, wheel } = MAST[rig], axle = height - wheel, arm = axle - wheel - 0.3, dark = shade(steel, 0.8);
     const side = 4 * r0 + 0.5, deep = footing(side / Math.SQRT2);
     m.box([0, 0, 0.15 - deep / 2], [side, side, 0.7 + deep], CONCRETE);
     m.beam([0, 0, 0], [0, 0, arm], 2 * r0, steel, { sides: 8, w1: 2 * r1 });
     m.box([0, 0, arm], [2.4 * r1, 2.4 * r1, 0.8], dark).box([0, 0, arm], [2 * (T - 0.14), 1.6 * r1, 0.4], steel);
+    // The lifting frame: a beam over the cross-arm on a post above each sheave train, to lift the cable off them.
+    const lift = height + 0.9, post = 0.9 * r1;
+    m.box([0, 0, lift], [2 * (T - 0.15) + post, post, post], steel);
     const pitch = 2 * wheel + 0.08;
     for (const s of [-1, 1]) {
         const x = s * (T - 0.15);
+        m.box([x, 0, (arm + lift) / 2], [0.5 * post, 0.5 * post, lift - arm], steel);
         m.box([x, 0, axle], [0.14, wheels * pitch, 0.18], dark).box([x, 0, (arm + axle) / 2], [0.16, 0.22, axle - arm], dark);
         for (let k = 0; k < wheels; k++) {
             const y = (k - (wheels - 1) / 2) * pitch;
             m.beam([s * T - 0.07, y, axle], [s * T + 0.07, y, axle], 2 * wheel, DARK, { sides: 6, capped: true });
         }
     }
+}
+
+/**
+ * What a mast shows only near the eye: a ladder up its −y side, a walkway with a rail along the cross-arm, and a number
+ * plate. A cable car's tower has none.
+ */
+export function pylonFittings(rig: Rig, height: number): Model {
+    const m = new Model();
+    if (rig === 'cable_car') return m;
+    const T = TRACK_HALF_M[rig], { r: [r0, r1], wheel } = MAST[rig], arm = height - 2 * wheel - 0.3, out = (z: number) => -(r0 + (r1 - r0) * (z / arm) + 0.14);
+    for (const x of [-0.2, 0.2]) m.beam([x, out(0.6), 0.6], [x, out(arm), arm], 0.05, DARK, { sides: 3 });
+    for (let z = 1; z < arm; z += 1) m.beam([-0.2, out(z), z], [0.2, out(z), z], 0.04, DARK, { sides: 3 });
+    const y = -(0.8 * r1 + 0.32), half = T - 0.14;
+    m.box([0, y, arm + 0.23], [2 * half, 0.5, 0.06], DARK);
+    m.beam([-half, y - 0.22, arm + 1.25], [half, y - 0.22, arm + 1.25], 0.05, DARK, { sides: 3 });
+    for (const x of [-half, 0, half]) m.beam([x, y - 0.22, arm + 0.26], [x, y - 0.22, arm + 1.25], 0.05, DARK, { sides: 3 });
+    return m.box([0, r0 * (1 - 2.2 / arm) + r1 * (2.2 / arm) + 0.01, 2.2], [0.5, 0.04, 0.36], WHITE);
 }
 
 /** A pylon with its base at the origin; the cables run along +y over its top at z = height and x = ±TRACK_HALF_M. */
@@ -94,6 +115,8 @@ export function pylon(rig: Rig, height: number, seed = 1): Model {
 function hut(m: Model, [x, y]: [number, number], livery: number): void {
     const [w, l, h] = [2.6, 3.2, 2.7], deep = footing(Math.hypot(Math.abs(x) + w / 2 + 0.15, Math.abs(y) + l / 2 + 0.15));
     m.box([x, y, (0.3 - deep) / 2], [w + 0.3, l + 0.3, 0.3 + deep], CONCRETE).box([x, y, 0.3 + h / 2], [w, l, h], TIMBER).box([x, y, 2.05], [w + 0.08, l + 0.08, 0.9], GLASS);
+    // A door in the end toward −y, under the windows' band.
+    m.box([x, y - l / 2 - 0.03, 1.3], [0.9, 0.06, 2], shade(TIMBER, 0.6)).box([x + 0.28, y - l / 2 - 0.07, 1.3], [0.06, 0.04, 0.16], DARK);
     roof(m, [x, y, 0.3 + h], w, l, 30, 0.45, livery, TIMBER);
 }
 
@@ -182,6 +205,8 @@ function tram(m: Model, seed: number): void {
     m.loft(outline(1.5, 3, 0.55, 1), [[-5.3, 0.86], [-4.85, 1], [-4.1, 1], [-2.95, 1.04], [-2.55, 1.04], [-2.35, 0.97]],
         (band, n) => [shade(body, 0.72), body, glazed(n) ? GLASS : body, body, WHITE][band], DARK, WHITE);
     m.box([0, 0, 0.15], [0.7, 3.6, 0.6], shade(steel, 0.55));
+    // The carriage's four rollers on the cable.
+    for (const y of [-1.4, -0.5, 0.5, 1.4]) m.beam([-0.4, y, 0.42], [0.4, y, 0.42], 0.36, DARK, { sides: 6, capped: true });
     m.beam([0.1, 0, -0.05], [0.95, 0, -0.6], 0.5, steel, { capped: true }).beam([0.95, 0, -0.5], [0.95, 0, -1.85], 0.5, steel, { capped: true });
     m.beam([0.95, 0, -1.75], [0, 0, -2.4], 0.5, steel, { capped: true });
 }
@@ -192,6 +217,8 @@ function gondola(m: Model, seed: number): void {
     m.loft(outline(0.9, 1.1, 0.4, 2), [[-3.7, 0.8], [-3.4, 1], [-2.8, 1], [-1.8, 1.03], [-1.65, 1.02], [-1.5, 0.85]],
         (band, n) => [shade(body, 0.72), body, Math.abs(n[0]) > 0.99 || Math.abs(n[1]) > 0.99 ? GLASS : body, body, WHITE][band], DARK, WHITE);
     m.box([0, 0, 0], [0.24, 0.5, 0.3], DARK);
+    // The grip's two rollers on the cable.
+    for (const y of [-0.34, 0.34]) m.beam([-0.06, y, 0.06], [0.06, y, 0.06], 0.2, DARK, { sides: 6, capped: true });
     const hanger: Vec[] = [[0.04, 0, -0.06], [0.42, 0, -0.28], [0.56, 0, -0.8], [0.34, 0, -1.35], [0, 0, -1.53]];
     hanger.slice(1).forEach((p, i) => m.beam(hanger[i], p, 0.11, steel));
 }
@@ -200,6 +227,7 @@ function gondola(m: Model, seed: number): void {
 function chair(m: Model, seed: number): void {
     const pad = pick(LIVERY, seed, 1), steel = pick(STEEL, seed), [top, back, seat, half] = [-CHAIR_SEAT_M + 0.65, -0.32, -CHAIR_SEAT_M, 1.22];
     m.box([0, 0, 0], [0.2, 0.45, 0.26], DARK);
+    for (const y of [-0.3, 0.3]) m.beam([-0.05, y, 0.05], [0.05, y, 0.05], 0.18, DARK, { sides: 6, capped: true });
     const hanger: Vec[] = [[0.04, 0, -0.06], [0.4, 0, -0.3], [0.48, 0, -1.1], [0.38, 0, top + 0.7], [0.1, back * 0.6, top + 0.15], [0, back, top]];
     hanger.slice(1).forEach((p, i) => m.beam(hanger[i], p, 0.1, steel));
     m.beam([-half, back, top], [half, back, top], 0.08, steel);
