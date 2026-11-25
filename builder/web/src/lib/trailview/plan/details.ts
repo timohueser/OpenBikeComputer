@@ -24,7 +24,7 @@ export async function detailPipelines(gpu: Gpu, layout: GPUBindGroupLayout, draw
         device.createRenderPipelineAsync({
             label: 'plan details', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, ...draw] }), vertex: { module, entryPoint: 'detail_vertex' },
             // PIECE off: the faces shade by their facets and fade near DETAIL_END_M, as the corridors' parts.
-            fragment: { module, entryPoint: 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1, MODEL: 1 } },
+            fragment: { module, entryPoint: 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1, MODEL: 1, PLAN_DETAILS: 1 } },
             primitive: { topology: 'triangle-list', cullMode: 'back' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
         }),
         device.createRenderPipelineAsync({
