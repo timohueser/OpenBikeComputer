@@ -6,7 +6,7 @@
 //! of stroke metres. Per side, a ring needs a rail where the paved edge lies `DROP_M` over the plain terrain
 //! `DROP_OUT_M` out, or where a mapped guard rail lies near; `shares` gives each ring its share by the stretch rules.
 //! A rail sinks into the ground before a stop: a chain's end at a junction or past the graph, the zone of a junction
-//! on its own arms, a sidewalk, a town or a fold. At a level change (a deck's end, a tunnel's opening) it runs on and
+//! on its own arms, a sidewalk, a town, a fold, or another way's paved band over its beam. At a level change (a deck's end, a tunnel's opening) it runs on and
 //! ends square. The rules read only the graph, the plain terrain and the features, and no farther past the cell than
 //! `reach` states, so two cells give a ring the same share.
 
@@ -167,15 +167,20 @@ fn to_segment(q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     dist(q, add(a, d, t))
 }
 
-/// What the rules read of the features: the buildings' boxes and the mapped guard rails.
+/// A chord between two samples of a ground way, its paved half-width there and its way.
+type Chord = ([[f64; 2]; 2], f64, u32);
+
+/// What the rules read of the features and the graph: the buildings' boxes, the mapped guard rails, and the chords of
+/// the ground ways but water, with the widest paved half-width of them.
 struct Context<'a> {
     buildings: (Grid, Vec<[f64; 4]>),
     rails: (Grid, Vec<[[f64; 2]; 2]>),
+    ways: (Grid, Vec<Chord>, f64),
     input: &'a CellInput,
 }
 
 impl<'a> Context<'a> {
-    fn new(input: &'a CellInput) -> Context<'a> {
+    fn new(input: &'a CellInput, g: &WayGraph, half: &[Option<(bool, f64)>]) -> Context<'a> {
         let o = input.key.origin();
         let local = |p: &GlobalPoint| [(p.x - o.x) as f64, (p.y - o.y) as f64];
         let bbox = |pts: &[[f64; 2]]| {
@@ -196,7 +201,26 @@ impl<'a> Context<'a> {
         }
         let buildings = (Grid::of(4.0 * BUCKET, &boxes), boxes);
         let rails = (Grid::of(BUCKET, &segments.iter().map(|s| bbox(s)).collect::<Vec<_>>()), segments);
-        Context { buildings, rails, input }
+        let mut chords: Vec<Chord> = Vec::new();
+        for (w, way) in g.ways.iter().enumerate().filter(|(_, way)| way.level == Level::Ground) {
+            let Some((_, e)) = half[w] else { continue };
+            let samples = &g.samples[way.samples.start as usize..way.samples.end as usize];
+            let band = |s: &[Sample]| e + s[0].widen_m.max(s[1].widen_m);
+            chords.extend(
+                samples.windows(2).map(|s| ([s[0].pos, s[1].pos].map(|p| p.map(f64::from)), band(s), w as u32)),
+            );
+        }
+        let widest = chords.iter().map(|c| c.1).fold(0.0, f64::max);
+        let ways = (Grid::of(BUCKET, &chords.iter().map(|c| bbox(&c.0)).collect::<Vec<_>>()), chords, widest);
+        Context { buildings, rails, ways, input }
+    }
+
+    /// Whether q lies in the paved band of a ground way that the chain `own` does not hold.
+    fn in_other(&self, q: [f64; 2], own: &[(u32, i8)], mpu: f64) -> bool {
+        self.ways.0.any(q, self.ways.2 / mpu, |k| {
+            let ([a, b], band, w) = self.ways.1[k as usize];
+            to_segment(q, a, b) * mpu < band && !own.iter().any(|&(x, _)| x == w)
+        })
     }
 
     fn town(&self, q: [f64; 2], mpu: f64) -> bool {
@@ -465,10 +489,10 @@ pub fn place(g: &WayGraph, input: &CellInput, sections: &Sections) -> Edges {
     };
     let road = |w: u32| g.ways[w as usize].family == Family::Road;
     let change = |w: u32| road(w) && g.ways[w as usize].level != Level::Ground;
-    // Per road way: whether it is railed, and the half-width of its carriageway and shoulder.
+    // Per way but water: whether it is a railed road, and the half-width of its carriageway and shoulder.
     let info: Vec<Option<(bool, f64)>> = (0..g.ways.len() as u32)
-        .map(|w| road(w).then(|| section(g.ways[w as usize].part)))
-        .map(|s| s.map(|s| (RAILED.contains(&s.class.trim_end_matches("_link")), s.half_m + s.shoulder_m)))
+        .map(|w| (g.ways[w as usize].family != Family::Water).then(|| (road(w), section(g.ways[w as usize].part))))
+        .map(|s| s.map(|(r, s)| (r && RAILED.contains(&s.class.trim_end_matches("_link")), s.half_m + s.shoulder_m)))
         .collect();
     // The zones: about a junction, on its own arms, its widest way's paved half-width and corner and `MOUTH_M`; about
     // a level crossing, its widest way's and `MOUTH_M`. Where an arm leads to a level change within the zone (it is a
@@ -569,7 +593,7 @@ pub fn place(g: &WayGraph, input: &CellInput, sections: &Sections) -> Edges {
             for i in 1..n {
                 m[i] = m[i - 1] + libm::round(dist(pts[i].pos, pts[i - 1].pos) * mpu[i] * 1024.0) / 1024.0;
             }
-            let ctx = &*ctx.get_or_insert_with(|| Context::new(input));
+            let ctx = &*ctx.get_or_insert_with(|| Context::new(input, g, &info));
             for side in [1.0, -1.0] {
                 // Per ring its point on the shoulder's outer edge, the normal out (the chain's left, as the frame's y
                 // points south, then this side's), whether its way is railed and its paved half-width.
@@ -604,6 +628,7 @@ pub fn place(g: &WayGraph, input: &CellInput, sections: &Sections) -> Edges {
                         || (towns[i] > 0.0 && !mapped[i])
                         || (i > 0 && fold(i - 1))
                         || (i + 1 < n && fold(i))
+                        || ctx.in_other(add(rings[i].0, rings[i].1, -BEAM_IN_M[0] / mpu[i]), &chain, mpu[i])
                 });
                 let share = shares(&m, &need, &stops, ends);
                 let ring = |i: usize| Ring {
