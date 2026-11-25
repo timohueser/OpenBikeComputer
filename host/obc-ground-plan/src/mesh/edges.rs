@@ -4,12 +4,12 @@
 //!
 //! A chain is the ground road ways that joints and a junction's opposite arms link. Its rings are the graph samples
 //! and a point at each `RING_M` of stroke metres. Per side, a ring needs a rail where the paved edge lies `DROP_M`
-//! over the plain terrain `DROP_OUT_M` out, or where a mapped guard rail lies near; `shares` gives each ring its share
-//! by the stretch rules. A rail sinks into the ground before a stop: a chain's end at a junction or past the graph, a
-//! junction's corner on its arm's side, a sidewalk, a town, a fold, or another way's paved band under its beam. At a
-//! level change (a deck's end, a tunnel's opening) it runs on and ends square. The rules read only the graph, the
-//! plain terrain and the features, no farther past the cell than `reach` states, and alike in either direction of a
-//! chain, so two cells give a ring the same share.
+//! over the plain terrain `DROP_OUT_M` out or that point lies in area water, or where a mapped guard rail lies near;
+//! `shares` gives each ring its share by the stretch rules. A rail sinks into the ground before a stop: a chain's end
+//! at a junction or past the graph, a junction's corner on its arm's side, a sidewalk, a town, a fold, or another way's
+//! paved band under its beam. At a level change (a deck's end, a tunnel's opening) it runs on and ends square. The
+//! rules read only the graph, the plain terrain and the features, no farther past the cell than `reach` states, and
+//! alike in either direction of a chain, so two cells give a ring the same share.
 
 use super::shell::{clip, fan, prism, Build, DELINEATOR, P, RAIL};
 use crate::faces::records::find;
@@ -17,7 +17,7 @@ use crate::faces::Rules;
 use crate::frame::{metres_per_unit_at, GlobalPoint, CELL_UNITS};
 use crate::graph::{point as curve_point, u_at, Arm, Family, Level, Network, Sample, WayGraph};
 use crate::sections::{Reach, Sections, HALF_MAX_M};
-use crate::tile::Geometry;
+use crate::tile::{tile_square, Geometry};
 use crate::CellInput;
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
@@ -25,9 +25,12 @@ use std::f64::consts::{PI, TAU};
 
 /// The classes with guard rails and delineators outside towns, and their links.
 const RAILED: [&str; 5] = ["trunk", "primary", "secondary", "tertiary", "unclassified"];
-/// A rail stands where the edge lies this much over the plain terrain this far out.
+/// A rail stands where the edge lies this much over the plain terrain this far out, or where that point lies in area
+/// water: water close to the road counts as a drop.
 const DROP_M: f64 = 1.35;
 const DROP_OUT_M: f64 = 4.0;
+/// The kinds of area water: a lake (a pond and a reservoir too) and a river's area. A stream drawn as a line is none.
+const WATER: [&str; 2] = ["lake", "river-area"];
 /// A rail runs on this far past the last ring that needs it, then ramps into the ground over `RAMP_M`, as a terminal
 /// does; it ramps down over `RAMP_M` before a stop too.
 const LEAD_M: f64 = 4.0;
@@ -62,8 +65,8 @@ const SINK_M: f64 = 0.8;
 const POST_IN_M: f64 = 0.10;
 const POST_PLAN_M: [[f64; 2]; 3] = [[0.05, -0.04], [0.05, 0.04], [-0.05, 0.0]];
 const POST_UP_M: [f64; 2] = [-1.0, 0.71];
-/// A delineator: its middle in from the edge, its plan about it (in, along), and its foot, black band and top. The piece
-/// shader draws a triangle between the band's two offsets black (`plan/piece.wgsl`).
+/// A delineator: its middle in from the edge, its plan about it (in, along), and its foot, black band and top. The
+/// piece shader draws a triangle between the band's two offsets black (`plan/piece.wgsl`).
 const DELI_IN_M: f64 = 0.10;
 const DELI_PLAN_M: [[f64; 2]; 4] = [[-0.05, -0.06], [0.05, -0.06], [0.05, 0.06], [-0.05, 0.06]];
 const DELI_UP_M: [f64; 4] = [-0.5, 0.74, 0.9, 1.0];
@@ -100,7 +103,8 @@ enum End {
 
 /// The row of the reach table: how far past the cell a ring's share reads along its chain (the next ring, a stub, the
 /// lead and ramp, a gap that joins, and a level change's need past that gap), then about a ring of that need (its
-/// paved edge's offset, then the town test, which reaches farther than a junction's corner or another way's band).
+/// paved edge's offset, then the town test, which reaches farther than a junction's corner, another way's band or the
+/// drop's point out).
 pub fn reach(sections: &Sections) -> Reach {
     let edge = (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.widen_m + c.shoulder_m).fold(0.0, f64::max);
     let terms = [
@@ -186,11 +190,19 @@ fn bbox(pts: &[[f64; 2]]) -> [f64; 4] {
     pts.iter().fold([hi, hi, lo, lo], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
 }
 
-/// What the rules read of the features and the graph: the buildings' boxes, the mapped guard rails, and, at the first
-/// ring that asks, the chords of the ground ways but water with the widest paved half-width of them.
+/// A water area's copy in one tile: the tile's square and the edges of its rings by row (`row_of`).
+type Water = ([f64; 4], BTreeMap<i64, Vec<[[f64; 2]; 2]>>);
+
+fn row_of(y: f64) -> i64 {
+    libm::floor(y / BUCKET) as i64
+}
+
+/// What the rules read of the features and the graph: the buildings' boxes, the mapped guard rails, the water areas,
+/// and, at the first ring that asks, the chords of the ground ways but water with the widest paved half-width of them.
 struct Context<'a> {
     buildings: (Grid, Vec<[f64; 4]>),
     rails: (Grid, Vec<[[f64; 2]; 2]>),
+    water: Vec<Water>,
     ways: OnceCell<(Grid, Vec<Chord>, f64)>,
     g: &'a WayGraph,
     half: &'a [Option<Info>],
@@ -201,10 +213,23 @@ impl<'a> Context<'a> {
     fn new(input: &'a CellInput, g: &'a WayGraph, half: &'a [Option<Info>]) -> Context<'a> {
         let o = input.key.origin();
         let local = |p: &GlobalPoint| [(p.x - o.x) as f64, (p.y - o.y) as f64];
-        let (mut boxes, mut segments) = (Vec::new(), Vec::new());
+        let (mut boxes, mut segments, mut water) = (Vec::new(), Vec::new(), Vec::<Water>::new());
         for f in &input.features {
             for part in &f.parts {
                 let pts: Vec<[f64; 2]> = part.points.iter().map(local).collect();
+                if WATER.contains(&f.kind.as_str()) && f.geometry == Geometry::Area {
+                    // A polygon's outer ring comes first, then its holes.
+                    if part.outer {
+                        let [x0, y0, x1, y1] = tile_square(part.tile);
+                        water.push(([x0 - o.x, y0 - o.y, x1 - o.x, y1 - o.y].map(|v| v as f64), BTreeMap::new()));
+                    }
+                    let rows = &mut water.last_mut().expect("an outer ring first").1;
+                    for (&a, &b) in pts.iter().zip(pts.iter().cycle().skip(1)) {
+                        for row in row_of(a[1].min(b[1]))..=row_of(a[1].max(b[1])) {
+                            rows.entry(row).or_default().push([a, b]);
+                        }
+                    }
+                }
                 if f.kind == "building" && f.geometry == Geometry::Area && part.outer {
                     boxes.push(bbox(&pts));
                 }
@@ -215,7 +240,21 @@ impl<'a> Context<'a> {
         }
         let buildings = (Grid::of(4.0 * BUCKET, &boxes), boxes);
         let rails = (Grid::of(BUCKET, &segments.iter().map(|s| bbox(s)).collect::<Vec<_>>()), segments);
-        Context { buildings, rails, ways: OnceCell::new(), g, half, input }
+        Context { buildings, rails, water, ways: OnceCell::new(), g, half, input }
+    }
+
+    /// Whether q lies in area water, by each polygon's copy in the tile that owns q: inside its buffered square, a
+    /// tile's copy is the polygon itself.
+    fn water(&self, q: [f64; 2]) -> bool {
+        let row = row_of(q[1]);
+        let crosses = |&[a, b]: &[[f64; 2]; 2]| {
+            (a[1] > q[1]) != (b[1] > q[1]) && q[0] < a[0] + (q[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+        };
+        self.water.iter().any(|([x0, y0, x1, y1], rows)| {
+            (*x0..*x1).contains(&q[0])
+                && (*y0..*y1).contains(&q[1])
+                && rows.get(&row).is_some_and(|edges| edges.iter().filter(|e| crosses(e)).count() % 2 == 1)
+        })
     }
 
     /// Whether q lies in the paved band of a ground way that the chain `own` does not hold.
@@ -613,8 +652,8 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                     // The bank lifts the way's left: this side is its left where it is the chain's left along the way.
                     let (p, e) = (&pts[i], rings[i].3);
                     let z = p.z + p.bank * side * p.dir * e;
-                    let t = ctx.terrain(add(rings[i].0, rings[i].1, DROP_OUT_M / mpu[i]));
-                    rings[i].2 && t.is_some_and(|t| z - t > DROP_M)
+                    let out = add(rings[i].0, rings[i].1, DROP_OUT_M / mpu[i]);
+                    rings[i].2 && (ctx.terrain(out).is_some_and(|t| z - t > DROP_M) || ctx.water(out))
                 });
                 // A stop changes a share only within `JOIN_M` of a ring where a rail may stand, so the town test runs
                 // only there.
@@ -907,6 +946,33 @@ mod tests {
         let m_back: Vec<f64> = m.iter().rev().map(|x| 27.0 - x).collect();
         forward.reverse();
         assert_eq!(forward, shares(&m_back, &back(&need), &back(&stops), [End::Open, End::Flush]).0);
+    }
+
+    #[test]
+    fn water_beside_a_level_road_needs_a_rail_on_its_side() {
+        use crate::faces::tests::{at, cell, input_of, main_road, plane};
+        use crate::tile::{Feature, Part};
+        let mut input = input_of(cell(), &[main_road(&[[-150.0, 0.0], [150.0, 0.0]])]);
+        input.terrain = plane(cell(), &|_, _| 500.0);
+        let rails = |input: &CellInput| {
+            let g = crate::graph::build(cell(), input, &Rules::embedded().sections);
+            let e = place(&g, input, Rules::embedded());
+            e.rails.iter().flatten().filter(|r| r.share == 1.0).map(|r| r.out[1].signum()).collect::<Vec<f64>>()
+        };
+        assert!(rails(&input).is_empty(), "no drop, no water");
+        // A lake from 5 m south of the road's middle: the tertiary's edge lies 3.4 m out, its point 4 m past that.
+        let points: Vec<_> = [[-60.0, 5.0], [60.0, 5.0], [60.0, 80.0], [-60.0, 80.0]].map(at).to_vec();
+        let tile = (cell().feature_tiles().into_iter())
+            .find(|&t| {
+                let [x0, y0, x1, y1] = tile_square(t);
+                (x0..x1).contains(&at([0.0, 7.4]).x) && (y0..y1).contains(&at([0.0, 7.4]).y)
+            })
+            .expect("a tile owns the lake's shore");
+        let part = Part { outer: true, tile, own: vec![true; 4], points, heights: None, plan: None };
+        let (tags, parts) = (Default::default(), vec![part]);
+        input.features.push(Feature { index: 9, kind: "lake".into(), tags, geometry: Geometry::Area, parts });
+        let sides = rails(&input);
+        assert!(!sides.is_empty() && sides.iter().all(|&s| s > 0.0), "a rail on the lake's side only: {sides:?}");
     }
 
     #[test]
