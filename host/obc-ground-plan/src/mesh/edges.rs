@@ -710,32 +710,28 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                     if run.iter().any(|r| near_cell(r.edge, r.mpu)) {
                         out.rails.push(run);
                         // A post at each `POST_M` of its way's stroke metres between two rings of one way, where
-                        // the beam stands: its point and normal out of the road are theirs, mixed alike in either
-                        // direction of the chain.
-                        let posts_on =
-                            |k: usize| k < hi && pts[k].way == pts[k + 1].way && pts[k].along != pts[k + 1].along;
+                        // the beam stands: its point and normal out of the road are theirs, mixed from the ring of
+                        // fewer stroke metres, and a chord holds the marks from its first to before its last, so
+                        // either direction of the chain gives the same posts.
+                        let posts_on = |k: usize| {
+                            (lo..hi).contains(&k) && pts[k].way == pts[k + 1].way && pts[k].along != pts[k + 1].along
+                        };
                         let mix = |p: [f64; 2], q: [f64; 2], u: f64| {
                             [p[0] * (1.0 - u) + q[0] * u, p[1] * (1.0 - u) + q[1] * u]
                         };
                         for k in (lo..hi).filter(|&k| posts_on(k)) {
-                            let (a, b) = (&pts[k], &pts[k + 1]);
-                            let (x, y) = (a.along.min(b.along), a.along.max(b.along));
-                            for mark in
-                                (libm::ceil(x / POST_M) as i64..).map(|v| v as f64 * POST_M).take_while(|&v| v <= y)
-                            {
-                                let u = (mark - a.along) / (b.along - a.along);
-                                let share = share[k] * (1.0 - u) + share[k + 1] * u;
-                                // A post on a ring stands once: from the chord that starts there, if any.
-                                if share > 0.0 && (u < 1.0 || !posts_on(k + 1)) {
-                                    let (edge, nrm) =
-                                        (mix(rings[k].0, rings[k + 1].0, u), mix(rings[k].1, rings[k + 1].1, u));
-                                    out.posts.push(Ring {
-                                        edge,
-                                        out: nrm,
-                                        along: [-nrm[1], nrm[0]],
-                                        mpu: mpu_at(edge),
-                                        share,
-                                    });
+                            let (a, b) = if pts[k].along < pts[k + 1].along { (k, k + 1) } else { (k + 1, k) };
+                            let (x, y) = (pts[a].along, pts[b].along);
+                            // The chord past b, which holds b's mark where it runs on along the way.
+                            let past = if b > a { b } else { b.wrapping_sub(1) };
+                            let marks = (libm::ceil(x / POST_M) as i64..).map(|v| v as f64 * POST_M);
+                            for mark in marks.take_while(|&v| v < y || (v == y && !posts_on(past))) {
+                                let u = (mark - x) / (y - x);
+                                let share = share[a] * (1.0 - u) + share[b] * u;
+                                if share > 0.0 {
+                                    let (edge, nrm) = (mix(rings[a].0, rings[b].0, u), mix(rings[a].1, rings[b].1, u));
+                                    let along = [-nrm[1], nrm[0]];
+                                    out.posts.push(Ring { edge, out: nrm, along, mpu: mpu_at(edge), share });
                                 }
                             }
                         }
