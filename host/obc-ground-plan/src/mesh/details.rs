@@ -229,6 +229,12 @@ struct Span {
     along: [f64; 2],
 }
 
+impl Span {
+    fn lo(&self) -> f64 {
+        self.along[0].min(self.along[1])
+    }
+}
+
 /// A track's look: narrow, timber sleepers, a rack, a cable, its finish code.
 #[derive(Clone, Copy)]
 struct Gauge {
@@ -293,7 +299,7 @@ impl Cx<'_> {
     }
 
     fn ring(&mut self, at: &At, label: u32, offset: f64) -> u32 {
-        let p = at.p.map(|v| v as i32);
+        let p = at.p.map(|v| libm::round(v) as i32);
         self.out.rings.push(Ring { p, label, offset, tangent: at.t, along: at.along });
         self.out.rings.len() as u32 - 1
     }
@@ -357,7 +363,7 @@ impl Cx<'_> {
     }
 
     /// The runs of a line (its points in order): per run its rings, a span item between each two and a cap at each
-    /// end off the cell line. Returns its standing spans on a bed.
+    /// end off the cell line. Returns its standing spans on a bed by their least stroke metres.
     fn line(&mut self, pts: &[At], kind: u32, flags: u32, code: u32, key: u32) -> Vec<Span> {
         let mut st: Vec<Station> = Vec::new();
         for w in pts.windows(2) {
@@ -398,14 +404,18 @@ impl Cx<'_> {
             }
             i = j;
         }
+        spans.sort_by(|x, y| x.lo().total_cmp(&y.lo()));
         spans
     }
 
     /// The seat at q of a span of `spans` about stroke metres m, within `SEAT_M`: its ring and share.
     fn seat(&self, spans: &[Span], q: V, m: f64) -> Option<(u32, f64)> {
-        let near = |s: &&Span| s.along[0].min(s.along[1]) <= m + 0.5 && s.along[0].max(s.along[1]) >= m - 0.5;
+        // The spans by their least stroke metres; a span is at most `RING_M` long.
+        let (from, to) =
+            (spans.partition_point(|s| s.lo() < m - 1.5 - RING_M), spans.partition_point(|s| s.lo() <= m + 0.5));
+        let near = |s: &&Span| s.along[0].max(s.along[1]) >= m - 0.5;
         let d = |s: &Span| to_segment(q, s.a, s.b);
-        let best = spans.iter().filter(near).min_by(|x, y| d(x).total_cmp(&d(y)))?;
+        let best = spans[from..to].iter().filter(near).min_by(|x, y| d(x).total_cmp(&d(y)))?;
         let v = [best.b[0] - best.a[0], best.b[1] - best.a[1]];
         let t = ((q[0] - best.a[0]) * v[0] + (q[1] - best.a[1]) * v[1]) / (v[0] * v[0] + v[1] * v[1]).max(1e-12);
         (d(best) * self.mpu(q) <= SEAT_M).then_some((best.ring, t.clamp(0.0, 1.0)))
@@ -458,11 +468,12 @@ impl Cx<'_> {
         }
     }
 
-    /// A point of a way offset `off_m` to its left, rounded.
+    /// A point of a way offset `off_m` to its left: the way's point and the offset each rounded, so two cells give it
+    /// alike (a post point between samples is the curve's, not a whole unit).
     fn offset(&self, p: &Point, off_m: f64) -> At {
-        let n = left(p.t);
-        let k = off_m / self.mpu(p.pos);
-        At { p: [p.pos[0] + libm::round(n[0] * k), p.pos[1] + libm::round(n[1] * k)], t: p.t, along: p.along, z: p.z }
+        let (n, k) = (left(p.t), off_m / self.mpu(p.pos));
+        let q = [0, 1].map(|i| libm::round(p.pos[i]) + libm::round(n[i] * k));
+        At { p: q, t: p.t, along: p.along, z: p.z }
     }
 
     /// A flight's treads per span of the graph (`RISE_M`): a box between two rings on its middle line whose offsets

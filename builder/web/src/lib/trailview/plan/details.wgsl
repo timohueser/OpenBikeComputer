@@ -102,8 +102,8 @@ fn d_seat(word: u32) -> DSeat {
     return DSeat(mix(a.v.s, b.v.s, f), mix(a.v.h, b.v.h, f), d / len, (b.v.h - a.v.h) / len);
 }
 
-// A box's corner c (bit 2 its left side, bit 1 its front end, bit 0 its top) from its ends' places, heights and
-// frames: `p` and `a` by side and end (side << 1 | end), `lo` and `hi` and `y` by end.
+// A box's corner c (bit 2 its left side, bit 1 its front end, bit 0 its top) from its plan's corners (2 · side + end):
+// their places, foot and top heights and frames.
 struct DBox {
     p: array<vec2f, 4>,
     a: array<f32, 4>,
@@ -217,11 +217,12 @@ fn d_vertex(index: u32, item: u32) -> DVertex {
                 let r = d_ring((w0 & 0xffffu) + e);
                 for (var side = 0u; side < 2u; side++) {
                     let a = select(-half, half, side == 1u);
-                    b.p[side << 1u | e] = r.v.s + d_left(r.t) * a;
-                    b.a[side << 1u | e] = a;
-                    b.lo[side << 1u | e] = r.v.h - r.offset - D_TREAD_SINK_M;
-                    b.hi[side << 1u | e] = r.v.h;
-                    b.y[side << 1u | e] = r.along;
+                    let k = 2u * side + e;
+                    b.p[k] = r.v.s + d_left(r.t) * a;
+                    b.a[k] = a;
+                    b.lo[k] = r.v.h - r.offset - D_TREAD_SINK_M;
+                    b.hi[k] = r.v.h;
+                    b.y[k] = r.along;
                 }
             }
             let face = index / 6u;
