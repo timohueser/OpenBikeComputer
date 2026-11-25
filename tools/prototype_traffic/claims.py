@@ -51,3 +51,20 @@ for name, (o, p) in sets.items():
         rows.append(r)
 pd.set_option("display.width", 300); pd.set_option("display.max_columns", 30)
 print(pd.DataFrame(rows).to_string(index=False))
+
+# Claims that need no counts in the country: the quietest and busiest third by predicted value, within each class.
+rows = []
+for name, (o, p) in sets.items():
+    if "one constant" in name:
+        continue  # a constant does not change the order
+    for cls_name, sel in [(n, (o.cls == c).values) for c, n in CLASSES.items()]:
+        if sel.sum() < 50:
+            continue
+        a, q = o.aadt.values[sel], p[sel]
+        ta, tq = np.searchsorted(np.quantile(a, [1 / 3, 2 / 3]), a, "right"), np.searchsorted(np.quantile(q, [1 / 3, 2 / 3]), q, "right")
+        rows.append({"set": name, "class": cls_name, "points": sel.sum(),
+                     "said quietest third: truly quietest": f"{100 * np.mean(ta[tq == 0] == 0):.0f} %",
+                     "said quietest third: truly busiest": f"{100 * np.mean(ta[tq == 0] == 2):.0f} %",
+                     "said busiest third: truly busiest": f"{100 * np.mean(ta[tq == 2] == 2):.0f} %",
+                     "said busiest third: truly quietest": f"{100 * np.mean(ta[tq == 2] == 0):.0f} %"})
+print(pd.DataFrame(rows).to_string(index=False))
