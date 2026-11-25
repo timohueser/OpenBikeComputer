@@ -7,7 +7,7 @@ The heights come from the planner release's Terrarium tiles at zoom 12 (`--terra
 Copernicus GLO-30 tiles, downloaded into --dem-dir. `--slope-out` also writes the slope angle of the terrain as one
 image in Web Mercator, with its corners in FILE.png.json.
 """
-import argparse, gzip, json, math, os, subprocess, sys, urllib.request
+import argparse, gzip, json, math, os, re, subprocess, sys, urllib.request
 import numpy as np
 import osmium
 import rasterio
@@ -29,7 +29,9 @@ SURFACE = {**dict.fromkeys(["asphalt", "paved", "concrete", "concrete:plates", "
 SAC = {"strolling": 0, "hiking": 1, "mountain_hiking": 2, "demanding_mountain_hiking": 3, "alpine_hiking": 4,
        "demanding_alpine_hiking": 5, "difficult_alpine_hiking": 6}
 R = 6378137.0
-SLOPE_BREAKS = [3, 6, 9, 12]  # percent: classes 0..4
+# The grade scale of the planner's elevation profile: `gradeThresholds` in grade-data.ts.
+SLOPE_BREAKS = [float(v) for v in re.search(r"gradeThresholds = \[([^\]]*)\]", open(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "../src/lib/planner/grade-data.ts")).read()).group(1).split(",")]
 STEP_M, WINDOW_M = 25.0, 100.0
 
 
@@ -224,7 +226,13 @@ def main():
                 continue
             for slope, line in parts:
                 features.append(({**props, "slope": slope}, line))
-    print(f"{len(seen)} ways, {len(features)} stretches", file=sys.stderr)
+    print(f"{len(seen)} ways, {len(features)} stretches; slope classes from {SLOPE_BREAKS}", file=sys.stderr)
+    for kind in (False, True):
+        length = np.zeros(len(SLOPE_BREAKS) + 1)
+        for props, line in features:
+            if props["path"] == kind:
+                length[props["slope"]] += sum(metres(a, b) for a, b in zip(line, line[1:]))
+        print(("paths and tracks" if kind else "roads") + ": " + ", ".join(f"{v / length.sum():.0%}" for v in length), file=sys.stderr)
     write_tiles(features, bbox, args.out)
 
 

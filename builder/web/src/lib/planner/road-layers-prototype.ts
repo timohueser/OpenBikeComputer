@@ -1,5 +1,6 @@
 import type { ExpressionSpecification, Map } from 'maplibre-gl';
 import type { BikeType } from './riding-profiles';
+import { gradeBands, gradeThresholds } from './grade-data';
 
 /** Prototype: road layers from the file of `road-layers-prototype/build-data.py`, served next to the planner page. */
 export type RoadLayer = 'steepness' | 'surface' | 'grade';
@@ -9,14 +10,9 @@ export const roadLayers: { id: RoadLayer; label: string }[] = [
 type Theme = 'light' | 'dark';
 type Class = { label: string; light: string; dark: string; faint?: boolean };
 
-// Climb-profile colours; the lightness falls from flat to steep in both themes.
-const steepness: Class[] = [
-    { label: '< 3 %', light: '#b2d6a0', dark: '#a2d192' },
-    { label: '3–6 %', light: '#e0b21c', dark: '#d4a626' },
-    { label: '6–9 %', light: '#e2781a', dark: '#de7426' },
-    { label: '9–12 %', light: '#c8321f', dark: '#d8402e' },
-    { label: '> 12 %', light: '#7a1018', dark: '#b02a32' },
-];
+// The flat band and the climb bands of the elevation profile: the map has no direction of travel.
+const steepness: Class[] = gradeBands.slice(gradeThresholds.length, 2 * gradeThresholds.length + 1)
+    .map(band => ({ label: band.label, light: band.color, dark: band.dark }));
 // The router's surface classes, in order of `Surface` in planner/router/src/model.rs.
 const surface: Class[] = [
     { label: 'Unknown', light: '#9a9a9a', dark: '#777777', faint: true },
