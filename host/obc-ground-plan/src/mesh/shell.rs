@@ -1,7 +1,8 @@
 //! The meshes of the storeys other than 0: each storey's sheet as a constrained triangulation of its faces alone
 //! (no ground ring, no strip, no grid point), and the shell about it, each part a closed solid of a real thickness:
 //! the underside (the top again, turned over, at the slab's depth, with a riser where two depths meet), the edge
-//! faces on the free outline, a parapet or a railing on it, and the piers. A corner is a point with a label of the
+//! faces on the free outline, a parapet or a railing on it, and the piers; and storey 0's guard rails and delineators
+//! (`mesh::edges`). A corner is a point with a label of the
 //! cell's block and a height offset in metres: its height is the label's height there plus the offset, or where the
 //! corner has a cap (a second label and offset), the lower of the two.
 //!
@@ -39,9 +40,11 @@ use crate::frame::{metres_per_unit_at, CellKey, CELL_UNITS};
 use crate::graph::Structures;
 
 /// "OBS" and the layout's version: with the bores, the caps.
-pub const MAGIC: u32 = if BORES { 0x4f42_5302 } else { 0x4f42_5301 };
-/// The parts of a storey's mesh, in the order of their triangles.
-pub const PARTS: [&str; 7] = ["top", "underside", "edge", "parapet", "railing", "post", "pier"];
+pub const MAGIC: u32 = if BORES { 0x4f42_5304 } else { 0x4f42_5303 };
+/// The parts of a storey's mesh, in the order of their triangles: the shells, then the edge features of storey 0
+/// (`mesh::edges`), one part per look.
+pub const PARTS: [&str; 11] =
+    ["top", "underside", "edge", "parapet", "railing", "post", "pier", "rail", "delineator", "band", "reflector"];
 const BORES: bool = cfg!(feature = "bores");
 const TOP: usize = 0;
 const UNDER: usize = 1;
@@ -50,6 +53,10 @@ const PARAPET: usize = 3;
 const RAILING: usize = 4;
 const POST: usize = 5;
 const PIER: usize = 6;
+pub(super) const RAIL: usize = 7;
+pub(super) const DELINEATOR: usize = 8;
+pub(super) const BAND: usize = 9;
+pub(super) const REFLECTOR: usize = 10;
 pub const HEAD: usize = 9 + PARTS.len() + BORES as usize;
 
 /// A parapet: its width and its height over the deck (the crossing block's thickness table).
@@ -58,7 +65,7 @@ const PARAPET_M: [f64; 2] = [0.35, 1.0];
 const RAIL_M: f64 = 1.05;
 const BAR_M: f64 = 0.08;
 
-type P = [i32; 2];
+pub(super) type P = [i32; 2];
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShellStats {
@@ -153,7 +160,7 @@ impl StoreyMesh {
 
 /// The corners and the items of the mesh as it grows.
 #[derive(Default)]
-struct Build {
+pub(super) struct Build {
     /// Each corner as it is asked for, its key (`corner_key`) and its offset's bits; equal ones are one corner.
     keys: Vec<(u64, u32)>,
     tris: [Vec<[u32; 3]>; PARTS.len()],
@@ -183,7 +190,7 @@ fn corner_key(p: P, label: u32) -> u64 {
 impl Build {
     // One copy: the shell calls it from many places.
     #[inline(never)]
-    fn corner(&mut self, p: P, label: u32, offset: f64) -> u32 {
+    pub(super) fn corner(&mut self, p: P, label: u32, offset: f64) -> u32 {
         let label = self.relabelled(p, label).unwrap_or(label);
         self.keys.push((corner_key(p, label), (offset as f32).to_bits()));
         self.keys.len() as u32 - 1
@@ -203,8 +210,13 @@ impl Build {
         self.caps.push(((corner_key(p, label), (offset as f32).to_bits()), (cap, (cap_off as f32).to_bits())));
     }
 
+    /// A triangle with its corners counter-clockwise seen from outside.
+    pub(super) fn tri(&mut self, part: usize, c: [u32; 3]) {
+        self.tris[part].push(c);
+    }
+
     /// A quad with its corners counter-clockwise seen from outside.
-    fn quad(&mut self, part: usize, c: [u32; 4]) {
+    pub(super) fn quad(&mut self, part: usize, c: [u32; 4]) {
         self.tris[part].extend([[c[0], c[1], c[2]], [c[0], c[2], c[3]]]);
     }
 }
@@ -286,7 +298,7 @@ fn wall(
 
 /// A closed prism over a convex ring of the cell (cut by the cell square): its corners at each point take the top's
 /// label and offset and the foot's. Its walls on a cell line stay open.
-fn prism(b: &mut Build, part: usize, ring: &[P], top: (u32, f64), foot: (u32, f64)) {
+pub(super) fn prism(b: &mut Build, part: usize, ring: &[P], top: (u32, f64), foot: (u32, f64)) {
     let n = ring.len();
     if n < 3 || area2(ring) == 0 {
         return;
@@ -313,7 +325,7 @@ fn prism(b: &mut Build, part: usize, ring: &[P], top: (u32, f64), foot: (u32, f6
 
 /// A convex ring about the point `o`, given as offsets from it, cut by the cell square, its points rounded to the
 /// frame unit. The cut is reckoned from `o`, so two cells that share the ring cut it alike on their shared line.
-fn clip(o: P, ring: &[[f64; 2]]) -> Vec<P> {
+pub(super) fn clip(o: P, ring: &[[f64; 2]]) -> Vec<P> {
     let c = CELL_UNITS as f64;
     let mut pts = ring.to_vec();
     let lines = [(0, -f64::from(o[0]), false), (0, c - f64::from(o[0]), true), (1, -f64::from(o[1]), false)];
@@ -785,6 +797,7 @@ pub fn mesh_storeys_with(
         bores(&mut b, m0, &storeys.plans[k], &all_labels[k], storeys, &lines, &mut open, &mut stats);
     }
     piers(&mut b, storeys, words, &lines, &all_labels, structures, &mut stats);
+    super::edges::solids(&mut b, &storeys.edges, words);
     // The corners by point (y, then x), then label and offset, each once; and the items in runs: each part and each
     // kind of slot apart.
     let mut unique = b.keys.clone();
@@ -1097,7 +1110,7 @@ fn piers(
 }
 
 /// The faults of a storey mesh's closure, per solid: the slab (top, underside, edge faces and slots; a bore's floor,
-/// roof and walls), the parapets, the railings' rails, their posts and the piers. In each, every edge between two corners at two points is the edge of exactly one
+/// roof and walls), the parapets, the railings' rails, their posts, the piers and the guard rails. In each, every edge between two corners at two points is the edge of exactly one
 /// triangle in each direction (a closed, consistently turned surface), except on a cell line and on an open piece
 /// (`StoreyMesh::open`), where storey 0 or the neighbour goes on. Two corners at one point (a seam between two
 /// labels, or a vertical edge) span no area seen from above and count for nothing.
@@ -1113,7 +1126,7 @@ pub fn closure(m: &StoreyMesh) -> Vec<String> {
         let two = if (k as u32) < m.top_slots { [[ap, aq, bq], [ap, bq, bp]] } else { [[ap, bq, aq], [ap, bp, bq]] };
         solids[0].1.extend(two);
     }
-    for k in [PARAPET, RAILING, POST, PIER] {
+    for k in [PARAPET, RAILING, POST, PIER, RAIL] {
         solids.push((PARTS[k], slab(k)));
     }
     for (name, tris) in solids {

@@ -73,6 +73,7 @@
 
 pub mod cdt;
 pub mod check;
+pub mod edges;
 pub mod params;
 pub mod points;
 pub mod region;

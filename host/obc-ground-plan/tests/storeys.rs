@@ -350,7 +350,10 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         assert_eq!(without.far, with.far, "{key:?}: the far block");
         if with.storeys.plans.is_empty() {
             assert_eq!(without.records, with.records, "{key:?}: a cell with no deck has the records of storey 0 alone");
-            continue;
+            // Storey 0's guard rails and delineators mesh with the storeys.
+            if with.storeys.edges.rails.is_empty() && with.storeys.edges.delineators.is_empty() {
+                continue;
+            }
         }
         // Storey 0 reads the same label and height at a grid of points.
         let c = f64::from(CELL_UNITS as i32);

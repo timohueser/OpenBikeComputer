@@ -22,6 +22,11 @@ struct Piece {
     // A storey mesh's first triangle of its railings and posts, and of its piers (mesh/shell.rs's PARTS).
     railings: u32,
     piers: u32,
+    // The first triangle of storey 0's guard rails, of the delineators' bodies, their bands and their reflectors.
+    rails: u32,
+    delineators: u32,
+    bands: u32,
+    reflectors: u32,
 }
 
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
@@ -347,6 +352,10 @@ fn storey_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
         let n = normalize(cross(vec3f(b.s - a.s, b.h - a.h), vec3f(c.s - a.s, c.h - a.h)) + vec3f(0.0, 0.0, 1e-9));
         var mat = select(build, select(MAT_STEEL, MAT_WOOD, build == MAT_TIMBER), i >= params.railings);
         mat = select(mat, MAT_CAP, i >= params.piers);
+        mat = select(mat, MAT_RAIL, i >= params.rails);
+        mat = select(mat, MAT_DELI, i >= params.delineators);
+        mat = select(mat, MAT_DELI_BAND, i >= params.bands);
+        mat = select(mat, MAT_REFLECTOR, i >= params.reflectors);
         let word = mat | (480u << HALF_SHIFT);
         out = piece_out(v, word, CornerPlace(vec2f(v.h, half_of(word)), v.s.x + v.s.y), n);
     }

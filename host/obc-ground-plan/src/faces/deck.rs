@@ -127,6 +127,8 @@ pub struct Storeys {
     pub portals: Vec<Portal>,
     /// The floors in front of the portal lines: faces of storey-0 labels under a way on top (`records::Under`).
     pub wedges: Option<super::FacePlan>,
+    /// Storey 0's guard rails and delineators, which the shell meshes with the storeys (`mesh::edges`).
+    pub edges: crate::mesh::edges::Edges,
 }
 
 /// A piece of storey 0's mesh on a portal line, from a to b, with the labels of its two faces: the way that ends there
