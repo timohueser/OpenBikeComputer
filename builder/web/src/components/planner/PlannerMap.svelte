@@ -17,6 +17,8 @@
     import { coordinateAt, kilometres, nearestOnScreen, nearestProgress, routeSlice } from "../../lib/planner/geo";
     import type { Coordinate, MapPoint, MapSegment, MapTown } from "../../lib/planner/map-types";
     import { grownHull, span } from "../../lib/planner/town-area";
+    import { syncRoadLayer, type RoadLayer } from "../../lib/planner/road-layers-prototype";
+    import type { BikeType } from "../../lib/planner/riding-profiles";
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection, type RouteHint } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
     import { nightView } from "../../lib/planner/view-change";
@@ -30,7 +32,7 @@
         segments = [], gaps = [], coordinates = [], highlightedLines = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
-        placeKinds = [], highlightedKind = null, mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
+        placeKinds = [], highlightedKind = null, mapOverlays = { network: 'none', access: false }, roadLayer = '', bike = 'touring', accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
         lines = [], onPick = null, part = null, week = null, lit = null, towns = [], litStop = null,
         onStopHover, onStopOpen, onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onMoveStart, onRouteHover, onDayClick, popup,
     }: {
@@ -53,6 +55,8 @@
         /** The kinds of places that the map draws, and the one of them that it highlights. */
         placeKinds?: PlaceCategory[]; highlightedKind?: PlaceCategory | null;
         mapOverlays?: OverlayOptions;
+        roadLayer?: RoadLayer | '';
+        bike?: BikeType;
         /** The region's data layers, the shown one if any, the layer date, and the shown layer's labels beside the overnight stops. */
         dataLayer?: { layers: DataLayer[]; shown?: DataLayer; date: string; notes?: { coordinate: Coordinate; text: string }[] };
         /** Height of a bar over the bottom of the map that fits and callouts keep clear of. */
@@ -709,6 +713,7 @@
     $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { void showRoute; if (ready) syncRouteVisibility(); });
+    $effect(() => { const layer = roadLayer, look = theme, profile = bike; if (ready && map) syncRoadLayer(map, layer, look, profile); });
     $effect(() => { void lines; if (ready) (map?.getSource("lines") as GeoJSONSource | undefined)?.setData(linesData()); });
     function syncDataLayer() {
         if (!map || !dataLayer) return;

@@ -1,0 +1,90 @@
+import type { ExpressionSpecification, Map } from 'maplibre-gl';
+import type { BikeType } from './riding-profiles';
+
+/** Prototype: road layers from the file of `road-layers-prototype/build-data.py`, served next to the planner page. */
+export type RoadLayer = 'steepness' | 'surface' | 'grade';
+export const roadLayers: { id: RoadLayer; label: string }[] = [
+    { id: 'steepness', label: 'Steepness' }, { id: 'surface', label: 'Surface' }, { id: 'grade', label: 'Trail grade' },
+];
+type Theme = 'light' | 'dark';
+type Class = { label: string; light: string; dark: string; faint?: boolean };
+
+const steepness: Class[] = [
+    { label: '< 3 %', light: '#7ad151', dark: '#2c7a8e' },
+    { label: '3–6 %', light: '#22a884', dark: '#29af7f' },
+    { label: '6–9 %', light: '#2a788e', dark: '#7ad151' },
+    { label: '9–12 %', light: '#414487', dark: '#d2e21b' },
+    { label: '> 12 %', light: '#440154', dark: '#fff7a8' },
+];
+// The router's surface classes, in order of `Surface` in planner/router/src/model.rs.
+const surface: Class[] = [
+    { label: 'Unknown', light: '#9a9a9a', dark: '#777777', faint: true },
+    { label: 'Paved', light: '#0072b2', dark: '#4aa6e8' },
+    { label: 'Compacted', light: '#56b4e9', dark: '#9ad3f5' },
+    { label: 'Gravel', light: '#e69f00', dark: '#f0b43a' },
+    { label: 'Dirt', light: '#d55e00', dark: '#f07a2a' },
+    { label: 'Rough', light: '#cc79a7', dark: '#e59bc6' },
+];
+const ungraded: Class = { label: 'No grade', light: '#9a9a9a', dark: '#777777', faint: true };
+// Swiss hiking signs: yellow, then white-red-white, then white-blue-white. `strolling` (0) draws as T1.
+const sac: Class[] = [
+    { label: 'T1', light: '#e0b000', dark: '#f2cf3a' },
+    { label: 'T2', light: '#e2541c', dark: '#f27a4a' },
+    { label: 'T3', light: '#a3121c', dark: '#e0404a' },
+    { label: 'T4', light: '#4f8fe0', dark: '#7fb2f0' },
+    { label: 'T5', light: '#1f4ea8', dark: '#4a7ee0' },
+    { label: 'T6', light: '#14214f', dark: '#c8d6ff' },
+];
+// Ski-piste colours, as Trailforks draws them; S5 and S6 share the last class.
+const mtb: Class[] = [
+    { label: 'S0', light: '#3a9a3e', dark: '#5cc760' },
+    { label: 'S1', light: '#2166ac', dark: '#5a9ae0' },
+    { label: 'S2', light: '#c62828', dark: '#ef5350' },
+    { label: 'S3', light: '#111111', dark: '#f2f2f2' },
+    { label: 'S4', light: '#7b1fa2', dark: '#ce93d8' },
+    { label: 'S5+', light: '#f08c00', dark: '#ffb340' },
+];
+
+/** The hiking grade for a walk, the MTB grade on every bike. */
+const gradeKey = (bike: BikeType) => bike === 'hiking' ? 'sac' : 'mtb';
+
+function classes(layer: RoadLayer, bike: BikeType): { key: string; rows: Class[]; index: ExpressionSpecification } {
+    if (layer === 'steepness') return { key: 'slope', rows: steepness, index: ['get', 'slope'] };
+    if (layer === 'surface') return { key: 'surface', rows: surface, index: ['get', 'surface'] };
+    const key = gradeKey(bike);
+    const rows = key === 'sac' ? sac : mtb;
+    // Class 0 is "no grade"; a grade g is class 1 + g, clamped to the last row.
+    const index: ExpressionSpecification = ['case', ['has', key],
+        ['min', rows.length, ['+', 1, ['max', 0, ['-', ['get', key], key === 'sac' ? 1 : 0]]]], 0];
+    return { key, rows: [ungraded, ...rows], index };
+}
+
+export function roadLegend(layer: RoadLayer, theme: Theme, bike: BikeType) {
+    const { key, rows } = classes(layer, bike);
+    const title = layer === 'grade' ? (key === 'sac' ? 'Hiking grade (SAC)' : 'MTB grade (mtb:scale)') : '';
+    return { title, swatches: rows.map(row => ({ label: row.label, color: row[theme], faint: !!row.faint })) };
+}
+
+const source = 'road-layers-prototype', id = 'road-layer-prototype';
+
+/** Shows one road layer, or none, under the labels and the route lines. */
+export function syncRoadLayer(map: Map, layer: RoadLayer | '', theme: Theme, bike: BikeType) {
+    if (map.getLayer(id)) map.removeLayer(id);
+    if (!layer) return;
+    if (!map.getSource(source)) map.addSource(source, { type: 'vector', url: `pmtiles://${new URL('road-layers-prototype.pmtiles', location.href).href}` });
+    const { rows, index } = classes(layer, bike);
+    const color = ['match', index, ...rows.flatMap((row, i) => [i, row[theme]]), '#ff00ff'] as unknown as ExpressionSpecification;
+    const faintRows = rows.flatMap((row, i) => row.faint ? [i] : []);
+    const faint = (faintRows.length ? ['match', index, faintRows, true, false] : false) as unknown as ExpressionSpecification;
+    const width = (thin: number, full: number) => ['case', faint, thin, full] as unknown as ExpressionSpecification;
+    map.addLayer({
+        id, type: 'line', source, 'source-layer': 'roads', minzoom: 10,
+        // Roads have no trail grade: the grade layer draws only paths and tracks.
+        ...(layer === 'grade' ? { filter: ['==', ['get', 'path'], true] } : {}),
+        layout: { 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': index },
+        paint: {
+            'line-color': color,
+            'line-width': ['interpolate', ['linear'], ['zoom'], 10, width(0.4, 1), 12, width(0.8, 2.2), 16, width(1.4, 4.5)],
+        },
+    }, map.getStyle().layers.find(layer => layer.type === 'symbol')?.id);
+}

@@ -28,6 +28,7 @@
     import { routeColours } from '../../lib/planner/trailview-route';
     import { hasTrailView } from '../../lib/planner/trailview';
     import { dataLayers } from '../../lib/planner/layers/registry';
+    import type { RoadLayer } from '../../lib/planner/road-layers-prototype';
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import type { BikeType } from '../../lib/planner/riding-profiles';
@@ -149,6 +150,7 @@
     let showRoute = $state(true);
     // The map shows one data layer at a time; '' shows none.
     let shownLayerId = $state('');
+    let roadLayer = $state<RoadLayer | ''>('');
     const dataLayer = $derived(dataLayers.find(layer => layer.id === shownLayerId));
     let dateBarHeight = $state(0);
     // The layer date follows the trip start until the rider picks another day; it never changes the trip.
@@ -1313,7 +1315,7 @@
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
                     bind:this={map} {part} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedLines={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
+                    {theme} {hillshade} {contours} {mapOverlays} {roadLayer} {bike} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedLines={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     placeKinds={placeChoice.kinds} highlightedKind={placeChoice.highlight}
@@ -1363,7 +1365,7 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.number) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:hillshade bind:contours />
+                    <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:roadLayer {bike} bind:mapOverlays bind:hillshade bind:contours />
                     <PlaceKinds />
                     {#if hasTrailView(config)}
                         <div class="control-group">

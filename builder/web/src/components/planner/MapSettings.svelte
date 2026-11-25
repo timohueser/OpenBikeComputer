@@ -3,8 +3,12 @@
     import MapControlPanel from './MapControlPanel.svelte';
     import { bandShare, networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
     import type { DataLayer } from '../../lib/planner/layers/data-layer';
+    import { roadLayers, roadLegend, type RoadLayer } from '../../lib/planner/road-layers-prototype';
+    import type { BikeType } from '../../lib/planner/riding-profiles';
 
-    let { hillshade = $bindable(), contours = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), theme = 'light' }: {
+    let { hillshade = $bindable(), contours = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), roadLayer = $bindable(''), bike = 'touring', theme = 'light' }: {
+        roadLayer?: RoadLayer | '';
+        bike?: BikeType;
         /** The data layers of the region; the map shows one or none. */
         dataLayers?: DataLayer[];
         /** The id of the shown data layer, or '' for none. */
@@ -24,6 +28,7 @@
     const rows = $derived<{ label: string; tiles: Tile[] }[]>([
         { label: 'Routes, one at a time', tiles: networks.map(({ id, label, icon }) => ({ id, label, icon, on: mapOverlays.network === id,
             toggle: () => mapOverlays = { ...mapOverlays, network: mapOverlays.network === id ? 'none' : id } })) },
+        { label: 'Roads, one at a time', tiles: roadLayers.map(({ id, label }) => ({ id, label, on: roadLayer === id, toggle: () => roadLayer = roadLayer === id ? '' : id })) },
         { label: 'Conditions, one at a time', tiles: dataLayers.map(({ id, label }) => ({ id, label, on: shownLayer === id, toggle: () => shownLayer = shownLayer === id ? '' : id })) },
         { label: 'Map', tiles: [
             { id: 'relief', label: 'Relief', on: hillshade, toggle: () => hillshade = !hillshade },
@@ -55,6 +60,13 @@
                     {#each networkLevels as level (level.rank)}<li title={level.label}><span class="sample" style:color={theme === 'dark' ? level.dark : level.color}></span>{level.rank === 3 ? 'National / intl.' : level.rank === 0 ? 'Unspecified' : level.label}</li>{/each}
                 </ul>
             {/if}
+            {#if row.label.startsWith('Roads') && roadLayer}
+                {@const legend = roadLegend(roadLayer, theme, bike)}
+                <ul class="legend" aria-label="Road layer colors">
+                    {#if legend.title}<li class="title">{legend.title}</li>{/if}
+                    {#each legend.swatches as swatch (swatch.label)}<li><span class="road" class:faint={swatch.faint} style:background={swatch.color}></span>{swatch.label}</li>{/each}
+                </ul>
+            {/if}
         {/each}
     </div>
 </MapControlPanel>
@@ -83,6 +95,9 @@
     .sample { flex: 0 0 14px; height: 8px; border-radius: 2px; background: linear-gradient(currentColor 0 0) center / 100% 2px no-repeat, color-mix(in srgb, currentColor var(--band-share), var(--parchment)); }
     .legend { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8px; margin-top: -4px; font-size: 12px; color: var(--ink-soft); }
     .legend li { justify-content: flex-start; min-height: 22px; }
+    .legend .title { grid-column: 1 / -1; font-weight: 600; min-height: 18px; }
+    .road { flex: 0 0 14px; height: 4px; border-radius: 2px; }
+    .road.faint { height: 1.5px; }
     ul {
         margin: 0;
         padding: 0;
