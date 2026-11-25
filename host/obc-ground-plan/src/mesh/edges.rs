@@ -2,15 +2,16 @@
 //! storey mesh (`solids`). Both stand on their way's own shoulder, so each corner takes the label of the face under it
 //! and the drawn road's height, and a post or a delineator starts on paved ground and goes down into the fill.
 //!
-//! A chain is the ground road ways that joints and a junction's opposite arms link. Its rings are the graph samples
-//! and a point at each `RING_M` of stroke metres. Per side, a ring needs a rail where the paved edge lies `DROP_M`
-//! over the plain terrain `DROP_OUT_M` out or that point lies in area water, or where a mapped guard rail lies near;
-//! `shares` gives each ring its share by the stretch rules. A rail sinks into the ground before a stop: a chain's end
-//! at a junction or past the graph, a junction's corner on its arm's side, a sidewalk, a town, a fold, or the paved
-//! band of another way but a path under its beam: a rail stands beside a cycle path, and a path that joins makes a
-//! junction. At a level change (a deck's end, a tunnel's opening) it runs on and ends square. The rules read only the
-//! graph, the plain terrain and the features, no farther past the cell than `reach` states, and alike in either
-//! direction of a chain, so two cells give a ring the same share.
+//! A chain is the ground road ways that joints and a junction's opposite arms link. Its rings are the graph samples and
+//! a point at each `RING_M` of stroke metres. Per side, a ring needs a rail where the paved edge lies `DROP_M` over the
+//! plain terrain `DROP_OUT_M` out or that point lies in area water, or where a mapped guard rail lies near; `shares`
+//! gives each ring its share by the stretch rules. A rail sinks into the ground before a stop: a chain's end at a
+//! junction or past the graph, a junction's corner on its arm's side (at both rings of a chord that meets it), a
+//! sidewalk, a town, a fold, or the paved band of another way but a path under its beam: a rail stands beside a cycle
+//! path, and the corner of a junction where a path meets the road stops it. At a level change (a deck's end, a tunnel's
+//! opening) it runs on and ends square. The rules read only the graph, the plain terrain and the features, no farther
+//! past the cell than `reach` states, and alike in either direction of a chain, so two cells give a ring the same
+//! share.
 
 use super::shell::{clip, fan, prism, Build, DELINEATOR, P, RAIL};
 use crate::faces::records::find;
@@ -591,10 +592,13 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
     }
     let in_zones =
         Grid::of(BUCKET, &zones.iter().map(|&(q, r, ..)| [q[0] - r, q[1] - r, q[0] + r, q[1] + r]).collect::<Vec<_>>());
-    let in_zone = |p: &Point, out: [f64; 2]| {
-        in_zones.any(p.pos, 0.0, |k| {
+    // A zone stops both rings of a chord whose span along the zone's arm meets the zone's, so a zone narrower than
+    // the rings' spacing stops the rings about it.
+    let in_zone = |p: &Point, n: &Point, out: [f64; 2]| {
+        in_zones.any(add(p.pos, sub(n.pos, p.pos), 0.5), dist(p.pos, n.pos) / 2.0, |k| {
             let (q, r, way, h, side) = zones[k as usize];
-            way == p.way && (0.0..r).contains(&dot(sub(p.pos, q), h)) && dot(out, side) > 0.0
+            let (a, b) = (dot(sub(p.pos, q), h), dot(sub(n.pos, q), h));
+            (way == p.way || way == n.way) && a.max(b) >= 0.0 && a.min(b) < r && dot(out, side) > 0.0
         })
     };
     let c = CELL_UNITS as f64;
@@ -686,7 +690,8 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                     let front = add(rings[i].0, rings[i].1, -BEAM_FRONT_M / mpu[i]);
                     (i == 0 && ends[0] == End::Stop)
                         || (i + 1 == n && ends[1] == End::Stop)
-                        || in_zone(&pts[i], rings[i].1)
+                        || (i > 0 && in_zone(&pts[i], &pts[i - 1], rings[i].1))
+                        || (i + 1 < n && in_zone(&pts[i], &pts[i + 1], rings[i].1))
                         || pts[i].walk & bit != 0
                         || (towns[i] > 0.0 && !mapped[i])
                         || (i > 0 && fold(i - 1))
@@ -971,6 +976,24 @@ mod tests {
         input.features.push(Feature { index: 9, kind: "lake".into(), tags, geometry: Geometry::Area, parts });
         let sides = rails(&input);
         assert!(!sides.is_empty() && sides.iter().all(|&s| s > 0.0), "a rail on the lake's side only: {sides:?}");
+    }
+
+    #[test]
+    fn a_path_across_the_road_between_two_rings_stops_the_rail_about_it() {
+        use crate::faces::tests::{at, cell, input_of, line, main_road, mpu, plane};
+        // Rings stand at x = −2 and 2 m; the junction's own sample lies 0.7 m from the second and gives way to it. The
+        // path crosses at 80°: its corner on the obtuse side ends before that ring, on the acute side after the other.
+        let road = main_road(&[[-150.0, 0.0], [1.3, 0.0], [150.0, 0.0]]);
+        let path = line("path", &[("highway", "footway")], &[[8.25, -39.39], [1.3, 0.0], [-5.65, 39.39]]);
+        let mut input = input_of(cell(), &[road, path]);
+        input.terrain = plane(cell(), &|_, _| 497.0);
+        let g = crate::graph::build(cell(), &input, &Rules::embedded().sections);
+        let e = place(&g, &input, Rules::embedded());
+        let o = cell().origin();
+        let x = |r: &Ring| (o.x as f64 + r.edge[0] - at([1.3, 0.0]).x as f64) * mpu();
+        assert!(e.rails.iter().flatten().any(|r| r.share == 1.0), "the drop needs a rail");
+        let near: Vec<f64> = e.rails.iter().flatten().filter(|r| x(r).abs() < 3.0).map(|r| r.share).collect();
+        assert!(near.iter().all(|&s| s == 0.0), "{near:?}");
     }
 
     #[test]
