@@ -379,10 +379,12 @@ fn way_points(g: &WayGraph, w: u32, d: i8, out: &mut Vec<Point>) {
     out.extend(kept.into_iter().map(|p| Point { t: p.t.map(|v| v * f64::from(d)), ..p }));
 }
 
-/// A way's place in an order that every cell gives it: its first vertex and station.
-fn way_key(g: &WayGraph, w: u32) -> ([i64; 2], u64) {
+/// A way's place in an order that every cell gives it: its first and last vertex and station. Two ways that start at
+/// one junction differ in their ends.
+fn way_key(g: &WayGraph, w: u32) -> ([i64; 2], u64, [i64; 2], u64) {
     let way = &g.ways[w as usize];
-    (g.parts[way.part as usize].vertices[way.from.span as usize].pos, way.from.u.to_bits())
+    let at = |s: &crate::graph::Station| g.parts[way.part as usize].vertices[s.span as usize].pos;
+    (at(&way.from), way.from.u.to_bits(), at(&way.to), way.to.u.to_bits())
 }
 
 /// Whether the way is a ground road with samples.
