@@ -73,6 +73,8 @@ const BORE_FACE: u32 = 128u;
 // As anchored.ts: a face in the colour of the rock under it; an edge of a cable's ribbon. An anchor that is a point.
 const STONE_FACE: u32 = 32u;
 const CABLE_EDGE: u32 = 64u;
+// As UPRIGHT of anchored.ts.
+const UPRIGHT: i32 = 16384;
 const POINT_ANCHOR: u32 = 1u;
 const ABSOLUTE_ANCHOR: u32 = 2u;
 // The model grey that a stone face takes the rock's colour over: GREY of models/rocks.ts, squared as the albedo is.
@@ -203,9 +205,10 @@ fn anchored(v: AnchoredIn, first: u32) -> StructureOut {
     out.sleepers = NO_SLEEPERS;
     if ((flags & CABLE_EDGE) != 0u) {
         // The ribbon turns to the eye and is at least CABLE_PIXELS wide; `road.x` keeps the share that the cable covers.
-        let tangent = vec3f(pb - pa, z.y - z.x - 4.0 * an.sag * (1.0 - 2.0 * t));
-        // The edge's w is the cable's diameter in mm, its sign the side.
-        let diameter = abs(f32(v.offset.w)) * 0.001;
+        // The edge's w is the cable's diameter in mm, its sign the side; from UPRIGHT on, the cable runs straight up.
+        let w = abs(v.offset.w);
+        let tangent = select(vec3f(pb - pa, z.y - z.x - 4.0 * an.sag * (1.0 - 2.0 * t)), vec3f(0.0, 0.0, 1.0), w >= UPRIGHT);
+        let diameter = f32(w % UPRIGHT) * 0.001;
         let width = max(diameter, CABLE_PIXELS * length(p) * frame.pixel);
         p += normalize(cross(tangent, p)) * sign(f32(v.offset.w)) * 0.5 * width;
         out.road = vec2f(max(diameter / width, CABLE_COVER), 0.0);
