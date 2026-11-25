@@ -6,6 +6,8 @@
  "hip": 0.55,
  "timber": "upper",
  "shutters": true,
+ "balconies": true,
+ "flowers": true,
  "chimneys": 0,
  "palette": {
   "render": ["#f1ece0", "#e8e0cc"],
