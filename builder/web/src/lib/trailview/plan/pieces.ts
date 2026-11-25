@@ -38,7 +38,7 @@ const TERRAIN_BIT = 0x80000000;
 /** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
 const FADE_MARGIN_M = 10;
 /** Bytes of a piece's parameters, as Piece of piece.wgsl (corners.wgsl reads the first 48). */
-const PARAMS_BYTES = 80;
+const PARAMS_BYTES = 64;
 /** The vertices of a culvert mouth's model: MOUTH_QUADS of plan/piece.wgsl, six each. */
 const CULVERT_VERTICES = 6 * 48;
 /** The level-18 nodes per side of the block whose stamps a cell's corners read, NODES of corners.wgsl: the cell's four and one more on each side. */
@@ -498,7 +498,7 @@ export class Pieces {
         if (make !== 'all' || first !== 0 || !storeys?.compute || !mesh) return;
         const m = mesh.offsets.length, slots = mesh.slots.length, tris = 6 * m + slots;
         // The storeys' slots are all plain concrete: their end faces start at 0.
-        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers, mesh.rails, mesh.delineators, mesh.bands, mesh.reflectors], 2);
+        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers, mesh.rails, mesh.delineators], 2);
         r.gpu.device.queue.writeBuffer(storeys.params, 0, params);
         pass.setBindGroup(0, storeys.compute);
         pass.dispatchWorkgroups(Math.ceil(m / GROUP_CORNERS));

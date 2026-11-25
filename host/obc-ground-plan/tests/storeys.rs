@@ -350,10 +350,13 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         assert_eq!(without.far, with.far, "{key:?}: the far block");
         if with.storeys.plans.is_empty() {
             assert_eq!(without.records, with.records, "{key:?}: a cell with no deck has the records of storey 0 alone");
-            // Storey 0's guard rails and delineators mesh with the storeys.
-            if with.storeys.edges.rails.is_empty() && with.storeys.edges.delineators.is_empty() {
-                continue;
-            }
+        }
+        let mesh = mesh_storeys(key, &with.storeys, &with.records, &rules.structures).unwrap();
+        terrain.insert(key, fix.cell(key).terrain);
+        // An empty mesh still meets its neighbours: a guard rail of theirs may run on to the shared line.
+        if mesh.triangles.is_empty() {
+            built.insert(key, (with, mesh));
+            continue;
         }
         // Storey 0 reads the same label and height at a grid of points.
         let c = f64::from(CELL_UNITS as i32);
@@ -374,7 +377,6 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
                 partition(plan, window(key, 0.0)).into_iter().map(|f| format!("{key:?} storey {}: {f:?}", plan.level)),
             );
         }
-        let mesh = mesh_storeys(key, &with.storeys, &with.records, &rules.structures).unwrap();
         assert_eq!(mesh.stats.unlabelled, 0, "{key:?}: a sheet face has no label");
         faults.extend(closure(&mesh));
         faults.extend(on_paved(&mesh, &with.storeys, &with.records));
@@ -391,7 +393,6 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
             Err(e) => faults.push(format!("{key:?}: storey 0's mesh: {e:?}")),
         }
         torn += mesh.stats.torn;
-        terrain.insert(key, fix.cell(key).terrain);
         built.insert(key, (with, mesh));
     }
     for (&key, (b, m)) in &built {

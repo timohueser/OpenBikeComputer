@@ -275,11 +275,13 @@ impl Rules {
         reaches.push(taper);
         let graph_m = (sections.reaches().iter()).filter(|r| r.owner == "graph").map(Reach::metres).fold(0.0, f64::max);
         reaches.push(structures.reach(graph_m));
+        reaches.push(crate::mesh::edges::reach());
         for row in reaches.iter().filter(|r| r.chain) {
             if row.metres() > CHAIN_MAX_M {
                 return Err(format!(
-                    "the chain {:?} of faces is {} m, over CHAIN_MAX_M {CHAIN_MAX_M} m",
+                    "the chain {:?} of {} is {} m, over CHAIN_MAX_M {CHAIN_MAX_M} m",
                     row.name,
+                    row.owner,
                     row.metres()
                 ));
             }
@@ -287,7 +289,7 @@ impl Rules {
         Ok(Rules { sections, plan, structures, reaches })
     }
 
-    /// The reach table: the rows of `Sections` and those of the faces.
+    /// The reach table: the rows of `Sections`, those of the faces and the edges' (`mesh::edges::reach`).
     pub fn reaches(&self) -> impl Iterator<Item = &Reach> {
         self.sections.reaches().iter().chain(&self.reaches)
     }

@@ -5,8 +5,8 @@
 const MAGIC = 0x4f424d05;
 const HEAD = 12;
 const STOREY_MAGIC = 0x4f425303;
-/** The storey mesh's head: its magic, cell, counts and top slots, then the triangles of each of its 7 parts (`PARTS`). */
-const STOREY_HEAD = 20;
+/** The storey mesh's head: its magic, cell, counts and top slots, then the triangles of each of its 9 parts (`PARTS`). */
+const STOREY_HEAD = 18;
 /** Region cells (2 × 2 grid cells) along a side of a cell, as `params::CELLS`, and the words of R on the cell and one ring. */
 const CELLS = 128;
 const REGION_WORDS = Math.ceil(((CELLS + 2) * (CELLS + 2)) / 32);
@@ -41,22 +41,19 @@ export interface CellMesh {
 /**
  * The storeys' meshes of a cell: the sheets and the shells about them. A corner's height is that of its label plus its
  * offset; the top's triangles come first, then the shell's (underside, edges, parapets, railings, posts, piers), then storey 0's
- * guard rails and delineators (`mesh/edges.rs`): their rails, bodies, bands and reflectors.
+ * guard rails and delineators (`mesh/edges.rs`).
  */
 export interface StoreyMesh {
     /** Two words per corner, as the cell mesh's (never a terrain vertex), and each corner's offset in metres (f32 bits). */
     corners: Uint32Array<ArrayBuffer>;
     offsets: Uint32Array<ArrayBuffer>;
-    /** Three whole corner indices per triangle; the count of the top's, and the first of the railings', the piers', the guard rails',
-     * the delineators' bodies, their bands and their reflectors. */
+    /** Three whole corner indices per triangle; the count of the top's, and the first of the railings', the piers', the guard rails' and the delineators'. */
     triangles: Uint32Array<ArrayBuffer>;
     top: number;
     railings: number;
     piers: number;
     rails: number;
     delineators: number;
-    bands: number;
-    reflectors: number;
     /** Four whole corner indices per slot (a_p, a_q, b_q, b_p): the tops' steps between two labels, then the undersides' risers. */
     slots: Uint32Array<ArrayBuffer>;
 }
@@ -119,9 +116,9 @@ function storeyMesh(bytes: ArrayBuffer, start: number): StoreyMesh {
     };
     const triangle = items(triangles, triangleRuns, 3), slot = items(slots, slotRuns, 4);
     if (at > words.length) throw new Error('a storey mesh ends early');
-    // The parts' triangles: top, underside, edge, parapet, railing, post, pier, rail, delineator, band, reflector.
-    const parts = words.subarray(STOREY_HEAD - 11, STOREY_HEAD), first = (k: number) => parts.subarray(0, k).reduce((sum, n) => sum + n, 0);
-    return { corners: packed, offsets, triangles: whole(triangle, 3), top: parts[0], railings: first(4), piers: first(6), rails: first(7), delineators: first(8), bands: first(9), reflectors: first(10), slots: whole(slot, 4) };
+    // The parts' triangles: top, underside, edge, parapet, railing, post, pier, rail, delineator.
+    const parts = words.subarray(STOREY_HEAD - 9, STOREY_HEAD), first = (k: number) => parts.subarray(0, k).reduce((sum, n) => sum + n, 0);
+    return { corners: packed, offsets, triangles: whole(triangle, 3), top: parts[0], railings: first(4), piers: first(6), rails: first(7), delineators: first(8), slots: whole(slot, 4) };
 }
 
 /** The grid points whose region cells all lie in R: cells ⌊(i − 1) / 2⌋ to ⌊i / 2⌋ across, the same down. */

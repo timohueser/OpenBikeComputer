@@ -2,9 +2,9 @@
 //! (no ground ring, no strip, no grid point), and the shell about it, each part a closed solid of a real thickness:
 //! the underside (the top again, turned over, at the slab's depth, with a riser where two depths meet), the edge
 //! faces on the free outline, a parapet or a railing on it, and the piers; and storey 0's guard rails and delineators
-//! (`mesh::edges`). A corner is a point with a label of the
-//! cell's block and a height offset in metres: its height is the label's height there plus the offset, or where the
-//! corner has a cap (a second label and offset), the lower of the two.
+//! (`mesh::edges`). A corner is a point with a label of the cell's block and a height offset in metres: its height
+//! is the label's height there plus the offset, or where the corner has a cap (a second label and offset), the lower
+//! of the two.
 //!
 //! A bore (storey −1, the feature `bores`) is the prism under storey 0's own triangles over its floor
 //! (`mesh_storeys_with`): the top is its floor, the underside its roof, which stays its least plate under the ground
@@ -41,10 +41,9 @@ use crate::graph::Structures;
 
 /// "OBS" and the layout's version: with the bores, the caps.
 pub const MAGIC: u32 = if BORES { 0x4f42_5304 } else { 0x4f42_5303 };
-/// The parts of a storey's mesh, in the order of their triangles: the shells, then the edge features of storey 0
-/// (`mesh::edges`), one part per look.
-pub const PARTS: [&str; 11] =
-    ["top", "underside", "edge", "parapet", "railing", "post", "pier", "rail", "delineator", "band", "reflector"];
+/// The parts of a storey's mesh, in the order of their triangles: the shells, then storey 0's guard rails and
+/// delineators (`mesh::edges`).
+pub const PARTS: [&str; 9] = ["top", "underside", "edge", "parapet", "railing", "post", "pier", "rail", "delineator"];
 const BORES: bool = cfg!(feature = "bores");
 const TOP: usize = 0;
 const UNDER: usize = 1;
@@ -55,8 +54,6 @@ const POST: usize = 5;
 const PIER: usize = 6;
 pub(super) const RAIL: usize = 7;
 pub(super) const DELINEATOR: usize = 8;
-pub(super) const BAND: usize = 9;
-pub(super) const REFLECTOR: usize = 10;
 pub const HEAD: usize = 9 + PARTS.len() + BORES as usize;
 
 /// A parapet: its width and its height over the deck (the crossing block's thickness table).
@@ -190,7 +187,7 @@ fn corner_key(p: P, label: u32) -> u64 {
 impl Build {
     // One copy: the shell calls it from many places.
     #[inline(never)]
-    pub(super) fn corner(&mut self, p: P, label: u32, offset: f64) -> u32 {
+    fn corner(&mut self, p: P, label: u32, offset: f64) -> u32 {
         let label = self.relabelled(p, label).unwrap_or(label);
         self.keys.push((corner_key(p, label), (offset as f32).to_bits()));
         self.keys.len() as u32 - 1
@@ -210,13 +207,8 @@ impl Build {
         self.caps.push(((corner_key(p, label), (offset as f32).to_bits()), (cap, (cap_off as f32).to_bits())));
     }
 
-    /// A triangle with its corners counter-clockwise seen from outside.
-    pub(super) fn tri(&mut self, part: usize, c: [u32; 3]) {
-        self.tris[part].push(c);
-    }
-
     /// A quad with its corners counter-clockwise seen from outside.
-    pub(super) fn quad(&mut self, part: usize, c: [u32; 4]) {
+    fn quad(&mut self, part: usize, c: [u32; 4]) {
         self.tris[part].extend([[c[0], c[1], c[2]], [c[0], c[2], c[3]]]);
     }
 }
@@ -299,17 +291,30 @@ fn wall(
 /// A closed prism over a convex ring of the cell (cut by the cell square): its corners at each point take the top's
 /// label and offset and the foot's. Its walls on a cell line stay open.
 pub(super) fn prism(b: &mut Build, part: usize, ring: &[P], top: (u32, f64), foot: (u32, f64)) {
+    solid(b, part, ring, |_| top, |_| foot, |_| true);
+}
+
+/// `prism` with the top's and the foot's label and offset of each point, and a wall from a point to the next only
+/// where `wall` of the point holds; the walls on a cell line stay open.
+pub(super) fn solid(
+    b: &mut Build,
+    part: usize,
+    ring: &[P],
+    top: impl Fn(usize) -> (u32, f64),
+    foot: impl Fn(usize) -> (u32, f64),
+    wall: impl Fn(usize) -> bool,
+) {
     let n = ring.len();
     if n < 3 || area2(ring) == 0 {
         return;
     }
     // A positive ring in the frame holds its inside on the left of each edge and turns clockwise seen from above.
     let left = area2(ring) > 0;
-    let t: Vec<u32> = ring.iter().map(|&p| b.corner(p, top.0, top.1)).collect();
-    let f: Vec<u32> = ring.iter().map(|&p| b.corner(p, foot.0, foot.1)).collect();
+    let t: Vec<u32> = (0..n).map(|i| b.corner(ring[i], top(i).0, top(i).1)).collect();
+    let f: Vec<u32> = (0..n).map(|i| b.corner(ring[i], foot(i).0, foot(i).1)).collect();
     for i in 0..n {
         let j = (i + 1) % n;
-        if !on_cell_line(ring[i], ring[j]) {
+        if wall(i) && !on_cell_line(ring[i], ring[j]) {
             wall_of(b, part, [f[i], t[i], f[j], t[j]], left);
         }
     }
