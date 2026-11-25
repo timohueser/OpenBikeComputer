@@ -116,10 +116,10 @@ fn wall_side(finish: u32) -> u32 {
 }
 
 // The metres past the core edge of the way whose core lies nearest q, its half-width, its wall_side bits (from
-// SIDE_SHIFT) and its line: of the lines whose heights reach q's bin, but water. M_FAR, FACE_HALF_M and line −1 where
-// none does. A bin lists every line whose heights reach it, and every class's reach is at least a path's, so within a
-// path's reach (ground_terms) the answer does not depend on the bin.
-fn nearest_way(q: vec2i, mpu: f32) -> vec4f {
+// SIDE_SHIFT) and its line: of the lines whose heights reach q's bin, but those with a flag of `skip`. M_FAR,
+// FACE_HALF_M and line −1 where none does. A bin lists every line whose heights reach it, and every class's reach is
+// at least a path's, so within a path's reach (ground_terms) the answer does not depend on the bin.
+fn nearest_way(q: vec2i, mpu: f32, skip: u32) -> vec4f {
     var out = vec4f(M_FAR, FACE_HALF_M, 0.0, -1.0);
     let qf = vec2f(q);
     let head = m_bin_head(params.block, qf);
@@ -133,7 +133,7 @@ fn nearest_way(q: vec2i, mpu: f32) -> vec4f {
         let item = mw(at + k);
         let line = item & 0xffffu;
         let finish = mw(lines + M_LINE * line + 1u);
-        if ((finish & (M_WATER | M_CEILING)) != 0u) {
+        if ((finish & skip) != 0u) {
             continue;
         }
         let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (item >> 16u));
@@ -223,10 +223,13 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let lineless = shoulder && mw(lw + 2u) == M_NONE;
     var line = mw(lw + 2u);
     let lines = params.block + mw(params.block + 6u);
-    // A shoulder that no line owns takes its nearest way's look, which draws the shoulder past the way's half-width.
+    // A shoulder that no line owns takes the look of its nearest way of storey 0 where that is a road, which draws the
+    // shoulder past the way's half-width; beside a rail bed or a path, which own no road shoulder, it stays ground.
     if (lineless) {
-        let near = nearest_way(q, mpu).w;
-        line = select(M_NONE, u32(near), near >= 0.0);
+        let near = nearest_way(q, mpu, M_WATER | M_CEILING | M_STOREY).w;
+        if (near >= 0.0 && (mw(lines + M_LINE * u32(near) + 1u) & (M_RAIL | M_PATH)) == 0u) {
+            line = u32(near);
+        }
     }
     let finish = select(mw(lines + M_LINE * line + 1u), 0u, line == M_NONE);
     let code = finish & 0xffu;
@@ -314,7 +317,7 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     let o = params.out + 4u * k;
     if (!makes) {
         // A terrain vertex: ground, with its nearest way.
-        let way = nearest_way(q, mpu);
+        let way = nearest_way(q, mpu, M_WATER | M_CEILING);
         piece[o] = bitcast<u32>(NONE);
         piece[o + 1u] = look_word(MAT_GROUND, 0u, way.y);
         piece[o + 2u] = place_word(way.x, 0.0);
@@ -341,7 +344,7 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
         }
     } else {
         // Ground: its nearest way, for the ground terms; a shoulder takes that way's wall class.
-        let way = nearest_way(q, mpu);
+        let way = nearest_way(q, mpu, M_WATER | M_CEILING);
         let side = select(0u, u32(way.z) << SIDE_SHIFT, ((look.x >> 7u) & 15u) == CODE_ROAD_SURFACE);
         look = vec2u(look_word(MAT_GROUND, 0u, way.y) | side, place_word(way.x, 0.0));
     }
