@@ -124,6 +124,8 @@ export interface HouseStyle {
     timber: 'none' | 'upper' | 'all' | 'frame';
     shutters: boolean;
     balconies?: boolean;
+    /** Flower boxes on the balconies. */
+    flowers?: boolean;
     /** Gabled dormers that rise from the front wall into the roof. */
     dormers?: boolean;
     chimneys: 0 | 1 | 2;

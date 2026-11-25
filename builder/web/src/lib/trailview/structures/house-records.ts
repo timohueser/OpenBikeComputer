@@ -1,5 +1,5 @@
 // The houses of a feature tile as houses.wgsl reads them: a record per building that the tile owns,
-// and a mesh of walls and a flat roof for the footprints that no template fits. A worker uses it.
+// and a mesh of walls and a roof for the footprints that no template fits. A worker uses it.
 import earcut from 'earcut';
 import { EXTENT, square, unitScale, type Feature } from '../stream/features';
 import { fronts, metresPerUnit, type Node } from '../terrain/bins';
@@ -43,6 +43,75 @@ const RECTANGULAR = 0.7;
 const PARTS = 4;
 /** Sides of a footprint within this many degrees of its rectangle's sides, and corners closer than SNAP_M, count as square. */
 const SQUARE_DEG = 12, SNAP_M = 0.5;
+/**
+ * An outline moved inward by `d` metres, or outward by a negative `d`, each corner along its bisector; null where a
+ * side would turn round or two sides would cross. The outline is counter-clockwise.
+ */
+function inset(ring: number[][], d: number): number[][] | null {
+    const n = ring.length, out: number[][] = [];
+    for (let i = 0; i < n; i++) {
+        const a = ring[(i + n - 1) % n], p = ring[i], b = ring[(i + 1) % n], l0 = Math.hypot(p[0] - a[0], p[1] - a[1]), l1 = Math.hypot(b[0] - p[0], b[1] - p[1]);
+        const n0 = [(a[1] - p[1]) / l0, (p[0] - a[0]) / l0], n1 = [(p[1] - b[1]) / l1, (b[0] - p[0]) / l1], k = 1 + n0[0] * n1[0] + n0[1] * n1[1];
+        // A spike has no bisector to move along.
+        if (!(k > 0.1)) return null;
+        out.push([p[0] + d * (n0[0] + n1[0]) / k, p[1] + d * (n0[1] + n1[1]) / k]);
+    }
+    const side = (i: number) => [out[i], out[(i + 1) % n]], turn = (a: number[], b: number[], c: number[]) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    for (let i = 0; i < n; i++) {
+        const [a, b] = side(i), p = ring[i], q = ring[(i + 1) % n];
+        if ((b[0] - a[0]) * (q[0] - p[0]) + (b[1] - a[1]) * (q[1] - p[1]) <= 0) return null;
+        for (let j = i + 2; j < n; j++) {
+            if (i === 0 && j === n - 1) continue;
+            const [c, e] = side(j);
+            if (turn(a, b, c) * turn(a, b, e) < 0 && turn(c, e, a) * turn(c, e, b) < 0) return null;
+        }
+    }
+    return out;
+}
+
+/**
+ * An outline's roof stands this far past its walls and has at most this many bands. An outline of more corners
+ * than ROOF_CORNERS keeps a flat roof: its slopes would take more vertices than a town can hold. Corners closer
+ * than MET_M have met.
+ */
+const OVERHANG_M = 0.4, ROOF_BANDS = 8, ROOF_CORNERS = 12, MET_M = 0.02;
+
+/** A band of an outline's roof: from one outline, `from` metres inward of the walls, to the next, `to` metres inward. */
+interface Band { low: number[][]; high: number[][]; from: number; to: number }
+
+/**
+ * The roof of an outline, hipped: the outline moves inward and rises; where a side closes, its two corners become one
+ * and the rest moves on, until nothing is left (a ridge or a point) or until two sides meet that are no neighbours.
+ * What is left then is the flat `top`. `eaves` stand `over` metres past the `walls`. Null for an outline that cannot
+ * move inward at all or has more than ROOF_CORNERS corners.
+ */
+function hipped(outline: number[][], reach: number): { walls: number[][]; eaves: number[][]; over: number; bands: Band[]; top: number[][]; run: number } | null {
+    const apart = (ring: number[][], least: number) => ring.filter((p, i) => Math.hypot(p[0] - ring[(i + 1) % ring.length][0], p[1] - ring[(i + 1) % ring.length][1]) > least);
+    // Without the corners that repeat: a closed ring names its first corner twice.
+    const walls = apart(outline, 0.01), bands: Band[] = [];
+    if (walls.length > ROOF_CORNERS) return null;
+    let ring = walls, run = 0;
+    while (ring.length >= 3 && bands.length < ROOF_BANDS && run < reach) {
+        let low = 0, high = reach - run;
+        for (let step = 0; step < 14; step++) {
+            const middle = (low + high) / 2;
+            if (inset(ring, middle)) low = middle;
+            else high = middle;
+        }
+        const next = low > 0.02 ? inset(ring, low) : null;
+        if (!next) break;
+        bands.push({ low: ring, high: next, from: run, to: run + low });
+        run += low;
+        // The corners that met: the side between them closed.
+        const left = apart(next, MET_M);
+        ring = left;
+        if (left.length === next.length) break;
+    }
+    if (!bands.length) return null;
+    const eaves = inset(walls, -OVERHANG_M);
+    return { walls, eaves: eaves ?? walls, over: eaves ? OVERHANG_M : 0, bands, top: ring.length >= 3 ? ring : [], run };
+}
+
 /** A part narrower than NARROW_M that covers less than MISSED of the footprint goes; the parts may miss MISSED of it. */
 const NARROW_M = 2.5, MISSED = 0.08;
 /**
@@ -212,8 +281,10 @@ export function tileHouses(list: Feature[], tile: Node, owned: Node = tile): Til
                 (kind | (roof << 4) | (+outline << 6) | (+flatRoof << 7) | (door(angle, front) << 8) | (seed << 16)) >>> 0);
         }
         if (!outline) continue;
-        // The walls, from the bottom to the top, with the metres along the outline; then the roof.
-        const world = ring.map(([ex, ny]) => [Math.round((left + x0 + ex / m) * scale), Math.round((top + y0 - ny / m) * scale)]);
+        // The walls, from the bottom to the top, with the metres along the outline; then the roof, whose vertices carry
+        // their metres inward from the walls: houses.wgsl lifts them by the roof's pitch, or by nothing for a flat roof.
+        const place = ([ex, ny]: number[]) => [Math.round((left + x0 + ex / m) * scale), Math.round((top + y0 - ny / m) * scale)];
+        const world = ring.map(place);
         const vertex = ([wx, wy]: number[], up: number, roofed: number, u: number) => outlines.push(wx, wy, (index | (up << 31) | (roofed << 30)) >>> 0, f32(u));
         let along = 0;
         ring.forEach((a, i) => {
@@ -221,11 +292,28 @@ export function tileHouses(list: Feature[], tile: Node, owned: Node = tile): Til
             for (const [k, up, u] of [[i, 0, along], [j, 0, along + length], [j, 1, along + length], [i, 0, along], [j, 1, along + length], [i, 1, along]]) vertex(world[k], up, 0, u);
             along += length;
         });
-        const triangles = earcut(ring.flat());
+        // A roof that the map calls flat, and one about a courtyard, has no slopes.
+        const hip = flatRoof || feature.parts.some(p => !p.outer) ? null : hipped(ring, Math.min(fit.width, fit.depth) / 2), cap = hip ? hip.top : ring, run = hip?.run ?? 0;
+        if (hip) {
+            const { walls, eaves, over, bands } = hip;
+            // The underside of the eaves, then each band's slopes: the first starts at the eaves.
+            if (over) walls.forEach((p, i) => {
+                const j = (i + 1) % walls.length;
+                for (const [q, u] of [[p, 0], [walls[j], 0], [eaves[j], -over], [p, 0], [eaves[j], -over], [eaves[i], -over]] as const) vertex(place(q), 1, 1, u);
+            });
+            bands.forEach(({ low, high, from, to }, k) => {
+                const foot = k ? low : eaves, start = k ? from : -over;
+                low.forEach((_, i) => {
+                    const j = (i + 1) % low.length;
+                    for (const [q, u] of [[foot[i], start], [foot[j], start], [high[j], to], [foot[i], start], [high[j], to], [high[i], to]] as const) vertex(place(q), 1, 1, u);
+                });
+            });
+        }
+        const triangles = earcut(cap.flat());
         for (let t = 0; t < triangles.length; t += 3) {
             const [a, b, c] = [triangles[t], triangles[t + 1], triangles[t + 2]];
-            const turn = twiceArea([ring[a], ring[b], ring[c]]) >= 0 ? [a, b, c] : [a, c, b];
-            for (const k of turn) vertex(world[k], 1, 1, 0);
+            const turn = twiceArea([cap[a], cap[b], cap[c]]) >= 0 ? [a, b, c] : [a, c, b];
+            for (const k of turn) vertex(place(cap[k]), 1, 1, run);
         }
     }
     return { records: new Uint32Array(records), outlines: new Uint32Array(outlines) };
