@@ -101,6 +101,26 @@ stems and soft cushions.
 
 ![TrailView plants in a row in summer: a grass tuft, a fern, bilberry, alpine flowers, heather, a foxglove, alpenrose and a lupine](../../assets/trailview-models/plants.jpg)
 
+## Objects
+
+Benches, lamps, masts and the other built objects are not round: a plank is a box and a pole is a
+tube. They keep the style through their parts and their proportions.
+
+- **Each part is a real part.** A bench is slats on a frame, a table is planks on legs, a wall is
+  as thick as a wall. One board that stands for five planks looks cheap.
+- **Parts meet.** A wire ends in a clamp, an arm grows out of its pole, a cable lies on its
+  rollers. A gap between two parts that belong together looks like a fault.
+- **No two faces lie in one plane over each other.** Such faces flicker at a distance.
+- **A few materials.** Timber in two tones, stone in three, dark iron, and one accent: the brown
+  insulators of a railway mast, the red cap of a lighthouse, the brass spout of a fountain.
+- **Light is part of the model.** A lamp's glass, a lantern and a fire glow at night.
+- **A far stage where it pays.** A model that stands in large numbers, as a street lamp, has a far
+  stage with the same outline. A railway mast, its upper wire and its droppers draw only near the
+  eye: farther away a mast is thinner than a pixel, and only the contact wire draws.
+
+A town has two street lamps. An old quarter, where houses cover a third of the ground, has
+lanterns; every other street and every main road has the modern lamp.
+
 ## A new model
 
 A new model or a change to a model is a change of look. The review page
