@@ -275,7 +275,7 @@ impl Rules {
         reaches.push(taper);
         let graph_m = (sections.reaches().iter()).filter(|r| r.owner == "graph").map(Reach::metres).fold(0.0, f64::max);
         reaches.push(structures.reach(graph_m));
-        reaches.push(crate::mesh::edges::reach());
+        reaches.push(crate::mesh::edges::reach(&sections));
         for row in reaches.iter().filter(|r| r.chain) {
             if row.metres() > CHAIN_MAX_M {
                 return Err(format!(

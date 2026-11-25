@@ -2,22 +2,26 @@
 //! storey mesh (`solids`). Both stand on their way's own shoulder, so each corner takes the label of the face under it
 //! and the drawn road's height, and a post or a delineator starts on paved ground and goes down into the fill.
 //!
-//! A chain is the ground road ways that joints link. Its rings are the graph samples and a post point at each `POST_M`
-//! of stroke metres. Per side, a ring needs a rail where the paved edge lies `DROP_M` over the plain terrain
-//! `DROP_OUT_M` out, or where a mapped guard rail lies near; `shares` gives each ring its share by the stretch rules.
-//! A rail sinks into the ground before a stop: a chain's end at a junction or past the graph, the zone of a junction
-//! on its own arms, a sidewalk, a town, a fold, or another way's paved band over its beam. At a level change (a deck's end, a tunnel's opening) it runs on and
-//! ends square. The rules read only the graph, the plain terrain and the features, and no farther past the cell than
-//! `reach` states, so two cells give a ring the same share.
+//! A chain is the ground road ways that joints and a junction's opposite arms link. Its rings are the graph samples
+//! and a post point at each `POST_M` of stroke metres. Per side, a ring needs a rail where the paved edge lies `DROP_M`
+//! over the plain terrain `DROP_OUT_M` out, or where a mapped guard rail lies near; `shares` gives each ring its share
+//! by the stretch rules. A rail sinks into the ground before a stop: a chain's end at a junction or past the graph, a
+//! junction's corner on its arm's side, a sidewalk, a town, a fold, or another way's paved band under its beam. At a
+//! level change (a deck's end, a tunnel's opening) it runs on and ends square. The rules read only the graph, the
+//! plain terrain and the features, no farther past the cell than `reach` states, and alike in either direction of a
+//! chain, so two cells give a ring the same share.
 
 use super::shell::{clip, prism, solid, Build, DELINEATOR, P, RAIL};
 use crate::faces::records::find;
+use crate::faces::Rules;
 use crate::frame::{metres_per_unit_at, GlobalPoint, CELL_UNITS};
-use crate::graph::{point as curve_point, u_at, Arm, CrossingKind, Family, Level, Network, PointRef, Sample, WayGraph};
+use crate::graph::{point as curve_point, u_at, Arm, Family, Level, Network, Sample, WayGraph};
 use crate::sections::{Reach, Sections, HALF_MAX_M};
 use crate::tile::Geometry;
 use crate::CellInput;
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
+use std::f64::consts::{PI, TAU};
 
 /// The classes with guard rails and delineators outside towns, and their links.
 const RAILED: [&str; 5] = ["trunk", "primary", "secondary", "tertiary", "unclassified"];
@@ -60,8 +64,7 @@ const POST_UP_M: [f64; 2] = [-1.0, 0.71];
 const DELI_IN_M: f64 = 0.10;
 const DELI_HALF_M: [f64; 2] = [0.05, 0.06];
 const DELI_UP_M: [f64; 4] = [-0.5, 0.74, 0.9, 1.0];
-/// Nothing stands within this past a junction's widest way and corner, or past a level crossing's widest way.
-const MOUTH_M: f64 = 5.0;
+/// The side of a grid bucket, in frame units (about 13 m).
 const BUCKET: f64 = 8192.0;
 
 /// A ring of an edge feature: its point on the shoulder's outer edge (frame units from the cell's origin), the unit
@@ -94,15 +97,16 @@ enum End {
 
 /// The row of the reach table: how far past the cell a ring's share reads along its chain (the next ring, a stub, the
 /// lead and ramp, a gap that joins, and a level change's need past that gap), then about a ring of that need (its
-/// way's half-width, then the town test).
-pub fn reach() -> Reach {
+/// paved edge's offset, then the town test, which reaches farther than a junction's corner or another way's band).
+pub fn reach(sections: &Sections) -> Reach {
+    let edge = (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.widen_m + c.shoulder_m).fold(0.0, f64::max);
     let terms = [
         ("POST_M", POST_M),
         ("2·RAMP_M", 2.0 * RAMP_M),
         ("LEAD_M + RAMP_M", LEAD_M + RAMP_M),
         ("JOIN_M", JOIN_M),
         ("a level change's JOIN_M", JOIN_M),
-        ("HALF_MAX_M", HALF_MAX_M),
+        ("HALF_MAX_M + widen_m + shoulder_m", HALF_MAX_M + edge),
         ("TOWN_M", TOWN_M),
     ];
     let terms = terms.iter().map(|&(what, m)| (what.to_string(), m)).collect();
@@ -167,26 +171,33 @@ fn to_segment(q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     dist(q, add(a, d, t))
 }
 
+/// Of a way: whether it is railed, the half-width of its carriageway and shoulder, and its carriageway's half-width
+/// and corner radius.
+type Info = (bool, f64, f64, f64);
+
 /// A chord between two samples of a ground way, its paved half-width there and its way.
 type Chord = ([[f64; 2]; 2], f64, u32);
 
-/// What the rules read of the features and the graph: the buildings' boxes, the mapped guard rails, and the chords of
-/// the ground ways but water, with the widest paved half-width of them.
+fn bbox(pts: &[[f64; 2]]) -> [f64; 4] {
+    let (lo, hi) = (f64::NEG_INFINITY, f64::INFINITY);
+    pts.iter().fold([hi, hi, lo, lo], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
+}
+
+/// What the rules read of the features and the graph: the buildings' boxes, the mapped guard rails, and, at the first
+/// ring that asks, the chords of the ground ways but water with the widest paved half-width of them.
 struct Context<'a> {
     buildings: (Grid, Vec<[f64; 4]>),
     rails: (Grid, Vec<[[f64; 2]; 2]>),
-    ways: (Grid, Vec<Chord>, f64),
+    ways: OnceCell<(Grid, Vec<Chord>, f64)>,
+    g: &'a WayGraph,
+    half: &'a [Option<Info>],
     input: &'a CellInput,
 }
 
 impl<'a> Context<'a> {
-    fn new(input: &'a CellInput, g: &WayGraph, half: &[Option<(bool, f64)>]) -> Context<'a> {
+    fn new(input: &'a CellInput, g: &'a WayGraph, half: &'a [Option<Info>]) -> Context<'a> {
         let o = input.key.origin();
         let local = |p: &GlobalPoint| [(p.x - o.x) as f64, (p.y - o.y) as f64];
-        let bbox = |pts: &[[f64; 2]]| {
-            let (lo, hi) = (f64::NEG_INFINITY, f64::INFINITY);
-            pts.iter().fold([hi, hi, lo, lo], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
-        };
         let (mut boxes, mut segments) = (Vec::new(), Vec::new());
         for f in &input.features {
             for part in &f.parts {
@@ -201,24 +212,26 @@ impl<'a> Context<'a> {
         }
         let buildings = (Grid::of(4.0 * BUCKET, &boxes), boxes);
         let rails = (Grid::of(BUCKET, &segments.iter().map(|s| bbox(s)).collect::<Vec<_>>()), segments);
-        let mut chords: Vec<Chord> = Vec::new();
-        for (w, way) in g.ways.iter().enumerate().filter(|(_, way)| way.level == Level::Ground) {
-            let Some((_, e)) = half[w] else { continue };
-            let samples = &g.samples[way.samples.start as usize..way.samples.end as usize];
-            let band = |s: &[Sample]| e + s[0].widen_m.max(s[1].widen_m);
-            chords.extend(
-                samples.windows(2).map(|s| ([s[0].pos, s[1].pos].map(|p| p.map(f64::from)), band(s), w as u32)),
-            );
-        }
-        let widest = chords.iter().map(|c| c.1).fold(0.0, f64::max);
-        let ways = (Grid::of(BUCKET, &chords.iter().map(|c| bbox(&c.0)).collect::<Vec<_>>()), chords, widest);
-        Context { buildings, rails, ways, input }
+        Context { buildings, rails, ways: OnceCell::new(), g, half, input }
     }
 
     /// Whether q lies in the paved band of a ground way that the chain `own` does not hold.
     fn in_other(&self, q: [f64; 2], own: &[(u32, i8)], mpu: f64) -> bool {
-        self.ways.0.any(q, self.ways.2 / mpu, |k| {
-            let ([a, b], band, w) = self.ways.1[k as usize];
+        let (grid, chords, widest) = self.ways.get_or_init(|| {
+            let mut chords: Vec<Chord> = Vec::new();
+            for (w, way) in self.g.ways.iter().enumerate().filter(|(_, way)| way.level == Level::Ground) {
+                let Some((_, e, ..)) = self.half[w] else { continue };
+                let samples = &self.g.samples[way.samples.start as usize..way.samples.end as usize];
+                let band = |s: &[Sample]| e + s[0].widen_m.max(s[1].widen_m);
+                chords.extend(
+                    samples.windows(2).map(|s| ([s[0].pos, s[1].pos].map(|p| p.map(f64::from)), band(s), w as u32)),
+                );
+            }
+            let widest = chords.iter().map(|c| c.1).fold(0.0, f64::max);
+            (Grid::of(BUCKET, &chords.iter().map(|c| bbox(&c.0)).collect::<Vec<_>>()), chords, widest)
+        });
+        grid.any(q, widest / mpu, |k| {
+            let ([a, b], band, w) = chords[k as usize];
             to_segment(q, a, b) * mpu < band && !own.iter().any(|&(x, _)| x == w)
         })
     }
@@ -321,6 +334,12 @@ fn way_points(g: &WayGraph, w: u32, d: i8, out: &mut Vec<Point>) {
     out.extend(kept.into_iter().map(|p| Point { t: p.t.map(|v| v * f64::from(d)), ..p }));
 }
 
+/// A way's place in an order that every cell gives it: its first vertex and station.
+fn way_key(g: &WayGraph, w: u32) -> ([i64; 2], u64) {
+    let way = &g.ways[w as usize];
+    (g.parts[way.part as usize].vertices[way.from.span as usize].pos, way.from.u.to_bits())
+}
+
 /// Whether the way is a ground road with samples.
 fn ground(g: &WayGraph, w: u32) -> bool {
     let way = &g.ways[w as usize];
@@ -338,8 +357,9 @@ type Next = Result<(u32, i8), End>;
 type Chain = (Vec<(u32, i8)>, [End; 2]);
 
 /// The ground road ways in chains through the joints and the junctions' arms in `through`, each with its
-/// direction, and how each chain ends at its first and its last way. The chains start at the ways in the order of
-/// their first vertex, so a loop has its two ends at one place in every cell.
+/// direction, and how each chain ends at its first and its last way. A closed chain starts at its first way in
+/// `way_key` order, so its two ends lie alike in every cell that holds all of it; one that leaves a cell's graph
+/// is longer than 2·(`MARGIN_M` − 2·`POST_M`), as the cell places only rings within 2·`POST_M` of its square.
 fn chains(g: &WayGraph, through: &[((u32, i8), Next)]) -> Vec<Chain> {
     let mut next: BTreeMap<(u32, i8), Next> = BTreeMap::new();
     for j in &g.joints {
@@ -356,13 +376,10 @@ fn chains(g: &WayGraph, through: &[((u32, i8), Next)]) -> Vec<Chain> {
     let ends = g.junctions.iter().flat_map(|j| &j.arms).chain(g.ends.iter().map(|e| &e.arm));
     next.extend(ends.filter(|a| at_end(g, a)).map(|a| ((a.way, a.dir), Err(End::Stop))));
     next.extend(through.iter().copied());
-    let mut order: Vec<u32> = (0..g.ways.len() as u32).filter(|&w| ground(g, w)).collect();
-    order.sort_by_key(|&w| {
-        let way = &g.ways[w as usize];
-        (g.parts[way.part as usize].vertices[way.from.span as usize].pos, way.from.u.to_bits())
-    });
     let mut seen = vec![false; g.ways.len()];
     let mut out = Vec::new();
+    let mut order: Vec<u32> = (0..g.ways.len() as u32).filter(|&w| ground(g, w)).collect();
+    order.sort_by_key(|&w| way_key(g, w));
     for w in order {
         if std::mem::replace(&mut seen[w as usize], true) {
             continue;
@@ -433,8 +450,8 @@ fn metres_to(m: &[f64], stops: &[bool], marks: &[bool]) -> Vec<f64> {
     out
 }
 
-/// Takes away a stretch of `shares` shorter than `least` metres, but one at an open end of the chain, which may go on
-/// past the graph.
+/// Takes away a stretch of `shares` shorter than `least` metres from its first to its last ring, but one at an open
+/// end of the chain, which may go on past the graph.
 fn without_stubs(shares: &mut [f64], m: &[f64], least: f64, ends: [End; 2]) {
     let n = shares.len();
     let mut from = None;
@@ -443,7 +460,7 @@ fn without_stubs(shares: &mut [f64], m: &[f64], least: f64, ends: [End; 2]) {
             (true, None) => from = Some(j),
             (false, Some(f)) => {
                 let open = (f == 0 && ends[0] == End::Open) || (j == n && ends[1] == End::Open);
-                if !open && m[j.min(n - 1)] - m[f] < least {
+                if !open && m[j - 1] - m[f] < least {
                     shares[f..j].fill(0.0);
                 }
                 from = None;
@@ -455,8 +472,8 @@ fn without_stubs(shares: &mut [f64], m: &[f64], least: f64, ends: [End; 2]) {
 
 /// Per ring its share by the stretch rules, from its stroke metres, need and stops. A level change at an end of the
 /// chain passes as a need does where a need lies within `JOIN_M` of it, as the deck's parapet or the portal carries the
-/// rail on: a rail that reaches it runs on full and ends square there.
-fn shares(m: &[f64], need: &[bool], stops: &[bool], ends: [End; 2]) -> Vec<f64> {
+/// rail on: a rail that reaches it runs on full and ends square there. Also the metres to the nearest stop.
+fn shares(m: &[f64], need: &[bool], stops: &[bool], ends: [End; 2]) -> (Vec<f64>, Vec<f64>) {
     let n = m.len();
     let to_need = metres_to(m, stops, need);
     let mut passes = need.to_vec();
@@ -467,7 +484,7 @@ fn shares(m: &[f64], need: &[bool], stops: &[bool], ends: [End; 2]) -> Vec<f64> 
     let smooth = |t: f64| t.clamp(0.0, 1.0) * t.clamp(0.0, 1.0) * (3.0 - 2.0 * t.clamp(0.0, 1.0));
     let mut out: Vec<f64> = (0..n).map(|i| smooth(((LEAD_M + RAMP_M - to_rail[i]).min(to_stop[i])) / RAMP_M)).collect();
     without_stubs(&mut out, m, 2.0 * RAMP_M, ends);
-    out
+    (out, to_stop)
 }
 
 /// `f` of each ring.
@@ -475,84 +492,65 @@ fn flat(n: usize, f: impl Fn(usize) -> bool) -> Vec<bool> {
     (0..n).map(f).collect()
 }
 
-/// A zone where nothing stands: its middle, its radius, the way it stops (all where none), and the side of that way
-/// it stops (each side where 0): a ring's side stops where its normal out has a dot of 0 or more with it.
-type Zone = ([f64; 2], f64, Option<u32>, [f64; 2]);
+/// A zone where nothing stands: the junction, how far along its arm, the arm's way and unit heading, and the side
+/// of the arm it stops: a ring's side stops where its normal out has a positive dot with it.
+type Zone = ([f64; 2], f64, u32, [f64; 2], [f64; 2]);
 
 /// The guard rails and delineators about a cell: see the module.
-pub fn place(g: &WayGraph, input: &CellInput, sections: &Sections) -> Edges {
+pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
     let origin_y = input.key.origin().y as f64;
     let mpu_at = |q: [f64; 2]| metres_per_unit_at(origin_y + q[1]);
-    let section = |part: u32| {
-        let f = &input.features[g.parts[part as usize].feature.0 as usize];
-        sections.way(&f.kind, &f.tags, false)
-    };
-    let road = |w: u32| g.ways[w as usize].family == Family::Road;
-    let change = |w: u32| road(w) && g.ways[w as usize].level != Level::Ground;
-    // Per way but water: whether it is a railed road, and the half-width of its carriageway and shoulder.
-    let info: Vec<Option<(bool, f64)>> = (0..g.ways.len() as u32)
-        .map(|w| (g.ways[w as usize].family != Family::Water).then(|| (road(w), section(g.ways[w as usize].part))))
-        .map(|s| s.map(|(r, s)| (r && RAILED.contains(&s.class.trim_end_matches("_link")), s.half_m + s.shoulder_m)))
+    let change = |w: u32| g.ways[w as usize].family == Family::Road && g.ways[w as usize].level != Level::Ground;
+    let info: Vec<Option<Info>> = (g.ways.iter())
+        .map(|way| {
+            let f = &input.features[g.parts[way.part as usize].feature.0 as usize];
+            let s = (way.family != Family::Water).then(|| rules.sections.way(&f.kind, &f.tags, false))?;
+            let railed = way.family == Family::Road && RAILED.contains(&s.class.trim_end_matches("_link"));
+            Some((railed, s.half_m + s.shoulder_m, s.half_m + s.widen_m, s.corner_radius_m))
+        })
         .collect();
-    // The zones: about a junction, on its own arms, its widest way's paved half-width and corner and `MOUTH_M`; about
-    // a level crossing, its widest way's and `MOUTH_M`. Where an arm leads to a level change within the zone (it is a
-    // deck or tunnel road, or its next point is the joint to one), the arm most nearly opposite runs on into it as
-    // through a joint, and the zone stops only their side that the other arms lie on.
+    // The zones: on each side of a junction's arm, up to where the round of the corner toward the neighbour arm on
+    // that side leaves the arm's carriageway edge, as the face plan rounds it (`faces::points`) along at most
+    // `extent_m`: past the point where the two edges cross, by the round's tangent length. An arm and its most nearly
+    // opposite arm, where each is the other's, run on through the junction as through a joint.
+    let extent = rules.plan.extent_m;
     let mut zones: Vec<Zone> = Vec::new();
     let mut through = Vec::new();
     for j in g.junctions.iter().filter(|j| j.network == Network::Way && j.arms.len() > 2) {
-        let r = (j.arms.iter().map(|a| section(g.ways[a.way as usize].part)))
-            .map(|s| s.half_m + s.widen_m + s.shoulder_m + s.corner_radius_m + MOUTH_M)
-            .fold(0.0, f64::max);
         let p = j.pos.map(f64::from);
-        let r = r / mpu_at(p);
-        let leads = |a: &Arm| match a.next {
-            _ if change(a.way) => true,
-            Some(PointRef::Joint(k)) => {
-                let x = &g.joints[k as usize];
-                dist(x.pos.map(f64::from), p) < r && x.arms.iter().any(|b| change(b.way))
-            }
-            _ => false,
+        let carriage = |a: &Arm| info[a.way as usize].map_or((0.0, 0.0), |i| (i.2, i.3));
+        let opposite = |k: usize| {
+            let cos = |c: usize| libm::cos(j.arms[c].angle - j.arms[k].angle);
+            (0..j.arms.len()).filter(|&c| c != k).min_by(|&a, &b| cos(a).total_cmp(&cos(b))).expect("three arms")
         };
-        let pair = j.arms.iter().position(leads).map(|l| {
-            let opposite = |k: usize| libm::cos(j.arms[k].angle - j.arms[l].angle);
-            let t = (0..j.arms.len()).filter(|&k| k != l).min_by(|&a, &b| opposite(a).total_cmp(&opposite(b)));
-            [l, t.expect("a junction has three arms")]
-        });
         for (k, a) in j.arms.iter().enumerate() {
-            let partner = match pair {
-                Some([l, t]) if k == l => t,
-                Some([l, t]) if k == t => l,
-                _ => {
-                    zones.push((p, r, Some(a.way), [0.0; 2]));
-                    continue;
-                }
-            };
-            let b = &j.arms[partner];
-            if at_end(g, a) && ground(g, a.way) {
-                let on = if ground(g, b.way) && at_end(g, b) {
-                    Ok((b.way, b.dir))
-                } else {
-                    Err(if change(b.way) { End::Flush } else { End::Stop })
-                };
-                through.push(((a.way, a.dir), on));
+            if opposite(opposite(k)) == k && at_end(g, a) && ground(g, a.way) {
+                let b = &j.arms[opposite(k)];
+                let end = if change(b.way) { End::Flush } else { End::Stop };
+                through.push(((a.way, a.dir), (ground(g, b.way) && at_end(g, b)).then_some((b.way, b.dir)).ok_or(end)));
             }
-            let side = [-a.heading[1], a.heading[0]];
-            let others = j.arms.iter().enumerate().filter(|&(c, _)| c != k && c != partner);
-            zones.extend(others.map(|(_, c)| (p, r, Some(a.way), side.map(|v| v * dot(side, c.heading).signum()))));
+            let (ha, ra) = carriage(a);
+            for turn in [1.0, -1.0] {
+                // The neighbour arm on this side, turned θ from this one toward that side.
+                let ((hc, rc), th) = (0..j.arms.len())
+                    .filter(|&c| c != k)
+                    .map(|c| (carriage(&j.arms[c]), (turn * (j.arms[c].angle - a.angle)).rem_euclid(TAU)))
+                    .min_by(|x, y| x.1.total_cmp(&y.1))
+                    .expect("three arms");
+                let (sin, cos) = (libm::sin(th), libm::cos(th));
+                let crossed = th < PI && ha + hc * cos >= 0.0;
+                let foot = if crossed { (hc + ha * cos) / sin + ra.min(rc) / libm::tan(th / 2.0) } else { 0.0 };
+                let side = [-turn * a.heading[1], turn * a.heading[0]];
+                zones.push((p, foot.clamp(0.0, extent) / mpu_at(p), a.way, a.heading, side));
+            }
         }
-    }
-    for x in g.crossings.iter().filter(|x| x.kind == CrossingKind::LevelCrossing) {
-        let p = x.pos.map(f64::from);
-        let r = [x.over, x.under].map(|s| section(s.part)).iter().map(|s| s.half_m + s.shoulder_m).fold(0.0, f64::max);
-        zones.push((p, (r + MOUTH_M) / mpu_at(p), None, [0.0; 2]));
     }
     let in_zones =
         Grid::of(BUCKET, &zones.iter().map(|&(q, r, ..)| [q[0] - r, q[1] - r, q[0] + r, q[1] + r]).collect::<Vec<_>>());
     let in_zone = |p: &Point, out: [f64; 2]| {
         in_zones.any(p.pos, 0.0, |k| {
-            let (q, r, way, side) = zones[k as usize];
-            dist(q, p.pos) < r && way.is_none_or(|w| w == p.way) && dot(out, side) >= 0.0
+            let (q, r, way, h, side) = zones[k as usize];
+            way == p.way && (0.0..r).contains(&dot(sub(p.pos, q), h)) && dot(out, side) > 0.0
         })
     };
     let c = CELL_UNITS as f64;
@@ -573,7 +571,9 @@ pub fn place(g: &WayGraph, input: &CellInput, sections: &Sections) -> Edges {
         for &(w, d) in &chain {
             way_points(g, w, d, &mut pts);
         }
-        pts.dedup_by(|b, a| dist(a.pos, b.pos) < 1.0);
+        // Of two points at one place (a joint), the one first in `way_key` order stays, in either direction.
+        let key = |p: &Point| (way_key(g, p.way), p.post, p.along.to_bits());
+        pts.dedup_by(|b, a| (dist(a.pos, b.pos) < 1.0).then(|| *a = std::cmp::min_by_key(*a, *b, key)).is_some());
         // The chain ends past the graph where the graph leaves out a span.
         let cuts: Vec<usize> = (1..pts.len())
             .filter(|&i| pts[i].way == pts[i - 1].way && pts[i].span.abs_diff(pts[i - 1].span) > 1)
@@ -587,11 +587,12 @@ pub fn place(g: &WayGraph, input: &CellInput, sections: &Sections) -> Edges {
             if n < 2 || !(0..n).any(|i| near_cell(pts[i].pos, mpu[i])) {
                 continue;
             }
-            // Stroke metres in whole 1/1024 m: their sums and differences are exact, so two cells, whose chains start
-            // at different rings, decide each threshold alike.
+            // Stroke metres in whole 1/1024 m, each step at the mean scale of its two rings: their sums and
+            // differences are exact and alike in either direction, so two cells decide each threshold alike.
             let mut m = vec![0.0; n];
             for i in 1..n {
-                m[i] = m[i - 1] + libm::round(dist(pts[i].pos, pts[i - 1].pos) * mpu[i] * 1024.0) / 1024.0;
+                let step = dist(pts[i].pos, pts[i - 1].pos) * (mpu[i] + mpu[i - 1]) / 2.0;
+                m[i] = m[i - 1] + libm::round(step * 1024.0) / 1024.0;
             }
             let ctx = &*ctx.get_or_insert_with(|| Context::new(input, g, &info));
             for side in [1.0, -1.0] {
@@ -599,7 +600,7 @@ pub fn place(g: &WayGraph, input: &CellInput, sections: &Sections) -> Edges {
                 // points south, then this side's), whether its way is railed and its paved half-width.
                 let rings: Vec<([f64; 2], [f64; 2], bool, f64)> = (0..n)
                     .map(|i| {
-                        let (railed, e) = info[pts[i].way as usize].unwrap_or((false, 0.0));
+                        let (railed, e, ..) = info[pts[i].way as usize].unwrap_or_default();
                         let nrm = [side * pts[i].t[1], -side * pts[i].t[0]];
                         (add(pts[i].pos, nrm, (e + pts[i].widen) / mpu[i]), nrm, railed, e + pts[i].widen)
                     })
@@ -612,15 +613,33 @@ pub fn place(g: &WayGraph, input: &CellInput, sections: &Sections) -> Edges {
                     let t = ctx.terrain(add(rings[i].0, rings[i].1, DROP_OUT_M / mpu[i]));
                     rings[i].2 && t.is_some_and(|t| z - t > DROP_M)
                 });
-                // The town test runs only where a rail may stand.
+                // A stop changes a share only within `JOIN_M` of a ring where a rail may stand, so the town test runs
+                // only there.
                 let may = metres_to(&m, &vec![false; n], &flat(n, |i| mapped[i] || drops[i]));
                 let town = flat(n, |i| rings[i].2 && may[i] <= JOIN_M && ctx.town(rings[i].0, mpu[i]));
                 let need = flat(n, |i| mapped[i] || (drops[i] && !town[i]));
                 let mut towns: Vec<f64> = town.iter().map(|&t| f64::from(u8::from(t))).collect();
                 without_stubs(&mut towns, &m, BREAK_M, ends);
                 let fold = |j: usize| dot(sub(rings[j + 1].0, rings[j].0), add(pts[j].t, pts[j + 1].t, 1.0)) <= 0.0;
+                let turn = |i: usize| {
+                    let lo = (0..=i).rev().find(|&k| m[i] - m[k] >= BEND_M).unwrap_or(0);
+                    let hi = (i..n).find(|&k| m[k] - m[i] >= BEND_M).unwrap_or(n - 1);
+                    libm::acos(dot(pts[lo].t, pts[hi].t).clamp(-1.0, 1.0)) > BEND_RAD
+                };
+                // The rings where a delineator may stand: on its step, near the cell and outside towns.
+                let deli = flat(n, |i| {
+                    let on = |step: f64| libm::fmod(pts[i].along, step) == 0.0;
+                    rings[i].2
+                        && pts[i].post
+                        && (on(STEP_M) || (on(BEND_STEP_M) && turn(i)))
+                        && near_cell(rings[i].0, mpu[i])
+                        && !ctx.town(rings[i].0, mpu[i])
+                });
+                // Another way's band is read only where a stop can change a share or a delineator.
+                let to_deli = metres_to(&m, &vec![false; n], &deli);
                 let stops = flat(n, |i| {
                     let bit = if side * pts[i].dir > 0.0 { 1 } else { 2 };
+                    let front = add(rings[i].0, rings[i].1, -BEAM_IN_M[0] / mpu[i]);
                     (i == 0 && ends[0] == End::Stop)
                         || (i + 1 == n && ends[1] == End::Stop)
                         || in_zone(&pts[i], rings[i].1)
@@ -628,9 +647,9 @@ pub fn place(g: &WayGraph, input: &CellInput, sections: &Sections) -> Edges {
                         || (towns[i] > 0.0 && !mapped[i])
                         || (i > 0 && fold(i - 1))
                         || (i + 1 < n && fold(i))
-                        || ctx.in_other(add(rings[i].0, rings[i].1, -BEAM_IN_M[0] / mpu[i]), &chain, mpu[i])
+                        || ((may[i] <= JOIN_M || to_deli[i] < CLEAR_M) && ctx.in_other(front, &chain, mpu[i]))
                 });
-                let share = shares(&m, &need, &stops, ends);
+                let (share, to_stop) = shares(&m, &need, &stops, ends);
                 let ring = |i: usize| Ring {
                     edge: rings[i].0,
                     out: rings[i].1,
@@ -642,35 +661,18 @@ pub fn place(g: &WayGraph, input: &CellInput, sections: &Sections) -> Edges {
                 // Runs: the rings with a share and the sunk ring on each side; one sunk ring between two runs joins
                 // them.
                 let mut i = 0;
-                while i < n {
-                    if share[i] <= 0.0 {
-                        i += 1;
-                        continue;
-                    }
-                    let mut j = i;
-                    while j + 1 < n && (share[j + 1] > 0.0 || (j + 2 < n && share[j + 2] > 0.0)) {
-                        j += 1;
-                    }
-                    let run: Vec<Ring> = (i.saturating_sub(1)..=(j + 1).min(n - 1)).map(ring).collect();
+                while let Some(f) = (i..n).find(|&k| share[k] > 0.0) {
+                    let sunk = |k: usize| share.get(k).is_none_or(|&v| v <= 0.0);
+                    let j = (f..n).find(|&k| sunk(k + 1) && sunk(k + 2)).expect("the last ring ends a run");
+                    let run: Vec<Ring> = (f.saturating_sub(1)..=(j + 1).min(n - 1)).map(ring).collect();
                     if run.iter().any(|r| near_cell(r.edge, r.mpu)) {
                         out.rails.push(run);
                     }
                     i = j + 1;
                 }
-                // Delineators where no rail stands, clear of every stop and outside towns.
-                let to_stop = metres_to(&m, &vec![false; n], &stops);
-                let turn = |i: usize| {
-                    let lo = (0..=i).rev().find(|&k| m[i] - m[k] >= BEND_M).unwrap_or(0);
-                    let hi = (i..n).find(|&k| m[k] - m[i] >= BEND_M).unwrap_or(n - 1);
-                    libm::acos(dot(pts[lo].t, pts[hi].t).clamp(-1.0, 1.0)) > BEND_RAD
-                };
-                for i in (0..n).filter(|&i| rings[i].2 && pts[i].post && to_stop[i] >= CLEAR_M) {
-                    let on = |step: f64| libm::fmod(pts[i].along, step) == 0.0;
-                    if share[i.saturating_sub(1)..(i + 2).min(n)].iter().all(|&v| v <= 0.0)
-                        && (on(STEP_M) || (on(BEND_STEP_M) && turn(i)))
-                        && near_cell(rings[i].0, mpu[i])
-                        && !ctx.town(rings[i].0, mpu[i])
-                    {
+                // Delineators where no rail stands and clear of every stop.
+                for i in (0..n).filter(|&i| deli[i] && to_stop[i] >= CLEAR_M) {
+                    if share[i.saturating_sub(1)..(i + 2).min(n)].iter().all(|&v| v <= 0.0) {
                         out.delineators.push(ring(i));
                     }
                 }
@@ -680,28 +682,16 @@ pub fn place(g: &WayGraph, input: &CellInput, sections: &Sections) -> Edges {
     out
 }
 
-/// A point of a beam segment's plan: its place, its share of the way from the segment's first ring, and whether the
-/// side that starts at it is the segment's end at its first ring, at its second, or a long side.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Vertex {
-    q: [f64; 2],
-    t: f64,
-    side: Side,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Side {
-    Long,
-    First,
-    Second,
-}
+/// A point of a beam segment's plan: its place and its share of the way from the segment's first ring. A side whose
+/// two ends have the same share is an end of the segment, at its first ring (0) or its second (1).
+type Vertex = ([f64; 2], f64);
 
 /// A convex plan cut by the cell square. A cut point is set exactly on its cell line, and reckoned from the edge's
 /// two ends in a fixed order, so two segments that share an edge, and two cells, cut it alike.
 fn clip_square(mut poly: Vec<Vertex>) -> Vec<Vertex> {
     let c = CELL_UNITS as f64;
     for (axis, bound, low) in [(0, 0.0, false), (0, c, true), (1, 0.0, false), (1, c, true)] {
-        let inside = |v: &Vertex| if low { v.q[axis] <= bound } else { v.q[axis] >= bound };
+        let inside = |v: &Vertex| if low { v.0[axis] <= bound } else { v.0[axis] >= bound };
         let mut out = Vec::new();
         for i in 0..poly.len() {
             let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
@@ -709,12 +699,11 @@ fn clip_square(mut poly: Vec<Vertex>) -> Vec<Vertex> {
                 out.push(a);
             }
             if inside(&a) != inside(&b) {
-                let (p, r) = if (a.q[0], a.q[1]) < (b.q[0], b.q[1]) { (a, b) } else { (b, a) };
-                let f = (bound - p.q[axis]) / (r.q[axis] - p.q[axis]);
-                let mut q = add(p.q, sub(r.q, p.q), f);
+                let (p, r) = if a.0 < b.0 { (a, b) } else { (b, a) };
+                let f = (bound - p.0[axis]) / (r.0[axis] - p.0[axis]);
+                let mut q = add(p.0, sub(r.0, p.0), f);
                 q[axis] = bound;
-                // The cut point starts the side that a went on, or the cell line, a long side that the solid leaves open.
-                out.push(Vertex { q, t: p.t + f * (r.t - p.t), side: if inside(&a) { Side::Long } else { a.side } });
+                out.push((q, p.1 + f * (r.1 - p.1)));
             }
         }
         poly = out;
@@ -752,21 +741,21 @@ pub(super) fn solids(b: &mut Build, edges: &Edges, words: &[u32]) {
             let (ra, rb) = (&w[0], &w[1]);
             let [f, bk] = BEAM_IN_M;
             let plan = clip_square(vec![
-                Vertex { q: at(ra, f, 0.0), t: 0.0, side: Side::Long },
-                Vertex { q: at(rb, f, 0.0), t: 1.0, side: Side::Second },
-                Vertex { q: at(rb, bk, 0.0), t: 1.0, side: Side::Long },
-                Vertex { q: at(ra, bk, 0.0), t: 0.0, side: Side::First },
+                (at(ra, f, 0.0), 0.0),
+                (at(rb, f, 0.0), 1.0),
+                (at(rb, bk, 0.0), 1.0),
+                (at(ra, bk, 0.0), 0.0),
             ]);
-            let ring: Vec<P> = plan.iter().map(|v| rounded(v.q)).collect();
+            let ring: Vec<P> = plan.iter().map(|v| rounded(v.0)).collect();
             let Some(labels) = ring.iter().map(|p| find(words, p.map(f64::from))).collect::<Option<Vec<u32>>>() else {
                 continue;
             };
-            let s = |i: usize| sunk(ra.share + plan[i].t * (rb.share - ra.share));
-            // The end faces stand at the run's ends only.
-            let wall = |i: usize| match plan[i].side {
-                Side::First => k == 0,
-                Side::Second => k + 2 == run.len(),
-                Side::Long => true,
+            let s = |i: usize| sunk(ra.share + plan[i].1 * (rb.share - ra.share));
+            // The end faces stand at the run's ends only; a side on a cell line stays open in any case.
+            let wall = |i: usize| match (plan[i].1, plan[(i + 1) % plan.len()].1) {
+                (0.0, 0.0) => k == 0,
+                (1.0, 1.0) => k + 2 == run.len(),
+                _ => true,
             };
             solid(b, RAIL, &ring, |i| (labels[i], BEAM_UP_M[1] + s(i)), |i| (labels[i], BEAM_UP_M[0] + s(i)), wall);
         }
@@ -787,7 +776,7 @@ mod tests {
     fn chain(len: f64, need: impl Fn(f64) -> bool, stop: impl Fn(f64) -> bool, ends: [End; 2]) -> (Vec<f64>, Vec<f64>) {
         let m: Vec<f64> = (0..=(len / 2.0) as usize).map(|i| 2.0 * i as f64).collect();
         let (need, stops): (Vec<bool>, Vec<bool>) = m.iter().map(|&x| (need(x), stop(x))).unzip();
-        let s = shares(&m, &need, &stops, ends);
+        let s = shares(&m, &need, &stops, ends).0;
         (m, s)
     }
 
@@ -843,26 +832,31 @@ mod tests {
     }
 
     #[test]
+    fn a_chain_gives_the_same_shares_in_either_direction() {
+        let m = [0.0, 1.5, 5.5, 9.5, 11.0, 13.0, 17.0, 19.0, 23.0, 27.0];
+        let (need, stops): (Vec<bool>, Vec<bool>) = m.iter().map(|&x| (x <= 1.5, x == 17.0)).unzip();
+        let back = |v: &[bool]| v.iter().rev().copied().collect::<Vec<bool>>();
+        let mut forward = shares(&m, &need, &stops, [End::Flush, End::Open]).0;
+        let m_back: Vec<f64> = m.iter().rev().map(|x| 27.0 - x).collect();
+        forward.reverse();
+        assert_eq!(forward, shares(&m_back, &back(&need), &back(&stops), [End::Open, End::Flush]).0);
+    }
+
+    #[test]
     fn a_cell_line_cuts_a_beam_exactly_on_it_and_alike_from_both_sides() {
         let c = CELL_UNITS as f64;
-        let v = |q: [f64; 2], t: f64, side: Side| Vertex { q, t, side };
-        let quad = |x0: f64, x1: f64| {
-            vec![
-                v([x0, 100.0], 0.0, Side::Long),
-                v([x1, 117.0], 1.0, Side::Second),
-                v([x1, 130.0], 1.0, Side::Long),
-                v([x0, 113.0], 0.0, Side::First),
-            ]
-        };
+        let v = |q: [f64; 2], t: f64| (q, t);
+        let quad =
+            |x0: f64, x1: f64| vec![v([x0, 100.0], 0.0), v([x1, 117.0], 1.0), v([x1, 130.0], 1.0), v([x0, 113.0], 0.0)];
         let cut = clip_square(quad(c - 300.0, c + 500.0));
-        let on_line: Vec<Vertex> = cut.iter().copied().filter(|p| p.q[0] == c).collect();
+        let on_line: Vec<Vertex> = cut.iter().copied().filter(|p| p.0[0] == c).collect();
         assert_eq!(on_line.len(), 2);
-        assert!(on_line.iter().all(|p| (p.t - 300.0 / 800.0).abs() < 1e-12));
-        assert!(cut.iter().all(|p| p.side != Side::Second), "the far end lies past the cell");
+        assert!(on_line.iter().all(|p| (p.1 - 300.0 / 800.0).abs() < 1e-12));
+        assert!(cut.iter().all(|p| p.1 < 1.0), "the far end lies past the cell");
         // The neighbour holds the same beam 1 cell west: its cut points lie on its own x = 0.
         let shifted = clip_square(quad(-300.0, 500.0));
-        let theirs: Vec<f64> = shifted.iter().filter(|p| p.q[0] == 0.0).map(|p| p.q[1]).collect();
-        let ours: Vec<f64> = on_line.iter().map(|p| p.q[1]).collect();
+        let theirs: Vec<f64> = shifted.iter().filter(|p| p.0[0] == 0.0).map(|p| p.0[1]).collect();
+        let ours: Vec<f64> = on_line.iter().map(|p| p.0[1]).collect();
         assert_eq!(theirs, ours);
     }
 }
