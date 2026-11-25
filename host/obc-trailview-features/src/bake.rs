@@ -19,7 +19,7 @@ use crate::roads::{self, Classes, River, Surroundings};
 use crate::structures::{self, is_bridge, GROUND};
 use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
-use crate::{levels, lifts, metres, parts, rails, sea, world, Part, Tags, Terrain};
+use crate::{levels, lifts, metres, parts, rails, sea, summits, world, Part, Tags, Terrain};
 
 const EARTH_RADIUS_KM: f64 = 6371.0088;
 /// The waterways and lakes that the water solver sets, and the falls, weirs and dams that keep the
@@ -149,6 +149,7 @@ pub fn bake(
     // the other lifts: a station shares their places. The features of the solvers wait for all of their kind.
     let (mut lift_ways, mut lift_entry, mut landuse) = (Vec::new(), None, Vec::new());
     let (mut ways, mut stations, mut river_areas) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut crosses, mut peaks) = (Vec::new(), Vec::new());
     osm::objects(kinds, &cut, &binary, &osm::ALL, |(selected, mut tags, mut parts)| {
         let Selected::Entry(e) = selected else {
             if placer.tiles.meets(MAX_ZOOM, &parts) {
@@ -164,6 +165,15 @@ pub fn bake(
             return;
         }
         if kind == "building" {
+            return;
+        }
+        if summits::solves(kind) {
+            let found = (tags, parts[0].points[0]);
+            if kind == "peak" {
+                peaks.push(found)
+            } else {
+                crosses.push(found)
+            }
             return;
         }
         if placer.tiles.meets(MAX_ZOOM, &parts) {
@@ -193,6 +203,12 @@ pub fn bake(
         ));
     }
     eprintln!("osm: {:.1} s", started.elapsed().as_secs_f64());
+    if let Some(cross) = kinds.iter().find(|k| k.kind == "cross") {
+        let (crosses, added) = summits::crosses(crosses, &peaks);
+        for (tags, point) in crosses.into_iter().chain(added) {
+            placer.entry(cross, tags, line(vec![point], None));
+        }
+    }
     // The buildings come in a read of the areas of their own, after the landuse areas: a building of the
     // region takes the landuse of the area that holds it. The lifts keep only the outer rings that can house
     // a station.

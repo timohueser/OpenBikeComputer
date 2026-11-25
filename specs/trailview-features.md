@@ -96,7 +96,7 @@ finds the runs of that field. A stream has no length: the streams before it give
 `kind`, `key` and `value` are indices from 0 into the strings of the tile. The tags of a feature are
 sorted by key. `geometry` is 0 for a point, 1 for a line and 2 for an area. The features of a tile
 come in a fixed order: first the kinds that no solver sets, in the order of the OSM file, the points
-and the lines before the areas; then the buildings, the lifts, the rivers and lakes, the roads,
+and the lines before the areas; then the crosses, the buildings, the lifts, the rivers and lakes, the roads,
 paths and tracks, the bridge piers, the catenary masts, the platforms, the sea, the tunnel tubes and the tunnel
 ends. So the bytes of a
 tile do not depend on how much of the file lies outside the region.
@@ -872,6 +872,14 @@ that it runs in, and a room's floor with its last arm's.
   clear, and a way that was at grade with the road solver's height where the floor went down under it. Another way of
   the kind `tunnel` lowers the floor only as a room over this one; its clashes are counted apart, as tube clashes.
 
+### Summit crosses
+
+A `cross` within 50 m of a `peak` takes the tag `summit:cross` `yes`. A peak with a `name` and with
+no cross within 50 m gets a `cross` with that tag alone at its node, except a peak tagged
+`summit:cross` `no`. The crosses come in the order of the file, then the added crosses in the order
+of their peaks. A peak is no feature of the tiles. A peak tagged `summit:cross` `yes` is a `cross`,
+the first entry that matches it.
+
 ### Sea
 
 The bake adds the kind `sea`, `min_zoom` 8: each polygon of the source `water-polygons`
@@ -899,8 +907,8 @@ The bake validates the table before it reads OSM, and a test of `host/obc-trailv
 validates the committed table. A `path` keeps `sac_scale` and `surface`: a reader takes the look of
 steps from them. A `road` keeps `service`, and a `main-road`, a `road` and a `path` keep `lit`: a
 reader tells a driveway from them and lights a way. A kind needs no engine module: `street-lamp`
-and `level-crossing` are for the ground plan's placement. The table is part of the options of the step, so a change to it
-bakes the layer again.
+and `level-crossing` are for the ground plan's placement, and a `peak` only places summit crosses.
+The table is part of the options of the step, so a change to it bakes the layer again.
 
 ### Add a kind
 
