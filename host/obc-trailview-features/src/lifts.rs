@@ -3,12 +3,13 @@
 //! adds a pylon in a span that is longer than its rig allows, or under whose cable a carrier comes
 //! nearer the terrain than its clearance. The pylon stands where the carrier comes nearest, as a real
 //! pylon stands on a knoll. A way that runs through the end of another lift splits there: that vertex
-//! is a station, not a pylon.
+//! is a station, not a pylon. A station stands at each end, also in place of a building that OSM maps
+//! around the end.
 
 use std::collections::HashSet;
 
 use crate::geometry::{bounds, contains, key, Boxes};
-use crate::{metres, Tags, Terrain};
+use crate::{metres, Part, Tags, Terrain};
 
 /// Per rig: the height of the cable over the ground at a pylon and at a station, the longest span,
 /// the sag at mid-span as a share of the span, and how far a carrier hangs under the cable and the
@@ -97,18 +98,38 @@ fn pylons(tags: &Tags, points: &[[f64; 2]], terrain: &dyn Terrain) -> Vec<[f64; 
 pub struct Metrics {
     pub lifts: usize,
     pub added_pylons: usize,
-    pub housed_ends: usize,
     pub shared_ends: usize,
 }
 
 /// A lift: its tags and points.
 pub type Lift = (Tags, Vec<[f64; 2]>);
 
+/// The ends of the lifts.
+pub struct Ends {
+    points: Vec<[f64; 2]>,
+    boxes: Boxes,
+}
+
+impl Ends {
+    pub fn new(ways: &[Lift]) -> Self {
+        let points: Vec<[f64; 2]> = ways.iter().flat_map(|(_, p)| [p[0], p[p.len() - 1]]).collect();
+        let boxes = Boxes::new(&points.iter().map(|&[x, y]| [x, y, x, y]).collect::<Vec<_>>());
+        Self { points, boxes }
+    }
+
+    /// Whether an outer ring of the parts holds an end: the station of the lift stands for such a building.
+    pub fn within(&self, parts: &[Part]) -> bool {
+        parts.iter().filter(|p| p.outer).any(|p| {
+            let near = self.boxes.overlapping(bounds(&p.points));
+            near.into_iter().any(|k| contains(&[p.points.as_slice()], self.points[k]))
+        })
+    }
+}
+
 /// The lifts (tags, points) as the tiles keep them: each way split at its vertices where another lift
-/// ends, with the pylons that it lacks on the `terrain`, and the tag `stations` where an end
-/// has no station of its own: the end lies in one of the `buildings` (outer rings), or a lift before
-/// it in the list has its station there.
-pub fn rigged(ways: &[Lift], buildings: &[Vec<[f64; 2]>], terrain: &dyn Terrain) -> (Vec<Lift>, Metrics) {
+/// ends, with the pylons that it lacks on the `terrain`, and the tag `stations` where an end has no
+/// station of its own: a lift before it in the list has its station there.
+pub fn rigged(ways: &[Lift], terrain: &dyn Terrain) -> (Vec<Lift>, Metrics) {
     let ends: HashSet<[u64; 2]> =
         ways.iter().flat_map(|(_, points)| [points[0], points[points.len() - 1]]).map(key).collect();
     let mut split = Vec::new();
@@ -119,19 +140,12 @@ pub fn rigged(ways: &[Lift], buildings: &[Vec<[f64; 2]>], terrain: &dyn Terrain)
         cut.push(last);
         split.extend(cut.windows(2).map(|c| (tags, &points[c[0]..=c[1]])));
     }
-    let housed = inside(ways.iter().flat_map(|(_, p)| [p[0], p[p.len() - 1]]), buildings);
     let mut held = HashSet::new();
     let mut metrics = Metrics { lifts: split.len(), ..Metrics::default() };
     let mut out = Vec::new();
     for (tags, points) in split {
-        let mut own = [false; 2];
-        for (n, p) in [points[0], points[points.len() - 1]].into_iter().enumerate() {
-            let (is_housed, is_held) = (housed.contains(&key(p)), held.contains(&key(p)));
-            own[n] = !is_housed && !is_held;
-            metrics.housed_ends += usize::from(is_housed);
-            metrics.shared_ends += usize::from(!is_housed && is_held);
-            held.insert(key(p));
-        }
+        let own = [points[0], points[points.len() - 1]].map(|p| held.insert(key(p)));
+        metrics.shared_ends += own.iter().filter(|own| !**own).count();
         let rig = pylons(tags, points, terrain);
         metrics.added_pylons += rig.len() - points.len();
         let stations = match own {
@@ -147,15 +161,6 @@ pub fn rigged(ways: &[Lift], buildings: &[Vec<[f64; 2]>], terrain: &dyn Terrain)
         out.push((tags, rig));
     }
     (out, metrics)
-}
-
-/// The points that lie inside one of the rings.
-fn inside(points: impl Iterator<Item = [f64; 2]>, rings: &[Vec<[f64; 2]>]) -> HashSet<[u64; 2]> {
-    let boxes = Boxes::new(&rings.iter().map(bounds).collect::<Vec<_>>());
-    points
-        .filter(|&[x, y]| boxes.overlapping([x, y, x, y]).into_iter().any(|k| contains(&[rings[k].as_slice()], [x, y])))
-        .map(key)
-        .collect()
 }
 
 #[cfg(test)]
@@ -247,7 +252,7 @@ mod tests {
     fn a_way_through_the_end_of_another_lift_splits_there_and_one_station_stands() {
         let (a, m, b, c) = (at(0.0, 0.0), at(100.0, 0.0), at(200.0, 0.0), at(100.0, 100.0));
         let ways = [(lift("gondola"), vec![a, m, b]), (lift("chair_lift"), vec![m, c])];
-        let (out, metrics) = rigged(&ways, &[], &|_: f64, _: f64| f64::NAN);
+        let (out, metrics) = rigged(&ways, &|_: f64, _: f64| f64::NAN);
         assert_eq!(out.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(), [vec![a, m], vec![m, b], vec![m, c]]);
         let stations: Vec<Option<&str>> = out.iter().map(|(t, _)| t.get("stations").map(String::as_str)).collect();
         assert_eq!(stations, [None, Some("end"), Some("end")]);
@@ -255,10 +260,16 @@ mod tests {
     }
 
     #[test]
-    fn an_end_in_a_building_has_no_station_of_its_own() {
-        let hall = vec![at(-10.0, -10.0), at(10.0, -10.0), at(10.0, 10.0), at(-10.0, 10.0)];
-        let (out, _) =
-            rigged(&[(lift("drag_lift"), vec![at(0.0, 0.0), at(100.0, 0.0)])], &[hall], &|_: f64, _: f64| f64::NAN);
-        assert_eq!(out[0].0["stations"], "end");
+    fn the_outer_rings_of_a_building_decide_whether_it_holds_an_end() {
+        let ring = |east: f64, half: f64, outer: bool| Part {
+            outer,
+            points: vec![at(east - half, -half), at(east + half, -half), at(east + half, half), at(east - half, half)],
+            z: None,
+            plan: None,
+        };
+        let ends = Ends::new(&[(lift("drag_lift"), vec![at(0.0, 0.0), at(100.0, 0.0)])]);
+        assert!(ends.within(&[ring(0.0, 10.0, true), ring(0.0, 5.0, false)]), "an end in a courtyard");
+        assert!(ends.within(&[ring(300.0, 10.0, true), ring(100.0, 10.0, true)]), "the second outer ring");
+        assert!(!ends.within(&[ring(50.0, 10.0, true)]), "a building under the cable");
     }
 }

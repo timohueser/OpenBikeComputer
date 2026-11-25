@@ -510,10 +510,15 @@ Each vertex of an `aerialway` between its ends is a pylon. A way splits at each 
 `aerialway` ends: there is a mid-station. Where a span is longer than its rig allows, or where a
 carrier would come nearer the terrain than its clearance, the bake adds a pylon: in the middle of a
 long span, else at the point of the span at least 25 m from both of its ends where the carrier comes
-nearest. The rigs are those of `host/obc-trailview-features/src/lifts.rs`. A station at an end that
-lies inside a mapped building is that building; of the ways that end at one point, only the first in
-the OSM data has the station there. The tag `stations` names the ends that have a station of their
-own.
+nearest. The rigs are those of `host/obc-trailview-features/src/lifts.rs`.
+
+A station stands at each end of an `aerialway`. A `building` with an outer ring that holds such an
+end is not in the tiles: the station stands in its place. One rule covers each case: a building
+with more than one end goes and each end has its station; one outer ring of a multipolygon that
+holds an end removes the whole building; an end in a courtyard counts. A building at the edge of
+the region sees the same ends as one in its middle, because the bake reads the lifts and the
+buildings 20 km past the region. Of the ways that end at one point, only the first in the OSM data
+has the station there. The tag `stations` names the ends that have a station of their own.
 
 A `building` in an area `landuse=industrial` or `landuse=farmyard` has the tag `landuse` of that
 area: of the smallest such area that holds the mean of the vertices of its first outer ring. The
@@ -908,6 +913,8 @@ validates the committed table. A `path` keeps `sac_scale` and `surface`: a reade
 steps from them. A `road` keeps `service`, and a `main-road`, a `road` and a `path` keep `lit`: a
 reader tells a driveway from them and lights a way. A kind needs no engine module: `street-lamp`
 and `level-crossing` are for the ground plan's placement, and a `peak` only places summit crosses.
+The inactive kind `no-house` takes the buildings that the engine must not draw as a house: a
+building tagged `aerialway=station`, where the station of the lift stands, and a ski jump.
 The table is part of the options of the step, so a change to it bakes the layer again.
 
 ### Add a kind
