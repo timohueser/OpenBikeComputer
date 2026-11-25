@@ -40,3 +40,5 @@ python3 -I "$here/map.py" "$d/feat/bw.parquet" "$d/feat/model.pkl" "$d/feat/bw_m
 python3 -I -c "import sys, pandas as p; p.concat([p.read_parquet(f) for f in sys.argv[2:]]).to_parquet(sys.argv[1])" \
   "$d/feat/norway_all_matched.parquet" "$d/feat/norway_matched.parquet" "$d/feat/norway_periodic_matched.parquet"
 python3 -I "$here/map.py" "$d/feat/norway.parquet" "$d/feat/model.pkl" "$d/feat/norway_all_matched.parquet" 60.76 11.08 "Norway, Hamar" "$d/norway_hamar.png"
+python3 -I "$here/claims.py" "$d/feat/england_matched.parquet" "$d/feat/model.pkl" \
+  "$d/feat/bw_matched.parquet" "$d/feat/norway_matched.parquet" "$d/feat/norway_periodic_matched.parquet" | tee -a "$d/report.txt"
