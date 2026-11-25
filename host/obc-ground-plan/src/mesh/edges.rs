@@ -739,6 +739,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                                 let share = share[a] * (1.0 - u) + share[b] * u;
                                 if share > 0.0 {
                                     let (edge, nrm) = (mix(rings[a].0, rings[b].0, u), mix(rings[a].1, rings[b].1, u));
+                                    let nrm = nrm.map(|v| v / libm::hypot(nrm[0], nrm[1]));
                                     let along = [-nrm[1], nrm[0]];
                                     out.posts.push(Ring { edge, out: nrm, along, mpu: mpu_at(edge), share });
                                 }
