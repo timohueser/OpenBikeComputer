@@ -3,7 +3,7 @@
 //! and the drawn road's height, and a post or a delineator starts on paved ground and goes down into the fill.
 //!
 //! A chain is the ground road ways that joints and a junction's opposite arms link. Its rings are the graph samples
-//! and a post point at each `POST_M` of stroke metres. Per side, a ring needs a rail where the paved edge lies `DROP_M`
+//! and a point at each `RING_M` of stroke metres. Per side, a ring needs a rail where the paved edge lies `DROP_M`
 //! over the plain terrain `DROP_OUT_M` out, or where a mapped guard rail lies near; `shares` gives each ring its share
 //! by the stretch rules. A rail sinks into the ground before a stop: a chain's end at a junction or past the graph, a
 //! junction's corner on its arm's side, a sidewalk, a town, a fold, or another way's paved band under its beam. At a
@@ -11,7 +11,7 @@
 //! plain terrain and the features, no farther past the cell than `reach` states, and alike in either direction of a
 //! chain, so two cells give a ring the same share.
 
-use super::shell::{clip, prism, solid, Build, DELINEATOR, P, RAIL};
+use super::shell::{clip, fan, prism, Build, DELINEATOR, P, RAIL};
 use crate::faces::records::find;
 use crate::faces::Rules;
 use crate::frame::{metres_per_unit_at, GlobalPoint, CELL_UNITS};
@@ -40,8 +40,9 @@ const TOWN_BUILDINGS: usize = 3;
 const TOWN_M: f64 = 40.0;
 /// A mapped guard rail counts within this of the shoulder's outer edge.
 const MAPPED_M: f64 = 2.5;
-/// A post every this many stroke metres; a ring at each, so a straight beam runs this far between rings.
-const POST_M: f64 = 4.0;
+/// A ring every `RING_M` of stroke metres, so a straight beam runs this far between rings, and a post every `POST_M`.
+const RING_M: f64 = 4.0;
+const POST_M: f64 = 2.0;
 /// A delineator every `STEP_M` of stroke metres, and every `BEND_STEP_M` where the line turns `BEND_RAD` within
 /// `BEND_M` each way; none within `CLEAR_M` of a stop.
 const STEP_M: f64 = 40.0;
@@ -49,27 +50,29 @@ const BEND_STEP_M: f64 = 20.0;
 const BEND_RAD: f64 = 0.35;
 const BEND_M: f64 = 15.0;
 const CLEAR_M: f64 = 5.0;
-/// The beam, a box: its front and back in from the shoulder's outer edge, its foot and top over the road.
-const BEAM_IN_M: [f64; 2] = [0.22, 0.13];
-const BEAM_UP_M: [f64; 2] = [0.44, 0.75];
+/// The W-beam's section, closed, from the middle of its back: per point metres in from the shoulder's outer edge and
+/// over the road. Two ridges face the road about a fold, 0.31 m high and 0.09 m deep, its front `BEAM_FRONT_M` in.
+const BEAM: [[f64; 2]; 6] = [[0.13, 0.595], [0.16, 0.44], [0.22, 0.49], [0.18, 0.595], [0.22, 0.7], [0.16, 0.75]];
+const BEAM_FRONT_M: f64 = 0.22;
 /// A beam that does not stand has sunk this far: its top 5 cm under the shoulder.
 const SINK_M: f64 = 0.8;
-/// A post behind the beam: its middle in from the edge, half its depth and width, its foot and top. Its back keeps
-/// 5 cm off the edge, more than the most that the face plan's chord of the edge leaves the curve.
-const POST_IN_M: f64 = 0.09;
-const POST_HALF_M: [f64; 2] = [0.04, 0.04];
+/// A post right behind the beam: its middle in from the edge, its plan about it (in, along), a triangle with its
+/// face toward the beam, and its foot and top. Its back keeps 5 cm off the edge, more than the most that the face
+/// plan's chord of the edge leaves the curve.
+const POST_IN_M: f64 = 0.10;
+const POST_PLAN_M: [[f64; 2]; 3] = [[0.05, -0.04], [0.05, 0.04], [-0.05, 0.0]];
 const POST_UP_M: [f64; 2] = [-1.0, 0.71];
-/// A delineator: its middle in from the edge, half its depth and width, and its foot, black band and top. The piece
+/// A delineator: its middle in from the edge, its plan about it (in, along), and its foot, black band and top. The piece
 /// shader draws a triangle between the band's two offsets black (`plan/piece.wgsl`).
 const DELI_IN_M: f64 = 0.10;
-const DELI_HALF_M: [f64; 2] = [0.05, 0.06];
+const DELI_PLAN_M: [[f64; 2]; 4] = [[-0.05, -0.06], [0.05, -0.06], [0.05, 0.06], [-0.05, 0.06]];
 const DELI_UP_M: [f64; 4] = [-0.5, 0.74, 0.9, 1.0];
 /// The side of a grid bucket, in frame units (about 13 m).
 const BUCKET: f64 = 8192.0;
 
 /// A ring of an edge feature: its point on the shoulder's outer edge (frame units from the cell's origin), the unit
 /// normal out of the road and the unit tangent along it, the metres per unit there, the share that it stands by
-/// (0 sunk, 1 full) and whether a post stands at it.
+/// (0 sunk, 1 full).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ring {
     pub edge: [f64; 2],
@@ -77,13 +80,13 @@ pub struct Ring {
     pub along: [f64; 2],
     pub mpu: f64,
     pub share: f64,
-    pub post: bool,
 }
 
-/// A cell's guard rails, each the rings of one run, and its delineators.
+/// A cell's guard rails, each the rings of one run, their posts, and its delineators.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Edges {
     pub rails: Vec<Vec<Ring>>,
+    pub posts: Vec<Ring>,
     pub delineators: Vec<Ring>,
 }
 
@@ -101,7 +104,7 @@ enum End {
 pub fn reach(sections: &Sections) -> Reach {
     let edge = (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.widen_m + c.shoulder_m).fold(0.0, f64::max);
     let terms = [
-        ("POST_M", POST_M),
+        ("RING_M", RING_M),
         ("2·RAMP_M", 2.0 * RAMP_M),
         ("LEAD_M + RAMP_M", LEAD_M + RAMP_M),
         ("JOIN_M", JOIN_M),
@@ -278,7 +281,7 @@ struct Point {
     span: u32,
 }
 
-/// The points of way w in direction d: its graph samples and a post point at each `POST_M` of stroke metres
+/// The points of way w in direction d: its graph samples and a post point at each `RING_M` of stroke metres
 /// between them; a sample within a metre of a post point gives way to it. The graph leaves out the spans that do not
 /// meet its area, and posts stand only between the samples of one span or of two spans that meet.
 fn way_points(g: &WayGraph, w: u32, d: i8, out: &mut Vec<Point>) {
@@ -307,8 +310,8 @@ fn way_points(g: &WayGraph, w: u32, d: i8, out: &mut Vec<Point>) {
         let v = part.vertices[s.span as usize].pos;
         let sign = if part.backward { -1.0 } else { 1.0 };
         let (lo, hi) = (s.along_m.min(n.along_m), s.along_m.max(n.along_m));
-        let mut posts: Vec<Point> = (libm::floor(lo / POST_M) as i64 + 1..)
-            .map(|k| k as f64 * POST_M)
+        let mut posts: Vec<Point> = (libm::floor(lo / RING_M) as i64 + 1..)
+            .map(|k| k as f64 * RING_M)
             .take_while(|&along| along < hi)
             .map(|along| {
                 let p = curve_point(part, s.span as usize, u_at(span, (along - span.along0_m) * sign));
@@ -359,7 +362,7 @@ type Chain = (Vec<(u32, i8)>, [End; 2]);
 /// The ground road ways in chains through the joints and the junctions' arms in `through`, each with its
 /// direction, and how each chain ends at its first and its last way. A closed chain starts at its first way in
 /// `way_key` order, so its two ends lie alike in every cell that holds all of it; one that leaves a cell's graph
-/// is longer than 2·(`MARGIN_M` − 2·`POST_M`), as the cell places only rings within 2·`POST_M` of its square.
+/// is longer than 2·(`MARGIN_M` − 2·`RING_M`), as the cell places only rings within 2·`RING_M` of its square.
 fn chains(g: &WayGraph, through: &[((u32, i8), Next)]) -> Vec<Chain> {
     let mut next: BTreeMap<(u32, i8), Next> = BTreeMap::new();
     for j in &g.joints {
@@ -556,7 +559,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
     let c = CELL_UNITS as f64;
     // A ring this near the cell square may own a piece in it.
     let near_cell = |q: [f64; 2], mpu: f64| {
-        let r = 2.0 * POST_M / mpu;
+        let r = 2.0 * RING_M / mpu;
         q[0] > -r && q[1] > -r && q[0] < c + r && q[1] < c + r
     };
     let mapped_any = input.features.iter().any(|f| f.kind == "guard-rail");
@@ -639,7 +642,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                 let to_deli = metres_to(&m, &vec![false; n], &deli);
                 let stops = flat(n, |i| {
                     let bit = if side * pts[i].dir > 0.0 { 1 } else { 2 };
-                    let front = add(rings[i].0, rings[i].1, -BEAM_IN_M[0] / mpu[i]);
+                    let front = add(rings[i].0, rings[i].1, -BEAM_FRONT_M / mpu[i]);
                     (i == 0 && ends[0] == End::Stop)
                         || (i + 1 == n && ends[1] == End::Stop)
                         || in_zone(&pts[i], rings[i].1)
@@ -656,7 +659,6 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                     along: pts[i].t,
                     mpu: mpu[i],
                     share: share[i],
-                    post: pts[i].post && share[i] > 0.0,
                 };
                 // Runs: the rings with a share and the sunk ring on each side; one sunk ring between two runs joins
                 // them.
@@ -664,9 +666,40 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                 while let Some(f) = (i..n).find(|&k| share[k] > 0.0) {
                     let sunk = |k: usize| share.get(k).is_none_or(|&v| v <= 0.0);
                     let j = (f..n).find(|&k| sunk(k + 1) && sunk(k + 2)).expect("the last ring ends a run");
-                    let run: Vec<Ring> = (f.saturating_sub(1)..=(j + 1).min(n - 1)).map(ring).collect();
+                    let (lo, hi) = (f.saturating_sub(1), (j + 1).min(n - 1));
+                    let run: Vec<Ring> = (lo..=hi).map(ring).collect();
                     if run.iter().any(|r| near_cell(r.edge, r.mpu)) {
                         out.rails.push(run);
+                        // A post at each `POST_M` of its way's stroke metres between two rings of one way, where
+                        // the beam stands: its point and normal out of the road are theirs, mixed alike in either
+                        // direction of the chain.
+                        let posts_on =
+                            |k: usize| k < hi && pts[k].way == pts[k + 1].way && pts[k].along != pts[k + 1].along;
+                        let mix = |p: [f64; 2], q: [f64; 2], u: f64| {
+                            [p[0] * (1.0 - u) + q[0] * u, p[1] * (1.0 - u) + q[1] * u]
+                        };
+                        for k in (lo..hi).filter(|&k| posts_on(k)) {
+                            let (a, b) = (&pts[k], &pts[k + 1]);
+                            let (x, y) = (a.along.min(b.along), a.along.max(b.along));
+                            for mark in
+                                (libm::ceil(x / POST_M) as i64..).map(|v| v as f64 * POST_M).take_while(|&v| v <= y)
+                            {
+                                let u = (mark - a.along) / (b.along - a.along);
+                                let share = share[k] * (1.0 - u) + share[k + 1] * u;
+                                // A post on a ring stands once: from the chord that starts there, if any.
+                                if share > 0.0 && (u < 1.0 || !posts_on(k + 1)) {
+                                    let (edge, nrm) =
+                                        (mix(rings[k].0, rings[k + 1].0, u), mix(rings[k].1, rings[k + 1].1, u));
+                                    out.posts.push(Ring {
+                                        edge,
+                                        out: nrm,
+                                        along: [-nrm[1], nrm[0]],
+                                        mpu: mpu_at(edge),
+                                        share,
+                                    });
+                                }
+                            }
+                        }
                     }
                     i = j + 1;
                 }
@@ -682,9 +715,9 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
     out
 }
 
-/// A point of a beam segment's plan: its place and its share of the way from the segment's first ring. A side whose
-/// two ends have the same share is an end of the segment, at its first ring (0) or its second (1).
-type Vertex = ([f64; 2], f64);
+/// A point of a beam face: its place, its share of the way from the segment's first ring and its height in the
+/// beam's section.
+type Vertex = ([f64; 2], [f64; 2]);
 
 /// A convex plan cut by the cell square. A cut point is set exactly on its cell line, and reckoned from the edge's
 /// two ends in a fixed order, so two segments that share an edge, and two cells, cut it alike.
@@ -703,7 +736,7 @@ fn clip_square(mut poly: Vec<Vertex>) -> Vec<Vertex> {
                 let f = (bound - p.0[axis]) / (r.0[axis] - p.0[axis]);
                 let mut q = add(p.0, sub(r.0, p.0), f);
                 q[axis] = bound;
-                out.push((q, p.1 + f * (r.1 - p.1)));
+                out.push((q, add(p.1, sub(r.1, p.1), f)));
             }
         }
         poly = out;
@@ -715,20 +748,41 @@ fn rounded(q: [f64; 2]) -> P {
     q.map(|v| libm::round(v) as i32)
 }
 
+/// Whether a face of points (plan, metres up) turns counter-clockwise seen from `out` (east, north, up): by its
+/// normal (Newell's), in metres.
+fn faces(pts: &[Vertex], mpu: f64, out: [f64; 3]) -> bool {
+    let r = |v: &Vertex| [v.0[0] * mpu, -v.0[1] * mpu, v.1[1]];
+    let mut n = [0.0; 3];
+    for (a, b) in pts.iter().map(r).zip(pts.iter().cycle().skip(1).map(r)) {
+        n = [
+            n[0] + (a[1] - b[1]) * (a[2] + b[2]),
+            n[1] + (a[2] - b[2]) * (a[0] + b[0]),
+            n[2] + (a[0] - b[0]) * (a[1] + b[1]),
+        ];
+    }
+    n[0] * out[0] + n[1] * out[1] + n[2] * out[2] > 0.0
+}
+
 /// The solids of a cell's guard rails and delineators in its storey mesh, each corner on the label that the block
-/// finds at its point; a piece whose point finds none is left out. A beam is cut on the cell lines and stays open
-/// there, and so is a post or a delineator, whose corners take the label at its middle where the cell holds it.
+/// finds at its point; a piece whose point finds none is left out. A beam is swept from its section between each two
+/// rings and closed at its run's ends; it is cut on the cell lines and stays open there, and so is a post or a
+/// delineator, whose corners take the label at its middle where the cell holds it.
 pub(super) fn solids(b: &mut Build, edges: &Edges, words: &[u32]) {
     let c = CELL_UNITS as f64;
     let sunk = |share: f64| -SINK_M * (1.0 - share);
+    // The section turns counter-clockwise in (in, up) where this is positive.
+    let turn: f64 = (0..BEAM.len())
+        .map(|k| BEAM[k][0] * BEAM[(k + 1) % BEAM.len()][1] - BEAM[(k + 1) % BEAM.len()][0] * BEAM[k][1])
+        .sum();
+    let east_north = |v: [f64; 2]| [v[0], -v[1], 0.0];
     let at = |r: &Ring, d: f64, a: f64| add(add(r.edge, r.out, -d / r.mpu), r.along, a / r.mpu);
-    // A box at ring r, `d` in from the edge, of half depth and width `half`, cut by the cell square: a prism between
-    // each two offsets of `up`, on the label at its middle, or where a neighbour holds that, at its first point.
-    let boxed = |b: &mut Build, part: usize, r: &Ring, d: f64, [hd, ha]: [f64; 2], up: &[f64]| {
+    // A prism at ring r, its middle `d` in from the edge and its plan about that (in, along), cut by the cell square:
+    // one between each two offsets of `up`, on the label at its middle, or where a neighbour holds that, at its first
+    // point.
+    let boxed = |b: &mut Build, part: usize, r: &Ring, d: f64, plan: &[[f64; 2]], up: &[f64]| {
         let mid = at(r, d, 0.0);
         let o = rounded(mid);
-        let corner = |x: f64, y: f64| sub(at(r, d + x, y), o.map(f64::from));
-        let ring = clip(o, &[corner(-hd, -ha), corner(hd, -ha), corner(hd, ha), corner(-hd, ha)]);
+        let ring = clip(o, &plan.iter().map(|&[x, y]| sub(at(r, d + x, y), o.map(f64::from))).collect::<Vec<_>>());
         let inside = mid.iter().all(|v| (0.0..=c).contains(v));
         if let Some(label) = ring.first().and_then(|&p| find(words, (if inside { o } else { p }).map(f64::from))) {
             for w in up.windows(2) {
@@ -739,32 +793,45 @@ pub(super) fn solids(b: &mut Build, edges: &Edges, words: &[u32]) {
     for run in &edges.rails {
         for (k, w) in run.windows(2).enumerate() {
             let (ra, rb) = (&w[0], &w[1]);
-            let [f, bk] = BEAM_IN_M;
-            let plan = clip_square(vec![
-                (at(ra, f, 0.0), 0.0),
-                (at(rb, f, 0.0), 1.0),
-                (at(rb, bk, 0.0), 1.0),
-                (at(ra, bk, 0.0), 0.0),
-            ]);
-            let ring: Vec<P> = plan.iter().map(|v| rounded(v.0)).collect();
-            let Some(labels) = ring.iter().map(|p| find(words, p.map(f64::from))).collect::<Option<Vec<u32>>>() else {
-                continue;
-            };
-            let s = |i: usize| sunk(ra.share + plan[i].1 * (rb.share - ra.share));
-            // The end faces stand at the run's ends only; a side on a cell line stays open in any case.
-            let wall = |i: usize| match (plan[i].1, plan[(i + 1) % plan.len()].1) {
-                (0.0, 0.0) => k == 0,
-                (1.0, 1.0) => k + 2 == run.len(),
-                _ => true,
-            };
-            solid(b, RAIL, &ring, |i| (labels[i], BEAM_UP_M[1] + s(i)), |i| (labels[i], BEAM_UP_M[0] + s(i)), wall);
-        }
-        for r in run.iter().filter(|r| r.post) {
-            boxed(b, RAIL, r, POST_IN_M, POST_HALF_M, &POST_UP_M.map(|up| up + sunk(r.share)));
+            let mut faces_of: Vec<(Vec<Vertex>, [f64; 3])> = Vec::new();
+            for e in 0..BEAM.len() {
+                let (p, q) = (BEAM[e], BEAM[(e + 1) % BEAM.len()]);
+                // Out of the beam: (Δup, −Δin) in a counter-clockwise section, and in points against `out`.
+                let (n_in, n_up) = (turn.signum() * (q[1] - p[1]), -turn.signum() * (q[0] - p[0]));
+                let o = east_north(ra.out);
+                let strip = vec![(at(ra, p[0], 0.0), [0.0, p[1]]), (at(rb, p[0], 0.0), [1.0, p[1]])];
+                let strip = [strip, vec![(at(rb, q[0], 0.0), [1.0, q[1]]), (at(ra, q[0], 0.0), [0.0, q[1]])]].concat();
+                faces_of.push((strip, [-n_in * o[0], -n_in * o[1], n_up]));
+            }
+            // The section closes the run: at its first ring facing back along it, at its last facing on.
+            for (r, t, _) in [(ra, 0.0, k == 0), (rb, 1.0, k + 2 == run.len())].into_iter().filter(|e| e.2) {
+                let out = east_north(r.along).map(|v| v * (2.0 * t - 1.0));
+                faces_of.push((BEAM.iter().map(|p| (at(r, p[0], 0.0), [t, p[1]])).collect(), out));
+            }
+            let mut polys = Vec::new();
+            for (mut f, out) in faces_of {
+                if !faces(&f, ra.mpu, out) {
+                    f.reverse();
+                }
+                let f = clip_square(f);
+                let ring: Vec<P> = f.iter().map(|v| rounded(v.0)).collect();
+                let s = |v: &Vertex| v.1[1] + sunk(ra.share * (1.0 - v.1[0]) + rb.share * v.1[0]);
+                polys.push(
+                    ring.iter().zip(&f).map(|(&p, v)| (p, find(words, p.map(f64::from)), s(v))).collect::<Vec<_>>(),
+                );
+            }
+            if polys.iter().flatten().all(|c| c.1.is_some()) {
+                for poly in polys.iter().filter(|p| p.len() >= 3) {
+                    fan(b, RAIL, &poly.iter().map(|&(p, l, off)| (p, l.expect("labelled"), off)).collect::<Vec<_>>());
+                }
+            }
         }
     }
+    for r in &edges.posts {
+        boxed(b, RAIL, r, POST_IN_M, &POST_PLAN_M, &POST_UP_M.map(|up| up + sunk(r.share)));
+    }
     for r in &edges.delineators {
-        boxed(b, DELINEATOR, r, DELI_IN_M, DELI_HALF_M, &DELI_UP_M);
+        boxed(b, DELINEATOR, r, DELI_IN_M, &DELI_PLAN_M, &DELI_UP_M);
     }
 }
 
@@ -845,14 +912,14 @@ mod tests {
     #[test]
     fn a_cell_line_cuts_a_beam_exactly_on_it_and_alike_from_both_sides() {
         let c = CELL_UNITS as f64;
-        let v = |q: [f64; 2], t: f64| (q, t);
+        let v = |q: [f64; 2], t: f64| (q, [t, 0.0]);
         let quad =
             |x0: f64, x1: f64| vec![v([x0, 100.0], 0.0), v([x1, 117.0], 1.0), v([x1, 130.0], 1.0), v([x0, 113.0], 0.0)];
         let cut = clip_square(quad(c - 300.0, c + 500.0));
         let on_line: Vec<Vertex> = cut.iter().copied().filter(|p| p.0[0] == c).collect();
         assert_eq!(on_line.len(), 2);
-        assert!(on_line.iter().all(|p| (p.1 - 300.0 / 800.0).abs() < 1e-12));
-        assert!(cut.iter().all(|p| p.1 < 1.0), "the far end lies past the cell");
+        assert!(on_line.iter().all(|p| (p.1[0] - 300.0 / 800.0).abs() < 1e-12));
+        assert!(cut.iter().all(|p| p.1[0] < 1.0), "the far end lies past the cell");
         // The neighbour holds the same beam 1 cell west: its cut points lie on its own x = 0.
         let shifted = clip_square(quad(-300.0, 500.0));
         let theirs: Vec<f64> = shifted.iter().filter(|p| p.0[0] == 0.0).map(|p| p.0[1]).collect();

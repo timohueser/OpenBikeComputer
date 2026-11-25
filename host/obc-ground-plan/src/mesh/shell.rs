@@ -291,30 +291,17 @@ fn wall(
 /// A closed prism over a convex ring of the cell (cut by the cell square): its corners at each point take the top's
 /// label and offset and the foot's. Its walls on a cell line stay open.
 pub(super) fn prism(b: &mut Build, part: usize, ring: &[P], top: (u32, f64), foot: (u32, f64)) {
-    solid(b, part, ring, |_| top, |_| foot, |_| true);
-}
-
-/// `prism` with the top's and the foot's label and offset of each point, and a wall from a point to the next only
-/// where `wall` of the point holds; the walls on a cell line stay open.
-pub(super) fn solid(
-    b: &mut Build,
-    part: usize,
-    ring: &[P],
-    top: impl Fn(usize) -> (u32, f64),
-    foot: impl Fn(usize) -> (u32, f64),
-    wall: impl Fn(usize) -> bool,
-) {
     let n = ring.len();
     if n < 3 || area2(ring) == 0 {
         return;
     }
     // A positive ring in the frame holds its inside on the left of each edge and turns clockwise seen from above.
     let left = area2(ring) > 0;
-    let t: Vec<u32> = (0..n).map(|i| b.corner(ring[i], top(i).0, top(i).1)).collect();
-    let f: Vec<u32> = (0..n).map(|i| b.corner(ring[i], foot(i).0, foot(i).1)).collect();
+    let t: Vec<u32> = ring.iter().map(|&p| b.corner(p, top.0, top.1)).collect();
+    let f: Vec<u32> = ring.iter().map(|&p| b.corner(p, foot.0, foot.1)).collect();
     for i in 0..n {
         let j = (i + 1) % n;
-        if wall(i) && !on_cell_line(ring[i], ring[j]) {
+        if !on_cell_line(ring[i], ring[j]) {
             wall_of(b, part, [f[i], t[i], f[j], t[j]], left);
         }
     }
@@ -326,6 +313,13 @@ pub(super) fn solid(
         };
         b.tris[part].extend([up, down]);
     }
+}
+
+/// A flat polygon of corners (point, label, offset) that turns counter-clockwise seen from outside its solid, as a
+/// fan from its first corner.
+pub(super) fn fan(b: &mut Build, part: usize, ring: &[(P, u32, f64)]) {
+    let c: Vec<u32> = ring.iter().map(|&(p, l, off)| b.corner(p, l, off)).collect();
+    b.tris[part].extend((2..c.len()).map(|i| [c[0], c[i - 1], c[i]]));
 }
 
 /// A convex ring about the point `o`, given as offsets from it, cut by the cell square, its points rounded to the
