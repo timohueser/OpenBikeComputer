@@ -2,8 +2,8 @@
 //! ([`step`]): the OSM objects of the kind table ([`kinds`], [`osm`]), with the levels of rivers and
 //! lakes ([`water`]), the heights of roads, paths, tracks, bridges and tunnels ([`roads`]) from the
 //! master terrain ([`terrain`]), the lifts ([`lifts`]), the railway furniture ([`rails`]), the
-//! bridges and tunnels ([`structures`]) and the sea ([`sea`]), cut into tiles ([`tiles`]) of a
-//! PMTiles archive ([`pmtiles`]), after the census of their heights ([`gate`]).
+//! summit crosses ([`summits`]), the bridges and tunnels ([`structures`]) and the sea ([`sea`]), cut
+//! into tiles ([`tiles`]) of a PMTiles archive ([`pmtiles`]), after the census of their heights ([`gate`]).
 //! `specs/trailview-features.md` defines the archive.
 
 use std::collections::BTreeMap;
@@ -23,6 +23,7 @@ mod sea;
 pub mod stamps;
 pub mod step;
 mod structures;
+mod summits;
 pub mod terrain;
 mod tiles;
 mod water;
