@@ -39,8 +39,8 @@ describe('the mesh reader', () => {
         }
     });
 
-    it('reads the storeys after a cell mesh: every index names a storey corner, the top comes first, then the shell in its parts', () => {
-        // A cell of the browser fixture with decks over a road.
+    it('reads the storeys after a cell mesh: every index names a storey corner, the top comes first, then the shell in its parts, then the track details', () => {
+        // A cell of the browser fixture with decks over a road and a track.
         const fixture = new URL('../../../../tests/browser/trailview/fixture/features/13/', import.meta.url), [x, y] = [34294, 23098];
         const request = new CellRequest(x, y), tiles = feature_tiles(x, y);
         for (let t = 0; t < tiles.length; t += 2) {
@@ -56,6 +56,14 @@ describe('the mesh reader', () => {
             expect(storeys.top).toBeLessThan(storeys.triangles.length / 3);
             expect(storeys.top <= storeys.railings && storeys.railings <= storeys.piers && storeys.piers <= storeys.triangles.length / 3).toBe(true);
             expect([...new Float32Array(storeys.offsets.buffer)].every(Number.isFinite)).toBe(true);
+            // Its track details: each ring names a storey corner, each part its rings, and the ranges hold the parts in order.
+            const { details, rings, ranges } = storeys, items = (details.length - 3 * rings) / 2;
+            expect(rings).toBeGreaterThan(0);
+            for (let r = 0; r < rings; r++) expect(details[3 * r]).toBeLessThan(corners);
+            for (let i = 0; i < items; i++) expect(details[3 * rings + 2 * i] & 0xffff).toBeLessThan(rings);
+            expect(ranges.map(({ first }) => first)).toEqual(ranges.map((_, k) => ranges.slice(0, k).reduce((n, r) => n + r.count, 0)));
+            expect(ranges.reduce((n, { count }) => n + count, 0)).toBe(items);
+            expect(ranges.every(({ node, draw }) => node < 16 && draw < 3)).toBe(true);
         } finally {
             input.free();
             plan.free();

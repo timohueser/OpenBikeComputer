@@ -265,7 +265,9 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     // Inside a carriageway its pixels keep the frame within the half-width (corridor.wgsl), so the look draws no
     // verge there; between the corners the frame stays linear, so its lines stay straight.
     let inside = select(PIECE_INSIDE, 0u, soil || shoulder);
-    return vec2u(look_word(mat, drawn, f.z) | inside | wall, place_word(f.x, f.y));
+    // A bed counts its sleepers along, wrapped below place_word's clamp: its look paints them where the near ones stand.
+    let sleepers = f.y / SLEEPER_M - 16384.0 * floor(f.y / (16384.0 * SLEEPER_M));
+    return vec2u(look_word(mat, drawn, f.z) | inside | wall, place_word(f.x, select(f.y, sleepers, surface_code == S_RAILBED)));
 }
 
 // A workgroup makes GROUP_CORNERS corners, LANES lanes each: lane 0 the height and the look, lanes 1 to 4 the

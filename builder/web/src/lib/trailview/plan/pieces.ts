@@ -18,6 +18,7 @@ import { metresPerUnit } from '../terrain/bins';
 import type { NodeFeatures } from '../terrain/stamps';
 import { BOX } from '../structures/node';
 import { cellMesh, SUNK_WORDS, type CellMesh, type StoreyMesh } from './mesh';
+import { detailPipelines, drawDetails } from './details';
 
 /** The cells per side of the window about the eye's cell, the words before the slots, and the slots of sunk points: as cells.wgsl. */
 export const WINDOW = 7;
@@ -38,7 +39,7 @@ const TERRAIN_BIT = 0x80000000;
 /** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
 const FADE_MARGIN_M = 10;
 /** Bytes of a piece's parameters, as Piece of piece.wgsl (corners.wgsl reads the first 48). */
-const PARAMS_BYTES = 64;
+const PARAMS_BYTES = 80;
 /** The vertices of a culvert mouth's model: MOUTH_QUADS of plan/piece.wgsl, six each. */
 const CULVERT_VERTICES = 6 * 48;
 /** The level-18 nodes per side of the block whose stamps a cell's corners read, NODES of corners.wgsl: the cell's four and one more on each side. */
@@ -120,6 +121,7 @@ interface Resources {
     /** The storeys' triangles, whole and cut, and their caster into the shadow map. */
     storeys: GPURenderPipeline[];
     storeyCaster: GPURenderPipeline;
+    details: Awaited<ReturnType<typeof detailPipelines>>;
     corners: GPUComputePipeline;
     drawLayout: GPUBindGroupLayout;
     computeLayout: GPUBindGroupLayout;
@@ -134,8 +136,9 @@ export interface PiecesStats {
     steps: number;
     /** Those of its triangles and slots that lie near a box. */
     tail: number;
-    /** The storeys' triangles and slots in view. */
+    /** The storeys' triangles and slots in view, and the details' triangles drawn. */
     storeyTriangles: number;
+    detailTriangles: number;
     /** The pieces' GPU bytes, the storeys' among them. */
     bytes: number;
     /** Milliseconds from the first frame with a wanted cell that does not draw to the next frame in which all draw. */
@@ -204,6 +207,8 @@ export class Pieces {
     private resting = false;
     /** The frame uniform of the sun's view, for the storeys' casters. */
     private sun?: GPUBuffer;
+    private eye?: Eye;
+    private detailTriangles = 0;
 
     /**
      * `stamps` gives a node's stamp data and boxes, undefined while they are on their way, and asks for them; `holds`
@@ -276,6 +281,7 @@ export class Pieces {
         // At rest the recovery from the shortage that took the level away comes first: the pieces keep what they hold.
         // `touched` names only this frame's pages, so a piece reads its page keys again after a rest.
         const resting = rule.finest < COARSEST_MESH;
+        this.eye = eye;
         if (resting && !this.resting) for (const piece of this.pieces.values()) piece.plain = undefined;
         this.resting = resting;
         // A split near a box can take tens of milliseconds: one a frame, shown and near cells first. A cell with no box near
@@ -416,13 +422,14 @@ export class Pieces {
 
     /** A cell's storeys: their corners, out words, slots, triangles and offsets in one buffer, as their parameters name them. */
     private uploadStoreys(r: Resources, storeys: StoreyMesh): StoreysGpu {
-        const { device } = r.gpu, { corners, slots, triangles, offsets } = storeys, n = offsets.length;
-        const data = r.gpu.buffer('plan', 4 * Math.max(4, 7 * n + slots.length + triangles.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        const { device } = r.gpu, { corners, slots, triangles, offsets, details } = storeys, n = offsets.length;
+        const data = r.gpu.buffer('plan', 4 * Math.max(4, 7 * n + slots.length + triangles.length + details.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(data, 0, corners);
         device.queue.writeBuffer(data, 4 * 6 * n, slots);
         device.queue.writeBuffer(data, 4 * (6 * n + slots.length), triangles);
         device.queue.writeBuffer(data, 4 * (6 * n + slots.length + triangles.length), offsets);
+        device.queue.writeBuffer(data, 4 * (7 * n + slots.length + triangles.length), details);
         return { data, params, draw: this.drawGroup(r, data, params, r.frame), computed: false };
     }
 
@@ -498,7 +505,8 @@ export class Pieces {
         if (make !== 'all' || first !== 0 || !storeys?.compute || !mesh) return;
         const m = mesh.offsets.length, slots = mesh.slots.length, tris = 6 * m + slots;
         // The storeys' slots are all plain concrete: their end faces start at 0.
-        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers, mesh.rails, mesh.delineators], 2);
+        const rings = tris + mesh.triangles.length + m;
+        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers, mesh.rails, mesh.delineators, rings, rings + 3 * mesh.rings], 2);
         r.gpu.device.queue.writeBuffer(storeys.params, 0, params);
         pass.setBindGroup(0, storeys.compute);
         pass.dispatchWorkgroups(Math.ceil(m / GROUP_CORNERS));
@@ -606,6 +614,8 @@ export class Pieces {
                 pass.draw(6 * (piece.mesh.storeys!.slots.length / 4));
             }
         }
+        const storeyed = this.inView.filter(piece => piece.gpu!.storeys?.computed);
+        this.detailTriangles = drawDetails(pass, r.details.draw, this.eye!, storeyed.map(({ node, mesh, gpu }) => ({ ...node, storeys: mesh.storeys!, group: gpu!.storeys!.draw })));
     }
 
     /** Draws the storeys of the cells that draw into the shadow map as casters, with the sun's frame (`castWith`). */
@@ -624,6 +634,7 @@ export class Pieces {
             pass.setBindGroup(0, storeys.cast);
             pass.draw(piece.mesh.storeys!.triangles.length);
         }
+        drawDetails(pass, r.details.cast, this.eye!, storeyed.map(({ node, mesh, gpu }) => ({ ...node, storeys: mesh.storeys!, group: gpu!.storeys!.cast! })));
     }
 
     /** The runs of a piece that draw at this frame's level. */
@@ -658,7 +669,7 @@ export class Pieces {
             cells: this.pieces.size, drawn: this.drawn.length, inView: this.inView.length,
             triangles: this.inView.reduce((sum, piece) => sum + piece.mesh.runs.slice(0, this.drawnRuns(piece)).reduce((n, run) => n + run.count, 0), 0), steps: this.inView.reduce((sum, { mesh }) => sum + mesh.steps.length / 4, 0),
             tail: this.inView.reduce((sum, { tails: t }) => sum + (t ? [...t.own, ...t.mouth, ...t.slots].reduce((n, c) => n + c, 0) : 0), 0),
-            storeyTriangles: this.inView.reduce((sum, { mesh: { storeys: s } }) => sum + (s ? s.triangles.length / 3 + 2 * (s.slots.length / 4) : 0), 0),
+            storeyTriangles: this.inView.reduce((sum, { mesh: { storeys: s } }) => sum + (s ? s.triangles.length / 3 + 2 * (s.slots.length / 4) : 0), 0), detailTriangles: this.detailTriangles,
             bytes, ready: this.readyMs,
         };
     }
@@ -693,7 +704,7 @@ export async function piecePipelines(gpu: Gpu) {
         vertex: { module: modules[0], entryPoint: 'storey_caster' }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
     });
     // A step faces its lower side from either side of its edge.
-    const [triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, storeys, cutStoreys, storeyCaster, corners] = await Promise.all([
+    const [triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, storeys, cutStoreys, storeyCaster, corners, details] = await Promise.all([
         render('piece_vertex', 'back', false), render('slot_vertex', 'none', false), render('piece_vertex', 'back', true), render('slot_vertex', 'none', true),
         render('piece_vertex', 'back', false, true), render('piece_vertex', 'back', true, true),
         render('culvert_vertex', 'none', false), render('culvert_vertex', 'none', true),
@@ -702,8 +713,9 @@ export async function piecePipelines(gpu: Gpu) {
             label: 'plan corners', layout: device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surface] }),
             compute: { module: device.createShaderModule({ label: 'plan corners', code: wgsl('plan/corners.wgsl') }), entryPoint: 'corners' },
         }),
+        detailPipelines(gpu, drawLayout, [surface, ground, features], [surface, empty, features]),
     ]);
-    return { triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, storeys: [storeys, cutStoreys], storeyCaster, corners, drawLayout, computeLayout };
+    return { triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, storeys: [storeys, cutStoreys], storeyCaster, corners, details, drawLayout, computeLayout };
 }
 
 /**

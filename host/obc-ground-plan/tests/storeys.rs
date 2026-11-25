@@ -1,5 +1,5 @@
 //! The storeys over the ground over every cell of the TrailView fixture: storey 0 reads the same with them, each
-//! storey is a planar partition, each shell part closes, no parapet or railing stands in a paved face of its
+//! storey is a planar partition, each shell part and each run of track details closes, no parapet or railing stands in a paved face of its
 //! storey or in a way of storey 0, no slot of a top is a wall between two deck ways, no bar stands on two decks, no
 //! edge stands across the
 //! mouth of a way that goes on at another level, something goes on past every open piece, a stub and its deck share
@@ -20,6 +20,7 @@ use obc_ground_plan::faces::records::{self, find};
 use obc_ground_plan::faces::{window, EdgeKind, Rules, Surface};
 use obc_ground_plan::frame::{metres_per_unit, CellKey, CELL_UNITS};
 use obc_ground_plan::graph::Family;
+use obc_ground_plan::mesh::details;
 use obc_ground_plan::mesh::shell::{border, closure, mesh_storeys, on_paved, StoreyMesh};
 use obc_ground_plan::mesh::{mesh_cell, CellMesh, Reads, Rim, NO_LABEL};
 use obc_ground_plan::tile::TileCache;
@@ -353,6 +354,7 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         }
         let mesh = mesh_storeys(key, &with.storeys, &with.records, &rules.structures).unwrap();
         terrain.insert(key, fix.cell(key).terrain);
+        faults.extend(details::closure(&with.storeys.details).into_iter().map(|f| format!("{key:?} details: {f}")));
         // An empty mesh still meets its neighbours: a guard rail of theirs may run on to the shared line.
         if mesh.triangles.is_empty() {
             built.insert(key, (with, mesh));

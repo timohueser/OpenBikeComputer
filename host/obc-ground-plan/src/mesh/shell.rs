@@ -27,7 +27,10 @@
 //! | corners | 3 words each, sorted by point (y, then x): x in bits 0–18 and the label's bits 0–12 in bits 19–31; y in bits 0–18 and the label's bits 13–24 in bits 19–30; the offset (f32, metres) |
 //! | triangle runs, triangles | as the cell mesh's: 2 words a run (count, base corner), 3 u16 a triangle less its run's base; each part in runs of its own |
 //! | slot runs, slots | 2 words a run, 4 u16 a slot (`a_p, a_q, b_q, b_p`): the tops' slots between two labels, then the undersides' risers |
-//! | caps | with the bores (its count last in the head): 3 words each, sorted: a corner, a cap's label (`NO_LABEL`: the plain terrain) and offset (f32) |
+//! | caps | with the bores (its count after the parts' in the head): 3 words each, sorted: a corner, a cap's label (`NO_LABEL`: the plain terrain) and offset (f32) |
+//! | rings | storey 0's details (`mesh::details`; their counts last in the head): 3 words each, a corner, its line's unit tangent (`pack2x16snorm`, x east, y south) and its stroke metres (f32) |
+//! | items | 2 words each, by node, then draw (`details::Item`) |
+//! | ranges | 2 words each, in the items' order: node << 8 \| draw, and the count of its items |
 
 use std::collections::BTreeMap;
 
@@ -40,7 +43,7 @@ use crate::frame::{metres_per_unit_at, CellKey, CELL_UNITS};
 use crate::graph::Structures;
 
 /// "OBS" and the layout's version: with the bores, the caps.
-pub const MAGIC: u32 = if BORES { 0x4f42_5304 } else { 0x4f42_5303 };
+pub const MAGIC: u32 = if BORES { 0x4f42_5306 } else { 0x4f42_5305 };
 /// The parts of a storey's mesh, in the order of their triangles: the shells, then storey 0's guard rails and
 /// delineators (`mesh::edges`).
 pub const PARTS: [&str; 9] = ["top", "underside", "edge", "parapet", "railing", "post", "pier", "rail", "delineator"];
@@ -54,7 +57,7 @@ const POST: usize = 5;
 const PIER: usize = 6;
 pub(super) const RAIL: usize = 7;
 pub(super) const DELINEATOR: usize = 8;
-pub const HEAD: usize = 9 + PARTS.len() + BORES as usize;
+pub const HEAD: usize = 9 + PARTS.len() + BORES as usize + 3;
 
 /// A parapet: its width and its height over the deck (the crossing block's thickness table).
 const PARAPET_M: [f64; 2] = [0.35, 1.0];
@@ -95,6 +98,10 @@ pub struct StoreyMesh {
     /// The caps of corners, sorted (a corner may have several): the corner, the cap's label (`NO_LABEL`: the plain
     /// terrain) and its offset's bits (`corner_height`).
     pub caps: Vec<[u32; 3]>,
+    /// Storey 0's details: their rings, items and ranges (see the module's bytes).
+    pub rings: Vec<[u32; 3]>,
+    pub items: Vec<[u32; 2]>,
+    pub ranges: Vec<[u32; 2]>,
     pub stats: ShellStats,
 }
 
@@ -115,13 +122,17 @@ impl StoreyMesh {
         if BORES {
             head.push(self.caps.len() as u32);
         }
+        head.extend([self.rings.len(), self.items.len(), self.ranges.len()].map(|n| n as u32));
         let words = (head.into_iter())
             .chain(self.corners.iter().flatten().copied())
             .chain(self.triangle_runs.iter().flatten().copied())
             .chain(packed(&self.triangles, &self.triangle_runs))
             .chain(self.slot_runs.iter().flatten().copied())
             .chain(packed(&self.slots, &self.slot_runs))
-            .chain(self.caps.iter().flatten().copied());
+            .chain(self.caps.iter().flatten().copied())
+            .chain(self.rings.iter().flatten().copied())
+            .chain(self.items.iter().flatten().copied())
+            .chain(self.ranges.iter().flatten().copied());
         words.flat_map(u32::to_le_bytes).collect()
     }
 
@@ -797,6 +808,7 @@ pub fn mesh_storeys_with(
     }
     piers(&mut b, storeys, words, &lines, &all_labels, structures, &mut stats);
     super::edges::solids(&mut b, &storeys.edges, words);
+    let ring_corners: Vec<u32> = (storeys.details.rings.iter()).map(|r| b.corner(r.p, r.label, r.offset)).collect();
     // The corners by point (y, then x), then label and offset, each once; and the items in runs: each part and each
     // kind of slot apart.
     let mut unique = b.keys.clone();
@@ -828,6 +840,22 @@ pub fn mesh_storeys_with(
         caps.dedup();
     }
     let caps: Vec<[u32; 3]> = caps.into_iter().map(|(k, off)| [(k >> 32) as u32, k as u32, off]).collect();
+    let d = &storeys.details;
+    let rings = (d.rings.iter().zip(&ring_corners))
+        .map(|(r, &k)| {
+            [rank[k as usize], super::details::pack_snorm(r.tangent[0], r.tangent[1]), (r.along as f32).to_bits()]
+        })
+        .collect();
+    let mut items = d.items.clone();
+    items.sort_by_key(|i| (i.node, i.draw()));
+    let mut ranges: Vec<[u32; 2]> = Vec::new();
+    for i in &items {
+        let range = u32::from(i.node) << 8 | i.draw() as u32;
+        match ranges.last_mut() {
+            Some(last) if last[0] == range => last[1] += 1,
+            _ => ranges.push([range, 1]),
+        }
+    }
     let corners = (unique.iter())
         .map(|&(key, offset)| {
             let (label, x, y) = ((key as u32) & NO_LABEL, (key >> 25) as u32 & 0x7ffff, (key >> 44) as u32);
@@ -845,6 +873,9 @@ pub fn mesh_storeys_with(
         top_slots: b.slots[0].len() as u32,
         open,
         caps,
+        rings,
+        items: items.iter().map(|i| i.words).collect(),
+        ranges,
         stats,
     })
 }

@@ -123,10 +123,10 @@ pub fn reach(sections: &Sections) -> Reach {
 }
 
 /// Items in square buckets of frame units, by their boxes.
-struct Grid(BTreeMap<(i64, i64), Vec<u32>>, f64);
+pub(super) struct Grid(BTreeMap<(i64, i64), Vec<u32>>, f64);
 
 impl Grid {
-    fn of(size: f64, boxes: &[[f64; 4]]) -> Grid {
+    pub(super) fn of(size: f64, boxes: &[[f64; 4]]) -> Grid {
         let mut g = Grid(BTreeMap::new(), size);
         for (id, &[x0, y0, x1, y1]) in boxes.iter().enumerate() {
             for y in g.key(y0)..=g.key(y1) {
@@ -144,7 +144,7 @@ impl Grid {
 
     /// Whether `f` holds of an item whose bucket meets the square of half side r about q. An item in several buckets
     /// comes once for each.
-    fn any(&self, q: [f64; 2], r: f64, mut f: impl FnMut(u32) -> bool) -> bool {
+    pub(super) fn any(&self, q: [f64; 2], r: f64, mut f: impl FnMut(u32) -> bool) -> bool {
         for y in self.key(q[1] - r)..=self.key(q[1] + r) {
             for x in self.key(q[0] - r)..=self.key(q[0] + r) {
                 if self.0.get(&(x, y)).is_some_and(|ids| ids.iter().any(|&k| f(k))) {
@@ -173,7 +173,7 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
 }
 
 /// The distance from q to the segment a → b.
-fn to_segment(q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+pub(super) fn to_segment(q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     let d = sub(b, a);
     let l2 = dot(d, d);
     let t = if l2 > 0.0 { (dot(sub(q, a), d) / l2).clamp(0.0, 1.0) } else { 0.0 };
@@ -187,7 +187,7 @@ type Info = (bool, f64, f64, f64, bool);
 /// A chord between two samples of a ground way, its paved half-width there and its way.
 type Chord = ([[f64; 2]; 2], f64, u32);
 
-fn bbox(pts: &[[f64; 2]]) -> [f64; 4] {
+pub(super) fn bbox(pts: &[[f64; 2]]) -> [f64; 4] {
     let (lo, hi) = (f64::NEG_INFINITY, f64::INFINITY);
     pts.iter().fold([hi, hi, lo, lo], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
 }
@@ -309,24 +309,24 @@ impl<'a> Context<'a> {
 /// widening, the sides of its way with a sidewalk (1 its left, 2 its right), its stroke metres, whether it is a post
 /// point, its way, the way's direction in the chain and its span.
 #[derive(Clone, Copy)]
-struct Point {
-    pos: [f64; 2],
-    t: [f64; 2],
-    z: f64,
+pub(super) struct Point {
+    pub(super) pos: [f64; 2],
+    pub(super) t: [f64; 2],
+    pub(super) z: f64,
     bank: f64,
     widen: f64,
     walk: u8,
-    along: f64,
+    pub(super) along: f64,
     post: bool,
     way: u32,
     dir: f64,
     span: u32,
 }
 
-/// The points of way w in direction d: its graph samples and a post point at each `RING_M` of stroke metres
+/// The points of way w in direction d: its graph samples and a post point at each `step` metres of stroke metres
 /// between them; a sample within a metre of a post point gives way to it. The graph leaves out the spans that do not
 /// meet its area, and posts stand only between the samples of one span or of two spans that meet.
-fn way_points(g: &WayGraph, w: u32, d: i8, out: &mut Vec<Point>) {
+pub(super) fn way_points(g: &WayGraph, w: u32, d: i8, step: f64, out: &mut Vec<Point>) {
     let way = &g.ways[w as usize];
     let part = &g.parts[way.part as usize];
     let samples = &g.samples[way.samples.start as usize..way.samples.end as usize];
@@ -352,8 +352,8 @@ fn way_points(g: &WayGraph, w: u32, d: i8, out: &mut Vec<Point>) {
         let v = part.vertices[s.span as usize].pos;
         let sign = if part.backward { -1.0 } else { 1.0 };
         let (lo, hi) = (s.along_m.min(n.along_m), s.along_m.max(n.along_m));
-        let mut posts: Vec<Point> = (libm::floor(lo / RING_M) as i64 + 1..)
-            .map(|k| k as f64 * RING_M)
+        let mut posts: Vec<Point> = (libm::floor(lo / step) as i64 + 1..)
+            .map(|k| k as f64 * step)
             .take_while(|&along| along < hi)
             .map(|along| {
                 let p = curve_point(part, s.span as usize, u_at(span, (along - span.along0_m) * sign));
@@ -381,7 +381,7 @@ fn way_points(g: &WayGraph, w: u32, d: i8, out: &mut Vec<Point>) {
 
 /// A way's place in an order that every cell gives it: its first and last vertex and station. Two ways that start at
 /// one junction differ in their ends.
-fn way_key(g: &WayGraph, w: u32) -> ([i64; 2], u64, [i64; 2], u64) {
+pub(super) fn way_key(g: &WayGraph, w: u32) -> ([i64; 2], u64, [i64; 2], u64) {
     let way = &g.ways[w as usize];
     let at = |s: &crate::graph::Station| g.parts[way.part as usize].vertices[s.span as usize].pos;
     (at(&way.from), way.from.u.to_bits(), at(&way.to), way.to.u.to_bits())
@@ -619,7 +619,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
         }
         let mut pts = Vec::new();
         for &(w, d) in &chain {
-            way_points(g, w, d, &mut pts);
+            way_points(g, w, d, RING_M, &mut pts);
         }
         // Of two points at one place (a joint), the one first in `way_key` order stays, in either direction.
         let key = |p: &Point| (way_key(g, p.way), p.post, p.along.to_bits());

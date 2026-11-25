@@ -470,6 +470,13 @@ impl WaySection<'_> {
     pub fn outer_m(&self) -> f64 {
         self.half_m + self.shoulder_m.max(self.sidewalk_m)
     }
+
+    /// Whether its look frays into the ground at its edges: gravel, dirt or a trail's, as `frays` of the viewer's
+    /// `roads/section.ts`.
+    pub fn frays(&self) -> bool {
+        self.material == Material::Finish
+            && matches!(self.finish, Some(Finish::Gravel | Finish::Dirt | Finish::Grass | Finish::Path))
+    }
 }
 
 /// The fields of a class row that the faces' rules check.

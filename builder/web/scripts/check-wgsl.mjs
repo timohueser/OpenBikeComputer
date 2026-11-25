@@ -21,10 +21,11 @@ const check = (file, swap = {}) => {
     }
 };
 // A file that takes another's place checks in the composition that swaps it in, as does the slab's hook that they hold.
-const swapped = new Set([...Object.values(MOUTH), ...Object.values(PIECE_IN), 'plan/slab-in.wgsl']);
+const swapped = new Set([...Object.values(MOUTH), ...Object.values(PIECE_IN), 'plan/slab-in.wgsl', 'plan/details.wgsl']);
 files.filter(file => !swapped.has(file)).forEach(file => check(file));
 check('plan/piece.wgsl', MOUTH);
 check('plan/piece.wgsl', PIECE_IN);
+check('plan/details.wgsl', PIECE_IN);
 check('terrain/terrain.wgsl', CLIP_DISTANCES);
 check('terrain/water.wgsl', CLIP_DISTANCES);
 process.exit(failed ? 1 : 0);
