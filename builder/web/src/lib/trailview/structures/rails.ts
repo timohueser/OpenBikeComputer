@@ -44,14 +44,14 @@ const curves = new WeakMap<Line, { stops: Stop[]; box: number[] }>();
 function curveOf(line: Line): { stops: Stop[]; box: number[] } {
     let curve = curves.get(line);
     if (!curve) {
-        // A wire bends at the first stop of each span between two vertices of the tile, and each PIECE_M from it.
+        // A wire bends at each vertex of the tile, which is the last stop of its span, and each PIECE_M from it.
         const stops: Stop[] = [];
         let from = 0;
         stationsOf(line, () => line.h).forEach(({ x, y, z, along, v }, i, all) => {
-            const first = !i || all[i - 1].v !== v, before = stops[stops.length - 1];
-            if (first) from = along;
-            else for (let at = from + PIECE_M * (Math.floor((before.along - from) / PIECE_M) + 1); at < along - 1e-6; at += PIECE_M) stops.push({ ...between(before, { x, y, z, along }, (at - before.along) / (along - before.along)), fixed: true, piece: true });
-            stops.push({ x, y, z, along, fixed: first || i === all.length - 1 });
+            const vertex = !i || i === all.length - 1 || all[i + 1].v !== v, before = stops[stops.length - 1];
+            if (before) for (let at = from + PIECE_M * (Math.floor((before.along - from) / PIECE_M) + 1); at < along - 1e-6; at += PIECE_M) stops.push({ ...between(before, { x, y, z, along }, (at - before.along) / (along - before.along)), fixed: true, piece: true });
+            stops.push({ x, y, z, along, fixed: vertex });
+            if (vertex) from = along;
         });
         const xs = stops.map(s => s.x), ys = stops.map(s => s.y);
         curves.set(line, (curve = { stops, box: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] }));
@@ -101,7 +101,7 @@ export function rails(b: MeshBuilder, far: AnchoredBuilder, near: AnchoredBuilde
         }
     }
     for (const { stops, stands } of wired) {
-        // Only the stretch of the curve that reaches this node, from the first stop of a span to the first stop of a span.
+        // Only the stretch of the curve that reaches this node, from a vertex of the tile to a vertex of the tile.
         let from = stops.findIndex(s => within(s.x, s.y)), to = stops.length - 1;
         if (from < 0) continue;
         while (!within(stops[to].x, stops[to].y)) to--;

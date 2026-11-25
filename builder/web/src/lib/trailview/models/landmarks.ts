@@ -26,7 +26,7 @@ export function ruin(width: number, depth: number, height: number, seed: number)
     });
     // One corner still stands to the full height. From it the heads step down in whole courses, both ways round, to low
     // walls about the far corner: the breach. A piece here and there lost a course more.
-    const count = stops.length, corner = stops.findIndex(stop => stop.side === Math.floor(rand() * 4)), breach = (corner + Math.floor(count / 2)) % count, door = (corner + 2) % count;
+    const count = stops.length, standing = Math.floor(rand() * 4), corner = stops.findIndex(stop => stop.side === standing), breach = (corner + Math.floor(count / 2)) % count, door = (corner + 2) % count;
     const tops = stops.map((_, i) => {
         const from = Math.min(Math.abs(i - corner), count - Math.abs(i - corner)), away = (from + (i < corner ? 0.5 : 0)) / (count / 2), share = Math.max(0.16, Math.min(1, (0.62 - away) / 0.45));
         const lost = rand() < 0.3 ? COURSE_M : 0;

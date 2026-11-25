@@ -76,7 +76,7 @@ export const along = (ax: number, ay: number, bx: number, by: number, x: number,
 
 /**
  * A quarter of houses: a building of at most HOUSE_M2 counts, a hall or a whole block does not. Its cover is taken over
- * cells of 2^COVER_SHIFT world units, about 26 m in the Alps, COVER_CELLS to each side of a place's cell: about 130 m.
+ * cells of 2^COVER_SHIFT world units, about 26 m in the Alps, COVER_CELLS to each side of a place's cell: a square about 130 m across.
  */
 const HOUSE_M2 = 1000, COVER_SHIFT = 10, COVER_CELLS = 2;
 const covers = new WeakMap<Town, Map<number, number>>();

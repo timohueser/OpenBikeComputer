@@ -86,6 +86,9 @@ function mast(m: Model, rig: Exclude<Rig, 'cable_car'>, height: number, steel: n
     }
 }
 
+/** How far a face of a beam of eight sides lies from its axis, as a share of the radius that `mast` gives it. */
+const FACE = Math.SQRT2 * Math.cos(Math.PI / 8);
+
 /**
  * What a mast shows only near the eye: a ladder up its −y side, a walkway with a rail along the cross-arm, and a number
  * plate. A cable car's tower has none.
@@ -93,14 +96,16 @@ function mast(m: Model, rig: Exclude<Rig, 'cable_car'>, height: number, steel: n
 export function pylonFittings(rig: Rig, height: number): Model {
     const m = new Model();
     if (rig === 'cable_car') return m;
-    const T = TRACK_HALF_M[rig], { r: [r0, r1], wheel } = MAST[rig], arm = height - 2 * wheel - 0.3, out = (z: number) => -(r0 + (r1 - r0) * (z / arm) + 0.14);
+    const T = TRACK_HALF_M[rig], { r: [r0, r1], wheel } = MAST[rig], arm = height - 2 * wheel - 0.3;
+    // A face of the mast's eight sides lies FACE of its radius from its axis.
+    const face = (z: number) => FACE * (r0 + (r1 - r0) * (z / arm)), out = (z: number) => -(face(z) + 0.1);
     for (const x of [-0.2, 0.2]) m.beam([x, out(0.6), 0.6], [x, out(arm), arm], 0.05, DARK, { sides: 3 });
     for (let z = 1; z < arm; z += 1) m.beam([-0.2, out(z), z], [0.2, out(z), z], 0.04, DARK, { sides: 3 });
     const y = -(0.8 * r1 + 0.32), half = T - 0.14;
     m.box([0, y, arm + 0.23], [2 * half, 0.5, 0.06], DARK);
     m.beam([-half, y - 0.22, arm + 1.25], [half, y - 0.22, arm + 1.25], 0.05, DARK, { sides: 3 });
     for (const x of [-half, 0, half]) m.beam([x, y - 0.22, arm + 0.26], [x, y - 0.22, arm + 1.25], 0.05, DARK, { sides: 3 });
-    return m.box([0, r0 * (1 - 2.2 / arm) + r1 * (2.2 / arm) + 0.01, 2.2], [0.5, 0.04, 0.36], WHITE);
+    return m.box([0, face(2.2) + 0.01, 2.2], [0.5, 0.04, 0.36], WHITE);
 }
 
 /** A pylon with its base at the origin; the cables run along +y over its top at z = height and x = ±TRACK_HALF_M. */
