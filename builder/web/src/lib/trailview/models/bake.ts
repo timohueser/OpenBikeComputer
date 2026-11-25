@@ -26,14 +26,14 @@ const SEEDS = 3, SLABS = 3;
  * The model budget of specs/trailview-models.md: per kind of model and mesh tier, the most triangles and vertices; and
  * the most triangles of tier 0 of a summer crown, as the mean of every tree species. Measured on the models of develop
  * 4a5419013, the largest counts rounded up; the owner chose about 5 times for the animals and 4 times for the small
- * objects, which few instances draw.
+ * objects, which few instances draw, and a quarter of that for the far tier of a small object, as for an animal.
  */
 const BUDGET: Record<string, [number, number][]> = {
     tree: [[4700, 9000], [900, 1800], [230, 600]],
     plant: [[350, 1000]],
     animal: [[1000, 3000], [250, 750]],
     rock: [[100, 300]],
-    object: [[600, 1800]],
+    object: [[600, 1800], [150, 450]],
 };
 const TREE_MEAN = 3400;
 

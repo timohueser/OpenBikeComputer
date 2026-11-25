@@ -131,7 +131,7 @@ export class Sculpt {
 
 /**
  * The mesh of a model as the instances read it: each polygon lit flat by one normal (Newell's, so a lofted quad that is
- * not quite planar draws as one facet), its corners kept once.
+ * not quite planar draws as one facet), its corners kept once, with its glow and its rise at night.
  */
 export function mesh(model: Model): FloatMesh {
     const flat = geometry(model), p = model.points, normals = new Map<number, Vec>();
@@ -140,16 +140,18 @@ export function mesh(model: Model): FloatMesh {
         const c = cross([p[i + 3] - p[i], p[i + 4] - p[i + 1], p[i + 5] - p[i + 2]], [p[i + 6] - p[i], p[i + 7] - p[i + 1], p[i + 8] - p[i + 2]]);
         normals.set(face, along(n, c, 1));
     });
-    const at = new Map<string, number>(), out = { position: [] as number[], normal: [] as number[], color: [] as number[], index: [] as number[] };
+    const at = new Map<string, number>(), out = { position: [] as number[], normal: [] as number[], color: [] as number[], index: [] as number[], ...(flat.glow && { glow: [] as number[] }), ...(flat.rise && { rise: [] as number[] }) };
     for (let v = 0; v < flat.position.length / 3; v++) {
         const position = [0, 1, 2].map(d => flat.position[3 * v + d]), normal = unit(normals.get(model.faces[Math.floor(v / 3)])!), color = [0, 1, 2].map(d => flat.color[3 * v + d]);
-        const key = [...position, ...normal, ...color].join();
+        const key = [...position, ...normal, ...color, flat.glow?.[v], flat.rise?.[v]].join();
         let k = at.get(key);
         if (k === undefined) {
             at.set(key, (k = out.position.length / 3));
             out.position.push(...position);
             out.normal.push(...normal);
             out.color.push(...color);
+            out.glow?.push(flat.glow![v]);
+            out.rise?.push(flat.rise![v]);
         }
         out.index.push(k);
     }

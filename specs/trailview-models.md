@@ -94,6 +94,7 @@ where each comes from.
 | Animal | 0 | 1,000 (the owner's choice: few on screen) | 3,000 |
 | Animal | 1 | 250 | 750 |
 | Small object of a kind | 0 | 600 (the owner's choice: few on screen) | 1,800 |
+| Small object of a kind | 1 | 150 (a quarter of tier 0, as for an animal) | 450 |
 
 One view draws at most 256 instance models, each with at most 3 mesh tiers and an impostor. The
 same files serve the desktop and the phone; a phone draws nearer tier ends through the budget table

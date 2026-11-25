@@ -109,7 +109,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node, plan = 
         if (mesh) far.mesh.planOnly(() => far.mesh.append(new Uint32Array(mesh.vertices), mesh.indices));
     } else tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
-    rails(far.mesh, far.anchored, list, tile, lines, owns, [x0, y0, x0 + side, y0 + side]);
+    rails(far.mesh, far.anchored, near.anchored, list, tile, lines, owns, [x0, y0, x0 + side, y0 + side]);
     const points: Point[] = [];
     let kind = '';
     const place = ({ model, tint = 1, ...at }: Placement) => points.push({ ...at, tint, model: POINT_MODELS.indexOf(`${kind}/${model}`) });

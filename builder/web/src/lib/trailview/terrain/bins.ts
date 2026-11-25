@@ -238,8 +238,8 @@ export interface Building { rings: number[][]; outer: boolean[] }
  * surface, the pads under the platforms and the buildings.
  */
 export interface Shapes {
-    /** The zoom of the tile. */
-    zoom: number;
+    /** The zoom of the tile, and its square in world units: west, north, east and south. */
+    zoom: number; square?: number[];
     lines: Line[]; mouths: CulvertMouth[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[];
     crossings: { x: number; y: number }[];
     /** Each part of a bridge whole, missing heights included, in world units, and the half-width of its deck in metres. */
@@ -604,7 +604,8 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     const buried = joinCulverts(list, lines, world);
     junctionPlanes(lines);
     abutments(lines);
-    return { zoom: tile.level, lines, lakes, seas, areas, pads, buildings, barriers, crossings, bridges, mouths: standMouths(lines, buried) };
+    const side = 2 ** (30 - tile.level);
+    return { zoom: tile.level, square: [tile.x * side, tile.y * side, (tile.x + 1) * side, (tile.y + 1) * side], lines, lakes, seas, areas, pads, buildings, barriers, crossings, bridges, mouths: standMouths(lines, buried) };
 }
 
 /**
