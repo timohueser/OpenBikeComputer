@@ -101,3 +101,4 @@ fixtures/build/
 # Package-local reference to the existing Rust XCFramework.
 companion-ios/Packages/OBCKit/.swiftpm/OBCHost.xcframework
 builder/web/public/road-layers-prototype.pmtiles
+builder/web/public/slope-angle-prototype.png*

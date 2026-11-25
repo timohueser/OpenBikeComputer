@@ -4,9 +4,13 @@ const { chromium } = createRequire(import.meta.url)('playwright');
 const base = process.argv[2] ?? 'http://localhost:5173';
 const out = new URL('./', import.meta.url).pathname;
 // Kriens and the Sonnenberg, south-west of Lucerne: flat town, hills and the Pilatus foothills. The settings panel covers the right.
-const views = { near: { center: [8.28, 47.04], zoom: 14, padding: { right: 420 } }, far: { center: [8.29, 47.02], zoom: 12, padding: { right: 420 } } };
+const views = { near: { center: [8.28, 47.04], zoom: 14, padding: { right: 420 } }, far: { center: [8.29, 47.02], zoom: 12, padding: { right: 420 } },
+    // Pilatus, the steepest ground of the test area.
+    mountain: { center: [8.255, 46.98], zoom: 13, padding: { right: 420 } } };
+const tiles = ['Steepness', 'Surface', 'Trail grade', 'Slope angle'];
 const shots = [
     ...['Steepness', 'Surface', 'Trail grade'].flatMap(layer => Object.keys(views).map(view => ({ layer, view, look: 'light' }))),
+    { layer: 'Slope angle', view: 'mountain', look: 'light' },
     { layer: 'Steepness', view: 'near', look: 'dark' },
 ];
 const browser = await chromium.launch(process.env.HTTPS_PROXY ? { proxy: { server: process.env.HTTPS_PROXY, bypass: '127.0.0.1,localhost' } } : {});
@@ -24,8 +28,10 @@ for (const look of ['light', 'dark']) {
         await page.evaluate(view => window.plannerMap.jumpTo(view), views[shot.view]);
         const dialog = page.getByRole('dialog', { name: 'Map settings' });
         if (!await dialog.isVisible()) await page.getByRole('button', { name: 'Map settings', exact: true }).click();
-        const button = dialog.getByRole('button', { name: shot.layer, exact: true });
-        if (await button.getAttribute('aria-pressed') !== 'true') await button.click();
+        for (const tile of tiles) {
+            const button = dialog.getByRole('button', { name: tile, exact: true });
+            if ((await button.getAttribute('aria-pressed') === 'true') !== (tile === shot.layer)) await button.click();
+        }
         await page.evaluate(() => new Promise(resolve => { const map = window.plannerMap; map.once('idle', resolve); map.triggerRepaint(); }));
         await page.waitForTimeout(1500);
         const name = `${shot.layer.toLowerCase().replace(' ', '-')}-${shot.view}-${look}.jpg`;

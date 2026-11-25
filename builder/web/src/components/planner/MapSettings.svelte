@@ -3,11 +3,12 @@
     import MapControlPanel from './MapControlPanel.svelte';
     import { bandShare, networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
     import type { DataLayer } from '../../lib/planner/layers/data-layer';
-    import { roadLayers, roadLegend, type RoadLayer } from '../../lib/planner/road-layers-prototype';
+    import { roadLayers, roadLegend, slopeAngleLegend, type RoadLayer } from '../../lib/planner/road-layers-prototype';
     import type { BikeType } from '../../lib/planner/riding-profiles';
 
-    let { hillshade = $bindable(), contours = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), roadLayer = $bindable(''), bike = 'touring', theme = 'light' }: {
+    let { hillshade = $bindable(), contours = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), roadLayer = $bindable(''), slopeAngle = $bindable(false), bike = 'touring', theme = 'light' }: {
         roadLayer?: RoadLayer | '';
+        slopeAngle?: boolean;
         bike?: BikeType;
         /** The data layers of the region; the map shows one or none. */
         dataLayers?: DataLayer[];
@@ -33,6 +34,7 @@
         { label: 'Map', tiles: [
             { id: 'relief', label: 'Relief', on: hillshade, toggle: () => hillshade = !hillshade },
             { id: 'contours', label: 'Contours', on: contours, toggle: () => contours = !contours },
+            { id: 'slope-angle', label: 'Slope angle', on: slopeAngle, toggle: () => slopeAngle = !slopeAngle },
             { id: 'closures', label: 'Closures', on: mapOverlays.access, toggle: () => mapOverlays = { ...mapOverlays, access: !mapOverlays.access } },
         ] },
     ].filter(row => row.tiles.length));
@@ -58,6 +60,11 @@
             {#if i === 0 && mapOverlays.network !== 'none'}
                 <ul class="legend" aria-label="Route network colors" style:--band-share={`${bandShare[theme] * 100}%`}>
                     {#each networkLevels as level (level.rank)}<li title={level.label}><span class="sample" style:color={theme === 'dark' ? level.dark : level.color}></span>{level.rank === 3 ? 'National / intl.' : level.rank === 0 ? 'Unspecified' : level.label}</li>{/each}
+                </ul>
+            {/if}
+            {#if row.label === 'Map' && slopeAngle}
+                <ul class="legend" aria-label="Slope angle colors">
+                    {#each slopeAngleLegend as swatch (swatch.label)}<li><span class="road" style:background={swatch.color} style:height="8px"></span>{swatch.label}</li>{/each}
                 </ul>
             {/if}
             {#if row.label.startsWith('Roads') && roadLayer}

@@ -88,3 +88,24 @@ export function syncRoadLayer(map: Map, layer: RoadLayer | '', theme: Theme, bik
         },
     }, map.getStyle().layers.find(layer => layer.type === 'symbol')?.id);
 }
+
+/** Ski-touring slope classes of `build-data.py --slope-out`; below 30° is clear. */
+export const slopeAngleLegend = [
+    { label: '30–35°', color: '#f2e500' }, { label: '35–40°', color: '#f59600' },
+    { label: '40–45°', color: '#e0001a' }, { label: '> 45°', color: '#8228a0' },
+];
+const slopeId = 'slope-angle-prototype';
+
+/** The slope angle of the terrain, over the relief and under the roads. */
+export async function syncSlopeAngle(map: Map, shown: boolean) {
+    if (map.getLayer(slopeId)) map.removeLayer(slopeId);
+    if (!shown) return;
+    if (!map.getSource(slopeId)) {
+        const url = new URL('slope-angle-prototype.png', location.href).href;
+        const { coordinates } = await (await fetch(`${url}.json`)).json();
+        if (!map.getSource(slopeId)) map.addSource(slopeId, { type: 'image', url, coordinates });
+    }
+    if (map.getLayer(slopeId)) return;
+    map.addLayer({ id: slopeId, type: 'raster', source: slopeId, paint: { 'raster-opacity': 0.55, 'raster-resampling': 'nearest', 'raster-fade-duration': 0 } },
+        map.getStyle().layers.find(layer => layer.id.startsWith('roads_'))?.id);
+}

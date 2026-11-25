@@ -1,11 +1,13 @@
 """Prototype: one PMTiles archive (layer `roads`, zoom 10 to 14) of every road and path in a box, with slope class, surface class and trail grades.
 
-pip install osmium rasterio numpy shapely mapbox-vector-tile pmtiles
-python3 -I build-data.py --bbox W,S,E,N --dem-dir DIR --out FILE.pmtiles EXTRACT.osm.pbf [MORE.osm.pbf ...]
+pip install osmium rasterio numpy shapely mapbox-vector-tile pmtiles pillow
+python3 -I build-data.py --bbox W,S,E,N --dem-dir DIR --out FILE.pmtiles [--terrain URL --slope-out FILE.png] EXTRACT.osm.pbf [...]
 
-Missing Copernicus GLO-30 tiles for the box are downloaded into --dem-dir.
+The heights come from the planner release's Terrarium tiles at zoom 12 (`--terrain`, a `{z}/{x}/{y}` URL), or else from
+Copernicus GLO-30 tiles, downloaded into --dem-dir. `--slope-out` also writes the slope angle of the terrain as one
+image in Web Mercator, with its corners in FILE.png.json.
 """
-import argparse, gzip, math, os, sys, urllib.request
+import argparse, gzip, json, math, os, subprocess, sys, urllib.request
 import numpy as np
 import osmium
 import rasterio
@@ -13,6 +15,7 @@ import mapbox_vector_tile
 import shapely
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
+from PIL import Image
 
 # planner/router-build/src/source.rs highway_access; motorways carry no bike or foot.
 HIGHWAYS = {"cycleway", "residential", "living_street", "unclassified", "service", "tertiary", "tertiary_link",
@@ -25,6 +28,7 @@ SURFACE = {**dict.fromkeys(["asphalt", "paved", "concrete", "concrete:plates", "
            **dict.fromkeys(["sand", "mud", "rock", "stone", "cobblestone", "sett"], 5)}
 SAC = {"strolling": 0, "hiking": 1, "mountain_hiking": 2, "demanding_mountain_hiking": 3, "alpine_hiking": 4,
        "demanding_alpine_hiking": 5, "difficult_alpine_hiking": 6}
+R = 6378137.0
 SLOPE_BREAKS = [3, 6, 9, 12]  # percent: classes 0..4
 STEP_M, WINDOW_M = 25.0, 100.0
 
@@ -53,6 +57,74 @@ class Dem:
         fc, fr = col - c0, row - r0
         q = data[r0:r0 + 2, c0:c0 + 2]
         return float(q[0, 0] * (1 - fc) * (1 - fr) + q[0, 1] * fc * (1 - fr) + q[1, 0] * (1 - fc) * fr + q[1, 1] * fc * fr)
+
+
+class TerrainTiles:
+    """A mosaic of the Terrarium tiles of one zoom over the box, cached in `directory`."""
+    Z, SIZE = 12, 512
+
+    def __init__(self, template, directory, bbox, margin=0.02):
+        os.makedirs(directory, exist_ok=True)
+        n = 2 ** self.Z
+        tx = lambda lon: int((lon + 180) / 360 * n)
+        ty = lambda lat: int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n)
+        self.x0, self.y0 = tx(bbox[0] - margin), ty(bbox[3] + margin)
+        x1, y1 = tx(bbox[2] + margin), ty(bbox[1] - margin)
+        rows = []
+        for y in range(self.y0, y1 + 1):
+            row = []
+            for x in range(self.x0, x1 + 1):
+                path = os.path.join(directory, f"{self.Z}-{x}-{y}.webp")
+                if not os.path.exists(path):
+                    subprocess.run(["curl", "-sSf", "-o", path, template.format(z=self.Z, x=x, y=y)], check=True)
+                rgb = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32)
+                row.append(rgb[..., 0] * 256 + rgb[..., 1] + rgb[..., 2] / 256 - 32768)
+            rows.append(np.hstack(row))
+        self.data = np.vstack(rows)
+
+    def pixel(self, lon, lat):
+        n = 2 ** self.Z * self.SIZE
+        return ((lon + 180) / 360 * n - self.x0 * self.SIZE,
+                (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n - self.y0 * self.SIZE)
+
+    def height(self, lon, lat):
+        col, row = self.pixel(lon, lat)
+        col, row = col - 0.5, row - 0.5
+        c0, r0 = int(col), int(row)
+        if not (0 <= c0 < self.data.shape[1] - 1 and 0 <= r0 < self.data.shape[0] - 1):
+            raise KeyError((lon, lat))
+        fc, fr = col - c0, row - r0
+        q = self.data[r0:r0 + 2, c0:c0 + 2]
+        return float(q[0, 0] * (1 - fc) * (1 - fr) + q[0, 1] * fc * (1 - fr) + q[1, 0] * (1 - fc) * fr + q[1, 1] * fc * fr)
+
+    def corners(self):
+        n = 2 ** self.Z
+        lon = lambda x: x / n * 360 - 180
+        lat = lambda y: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
+        x1, y1 = self.x0 + self.data.shape[1] // self.SIZE, self.y0 + self.data.shape[0] // self.SIZE
+        return [[lon(self.x0), lat(self.y0)], [lon(x1), lat(self.y0)], [lon(x1), lat(y1)], [lon(self.x0), lat(y1)]]
+
+
+# Ski-touring classes: 30-35, 35-40, 40-45, above 45 degrees; below 30 is clear.
+SLOPE_ANGLES = [(30, (242, 229, 0)), (35, (245, 150, 0)), (40, (224, 0, 26)), (45, (130, 40, 160))]
+
+
+def write_slope_angle(terrain, path):
+    rows = np.arange(terrain.data.shape[0]) + 0.5
+    n = 2 ** terrain.Z * terrain.SIZE
+    lat = np.arctan(np.sinh(np.pi * (1 - 2 * (rows + terrain.y0 * terrain.SIZE) / n)))
+    pixel_m = 2 * math.pi * R / n * np.cos(lat)  # ground size of a pixel, by row
+    dz_dy, dz_dx = np.gradient(terrain.data)
+    angle = np.degrees(np.arctan(np.hypot(dz_dx, dz_dy) / pixel_m[:, None]))
+    rgba = np.zeros((*angle.shape, 4), dtype=np.uint8)
+    for limit, color in SLOPE_ANGLES:
+        rgba[angle >= limit] = (*color, 255)
+    Image.fromarray(rgba).save(path, optimize=True)
+    with open(path + ".json", "w") as f:
+        json.dump({"coordinates": terrain.corners()}, f)
+    share = [float((angle >= limit).mean()) for limit, _ in SLOPE_ANGLES]
+    print(f"{path}: {rgba.shape[1]}x{rgba.shape[0]} px, {os.path.getsize(path) / 1e6:.1f} MB; share of ground at or above "
+          + ", ".join(f"{limit}\u00b0 {v:.1%}" for (limit, _), v in zip(SLOPE_ANGLES, share)), file=sys.stderr)
 
 
 def metres(a, b):
@@ -119,12 +191,16 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--bbox", required=True)
     p.add_argument("--dem-dir", required=True)
+    p.add_argument("--terrain")
+    p.add_argument("--slope-out")
     p.add_argument("--out", required=True)
     p.add_argument("extracts", nargs="+")
     args = p.parse_args()
     bbox = [float(v) for v in args.bbox.split(",")]
     w, s, e, n = bbox
-    dem = Dem(args.dem_dir, bbox)
+    dem = TerrainTiles(args.terrain, args.dem_dir, bbox) if args.terrain else Dem(args.dem_dir, bbox)
+    if args.slope_out:
+        write_slope_angle(dem, args.slope_out)
     seen, features = set(), []
     for extract in args.extracts:
         for way in osmium.FileProcessor(extract, osmium.osm.NODE | osmium.osm.WAY).with_locations():
@@ -152,7 +228,6 @@ def main():
     write_tiles(features, bbox, args.out)
 
 
-R = 6378137.0
 def mercator(lonlat):
     lon, lat = lonlat[:, 0], lonlat[:, 1]
     return np.column_stack([np.radians(lon) * R, np.log(np.tan(np.pi / 4 + np.radians(lat) / 2)) * R])
