@@ -9,12 +9,13 @@ export const roadLayers: { id: RoadLayer; label: string }[] = [
 type Theme = 'light' | 'dark';
 type Class = { label: string; light: string; dark: string; faint?: boolean };
 
+// Climb-profile colours; the lightness falls from flat to steep in both themes.
 const steepness: Class[] = [
-    { label: '< 3 %', light: '#7ad151', dark: '#2c7a8e' },
-    { label: '3–6 %', light: '#22a884', dark: '#29af7f' },
-    { label: '6–9 %', light: '#2a788e', dark: '#7ad151' },
-    { label: '9–12 %', light: '#414487', dark: '#d2e21b' },
-    { label: '> 12 %', light: '#440154', dark: '#fff7a8' },
+    { label: '< 3 %', light: '#b2d6a0', dark: '#a2d192' },
+    { label: '3–6 %', light: '#e0b21c', dark: '#d4a626' },
+    { label: '6–9 %', light: '#e2781a', dark: '#de7426' },
+    { label: '9–12 %', light: '#c8321f', dark: '#d8402e' },
+    { label: '> 12 %', light: '#7a1018', dark: '#b02a32' },
 ];
 // The router's surface classes, in order of `Surface` in planner/router/src/model.rs.
 const surface: Class[] = [

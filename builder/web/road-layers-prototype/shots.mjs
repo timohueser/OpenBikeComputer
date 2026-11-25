@@ -8,11 +8,12 @@ const views = { near: { center: [8.28, 47.04], zoom: 14, padding: { right: 420 }
     // Pilatus, the steepest ground of the test area.
     mountain: { center: [8.255, 46.98], zoom: 13, padding: { right: 420 } } };
 const tiles = ['Steepness', 'Surface', 'Trail grade', 'Slope angle'];
+const only = process.argv[3];
 const shots = [
     ...['Steepness', 'Surface', 'Trail grade'].flatMap(layer => Object.keys(views).map(view => ({ layer, view, look: 'light' }))),
     { layer: 'Slope angle', view: 'mountain', look: 'light' },
     { layer: 'Steepness', view: 'near', look: 'dark' },
-];
+].filter(shot => !only || shot.layer === only);
 const browser = await chromium.launch(process.env.HTTPS_PROXY ? { proxy: { server: process.env.HTTPS_PROXY, bypass: '127.0.0.1,localhost' } } : {});
 for (const look of ['light', 'dark']) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: look });
