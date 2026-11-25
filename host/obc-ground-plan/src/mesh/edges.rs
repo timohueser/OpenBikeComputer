@@ -6,10 +6,11 @@
 //! and a point at each `RING_M` of stroke metres. Per side, a ring needs a rail where the paved edge lies `DROP_M`
 //! over the plain terrain `DROP_OUT_M` out or that point lies in area water, or where a mapped guard rail lies near;
 //! `shares` gives each ring its share by the stretch rules. A rail sinks into the ground before a stop: a chain's end
-//! at a junction or past the graph, a junction's corner on its arm's side, a sidewalk, a town, a fold, or another way's
-//! paved band under its beam. At a level change (a deck's end, a tunnel's opening) it runs on and ends square. The
-//! rules read only the graph, the plain terrain and the features, no farther past the cell than `reach` states, and
-//! alike in either direction of a chain, so two cells give a ring the same share.
+//! at a junction or past the graph, a junction's corner on its arm's side, a sidewalk, a town, a fold, or the paved
+//! band of another way but a path under its beam: a rail stands beside a cycle path, and a path that joins makes a
+//! junction. At a level change (a deck's end, a tunnel's opening) it runs on and ends square. The rules read only the
+//! graph, the plain terrain and the features, no farther past the cell than `reach` states, and alike in either
+//! direction of a chain, so two cells give a ring the same share.
 
 use super::shell::{clip, fan, prism, Build, DELINEATOR, P, RAIL};
 use crate::faces::records::find;
@@ -178,9 +179,9 @@ fn to_segment(q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     dist(q, add(a, d, t))
 }
 
-/// Of a way: whether it is railed, the half-width of its carriageway and shoulder, and its carriageway's half-width
-/// and corner radius.
-type Info = (bool, f64, f64, f64);
+/// Of a way: whether it is railed, the half-width of its carriageway and shoulder, its carriageway's half-width and
+/// corner radius, and whether it is of a path class.
+type Info = (bool, f64, f64, f64, bool);
 
 /// A chord between two samples of a ground way, its paved half-width there and its way.
 type Chord = ([[f64; 2]; 2], f64, u32);
@@ -198,7 +199,8 @@ fn row_of(y: f64) -> i64 {
 }
 
 /// What the rules read of the features and the graph: the buildings' boxes, the mapped guard rails, the water areas,
-/// and, at the first ring that asks, the chords of the ground ways but water with the widest paved half-width of them.
+/// and, at the first ring that asks, the chords of the ground ways but water and paths with the widest paved half-width
+/// of them.
 struct Context<'a> {
     buildings: (Grid, Vec<[f64; 4]>),
     rails: (Grid, Vec<[[f64; 2]; 2]>),
@@ -257,12 +259,12 @@ impl<'a> Context<'a> {
         })
     }
 
-    /// Whether q lies in the paved band of a ground way that the chain `own` does not hold.
+    /// Whether q lies in the paved band of a ground way but a path that the chain `own` does not hold.
     fn in_other(&self, q: [f64; 2], own: &[(u32, i8)], mpu: f64) -> bool {
         let (grid, chords, widest) = self.ways.get_or_init(|| {
             let mut chords: Vec<Chord> = Vec::new();
             for (w, way) in self.g.ways.iter().enumerate().filter(|(_, way)| way.level == Level::Ground) {
-                let Some((_, e, ..)) = self.half[w] else { continue };
+                let Some((_, e, .., false)) = self.half[w] else { continue };
                 let samples = &self.g.samples[way.samples.start as usize..way.samples.end as usize];
                 let band = |s: &[Sample]| e + s[0].widen_m.max(s[1].widen_m);
                 chords.extend(
@@ -548,7 +550,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
             let f = &input.features[g.parts[way.part as usize].feature.0 as usize];
             let s = (way.family != Family::Water).then(|| rules.sections.way(&f.kind, &f.tags, false))?;
             let railed = way.family == Family::Road && RAILED.contains(&s.class.trim_end_matches("_link"));
-            Some((railed, s.half_m + s.shoulder_m, s.half_m + s.widen_m, s.corner_radius_m))
+            Some((railed, s.half_m + s.shoulder_m, s.half_m + s.widen_m, s.corner_radius_m, s.path))
         })
         .collect();
     // The zones: on each side of a junction's arm, up to where the round of the corner toward the neighbour arm on
