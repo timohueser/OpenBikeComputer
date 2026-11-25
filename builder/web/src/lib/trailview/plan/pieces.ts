@@ -601,7 +601,7 @@ export class Pieces {
                 pass.setBindGroup(0, piece.gpu!.draw);
                 pass.draw(CULVERT_VERTICES * (piece.mesh.culverts.length / 4));
             }
-            const storeyed = pieces.filter(piece => piece.gpu!.storeys?.computed);
+            const storeyed = pieces.filter(piece => piece.gpu!.storeys?.computed && piece.mesh.storeys!.triangles.length);
             pass.setPipeline(r.storeys[+cut]);
             for (const piece of storeyed) {
                 pass.setBindGroup(0, piece.gpu!.storeys!.draw);
@@ -632,7 +632,7 @@ export class Pieces {
             const storeys = piece.gpu!.storeys!;
             storeys.cast ??= this.drawGroup(r, storeys.data, storeys.params, this.sun);
             pass.setBindGroup(0, storeys.cast);
-            pass.draw(piece.mesh.storeys!.triangles.length);
+            if (piece.mesh.storeys!.triangles.length) pass.draw(piece.mesh.storeys!.triangles.length);
         }
         drawDetails(pass, r.details.cast, this.eye!, storeyed.map(({ node, mesh, gpu }) => ({ ...node, storeys: mesh.storeys!, group: gpu!.storeys!.cast! })));
     }
