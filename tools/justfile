@@ -477,32 +477,14 @@ ios-companion *args:
     _run "$OBC_TOOLS/build-ios-host.sh"
     ios_install OBCCompanion Release com.openbikecomputer.companion "$device"
 
-[doc("What governs these files: contracts, guards, suites, frames, budgets. Args: PATH...")]
+[doc("Check AGENTS.md and the READMEs: line caps, named paths and tasks, links, published pages.")]
 [group('docs')]
-governs *args:
+paths:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"
-    _run python3 "$OBC_TOOLS/governs.py" "$@"
-
-[doc("Prose budgets, published-page and link rules. Args: [--check|--update|--report]")]
-[group('docs')]
-prose *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"
-    _run python3 "$OBC_TOOLS/prose.py" "$@"
-
-[doc("System docs against the code. Args: check [--base REF] [--update | --accept] | map | leaves SYSTEM | report [--publish]")]
-[group('docs')]
-cairn *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"
-    _run python3 "$OBC_TOOLS/cairn/cairn.py" "$@"
+    _run python3 "$OBC_TOOLS/check_paths.py"
 
 # Builds the web app as the deploy builds it and serves it on :4173 at /planner.html. Args: [PORT].
 # It reads the device catalogue of the active planner release, as deployed;
