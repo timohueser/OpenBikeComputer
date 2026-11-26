@@ -9,8 +9,8 @@
 //! the rail, the cover behind a portal), the line stops at that face's edge, found to `BISECT_M`. Each run of spans
 //! has a cap at each end. A track's top sinks to `FLUSH_M` over its face over `RAMP_M` of stroke metres before a level
 //! crossing: where its middle line lies within a ground road's or path's carriageway (half-width and widening about
-//! the graph's chord), on any ground rail way that it runs on into through joints and junctions, its metres carried
-//! over each node. That is one value per stroke metre, from the graph alone in global frame units, so all the track's
+//! the graph's chord), on its way or on a ground rail way that ends within `RAMP_M` of it at joints and junctions, its
+//! metres carried over each node along the least path. That is one value per stroke metre, from the graph alone in global frame units, so all the track's
 //! lines take it and every cell gives it alike. A sleeper stands at each `SLEEPER_M` of stroke metres on the spans of
 //! both rails, or of one (its other seat past the cell or its rail stopped): then the other seat lies the gauge across
 //! at the same height. It sinks with them. A later track (`way_key`, the least of the track's ways about a point)
@@ -23,7 +23,7 @@ use super::edges::{add, at_end, bbox, dist, dot, sub, to_segment, way_key, way_p
 use crate::faces::records::{self, find, LINE};
 use crate::faces::{Rules, Surface};
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
-use crate::graph::{point as curve_point, s_at, u_at, Arm, Family, Level, WayGraph};
+use crate::graph::{point as curve_point, s_at, u_at, Family, Level, WayGraph};
 use crate::sections::{Finish, Reach, Sections, WaySection, HALF_MAX_M};
 
 /// The kinds of a part (an item's top bits): swept along a line (rail, rack, cable), boxes (sleeper, roller, tread),
@@ -302,7 +302,6 @@ type Chord = ([V; 2], f64);
 type Bed = ([V; 2], f64, u32, u32);
 /// A track way's place in `way_key` order and the way.
 type Key = (u32, u32);
-type Link = (u32, f64, f64, [i32; 2], bool);
 
 struct Cx<'a> {
     g: &'a WayGraph,
@@ -312,9 +311,13 @@ struct Cx<'a> {
     tracks: (Grid, Vec<Bed>),
     /// The ground roads' and paths' chords and the widest band.
     roads: (Grid, Vec<Chord>, f64),
-    /// Per way the rail ways that run on from it, each with the map of their stroke metres into its own (σ·m + τ),
-    /// the node where it runs on, and whether that is its track's way on (not a branch's).
-    links: Vec<Vec<Link>>,
+    /// Per way, at its start and its end, the node there (a joint or junction where it ends) and its stroke metres;
+    /// per node the rail ways that end there, each with that end.
+    ends: Vec<[(Option<u32>, f64); 2]>,
+    nodes: Vec<Vec<(u32, usize)>>,
+    /// Per way the ways its track runs on into: at a joint, and at a junction's two arms that are each other's most
+    /// nearly opposite (not a branch).
+    own: Vec<Vec<u32>>,
 }
 
 impl Cx<'_> {
@@ -357,39 +360,58 @@ impl Cx<'_> {
     fn lowered(&self, q: V, (key, w): Key) -> bool {
         let (grid, chords) = &self.tracks;
         let mpu = self.mpu(q);
-        let mut near = Vec::new();
+        let (mut mine, mut other) = (key, u32::MAX);
         grid.any(q, SLEEPER_HALF_M[0] / mpu, |k| {
-            let ([a, b], half, other, v) = chords[k as usize];
+            let ([a, b], half, place, v) = chords[k as usize];
             if to_segment(q, a, b) * mpu <= half {
-                near.push((other, v == w || self.links[w as usize].iter().any(|l| l.0 == v && l.4)));
+                if v == w || self.own[w as usize].contains(&v) {
+                    mine = mine.min(place);
+                } else {
+                    other = other.min(place);
+                }
             }
             false
         });
-        let mine = near.iter().filter(|c| c.1).map(|c| c.0).fold(key, u32::min);
-        near.iter().any(|c| !c.1 && c.0 < mine)
+        other < mine
     }
 
-    /// The stroke metres, in way w's own, where the middle line of its track lies within a crossing band: on the
-    /// chords of the ground rail ways that run on from w through its links, never back through the node a way was
-    /// reached by; each with the box of its chord (global frame units), where `near` keeps that box. A way's map into
-    /// w's metres composes the links from w on.
+    /// The stroke metres, in way w's own, where the middle line of its track lies within a crossing band, each with
+    /// the box of its chord (global frame units) where `near` keeps it: on w's chords and on those of the rail ways
+    /// that end within `RAMP_M` of w's ends, through every rail end at each node, each by its least path in metres,
+    /// so every end at a node sees one distance to each zone. A way's metres map into w's along that path.
     fn zones(&self, w: u32, near: impl Fn(&[f64; 4]) -> bool) -> Vec<(f64, f64, [f64; 4])> {
         let (grid, chords, widest) = &self.roads;
         let mpu = metres_per_unit_at(self.origin[1] + CELL_UNITS as f64 / 2.0);
-        let mut ways = vec![(w, 1.0, 0.0, None)];
+        let mut ways = vec![(w, 1.0, 0.0)];
         let mut seen = vec![false; self.g.ways.len()];
         seen[w as usize] = true;
-        let mut i = 0;
-        while let Some(&(v, sv, tv, by)) = ways.get(i) {
-            i += 1;
-            for &(x, sx, tx, node, _) in self.links[v as usize].iter().filter(|l| Some(l.3) != by) {
-                if !std::mem::replace(&mut seen[x as usize], true) {
-                    ways.push((x, sv * sx, sv * tx + tv, Some(node)));
+        // Nodes to pass, each with its path metres from w, its metres in w's and the way w's metres run out there.
+        let e = &self.ends[w as usize];
+        let mut open: Vec<(u32, f64, f64, f64)> = (0..2)
+            .filter_map(|k| e[k].0.map(|n| (n, 0.0, e[k].1, if e[k].1 >= e[1 - k].1 { 1.0 } else { -1.0 })))
+            .collect();
+        let mut passed = vec![false; self.nodes.len()];
+        while let Some(i) = (0..open.len()).min_by(|&a, &b| open[a].1.total_cmp(&open[b].1)) {
+            let (n, d, m, out) = open.swap_remove(i);
+            if std::mem::replace(&mut passed[n as usize], true) {
+                continue;
+            }
+            for &(x, k) in &self.nodes[n as usize] {
+                if std::mem::replace(&mut seen[x as usize], true) {
+                    continue;
+                }
+                let [near_end, far_end] = [self.ends[x as usize][k], self.ends[x as usize][1 - k]];
+                let sx = if far_end.1 >= near_end.1 { out } else { -out };
+                let tx = m - sx * near_end.1;
+                ways.push((x, sx, tx));
+                let past = d + (far_end.1 - near_end.1).abs();
+                if let Some(next) = far_end.0.filter(|_| past < RAMP_M) {
+                    open.push((next, past, sx * far_end.1 + tx, out));
                 }
             }
         }
         let mut out = Vec::new();
-        for (v, sv, tv, _) in ways {
+        for (v, sv, tv) in ways {
             let way = &self.g.ways[v as usize];
             if way.level != Level::Ground {
                 continue;
@@ -725,11 +747,11 @@ fn span_at(g: &WayGraph, w: u32, m: f64) -> Option<(u32, f64)> {
     spans_of(g, w).into_iter().find(|&(k, s0, s1)| (s0..=s1).contains(&at(k))).map(|(k, ..)| (k, at(k)))
 }
 
-/// The stroke metres of an arm's way at its node.
-fn along_at(g: &WayGraph, arm: &Arm) -> f64 {
-    let span = &g.parts[g.ways[arm.way as usize].part as usize].spans[arm.at.span as usize];
-    let sign = if g.parts[g.ways[arm.way as usize].part as usize].backward { -1.0 } else { 1.0 };
-    span.along0_m + sign * s_at(span, arm.at.u)
+/// The stroke metres of way w at its station.
+fn along_at(g: &WayGraph, w: u32, at: &crate::graph::Station) -> f64 {
+    let part = &g.parts[g.ways[w as usize].part as usize];
+    let span = &part.spans[at.span as usize];
+    span.along0_m + if part.backward { -1.0 } else { 1.0 } * s_at(span, at.u)
 }
 
 /// The marks of way w at each `step` of its stroke metres: per mark its metres and its point on the curve.
@@ -832,30 +854,23 @@ pub fn place(g: &WayGraph, input: &crate::CellInput, rules: &Rules, words: &[u32
     }
     let widest = roads.iter().map(|r| r.1).fold(0.0, f64::max);
     let road_boxes: Vec<[f64; 4]> = roads.iter().map(|c| bbox(&c.0)).collect();
-    // A rail way runs on into the other at a joint, and at a junction into its most nearly opposite arm (a branch into
-    // the way it leaves, as `edges` chains roads): m = σ·m' + τ, σ -1 where both ways' metres grow away from the node.
-    let mut links = vec![Vec::new(); g.ways.len()];
-    let rail = |a: &Arm| g.ways[a.way as usize].family == Family::Rail && at_end(g, a);
-    let away = |a: &Arm| (a.dir > 0) != g.parts[g.ways[a.way as usize].part as usize].backward;
-    let mut link = |a: &Arm, b: &Arm, node: [i32; 2], on: bool| {
-        if rail(a) && rail(b) && a.way != b.way {
-            let s = if away(a) != away(b) { 1.0 } else { -1.0 };
-            links[a.way as usize].push((b.way, s, along_at(g, a) - s * along_at(g, b), node, on));
-            links[b.way as usize].push((a.way, s, along_at(g, b) - s * along_at(g, a), node, on));
-        }
-    };
-    for j in &g.joints {
-        link(&j.arms[0], &j.arms[1], j.pos, true);
-    }
-    for j in &g.junctions {
-        let cos = |a: usize, b: usize| libm::cos(j.arms[a].angle - j.arms[b].angle);
-        let opposite =
-            |k: usize| (0..j.arms.len()).filter(|&c| c != k).min_by(|&a, &b| cos(a, k).total_cmp(&cos(b, k)));
-        for k in 0..j.arms.len() {
-            if let Some(o) = opposite(k).filter(|&o| k < o || opposite(o) != Some(k)) {
-                link(&j.arms[k], &j.arms[o], j.pos, opposite(o) == Some(k));
+    // The rail ways' ends at the joints and junctions; a track runs on at a joint and at a junction's two arms that
+    // are each other's most nearly opposite (as `edges` chains roads).
+    let mut ends: Vec<[(Option<u32>, f64); 2]> = (0..g.ways.len() as u32)
+        .map(|w| [&g.ways[w as usize].from, &g.ways[w as usize].to].map(|s| (None, along_at(g, w, s))))
+        .collect();
+    let (mut nodes, mut own) = (Vec::new(), vec![Vec::new(); g.ways.len()]);
+    for arms in (g.joints.iter().map(|j| &j.arms[..])).chain(g.junctions.iter().map(|j| &j.arms[..])) {
+        let rail = |k: usize| g.ways[arms[k].way as usize].family == Family::Rail && at_end(g, &arms[k]);
+        let cos = |a: usize, b: usize| libm::cos(arms[a].angle - arms[b].angle);
+        let opposite = |k: usize| (0..arms.len()).filter(|&c| c != k).min_by(|&a, &b| cos(a, k).total_cmp(&cos(b, k)));
+        for k in (0..arms.len()).filter(|&k| rail(k)) {
+            ends[arms[k].way as usize][usize::from(arms[k].dir < 0)].0 = Some(nodes.len() as u32);
+            if let Some(o) = opposite(k).filter(|&o| opposite(o) == Some(k) && rail(o) && arms[o].way != arms[k].way) {
+                own[arms[k].way as usize].push(arms[o].way);
             }
         }
+        nodes.push((0..arms.len()).filter(|&k| rail(k)).map(|k| (arms[k].way, usize::from(arms[k].dir < 0))).collect());
     }
     let mut cx = Cx {
         g,
@@ -864,7 +879,9 @@ pub fn place(g: &WayGraph, input: &crate::CellInput, rules: &Rules, words: &[u32
         out: Details::default(),
         tracks: (Grid::of(8192.0, &bed_boxes), beds),
         roads: (Grid::of(8192.0, &road_boxes), roads, widest),
-        links,
+        ends,
+        nodes,
+        own,
     };
     for w in tracks {
         let s = section(w);
