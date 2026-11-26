@@ -45,7 +45,7 @@ public struct PlannerPlan: Codable, Equatable, Sendable {
 }
 
 public struct PlanPoint: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case start, finish, pass, via, waypoint, detour, night, marker }
+    public enum Kind: String, Codable, Sendable { case start, finish, pass, via, waypoint, night, marker }
     /// How the leg that ends at this point runs. In a loop, the start's leg is the closing leg.
     public enum Leg: String, Codable, Sendable { case routed, straight, drawn, transfer }
 
