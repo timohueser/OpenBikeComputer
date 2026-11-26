@@ -95,6 +95,7 @@ fn with_storeys(
     let start = now();
     b.storeys = records::storeys(&b.graph, input, rules, b.key, &mut b.records, under);
     b.storeys.edges = mesh::edges::place(&b.graph, input, rules);
+    b.storeys.details = mesh::details::place(&b.graph, input, rules, &b.records);
     let plan = &b.faces;
     let sharp = |f: u32| f != OUTSIDE && mesh::params::sharp_face(&plan.faces[f as usize]);
     let origin_y = b.key.origin().y as f64;
