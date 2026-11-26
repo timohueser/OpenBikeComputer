@@ -26,7 +26,7 @@ On a rework, a leaf needs no peanut when each of its modules has a purpose comme
 
 ## 2. Peanuts
 
-Start one `doc-peanut` subagent for each leaf, all in parallel. Give it only this prompt with the files of its leaf. Do not give it the `uses` lines or the system doc: step 3 needs a claim that does not copy them. Keep the `Purpose:` line only when the leaf is one module: one file, or one folder with its module file.
+Start one peanut subagent at the balanced tier for each leaf, all in parallel. Give it only this prompt with the files of its leaf. Do not give it the `uses` lines or the system doc: step 3 needs a claim that does not copy them. Keep the `Purpose:` line only when the leaf is one module: one file, or one folder with its module file.
 
 ```text
 Read only these files, and no others:
@@ -58,7 +58,7 @@ Mark a summary with a wrong claim `UNRELIABLE`, with the claim. It goes up to th
 
 If the system has 5 leaves or fewer, skip this step: the peanut summaries are the bottom-up view.
 
-Each distinct `level:` folder is a level. Its children are its leaves and the levels inside it. Above them come the crate, then the system. Skip a level with one child. Go bottom-up: start one `doc-hay` subagent for each level after its children are done. Give it each child summary, with the child's `leaf` line or level name before it, the `UNRELIABLE` marks, and the module file of its folder if it has one: `lib.rs`, `main.rs`, `mod.rs`, `x.rs` for a folder `x/`, `__init__.py` or `index.ts`.
+Each distinct `level:` folder is a level. Its children are its leaves and the levels inside it. Above them come the crate, then the system. Skip a level with one child. Go bottom-up: start one hay subagent at the balanced tier for each level after its children are done. Give it each child summary, with the child's `leaf` line or level name before it, the `UNRELIABLE` marks, and the module file of its folder if it has one: `lib.rs`, `main.rs`, `mod.rs`, `x.rs` for a folder `x/`, `__init__.py` or `index.ts`.
 
 ```text
 These are summaries of the parts of <level>. Read them and the files given, and no others.
@@ -126,6 +126,6 @@ When the user approves the doc, set `status: approved`, then run `cairn map` and
 
 Write the findings to a file, as [writing.md](writing.md) says, grouped by kind. Open the issue with `gh api repos/{owner}/{repo}/issues -X POST -f title="Findings from documenting <system>" -F body=@FILE`.
 
-Run `cairn map`. Then open one pull request with the doc, the map and the purpose comments. Its body links the findings issue. Its `Mode:` line is `change #N` when an issue asked for the doc, otherwise `fix`.
+Run `cairn map`. Then open one pull request with the doc, the map and the purpose comments. Its body links the findings issue.
 
 End with the pull request link and the issue link. If the issue has findings with the action `fix`, offer once to fix them now in a second pull request, as [fix.md](fix.md) says.

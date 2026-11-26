@@ -7,7 +7,7 @@ Fixes a bug, makes a small tweak, or fixes the findings with the action `fix` in
 - **A bug or a tweak:** read the map and the docs of the systems it touches. For a bug, reproduce it first, with a failing test when that is practical.
 - **The findings of issue #N:** read the issue. Take only the findings with the action `fix`. A `refactor issue` item waits for its own `design`, and an `intended choice` needs no action.
 
-If the change needs a design, say so once and offer `design`: for example, when it adds a `depends_on` entry, changes a contract file (such as `specs/`), or grows past a small change. If the user wants to go ahead, go ahead, and the pull request records `Mode: skip: <reason>`.
+If the change needs a design, say so once and offer `design`: for example, when it adds a `depends_on` entry, changes a contract file (such as `specs/`), or grows past a small change. If the user wants to go ahead, go ahead.
 
 ## 2. Change
 
@@ -19,7 +19,7 @@ Run the checks that the project's agent instructions (such as AGENTS.md) ask for
 
 ## 3. Pull request
 
-Open one pull request as a draft, and fill the pull request template. When the user's pull request is already open, leave its state. Its `Mode:` line is `fix`, or the `skip` of step 1. Its body says what was wrong, what changed, and the checks that ran.
+Open one pull request as a draft, and fill the pull request template. When the user's pull request is already open, leave its state. Its body says what was wrong, what changed, and the checks that ran.
 
 For findings, edit the issue now: mark each fixed finding with the pull request link. Write `Closes #N` in the pull request body only when the issue has no `fix` or `refactor issue` item left.
 
