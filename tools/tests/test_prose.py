@@ -32,6 +32,10 @@ class WordCountTests(unittest.TestCase):
         )
         self.assertEqual(prose.words(text), 5)
 
+    def test_a_design_doc_takes_its_kind_from_its_header(self):
+        self.assertEqual(prose.DESIGN_KIND.match("---\nsystem: a\nkind: shell\n---\n").group(1), "shell")
+        self.assertIsNone(prose.DESIGN_KIND.match("---\nsystem: a\n---\nkind: shell\n"))
+
 
 class UpdateTests(unittest.TestCase):
     def run_update(self, found, base, *paths):

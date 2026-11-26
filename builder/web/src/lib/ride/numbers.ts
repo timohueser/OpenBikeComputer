@@ -15,7 +15,7 @@ export interface Channels { hr?: Channel; power?: Channel; cadence?: Channel }
 
 /** A climb from sample `first` to sample `last`. `from` and `to` are kilometres from the start, with no hop across a
  * pause; `top` is the place of the last sample. `seconds` is its moving time, `powerW` its mean power when the ride has
- * power. */
+ * power. It has no grade: recorded heights make the grade too high. */
 export interface RideClimb { first: number; last: number; from: number; to: number; ascent: number; top: Coordinate; seconds: number; powerW?: number }
 
 /** Each sample weighs the seconds of the moving step that ends at it (`movingSteps`). */

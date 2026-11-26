@@ -1,7 +1,4 @@
-"""The weekly report: the skipped pull requests, the ratchet, and the approved system docs to check.
-
-The `Mode:` line of a pull request body is a record: `change #N`, `fix` or `skip: <reason>`. Nothing
-checks it, and the report does not count an unknown value.
+"""The weekly report: the ratchet, and the approved system docs to check.
 
 The report reads git and GitHub and costs no tokens. For each approved doc, it lists the pull
 requests merged since the doc last changed that touch the files of its system.
@@ -10,14 +7,13 @@ requests merged since the doc last changed that touch the files of its system.
 from __future__ import annotations
 
 import functools
-import itertools
 import json
 import re
 import subprocess
 import sys
 from collections import Counter
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cairn
@@ -28,33 +24,9 @@ MERGE = re.compile(r"Merge pull request #([1-9]\d*)\b")
 # GitHub refuses an issue body longer than 65,536 characters.
 BODY_LIMIT = 65_000
 PIN = "mutation($id: ID!) { pinIssue(input: {issueId: $id}) { issue { number } } }"
-MODE = re.compile(r"change #(?P<issue>[1-9]\d*)|fix|skip: (?P<reason>\S.*)")
-# GitHub hides an unclosed comment up to the end of the body.
-COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
-FENCE = re.compile(r"^```.*?^```", re.S | re.M)
 
 #: `api(path, method="GET", payload=None)` on `repos/{owner}/{repo}/`.
 Api = Callable[..., object]
-
-
-def untrusted(text: str) -> str:
-    """Text from a pull request, on one line. A zero-width space after each `@` keeps
-    GitHub from notifying the user that it names, and `&lt;` keeps `<!--` from hiding the rest of the
-    report."""
-    return " ".join(str(text).split()).replace("@", "@\u200b").replace("<", "&lt;")
-
-
-def visible(body: str) -> str:
-    """The body without HTML comments and code blocks."""
-    return FENCE.sub("", COMMENT.sub("", body))
-
-
-def pull_mode(pull: dict) -> re.Match | None:
-    """The value of the first `Mode:` line of a pull request body, or None when it is unknown."""
-    for line in visible(pull.get("body") or "").splitlines():
-        if line.startswith("Mode:"):
-            return MODE.fullmatch(line[len("Mode:"):].strip())
-    return None
 
 
 def git(root: Path, *args: str) -> str | None:
@@ -74,24 +46,6 @@ def gh(root: Path, endpoint: str, method: str = "GET", payload: dict | None = No
 
 def api(root: Path, path: str, method: str = "GET", payload: dict | None = None):
     return gh(root, f"repos/{{owner}}/{{repo}}/{path}", method, payload)
-
-
-def merged(api: Api, now: datetime) -> list[dict]:
-    """The pull requests merged in the 7 days before `now`, by number. The list is newest update
-    first, so it stops at a page that ends before the window."""
-    since = now - timedelta(days=7)
-    found = []
-    for page in itertools.count(1):
-        pulls = api(f"pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}")
-        found += [pull for pull in pulls if pull.get("merged_at") and datetime.fromisoformat(pull["merged_at"]) >= since]
-        if len(pulls) < 100 or datetime.fromisoformat(pulls[-1]["updated_at"]) < since:
-            return sorted(found, key=lambda pull: pull["number"])
-
-
-def skips(pulls: list[dict]) -> list[tuple[int, str, str]]:
-    """The pull requests with `Mode: skip: <reason>`, as (number, title, reason)."""
-    return [(pull["number"], pull["title"], mode["reason"]) for pull in pulls
-            if (mode := pull_mode(pull)) and mode["reason"]]
 
 
 def merges(root: Path, since: str) -> list[tuple[str, int]]:
@@ -138,20 +92,11 @@ def docs_to_check(root: Path, docs: list[cairn.Doc], config: dict) -> list[tuple
 
 
 def write(root: Path, config: dict, docs: list[cairn.Doc], result: cairn.Result, baseline: set[str],
-          api: Api, now: datetime) -> tuple[str, bool]:
+          now: datetime) -> tuple[str, bool]:
     """The report, and whether a part of it failed."""
-    failed = False
-    lines = ["# cairn report", "", f"Written on {now:%Y-%m-%d} at {git(root, 'rev-parse', '--short', 'HEAD')}.",
-             "", "## Skips merged in the last 7 days", ""]
-    try:
-        rows = [f"| #{n} | {untrusted(t).replace('|', '/')} | {untrusted(r).replace('|', '/')} |" for n, t, r in skips(merged(api, now))]
-        lines += ["| Pull request | Title | Reason |", "| --- | --- | --- |", *rows] if rows else ["None."]
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        failed = True
-        lines.append(f"The pull requests cannot be read: {error}")
-
     counts = Counter(system for v in result.violations for system in v.systems)
-    lines += ["", "## Ratchet", "", f"{len(result.violations)} violations; the baseline holds {len(baseline)}.", "",
+    lines = ["# cairn report", "", f"Written on {now:%Y-%m-%d} at {git(root, 'rev-parse', '--short', 'HEAD')}.",
+             "", "## Ratchet", "", f"{len(result.violations)} violations; the baseline holds {len(baseline)}.", "",
               "| System | Violations |", "| --- | --- |",
               *(f"| {system} | {n} |" for system, n in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0])))]
     unowned = sorted(v.id.removeprefix("unowned ") for v in result.violations if v.id.startswith("unowned "))
@@ -167,7 +112,7 @@ def write(root: Path, config: dict, docs: list[cairn.Doc], result: cairn.Result,
     if not found:
         approved = sum(doc.status == "approved" for doc in docs)
         lines.append(f"{approved} approved doc(s); no pull request touched their systems since they changed.")
-    return "\n".join(lines), failed
+    return "\n".join(lines), False
 
 
 def publish(body: str, api: Api, pin: Callable[[str], object]) -> str:
@@ -200,10 +145,10 @@ def main(publishing: bool) -> int:
         result = cairn.analyse(docs, files, units, edges, config)
         path = root / config["baseline"]
         baseline = set(json.loads(path.read_text())) if path.exists() else set()
-        read = functools.partial(api, root)
-        text, failed = write(root, config, docs, result, baseline, read, datetime.now(timezone.utc))
+        text, failed = write(root, config, docs, result, baseline, datetime.now(timezone.utc))
         print(text)
         if publishing:
+            read = functools.partial(api, root)
             def pin(node: str) -> None:
                 answer = gh(root, "graphql", "POST", {"query": PIN, "variables": {"id": node}})
                 if (answer or {}).get("errors"):

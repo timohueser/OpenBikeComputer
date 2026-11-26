@@ -6,7 +6,7 @@
 
 Find the base: `base=$(gh api repos/{owner}/{repo}/pulls/N --jq .base.ref)`, then `git fetch origin "$base"`. Write the diff to a file outside the checkout: `git diff "origin/$base"...HEAD > FILE`. Note the HEAD commit for a later delta review.
 
-Start one fresh subagent with the role `code-review`, as the router's Subagents rules say. Give it the file path, not the pasted diff, the intent (the bug, the list of findings, or the issue's TL;DR) and the paths of the approved system docs (`status: approved`) of the systems that the diff touches.
+Start one fresh subagent at the strong tier and high effort, as the router's Subagents rules say. Give it the file path, not the pasted diff, the intent (the bug, the list of findings, or the issue's TL;DR) and the paths of the approved system docs (`status: approved`) of the systems that the diff touches.
 
 ```text
 Review this pull request. The diff is in <FILE>. Its intent:

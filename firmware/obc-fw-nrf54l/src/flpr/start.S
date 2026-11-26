@@ -1,4 +1,4 @@
-/* start.S — FLPR reset entry for the LS021 F0 blink blob (issue #150, epic #149).
+/* start.S — FLPR reset entry for the LS021 scan blob.
 
    The M33 sets VPR00.INITPC to the FLPR_RAM base and releases the core, so the very first
    instruction the FLPR fetches is `_start` here (placed first by flpr.ld via `.text.start`).

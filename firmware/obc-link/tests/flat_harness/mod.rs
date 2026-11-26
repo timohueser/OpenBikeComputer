@@ -26,8 +26,6 @@ use obc_flat_device::{CATALOG_BLOCKS, TOTAL_BLOCKS};
 pub use obc_flat_device::{crc32, STORE};
 
 pub type Plain<'a> = Device<&'a SparseDisk>;
-/// A device over a card that refuses one media operation and then behaves.
-pub type Faulty<'a> = Device<&'a obc_storage::flat::sim::FaultOnce<&'a SparseDisk>>;
 
 pub fn blank_card(seed: u64) -> SparseDisk {
     obc_flat_device::blank_card(TOTAL_BLOCKS, seed)

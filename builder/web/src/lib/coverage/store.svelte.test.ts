@@ -143,7 +143,7 @@ describe("box parts", () => {
         expect(store.focus!.maxLat).toBeGreaterThanOrEqual(46_100_000);
     });
 
-    it("shows holes from every band, deduplicated — never a hole the UI keeps to itself (#1041 A5)", () => {
+    it("shows holes from every band, deduplicated — never a hole the UI keeps to itself", () => {
         const store = makeStore();
         // Detail ground fully published across a wider column, but the mid
         // band's index still ends at j=0526 — so a box reaching past 7.87°E
@@ -194,7 +194,7 @@ describe("box parts", () => {
     });
 });
 
-describe("partial-detail hatching (#1041 A9)", () => {
+describe("partial-detail hatching", () => {
     /** The fixture indices with both fine cells flagged partial — the shape of
      *  a real extract, where border cells are partial as a matter of course. */
     function partialIndices() {

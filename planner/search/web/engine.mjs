@@ -1,6 +1,6 @@
 import {norm,compact,streetNorm,editDistance,editBudget,spans} from './text.mjs';
 import vocabulary from '../query/lexicon/kinds.json' with {type:'json'};
-export {norm,editDistance} from './text.mjs';
+export {norm} from './text.mjs';
 
 export const DEFAULT_VIEW = [7.77, 47.965, 7.96, 48.06];
 const CUISINES = {

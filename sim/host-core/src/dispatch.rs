@@ -2062,14 +2062,20 @@ mod tests {
             })
         }
 
-        fn append(&mut self, point: TrackPoint) -> bool {
+        fn append_batch(
+            &mut self,
+            points: &[TrackPoint],
+            _continuation: Option<obc_app::RideContinuation>,
+        ) -> Result<crate::AppendStatus, RecorderError> {
             assert!(self.open, "no append against an absent recorder");
-            if self.delta_limit.is_some_and(|limit| self.delta_points == limit) {
-                return false;
+            let room = self.delta_limit.map_or(points.len(), |limit| limit - self.delta_points);
+            let written = points.len().min(room);
+            if written == 0 && !points.is_empty() {
+                return Err(RecorderError::Write);
             }
-            self.delta_points += 1;
-            self.points.push(point);
-            true
+            self.delta_points += written;
+            self.points.extend_from_slice(&points[..written]);
+            Ok(crate::AppendStatus::Accepted(written as u16))
         }
     }
 

@@ -201,6 +201,6 @@ fn without_terrain_the_shown_elevation_is_the_raw_barometer() {
     assert_eq!(
         app.recorder.current_elevation_m(),
         app.recorder.baro_elevation_m(),
-        "the tile shows exactly what it showed before the epic"
+        "with no terrain the tile shows the raw barometric elevation"
     );
 }

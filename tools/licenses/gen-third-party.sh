@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regenerate THIRD-PARTY.md — the licence texts that have to travel with a distributed
-# binary (#1149). Run it through `obc licenses`; `obc licenses --check` fails instead of
+# binary. Run it through `obc licenses`; `obc licenses --check` fails instead of
 # writing, which is what CI runs.
 #
 # One section per *artifact*, because the obligation is per artifact: the crates inside

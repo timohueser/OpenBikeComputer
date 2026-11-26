@@ -78,7 +78,7 @@ targets:
       - package: OBCKit
         product: OBCTransport
       # The file-format edge (RouteImporter + decoders) — the composition root
-      # registers the concrete formats (B4: GPX; B6 adds TCX).
+      # registers the concrete formats (GPX, TCX).
       - package: OBCKit
         product: OBCFormats
       - package: OBCKit
@@ -102,7 +102,7 @@ targets:
         # Keep object transfers active when the phone locks or the app enters the background.
         UIBackgroundModes:
           - bluetooth-central
-          # The periodic "has firmware been published?" check (#773 U5). BGAppRefreshTask needs
+          # The periodic "has firmware been published?" check. BGAppRefreshTask needs
           # this mode declared or the scheduler refuses the request; the wake itself does one
           # anonymous GET and, at most, posts a local notification — no BLE, no device read.
           - fetch
@@ -112,7 +112,7 @@ targets:
         # registers for us).
         BGTaskSchedulerPermittedIdentifiers:
           - com.openbikecomputer.companion.updatecheck
-        # Route-file registration (B6): puts OBC in the share sheet's app row
+        # Route-file registration: puts OBC in the share sheet's app row
         # for .gpx/.tcx files (Komoot/Strava/Garmin exports) and lets Files
         # "open in" the app — delivery lands in RootView's onOpenURL. This IS
         # the share-sheet entry: a dedicated Share Extension target would only
@@ -272,7 +272,7 @@ targets:
         # slice to link. Every Mac that can run this today is Apple silicon.
         EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
 
-  # ─────────────────────────────────────────────────────── UI tests (B1P home)
+  # ─────────────────────────────────────────────────────── UI tests
   OBCCompanionUITests:
     type: bundle.ui-testing
     platform: iOS

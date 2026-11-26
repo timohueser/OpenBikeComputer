@@ -3991,7 +3991,6 @@ dependencies = [
  "obc-map-scene",
  "obc-places",
  "obc-tree-walk",
- "serde_json",
 ]
 
 [[package]]

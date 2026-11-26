@@ -56,7 +56,7 @@ code editor. Add an R2 binding named `BUCKET` for `obc-maps`. Add the custom dom
 | `/releases/ID/routes/tiles/long/T.json` | Trail record file of the trail `T` |
 
 The service also serves release font, sprite and device catalog paths. `ID` is the digest of the
-[named files of the planner](../../specs/obc-data.md#planner). Packs come from the object pool
+[named files of the planner](../../specs/obc-data-products.md#planner). Packs come from the object pool
 through their block index pointers. `/version` names the grid formats that the Worker reads.
 
 The pack header gives the zoom levels and the tile type. A tile extension is optional and must

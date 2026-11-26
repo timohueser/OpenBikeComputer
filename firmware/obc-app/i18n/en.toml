@@ -1,9 +1,8 @@
 # OpenBikeComputer UI translation catalog — ENGLISH (canonical key set).
 #
-# This file defines the *universe* of message keys (epic #602). Every key present
+# This file defines the *universe* of message keys. Every key present
 # here MUST be present in de.toml / fr.toml / es.toml too, or the build fails
-# (see obc-app/build.rs — the completeness check). de/fr/es may still be English
-# stubs at this stage; real translations land in L4 (#606).
+# (see obc-app/build.rs — the completeness check).
 #
 # Naming convention (key -> `Msg` variant):
 #   * Keys are grouped in `[section]` tables (a section is a screen or domain).
@@ -11,7 +10,7 @@
 #         [menu] routes = "Routes"   ->   Msg::MenuRoutes
 #     Underscores in a key are word breaks:  `off_route = "..."` -> `Msg::…OffRoute`.
 #   * A bare top-level key (no section, discouraged) maps to PascalCase(key) alone.
-#   * Values are TOML basic strings (double-quoted). Keep them within the #601 font
+#   * Values are TOML basic strings (double-quoted). Keep them within the font
 #     repertoire (Latin-1 + Latin Extended-A); no curly quotes / em-dash / ellipsis.
 #
 # Sections are grouped by screen/domain and kept in the SAME order across en/de/fr/es
@@ -37,8 +36,7 @@ manual = "MANUAL"
 no_peaks = "NO NAMED PEAKS"
 
 # --- The context sheets' row labels (the Down+Back sheet on a riding view and on the Up-ahead
-# --- timeline), plus the Detour chooser's copy. The mid-ride compass that used to own this section
-# --- is gone (#1515 D3); `filter`/`sources` are the Up-ahead sheet's two value rows (D4a), which
+# --- timeline), plus the Detour chooser's copy. `filter`/`sources` are the Up-ahead sheet's two value rows, which
 # --- are the only home either control has.
 [ride_context]
 up_ahead = "Up ahead"
@@ -51,7 +49,7 @@ no_nav = "No routing data"
 filter = "Filter"
 sources = "Sources"
 
-# --- The "Up ahead" timeline (epic #946): merged waypoints + route-corridor POIs ---
+# --- The "Up ahead" timeline: merged waypoints + route-corridor POIs ---
 [up_ahead]
 everything = "Everything"
 none = "Nothing up ahead"
@@ -127,8 +125,8 @@ sat = "Sat"
 sun = "Sun"
 
 # --- Short-date table (uppercase) — the Rides rows' line-2 `D MON` date and the Home date
-# line (T5, #683: abbreviated weekday + day + month, day-first in every language). Months are
-# generic; the seven weekday abbreviations (Monday-first) were added for the Home line ---
+# line (abbreviated weekday + day + month, day-first in every language). Months are
+# generic; the seven weekday abbreviations (Monday-first) serve the Home line ---
 [date]
 jan = "JAN"
 feb = "FEB"
@@ -268,7 +266,7 @@ title = "SOUND"
 level = "Sound"
 key_tones = "Key tones"
 
-# --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
+# --- The map sheet's row labels — the only home these three switches have ---
 [map_context]
 landmarks = "Landmarks"
 campsites = "Campsites"
@@ -280,8 +278,6 @@ categories = "Categories"
 map_display = "Map display"
 clock = "Clock"
 scale_bar = "Scale bar"
-# Elevation EL10c (#1096), provisional: the contour switch migrated here rather than being
-# retired, and it still goes with #1097's verdict — drop this key from all four catalogs with it.
 contours = "Contours"
 
 # --- Power settings screen ---
@@ -310,7 +306,7 @@ off = "Off"
 connected = "Connected"
 advertising = "Advertising"
 
-# --- Sensors settings screen (BLE sensors epic #707) ---
+# --- Sensors settings screen ---
 [sensors]
 title = "SENSORS"
 heart_rate = "Heart rate"
@@ -435,7 +431,7 @@ day_one = "day"
 days = "days"
 no_days = "No days"
 
-# --- Trip cascade-delete confirm (epic #526, TR3) ---
+# --- Trip cascade-delete confirm ---
 [trip_delete]
 title = "DELETE TRIP"
 warn = "Deletes the trip and all its routes"
@@ -486,7 +482,7 @@ route_removed = "Route removed"
 recording = "Recording a ride"
 
 # --- Create-route (nav) confirm / planning / fail cards ---
-# --- The Detour flow (#882): planning copy, preview title, failure hints ---
+# --- The Detour flow: planning copy, preview title, failure hints ---
 [detour]
 title = "DETOUR"
 planning = "Planning detour..."
@@ -624,7 +620,7 @@ show_route = "Show route"
 # The spinner while the rest of the day before joins the next day.
 loading_day = "Loading day..."
 
-# --- System settings screen (epic #615 S5, #620) ---
+# --- System settings screen ---
 [system]
 title = "SYSTEM"
 units = "Units"
@@ -633,7 +629,7 @@ language = "Language"
 update = "Firmware"
 about = "About"
 
-# --- About page (issue #1149): the credits + licences surface. Only the section
+# --- About page: the credits + licences surface. Only the section
 # captions are translated; the attribution texts are legal formulas and stay canonical. ---
 [about]
 title = "ABOUT"
@@ -680,7 +676,7 @@ install_no_card = "The card is not ready. Try again."
 install_snapshot_failed = "Could not save a rollback copy to the card. Update not installed."
 install_state_write = "Could not prepare the update. Nothing was changed."
 
-# --- The map-transfer card (map_transfer.rs, issue #927): what the glass shows while a map
+# --- The map-transfer card (map_transfer.rs): what the glass shows while a map
 # is written to the card over USB, and what it says when the write ends ---
 [map_transfer]
 title = "MAP"

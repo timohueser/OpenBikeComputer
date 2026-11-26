@@ -15,7 +15,7 @@ files, and the route engine reads those files.
   of `obc data serve`, which runs the installer of the route service.
 - Code authority: `planner/router/src/cells.rs` (`Directory`, `Topology`, `Group`, `Table`,
   `Geometry`, `encode_road`, `decode_road`, `encode_table`).
-- Related: [route API](route-api.md), [planner release](planner-release.md), [obc data](obc-data.md)
+- Related: [route API](route-api.md), [planner release](planner-release.md), [obc data](obc-data-registry.md#dataplannertoml)
   (the option `download_level`).
 
 All integers are little-endian. A **width** is 1, 2 or 4 bytes. A column of a level-1 cell has the

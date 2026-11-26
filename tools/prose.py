@@ -31,7 +31,15 @@ ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "tools/testing/prose-baseline.json"
 
 # `policy` is capped hardest because an agent loads those files on every turn.
-CAPS = {"guide": 2500, "readme": 800, "guard": 150, "policy": 2000}
+# `skill` is the owner's budget of 2,000 tokens for one skill file: four bytes make a token, and
+# the running text of the skill has 6 to 7 bytes a word.
+# `system` and `shell` are the sizes that the cairn skill's `document` command writes to.
+# `spec` holds the running text of a full binary format next to its tables and code; more is
+# explanation, which belongs in a guide page.
+CAPS = {
+    "guide": 2500, "readme": 800, "guard": 150, "policy": 2000,
+    "skill": 1200, "system": 1200, "shell": 150, "spec": 4000,
+}
 
 POLICY = ("AGENTS.md", ".github/CONTRIBUTING.md", "docs/testing.md", "docs/README.md")
 
@@ -42,6 +50,7 @@ FRONT = re.compile(r"\A---\n.*?\n---\n", re.S)
 LINK = re.compile(r"\]\((?:<([^>]+)>|([^\s)]+))(?:\s+[^)]*)?\)")
 CODE = re.compile(r"`[^`\n]*`")
 DOCSTRING = re.compile(r'\A(?:#![^\n]*\n)?\s*"""(.*?)"""', re.S)
+DESIGN_KIND = re.compile(r"\A---\n(?:(?!---$).*\n)*?kind: (system|shell)$", re.M)
 
 
 def tracked() -> list[str]:
@@ -78,6 +87,14 @@ def corpus() -> dict[str, tuple[str, int]]:
                 found[f] = ("guide", words(path.read_text(encoding="utf-8", errors="ignore")))
         elif os.path.basename(f) == "README.md" and "vendor/" not in f:
             found[f] = ("readme", words(path.read_text(encoding="utf-8", errors="ignore")))
+        elif f.startswith("tools/cairn/skill/") and f.endswith(".md"):
+            found[f] = ("skill", words(path.read_text(encoding="utf-8")))
+        elif re.fullmatch(r"docs/design/[^/]+\.md", f):
+            text = path.read_text(encoding="utf-8")
+            m = DESIGN_KIND.match(text)
+            found[f] = (m.group(1) if m else "system", words(text))
+        elif re.fullmatch(r"specs/[^/]+\.md", f):
+            found[f] = ("spec", words(path.read_text(encoding="utf-8")))
         elif re.fullmatch(r"tools/check_[a-z_]+\.py", f) or f == "tools/cairn/cairn.py":
             m = DOCSTRING.match(path.read_text(encoding="utf-8", errors="ignore"))
             found[f] = ("guard", words(m.group(1)) if m else 0)
@@ -148,14 +165,6 @@ def report(found: dict[str, tuple[str, int]], base: dict[str, int]) -> None:
             print(f"  {count:>6,}  {f}{flag}")
         if len(rows) > 8:
             print(f"  … {len(rows) - 8} more")
-
-    # Specs are reported, never gated: capping words on a byte-layout contract would push out
-    # tables, not rationale.
-    print("\nspec prose words (reported, not gated)")
-    for spec in sorted((ROOT / "specs").glob("*.md")):
-        count = words(spec.read_text(encoding="utf-8"))
-        flag = "  ← worth a pass" if count > 6000 else ""
-        print(f"  {count:>6,}  {spec.name}{flag}")
 
 
 def main() -> int:

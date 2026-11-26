@@ -93,11 +93,7 @@ fn place_height(p: Place, level: u32) -> f32 {
     return select(select(fine, coarse, known(coarse)), mix(fine, coarse, p.morph), known(fine) && known(coarse));
 }
 
-// The mesh vertex of a level at a grid point.
-fn grid_vertex(u: vec2i, level: u32, snapping: bool) -> Vertex {
-    return grid_vertex_by(u, level, snapping, snapping);
-}
-
+// The mesh vertex of a level at a grid point, with the snaps of vertex_place_by.
 fn grid_vertex_by(u: vec2i, level: u32, own: bool, coarser: bool) -> Vertex {
     let p = vertex_place_by(u, level, own, coarser);
     return Vertex(p.at, place_height(p, level));
@@ -192,7 +188,7 @@ fn stand_ground(s: vec2f, u: vec2i) -> vec2f {
     return vec2f(morphed_ground(u, q).x, slope.y);
 }
 
-// The bilinear height and slope at a LOD `q`, as grid_vertex: a node of level `fine` goes to the
+// The bilinear height and slope at a LOD `q`, as grid_vertex_by: a node of level `fine` goes to the
 // coarser level's by its morph.
 fn morphed_ground(u: vec2i, q: f32) -> vec2f {
     let fine = u32(ceil(q));

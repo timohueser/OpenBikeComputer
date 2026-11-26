@@ -29,9 +29,3 @@ fn phase_of(u: f32, day: f32, elevation: f32) -> u32 {
     let passed = vec4u(vec4f(u) < turns_passed(day, elevation));
     return (passed.x + passed.y + passed.z + passed.w) & 3u;
 }
-
-// The share of the trees in each phase: winter, spring, summer, autumn.
-fn phase_shares(day: f32, elevation: f32) -> vec4f {
-    let s = turns_passed(day, elevation);
-    return vec4f(1.0 - s.x + s.w, s.x - s.y, s.y - s.z, s.z - s.w);
-}

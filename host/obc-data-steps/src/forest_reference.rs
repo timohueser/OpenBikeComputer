@@ -1,5 +1,5 @@
 //! The producer of `forest`: the canopy of each cell of the zoom 12 tiles at 256 px, one file
-//! `10/<x>/<y>.tif` per zoom 10 block (`specs/obc-data.md`). A version makes each block of its
+//! `10/<x>/<y>.tif` per zoom 10 block (`specs/obc-data-producers.md`). A version makes each block of its
 //! region from every canopy model of its tiles, so the pixels of a block do not depend on the
 //! region, and keeps every other block of the version before without a copy.
 //! `tools/forest_reference.py fetch` reduces the source rasters of one block.

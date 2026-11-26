@@ -23,33 +23,16 @@ import sys
 from pathlib import Path
 
 
-# Measured in CI on the build with the outline's turns, the levels that the tiles carry, the faces' tile-line
-# vertices, the decks' ceilings and end faces, the shared water level and curve of the feature bake, line water
-# and its culverts with their mouths, the classifier's ford rule, and the storeys over the ground with their open
-# junction ends, their ends on the stubs' points, what each deck is made of, the junctions that lie on the
-# ground, a building passage of an older bake on the ground, and the plumbing of the storey under the ground (the
-# crate's feature `storeys` on and `bores` off, the crate at one codegen unit in the release profile, stable 1.100.0),
-# the sidewalks' slabs with their ends, rings and kerbs, and the portal line's levels with the cover's sides.
-# The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
-# The built tunnel ends (obc-trailview-parts) with their open stretches and the approaches to their openings add
-# about 36 kB gzipped; the ways of the lanes of a head (the parts' `mouths`) about 2 kB more, measured in CI with
-# wasm-pack 0.15.0 and rustc 1.100.0. The guard rails and delineators of the roads (the crate's `mesh::edges`) add
-# about 29 kB gzipped, which the owner allows. The rails, sleepers, rack, cable and step treads of tracks and steps (the
-# crate's `mesh::details`) add about 26 kB gzipped, which the owner allows.
+# Measured in CI on the release build of `build-wasm-bridges.sh` (default features), wasm-pack 0.15.0, rustc 1.100.0.
 GROUND_PLAN_MEASURED = {"gzipped": 890_895, "raw_wasm": 2_286_659}
-# The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
-# unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
-# A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
-# and dependency noise.
+# Chosen by the owner for toolchain and dependency noise, not code growth; raw gets the same fraction as gzipped.
 GROUND_PLAN_MARGIN_GZIPPED = 8 * 1024
 GROUND_PLAN_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * GROUND_PLAN_MEASURED["raw_wasm"] / GROUND_PLAN_MEASURED["gzipped"]),
 }
 
-# Measured in CI on the build of the tunnel parts' arch, tube, boxes and underpasses, with a tile's volumes built once
-# and selected per node, the rim and the closed free end, and the rooms: lanes in a chord, heads with a hole per room
-# and the seam face, with wasm-pack 0.15.0 and rustc 1.100.0. The margin is the ground plan's, raw by the same fraction.
+# Measured in CI on the same build as the ground plan. The margin is the ground plan's, raw by the same fraction.
 PARTS_MEASURED = {"gzipped": 161_975, "raw_wasm": 394_336}
 PARTS_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,

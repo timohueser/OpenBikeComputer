@@ -32,7 +32,7 @@ class ResourceGuardTests(unittest.TestCase):
             resource_guard.parse_size_output(".vector_table 10 0\n.text 20 10\n.data 4 30\n.bss 8 34\n")
 
     def test_size_parser_requires_uninit_when_the_caller_asks(self):
-        """#1146 P2: the scratch arena lives in `.uninit`, so a board leg that cannot see the
+        """The scratch arena lives in `.uninit`, so a board leg that cannot see the
         section must fail rather than measure it as zero."""
         full = ".vector_table 10 0\n.text 20 10\n.rodata 6 30\n.data 4 36\n.bss 8 40\n"
         self.assertEqual(resource_guard.parse_size_output(full)[".bss"], 8)  # bootloader shape: fine
@@ -204,7 +204,7 @@ other:
             self._check_board(self._board_measured(), self._board_baseline(framebuffer_count=1))
 
     def test_arena_gate_catches_the_renamed_link_section(self):
-        """#1150 review: the finding this gate exists for.
+        """The finding this gate exists for.
 
         `.uninit` has a second tenant, so an arena whose `#[link_section]` is renamed off it leaves
         the section present at 1,024 B — the required-section check passes, `.bss + .data` is
@@ -633,7 +633,7 @@ class BootChainTests(unittest.TestCase):
 
     def test_task_frame_gate_fails_the_image_that_bricked_boot(self):
         # Real numbers from an image whose inlined terrain parse grew the main task's frame.
-        with self.assertRaisesRegex(resource_guard.GuardError, "task body is 22400 B.*#1108"):
+        with self.assertRaisesRegex(resource_guard.GuardError, "task body is 22400 B.*inline\\(never\\)"):
             self._check(self._measured(task_frame=22_400), self._boot_baseline())
 
     def test_headroom_gate_fails_when_the_chain_does_not_fit(self):

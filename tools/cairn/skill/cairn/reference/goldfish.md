@@ -6,13 +6,13 @@ A Goldfish is a fresh subagent with no memory of the conversation. It gets one d
 
 There are three tests. The command that calls Goldfish says which ones run:
 
-| Test | Role | Asks |
+| Test | Tier | Asks |
 | --- | --- | --- |
-| comprehension | `goldfish-comprehension` | Can you explain this from the document alone? |
-| critic | `goldfish-critic` | What is missing or wrong? |
-| readiness | `goldfish-readiness` | Which decisions would you still have to make? |
+| comprehension | balanced | Can you explain this from the document alone? |
+| critic | strong | What is missing or wrong? |
+| readiness | strong | Which decisions would you still have to make? |
 
-An S design runs the critic with the role `goldfish-critic-s`. No design runs comprehension: a builder reads a design once, and readiness tests that reading.
+An S design runs the critic at the balanced tier. No design runs comprehension: a builder reads a design once, and readiness tests that reading.
 
 ## Run the tests
 

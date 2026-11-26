@@ -177,14 +177,10 @@ pub trait RideRepository {
         profile: &mut Profile,
         facts: &mut RideTrackFacts,
     ) -> Option<Vec<(i32, i32)>>;
-    /// Re-scan after a ride was just saved. Folder-backed simulator stores use this hook; a static
-    /// in-memory catalog is a no-op.
-    fn refresh(&mut self) {}
-    /// Complete catalog and durable policy refresh. Legacy stores have no card authority.
+    /// Complete catalog and durable policy refresh. A store without a card returns no scope.
     fn refresh_metadata(
         &mut self,
     ) -> Result<Option<obc_app::device_core::StoreRevision>, obc_app::metadata::MetadataError> {
-        self.refresh();
         Ok(None)
     }
     fn store_scope(&self) -> Option<obc_app::device_core::StoreRevision> {
@@ -235,28 +231,13 @@ pub trait TrackRepository {
         Ok(CheckpointStatus::Unsupported)
     }
 
-    /// Accept a batch and its observation boundary. Legacy adapters report their actual prefix.
+    /// Accept a batch and its observation boundary. `Accepted(n)` takes the first `n` points:
+    /// Recorder keeps the rest staged and offers them again.
     fn append_batch(
         &mut self,
         points: &[TrackPoint],
-        _continuation: Option<RideContinuation>,
-    ) -> Result<AppendStatus, RecorderError> {
-        let written = points.iter().take_while(|point| self.append(**point)).count() as u16;
-        if written == 0 && !points.is_empty() {
-            Err(RecorderError::Write)
-        } else {
-            Ok(AppendStatus::Accepted(written))
-        }
-    }
-
-    /// Append one staged sample to the open ride. `false` means the medium refused it: Recorder
-    /// keeps that sample and every sample behind it staged, and offers them again.
-    ///
-    /// A store with no log has nothing to write and says so by succeeding.
-    fn append(&mut self, point: TrackPoint) -> bool {
-        let _ = point;
-        true
-    }
+        continuation: Option<RideContinuation>,
+    ) -> Result<AppendStatus, RecorderError>;
 }
 
 /// Trip projections and physical removal. A host without trips uses the unit implementation.
