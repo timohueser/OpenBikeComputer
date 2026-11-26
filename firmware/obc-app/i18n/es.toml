@@ -259,7 +259,7 @@ categories = "Categorías"
 map_display = "Pantalla"
 clock = "Reloj"
 scale_bar = "Escala"
-# "Curvas de nivel" needed the old settings row's two lines; a sheet row has one, so the
+# "Curvas de nivel" needs two lines and a sheet row has one, so the
 # self-contained "Relieve" is the reading that fits beside the slider.
 contours = "Relieve"
 

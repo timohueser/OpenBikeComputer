@@ -626,7 +626,7 @@ class Sink {
     }
 }
 
-describe("the map sink (#1116 D1)", () => {
+describe("the map sink", () => {
     /** If the sunk path produces the CLI's bytes, it is not a different assembler. */
     it("writes the native CLI's map without it ever entering wasm memory", async () => {
         const sink = new Sink();
@@ -725,7 +725,7 @@ describe("the map sink (#1116 D1)", () => {
     });
 });
 
-describe("the scratch store (#1116 D2)", () => {
+describe("the scratch store", () => {
     /** The browser's spill pool, modelled over buffers: minted ids, append-only streams, refusals
      *  where the real pool refuses. `failAppendAfter` is the disk filling mid-run. */
     class Scratch {

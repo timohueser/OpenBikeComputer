@@ -278,8 +278,6 @@ categories = "Categories"
 map_display = "Map display"
 clock = "Clock"
 scale_bar = "Scale bar"
-# Elevation EL10c, provisional: the contour switch migrated here rather than being
-# retired, and it still goes with #1097's verdict — drop this key from all four catalogs with it.
 contours = "Contours"
 
 # --- Power settings screen ---
