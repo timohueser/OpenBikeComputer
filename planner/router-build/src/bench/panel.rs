@@ -76,6 +76,8 @@ pub fn sample(net: &Net, spec: &Spec) -> Result<Vec<Pair>, String> {
 }
 
 pub struct Panel {
+    pub pairs: usize,
+    /// The pairs with a route.
     pub routes: usize,
     /// The sum of the measures of the routes.
     pub total: Measures,
@@ -84,18 +86,23 @@ pub struct Panel {
     pub detour: [f64; 3],
 }
 
-/// The pooled measures of the routes of `pairs`. Each pair has a route.
+/// The pooled measures of the routes of `pairs`. A pair with no route counts only as a pair.
 pub fn panel(net: &Net, pairs: &[Pair]) -> Result<Panel, String> {
     let routes = pairs.par_iter().map(|pair| {
-        let route = net.route(pair.from, pair.to)?.ok_or("a pair of the panel has no route")?;
-        let shortest = net.shortest(pair.from, pair.to)?.ok_or("a pair of the panel has no shortest route")?;
-        Ok((measure(net, &route), shortest.iter().map(|&road| net.length(road)).sum::<f64>()))
+        let route = net.route(pair.from, pair.to)?.filter(|route| !route.is_empty());
+        let Some(route) = route else { return Ok(None) };
+        let shortest = net.shortest(pair.from, pair.to)?.ok_or("a pair has a route, but no shortest route")?;
+        Ok(Some((measure(net, &route), shortest.iter().map(|&road| net.length(road)).sum::<f64>())))
     });
-    let routes = routes.collect::<Result<Vec<_>, String>>()?;
+    let routes: Vec<_> = routes.collect::<Result<Vec<_>, String>>()?.into_iter().flatten().collect();
+    if routes.is_empty() {
+        return Err("no pair of a panel has a route".into());
+    }
     let mut total = Measures::default();
     routes.iter().for_each(|(measures, _)| total.add(measures));
     let mut detours: Vec<f64> = routes.iter().map(|(measures, shortest)| measures.length_m / shortest).collect();
     detours.sort_by(f64::total_cmp);
     let quantile = |q: f64| detours[((detours.len() - 1) as f64 * q).round() as usize];
-    Ok(Panel { routes: routes.len(), total, detour: [quantile(0.5), quantile(0.95), quantile(1.0)] })
+    let detour = [quantile(0.5), quantile(0.95), quantile(1.0)];
+    Ok(Panel { pairs: pairs.len(), routes: routes.len(), total, detour })
 }

@@ -13,7 +13,7 @@ use crate::base::Topology;
 use crate::Graph;
 use net::Net;
 use obc_dem::planner::{Recent, Terrain};
-use panel::{Panel, Spec};
+use panel::{Pair, Panel, Spec};
 use planner_router::model::Point;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -26,6 +26,8 @@ const USAGE: &str = "Usage: route_bench run --pbf FILE --dem DIR --bounds W,S,E,
 const OPTIONS: [&str; 9] = ["pbf", "dem", "bounds", "out", "town", "profiles", "pairs", "pairs-box", "names"];
 /// The distance between the points on a signed route.
 const STEP_M: f64 = 5_000.0;
+/// The set of the pairs file with the pairs of the blind comparison. Each other set is a panel.
+const COMPARE: &str = "compare";
 
 /// The cells of one table row of `bench.md` with their column names: one object of `bench.json`.
 type Row = Vec<(String, Value)>;
@@ -111,7 +113,8 @@ fn signed_rows(signed: &signed::Signed, walking: bool) -> [Vec<Row>; 2] {
 
 fn panel_row(name: &str, panel: &Panel) -> Row {
     let mut cells = row([
-        ("panel", json!(name)),
+        ("set", json!(name)),
+        ("pairs", json!(panel.pairs)),
         ("routes", json!(panel.routes)),
         ("km", json!(round(panel.total.length_m / 1000.0, 1))),
         ("length / shortest, p50", json!(round(panel.detour[0], 3))),
@@ -130,6 +133,11 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
     let pairs_box = options.get("pairs-box").map_or(Ok(bounds), |text| area(text))?;
     let names: Vec<&str> = options.get("profiles").map_or(vec!["touring"], |names| names.split(',').collect());
     let profiles = crate::profiles(&names)?;
+    let mut specs = vec![("panel", Spec { classes: panel::PANEL, inside: None })];
+    if town.is_some() {
+        specs.push(("town", Spec { classes: panel::TOWN, inside: town }));
+    }
+    specs.push((COMPARE, Spec { classes: pairs::COMPARE, inside: Some(pairs_box) }));
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
 
     let clock = Instant::now();
@@ -154,21 +162,32 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
         need("bounds")?,
         dem.display()
     );
-    let (mut results, mut routes, mut ends) = (serde_json::Map::new(), serde_json::Map::new(), None);
+    let (mut results, mut routes, mut sets) = (serde_json::Map::new(), serde_json::Map::new(), None);
     for (index, profile) in profiles.iter().enumerate() {
         let clock = Instant::now();
         let net = Net::new(&graph, &topology, &states, &costs, index);
         let [shares, legs] = signed_rows(&signed::signed_share(&net, STEP_M)?, profile.walking);
-        let draw = |classes, inside| panel::panel(&net, &panel::sample(&net, &Spec { classes, inside })?);
-        let mut panels = vec![panel_row("random", &draw(panel::PANEL, None)?)];
-        if town.is_some() {
-            panels.push(panel_row("town", &draw(panel::TOWN, town)?));
+        if let (Some(path), None) = (options.get("pairs"), &sets) {
+            sets = Some(pairs::sets(Path::new(path), &net, &specs)?);
         }
-        if let Some(path) = options.get("pairs") {
-            if ends.is_none() {
-                ends = Some(pairs::pairs(Path::new(path), &net, pairs_box)?);
+        // The pairs of each set: those of the pairs file, else a draw with this profile.
+        let by_set: Vec<(&str, Vec<Pair>)> = match &sets {
+            Some(sets) => {
+                let snapped = sets.iter().map(|(name, ends)| Ok((name.as_str(), pairs::snap(&net, ends)?)));
+                snapped.collect::<Result<_, String>>()?
             }
-            routes.insert(profile.name.clone(), pairs::routes(&net, ends.as_deref().expect("the pairs"))?);
+            None => {
+                let panels = specs.iter().filter(|(name, _)| *name != COMPARE);
+                panels.map(|(name, spec)| Ok((*name, panel::sample(&net, spec)?))).collect::<Result<_, String>>()?
+            }
+        };
+        let mut panels = Vec::new();
+        for (name, pairs) in &by_set {
+            if *name == COMPARE {
+                routes.insert(profile.name.clone(), pairs::routes(&net, pairs)?);
+            } else {
+                panels.push(panel_row(name, &panel::panel(&net, pairs)?));
+            }
         }
         text += &format!("## `{}`\n\nThe signed routes:\n\n{}{}", profile.name, table(&shares), table(&legs));
         text += &format!("The panels:\n\n{}", table(&transposed(&panels)));
@@ -177,12 +196,12 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
         eprintln!("Profile {}: {:.0} s", profile.name, clock.elapsed().as_secs_f64());
     }
     text += &format!("## Price list\n\nThe cost of 1 m of flat road:\n\n{}", table(&prices));
-    let inputs = json!({"pbf": pbf, "dem": dem, "bounds": bounds, "town": town});
+    let inputs = json!({"pbf": pbf, "dem": dem, "bounds": bounds, "town": town, "pairs": options.get("pairs")});
     let bench = json!({"inputs": inputs, "profiles": results, "prices": objects(&prices)});
     write(&out.join("bench.json"), &format!("{bench:#}\n"))?;
     write(&out.join("bench.md"), &text)?;
-    if let Some(ends) = ends {
-        write(&out.join("routes.json"), &json!({"pairs": ends, "routes": routes}).to_string())?;
+    if let Some(sets) = sets {
+        write(&out.join("routes.json"), &json!({"pairs": sets[COMPARE], "routes": routes}).to_string())?;
     }
     Ok(())
 }

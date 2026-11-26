@@ -192,7 +192,8 @@ counts the roads in fragments and prints the landmark scale.
 obc exec cargo run --release -p planner-router-build --example route_bench -- run \
   --pbf region.osm.pbf --dem DEM --bounds W,S,E,N --out OUT
 
-# Two checkouts: run each with the same pairs file, then write the page of the blind comparison.
+# Two checkouts: run each with the same pairs file, for the same panels and for the page of the
+# blind comparison.
 route_bench run … --pairs pairs.json --out A    # in the first checkout
 route_bench run … --pairs pairs.json --out B    # in the second checkout
 route_bench compare A/routes.json B/routes.json --names old,new --out compare.html
@@ -208,15 +209,15 @@ osmium sort first.osm.pbf second.osm.pbf -o region.osm.pbf
 | `--bounds W,S,E,N` | The region, in degrees |
 | `--out DIR` | The folder of the output files |
 | `--profiles NAME,…` | The profiles, or `all`. The default is `touring` |
-| `--town W,S,E,N` | Adds the town panel: both ends of its pairs lie inside this box |
-| `--pairs FILE` | Adds `routes.json`. The run draws the pairs into a missing file, and reads an existing file |
-| `--pairs-box W,S,E,N` | Both ends of a drawn pair lie inside this box. The default is the bounds |
+| `--town W,S,E,N` | A draw has the set `town`: both ends of its pairs lie inside this box |
+| `--pairs FILE` | The file with the sets of pairs, as coordinates. The run draws the sets into a missing file. With an existing file it draws nothing: it reads each set, so each run with the file routes the same pairs. Adds `routes.json` |
+| `--pairs-box W,S,E,N` | Both ends of a drawn pair of the set `compare` lie inside this box. The default is the bounds |
 
 | Output | Content |
 | --- | --- |
 | `bench.json` | Each number of the run |
 | `bench.md` | The same numbers as tables: for each profile the signed routes and the panels, then the price list |
-| `routes.json` | For each pair and profile the line, the km, the ascent and the measures of the route, or `null` for no route |
+| `routes.json` | For each pair of the set `compare` and each profile the line, the km, the ascent and the measures of the route, or `null` for no route |
 | The page of `compare` | The two routes of a pair on a map of live tiles, in a random order that stays the same. It takes one answer for each pair and gives the answers as text. It leaves out a pair with no route in a run, and a pair with the same routes |
 
 | Measure | Definition |
@@ -229,9 +230,11 @@ osmium sort first.osm.pbf second.osm.pbf -o region.osm.pbf
 | `near %` | The share of the signed length of the legs within 30 m of the router's line |
 | `same road %` | The share on a directed road that the router's route also takes |
 | Split | From the first road of a leg that differs to the next road that both lines take. The same two stretches count once |
-| Panel `random` | 100 pairs each within 10 % of 5, 15 and 40 km in a straight line. SplitMix64 with a fixed seed draws junctions where a road with the snap bit of the profile arrives. A pair has a route |
-| Panel `town` | 100 pairs of 3 to 8 km |
-| Pairs of `--pairs` | 40 pairs, a third each within 10 % of 6, 12 and 22 km. Each end snaps to the nearest junction where a road with the snap bit of the profile arrives |
+| Set `panel` | A panel of 100 pairs each within 10 % of 5, 15 and 40 km in a straight line. SplitMix64 with a fixed seed draws junctions where a road with the snap bit of the profile arrives. A drawn pair has a route |
+| Set `town` | A panel of 100 pairs of 3 to 8 km |
+| Set `compare` | 40 pairs, a third each within 10 % of 6, 12 and 22 km, for the blind comparison |
+| Draw | Without `--pairs`, each profile draws its panels. With `--pairs` and no file, the first profile draws each set |
+| Pair of a file | Each end snaps to the nearest junction where a road with the snap bit of the profile arrives. A panel counts a pair with no route in `pairs`, not in `routes` |
 | `length / shortest` | The length of a route against the shortest route on the roads and turns that the profile may take |
 | Turn | A change of heading over 45° at a junction of three or more road ends. The headings are taken over 15 m |
 | Leave-and-rejoin event | The next road shares no `name`, `ref` or signed route with the road before, and a road within 2 km of route length shares one again |

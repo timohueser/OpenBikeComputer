@@ -1,7 +1,7 @@
 use super::measures::measure;
 use super::net::{states, Net};
 use super::pairs::compare;
-use super::panel::{sample, Class, Pair, Spec};
+use super::panel::{panel, sample, Class, Pair, Spec};
 use super::signed::signed_share;
 use crate::base::Topology;
 use crate::source::{Builder, Data, Id, NodeRef, Relations, Tags, Ways};
@@ -138,6 +138,13 @@ fn a_sample_gives_the_same_pairs_of_its_classes_again() {
         km >= CLASSES[class].0 && km <= CLASSES[class].1
     };
     assert!(pairs.len() == 8 && pairs.iter().enumerate().all(|(i, pair)| fits(pair, i / 4)), "{pairs:?}");
+}
+
+#[test]
+fn a_panel_counts_a_pair_with_no_route() {
+    let pairs = [Pair { from: 0, to: 9 }, Pair { from: 5, to: 5 }];
+    let panel = panel(&region().net(), &pairs).unwrap();
+    assert_eq!((panel.pairs, panel.routes, panel.total.length_m), (2, 1, 5_400.0));
 }
 
 #[test]
