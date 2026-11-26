@@ -2,7 +2,7 @@
 import type { Map } from 'maplibre-gl';
 import { config } from '../map-data';
 import { DEM_MAX_ZOOM, DEM_TILE } from '../map-style';
-import { decodedTiles, fetchTile } from './archive';
+import { cachedTiles, decodedTiles, fetchTile, type Tiles } from './archive';
 import { demTile } from './climate-terrain';
 import { abgr } from './colour';
 import type { Legend } from './data-layer';
@@ -81,40 +81,49 @@ export function slopeClasses(heights: Float32Array, beside: Beside, pixelMetres:
     return classes;
 }
 
-/** Paints a 256 px map tile from the part of the classes of its terrain tile that starts at `left`, `top`, one pixel for one pixel. */
-export function paintSlope(words: Uint32Array, classes: Uint8Array, { left, top }: { left: number; top: number }) {
+/**
+ * The classes of the terrain tiles of `heights`. Each tile is computed once, so the four map tiles of a terrain tile
+ * share it. A tile beside it that fails is as a missing one: the pixels at that edge read their own tile only.
+ */
+export function slopeTiles(heights: Pick<Tiles<Float32Array>, 'tile'>): Tiles<Uint8Array> {
+    return cachedTiles(async (z, x, y, signal) => {
+        const tile = await heights.tile(z, x, y, signal);
+        if (!tile) return null;
+        const [north, south, west, east] = await Promise.all([[0, -1], [0, 1], [-1, 0], [1, 0]].map(([dx, dy]) =>
+            heights.tile(z, x + dx, y + dy, signal).catch(error => { if (signal.aborted) throw error; return null; })));
+        const world = DEM_TILE * 2 ** z;
+        const pixelMetres = (row: number) => EQUATOR_M / world * Math.cos(latitudeAt(y * DEM_TILE + row + 0.5, world) * Math.PI / 180);
+        return slopeClasses(tile, { north, south, west, east }, pixelMetres);
+    }, 16 * 2 ** 20, tile => tile.byteLength);
+}
+
+/** The ImageData words of map tile z/x/y: its part of the terrain tile, one pixel for one pixel; null where the terrain has no tile. */
+export async function slopeWords(classes: Pick<Tiles<Uint8Array>, 'tile'>, z: number, x: number, y: number, signal: AbortSignal): Promise<Uint32Array<ArrayBuffer> | null> {
+    const part = demTile(z, x, y), tile = await classes.tile(part.z, part.x, part.y, signal);
+    if (!tile) return null;
+    const words = new Uint32Array(TILE * TILE);
     for (let py = 0; py < TILE; py++) {
-        const row = (top + py) * DEM_TILE + left;
-        for (let px = 0; px < TILE; px++) words[py * TILE + px] = PALETTE[classes[row + px]];
+        const row = (part.top + py) * DEM_TILE + part.left;
+        for (let px = 0; px < TILE; px++) words[py * TILE + px] = PALETTE[tile[row + px]];
     }
+    return words;
 }
 
 /** The map's terrain tiles; the relief has loaded most of them, so the browser cache serves them. A tile takes 1 MiB. */
-const terrain = decodedTiles((z, x, y, signal) => fetchTile(config.terrain, z, x, y, signal), async body => {
+const classes = slopeTiles(decodedTiles((z, x, y, signal) => fetchTile(config.terrain, z, x, y, signal), async body => {
     const { data, width, height } = await imagePixels(body);
     return exactHeights(data, width * height);
-}, 32 * 2 ** 20, tile => tile.byteLength);
-
-async function draw(z: number, x: number, y: number, signal: AbortSignal) {
-    const part = demTile(z, x, y);
-    const heights = await terrain.tile(part.z, part.x, part.y, signal);
-    if (!heights) return undefined;
-    // A tile beside it that fails is as a missing one: the pixels at that edge read their own tile only.
-    const [north, south, west, east] = await Promise.all([[0, -1], [0, 1], [-1, 0], [1, 0]].map(([dx, dy]) =>
-        terrain.tile(part.z, part.x + dx, part.y + dy, signal).catch(error => { if (signal.aborted) throw error; return null; })));
-    const world = DEM_TILE * 2 ** part.z;
-    const pixelMetres = (row: number) => EQUATOR_M / world * Math.cos(latitudeAt(part.y * DEM_TILE + row + 0.5, world) * Math.PI / 180);
-    const image = new ImageData(TILE, TILE);
-    paintSlope(new Uint32Array(image.data.buffer), slopeClasses(heights, { north, south, west, east }, pixelMetres), part);
-    return image;
-}
+}, 32 * 2 ** 20, tile => tile.byteLength));
 
 /** The slope angle layer of one map. It has one look: the colours are the same in each theme. */
 export class SlopeAngle {
     private raster = new Raster({
         id: SLOPE_ANGLE,
         extent: async () => ({ minzoom: TILE_ZOOM, maxzoom: TILE_ZOOM, bounds: config.bounds, attribution: config.terrain_attribution }),
-        draw: (_look, z, x, y, signal) => draw(z, x, y, signal),
+        draw: async (_look, z, x, y, signal) => {
+            const words = await slopeWords(classes, z, x, y, signal);
+            return words ? new ImageData(new Uint8ClampedArray(words.buffer), TILE, TILE) : undefined;
+        },
         minzoom: SLOPE_ANGLE_ZOOM,
         paint: { 'raster-opacity': 0.55, 'raster-resampling': 'nearest' },
         // The layer is decoration, as the relief: a terrain tile that fails leaves its tile clear.

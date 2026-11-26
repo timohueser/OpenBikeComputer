@@ -42,10 +42,10 @@ function waiting<T>(load: Promise<T>, signal?: AbortSignal): Promise<T> {
 }
 
 /**
- * Each tile is requested and decoded once while it stays cached. The cache keeps at most `budget`
- * decoded bytes; the least recently used tiles leave first. A failed load is not kept.
+ * Each tile is loaded once while it stays cached. The cache keeps at most `budget` bytes of tiles;
+ * the least recently used tiles leave first. A failed load is not kept.
  */
-export function decodedTiles<T>(get: TileGetter, decode: (body: Uint8Array<ArrayBuffer>, z: number, x: number, y: number) => T | Promise<T>, budget: number, bytes: (tile: T) => number): Tiles<T> {
+export function cachedTiles<T>(load: (z: number, x: number, y: number, signal: AbortSignal) => Promise<T | null>, budget: number, bytes: (tile: T) => number): Tiles<T> {
     type Entry = { load: Promise<T | null>; tile?: T | null; bytes: number };
     const entries = new Map<string, Entry>();
     let held = 0, version = 0;
@@ -70,7 +70,7 @@ export function decodedTiles<T>(get: TileGetter, decode: (body: Uint8Array<Array
             if (entry) touch(key, entry);
             else {
                 const signal = requestSignal();
-                const created: Entry = entry = { load: waiting(get(z, x, y, signal), signal).then(body => body ? decode(new Uint8Array(body), z, x, y) : null), bytes: 0 };
+                const created: Entry = entry = { load: waiting(load(z, x, y, signal), signal), bytes: 0 };
                 entries.set(key, created);
                 created.load.then(tile => arrive(key, created, tile), () => { if (entries.get(key) === created) entries.delete(key); });
             }
@@ -85,6 +85,14 @@ export function decodedTiles<T>(get: TileGetter, decode: (body: Uint8Array<Array
         get version() { return version; },
         get held() { return held; },
     };
+}
+
+/** Each tile is requested and decoded once while it stays cached, as `cachedTiles` keeps it. */
+export function decodedTiles<T>(get: TileGetter, decode: (body: Uint8Array<ArrayBuffer>, z: number, x: number, y: number) => T | Promise<T>, budget: number, bytes: (tile: T) => number): Tiles<T> {
+    return cachedTiles(async (z, x, y, signal) => {
+        const body = await get(z, x, y, signal);
+        return body ? decode(new Uint8Array(body), z, x, y) : null;
+    }, budget, bytes);
 }
 
 /** The raw tiles of an archive and its header. */
