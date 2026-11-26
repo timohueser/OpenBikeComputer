@@ -4,9 +4,9 @@
 
 const MAGIC = 0x4f424d05;
 const HEAD = 12;
-const STOREY_MAGIC = 0x4f425303;
-/** The storey mesh's head: its magic, cell, counts and top slots, then the triangles of each of its 9 parts (`PARTS`). */
-const STOREY_HEAD = 18;
+const STOREY_MAGIC = 0x4f425305;
+/** The storey mesh's head: its magic, cell, counts and top slots, the triangles of each of its 9 parts (`PARTS`), and the counts of the details' rings, items and ranges. */
+const STOREY_HEAD = 21;
 /** Region cells (2 × 2 grid cells) along a side of a cell, as `params::CELLS`, and the words of R on the cell and one ring. */
 const CELLS = 128;
 const REGION_WORDS = Math.ceil(((CELLS + 2) * (CELLS + 2)) / 32);
@@ -56,6 +56,10 @@ export interface StoreyMesh {
     delineators: number;
     /** Four whole corner indices per slot (a_p, a_q, b_q, b_p): the tops' steps between two labels, then the undersides' risers. */
     slots: Uint32Array<ArrayBuffer>;
+    /** Storey 0's track and step details (`mesh/details.rs`): 3 words a ring, then 2 words an item; the count of rings; per range of the items, in their order, its level-18 node in the cell (row by row), its draw and its items. */
+    details: Uint32Array<ArrayBuffer>;
+    rings: number;
+    ranges: { node: number; draw: number; first: number; count: number }[];
 }
 
 /** The bytes that `cellMesh` reads: a cell's mesh, then its storeys' mesh where it has a storey corner. */
@@ -100,7 +104,7 @@ function whole({ short, runs }: { short: Uint16Array; runs: { count: number; bas
 /** The storey meshes from word `start` of `bytes` on. */
 function storeyMesh(bytes: ArrayBuffer, start: number): StoreyMesh {
     const words = new Uint32Array(bytes, 4 * start);
-    const [magic, , , corners, triangles, triangleRuns, slots, slotRuns] = words.subarray(0, STOREY_HEAD);
+    const [magic, , , corners, triangles, triangleRuns, slots, slotRuns] = words.subarray(0, STOREY_HEAD), [rings, itemCount, ranges] = words.subarray(STOREY_HEAD - 3, STOREY_HEAD);
     if (magic !== STOREY_MAGIC) throw new Error(`not a storey mesh: ${magic.toString(16)}`);
     let at = STOREY_HEAD;
     const take = (n: number) => words.subarray(at, (at += n));
@@ -114,11 +118,13 @@ function storeyMesh(bytes: ArrayBuffer, start: number): StoreyMesh {
         const table = take(2 * runs), short = new Uint16Array(bytes.slice(4 * (start + at), 4 * (start + (at += Math.ceil((size * count) / 2))))).subarray(0, size * count);
         return { short, runs: Array.from({ length: runs }, (_, r) => ({ count: table[2 * r], base: table[2 * r + 1] })) };
     };
-    const triangle = items(triangles, triangleRuns, 3), slot = items(slots, slotRuns, 4);
+    const triangle = items(triangles, triangleRuns, 3), slot = items(slots, slotRuns, 4), details = take(3 * rings + 2 * itemCount).slice(), table = take(2 * ranges);
     if (at > words.length) throw new Error('a storey mesh ends early');
     // The parts' triangles: top, underside, edge, parapet, railing, post, pier, rail, delineator.
-    const parts = words.subarray(STOREY_HEAD - 9, STOREY_HEAD), first = (k: number) => parts.subarray(0, k).reduce((sum, n) => sum + n, 0);
-    return { corners: packed, offsets, triangles: whole(triangle, 3), top: parts[0], railings: first(4), piers: first(6), rails: first(7), delineators: first(8), slots: whole(slot, 4) };
+    const parts = words.subarray(STOREY_HEAD - 12, STOREY_HEAD - 3), first = (k: number) => parts.subarray(0, k).reduce((sum, n) => sum + n, 0);
+    const range: StoreyMesh['ranges'] = [];
+    for (let r = 0, first = 0; r < ranges; first += table[2 * r + 1], r++) range.push({ node: table[2 * r] >> 8, draw: table[2 * r] & 0xff, first, count: table[2 * r + 1] });
+    return { corners: packed, offsets, triangles: whole(triangle, 3), top: parts[0], railings: first(4), piers: first(6), rails: first(7), delineators: first(8), slots: whole(slot, 4), details, rings, ranges: range };
 }
 
 /** The grid points whose region cells all lie in R: cells ⌊(i − 1) / 2⌋ to ⌊i / 2⌋ across, the same down. */
