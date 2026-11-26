@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Source } from '../../planner/layers/archive';
 import { FORMAT } from './features';
-import { featureTiles, releaseTiles } from './terrain';
+import { PMTiles, SharedPromiseCache, zxyToTileId, type Header } from 'pmtiles';
+import { featureTiles, fineTerrain, releaseTiles } from './terrain';
 
 const gets = vi.hoisted(() => ({ count: 0 }));
 vi.mock('../../planner/layers/archive', async original => ({
@@ -13,7 +14,7 @@ const RELEASE = 'https://maps.test/releases/abc';
 const config = { terrain: `${RELEASE}/terrain/{z}/{x}/{y}.webp`, manifest: `${RELEASE}/release.json` } as Parameters<typeof releaseTiles>[0];
 
 describe('the stored terrain of a release', () => {
-    afterEach(() => vi.unstubAllGlobals());
+    afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
     it('reads zooms up to 12 from the tile service, and zoom 13 through the block index of its zoom 11 pack', async () => {
         const fetched: string[] = [];
@@ -49,6 +50,22 @@ describe('the stored terrain of a release', () => {
         expect(await tiles(13, 4224, 2880)).toBeUndefined();
         expect(fetched).toEqual([`${RELEASE}/public/grid.json`, `${RELEASE}/public/maps/tiles/terrain/13/7-66-45.json`,
             `https://maps.test/objects/${'c'.repeat(64)}`, `https://maps.test/objects/${'d'.repeat(64)}`]);
+    });
+
+    it('answers whether a national model holds the ground at a coordinate from the directories of the pack, with no tile', async () => {
+        const fetched: string[] = [];
+        vi.stubGlobal('fetch', async (url: URL | string) => {
+            fetched.push(String(url));
+            if (String(url).endsWith('/grid.json')) return new Response('{"format":4}');
+            return String(url).endsWith('/7-66-45.json') ? new Response(JSON.stringify({ '9-267-180.pmtiles': { sha256: 'd'.repeat(64), encoding: 'identity' } })) : new Response(null, { status: 404 });
+        });
+        // The pack holds tile 13/4283/2882, around Pilatus, and not the tile to its east.
+        vi.spyOn(PMTiles.prototype, 'getHeader').mockResolvedValue({ rootDirectoryOffset: 127, rootDirectoryLength: 10, leafDirectoryOffset: 0 } as Header);
+        vi.spyOn(SharedPromiseCache.prototype, 'getDirectory').mockResolvedValue([{ tileId: zxyToTileId(13, 4283, 2882), offset: 0, length: 9, runLength: 1 }]);
+        const fine = fineTerrain(config);
+        expect([await fine([8.255, 46.98]), await fine([8.3, 46.98]), await fine([5.2, 46.98])]).toEqual([true, false, false]);
+        expect(fetched).toEqual([`${RELEASE}/public/grid.json`, `${RELEASE}/public/maps/tiles/terrain/13/7-66-45.json`, `${RELEASE}/public/maps/tiles/terrain/13/7-65-45.json`]);
+        expect(await fineTerrain({ ...config, manifest: undefined })([5.2, 46.98])).toBe(true);
     });
 
     it('ends a request when its stop aborts', async () => {
