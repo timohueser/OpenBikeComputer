@@ -761,7 +761,7 @@ async fn main(_spawner: Spawner) {
             // push.
             hp.spawn(defmt::unwrap!(com_task(vcom, vb, va)));
             hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender(), CHORDS.sender())));
-            info!("FLPR LS021: gesture/bulge plane on SWI01 @ P3; map plane: thread mode (event-driven, #219)");
+            info!("FLPR LS021: gesture/bulge plane on SWI01 @ P3; map plane: thread mode (event-driven)");
             let display = MapDisplay {
                 frame,
                 panel,

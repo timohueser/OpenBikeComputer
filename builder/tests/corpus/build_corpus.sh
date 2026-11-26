@@ -22,7 +22,7 @@ osmium cat "$HERE/tiny/tiny.osm" -o "$DATA/tiny.osm.pbf" --overwrite
 echo "done: $DATA/tiny.osm.pbf"
 
 # tiny_west / tiny_east — the two-file split of tiny.osm that pins the native
-# multi-`.pbf` merge (#920). Their union is exactly tiny.osm, and they overlap:
+# multi-`.pbf` merge. Their union is exactly tiny.osm, and they overlap:
 # `ingest::tests::merging_two_overlapping_halves_rebuilds_the_whole` hard-fails
 # without the committed .pbfs. Each is written sorted, as a merge input must be.
 echo ">> tiny_split"
@@ -31,14 +31,14 @@ for half in west east; do
   echo "done: $DATA/tiny_$half.osm.pbf"
 done
 
-# poi — same deal for the POI-extraction fixture (#422): poi/poi.osm is the
+# poi — same deal for the POI-extraction fixture: poi/poi.osm is the
 # source of truth; `ingest::tests::poi_fixture_end_to_end` hard-fails without
 # the committed .pbf.
 echo ">> poi"
 osmium cat "$HERE/poi/poi.osm" -o "$DATA/poi.osm.pbf" --overwrite
 echo "done: $DATA/poi.osm.pbf"
 
-# unsorted — a way written before its nodes (#910). `osmium cat` copies the
+# unsorted — a way written before its nodes. `osmium cat` copies the
 # order as-is, which is what makes this fixture possible; do NOT pipe it through
 # `osmium sort`, that would defeat the point. `ingest::tests::
 # bbox_refuses_an_unsorted_pbf` hard-fails without the committed .pbf.

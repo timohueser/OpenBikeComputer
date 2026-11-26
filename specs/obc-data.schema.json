@@ -1,0 +1,5161 @@
+{
+  "$defs": {
+    "AfterUpdate": {
+      "properties": {
+        "collects": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Collects"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The rollback of now, which the collection after the switch drops."
+        },
+        "rollback": {
+          "description": "The release that becomes the rollback; `null` when the update changes no layer or the target\nserves nothing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "rollback",
+        "collects"
+      ],
+      "type": "object"
+    },
+    "Answer": {
+      "description": "What the follower says about the planner release of a release.",
+      "properties": {
+        "reason": {
+          "description": "Why the follower does not serve it; `null` when it does.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "release",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "ArchiveDataset": {
+      "description": "A dataset of the archive.",
+      "properties": {
+        "bytes": {
+          "description": "The bytes of the verified files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_estimate": {
+          "description": "The `bytes_estimate` of the definition.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "coverage": {
+          "type": "string"
+        },
+        "dataset": {
+          "type": "string"
+        },
+        "error": {
+          "description": "Why the manifest is `unreadable`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "got": {
+          "description": "The day of the last `archive get`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "listed": {
+          "description": "The files that the last get listed.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "listed_bytes": {
+          "description": "Their bytes, as far as the manifest knows them.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root": {
+          "description": "The root that has its manifest.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sources": {
+          "description": "Ids of `data/sources.toml`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/$defs/DatasetState"
+        },
+        "verified": {
+          "description": "The files of the manifest that are in the root with their size: they serve.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "dataset",
+        "sources",
+        "coverage",
+        "root",
+        "state",
+        "error",
+        "version",
+        "got",
+        "listed",
+        "listed_bytes",
+        "verified",
+        "bytes",
+        "bytes_estimate"
+      ],
+      "type": "object"
+    },
+    "ArchiveRoot": {
+      "properties": {
+        "free_bytes": {
+          "description": "`null` when the root does not exist.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "free_bytes"
+      ],
+      "type": "object"
+    },
+    "ArchiveStatus": {
+      "description": "The output of `obc data archive status`.",
+      "properties": {
+        "datasets": {
+          "description": "Each dataset of `data/archive/`.",
+          "items": {
+            "$ref": "#/$defs/ArchiveDataset"
+          },
+          "type": "array"
+        },
+        "roots": {
+          "description": "The roots of `OBC_DATA_ARCHIVE`, in order.",
+          "items": {
+            "$ref": "#/$defs/ArchiveRoot"
+          },
+          "type": "array"
+        },
+        "unarchived": {
+          "description": "The sources with `keep = \"archive\"` that no dataset has.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "roots",
+        "datasets",
+        "unarchived"
+      ],
+      "type": "object"
+    },
+    "AreaBoxes": {
+      "description": "An area as boxes.",
+      "properties": {
+        "boxes": {
+          "description": "A box for each part: the box of a box region, and the bounds of each Geofabrik area in the\ncached index.",
+          "items": {
+            "$ref": "#/$defs/Bbox"
+          },
+          "type": "array"
+        },
+        "missing": {
+          "description": "Why a part has no box; `null` when each part has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "boxes",
+        "missing"
+      ],
+      "type": "object"
+    },
+    "Areas": {
+      "description": "What `areas` writes.",
+      "properties": {
+        "areas": {
+          "description": "Its areas whose path or name holds the query.",
+          "items": {
+            "$ref": "#/$defs/GeofabrikArea"
+          },
+          "type": "array"
+        },
+        "index": {
+          "description": "The version of the cached Geofabrik index; `null` while the store has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "regions": {
+          "description": "The regions of `data/regions/` whose id or name holds the query.",
+          "items": {
+            "$ref": "#/$defs/Region"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "regions",
+        "index",
+        "areas"
+      ],
+      "type": "object"
+    },
+    "Bbox": {
+      "description": "Degrees, longitude first.",
+      "properties": {
+        "east": {
+          "format": "double",
+          "type": "number"
+        },
+        "north": {
+          "format": "double",
+          "type": "number"
+        },
+        "south": {
+          "format": "double",
+          "type": "number"
+        },
+        "west": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "west",
+        "south",
+        "east",
+        "north"
+      ],
+      "type": "object"
+    },
+    "BlockedLayer": {
+      "additionalProperties": false,
+      "properties": {
+        "layer": {
+          "description": "The layer of the step.",
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "step": {
+          "description": "The step that cannot be planned.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step",
+        "layer",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "Cause": {
+      "description": "Why a layer is stale: exactly one of three causes. When more than one applies, the first in\nthis order is the cause.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The version of the layer is not that of the release. `from` is `null` when the release has\nno step of the layer.",
+          "properties": {
+            "field": {
+              "$ref": "#/$defs/Field"
+            },
+            "from": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "version",
+              "type": "string"
+            },
+            "to": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "field",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A source has a newer version to use. `to` is the version that the steps read, or the newer\nversion upstream; `null` when upstream names none.",
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "source",
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "to": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A layer or a source that the layer reads has other files, or `options`: the release has\nother steps of the layer, or a step with other options, inputs, `params` or `client`.",
+          "properties": {
+            "kind": {
+              "const": "input",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Check": {
+      "description": "One thing that an action needs.",
+      "properties": {
+        "action": {
+          "description": "The arguments after `obc data` of the command that applies the fix, which the page runs\nafter a confirm; `null` when a person applies it.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "blocks": {
+          "description": "Whether the action waits for it.",
+          "type": "boolean"
+        },
+        "commands": {
+          "description": "The commands of the fix, one per line.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "fix": {
+          "description": "What to do about the problem, and where the commands run.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "problem": {
+          "description": "Why it fails; `null` when it passes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "problem",
+        "fix",
+        "commands",
+        "action",
+        "blocks"
+      ],
+      "type": "object"
+    },
+    "CleanPlan": {
+      "description": "What `clean` removes from the store, or removed.",
+      "properties": {
+        "store": {
+          "$ref": "#/$defs/GcPlan",
+          "description": "The snapshot records and the objects that nothing reaches, and what stays."
+        }
+      },
+      "required": [
+        "store"
+      ],
+      "type": "object"
+    },
+    "Code": {
+      "description": "The kind of an error. It sets the exit status and the fix.",
+      "oneOf": [
+        {
+          "const": "usage",
+          "description": "An argument is not valid, an id names nothing, the command runs outside the repository, or\nanother command must run first.",
+          "type": "string"
+        },
+        {
+          "const": "no_terminal",
+          "description": "A command that asks has no terminal to ask in, and no `--yes`.",
+          "type": "string"
+        },
+        {
+          "const": "not_confirmed",
+          "description": "The person did not answer yes.",
+          "type": "string"
+        },
+        {
+          "const": "invalid_data",
+          "description": "A file under `data/` is not valid.",
+          "type": "string"
+        },
+        {
+          "const": "fetch_failed",
+          "description": "A fetch or an upstream check failed.",
+          "type": "string"
+        },
+        {
+          "const": "blocked",
+          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set. Or a layer cannot be planned, the target cannot take the command, or\nthis machine cannot do the work.",
+          "type": "string"
+        },
+        {
+          "const": "r2_failed",
+          "description": "R2 or rclone failed, or refused a key.",
+          "type": "string"
+        },
+        {
+          "const": "verify_failed",
+          "description": "A release failed its check before a target serves it, or after an upload the object in the\nbucket is not the file.",
+          "type": "string"
+        },
+        {
+          "const": "run_failed",
+          "description": "A run failed: the build, or the run that `runs RUN --follow` shows.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "The store or the file system failed.",
+          "type": "string"
+        }
+      ]
+    },
+    "Collects": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keys": {
+          "description": "The keys of the release that the serving release does not name, and their size: what the\ncollection deletes at most.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "release": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "release",
+        "keys",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "CopiedVersion": {
+      "properties": {
+        "copy": {
+          "$ref": "#/$defs/Downloads",
+          "description": "The files that the home lacks."
+        },
+        "held": {
+          "$ref": "#/$defs/Downloads",
+          "description": "The files that the home holds."
+        },
+        "manifest_sha256": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "manifest_sha256",
+        "copy",
+        "held"
+      ],
+      "type": "object"
+    },
+    "CopyPlan": {
+      "description": "What a copy does.",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "root": {
+          "description": "The archive root of the home of the source.",
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "versions": {
+          "description": "Each version of the target, oldest first.",
+          "items": {
+            "$ref": "#/$defs/CopiedVersion"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "source",
+        "from",
+        "root",
+        "versions"
+      ],
+      "type": "object"
+    },
+    "Credential": {
+      "additionalProperties": false,
+      "description": "What a fetch needs before upstream answers: environment variables, or a file.",
+      "properties": {
+        "env": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hint": {
+          "description": "What to copy there, in one line.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "register": {
+          "description": "Where a person gets the credential.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "CredentialSet": {
+      "additionalProperties": false,
+      "description": "What `source credential` wrote. It never holds a value.",
+      "properties": {
+        "file": {
+          "description": "The file that holds the values now.",
+          "type": "string"
+        },
+        "names": {
+          "description": "The names of the values that it wrote.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "overridden": {
+          "description": "The names that the environment of the command sets, from the shell or `tools/obc.local`:\nthe environment wins over the file, so the new value serves only once they are removed\nthere.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sources": {
+          "description": "The sources that the credential serves; none for a credential of `deploy`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "file",
+        "names",
+        "sources",
+        "overridden"
+      ],
+      "type": "object"
+    },
+    "CredentialState": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "description": "The values that the command reads, one per line, in this order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hint": {
+          "description": "What to copy there.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "needed_for": {
+          "type": "string"
+        },
+        "register": {
+          "description": "Where a person gets it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "set": {
+          "description": "The arguments after `obc data` of the command that sets it from standard input, such as\n`source credential SOURCE` for each source that needs it. `null` for the R2 key, which the\npage does not set.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/Readiness"
+        },
+        "uses": {
+          "description": "The `use` of each source that it serves.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "needed_for",
+        "state",
+        "set",
+        "fields",
+        "uses",
+        "register",
+        "hint"
+      ],
+      "type": "object"
+    },
+    "DatasetState": {
+      "oneOf": [
+        {
+          "const": "complete",
+          "description": "Each listed file is verified.",
+          "type": "string"
+        },
+        {
+          "const": "incomplete",
+          "description": "A listed file is missing.",
+          "type": "string"
+        },
+        {
+          "const": "absent",
+          "description": "No root has the manifest.",
+          "type": "string"
+        },
+        {
+          "const": "unreadable",
+          "description": "The manifest cannot be read, or has no `version`: no file of it serves.",
+          "type": "string"
+        }
+      ]
+    },
+    "DeployPlan": {
+      "description": "What `deploy WHAT --dry-run` writes.",
+      "properties": {
+        "args": {
+          "description": "The arguments after `obc data` that start it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "commands": {
+          "description": "The commands that it runs in the repository root, in this order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "commit": {
+          "description": "The commit of this checkout that it deploys.",
+          "type": "string"
+        },
+        "text": {
+          "description": "What the deploy changes.",
+          "type": "string"
+        },
+        "what": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "what",
+        "commit",
+        "text",
+        "commands",
+        "args"
+      ],
+      "type": "object"
+    },
+    "Deployed": {
+      "description": "What `deploy` writes.",
+      "properties": {
+        "checkout": {
+          "description": "The commit of this checkout: what a deploy puts in place.",
+          "type": "string"
+        },
+        "publish": {
+          "description": "What `update prod` and the delete of its old data need on this machine.",
+          "items": {
+            "$ref": "#/$defs/Check"
+          },
+          "type": "array"
+        },
+        "services": {
+          "$ref": "#/$defs/Running"
+        },
+        "tiles": {
+          "$ref": "#/$defs/Running"
+        }
+      },
+      "required": [
+        "checkout",
+        "publish",
+        "services",
+        "tiles"
+      ],
+      "type": "object"
+    },
+    "Detached": {
+      "description": "What a command that starts a detached run writes: the run.",
+      "properties": {
+        "run": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "type": "object"
+    },
+    "Downloaded": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "file"
+      ],
+      "type": "object"
+    },
+    "Downloads": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "files",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "Error": {
+      "description": "Why a command failed, and what to do about it.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "fix": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "run": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "fix"
+      ],
+      "type": "object"
+    },
+    "Estimate": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes_out": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "client_bytes": {
+          "description": "The size of the files that a client reads: what a target gets.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "guess": {
+          "description": "It comes from a build of the step with other options, such as another region, scaled to the\ninput size of the step.",
+          "type": "boolean"
+        },
+        "peak_rss_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "wall_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wall_ms",
+        "bytes_out",
+        "client_bytes",
+        "peak_rss_bytes",
+        "guess"
+      ],
+      "type": "object"
+    },
+    "Failure": {
+      "description": "What `--json` writes when a command fails.",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/Error"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "type": "object"
+    },
+    "Fetch": {
+      "additionalProperties": false,
+      "properties": {
+        "at_once": {
+          "description": "The most block programs of the `terrain` prepare that read the source at the same time, 4\nwhen it is not set: a service that answers slower under many requests holds fewer slots.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/FetchKind"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "FetchKind": {
+      "oneOf": [
+        {
+          "enum": [
+            "http",
+            "geofabrik",
+            "glo30",
+            "dtm",
+            "capture",
+            "github"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "by-hand",
+          "description": "A person orders or downloads the files.",
+          "type": "string"
+        },
+        {
+          "const": "installed",
+          "description": "A person installs it, or another source's build brings it.",
+          "type": "string"
+        },
+        {
+          "const": "prepared",
+          "description": "`obc data source prepare` makes its versions in the archive.",
+          "type": "string"
+        }
+      ]
+    },
+    "Fetched": {
+      "description": "The requested files of a snapshot.",
+      "properties": {
+        "files": {
+          "items": {
+            "$ref": "#/$defs/FetchedFile"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "files"
+      ],
+      "type": "object"
+    },
+    "FetchedFile": {
+      "properties": {
+        "archive": {
+          "description": "The path in the archive (`OBC_DATA_ARCHIVE`) of the file that gave the bytes instead of `url`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The part of `url` that names the file within its source, unique in a record: the name a\nstep gives the file when it needs one.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The object in the store.",
+          "type": "string"
+        },
+        "retrieved": {
+          "description": "`YYYY-MM-DDTHH:MM:SSZ`",
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url",
+        "size",
+        "sha256",
+        "retrieved",
+        "path"
+      ],
+      "type": "object"
+    },
+    "Field": {
+      "oneOf": [
+        {
+          "const": "format",
+          "description": "The number that the readers check.",
+          "type": "string"
+        },
+        {
+          "const": "revision",
+          "description": "The number of the output.",
+          "type": "string"
+        }
+      ]
+    },
+    "Files": {
+      "properties": {
+        "listed": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "verified": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "verified",
+        "listed"
+      ],
+      "type": "object"
+    },
+    "ForRegion": {
+      "description": "What a bake of the region reads of a source, and what it still needs.",
+      "properties": {
+        "after_stop": {
+          "description": "The step list of a product that reads it stopped before it read the source: its fetches\nare not known, and `need` is `unknown` but for a prepared source.",
+          "type": "boolean"
+        },
+        "download_bytes": {
+          "description": "The known bytes to download.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "held_bytes": {
+          "description": "The known bytes of the held ones.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "held_requests": {
+          "description": "Of them, those that the store or the archive holds.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "need": {
+          "$ref": "#/$defs/Need"
+        },
+        "read_by": {
+          "description": "For a source that only a prepare reads: the prepared source whose need it has.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requests": {
+          "description": "The fetches of the source that the step lists read: one per set of params.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unknown_requests": {
+          "description": "The fetches to download of unknown size.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "need",
+        "requests",
+        "held_requests",
+        "held_bytes",
+        "download_bytes",
+        "unknown_requests",
+        "read_by",
+        "after_stop"
+      ],
+      "type": "object"
+    },
+    "FormatChange": {
+      "properties": {
+        "from": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "readers": {
+          "description": "What the new format means for each reader of the layer.",
+          "items": {
+            "$ref": "#/$defs/FormatReader"
+          },
+          "type": "array"
+        },
+        "to": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "readers"
+      ],
+      "type": "object"
+    },
+    "FormatReader": {
+      "properties": {
+        "effect": {
+          "type": "string"
+        },
+        "reader": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reader",
+        "effect"
+      ],
+      "type": "object"
+    },
+    "GcPlan": {
+      "description": "What `clean` deletes from the store, or deleted, and what stays.",
+      "properties": {
+        "keep_bytes": {
+          "description": "The size of the objects and the unpacked copies that stay.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keep_copies": {
+          "description": "The unpacked copies that stay.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keep_objects": {
+          "description": "The objects that stay.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kept": {
+          "description": "What stays, and why.",
+          "items": {
+            "$ref": "#/$defs/Kept"
+          },
+          "type": "array"
+        },
+        "objects": {
+          "description": "SHA-256 and size of each object that nothing reaches.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "partial_bytes": {
+          "description": "The size of `partial/`: unfinished downloads and the work of steps that stopped. A\ncollection removes it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "remove_bytes": {
+          "description": "The size of `objects` and `unpacked`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "snapshots": {
+          "description": "`source@version` of each snapshot record that nothing reaches.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "unpacked": {
+          "description": "The SHA-256 and size of each unpacked copy of an archive file that the archive no longer lists.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kept",
+        "snapshots",
+        "objects",
+        "remove_bytes",
+        "keep_objects",
+        "keep_copies",
+        "keep_bytes",
+        "partial_bytes",
+        "unpacked"
+      ],
+      "type": "object"
+    },
+    "GeofabrikArea": {
+      "properties": {
+        "bounds": {
+          "$ref": "#/$defs/Bbox"
+        },
+        "countries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "parent",
+        "countries",
+        "bounds"
+      ],
+      "type": "object"
+    },
+    "Held": {
+      "description": "How this machine holds a source.",
+      "properties": {
+        "archive_files": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Files"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The verified and the listed files of its dataset; `null` while no manifest lists a file."
+        },
+        "bytes": {
+          "description": "The bytes held; `null` when the source holds none of its own.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "covers": {
+          "description": "Where the source has data, in words.",
+          "type": "string"
+        },
+        "dataset": {
+          "description": "The dataset of `data/archive/` of the source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "date": {
+          "description": "`YYYY-MM-DD`: the last `archive get`, the newest version that holds it, or the newest file\nin the store.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "download_bytes": {
+          "description": "What an `archive get` still takes; `null` when unknown or nothing is to get.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "Why its dataset or its prepared versions cannot be read.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gap": {
+          "description": "A national terrain model that nothing holds: the terrain there is GLO-30 only.",
+          "type": "boolean"
+        },
+        "no_dataset": {
+          "description": "`keep = \"archive\"`, and no dataset of `data/archive/` has the source.",
+          "type": "boolean"
+        },
+        "prepared_by": {
+          "description": "The prepared source whose versions hold it: itself, or the one that reads it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rule": {
+          "$ref": "#/$defs/Rule"
+        },
+        "status": {
+          "$ref": "#/$defs/SourceStatus"
+        },
+        "store_requests": {
+          "description": "The requests of the source with params in the store, the newest of each set of params.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "store_versions": {
+          "description": "The versions of the source in the store.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "where": {
+          "description": "The archive root of its dataset, the home of the prepared source that holds it, `store`, or\nthe host of an asset that R2 keeps; `null` when nothing is held.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "rule",
+        "covers",
+        "status",
+        "where",
+        "dataset",
+        "prepared_by",
+        "bytes",
+        "download_bytes",
+        "date",
+        "archive_files",
+        "store_versions",
+        "store_requests",
+        "gap",
+        "no_dataset",
+        "error"
+      ],
+      "type": "object"
+    },
+    "HeldSource": {
+      "properties": {
+        "held": {
+          "$ref": "#/$defs/Held"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "held"
+      ],
+      "type": "object"
+    },
+    "Holder": {
+      "description": "The run that holds the lock of a target. A reader ignores keys that it does not know, so builds\nof `obc data` read each other's lock.",
+      "properties": {
+        "heartbeat": {
+          "description": "The time of the last heartbeat, `YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": "string"
+        },
+        "machine": {
+          "description": "`OBC_DATA_MACHINE`, or else the short host name.",
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "progress": {
+          "default": [],
+          "description": "Each layer that the run bakes, at the last heartbeat. The status of the run on its machine\nhas the detail.",
+          "items": {
+            "$ref": "#/$defs/Progress"
+          },
+          "type": "array"
+        },
+        "review": {
+          "description": "The id of the review that the run does; `null` until the run has it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "type": "string"
+        },
+        "waiting": {
+          "description": "Why the run waits, in the phase `router-ready`: the last answer of the follower of the\ntarget.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "machine",
+        "run",
+        "review",
+        "phase",
+        "heartbeat",
+        "progress"
+      ],
+      "type": "object"
+    },
+    "Job": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/Readiness"
+        }
+      },
+      "required": [
+        "name",
+        "state",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "Keep": {
+      "description": "Where the copy of a source that a bake reads stays, so that no outage stops a bake.",
+      "oneOf": [
+        {
+          "const": "archive",
+          "description": "The archive (`OBC_DATA_ARCHIVE`) holds the whole dataset: a fetch reads it there first.",
+          "type": "string"
+        },
+        {
+          "const": "store",
+          "description": "The store keeps what each fetch took.",
+          "type": "string"
+        },
+        {
+          "const": "prepared",
+          "description": "We keep what we make: the archive keeps a prepared source and a source that only a prepare\nreads, and R2 keeps our own asset.",
+          "type": "string"
+        }
+      ]
+    },
+    "Kept": {
+      "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
+      "properties": {
+        "because": {
+          "description": "`served by TARGET, …`, `newest of the source`, `newest of a request`, `refreshed`, `inputs\nkept`, `release`, `fixture`, `in the archive` or `archive not read`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bytes": {
+          "description": "The size of its files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "entry": {
+          "description": "`source@version`, a step, or `N objects`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entry",
+        "bytes",
+        "because"
+      ],
+      "type": "object"
+    },
+    "Kind": {
+      "description": "In the order `obc data sources` lists them.",
+      "oneOf": [
+        {
+          "const": "data",
+          "description": "An input that steps read.",
+          "type": "string"
+        },
+        {
+          "const": "asset",
+          "description": "A file that ships to users as it is.",
+          "type": "string"
+        },
+        {
+          "const": "tool",
+          "description": "Code that steps run; nothing of it ships.",
+          "type": "string"
+        }
+      ]
+    },
+    "LayerChange": {
+      "description": "A layer that the update changes.",
+      "properties": {
+        "cause": {
+          "$ref": "#/$defs/PlanCause"
+        },
+        "dropped_leaves": {
+          "description": "The grid leaves of `drops` of a tiled layer, as `leaves` names them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "drops": {
+          "description": "The steps of the serving release that no step makes now.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FormatChange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The format of the serving release and of the steps, when it changes. Old readers keep what\nthey have and get no new data until they update."
+        },
+        "layer": {
+          "type": "string"
+        },
+        "leaves": {
+          "description": "The grid leaves whose steps bake, as `<i>-<j>`: the last part of the name of each step of a\ntiled layer that has that form.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "partitions": {
+          "description": "The partitions of a partitioned layer whose steps bake.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "readers": {
+          "description": "The programs that read the layer.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "steps": {
+          "description": "The steps that bake.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer",
+        "cause",
+        "text",
+        "steps",
+        "leaves",
+        "drops",
+        "dropped_leaves",
+        "readers",
+        "format"
+      ],
+      "type": "object"
+    },
+    "LayerProgress": {
+      "properties": {
+        "done": {
+          "default": 0,
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "layer": {
+          "default": "",
+          "type": "string"
+        },
+        "leaves_baking": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "leaves_done": {
+          "default": [],
+          "description": "The leaves `<i>-<j>` of a tiled layer whose steps finished, and those whose steps bake now.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "leaves_unchanged": {
+          "default": [],
+          "description": "The finished leaves whose steps all kept their output of the serving release.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "started": {
+          "default": null,
+          "description": "When its first step started, `YYYY-MM-DDTHH:MM:SSZ`; `null` before.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "total": {
+          "default": 0,
+          "description": "The steps of the layer that the run bakes, and those that finished.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "layer",
+        "total",
+        "done",
+        "leaves_done",
+        "leaves_baking",
+        "leaves_unchanged",
+        "started"
+      ],
+      "type": "object"
+    },
+    "LayerShape": {
+      "description": "How the steps of a layer bake.",
+      "oneOf": [
+        {
+          "const": "tiled",
+          "description": "Per grid leaf.",
+          "type": "string"
+        },
+        {
+          "const": "whole",
+          "description": "Once over the coverage of a target, also in named partitions (`partitions`).",
+          "type": "string"
+        }
+      ]
+    },
+    "LayerSources": {
+      "description": "A name of `used_by` and the sources that it reads. Whether a bake of a region still downloads\nor prepares is in `sources --region`.",
+      "properties": {
+        "layer": {
+          "type": "string"
+        },
+        "sources": {
+          "description": "The `data` sources and assets whose `used_by` has the layer, but no source that only a\nprepare reads.",
+          "items": {
+            "$ref": "#/$defs/HeldSource"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "layer",
+        "sources"
+      ],
+      "type": "object"
+    },
+    "LayerState": {
+      "additionalProperties": false,
+      "properties": {
+        "cause": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why a `stale` layer is stale; `null` for another state."
+        },
+        "format": {
+          "description": "The format and the revision of its steps; `null` for a layer that only the release has.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "layer": {
+          "type": "string"
+        },
+        "leaves": {
+          "description": "The grid leaves of a tiled layer, as `<i>-<j>`, sorted; empty for another layer.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "partitions": {
+          "description": "The partitions of a partitioned layer that its steps make, sorted; absent for another layer.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "readers": {
+          "description": "The programs that read its files.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reads": {
+          "description": "The layers and the sources that its steps read, sorted. In place of a layer that no program\nreads, it names what that layer reads.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "served_format": {
+          "description": "The format and the revision of the layer in the release; `null` while the release has none.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "served_revision": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "shape": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LayerShape"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How its steps bake; `null` for a layer that only the release has."
+        },
+        "stale_leaves": {
+          "description": "The leaves whose steps a build changes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stale_partitions": {
+          "description": "The partitions whose steps a build changes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/$defs/Verdict"
+        },
+        "text": {
+          "description": "The cause in a few words; `null` without a cause.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "layer",
+        "state",
+        "cause",
+        "text",
+        "shape",
+        "format",
+        "revision",
+        "served_format",
+        "served_revision",
+        "readers",
+        "reads",
+        "leaves",
+        "stale_leaves"
+      ],
+      "type": "object"
+    },
+    "Legacy": {
+      "description": "The keys of the legacy pipelines that a target does not use.",
+      "properties": {
+        "digest": {
+          "description": "The SHA-256 of the lines `<bytes>  <key>\\n` of the keys of every folder, sorted by key.",
+          "type": "string"
+        },
+        "folders": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/LegacyKey"
+            },
+            "type": "array"
+          },
+          "description": "The keys of each folder, sorted.",
+          "type": "object"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "folders",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "LegacyKey": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "properties": {
+        "app": {
+          "type": "string"
+        },
+        "how": {
+          "description": "The command, or what to do, with absolute paths.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "app",
+        "how"
+      ],
+      "type": "object"
+    },
+    "Listening": {
+      "description": "What `serve` writes when it listens.",
+      "properties": {
+        "links": {
+          "description": "How each app of this machine and of its network opens a dir target; empty for an R2 target.",
+          "items": {
+            "$ref": "#/$defs/Link"
+          },
+          "type": "array"
+        },
+        "network": {
+          "description": "Its origin on the network, for a phone; `null` without a network and for an R2 target.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": "string"
+        },
+        "url": {
+          "description": "The origin of `obc data serve` on this machine.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "url",
+        "network",
+        "links"
+      ],
+      "type": "object"
+    },
+    "Lock": {
+      "description": "The run that holds the lock of a target, as its `lock.json` says.",
+      "properties": {
+        "died": {
+          "description": "Whether the run ran on this machine and its process ended: the next run takes the lock\nover.",
+          "type": "boolean"
+        },
+        "heartbeat": {
+          "description": "The time of the last heartbeat, `YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": "string"
+        },
+        "machine": {
+          "description": "`OBC_DATA_MACHINE`, or else the short host name.",
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "progress": {
+          "default": [],
+          "description": "Each layer that the run bakes, at the last heartbeat. The status of the run on its machine\nhas the detail.",
+          "items": {
+            "$ref": "#/$defs/Progress"
+          },
+          "type": "array"
+        },
+        "review": {
+          "description": "The id of the review that the run does; `null` until the run has it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "type": "string"
+        },
+        "stale": {
+          "description": "Whether the last heartbeat is as old as `unlock` needs, by the clock of this machine: the\nrun likely ended without freeing the lock.",
+          "type": "boolean"
+        },
+        "waiting": {
+          "description": "Why the run waits, in the phase `router-ready`: the last answer of the follower of the\ntarget.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "machine",
+        "run",
+        "review",
+        "phase",
+        "heartbeat",
+        "progress",
+        "stale",
+        "died"
+      ],
+      "type": "object"
+    },
+    "Machine": {
+      "additionalProperties": false,
+      "description": "The machine that runs the command.",
+      "properties": {
+        "colour": {
+          "description": "The header colour of its page: `data/machines.toml`, or else the charcoal of a laptop.",
+          "type": "string"
+        },
+        "cores": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "load": {
+          "description": "The load average of the last minute; `null` where the system does not tell.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "memory_available_bytes": {
+          "description": "The memory that programs can still take; `null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "memory_bytes": {
+          "description": "`null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "`OBC_DATA_MACHINE`, or else the short host name.",
+          "type": "string"
+        },
+        "os": {
+          "description": "`linux` or `macos`.",
+          "type": "string"
+        },
+        "store_free_bytes": {
+          "description": "The free bytes of the disk of the store; `null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "colour",
+        "os",
+        "cores",
+        "memory_bytes",
+        "store_free_bytes",
+        "load",
+        "memory_available_bytes"
+      ],
+      "type": "object"
+    },
+    "MachineCheck": {
+      "description": "This machine against the cost.",
+      "properties": {
+        "memory_bytes": {
+          "description": "`null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "refusals": {
+          "description": "Why this machine cannot do the update; empty when it can, or cannot tell.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "store_free_bytes": {
+          "description": "The free bytes of the disk of the store; `null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memory_bytes",
+        "store_free_bytes",
+        "refusals"
+      ],
+      "type": "object"
+    },
+    "Made": {
+      "properties": {
+        "machine": {
+          "type": "string"
+        },
+        "time": {
+          "description": "`YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "machine",
+        "time"
+      ],
+      "type": "object"
+    },
+    "Need": {
+      "description": "What a bake of a region still needs of a source or a layer, from the least to the most.",
+      "oneOf": [
+        {
+          "const": "held",
+          "description": "The store, the archive or a prepared version holds what the bake reads.",
+          "type": "string"
+        },
+        {
+          "const": "download",
+          "description": "A fetch downloads a part, in the bake or in the prepare that reads it.",
+          "type": "string"
+        },
+        {
+          "const": "prepare",
+          "description": "`obc data source prepare` makes a version that covers the region.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Unknown: a step list needs a snapshot that the store lacks, or the cached index lacks an\narea of a scope.",
+          "type": "string"
+        }
+      ]
+    },
+    "Note": {
+      "additionalProperties": false,
+      "description": "A layer that bakes without a source that it reads where the source has a version, such as a\nprepared source that no target lists yet, or that reads an older version of a due source whose\nfetch failed. It does not prevent an update.",
+      "properties": {
+        "layer": {
+          "type": "string"
+        },
+        "text": {
+          "description": "What the layer bakes without and the command that gives it, or the version that it reads.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer",
+        "text"
+      ],
+      "type": "object"
+    },
+    "Object": {
+      "description": "One object in the bucket.",
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "modified": {
+          "description": "The upload time that the bucket reports.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "bytes",
+        "modified"
+      ],
+      "type": "object"
+    },
+    "Objects": {
+      "description": "The objects of a bucket that a command lists or deletes.",
+      "properties": {
+        "bucket": {
+          "description": "The bucket or the local directory, never a credential.",
+          "type": "string"
+        },
+        "objects": {
+          "items": {
+            "$ref": "#/$defs/Object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "bucket",
+        "objects"
+      ],
+      "type": "object"
+    },
+    "Observation": {
+      "properties": {
+        "checked_at": {
+          "description": "None for policy-derived capture results and sources without a probe.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "last_success": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Success"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "$ref": "#/$defs/Upstream"
+        }
+      },
+      "required": [
+        "checked_at",
+        "result",
+        "last_success"
+      ],
+      "type": "object"
+    },
+    "Overview": {
+      "description": "What `obc data` writes.",
+      "properties": {
+        "machine": {
+          "$ref": "#/$defs/Machine"
+        },
+        "targets": {
+          "description": "One per target of `data/targets.toml`, by name.",
+          "items": {
+            "$ref": "#/$defs/TargetState"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "machine",
+        "targets"
+      ],
+      "type": "object"
+    },
+    "Phase": {
+      "enum": [
+        "prepare",
+        "build",
+        "verify",
+        "upload",
+        "router-ready",
+        "switch",
+        "collect"
+      ],
+      "type": "string"
+    },
+    "PhaseState": {
+      "properties": {
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "started": {
+          "description": "When it began, `YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/State2"
+        },
+        "waiting": {
+          "description": "Why it waits: in `router-ready`, the last answer of the follower of the target.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "phase",
+        "state",
+        "started"
+      ],
+      "type": "object"
+    },
+    "PlanBuild": {
+      "additionalProperties": false,
+      "properties": {
+        "again": {
+          "description": "Whether the step builds also when the store has the layer of its key.",
+          "type": "boolean"
+        },
+        "built": {
+          "description": "When the store has the layer of `key`: the time of its build, `YYYY-MM-DDTHH:MM:SSZ`. The\nupdate reuses that layer unless `again`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "estimate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Estimate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "key": {
+          "description": "`None` until the layers and snapshots that it reads are in the store.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recipe": {
+          "description": "The key of the step without the digests of its inputs.",
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "step",
+        "recipe",
+        "key",
+        "estimate",
+        "again",
+        "built"
+      ],
+      "type": "object"
+    },
+    "PlanCause": {
+      "description": "Why a group changes a release.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The layer is stale.",
+          "properties": {
+            "cause": {
+              "$ref": "#/$defs/Cause"
+            },
+            "kind": {
+              "const": "stale",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "cause"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`--only` names the layer: its steps build again.",
+          "properties": {
+            "kind": {
+              "const": "named",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The release has the layer, and no step makes it now.",
+          "properties": {
+            "kind": {
+              "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A step that bakes reads files of the layer that no client reads, so the target does not hold\nthem, and the store of this machine lacks them.",
+          "properties": {
+            "kind": {
+              "const": "unheld",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PlanFetch": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "description": "The size of these files in a snapshot record of the source, or `None`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "files": {
+          "description": "The names of the files that the store lacks, or none when the store cannot name them: then\nthe fetch gets every file that it gives.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "params",
+        "files",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "PrepareReview": {
+      "description": "The review of a prepare. Its id names the decisions, so `--expect ID` starts a prepare only when\nthey are the ones that a person read.",
+      "properties": {
+        "abandoned": {
+          "description": "The version that a stopped run of this machine started and that this run does not resume:\nthe home has a newer complete version. `null` when there is none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "args": {
+          "description": "The arguments after `obc data` that start the prepare of this review.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cost": {
+          "$ref": "#/$defs/PreparedCost"
+        },
+        "done": {
+          "$ref": "#/$defs/Downloads",
+          "description": "The files that earlier runs of the version moved into the home: this run does not make them\nagain."
+        },
+        "files": {
+          "description": "The files of the version, at most; `null` when the producer cannot tell before the run.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "format": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the root, the\nversion, the format, the revision, the scope, the languages, `publish_text` and each planned\ninput, including archive paths, URLs, sizes and object identities.",
+          "type": "string"
+        },
+        "inputs": {
+          "items": {
+            "$ref": "#/$defs/PreparedInput"
+          },
+          "type": "array"
+        },
+        "languages": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "listing": {
+          "description": "Whether the manifest of the version is in the home and names the files of the journal: the\nrun only lists the version, and makes and writes nothing else.",
+          "type": "boolean"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineCheck"
+        },
+        "publish_text": {
+          "description": "Whether the version publishes its article text: `publish_text` of the source; `null` for a\nsource without text.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "revision": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root": {
+          "description": "The archive root of the home of the source.",
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Scope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`null`: every place that the source covers."
+        },
+        "source": {
+          "type": "string"
+        },
+        "stale": {
+          "description": "Each target whose serving release reads an older version, with those layers: they are stale\nonce the version is complete.",
+          "items": {
+            "$ref": "#/$defs/StaleReaders"
+          },
+          "type": "array"
+        },
+        "version": {
+          "description": "The version that the run makes: the UTC date when its first run started, with `.2`, `.3`\nand so on after the first version of that day.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "root",
+        "version",
+        "abandoned",
+        "listing",
+        "format",
+        "revision",
+        "scope",
+        "languages",
+        "inputs",
+        "files",
+        "publish_text",
+        "done",
+        "cost",
+        "machine",
+        "stale",
+        "args"
+      ],
+      "type": "object"
+    },
+    "PreparedCost": {
+      "description": "Estimates from the newest version in the home; `null` without one.",
+      "properties": {
+        "archive_bytes": {
+          "description": "What goes into the archive: the files of the version that earlier runs did not move.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "peak_rss_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "store_bytes": {
+          "description": "What goes into the store: the inputs that it lacks.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unknown": {
+          "description": "The inputs whose size the store does not know, as `SOURCE@VERSION`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "wall_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "wall_ms",
+        "peak_rss_bytes",
+        "store_bytes",
+        "archive_bytes",
+        "unknown"
+      ],
+      "type": "object"
+    },
+    "PreparedIn": {
+      "properties": {
+        "error": {
+          "description": "Why the versions or the lock of the source cannot be read; `null` when they can.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "root": {
+          "description": "The archive root of the home; `null` when no root of `OBC_DATA_ARCHIVE` has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "versions": {
+          "items": {
+            "$ref": "#/$defs/Version"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "root",
+        "versions",
+        "lock",
+        "error"
+      ],
+      "type": "object"
+    },
+    "PreparedInput": {
+      "properties": {
+        "bytes": {
+          "description": "Input bytes from local files, upstream metadata or the store; `null` when unknown.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "download_bytes": {
+          "description": "Archive bytes absent on this machine; null for other source inputs.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "description": "`null` for the newest version upstream.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "params",
+        "bytes",
+        "download_bytes"
+      ],
+      "type": "object"
+    },
+    "Progress": {
+      "description": "The steps of a layer that a run bakes, and those that finished.",
+      "properties": {
+        "done": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "layer": {
+          "type": "string"
+        },
+        "total": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "layer",
+        "done",
+        "total"
+      ],
+      "type": "object"
+    },
+    "Readiness": {
+      "oneOf": [
+        {
+          "enum": [
+            "ready",
+            "missing"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "optional",
+          "description": "Missing, but no main job needs it.",
+          "type": "string"
+        }
+      ]
+    },
+    "Refresh": {
+      "anyOf": [
+        {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "const": "manual"
+        }
+      ],
+      "description": "How old the serving version may get, in days, before the source is stale; `manual` is never stale."
+    },
+    "Region": {
+      "oneOf": [
+        {
+          "description": "The selected Geofabrik source paths, independent of the saved region id.",
+          "properties": {
+            "areas": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "geofabrik",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "areas"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "box": {
+              "$ref": "#/$defs/Bbox"
+            },
+            "kind": {
+              "const": "box",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "box"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "union",
+              "type": "string"
+            },
+            "union": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "union"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "countries": {
+          "description": "The ISO 3166-1 alpha-2 codes of its countries, such as `DE`. Empty when the file names none.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "time_zone": {
+          "description": "The IANA time zone of the region, such as `Europe/Berlin`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "countries",
+        "time_zone"
+      ],
+      "type": "object"
+    },
+    "RegionLayer": {
+      "description": "A layer and what a bake of the region still needs for it: the most of its sources.",
+      "properties": {
+        "layer": {
+          "type": "string"
+        },
+        "need": {
+          "$ref": "#/$defs/Need"
+        },
+        "reason": {
+          "description": "Why its step list cannot be listed: then `need` is `unknown`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sources": {
+          "description": "The sources that its steps read.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "layer",
+        "need",
+        "sources",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "RegionProduct": {
+      "description": "A product of the region.",
+      "properties": {
+        "incomplete": {
+          "description": "Its step list stopped: a snapshot that it needs is not in the store, or it does not suit\nthe region. Its other sources come from the table of what it can read.",
+          "type": "boolean"
+        },
+        "product": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it stopped.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "product",
+        "incomplete",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "RegionSource": {
+      "description": "A source that a bake of the region reads.",
+      "properties": {
+        "for_region": {
+          "$ref": "#/$defs/ForRegion"
+        },
+        "held": {
+          "$ref": "#/$defs/Held",
+          "description": "How this machine holds the source."
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "held",
+        "for_region"
+      ],
+      "type": "object"
+    },
+    "RegionSources": {
+      "description": "What `sources --region` and `sources --box` write.",
+      "properties": {
+        "boxes": {
+          "description": "Its boxes, and the bounds of its Geofabrik areas in the cached index.",
+          "items": {
+            "$ref": "#/$defs/Bbox"
+          },
+          "type": "array"
+        },
+        "countries": {
+          "description": "The countries that select the national models; empty selects each that meets a box.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "download_bytes": {
+          "description": "The sum of the known bytes to download.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "layers": {
+          "description": "The layers of the products.",
+          "items": {
+            "$ref": "#/$defs/RegionLayer"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "prepare": {
+          "description": "The prepared sources to prepare.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "products": {
+          "description": "The products with each optional part on, and whether their step lists are complete.",
+          "items": {
+            "$ref": "#/$defs/RegionProduct"
+          },
+          "type": "array"
+        },
+        "region": {
+          "type": "string"
+        },
+        "sources": {
+          "description": "The sources that the step lists read, and the sources that only a prepare reads of the\nprepared sources among them.",
+          "items": {
+            "$ref": "#/$defs/RegionSource"
+          },
+          "type": "array"
+        },
+        "unknown": {
+          "description": "The sources with a download of unknown size, or whose need is unknown.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "region",
+        "name",
+        "boxes",
+        "countries",
+        "products",
+        "layers",
+        "sources",
+        "download_bytes",
+        "unknown",
+        "prepare"
+      ],
+      "type": "object"
+    },
+    "RequestStatus": {
+      "properties": {
+        "age_days": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "observation": {
+          "$ref": "#/$defs/Observation"
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serving": {
+          "description": "The version that the serving release reads.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/State"
+        }
+      },
+      "required": [
+        "params",
+        "serving",
+        "observation",
+        "state",
+        "reason",
+        "age_days"
+      ],
+      "type": "object"
+    },
+    "Review": {
+      "description": "The review of an update.",
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/AfterUpdate"
+        },
+        "args": {
+          "description": "The arguments after `obc data` that start the update of this review.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bakes": {
+          "description": "The steps that this machine builds. A step whose output is in the store already is not here.",
+          "items": {
+            "$ref": "#/$defs/PlanBuild"
+          },
+          "type": "array"
+        },
+        "base": {
+          "description": "The release that the target serves; `null` while it serves nothing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cost": {
+          "$ref": "#/$defs/ReviewCost"
+        },
+        "downloads": {
+          "$ref": "#/$defs/Downloads",
+          "description": "What this machine downloads from the target: files of kept steps that a step that bakes reads."
+        },
+        "fetches": {
+          "description": "What this machine fetches into its store.",
+          "items": {
+            "$ref": "#/$defs/PlanFetch"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the decisions: the target,\nthe tag of `release.json`, the settings, `layers`, every step that bakes and the source version\nthat each of them reads. Two machines that read the same target give the same id when their\nstores resolve the same versions and files.",
+          "type": "string"
+        },
+        "kept": {
+          "description": "The number of outputs that the release keeps by reference.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "layers": {
+          "description": "Each layer that the update bakes or drops, in dependency order. A layer that only other\nlayers read is not listed: the layers that read it are.",
+          "items": {
+            "$ref": "#/$defs/LayerChange"
+          },
+          "type": "array"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineCheck"
+        },
+        "notes": {
+          "description": "What layers bake without, such as a prepared source that no target lists yet.",
+          "items": {
+            "$ref": "#/$defs/Note"
+          },
+          "type": "array"
+        },
+        "optional": {
+          "description": "The parts that `--add` and `--remove` name, sorted; `settings.layers` holds those\nthat are on.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reused": {
+          "description": "The steps whose output the store has from an earlier build: the update uses it and does not\nbuild it. Each has `built`.",
+          "items": {
+            "$ref": "#/$defs/PlanBuild"
+          },
+          "type": "array"
+        },
+        "services": {
+          "description": "For `prod`: why its follower or its tiles Worker cannot serve the release, each with its\nfix. The update waits at router-ready for a follower, and refuses a tiles Worker that cannot\nread the grid of the release.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "settings": {
+          "$ref": "#/$defs/Settings"
+        },
+        "sources": {
+          "description": "Each fetch that a baked step reads at another version than the serving release.",
+          "items": {
+            "$ref": "#/$defs/SourceMove"
+          },
+          "type": "array"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "target",
+        "base",
+        "settings",
+        "layers",
+        "sources",
+        "kept",
+        "fetches",
+        "bakes",
+        "reused",
+        "downloads",
+        "cost",
+        "machine",
+        "after",
+        "args",
+        "optional",
+        "notes",
+        "services"
+      ],
+      "type": "object"
+    },
+    "ReviewCost": {
+      "properties": {
+        "peak_rss_bytes": {
+          "description": "The highest estimated peak of one bake.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "store_bytes": {
+          "description": "What the fetches, the downloads and the bakes write into the store.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unknown": {
+          "$ref": "#/$defs/Unknown",
+          "description": "What the figures lack."
+        },
+        "upload_bytes": {
+          "description": "What goes to the target: the files of the bakes and of the reused steps that a client reads.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wall_ms": {
+          "description": "The estimated times of the bakes, added as if one ran after another.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wall_ms",
+        "peak_rss_bytes",
+        "store_bytes",
+        "upload_bytes",
+        "unknown"
+      ],
+      "type": "object"
+    },
+    "Role": {
+      "additionalProperties": false,
+      "description": "A release and the time it took its role, `YYYY-MM-DDTHH:MM:SSZ`.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "since": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "since"
+      ],
+      "type": "object"
+    },
+    "RolledBack": {
+      "description": "What a rollback did.",
+      "properties": {
+        "rollback": {
+          "description": "The release that it served before.",
+          "type": "string"
+        },
+        "run": {
+          "type": "string"
+        },
+        "serving": {
+          "description": "The release that the target serves now: its rollback before.",
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "target",
+        "serving",
+        "rollback"
+      ],
+      "type": "object"
+    },
+    "Router": {
+      "description": "What `router` writes.",
+      "properties": {
+        "next": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Role"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The release that `planner/next.json` names while a run waits for it; `null` without one."
+        },
+        "rollback": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Answer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`null` without a rollback."
+        },
+        "serving": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Answer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`null` while the target serves nothing."
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "serving",
+        "rollback",
+        "next"
+      ],
+      "type": "object"
+    },
+    "Rule": {
+      "oneOf": [
+        {
+          "const": "keep",
+          "description": "`keep = \"archive\"`.",
+          "type": "string"
+        },
+        {
+          "const": "prepare",
+          "description": "`keep = \"prepared\"`.",
+          "type": "string"
+        },
+        {
+          "const": "store",
+          "description": "`keep = \"store\"`.",
+          "type": "string"
+        },
+        {
+          "const": "live",
+          "description": "`keep = \"store\"` with a `refresh` in days: the OSM sources.",
+          "type": "string"
+        }
+      ]
+    },
+    "RunError": {
+      "properties": {
+        "code": {
+          "description": "The code of the [error](#errors).",
+          "type": "string"
+        },
+        "fix": {
+          "type": "string"
+        },
+        "kept": {
+          "default": [],
+          "description": "The steps whose layers the run built: the store keeps them, and the next update reuses\nthem.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "fix",
+        "kept"
+      ],
+      "type": "object"
+    },
+    "RunFetch": {
+      "properties": {
+        "bytes": {
+          "default": null,
+          "description": "`None` while it runs, and when it failed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "end_ms": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "default": [],
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "resolved": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "default": "",
+          "type": "string"
+        },
+        "start_ms": {
+          "default": null,
+          "description": "When it started and when it ended, in milliseconds after the start of the run; `null` before.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "version": {
+          "default": "",
+          "type": "string"
+        },
+        "wall_ms": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "resolved",
+        "params",
+        "start_ms",
+        "end_ms",
+        "bytes",
+        "wall_ms",
+        "error"
+      ],
+      "type": "object"
+    },
+    "RunList": {
+      "description": "Every run in the store, newest first.",
+      "properties": {
+        "runs": {
+          "items": {
+            "$ref": "#/$defs/Summary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "runs"
+      ],
+      "type": "object"
+    },
+    "RunStep": {
+      "properties": {
+        "bytes_out": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cpu_ms": {
+          "default": null,
+          "description": "User plus system CPU time; `null` as `wall_ms` is, and when the system does not report it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "end_ms": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_wall_ms": {
+          "default": null,
+          "description": "Its wall time in the newest earlier run that built it. `runs RUN` gives it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "layer": {
+          "default": "",
+          "description": "Empty until it finishes.",
+          "type": "string"
+        },
+        "peak_rss_bytes": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reads": {
+          "default": [],
+          "description": "The inputs that it read.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reused": {
+          "default": false,
+          "type": "boolean"
+        },
+        "start_ms": {
+          "default": null,
+          "description": "When it started and when it finished or failed, in milliseconds after the start of the run;\n`null` before. An unchanged step does not start.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "step": {
+          "default": "",
+          "type": "string"
+        },
+        "unchanged": {
+          "default": false,
+          "description": "It kept its output of the serving release: its key is the key of that output.",
+          "type": "boolean"
+        },
+        "users": {
+          "default": [],
+          "description": "The steps of this run that read it. `runs RUN` gives it; the status file has none.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "wall_ms": {
+          "default": null,
+          "description": "`null` while it runs, when it failed, and when it is unchanged.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "step",
+        "layer",
+        "reused",
+        "unchanged",
+        "start_ms",
+        "end_ms",
+        "wall_ms",
+        "cpu_ms",
+        "peak_rss_bytes",
+        "bytes_out",
+        "reads",
+        "error",
+        "users",
+        "last_wall_ms"
+      ],
+      "type": "object"
+    },
+    "Running": {
+      "description": "What a deployment says that it runs.",
+      "properties": {
+        "checks": {
+          "description": "What a deploy from this machine needs, each checked now.",
+          "items": {
+            "$ref": "#/$defs/Check"
+          },
+          "type": "array"
+        },
+        "commit": {
+          "description": "The commit that it runs; `null` when it does not answer, or when its build named none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential": {
+          "$ref": "#/$defs/CredentialState",
+          "description": "The credential that a deploy needs, which the page sets."
+        },
+        "reason": {
+          "description": "Why it cannot serve a release of `obc data`; `null` when it answers.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "The URL that answers with its commit.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "commit",
+        "reason",
+        "checks",
+        "credential"
+      ],
+      "type": "object"
+    },
+    "Scope": {
+      "additionalProperties": false,
+      "description": "The part of the world that a version covers, as the settings of a target name a region.",
+      "properties": {
+        "definitions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The TOML text of the region and of the members of a union, by id.",
+          "type": "object"
+        },
+        "region": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "region",
+        "definitions"
+      ],
+      "type": "object"
+    },
+    "Serving": {
+      "additionalProperties": false,
+      "description": "`release.json`: the release that a target serves, and the one that a rollback switches to.",
+      "properties": {
+        "rollback": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Role"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "serving": {
+          "$ref": "#/$defs/Role"
+        }
+      },
+      "required": [
+        "serving",
+        "rollback"
+      ],
+      "type": "object"
+    },
+    "Settings": {
+      "additionalProperties": false,
+      "properties": {
+        "definitions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Full TOML definitions of the region and its union members, keyed by region id.",
+          "type": "object"
+        },
+        "layers": {
+          "description": "The parts that are on, sorted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refresh": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Refresh"
+          },
+          "description": "Source id to the policy that replaces the policy of `data/sources.toml`.",
+          "type": "object"
+        },
+        "region": {
+          "description": "The id of the region; empty until an update names one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "region",
+        "definitions",
+        "layers",
+        "refresh"
+      ],
+      "type": "object"
+    },
+    "Setup": {
+      "additionalProperties": false,
+      "description": "What `setup` writes.",
+      "properties": {
+        "credentials": {
+          "description": "Only whether each credential is set; never its value.",
+          "items": {
+            "$ref": "#/$defs/CredentialState"
+          },
+          "type": "array"
+        },
+        "jobs": {
+          "description": "What this machine can do, and the reason when it cannot.",
+          "items": {
+            "$ref": "#/$defs/Job"
+          },
+          "type": "array"
+        },
+        "store": {
+          "$ref": "#/$defs/StoreUse"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/Tool"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "store",
+        "jobs",
+        "tools",
+        "credentials"
+      ],
+      "type": "object"
+    },
+    "SourceLayers": {
+      "description": "What `sources --layer` writes.",
+      "properties": {
+        "layers": {
+          "items": {
+            "$ref": "#/$defs/LayerSources"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "layers"
+      ],
+      "type": "object"
+    },
+    "SourceMove": {
+      "properties": {
+        "from": {
+          "description": "`null` when the serving release does not read the fetch.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "params",
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "SourceRow": {
+      "description": "A source of `data/sources.toml`, what each target reads of it, and its versions in the store.",
+      "properties": {
+        "areas": {
+          "description": "The Geofabrik areas (`geofabrik-poly`) whose polygons hold the data inside `extent`. None\nmeans all of `extent`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "attribution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Credential"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "credential_missing": {
+          "type": "boolean"
+        },
+        "extent": {
+          "description": "The box outside which the source has no data: west, south, east and north in degrees.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "fetch": {
+          "$ref": "#/$defs/Fetch"
+        },
+        "group": {
+          "description": "The heading under which the operator page lists a source that is not prepared.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "held": {
+          "$ref": "#/$defs/Held",
+          "description": "How this machine holds the copy that a bake reads."
+        },
+        "hosts": {
+          "description": "Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "keep": {
+          "$ref": "#/$defs/Keep"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "licence": {
+          "description": "An SPDX id or `LicenseRef-…`. Unset blocks a data source or an asset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "licence_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "obligations": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prepared": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreparedIn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a prepared source: its home in the archive, its complete versions there, and the run\nthat holds its lock. `null` for another source."
+        },
+        "publish_text": {
+          "description": "A prepared source of article text publishes the text in its versions, unless this is\n`false`: then the text stays on the machine that prepares.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "redistribute": {
+          "type": "boolean"
+        },
+        "refresh": {
+          "$ref": "#/$defs/Refresh",
+          "default": "manual"
+        },
+        "refreshable": {
+          "description": "Whether `source refresh` moves the source.",
+          "type": "boolean"
+        },
+        "requests": {
+          "description": "For a source fetched with params: the newest record in the local store of each set of\nparams, sorted by params.",
+          "items": {
+            "$ref": "#/$defs/StoredRequest"
+          },
+          "type": "array"
+        },
+        "snapshots": {
+          "description": "The versions in the local store, the one fetched last first.",
+          "items": {
+            "$ref": "#/$defs/Stored"
+          },
+          "type": "array"
+        },
+        "start": {
+          "description": "The version that a step list reads while no serving release reads the source. Without it,\nthe first fetch takes the newest version upstream.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targets": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SourceTarget"
+          },
+          "description": "By target: its policy, and the state of each request that its serving release reads.",
+          "type": "object"
+        },
+        "use": {
+          "description": "What `used_by` reads the source for, in one line.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "used_by": {
+          "description": "What reads the source: the products `device` and `planner`, or the `search` and `trailview`\nlayers of `planner`. `tools/check_data_sources.py` checks the names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "$ref": "#/$defs/VersionScheme"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "fetch",
+        "version",
+        "refresh",
+        "keep",
+        "redistribute",
+        "targets",
+        "snapshots",
+        "requests",
+        "credential_missing",
+        "refreshable",
+        "prepared",
+        "held"
+      ],
+      "type": "object"
+    },
+    "SourceStatus": {
+      "description": "How this machine holds a source.",
+      "oneOf": [
+        {
+          "const": "archived",
+          "description": "The dataset of the source is complete in the archive.",
+          "type": "string"
+        },
+        {
+          "const": "prepared",
+          "description": "A prepared version holds it, or R2 keeps our own asset.",
+          "type": "string"
+        },
+        {
+          "const": "live",
+          "description": "A bake reads it upstream when it is due.",
+          "type": "string"
+        },
+        {
+          "const": "held",
+          "description": "The store has a version of a source that a fetch takes whole.",
+          "type": "string"
+        },
+        {
+          "const": "partial",
+          "description": "The archive holds some files of its dataset, or the store some requests of it.",
+          "type": "string"
+        },
+        {
+          "const": "missing",
+          "description": "Nothing is held.",
+          "type": "string"
+        }
+      ]
+    },
+    "SourceTarget": {
+      "properties": {
+        "refresh": {
+          "$ref": "#/$defs/Refresh"
+        },
+        "requests": {
+          "items": {
+            "$ref": "#/$defs/RequestStatus"
+          },
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/$defs/State",
+          "description": "The least state of its requests; `unused` when the serving release reads none."
+        }
+      },
+      "required": [
+        "refresh",
+        "state",
+        "requests"
+      ],
+      "type": "object"
+    },
+    "SourceVersion": {
+      "description": "A source version that a release read.",
+      "properties": {
+        "retrieved": {
+          "description": "When a machine first retrieved a file of it, `YYYY-MM-DDTHH:MM:SSZ`; `null` without a file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "retrieved"
+      ],
+      "type": "object"
+    },
+    "Sources": {
+      "properties": {
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/SourceRow"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sources"
+      ],
+      "type": "object"
+    },
+    "StaleReaders": {
+      "properties": {
+        "error": {
+          "description": "Why the target cannot be read; `null` when it can.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "layers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "layers",
+        "error"
+      ],
+      "type": "object"
+    },
+    "Started": {
+      "description": "What `obc data update --json` writes: the run that it started.",
+      "properties": {
+        "review": {
+          "description": "The id of the review that the run does; `null` for `--plan`, whose run makes the review.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "review"
+      ],
+      "type": "object"
+    },
+    "State": {
+      "description": "The state of a source. The least of the states of its requests is the one to show for all of\nthem.",
+      "oneOf": [
+        {
+          "enum": [
+            "stale",
+            "blocked",
+            "ok"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "unused",
+          "description": "No step of the target reads the source.",
+          "type": "string"
+        }
+      ]
+    },
+    "State2": {
+      "oneOf": [
+        {
+          "enum": [
+            "running",
+            "ok"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "starting",
+          "description": "Reserved: no process took it yet.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "It failed, or its process ended before it finished.",
+          "type": "string"
+        },
+        {
+          "const": "stopped",
+          "description": "A signal or `obc data runs RUN --stop` stopped it.",
+          "type": "string"
+        }
+      ]
+    },
+    "Status": {
+      "description": "`runs/<id>/status.json`: a run as far as it went. The process of the run writes it. A reader\ntakes fields that it does not know, and gives a missing one its default, so a status of another\nbuild of `obc data` reads.",
+      "properties": {
+        "args": {
+          "default": [],
+          "description": "The arguments after `obc data` that started the run.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bytes_built": {
+          "default": 0,
+          "description": "The size of the layers that it built; a reused layer is not counted.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_fetched": {
+          "default": 0,
+          "description": "The size of the files of its fetches.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "`null` unless it failed or stopped."
+        },
+        "fetches": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunFetch"
+          },
+          "type": "array"
+        },
+        "id": {
+          "default": "",
+          "type": "string"
+        },
+        "layers": {
+          "default": [],
+          "description": "Each layer whose steps it bakes, in the order of the plan.",
+          "items": {
+            "$ref": "#/$defs/LayerProgress"
+          },
+          "type": "array"
+        },
+        "phases": {
+          "default": [],
+          "description": "Each phase that it entered, in order.",
+          "items": {
+            "$ref": "#/$defs/PhaseState"
+          },
+          "type": "array"
+        },
+        "pid": {
+          "default": 0,
+          "description": "The process of the run: while it starts, the process that reserved it, and then the\nprocess that it starts.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "started": {
+          "default": "",
+          "description": "`YYYY-MM-DDTHH:MM:SSZ`",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/State2",
+          "default": "starting"
+        },
+        "steps": {
+          "default": [],
+          "description": "In the order they started.",
+          "items": {
+            "$ref": "#/$defs/RunStep"
+          },
+          "type": "array"
+        },
+        "switched": {
+          "default": [],
+          "description": "The releases that the run switched the target to.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "wall_ms": {
+          "default": null,
+          "description": "`null` until it ends.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "args",
+        "pid",
+        "state",
+        "started",
+        "wall_ms",
+        "phases",
+        "layers",
+        "fetches",
+        "steps",
+        "switched",
+        "bytes_fetched",
+        "bytes_built",
+        "error"
+      ],
+      "type": "object"
+    },
+    "StoreUse": {
+      "additionalProperties": false,
+      "properties": {
+        "free_bytes": {
+          "description": "`null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "used_bytes": {
+          "description": "The size of every file in the store.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "used_bytes",
+        "free_bytes"
+      ],
+      "type": "object"
+    },
+    "Stored": {
+      "description": "A version of a source in the local store.",
+      "properties": {
+        "bytes": {
+          "description": "The size of its files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "StoredRequest": {
+      "description": "A fetch of a source with params, as the local store records it.",
+      "properties": {
+        "bytes": {
+          "description": "The size of its files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fetched": {
+          "description": "When its newest file was retrieved, `YYYY-MM-DDTHH:MM:SSZ`; `null` for a fetch without\nfiles.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "params",
+        "version",
+        "bytes",
+        "fetched"
+      ],
+      "type": "object"
+    },
+    "Success": {
+      "properties": {
+        "checked_at": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "checked_at",
+        "version"
+      ],
+      "type": "object"
+    },
+    "Summary": {
+      "description": "A run, as `obc data runs` lists it.",
+      "properties": {
+        "args": {
+          "description": "The arguments after `obc data` that started the run.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bytes_built": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_fetched": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "started": {
+          "description": "`YYYY-MM-DDTHH:MM:SSZ`",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/State2"
+        },
+        "wall_ms": {
+          "description": "`null` until it ends.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "args",
+        "started",
+        "state",
+        "wall_ms",
+        "bytes_fetched",
+        "bytes_built"
+      ],
+      "type": "object"
+    },
+    "TargetState": {
+      "properties": {
+        "area": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AreaBoxes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The area of the serving release, as boxes that a map draws; `null` while it serves nothing."
+        },
+        "at": {
+          "description": "The folder of a dir target, or the public URL of an R2 bucket.",
+          "type": "string"
+        },
+        "blocked": {
+          "description": "The steps that cannot be planned.",
+          "items": {
+            "$ref": "#/$defs/BlockedLayer"
+          },
+          "type": "array"
+        },
+        "drift": {
+          "description": "The pointer keys whose bytes are not those of the serving release.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "error": {
+          "description": "Why the target or its steps could not be read; `null` when they could.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fix": {
+          "description": "What to do about `error`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "`dir` or `r2`, as `data/targets.toml` says.",
+          "type": "string"
+        },
+        "layers": {
+          "description": "Each layer of the steps and of the serving release; `null` while the target serves nothing\nor its steps cannot be listed.",
+          "items": {
+            "$ref": "#/$defs/LayerState"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The run that holds the lock of the target; `null` while it is free."
+        },
+        "lock_error": {
+          "description": "Why `lock.json` of the target cannot be read; `null` when it can.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "made": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Made"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The machine that made the serving release, and when; `null` while it serves nothing."
+        },
+        "next": {
+          "description": "The command to run next, or the run to wait for while it holds the lock; `null` when the\ntarget serves its settings as the steps make them now. For an R2 target, the command is the\nreview: its update needs the id that the owner approved.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "description": "What layers bake without, such as a prepared source that no target lists yet.",
+          "items": {
+            "$ref": "#/$defs/Note"
+          },
+          "type": "array"
+        },
+        "parts": {
+          "description": "The parts that the serving release has on, as `--add` names them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "region": {
+          "description": "The region of the serving release.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Serving"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What `release.json` of the target says; `null` while it serves nothing."
+        },
+        "serve": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Listening"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where `obc data serve` serves a dir target, and how each app opens it; `null` for an R2\ntarget."
+        },
+        "sources": {
+          "description": "Each source version that the serving release read.",
+          "items": {
+            "$ref": "#/$defs/SourceVersion"
+          },
+          "type": "array"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "kind",
+        "at",
+        "release",
+        "made",
+        "serve",
+        "lock",
+        "lock_error",
+        "region",
+        "parts",
+        "area",
+        "sources",
+        "layers",
+        "blocked",
+        "notes",
+        "drift",
+        "error",
+        "fix",
+        "next"
+      ],
+      "type": "object"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "description": "The version that the tool gives, or the command that installs it; both when the version is\ntoo old.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "needed_for": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/Readiness"
+        }
+      },
+      "required": [
+        "name",
+        "needed_for",
+        "state",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "Trusted": {
+      "description": "What `deploy trust` wrote.",
+      "properties": {
+        "file": {
+          "description": "The file that holds the host key now.",
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "file"
+      ],
+      "type": "object"
+    },
+    "Unknown": {
+      "properties": {
+        "estimate": {
+          "description": "The bakes without an estimate.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "guess": {
+          "description": "The bakes whose estimate is a guess from a build with other options.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "peak": {
+          "description": "The bakes whose estimate has no peak.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "size": {
+          "description": "The fetches whose size is not known, as `SOURCE@VERSION`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "estimate",
+        "peak",
+        "guess",
+        "size"
+      ],
+      "type": "object"
+    },
+    "Unlocked": {
+      "description": "What `unlock` did.",
+      "properties": {
+        "holder": {
+          "$ref": "#/$defs/Holder",
+          "description": "The run that held the lock."
+        },
+        "source": {
+          "description": "The prepared source whose lock it freed; `null` for the lock of a target.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "The target whose lock it freed; `null` for the lock of a prepared source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "target",
+        "source",
+        "holder"
+      ],
+      "type": "object"
+    },
+    "Uploaded": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "uploaded": {
+          "description": "`false` when an immutable key already held these bytes.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key",
+        "uploaded"
+      ],
+      "type": "object"
+    },
+    "Upstream": {
+      "oneOf": [
+        {
+          "properties": {
+            "state": {
+              "const": "newest",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The service captures current data on demand; no network probe establishes a version.",
+          "properties": {
+            "state": {
+              "const": "capture",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The source has no cheap upstream probe.",
+          "properties": {
+            "state": {
+              "const": "cannot_check",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "state": {
+              "const": "failed",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Verdict": {
+      "oneOf": [
+        {
+          "const": "ok",
+          "description": "The release has the layer as its steps make it now.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "No step makes the layer: an optional layer that is off, or a layer that only the release has.",
+          "type": "string"
+        },
+        {
+          "const": "stale",
+          "description": "A build changes the layer.",
+          "type": "string"
+        }
+      ]
+    },
+    "Version": {
+      "additionalProperties": false,
+      "description": "An entry of `versions.json`, which lists the complete versions oldest first.",
+      "properties": {
+        "bytes": {
+          "description": "The size of its files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "format": {
+          "description": "The format of the manifest: a target reads only a version of the format of its producer.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "manifest_sha256": {
+          "type": "string"
+        },
+        "region": {
+          "description": "The region of its scope; absent for a version of every place that the source covers.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "time": {
+          "description": "When it was complete, `YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "manifest_sha256",
+        "format",
+        "bytes",
+        "time"
+      ],
+      "type": "object"
+    },
+    "VersionScheme": {
+      "description": "How upstream names a version, and so what a version of the source looks like.",
+      "oneOf": [
+        {
+          "enum": [
+            "release",
+            "commit"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "date",
+          "description": "`YYYY-MM-DD`: the only scheme that gives a version an age.",
+          "type": "string"
+        },
+        {
+          "const": "digest",
+          "description": "The SHA-256 of the file.",
+          "type": "string"
+        }
+      ]
+    },
+    "View": {
+      "description": "A run as `obc data runs RUN` gives it: its status, with the users and the earlier times of its\nsteps, and the end of its log.",
+      "properties": {
+        "args": {
+          "default": [],
+          "description": "The arguments after `obc data` that started the run.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bytes_built": {
+          "default": 0,
+          "description": "The size of the layers that it built; a reused layer is not counted.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_fetched": {
+          "default": 0,
+          "description": "The size of the files of its fetches.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "`null` unless it failed or stopped."
+        },
+        "fetches": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunFetch"
+          },
+          "type": "array"
+        },
+        "id": {
+          "default": "",
+          "type": "string"
+        },
+        "layers": {
+          "default": [],
+          "description": "Each layer whose steps it bakes, in the order of the plan.",
+          "items": {
+            "$ref": "#/$defs/LayerProgress"
+          },
+          "type": "array"
+        },
+        "log": {
+          "description": "The last lines of `runs/<id>/log`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "log_path": {
+          "description": "The path of that log on the machine of the run.",
+          "type": "string"
+        },
+        "phases": {
+          "default": [],
+          "description": "Each phase that it entered, in order.",
+          "items": {
+            "$ref": "#/$defs/PhaseState"
+          },
+          "type": "array"
+        },
+        "pid": {
+          "default": 0,
+          "description": "The process of the run: while it starts, the process that reserved it, and then the\nprocess that it starts.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "review": {
+          "description": "The review that a run of `update --plan` wrote, as `update --dry-run` writes it; `null`\nfor another run, and until the plan is done."
+        },
+        "started": {
+          "default": "",
+          "description": "`YYYY-MM-DDTHH:MM:SSZ`",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/State2",
+          "default": "starting"
+        },
+        "steps": {
+          "default": [],
+          "description": "In the order they started.",
+          "items": {
+            "$ref": "#/$defs/RunStep"
+          },
+          "type": "array"
+        },
+        "switched": {
+          "default": [],
+          "description": "The releases that the run switched the target to.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "wall_ms": {
+          "default": null,
+          "description": "`null` until it ends.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "args",
+        "pid",
+        "state",
+        "started",
+        "wall_ms",
+        "phases",
+        "layers",
+        "fetches",
+        "steps",
+        "switched",
+        "bytes_fetched",
+        "bytes_built",
+        "error",
+        "log",
+        "log_path",
+        "review"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

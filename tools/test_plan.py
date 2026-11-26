@@ -6,8 +6,8 @@ dependencies and its test targets come from `cargo metadata`.  Only the facts Ca
 cannot see live here — the job table below, and `tools/testing/suites.toml`, which holds the
 suites no Cargo package owns plus the per-package path triggers and platform limits.
 
-Selection is standard library only.  The structural workflow check in `validate-filters`
-is the one command that needs PyYAML (the locked `dev` group).
+Selection is standard library only.  `check` also compares the job table with the workflow,
+and that needs PyYAML (the locked `dev` group).
 """
 
 from __future__ import annotations
@@ -78,20 +78,6 @@ JOBS: dict[str, Job] = {
 
 # The job that evaluates the plan.  It is never a route for the work it reports.
 AGGREGATE = "ci"
-
-# `obc check <gate>` runs one job's work locally.  A gate that names several jobs runs
-# all of them.
-GATES: dict[str, tuple[str, ...]] = {
-    "fmt": ("fmt",),
-    "clippy": ("clippy",),
-    "test": ("test",),
-    "device": ("device",),
-    "board": ("embedded", "boot"),
-    "deny": ("deny",),
-    "wasm": ("wasm", "wasm-bridges"),
-    "frontend": ("web",),
-    "docs": ("docs",),
-}
 
 PLATFORMS = {"linux": "linux", "darwin": "macos", "win32": "windows"}
 KNOWN_PLATFORMS = set(PLATFORMS.values())
@@ -307,7 +293,6 @@ class Unit:
     platforms: tuple[str, ...] = ()
     fixtures: bool = False
     foundation: bool = False
-    ci_only: bool = False
     declared: bool = False
     scoped: bool = False
     rust_packages: frozenset[str] = frozenset()
@@ -373,7 +358,6 @@ def build_units(graph: CargoGraph, document: Mapping[str, Any]) -> list[Unit]:
                 platforms=tuple(suite.get("platforms", ())),
                 fixtures=bool(suite.get("fixtures")),
                 foundation=bool(suite.get("foundation")),
-                ci_only=bool(suite.get("ci_only")),
                 declared=True,
                 scoped=bool(suite.get("scoped")),
                 rust_packages=graph.build_closure(suite.get("rust_packages", ())),
@@ -851,25 +835,6 @@ def run_plan(
             return 1
     return 0
 
-def gate_jobs(gates: Sequence[str]) -> set[str]:
-    unknown = [gate for gate in gates if gate not in GATES]
-    if unknown:
-        raise PlanError(
-            f"unknown gate(s) {', '.join(unknown)}; known gates: {', '.join(sorted(GATES))}"
-        )
-    return {job for gate in gates for job in GATES[gate]}
-
-def reproduced(units: Sequence[Unit], gates: Sequence[str]) -> list[Unit]:
-    """Units whose whole CI route one local gate run re-executes."""
-
-    claimed = gate_jobs(gates)
-    return [
-        unit
-        for unit in units
-        if unit.jobs and not unit.ci_only and set(unit.jobs).issubset(claimed)
-    ]
-
-
 def _command_errors(root: Path, unit: Unit, graph: CargoGraph) -> list[str]:
     """Reject a command whose executable, working directory or package does not exist."""
 
@@ -974,7 +939,7 @@ def validate_workflow(root: Path) -> list[str]:
         import yaml
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on the environment
         raise PlanError(
-            "validate-filters needs PyYAML: uv run --locked --group dev python tools/test_plan.py validate-filters"
+            "check needs PyYAML: uv run --locked --group dev python tools/test_plan.py check"
         ) from exc
     with (root / ".github/workflows/ci.yml").open("rb") as handle:
         workflow = yaml.safe_load(handle)
@@ -1065,56 +1030,20 @@ def command_cargo_filter(args: argparse.Namespace) -> int:
     print(cargo_filter(graph, args.tier, args.packages or None, carved_targets(document, args.suites)))
     return 0
 
-def command_gates(args: argparse.Namespace) -> int:
-    root = (args.root or repository_root()).resolve()
-    if args.list:
-        print(" ".join(sorted(GATES)))
-        return 0
-    if not args.gate:
-        raise PlanError("name at least one gate, or pass --list")
-    _, _, units = load(root)
-    covered = {unit.id for unit in reproduced(units, args.gate)}
-    if not args.unreproduced:
-        print("reproduces: " + ", ".join(sorted(covered)))
-        return 0
-    host = host_platform()
-    missing = [unit for unit in units if unit.route == "required" and unit.id not in covered]
-    if not missing:
-        print("this run reproduces every suite required on a pull request")
-        return 0
-    print("required suites this run does not reproduce:")
-    for unit in missing:
-        reason = (
-            f"runs only on {', '.join(unit.platforms)}"
-            if unit.platforms and host not in unit.platforms
-            else "no gate in this run runs its work"
-        )
-        print(f"  - {unit.id}: {reason}")
-    return 0
-
 def command_check(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
     graph, document, units = load(root)
-    errors = validate(root, graph, document, units)
+    errors = validate(root, graph, document, units) + validate_workflow(root)
+    for path in AUDITED_PATHS:
+        errors.extend(select(units, graph, [path]).errors)
     if errors:
         raise PlanError("\n".join(f"- {error}" for error in sorted(set(errors))))
     declared = sum(1 for unit in units if unit.declared)
     targets = sum(len(package.ordinary_targets) + len(package.fixture_targets) for package in graph.packages.values())
     print(
         f"test plan OK: {len(graph.packages)} Cargo packages with {targets} test binaries, "
-        f"{declared} declared suites, {len(JOBS)} CI jobs"
+        f"{declared} declared suites, {len(JOBS)} CI jobs that match the workflow"
     )
-    return 0
-
-def command_validate_filters(args: argparse.Namespace) -> int:
-    root = (args.root or repository_root()).resolve()
-    graph, _, units = load(root)
-    errors = validate_workflow(root)
-    for path in AUDITED_PATHS:
-        errors.extend(select(units, graph, [path]).errors)
-    if errors:
-        raise PlanError("\n".join(f"- {error}" for error in sorted(set(errors))))
-    print(f"the job table and the workflow agree on {len(JOBS)} jobs over {len(AUDITED_PATHS)} audited paths")
     return 0
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1148,19 +1077,9 @@ def build_parser() -> argparse.ArgumentParser:
     filter_parser.add_argument("--suites", nargs="*", help="the selected suites whose targets join the fast tier (default: all)")
     filter_parser.set_defaults(func=command_cargo_filter)
 
-    gates_parser = subparsers.add_parser("gates", help="report what `obc check` gates reproduce")
-    gates_parser.add_argument("gate", nargs="*")
-    gates_parser.add_argument("--list", action="store_true")
-    gates_parser.add_argument("--unreproduced", action="store_true")
-    gates_parser.set_defaults(func=command_gates)
-
-    check_parser = subparsers.add_parser("check", help="validate the plan documents")
+    check_parser = subparsers.add_parser("check", help="validate the plan documents and the workflow")
     check_parser.set_defaults(func=command_check)
 
-    workflow_parser = subparsers.add_parser(
-        "validate-filters", help="prove the job table and the workflow describe the same jobs"
-    )
-    workflow_parser.set_defaults(func=command_validate_filters)
     return parser
 
 def main(argv: Sequence[str] | None = None) -> int:

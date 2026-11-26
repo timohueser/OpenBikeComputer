@@ -3,7 +3,7 @@
 //! the only copy. A bake reads a version as it reads any other source: the files that a step names,
 //! each with the SHA-256 of the manifest. The manifest is the identity of a version: a step reads
 //! `<version>/<manifest sha256>`, because a test root can have other files under one version name.
-//! `specs/obc-data.md`, "Prepared sources", gives the layout.
+//! `specs/obc-data-prepared.md` gives the layout.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

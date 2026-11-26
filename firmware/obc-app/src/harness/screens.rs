@@ -1366,7 +1366,7 @@ fn laps_of_the_drawer_settings_row_stay_on_the_root() {
 
 /// The Assistant chord answers from the root pair too, so the rider reaches the same place from
 /// any depth and Back leaves it for the view they ride on. The deepest page is the hard case: the
-/// chord used to spend a slot on it, and at the ceiling it had to fall back to the bare Home root.
+/// chord must not spend a stack slot on it, or at the ceiling it would fall back to the bare Home root.
 #[test]
 fn the_assistant_chord_lands_on_the_root_pair_from_a_deep_page() {
     use crate::screen::MAX_DEPTH;

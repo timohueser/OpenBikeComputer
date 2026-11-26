@@ -667,8 +667,8 @@ fn by_id(records: &[Value]) -> HashMap<i64, &Value> {
 
 #[test]
 fn route_sources_give_a_job_for_each_route_and_each_stage_with_members() {
-    let spec = include_str!("../../../../specs/obc-data.md");
-    let example = spec.split("##### Route sources").nth(1).unwrap().split("```json").nth(1).unwrap();
+    let spec = include_str!("../../../../specs/obc-data-products.md");
+    let example = spec.split("### Route sources").nth(1).unwrap().split("```json").nth(1).unwrap();
     let mut file: Value = serde_json::from_str(example.split("```").next().unwrap()).unwrap();
     let Sources { ids, jobs, trails } = sources::jobs(&file).unwrap();
     assert_eq!(ids, ["schweizmobil-hiking"]);

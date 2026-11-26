@@ -11,7 +11,6 @@ obc cairn check --update   # remove gone entries from the baseline
 obc cairn check --base origin/develop   # also fail when the baseline grew since the merge base
 obc cairn map              # rewrite the generated block of docs/design/README.md, and docs/design/map.json
 obc cairn leaves rendering-display   # print the leaves of a system, for the skill's `document` command
-obc cairn model code-review   # print the model and effort of a role in this harness
 obc cairn report           # print the weekly report; --publish writes it to its issue
 python3 -m unittest discover -s tools/cairn/tests
 ```
@@ -23,10 +22,10 @@ python3 -m unittest discover -s tools/cairn/tests
 | `docs/design/README.md` | the system map. `cairn map` rewrites the block between its two comments. `check` fails when the block is stale. Two merged pull requests can leave it stale on `develop`; `obc cairn map` fixes it. |
 | `docs/design/map.json` | the same map as data: for each system its purpose, dependencies, line count and violations, then the edges and the cycles. `cairn map` writes it, and the system explorer on the docs site shows it. Agents read it directly. `check` fails when it is stale, but ignores `lines`, `violations` and `problems`, because most code changes alter them. So those three can lag in git; the site deploy writes the file again. |
 | `docs/design/<system>.md` | the header of one system or shell: `kind`, `area` (systems only), `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
-| `.cairn/config.json` | the source file types, the adapters, the tooling folder for R4, the globs of test files, the leaf limits, the skill budget, and the model roles and tiers |
+| `.cairn/config.json` | the source file types, the adapters, the tooling folder for R4, the globs of test files and the leaf limits |
 | `.cairn/baseline.json` | the IDs of the known violations |
 | `report.py` | `cairn report` |
-| `skill/cairn/` | the agent skill: `SKILL.md` routes to one file in `reference/` for each command. `.claude/skills/cairn` and `.agents/skills/cairn` link to it. |
+| `skill/cairn/` | the agent skill: `SKILL.md` routes to one file in `reference/` for each command. `.claude/skills/cairn` and `.agents/skills/cairn` link to it. `obc prose` budgets its files. |
 | `.github/workflows/cairn-report.yml` | runs `cairn report --publish` each week |
 | `adapters/cargo.py` | the Rust crates and their path dependencies. Each tracked `Cargo.toml` with a `[workspace]` table is a Cargo root. Every other tracked `Cargo.toml` outside `ignore` must be a member of a root. |
 | `adapters/imports.py` | the relative imports of the web source files with the `extensions` of its settings: `from`, `import`, `import()` and `new URL()`. Many systems share one npm package, so an edge joins two files. An import of a package or through an alias is not an edge. |
@@ -48,8 +47,8 @@ python3 -m unittest discover -s tools/cairn/tests
 A violation whose ID is not in the baseline is new. The ID of an R1 or R4 violation names the
 crate or the system, not the number of files, so more files under a known ID are not new. A new
 violation fails only when it touches a system whose doc has `status: approved`. An unowned file
-touches no system, so it fails when any doc has `status: approved`. Three faults fail for every
-doc, approved or not: a stale map, a lost name in a Rules table, and a skill file over its budget.
+touches no system, so it fails when any doc has `status: approved`. Two faults fail for every
+doc, approved or not: a stale map and a lost name in a Rules table.
 
 A baseline entry whose violation is gone must be removed with `--update`. For an approved system
 it fails like a new violation. For a draft system the report only lists it. A gone entry touches
@@ -82,7 +81,7 @@ change that renames or removes a cited test must update the doc.
 globs: the doc describes the system, and the draft of `document` links the tests as evidence for
 the rules. A leaf stays inside one crate. A folder that is too large is cut by its entries, and
 small entries of one folder share a leaf. A file `x.rs` stays with its folder `x/`. A file larger
-than the line limit is a leaf of its own.
+than the line limit is a leaf of its own. `leaves` needs `leaf_lines` and `leaf_files`.
 
 `skill/cairn/NOTICE` names the source and licence of the adapted Goldfish prompts.
 
@@ -90,37 +89,13 @@ The output names every repository crate on one line. Each leaf gives its `level`
 which it was cut, and the repository crates that its crate uses, from the cargo adapter. A file in
 no crate has no such list.
 
-## Skill budget
-
-`check` fails when a skill file is over its budget in `skill`: `router_tokens` for `SKILL.md`,
-`reference_tokens` for each file in `reference/`. A token is four bytes. `tools/prose.py` does not
-budget the skill files; it checks only their links.
-
-`skill` is optional; `leaves` needs `leaf_lines` and `leaf_files`.
-
-## The `Mode:` line
-
-The pull request template has a `Mode:` line: `change #N`, `fix` or `skip: <reason>`. It is a record
-for the weekly report, and nothing checks it. The report reads the first `Mode:` line outside code
-blocks and HTML comments, and does not count an unknown value.
-
-## Models
-
-| Key or input | Gives |
-| --- | --- |
-| `roles.<role>` | the `tier` (`strong`, `balanced`, `fast` or `inherit`) and the `effort` of a job |
-| `tiers.<harness>` | the model of each tier for `claude-code` and `codex` |
-| the harness | `--harness`, else `claude-code` when `CLAUDECODE=1`. Codex sets no such variable. An unknown harness or the tier `inherit` prints `inherit`. |
-
 ## Report
 
 The report reads git and GitHub and costs no tokens.
 
 | Part | Source |
 | --- | --- |
-| Skips | the pull requests merged in the last 7 days with `Mode: skip: <reason>`, and their reasons, read through `gh api` |
 | Ratchet, files with no owner | the analysis of `cairn check` |
 | System docs to check | For each doc with `status: approved`: the `Merge pull request #N` commits on the first-parent line of HEAD after the last change to the doc. A commit counts when it changes files of the system outside `tests` and the map. |
-| Mentions | Each `@` in a title or a reason gets a zero-width space after it, so the issue notifies nobody. |
 | `--publish` | Replaces the body of the open issue labelled `cairn-report`, or creates the label and the issue and pins it. Pinning uses GraphQL; a failed pin adds a note to the body. |
 | Exit code | 1 when a part fails |

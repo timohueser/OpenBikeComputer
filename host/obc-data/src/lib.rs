@@ -1,6 +1,6 @@
 //! The data registry: every external source a bake uses, every region, and the targets; the
 //! store and the fetchers that fill it; the engine that builds layers and the releases of the
-//! targets; the reader of PMTiles archives that the steps share; and the `obc data` commands. `specs/obc-data.md` is the contract for the files this
+//! targets; the reader of PMTiles archives that the steps share; and the `obc data` commands. The `specs/obc-data-*.md` specs are the contract for the files this
 //! crate reads and writes.
 
 pub mod cli;

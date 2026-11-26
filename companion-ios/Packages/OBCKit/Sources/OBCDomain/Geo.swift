@@ -76,8 +76,8 @@ public struct TrackPreview: Equatable, Sendable {
 
     /// The polyline in unit space. Empty when the source had no geometry.
     public let points: [Point]
-    /// The source coordinates for `points`, index-aligned. Empty when unknown, such as an older
-    /// library file, and the basemap preview then falls back to the grid.
+    /// The source coordinates for `points`, index-aligned. Empty when unknown, and the basemap
+    /// preview then falls back to the grid.
     public let coordinates: [Coordinate]
     /// Width divided by height of the source bounding box, for aspect-correct letterboxing. It is
     /// 1 when there is nothing to draw, or the track is a point.

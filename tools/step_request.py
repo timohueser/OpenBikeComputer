@@ -1,4 +1,4 @@
-"""The request of an `obc data` step, for a Python step: specs/obc-data.md, "The step contract"."""
+"""The request of an `obc data` step, for a Python step: specs/obc-data-layers.md, "The step contract"."""
 
 import json
 import sys

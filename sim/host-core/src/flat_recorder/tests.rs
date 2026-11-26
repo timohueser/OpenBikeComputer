@@ -78,7 +78,7 @@ fn append(recorder: &mut FlatRideRecorder, points: &[TrackPoint]) {
 }
 
 #[test]
-fn batch_capacity_and_context_are_atomic_and_legacy_lifecycle_remains_compatible() {
+fn batch_capacity_and_context_are_atomic_and_the_lifecycle_conforms() {
     let owner = HostStore::memory().unwrap();
     let mut recorder = FlatRideRecorder::new(owner.clone()).unwrap();
     crate::conformance::track_lifecycle(&mut recorder);

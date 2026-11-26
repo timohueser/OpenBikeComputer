@@ -1,5 +1,5 @@
 //! What every command shares: the error with its code and exit status, the question before a
-//! change, and the JSON output whose schemas `specs/obc-data.md` holds.
+//! change, and the JSON output whose schemas `specs/obc-data.schema.json` holds.
 
 use std::io::{BufRead, IsTerminal};
 use std::process::ExitCode;
@@ -76,7 +76,9 @@ impl Code {
             Code::Usage => "Correct the command. `obc data --help` lists the commands and their arguments.",
             Code::NoTerminal => "Show the question to a person. When they agree, run the command again with `--yes`.",
             Code::NotConfirmed => "Nothing changed. Run the command again when you want the change.",
-            Code::InvalidData => "Correct the file that the message names. `specs/obc-data.md` gives its format.",
+            Code::InvalidData => {
+                "Correct the file that the message names. `specs/obc-data-registry.md` gives its format."
+            }
             Code::FetchFailed => "Run the command again. A download continues where it stopped.",
             Code::Blocked => {
                 "Set the credential that the message or `obc data sources` names, or correct what the message \
@@ -280,7 +282,7 @@ pub fn confirm(question: &str, yes: bool) -> Result<(), Error> {
 }
 
 /// Write the output of a command. `JsonSchema` is required so that each output has a schema for
-/// `specs/obc-data.md`; `tests::outputs` lists them.
+/// `specs/obc-data.schema.json`; `tests::outputs` lists them.
 pub fn print_json(value: &(impl Serialize + JsonSchema)) -> Result<(), Error> {
     println!("{}", serde_json::to_string_pretty(value).map_err(|e| e.to_string())?);
     Ok(())
@@ -365,18 +367,18 @@ mod tests {
         (outputs, crate::engine::sorted(document))
     }
 
-    fn schemas_section() -> String {
-        let (outputs, document) = schemas();
+    fn schemas_section(outputs: &[(&str, String)]) -> String {
         let mut text = format!(
-            "`--json` writes one document of the schema in this table to standard output. The schemas\n\
-             come from the Rust types in `host/obc-data`. A test fails when this section is not the one\n\
-             that they give; `{UPDATE}=1 cargo test -p obc-data` writes it again.\n\n\
+            "`--json` writes one document of the schema in this table to standard output.\n\
+             [`obc-data.schema.json`](obc-data.schema.json) holds the schemas, which come from the Rust\n\
+             types in `host/obc-data`. A test fails when this section or that file is not what they give;\n\
+             `{UPDATE}=1 cargo test -p obc-data` writes them again.\n\n\
              | Command | Schema |\n| --- | --- |\n",
         );
-        for (commands, name) in &outputs {
+        for (commands, name) in outputs {
             text += &format!("| {commands} | `{name}` |\n");
         }
-        text + "\n```json\n" + &serde_json::to_string_pretty(&document).unwrap() + "\n```\n"
+        text
     }
 
     fn codes() -> String {
@@ -427,14 +429,23 @@ mod tests {
 
     #[test]
     fn the_spec_has_the_current_error_codes_and_schemas() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs/obc-data.md");
-        let spec = std::fs::read_to_string(&path).unwrap();
+        let specs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs");
+        let spec = std::fs::read_to_string(specs.join("obc-data-cli.md")).unwrap();
+        let (outputs, document) = schemas();
         let current = replace_section(&spec, "### Error codes", &codes());
-        let current = replace_section(&current, "## JSON schemas", &schemas_section());
-        if std::env::var_os(UPDATE).is_some() {
-            std::fs::write(&path, &current).unwrap();
-        } else {
-            assert!(spec == current, "specs/obc-data.md is not current: run `{UPDATE}=1 cargo test -p obc-data`");
+        let current = replace_section(&current, "## JSON schemas", &schemas_section(&outputs));
+        let files = [
+            ("obc-data-cli.md", current),
+            ("obc-data.schema.json", serde_json::to_string_pretty(&document).unwrap() + "\n"),
+        ];
+        for (name, current) in files {
+            let path = specs.join(name);
+            if std::env::var_os(UPDATE).is_some() {
+                std::fs::write(&path, &current).unwrap();
+            } else {
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                assert!(text == current, "specs/{name} is not current: run `{UPDATE}=1 cargo test -p obc-data`");
+            }
         }
     }
 

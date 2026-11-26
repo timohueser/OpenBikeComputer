@@ -476,15 +476,9 @@ fn parse_injection(s: &str) -> Result<Injection, String> {
             id: value.parse().map_err(|_| "--inject upload needs a u64 object id")?,
             replaced: kind == "upload-replace",
         }),
-        "trip-upload" => {
-            let n: obc_app::CatalogObjectId =
-                value.parse().map_err(|_| "--inject trip-upload needs the N of TP{N}.OBT")?;
-            // The band here, not at the use site: a trip file the store cannot carry has no catalog
-            // identity to announce, and saturating into one would name a trip no scan can list.
-            let id =
-                n.checked_add(obc_host_core::TRIP_ID_BASE).ok_or("--inject trip-upload N is past the trip id band")?;
-            Ok(Injection::TripUpload { id })
-        }
+        "trip-upload" => Ok(Injection::TripUpload {
+            id: value.parse().map_err(|_| "--inject trip-upload needs the N of TP{N}.OBT")?,
+        }),
         "map-transfer" => Ok(Injection::MapTransfer(parse_map_transfer(value)?)),
         "warning" => Ok(Injection::Warning(parse_warning(value)?)),
         "bond-clear" => Ok(Injection::BondClear(match value {
@@ -1963,11 +1957,7 @@ mod cli_tests {
             parse(&["--dfu", "installing=normal"]).unwrap().dfu,
             Some(DfuSeed::Installing(dfu::DfuScanKind::Normal))
         ));
-        let trip = obc_host_core::TRIP_ID_BASE + 5;
-        assert!(
-            matches!(parse(&["--inject", "trip-upload=5"]).unwrap().inject, Some(Injection::TripUpload { id }) if id == trip)
-        );
-        assert!(parse(&["--inject", "trip-upload=18446744073709551615"]).is_err(), "past the trip band, refused");
+        assert!(matches!(parse(&["--inject", "trip-upload=5"]).unwrap().inject, Some(Injection::TripUpload { id: 5 })));
         assert!(matches!(
             parse(&["--inject", "map-transfer=receiving:100000/400000"]).unwrap().inject,
             Some(Injection::MapTransfer(obc_app::screen::MapTransfer::Receiving {

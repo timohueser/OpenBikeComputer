@@ -27,8 +27,7 @@ fn fixture_pbf() -> String {
 }
 
 /// A shipped preset, used exactly as the CLI and the app would use it — the
-/// `_meta` block rides along and is ignored (`config::tests::
-/// unknown_tooling_metadata_remains_compatible`).
+/// `_meta` block rides along and is ignored (`config::tests::unknown_tooling_metadata_is_ignored`).
 fn preset_path() -> PathBuf {
     repo("builder/presets/schema.json")
 }
@@ -185,8 +184,7 @@ fn preset_with_min_line_km(value: f64) -> Config {
 }
 
 /// `min_line_km: 0` is the off value, and off must mean *untouched*: a ladder that sets it to zero
-/// everywhere packs to the same bytes as one that never mentions the knob. This is what lets the
-/// cull remain backward-compatible with schemas that predate the setting.
+/// everywhere packs to the same bytes as one that never mentions the knob.
 #[test]
 fn the_line_cull_switched_off_is_byte_identical() {
     let dir = out_dir("cull-off");

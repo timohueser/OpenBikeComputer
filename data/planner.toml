@@ -1,4 +1,4 @@
-# The options of the planner layers that are the same for each region: specs/obc-data.md, `planner`.
+# The options of the planner layers that are the same for each region: specs/obc-data-products.md, `planner`.
 
 [osm]
 # The basemap, the routing and the search of a region with a box read the OSM of the region bounds

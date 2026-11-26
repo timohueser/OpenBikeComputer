@@ -114,7 +114,7 @@ Coastlines and summits seldom change, and a terrain bake is slow. So the terrain
 of the OSM extracts, the source `terrain-osm` in [the sources](src:data/sources.toml). The weekly
 refresh does not replace this copy: a new OSM extract bakes the maps and the routes again, but not
 the terrain. The copy changes only when an operator fetches a newer extract of an area, or when a
-region gets an area that has no copy yet. The section Versions of [the data spec](src:specs/obc-data.md)
+region gets an area that has no copy yet. The section Versions of [the layers spec](src:specs/obc-data-layers.md)
 has the rule.
 
 ## Peak View

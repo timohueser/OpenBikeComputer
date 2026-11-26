@@ -82,6 +82,6 @@ such run by source manifest, boundary, compiler, policy and output hashes.
 ## Retention
 
 Keep the capture locally while the country build and its validation need it. Keep the source
-hashes, the recipe, the compiler identity and the measured counts in Git, and remove the local raw
-capture when that work is done. A fresh acquisition sees new upstream data; it cannot reproduce an
+hashes, the compiler identity and the measured counts in Git, and remove the local raw capture when
+that work is done. A fresh acquisition sees new upstream data; it cannot reproduce an
 old capture from its hashes alone.

@@ -18,8 +18,6 @@ from the points. Import gives the plan a new ID and does not replace another pla
 | `name` | Non-empty string, at most 120 characters |
 | `trip` | Plan object |
 
-A reader ignores the fields `versions` and `open` of an older file.
-
 ## Plan object
 
 Required fields are `points`, `routeOrder` and `days`. The web planner writes `budget` as `"days"`,
