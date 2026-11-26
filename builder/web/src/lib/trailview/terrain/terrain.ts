@@ -24,7 +24,7 @@ import { cellOf, MODEL_ROW, nearCells, Records, ROWS, type RecordsStats } from '
 import { CELLS_BYTES, COARSEST_MESH, meshCells, Pieces, stampNodes, type PiecesStats } from '../plan/pieces';
 import { CLIFF_JOB_BYTES, cliffJobs, packCliffJobs, type CliffJob } from './cliff';
 import { Structures } from '../structures/structures';
-import { BOX } from '../structures/node';
+import { BOX, BOX_GPU } from '../structures/node';
 
 /**
  * GPU memory for pages: the stored and the synthesized budgets of the desktop, in MiB. The feature masks
@@ -448,7 +448,7 @@ export class Terrain {
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
             scales: buffer('terrain', pages * 8, storage | GPUBufferUsage.COPY_SRC),
             nodes: buffer('terrain', MAX_NODES * NODE_BYTES, storage),
-            holes: buffer('terrain', (1 + 3 * (plan ? PLAN_HOLES : MAX_HOLES)) * 16, storage),
+            holes: buffer('terrain', (1 + 4 * (plan ? PLAN_HOLES : MAX_HOLES)) * 16, storage),
             cells: buffer('plan', plan ? CELLS_BYTES : 256, storage),
             synthJobs: buffer('compute', ARRIVALS * JOB_BYTES, storage),
             synthOut: buffer('compute', ARRIVALS * texels * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
@@ -1251,7 +1251,7 @@ function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
  * out: without its bore and facade the ground stays closed.
  */
 function holes(lists: Float64Array[], anchor: Anchor, drawn: (x: number, y: number) => boolean, plan: boolean): Float32Array<ArrayBuffer> {
-    const most = plan ? PLAN_HOLES : MAX_HOLES, out = new Float32Array(4 * (1 + 3 * most)), seen = new Set<string>();
+    const most = plan ? PLAN_HOLES : MAX_HOLES, out = new Float32Array(4 * (1 + 4 * most)), seen = new Set<string>();
     const boxes = lists.flatMap(list => Array.from({ length: list.length / BOX }, (_, k) => list.subarray(BOX * k, BOX * (k + 1))));
     const away = (box: Float64Array) => (box[0] - anchor.whole[0]) ** 2 + (box[1] - anchor.whole[1]) ** 2;
     if (plan) boxes.sort((a, b) => away(a) - away(b));
@@ -1261,7 +1261,7 @@ function holes(lists: Float64Array[], anchor: Anchor, drawn: (x: number, y: numb
         const name = `${box[0]},${box[1]},${box[2]},${box[3]}`;
         if (seen.has(name) || !drawn(box[0], box[1])) continue;
         seen.add(name);
-        out.set([box[0] - anchor.whole[0], box[1] - anchor.whole[1], ...box.subarray(2)], 4 + 12 * n++);
+        out.set([box[0] - anchor.whole[0], box[1] - anchor.whole[1], ...box.subarray(2)], 4 + BOX_GPU * n++);
     }
     out[0] = n;
     return out;

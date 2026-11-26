@@ -50,10 +50,12 @@ export function floorsOf(list: Feature[], tile: Node, node: Node, plan = false):
 
 /**
  * Words of a box in which the ground does not draw (`BOX` of obc-trailview-parts): the middle of its start in world units,
- * its unit way in, and its depth, half-width, roof, floor, rise, spring and the slopes of its two ends. A portal's box is
- * its `portalBox` with the spring at its roof and slopes 0.
+ * its unit way in, and its depth, half-width, roof, floor, the floor's rise, spring, the slopes of its two ends and the
+ * rises of its roof and its spring. A portal's box is its `portalBox` with the spring at its roof, one rise and slopes 0.
  */
-export const BOX = 12;
+export const BOX = 14;
+/** Words of a box on the GPU: four vec4 (portal-box.wgsl). */
+export const BOX_GPU = 16;
 
 /**
  * The boxes of the tunnels' portals within REACH_M of a node's square, where the terrain draws nothing; with the ground plan
@@ -70,7 +72,7 @@ export function portalBoxes(list: Feature[], tile: Node, node: Node, plan = fals
             // A portal over two tracks: its middle moves to the left of the way in, as `portal` of tunnels.ts moves it.
             const dx = line.xy[2 * w] - x, dy = line.xy[2 * w + 1] - y, l = Math.hypot(dx, dy) || 1, shift = (pair?.shift ?? 0) / metresPerUnit(y);
             const [depth, half, roof, floor, rise] = portalBox(line, v, end ? 0 : line.z.length - 1, pair?.widen);
-            out.push(x + dy / l * shift, y - dx / l * shift, dx / l, dy / l, depth, half, roof, floor, rise, roof, 0, 0);
+            out.push(x + dy / l * shift, y - dx / l * shift, dx / l, dy / l, depth, half, roof, floor, rise, roof, 0, 0, rise, rise);
         }
     }
     const volumes = parts && partVolumes(list, tile, node);

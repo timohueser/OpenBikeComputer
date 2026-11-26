@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { DEEPEST, unitScale, type Feature } from '../stream/features';
 import { metresPerUnit, RULES, SLEEPER_M, worldPoint } from '../terrain/bins';
 import { OWNER } from '../terrain/lod';
+import { BOX } from './node';
 import { partInput, partMeshes, partVolumes } from './parts';
 import { STRUCTURE_VERTEX } from './mesh';
 import { VOID_M } from './tunnels';
@@ -42,11 +43,11 @@ describe('the parts', () => {
 
     it('give the boxes and the mesh of an arch from the records of its feature tile', () => {
         const list = records(), input = partInput(list, tile, owner)!, { boxes, floors } = partVolumes(list, tile, owner)!;
-        // 12 words a box; the opening's first, from the front of the head wall, `recess_m` out of the frame line, round
+        // BOX words a box; the opening's first, from the front of the head wall, `recess_m` out of the frame line, round
         // its hole grown to the middle of the wall; then the tube's.
         const [x, y] = worldPoint(tile, point(0), 0);
-        expect(boxes.length % 12).toBe(0);
-        expect(boxes.length).toBeGreaterThan(12);
+        expect(boxes.length % BOX).toBe(0);
+        expect(boxes.length).toBeGreaterThan(BOX);
         expect([...boxes.slice(1, 4)]).toEqual([y, 1, 0]);
         expect(boxes[0]).toBeCloseTo(x - table.design.recess_m / metresPerUnit(y), 0);
         expect(boxes[5]).toBeCloseTo(4.5 + table.design.frame_m + table.bake.shell_m / 2, 6);

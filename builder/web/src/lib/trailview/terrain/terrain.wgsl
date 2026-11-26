@@ -44,11 +44,11 @@ override PLAN: bool = false;
 fn hole_distance(u: vec2f, h: f32, footprint: bool) -> f32 {
     var d = 1e6;
     for (var i = 0u; i < u32(holes[0].x); i++) {
-        let b = holes[2u + 3u * i];
-        let c = holes[3u + 3u * i];
-        let q = box_point(holes[1u + 3u * i], b, c, u, h);
+        let b = holes[2u + 4u * i];
+        let c = holes[3u + 4u * i];
+        let q = box_point(holes[1u + 4u * i], b, c, u, h);
         let foot = box_plan(b, c, q);
-        d = min(d, select(max(foot, max(box_wall(b, c, q), b.w - q.z)), foot, footprint));
+        d = min(d, select(max(foot, max(box_wall(b, c, holes[4u + 4u * i], q), b.w - q.z)), foot, footprint));
     }
     return d;
 }

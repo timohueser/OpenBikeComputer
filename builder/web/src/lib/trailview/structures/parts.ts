@@ -69,7 +69,7 @@ export function partMeshes(input: string): StructureMesh | null {
 const tileVolumes = new WeakMap<Feature[], Float64Array | null>();
 
 /**
- * The boxes (`BOX` of obc-trailview-parts, 12 words each) and the floor segments (`FLOOR` words) of the parts near the square
+ * The boxes (`BOX` of obc-trailview-parts, `BOX` words each) and the floor segments (`FLOOR` words) of the parts near the square
  * of `node`, from the volumes of its feature tile; null for a tile without an end.
  */
 export function partVolumes(list: Feature[], tile: Node, node: Node): { boxes: Float64Array<ArrayBuffer>; floors: Float64Array<ArrayBuffer> } | null {

@@ -221,6 +221,7 @@ fn boxes_fit(name: &str, ends: &[End], chords: &[Chord]) -> (usize, usize) {
             let (depth, half, roof, floor, spring) = (b[4], b[5] + MARGIN_M, b[6] + MARGIN_M, b[7], b[9]);
             for k in 0..=4 {
                 let f = k as f64 / 4.0;
+                let [floor, roof, spring] = [(floor, 8), (roof, 12), (spring, 13)].map(|(h, r)| h + b[r] * depth * f);
                 for a in [-1.0, -0.5, 0.0, 0.5, 1.0] {
                     let left = a * half;
                     let along = b[10] * left + (depth + (b[11] - b[10]) * left) * f;
@@ -230,11 +231,7 @@ fn boxes_fit(name: &str, ends: &[End], chords: &[Chord]) -> (usize, usize) {
                         spring.min(roof)
                     };
                     for z in [floor, (floor + top) / 2.0, top] {
-                        let q = [
-                            b[0] + (b[2] * along + lu[0] * left) / m,
-                            b[1] + (b[3] * along + lu[1] * left) / m,
-                            z + b[8] * depth * f,
-                        ];
+                        let q = [b[0] + (b[2] * along + lu[0] * left) / m, b[1] + (b[3] * along + lu[1] * left) / m, z];
                         let held = (0..net.chords.len()).any(|c| in_shell(&net, c, foot, q));
                         assert!(held, "{name}, end {e}, box {i}: {k}/4 in, {left} left, {z} up lies outside the shell");
                         solid += 1;
@@ -266,12 +263,26 @@ fn the_boxes_hold_the_room_and_lie_inside_the_part() {
     let (bent60, chords60) = graded(60.0, 0.0);
     let mut boxed = lower.clone();
     boxed.iter_mut().for_each(|c| c.section = Section::Box);
+    // Chords whose height changes along them, as a lone tube's under a way on top.
+    let ramp = |section: Section| {
+        let mut chords = lower.clone();
+        for (k, c) in chords.iter_mut().enumerate() {
+            (c.height, c.section) = ([4.0 + 0.4 * k as f64, 4.4 + 0.4 * k as f64], section);
+        }
+        chords
+    };
     let mut cases = vec![
         ("straight with a lower chord".to_string(), straight.clone(), lower.clone()),
         ("bent 20° in the collar".to_string(), bent20, chords20),
         ("bent 60° on a level floor".to_string(), bent60, chords60),
         ("a box section".to_string(), straight.clone(), boxed),
+        ("a round section that rises".to_string(), straight.clone(), ramp(Section::Round)),
+        ("a box section that rises".to_string(), straight.clone(), ramp(Section::Box)),
     ];
+    // A chord's roof and spring rise in its box: no more boxes than chords.
+    let rising = ramp(Section::Box);
+    let net = Net::new(&straight, &rising, rules);
+    assert!(boxes::boxes(&net, 0).len() <= 1 + lower.len());
     for (name, (ends, chords)) in [
         ("an underpass", underpass(tube(), "primary")),
         ("a path underpass", underpass(bent(30.0, 20.0), "footway")),

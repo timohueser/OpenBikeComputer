@@ -133,10 +133,11 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
 fn daylight(u: vec2f, h: f32) -> f32 {
     var light = 0.0;
     for (var i = 0u; i < u32(portals[0].x); i++) {
-        let b = portals[2u + 3u * i];
-        let q = box_point(portals[1u + 3u * i], b, portals[3u + 3u * i], u, h);
+        let b = portals[2u + 4u * i];
+        let c = portals[3u + 4u * i];
+        let q = box_point(portals[1u + 4u * i], b, c, u, h);
         let from_facade = abs(q.x);
-        let off = max(abs(q.y) - b.y, max(b.w - 1.0 - q.z, q.z - b.z));
+        let off = max(abs(q.y) - b.y, max(b.w - 1.0 - q.z, q.z - box_top(b, c, portals[4u + 4u * i], q).x));
         light = max(light, (1.0 - smoothstep(0.0, DAYLIGHT_M, from_facade)) * (1.0 - smoothstep(0.0, 1.0 + from_facade, off)));
     }
     return light;

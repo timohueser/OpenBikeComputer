@@ -16,7 +16,7 @@ import { CALM, CELL_LEVEL, distances, key, size, type Eye, type Node, type Rule 
 import { touches } from '../terrain/pages';
 import { metresPerUnit } from '../terrain/bins';
 import type { NodeFeatures } from '../terrain/stamps';
-import { BOX } from '../structures/node';
+import { BOX, BOX_GPU } from '../structures/node';
 import { cellMesh, SUNK_WORDS, type CellMesh, type StoreyMesh } from './mesh';
 
 /** The cells per side of the window about the eye's cell, the words before the slots, and the slots of sunk points: as cells.wgsl. */
@@ -405,9 +405,9 @@ export class Pieces {
         // A buffer write takes whole words.
         device.queue.writeBuffer(gpu.indices, 0, triangles.buffer, triangles.byteOffset, 4 * Math.ceil(triangles.length / 2));
         if (!boxes.length) return;
-        const s = size(CELL_LEVEL), words = new Float32Array(4 + BOX * boxes.length);
+        const s = size(CELL_LEVEL), words = new Float32Array(4 + BOX_GPU * boxes.length);
         words[0] = boxes.length;
-        boxes.forEach((box, k) => words.set([box[0] - piece.node.x * s, box[1] - piece.node.y * s, ...box.subarray(2)], 4 + BOX * k));
+        boxes.forEach((box, k) => words.set([box[0] - piece.node.x * s, box[1] - piece.node.y * s, ...box.subarray(2)], 4 + BOX_GPU * k));
         if (gpu.boxes) r.gpu.destroy('plan', gpu.boxes);
         gpu.boxes = r.gpu.buffer('plan', words.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(gpu.boxes, 0, words);

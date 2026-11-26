@@ -379,11 +379,11 @@ fn storey_caster(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f 
 fn in_box(u: vec2f, h: f32) -> bool {
     let origin = vec2f(params.origin - surface.anchor);
     for (var i = 0u; i < u32(boxes[0].x); i++) {
-        let a = boxes[1u + 3u * i];
-        let b = boxes[2u + 3u * i];
-        let c = boxes[3u + 3u * i];
+        let a = boxes[1u + 4u * i];
+        let b = boxes[2u + 4u * i];
+        let c = boxes[3u + 4u * i];
         let q = box_point(vec4f(a.xy + origin, a.zw), b, c, u, h);
-        if (box_plan(b, c, q) < 0.0 && box_wall(b, c, q) < 0.0 && q.z > b.w) {
+        if (box_plan(b, c, q) < 0.0 && box_wall(b, c, boxes[4u + 4u * i], q) < 0.0 && q.z > b.w) {
             return true;
         }
     }
