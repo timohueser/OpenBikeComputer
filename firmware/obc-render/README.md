@@ -1,29 +1,14 @@
----
-system: rendering-display
-kind: system
-area: Device
-purpose: "Draws the map and the screens, and updates the display panel."
-owns:
-  - firmware/obc-render/**
-  - firmware/obc-display/**
-depends_on:
-  - foundations
-test_depends_on:
-  - map-reading
-status: approved
----
-
-# Rendering & display
+# Rendering and display
 
 ## What it does
 
-This system draws one 240 × 320 frame and puts it on the panel. It has two crates.
+`obc-render` and `obc-display` draw one 240 × 320 frame and put it on the panel.
 
-[`obc-render`](../../firmware/obc-render/src/lib.rs) draws. It reads a map through the `MapScene` interface of [`obc-map-scene`](../../firmware/obc-map-scene/src/lib.rs) and writes pixels to any `embedded-graphics` `DrawTarget`. It also gives the screens their drawing words: `Surface`, `Canvas`, the fonts and the text functions. The device, the simulators, the map bakers' previews and the benchmark run this same code, so a frame on a computer is the frame on the panel.
+[`obc-render`](src/lib.rs) draws. It reads a map through the `MapScene` interface of [`obc-map-scene`](../obc-map-scene/src/lib.rs) and writes pixels to any `embedded-graphics` `DrawTarget`. It also gives the screens their drawing words: `Surface`, `Canvas`, the fonts and the text functions. The device, the simulators, the map bakers' previews and the benchmark run this same code, so a frame on a computer is the frame on the panel.
 
-[`obc-display`](../../firmware/obc-display/src/lib.rs) stores and presents. It holds the frame's draw targets, the frame and presenter contracts, and the code for the shipping panel, the Sharp LS021B7DD02. That code finds the changed rows and defines the bits on the panel's source bus.
+[`obc-display`](../obc-display/src/lib.rs) stores and presents. It holds the frame's draw targets, the frame and presenter contracts, and the code for the shipping panel, the Sharp LS021B7DD02. That code finds the changed rows and defines the bits on the panel's source bus.
 
-The system does not own the screens, the map reader, or the transport to the panel. The rider interface decides what to draw. Map reading supplies the scene. Board support owns [`Ls021Flpr`](../../firmware/obc-fw-nrf54l/src/ls021_flpr.rs) and the scan program on the coprocessor. The guide pages [rendering pipeline](../content/software/rendering.md) and [display protocol](../content/hardware/display-protocol.md) explain the product view.
+The system does not own the screens, the map reader, or the transport to the panel. The rider interface decides what to draw. Map reading supplies the scene. Board support owns [`Ls021Flpr`](../obc-fw-nrf54l/src/ls021_flpr.rs) and the scan program on the coprocessor. The guide pages [rendering pipeline](../../docs/content/software/rendering.md) and [display protocol](../../docs/content/hardware/display-protocol.md) explain the product view.
 
 ## A picture
 
@@ -72,38 +57,38 @@ Now the rider holds a button. The hold feedback, the bulge, lives on the input p
 
 | Part | Purpose |
 | --- | --- |
-| `obc-render` [`lib.rs`](../../firmware/obc-render/src/lib.rs) | The render entry points, the buffer capacities, the shared scratch, the width ramp and the draw passes. |
-| [`collect.rs`](../../firmware/obc-render/src/collect.rs) | Selects the frame's features: the direct walk, then the stub fallback. |
-| [`viewport.rs`](../../firmware/obc-render/src/viewport.rs) | Projects microdegrees to screen pixels and tests whether geometry can be visible. |
-| [`stroke.rs`](../../firmware/obc-render/src/stroke.rs), [`fill.rs`](../../firmware/obc-render/src/fill.rs), [`sort.rs`](../../firmware/obc-render/src/sort.rs) | Rasterize lines and polygons. |
-| [`overlay.rs`](../../firmware/obc-render/src/overlay.rs) | Draws the rider marker, the route with its chevrons, and the breadcrumb. |
-| [`canvas.rs`](../../firmware/obc-render/src/canvas.rs), [`surface.rs`](../../firmware/obc-render/src/surface.rs) | The drawing vocabulary of the screens. |
-| [`text.rs`](../../firmware/obc-render/src/text.rs), [`font_data.rs`](../../firmware/obc-render/src/font_data.rs), [`text_tap.rs`](../../firmware/obc-render/src/text_tap.rs) | The font tiers, their bitmaps, and a host-only record of drawn text for the copy-fit test. |
-| `obc-display` [`framebuffer.rs`](../../firmware/obc-display/src/framebuffer.rs) | The draw targets `FbDevice64` and `Framebuffer565`, with the colour conversions. |
-| [`display_contracts/`](../../firmware/obc-display/src/display_contracts/mod.rs) | `Device64Frame`, `Presenter`, `OverlayPresenter` and the conformance suite. |
-| [`ls021/`](../../firmware/obc-display/src/ls021/mod.rs) | The panel's geometry, `RowDiff`, the wire pack and the overlay engine. |
-| [`panel.rs`](../../firmware/obc-display/src/panel.rs) | `Band`, a frame-absolute view of a window, and the composite that fills it from the frame. |
+| `obc-render` [`lib.rs`](src/lib.rs) | The render entry points, the buffer capacities, the shared scratch, the width ramp and the draw passes. |
+| [`collect.rs`](src/collect.rs) | Selects the frame's features: the direct walk, then the stub fallback. |
+| [`viewport.rs`](src/viewport.rs) | Projects microdegrees to screen pixels and tests whether geometry can be visible. |
+| [`stroke.rs`](src/stroke.rs), [`fill.rs`](src/fill.rs), [`sort.rs`](src/sort.rs) | Rasterize lines and polygons. |
+| [`overlay.rs`](src/overlay.rs) | Draws the rider marker, the route with its chevrons, and the breadcrumb. |
+| [`canvas.rs`](src/canvas.rs), [`surface.rs`](src/surface.rs) | The drawing vocabulary of the screens. |
+| [`text.rs`](src/text.rs), [`font_data.rs`](src/font_data.rs), [`text_tap.rs`](src/text_tap.rs) | The font tiers, their bitmaps, and a host-only record of drawn text for the copy-fit test. |
+| `obc-display` [`framebuffer.rs`](../obc-display/src/framebuffer.rs) | The draw targets `FbDevice64` and `Framebuffer565`, with the colour conversions. |
+| [`display_contracts/`](../obc-display/src/display_contracts/mod.rs) | `Device64Frame`, `Presenter`, `OverlayPresenter` and the conformance suite. |
+| [`ls021/`](../obc-display/src/ls021/mod.rs) | The panel's geometry, `RowDiff`, the wire pack and the overlay engine. |
+| [`panel.rs`](../obc-display/src/panel.rs) | `Band`, a frame-absolute view of a window, and the composite that fills it from the frame. |
 
 ## Rules that must hold
 
 | Rule | Check |
 | --- | --- |
-| The renderer drops a feature whole, lowest priority first, across all chunks. | `priority_one_survives_saturation_across_chunks` in [`priority.rs`](../../firmware/obc-render/tests/cases/priority.rs), `frame_points_saturate_before_spans_and_priority_still_wins` in [`fill_edges.rs`](../../firmware/obc-render/tests/cases/fill_edges.rs), `over_capacity_feature_is_dropped_whole_with_typed_stat` in [`errors.rs`](../../firmware/obc-render/tests/cases/errors.rs) |
-| A scene is outside the trust boundary. Bad priorities, rings or coordinates never reach the painter or take a later winner's room. | [`static_scene.rs`](../../firmware/obc-render/tests/cases/static_scene.rs); `a_projection_outside_i16_is_rejected_instead_of_wrapping` in [`collect.rs`](../../firmware/obc-render/src/collect.rs) |
-| The renderer needs no OBCM bytes and no reader. | `renders_static_scene_without_reader_or_map_bytes` in [`static_scene.rs`](../../firmware/obc-render/tests/cases/static_scene.rs); `obc-reader` is only a dev-dependency |
-| Each specialized fill gives the pixels of `fill_polygon`. | `packed_edge_scan_is_pixel_identical_on_pseudo_random_polygons` in [`fill.rs`](../../firmware/obc-render/src/fill.rs), `convex_quad_fill_matches_even_odd_on_pseudo_random_quads` in [`stroke.rs`](../../firmware/obc-render/src/stroke.rs) |
-| A row with too many crossings stays empty. It never fills with the wrong parity. | `fill_polygon_skips_rows_that_overflow_the_crossing_buffer` in [`fill.rs`](../../firmware/obc-render/src/fill.rs) |
-| Dashes stay at one place on the map while the camera moves. | `a_pan_does_not_slide_the_pattern_along_the_line` in [`stroke.rs`](../../firmware/obc-render/src/stroke.rs) |
+| The renderer drops a feature whole, lowest priority first, across all chunks. | `priority_one_survives_saturation_across_chunks` in [`priority.rs`](tests/cases/priority.rs), `frame_points_saturate_before_spans_and_priority_still_wins` in [`fill_edges.rs`](tests/cases/fill_edges.rs), `over_capacity_feature_is_dropped_whole_with_typed_stat` in [`errors.rs`](tests/cases/errors.rs) |
+| A scene is outside the trust boundary. Bad priorities, rings or coordinates never reach the painter or take a later winner's room. | [`static_scene.rs`](tests/cases/static_scene.rs); `a_projection_outside_i16_is_rejected_instead_of_wrapping` in [`collect.rs`](src/collect.rs) |
+| The renderer needs no OBCM bytes and no reader. | `renders_static_scene_without_reader_or_map_bytes` in [`static_scene.rs`](tests/cases/static_scene.rs); `obc-reader` is only a dev-dependency |
+| Each specialized fill gives the pixels of `fill_polygon`. | `packed_edge_scan_is_pixel_identical_on_pseudo_random_polygons` in [`fill.rs`](src/fill.rs), `convex_quad_fill_matches_even_odd_on_pseudo_random_quads` in [`stroke.rs`](src/stroke.rs) |
+| A row with too many crossings stays empty. It never fills with the wrong parity. | `fill_polygon_skips_rows_that_overflow_the_crossing_buffer` in [`fill.rs`](src/fill.rs) |
+| Dashes stay at one place on the map while the camera moves. | `a_pan_does_not_slide_the_pattern_along_the_line` in [`stroke.rs`](src/stroke.rs) |
 | A frame's pixels and read counts change only on purpose. | `obc shot --check` against `firmware/ui-snapshots.sha256`; `obc-bench --check` against [`golden.txt`](../../sim/bench/golden.txt) |
-| The frame buffers keep their size and fit the board. | The `const` asserts in [`lib.rs`](../../firmware/obc-render/src/lib.rs) and [`collect.rs`](../../firmware/obc-render/src/collect.rs); `arena_render` in [`resource_baseline.json`](../../firmware/tools/resource_baseline.json), through `resource_guard.py` |
-| Neither crate depends on the app, the board or host tools. `obc-render` also stays off the platform crates. | `firmware/tools/check_dependencies.py`, [`dependency_rules.json`](../../firmware/tools/dependency_rules.json) |
+| The frame buffers keep their size and fit the board. | The `const` asserts in [`lib.rs`](src/lib.rs) and [`collect.rs`](src/collect.rs); `arena_render` in [`resource_baseline.json`](../tools/resource_baseline.json), through `resource_guard.py` |
+| Neither crate depends on the app, the board or host tools. `obc-render` also stays off the platform crates. | `firmware/tools/check_dependencies.py`, [`dependency_rules.json`](../tools/dependency_rules.json) |
 | Rendering cannot write a frame that the coprocessor scans. | The compiler. `present` holds a shared borrow of the frame, and rendering needs a mutable one. |
-| The frame is byte-identical after an overlay, also after a fault. | `a_push_fault_still_restores_the_frame` in [`ls021/mod.rs`](../../firmware/obc-display/src/ls021/mod.rs); [`conformance.rs`](../../firmware/obc-display/src/display_contracts/conformance.rs) |
-| The row store tracks the clean frame, also for excluded rows. | `diff_clipped_updates_the_store_for_excluded_rows` in [`rowdiff.rs`](../../firmware/obc-display/src/ls021/rowdiff.rs) |
-| A change in one byte lane of a row changes its hash. | `byte_lane_confined_changes_never_collide` in [`rowdiff.rs`](../../firmware/obc-display/src/ls021/rowdiff.rs) |
-| The stored byte matches the quantization of the previews. | `device64_matches_reader_quantization_exhaustively` in [`framebuffer.rs`](../../firmware/obc-display/src/framebuffer.rs) |
-| The Rust wire pack and its C port use the same pin map. | `flpr_blob_carries_the_same_pin_map` in [`wire.rs`](../../firmware/obc-display/src/ls021/wire.rs); a change to `flpr_scan.c` selects it through a trigger in [`suites.toml`](../../tools/testing/suites.toml) |
-| The frame geometry, the wire row and the scan program agree. | The `const` asserts in [`ls021/mod.rs`](../../firmware/obc-display/src/ls021/mod.rs) and [`ls021_flpr.rs`](../../firmware/obc-fw-nrf54l/src/ls021_flpr.rs) |
+| The frame is byte-identical after an overlay, also after a fault. | `a_push_fault_still_restores_the_frame` in [`ls021/mod.rs`](../obc-display/src/ls021/mod.rs); [`conformance.rs`](../obc-display/src/display_contracts/conformance.rs) |
+| The row store tracks the clean frame, also for excluded rows. | `diff_clipped_updates_the_store_for_excluded_rows` in [`rowdiff.rs`](../obc-display/src/ls021/rowdiff.rs) |
+| A change in one byte lane of a row changes its hash. | `byte_lane_confined_changes_never_collide` in [`rowdiff.rs`](../obc-display/src/ls021/rowdiff.rs) |
+| The stored byte matches the quantization of the previews. | `device64_matches_reader_quantization_exhaustively` in [`framebuffer.rs`](../obc-display/src/framebuffer.rs) |
+| The Rust wire pack and its C port use the same pin map. | `flpr_blob_carries_the_same_pin_map` in [`wire.rs`](../obc-display/src/ls021/wire.rs); a change to `flpr_scan.c` selects it through a trigger in [`suites.toml`](../../tools/testing/suites.toml) |
+| The frame geometry, the wire row and the scan program agree. | The `const` asserts in [`ls021/mod.rs`](../obc-display/src/ls021/mod.rs) and [`ls021_flpr.rs`](../obc-fw-nrf54l/src/ls021_flpr.rs) |
 
 ## Decisions
 
@@ -136,6 +121,6 @@ Now the rider holds a button. The hold feedback, the bulge, lives on the input p
 | Resident frame | The one frame in RAM. Presenters read it, and it holds the clean image when a presenter returns. |
 | Row store | The row hashes that `RowDiff` keeps from the last present. |
 | Bulge | The hold-gesture overlay at the screen edge. |
-| Input plane | The task that recognizes gestures while the map task renders. The [architecture guide](../content/software/architecture.md) explains the two planes. |
+| Input plane | The task that recognizes gestures while the map task renders. The [architecture guide](../../docs/content/software/architecture.md) explains the two planes. |
 | FLPR | The nRF54L coprocessor that runs the panel scan. |
 | Glass | The panel itself, as opposed to the frame in RAM. |

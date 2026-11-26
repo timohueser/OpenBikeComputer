@@ -37,8 +37,7 @@ the first failure. Before a suite runs, it installs each npm project of the suit
 builds the wasm bridges when they are missing or the change reaches them. A
 suite whose `platforms` exclude the host is reported as skipped, never as passed. Every Cargo
 command needs the CI-pinned runner: `cargo install cargo-nextest --version 0.9.143 --locked`.
-The Python suites need `pip install -r tools/requirements-test.txt --group planner-snow --group forest-reference`
-(pip 25.1 or later).
+The Python suites need `uv sync --locked --group dev --group planner-snow --group forest-reference --group route-sources`.
 
 ## Routes
 

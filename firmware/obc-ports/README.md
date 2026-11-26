@@ -5,7 +5,7 @@ adapters and the hosts: fixes, GPS/calendar time, input events, recorded-track p
 the capability polling traits, the `Sensors` bundle, and the `SettingsStore` contract. It owns no
 drivers, buses, executor primitives, UI or render policy, and no allocation.
 
-The manifest has no dependencies, and it must stay that way: `tools/dependency_rules.json` puts
+The manifest has no dependencies, and it must stay that way: `firmware/tools/dependency_rules.json` puts
 `obc-ports` in the `foundation` allowlist, so a production edge to the app, the route algorithms,
 a platform adapter, the board or the bootloader fails the dependency check. The checker also reads
 the two standalone Cargo roots, so an edge from the board or the bootloader cannot evade it.
