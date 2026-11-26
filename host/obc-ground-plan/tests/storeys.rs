@@ -20,7 +20,7 @@ use obc_ground_plan::faces::records::{self, find};
 use obc_ground_plan::faces::{window, EdgeKind, Rules, Surface};
 use obc_ground_plan::frame::{metres_per_unit, CellKey, CELL_UNITS};
 use obc_ground_plan::graph::Family;
-use obc_ground_plan::mesh::shell::{border, closure, mesh_storeys, on_paved, StoreyMesh};
+use obc_ground_plan::mesh::shell::{self, border, closure, mesh_storeys, on_paved, StoreyMesh};
 use obc_ground_plan::mesh::{mesh_cell, CellMesh, Reads, Rim, NO_LABEL};
 use obc_ground_plan::tile::TileCache;
 
@@ -343,6 +343,7 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
     let mut built: BTreeMap<CellKey, (CellBuild, StoreyMesh)> = BTreeMap::new();
     let mut terrain = BTreeMap::new();
     let (mut torn, mut seams, mut joints, mut beside, mut open_ends) = (0, Vec::new(), 0, 0, Vec::new());
+    let mut pierced = false;
     for key in fix.cells() {
         let without = build_request(fix.request(key), &mut cache, rules, &mut || 0.0).unwrap();
         let with = build_storeys(fix.request(key), &mut cache, rules, &mut || 0.0).unwrap();
@@ -380,6 +381,14 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         }
         assert_eq!(mesh.stats.unlabelled, 0, "{key:?}: a sheet face has no label");
         faults.extend(closure(&mesh));
+        // The closure check sees a delineator that lacks a face.
+        let delineators = mesh.part(shell::PARTS.iter().position(|&p| p == "delineator").unwrap());
+        if !pierced && !delineators.is_empty() {
+            let mut open = mesh.clone();
+            open.triangles[delineators.start] = [0; 3];
+            assert!(closure(&open).len() > closure(&mesh).len(), "{key:?}: a delineator without a face passes");
+            pierced = true;
+        }
         faults.extend(on_paved(&mesh, &with.storeys, &with.records));
         faults.extend(walls_between_decks(key, &mesh, &with));
         faults.extend(edges_in_mouths(key, &mesh, &with, rules.structures.edge_band_m));
@@ -419,4 +428,5 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
     assert!(seams.len() <= SEAMS_MAX, "{} seams where a stub meets its deck, more than {SEAMS_MAX}", seams.len());
     assert!(decks > 10, "the fixture's decks");
     assert!(faults.is_empty(), "{} faults: {:#?}", faults.len(), &faults[..faults.len().min(20)]);
+    assert!(pierced, "the fixture has no delineator to check the closure with");
 }
