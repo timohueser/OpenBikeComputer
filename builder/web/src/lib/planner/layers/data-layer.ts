@@ -11,6 +11,8 @@ export interface Swatch {
     label: string;
     color: string;
     hatch?: boolean;
+    /** What the map draws in the colour: a line or a thin line; an area without it. */
+    shape?: 'line' | 'thin';
 }
 
 /** A map symbol in the legend: a stroke path in a 24 px box. */

@@ -13,7 +13,7 @@ afterEach(() => {
 
 function open(dataLayers: DataLayer[] = []) {
     shown = mount(MapSettings, { target: document.body, props: {
-        dataLayers, hillshade: true, contours: true, mapOverlays: { network: 'cycling', access: true },
+        dataLayers, contours: true, slopeAngle: false, mapOverlays: { network: 'cycling', access: true },
     } });
     click('Map settings');
 }
@@ -24,6 +24,7 @@ function click(label: string) {
 }
 
 const row = (label: string) => document.querySelector(`[role="group"][aria-label="${label}"]`);
+const tiles = (label: string) => [...row(label)!.querySelectorAll('button')].map(tile => tile.textContent?.trim());
 const lit = (label: string) => [...row(label)?.querySelectorAll('[aria-pressed="true"]') ?? []].map(tile => tile.textContent?.trim());
 
 it('lights one route network at a time, and a second click removes the network and its legend', () => {
@@ -39,9 +40,17 @@ it('lights one route network at a time, and a second click removes the network a
 
 it('shows a conditions tile for each data layer of the region, and no row without one', () => {
     open([{ id: 'snow', label: 'Snow' } as DataLayer]);
-    expect([...row('Conditions, one at a time')!.querySelectorAll('button')].map(tile => tile.textContent?.trim())).toEqual(['Snow']);
+    expect(tiles('Conditions, one at a time')).toEqual(['Snow']);
     unmount(shown!);
     open();
     expect(row('Conditions, one at a time')).toBeNull();
     expect(row('Map')).not.toBeNull();
+});
+
+it('switches the slope angle in the map row, which has no switch for the relief', () => {
+    open();
+    expect(tiles('Map')).toEqual(['Contours', 'Slope angle', 'Closures']);
+    expect(lit('Map')).toEqual(['Contours', 'Closures']);
+    click('Slope angle');
+    expect(lit('Map')).toEqual(['Contours', 'Slope angle', 'Closures']);
 });

@@ -4,13 +4,13 @@
     import { bandShare, networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
     import type { DataLayer } from '../../lib/planner/layers/data-layer';
 
-    let { hillshade = $bindable(), contours = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), theme = 'light' }: {
+    let { contours = $bindable(), slopeAngle = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), theme = 'light' }: {
         /** The data layers of the region; the map shows one or none. */
         dataLayers?: DataLayer[];
         /** The id of the shown data layer, or '' for none. */
         shownLayer?: string;
-        hillshade: boolean;
         contours: boolean;
+        slopeAngle: boolean;
         mapOverlays: OverlayOptions;
         theme?: 'light' | 'dark';
     } = $props();
@@ -26,8 +26,8 @@
             toggle: () => mapOverlays = { ...mapOverlays, network: mapOverlays.network === id ? 'none' : id } })) },
         { label: 'Conditions, one at a time', tiles: dataLayers.map(({ id, label }) => ({ id, label, on: shownLayer === id, toggle: () => shownLayer = shownLayer === id ? '' : id })) },
         { label: 'Map', tiles: [
-            { id: 'relief', label: 'Relief', on: hillshade, toggle: () => hillshade = !hillshade },
             { id: 'contours', label: 'Contours', on: contours, toggle: () => contours = !contours },
+            { id: 'slope-angle', label: 'Slope angle', on: slopeAngle, toggle: () => slopeAngle = !slopeAngle },
             { id: 'closures', label: 'Closures', on: mapOverlays.access, toggle: () => mapOverlays = { ...mapOverlays, access: !mapOverlays.access } },
         ] },
     ].filter(row => row.tiles.length));

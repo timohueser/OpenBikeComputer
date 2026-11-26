@@ -18,7 +18,7 @@
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import MapSettings from './MapSettings.svelte';
     import PlaceKinds from './PlaceKinds.svelte';
-    import LayerLegend from './LayerLegend.svelte';
+    import MapLegends, { type MapLegend } from './MapLegends.svelte';
     import LayerDateBar from './LayerDateBar.svelte';
     import LayerInspect from './LayerInspect.svelte';
     import LayerStrip from './LayerStrip.svelte';
@@ -28,6 +28,7 @@
     import { routeColours } from '../../lib/planner/trailview-route';
     import { hasTrailView } from '../../lib/planner/trailview';
     import { dataLayers } from '../../lib/planner/layers/registry';
+    import { SLOPE_ANGLE_ZOOM, slopeLegend } from '../../lib/planner/layers/slope-angle';
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import type { BikeType } from '../../lib/planner/riding-profiles';
@@ -143,14 +144,20 @@
     let mapPlace = $state<Place | null>(null);
     const theme = $derived<'light' | 'dark'>(appearance.dark ? 'dark' : 'light');
     let hoveredId = $state<string | null>(null);
-    let hillshade = $state(true);
     let contours = $state(true);
+    let slopeAngle = $state(false);
+    let mapZoom = $state(0);
     let mapOverlays = $state<OverlayOptions>({ network: 'cycling', access: true });
     let showRoute = $state(true);
     // The map shows one data layer at a time; '' shows none.
     let shownLayerId = $state('');
     const dataLayer = $derived(dataLayers.find(layer => layer.id === shownLayerId));
-    let dateBarHeight = $state(0);
+    /** The legends of the layers that are on, from the top of their stack on the map. */
+    const legends = $derived<MapLegend[]>([
+        ...(slopeAngle ? [{ label: 'Slope angle', ...(mapZoom < SLOPE_ANGLE_ZOOM ? { note: 'Zoom in to see it' } : { legend: slopeLegend }) }] : []),
+        ...(dataLayer ? [{ label: dataLayer.label, ...(dataLayer.error ? { note: dataLayer.error } : dataLayer.source ? { legend: dataLayer.legend(theme) } : { note: 'Loading…' }) }] : []),
+    ]);
+    let legendsHeight = $state(0);
     // The layer date follows the trip start until the rider picks another day; it never changes the trip.
     let layerDate = $state<string | null>(null);
     const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
@@ -1313,7 +1320,7 @@
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
                     bind:this={map} {part} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedLines={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
+                    {theme} {contours} {slopeAngle} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={legends.length ? legendsHeight + 34 : 0} onZoom={zoom => mapZoom = zoom} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedLines={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     placeKinds={placeChoice.kinds} highlightedKind={placeChoice.highlight}
@@ -1363,7 +1370,7 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.number) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:hillshade bind:contours />
+                    <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:contours bind:slopeAngle />
                     <PlaceKinds />
                     {#if hasTrailView(config)}
                         <div class="control-group">
@@ -1372,14 +1379,10 @@
                         </div>
                     {/if}
                 </div>
-                {#if dataLayer}
-                    <div class="layer-date" bind:clientHeight={dateBarHeight}>
-                        <div class="layer-legend" role="status">
-                            {#if dataLayer.error}{dataLayer.error}
-                            {:else if dataLayer.source}<strong>{dataLayer.label}</strong><LayerLegend legend={dataLayer.legend(theme)} label={`${dataLayer.label} colours`} />
-                            {:else}Loading…{/if}
-                        </div>
-                        {#if layerYear}<LayerDateBar date={shownDate} year={layerYear} variable={dataLayer.variable} onDate={(date) => layerDate = date} />{/if}
+                {#if legends.length}
+                    <div class="map-legends" bind:clientHeight={legendsHeight}>
+                        <MapLegends {legends} />
+                        {#if dataLayer && layerYear}<LayerDateBar date={shownDate} year={layerYear} variable={dataLayer.variable} onDate={(date) => layerDate = date} />{/if}
                     </div>
                 {/if}
                 {#if dropping}
@@ -1518,11 +1521,10 @@
     .device-parts { margin: 8px 0 0; font-size: 13px; color: var(--ink-soft); }
     .back-to-routes { display: flex; align-items: center; gap: 6px; min-height: 32px; margin: -4px 12px 8px; padding: 0 6px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; text-align: left; }
     .back-to-routes:hover { background: var(--parchment-2); color: var(--ink); }
-    /* Clear of the map controls column, which reaches the bottom on a short map. The map reaches the clicks beside the legend. */
-    .layer-date { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; display: grid; gap: 8px; pointer-events: none; }
-    .layer-date > :global(*) { pointer-events: auto; }
-    .layer-legend { justify-self: start; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 7px 12px; border-radius: 8px; background: var(--panel); box-shadow: var(--planner-shadow); font-size: 12px; color: var(--ink-soft); }
-    .layer-legend strong { font-weight: 600; color: var(--ink); }
+    /* The legends, and the date bar of the conditions layer under them. Clear of the map controls column, which reaches the bottom on a
+       short map, and of the scale bar. The map reaches the clicks beside a legend. */
+    .map-legends { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; display: grid; gap: 8px; pointer-events: none; }
+    .map-legends > :global(*) { pointer-events: auto; }
     .pane-scroll {
         flex: 1;
         min-height: 0;

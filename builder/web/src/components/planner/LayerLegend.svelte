@@ -14,7 +14,7 @@
 
 {#if 'swatches' in legend}
     <ul class="legend" aria-label={label}>
-        {#each legend.swatches as swatch (swatch.label)}<li><span class="swatch" class:hatch={swatch.hatch} style:--swatch={swatch.color}></span>{swatch.label}</li>{/each}
+        {#each legend.swatches as swatch (swatch.label)}<li><span class={['swatch', swatch.shape]} class:hatch={swatch.hatch} style:--swatch={swatch.color}></span>{swatch.label}</li>{/each}
         {@render marks()}
         {@render children?.()}
     </ul>
@@ -34,6 +34,8 @@
     .legend :global(li) { display: flex; align-items: center; gap: 6px; }
     .swatch { flex: 0 0 14px; height: 8px; border-radius: 2px; background: var(--swatch); box-shadow: inset 0 0 0 1px var(--line-strong); }
     .hatch { background: repeating-linear-gradient(135deg, transparent 0 2px, var(--swatch) 2px 3.5px); }
+    .line, .thin { height: 4px; box-shadow: none; }
+    .thin { height: 1.5px; border-radius: 0; }
     .mark { flex: none; width: 20px; height: 20px; margin: -6px -3px; fill: none; stroke: var(--ink); stroke-linecap: round; stroke-linejoin: round; }
     .scale { align-items: flex-start; }
     .ramp { flex: 0 1 auto; width: 260px; min-width: 120px; }
