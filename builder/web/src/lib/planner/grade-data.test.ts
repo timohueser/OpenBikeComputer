@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { formatGrade, gradeBand, profileGrades } from './grade-data';
+import cases from './grade-cases.json';
 
 describe('terrain grade display', () => {
+    it('gives each piece of the shared cases the steepness class of the map', () => {
+        for (const { case: name, distance_m, height_m, slope } of cases) {
+            const total = distance_m.at(-1)!;
+            const samples = distance_m.map((distance, i) => ({ progress: distance / total, height: height_m[i] }));
+            const classes = profileGrades(samples, total / 1000).map(gradeBand).map(band => band === 11 ? null : Math.abs(band - 5));
+            expect(classes, name).toEqual(slope);
+        }
+    });
     it('uses distance, preserves direction and handles uneven sample spacing', () => {
         const samples = [0, .01, .025, .1, .4, .9, 1].map(progress => ({ progress, height: progress * 100 }));
         for (const grade of profileGrades(samples, 1)) expect(grade).toBeCloseTo(10);
