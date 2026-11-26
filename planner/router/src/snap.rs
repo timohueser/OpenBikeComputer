@@ -25,7 +25,7 @@ pub(crate) fn check(policy: Policy) -> Result<()> {
 
 /// The candidates among the attachments `found`, in any order: the nearest, those within
 /// `policy.ambiguity_m` of it, and at most `policy.max_candidates`.
-pub(crate) fn select(mut found: Vec<Candidate>, policy: Policy) -> Candidates {
+pub fn select(mut found: Vec<Candidate>, policy: Policy) -> Candidates {
     found.sort_by(|a, b| a.snap_distance_m.total_cmp(&b.snap_distance_m).then(a.position.road.cmp(&b.position.road)));
     if let Some(nearest) = found.first().map(|c| c.snap_distance_m) {
         found.retain(|c| c.snap_distance_m <= nearest + policy.ambiguity_m);
