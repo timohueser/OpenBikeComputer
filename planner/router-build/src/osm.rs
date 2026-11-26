@@ -16,7 +16,7 @@ use std::fs::File;
 use std::iter::Peekable;
 use std::path::PathBuf;
 
-/// The counts of the import that the warnings of the manifest report, by label.
+/// The counts of the import that the warnings of `package.json` report, by label.
 pub type Counts = BTreeMap<String, usize>;
 
 fn count(counts: &mut Counts, key: &str) {
@@ -792,7 +792,7 @@ pub fn roads(source: Source, sizes: &[u32], terrain: Option<Height>) -> Result<G
     crate::check_counts((osm.ways.len(), osm.ways.references().len()), ends.values(), graph.points.len())?;
     let partition = crate::partition::partition(&graph.points, &ends, sizes)?;
     crate::work::Guard::stage("emit");
-    let keys = layout::keys(&ends, |from, to| Ok(layout::partition_key(from, to, &partition)))?;
+    let keys = layout::keys(&ends, |from, to| layout::partition_key(from, to, &partition));
     let points = shape_points + if terrain.is_some() { resampled } else { 0 };
     let bounds = layout::bounds(&keys, layout::bucket_count(ends.len() as u64, points)?);
     eprintln!(

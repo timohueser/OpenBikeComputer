@@ -99,8 +99,9 @@ const fn whole(name: &'static str, format: u32, readers: &'static [&'static Read
 }
 
 /// The files of a work layer hold router types: the closure sets, `Point` and the postcard
-/// `CostBasis` of the dictionary. Its format only grows. The three work layers share this format,
-/// so a change of the files of one bakes all three again.
+/// `CostBasis` of the dictionary. Its format only grows, and it does not follow the router
+/// `FORMAT`: raise it by hand when one of these types changes. The three work layers share this
+/// format, so a change of the files of one bakes all three again.
 const fn work(name: &'static str) -> Layer {
     Layer { name, shape: Shape::Whole, format: 12, revision: 1, readers: &[], cache: true }
 }
@@ -421,11 +422,14 @@ impl Planner {
         };
         // The last part of the id: the old planner names its files after it.
         let name = region.id.rsplit('/').next();
-        // A bad profile of the routing fails before any bake.
+        // A bad profile, cell size or download level of the routing fails before any bake.
         if on("routing") {
-            let profiles: Vec<&str> = config.routing.profiles.iter().map(String::as_str).collect();
+            let routing = &config.routing;
+            let profiles: Vec<&str> = routing.profiles.iter().map(String::as_str).collect();
             planner_router_build::profiles(&profiles)
                 .and_then(|profiles| planner_router_build::catalog::check(&profiles))
+                .and_then(|()| planner_router_build::partition::check_sizes(&routing.cell_sizes))
+                .and_then(|()| planner_router_build::cells::download_level(routing.download_level.into()).map(drop))
                 .map_err(|reason| invalid(format!("the routing of region `{id}`: {reason}")))?;
         }
         let work = |layer: &'static Layer, inputs: Vec<Input>, options, run| Step {
