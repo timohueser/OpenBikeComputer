@@ -9,6 +9,7 @@
 
 mod crossings;
 mod curve;
+pub mod forecourt;
 pub mod level_tags;
 mod levels;
 mod open;
@@ -28,6 +29,7 @@ use crate::CellInput;
 pub use crossings::end_on_chord;
 pub(crate) use curve::{folds, water_spans, water_tangents};
 pub use curve::{point, s_at, u_at, water_curves, water_grades, water_level, SpanPoint, WaterCurve};
+pub use forecourt::Forecourt;
 pub use levels::{check_levels, levels, step, EndKind, EndLine, Ladder, Levels, Run, State, Step, Structures};
 pub use open::OpenEnd;
 
@@ -391,13 +393,16 @@ pub struct WayGraph {
     /// The openings of the built tunnel ends about the cell, which the ways that end there widen to
     /// (`faces::approach`); empty from `build`, the caller sets them.
     pub mouths: Vec<crate::openings::Mouth>,
+    /// The forecourt ways of the rooms with a clear front (`forecourt::add`).
+    pub forecourts: Vec<Forecourt>,
 }
 
-/// A sample of a walk along a way: its place (cell units) and its way.
+/// A sample of a walk along a way: its place (cell units), its way and its height.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WalkPoint {
     pub pos: [i32; 2],
     pub way: u32,
+    pub z_m: f64,
 }
 
 impl WayGraph {
@@ -425,7 +430,10 @@ impl WayGraph {
     /// Every walk starts at `at`.
     pub fn walk(&self, way: u32, at: u32, dir: i8, max_m: f64, branches: bool) -> Vec<Vec<WalkPoint>> {
         let mpu = |a: [i32; 2], b: [i32; 2]| metres_per_unit(self.cell.origin().y + i64::from(a[1] + b[1]) / 2);
-        let point = |k: u32| WalkPoint { pos: self.samples[k as usize].pos, way: self.way_of_sample(k) };
+        let point = |k: u32| {
+            let s = &self.samples[k as usize];
+            WalkPoint { pos: s.pos, way: self.way_of_sample(k), z_m: s.z_m }
+        };
         let mut out = Vec::new();
         let network = self.ways[way as usize].family.network();
         let mut todo = vec![(way, at, dir, 0.0, vec![point(at)])];
@@ -442,7 +450,8 @@ impl WayGraph {
                             a[0] + libm::round(f * f64::from(b[0] - a[0])) as i32,
                             a[1] + libm::round(f * f64::from(b[1] - a[1])) as i32,
                         ];
-                        list.push(WalkPoint { pos, ..point(next as u32) });
+                        let z_m = self.samples[k as usize].z_m * (1.0 - f) + self.samples[next as usize].z_m * f;
+                        list.push(WalkPoint { pos, z_m, ..point(next as u32) });
                         break;
                     }
                     (k, m) = (next as u32, m + len);

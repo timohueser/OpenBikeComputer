@@ -461,6 +461,7 @@ pub(crate) fn assemble(
         stats: GraphStats::default(),
         levelled: false,
         mouths: Vec::new(),
+        forecourts: Vec::new(),
     };
     for (id, piece) in plan.pieces.iter().enumerate() {
         let part = &parts[piece.part];

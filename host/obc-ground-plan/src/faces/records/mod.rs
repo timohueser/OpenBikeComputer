@@ -9,8 +9,8 @@
 //! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16; the offset of the blend edges; the offset of the junction table and the count of its records; the offset of the outline edges; the offset of the sidewalks' table |
 //! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
-//! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id (a junction's: the index of its junction record); material line; rail line of a crossing; 4 host lines; 4 other lines (none for a junction: its record holds its arms) |
-//! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order, the water after the ways: way, finish code (0 for water) with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut, the fill's rise and crest (m); then the ceiling lines (`CEILING`), whose cut and fill words hold their flat ends and whose return grade holds their drop |
+//! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id (a junction's: the index of its junction record); material line; rail line of a crossing; 4 host lines (a forecourt's: its lanes'); 4 other lines (none for a junction: its record holds its arms) |
+//! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order, the water after the ways: way, finish code (0 for water) with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), the painter's rank (0 for a forecourt, the approach of a clear opening, else the class rank + 1), shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut, the fill's rise and crest (m); then the ceiling lines (`CEILING`), whose cut and fill words hold their flat ends and whose return grade holds their drop |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | junctions | the table, a word per junction record: its offset; then the records (`junction`) |
@@ -907,7 +907,7 @@ fn code(finish: Finish) -> u32 {
 /// The words of the leg of a line from point `lo` to point `hi` (`legs`), with its first sample 0, and
 /// of its samples. A leg is a line of its own: its ends at cuts meet the next legs, and its frame's mitres turn
 /// as a line's that ends there. A taper's vertex between two graph samples takes their values at its
-/// share of the segment.
+/// share of the segment. A forecourt has the painter's first rank, 0, every other line its class rank + 1.
 fn line_words(
     line: &WayLine,
     (lo, hi): (usize, usize),
@@ -930,7 +930,7 @@ fn line_words(
     let flags = flags.iter().fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
     let finish = sec.finish.map_or(0, code) | flags | (sec.material as u32) << MATERIAL_SHIFT;
     let mut w = vec![line.way, finish, 0, (hi - lo + 1) as u32];
-    w.extend([f(sec.cut), f(sec.fill), f(sec.reach_m), sec.rank as u32]);
+    w.extend([f(sec.cut), f(sec.fill), f(sec.reach_m), if line.approach { 0 } else { sec.rank as u32 + 1 }]);
     w.extend([f(sec.shoulder_m), f(sec.verge_m), f(sec.return_grade), f(sec.half_m)]);
     // An end meets a junction or a joint whose arms all lie on the way's level; a joint to a bridge or
     // a tunnel is a level change.
@@ -1307,16 +1307,23 @@ fn encode(
         v.retain(|&x| x != u32::MAX);
         v.sort_unstable();
         v.dedup();
+        debug_assert!(v.len() <= 4, "a label holds four lines: {v:?}");
         v.resize(4, u32::MAX);
         [v[0], v[1], v[2], v[3]]
     };
     // The lines whose frame the paint of a way's label follows: its leg and the ways it meets at a
     // joint; and its other lines: those partners. Each arm names the leg it leaves along. A junction's
-    // record holds its arms.
+    // record holds its arms. A forecourt's are the legs of its frames (`Forecourt::frames`) nearest its front: its
+    // paint follows them (`m_paint_frames` of the viewer's terrain/records.wgsl), its heights its material line.
     let joints_of = |w: u32| graph.joints.iter().filter(move |j| j.arms.iter().any(|a| a.way == w));
+    let forecourt = |w: u32| graph.forecourts.iter().find(|f| f.way == w);
     let hosts: Vec<[u32; 4]> = (labels.iter())
-        .map(|l| match (l[0] >> 8) & 0xff {
-            WAY_OWNER => {
+        .map(|l| match ((l[0] >> 8) & 0xff, forecourt(l[1]).zip(of_way.get(&l[1]))) {
+            (WAY_OWNER, Some((f, &own))) => {
+                let front = lines[own as usize].p[0];
+                four(f.frames.iter().filter_map(|w| of_way.get(w)).map(|&l| foot_line(l as usize, front)).collect())
+            }
+            (WAY_OWNER, None) => {
                 let partners =
                     joints_of(l[1]).flat_map(|j| j.arms.iter().filter(|a| a.way != l[1]).map(|a| arm_line(a, j.pos)));
                 four(std::iter::once(l[2]).chain(partners).collect())
@@ -1403,8 +1410,8 @@ fn encode(
     }
     // The paint reads a label's host lines, its other lines and its material line at their segment
     // nearest the point: in every bin that a point's, region's or round's label reaches, each set's
-    // segments that can be nearest to a point of the bin. A segment farther from the bin than the
-    // set's nearest one plus the bin's diagonal is nearer to no point of it.
+    // segments that can be nearest to a point of the bin; for a forecourt, its host lines. A segment farther
+    // from the bin than the set's nearest one plus the bin's diagonal is nearer to no point of it.
     let diag = f64::from(BIN_UNITS) * std::f64::consts::SQRT_2;
     for b in 0..n_bins {
         let mut sets: Vec<[u32; 4]> = Vec::new();
@@ -1412,7 +1419,10 @@ fn encode(
         while at < items[b].len() {
             let ci = (items[b][at] & 0xffff) as usize;
             at = skip_item(&items[b], at);
-            if !cands.get(ci).is_some_and(|c| c.label.owner != Owner::Terrain && kind(c) != WAY) {
+            let Some(c) = cands.get(ci).filter(|c| c.label.owner != Owner::Terrain) else { continue };
+            // A way's own line lies in the bins of its stroke.
+            let way = kind(c) == WAY;
+            if way && !matches!(c.label.owner, Owner::Way(w) if forecourt(w).is_some()) {
                 continue;
             }
             for &l in &given[ci] {
@@ -1427,7 +1437,7 @@ fn encode(
                 } else {
                     [hosts[l as usize], others[l as usize]]
                 };
-                for h in [h, o, own] {
+                for h in [h, o, own].into_iter().take(if way { 1 } else { 3 }) {
                     if h[0] != u32::MAX && !sets.contains(&h) {
                         sets.push(h);
                     }

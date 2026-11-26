@@ -135,12 +135,14 @@ pub fn far_request(request: Request, cache: &mut TileCache, rules: &Rules) -> Re
 }
 
 /// The way graph of a cell: with the storeys, its ways follow the levels that the tiles carry. The ways of the built
-/// tunnel ends lie on the ground up to their openings (`openings::built`).
+/// tunnel ends lie on the ground up to their openings (`openings::built`), and each room with a clear front has its
+/// forecourt (`graph::forecourt`).
 pub fn cell_graph(key: CellKey, input: &CellInput, rules: &Rules) -> WayGraph {
     let levelled = cfg!(feature = "storeys").then_some(rules.structures.edge_band_m);
     let built = openings::built(input);
     let mut graph = graph::build_open(key, input, &rules.sections, levelled, &built.open);
     graph.mouths = built.mouths;
+    graph::forecourt::add(&mut graph);
     graph
 }
 

@@ -83,6 +83,8 @@ pub(crate) struct WayLine<'a> {
     pub spans: Vec<(usize, usize)>,
     /// The height of each graph sample (metres), in the order of `index`.
     pub z: Vec<f64>,
+    /// Whether it is a forecourt: the approach of a clear opening (`approach`).
+    pub approach: bool,
 }
 
 /// The band layers about a carriageway, inner to outer: paved shoulder, shoulder, verge, bank, slope.
@@ -451,6 +453,7 @@ fn lines_with<'a>(
             cuts: Vec::new(),
             spans: Vec::new(),
             z: samples.iter().map(|s| s.z_m).collect(),
+            approach: false,
             sec,
         };
         for s in samples {
@@ -479,6 +482,10 @@ fn lines_with<'a>(
         out.push(line);
     }
     taper(ctx, &mut out, &of_way);
+    for line in &mut out {
+        line.cuts = line.cuts.iter().map(|&k| line.index[k]).collect();
+        line.spans = line.spans.iter().map(|&(a, b)| (line.index[a], line.index[b])).collect();
+    }
     approach::widen(ctx, &mut out);
     // A bore's end on a portal takes the offsets of the ground way that ends there as storey 0 builds that way (its
     // own tapers included): one computation, so both strokes end on the same corners.
@@ -518,10 +525,6 @@ fn lines_with<'a>(
                 line.end_cuts[k] = Some(cuts);
             }
         }
-    }
-    for line in &mut out {
-        line.cuts = line.cuts.iter().map(|&k| line.index[k]).collect();
-        line.spans = line.spans.iter().map(|&(a, b)| (line.index[a], line.index[b])).collect();
     }
     let grow =
         |b: [i32; 4], p: P, h: i32| [b[0].min(p[0] - h), b[1].min(p[1] - h), b[2].max(p[0] + h), b[3].max(p[1] + h)];
@@ -1726,18 +1729,24 @@ fn candidates<'a>(
                 }
             }
         }
-        let own = carriageway((first, last));
-        cands.push(Cand {
-            rings: union(&own, [0, 0]),
-            label: way_label(rules, line, legs::leg(&line.cuts, first, 1)).0,
-            key: way_key(rules, line),
-            glob: None,
-            line: li,
-            relabel: None,
-            beyond: Vec::new(),
-            fill: None,
-            discs: Vec::new(),
-        });
+        let own = union(&carriageway((first, last)), [0, 0]);
+        let own = match line.approach {
+            true => approach::legs(line, &own),
+            false => vec![(legs::leg(&line.cuts, first, 1), own)],
+        };
+        for (leg, rings) in own {
+            cands.push(Cand {
+                rings,
+                label: way_label(rules, line, leg).0,
+                key: way_key(rules, line),
+                glob: None,
+                line: li,
+                relabel: None,
+                beyond: Vec::new(),
+                fill: None,
+                discs: Vec::new(),
+            });
+        }
         // A deck's band layers are its own: the slab's edge band names its way.
         let mut own = (!line.cuts.is_empty() || decks.is_some()).then(|| own_layers.entry(li).or_default());
         // So are the paved layers of a way on its segments on top of a lower way: their heights are that way's, not
@@ -1910,6 +1919,16 @@ fn candidates<'a>(
         w.2 = prepare(&w.2);
     }
     let pieces = split_legs(&ctx, &lines, &of_way, &mut cands);
+    // The carriageway of a forecourt wins against every face of every way, an at-grade way across its apron too: it is
+    // the floor's continuation. In the recess the ground must be the floor, which the opening's box keeps up to the
+    // floor + lift. On the apron its level ground closes the gap before the opening; a lane's face there cannot, as it
+    // takes its heights from its own line. Its key ties only with a bore's cover, whose glob takes the tie.
+    for c in cands.iter_mut().filter(|c| c.relabel.is_none() && c.glob.is_none()) {
+        let Some(line) = lines.get(c.line) else { continue };
+        if c.key == way_key(rules, line) && line.approach {
+            c.key = (0, 0, 0);
+        }
+    }
     // The rounds at the corners of the paved outline that no point's round shapes. Their key loses
     // to every carriageway and rail bed, so a round paves land only. `lines_m` holds their reach.
     let mut paved: Vec<Vec<P>> = (cands.iter())
@@ -2257,8 +2276,8 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
     Lid { cover, entering: lids, tops, of_lower: lid_of }
 }
 
-/// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own
-/// band layers: the medial lines between its legs cut it, each piece goes to its nearest leg, whose line
+/// Splits every candidate that gives the label of a way with legs (`legs`) but a forecourt's carriageway, or that is
+/// one of its own band layers: the medial lines between its legs cut it, each piece goes to its nearest leg, whose line
 /// is its host, and each leg's part is the union of its pieces, which share their vertices. Where two
 /// legs overlap, the nearest one owns the ground, and the step between them stands on the medial line
 /// (blended where they agree). A candidate keeps its place with its first leg's part; the others go to
@@ -2275,7 +2294,9 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
             _ => continue,
         };
         let Some(&l) = of_way.get(&w).filter(|&&l| !lines[l].cuts.is_empty()) else { continue };
-        if cands[c].relabel.is_some() {
+        // A forecourt's own candidates are one per leg already: its carriageway (`approach::legs`); its shoulder and
+        // verge are as wide as its core (`approach::forecourt`), so they hold no ground.
+        if cands[c].relabel.is_some() || (lines[l].approach && cands[c].label.owner == Owner::Way(w)) {
             continue;
         }
         let line = &lines[l];

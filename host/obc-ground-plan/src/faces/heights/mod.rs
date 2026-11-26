@@ -797,7 +797,11 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Item
             near = near.min(dist - (ha + f * (hb - ha)) - ln.side);
             least = least.min(dist);
         }
-        if near >= feather && !kept {
+        // A forecourt's line (rank 0) ends square on its start, feather included: behind that line only a face that it
+        // hosts reads it, whatever its width. The cones of its paved outline still rise from its front into the hill
+        // behind, as at any way's end (`groups`).
+        let behind = ln.class == 0 && b.past_end(&ln, 0, q) > 0.0;
+        if (near >= feather || behind) && !kept {
             k = end;
             continue;
         }
