@@ -8,8 +8,7 @@
 # The packer's header bbox is computed from the packed content and is always a
 # bit wider than the extract bbox (complete ways and stray coastline/boundary
 # features stretch it), so self-sourcing ratchets the bbox wider on every
-# re-pack. That is exactly how the pre-v9 fixtures drifted (monaco once grew to
-# 14.5 MB). Extract bboxes below are canonical and hand-picked; change them
+# re-pack. Extract bboxes below are canonical and hand-picked; change them
 # only as a deliberate, reviewed decision.
 #
 # It also bakes the OBCT terrain sidecars (`./build-map-package.sh terrain`) —

@@ -2,7 +2,7 @@
 
     uv run --locked --group planner-climate python -m tools.planner_climate prepare --block X-Y --years YEAR,… [--orography] --work DIR --out DIR
 
-`prepare` writes the files of one block of `climate` (`specs/obc-data.md`) from the ECMWF ARCO geo-chunked
+`prepare` writes the files of one block of `climate` (`specs/obc-data-producers.md`) from the ECMWF ARCO geo-chunked
 Zarr stores of ERA5-Land, with the CDS personal access token in `~/.cdsapirc`. The `obc data` step
 `planner/climate` bakes `climate.pmtiles`, as `specs/planner-climate-tiles.md` defines it, from those files.
 """

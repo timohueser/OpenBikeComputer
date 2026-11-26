@@ -1320,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_tooling_metadata_remains_compatible() {
+    fn unknown_tooling_metadata_is_ignored() {
         let config = Config::parse(
             r#"{
                 "_meta":{"id":"custom"}, "disabled":["highway/path"], "future_root":true,
@@ -1333,7 +1333,7 @@ mod tests {
     }
 
     #[test]
-    fn null_defaults_and_required_colors_match_legacy_behavior() {
+    fn null_means_default_and_required_colors_are_not_nullable() {
         let config = Config::parse(
             r#"{
                 "lods": null, "marker": null, "chunk_size": null,
@@ -1341,7 +1341,7 @@ mod tests {
                 "routing":{"min_component_edges":null,"profiles":null}
             }"#,
         )
-        .expect("legacy null-as-default fields remain accepted");
+        .expect("null-as-default fields are accepted");
         assert_eq!(config.lods.len(), 1);
         assert_eq!(config.features[0].1["path"].weight, 1);
         assert_eq!(config.routing, default_routing());

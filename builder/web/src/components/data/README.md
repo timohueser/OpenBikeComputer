@@ -5,7 +5,7 @@ The page of `obc data` on one machine. `obc data ui` builds it and serves it on
 `obc data --json ARGS` on that machine, and each action shows its command. The Machine screen
 and the Services of prod set a credential through `POST /api/credential`, which gives the values
 to `obc data source credential ID` or `obc data deploy credential WHAT` on standard input. The
-[data contract](../../../../../specs/obc-data.md#the-page) defines the route and its checks.
+[data contract](../../../../../specs/obc-data-cli.md#the-page) defines the route and its checks.
 
 ## Run
 

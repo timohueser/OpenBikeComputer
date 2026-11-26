@@ -386,13 +386,18 @@ pub fn update_raw_image() -> Vec<u8> {
     v
 }
 
-/// A full **OBCU update container** (`obcu-update.md` §1, `UPDATE.BIN`): the fixed
-/// 64-byte header (magic `OBCU`, version 1, raw-image length + CRC-32, NUL-padded
-/// `fw_version`, header CRC-32 over bytes `0..60`) followed by [`update_raw_image`].
-/// Built straight from the spec's field table — independent of the `obc-dfu`
-/// production codec, which pins the same bytes from the other side. The iOS
-/// companion's `OBCUHeader` decoder validates this file identically.
-pub fn update_container_v1() -> Vec<u8> {
+/// A full signed **OBCU update container** (`obcu-update.md` §1, `UPDATE.BIN`): the fixed 64-byte
+/// header (magic `OBCU`, version 1, raw-image length + CRC-32, NUL-padded `fw_version`, the
+/// signature-scheme marker `sig_scheme` = 1 · `sig_len` = 64, header CRC-32 over bytes `0..60`),
+/// then [`update_raw_image`] and a **64-byte Ed25519 signature trailer**.
+///
+/// The header is hand-built from the spec's field table, independent of the `obc-dfu` production
+/// codec. The signature is the one part that cannot be: it comes from `obc_dfu::sign_image` over the
+/// domain-separated message of §1.3 (`"OBCUv2-sig\0" ‖ fw_version[32] ‖ image_len ‖ image`), signed
+/// with the **committed test key** (`firmware/obc-dfu/keys/test/`). That signing is deterministic
+/// (fixed zero noise), so this fixture is a stable file — a nondeterministic signer would re-cut it
+/// on every regeneration, which is exactly why `obc_dfu::sig` pins determinism with its own test.
+pub fn update_container() -> Vec<u8> {
     let image = update_raw_image();
     let mut header = [0u8; 64];
     header[0..4].copy_from_slice(b"OBCU");
@@ -402,41 +407,9 @@ pub fn update_container_v1() -> Vec<u8> {
     header[12..16].copy_from_slice(&le32(crc32(&image)));
     let vbytes = UPDATE_FW_VERSION.as_bytes();
     header[16..16 + vbytes.len()].copy_from_slice(vbytes); // NUL-padded to 32
-                                                           // 48..60 reserved (0) — future signature-scheme marker
-    let hcrc = crc32(&header[..60]);
-    header[60..64].copy_from_slice(&le32(hcrc));
-
-    let mut v = Vec::with_capacity(64 + image.len());
-    v.extend_from_slice(&header);
-    v.extend_from_slice(&image);
-    v
-}
-
-/// A full signed OBCU v2 update container (`obcu-update.md` §1): the same
-/// 64-byte header table as [`update_container_v1`] — *including* `header_version` still `1`, the
-/// flash-once-bootloader guarantee — with v1's reserved bytes `48..52` now carrying the
-/// signature-scheme marker (`sig_scheme` = 1 · `sig_len` = 64), followed by [`update_raw_image`]
-/// and a **64-byte Ed25519 signature trailer**.
-///
-/// The header is hand-built from the spec's field table, like every other fixture here. The
-/// signature is the one part that cannot be: it comes from `obc_dfu::sign_image` over the
-/// domain-separated message of §1.3 (`"OBCUv2-sig\0" ‖ fw_version[32] ‖ image_len ‖ image`), signed
-/// with the **committed test key** (`firmware/obc-dfu/keys/test/`). That signing is deterministic
-/// (fixed zero noise), so this fixture is a stable file — a nondeterministic signer would re-cut it
-/// on every regeneration, which is exactly why `obc_dfu::sig` pins determinism with its own test.
-pub fn update_container_v2() -> Vec<u8> {
-    let image = update_raw_image();
-    let mut header = [0u8; 64];
-    header[0..4].copy_from_slice(b"OBCU");
-    header[4..6].copy_from_slice(&le16(1)); // header_version — still 1 in a v2 container
-                                            // 6..8 reserved (0)
-    header[8..12].copy_from_slice(&le32(image.len() as u32));
-    header[12..16].copy_from_slice(&le32(crc32(&image)));
-    let vbytes = UPDATE_FW_VERSION.as_bytes();
-    header[16..16 + vbytes.len()].copy_from_slice(vbytes); // NUL-padded to 32
     header[48..50].copy_from_slice(&le16(1)); // sig_scheme = Ed25519
     header[50..52].copy_from_slice(&le16(64)); // sig_len
-                                               // 52..60 still reserved (0)
+                                               // 52..60 reserved (0)
     let hcrc = crc32(&header[..60]);
     header[60..64].copy_from_slice(&le32(hcrc));
 
@@ -576,13 +549,8 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // The phone's clock stamp (cmd 5): 2026-07-09T12:00:00Z (unix 1783598400),
         // +02:00 (offset 120 min). 7 bytes.
         ("command-set-clock.bin", command_set_clock(1_783_598_400, 120)),
-        ("update-container-v1.bin", update_container_v1()),
-        // The signed OBCU v2 container (spec §1): the same header table and the
-        // same 128-byte image, plus the scheme marker in v1's reserved bytes and a 64-byte Ed25519
-        // trailer under the committed test key. Kept alongside v1 rather than replacing it: v1 is
-        // still what a fielded bootloader and the device's own rollback snapshot look like, and the pair
-        // is what pins the offset-compatibility guarantee across implementations.
-        ("update-container-v2.bin", update_container_v2()),
+        // The signed OBCU container (spec §1) under the committed test key.
+        ("update-container.bin", update_container()),
         // A trip (§7.7): three days that pin every header and day field.
         ("trip-v3.bin", trip),
     ];

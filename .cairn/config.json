@@ -3,7 +3,6 @@
   "baseline": ".cairn/baseline.json",
   "leaf_lines": 4000,
   "leaf_files": 60,
-  "skill": {"path": "tools/cairn/skill/cairn", "router_tokens": 2000, "reference_tokens": 2000},
   "tests": ["**/tests/**", "tests.rs", "*_tests.rs", "*_test.py", "*Tests.swift", "*.test.ts"],
   "sources": {
     "extensions": [".rs", ".ts", ".svelte", ".py", ".swift", ".wgsl", ".js", ".mjs", ".sh", ".h", ".c"],
@@ -20,19 +19,5 @@
   "tooling": {
     "path": "tools/",
     "area": "Tooling"
-  },
-  "roles": {
-    "goldfish-comprehension": { "tier": "balanced", "effort": "medium" },
-    "goldfish-critic":        { "tier": "strong",   "effort": "medium" },
-    "goldfish-critic-s":      { "tier": "balanced", "effort": "medium" },
-    "goldfish-readiness":     { "tier": "strong",   "effort": "medium" },
-    "code-review":            { "tier": "strong",   "effort": "high" },
-    "doc-peanut":             { "tier": "balanced", "effort": "medium" },
-    "doc-hay":                { "tier": "balanced", "effort": "medium" },
-    "implementer":            { "tier": "inherit" }
-  },
-  "tiers": {
-    "claude-code": { "strong": "opus",   "balanced": "sonnet", "fast": "haiku" },
-    "codex":       { "strong": "gpt-6-astra", "balanced": "gpt-6.1-sol", "fast": "gpt-6-luna" }
   }
 }

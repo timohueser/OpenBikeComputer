@@ -22,7 +22,17 @@ Each file here is a normative contract: what the bytes, the JSON or the API must
 | [ride-archive-receipts.md](ride-archive-receipts.md) | The iOS archive boundary and the receipts that carry proof to the device |
 | **Map catalog and data pipeline** | |
 | [obcc-catalog.md](obcc-catalog.md) | OBCC: the JSON catalog of baked cells |
-| [obc-data.md](obc-data.md) | The `data/` registry, the store and archive, layers, releases and the `obc data` JSON output |
+| [obc-data-registry.md](obc-data-registry.md) | The `data/` files of `obc data`, the settings of a target and the state of a source |
+| [obc-data-store.md](obc-data-store.md) | The store of a machine, its collection and the fetchers |
+| [obc-data-archive.md](obc-data-archive.md) | The archive of whole datasets |
+| [obc-data-layers.md](obc-data-layers.md) | Layers: keys, the step contract, receipts, plans, runs, versions and state |
+| [obc-data-products.md](obc-data-products.md) | The products `device` and `planner`, the route sources and the service runtimes |
+| [obc-data-targets.md](obc-data-targets.md) | Targets and releases: update, rollback and collection |
+| [obc-data-serve.md](obc-data-serve.md) | `obc data serve` and `obc data deploy` |
+| [obc-data-prepared.md](obc-data-prepared.md) | The prepared sources and the producer `terrain` |
+| [obc-data-producers.md](obc-data-producers.md) | The producers `forest`, `climate`, `colour`, `snow` and `wiki` |
+| [obc-data-cli.md](obc-data-cli.md) | The `obc data` commands, the overview, the operator page, the R2 client, the errors and the JSON output |
+| [obc-data.schema.json](obc-data.schema.json) | The JSON Schema of the `--json` output of `obc data`, generated |
 | [wikimedia-content.md](wikimedia-content.md) | The prepared `wiki` source of landmark and peak content |
 | **Planner** | |
 | [planner-release.md](planner-release.md) | A planner release: `release.json`, grid storage, tile paths and the catalogue |

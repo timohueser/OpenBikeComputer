@@ -102,7 +102,7 @@ final class WebsiteScreenshotTests: XCTestCase {
         guard let settled else {
             XCTFail(
                 "\(name) never reached two identical frames in \(Self.settleAttempts) screenshots — "
-                    + "capturing it would race whatever is still moving (#1212)",
+                    + "capturing it would race whatever is still moving",
                 file: file, line: line
             )
             return

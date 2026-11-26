@@ -266,10 +266,6 @@ impl TrackRepository for FlatRideRecorder {
         self.ride.discard();
         self.flush().map_err(recorder_error)
     }
-
-    fn append(&mut self, _point: TrackPoint) -> bool {
-        false
-    }
 }
 
 fn recorder_error(error: StoreError) -> RecorderError {

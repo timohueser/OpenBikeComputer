@@ -38,23 +38,9 @@ export class Library {
         return this.database ??= new Promise<IDBDatabase>((resolve, reject) => {
             const request = (this.factory ?? indexedDB).open('obc-library', 4);
             // A database of an earlier version keeps the records of each store that is still in `STORES`.
-            request.onupgradeneeded = event => {
+            request.onupgradeneeded = () => {
                 const db = request.result;
                 for (const name of [...db.objectStoreNames]) if (!STORES.includes(name as StoreName)) db.deleteObjectStore(name);
-                // A route of an earlier version can have the field `open`, the id of a version, and the field
-                // `revision`.
-                if (event.oldVersion) {
-                    const cursor = request.transaction!.objectStore('routes').openCursor();
-                    cursor.onsuccess = () => {
-                        const at = cursor.result;
-                        if (!at) return;
-                        if (at.value && typeof at.value === 'object' && ('open' in at.value || 'revision' in at.value)) {
-                            const { open: _, revision: __, ...route } = at.value;
-                            at.update(route);
-                        }
-                        at.continue();
-                    };
-                }
                 for (const name of STORES) {
                     if (db.objectStoreNames.contains(name)) continue;
                     const store = db.createObjectStore(name, KEYS[name] ? { keyPath: KEYS[name] } : undefined);

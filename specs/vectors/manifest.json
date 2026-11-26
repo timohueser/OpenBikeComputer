@@ -282,20 +282,8 @@
       "utc_iso": "2026-07-09T12:00:00Z",
       "offset_min": 120
     },
-    "update-container-v1.bin": {
-      "format": "OBCU update container (spec 1), unsigned/v1 — fwImage payload (spec 7.6)",
-      "byte_len": 192,
-      "header_len": 64,
-      "image_len": 128,
-      "image_crc32": "0x5B990292",
-      "header_crc32": "0x56B035F8",
-      "fw_version": "1.2.0+abc1234",
-      "sig_scheme": 0,
-      "sig_len": 0,
-      "object_id": 0
-    },
-    "update-container-v2.bin": {
-      "format": "OBCU update container (spec 1), Ed25519-signed/v2 — same header table and same 128-byte image as v1, with the scheme marker in v1's reserved bytes 48..52 and a 64-byte signature trailer",
+    "update-container.bin": {
+      "format": "OBCU update container (spec 1), Ed25519-signed — fwImage payload (spec 7.6): 64-byte header, 128-byte image, 64-byte signature trailer",
       "byte_len": 256,
       "header_len": 64,
       "image_len": 128,

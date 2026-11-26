@@ -3,7 +3,7 @@
 A planner release joins map, routing, search and model data. `release.json` is its UTF-8 JSON
 manifest. This contract also defines the grid storage, the tile API paths and the catalogue. The
 release and its files are immutable. A release of `obc data update` has the ID of the [named files
-of the planner](obc-data.md#planner).
+of the planner](obc-data-products.md#planner).
 
 - Version: manifest `format` `2`; catalogue `format: 1`; `public/grid.json` `format: 4`. A client
   refuses a catalogue `format` that it does not know.
@@ -12,7 +12,7 @@ of the planner](obc-data.md#planner).
   service ([`planner/tiles`](../planner/tiles/README.md)), `obc data serve`, the companion app.
 - Related: [offline bundle](planner-offline.md), [route package](route-package.md), [route
   catalog](route-catalog.md), [snow tiles](planner-snow-tiles.md), [climate
-  tiles](planner-climate-tiles.md), [`obc data`](obc-data.md).
+  tiles](planner-climate-tiles.md), [`obc data` targets](obc-data-targets.md).
 
 ## Manifest
 
@@ -40,7 +40,7 @@ reads only the indexes whose `folders` hold the files that it needs, and checks 
 File paths stay inside the release directory. File hashes use lowercase 64-character hex. Maps,
 search, and routing have the same OSM hash and bounds. The terrain inputs cover every routing
 elevation input. Search metadata contains the OSM hash. Terrain TileJSON contains terrain input
-hashes. The [`obc data` release manifest](obc-data.md#release-manifest) records source versions,
+hashes. The [`obc data` release manifest](obc-data-targets.md#release-manifest) records source versions,
 tool identities and layer receipts. These are not client files.
 
 ## Objects and services

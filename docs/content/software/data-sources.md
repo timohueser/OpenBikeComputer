@@ -33,7 +33,7 @@ for the route catalog: the row of a source gives its licence and credit, and its
 description in `data/routes/` says which layers and fields of its files make a route. So a new
 country needs a description, not new code.
 
-The [data contract](src:specs/obc-data.md) defines the registry, how each layer reads its sources,
+The [registry contract](src:specs/obc-data-registry.md) defines the registry, how each layer reads its sources,
 and where each credit goes.
 
 ## By product and layer
@@ -58,7 +58,7 @@ table: areas
 ## Licences and credits
 
 The credit is the text that a product shows. **Redistribute** is the `redistribute` key that the
-[data contract](src:specs/obc-data.md) defines: whether the licence lets us give the upstream
+[registry contract](src:specs/obc-data-registry.md) defines: whether the licence lets us give the upstream
 files to others.
 
 ```sources
