@@ -310,17 +310,20 @@ impl Cx<'_> {
         })
     }
 
-    /// The metres along a line from q (on a ground track's line, unit tangent t) to the nearest band of a ground road
-    /// or path that crosses it on a track's bed: 0 inside one. The line meets a chord's line at x, |s| from q at the
-    /// angle θ, so the band begins band / sin θ before x. A chord counts where x lies on it or within its band past an
-    /// end, and in a ground track's sleeper band: not past a deck's end.
-    fn crossing_m(&self, q: V, t: V) -> f64 {
+    /// The metres along a line from q (on a ground track's line `off_m` left of its middle, unit tangent t) to the
+    /// nearest band of a ground road or path that the track runs through, as the face plan makes a crossing: 0 where
+    /// the band holds the track's middle. The line meets a chord's line at x, |s| from q at the angle θ, so the band
+    /// begins band / sin θ before x. A chord counts where x lies on it or within its band past an end, and in a ground
+    /// track's sleeper band: not past a deck's end.
+    fn crossing_m(&self, q: V, t: V, off_m: f64) -> f64 {
         let (grid, chords, widest) = &self.roads;
         let mpu = self.mpu(q);
+        let n = left(t);
+        let middle = [q[0] - n[0] * off_m / mpu, q[1] - n[1] * off_m / mpu];
         let mut best = f64::INFINITY;
         grid.any(q, (RAMP_M + 3.0 * widest) / mpu, |k| {
             let ([a, b], band) = chords[k as usize];
-            if to_segment(q, a, b) * mpu <= band {
+            if to_segment(middle, a, b) * mpu <= band {
                 best = 0.0;
                 return true;
             }
@@ -351,8 +354,8 @@ impl Cx<'_> {
 
     /// A ring's offset: lower inside an earlier track's sleeper band, and sunk toward a crossing band from a line's
     /// top over its face `top_m` to `FLUSH_M`.
-    fn offset_at(&self, at: &At, key: u32, top_m: f64) -> f64 {
-        let ramp = (self.crossing_m(at.p, at.t) / RAMP_M).min(1.0);
+    fn offset_at(&self, at: &At, key: u32, top_m: f64, off_m: f64) -> f64 {
+        let ramp = (self.crossing_m(at.p, at.t, off_m) / RAMP_M).min(1.0);
         let stack = if self.lowered(at.p, key) { -STACK_M } else { 0.0 };
         stack - (top_m - FLUSH_M) * (1.0 - ramp)
     }
@@ -433,6 +436,8 @@ impl Cx<'_> {
         let stands = |i: usize| st[i].state != State::None && st[i + 1].state != State::None && !st[i].gap;
         let scale = if kind == RAIL && flags & 2 == 0 { RAIL_SCALE } else { 1.0 };
         let top = SLEEPER_UP_M + TOP_M[kind as usize] * scale;
+        let side = if flags & 1 != 0 { 1.0 } else { -1.0 };
+        let off = if kind == RAIL { side * GAUGE_M[usize::from(flags & 2 != 0)] } else { 0.0 };
         let mut spans = Vec::new();
         let mut i = 0;
         while i + 1 < st.len() {
@@ -446,7 +451,7 @@ impl Cx<'_> {
             }
             let first = self.out.rings.len() as u32;
             for s in &st[i..=j] {
-                let offset = self.offset_at(&s.at, key, top);
+                let offset = self.offset_at(&s.at, key, top, off);
                 self.ring(&s.at, s.label, offset);
             }
             for k in i..j {
@@ -519,11 +524,9 @@ impl Cx<'_> {
                     let (state, label) = self.bed(x);
                     if state == State::Bed {
                         let at = At { p: x, t, along: m, z: 0.0 };
-                        let offset = self.offset_at(
-                            &at,
-                            key,
-                            SLEEPER_UP_M + TOP_M[0] * if gauge.narrow { 1.0 } else { RAIL_SCALE },
-                        );
+                        let top = SLEEPER_UP_M + TOP_M[0] * if gauge.narrow { 1.0 } else { RAIL_SCALE };
+                        let across = ((x[0] - q[0]) * n[0] + (x[1] - q[1]) * n[1]) * self.mpu(q);
+                        let offset = self.offset_at(&at, key, top, across);
                         let ring = self.ring(&at, label, offset);
                         self.item(q, [seat(a) | SLEEPER << 28, ring | (AXIS | flags) << 28]);
                     }
@@ -956,7 +959,9 @@ mod tests {
         let rail = line("railway", &[("railway", "rail")], &[[-150.0, 0.0], [150.0, 0.0]]);
         let (c, s) = (libm::cos(PI_3), libm::sin(PI_3));
         let road = line("road", &[("highway", "residential")], &[[-80.0 * c, -80.0 * s], [80.0 * c, 80.0 * s]]);
-        let (d, words) = built(cell(), &[rail, road], &|_, _| 500.0);
+        // A road beside the track with its edge over the bed, as the face plan's test: no crossing.
+        let beside = line("road", &[("highway", "residential")], &[[20.0, 3.5], [150.0, 3.5]]);
+        let (d, words) = built(cell(), &[rail, road, beside], &|_, _| 500.0);
         assert!(closure(&d).is_empty(), "{:?}", closure(&d));
         let surface = |q: V| find(&words, q).map(|l| records::label(&words, l)[0] & 0xff);
         let crossing = Some(Surface::Crossing as u32);
