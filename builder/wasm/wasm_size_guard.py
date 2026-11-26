@@ -7,16 +7,6 @@ The ground-plan and parts budgets are their recorded CI sizes plus the owner's m
 
 from __future__ import annotations
 
-GOVERNS = [
-    'builder/wasm/**',
-    'host/obcm-assemble/**',
-    'builder/ground-plan-wasm/**',
-    'host/obc-ground-plan/**',
-    'builder/trailview-parts-wasm/**',
-    'host/obc-trailview-parts/**',
-]
-RULE = 'A wasm bridge stays inside its recorded gzip and raw size budgets.'
-
 import argparse
 import gzip
 import sys

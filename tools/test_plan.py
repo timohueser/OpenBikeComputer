@@ -49,7 +49,6 @@ class Job:
 JOBS: dict[str, Job] = {
     "selection": Job(unconditional=True),
     "guards": Job(unconditional=True),
-    "cairn": Job(needs=("selection",)),
     "fmt": Job(needs=("selection",), roots=PRODUCT_ROOTS),
     "clippy": Job(needs=("selection",), roots=(ROOT_WORKSPACE,)),
     "test": Job(needs=("selection",), roots=(ROOT_WORKSPACE,), script="tools/ci/test.sh"),
@@ -124,7 +123,6 @@ TEST_POLICY_PATTERNS = (
 # stay on the full policy route.
 PUBLICATION_WORKFLOWS = {
     ".github/workflows/bake.yml",
-    ".github/workflows/cairn-report.yml",
     ".github/workflows/deploy-site.yml",
     ".github/workflows/deploy-verification.yml",
 }
@@ -133,6 +131,8 @@ SCOPED_POLICY_PATHS = {"tools/test_plan.py", "tools/ci_aggregate.py", ".github/w
 CODE_OR_POLICY_SUFFIXES = {
     ".c", ".h", ".js", ".json", ".py", ".rs", ".sh", ".swift", ".toml", ".ts", ".tsx", ".yaml", ".yml",
 }
+# The memory of the agents: the index and the pages (`tools/check_paths.py` holds them).
+PAGE_NAMES = {"AGENTS.md", "README.md"}
 # The captured-fixture tier is exactly the targets Cargo gates on this feature.
 FIXTURE_FEATURE = "external-fixtures"
 # The reason prefix that means "run everything, including the snapshot sweep".
@@ -504,6 +504,14 @@ def select(
 
     orphaned: list[str] = []
     for path in sorted(set(changed_paths)):
+        # A page instructs a reader. No build and no test reads one, so a page is not an input of
+        # the package, fixture set or area that holds it: only a trigger that names pages selects.
+        if Path(path).name in PAGE_NAMES:
+            for unit in units:
+                for pattern in unit.triggers:
+                    if Path(pattern).name in PAGE_NAMES and glob_matches(path, pattern):
+                        claim(unit, f"trigger {pattern} matched {path}")
+            continue
         owned = False
         if is_policy_path(path):
             owned = True
