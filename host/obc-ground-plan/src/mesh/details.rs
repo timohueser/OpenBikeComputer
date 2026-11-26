@@ -652,18 +652,19 @@ fn exit(near: V, far: V) -> V {
 /// Per span of way w that the graph holds: its index and the way's span metres in it.
 fn spans_of(g: &WayGraph, w: u32) -> Vec<(u32, f64, f64)> {
     let way = &g.ways[w as usize];
-    let part = &g.parts[way.part as usize];
     let mut ks: Vec<u32> =
         g.samples[way.samples.start as usize..way.samples.end as usize].iter().map(|s| s.span).collect();
     ks.dedup();
-    ks.into_iter()
-        .filter_map(|k| {
-            let span = &part.spans[k as usize];
-            let s0 = if k == way.from.span { s_at(span, way.from.u) } else { 0.0 };
-            let s1 = if k == way.to.span { s_at(span, way.to.u) } else { span.len_m };
-            (k >= way.from.span && k <= way.to.span && s1 > s0).then_some((k, s0, s1))
-        })
-        .collect()
+    ks.into_iter().filter_map(|k| span_range(g, w, k).map(|(s0, s1)| (k, s0, s1))).collect()
+}
+
+/// The span metres of way w in span k of its part, none where it holds none of it.
+fn span_range(g: &WayGraph, w: u32, k: u32) -> Option<(f64, f64)> {
+    let way = &g.ways[w as usize];
+    let span = g.parts[way.part as usize].spans.get(k as usize)?;
+    let s0 = if k == way.from.span { s_at(span, way.from.u) } else { 0.0 };
+    let s1 = if k == way.to.span { s_at(span, way.to.u) } else { span.len_m };
+    (k >= way.from.span && k <= way.to.span && s1 > s0).then_some((s0, s1))
 }
 
 /// The point of way w at metres s of span k: frame units, unrounded.
@@ -687,16 +688,10 @@ fn marks(g: &WayGraph, w: u32, step: f64, half: f64) -> Vec<(f64, V, V, f64)> {
     let way = &g.ways[w as usize];
     let part = &g.parts[way.part as usize];
     let sign = if part.backward { -1.0 } else { 1.0 };
-    let range = |k: u32| {
-        let span = &part.spans[k as usize];
-        let s0 = if k == way.from.span { s_at(span, way.from.u) } else { 0.0 };
-        let s1 = if k == way.to.span { s_at(span, way.to.u) } else { span.len_m };
-        (k >= way.from.span && k <= way.to.span && s1 > s0).then_some((s0, s1))
-    };
     // Whether the stroke metres run on from span k into the next (by `d`, ±1).
     let joins = |k: u32, d: i64| {
         let n = k as i64 + d;
-        if n < 0 || n as usize >= part.spans.len() || range(n as u32).is_none() {
+        if n < 0 || span_range(g, w, n as u32).is_none() {
             return false;
         }
         let (a, b) = (&part.spans[k as usize], &part.spans[n as usize]);
