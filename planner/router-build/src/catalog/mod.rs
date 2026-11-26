@@ -1,6 +1,6 @@
 //! The route catalog: the signed routes of a region, each with the plan that reproduces it.
 //! `specs/route-catalog.md` is the contract.
-mod assemble;
+pub(crate) mod assemble;
 mod connector;
 mod long;
 mod merge;

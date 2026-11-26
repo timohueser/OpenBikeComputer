@@ -1,4 +1,5 @@
 pub mod base;
+pub mod bench;
 pub mod blocks;
 pub mod catalog;
 mod column;
