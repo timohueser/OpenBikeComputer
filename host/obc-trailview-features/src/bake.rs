@@ -145,8 +145,8 @@ pub fn bake(
     let cut = osm::selected(kinds, pbf, &binary, &placer.tiles, work)?;
     let Solution { waters, drawn, water, roads: solved, kept, cut: cut_features, ways: solved_ways } =
         solve(options, &cut, &binary, &placer.tiles, terrain, memory)?;
-    // The second read places the features in the order of the file. The lifts wait for the buildings and
-    // the other lifts: a station shares their places. The features of the solvers wait for all of their kind.
+    // The second read places the features in the order of the file. The lifts wait for the other lifts: the
+    // lifts that end at one point share a station. The features of the solvers wait for all of their kind.
     let (mut lift_ways, mut lift_entry, mut landuse) = (Vec::new(), None, Vec::new());
     let (mut ways, mut stations, mut river_areas) = (Vec::new(), Vec::new(), Vec::new());
     let (mut crosses, mut peaks) = (Vec::new(), Vec::new());
@@ -210,27 +210,25 @@ pub fn bake(
         }
     }
     // The buildings come in a read of the areas of their own, after the landuse areas: a building of the
-    // region takes the landuse of the area that holds it. The lifts keep only the outer rings that can house
-    // a station.
-    let ends: Vec<[f64; 4]> =
-        lift_ways.iter().flat_map(|(_, p)| [p[0], p[p.len() - 1]]).map(|[x, y]| [x, y, x, y]).collect();
-    let ends = Boxes::new(&ends);
+    // region takes the landuse of the area that holds it. A building that holds the end of a lift has no
+    // place: the station of the lift stands there.
+    let ends = lifts::Ends::new(&lift_ways);
     let landuse_at = landuse_of(&landuse);
-    let (mut housing, mut counts) = (Vec::new(), [0usize; LANDUSE.len()]);
+    let (mut station_buildings, mut counts) = (0usize, [0usize; LANDUSE.len()]);
     osm::objects(kinds, &cut, &binary, &[osm::AREAS], |(selected, mut tags, parts)| {
         let Selected::Entry(e) = selected else { return };
-        if kinds[e].kind != "building" {
+        if kinds[e].kind != "building" || !placer.tiles.meets(MAX_ZOOM, &parts) {
             return;
         }
-        let rings = parts.iter().filter(|p| p.outer).map(|p| &p.points);
-        housing.extend(rings.filter(|ring| !ends.overlapping(bounds(*ring)).is_empty()).cloned());
-        if placer.tiles.meets(MAX_ZOOM, &parts) {
-            if let Some(value) = landuse_at(&parts) {
-                counts[LANDUSE.iter().position(|l| *l == value).unwrap()] += 1;
-                tags.insert("landuse".into(), value.to_string());
-            }
-            placer.entry(&kinds[e], tags, parts);
+        if ends.within(&parts) {
+            station_buildings += 1;
+            return;
         }
+        if let Some(value) = landuse_at(&parts) {
+            counts[LANDUSE.iter().position(|l| *l == value).unwrap()] += 1;
+            tags.insert("landuse".into(), value.to_string());
+        }
+        placer.entry(&kinds[e], tags, parts);
     })?;
     // The cut of a large region takes GBs, and the rest of the bake runs long after it is read.
     std::fs::remove_file(&cut).map_err(|e| e.to_string())?;
@@ -240,14 +238,14 @@ pub fn bake(
     drop(landuse_at);
     drop(landuse);
     if let Some(e) = lift_entry {
-        let (rigged, lift_metrics) = lifts::rigged(&lift_ways, &housing, terrain);
+        let (rigged, lift_metrics) = lifts::rigged(&lift_ways, terrain);
         for (tags, points) in rigged {
             placer.entry(&kinds[e], tags, line(points, None));
         }
         metrics.insert(
             "lifts".into(),
             json!({"lifts": lift_metrics.lifts, "added_pylons": lift_metrics.added_pylons,
-                   "housed_ends": lift_metrics.housed_ends, "shared_ends": lift_metrics.shared_ends}),
+                   "shared_ends": lift_metrics.shared_ends, "station_buildings": station_buildings}),
         );
     }
     eprintln!("placed: {:.1} s", started.elapsed().as_secs_f64());

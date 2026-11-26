@@ -161,6 +161,14 @@
     "height": "surface"
   },
   {
+    "kind": "no-house",
+    "geometry": "area",
+    "match": [{"building": "*", "aerialway": ["station"]}, {"building": "*", "man_made": ["ski_jump"]}],
+    "keep": [],
+    "height": "none",
+    "active": false
+  },
+  {
     "kind": "building",
     "geometry": "area",
     "match": [{"building": "*"}],

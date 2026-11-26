@@ -572,9 +572,9 @@ The bake adds these to the features of the road solver:
   its clearance, the bake adds a pylon: in the middle of a long span, else at the point of the span
   at least 25 m from both of its ends where the carrier comes nearest. The rigs are those of
   `host/obc-trailview-features/src/lifts.rs`.
-- A station at an end that lies inside a mapped building is that building. Of the ways that end at
-  one point, only the first in the OSM data has the station there. The tag `stations` names the
-  ends that have a station of their own.
+- A station stands at each end. A `building` with an outer ring that holds an end, or tagged
+  `aerialway=station`, is not in the tiles. Of the ways that end at one point, only the first in
+  the OSM data has the station there (tag `stations`).
 
 #### Buildings
 

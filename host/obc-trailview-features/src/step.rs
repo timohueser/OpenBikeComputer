@@ -92,7 +92,7 @@ mod tests {
     /// A zoom-13 tile in Engelberg. Each node is (id, u, v) in its tile units.
     const COLUMN: u32 = 4286;
     const ROW: u32 = 2889;
-    const NODES: [(u32, u32, u32); 45] = [
+    const NODES: [(u32, u32, u32); 49] = [
         (1, 7000, 4000),
         (2, 17500, 4000),
         (3, 3000, 3000),
@@ -136,8 +136,12 @@ mod tests {
         (41, 9300, 9500),
         (42, 9000, 9000),
         (43, 9600, 9000),
-        (44, 3050, 3050),
+        (44, 2950, 3200),
         (45, 8000, 6000),
+        (46, 7950, 5950),
+        (47, 8050, 5950),
+        (48, 8050, 6050),
+        (49, 7950, 6050),
     ];
 
     type Way = (u32, Vec<u32>, Vec<(&'static str, &'static str)>);
@@ -160,8 +164,9 @@ mod tests {
             (112, vec![36, 37, 38, 39, 36], vec![("landuse", "farmyard")]),
             (113, vec![40, 41], vec![("highway", "residential")]),
             (114, vec![42, 43], vec![("highway", "residential"), ("bridge", "yes")]),
-            // A chair lift from inside the building of relation 200.
+            // A chair lift from beside the building of relation 200 into a building of its own.
             (115, vec![44, 45], vec![("aerialway", "chair_lift")]),
+            (116, vec![46, 47, 48, 49, 46], vec![("building", "yes")]),
         ]
     }
 
@@ -420,8 +425,9 @@ mod tests {
         }
         assert_eq!(building.parts.iter().map(|p| p.outer).collect::<Vec<_>>(), [true, false]);
         assert_eq!(building.parts[1].xy.len(), 4);
-        // The building houses the station of the lift at its start: the lift has a station at its end only.
-        assert_eq!(find(left, "aerialway").tags.get("stations").map(String::as_str), Some("end"));
+        // The station of the lift stands for the building that holds its end: the tile holds one building, and
+        // the lift has both of its stations.
+        assert_eq!(find(left, "aerialway").tags.get("stations"), None);
         // Above zoom 13 a tile holds the water and the main roads only, and the river still ends on the
         // shore of the lake.
         let overview = tiles.iter().find(|(k, _)| k.0 == 11).unwrap().1;
@@ -430,7 +436,7 @@ mod tests {
         assert!(lake.parts[0].xy.contains(river.parts[0].xy.last().unwrap()));
         let metrics = table(&std::fs::read_to_string(root.join("metrics.json")).unwrap());
         assert_eq!(metrics["tiles"], tiles.len());
-        assert_eq!(metrics["lifts"]["housed_ends"], 1);
+        assert_eq!(metrics["lifts"]["station_buildings"], 1);
         assert_eq!(
             metrics["roads"]["shallow_tunnels"], 1,
             "each way on the ground with a tunnel tag is a shallow tunnel"

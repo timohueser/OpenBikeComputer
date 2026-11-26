@@ -11,8 +11,9 @@ use crate::kinds::{kind_of, selected_by, Entry, Values};
 use crate::tiles::{Geometry, Tiles, MAX_ZOOM};
 use crate::{world, Part, Tags};
 
-/// A lift station shares its place with the buildings and the lifts near it: the near area of the
-/// input reaches this far past the tiles of the region, more than the longest aerial lift.
+/// The end of a lift takes the place of the building that holds it, and the lifts that end at one point
+/// share a station: the near area of the input reaches this far past the tiles of the region, more than
+/// the longest aerial lift.
 pub const LIFT_REACH_M: f64 = 20000.0;
 const METRES_PER_DEGREE: f64 = 111320.0;
 /// Up to this size, the input is renumbered before the cut. Osmium's extract keeps bit sets up to the
