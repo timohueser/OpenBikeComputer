@@ -7,8 +7,9 @@
 //! line's rings are its way's samples and a point each `RING_M` of stroke metres, offset onto the line, its cuts by
 //! the cell lines, and where the face under it changes: read each `PROBE_M` and found to `BISECT_M`. A span stands on
 //! a rail bed or a crossing face, and a run of spans has a cap at each end but on a cell line. A line's top over its
-//! face sinks to `FLUSH_M` over `RAMP_M` before the band of a ground road or path that crosses it on a track's bed:
-//! continuous along the line, by the metres from its ring to the band along its tangent. A sleeper stands at each `SLEEPER_M` of stroke metres where both its seats lie on standing spans of a bed and
+//! face sinks to `FLUSH_M` over `RAMP_M` before a crossing: by the metres along the line to the nearest crossing face
+//! that the cell's reads found, or to the band of a ground road or path that the track runs through, which the graph
+//! gives every cell alike past its square. A sleeper stands at each `SLEEPER_M` of stroke metres where both its seats lie on standing spans of a bed and
 //! its footprint crosses no jump of the stroke metres (another tile's span, a way's end); a seat past the cell line
 //! takes the ring where the sleeper's axis leaves the square. A later track (`way_key`) stands `STACK_M` lower inside
 //! an earlier one's sleeper band. A flight's span splits into treads by its rise, each a box from under the face to
@@ -354,8 +355,9 @@ impl Cx<'_> {
 
     /// A ring's offset: lower inside an earlier track's sleeper band, and sunk toward a crossing band from a line's
     /// top over its face `top_m` to `FLUSH_M`.
-    fn offset_at(&self, at: &At, key: u32, top_m: f64, off_m: f64) -> f64 {
-        let ramp = (self.crossing_m(at.p, at.t, off_m) / RAMP_M).min(1.0);
+    /// `face_m`: the metres along the line to a crossing face that the cell's reads found.
+    fn offset_at(&self, at: &At, key: u32, top_m: f64, off_m: f64, face_m: f64) -> f64 {
+        let ramp = (self.crossing_m(at.p, at.t, off_m).min(face_m) / RAMP_M).min(1.0);
         let stack = if self.lowered(at.p, key) { -STACK_M } else { 0.0 };
         stack - (top_m - FLUSH_M) * (1.0 - ramp)
     }
@@ -436,6 +438,14 @@ impl Cx<'_> {
         let stands = |i: usize| st[i].state != State::None && st[i + 1].state != State::None && !st[i].gap;
         let scale = if kind == RAIL && flags & 2 == 0 { RAIL_SCALE } else { 1.0 };
         let top = SLEEPER_UP_M + TOP_M[kind as usize] * scale;
+        // The metres along the stations, each step in whole 1/1024 m at the mean scale of its ends: alike in either
+        // direction; and those of the stations on a crossing face.
+        let mut m = vec![0.0; st.len()];
+        for k in 1..st.len() {
+            let (a, b) = (st[k - 1].at.p, st[k].at.p);
+            m[k] = m[k - 1] + libm::round(dist(a, b) * (self.mpu(a) + self.mpu(b)) / 2.0 * 1024.0) / 1024.0;
+        }
+        let crossings: Vec<f64> = (0..st.len()).filter(|&k| st[k].state == State::Crossing).map(|k| m[k]).collect();
         let side = if flags & 1 != 0 { 1.0 } else { -1.0 };
         let off = if kind == RAIL { side * GAUGE_M[usize::from(flags & 2 != 0)] } else { 0.0 };
         let mut spans = Vec::new();
@@ -450,8 +460,9 @@ impl Cx<'_> {
                 j += 1;
             }
             let first = self.out.rings.len() as u32;
-            for s in &st[i..=j] {
-                let offset = self.offset_at(&s.at, key, top, off);
+            for (k, s) in st.iter().enumerate().take(j + 1).skip(i) {
+                let face = crossings.iter().map(|&c| (m[k] - c).abs()).fold(f64::INFINITY, f64::min);
+                let offset = self.offset_at(&s.at, key, top, off, face);
                 self.ring(&s.at, s.label, offset);
             }
             for k in i..j {
@@ -526,7 +537,7 @@ impl Cx<'_> {
                         let at = At { p: x, t, along: m, z: 0.0 };
                         let top = SLEEPER_UP_M + TOP_M[0] * if gauge.narrow { 1.0 } else { RAIL_SCALE };
                         let across = ((x[0] - q[0]) * n[0] + (x[1] - q[1]) * n[1]) * self.mpu(q);
-                        let offset = self.offset_at(&at, key, top, across);
+                        let offset = self.offset_at(&at, key, top, across, f64::INFINITY);
                         let ring = self.ring(&at, label, offset);
                         self.item(q, [seat(a) | SLEEPER << 28, ring | (AXIS | flags) << 28]);
                     }
