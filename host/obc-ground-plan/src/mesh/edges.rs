@@ -831,17 +831,14 @@ pub(super) fn solids(b: &mut Build, edges: &Edges, words: &[u32]) {
     let east_north = |v: [f64; 2]| [v[0], -v[1], 0.0];
     let at = |r: &Ring, d: f64, a: f64| add(add(r.edge, r.out, -d / r.mpu), r.along, a / r.mpu);
     // A prism at ring r, its middle `d` in from the edge and its plan about that (in, along), cut by the cell square:
-    // one between each two offsets of `up`, on the label at its middle, or where a neighbour holds that, at its first
-    // point.
+    // through the offsets of `up`, on the label at its middle, or where a neighbour holds that, at its first point.
     let boxed = |b: &mut Build, part: usize, r: &Ring, d: f64, plan: &[[f64; 2]], up: &[f64]| {
         let mid = at(r, d, 0.0);
         let o = rounded(mid);
         let ring = clip(o, &plan.iter().map(|&[x, y]| sub(at(r, d + x, y), o.map(f64::from))).collect::<Vec<_>>());
         let inside = mid.iter().all(|v| (0.0..=c).contains(v));
         if let Some(label) = ring.first().and_then(|&p| find(words, (if inside { o } else { p }).map(f64::from))) {
-            for w in up.windows(2) {
-                prism(b, part, &ring, (label, w[1]), (label, w[0]));
-            }
+            prism(b, part, &ring, &up.iter().map(|&u| (label, u)).collect::<Vec<_>>());
         }
     };
     for run in &edges.rails {

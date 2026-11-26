@@ -288,23 +288,28 @@ fn wall(
     wall_of(b, part, c, left);
 }
 
-/// A closed prism over a convex ring of the cell (cut by the cell square): its corners at each point take the top's
-/// label and offset and the foot's. Its walls on a cell line stay open.
-pub(super) fn prism(b: &mut Build, part: usize, ring: &[P], top: (u32, f64), foot: (u32, f64)) {
+/// A closed prism over a convex ring of the cell (cut by the cell square), from its foot up through `levels` (label,
+/// offset) to its top: its corners at each point take each level's label and offset, and its walls split at each
+/// level between. Its walls on a cell line stay open.
+pub(super) fn prism(b: &mut Build, part: usize, ring: &[P], levels: &[(u32, f64)]) {
     let n = ring.len();
     if n < 3 || area2(ring) == 0 {
         return;
     }
     // A positive ring in the frame holds its inside on the left of each edge and turns clockwise seen from above.
     let left = area2(ring) > 0;
-    let t: Vec<u32> = ring.iter().map(|&p| b.corner(p, top.0, top.1)).collect();
-    let f: Vec<u32> = ring.iter().map(|&p| b.corner(p, foot.0, foot.1)).collect();
-    for i in 0..n {
-        let j = (i + 1) % n;
-        if !on_cell_line(ring[i], ring[j]) {
-            wall_of(b, part, [f[i], t[i], f[j], t[j]], left);
+    let at: Vec<Vec<u32>> =
+        levels.iter().map(|&(l, off)| ring.iter().map(|&p| b.corner(p, l, off)).collect()).collect();
+    for w in at.windows(2) {
+        let (f, t) = (&w[0], &w[1]);
+        for i in 0..n {
+            let j = (i + 1) % n;
+            if !on_cell_line(ring[i], ring[j]) {
+                wall_of(b, part, [f[i], t[i], f[j], t[j]], left);
+            }
         }
     }
+    let (f, t) = (&at[0], &at[at.len() - 1]);
     for i in 1..n - 1 {
         let (up, down) = if left {
             ([t[0], t[i + 1], t[i]], [f[0], f[i], f[i + 1]])
@@ -1047,7 +1052,7 @@ fn posts(
         if ring.iter().flatten().any(|&v| !(0.0..=c).contains(&v)) || ring.iter().any(|&v| paved(v)) {
             continue;
         }
-        prism(b, POST, &clip([0, 0], &ring), (l, RAIL_M - BAR_M), (l, 0.0));
+        prism(b, POST, &clip([0, 0], &ring), &[(l, 0.0), (l, RAIL_M - BAR_M)]);
     }
 }
 
@@ -1103,13 +1108,13 @@ fn piers(
             continue;
         }
         let ground = find(words, q).unwrap_or(NO_LABEL);
-        prism(b, PIER, &ring, (top, -w.depth_m), (ground, -structures.pier_depth_m));
+        prism(b, PIER, &ring, &[(ground, -structures.pier_depth_m), (top, -w.depth_m)]);
         stats.piers += 1;
     }
 }
 
 /// The faults of a storey mesh's closure, per solid: the slab (top, underside, edge faces and slots; a bore's floor,
-/// roof and walls), the parapets, the railings' rails, their posts, the piers and the guard rails. In each, every edge between two corners at two points is the edge of exactly one
+/// roof and walls), the parapets, the railings' rails, their posts, the piers, the guard rails and the delineators. In each, every edge between two corners at two points is the edge of exactly one
 /// triangle in each direction (a closed, consistently turned surface), except on a cell line and on an open piece
 /// (`StoreyMesh::open`), where storey 0 or the neighbour goes on. Two corners at one point (a seam between two
 /// labels, or a vertical edge) span no area seen from above and count for nothing.
@@ -1125,7 +1130,7 @@ pub fn closure(m: &StoreyMesh) -> Vec<String> {
         let two = if (k as u32) < m.top_slots { [[ap, aq, bq], [ap, bq, bp]] } else { [[ap, bq, aq], [ap, bp, bq]] };
         solids[0].1.extend(two);
     }
-    for k in [PARAPET, RAILING, POST, PIER, RAIL] {
+    for k in [PARAPET, RAILING, POST, PIER, RAIL, DELINEATOR] {
         solids.push((PARTS[k], slab(k)));
     }
     for (name, tris) in solids {
