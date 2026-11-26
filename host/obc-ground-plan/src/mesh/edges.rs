@@ -681,7 +681,6 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                 let deli = flat(n, |i| {
                     let on = |step: f64| libm::fmod(pts[i].along, step) == 0.0;
                     rings[i].2
-                        && pts[i].post
                         && (on(STEP_M) || (on(BEND_STEP_M) && turn(i)))
                         && near_cell(rings[i].0, mpu[i])
                         && !ctx.town(rings[i].0, mpu[i])
