@@ -394,7 +394,7 @@ fn ground(g: &WayGraph, w: u32) -> bool {
 }
 
 /// Whether the arm ends its way: at its way's start it points along it (+1), at its end back (−1).
-fn at_end(g: &WayGraph, a: &Arm) -> bool {
+pub(super) fn at_end(g: &WayGraph, a: &Arm) -> bool {
     a.at == if a.dir > 0 { g.ways[a.way as usize].from } else { g.ways[a.way as usize].to }
 }
 
