@@ -63,7 +63,7 @@ describe('the mesh reader', () => {
             for (let i = 0; i < items; i++) expect(details[3 * rings + 2 * i] & 0xffff).toBeLessThan(rings);
             expect(ranges.map(({ first }) => first)).toEqual(ranges.map((_, k) => ranges.slice(0, k).reduce((n, r) => n + r.count, 0)));
             expect(ranges.reduce((n, { count }) => n + count, 0)).toBe(items);
-            expect(ranges.every(({ node, draw }) => node < 16 && draw < 3)).toBe(true);
+            expect(ranges.every(({ node, draw }) => node < 16 && draw < 5)).toBe(true);
         } finally {
             input.free();
             plan.free();

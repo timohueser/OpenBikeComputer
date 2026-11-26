@@ -97,12 +97,15 @@ impl Item {
         self.words[0] >> 28
     }
 
-    /// Its draw: a swept span, a box or a cap, a log (`plan/details.ts`).
+    /// Its draw, each with its own corners (`plan/details.ts`): a rail's span, a rack's or a cable's, a box, a cap,
+    /// a log.
     pub fn draw(&self) -> usize {
         match self.kind() {
-            RAIL | RACK | CABLE => 0,
-            LOG => 2,
-            _ => 1,
+            RAIL => 0,
+            RACK | CABLE => 1,
+            CAP => 3,
+            LOG => 4,
+            _ => 2,
         }
     }
 

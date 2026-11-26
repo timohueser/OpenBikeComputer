@@ -1,7 +1,8 @@
 // Storey 0's track and step details (`mesh/details.rs` of obc-ground-plan): each part built here from its rings,
 // corners of the cell's storey mesh at their heights from corners.wgsl, as culvert_vertex builds a mouth; an instance
-// is a part (details.ts). They shade with the corridors' fragment stage without PIECE, as the parts of roads/parts.ts:
-// by their facets, faded out from DETAIL_M to DETAIL_END_M (track-looks.wgsl) as the bed's look paints them.
+// is a part and a vertex one of its corners, which its draw's triangles share (details.ts). They shade with the
+// corridors' fragment stage without PIECE, as the parts of roads/parts.ts: by their facets, each triangle with the look
+// of its first corner, faded out from DETAIL_M to DETAIL_END_M (track-looks.wgsl) as the bed's look paints them.
 // #include piece.wgsl
 
 // As mesh/details.rs: the kinds of a part, and a sleeper with one seat, its other the gauge across its span (to the
@@ -75,14 +76,13 @@ fn d_left(t: vec2f) -> vec2f {
     return vec2f(-t.y, t.x);
 }
 
-// A vertex of a part: its place in LOD space, its height, its look word and frame; `keep` false draws nothing.
+// A corner of a part: its place in LOD space, its height, its look word and frame.
 struct DVertex {
     s: vec2f,
     h: f32,
     word: u32,
     across: f32,
     along: f32,
-    keep: bool,
 }
 
 // A seat of a part on a span (a ring and the next, 16 bits each and a share in 12): its place, height, the span's unit
@@ -113,19 +113,11 @@ struct DBox {
     y: array<f32, 4>,
 }
 
-// A box's 6 faces of 4 corners, counter-clockwise from outside: top, right, left, front, back, bottom (roads/parts.ts).
-fn d_box_corner(face: u32, k: u32) -> u32 {
-    var faces = array(5u, 1u, 3u, 7u, 0u, 2u, 3u, 1u, 6u, 4u, 5u, 7u, 2u, 6u, 7u, 3u, 4u, 0u, 1u, 5u, 6u, 2u, 0u, 4u);
-    return faces[4u * face + k];
-}
-
-fn d_box(b: DBox, index: u32, mats: vec2u, code: u32) -> DVertex {
-    let face = index / 6u;
-    let c = d_box_corner(face, array(0u, 1u, 2u, 0u, 2u, 3u)[index % 6u]);
+// Corner c of a box: its top's look on a top corner, its sides' on a foot corner, which begins each side's triangles.
+fn d_box(b: DBox, c: u32, mats: vec2u, code: u32) -> DVertex {
     let at = c >> 1u;
     let up = (c & 1u) == 1u;
-    let mat = select(mats.y, mats.x, face == 0u);
-    return DVertex(b.p[at], select(b.lo[at], b.hi[at], up), look_word(mat, code, 0.0), b.a[at], b.y[at], true);
+    return DVertex(b.p[at], select(b.lo[at], b.hi[at], up), look_word(select(mats.y, mats.x, up), code, 0.0), b.a[at], b.y[at]);
 }
 
 // A centred box: its middle, unit left and ahead, half-width across and along, its base height at the middle and
@@ -145,43 +137,34 @@ fn d_centred(m: vec2f, left: vec2f, ahead: vec2f, half: vec2f, base: f32, rise: 
     return b;
 }
 
-// Vertex `index` of the part of item `item`.
+// Corner `index` of the part of item `item`.
 fn d_vertex(index: u32, item: u32) -> DVertex {
     let w0 = piece[params.items + 2u * item];
     let w1 = piece[params.items + 2u * item + 1u];
     let kind = w0 >> 28u;
     let bits = (w0 >> 16u) & 0xfffu;
-    var out = DVertex(vec2f(0.0), NONE, 0u, 0.0, 0.0, false);
+    var out: DVertex;
     // A sleeper's flags lie in its second word's top bits; a tread's and a log's second word is no code.
     let narrow = (select(bits, w1 >> 28u, kind == D_SLEEPER) & 2u) != 0u;
     let code = select(select(w1 & 15u, 0u, kind == D_TREAD || kind == D_LOG), RAIL_CODE + u32(narrow), kind == D_SLEEPER);
     switch kind {
         case D_RAIL, D_RACK, D_CABLE: {
-            // A span's quad between its rings: an edge of the section, swept.
-            let q = index / 6u;
-            let corner = array(0u, 1u, 1u, 0u, 1u, 0u)[index % 6u];
-            let k = (q + array(0u, 0u, 1u, 0u, 1u, 1u)[index % 6u]) % d_points(kind);
-            if (q >= d_points(kind)) {
-                return out;
-            }
-            out = d_swept(kind, bits, d_ring((w0 & 0xffffu) + corner), k, code);
-            out.word = look_word(select(select(LOOK_CABLE, LOOK_RACK, kind == D_RACK), select(LOOK_RAIL, LOOK_RAIL_HEAD, q == 5u), kind == D_RAIL), code, 0.0);
+            // A point of the section at one of its span's two rings; the rail head's top takes its own look.
+            let n = d_points(kind);
+            out = d_swept(kind, bits, d_ring((w0 & 0xffffu) + index / n), index % n, code);
+            out.word = look_word(select(select(LOOK_CABLE, LOOK_RACK, kind == D_RACK), select(LOOK_RAIL, LOOK_RAIL_HEAD, index % n == 5u), kind == D_RAIL), code, 0.0);
         }
         case D_CAP: {
-            // The section's polygon at a run's end, in convex fans: its foot, web and head; facing back at a run's
-            // start, on at its end.
-            var rail = array(0u, 1u, 2u, 0u, 2u, 9u, 0u, 9u, 10u, 0u, 10u, 11u, 2u, 3u, 8u, 2u, 8u, 9u, 3u, 4u, 5u, 3u, 5u, 6u, 3u, 6u, 7u, 3u, 7u, 8u);
+            // The section's polygon at a run's end in the rail's convex fans: a rack's or cable's points past its four
+            // fall on its first, which leaves its one quad. Facing back at a run's start; at its end each point takes
+            // its mirror point, which turns the cap to face on.
             let section = (bits >> 4u) & 3u;
-            let tri = index / 3u;
-            if (index >= select(6u, 30u, section == D_RAIL)) {
-                return out;
+            let n = d_points(section);
+            var k = select(0u, index, index < n);
+            if ((bits & 8u) != 0u) {
+                k = n - 1u - k;
             }
-            var k = index % 3u;
-            if ((bits & 8u) != 0u && k != 0u) {
-                k = 3u - k;
-            }
-            let at = 3u * tri + k;
-            out = d_swept(section, bits, d_ring(w0 & 0xffffu), select(array(0u, 1u, 2u, 0u, 2u, 3u)[at % 6u], rail[at], section == D_RAIL), code);
+            out = d_swept(section, bits, d_ring(w0 & 0xffffu), k, code);
             out.word = look_word(select(select(LOOK_CABLE, LOOK_RACK, section == D_RACK), LOOK_RAIL, section == D_RAIL), code, 0.0);
         }
         case D_SLEEPER: {
@@ -239,12 +222,12 @@ fn d_swept(kind: u32, bits: u32, r: DRing, k: u32, code: u32) -> DVertex {
     let up = D_SLEEPER_UP_M + p.y * scale;
     // A rail's frame across is the track's: its middle lies a gauge to the side of the rail's.
     let middle = select(0.0, select(-1.0, 1.0, (bits & 1u) != 0u) * rail_gauge(code), kind == D_RAIL);
-    return DVertex(r.v.s + d_left(r.t) * p.x, r.v.h + up, 0u, middle + p.x, r.along / SLEEPER_SPACING_M, true);
+    return DVertex(r.v.s + d_left(r.t) * p.x, r.v.h + up, 0u, middle + p.x, r.along / SLEEPER_SPACING_M);
 }
 
-// A log across a trail's steps at its ring: round over the face, flat below, its ends closed; its length, turn and
-// grade from its words (roads/parts.ts).
-fn d_log(w0: u32, w1: u32, index: u32) -> DVertex {
+// Corner c of a log across a trail's steps at its ring: round over the face, flat below, a point of its arc at a side;
+// its length, turn and grade from its words (roads/parts.ts).
+fn d_log(w0: u32, w1: u32, c: u32) -> DVertex {
     let r = d_ring(w0 & 0xffffu);
     var halves = array(0.3, 0.35, 0.45, 0.55, 0.7, 0.85);
     let half = halves[min((w0 >> 16u) & 7u, 5u)];
@@ -252,35 +235,19 @@ fn d_log(w0: u32, w1: u32, index: u32) -> DVertex {
     let turn = pose.x * D_LOG_TURN;
     let ahead = vec2f(r.t.x * cos(turn) - r.t.y * sin(turn), r.t.x * sin(turn) + r.t.y * cos(turn));
     let low = asin((D_LOG_AXIS_M + D_LOG_SUNK_M) / D_LOG_R_M);
-    // 8 quads about its round (the last its flat foot), then 3 quads at each end: points of the arc at a side.
-    let q = index / 6u;
-    let c = array(0u, 1u, 2u, 0u, 2u, 3u)[index % 6u];
-    var arc: u32;
-    var side: f32;
-    if (q < 8u) {
-        arc = (q + select(0u, 1u, c >= 2u)) % 8u;
-        side = select(-half, half, c == 1u || c == 2u);
-    } else {
-        let k = 2u * ((q - 8u) % 3u) + 1u;
-        let right = q < 11u;
-        var fan = array(0u, k, k + 1u, k + 2u);
-        if (!right) {
-            fan = array(k + 2u, k + 1u, k, 0u);
-        }
-        arc = fan[c];
-        side = select(half, -half, right);
-    }
+    let arc = c % 8u;
+    let side = select(-half, half, c >= 8u);
     let angle = -low + f32(arc) * (3.14159265 + 2.0 * low) / 7.0;
     let y = cos(angle) * D_LOG_R_M;
     let up = D_LOG_AXIS_M + sin(angle) * D_LOG_R_M + 4.0 * pose.y * y;
-    return DVertex(r.v.s + d_left(ahead) * side + ahead * y, r.v.h + up, look_word(LOOK_LOG, 0u, 0.0), side, y, true);
+    return DVertex(r.v.s + d_left(ahead) * side + ahead * y, r.v.h + up, look_word(LOOK_LOG, 0u, 0.0), side, y);
 }
 
 @vertex
 fn detail_vertex(@builtin(vertex_index) index: u32, @builtin(instance_index) item: u32) -> CorridorOut {
     let d = d_vertex(index, item);
     var out = piece_out(PieceVertex(units_of(d.s), d.s, d.h), d.word, CornerPlace(vec2f(d.across, 0.0), d.along), vec3f(0.0, 0.0, 1.0));
-    if (!d.keep || !known(d.h)) {
+    if (!known(d.h)) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
     }
     return out;
@@ -290,5 +257,5 @@ fn detail_vertex(@builtin(vertex_index) index: u32, @builtin(instance_index) ite
 fn detail_caster(@builtin(vertex_index) index: u32, @builtin(instance_index) item: u32) -> @builtin(position) vec4f {
     let d = d_vertex(index, item);
     let p = frame.view_proj * vec4f(corner_point(PieceVertex(units_of(d.s), d.s, d.h)), 1.0);
-    return select(vec4f(0.0, 0.0, 2.0, 1.0), p, d.keep && known(d.h));
+    return select(vec4f(0.0, 0.0, 2.0, 1.0), p, known(d.h));
 }
