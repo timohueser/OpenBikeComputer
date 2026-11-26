@@ -156,19 +156,19 @@ impl Grid {
     }
 }
 
-fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+pub(super) fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] - b[0], a[1] - b[1]]
 }
 
-fn add(a: [f64; 2], b: [f64; 2], k: f64) -> [f64; 2] {
+pub(super) fn add(a: [f64; 2], b: [f64; 2], k: f64) -> [f64; 2] {
     [a[0] + k * b[0], a[1] + k * b[1]]
 }
 
-fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
+pub(super) fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[0] + a[1] * b[1]
 }
 
-fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
+pub(super) fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     libm::hypot(a[0] - b[0], a[1] - b[1])
 }
 
@@ -320,7 +320,7 @@ pub(super) struct Point {
     post: bool,
     way: u32,
     dir: f64,
-    span: u32,
+    pub(super) span: u32,
 }
 
 /// The points of way w in direction d: its graph samples and a post point at each `step` metres of stroke metres

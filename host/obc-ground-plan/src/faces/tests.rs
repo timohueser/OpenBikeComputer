@@ -30,6 +30,8 @@ pub(crate) struct Line {
     pub grade: Vec<f64>,
     /// Per vertex, the sides of the segment from it on with a sidewalk: 1 left, 2 right.
     pub walk: Vec<u8>,
+    /// The alignment's stroke metres at the first vertex, and whether they run backward.
+    pub plan: (f64, bool),
 }
 
 pub(crate) fn line(kind: &'static str, tags: &[(&'static str, &'static str)], points: &[[f64; 2]]) -> Line {
@@ -41,6 +43,7 @@ pub(crate) fn line(kind: &'static str, tags: &[(&'static str, &'static str)], po
         z: vec![500.0; n],
         grade: vec![0.0; n],
         walk: vec![0; n],
+        plan: (0.0, false),
     }
 }
 
@@ -73,8 +76,8 @@ fn feature(l: &Line, tile: (u32, u32), index: u32) -> Feature {
         })
         .collect();
     let plan = Some(Alignment {
-        along_m: 0.0,
-        backward: false,
+        along_m: l.plan.0,
+        backward: l.plan.1,
         tangent,
         grade: l.grade.clone(),
         bank: vec![0.0; n],

@@ -329,6 +329,36 @@ fn edges_in_mouths(key: CellKey, m: &StoreyMesh, b: &CellBuild, band_m: f64) -> 
     out
 }
 
+/// The faults of a cell's track and step details: an item that names a ring past the table, a swept span whose end
+/// neither goes on in a span of its line nor has a cap.
+fn details_closure(d: &details::Details) -> Vec<String> {
+    use details::{CABLE, CAP, LOG};
+    let line = |i: &details::Item| (i.kind(), (i.words[0] >> 16) & 7);
+    let mut spans: Vec<_> = d.items.iter().filter(|i| i.kind() <= CABLE).map(|i| (i.ring(), line(i))).collect();
+    spans.sort_unstable();
+    let mut caps: Vec<_> = (d.items.iter().filter(|i| i.kind() == CAP))
+        .map(|i| (i.ring(), (i.words[0] >> 20) & 3, (i.words[0] >> 16) & 15))
+        .collect();
+    caps.sort_unstable();
+    let mut out = Vec::new();
+    for i in &d.items {
+        let r = i.ring();
+        if r + 1 >= d.rings.len() + usize::from(i.kind() == CAP || i.kind() == LOG) {
+            out.push(format!("{:?}: ring {r} past the table", i.words));
+        } else if i.kind() <= CABLE {
+            let (kind, flags) = line(i);
+            let on = |n: usize| spans.binary_search(&(n, (kind, flags))).is_ok();
+            if (r == 0 || !on(r - 1)) && caps.binary_search(&(r, kind, flags)).is_err() {
+                out.push(format!("a {kind} span at ring {r} starts with no cap"));
+            }
+            if !on(r + 1) && caps.binary_search(&(r + 1, kind, flags | 8)).is_err() {
+                out.push(format!("a {kind} span at ring {r} ends with no cap"));
+            }
+        }
+    }
+    out
+}
+
 fn shell_part(m: &StoreyMesh, t: usize) -> &'static str {
     (0..obc_ground_plan::mesh::shell::PARTS.len())
         .find(|&k| m.part(k).contains(&t))
@@ -354,7 +384,7 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         }
         let mesh = mesh_storeys(key, &with.storeys, &with.records, &rules.structures).unwrap();
         terrain.insert(key, fix.cell(key).terrain);
-        faults.extend(details::closure(&with.storeys.details).into_iter().map(|f| format!("{key:?} details: {f}")));
+        faults.extend(details_closure(&with.storeys.details).into_iter().map(|f| format!("{key:?} details: {f}")));
         // An empty mesh still meets its neighbours: a guard rail of theirs may run on to the shared line.
         if mesh.triangles.is_empty() {
             built.insert(key, (with, mesh));

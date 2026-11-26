@@ -4,7 +4,8 @@
 // by their facets, faded out from DETAIL_M to DETAIL_END_M (track-looks.wgsl) as the bed's look paints them.
 // #include piece.wgsl
 
-// As mesh/details.rs: the kinds of a part, and a sleeper's second seat on the ring where its axis leaves the cell.
+// As mesh/details.rs: the kinds of a part, and a sleeper with one seat, its other the gauge across its span (to the
+// left with D_LEFT).
 const D_RAIL: u32 = 0u;
 const D_RACK: u32 = 1u;
 const D_CABLE: u32 = 2u;
@@ -14,6 +15,7 @@ const D_TREAD: u32 = 5u;
 const D_CAP: u32 = 6u;
 const D_LOG: u32 = 7u;
 const D_AXIS: u32 = 1u;
+const D_LEFT: u32 = 8u;
 // As roads/parts.ts: a sleeper's top over the bed, its depth and half-width along the track; a roller's half-width
 // across and along and its top; a rail 0.125 m high, 1.2 times on standard gauge.
 const D_SLEEPER_UP_M: f32 = 0.05;
@@ -183,16 +185,13 @@ fn d_vertex(index: u32, item: u32) -> DVertex {
             out.word = look_word(select(select(LOOK_CABLE, LOOK_RACK, section == D_RACK), LOOK_RAIL, section == D_RAIL), code, 0.0);
         }
         case D_SLEEPER: {
-            // Between its seats, which take their rails' heights; a second seat past the cell line lies on the axis to
-            // the ring where it leaves the cell.
+            // Between its seats, which take their rails' heights; a seat alone has its other the gauge across its span
+            // at its height.
             let a = d_seat(w0);
-            var b = DSeat(vec2f(0.0), 0.0, a.dir, a.grade);
+            let flags = w1 >> 28u;
             let gauge = 2.0 * rail_gauge(code);
-            if (((w1 >> 28u) & D_AXIS) != 0u) {
-                let x = d_ring(w1 & 0xffffu);
-                let d = max(length(x.v.s - a.s), 1e-6);
-                b = DSeat(a.s + (x.v.s - a.s) * gauge / d, a.h + (x.v.h - a.h) * gauge / d, a.dir, a.grade);
-            } else {
+            var b = DSeat(a.s + d_left(a.dir) * select(-gauge, gauge, (flags & D_LEFT) != 0u), a.h, a.dir, a.grade);
+            if ((flags & D_AXIS) == 0u) {
                 b = d_seat(w1 & 0x0fffffffu);
             }
             let left = d_left(a.dir);
@@ -200,7 +199,7 @@ fn d_vertex(index: u32, item: u32) -> DVertex {
             let rise = vec2f((a.h - b.h) / select(across, 1e-6, abs(across) < 1e-6), a.grade);
             let half = vec2f(sleeper_half(code), D_SLEEPER_ALONG_M);
             let bx = d_centred(0.5 * (a.s + b.s), left, a.dir, half, 0.5 * (a.h + b.h), rise, D_SLEEPER_UP_M - D_SLEEPER_DEPTH_M, D_SLEEPER_UP_M);
-            let mat = select(LOOK_SLEEPER, LOOK_TIMBER, ((w1 >> 28u) & 4u) != 0u);
+            let mat = select(LOOK_SLEEPER, LOOK_TIMBER, (flags & 4u) != 0u);
             out = d_box(bx, index, vec2u(mat), code);
         }
         case D_ROLLER: {
@@ -209,7 +208,7 @@ fn d_vertex(index: u32, item: u32) -> DVertex {
             out = d_box(bx, index, vec2u(LOOK_RAIL), code);
         }
         case D_TREAD: {
-            // From under its face to its level (its rings' offsets), between its rings; open at an end on the cell line.
+            // From under its face to its level (its rings' offsets), between its rings.
             let half = bitcast<f32>(w1);
             var b: DBox;
             for (var e = 0u; e < 2u; e++) {
@@ -223,10 +222,6 @@ fn d_vertex(index: u32, item: u32) -> DVertex {
                     b.hi[k] = r.v.h;
                     b.y[k] = r.along;
                 }
-            }
-            let face = index / 6u;
-            if ((face == 4u && (bits & 2u) != 0u) || (face == 3u && (bits & 4u) != 0u)) {
-                return out;
             }
             out = d_box(b, index, vec2u(LOOK_TREAD, LOOK_RISER), code);
         }
