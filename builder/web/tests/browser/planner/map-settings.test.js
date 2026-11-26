@@ -12,10 +12,10 @@ const ARCHIVES = {
 const overlap = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 const inside = (inner, outer) => inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
 
-/** The planner at phone width with the map settings open, and the paths that it requests from then on. */
-async function settings(page) {
+/** The planner with the map settings open, at phone width or in a window of `width`, and the paths that it requests from then on. */
+async function settings(page, width = 390) {
   const requested = [];
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width, height: 844 });
   await page.route(url => url.hostname !== '127.0.0.1', route => {
     const request = route.request();
     if (request.method() === 'OPTIONS') return route.fulfill(CORS_PREFLIGHT);
@@ -29,6 +29,14 @@ async function settings(page) {
   await page.goto('/planner.html#/planner');
   await page.getByRole('button', { name: 'Map settings' }).click();
   return { popup: page.getByRole('dialog', { name: 'Map settings' }), requested };
+}
+
+/** Five steps in from zoom 7, where the map starts. */
+async function zoomTo12(page) {
+  for (let i = 0; i < 5; i++) {
+    await page.getByRole('button', { name: 'Zoom in' }).click();
+    await page.waitForTimeout(500);
+  }
 }
 
 test('the map settings show their pictures, and the legend of a data layer stands on the map above the date bar', async ({ page }) => {
@@ -58,17 +66,11 @@ test('the legends of the signed routes, the roads, the slope angle and the snow 
   const routes = page.getByRole('status').filter({ hasText: 'Cycling routes' });
   const slope = page.getByRole('status').filter({ hasText: 'Slope angle' });
   const snow = page.getByRole('status').filter({ has: page.getByRole('img', { name: /^Snow colours/ }) });
-  // The slope angle draws from zoom 12; the map starts at zoom 7. The pill keeps its height, so a fit of the route that
-  // keeps clear of the pills does not move the zoom across 12 again.
+  // The slope angle draws from zoom 12; the map starts at zoom 7.
   await expect(slope).toHaveText(/Slope angle · zoom in/);
   await expect(slope.getByRole('list', { name: 'Slope angle colours' }).getByRole('listitem')).toHaveCount(4);
-  const far = await slope.boundingBox();
-  for (let i = 0; i < 5; i++) {
-    await page.getByRole('button', { name: 'Zoom in' }).click();
-    await page.waitForTimeout(500);
-  }
+  await zoomTo12(page);
   await expect(slope).not.toHaveText(/zoom in/);
-  expect((await slope.boundingBox()).height).toBe(far.height);
   await expect(snow).toBeVisible();
 
   // The map requests the ways only while a layer of them is on.
@@ -87,3 +89,23 @@ test('the legends of the signed routes, the roads, the slope angle and the snow 
   // From the top: the signed routes, the roads, the slope angle, the conditions layer, its date bar.
   expect(boxes.slice(1).every((box, i) => boxes[i].y + boxes[i].height <= box.y)).toBe(true);
 });
+
+// The map fits a route clear of the pills, so a pill whose height follows the zoom would move the zoom across 12 again.
+// A note at the name must not move the swatches to another line. Windows of 480 px and of 1092 px give the stack of
+// legends a width where the swatches of the slope angle, and those of the steepness, have room beside the name alone
+// and not beside the name with its note.
+for (const width of [390, 480, 1092, 1440]) {
+  test(`the pills of the steepness and of the slope angle keep their height across zoom 12 in a window of ${width} px`, async ({ page }) => {
+    const { popup } = await settings(page, width);
+    await popup.getByRole('button', { name: 'Steepness', exact: true }).click();
+    await popup.getByRole('button', { name: 'Slope angle', exact: true }).click();
+    await page.keyboard.press('Escape');
+    const pills = ['Steepness', 'Slope angle'].map(name => page.getByRole('status').filter({ hasText: name }));
+    const heights = async () => (await Promise.all(pills.map(pill => pill.boundingBox()))).map(box => box.height);
+    for (const pill of pills) await expect(pill).toHaveText(/· zoom in/);
+    const far = await heights();
+    await zoomTo12(page);
+    for (const pill of pills) await expect(pill).not.toHaveText(/zoom in/);
+    expect(await heights()).toEqual(far);
+  });
+}

@@ -170,6 +170,8 @@
     let coarse = $state(false);
     const heightsShown = $derived(slopeAngle || wayLayer === 'steepness');
     $effect(() => {
+        // No note while the answer for this view is not known.
+        coarse = false;
         if (!heightsShown) return;
         const [west, south, east, north] = viewBounds;
         let current = true;
@@ -1542,8 +1544,9 @@
     .back-to-routes { display: flex; align-items: center; gap: 6px; min-height: 32px; margin: -4px 12px 8px; padding: 0 6px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; text-align: left; }
     .back-to-routes:hover { background: var(--parchment-2); color: var(--ink); }
     /* The legends, and the date bar of the conditions layer under them. Clear of the map controls column, which reaches the bottom on a
-       short map, and of the scale bar. The map reaches the clicks beside a legend. */
-    .map-legends { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; display: grid; gap: 8px; pointer-events: none; }
+       short map, and of the scale bar. The map reaches the clicks beside a legend. The stack is a container: its width sets the layout of a pill
+       (`MapLegends`). */
+    .map-legends { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; display: grid; gap: 8px; pointer-events: none; container-type: inline-size; }
     .map-legends > :global(*) { pointer-events: auto; }
     .pane-scroll {
         flex: 1;
