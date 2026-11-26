@@ -77,7 +77,8 @@ $D --out DIR --places A,B [--at NAME=LAT,LON] [--size-m M] [--px N] [--sections 
 $D --out DIR --fixture-steps [--grid M] [--cells X,Y;...]
 $D --why LAT,LON[;...]     # or --why-g X,Y[;...] (global frame units)
 $D --cost DIR
-$D --out DIR --gpu-check --places A,B [--at NAME=LAT,LON]
+obc exec cargo run --release -p obc-ground-plan --no-default-features --features storeys --example debug -- \
+  heights --out DIR --gpu-check --places A,B [--at NAME=LAT,LON] [--fixture DIR]
 ```
 
 | Option | Output |
@@ -86,7 +87,7 @@ $D --out DIR --gpu-check --places A,B [--at NAME=LAT,LON]
 | `--fixture-steps` | `fixture-steps.json` (steps by rule, borders, ripple, steps at label edges with no rule, slopes steeper than a rock face), `inside.json`, `unnamed.json`, `slots-full.json`, `host-missing.json`, `border-differ.json`, `edge-steps.json` |
 | `--why` | Prints the records and both sides' causes at the point and 2 units about it |
 | `--cost` | `cost.json`: the heights per fixture cell on one thread |
-| `--gpu-check` | `blocks.bin` and `points.json` for the GPU probe |
+| `--gpu-check` | `blocks.bin` and `points.json` for the GPU probe: the cells as the viewer builds them, with the viewer's features (it refuses the bores); `--fixture DIR` takes another fixture, such as a bake's |
 
 The GPU probe compares the viewer's `heights.wgsl` with `points.json`. Run it from `builder/web`,
 one GPU user at a time:

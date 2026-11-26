@@ -3,7 +3,8 @@
 //! (`check::edge_steps`, on a grid of `EDGE_GRID_M`), and the slopes steeper than a rock face. Writes
 //! `fixture-steps.json`.
 //! `heights --cost DIR`: the cost of the heights per fixture cell on one thread (`cost.json`).
-//! `heights --gpu-check --out DIR --places A,B [--at NAME=LAT,LON]`: the blocks of the places' cells
+//! `heights --gpu-check --out DIR --places A,B [--at NAME=LAT,LON] [--fixture DIR]`, built with the viewer's features
+//! (`--no-default-features --features storeys`): the blocks of the places' cells as the device builds them
 //! (`blocks.bin`) and Rust's heights at their paved and slope points (`points.json`) for
 //! `tests/browser/trailview/model-probe.mjs`, which compares the viewer's `heights.wgsl` with them, and
 //! `find`'s labels at whole-unit points (`labels.json`): the grid, every candidate edge's vertices, the
@@ -73,6 +74,7 @@ pub fn run() -> Result<(), String> {
     let (mut out, mut grid, mut only) = (None::<PathBuf>, 0.5f64, None::<Vec<(u32, u32)>>);
     let (mut gpu, mut scan_all, mut names, mut at) = (false, false, Vec::new(), Vec::new());
     let (mut size_m, mut px, mut sections) = (64.0, 1280u32, Vec::new());
+    let mut fixture = None::<PathBuf>;
     let mut args = std::env::args().skip(2);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
@@ -87,6 +89,7 @@ pub fn run() -> Result<(), String> {
                     .collect::<Result<_, _>>()?
             }
             "--gpu-check" => gpu = true,
+            "--fixture" => fixture = Some(value()?.into()),
             "--cost" => {
                 let out = args.next().ok_or("--cost DIR")?;
                 return cost(std::path::Path::new(&out));
@@ -131,13 +134,16 @@ pub fn run() -> Result<(), String> {
     let out =
         out.ok_or("heights --out DIR (--fixture-steps | --gpu-check | --why LAT,LON | --places A,B --at N=LAT,LON)")?;
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    if fixture.is_some() && !gpu {
+        return Err("heights: --fixture DIR only with --gpu-check".into());
+    }
     if !scan_all {
         let views = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../builder/web/tests/browser/trailview/road-views-top.json");
         let mut places = crate::named_places(&views, &names)?;
         places.extend(at);
         return if gpu {
-            gpu_check(&out, &places)
+            gpu_check(&out, &places, &fixture.unwrap_or_else(default_dir))
         } else {
             crate::heights_view::run(&out, &places, size_m, px, &sections)
         };
@@ -360,9 +366,14 @@ pub fn run() -> Result<(), String> {
 const GPU_SIDE: usize = 160;
 const GPU_SIZE_M: f64 = 60.0;
 
-fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(), String> {
-    let dir = default_dir();
-    let mut fix = Fixture::open(&dir);
+fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)], dir: &std::path::Path) -> Result<(), String> {
+    // A block with the bores holds their floor lines, which the viewer never gets and its heights.wgsl does not read.
+    if cfg!(feature = "bores") {
+        return Err(
+            "--gpu-check: the viewer links the storeys, not the bores: --no-default-features --features storeys".into(),
+        );
+    }
+    let mut fix = Fixture::open(dir);
     let rules = Rules::embedded();
     let mut blocks: Vec<u32> = Vec::new();
     let mut at: BTreeMap<CellKey, (usize, obc_ground_plan::CellInput)> = BTreeMap::new();
@@ -379,7 +390,8 @@ fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(),
                 let key = CellKey::of(GlobalPoint { x: g[0].floor() as i64, y: g[1].floor() as i64 });
                 if let std::collections::btree_map::Entry::Vacant(e) = at.entry(key) {
                     let Ok(input) = fix.try_cell(key) else { continue };
-                    let graph = graph::build(key, &input, &rules.sections);
+                    // As the device builds a cell: with the openings of its built tunnel ends.
+                    let graph = obc_ground_plan::cell::cell_graph(key, &input, rules);
                     let words = records::build(&graph, &input, rules, key, 0, true).near.words;
                     e.insert((blocks.len(), input));
                     blocks.extend(words);
