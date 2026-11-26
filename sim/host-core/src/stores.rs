@@ -16,13 +16,12 @@ pub struct MemRideStore {
 
 impl MemRideStore {
     /// Seed the catalog (newest first, as [`App::set_rides`](obc_app::App::set_rides) expects).
-    /// Positional ids — the catalog is fixed, so they're session-stable — carved out of
-    /// [`RIDE_ID_BASE`](crate::RIDE_ID_BASE)'s fixture band. Deletion also retains the Ride kind.
+    /// Positional ids: the catalog is fixed, so they are session-stable.
     pub fn new(catalog: Vec<RideSummary>) -> Self {
         let catalog = catalog
             .into_iter()
             .enumerate()
-            .map(|(i, summary)| RideEntry { id: crate::RIDE_ID_BASE + i as CatalogObjectId, summary })
+            .map(|(i, summary)| RideEntry { id: i as CatalogObjectId, summary })
             .collect();
         MemRideStore { catalog }
     }
@@ -103,6 +102,14 @@ impl TrackRepository for MemTrackStore {
     fn discard(&mut self) -> Result<(), obc_app::recorder::RecorderError> {
         self.recording = false;
         Ok(())
+    }
+
+    fn append_batch(
+        &mut self,
+        points: &[obc_ports::TrackPoint],
+        _continuation: Option<obc_app::RideContinuation>,
+    ) -> Result<crate::AppendStatus, obc_app::recorder::RecorderError> {
+        Ok(crate::AppendStatus::Accepted(points.len() as u16))
     }
 }
 

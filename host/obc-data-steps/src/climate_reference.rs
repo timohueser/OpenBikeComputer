@@ -1,6 +1,6 @@
 //! The producer of `climate`: the daily values of ERA5-Land of each block of 96 × 64 cells of its
 //! region, `<year>/<x>/<y>.gz` for the ten years that `planner/climate` reads, and the geopotential
-//! `orography/<x>/<y>.gz` (`specs/obc-data.md`). A version extends the version before: it makes
+//! `orography/<x>/<y>.gz` (`specs/obc-data-producers.md`). A version extends the version before: it makes
 //! only the files that the version before lacks, as final data of a year does not change.
 //! `tools/planner_climate.py prepare` writes the files of one block.
 

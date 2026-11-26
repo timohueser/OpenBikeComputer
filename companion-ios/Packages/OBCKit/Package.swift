@@ -76,9 +76,6 @@ let package = Package(
         .testTarget(
             name: "OBCTransportTests",
             dependencies: ["OBCTransport", "OBCFormats"],
-            // Checked-in library files from older app versions (e.g. the v1
-            // planned-route JSON) — the persistence-compat pins.
-            resources: [.copy("Fixtures")],
             swiftSettings: languageMode
         ),
         // Fake links and the checked-in protocol-v4 vectors, resolved from `#filePath`.

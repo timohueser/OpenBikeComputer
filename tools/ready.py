@@ -31,25 +31,6 @@ import test_plan
 #: Cargo roots beside the root workspace. Each one formats through its own manifest.
 STANDALONE_ROOTS = tuple(root for root in test_plan.PRODUCT_ROOTS if root != test_plan.ROOT_WORKSPACE)
 
-#: The clippy commands CI runs for each standalone root, copied from its job. They are quoted
-#: rather than composed: a root pins its target in its own `.cargo/config.toml`, which only a
-#: command started inside the root reads, and a root with no test harness cannot take
-#: `--all-targets`. A root that gains a feature leg in CI gains it here too.
-STANDALONE_CLIPPY: dict[str, tuple[str, ...]] = {
-    "firmware/obc-fw-nrf54l": (
-        "cargo clippy --locked -- -D warnings",
-        "cargo clippy --locked --features debug-uart -- -D warnings",
-    ),
-    "firmware/obc-boot": (
-        "cargo clippy --locked -- -D warnings",
-        "cargo clippy --locked --features rtt -- -D warnings",
-    ),
-    "firmware/obc-sensor-sim": (
-        "cargo clippy --locked --lib --tests -- -D warnings",
-        "cargo clippy --locked --features device --bin obc-sensor-sim --target thumbv8m.main-none-eabihf -- -D warnings",
-    ),
-}
-
 #: Paths that make `obc suites check` necessary, beside the test policy `test_plan` already names.
 TEST_SOURCE_PATTERNS = (
     "**/tests/**",
@@ -135,16 +116,13 @@ def _clippy_gates(changed: Sequence[str], packages: Mapping[str, test_plan.Packa
         if not hit:
             continue
         root = package.product_root
-        if root == test_plan.ROOT_WORKSPACE:
-            commands = [f"cargo clippy -p {name} --all-targets -- -D warnings"]
-        elif root not in STANDALONE_CLIPPY:
-            raise test_plan.PlanError(f"no CI clippy command for the Cargo root {root}")
-        else:
-            commands = [f"cd {root} && {command}" for command in STANDALONE_CLIPPY[root]]
-        gates.extend(
-            Gate(command, f"package {name} changed: {hit}", True, covered_by="ci.rust-clippy")
-            for command in commands
+        # A standalone root's clippy legs are the `clippy` section of its CI script.
+        command = (
+            f"cargo clippy -p {name} --all-targets -- -D warnings"
+            if root == test_plan.ROOT_WORKSPACE
+            else f"bash tools/ci/{Path(root).name}.sh clippy"
         )
+        gates.append(Gate(command, f"package {name} changed: {hit}", True, covered_by="ci.rust-clippy"))
     if not gates:
         return [Gate("cargo clippy", "no Cargo package changed", False)]
     return gates
@@ -362,7 +340,6 @@ def skeleton(changed: Sequence[str]) -> str:
         "",
         "pull request skeleton",
         "",
-        "Mode: change #N | fix | skip: <reason>",
         f"Surfaces: {', '.join(surfaces(changed)) or 'none'}",
         "Requirements: <SYS-nnn, or `none`>",
     ]

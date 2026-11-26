@@ -31,26 +31,19 @@ and test them from their own directories. The nearest README has the surface's s
 - Do not run planner publications or deployments concurrently.
 - Publish to prod only with a review ID that the owner approved: `obc data update prod --yes --expect ID`.
 - After a production data update, run the route pictures steps of `builder/web/tests/browser/trailview/README.md`.
-- Test the crates you changed, never the whole workspace by default:
+- Verify a change with two commands:
 
   ```sh
-  obc test -p <crate>
-  obc exec cargo clippy -p <crate> --all-targets -- -D warnings
+  obc test -p <crate>   # the inner loop: one package's tests, then its doctests
+  obc ready             # before a push: format, lint, docs and the affected suites
   ```
 
+  `obc ready` prints each gate it runs or skips, with the reason. A change that reaches the whole
+  graph is left to CI. [docs/testing.md](docs/testing.md) explains the plan.
 - Run a command that no task covers with `obc exec`: a raw shell lacks the tools of `obc.local`,
-  GEOS and the Cargo target of the checkout. `obc suites prepare` installs the npm projects and the wasm
-  bridges of a new worktree; `obc test affected` installs the ones its suites need.
-
-- `obc test fixtures -p <crate>` is for captured external data only. For a non-Rust surface, run
-  that surface's own focused command from its README. Select whole suites, never single tests.
-- For a change across packages, `obc test affected --base origin/develop` is the selection CI
-  runs; `--dry-run` prints the plan. `obc ready` runs the gates a change selects before a push.
-- `obc test full` or `obc check full` only for cross-cutting changes: workspace manifests, shared
-  contracts, foundational crates, CI or tooling, releases.
-- `obc suites check` after changing test sources, suite commands, workflows or test policy.
-  [docs/testing.md](docs/testing.md) explains the plan documents.
-- `cargo fmt --all` for the workspace, and `cargo fmt` in each standalone Cargo root.
+  GEOS and the Cargo target of the checkout.
+- For a non-Rust surface, run that surface's own focused command from its README. Select whole
+  suites, never single tests.
 - Prove claims with tests and measurements, and keep each run short. A run that takes minutes, in
   CI or local, committed or temporary, must earn its time: take the smallest sample that answers
   the question, and do not repeat it without a reason. Before a run over 5 minutes becomes routine
@@ -92,8 +85,8 @@ record. It does not appear in a contract, a guide, a README, a guard or a commen
 A rule is a check or it is one sentence in this file. A number in a gate says where it came from:
 measured on a named build, or chosen by the owner for a stated reason. `obc governs PATH` lists
 every guard, suite, contract and budget that reaches a file. `obc prose
---check` budgets guide pages, READMEs, guard docstrings and this file; an over-budget file must
-not grow.
+--check` budgets guide pages, READMEs, specs, system docs, skill files, guard docstrings and this
+file; an over-budget file must not grow.
 
 ## Documentation
 

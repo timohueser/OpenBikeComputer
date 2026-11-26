@@ -1,7 +1,7 @@
 name: cairn report
 
-# The weekly report on skipped pull requests, the ratchet and the approved system docs to check. It replaces the body of
-# the open issue labelled cairn-report.
+# The weekly report on the ratchet and the approved system docs to check. It replaces the body of the open issue
+# labelled cairn-report.
 
 on:
   schedule:
@@ -15,7 +15,6 @@ concurrency:
 permissions:
   contents: read
   issues: write
-  pull-requests: read
 
 jobs:
   report:

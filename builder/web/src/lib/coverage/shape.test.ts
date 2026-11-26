@@ -42,7 +42,7 @@ describe("patchCount", () => {
     });
 });
 
-describe("cellsTouchingHoles (#1041 A9)", () => {
+describe("cellsTouchingHoles", () => {
     it("keeps a partial only when a hole shares an edge or a corner", () => {
         const partials = ["18/0100/0100", "18/0100/0103"];
         // Edge-adjacent to the first, two cells away from the second.
@@ -60,7 +60,7 @@ describe("cellsTouchingHoles (#1041 A9)", () => {
     });
 });
 
-describe("mergeMixedCellRects (#1041 A5)", () => {
+describe("mergeMixedCellRects", () => {
     it("merges per cell size, so a mixed-band hole set still becomes rectangles", () => {
         const rects = mergeMixedCellRects(["18/0100/0100", "18/0100/0101", "19/0200/0200"]);
         expect(rects).toHaveLength(2);

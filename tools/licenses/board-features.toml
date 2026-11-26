@@ -1,0 +1,15 @@
+# cargo-deny bans for the board image only. tools/licenses/deny.toml is shared with the sensor
+# simulator, which logs through trouble-host on purpose, so this rule needs its own file.
+#   cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config tools/licenses/board-features.toml check bans
+
+[graph]
+all-features = true
+
+[bans]
+# tools/licenses/deny.toml reports duplicate versions.
+multiple-versions = "allow"
+features = [
+    # The Bluetooth host formats bond keys and identities in its logs. The board owns the
+    # connection diagnostics.
+    { crate = "trouble-host", deny = ["defmt", "log"] },
+]

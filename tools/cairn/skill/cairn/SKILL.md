@@ -8,9 +8,9 @@ description: Keeps one design document for each system of this repository, and m
 ## Rules for every command
 
 1. **A change's issue holds the state.** Read it with `gh api repos/{owner}/{repo}/issues/N --jq .body` and find its `Status:` line. Write each result into the issue, not only into the conversation.
-2. **The workflow never blocks.** When the user skips a step, say so once, in one line, and name the step you suggest. If the user wants to go ahead, go ahead. The pull request then records `Mode: skip: <reason>`.
+2. **The workflow never blocks.** When the user skips a step, say so once, in one line, and name the step you suggest. If the user wants to go ahead, go ahead.
 3. **You propose, and the user corrects.** Each question stands alone: what you found, why it matters, the options and your recommendation. Ask all open questions together, not one at a time.
-4. **Each subagent starts fresh and has a role.** See "Subagents" below.
+4. **Each subagent starts fresh, with a tier and an effort.** See "Subagents" below.
 5. **After compaction, read your command's reference again.** The reference files do not come back after compaction.
 6. **Write plainly.** Before you write a doc, an issue, or a message to the user, read [writing.md](reference/writing.md).
 
@@ -41,17 +41,17 @@ Choose the command from the request. If two commands fit, ask once. Read the com
 
 ## Subagents
 
-- Get the model and effort of a role with `cairn model <role>`. It prints `model:` and `effort:`, or `inherit`, which means the session's own model. On Codex, add `--harness codex`.
-- Give a subagent only what its role needs, never the conversation. On Codex, start it with `fork_turns: "none"`.
+- Each reference gives a subagent its tier. The `strong` tier is the most capable model of your harness, and the `balanced` tier is its middle model. A subagent with no tier uses the session's own model.
+- Use medium effort, unless the reference gives a different effort.
+- Give a subagent only what its task needs, never the conversation. On Codex, start it with `fork_turns: "none"`.
 - Tell each subagent that its report has at most 400 words.
 - Start independent subagents in parallel.
-- If you cannot start a subagent, do its work yourself, from its inputs only. Start your output with `DEGRADED: <role> did not run independently.`
+- If you cannot start a subagent, do its work yourself, from its inputs only. Start your output with `DEGRADED: <subagent> did not run independently.`
 
 A Goldfish is a fresh subagent that tests one document. [goldfish.md](reference/goldfish.md) has its three tests. `design`, `document` and `review-doc` use it.
 
-## Records
+## Size
 
-- Each pull request has one `Mode:` line: `change #N`, `fix`, or `skip: <reason>`. It is a record for the weekly report; nothing checks it.
 - An issue's `Size:` line (S, M or L) sets how much design and review the change gets. Only the user makes a size smaller.
 
 ## Files and tools
@@ -68,4 +68,3 @@ A Goldfish is a fresh subagent that tests one document. [goldfish.md](reference/
 - `cairn check` finds files with no owner, undeclared dependencies, cycles, the violations of the layout rules, and names in a Rules table that their linked file does not hold. Run it in CI.
 - `cairn map` writes the generated part of the map.
 - `cairn leaves <system>` cuts a system's files into small leaves, for `document`.
-- `cairn model <role>` prints the model and effort of a role.

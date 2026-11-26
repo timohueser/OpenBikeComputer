@@ -495,7 +495,7 @@ prose *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/prose.py" "$@"
 
-[doc("System docs against the code. Args: check [--base REF] [--update | --accept] | map | leaves SYSTEM | model ROLE | report [--publish]")]
+[doc("System docs against the code. Args: check [--base REF] [--update | --accept] | map | leaves SYSTEM | report [--publish]")]
 [group('docs')]
 cairn *args:
     #!/usr/bin/env bash
@@ -558,16 +558,14 @@ ux *args:
     _run npm run ux-study --prefix "$fe/tests/browser" -- "$@"
 
 # A scope is required: `obc test -p obc-pack` runs nextest and then the same scope's doctests;
-# `--lib` runs the library target alone and no doctests.
-# The plan selector runs the affected packages and suites and prints why:
+# `--lib` runs the library target alone and no doctests. Two modes serve `obc ready` and people:
 #
-#   obc test affected --base origin/develop [--head REF] [--dry-run]
+#   obc test affected --base origin/develop [--head REF] [--dry-run]   the units the plan selects
+#   obc test fixtures -p <crate>   the captured-fixture tier, after a fixture sync
 #
-# `obc test fixtures -p <crate>` keeps its scoped meaning (sync + external-fixtures) and
-# needs neither the plan nor Git. `full` stays the exceptional cross-cutting gate.
 # See docs/testing.md for the routes.
-[doc("Run focused host tests. Args: -p CRATE [--lib] | fixtures -p CRATE | affected --base REF | full")]
-[group('test')]
+[doc("Run one package's host tests, then its doctests. Args: -p CRATE [--lib]")]
+[group('agent')]
 test *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -577,9 +575,7 @@ test *args:
     [[ -n "$mode" ]] || {
       _err "a test scope is required"
       _hint "focused: obc test -p <crate> [test-filter]"
-      _hint "captured fixtures: obc test fixtures -p <crate>"
-      _hint "by change: obc test affected --base origin/develop [--dry-run]"
-      _hint "cross-cutting only: obc test full"
+      _hint "before a push: obc ready"
       exit 2
     }
     require_scope() {
@@ -604,13 +600,6 @@ test *args:
       OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
     }
     case "$mode" in
-      full)
-        shift
-        _run cargo nextest run --workspace --all-features --locked --tests --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast)" "$@"
-        fixture_env
-        _run cargo nextest run --workspace --all-features --locked --tests --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fixtures)" "$@"
-        _run cargo test --workspace --all-features --locked --doc
-        ;;
       affected)
         shift
         _run python3 "$OBC_TOOLS/test_plan.py" run "$@"
@@ -632,7 +621,7 @@ test *args:
           exit 2
         }
         # `--no-tests warn`: a package with no test yet is not a failed run. The workspace
-        # runs in `obc test full` and CI keep the default `fail`.
+        # runs of tools/ci/test.sh keep the default `fail`.
         _run cargo nextest run --locked --no-tests warn "$@"
         # `--lib` is the library-only loop: nextest builds one target and doctests, which are a
         # separate Cargo run over the whole package, stay out of it. Cargo rejects `--lib` on a
@@ -674,119 +663,22 @@ licenses *args:
 check-docs:
     @cd "$OBC_ROOT" && python3 docs/build_docs.py --check-links
 
-# Run explicitly selected CI gates locally. Each gate names the CI jobs it reproduces;
-# `full` runs every gate in the job table and then names the required suites the run does
-# NOT reproduce. Examples:
-#   obc check fmt         obc check test         obc check board docs
-#   obc check full        # cross-cutting changes only
-# The routes live in docs/testing.md.
-[doc("Run selected CI gates locally. Args: GATE... | full")]
+# Each NAME is a script in tools/ci, the one definition of the CI steps it runs; this runs every
+# section of it. Examples:
+#   obc check fmt         obc check clippy test         obc check obc-boot
+[doc("Run CI scripts locally. Args: NAME...")]
 [group('build')]
 check *args:
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    gates=($(python3 "$OBC_TOOLS/test_plan.py" gates --list)) || exit 1
-    sel=("$@")
-    (( ${#sel[@]} )) || {
-      _err "select one or more gates (${gates[*]:-})"
-      _hint "use package-scoped checks during development; use 'obc check full' only for cross-cutting changes"
-      exit 2
-    }
-    full=0
-    if [[ "${sel[0]}" == full ]]; then
-      (( ${#sel[@]} == 1 )) || { _err "'full' cannot be combined with individual gates"; exit 2; }
-      full=1
-      sel=("${gates[@]}")
-    fi
-    # A gate the job table does not know fails here, before any work.
-    python3 "$OBC_TOOLS/test_plan.py" gates "${sel[@]}" || exit 1
-    want() { local x; for x in "${sel[@]}"; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
-    FAILED=(); PASSED=(); SKIPPED=()
-    step() { local label="$1"; shift; printf '\n'; _say "▶ $label"
-             if _run "$@"; then PASSED+=("$label"); else _err "$label FAILED"; FAILED+=("$label"); fi; }
-    cd "$OBC_ROOT"
-    if want fmt; then
-      step "fmt (workspace)"   cargo fmt --all --check
-      step "fmt (board crate)" cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
-      step "fmt (bootloader)"  cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml
-      step "fmt (sensor mock)" cargo fmt --check --manifest-path firmware/obc-sensor-sim/Cargo.toml
-    fi
-    want clippy && step "clippy (workspace, all-targets/features)" \
-      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-    if want test; then
-      rm -rf .artifacts/python/repository-tools
-      step "firmware production dependency direction" python3 "$OBC_ROOT/firmware/tools/check_dependencies.py"
-      step "fixture registry unit tests" uv run --locked --group dev --group planner-snow --group forest-reference --group route-sources python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
-      step "test (fast hermetic binaries)" bash tools/ci/test.sh nextest-fast
-      step "doctests (selected packages)" bash tools/ci/test.sh doctests
-      step "obc-formats (default features = the device's shape)" bash tools/ci/test.sh formats-default
-      step "bench golden gate (pixels + read counters)" bash tools/ci/test.sh bench-golden
-    fi
-    want device && step "device build (obc-app @ thumbv8m)" \
-      cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked
-    if want board; then
-      if ensure_riscv 2>/dev/null; then
-        pushd "$OBC_ROOT/firmware/obc-fw-nrf54l" >/dev/null
-        step "board clippy (default)"        cargo clippy --locked -- -D warnings
-        step "board clippy (debug-uart)"     cargo clippy --locked --features debug-uart -- -D warnings
-        step "board build (default, release)" cargo build --release --locked
-        popd >/dev/null
-      else _warn "skip the nRF54L gates — no RISC-V gcc (obc doctor --install)"; SKIPPED+=("embedded"); fi
-      # The `board` gate is the `embedded` AND `boot` jobs. The bootloader keeps the COM wave in
-      # software, so it has no FLPR blob and runs whether or not a RISC-V gcc is installed.
-      pushd "$OBC_ROOT/firmware/obc-boot" >/dev/null
-      step "bootloader clippy (default)"   cargo clippy --locked -- -D warnings
-      step "bootloader clippy (rtt)"       cargo clippy --locked --features rtt -- -D warnings
-      step "bootloader build (release)"    cargo build --release --locked
-      popd >/dev/null
-      pushd "$OBC_ROOT/firmware/obc-sensor-sim" >/dev/null
-      step "sensor sim tests and device build" bash check.sh
-      step "sensor sim clippy (host)"      cargo clippy --locked --lib --tests -- -D warnings
-      step "sensor sim clippy (device)"    cargo clippy --locked --features device --bin obc-sensor-sim --target thumbv8m.main-none-eabihf -- -D warnings
-      popd >/dev/null
-    fi
-    if want frontend; then
-      if command -v npm >/dev/null 2>&1; then
-        fe="$OBC_ROOT/builder/web"
-        pushd "$fe" >/dev/null
-        [[ -d node_modules ]] || step "frontend deps (npm ci)" npm ci
-        # Not optional: the TS wrapper imports the generated bindings, so svelte-check
-        # and the byte-identity drift guard both fail without the module present. CI
-        # gets the core and test device from the `wasm-bridges` job; locally we build them.
-        step "wasm bridges"          npm run build:wasm
-        step "frontend svelte-check" npm run check
-        # `bundle.test.ts` builds the web app and inspects the emitted chunks.
-        step "frontend vitest"       npm test
-        popd >/dev/null
-      else _warn "skip frontend — npm not installed"; SKIPPED+=("frontend"); fi
-    fi
-    if want deny; then
-      if command -v cargo-deny >/dev/null 2>&1; then
-        step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
-        step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
-        step "deny (bootloader)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-boot/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
-        step "deny (sensor sim)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-sensor-sim/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
-      else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
-    fi
-    if want wasm; then
-      if command -v trunk >/dev/null 2>&1; then step "wasm (obc-web-demo → wasm)" trunk build --config "$OBC_ROOT/docs/Trunk.toml"
-      else _warn "skip wasm — trunk not installed (cargo install trunk)"; SKIPPED+=("wasm"); fi
-      # The assembly engine has to stay browser-shippable: the `cli` feature owns every
-      # std::fs call, so building the library without it catches a stray one here.
-      if rustup target list --installed | grep -q wasm32-unknown-unknown; then
-        step "wasm (obcm-assemble engine)" \
-          cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
-      else _warn "skip wasm engine — no wasm32 target (obc doctor --install)"; SKIPPED+=("wasm-engine"); fi
-    fi
-    want docs && step "docs build and link check" just --justfile "$OBC_ROOT/justfile" check-docs
-    printf '\n'; _say "check summary"
-    (( ${#PASSED[@]} ))  && _ok   "passed:  ${PASSED[*]}"
-    (( ${#SKIPPED[@]} )) && _warn "skipped: ${SKIPPED[*]}"
-    # No unqualified CI-parity claim: the plan names what this run leaves to CI.
-    (( full )) && python3 "$OBC_TOOLS/test_plan.py" gates --unreproduced "${sel[@]}"
-    if (( ${#FAILED[@]} )); then _err "failed:  ${FAILED[*]}"; exit 1; fi
-    _ok "all run gates passed"
+    (( $# )) || { _err "name one or more of: $(cd "$OBC_TOOLS/ci" && ls *.sh | grep -v '^sections' | sed 's/\.sh$//' | xargs)"; exit 2; }
+    # The board image cross-compiles its FLPR blob; the other scripts do not need a RISC-V gcc.
+    ensure_riscv 2>/dev/null || true
+    for name in "$@"; do
+      [[ -f "$OBC_TOOLS/ci/$name.sh" && "$name" != sections ]] || { _err "no script tools/ci/$name.sh"; exit 2; }
+      _run bash "$OBC_TOOLS/ci/$name.sh"
+    done
 
 # Dry-run by default: `obc clean`, then `obc clean --days 14 --apply`.
 [doc("Remove old OBC test scratch and old artifacts in $CARGO_TARGET_DIR. Args: [--apply] [--days N]")]
@@ -875,8 +767,8 @@ ci *args:
     _run python3 "$OBC_TOOLS/ci_log.py" "$@"
 
 # The routes and the granularity policy live in docs/testing.md.
-[doc("Inspect the test selection plan from any directory. Args: check | select --base REF | run | prepare | gates | cargo-filter --tier TIER | validate-filters")]
-[group('agent')]
+[doc("Inspect the test selection plan from any directory. Args: check | select --base REF | prepare")]
+[group('test')]
 suites *args:
     #!/usr/bin/env bash
     set -euo pipefail

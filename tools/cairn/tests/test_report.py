@@ -1,12 +1,8 @@
-import io
 import json
-import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -14,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 import cairn  # noqa: E402
 import report  # noqa: E402
 
-# The roles, the tiers and the test globs of this repository.
+# The test globs of this repository.
 CONFIG = json.loads((cairn.ROOT / cairn.CONFIG).read_text())
 
 
@@ -82,25 +78,6 @@ class DocsToCheckTests(unittest.TestCase):
         self.assertEqual(self.found(), [])
 
 
-class SkipTests(unittest.TestCase):
-    def test_only_skips_merged_in_the_last_7_days_are_listed_with_their_reason(self):
-        def pull(number, body, merged, updated="2026-10-28T00:00:00Z"):
-            return {"number": number, "title": f"PR {number}", "body": body, "merged_at": merged, "updated_at": updated}
-
-        pulls = [
-            pull(10, "Mode: skip: a release fix", "2026-10-27T09:00:00Z"),
-            pull(11, "Mode: fix", "2026-10-27T09:00:00Z"),
-            pull(12, "Mode: skip: closed, never merged", None),
-            pull(13, "Mode: skip: merged long ago", "2026-10-01T09:00:00Z"),
-            pull(14, "<!-- Mode: skip: hidden -->\n```\nMode: skip: an example\n```\nMode: fix", "2026-10-27T09:00:00Z"),
-            pull(15, "Mode: override: an unknown value", "2026-10-27T09:00:00Z"),
-        ]
-        api = mock.Mock(return_value=pulls)
-        found = report.skips(report.merged(api, datetime(2026, 10, 29, tzinfo=timezone.utc)))
-        self.assertEqual(found, [(10, "PR 10", "a release fix")])
-        api.assert_called_once()
-
-
 class TestGlobTests(unittest.TestCase):
     def test_a_test_pattern_with_no_folder_matches_the_file_name_only(self):
         for path in ("tools/cairn/tests/test_report.py", "a/src/tests.rs", "a/src/peaks_tests.rs", "web/A.svelte.test.ts"):
@@ -139,29 +116,6 @@ class PublishTests(unittest.TestCase):
         report.publish("Report.", api, pin)
         pin.assert_not_called()
         self.assertEqual([c for c in calls if c[0] != "GET"], [("PATCH", "issues/4", {"body": "Report."})])
-
-
-class ModelTests(unittest.TestCase):
-    def test_each_harness_has_its_model_and_an_unknown_harness_inherits(self):
-        self.assertEqual(cairn.model_for(CONFIG, "code-review", "claude-code"), ("opus", "high"))
-        self.assertEqual(cairn.model_for(CONFIG, "doc-hay", "codex"), ("gpt-6.1-sol", "medium"))
-        self.assertIsNone(cairn.model_for(CONFIG, "doc-hay", None))
-        self.assertIsNone(cairn.model_for(CONFIG, "implementer", "claude-code"))
-        with self.assertRaisesRegex(cairn.CairnError, "unknown role `writer`"):
-            cairn.model_for(CONFIG, "writer", "codex")
-
-    def test_the_harness_comes_from_the_environment_unless_given(self):
-        def run(*args, claude_code):
-            with mock.patch.dict(os.environ), redirect_stdout(io.StringIO()) as out:
-                os.environ.pop("CLAUDECODE", None)
-                if claude_code:
-                    os.environ["CLAUDECODE"] = "1"
-                self.assertEqual(cairn.main(["model", *args]), 0)
-            return out.getvalue()
-
-        self.assertEqual(run("doc-hay", claude_code=True), "model: sonnet\neffort: medium\n")
-        self.assertEqual(run("doc-hay", claude_code=False), "inherit\n")
-        self.assertEqual(run("doc-hay", "--harness", "codex", claude_code=True), "model: gpt-6.1-sol\neffort: medium\n")
 
 
 if __name__ == "__main__":

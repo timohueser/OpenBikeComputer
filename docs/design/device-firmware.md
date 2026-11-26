@@ -34,7 +34,7 @@ Board support owns the drivers for the radio, USB, card, panel and sensors. The 
 | --- | --- |
 | A release image fits the recorded RAM, frame and flash budgets. | [`resource_guard.py`](../../firmware/tools/resource_guard.py) against [`resource_baseline.json`](../../firmware/tools/resource_baseline.json) |
 | Each user of the shared RAM block fits in it. | The `const` asserts in [`arena.rs`](../../firmware/obc-fw-nrf54l/src/arena.rs) |
-| The Bluetooth host has no logging features, because its logs would contain bond keys. | `forbidden_features` in [`dependency_rules.json`](../../firmware/tools/dependency_rules.json), through [`check_dependencies.py`](../../firmware/tools/check_dependencies.py) |
+| The Bluetooth host has no logging features, because its logs would contain bond keys. | `trouble-host` in [`board-features.toml`](../../tools/licenses/board-features.toml), through cargo-deny |
 
 ## Decisions
 

@@ -7,21 +7,33 @@ plan and runs on every pull request.
 
 ## Commands
 
+Agents and contributors use two commands:
+
 ```sh
 obc test -p obc-app                       # one package on nextest, then its doctests
-obc test -p obc-app --lib                 # the library target alone
-obc test fixtures -p obc-route            # the captured-fixture tier, after a fixture sync
+obc ready                                 # before a push: the gates the change selects
+```
+
+`obc test` always needs a scope; it never expands to the workspace on its own. `--lib` runs the
+library target alone. `obc ready` runs the format, lint and documentation gates of the changed
+paths, then `obc test affected`. A selection that takes the whole graph is left to CI.
+
+The commands below serve `obc ready`, CI and people who debug the plan:
+
+```sh
 obc test affected --base origin/develop   # the selection CI runs; --dry-run prints it
-obc test full                             # cross-cutting changes only
-obc check fmt clippy device docs          # named CI gates; obc check full runs them all
-obc suites check                          # plan drift and command resolution
+obc test fixtures -p obc-route            # the captured-fixture tier, after a fixture sync
+obc check fmt obc-boot                    # run CI scripts of tools/ci locally
+obc suites check                          # plan drift, command resolution, the workflow's jobs
 obc suites select --base REF [--release]  # the plan as text or json
 obc suites prepare                        # the npm projects and wasm bridges of the web suites
 ```
 
-`obc test` always needs a scope; it never expands to the workspace on its own. `affected` reads
-the working tree, prints every selected unit with a reason, and stops at the first failure. Before
-a suite runs, it installs each npm project of the suite's CI job whose lock file changed, and it
+Each `tools/ci/NAME.sh` script is the one definition of the CI steps that call it. A step runs
+one section; `obc check NAME` runs every section.
+
+`obc test affected` reads the working tree, prints every selected unit with a reason, and stops at
+the first failure. Before a suite runs, it installs each npm project of the suite's CI job whose lock file changed, and it
 builds the wasm bridges when they are missing or the change reaches them. A
 suite whose `platforms` exclude the host is reported as skipped, never as passed. Every Cargo
 command needs the CI-pinned runner: `cargo install cargo-nextest --version 0.9.143 --locked`.
@@ -69,14 +81,14 @@ A `[[suite]]` entry is verification no Cargo package owns:
 | `jobs` | the CI jobs that execute it (`ordinary` and `required` need at least one) |
 | `triggers` | paths that select it, including its own test sources |
 | `fixtures` | captured or production-shaped inputs it needs |
-| `platforms`, `foundation`, `ci_only` | platform restriction; selected by manifest or toolchain changes; not reproducible locally |
+| `platforms`, `foundation` | platform restriction; selected by manifest or toolchain changes |
 | `scoped` | follows its own inputs instead of broad policy or unowned-deletion selection |
 | `rust_packages` | linked libraries; Cargo supplies their non-development dependencies |
 | `rust_excludes` | source paths outside the linked feature set |
-| `package`, `targets` | Cargo test targets this suite owns; the fast tier runs them when the plan selects an ordinary or required owner, or with no plan (`obc test full`) |
+| `package`, `targets` | Cargo test targets this suite owns; the fast tier runs them when the plan selects an ordinary or required owner, or with no plan (`tools/ci/test.sh`) |
 
 Neither entry lists dependencies, test counts, durations or source files; Cargo and the result
-artifacts supply those. The CI job table is in `tools/test_plan.py`; `obc suites validate-filters`
+artifacts supply those. The CI job table is in `tools/test_plan.py`; `obc suites check` also
 checks that it and `.github/workflows/ci.yml` describe the same jobs.
 
 Selection fails closed: an unowned source path or a selected suite without a CI route is an error.

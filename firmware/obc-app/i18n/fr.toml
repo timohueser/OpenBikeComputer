@@ -259,7 +259,7 @@ categories = "Catégories"
 map_display = "Affichage"
 clock = "Horloge"
 scale_bar = "Échelle"
-# "Courbes de niveau" needed the old settings row's two lines; a sheet row has one, so the
+# "Courbes de niveau" needs two lines and a sheet row has one, so the
 # self-contained "Relief" is the reading that fits beside the slider.
 contours = "Relief"
 

@@ -1,4 +1,4 @@
-# Every external dataset, asset and tool that a bake uses. specs/obc-data.md defines the format.
+# Every external dataset, asset and tool that a bake uses. specs/obc-data-registry.md defines the format.
 # A source without a licence is blocked until its licence is recorded here.
 
 # ── OpenStreetMap ────────────────────────────────────────────────────────────

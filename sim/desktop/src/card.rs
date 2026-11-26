@@ -56,9 +56,7 @@ impl Session {
                     .and_then(|stem| stem.strip_prefix("TP").or_else(|| stem.strip_prefix("tp")))
                     .and_then(|digits| digits.parse::<u64>().ok())
                 {
-                    if let Some(old) = number.checked_add(obc_host_core::TRIP_ID_BASE) {
-                        trip_ids.push((old, id));
-                    }
+                    trip_ids.push((number, id));
                 }
             }
             args.inject = match args.inject {
@@ -73,7 +71,7 @@ impl Session {
                 Some(Injection::TripUpload { id }) => Some(Injection::TripUpload {
                     id: trip_ids
                         .iter()
-                        .find(|(old, _)| *old == id)
+                        .find(|(number, _)| *number == id)
                         .map(|(_, id)| *id)
                         .ok_or("trip upload fixture does not name an imported trip")?,
                 }),

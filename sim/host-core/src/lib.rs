@@ -79,9 +79,3 @@ pub use settings_store::FileSettingsStore;
 pub use sink::VecSink;
 pub use stores::{MemRideStore, MemTrackStore};
 pub use track_store::TrackStore;
-
-/// Session ID band retained by legacy folder and summary-only ride fixtures.
-pub const RIDE_ID_BASE: obc_app::CatalogObjectId = 1 << 32;
-
-/// Session ID band retained by legacy trip fixtures. Physical deletion also carries its kind.
-pub const TRIP_ID_BASE: obc_app::CatalogObjectId = 1 << 48;
