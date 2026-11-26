@@ -71,12 +71,15 @@ const RETRIES = 2, RETRY_MS = 1000;
 
 /** The legs `first` to `last` as consecutive leg ranges `[from, to]` of at most one request each. Each range starts at the
  * end point of the range before. A range ends at a turnaround only where no other point fits, because a join there can
- * cost another request. */
-export function chunks(first: number, last: number, turnarounds: number[]): [number, number][] {
+ * cost another request, and at a point of `inside` only where no other point fits at all. */
+export function chunks(first: number, last: number, turnarounds: number[], inside = new Set<number>()): [number, number][] {
     const spans: [number, number][] = [];
     for (let from = first; from <= last;) {
-        let to = Math.min(from + MAX_REQUEST_POINTS - 2, last);
-        while (to < last && to > from && turnarounds.includes(to + 1)) to--;
+        const most = Math.min(from + MAX_REQUEST_POINTS - 2, last);
+        const fits = (avoid: (point: number) => boolean) => {
+            for (let to = most; to > from; to--) if (to === last || !avoid(to + 1)) return to;
+        };
+        const to = fits(point => turnarounds.includes(point)) ?? fits(point => inside.has(point)) ?? most;
         spans.push([from, to]);
         from = to + 1;
     }
@@ -135,7 +138,7 @@ export class LegCache {
                 // A turnaround whose legs did not meet stays inside the request.
                 while (inside.has(first) && !legs[first - 1]?.gap) first--;
                 while (inside.has(last + 1) && !legs[last + 1]?.gap) last++;
-                const gap = chunks(Math.max(first, (spans.at(-1)?.to ?? -1) + 1), last, turnarounds);
+                const gap = chunks(Math.max(first, (spans.at(-1)?.to ?? -1) + 1), last, turnarounds, inside);
                 spans.push(...gap.map(([from, to], c) => ({ from, to, pins: { start_position: c ? undefined : pin(legs[from - 1], from)?.end,
                     end_position: c < gap.length - 1 ? undefined : pin(legs[to + 1], to + 1)?.start } })));
             }

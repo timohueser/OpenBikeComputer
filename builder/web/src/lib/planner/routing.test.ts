@@ -344,16 +344,21 @@ describe('runs longer than one request', () => {
         expect(bodies(fetch)).toEqual([expect.objectContaining({ points: coordinates.slice(0, 4), turnarounds: [1] })]);
     });
 
-    it('asks only for the legs of a moved visit between visits, and again one leg wider where a turnaround does not meet', async () => {
+    it('asks only for the legs of a moved visit between visits, pinned only at a shaping point, and again one leg wider where a turnaround does not meet', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
         vi.stubGlobal('fetch', fetch);
         const cache = new LegCache();
-        const visits = (coordinates: Coordinate[]) => plan(coordinates, Object.fromEntries(coordinates.slice(1, -1).map((_, i) => [i + 1, { kind: 'waypoint' }])));
+        const visits = (coordinates: Coordinate[], via = -1) =>
+            plan(coordinates, Object.fromEntries(coordinates.slice(1, -1).map((_, i) => [i + 1, { kind: i + 1 === via ? 'via' : 'waypoint' }])));
+        // The largest requests carry 100 visits.
+        await calculateLine(visits(run(102)), signal, new LegCache());
+        expect(bodies(fetch).map(body => body.points.length)).toEqual([64, 39]);
+        fetch.mockClear();
         const coordinates = run(14);
-        await calculateLine(visits(coordinates), signal, cache);
+        await calculateLine(visits(coordinates, 7), signal, cache);
         const moved = (i: number) => coordinates.map((point, k): Coordinate => k === i ? [point[0], 48.01] : point);
-        const line = await calculateLine(visits(moved(6)), signal, cache);
-        expect(bodies(fetch).slice(1)).toEqual([{ points: moved(6).slice(5, 8), profile: 'touring', turnarounds: [1] }]);
+        const line = await calculateLine(visits(moved(6), 7), signal, cache);
+        expect(bodies(fetch).slice(1)).toEqual([{ points: moved(6).slice(5, 8), profile: 'touring', turnarounds: [1], end_position: `one:${coordinates[7]}` }]);
         expect(line.coordinates).toEqual(moved(6));
         // The service snaps the first point of the next request to another road, so it does not meet the leg before it.
         fetch.mockImplementationOnce(async (url, init) => {
@@ -361,8 +366,9 @@ describe('runs longer than one request', () => {
             body.points[0] = [body.points[0][0], 48.001];
             return routeService('one')(url, { ...init, body: JSON.stringify(body) });
         });
-        const again = await calculateLine(visits(moved(9)), signal, cache);
-        expect(bodies(fetch).slice(2).map(body => [body.points, body.turnarounds])).toEqual([[moved(9).slice(8, 11), [1]], [moved(9).slice(7, 10), [1]]]);
+        const again = await calculateLine(visits(moved(9), 7), signal, cache);
+        expect(bodies(fetch).slice(2).map(body => [body.points, body.turnarounds, body.start_position, body.end_position])).toEqual([
+            [moved(9).slice(8, 11), [1], undefined, undefined], [moved(9).slice(7, 10), [1], `one:${coordinates[7]}`, undefined]]);
         expect(again.coordinates).toEqual(moved(9));
     });
 
