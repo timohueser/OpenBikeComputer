@@ -86,15 +86,20 @@ struct Edge {
     reversed: bool,
 }
 
-/// The roads of one way, each direction once, as chains along the way: one chain when they form
-/// one, else one chain for each road.
+/// The roads of one way as chains along the way: one chain when they form one, else one chain for
+/// each road. A road and the road of its other direction, with the same points in reverse order,
+/// count once.
 fn chains(graph: &Graph, roads: impl Iterator<Item = usize>) -> Vec<Vec<Edge>> {
     let mut seen = HashSet::new();
     let edges: Vec<Edge> = roads
         .filter_map(|road| {
             let (from, to, reversed) = (graph.roads.from(road), graph.roads.to(road), graph.roads.reversed(road));
             let (from, to) = if reversed { (to, from) } else { (from, to) };
-            seen.insert((from, to)).then_some(Edge { from, to, road, reversed })
+            let mut points: Vec<[i32; 2]> = graph.roads.shape(road).iter().map(|p| [p.lon, p.lat]).collect();
+            if reversed {
+                points.reverse();
+            }
+            seen.insert(points).then_some(Edge { from, to, road, reversed })
         })
         .collect();
     let next: HashMap<u32, usize> = edges.iter().enumerate().map(|(i, edge)| (edge.from, i)).collect();
@@ -322,7 +327,9 @@ mod tests {
         let shape = |range: std::ops::RangeInclusive<usize>| points[range].to_vec();
         let mut roads = Vec::new();
         for (ends, range) in [((2, 3), 4..=6), ((0, 1), 0..=2), ((1, 2), 2..=4)] {
-            roads.extend(both(road(7, ends, shape(range))));
+            let [forward, back] = both(road(7, ends, shape(range)));
+            // The reversed road comes first for the first road of the way.
+            roads.extend(if ends == (0, 1) { [back, forward] } else { [forward, back] });
         }
         let (report, rows) = bake(&[(7, &[("highway", "residential")])], roads);
         let slopes: Vec<_> = rows.iter().map(|row| (row.3.clone(), row.7.len())).collect();
@@ -335,13 +342,16 @@ mod tests {
     #[test]
     fn the_roads_of_a_ring_stand_alone_and_a_ferry_has_no_stretch() {
         let flat = line(7_500_000, 3, |_| 0.0);
+        // A second road from junction 0 to junction 1 on other points.
+        let other = line(7_600_000, 3, |_| 0.0);
         let rise = line(flat[2].lon, 3, |d| (0.11 * d) as f32);
         let fall = line(rise[2].lon, 3, |d| (0.11 * (40.0 - d)) as f32);
         let ferry = Road { class: FERRY, ..road(8, (3, 4), line(7_500_000, 3, |d| (0.5 * d) as f32)) };
-        let roads = vec![road(7, (0, 1), flat), road(7, (1, 2), rise), road(7, (2, 0), fall), ferry];
+        let roads =
+            vec![road(7, (0, 1), flat), road(7, (0, 1), other), road(7, (1, 2), rise), road(7, (2, 0), fall), ferry];
         let (report, rows) = bake(&[(7, &[("highway", "track")]), (8, &[("route", "ferry")])], roads);
         let slopes: Vec<_> = rows.iter().map(|row| (row.1, row.3.clone())).collect();
-        assert_eq!(slopes, [(7, 0.into()), (7, 3.into()), (7, 3.into())]);
+        assert_eq!(slopes, [(7, 0.into()), (7, 0.into()), (7, 3.into()), (7, 3.into())]);
         assert_eq!(report.ways, 1);
     }
 

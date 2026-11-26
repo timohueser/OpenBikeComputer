@@ -28,8 +28,9 @@ def features(tile):
 class WaysArchive(unittest.TestCase):
     def test_tiles_draw_the_stretches_of_their_block_with_their_grades(self):
         from pmtiles.reader import MmapSource, Reader
-        # A block of zoom 9 ends at 7.734375° E, where the next one starts.
-        edge, lat = 7.734375, 47.0
+        # A block of zoom 9 ends at 7.734375° E, where the next one starts. At 48.2° N the east block has the
+        # lower tile ID, so the archive is clustered only when the blocks go in tile-ID order.
+        edge, lat = 7.734375, 48.2
         x, y = ways.coordinates(blob([(edge, lat)]))
         west, east = (round(x * 512) - 1) * 512 + int(y * 512), round(x * 512) * 512 + int(y * 512)
         rows = [
@@ -51,7 +52,7 @@ class WaysArchive(unittest.TestCase):
                     slope INTEGER, mtb INTEGER, sac INTEGER, trail INTEGER, coordinates BLOB);""")
                 db.executemany("INSERT INTO stretches VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
             db.close()
-            metrics = ways.derive(database, target, [7.6, 46.9, 7.8, 47.1], "© OpenStreetMap contributors")
+            metrics = ways.derive(database, target, [7.6, 48.1, 7.8, 48.3], "© OpenStreetMap contributors")
             with target.open("rb") as stream:
                 reader = Reader(MmapSource(stream))
                 header, metadata = reader.header(), reader.metadata()
