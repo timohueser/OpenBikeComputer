@@ -35,20 +35,20 @@ export async function detailPipelines(gpu: Gpu, layout: GPUBindGroupLayout, draw
     return { draw: drawn, cast: caster };
 }
 
-/** Draws the details of the cells (zoom 16, each with its storey mesh and the bind group of the pass) whose level-18 nodes lie near the eye. Returns the parts drawn. */
+/** Draws the details of the cells (zoom 16, each with its storey mesh and the bind group of the pass) whose level-18 nodes lie near the eye. Returns the triangles drawn. */
 export function drawDetails(pass: GPURenderPassEncoder, pipeline: GPURenderPipeline, eye: Eye, cells: { x: number; y: number; storeys: StoreyMesh; group: GPUBindGroup }[]): number {
     const ground = { anchor: eye.anchor, above: 0 };
-    let parts = 0;
+    let triangles = 0;
     for (const { x, y, storeys, group } of cells) {
         let bound = false;
         for (const { node, draw, first, count } of storeys.ranges) {
             if (distances(ground, { level: 18, x: 4 * x + (node & 3), y: 4 * y + (node >> 2) })[0] >= REACH_M) continue;
-            if (!parts) pass.setPipeline(pipeline);
+            if (!triangles) pass.setPipeline(pipeline);
             if (!bound) pass.setBindGroup(0, group);
             bound = true;
             pass.draw(VERTICES[draw], count, 0, first);
-            parts += count;
+            triangles += (count * VERTICES[draw]) / 3;
         }
     }
-    return parts;
+    return triangles;
 }
