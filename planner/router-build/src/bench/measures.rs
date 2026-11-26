@@ -73,18 +73,10 @@ fn shares(a: &Label, b: &Label) -> bool {
     a.0.is_some() && a.0 == b.0 || a.1.is_some() && a.1 == b.1 || a.2.iter().any(|route| b.2.contains(route))
 }
 
-/// The tagged limit in the direction of travel in km/h, as `traffic::stress` reads it. A zone
-/// code such as `DE:urban` is no limit.
+/// The tagged limit in the direction of travel in km/h, as `traffic::stress` reads it.
 fn limit(tags: &Tags, reversed: bool) -> Option<f64> {
     let direction = if reversed { "maxspeed:backward" } else { "maxspeed:forward" };
-    [direction, "maxspeed"].into_iter().find_map(|key| {
-        let value = tags.get(key)?.trim();
-        let (number, scale) = match value.strip_suffix("mph") {
-            Some(number) => (number, 1.609_344),
-            None => (value.strip_suffix("km/h").unwrap_or(value), 1.0),
-        };
-        number.trim().parse::<f64>().ok().map(|speed| speed * scale).filter(|speed| *speed > 0.0 && *speed <= 300.0)
-    })
+    [direction, "maxspeed"].into_iter().find_map(|key| traffic::speed(tags.get(key)?))
 }
 
 /// Whether the route turns from road `before` onto road `after`: a change of heading over
