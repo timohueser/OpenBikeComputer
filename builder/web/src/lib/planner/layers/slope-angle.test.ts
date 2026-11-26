@@ -60,9 +60,10 @@ describe('slope angle', () => {
         // The terrain tile of zoom 12 around Pilatus, and the size of a pixel on the ground in each of its rows.
         const X = 2141, Y = 1440, WORLD = 512 * 4096;
         const pixelMetres = (row: number) => 2 * Math.PI * 6_378_137 / WORLD * Math.cos(Math.atan(Math.sinh(Math.PI * (1 - 2 * (Y * 512 + row + 0.5) / WORLD))));
-        /** One terrain tile with a slope to the east, of an angle at each pixel, and no tile beside it; the tiles in `failing` do not load. */
-        const terrain = (degrees: (x: number, row: number) => number, failing: string[] = []) => slopeTiles({
+        /** One terrain tile with a slope to the east, of an angle at each pixel, and no tile beside it; the tiles in `failing` do not load. `asked` gets each tile that a reader asks for. */
+        const terrain = (degrees: (x: number, row: number) => number, failing: string[] = [], asked: string[] = []) => slopeTiles({
             tile: async (_z, x, y) => {
+                asked.push(`${x - X},${y - Y}`);
                 if (failing.includes(`${x - X},${y - Y}`)) throw new Error('503');
                 return x === X && y === Y ? Float32Array.from({ length: 512 * 512 }, (_, i) => (i % 512) * pixelMetres(i >> 9) * tan(degrees(i % 512, i >> 9))) : null;
             },
@@ -84,8 +85,15 @@ describe('slope angle', () => {
             expect((await words(tiles, 0, 1)).filter(word => word === 0xffa02882).length).toBeGreaterThan(250 * 250);
         });
 
-        it('paints a tile whose neighbour fails from its own heights, and fails without its own', async () => {
-            expect(new Set(await words(terrain(() => 37, ['1,0', '0,-1']), 1, 0))).toEqual(new Set([0xff0096f5]));
+        it('paints a tile whose neighbour fails from its own heights, and computes it again until each neighbour answers', async () => {
+            const failing = ['1,0', '0,-1'], asked: string[] = [];
+            const tiles = terrain(() => 37, failing, asked);
+            expect(new Set(await words(tiles, 1, 0))).toEqual(new Set([0xff0096f5]));
+            failing.length = 0;
+            // The second map tile computes the classes again, and the third reads the kept ones.
+            await words(tiles, 0, 0);
+            await words(tiles, 0, 1);
+            expect(asked.filter(tile => tile === '0,0')).toHaveLength(2);
             await expect(words(terrain(() => 37, ['0,0']), 0, 0)).rejects.toThrow('503');
         });
     });

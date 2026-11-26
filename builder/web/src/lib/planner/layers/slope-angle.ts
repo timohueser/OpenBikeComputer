@@ -83,18 +83,23 @@ export function slopeClasses(heights: Float32Array, beside: Beside, pixelMetres:
 
 /**
  * The classes of the terrain tiles of `heights`. Each tile is computed once, so the four map tiles of a terrain tile
- * share it. A tile beside it that fails is as a missing one: the pixels at that edge read their own tile only.
+ * share it. A tile beside it that fails is as a missing one: the pixels at that edge read their own tile only. Such
+ * classes are not kept, so the next reader computes them again with the tile beside.
  */
 export function slopeTiles(heights: Pick<Tiles<Float32Array>, 'tile'>): Tiles<Uint8Array> {
+    const oneSided = new WeakSet<Uint8Array>();
     return cachedTiles(async (z, x, y, signal) => {
         const tile = await heights.tile(z, x, y, signal);
         if (!tile) return null;
+        let failed = false;
         const [north, south, west, east] = await Promise.all([[0, -1], [0, 1], [-1, 0], [1, 0]].map(([dx, dy]) =>
-            heights.tile(z, x + dx, y + dy, signal).catch(error => { if (signal.aborted) throw error; return null; })));
+            heights.tile(z, x + dx, y + dy, signal).catch(error => { if (signal.aborted) throw error; failed = true; return null; })));
         const world = DEM_TILE * 2 ** z;
         const pixelMetres = (row: number) => EQUATOR_M / world * Math.cos(latitudeAt(y * DEM_TILE + row + 0.5, world) * Math.PI / 180);
-        return slopeClasses(tile, { north, south, west, east }, pixelMetres);
-    }, 16 * 2 ** 20, tile => tile.byteLength);
+        const classes = slopeClasses(tile, { north, south, west, east }, pixelMetres);
+        if (failed) oneSided.add(classes);
+        return classes;
+    }, 16 * 2 ** 20, tile => tile.byteLength, tile => !oneSided.has(tile));
 }
 
 /** The ImageData words of map tile z/x/y: its part of the terrain tile, one pixel for one pixel; null where the terrain has no tile. */

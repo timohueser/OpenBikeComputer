@@ -90,7 +90,7 @@ export function fineTerrain(config: PlannerConfig): (lonLat: [number, number]) =
         if (!pack) return true;
         const [x, y] = worldPixel(lonLat, 2 ** TILE_ZOOM).map(Math.floor), archive = await pack(x, y);
         if (!archive) return false;
-        // The steps of `PMTiles.getZxy` up to the entry of the tile.
+        // The steps of `PMTiles.getZxy` up to the entry of the tile: the walk depends on the directory layout of the pmtiles library.
         const header = await archive.getHeader(), id = zxyToTileId(TILE_ZOOM, x, y);
         let offset = header.rootDirectoryOffset, length = header.rootDirectoryLength;
         for (let depth = 0; depth <= 3; depth++) {

@@ -43,15 +43,17 @@ function waiting<T>(load: Promise<T>, signal?: AbortSignal): Promise<T> {
 
 /**
  * Each tile is loaded once while it stays cached. The cache keeps at most `budget` bytes of tiles;
- * the least recently used tiles leave first. A failed load is not kept.
+ * the least recently used tiles leave first. A failed load is not kept, and a tile that `keep` refuses goes to its
+ * waiting readers only: the next reader loads it again.
  */
-export function cachedTiles<T>(load: (z: number, x: number, y: number, signal: AbortSignal) => Promise<T | null>, budget: number, bytes: (tile: T) => number): Tiles<T> {
+export function cachedTiles<T>(load: (z: number, x: number, y: number, signal: AbortSignal) => Promise<T | null>, budget: number, bytes: (tile: T) => number, keep: (tile: T) => boolean = () => true): Tiles<T> {
     type Entry = { load: Promise<T | null>; tile?: T | null; bytes: number };
     const entries = new Map<string, Entry>();
     let held = 0, version = 0;
     const touch = (key: string, entry: Entry) => { entries.delete(key); entries.set(key, entry); };
     const arrive = (key: string, entry: Entry, tile: T | null) => {
         if (entries.get(key) !== entry) return;
+        if (tile !== null && !keep(tile)) { entries.delete(key); return; }
         entry.tile = tile;
         entry.bytes = tile === null ? 0 : bytes(tile);
         held += entry.bytes;
