@@ -71,7 +71,14 @@
 // { names: [x, y], sets: [{ profile, pairs: [{ id, ends: [[lat, lon], [lat, lon]],
 //   routes: [{ line: [[lat, lon], …], km, ascent_m, measures }, the same of y] }] }] }
 const DATA = /*DATA*/null;
-const KEY = 'route-bench-compare ' + DATA.names.join(' ');
+// FNV-1a.
+function hash(text) {
+  let h = 2166136261;
+  for (const c of text) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+// The answers belong to the routes of this page, so the key has the hash of the data.
+const KEY = 'route-bench-compare ' + hash(JSON.stringify(DATA));
 let store = {};
 try { store = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) {}
 const $ = (id) => document.getElementById(id);
@@ -95,11 +102,7 @@ const answer = (pair) => answers()[pair.id] = answers()[pair.id] || {};
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) {} };
 
 // The run of route A, 0 or 1: a coin that stays the same for a pair when the page loads again.
-function first(pair) {
-  let h = 2166136261;
-  for (const c of set.profile + pair.id) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
-  return (h >>> 13) & 1;
-}
+const first = (pair) => (hash(set.profile + pair.id) >>> 13) & 1;
 
 function show(fit) {
   const pair = set.pairs[index];
