@@ -22,6 +22,8 @@ pub static ROUTING_ROADS: Function =
     Function { name: "planner-router-build/routing-roads", run: planner_router_build::step::roads };
 pub static ROUTING_COSTS: Function =
     Function { name: "planner-router-build/routing-costs", run: planner_router_build::step::costs };
+pub static ROUTING_WAYS: Function =
+    Function { name: "planner-router-build/routing-ways", run: planner_router_build::step::ways };
 pub static ROUTING: Function = Function { name: "planner-router-build/routing", run: planner_router_build::step::step };
 pub static ROUTE_FACTS: Function =
     Function { name: "planner-router-build/route-facts", run: planner_router_build::step::facts };
@@ -49,6 +51,7 @@ pub const FUNCTIONS: &[&Function] = &[
     &ROUTING_SOURCE,
     &ROUTING_ROADS,
     &ROUTING_COSTS,
+    &ROUTING_WAYS,
     &ROUTING,
     &ROUTE_FACTS,
     &SEARCH,
