@@ -1,4 +1,4 @@
-# cargo-about: the licence *texts* that have to travel with a distributed binary (#1149).
+# cargo-about: the licence *texts* that have to travel with a distributed binary.
 #
 # The sibling of deny.toml, and deliberately a separate file: deny.toml decides *which*
 # licences may enter the tree (a policy gate, run on every PR), while this one collects the

@@ -1186,8 +1186,6 @@ pub enum SettingsIntent {
     /// A rider edit changed the live settings; `revision` is the value they now describe. A newer
     /// edit supersedes an older in-flight write, and the older ack is then no longer current.
     Changed { revision: u16 },
-    /// The backoff after a failed write elapsed — retry the revision that is still owed.
-    RetryDue,
 }
 
 /// Persist the current settings revision. Values are read from resident settings at execution.
@@ -1302,9 +1300,6 @@ impl SettingsMachine {
                 self.revision = revision;
                 self.persist = PersistState::Dirty;
             }
-            // The backoff elapsing is not a state change on its own: `next_effect` re-derives the
-            // deadline from the clock it is handed, so a due retry emits without anything to latch.
-            SettingsIntent::RetryDue => {}
         }
     }
 

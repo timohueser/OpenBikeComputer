@@ -129,10 +129,10 @@ fn flpr_memory_x() -> String {
         "\
 MEMORY
 {{
-    FLASH       : ORIGIN = {APP_SLOT_BASE:#010X}, LENGTH = {app_len:#X} /* app slot ({app_kb}K) above the 32K obc-boot (#617) */
-    SEMMC_STAGE : ORIGIN = {SEMMC_STAGE_BASE:#010X}, LENGTH = {stage_kb}K   /* staged sEMMC blob — armer→boot handoff (#1158, obcu-update.md §3) */
-    BOOT_STATE  : ORIGIN = {BOOT_STATE_BASE:#010X}, LENGTH = 4K    /* DFU boot-state handoff page (#617, obcu-update.md §2) */
-    SETTINGS    : ORIGIN = {SETTINGS_BASE:#010X}, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
+    FLASH       : ORIGIN = {APP_SLOT_BASE:#010X}, LENGTH = {app_len:#X} /* app slot ({app_kb}K) above the 32K obc-boot */
+    SEMMC_STAGE : ORIGIN = {SEMMC_STAGE_BASE:#010X}, LENGTH = {stage_kb}K   /* staged sEMMC blob — armer→boot handoff (obcu-update.md §3) */
+    BOOT_STATE  : ORIGIN = {BOOT_STATE_BASE:#010X}, LENGTH = 4K    /* DFU boot-state handoff page (obcu-update.md §2) */
+    SETTINGS    : ORIGIN = {SETTINGS_BASE:#010X}, LENGTH = 4K    /* persistent settings page — top of RRAM */
     RAM         : ORIGIN = {SRAM_BASE:#010X}, LENGTH = {ram_kb}K   /* M33 .data/.bss/stack */
     /* Reserved for the FLPR (not linked by the M33; see the generated flpr.ld):
          SEMMC    {SEMMC_RAM_BASE:#010X} .. {FLPR_RAM_BASE:#010X}  ({semmc_kb}K)  sEMMC soft-peripheral image (INITPC = {SEMMC_RAM_BASE:#010X}, VRI at +{SEMMC_VRI_OFFSET})
@@ -438,7 +438,7 @@ fn find_riscv_gcc() -> String {
     }
     panic!(
         "no RISC-V gcc found for the FLPR blob — install one (`brew install riscv64-elf-gcc`) \
-         or set RISCV_GCC=<path>. See firmware/docs/ls021-flpr.md (issue #150)."
+         or set RISCV_GCC=<path>."
     );
 }
 

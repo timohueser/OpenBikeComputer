@@ -1,7 +1,7 @@
 # Place query validation
 
 The `fixtures.assistant-places` manual suite runs the whole
-`host/obc-pack/tests/assistant_places.rs` target:
+`host/obc-bake/tests/assistant_places.rs` target:
 
 ```sh
 python3 fixtures/verify-assistant-places.py

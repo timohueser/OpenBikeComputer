@@ -1,19 +1,18 @@
 /* obc-boot memory map — the bootloader's 32 KB slot at the bottom of the nRF54LM20's RRAM.
  *
- * The full device layout (epic #615; #1158 for the stage carve; the app side of it is emitted by
- * ../obc-fw-nrf54l/build.rs — keep the two in agreement):
+ * The full device layout (the app side of it is emitted by ../obc-fw-nrf54l/build.rs — keep the
+ * two in agreement):
  *
  *   0x0000_0000  obc-boot           32 KB   (this crate — FLASH below)
  *   0x0000_8000  app slot         1976 KB   (the board crate, linked at 0x8000)
  *   0x001F_6000  SEMMC_STAGE        20 KB   (the armer-staged sEMMC blob — obcu-update.md §3, read here)
  *   0x001F_B000  BOOT_STATE page     4 KB   (the obc-dfu handoff page — read here)
- *   0x001F_C000  SETTINGS page       4 KB   (the app's persistent settings, #193 — never ours)
+ *   0x001F_C000  SETTINGS page       4 KB   (the app's persistent settings — never ours)
  *
- * RAM is 480 KB — the same extent the app links (#1158): the region above 0x2007_8000 is the
- * coprocessor territory this bootloader now genuinely uses. On the Install/Rollback paths it
- * copies the staged sEMMC image into the SEMMC carve and runs the FLPR there to reach the card
- * (semmc.rs), so the M33's stack must never overlap it — the pre-port note that boot's stack
- * could harmlessly start inside the carve is dead. The display FLPR's image/stack and the SHARED
+ * RAM is 480 KB — the same extent the app links: the region above 0x2007_8000 is coprocessor
+ * territory this bootloader uses. On the Install/Rollback paths it copies the staged sEMMC image
+ * into the SEMMC carve and runs the FLPR there to reach the card (semmc.rs), so the M33's stack
+ * must never overlap it. The display FLPR's image/stack and the SHARED
  * handshake page above it stay untouched (the app owns the display blob's whole lifecycle), and
  * the top 4 KB VPR-context/ProtectedRAM reservation is never mapped by anyone:
  *
@@ -38,7 +37,7 @@ MEMORY
  * (the magic address lives only in the linker script; main.rs reads the symbol). */
 PROVIDE(__boot_state_base = ORIGIN(BOOT_STATE));
 
-/* Base of the blob-stage carve (#1158, obcu-update.md §3) — where the armer left the sEMMC
+/* Base of the blob-stage carve (obcu-update.md §3) — where the armer left the sEMMC
  * soft-peripheral image this bootloader boots the card through. Also the app slot's END:
  * the install engine's slot length is `__semmc_stage_base - __app_slot_base`, so nothing
  * the engine flashes can ever touch the carve. */

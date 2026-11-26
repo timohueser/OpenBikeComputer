@@ -25,6 +25,9 @@ struct Piece {
     // The first triangle of storey 0's guard rails and of its delineators.
     rails: u32,
     delineators: u32,
+    // The first word of storey 0's details' rings and of their items (plan/details.wgsl).
+    rings: u32,
+    items: u32,
 }
 
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
