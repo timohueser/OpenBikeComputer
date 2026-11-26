@@ -57,6 +57,15 @@ cargo clippy -p planner-service --all-targets --no-default-features -- -D warnin
 
 ## Reference
 
+| Command | Purpose |
+| --- | --- |
+| `planner-service INSTALL` | Serves the install |
+| `planner-service INSTALL --scrub` | Reads each installed file again; fails and names each file whose SHA-256 differs |
+| `planner-service INSTALL --missing DIRECTORY PACKAGE` | Prints the installed bytes of the files of all cells and profile groups that `INSTALL` lacks |
+| `planner-service INSTALL --install DIRECTORY PACKAGE OBJECTS THREADS` | Installs all cells and profile groups on `THREADS` workers from `OBJECTS`, which holds each object as `OBJECTS/<first two hex digits>/<SHA-256>`. Exit status 3: an object is missing or damaged, and the last line of standard error is `object <SHA-256>: <why>`; 1: another failure |
+| `planner-service --formats` | Prints the format of the routing package that the service reads |
+| `planner-service --workers` | Prints the worker count: `ROUTE_WORKERS`, else the CPUs of the process |
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ROUTE_LISTEN` | `127.0.0.1:8788` | Listen address |
