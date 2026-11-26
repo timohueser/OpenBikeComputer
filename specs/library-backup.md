@@ -43,8 +43,6 @@ no `photos` field and no photo entry.
 | `settings` | Object: the settings of the app |
 | `photos` | Optional array of [photo records](#7-photo-record), each with a unique `id`. Without it, the file has no photos. |
 
-A reader ignores the field `versions` of an older file.
-
 ## 3. Route record
 
 | Field | Value |
@@ -54,8 +52,6 @@ A reader ignores the field `versions` of an older file.
 | `updatedAt` | Unix time in milliseconds of the last edit |
 | `summary` | [Summary](#5-summary) with `days`, or `null` when the plan never had a calculated line |
 | `trip` | Plan object of [planner-plan.md](planner-plan.md) |
-
-A reader ignores the fields `open` and `revision` of a route record of an older file.
 
 ## 4. Ride record
 

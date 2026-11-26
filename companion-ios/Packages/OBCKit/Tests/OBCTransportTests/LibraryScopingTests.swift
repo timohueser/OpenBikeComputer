@@ -35,7 +35,7 @@ import OBCTransport
         #expect(id.deviceObjectID == DeviceObjectID(3))
     }
 
-    @Test func legacyFlatIDParsesItsObjectIDButHasNoScope() {
+    @Test func unscopedIDParsesItsObjectIDButHasNoScope() {
         let flat = RideID(deviceObjectID: DeviceObjectID(9))
         #expect(flat.rawValue == "9")
         #expect(flat.scope == nil)

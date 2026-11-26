@@ -74,14 +74,11 @@ pub(crate) fn fords(family: Family, water: &WaterSection) -> bool {
 /// The kinds that lie on the ground unless their tags say otherwise.
 const GROUND_KINDS: [&str; 4] = ["main-road", "road", "path", "railway"];
 
-/// Whether a way feature is a tunnel: of the kind `tunnel` (a passage through a building of an older bake is none), or
-/// a ground kind tagged `tunnel=yes` (the bake's shallow rule keeps the tag on a tunnel that it lays on the ground).
+/// Whether a way feature is a tunnel: of the kind `tunnel`, or a ground kind tagged `tunnel=yes` (the bake's shallow
+/// rule keeps the tag on a tunnel that it lays on the ground).
 pub(crate) fn tunnel(feature: &Feature) -> bool {
-    let tag = feature.tags.get("tunnel").map(String::as_str);
-    match feature.kind.as_str() {
-        "tunnel" => tag != Some("building_passage"),
-        kind => GROUND_KINDS.contains(&kind) && tag == Some("yes"),
-    }
+    let kind = feature.kind.as_str();
+    kind == "tunnel" || (GROUND_KINDS.contains(&kind) && feature.tags.get("tunnel").is_some_and(|tag| tag == "yes"))
 }
 
 /// The family, rank, level and rules of a line feature, or None for another kind. `shallow`: a ground kind tagged

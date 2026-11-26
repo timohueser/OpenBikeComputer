@@ -505,20 +505,18 @@ private struct PlannedRouteFile: Codable {
     var version: Int
     var summary: RouteSummaryDTO
     var route: ImportedRouteDTO
-    /// The bike-type wire value. Optional-decoded: a file without it loads as Road.
-    var bikeType: UInt8?
+    /// The bike-type wire value.
+    var bikeType: UInt8
     var sourceFileName: String
     /// The device object id this route is stored under, nil when not on the device.
-    /// Optional-decoded, so a file without it loads as "not uploaded" and self-heals on the next
-    /// upload or reconcile. It stays a bare `UInt64` on disk; the domain type wraps it.
+    /// It stays a bare `UInt64` on disk; the domain type wraps it.
     var deviceObjectID: UInt64?
     /// A device link needs its object id, serial, and store identity.
     /// Incomplete links remain unbound until content reconciliation.
     var deviceSerial: String?
     var deviceStoreID: String?
-    /// The committed upload payload's CRC-32, the device-copy fingerprint. Optional-decoded: a
-    /// file without it loads as "content unknown", which reads as outdated and self-heals on the
-    /// next upload.
+    /// The committed upload payload's CRC-32, the device-copy fingerprint. Nil reads as outdated
+    /// and self-heals on the next upload.
     var uploadedCRC32: UInt32?
     var addedAt: Date
     /// The planner plan, in the `specs/planner-plan.md` shape.
@@ -550,7 +548,7 @@ private struct PlannedRouteFile: Codable {
         return PlannedRouteRecord(
             summary: summary.domain,
             route: route.domain,
-            bikeType: bikeType.flatMap(BikeType.init(rawValue:)) ?? .road,
+            bikeType: BikeType(rawValue: bikeType) ?? .road,
             sourceFileName: sourceFileName,
             sourceFileData: sourceFileData,
             deviceLink: link,
@@ -742,9 +740,8 @@ private struct TrackPreviewDTO: Codable {
     var points: [[Double]]
     var aspectRatio: Double
     /// `[lat, lon]` pairs, index-aligned with `points`: the source geography the basemap preview
-    /// draws. Optional-decoded, so a file without it loads with no coordinates and the preview
-    /// falls back to the grid until the record is re-saved.
-    var coordinates: [[Double]]?
+    /// draws.
+    var coordinates: [[Double]]
 
     init(_ preview: TrackPreview) {
         points = preview.points.map { [$0.x, $0.y] }
@@ -756,7 +753,7 @@ private struct TrackPreviewDTO: Codable {
         TrackPreview(
             points: points.compactMap { $0.count == 2 ? TrackPreview.Point(x: $0[0], y: $0[1]) : nil },
             aspectRatio: aspectRatio,
-            coordinates: (coordinates ?? []).compactMap {
+            coordinates: coordinates.compactMap {
                 $0.count == 2 ? Coordinate(latitude: $0[0], longitude: $0[1]) : nil
             }
         )
@@ -769,8 +766,8 @@ private struct ImportedRouteDTO: Codable {
     /// `[lat, lon]` or `[lat, lon, ele]` per point.
     var points: [[Double]]
     var waypoints: [WaypointDTO]
-    var surfaces: [UInt8]?
-    var elevationIncomplete: [Bool]?
+    var surfaces: [UInt8]
+    var elevationIncomplete: [Bool]
 
     init(_ route: ImportedRoute) {
         name = route.name
@@ -793,8 +790,8 @@ private struct ImportedRouteDTO: Codable {
                 return RoutePoint(
                     coordinate: Coordinate(latitude: values[0], longitude: values[1]),
                     elevationMeters: values.count >= 3 ? values[2] : nil,
-                    surface: surfaces.flatMap { index < $0.count ? $0[index] : nil } ?? 0,
-                    elevationIncomplete: elevationIncomplete.flatMap { index < $0.count ? $0[index] : nil } ?? false
+                    surface: index < surfaces.count ? surfaces[index] : 0,
+                    elevationIncomplete: index < elevationIncomplete.count && elevationIncomplete[index]
                 )
             },
             waypoints: waypoints.map(\.domain)
@@ -809,11 +806,9 @@ private struct WaypointDTO: Codable {
     var distanceAlongMeters: Double
     var lat: Double
     var lon: Double
-    /// The category wire id, where 0 or absent is generic, and the signed lateral offset. Both are
-    /// optional, so an older library still decodes: such a record reads back generic and on-route,
-    /// and the import is where those are fixed.
+    /// The category wire id, nil for generic, and the signed lateral offset.
     var category: UInt8?
-    var lateralOffsetMeters: Double?
+    var lateralOffsetMeters: Double
     var provenance: WaypointProvenance?
 
     init(_ waypoint: Waypoint) {
@@ -834,7 +829,7 @@ private struct WaypointDTO: Codable {
             distanceAlongMeters: distanceAlongMeters,
             coordinate: Coordinate(latitude: lat, longitude: lon),
             category: category.flatMap(WaypointCategory.init(wireID:)),
-            lateralOffsetMeters: lateralOffsetMeters ?? 0, provenance: provenance
+            lateralOffsetMeters: lateralOffsetMeters, provenance: provenance
         )
     }
 }
@@ -921,7 +916,7 @@ private struct RidePointDTO: Codable {
 }
 
 private struct RideSummaryDTO: Codable {
-    var isDemo: Bool?
+    var isDemo: Bool
     var source: RideSource?
     var id: String
     var name: String
@@ -930,11 +925,8 @@ private struct RideSummaryDTO: Codable {
     var movingTime: Double
     var averageSpeedMps: Double
     var climbMeters: Double
-    // Optional, so a `summary.json` written before the footer carried descent still decodes.
-    var descentMeters: Double?
+    var descentMeters: Double
     var preview: TrackPreviewDTO?
-    // The per-ride sensor summary is optional, so a `summary.json` written without these keys
-    // still decodes with every field nil.
     var avgHeartRate: Int?
     var maxHeartRate: Int?
     var avgCadence: Int?
@@ -943,8 +935,7 @@ private struct RideSummaryDTO: Codable {
     var energyKJ: Int?
     var bikeType: UInt8
     var trip: RideTripDTO?
-    // Optional, so a `summary.json` written before rides carried limits decodes as not set.
-    var zoneLimits: RideZoneLimits?
+    var zoneLimits: RideZoneLimits
 
     init(_ summary: RideSummary) {
         source = summary.source
@@ -973,12 +964,12 @@ private struct RideSummaryDTO: Codable {
         RideSummary(
             id: RideID(id), name: name, date: date,
             distanceMeters: distanceMeters, movingTime: movingTime,
-            averageSpeedMps: averageSpeedMps, climbMeters: climbMeters, descentMeters: descentMeters ?? 0,
+            averageSpeedMps: averageSpeedMps, climbMeters: climbMeters, descentMeters: descentMeters,
             trackPreview: preview?.domain,
             avgHeartRate: avgHeartRate, maxHeartRate: maxHeartRate,
             avgCadence: avgCadence, avgPower: avgPower, maxPower: maxPower, energyKJ: energyKJ,
             bikeType: BikeType(rawValue: bikeType) ?? .road, trip: trip?.domain,
-            zoneLimits: zoneLimits ?? .notSet, source: source, isDemo: isDemo ?? false
+            zoneLimits: zoneLimits, source: source, isDemo: isDemo
         )
     }
 }
