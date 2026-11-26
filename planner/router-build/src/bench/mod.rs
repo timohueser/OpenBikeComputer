@@ -1,6 +1,8 @@
-//! The route bench: the route-quality measures of a region with the cost code of this checkout.
+//! The route bench: the route-quality measures of a region with the cost code of this checkout,
+//! and the pairs of routes for a blind comparison of two checkouts.
 mod measures;
 mod net;
+mod pairs;
 mod panel;
 mod prices;
 mod signed;
@@ -18,9 +20,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
-const USAGE: &str =
-    "Usage: route_bench run --pbf FILE --dem DIR --bounds W,S,E,N --out DIR [--town W,S,E,N] [--profiles NAME,…]";
-const OPTIONS: [&str; 6] = ["pbf", "dem", "bounds", "out", "town", "profiles"];
+const USAGE: &str = "Usage: route_bench run --pbf FILE --dem DIR --bounds W,S,E,N --out DIR [--town W,S,E,N] \
+                     [--profiles NAME,…] [--pairs FILE [--pairs-box W,S,E,N]]\n       \
+                     route_bench compare A/routes.json B/routes.json --names X,Y --out FILE.html";
+const OPTIONS: [&str; 9] = ["pbf", "dem", "bounds", "out", "town", "profiles", "pairs", "pairs-box", "names"];
 /// The distance between the points on a signed route.
 const STEP_M: f64 = 5_000.0;
 
@@ -124,6 +127,7 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
     let (pbf, dem, out) = (Path::new(need("pbf")?), Path::new(need("dem")?), Path::new(need("out")?));
     let bounds = area(need("bounds")?)?;
     let town = options.get("town").map(|text| area(text)).transpose()?;
+    let pairs_box = options.get("pairs-box").map_or(Ok(bounds), |text| area(text))?;
     let names: Vec<&str> = options.get("profiles").map_or(vec!["touring"], |names| names.split(',').collect());
     let profiles = crate::profiles(&names)?;
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -149,7 +153,7 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
         need("bounds")?,
         dem.display()
     );
-    let mut results = serde_json::Map::new();
+    let (mut results, mut routes, mut ends) = (serde_json::Map::new(), serde_json::Map::new(), None);
     for (index, profile) in profiles.iter().enumerate() {
         let clock = Instant::now();
         let net = Net::new(&graph, &topology, &costs, index);
@@ -158,6 +162,12 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
         let mut panels = vec![panel_row("random", &draw(panel::PANEL, None)?)];
         if town.is_some() {
             panels.push(panel_row("town", &draw(panel::TOWN, town)?));
+        }
+        if let Some(path) = options.get("pairs") {
+            if ends.is_none() {
+                ends = Some(pairs::pairs(Path::new(path), &net, pairs_box)?);
+            }
+            routes.insert(profile.name.clone(), pairs::routes(&net, ends.as_deref().expect("the pairs"))?);
         }
         text += &format!("## `{}`\n\nThe signed routes:\n\n{}{}", profile.name, table(&shares), table(&legs));
         text += &format!("The panels:\n\n{}", table(&transposed(&panels)));
@@ -169,7 +179,25 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
     let inputs = json!({"pbf": pbf, "dem": dem, "bounds": bounds, "town": town});
     let bench = json!({"inputs": inputs, "profiles": results, "prices": objects(&prices)});
     write(&out.join("bench.json"), &format!("{bench:#}\n"))?;
-    write(&out.join("bench.md"), &text)
+    write(&out.join("bench.md"), &text)?;
+    if let Some(ends) = ends {
+        write(&out.join("routes.json"), &json!({"pairs": ends, "routes": routes}).to_string())?;
+    }
+    Ok(())
+}
+
+fn compare(options: &HashMap<&str, &str>, runs: &[&str]) -> Result<(), String> {
+    let (Some(names), Some(out), [a, b]) = (options.get("names"), options.get("out"), runs) else {
+        return Err(USAGE.into());
+    };
+    let Some((x, y)) = names.split_once(',') else { return Err(USAGE.into()) };
+    let read = |path: &str| -> Result<Value, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))
+    };
+    let (data, missing) = pairs::compare([&read(a)?, &read(b)?], [x, y])?;
+    eprintln!("{missing} pairs have no route in one of the runs");
+    write(Path::new(out), &pairs::page(&data))
 }
 
 fn command(args: &[String]) -> Result<(), String> {
@@ -184,8 +212,9 @@ fn command(args: &[String]) -> Result<(), String> {
             Some(_) => return Err(USAGE.into()),
         }
     }
-    match rest[..] {
-        ["run"] => run(&options),
+    match rest.split_first() {
+        Some((&"run", [])) => run(&options),
+        Some((&"compare", runs)) => compare(&options, runs),
         _ => Err(USAGE.into()),
     }
 }

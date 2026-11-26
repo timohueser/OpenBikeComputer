@@ -1,11 +1,13 @@
 use super::measures::measure;
 use super::net::Net;
+use super::pairs::compare;
 use super::panel::{sample, Class, Pair, Spec};
 use super::signed::signed_share;
 use crate::base::Topology;
 use crate::source::{Builder, Data, Id, NodeRef, Relations, Tags, Ways};
 use crate::{Costs, Graph};
 use planner_router::model::{Point, Road, Surface, BIKE, FOOT, PUSH};
+use serde_json::{json, Value};
 
 /// A grid of streets 600 m apart, 10 columns by 3 rows, with the costs of `touring`. Node and
 /// junction `10 × row + column` are the same number. The streets of row 0 have the name `Main`.
@@ -123,4 +125,15 @@ fn a_sample_gives_the_same_pairs_of_its_classes_again() {
         km >= CLASSES[class].0 && km <= CLASSES[class].1
     };
     assert!(pairs.len() == 8 && pairs.iter().enumerate().all(|(i, pair)| fits(pair, i / 4)), "{pairs:?}");
+}
+
+#[test]
+fn compare_keeps_the_pairs_with_two_different_routes() {
+    let route = |lat: f64| json!({"line": [[lat, 7.0], [lat, 7.02]]});
+    let run = |routes: [Value; 3]| json!({"pairs": [1, 2, 3], "routes": {"touring": routes}});
+    // Pair 1 has two routes 100 m apart, pair 2 the same route twice, pair 3 no route in a run.
+    let runs = [run([route(48.0), route(48.0), Value::Null]), run([route(48.0009), route(48.0), route(48.0)])];
+    let (data, missing) = compare([&runs[0], &runs[1]], ["a", "b"]).unwrap();
+    let kept: Vec<&Value> = data["sets"][0]["pairs"].as_array().unwrap().iter().map(|pair| &pair["id"]).collect();
+    assert_eq!((kept, missing), (vec![&json!(1)], 1));
 }
