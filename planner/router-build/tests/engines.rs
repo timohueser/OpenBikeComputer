@@ -317,6 +317,23 @@ fn a_missing_cell_is_a_missing_region_and_gives_no_turn() {
 }
 
 #[test]
+fn a_snap_gives_the_same_candidates_cold_and_warm() {
+    let bake = bake("warm");
+    let warm = bake.region(None);
+    for radius_m in [Policy::default().radius_m, REACH_M] {
+        let policy = Policy { radius_m, ..Policy::default() };
+        for point in snap_points(&bake.graph) {
+            let cold = warm.fork().snap(point, "touring", policy).unwrap();
+            assert_eq!(
+                candidates(&warm.snap(point, "touring", policy).unwrap()),
+                candidates(&cold),
+                "{point:?} {radius_m} m"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_route_costs_what_its_pieces_and_turns_cost() {
     let bake = bake("cost");
     let graph = &bake.graph;
