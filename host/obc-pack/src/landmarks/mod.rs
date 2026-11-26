@@ -565,7 +565,6 @@ fn compile_selected(
                 output,
                 select_photos,
                 text_required: true,
-                snapshot_schema: snapshot.schema,
             },
             &place,
             entity,
@@ -711,7 +710,6 @@ struct Inputs<'a> {
     /// A landmark answers "what is this place", which needs text. A peak is identified by sight,
     /// so a photo alone is a record there.
     text_required: bool,
-    snapshot_schema: u32,
 }
 
 /// The captured file members of the place's own Commons categories. The listing is a pinned source
@@ -721,7 +719,6 @@ fn category_members(
     sources: &Sources,
     place: &Value,
     categories: &[String],
-    snapshot_schema: u32,
 ) -> Result<BTreeSet<String>, String> {
     let mut members = BTreeSet::new();
     let limits = photo_policy()["fallback"].clone();
@@ -731,9 +728,6 @@ fn category_members(
         let title = string(listing, "title")?;
         if !categories.iter().any(|name| name == title) {
             return Err(format!("unclaimed commons category: {title}"));
-        }
-        if snapshot_schema == 1 {
-            return Err(format!("schema 1 cannot prove complete commons category coverage: {title}"));
         }
         let bounded = listing["limit"].as_u64() == Some(max_files as u64);
         let complete = listing["complete"].as_bool().ok_or("missing category completeness")?;
@@ -797,7 +791,7 @@ fn prepare_article(
     found: &mut Found,
     summit: Option<(f64, f64)>,
 ) -> Result<Option<PreparedArticle>, String> {
-    let Inputs { root, sources, locales, output, select_photos, text_required, snapshot_schema } = *inputs;
+    let Inputs { root, sources, locales, output, select_photos, text_required } = *inputs;
     let Found { omissions, requests } = found;
     let qid = string(place, "qid")?;
     let mut omit = |asset: &str, reason: String| {
@@ -854,7 +848,7 @@ fn prepare_article(
     };
     // Every P373 claim, so the compiler and the capture cannot name different categories.
     let categories: Vec<String> = claim_files("P373").into_iter().map(|name| format!("Category:{name}")).collect();
-    let members = category_members(root, sources, place, &categories, snapshot_schema)?;
+    let members = category_members(root, sources, place, &categories)?;
     let pools = photo_pools();
     let mut ranked = Vec::new();
     for image in place["images"].as_array().into_iter().flatten() {
@@ -933,7 +927,7 @@ fn prepare_article(
 fn load_snapshot(snapshot_path: &Path) -> Result<(Snapshot, Vec<u8>), String> {
     let raw = fs::read(snapshot_path).map_err(|e| e.to_string())?;
     let snapshot: Snapshot = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
-    if !matches!(snapshot.schema, 1 | 2) {
+    if snapshot.schema != 2 {
         return Err("unsupported source snapshot schema".into());
     }
     let root = snapshot_path.parent().ok_or("snapshot has no parent")?;

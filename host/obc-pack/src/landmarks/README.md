@@ -20,7 +20,7 @@ a country capture.
 
 ## Input
 
-A schema 1 source manifest: each raw response has a relative path, URL, byte count and SHA-256.
+A schema 2 source manifest: each raw response has a relative path, URL, byte count and SHA-256.
 Entity responses are `entities/QID.json`, parent classes are in `classes/`, locale entities in
 `locales/`. The compiler verifies the registered bytes before it selects sites, and derives
 coordinates and types from the raw entities. A raw `wbgetentities` response can carry an

@@ -1,5 +1,5 @@
 //! `obc-mkimage` end-to-end tests: drive the built binary through the real
-//! `keygen`/`wrap`/`sign`/`inspect` flow, including the OBCU v2 signature.
+//! `keygen`/`wrap`/`sign`/`inspect` flow, including the OBCU signature.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -102,29 +102,32 @@ fn signing_is_reproducible() {
     let _ = std::fs::remove_file(&b_path);
 }
 
-/// The `sign` subcommand attaches a trailer to an already-wrapped container, and the result is
-/// byte-identical to what `wrap --sign-seed` would have produced in one step.
+/// The `sign` subcommand replaces the trailer of an already-wrapped container, and the result is
+/// byte-identical to what `wrap` with that seed would have produced in one step.
 #[test]
 fn sign_matches_wrap_sign_seed() {
     let bin_path = scratch("late.bin");
-    let unsigned_path = scratch("LATE-UNSIGNED.BIN");
+    let other_seed = scratch("other.seed");
+    let first_path = scratch("LATE-FIRST.BIN");
     let signed_path = scratch("LATE-SIGNED.BIN");
     let one_shot_path = scratch("LATE-ONESHOT.BIN");
     std::fs::write(&bin_path, fake_image(b"signed after the fact")).unwrap();
+    std::fs::write(&other_seed, format!("{}\n", "11".repeat(32))).unwrap();
 
     let w = bin()
         .args(["wrap", "--bin"])
         .arg(&bin_path)
         .args(["--version", "v2.0.0", "--out"])
-        .arg(&unsigned_path)
+        .arg(&first_path)
+        .arg("--sign-seed")
+        .arg(&other_seed)
         .output()
         .unwrap();
-    assert!(w.status.success());
-    assert!(String::from_utf8_lossy(&w.stderr).contains("UNSIGNED"), "an unsigned wrap warns loudly");
+    assert!(w.status.success(), "wrap failed: {}", String::from_utf8_lossy(&w.stderr));
 
     let s = bin()
         .args(["sign", "--in"])
-        .arg(&unsigned_path)
+        .arg(&first_path)
         .arg("--out")
         .arg(&signed_path)
         .arg("--sign-seed")
@@ -148,7 +151,7 @@ fn sign_matches_wrap_sign_seed() {
     let i = bin().arg("inspect").arg(&signed_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
     assert!(i.status.success());
 
-    for p in [&bin_path, &unsigned_path, &signed_path, &one_shot_path] {
+    for p in [&bin_path, &other_seed, &first_path, &signed_path, &one_shot_path] {
         let _ = std::fs::remove_file(p);
     }
 }
@@ -316,7 +319,6 @@ fn inspect_rejects_unknown_or_inconsistent_signature_markers() {
             .arg(&out_path)
             .arg("--pubkey")
             .arg(test_key("pub"))
-            .arg("--allow-unsigned")
             .output()
             .unwrap();
         assert!(!i.status.success(), "scheme {scheme}, length {sig_len} must not pass the release gate");
@@ -327,29 +329,33 @@ fn inspect_rejects_unknown_or_inconsistent_signature_markers() {
     let _ = std::fs::remove_file(&out_path);
 }
 
-/// An unsigned (v1) container fails `inspect` by default — that default is what keeps an unsigned
-/// artifact from reaching a release — but is inspectable with the explicit escape hatch.
+/// `wrap` never writes an unsigned container, and `inspect` fails one, which is what keeps an
+/// unsigned artifact from reaching a release.
 #[test]
-fn inspect_rejects_unsigned_unless_allowed() {
-    let bin_path = scratch("v1.bin");
-    let out_path = scratch("V1.BIN");
-    std::fs::write(&bin_path, fake_image(b"an old-style container")).unwrap();
-    let w = bin()
+fn unsigned_containers_are_neither_written_nor_passed() {
+    let bin_path = scratch("unsigned.bin");
+    let out_path = scratch("UNSIGNED.BIN");
+    std::fs::write(&bin_path, fake_image(b"an unsigned container")).unwrap();
+    let no_seed = bin()
         .args(["wrap", "--bin"])
         .arg(&bin_path)
         .args(["--version", "v0.9.0", "--out"])
         .arg(&out_path)
         .output()
         .unwrap();
-    assert!(w.status.success());
+    assert!(!no_seed.status.success(), "wrap without a seed must fail");
+    assert!(String::from_utf8_lossy(&no_seed.stderr).contains("--sign-seed"));
+    assert!(!out_path.exists(), "no output file on refusal");
 
-    let strict = bin().arg("inspect").arg(&out_path).output().unwrap();
-    assert!(!strict.status.success(), "an unsigned container must not pass the gate");
-    assert!(String::from_utf8_lossy(&strict.stdout).contains("NONE"));
+    // The device-written rollback snapshot is the one unsigned container: header and image only.
+    let image = fake_image(b"an unsigned container");
+    let mut blob = ImageHeader::new(&image, "v0.9.0").encode().to_vec();
+    blob.extend_from_slice(&image);
+    std::fs::write(&out_path, &blob).unwrap();
 
-    let lenient = bin().arg("inspect").arg(&out_path).arg("--allow-unsigned").output().unwrap();
-    assert!(lenient.status.success(), "…but --allow-unsigned still reports on it");
-    assert!(String::from_utf8_lossy(&lenient.stdout).contains("=> valid"));
+    let i = bin().arg("inspect").arg(&out_path).output().unwrap();
+    assert!(!i.status.success(), "an unsigned container must not pass the gate");
+    assert!(String::from_utf8_lossy(&i.stdout).contains("NONE"));
 
     let _ = std::fs::remove_file(&bin_path);
     let _ = std::fs::remove_file(&out_path);
@@ -369,6 +375,8 @@ fn wrap_rejects_oversize() {
         .arg(&bin_path)
         .args(["--version", "v0", "--out"])
         .arg(&out_path)
+        .arg("--sign-seed")
+        .arg(test_key("seed"))
         .output()
         .unwrap();
     assert!(!w.status.success(), "oversize image must be refused");
@@ -391,14 +399,16 @@ fn wrap_warns_on_tiny_image() {
         .arg(&bin_path)
         .args(["--version", "v0", "--out"])
         .arg(&out_path)
+        .arg("--sign-seed")
+        .arg(test_key("seed"))
         .output()
         .unwrap();
     assert!(w.status.success(), "a tiny image is warn-only, not a panic: {}", String::from_utf8_lossy(&w.stderr));
     assert!(String::from_utf8_lossy(&w.stderr).contains("warning"), "expected a short-image warning");
     assert!(out_path.exists(), "file is still written");
 
-    // The wrapped file still inspects clean as a container (it is simply unsigned).
-    let i = bin().arg("inspect").arg(&out_path).arg("--allow-unsigned").output().unwrap();
+    // The wrapped file still inspects clean.
+    let i = bin().arg("inspect").arg(&out_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
     assert!(i.status.success());
 
     let _ = std::fs::remove_file(&bin_path);
@@ -420,6 +430,8 @@ fn wrap_warns_on_bad_vector_table() {
         .arg(&bin_path)
         .args(["--version", "v0", "--out"])
         .arg(&out_path)
+        .arg("--sign-seed")
+        .arg(test_key("seed"))
         .output()
         .unwrap();
     assert!(w.status.success(), "a bad vector table is warn-only, not fatal");
