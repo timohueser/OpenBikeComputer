@@ -1,5 +1,5 @@
 import type { Plant } from '../plant-library';
-import { blade, GOLDEN, hash, hex, merge, paint, ramp, random, smooth, soft, UP, v3, type Geometry, type Ramp, revolve } from '../plant-shape';
+import { GOLDEN, hash, hex, leaf, merge, paint, ramp, random, revolve, sheet, smooth, soft, UP, v3, type Geometry, type Ramp } from '../plant-shape';
 import type { Season } from '../../rules/regions';
 
 /** Silver rosette leaves of the tajinaste. */
@@ -13,55 +13,45 @@ const SPIKE: Record<Season, Ramp> = {
     autumn: ['#5e4636', '#84644a', '#a68866'],
 };
 
-/**
- * A mound of narrow silver leaves round the foot, leaving at `upright` from vertical in the
- * middle to `spread` at the rim and arching out: 3 triangles a leaf.
- */
-function rosette(leaves: number, reach: number, [upright, spread]: [number, number], rand: () => number): Geometry {
-    const [deep, mid, tip] = ramp(SILVER);
-    const parts: Geometry[] = [];
-    for (let k = 0; k < leaves; k++) {
-        const a = k * GOLDEN + rand() * 0.4;
-        const tilt = upright + (spread - upright) * Math.sqrt((k + 0.5) / leaves) * (0.85 + 0.15 * rand());
-        const length = reach * (0.8 + 0.3 * rand());
-        const geo = blade([0.04 * Math.cos(a), 0.04 * Math.sin(a), 0], a, length, tilt, 0.35 * tilt, (t) => 0.3 * reach * Math.sin(Math.PI * Math.min(1, 0.15 + t)), 2);
-        parts.push(paint(geo, (p) => deep.clone().lerp(mid, smooth(0, 0.4 * length, p.length())).lerp(tip, smooth(0.5 * length, length, p.length()))));
-    }
-    return merge(parts);
-}
+/** The spike's outline, (radius, height): thickest low down, a long taper to a blunt tip. */
+const OUTLINE: [number, number][] = [[0.06, 0], [0.095, 0.2], [0.1, 0.38], [0.08, 0.6], [0.05, 0.82], [0.022, 0.95], [0, 1]];
+const girth = (z: number) => {
+    const i = Math.max(1, OUTLINE.findIndex(([, at]) => at >= z));
+    const [[r0, z0], [r1, z1]] = [OUTLINE[i - 1], OUTLINE[i]];
+    return r0 + ((r1 - r0) * (z - z0)) / (z1 - z0);
+};
+
+/** The whorls of flowers up the spike, the flowers of a whorl, and the leaves of the rosette. */
+const WHORLS = 15, FLOWERS = 6, LEAVES = 30;
 
 /**
- * Teide bugloss in flower: one tall narrow spike out of a silver rosette, its foot still leafy
- * and silver. The spike is a stack of twelve small flaring tiers of flowers, each turned half a
- * corner against the one below, so its outline is bristly from every side. 315 triangles.
+ * Teide bugloss in flower: one tall spike out of a mound of narrow silver leaves. The spike is a round tapering
+ * column, and whorls of flower sprays stand out of it and up, each whorl turned half a step against the one below,
+ * so its outline is bristly from every side; the lowest whorls are still silver leaves.
  */
 function tajinaste(season: Season, seed: number, rand: () => number): Geometry {
-    const [, mid] = ramp(SILVER);
+    const [deep, silver, pale] = ramp(SILVER);
     const [dark, body, lit] = ramp(SPIKE[season]);
     const bract = hex('#b4bcac');
-    const [tiers, sides] = [12, 5];
-    const girth = (z: number) => 0.085 * (1.05 - z) ** 0.8;
-    // A tier flares out to its lit lower edge and narrows into shade at the foot of the next.
-    const profile: [number, number][] = [[0.075, 0], [0.085, 0.1]];
-    for (let t = 0; t < tiers; t++) {
-        const z = 0.13 + (t / tiers) * 0.82;
-        profile.push([(1.2 + 0.2 * rand()) * girth(z), z], [0.85 * girth(z), z + 0.045]);
+    const leafy = (z: number) => 1 - smooth(0.1, 0.26, z);
+    const cards = sheet();
+    for (let w = 0; w < WHORLS; w++) for (let i = 0; i < FLOWERS; i++) {
+        const z = 0.1 + 0.82 * (w / (WHORLS - 1)) + 0.02 * rand(), a = ((i + 0.5 * (w % 2) + 0.3 * rand()) / FLOWERS) * 2 * Math.PI;
+        const out = v3(Math.cos(a), Math.sin(a), 0), at = out.clone().multiplyScalar(0.85 * girth(z)).setZ(z);
+        const colour = body.clone().lerp(lit, 0.2 + 0.6 * smooth(0.4, 1, z));
+        if (hash(at, seed + 3) < 0.3) colour.lerp(bract, 0.5);
+        colour.lerp(silver, leafy(z));
+        const length = (0.04 + 0.75 * girth(z)) * (0.85 + 0.3 * rand()), lean = out.clone().lerp(UP, 0.35).normalize();
+        leaf(cards, at, out.clone().multiplyScalar(0.8).setZ(0.6), length, 0.6 * length, 0.45, [dark.clone().lerp(deep, leafy(z)), colour, colour.clone().lerp(lit.clone().lerp(pale, leafy(z)), 0.5)], () => lean);
     }
-    profile.push([0, 1]);
-    const spike = revolve(profile, sides);
-    spike.color = [];
-    const p = v3();
-    for (let i = 0; i < spike.position.length / 3; i++) {
-        const row = i % profile.length;
-        const edge = row >= 2 && row % 2 === 0;
-        p.from(spike.position, i).applyAxisAngle(UP, (Math.floor(row / 2) * Math.PI) / sides);
-        const c = edge ? body.clone().lerp(lit, 0.2 + 0.6 * smooth(0.4, 1, p.z)) : dark.clone().lerp(body, 0.5);
-        if (edge && hash(p, seed + 3) < 0.3) c.lerp(bract, 0.5);
-        c.lerp(mid, 1 - smooth(0.1, 0.24, p.z));
-        spike.color.push(c.r, c.g, c.b);
-        spike.position.splice(3 * i, 3, p.x, p.y, p.z);
+    for (let k = 0; k < LEAVES; k++) {
+        const a = k * GOLDEN + 0.4 * rand(), tilt = 0.45 + 0.95 * Math.sqrt((k + 0.5) / LEAVES) * (0.85 + 0.15 * rand());
+        const out = v3(Math.cos(a), Math.sin(a), 0), lean = out.clone().lerp(UP, 0.5).normalize();
+        const tone = silver.clone().lerp(pale, 0.6 * rand());
+        leaf(cards, out.clone().multiplyScalar(0.04), out.clone().multiplyScalar(Math.sin(tilt)).setZ(Math.cos(tilt)), 0.36 * (0.8 + 0.35 * rand()), 0.085, 0.45, [deep, tone, tone.clone().lerp(pale, 0.6)], () => lean);
     }
-    return merge([rosette(20, 0.28, [0.4, 1.15], rand), soft(spike)]);
+    const spike = paint(soft(revolve(OUTLINE, 6)), (p) => dark.clone().lerp(body, 0.4).lerp(silver, leafy(p.z)));
+    return merge([spike, cards.build()]);
 }
 
 export default {

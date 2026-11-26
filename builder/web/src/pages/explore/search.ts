@@ -58,8 +58,10 @@ export interface Query {
     wishes: Partial<Record<Wish, 'nice' | 'must'>>;
 }
 
-export const defaultQuery = (today: string): Query =>
-    ({ date: today, walk: WALK_M.default, car: false, drive: DRIVE_KM.default, shapes: [...SHAPES], grade: [0, GRADE_TOP], ungraded: true, wishes: {} });
+/** The default names each field, also one with no value, so a query read from an address replaces each field of the query
+ * that it is spread over. */
+export const defaultQuery = (today: string): Query => ({ date: today, start: undefined, walk: WALK_M.default, car: false, drive: DRIVE_KM.default, lift: undefined,
+    pin: undefined, length: undefined, climb: undefined, shapes: [...SHAPES], grade: [0, GRADE_TOP], ungraded: true, wishes: {} });
 
 /** The loaded files: the records of the map view, and the facts and places of their cells. */
 export interface Loaded {
@@ -503,4 +505,29 @@ export function keepQuery(query: Query, today: string) {
     } catch {
         // Not kept.
     }
+}
+
+/** The key of the last three searches in `localStorage`, the newest first, each the text of `queryParams`. */
+export const KEPT_SEARCHES = 'explore-searches';
+
+export function storedSearches(): string[] {
+    try {
+        const kept: unknown = JSON.parse(localStorage.getItem(KEPT_SEARCHES) ?? '[]');
+        return Array.isArray(kept) ? kept.filter((text): text is string => typeof text === 'string').slice(0, 3) : [];
+    } catch {
+        return [];
+    }
+}
+
+/** The last searches with `query` first. The default query is no search. */
+export function keepSearch(query: Query, today: string, searches: string[]): string[] {
+    const text = queryParams(query, today);
+    if (!text) return searches;
+    const next = [text, ...searches.filter(one => one !== text)].slice(0, 3);
+    try {
+        localStorage.setItem(KEPT_SEARCHES, JSON.stringify(next));
+    } catch {
+        // Not kept.
+    }
+    return next;
 }

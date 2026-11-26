@@ -103,7 +103,7 @@ test('plans survive new, switch and reload, and a downloaded file opens again', 
   expect(errors).toEqual([]);
 });
 
-test('GPX files open as a new trip with a transfer and leave the open plan in the library', async ({ page }) => {
+test('GPX files open as a new trip and leave the open plan in the library', async ({ page }) => {
   const gpx = (name, line) => ({ name, mimeType: 'application/gpx+xml', buffer: Buffer.from(`<gpx><trk><name>${name.replace('.gpx', '')} ride</name><trkseg>${
     line.map(([lon, lat]) => `<trkpt lat="${lat}" lon="${lon}"/>`).join('')}</trkseg></trk></gpx>`) });
   await start(page);
@@ -116,7 +116,7 @@ test('GPX files open as a new trip with a transfer and leave the open plan in th
   await expect(page.getByRole('heading', { name: 'north ride', exact: true })).toBeVisible();
   await openLibrary(page);
   await expect(library(page).locator('li')).toHaveCount(2);
-  await expect(row(page, 'north ride')).toContainText('2 days · 6.2 km');
+  await expect(row(page, 'north ride')).toContainText('2 days · 12.9 km');
   await expect(row(page, 'Keep me')).toBeVisible();
 });
 

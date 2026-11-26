@@ -470,12 +470,20 @@ impl WaySection<'_> {
     pub fn outer_m(&self) -> f64 {
         self.half_m + self.shoulder_m.max(self.sidewalk_m)
     }
+
+    /// Whether its look frays into the ground at its edges: gravel, dirt or a trail's, as `frays` of the viewer's
+    /// `roads/section.ts`.
+    pub fn frays(&self) -> bool {
+        self.material == Material::Finish
+            && matches!(self.finish, Some(Finish::Gravel | Finish::Dirt | Finish::Grass | Finish::Path))
+    }
 }
 
 /// The fields of a class row that the faces' rules check.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClassFaces<'a> {
     pub group: &'a str,
+    pub widen_m: f64,
     pub shoulder_m: f64,
     pub sidewalk_m: f64,
     pub reach_m: f64,
@@ -895,6 +903,7 @@ impl Sections {
     pub fn class_faces(&self, rank: usize) -> Option<ClassFaces<'_>> {
         self.classes.get(rank).map(|row| ClassFaces {
             group: &row.group,
+            widen_m: row.widen_m,
             shoulder_m: self.widths.classes[rank].1.shoulder_m,
             sidewalk_m: self.widths.classes[rank].1.sidewalk_m,
             reach_m: row.reach_m,

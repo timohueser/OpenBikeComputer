@@ -8,9 +8,6 @@ tools rather than an ELF Python package so a fresh checkout needs only the selec
 
 from __future__ import annotations
 
-GOVERNS = ['firmware/obc-fw-nrf54l/**', 'firmware/obc-boot/**', 'firmware/tools/resource_baseline.json']
-RULE = 'A release image fits the recorded resource baseline and the app slot: RAM, frames, boot chain, bootloader flash and image size.'
-
 import argparse
 import json
 import re
@@ -725,7 +722,7 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
     require(
         measured.uninit <= profile["uninit_max"],
         f"{args.profile} .uninit grew to {measured.uninit} B, above {profile['uninit_max']} B; "
-        "this is the scratch arena's section (#1146 P2) — an arm grew past the current maximum, or "
+        "this is the scratch arena's section — an arm grew past the current maximum, or "
         "a new NOLOAD static appeared. Itemize/approve it exactly as a resident increase",
     )
     check_arena(args.profile, profile, measured)
@@ -756,7 +753,7 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
             measured.largest_poll_frame <= profile["poll_frame_limit"],
             f"{args.profile} largest guarded poll frame is {measured.largest_poll_frame} B, above "
             f"the {profile['poll_frame_limit']} B safety limit; move large construction "
-            "temporaries behind an #[inline(never)] .bss initializer (see issue #677)",
+            "temporaries behind an #[inline(never)] .bss initializer",
         )
     if measured.boot is not None:
         check_boot_chain(args.profile, profile, measured.boot)
@@ -790,14 +787,14 @@ def check_arena(profile_name: str, profile: dict[str, object], measured: BoardMe
     require(
         expected is not None,
         f"{profile_name} baseline has no compile_time_allocations.arena_total; the board leg pins "
-        "the linked scratch arena against the same figure the report leg pins (#1146 P2)",
+        "the linked scratch arena against the same figure the report leg pins",
     )
     names = [symbol.name for symbol in measured.arena_symbols]
     require(
         len(measured.arena_symbols) == 1,
         f"{profile_name} links {len(measured.arena_symbols)} scratch-arena static(s), expected 1 "
         f"(symbols: {names}); the `arena::ARENA` static was renamed, optimized out, or duplicated — "
-        "if it genuinely moved, move `is_arena_symbol` with it (#1146 P2)",
+        "if it genuinely moved, move `is_arena_symbol` with it",
     )
     arena = measured.arena_symbols[0]
     require(
@@ -816,7 +813,7 @@ def check_arena(profile_name: str, profile: dict[str, object], measured: BoardMe
         measured.uninit >= arena.size,
         f"{profile_name} .uninit is {measured.uninit} B but the scratch arena is {arena.size} B: "
         "the arena is no longer linked into `.uninit`. Its `#[link_section]` was renamed or "
-        "dropped, and the section's other tenant kept every other RAM gate green (#1146 P2)",
+        "dropped, and the section's other tenant kept every other RAM gate green",
     )
     print(f"{profile_name}: scratch arena {arena.size:,} B inside .uninit {measured.uninit:,} B")
 
@@ -835,7 +832,7 @@ def check_boot_chain(profile_name: str, profile: dict[str, object], boot: BootCh
         f"{profile_name} largest out-of-line task body is {boot.task_frame} B, above the "
         f"{profile['task_frame_limit']} B limit (`{boot.task_frame_symbol[:70]}`); an async fn's "
         "non-await-crossing temporary is still a PERMANENT poll-frame slot — move fat construction "
-        "behind an #[inline(never)] helper (issues #677, #1108)",
+        "behind an #[inline(never)] helper",
     )
     require(
         boot.residual_stack >= profile["residual_stack_min"],
@@ -860,8 +857,8 @@ def check_boot_chain(profile_name: str, profile: dict[str, object], boot: BootCh
         headroom >= profile["boot_chain_headroom_min"],
         f"{profile_name} boot-chain headroom is {headroom} B (residual {boot.residual_stack} B − "
         f"ceiling {boot.chain_ceiling} B), under the {profile['boot_chain_headroom_min']} B floor "
-        "MPSL's ISRs and the unmodelled indirect calls need. This is the #1108 failure mode: it "
-        "goes red BEFORE the board stops booting",
+        "MPSL's ISRs and the unmodelled indirect calls need. A stack overflow at boot "
+        "follows; this gate goes red BEFORE the board stops booting",
     )
     check_deep_ride_high_water(profile_name, profile, boot)
 
@@ -1081,7 +1078,7 @@ def check_frames(args: argparse.Namespace) -> None:
         largest <= args.limit,
         f"{needle} largest stack frame is {largest} B, above the {args.limit} B limit "
         f"(`{symbol[:90]}`); a value built in a return slot rather than in place is the usual cause "
-        "— see KernelTransaction::mount_in_place and CatalogModel::init_empty (#1359)",
+        "— see KernelTransaction::mount_in_place and CatalogModel::init_empty",
     )
 
 

@@ -66,13 +66,7 @@ pub enum EdgeKind {
     CellBorder = 6,
 }
 
-/// Edge flags. `SEAM`: a guest's blend part meets its host's seam face (the give-way line).
-/// `BLEND_JOIN`: two blend faces, one blend region. `UNRELATED`: two owners that no way, junction,
-/// bend or joint relates.
-pub const SEAM: u8 = 1;
-pub const BLEND_JOIN: u8 = 2;
-pub const UNRELATED: u8 = 4;
-/// `FRONT_LEFT`: on a portal edge (`EdgeKind::Portal`), the way that ends on it lies on the left; the bore on the right.
+/// Edge flag `FRONT_LEFT`: on a portal edge (`EdgeKind::Portal`), the way that ends on it lies on the left; the bore on the right.
 pub const FRONT_LEFT: u8 = 8;
 /// The face index past the window's edge.
 pub const OUTSIDE: u32 = u32::MAX;

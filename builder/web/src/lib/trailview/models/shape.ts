@@ -298,6 +298,32 @@ export function limb(a: Vec, b: Vec, r: number, shade: Shade, amp = 0.01, sides 
     return paint(geo, shade);
 }
 
+/**
+ * A round tube through `points`, `r` thick at the first and `tip` at the last: open at its root, which stands in
+ * what it grows from, and closed to a point at its end.
+ */
+export function tube(points: V[], r: number, tip: number, sides: number, shade: Shade): Geometry {
+    const geo = empty(), last = points.length - 1;
+    let u = v3(), t = v3();
+    points.forEach((p, i) => {
+        t = points[Math.min(last, i + 1)].clone().sub(points[Math.max(0, i - 1)]).normalize();
+        // A ring's first corner follows that of the ring before, so the tube does not twist.
+        u = (i ? u : Math.abs(t.z) < 0.9 ? v3(0, 0, 1) : v3(1, 0, 0)).clone().projectOnPlane(t).normalize();
+        const v = t.clone().cross(u), radius = r + (tip - r) * (i / last);
+        for (let k = 0; k < sides; k++) {
+            const a = (k / sides) * 2 * Math.PI;
+            geo.position.push(...p.clone().addScaledVector(u, radius * Math.cos(a)).addScaledVector(v, radius * Math.sin(a)).toArray());
+        }
+    });
+    geo.position.push(...points[last].clone().addScaledVector(t, 2 * tip).toArray());
+    for (let i = 0; i <= last; i++) for (let k = 0; k < sides; k++) {
+        const a = i * sides + k, b = i * sides + ((k + 1) % sides);
+        if (i < last) geo.index.push(a, b, a + sides, b, b + sides, a + sides);
+        else geo.index.push(a, b, sides * (last + 1));
+    }
+    return paint(computeNormals(geo), shade);
+}
+
 /** Normals out from a dome around `centre` with half-sizes `size`, leaning `lift` of the way up. */
 export const domed = (centre: V, size: V, lift: number) => (p: V) => p.clone().sub(centre).divide(size).normalize().lerp(UP, lift).normalize();
 

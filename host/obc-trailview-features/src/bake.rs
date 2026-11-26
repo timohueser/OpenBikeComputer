@@ -19,7 +19,7 @@ use crate::roads::{self, Classes, River, Surroundings};
 use crate::structures::{self, is_bridge, GROUND};
 use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
-use crate::{levels, lifts, metres, parts, rails, sea, world, Part, Tags, Terrain};
+use crate::{levels, lifts, metres, parts, rails, sea, summits, world, Part, Tags, Terrain};
 
 const EARTH_RADIUS_KM: f64 = 6371.0088;
 /// The waterways and lakes that the water solver sets, and the falls, weirs and dams that keep the
@@ -149,6 +149,7 @@ pub fn bake(
     // the other lifts: a station shares their places. The features of the solvers wait for all of their kind.
     let (mut lift_ways, mut lift_entry, mut landuse) = (Vec::new(), None, Vec::new());
     let (mut ways, mut stations, mut river_areas) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut crosses, mut peaks) = (Vec::new(), Vec::new());
     osm::objects(kinds, &cut, &binary, &osm::ALL, |(selected, mut tags, mut parts)| {
         let Selected::Entry(e) = selected else {
             if placer.tiles.meets(MAX_ZOOM, &parts) {
@@ -164,6 +165,15 @@ pub fn bake(
             return;
         }
         if kind == "building" {
+            return;
+        }
+        if summits::solves(kind) {
+            let found = (tags, parts[0].points[0]);
+            if kind == "peak" {
+                peaks.push(found)
+            } else {
+                crosses.push(found)
+            }
             return;
         }
         if placer.tiles.meets(MAX_ZOOM, &parts) {
@@ -193,6 +203,12 @@ pub fn bake(
         ));
     }
     eprintln!("osm: {:.1} s", started.elapsed().as_secs_f64());
+    if let Some(cross) = kinds.iter().find(|k| k.kind == "cross") {
+        let (crosses, added) = summits::crosses(crosses, &peaks);
+        for (tags, point) in crosses.into_iter().chain(added) {
+            placer.entry(cross, tags, line(vec![point], None));
+        }
+    }
     // The buildings come in a read of the areas of their own, after the landuse areas: a building of the
     // region takes the landuse of the area that holds it. The lifts keep only the outer rings that can house
     // a station.
@@ -256,9 +272,12 @@ pub fn bake(
         road_metrics.insert("cut_features".into(), cut_features.into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
         let underpasses: Vec<usize> = solved.underpasses.iter().map(|&i| kept[i]).collect();
+        // A vertex on a bed lies at the height of its leader, which the census reads.
+        let mut on_bed: HashSet<[u64; 2]> = HashSet::new();
         for (&f, parts) in kept.iter().zip(solved.ways) {
             for (part, way) in ways[f].2.iter_mut().zip(parts) {
                 if let Some(way) = way {
+                    on_bed.extend(way.points.iter().zip(&way.bed).filter(|(_, &bed)| bed).map(|(&p, _)| key(p)));
                     (part.points, part.z, part.plan) = (way.points, Some(way.z), Some(way.plan));
                 }
             }
@@ -355,7 +374,8 @@ pub fn bake(
                 }
                 if entry.kind != "tunnel" && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
                     let half = options.widths.way(&kinds[*e].kind, tags, false).half_m;
-                    ground_census.add(&entry.kind, &parts, half, terrain, &|p| on_deck.contains(&key(p)));
+                    let skip = |p: [f64; 2]| on_deck.contains(&key(p)) || on_bed.contains(&key(p));
+                    ground_census.add(&entry.kind, &parts, half, terrain, &skip);
                 }
                 let mut all = tags.clone();
                 all.extend(extra.get(&n).cloned().unwrap_or_default());
@@ -831,13 +851,14 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
         "clearances_low_cm": m.clearances_low_cm, "passes": m.passes, "passes_near_cm": m.passes_near_cm,
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
         "grade_excess_over_1cm": m.grade_excess_over_1cm, "grounded": m.grounded,
+        "bed_m": m.bed_m.round(), "beds_apart": m.beds_apart,
         "residual_p99_m": round(m.residual_p99_m, 2),
         "refinements_unconverged": m.refinements_unconverged, "covers": m.covers, "covers_lifted": m.covers_lifted,
         "covers_untagged": m.covers_untagged, "covers_untagged_lifted": m.covers_untagged_lifted,
         "covers_capped": m.covers_capped, "covers_untagged_capped": m.covers_untagged_capped,
         "cover_lift_top_m": round(m.cover_lift_top_m, 2),
         "sidewalk_tagged_m": m.sidewalks.tagged_m.round(), "sidewalk_built_m": m.sidewalks.built_m.round(),
-        "sidewalk_bend_m": m.sidewalks.bend_m.round(), "sidewalk_bed_m": m.sidewalks.bed_m.round(),
+        "sidewalk_bend_m": m.sidewalks.bend_m.round(), "sidewalk_footprint_m": m.sidewalks.footprint_m.round(),
         "sidewalk_short_m": m.sidewalks.short_m.round(),
     });
     value.as_object().unwrap().clone()

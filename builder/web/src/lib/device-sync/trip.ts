@@ -48,10 +48,7 @@ export function partName(name: string, part: number, parts: number): string {
     return truncateUtf8(name, DISPLAY_NAME_MAX - suffix.length).trimEnd() + suffix;
 }
 
-/** The start date of part `part` of a trip in days since 1970-01-01, or 0 when the trip has none: the calendar day of its
- * first riding day. */
+/** The start date of part `part` of a trip in days since 1970-01-01, or 0 when the trip has none. */
 export function startDay(trip: Trip, part: number): number {
-    if (!trip.startDate) return 0;
-    const before = partDays * (part - 1);
-    return Date.parse(trip.startDate) / 86_400_000 + before + (trip.restAfter ?? []).filter(after => after <= before).length;
+    return trip.startDate ? Date.parse(trip.startDate) / 86_400_000 + partDays * (part - 1) : 0;
 }

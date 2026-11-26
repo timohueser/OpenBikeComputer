@@ -227,6 +227,13 @@
     "height": "surface"
   },
   {
+    "kind": "peak",
+    "geometry": "point",
+    "match": [{"natural": ["peak"]}],
+    "keep": ["name", "summit:cross"],
+    "height": "none"
+  },
+  {
     "kind": "shrine",
     "geometry": "point",
     "match": [{"historic": ["wayside_shrine"]}],

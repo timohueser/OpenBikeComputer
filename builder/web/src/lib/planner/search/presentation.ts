@@ -1,12 +1,11 @@
 import type { Place, Stay } from '../editor';
 import { placeCategories, poiKinds, type PlaceCategory } from '../poi-kinds';
-import type { QueryPoint, Where, QueryRequest, SearchPlace } from './types';
+import type { QueryPoint, SearchPlace } from './types';
 import contract from '../../../../../../planner/search/query/contract.json' with { type: 'json' };
 
 /** The query language that search accepts. */
 export { contract };
 export const kindLabel = (kind: string) => kind.replaceAll('_', ' ');
-export const allKinds = Object.keys(contract.kinds);
 const kinds: Record<string, { category: string | null }> = contract.kinds, dataKinds: Record<string, string> = contract.data;
 /** The map category of a query kind or a search-data kind, such as `shop` for `shop=yes`. A kind without one shows as a
  * viewpoint. */
@@ -19,9 +18,7 @@ const stayKinds: Record<string, Stay> = { campsite: 'camp', hut: 'hut', hostel: 
 export const stayKind = (placeKind?: string): Stay | undefined => placeKind && Object.hasOwn(stayKinds, placeKind) ? stayKinds[placeKind] : undefined;
 /** The map category of a place to sleep, such as `camp`; undefined for any other kind, such as a town. */
 export const sleepCategory = (placeKind?: string): PlaceCategory | undefined => stayKind(placeKind) ? category(placeKind!) : undefined;
-/** Why a night that a train or bus leaves from does not move. */
-export const trainNightText = 'A train or bus leaves from here. Remove it to move this night.';
-/** The five kinds of place to sleep as the trip row and a night list them. */
+/** The five kinds of place to sleep as the route preferences and a night list them. */
 export const stayOptions: { kind: Stay; label: string }[] = [
     { kind: 'camp', label: 'Campsites' }, { kind: 'hut', label: 'Huts' }, { kind: 'hostel', label: 'Hostels' },
     { kind: 'hotel', label: 'Hotels' }, { kind: 'shelter', label: 'Shelters' },
@@ -43,20 +40,4 @@ export function pointLabel(p: QueryPoint): string {
     if ('day' in p) return `Day ${p.day} ${p.part ?? 'end'}`;
     const a = p.along;
     return `${a.ref === 'km' ? '' : `From ${a.ref}: `}${a.at ? `${a.at.value} ${a.at.unit}` : `${a.from?.value ?? 0}–${a.to?.value ?? 'end'} ${a.to?.unit ?? a.from?.unit ?? 'km'}`}`;
-}
-export function whereLabel(w: Where): string {
-    if (w.anchor) return 'Near the selected point';
-    return [w.day ? `Day ${w.day}${w.part ? ` ${w.part}` : ''}` : w.scope === 'route' ? w.part ? `Near route ${w.part}` : 'Along the route' : w.scope === 'here' ? 'Near your location' : '',
-        w.near ? `${w.near.length > 1 ? 'Between' : 'Near'} ${w.near.map(pointLabel).join(' and ')}` : '',
-        w.along ? pointLabel({ along: w.along }) : '', w.before ? `Before ${pointLabel(w.before)}` : '', w.after ? `After ${pointLabel(w.after)}` : '',
-    ].filter(Boolean).join(' · ') || 'In this map view';
-}
-export function fieldLabel(key: string, value: unknown): string {
-    if (key === 'where') return whereLabel(value as Where);
-    if (['from','to','point','at','near'].includes(key)) return `${key}: ${pointLabel(value as QueryPoint)}`;
-    if (key === 'via') return `Via ${(value as QueryPoint[]).map(pointLabel).join(', ')}`;
-    if (key === 'what') return Array.isArray(value) ? value.map(kindLabel).join(', ') : kindLabel(String(value));
-    if (key === 'open') { const o = value as QueryRequest['open']; return o?.now ? 'Open now' : `Open ${o?.weekday ?? `on Day ${o?.day}`}`; }
-    if (typeof value === 'object' && value && 'unit' in value && 'value' in value) return `${kindLabel(key)}: ${value.value} ${value.unit}`;
-    return `${kindLabel(key)}: ${kindLabel(String(value))}`;
 }

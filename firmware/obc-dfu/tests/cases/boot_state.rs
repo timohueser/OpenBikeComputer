@@ -224,9 +224,9 @@ fn verdict_outcome_governs_with_matching_marker() {
 #[test]
 fn verdict_stale_or_missing_outcome_with_marker_is_reverted() {
     assert_eq!(verdict(&idle_outcome("v1", OutcomeKind::Installed, 4), Some(5)), Verdict::Reverted);
-    // No recorded outcome at all, as a v1 page decodes.
-    let migrated = BootState::Idle { installed: None, last_outcome: None };
-    assert_eq!(verdict(&migrated, Some(9)), Verdict::Reverted, "migrated v1 page + marker ⇒ conservative revert");
+    // No recorded outcome at all, as a torn page decodes.
+    let empty = BootState::Idle { installed: None, last_outcome: None };
+    assert_eq!(verdict(&empty, Some(9)), Verdict::Reverted, "empty page + marker ⇒ conservative revert");
 }
 
 /// A `Trial` page means this is the trial boot, so the confirm owns the verdict.
@@ -283,68 +283,7 @@ fn running_image_per_state() {
     );
 }
 
-// The bootloader is flashed once and is not updated by DFU, so a fielded bootloader keeps writing
-// v1 pages after the app updates. The reader must accept them, or an update would fail its own
-// trial confirm on every device whose bootloader is not reflashed at the same time.
-
-/// Makes a genuine v1 page from a v2 encode: patch the version to 1, zero an `Idle`'s outcome bytes
-/// out of the body, and re-CRC. `blob_len` does not change, because the extra `has_outcome` byte of
-/// a v2 `Idle` never crosses a 16-byte line boundary.
-fn as_v1_page(state: &BootState) -> Vec<u8> {
-    let page = state.encode();
-    let mut b = page.as_bytes().to_vec();
-    b[4..6].copy_from_slice(&1u16.to_le_bytes());
-    let blob_len = u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize;
-    if let BootState::Idle { installed, .. } = state {
-        let v1_end = 16 + 1 + if installed.is_some() { 64 } else { 0 };
-        for byte in &mut b[v1_end..blob_len - 4] {
-            *byte = 0;
-        }
-    }
-    let crc = obc_dfu::crc32(&b[..blob_len - 4]);
-    b[blob_len - 4..blob_len].copy_from_slice(&crc.to_le_bytes());
-    b
-}
-
-/// v1 pages decode to the right states. The case that matters: an old bootloader's v1 `Trial` must
-/// still be confirmable by the new app.
-#[test]
-fn v1_pages_decode_with_v1_semantics() {
-    let idle_hdr = BootState::Idle { installed: Some(header("v1.0.0", 800_000)), last_outcome: None };
-    assert_eq!(BootState::decode(&as_v1_page(&idle_hdr)), idle_hdr, "v1 Idle with header");
-
-    let idle_none = BootState::Idle { installed: None, last_outcome: None };
-    assert_eq!(BootState::decode(&as_v1_page(&idle_none)), idle_none, "v1 Idle without header");
-
-    let armed = BootState::Armed { generation: 7, update: staged("u", 3), rollback: Some(staged("r", 2)) };
-    assert_eq!(BootState::decode(&as_v1_page(&armed)), armed, "v1 Armed is byte-identical");
-
-    let trial =
-        BootState::Trial { generation: 7, installed: header("v2.0.0", 900_000), rollback: Some(staged("r", 2)) };
-    assert_eq!(BootState::decode(&as_v1_page(&trial)), trial, "v1 Trial is byte-identical");
-}
-
-/// The v1 `Idle` decode is gated on the version field, so trailing bytes are never read as an
-/// outcome record, even when they hold a well-formed one.
-#[test]
-fn v1_idle_trailing_bytes_are_not_parsed_as_outcome() {
-    let v2 = BootState::Idle {
-        installed: Some(header("v1.0.0", 800_000)),
-        last_outcome: Some(LastOutcome { kind: OutcomeKind::RolledBack, generation: 9 }),
-    };
-    let mut b = v2.encode().as_bytes().to_vec();
-    b[4..6].copy_from_slice(&1u16.to_le_bytes());
-    let blob_len = u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize;
-    let crc = obc_dfu::crc32(&b[..blob_len - 4]);
-    b[blob_len - 4..blob_len].copy_from_slice(&crc.to_le_bytes());
-    assert_eq!(
-        BootState::decode(&b),
-        BootState::Idle { installed: Some(header("v1.0.0", 800_000)), last_outcome: None },
-        "a version-1 page never yields an outcome, whatever its trailing bytes hold"
-    );
-}
-
-/// Writers emit v2, and any version but 1 or 2 falls back to `Idle`.
+/// Writers emit version 2, and any other version falls back to `Idle`.
 #[test]
 fn version_field_bounds() {
     let state = BootState::Idle {
@@ -352,10 +291,10 @@ fn version_field_bounds() {
         last_outcome: Some(LastOutcome { kind: OutcomeKind::Installed, generation: 3 }),
     };
     let page = state.encode();
-    assert_eq!(u16::from_le_bytes([page.as_bytes()[4], page.as_bytes()[5]]), 2, "writers always emit v2");
-    assert_eq!(BootState::decode(page.as_bytes()), state, "a v2 page decodes (regression)");
+    assert_eq!(u16::from_le_bytes([page.as_bytes()[4], page.as_bytes()[5]]), 2, "writers always emit version 2");
+    assert_eq!(BootState::decode(page.as_bytes()), state, "a version-2 page decodes");
 
-    for v in [0u16, 3, 0xFFFF] {
+    for v in [0u16, 1, 3, 0xFFFF] {
         let mut b = page.as_bytes().to_vec();
         b[4..6].copy_from_slice(&v.to_le_bytes());
         let blob_len = u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize;

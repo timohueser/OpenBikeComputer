@@ -15,6 +15,8 @@ export const ANCHORED_VERTEX = 4;
 export const OFFSET_SCALE = 256;
 /** Vertex flags, after those of mesh.ts: the face takes the colour of the rock under it, tinted; the vertex is an edge of a cable's ribbon. */
 export const STONE = 32, CABLE = 64;
+/** Added to the diameter in mm of a cable's edge: the cable runs straight up, as `UPRIGHT` of structures.wgsl. */
+export const UPRIGHT = 16384;
 /** A point's far end lies this many world units off: its heading is good to 1/HEADING rad. */
 const HEADING = 4096;
 /**
@@ -22,6 +24,29 @@ const HEADING = 4096;
  * its own distance, so a long piece near the eye would widen to a band.
  */
 const PIECE_M = 20;
+
+/** A model's corners, each once per colour, as x, y, z and colour, and the corners of its triangles: made once per model. */
+const corners = new WeakMap<Model, { points: number[]; triangles: number[] }>();
+
+function cornersOf(model: Model): { points: number[]; triangles: number[] } {
+    let made = corners.get(model);
+    if (!made) {
+        const p = model.points, at = new Map<string, number>(), points: number[] = [], triangles: number[] = [];
+        model.colours.forEach((colour, f) => {
+            for (let k = 0; k < 3; k++) {
+                const i = 9 * f + 3 * k, name = `${p[i]} ${p[i + 1]} ${p[i + 2]} ${colour}`;
+                let corner = at.get(name);
+                if (corner === undefined) {
+                    at.set(name, (corner = points.length / 4));
+                    points.push(p[i], p[i + 1], p[i + 2], colour);
+                }
+                triangles.push(corner);
+            }
+        });
+        corners.set(model, (made = { points, triangles }));
+    }
+    return made;
+}
 
 /** The vertices and indices of an anchored mesh, whose anchors are those of its node. */
 export interface AnchoredMesh {
@@ -61,29 +86,34 @@ export class AnchoredBuilder {
     /** A model t along an anchor, turned `turn` radians about z in the anchor's frame and moved to `at` there. `flags` go to every face. */
     model(model: Model, anchor: number, t = 0, turn = 0, at: [number, number, number] = [0, 0, 0], scale = 1, flags = 0): void {
         // Faces of one colour share their corners.
-        const c = Math.cos(turn) * scale, s = Math.sin(turn) * scale, p = model.points, made = new Map<string, number>();
-        model.colours.forEach((colour, f) => {
-            const v = [0, 1, 2].map(k => {
-                const i = 9 * f + 3 * k, name = `${p[i]} ${p[i + 1]} ${p[i + 2]} ${colour}`;
-                return made.get(name) ?? made.set(name, this.vertex(anchor, t, [at[0] + c * p[i] - s * p[i + 1], at[1] + s * p[i] + c * p[i + 1], at[2] + scale * p[i + 2]], (colour | (flags << 24)) >>> 0)).get(name)!;
-            });
-            this.triangle(v[0], v[1], v[2]);
-        });
+        const c = Math.cos(turn) * scale, s = Math.sin(turn) * scale, { points: p, triangles } = cornersOf(model), first = this.words.length / ANCHORED_VERTEX;
+        for (let i = 0; i < p.length; i += 4) this.vertex(anchor, t, [at[0] + c * p[i] - s * p[i + 1], at[1] + s * p[i] + c * p[i + 1], at[2] + scale * p[i + 2]], (p[i + 3] | (flags << 24)) >>> 0);
+        for (const corner of triangles) this.indices.push(first + corner);
     }
 
-    /** A cable of `diameter` metres along a span, `across` metres to the right of it: a ribbon that the vertex shader turns to the eye and widens to a pixel. */
-    cable(anchor: number, across: number, colour: number, diameter = 0.05): void {
+    /**
+     * A cable of `diameter` metres along a span, `across` metres to the right of it and `rise` metres over each of its
+     * ends: a ribbon that the vertex shader turns to the eye and widens to a pixel.
+     */
+    cable(anchor: number, across: number, colour: number, diameter = 0.05, rise: [number, number] = [0, 0]): void {
         const w = this.anchorWords.slice(anchor * ANCHOR_WORDS, anchor * ANCHOR_WORDS + 4);
         const segments = Math.max(1, Math.ceil(metresBetween([w[0], w[1]], [w[2], w[3]]) / PIECE_M));
         let last: number[] = [];
         for (let k = 0; k <= segments; k++) {
-            const edge = [-1, 1].map(side => this.vertex(anchor, k / segments, [across, 0, 0], (colour | (CABLE << 24)) >>> 0, side * Math.round(diameter * 1000)));
+            const edge = [-1, 1].map(side => this.vertex(anchor, k / segments, [across, 0, rise[0] + (rise[1] - rise[0]) * k / segments], (colour | (CABLE << 24)) >>> 0, side * Math.round(diameter * 1000)));
             if (last.length) {
                 this.triangle(last[0], last[1], edge[1]);
                 this.triangle(last[0], edge[1], edge[0]);
             }
             last = edge;
         }
+    }
+
+    /** A cable of `diameter` metres straight up, t along a span, from `from` to `to` metres over it. */
+    upright(anchor: number, t: number, from: number, to: number, colour: number, diameter = 0.02): void {
+        const [a, b, c, d] = [from, to].flatMap(z => [-1, 1].map(side => this.vertex(anchor, t, [0, 0, z], (colour | (CABLE << 24)) >>> 0, side * (UPRIGHT + Math.round(diameter * 1000)))));
+        this.triangle(a, b, d);
+        this.triangle(a, d, c);
     }
 
     mesh(): AnchoredMesh | null {

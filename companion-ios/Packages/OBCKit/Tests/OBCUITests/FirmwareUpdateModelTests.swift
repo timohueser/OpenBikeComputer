@@ -10,7 +10,7 @@ import OBCTransport
 struct FirmwareUpdateModelTests {
     // MARK: Helpers
 
-    /// A valid OBCU v2 container tagged with `version`: both CRCs correct and the signature
+    /// A valid OBCU container tagged with `version`: both CRCs correct and the signature
     /// marker set. The trailer is a stand-in; the app carries signatures but never verifies them.
     private func container(version: String, imageLen: Int = 96) -> Data {
         var image = Data()

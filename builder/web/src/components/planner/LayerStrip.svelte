@@ -8,7 +8,7 @@
     import type { RoutingLine } from '../../lib/planner/routing';
     import { axisLeft, axisPixels, axisProgress, axisWidth } from '../../lib/planner/profile-axis';
 
-    let { layer, line, samples, total, date, theme, from, to, rests = [], onHover }: {
+    let { layer, line, samples, total, date, theme, from, to, onHover }: {
         /** A layer with a strip. */
         layer: DataLayer;
         line: RoutingLine;
@@ -19,8 +19,6 @@
         theme: Theme;
         from: number;
         to: number;
-        /** The rest columns of the profile, as route progress. */
-        rests?: number[];
         onHover: (progress: number | null) => void;
     } = $props();
 
@@ -29,7 +27,7 @@
     const fills = $derived(strip.fills(theme));
     const scaled = $derived(samples && strip.scaled ? strip.scaled(samples, date) : null);
     const runs = $derived(samples ? valueRuns(strip.values(samples, date), points.map(point => point.progress)).filter(run => run.to > from && run.from < to) : []);
-    const axis = $derived({ from, to, rests });
+    const axis = $derived({ from, to });
     let bar: HTMLDivElement;
     let at = $state<{ progress: number; x: number; bottom: number } | null>(null);
     const index = $derived(at ? Math.min(points.length - 1, sampleIndex(points, at.progress)) : -1);
@@ -68,7 +66,7 @@
         {#each runs as run, i (i)}
             {@const swatch = fills[run.value]}
             <span class:hatch={swatch.hatch} style:--swatch={swatch.color}
-                style:left={axisLeft(axis, Math.max(run.from, from), true)} style:width={axisWidth(axis, Math.max(run.from, from), Math.min(run.to, to))}></span>
+                style:left={axisLeft(axis, Math.max(run.from, from))} style:width={axisWidth(axis, Math.max(run.from, from), Math.min(run.to, to))}></span>
         {/each}
         {#each scaled?.marks ?? [] as mark (mark.index)}
             {@const progress = points[mark.index].progress}

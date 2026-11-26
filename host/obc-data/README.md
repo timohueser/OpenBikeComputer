@@ -3,7 +3,7 @@
 Run `obc data` from the repository root. Without a command it shows each target: what it serves,
 how its layers stand, and the command to run next. Use `--json` for structured output.
 The [data guide](../../docs/content/software/data.md) explains the model.
-The [data contract](../../specs/obc-data.md) defines bytes and admission checks.
+The `obc-data-*` contracts of [specs](../../specs/README.md) define bytes and admission checks.
 
 ## Setup
 
@@ -87,7 +87,7 @@ The plan run shows each download, then the plan. **Start bake** runs that plan.
 On the Wiki page, select `europe/dach` and article languages, then **Review preparation**.
 The review shows cached archives, missing downloads and their sizes. **Start** downloads missing
 inputs, then prepares the region. A stopped run resumes with the same selection and pinned inputs.
-Existing archives stay in place; the [wiki contract](../../specs/obc-data.md#wiki) gives their names.
+Existing archives stay in place; the [wiki contract](../../specs/obc-data-producers.md#wiki) gives their names.
 Select **Worldwide** only for a global version. Changing the selection requires a new review.
 
 The [page README](../../builder/web/src/components/data/README.md) covers the page.

@@ -711,91 +711,70 @@ fn named(name: &'static str) -> &'static Scenario {
     SCENARIOS.iter().find(|scenario| scenario.name == name).unwrap_or_else(|| panic!("no scenario {name}"))
 }
 
-/// One of the sixteen mandatory traces, bound to the test that runs it.
+/// One of the mandatory traces, bound to the test that runs it.
 struct MandatoryTrace {
-    /// The row, in the issue's words.
+    /// The row, in the checklist's words.
     row: &'static str,
     /// The `#[test]` that runs it.
     test: &'static str,
-    /// Set when the test exercises a different situation than the row names, saying why the row's
-    /// own situation is unreachable and which slice makes it reachable. A row that silently tested
-    /// something else would let the checklist read as covered when it is not.
-    substitution: Option<&'static str>,
 }
 
-/// All sixteen. The binding is checked rather than written down: the test below looks each name up
+/// All of them. The binding is checked rather than written down: the test below looks each name up
 /// in this file's own source as a real `#[test]`, so a renamed, deleted or un-attributed trace fails
 /// the gate instead of quietly leaving a row uncovered.
 const MANDATORY_TRACES: [MandatoryTrace; 14] = [
-    MandatoryTrace {
-        row: "outcome after cancellation",
-        test: "an_outcome_after_cancellation_changes_nothing",
-        substitution: None,
-    },
+    MandatoryTrace { row: "outcome after cancellation", test: "an_outcome_after_cancellation_changes_nothing" },
     MandatoryTrace {
         row: "outcome after a replacement request",
         test: "an_outcome_after_a_replacement_request_changes_nothing",
-        substitution: None,
     },
     MandatoryTrace {
         row: "store change during catalog refresh",
         test: "a_store_change_during_a_catalog_operation_is_not_lost",
-        substitution: None,
     },
     MandatoryTrace {
         row: "transfer start during route planning",
         test: "a_transfer_during_planning_withdraws_heavy_capability",
-        substitution: None,
     },
     MandatoryTrace {
         row: "route-plan completion after active-route change",
         test: "a_route_plan_that_lands_after_the_active_route_changed_is_refused",
-        substitution: None,
     },
     MandatoryTrace {
         row: "settings result with an old revision",
         test: "a_settings_result_with_an_old_revision_is_refused",
-        substitution: None,
     },
     MandatoryTrace {
         row: "ride finalize failure after the last checkpoint",
         test: "a_failed_finalize_leaves_the_ride_open_and_warns_the_rider",
-        substitution: None,
     },
     MandatoryTrace {
         row: "trip member disappearance before delete commit",
         test: "a_trip_member_that_vanished_before_the_commit_is_a_success",
-        substitution: None,
     },
     MandatoryTrace {
         row: "capability change after a new map mounts",
         test: "capabilities_follow_the_mounted_data_and_the_platform",
-        substitution: None,
     },
     MandatoryTrace {
         row: "detour without a path",
         test: "a_detour_without_a_path_is_a_failure_and_not_an_absent_capability",
-        substitution: None,
     },
     MandatoryTrace {
         row: "device without detour capability",
         test: "capabilities_follow_the_mounted_data_and_the_platform",
-        substitution: None,
     },
     MandatoryTrace {
         row: "active-route deletion with same-pass Navigator delivery",
         test: "deleting_the_active_route_drops_it_in_the_same_pass",
-        substitution: None,
     },
     MandatoryTrace {
         row: "full effect slot and full outcome slot",
         test: "a_full_slot_preserves_work_on_both_sides_of_the_seam",
-        substitution: None,
     },
     MandatoryTrace {
         row: "stale derived input after a subject change",
         test: "a_stale_derived_fill_is_dropped_and_the_level_asks_again",
-        substitution: None,
     },
 ];
 
@@ -811,20 +790,7 @@ fn every_mandatory_trace_has_a_test_that_runs_it() {
             trace.row,
             trace.test
         );
-        if let Some(substitution) = trace.substitution {
-            assert!(
-                substitution.contains('#'),
-                "{}: a substituted situation names the slice that makes the row literal",
-                trace.row
-            );
-        }
     }
-    let substituted = MANDATORY_TRACES.iter().filter(|trace| trace.substitution.is_some()).count();
-    assert_eq!(
-        substituted, 0,
-        "the store-refresh row became literal at #1397 S6a and the trip cascade at #1491 — every \
-         row now runs the situation it names"
-    );
 }
 
 fn typed() -> CoreHarness {

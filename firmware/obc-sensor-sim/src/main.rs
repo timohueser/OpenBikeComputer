@@ -29,7 +29,7 @@ fn now() -> u64 {
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let (controller, controls, factory) = board::init(spawner);
-    let mut resources = HostResources::<_, DefaultPacketPool, 1, 2>::new();
+    let mut resources = HostResources::<DefaultPacketPool, 1, 2>::new();
     let stack = trouble_host::new(controller, &mut resources)
         .set_random_address(Address::random(obc_sensor_sim::Sensor::Power.address(factory)))
         .build();

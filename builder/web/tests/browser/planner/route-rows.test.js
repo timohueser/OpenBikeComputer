@@ -40,7 +40,7 @@ const drawn = (id, kind, lon, from, to, extra = {}) => ({
 const route = {
   id: 'two', name: 'Two days', updatedAt: 0,
   trip: {
-    mode: 'trip', bike: 'touring', days: 2, daysSet: true, restAfter: [], routeOrder: ['up', 'night-1', 'flat'], points: [
+    mode: 'trip', bike: 'touring', days: 2, daysSet: true, routeOrder: ['up', 'night-1', 'flat'], points: [
       drawn('start', 'start', 8, 400, 400), drawn('up', 'waypoint', 8.05, 400, 600), drawn('night-1', 'night', 8.1, 600, 600, { night: 1, label: 'Inn' }),
       drawn('flat', 'waypoint', 8.15, 600, 600), drawn('finish', 'finish', 8.2, 600, 400),
     ],
@@ -226,7 +226,7 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await places.first().click();
   await expect(popup).toContainText('Linde');
   await expect(popup).toContainText('km 2.3 · 111 m from the route');
-  await expect(popup.getByRole('link', { name: 'Website' })).toHaveAttribute('href', 'https://linde.example/');
+  await expect(popup.getByRole('link', { name: 'linde.example' })).toHaveAttribute('href', 'https://linde.example/');
   await places.last().click();
   await expect(places.last()).toContainText('35');
   await expect(lanes.locator('.list button')).toHaveCount(30);

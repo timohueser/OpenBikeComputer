@@ -1,6 +1,6 @@
 """The planner snow archives of `specs/planner-snow-tiles.md`.
 
-`prepare` writes the files of one zoom 6 block of the prepared source `snow` (specs/obc-data.md, `snow`), one
+`prepare` writes the files of one zoom 6 block of the prepared source `snow` (specs/obc-data-producers.md, `snow`), one
 season at a time:
 
     python -m tools.planner_snow prepare --block X-Y --seasons 2016,2017 --modis LIST --canopy FILE,… --out DIR

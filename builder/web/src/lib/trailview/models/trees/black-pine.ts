@@ -4,12 +4,16 @@ export default {
   form: 'broadleaf',
   name: 'Black pine',
   latin: 'Pinus nigra',
-  fork: 0.4,
-  // Old trees spread into a broad, flat-topped crown of dense pads.
-  crown: [0.72, 0.44, 0.4, 0.3],
+  fork: 0.34,
+  // Old trees spread into a broad, dark dome of heavy pads in level whorls.
+  crown: [0.68, 0.42, 0.4, 0.3],
   open: true,
   stagger: true,
   pads: true,
+  billows: 5,
+  dense: 1.3,
+  layers: 3,
+  crook: 0.006,
   trunk: 0.03,
   flare: 1.5,
   // Grey plates in dark furrows all the way up, never the orange of a Scots pine.

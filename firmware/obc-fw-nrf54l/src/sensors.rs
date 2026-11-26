@@ -247,7 +247,7 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
             Either::First(Either4::Second(())) => note_wait_edge(&mut st, false),
             Either::First(Either4::Third(new_s)) => {
                 interval_s = new_s.max(1);
-                info!("sensors: fix interval → {=u16}s (#117); reconfiguring M10", interval_s);
+                info!("sensors: fix interval → {=u16}s; reconfiguring M10", interval_s);
                 configure_m10(&mut twim, interval_s).await;
                 next_poll = Instant::now() + poll_deadline(interval_s);
                 continue;

@@ -1,10 +1,8 @@
-//! Host tests for the OBCU signature: the armer's accept and reject matrix, and the compatibility
-//! that keeps a flash-once bootloader able to install signed containers.
+//! Host tests for the OBCU signature: the armer's accept and reject matrix, and an install of a
+//! signed container through the real engine.
 //!
 //! The armer vectors take one signed container and apply one mutation per attack, always through
-//! the production `scan`. The compatibility half decodes a signed header with a reimplementation of
-//! the unsigned header decoder, transcribed from the spec text, and then installs a signed
-//! container through the real engine.
+//! the production `scan`.
 
 use obc_dfu::armer::{scan, ScanError, StageIo};
 use obc_dfu::engine::IoError;
@@ -45,7 +43,7 @@ fn signed_container(image: &[u8], version: &str, seed: &[u8; 32]) -> Vec<u8> {
     bytes
 }
 
-fn v1_container(image: &[u8], version: &str) -> Vec<u8> {
+fn unsigned_container(image: &[u8], version: &str) -> Vec<u8> {
     let header = ImageHeader::new(image, version);
     let mut bytes = header.encode().to_vec();
     bytes.extend_from_slice(image);
@@ -91,9 +89,9 @@ fn signed_message_is_the_spec_bytes() {
 }
 
 #[test]
-fn armer_accepts_a_correctly_signed_v2_container() {
+fn armer_accepts_a_correctly_signed_container() {
     let img = image();
-    let staged = scan_bytes(signed_container(&img, "v1.4.0", &test_key::SEED)).expect("a signed v2 container arms");
+    let staged = scan_bytes(signed_container(&img, "v1.4.0", &test_key::SEED)).expect("a signed container arms");
     assert_eq!(staged.len, img.len() as u32);
     assert!(staged.header.is_signed());
     assert_eq!(staged.header.sig_scheme, SIG_SCHEME_ED25519);
@@ -165,11 +163,11 @@ fn armer_rejects_a_truncated_container() {
 }
 
 #[test]
-fn armer_rejects_an_unsigned_v1_container() {
+fn armer_rejects_an_unsigned_container() {
     // The bypass that matters: if an unsigned wrapper were installable, nobody would forge a
     // signature, they would omit it.
     let img = image();
-    assert_eq!(scan_bytes(v1_container(&img, "v1.4.0")), Err(ScanError::Unsigned));
+    assert_eq!(scan_bytes(unsigned_container(&img, "v1.4.0")), Err(ScanError::Unsigned));
 }
 
 #[test]
@@ -216,64 +214,13 @@ fn armer_rejects_a_container_signed_for_a_different_device_key() {
     assert!(scan_bytes_with(bytes, &test_key::PUBLIC).is_ok());
 }
 
-// `obc-boot` is flashed once and never updated by DFU, so a bootloader already in the field must
-// keep installing images produced after the signature landed.
-
-/// The unsigned header decoder, transcribed from the spec text rather than called into `obc-dfu`,
-/// so it keeps testing the old behavior however the crate evolves. It returns the three fields the
-/// install engine consumes.
-fn v1_decode(bytes: &[u8; 64]) -> Option<(u32, u32, [u8; 32])> {
-    if &bytes[0..4] != b"OBCU" {
-        return None;
-    }
-    if u16::from_le_bytes([bytes[4], bytes[5]]) != 1 {
-        return None;
-    }
-    let stored = u32::from_le_bytes([bytes[60], bytes[61], bytes[62], bytes[63]]);
-    if stored != obc_dfu::crc32(&bytes[..60]) {
-        return None;
-    }
-    let mut fw_version = [0u8; 32];
-    fw_version.copy_from_slice(&bytes[16..48]);
-    Some((
-        u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
-        u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
-        fw_version,
-    ))
-}
-
 #[test]
-fn a_fielded_v1_decoder_accepts_a_v2_header_with_identical_fields() {
-    let img = image();
-    let v1 = v1_container(&img, "v1.4.0-3-gcafe123");
-    let v2 = signed_container(&img, "v1.4.0-3-gcafe123", &test_key::SEED);
-
-    let v1_hdr: &[u8; 64] = v1[..64].try_into().unwrap();
-    let v2_hdr: &[u8; 64] = v2[..64].try_into().unwrap();
-
-    let from_v1 = v1_decode(v1_hdr).expect("v1 header decodes under the v1 rules");
-    let from_v2 = v1_decode(v2_hdr).expect("v2 header ALSO decodes under the v1 rules");
-    assert_eq!(from_v1, from_v2, "every field the bootloader reads is byte-identical");
-
-    assert_eq!(&v1_hdr[0..4], &v2_hdr[0..4], "magic @0");
-    assert_eq!(&v1_hdr[4..6], &v2_hdr[4..6], "header version @4 — still 1, deliberately");
-    assert_eq!(&v1_hdr[6..8], &v2_hdr[6..8], "reserved @6");
-    assert_eq!(&v1_hdr[8..12], &v2_hdr[8..12], "image_len @8");
-    assert_eq!(&v1_hdr[12..16], &v2_hdr[12..16], "image_crc32 @12");
-    assert_eq!(&v1_hdr[16..48], &v2_hdr[16..48], "fw_version @16");
-    // Exactly one region differs: the run v1 reserved for a scheme marker.
-    assert_ne!(&v1_hdr[48..52], &v2_hdr[48..52], "the scheme marker @48 is the only new content");
-    assert_eq!(&v1_hdr[52..60], &v2_hdr[52..60], "the rest of the reserved run @52 is still zero");
-    assert_ne!(&v1_hdr[60..64], &v2_hdr[60..64], "the header CRC @60 covers the marker, so it moves");
-}
-
-#[test]
-fn the_install_engine_flashes_a_v2_container_unchanged() {
+fn the_install_engine_flashes_a_signed_container_unchanged() {
     // Through the real engine, the code `obc-boot` links: the flash pass must write exactly
     // `image_len` raw bytes, skipping the container header and never touching the trailer.
     let img = image();
     let container = signed_container(&img, "v1.4.0", &test_key::SEED);
-    let staged = scan_bytes(container.clone()).expect("the v2 container scans");
+    let staged = scan_bytes(container.clone()).expect("the signed container scans");
 
     let flashed = mock_engine::install(&container, &staged);
     assert_eq!(flashed, img, "the raw image is flashed; the header and the trailer are not");
@@ -329,7 +276,7 @@ mod mock_engine {
 
         let state = BootState::Armed { generation: 1, update: *staged, rollback: None };
         let mut buf = [0u8; 4096];
-        assert_eq!(run(&state, &SLOT, &mut io, &mut buf), Outcome::Installed, "a v2 container installs");
+        assert_eq!(run(&state, &SLOT, &mut io, &mut buf), Outcome::Installed, "a signed container installs");
         io.flash[..staged.len as usize].to_vec()
     }
 }

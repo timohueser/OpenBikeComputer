@@ -151,7 +151,7 @@ fn peak_catalogue_keeps_explicit_associations_and_shared_assets_independent_of_e
     resolutions[4]["canonical_path"] = json!("links/hill.json");
     resolutions[4]["canonical_language"] = json!("en");
     let manifest = f.root.join("manifest.json");
-    fs::write(&manifest,serde_json::to_vec(&json!({"schema":1,"sources":f.sources,"places":places,"peaks":{"summits_path":"summits.json","resolutions":resolutions}})).unwrap()).unwrap();
+    fs::write(&manifest,serde_json::to_vec(&json!({"schema":2,"sources":f.sources,"places":places,"peaks":{"summits_path":"summits.json","resolutions":resolutions}})).unwrap()).unwrap();
     let boundary = f.root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
     let first = peaks::compile(&manifest, &boundary, &f.root.join("first"), false).unwrap();
@@ -345,7 +345,7 @@ fn a_photo_alone_is_a_peak_record_and_never_a_landmark() {
     let resolutions = json!([{"node_id":1,"kind":"wikidata","path":"links/Q4.json","status":"resolved"}]);
     let boundary = f.root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
-    let mut snapshot = json!({"schema":1,"sources":f.sources,"places":[place]});
+    let mut snapshot = json!({"schema":2,"sources":f.sources,"places":[place]});
     let landmarks = f.root.join("landmarks.json");
     fs::write(&landmarks, serde_json::to_vec(&snapshot).unwrap()).unwrap();
     snapshot["peaks"] = json!({"summits_path":"summits.json","resolutions":resolutions});
@@ -399,7 +399,7 @@ fn a_text_record_keeps_the_osm_name_when_its_default_language_has_no_label() {
     let boundary = f.root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
     let manifest = f.root.join("manifest.json");
-    fs::write(&manifest,serde_json::to_vec(&json!({"schema":1,"sources":f.sources,"places":[place],
+    fs::write(&manifest,serde_json::to_vec(&json!({"schema":2,"sources":f.sources,"places":[place],
         "peaks":{"summits_path":"summits.json","resolutions":[{"node_id":2,"kind":"wikidata","path":"links/Q5.json","status":"resolved"}]}})).unwrap()).unwrap();
     let result = peaks::compile(&manifest, &boundary, &f.root.join("out"), false).unwrap();
     let record = &result.records[0].article;

@@ -3,7 +3,7 @@
 //! a re-route rewrite, an import. A settled Map view reparses nothing.
 
 use obc_app::App;
-use obc_route::{RouteIndex, RouteReader};
+use obc_route::RouteIndex;
 
 use crate::RouteRepository;
 
@@ -35,7 +35,8 @@ impl ActiveRouteSession {
         self.index = routes.active_source().and_then(|s| RouteIndex::read(s).ok()).map(Box::new);
     }
 
-    /// The resident parse, for building a [`RouteReader`] over the store's active bytes.
+    /// The resident parse, for building a [`RouteReader`](obc_route::RouteReader) over the store's
+    /// active bytes.
     pub fn index(&self) -> Option<&RouteIndex> {
         self.index.as_deref()
     }
@@ -46,26 +47,5 @@ impl ActiveRouteSession {
     pub fn sync(&mut self, app: &App, routes: &mut dyn RouteRepository) {
         let changed = routes.sync_active(app.active_route_index());
         self.reparse(changed, routes);
-    }
-}
-
-/// Fill an open Route overview's decimated shape preview — the once-per-entry cue
-/// every frame-stepped host shares. `nav_preview_missing` is false again the moment the copy lands,
-/// so this is a per-frame no-op otherwise.
-pub fn fill_nav_preview(app: &mut App, route: Option<&RouteReader>) {
-    if let Some(key) = app.derived_needs().nav_preview {
-        let points = route.and_then(|r| {
-            if key.assistant {
-                r.assistant_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>().ok()
-            } else {
-                Some(r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>())
-            }
-        });
-        use obc_app::device_core::{DerivedInput, DerivedInputs, DerivedTargets};
-        let input = if points.is_some() { DerivedInput::filled(key) } else { DerivedInput::failed(key) };
-        app.apply_derived(
-            DerivedInputs::nav_preview(input),
-            DerivedTargets { nav_preview: points.as_deref().unwrap_or(&[]), ..DerivedTargets::NONE },
-        );
     }
 }

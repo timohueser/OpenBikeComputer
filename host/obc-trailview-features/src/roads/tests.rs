@@ -151,7 +151,7 @@ fn a_hairpin_climbs_within_the_grade_of_its_class() {
 #[test]
 fn a_road_across_a_steep_slope_keeps_its_grade_where_the_terrain_under_its_line_humps() {
     // A slope that rises 2 m per metre north, with a nose 15 m high under the line of the road: the terrain
-    // across the road's width spans 16 m, and the nose is no bed for the road.
+    // across the road's width spans 16 m, and the nose is not the base of the road.
     let place = engelberg();
     let height = |e: f64, n: f64| 1000.0 + 2.0 * n + 15.0 * (-((e - 250.0) / 8.0).powi(2)).exp();
     let road = way("primary", place.line(&[(0.0, 0.0), (500.0, 0.0)], Some(20.0)), |f| f.half = 4.0);
@@ -404,6 +404,21 @@ fn a_tunnel_that_ends_in_the_mountain_is_level_from_the_road_that_it_leaves() {
 }
 
 #[test]
+fn a_tunnel_that_ends_in_the_mountain_does_not_tilt_under_a_path_by_its_portal() {
+    // A path on the ground crosses 8 m from the portal, where the tunnel must lie under the portal's height
+    // to pass under it. Held only by its portal, the straight tunnel would tilt down to its dead end.
+    let place = engelberg();
+    let terrain = place.terrain(|e, _| 1000.0 + 0.3 * e.max(0.0));
+    let features = [
+        way("residential", place.line(&[(0.0, -300.0), (0.0, 300.0)], Some(20.0)), plain),
+        way("footway", place.line(&[(0.0, 0.0), (400.0, 0.0)], Some(5.0)), tunnel),
+        way("path", place.line(&[(8.0, -47.0), (8.0, 53.0)], None), plain),
+    ];
+    let (_, z) = along_east(&place, &run(&features, &terrain, &[]).ways[1][0]);
+    assert!((z[z.len() - 1] - z[0]).abs() < 0.5, "{} m at the dead end", z[z.len() - 1] - z[0]);
+}
+
+#[test]
 fn a_way_on_the_ground_of_a_higher_layer_passes_over_and_one_indoors_stays_on_the_terrain() {
     let place = engelberg();
     let terrain = place.terrain(|_, _| 1000.0);
@@ -437,15 +452,15 @@ fn the_tracks_of_a_double_line_on_noisy_ground_lie_at_one_height() {
 #[test]
 fn a_road_whose_carriageway_overlaps_another_lies_at_its_height() {
     // A service road and a track 4.5 m apart on a slope across them: their carriageways overlap, and
-    // the terrain under them differs by 0.45 m. A narrower footway as far from the track does not
-    // reach it, and keeps its own height.
+    // the terrain under them differs by 0.45 m. A footway whose edge lies 2.5 m from the track's, past
+    // BESIDE_GAP_M, keeps its own height.
     let place = engelberg();
     let terrain = place.terrain(|e, n| 500.0 + 0.02 * e + 0.1 * n);
     let narrow = |f: &mut Feature| f.half = 1.0;
     let features = [
         way("service", place.line(&[(0.0, 2.25), (300.0, 2.25)], Some(10.0)), plain),
         way("track", place.line(&[(0.0, -2.25), (300.0, -2.25)], Some(10.0)), plain),
-        way("footway", place.line(&[(0.0, -6.75), (300.0, -6.75)], Some(10.0)), narrow),
+        way("footway", place.line(&[(0.0, -8.75), (300.0, -8.75)], Some(10.0)), narrow),
     ];
     let solved = run(&features, &terrain, &[]);
     let [(na, nz), (sa, sz), (fa, fz)] = [0, 1, 2].map(|f| place.profile(&solved.ways[f][0]));
@@ -455,16 +470,232 @@ fn a_road_whose_carriageway_overlaps_another_lies_at_its_height() {
 }
 
 #[test]
-fn a_track_on_a_ramp_beside_a_level_track_keeps_its_own_height() {
-    // The embankment north of the level track rises 8 m.
+fn a_path_keeps_its_ground_near_an_opening_that_it_does_not_share_with_the_road() {
+    // A footway on a shelf 5 m under a road, its edge 1.5 m from the road's: it leaves its own tunnel and
+    // ends 10 m before the road's bridge. Within the reach of each opening, 40 m for a residential road,
+    // it keeps its own ground; between them it lies on the road's bed.
     let place = engelberg();
-    let terrain = place.terrain(|e, n| 500.0 + if n > 2.0 { 8.0 * ((e - 50.0) / 300.0).clamp(0.0, 1.0) } else { 0.0 });
+    let terrain = place.terrain(|e, n| if (n - 5.0).abs() < 1.5 && e < 245.0 { 495.0 } else { 500.0 });
+    let line = |corners: &[(f64, f64)]| place.line(corners, Some(10.0));
+    let road = |f: &mut Feature| f.half = 2.5;
+    let path = |f: &mut Feature| f.half = 1.0;
     let features = [
-        way("rail", place.line(&[(0.0, 4.0), (400.0, 4.0)], Some(10.0)), plain),
-        way("rail", place.line(&[(0.0, 0.0), (400.0, 0.0)], Some(10.0)), plain),
+        way("residential", line(&[(-50.0, 0.0), (250.0, 0.0)]), road),
+        way("residential", line(&[(250.0, 0.0), (270.0, 0.0)]), |f| (f.free, f.half) = (true, 2.5)),
+        way("residential", line(&[(270.0, 0.0), (400.0, 0.0)]), road),
+        way("footway", line(&[(-100.0, 5.0), (0.0, 5.0)]), |f| (f.free, f.tunnel, f.half) = (true, true, 1.0)),
+        way("footway", line(&[(0.0, 5.0), (240.0, 5.0)]), path),
     ];
-    let (along, z) = place.profile(&run(&features, &terrain, &[]).ways[0][0]);
-    assert!(interp(380.0, &along, &z) > 507.5);
+    let solved = run(&features, &terrain, &[]);
+    let (along, z) = place.profile(&solved.ways[4][0]);
+    for e in [20.0, 230.0] {
+        assert!((interp(e, &along, &z) - 495.0).abs() < 0.3, "at {e} m east");
+    }
+    // The bed runs from the first vertex more than 40 m past the footway's portal to the last one more than
+    // 40 m before the road's bridge.
+    assert!((solved.metrics.bed_m - 150.0).abs() < 0.1);
+}
+
+#[test]
+fn a_path_keeps_its_ground_by_its_own_portal_round_a_corner() {
+    // A footway on a shelf 5 m under a road, its edge 1.5 m from the road's, ends at the portal of its own
+    // tunnel. Nothing on the ground runs on from that end, so it is an opening at any angle of the tunnel.
+    let place = engelberg();
+    let terrain = place.terrain(|e, n| if (n - 5.0).abs() < 1.5 && e > -1.0 && e < 245.0 { 495.0 } else { 500.0 });
+    let line = |corners: &[(f64, f64)]| place.line(corners, Some(10.0));
+    for degrees in [0.0f64, 90.0] {
+        let far = (-100.0 * degrees.to_radians().cos(), 5.0 + 100.0 * degrees.to_radians().sin());
+        let features = [
+            way("residential", line(&[(-150.0, 0.0), (400.0, 0.0)]), |f| f.half = 2.5),
+            way("footway", line(&[far, (0.0, 5.0)]), |f| (f.free, f.tunnel, f.half) = (true, true, 1.0)),
+            way("footway", line(&[(0.0, 5.0), (240.0, 5.0)]), |f| f.half = 1.0),
+        ];
+        let solved = run(&features, &terrain, &[]);
+        let (along, z) = place.profile(&solved.ways[2][0]);
+        for e in [5.0, 20.0] {
+            assert!((interp(e, &along, &z) - 495.0).abs() < 0.3, "tunnel at {degrees}°: at {e} m east");
+        }
+    }
+}
+
+#[test]
+fn a_tunnel_or_a_bridge_that_leaves_at_a_split_does_not_part_a_bed() {
+    // A footway 4 m beside a street, on a strip 1.5 m lower. At 100 m a subway leaves the footway square to
+    // it, and a side street leaves the street there on a bridge. Neither runs on from the street or the
+    // footway, so the bed is the same whether OSM splits the footway or the street there or not.
+    let place = engelberg();
+    let terrain = place.terrain(|_, n| if (n - 4.0).abs() < 1.0 { 498.5 } else { 500.0 });
+    let line = |corners: &[(f64, f64)]| place.line(corners, Some(10.0));
+    let (street, walk) = (|f: &mut Feature| f.half = 2.5, |f: &mut Feature| f.half = 1.0);
+    let pieces = |split: bool, n: f64, west: f64, east: f64| -> Vec<Vec<[f64; 2]>> {
+        if split {
+            vec![line(&[(west, n), (100.0, n)]), line(&[(100.0, n), (east, n)])]
+        } else {
+            vec![line(&[(west, n), (100.0, n), (east, n)])]
+        }
+    };
+    let mut beds = Vec::new();
+    for (split_walk, split_street) in [(false, false), (true, false), (false, true)] {
+        let mut features: Vec<Feature> =
+            pieces(split_street, 0.0, -200.0, 400.0).into_iter().map(|p| way("residential", p, street)).collect();
+        let first_walk = features.len();
+        features.extend(pieces(split_walk, 4.0, -150.0, 350.0).into_iter().map(|p| way("footway", p, walk)));
+        features.extend([
+            way("footway", line(&[(100.0, 4.0), (100.0, 60.0)]), |f| (f.free, f.tunnel, f.half) = (true, true, 1.0)),
+            way("footway", line(&[(100.0, 60.0), (100.0, 120.0)]), walk),
+            way("residential", line(&[(100.0, 0.0), (100.0, -40.0)]), |f| (f.free, f.half) = (true, 2.5)),
+            way("residential", line(&[(100.0, -40.0), (100.0, -100.0)]), street),
+        ]);
+        let solved = run(&features, &terrain, &[]);
+        let [(ra, rz), (wa, wz)] = [0, first_walk].map(|f| along_east(&place, &solved.ways[f][0]));
+        for e in [60.0, 80.0] {
+            let off = interp(e, &wa, &wz) - interp(e, &ra, &rz);
+            assert!(off.abs() < 0.05, "split footway {split_walk}, street {split_street}: {off:.2} m at {e} m");
+        }
+        beds.push(solved.metrics.bed_m);
+    }
+    assert!(beds.iter().all(|&b| (b - beds[0]).abs() < 0.5), "{beds:?}");
+}
+
+#[test]
+fn a_sidewalk_that_merges_into_its_road_does_not_move_the_road() {
+    // The sidewalk ends on the road at 100 m, and the road has a vertex 3 m on: no segment of the road holds
+    // the junction that the road shares with the sidewalk, and the road keeps its own line.
+    let place = engelberg();
+    let terrain = place.terrain(|e, _| 500.0 + 0.1 * e);
+    let corners = [(-200.0, 0.0), (100.0, 0.0), (103.0, 0.0), (400.0, 0.0)];
+    let road = way("residential", place.line(&corners, Some(10.0)), |f| f.half = 2.5);
+    let sidewalk =
+        way("footway", place.line(&[(-100.0, 3.0), (90.0, 3.0), (100.0, 0.0)], Some(10.0)), |f| f.half = 1.0);
+    let alone = run(std::slice::from_ref(&road), &terrain, &[]);
+    let solved = run(&[road, sidewalk], &terrain, &[]);
+    let [(ra, rz), (aa, az)] = [&solved.ways[0][0], &alone.ways[0][0]].map(|part| along_east(&place, part));
+    assert!(ra.iter().zip(&rz).all(|(&e, &z)| (interp(e, &aa, &az) - z).abs() < 0.02));
+    assert!(solved.metrics.bed_m > 150.0);
+}
+
+/// Metres east and the heights of the kept vertices of a solved way.
+fn along_east(place: &Place, part: &Option<Way>) -> (Vec<f64>, Vec<f64>) {
+    let way = part.as_ref().unwrap();
+    way.points.iter().zip(&way.z).map(|(&p, &z)| (place.east_north(p).0, z)).unzip()
+}
+
+#[test]
+fn a_path_beside_a_road_on_a_slope_lies_at_the_road_and_does_not_move_it() {
+    // A footway with its line 4 m from a residential road, on a slope of 30 % across them: its own terrain
+    // lies 1.2 m over the road's.
+    let place = engelberg();
+    let terrain = place.terrain(|e, n| 1000.0 + 0.05 * e + 0.3 * n);
+    let road = way("residential", place.line(&[(-100.0, 0.0), (200.0, 0.0)], Some(10.0)), |f| f.half = 2.5);
+    let footway = way("footway", place.line(&[(0.0, 4.0), (100.0, 4.0)], Some(10.0)), |f| f.half = 1.0);
+    let alone = run(std::slice::from_ref(&road), &terrain, &[]);
+    let solved = run(&[road, footway], &terrain, &[]);
+    let [(ra, rz), (fa, fz), (aa, az)] =
+        [&solved.ways[0][0], &solved.ways[1][0], &alone.ways[0][0]].map(|part| along_east(&place, part));
+    assert!(fa.iter().zip(&fz).all(|(&e, &z)| (interp(e, &ra, &rz) - z).abs() < 0.01));
+    assert!(ra.iter().zip(&rz).all(|(&e, &z)| (interp(e, &aa, &az) - z).abs() < 0.01));
+    assert!(solved.ways[1][0].as_ref().unwrap().bed.iter().all(|&bed| bed));
+    assert!((solved.metrics.bed_m - 100.0).abs() < 0.1 && solved.metrics.beds_apart == 0);
+}
+
+#[test]
+fn a_path_that_leaves_a_road_climbs_as_a_ramp_to_its_own_terrain() {
+    // The footway runs 4 m beside the road for 40 m, then turns 45° up the slope of 30 %.
+    let place = engelberg();
+    let height = |_: f64, n: f64| 1000.0 + 0.3 * n;
+    let road = way("residential", place.line(&[(-100.0, 0.0), (200.0, 0.0)], Some(10.0)), |f| f.half = 2.5);
+    let up = 60.0 / 2f64.sqrt();
+    let line = place.line(&[(0.0, 4.0), (40.0, 4.0), (40.0 + up, 4.0 + up)], Some(2.0));
+    let footway = way("footway", line, |f| f.half = 1.0);
+    let solved = run(&[road, footway], &place.terrain(height), &[]);
+    let (ra, rz) = along_east(&place, &solved.ways[0][0]);
+    let way = solved.ways[1][0].as_ref().unwrap();
+    for (&p, &z) in way.points.iter().zip(&way.z) {
+        let (e, n) = place.east_north(p);
+        if e <= 30.0 {
+            assert!((z - interp(e, &ra, &rz)).abs() < 0.01, "{z} on the bed at {e} m east");
+        }
+        if (e - 40.0) * 2f64.sqrt() >= 30.0 {
+            assert!((z - height(e, n)).abs() < 0.3, "{z} past the bed at {e} m east");
+        }
+    }
+    // The terrain climbs 21 % along the leg: the ramp at most RAMP_GRADE more, not a step.
+    let (along, z) = place.profile(&solved.ways[1][0]);
+    let steepest = (1..z.len()).map(|k| (z[k] - z[k - 1]) / (along[k] - along[k - 1])).fold(0.0, f64::max);
+    assert!(steepest <= 0.3 / 2f64.sqrt() + RAMP_GRADE + 0.02, "{steepest}");
+}
+
+#[test]
+fn a_path_tunnel_beside_a_road_tunnel_lies_at_the_road_where_a_bed_on_the_ground_runs_into_it() {
+    // An underpass under a street on flat ground: a road and a footway 4 m beside it, on the ground for
+    // 40 m before and after. The footway's openings lie 6 m before the road's. By its own bore the footway
+    // would lie 2.4 m over the road under the street.
+    let place = bridges();
+    let flat = place.terrain(|_, _| 500.0);
+    let under = |f: &mut Feature| (f.free, f.tunnel, f.layer, f.layered, f.half) = (true, true, -1, true, 2.5);
+    let line = |corners: &[(f64, f64)]| place.line(corners, Some(10.0));
+    let features = [
+        way("residential", line(&[(-40.0, 0.0), (0.0, 0.0)]), |f| f.half = 2.5),
+        way("residential", line(&[(0.0, 0.0), (100.0, 0.0)]), under),
+        way("residential", line(&[(100.0, 0.0), (140.0, 0.0)]), |f| f.half = 2.5),
+        way("footway", line(&[(-46.0, 4.0), (-6.0, 4.0)]), |f| f.half = 1.0),
+        way("footway", line(&[(-6.0, 4.0), (0.0, 4.0), (90.0, 4.0), (94.0, 4.0)]), |f| {
+            under(f);
+            f.half = 1.0;
+        }),
+        way("footway", line(&[(94.0, 4.0), (134.0, 4.0)]), |f| f.half = 1.0),
+        way("residential", place.line(&[(55.0, -100.0), (55.0, 100.0)], None), plain),
+    ];
+    let solved = run(&features, &flat, &[]);
+    let [(ra, rz), (fa, fz)] = [1, 4].map(|f| along_east(&place, &solved.ways[f][0]));
+    let pairs: Vec<(f64, f64)> = (ra.iter().zip(&rz))
+        .filter_map(|(&e, &z)| Some((z, fz[fa.iter().position(|&f| (f - e).abs() < 0.05)?])))
+        .collect();
+    assert!(pairs.len() >= 10);
+    assert!(pairs.iter().all(|(road, foot)| (road - foot).abs() < 0.01), "{pairs:?}");
+    assert!(interp(55.0, &ra, &rz) <= 500.0 - BORE_M - COVER_M + 0.01);
+}
+
+#[test]
+fn ways_at_two_levels_side_by_side_lie_on_no_bed() {
+    let place = engelberg();
+    // A footway on an embankment that climbs 10 % beside a level road: the trend parts them.
+    let embankment = place.terrain(|e, n| 1000.0 + if n > 2.0 { 0.1 * e.clamp(0.0, 200.0) } else { 0.0 });
+    let features = [
+        way("residential", place.line(&[(-100.0, 0.0), (300.0, 0.0)], Some(10.0)), |f| f.half = 2.5),
+        way("footway", place.line(&[(0.0, 4.0), (200.0, 4.0)], Some(10.0)), |f| f.half = 1.0),
+    ];
+    let solved = run(&features, &embankment, &[]);
+    let (fa, fz) = along_east(&place, &solved.ways[1][0]);
+    assert!((interp(150.0, &fa, &fz) - 1015.0).abs() < 0.3);
+    assert_eq!(solved.metrics.bed_m, 0.0);
+    // Two primaries with overlapping carriageways, one 6 m over the other behind a wall, run on into two
+    // tunnels: the test across parts them on the ground, and the tunnels have no bed to continue.
+    let wall = place.terrain(|_, n| if n > 0.0 { 1006.0 } else { 1000.0 });
+    let road = |n: f64, from: f64, to: f64, edit: fn(&mut Feature)| {
+        way("primary", place.line(&[(from, n), (to, n)], Some(10.0)), edit)
+    };
+    let mut features = Vec::new();
+    for n in [2.5, -2.5] {
+        features.extend([road(n, -200.0, 0.0, plain), road(n, 0.0, 300.0, tunnel), road(n, 300.0, 500.0, plain)]);
+    }
+    let solved = run(&features, &wall, &[]);
+    for (upper, e) in [(0, -100.0), (1, 150.0), (2, 400.0)] {
+        let [(ua, uz), (la, lz)] = [upper, upper + 3].map(|f| along_east(&place, &solved.ways[f][0]));
+        assert!((interp(e, &ua, &uz) - interp(e, &la, &lz) - 6.0).abs() < 0.3, "at {e} m east");
+    }
+    assert_eq!(solved.metrics.bed_m, 0.0);
+    // A track that climbs 8 m in 300 m beside a kilometre of level track, 4 m apart: the level part is a
+    // bed, and the ramp leaves it where the terrain under it lies BESIDE_RISE_M over the level track's.
+    let ramp = place.terrain(|e, n| 500.0 + if n > 2.0 { 8.0 * ((e - 50.0) / 300.0).clamp(0.0, 1.0) } else { 0.0 });
+    let features = [
+        way("rail", place.line(&[(-700.0, 0.0), (400.0, 0.0)], Some(10.0)), plain),
+        way("rail", place.line(&[(-700.0, 4.0), (400.0, 4.0)], Some(10.0)), plain),
+    ];
+    let solved = run(&features, &ramp, &[]);
+    let [(la, lz), (ra, rz)] = [0, 1].map(|f| along_east(&place, &solved.ways[f][0]));
+    assert!((interp(-300.0, &ra, &rz) - interp(-300.0, &la, &lz)).abs() < 0.01);
+    assert!(interp(380.0, &ra, &rz) > 507.5);
 }
 
 #[test]
@@ -966,7 +1197,7 @@ fn the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_s
                 tagged_m: mm(w.tagged_m),
                 built_m: mm(w.built_m),
                 bend_m: mm(w.bend_m),
-                bed_m: mm(w.bed_m),
+                footprint_m: mm(w.footprint_m),
                 short_m: mm(w.short_m),
             },
             ..m.clone()

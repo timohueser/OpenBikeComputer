@@ -31,7 +31,7 @@
     import Menu from '../lib/ui/Menu.svelte';
     import { kindName } from './explore/SignedCard.svelte';
     import StageStrip from './explore/StageStrip.svelte';
-    import { exploreAt, partLabel, partSection, readAddress, shownDescription, signedHref, stagePart } from './explore/signed-page';
+    import { bikeOf, exploreAt, partLabel, partSection, readAddress, shownDescription, signedHref, stagePart } from './explore/signed-page';
     import { trailHref } from './explore/trail-page';
     import { signedItem } from './routes/filter';
 
@@ -58,7 +58,7 @@
     let day = $state<[number, number] | null>(null);
     let routePlaces = $state.raw<RoutePlace[]>([]), litPlaces = $state.raw<string[]>([]), openPlaceId = $state<string | null>(null);
 
-    const item = $derived(record && signedItem(record, exploreAt(record).chips.bike!));
+    const item = $derived(record && signedItem(record, bikeOf(record)));
     const trip = $derived(record && planTrip(routeBase(record, emptyTrip()), routePlan(record), record.loop));
     const line = $derived(routed?.record === record ? routed?.line : undefined);
     const error = $derived(routed?.record === record ? routed?.error : undefined);
@@ -187,7 +187,7 @@
     <Detail {message} {name} back={{ label: '‹ Explore', href: ROUTES.explore, onclick: record ? event => toExplore(event) : undefined }}>
         {#snippet action()}
             {#if gone && address}
-                <a class="action" href={ROUTES.explore} onclick={event => { event.preventDefault(); router.go(ROUTES.explore, { explore: { chips: { bike: 'hiking' }, view: address.box } }); }}>Show this area on Explore</a>
+                <a class="action" href={ROUTES.explore} onclick={event => { event.preventDefault(); router.go(ROUTES.explore, { explore: { view: address.box } }); }}>Show this area on Explore</a>
             {:else if cell?.failed}
                 <button type="button" class="action" onclick={() => attempt++}>Retry</button>
             {/if}

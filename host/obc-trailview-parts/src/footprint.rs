@@ -1,15 +1,15 @@
 //! The ring that a part takes from the ground.
 
-use crate::arch::collar;
+use crate::arch::{collar, wide};
 use crate::tube::Net;
 
-/// The ring of end e, in world units, in order round it: the head wall and its wings from front to back, and the
-/// collar's shell along its chords out to `collar`.
+/// The ring of hole e, in world units, in order round it: its head from front to back (the head wall of all holes of
+/// its record, or the run of rims that holds it), and the collar's shell along its chords out to `collar`.
 pub fn ring(net: &Net, e: usize) -> Vec<[f64; 2]> {
-    let end = &net.ends[e];
+    let end = &net.holes[e];
     let (design, bake) = (&net.rules.design, &net.rules.ladder.bake);
     let edge = end.half + bake.shell_m;
-    let (wide_r, wide_l) = (-(edge + end.right.len() as f64), edge + end.left.len() as f64);
+    let (wide_r, wide_l) = wide(net, e);
     let (front, back) = (net.frame(e, -design.recess_m), net.frame(e, design.face_m - design.recess_m));
     let xy = |p: [f64; 3]| [p[0], p[1]];
     let mut out = vec![xy(front.at([wide_r, 0.0])), xy(front.at([wide_l, 0.0])), xy(back.at([wide_l, 0.0]))];

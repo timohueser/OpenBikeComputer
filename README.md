@@ -153,7 +153,7 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | `companion-ios/` | SwiftUI companion app and shared iOS package |
 | `specs/` | Normative binary, wire, and vector contracts |
 | `fixtures/` | Scenario registry, source provenance, and fixture builders |
-| `data/` | External data sources with their licences, regions, and environments |
+| `data/` | External data sources with their licences, regions, and targets |
 | `docs/` | Public documentation, website, and project blog |
 | `hardware/` | KiCad schematics, PCB layouts, footprints, and component models |
 | `tools/` | The `obc` command, repository tools, and verification console |

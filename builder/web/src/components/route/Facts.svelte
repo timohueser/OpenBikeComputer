@@ -119,22 +119,18 @@
                 <h3>Days</h3>
                 <ol class="days">
                     {#each days as day (day.number)}
-                        {#if day.rest}
-                            <li class="day"><span class="lead">Day {day.number}</span><strong>{trip.restNames?.[day.restIndex!] || 'Rest day'}</strong></li>
-                        {:else}
-                            {@const from = day.ridingNumber === 1 ? ends[0]?.label : trip.points.find(p => p.kind === 'night' && p.night === day.ridingNumber - 1)?.label}
-                            {@const last = day.ridingNumber === days.filter(d => !d.rest).length}
-                            <li class="day">
-                                <span class="lead">Day {day.number}</span>
-                                <span>
-                                    <strong>{dayTitle(from, last ? finish?.label : day.pinned?.label)}</strong>
-                                    <small>{formatDistance(day.distance * 1000)} · {formatHeight(day.ascent)} up · {duration(day.hours)}</small>
-                                </span>
-                            </li>
-                            {#each day.stops as stop (stop.point.id)}{@render pin(stop, about(stop.point))}{/each}
-                            {#if !last}
-                                <li class="sleep"><span class="lead"><span class="pin night"><Icon name="moon" size={11} /></span></span><span>{day.pinned?.label ?? 'Not chosen'}<small>Night</small></span></li>
-                            {/if}
+                        {@const from = day.number === 1 ? ends[0]?.label : trip.points.find(p => p.kind === 'night' && p.night === day.number - 1)?.label}
+                        {@const last = day.number === days.length}
+                        <li class="day">
+                            <span class="lead">Day {day.number}</span>
+                            <span>
+                                <strong>{dayTitle(from, last ? finish?.label : day.pinned?.label)}</strong>
+                                <small>{formatDistance(day.distance * 1000)} · {formatHeight(day.ascent)} up · {duration(day.hours)}</small>
+                            </span>
+                        </li>
+                        {#each day.stops as stop (stop.point.id)}{@render pin(stop, about(stop.point))}{/each}
+                        {#if !last}
+                            <li class="sleep"><span class="lead"><span class="pin night"><Icon name="moon" size={11} /></span></span><span>{day.pinned?.label ?? 'Not chosen'}<small>Night</small></span></li>
                         {/if}
                     {/each}
                 </ol>

@@ -43,8 +43,6 @@ no `photos` field and no photo entry.
 | `settings` | Object: the settings of the app |
 | `photos` | Optional array of [photo records](#7-photo-record), each with a unique `id`. Without it, the file has no photos. |
 
-A reader ignores the field `versions` of an older file.
-
 ## 3. Route record
 
 | Field | Value |
@@ -54,8 +52,6 @@ A reader ignores the field `versions` of an older file.
 | `updatedAt` | Unix time in milliseconds of the last edit |
 | `summary` | [Summary](#5-summary) with `days`, or `null` when the plan never had a calculated line |
 | `trip` | Plan object of [planner-plan.md](planner-plan.md) |
-
-A reader ignores the fields `open` and `revision` of a route record of an older file.
 
 ## 4. Ride record
 
@@ -84,7 +80,7 @@ A reader ignores the fields `open` and `revision` of a route record of an older 
 | `highestM` | Whole metres, or `null` when no height is known |
 | `seconds` | Number. For a route, the riding time that the routing gives. For a ride, the time from the first point to the last. |
 | `bike` | `"road"`, `"gravel"`, `"touring"`, `"mtb"` or `"hiking"` |
-| `days` | Route only: integer, 1 or more, rest days included |
+| `days` | Route only: integer, 1 or more |
 | `start` | Ride only: Unix time in seconds of the first point |
 | `movingS` | Ride only: the moving time |
 

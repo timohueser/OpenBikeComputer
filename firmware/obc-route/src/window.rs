@@ -6,14 +6,12 @@ use obc_formats::io::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AheadRange {
     FiveKm,
-    TenKm,
 }
 
 impl AheadRange {
     pub const fn meters(self) -> u32 {
         match self {
             Self::FiveKm => 5_000,
-            Self::TenKm => 10_000,
         }
     }
 }

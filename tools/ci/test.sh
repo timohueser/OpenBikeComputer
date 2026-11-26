@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 # The body of the CI `test` job. CI runs one section per step so each keeps its own
-# name and result artifact; `obc check test` runs the same sections from this file.
+# name and result artifact.
 #
-# Usage: tools/ci/test.sh SECTION...
+# Usage: tools/ci/test.sh [SECTION...]; with no section, every section runs.
 #   nextest-fast       fast hermetic binaries
 #   nextest-fixtures   captured-fixture binaries, after an explicit fixture sync
 #   doctests           workspace doctests
 #   formats-default    obc-formats in the device's default feature shape
 #   bench-golden       render + read-counter golden gate
-#
-# Every section runs in a subshell, so one section's exported environment cannot reach
-# the next when several run in one invocation.
 #
 # `--all-features` is deliberate: it is the shape the host tests are written for. The
 # device's feature shape is checked by the separate formats-default section.
@@ -53,14 +50,5 @@ bench_golden() {
   cargo run -p obc-bench --release --locked -- --check sim/bench/golden.txt
 }
 
-[ "$#" -gt 0 ] || { echo "tools/ci/test.sh: name at least one section" >&2; exit 2; }
-for section in "$@"; do
-  case "$section" in
-    nextest-fast) ( nextest_fast ) ;;
-    nextest-fixtures) ( nextest_fixtures ) ;;
-    doctests) ( doctests ) ;;
-    formats-default) ( formats_default ) ;;
-    bench-golden) ( bench_golden ) ;;
-    *) echo "tools/ci/test.sh: unknown section $section" >&2; exit 2 ;;
-  esac
-done
+SECTIONS=(nextest-fast nextest-fixtures doctests formats-default bench-golden)
+. tools/ci/sections.sh

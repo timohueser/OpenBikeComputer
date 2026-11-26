@@ -4,7 +4,7 @@ This is the **Synopsys DWC2 OTG device driver** the nRF54LM20's USBHS runs on. `
 `usb::Driver` is a thin wrapper over it (`embassy-nrf-0.11.0/src/usb/usbhs.rs` — it supplies the
 register block, the FIFO depth and the PHY type and forwards every trait call), so this crate is
 where the OUT-endpoint transfer arming lives, and therefore where the upload throughput ceiling
-sits (issue #1173).
+sits.
 
 The board crate redirects `embassy-nrf`'s dependency here with a `[patch.crates-io]` entry in
 `firmware/obc-fw-nrf54l/Cargo.toml`. Nothing else in the repo resolves it: the workspace root and
@@ -38,18 +38,17 @@ edits above and the two license files, which crates.io does not package. To re-d
 cargo download embassy-usb-synopsys-otg==0.4.0   # or fetch from a warm ~/.cargo/registry/src
 ```
 
-The first commit of the PR that introduced this directory is the pristine copy, so
+The commit that added this directory holds the pristine copy, so
 `git diff <that commit> -- firmware/obc-fw-nrf54l/vendor/embassy-usb-synopsys-otg` is always the
 complete local fork.
 
-## The local fork: multi-packet bulk OUT (issue #1173)
+## The local fork: multi-packet bulk OUT
 
 **One change, one endpoint.** Upstream `EndpointOut::read` arms exactly one max packet
 (`DOEPTSIZ.PKTCNT = 1`, `XFRSIZ = max_packet_size`) and re-arms it only after the application task
 has copied the packet out and cleared NAK. The endpoint therefore NAKs from the moment a packet
 lands until the executor gets round to polling the reader — ISR → waker → executor scan → poll →
-copy → CNAK per 512 B — which measured ~342 µs/packet on glass (2026-08-07), of which ~240 µs was
-that serialization. Map uploads ran at 1416–1459 kB/s on both hosts as a result.
+copy → CNAK per 512 B. That serialization caps the upload throughput.
 
 The fork adds an **opt-in per-endpoint burst** to that arming:
 

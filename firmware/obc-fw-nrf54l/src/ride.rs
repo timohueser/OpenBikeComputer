@@ -2393,7 +2393,7 @@ pub(crate) async fn run_app(
                     sensors: Sensors {
                         altimeter: Some(&mut consumer.altimeter()),
                         temperature: Some(&mut consumer.temperature()),
-                        clock: Some(&mut consumer.clock()), // SAM-M10Q UTC → the wall clock (always stamps; #641)
+                        clock: Some(&mut consumer.clock()), // SAM-M10Q UTC → the wall clock (always stamps)
                         compass: Some(&mut consumer.compass()), // ICM-20948 / AK09916 heading while stopped
                         fuel: Some(&mut fuel),
                         // The central manager feeds the shared hub mailboxes.

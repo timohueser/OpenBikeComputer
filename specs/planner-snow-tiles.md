@@ -3,7 +3,7 @@
 The three snow archives of one region: `snow.pmtiles` and `snow-levels.pmtiles`, the runs of bands
 in which a share of the years had snow, and `snow-seasons.pmtiles`, the onset and melt-out of each
 season. They come from the per-year tiles: the onset and melt-out of the longest snow period of
-each season. The prepared source [`snow`](obc-data.md#snow) holds the per-year tiles of zoom 6 to
+each season. The prepared source [`snow`](obc-data-producers.md#snow) holds the per-year tiles of zoom 6 to
 12, one file per season and zoom 6 block. `planner/snow` joins the seasons of the blocks of a
 region and makes the three archives.
 

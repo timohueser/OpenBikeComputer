@@ -2,27 +2,26 @@
     import { untrack } from 'svelte';
     import type { Attachment } from 'svelte/attachments';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { duration, type ItineraryDay } from '../../lib/planner/editor';
+    import { duration, type Day } from '../../lib/planner/editor';
     import { addDays } from '../../lib/planner/layers/data-layer';
     import { centredOn, end, home, step, type Week } from '../../lib/planner/week';
     import { formatDistance, formatHeight } from '../../lib/settings/format';
 
-    let { itinerary, week, theme, startDate, onMove, onHover, dragging = $bindable(false) }: {
-        /** The shown days, one for each calendar day. */
-        itinerary: ItineraryDay[];
+    let { days, week, theme, startDate, onMove, onHover, dragging = $bindable(false) }: {
+        days: Day[];
         week: Week;
         theme: 'light' | 'dark';
         startDate?: string;
-        /** Moves the week to start at this calendar day. */
+        /** Moves the week to start at this day. */
         onMove: (start: number) => void;
-        /** The riding number of the day that the pointer lights, or null. */
-        onHover?: (riding: number | null) => void;
+        /** The number of the day that the pointer lights, or null. */
+        onHover?: (day: number | null) => void;
         /** True while the pointer is down on the strip. */
         dragging?: boolean;
     } = $props();
 
-    const count = $derived(itinerary.length);
-    const longest = $derived(Math.max(0, ...itinerary.map(day => day.hours)));
+    const count = $derived(days.length);
+    const longest = $derived(Math.max(0, ...days.map(day => day.hours)));
     const inside = (day: number) => day >= week.start && day <= week.end;
     // Each slot and the 2 px gap after it take one share of the width and the last gap.
     const at = (slots: number) => `(100% + 2px) * ${slots / count}`;
@@ -31,10 +30,10 @@
     let strip = $state<HTMLDivElement>();
     let hovered = $state<number | null>(null);
     // The day outside the week under the pointer, while the pointer is up.
-    const lit = $derived(hovered !== null && !dragging && !inside(hovered) ? itinerary[hovered - 1] : undefined);
+    const lit = $derived(hovered !== null && !dragging && !inside(hovered) ? days[hovered - 1] : undefined);
     $effect(() => {
-        const riding = lit && !lit.rest ? lit.ridingNumber : null;
-        untrack(() => onHover?.(riding));
+        const day = lit?.number ?? null;
+        untrack(() => onHover?.(day));
     });
     // The days from the start of the week to the day under the pointer while it is down.
     let held = 0;
@@ -94,18 +93,17 @@
     aria-valuetext={`Days ${week.start} to ${week.end}`} bind:this={strip} {@attach wheel}
     onpointerdown={press} onpointermove={move} onpointerup={() => dragging = false} onpointercancel={() => dragging = false}
     onpointerleave={() => hovered = null} onkeydown={key}>
-    {#each itinerary as day (day.number)}
+    {#each days as day (day.number)}
         <span class="slot" class:lit={lit === day} aria-hidden="true">
-            {#if day.rest}<i class="rest-mark"></i>
-            {:else}<i class="bar" style:height={`${4 + (longest ? 22 * day.hours / longest : 0)}px`}
-                style:--day-color={inside(day.number) || lit === day ? dayColor(day.ridingNumber, theme) : undefined}></i>{/if}
+            <i class="bar" style:height={`${4 + (longest ? 22 * day.hours / longest : 0)}px`}
+                style:--day-color={inside(day.number) || lit === day ? dayColor(day.number, theme) : undefined}></i>
             {#if day.number % 7 === 1}<small>{label(day.number)}</small>{/if}
         </span>
     {/each}
     <span class="frame" style:left={`calc(${at(week.start - 1)} - 2px)`} style:width={`calc(${at(7)} + 2px)`}></span>
     {#if lit}
         <span class="tip" role="tooltip" style:left={`calc(${at(lit.number - .5)} - 1px)`} style:translate={`${-(lit.number - .5) / count * 100}% 0`}>
-            {lit.rest ? `Day ${lit.number} · Rest` : `Day ${lit.number} · ${formatDistance(lit.distance * 1000)} · ${duration(lit.hours)} · ↑ ${formatHeight(lit.ascent)}`}
+            Day {lit.number} · {formatDistance(lit.distance * 1000)} · {duration(lit.hours)} · ↑ {formatHeight(lit.ascent)}
         </span>
     {/if}
 </div>
@@ -138,13 +136,6 @@
         background: var(--day-color, color-mix(in srgb, var(--ink-faint) 45%, var(--panel)));
     }
     .lit .bar { outline: 2px solid var(--ink); }
-    .rest-mark {
-        width: 6px;
-        height: 6px;
-        margin-bottom: 1px;
-        box-sizing: border-box;
-        border: 1px solid var(--ink-soft);
-    }
     small {
         position: absolute;
         top: 30px;

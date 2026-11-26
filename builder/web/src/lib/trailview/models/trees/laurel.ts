@@ -7,8 +7,13 @@ export default {
   fork: 0.38,
   // Taller and narrower than the holm oak.
   crown: [0.6, 0.32, 0.32, 0.42],
-  stems: 4,
-  trunk: 0.022,
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.12 + 0.88 * t)) ** 0.6,
+  clumps: 12,
+  billows: 3,
+  bow: 0.3,
+  stems: 3,
+  leaders: true,
+  trunk: 0.026,
   flare: 1.5,
   // Moss climbs the trunks in the cloud forest.
   bark: ['#4a5236', '#6e675c'],

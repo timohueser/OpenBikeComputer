@@ -238,8 +238,8 @@ export interface Building { rings: number[][]; outer: boolean[] }
  * surface, the pads under the platforms and the buildings.
  */
 export interface Shapes {
-    /** The zoom of the tile. */
-    zoom: number;
+    /** The zoom of the tile, and its square in world units: west, north, east and south. */
+    zoom: number; square?: number[];
     lines: Line[]; mouths: CulvertMouth[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[];
     crossings: { x: number; y: number }[];
     /** Each part of a bridge whole, missing heights included, in world units, and the half-width of its deck in metres. */
@@ -493,8 +493,7 @@ type Frame = ReturnType<typeof frameOf>;
 function lineType(kind: string, tags: Record<string, string>): number | undefined {
     const river = kind === 'river' || kind === 'stream';
     if (!river && !['main-road', 'road', 'path', 'railway', 'tunnel', 'gallery'].includes(kind)) return undefined;
-    // Tiles of an older bake hold a passage through a building as a tunnel: it is a way, the building stands over it.
-    const bore = kind === 'tunnel' && tags.tunnel !== 'building_passage';
+    const bore = kind === 'tunnel';
     const bridge = !river && !bore && !GROUND.includes(tags.bridge ?? 'no');
     return kind === 'river' ? RIVER : kind === 'stream' ? STREAM : bridge ? BRIDGE : bore ? TUNNEL : kind === 'railway' ? RAIL : kind === 'path' || Object.hasOwn(PATH_HALF, tags.highway) ? PATH : ROAD;
 }
@@ -604,7 +603,8 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     const buried = joinCulverts(list, lines, world);
     junctionPlanes(lines);
     abutments(lines);
-    return { zoom: tile.level, lines, lakes, seas, areas, pads, buildings, barriers, crossings, bridges, mouths: standMouths(lines, buried) };
+    const side = 2 ** (30 - tile.level);
+    return { zoom: tile.level, square: [tile.x * side, tile.y * side, (tile.x + 1) * side, (tile.y + 1) * side], lines, lakes, seas, areas, pads, buildings, barriers, crossings, bridges, mouths: standMouths(lines, buried) };
 }
 
 /**
@@ -666,7 +666,7 @@ export const KERB_RISE_M = 0.12;
 const PIECE_M = 8;
 /**
  * A sidewalk on the inside of a bend needs this much more radius than its outer edge, and it ends ROOM_ALONG_M before and after
- * such a bend. This is the bake's rule of D1 (#3049); D2 (#3050) reads the bake's decision instead and deletes it here.
+ * such a bend, as the bake's sidewalks (`roads/sidewalks.rs` of `obc-trailview-features`) do.
  */
 const BEND_ROOM_M = 1;
 /** A sidewalk ends this far before and after a bend where it has no room. */

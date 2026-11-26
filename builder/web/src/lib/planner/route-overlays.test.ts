@@ -39,18 +39,18 @@ it('loads the archive when an overlay is first shown, then draws the network and
     await view.layer.install('light');
     expect(fetcher).not.toHaveBeenCalled();
     view.layer.set({ network: 'cycling', access: true });
-    await vi.waitFor(() => expect(view.visible()).toEqual(['network-cycling', 'network-cycling-band', 'network-cycling-labels', 'access-lines', 'access-symbols']));
+    await vi.waitFor(() => expect(view.visible()).toEqual(['network-cycling', 'network-cycling-labels', 'access-lines', 'access-symbols']));
     expect(view.sources.get('route-overlays')).toEqual({ type: 'vector', tiles: tilejson.tiles, minzoom: 6, maxzoom: 14, bounds: tilejson.bounds, attribution: 'OSM' });
     expect(JSON.stringify(view.definitions.get('access-symbols')!.filter)).toContain('cycling_minzoom');
     view.layer.set({ network: 'hiking', access: true }, 'walking');
-    expect(view.visible()).toEqual(['network-hiking', 'network-hiking-band', 'network-hiking-labels', 'hiking-markers', 'access-lines', 'access-symbols']);
+    expect(view.visible()).toEqual(['network-hiking', 'network-hiking-labels', 'hiking-markers', 'access-lines', 'access-symbols']);
     expect(JSON.stringify(view.definitions.get('access-symbols')!.filter)).toContain('walking_minzoom');
     view.layer.set({ network: 'mtb', access: false });
-    expect(view.visible()).toEqual(['network-mtb', 'network-mtb-band', 'network-mtb-labels']);
+    expect(view.visible()).toEqual(['network-mtb', 'network-mtb-labels']);
     // A new style after a theme change reuses the archive's TileJSON.
     view.sources.clear(); view.definitions.clear();
     await view.layer.install('dark');
-    expect(view.definitions.size).toBe(12);
+    expect(view.definitions.size).toBe(9);
     view.layer.set({ network: 'none', access: false });
     expect(view.visible()).toEqual([]);
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -64,10 +64,9 @@ it('puts the bands over the water and its structures, and under the lines of the
     view.layer.set({ network: 'cycling', access: false });
     await view.layer.install('light');
     const at = (id: string) => { const index = style.findIndex(layer => layer.id === id); expect(index, id).toBeGreaterThanOrEqual(0); return index; };
-    const band = at(view.definitions.get('network-cycling-band')!.before as string);
+    const band = at(view.definitions.get('network-cycling')!.before as string);
     for (const under of ['water', 'land-structure']) expect(band).toBeGreaterThan(at(under));
     for (const over of ['land-protected', 'water_stream', 'water_river', 'cliffs', 'ferries', 'roads_other', 'roads_minor', 'roads_bridges_other']) expect(band).toBeLessThanOrEqual(at(over));
-    expect(at(view.definitions.get('network-cycling')!.before as string)).toBeGreaterThan(at('roads_bridges_highway'));
     view.layer.destroy();
 });
 
@@ -76,7 +75,7 @@ it('draws a wider band for a wider road, and the width of a path for a tile that
     const view = overlays();
     view.layer.set({ network: 'cycling', access: false });
     await view.layer.install('light');
-    const band = view.definitions.get('network-cycling-band') as unknown as { paint: Record<string, unknown> };
+    const band = view.definitions.get('network-cycling') as unknown as { paint: Record<string, unknown> };
     const width = createPropertyExpression(band.paint['line-width'], 'line-width', v8.paint_line['line-width'] as StylePropertySpecification);
     if (width.result === 'error') throw new Error(width.value[0].message);
     const at = (zoom: number, properties: Record<string, string>) => width.value.evaluate({ zoom }, { type: 2, properties });
@@ -91,7 +90,7 @@ it('hides every overlay when the route comes from another routing package', asyn
     view.layer.set({ network: 'cycling', access: true });
     await view.layer.install('light');
     view.layer.verify('package-a');
-    expect(view.visible()).toHaveLength(5);
+    expect(view.visible()).toHaveLength(4);
     view.layer.verify('package-b');
     expect(view.visible()).toEqual([]);
     expect(view.status).toHaveBeenLastCalledWith(expect.stringContaining('other map data than the router'));
@@ -109,7 +108,7 @@ it('offers a retry when the overlay archive cannot load', async () => {
     await view.layer.install('light');
     expect(view.status).toHaveBeenLastCalledWith('Route networks and access could not load.', true);
     view.layer.retry();
-    await vi.waitFor(() => expect(view.visible()).toEqual(['network-cycling', 'network-cycling-band', 'network-cycling-labels']));
+    await vi.waitFor(() => expect(view.visible()).toEqual(['network-cycling', 'network-cycling-labels']));
     expect(view.status).toHaveBeenLastCalledWith('');
     view.layer.destroy();
 });

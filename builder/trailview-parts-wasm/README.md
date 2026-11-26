@@ -24,7 +24,8 @@ obc exec cargo clippy -p obc-trailview-parts-bridge --target wasm32-unknown-unkn
 | `built(parts)` | Whether all kinds of a tag `parts` or `ends` are built |
 
 An input is JSON: `{"square": [x0, y0, x1, y1], "ends": [{"at": [x, y], "z": z, "tags": {..}}], "chords": [{"a":
-[x, y, z], "b": [x, y, z], "tags": {..}, "code": c, "marked": m}]}`, in world units of the viewer.
+[x, y, z], "b": [x, y, z], "tags": {..}, "code": [c, ..], "marked": [m, ..]}]}`, in world units of the viewer,
+with a `code` and a `marked` per lane of a chord.
 
 ## Pitfalls
 

@@ -1,74 +1,78 @@
 <script lang="ts">
     import { tick, untrack } from 'svelte';
+    import { fade } from 'svelte/transition';
     import Icon from '../../lib/ui/Icon.svelte';
-    import DayRow from './DayRow.svelte';
-    import NightNode from './NightNode.svelte';
-    import StopPicker from './StopPicker.svelte';
-    import { orderedRoutePoints, planView, trainAfter, type Day, type ItineraryDay, type RoutePoint, type Trip } from '../../lib/planner/editor';
-    import { coordinateAt } from '../../lib/planner/geo';
+    import DayCard from './DayCard.svelte';
+    import DayLine from './DayLine.svelte';
+    import NightSeam from './NightSeam.svelte';
+    import { orderedRoutePoints, type Day, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
-    import { proposalTitle } from '../../lib/planner/stops';
-    import { trainNightText } from '../../lib/planner/search/presentation';
+    import { heightRange, profilePaths, profileSamples, sampleSlice } from '../../lib/planner/profile-data';
+    import { daysAround } from '../../lib/planner/stops';
     import type { RoutingLine } from '../../lib/planner/routing';
     import { step } from '../../lib/planner/week';
     import { formatDistance, formatHeight } from '../../lib/settings/format';
+    import { still } from '../../lib/ui/search-bar/motion';
 
     let {
-        trip, line, itinerary, days, theme, expandedDay, nightPage, nights, conflicts, selectedId, revealId, hoveredId = null, onHover,
-        onToggle, onOverview, onInspect, onShowEnd, onShowConflict,
-        onAddRest, onTransfer, onRemoveRest, onNameRest, week = null, onWeek,
+        trip, line, days, theme, expandedDay, nights, conflicts, revealId, hoveredId = null, onHover,
+        onToggle, onOverview, onInspect, onShowEnd, onShowConflict, week = null, onWeek,
     }: {
         trip: Trip;
         /** The line of the trip, once it is calculated. */
         line?: RoutingLine;
-        itinerary: ItineraryDay[];
         days: Day[];
         theme: 'light' | 'dark';
-        /** Riding number of the open day. */
+        /** Number of the open day. */
         expandedDay: number | null;
-        /** Riding number of the night whose page replaces the day list. */
-        nightPage: number | null;
         nights: NightChoices;
         conflicts: [RoutePoint, RoutePoint][];
-        selectedId: string | null;
         hoveredId?: string | null;
         onHover?: (id: string | null) => void;
-        /** The point whose row lights up for a moment. */
+        /** The point whose row lights up for a moment; `night-2` lights night 2. */
         revealId: string | null;
-        onToggle: (ridingDay: number) => void;
+        onToggle: (day: number) => void;
         onOverview: () => void;
         onInspect: (point: RoutePoint) => void;
         onShowEnd: (day: Day) => void;
         onShowConflict: (points: [RoutePoint, RoutePoint]) => void;
-        onAddRest: (afterRidingDay: number) => void;
-        /** Starts the pick of where a train or bus after this night arrives. */
-        onTransfer: (night: number) => void;
-        onRemoveRest: (index: number) => void;
-        onNameRest: (index: number, name: string) => void;
-        /** The week in focus of a long trip, by its first and last calendar day: the list shows only its days. */
+        /** The week in focus of a long trip, by its first and last day: the list shows only its days. */
         week?: { start: number; end: number } | null;
-        /** Moves the week to start at this calendar day. */
+        /** Moves the week to start at this day. */
         onWeek?: (start: number) => void;
     } = $props();
 
     let root = $state<HTMLDivElement>();
-    let page = $state<HTMLDivElement>();
-    let dayPicker = $state<HTMLSelectElement>();
-    let restEditing = $state<number | null>(null);
-    // The night whose row between it and the next day shows its buttons: under the pointer, focused or tapped.
-    let gap = $state<number | null>(null);
-    const focused = $derived(itinerary.find(day => !day.rest && day.ridingNumber === expandedDay));
-    const weekDays = $derived(week ? itinerary.slice(week.start - 1, week.end) : itinerary);
-    const visible = $derived(focused ? itinerary.filter(day => day.ridingNumber === focused.ridingNumber) : weekDays);
-    const ridingDays = $derived(itinerary.filter(day => !day.rest));
-    const scale = $derived(Math.max(0, ...days.map(day => day.hours)) || 1);
-    const total = $derived(planView(trip, line).total);
-    const calendar = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
+    let back = $state<HTMLButtonElement>();
+    let stepper = $state<HTMLDivElement>();
+    const focused = $derived(days.find(day => day.number === expandedDay));
+    const weekDays = $derived(week ? days.slice(week.start - 1, week.end) : days);
+    // The night whose seam is open between the cards of its two days; the list then shows only these.
+    const chosen = $derived(focused ? null : nights.choosing);
+    const visible = $derived(chosen !== null ? days.slice(chosen - 1, chosen + 1) : weekDays);
+    // Where the day ends in view on the seam; the two cards show the days with that end.
+    let end = $state<{ km: number; town: string } | null>(null);
+    const around = $derived(chosen !== null && end ? daysAround(trip, line, chosen, end.km) : null);
+    const shown = (day: Day) => around?.[day.number - chosen!] ?? day;
     const ends = $derived(orderedRoutePoints(trip));
-    const suggested = $derived(Object.fromEntries(days.flatMap(day => {
-        const around = day.pinned ? undefined : nights.around(day.number);
-        return around ? [[day.number, proposalTitle(around)]] : [];
-    })));
+    /** The town of each night by the number of its day: of the day end in view, of the place that the rider set, else of
+     * the suggestion. */
+    const nightTowns = $derived(days.map(day => around && day.number === chosen ? end!.town
+        : day.pinned ? day.pinned.locality ?? day.pinned.label : nights.around(day.number)?.stop.name ?? lastTown(day.number)));
+    // A night keeps the town of its last suggestion until its stops are found again, so that a title does not read
+    // "Night 1" for the moment in which the route is calculated.
+    const towns = new Map<number, string>();
+    function lastTown(night: number) {
+        const state = nights.found(night)?.state;
+        return state === 'ready' || state === 'error' ? undefined : towns.get(night);
+    }
+    $effect(() => { for (const day of days) { const town = nights.around(day.number)?.stop.name; if (town) towns.set(day.number, town); } });
+    const fromOf = (day: Day) => day.number === 1 ? ends[0]?.label ?? '' : nightTowns[day.number - 2] ?? `Night ${day.number - 1}`;
+    const toOf = (day: Day) => day.number === days.length ? (trip.loop ? ends[0] : ends.at(-1))?.label ?? '' : nightTowns[day.number - 1] ?? `Night ${day.number}`;
+    const samples = $derived(profileSamples(line));
+    const heights = $derived(heightRange(samples));
+    const profileOf = (day: Day) => samples.length
+        ? { ...profilePaths(sampleSlice(samples, day.from, day.to), heights.low, heights.high), view: `${day.from * 1000} 0 ${(day.to - day.from) * 1000} 105` } : undefined;
 
     // A number, so that a new week object with the same days does not scroll the list.
     const weekStart = $derived(week?.start);
@@ -80,24 +84,63 @@
         });
     });
 
-    // The day list keeps its scroll position under a night page; a page opened from an open day returns to the top of the
-    // list, as leaving the day does. The page and its towns open at the top. A closed page gives the focus back to the
-    // button that opens it.
-    let shownPage: number | null = null, shownDay: number | null = null, listTop = 0, scroller: Element | null = null;
-    const pane = () => scroller ??= [root, page].find(node => node?.isConnected)?.closest('.pane-scroll') ?? null;
+    // The list takes its new layout at once when a night or a stop opens or closes, and moves only by transform and
+    // opacity, which stay smooth while the map moves. The parts with `data-glide` that stay glide from where they stood
+    // to their new places; a part that leaves fades where it stood. `hold` takes the places before the change. The panel
+    // above the list changes with the night, so the page calls `hold` before any of it moves; the first call counts.
+    let stood = new Map<Element, number>();
+    const glides = new WeakMap<Element, Animation>();
+    const parts = () => [...root?.querySelectorAll<HTMLElement>('[data-glide]') ?? []];
+    export function hold() {
+        if (stood.size) return;
+        stood = new Map(parts().map(part => [part, part.getBoundingClientRect().top]));
+        // After the list has its new layout, scroll position and focus, and before it shows.
+        requestAnimationFrame(glide);
+    }
+    // A stop that opens or closes, and the stops that arrive, move the parts under them.
     $effect.pre(() => {
-        const next = nightPage, day = expandedDay, town = next !== null && nights.stopId !== null;
+        void [nights.stopId, chosen !== null && nights.found(chosen)?.state];
+        untrack(hold);
+    });
+    function glide() {
+        const from = stood, top = root?.getBoundingClientRect().top ?? 0;
+        stood = new Map();
+        if (!from.size || still()) return;
+        // A part that leaves is inert. Out of the flow, it lets the parts that stay close its gap.
+        for (const part of parts()) {
+            const was = from.get(part);
+            Object.assign(part.style, part.inert && was !== undefined ? { position: 'absolute', top: `${was - top}px`, width: `${part.offsetWidth}px` } : { position: '', top: '', width: '' });
+        }
+        for (const part of parts()) {
+            glides.get(part)?.cancel();
+            const was = from.get(part), by = part.inert || was === undefined ? 0 : was - part.getBoundingClientRect().top;
+            // A part that glides passes over the others.
+            part.style.zIndex = by ? '4' : '';
+            if (!by) continue;
+            const move = part.animate([{ transform: `translateY(${by}px)` }, { transform: 'none' }], { duration: 240, easing: 'cubic-bezier(.23, 1, .32, 1)' });
+            move.onfinish = () => part.style.zIndex = '';
+            glides.set(part, move);
+        }
+    }
+    const ms = (duration: number) => still() ? 0 : duration;
+
+    // The day list keeps its scroll position under an open night; a night opened from an open day returns to the top of
+    // the list, as leaving the day does. The night opens at the top. A closed night gives the focus back to the button
+    // that opens it.
+    let wasNight: number | null = null, wasDay: number | null = null, listTop = 0;
+    $effect.pre(() => {
+        const next = nights.choosing, day = expandedDay;
         untrack(() => {
-            const was = shownPage, fromDay = shownDay !== null;
-            shownPage = next;
-            shownDay = day;
-            if (was === next && !town) return;
-            if (was === null) listTop = fromDay ? 0 : pane()?.scrollTop ?? 0;
+            const was = wasNight, fromDay = wasDay !== null;
+            wasNight = next;
+            wasDay = day;
+            if (was === next) return;
+            const scroll = root?.closest('.pane-scroll');
+            if (was === null) listTop = fromDay ? 0 : scroll?.scrollTop ?? 0;
             tick().then(() => {
-                const scroll = pane();
                 if (next !== null) {
                     if (scroll) scroll.scrollTop = 0;
-                    if (was !== next) page?.querySelector<HTMLElement>('.overview')?.focus({ preventScroll: true });
+                    back?.focus({ preventScroll: true });
                 } else if (!focused) {
                     if (scroll) scroll.scrollTop = listTop;
                     root?.querySelector<HTMLElement>(`[data-night="${was}"]`)?.focus();
@@ -106,152 +149,76 @@
         });
     });
 
-    async function openDay(riding: number) {
-        onToggle(riding);
+    /** Opens a day. The focus goes to the arrow of the next day, or of the day before on the last day, when the control
+     * that had it is gone or disabled. */
+    async function openDay(day: number) {
+        onToggle(day);
         await tick();
-        dayPicker?.focus({ preventScroll: true });
+        const arrows = [...stepper?.querySelectorAll('button') ?? []].filter(arrow => !arrow.disabled);
+        if (!arrows.some(arrow => arrow === document.activeElement)) arrows.at(-1)?.focus({ preventScroll: true });
     }
 
     async function overview() {
-        const riding = expandedDay;
+        const day = expandedDay;
         onOverview();
         await tick();
-        root?.querySelector<HTMLElement>(`[data-day="${riding}"]`)?.focus();
+        root?.querySelector<HTMLElement>(`[data-day="${day}"]`)?.focus();
     }
 
-    function conflictOf(ridingDay: number) {
-        return conflicts.find(([, after]) => after.night === ridingDay) ?? null;
-    }
-
-    function nameRest(index: number, name: string) {
-        restEditing = null;
-        onNameRest(index, name);
+    function conflictOf(day: number) {
+        return conflicts.find(([, after]) => after.night === day) ?? null;
     }
 </script>
 
-{#if week && nightPage === null}
+{#if week && chosen === null}
     <nav class="week" aria-label="Week">
-        <button type="button" class="icon" aria-label="7 days back" disabled={week.start === 1} onclick={() => onWeek?.(step(itinerary.length, week.start, -7))}><Icon path="m15 5-7 7 7 7" size={16} /></button>
+        <button type="button" class="icon" aria-label="7 days back" disabled={week.start === 1} onclick={() => onWeek?.(step(days.length, week.start, -7))}><Icon path="m15 5-7 7 7 7" size={16} /></button>
         <strong>Days {week.start}–{week.end}</strong>
         <span>{formatDistance(weekDays.reduce((sum, day) => sum + day.distance, 0) * 1000)}{line?.unknownElevationKm === 0 ? ` · ↑ ${formatHeight(weekDays.reduce((sum, day) => sum + day.ascent, 0))}` : ''}</span>
-        <button type="button" class="icon" aria-label="7 days on" disabled={week.end === itinerary.length} onclick={() => onWeek?.(step(itinerary.length, week.start, 7))}><Icon name="chevron" size={16} /></button>
+        <button type="button" class="icon" aria-label="7 days on" disabled={week.end === days.length} onclick={() => onWeek?.(step(days.length, week.start, 7))}><Icon name="chevron" size={16} /></button>
     </nav>
 {/if}
 {#if focused}
     <nav class="day-nav" aria-label="Day navigation" style:top={week ? '36px' : undefined}>
         <button type="button" class="overview" onclick={overview}><Icon name="back" size={16} />All days</button>
-        <div class="day-picker">
-            <button type="button" class="icon" aria-label="Previous riding day" disabled={focused.ridingNumber === 1} onclick={() => onToggle(focused.ridingNumber - 1)}><Icon name="back" size={16} /></button>
-            <select bind:this={dayPicker} aria-label="Selected day" value={focused.ridingNumber} onchange={event => onToggle(Number(event.currentTarget.value))}>
-                {#each ridingDays as day}<option value={day.ridingNumber}>Day {day.number}</option>{/each}
-            </select>
-            <button type="button" class="icon" aria-label="Next riding day" disabled={focused.ridingNumber === days.length} onclick={() => onToggle(focused.ridingNumber + 1)}><Icon name="arrow" size={16} /></button>
+        <div class="stepper" bind:this={stepper}>
+            <button type="button" class="icon" aria-label="Previous riding day" disabled={focused.number === 1} onclick={() => openDay(focused.number - 1)}><Icon path="m15 5-7 7 7 7" size={16} /></button>
+            <strong>Day {focused.number} of {days.length}</strong>
+            <button type="button" class="icon" aria-label="Next riding day" disabled={focused.number === days.length} onclick={() => openDay(focused.number + 1)}><Icon name="chevron" size={16} /></button>
         </div>
     </nav>
-{/if}
-{#snippet towns(night: number, cancel = false, back?: string)}
-    {@const window = nights.window(night)}
-    {#if trainAfter(trip, night)}
-        <p class="hint">{trainNightText}</p>
-    {:else if line && window}
-        <StopPicker {trip} {line} {night} labels={[calendar[night], calendar[night + 1]]} {back} {theme} found={nights.found(night)} {window} stopId={nights.stopId} shownId={nights.shownId}
-            date={nights.date(night)} elevationAt={nights.elevationAt} onOpen={id => nights.open(id)} onEndHere={stop => nights.endHere(night, stop)}
-            onStay={place => nights.stay(night, place)} onSelectPlace={place => nights.selectPlace(place)} onPick={() => nights.pick()} onRetry={() => nights.retry(night)}
-            onCancel={cancel ? () => nights.choose(null) : undefined} kinds={nights.kinds(night)} onKinds={kinds => nights.setKinds(night, kinds)}
-            onRelease={days[night - 1].pinned || days[night - 1].split ? () => nights.release(night) : undefined} />
-    {:else}
-        <p class="hint">The towns to sleep in appear when the route is ready.</p>
-    {/if}
-{/snippet}
-
-{#snippet between(night: number)}
-    <div class="between" class:shown={gap === night}>
-        <button type="button" class="plus" aria-label={`Add after night ${calendar[night]}`} aria-expanded={gap === night} onclick={() => gap = night}><Icon name="plus" size={12} /></button>
-        <span class="add">
-            {#if !trip.restAfter?.includes(night)}
-                <button type="button" aria-label={`Rest day after night ${calendar[night]}`} onclick={() => { gap = null; onAddRest(night); }}><Icon name="pause" size={12} />Rest day</button>
-            {/if}
-            {#if !trainAfter(trip, night)}
-                <button type="button" aria-label={`Train or bus after night ${calendar[night]}`} onclick={() => { gap = null; onTransfer(night); }}><Icon name="train" size={13} />Train or bus</button>
-            {/if}
-        </span>
-    </div>
-{/snippet}
-
-{#if nightPage !== null}
-    <div class="night-page" bind:this={page}>
-        {#if nights.stopId === null}
-            <nav class="day-nav" aria-label="Night navigation">
-                <button type="button" class="overview" onclick={() => nights.choose(null)}><Icon name="back" size={16} />All days</button>
-            </nav>
-            <header>
-                <h2>Night {calendar[nightPage]}</h2>
-                <p>Where day {calendar[nightPage]} ends and day {calendar[nightPage + 1]} starts</p>
-            </header>
-        {/if}
-        <div class="towns">{@render towns(nightPage, false, `Night ${calendar[nightPage]}`)}</div>
-    </div>
-{:else}
-{#if !focused && nights.campsites}
+{:else if chosen !== null}
+    <nav class="day-nav" aria-label="Night navigation">
+        <button type="button" class="overview" bind:this={back} onclick={() => nights.choose(null)}><Icon name="back" size={16} />All days</button>
+    </nav>
+{:else if nights.campsites}
     <div class="keep">
         <p id="keep-campsites"><strong>{nights.campsites} {nights.campsites === 1 ? 'campsite' : 'campsites'} suggested</strong></p>
         <button type="button" class="keep-all" aria-describedby="keep-campsites" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
     </div>
 {/if}
-<div class="itinerary" class:ladder={!focused} class:from-start={!week || week.start === 1} class:to-finish={!week || week.end === itinerary.length} bind:this={root}>
-    {#if !focused && (!week || week.start === 1)}
-        <div class="endpoint"><span class="end-mark" aria-hidden="true"><Icon path="M8 5v14l11-7z" size={11} /></span><div><strong>{ends[0]?.label}</strong><small>Start</small></div></div>
-    {/if}
-    {#key expandedDay}
-    {#each visible as day (`${day.number}-${day.rest}`)}
-        {#if day.rest}
-            <div class="rest">
-                <span class="badge"><Icon name="pause" size={14} /></span>
-                <div class="rest-text">
-                    {#if restEditing === day.restIndex}
-                        <!-- svelte-ignore a11y_autofocus -->
-                        <input aria-label={`Name rest day ${day.number}`} value={trip.restNames?.[day.restIndex!] ?? ''} placeholder="Rest day name" autofocus
-                            onblur={(event) => nameRest(day.restIndex!, event.currentTarget.value)}
-                            onkeydown={(event) => {
-                                if (event.key === 'Enter') event.currentTarget.blur();
-                                if (event.key === 'Escape') restEditing = null;
-                            }} />
-                    {:else}
-                        <button type="button" class="rest-name" aria-label={`Name rest day ${day.number}`} onclick={() => restEditing = day.restIndex!}>
-                            <strong>Day {day.number} · {trip.restNames?.[day.restIndex!] || 'Rest'}</strong><Icon name="pencil" size={13} />
-                        </button>
-                    {/if}
-                    <small>{day.pinned?.label ?? `Night ${calendar[day.ridingNumber]} not chosen`}</small>
-                </div>
-                <button type="button" class="icon" aria-label={`Remove rest day ${day.number}`} onclick={() => onRemoveRest(day.restIndex!)}><Icon name="close" size={15} /></button>
+<div class="itinerary" bind:this={root}>
+    {#if focused}
+        {@const conflict = conflictOf(focused.number)}
+        <DayCard {trip} day={focused} from={fromOf(focused)} to={toOf(focused)} {theme} ascentKnown={line?.unknownElevationKm === 0} {nights}
+            conflict={conflict ? conflict[0].night! : null} profile={profileOf(focused)} onShowConflict={() => conflict && onShowConflict(conflict)} />
+        <DayLine {trip} {line} day={focused} {days} from={fromOf(focused)} {theme} {nights} {revealId} {hoveredId} {onHover} {onInspect} onShowEnd={() => onShowEnd(focused)} />
+    {:else}
+        {#each visible as day (day.number)}
+            {@const conflict = conflictOf(day.number)}
+            <div class="slot" data-glide in:fade={{ duration: ms(160) }} out:fade={{ duration: ms(120) }}>
+                <DayCard {trip} day={shown(day)} from={fromOf(day)} to={toOf(day)} foot={chosen === null && day.number !== days.length} flash={revealId === `night-${day.number}`}
+                    {theme} ascentKnown={line?.unknownElevationKm === 0} {nights} conflict={conflict ? conflict[0].night! : null} profile={profileOf(shown(day))}
+                    onOpen={() => openDay(day.number)} onShowEnd={() => onShowEnd(day)} onShowConflict={() => conflict && onShowConflict(conflict)} />
             </div>
-        {:else}
-            {@const conflict = conflictOf(day.ridingNumber)}
-            {#if !focused && day.number > (week?.start ?? 1)}{@render between(day.ridingNumber - 1)}{/if}
-            <DayRow
-                {trip} {line} {day} {days} {theme} {scale} {selectedId} {revealId} {hoveredId} {onHover} {calendar} {suggested}
-                expanded={expandedDay === day.ridingNumber}
-                choosing={expandedDay === day.ridingNumber && nights.choosing === day.ridingNumber}
-                conflict={conflict ? calendar[conflict[0].night!] : null}
-                onToggle={() => openDay(day.ridingNumber)}
-                {onInspect} onChange={() => nights.choose(day.ridingNumber)}
-                onShowEnd={() => onShowEnd(days[day.ridingNumber - 1])}
-                onShowConflict={() => conflict && onShowConflict(conflict)}
-            >{#snippet picker()}{@render towns(day.ridingNumber, !!days[day.ridingNumber - 1].pinned)}{/snippet}</DayRow>
-            {#if !focused && day.ridingNumber < days.length}
-                {@const end = days[day.ridingNumber - 1].to}
-                <NightNode day={days[day.ridingNumber - 1]} label={calendar[day.ridingNumber]} {nights} end={line ? coordinateAt(line.coordinates, end) : undefined}
-                    elevation={nights.elevationAt(end * total)} onShow={() => onShowEnd(days[day.ridingNumber - 1])}
-                    onActive={active => gap = active ? day.ridingNumber : gap === day.ridingNumber ? null : gap} />
+            {#if day.number === chosen}
+                <div class="seam" data-glide in:fade={{ duration: ms(180) }} out:fade={{ duration: ms(120) }}>
+                    <NightSeam {trip} {line} {day} {theme} {nights} {hoveredId} {onHover} onEnd={value => end = value} />
+                </div>
             {/if}
-        {/if}
-    {/each}
-    {/key}
-    {#if !focused && (!week || week.end === itinerary.length)}
-        <div class="endpoint"><span class="end-mark" aria-hidden="true"><Icon name="flag" size={12} /></span><div><strong>{trip.loop ? ends[0]?.label : ends.at(-1)?.label}</strong><small>Finish</small></div></div>
+        {/each}
     {/if}
 </div>
-{/if}
 
 <style>
     .day-nav {
@@ -279,148 +246,35 @@
         background: var(--panel);
         font-size: 13px;
     }
-    .week strong { font: 600 14px var(--sans); }
+    .week strong, .stepper strong { font: 600 14px var(--sans); }
     .week span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-soft); }
     .week .icon { width: 28px; height: 28px; border: 1px solid var(--line-strong); }
-    .week .icon:disabled { opacity: .4; cursor: default; }
-    .overview, .day-picker { display: flex; align-items: center; gap: 8px; }
+    .overview, .stepper { display: flex; align-items: center; gap: 8px; }
     .overview { min-height: 36px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--ink); font-size: 13px; font-weight: 600; }
     .overview:hover { background: var(--parchment-2); }
-    .day-picker { gap: 2px; }
-    select { height: 34px; padding: 0 4px; border: 0; border-radius: 6px; color: var(--ink); background: var(--panel); font: 600 14px var(--sans); }
-    .hint { margin: 4px 8px 8px; font-size: 13px; color: var(--ink-soft); }
-    .night-page header { padding: 12px 16px 8px; }
-    .night-page h2 { margin: 0; font: 600 17px/1.3 var(--sans); }
-    .night-page header p { margin: 2px 0 0; font-size: 13px; color: var(--ink-soft); }
-    .towns { padding: 4px 16px 16px; }
-    .keep { display: flex; align-items: center; gap: 12px; margin: 4px 8px 8px; padding: 10px 12px; border-radius: 8px; background: var(--parchment-2); }
+    .stepper { gap: 2px; }
+    .keep { display: flex; align-items: center; gap: 12px; margin: 4px 12px 8px; padding: 10px 12px; border-radius: 8px; background: var(--parchment-2); }
     .keep p { flex: 1; min-width: 0; margin: 0; }
     .keep strong { font: 600 14px/1.3 var(--sans); }
     .keep-all { flex: none; min-height: 32px; padding: 0 14px; border: 0; border-radius: 6px; background: var(--amber); color: var(--on-amber); font: inherit; font-weight: 600; cursor: pointer; }
     .keep-all:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
     .itinerary {
+        position: relative;
         display: flex;
         flex-direction: column;
-        gap: 4px;
-        padding: 4px 8px 16px;
+        gap: 8px;
+        padding: 4px 12px 16px;
     }
-    /* One rail joins start, days, nights and finish, through the centre of their marks. Without the start or the finish
-     * row, it runs from the edge of the first or the last row shown. */
-    .ladder {
-        position: relative;
-        gap: 0;
-    }
-    .ladder::before {
-        content: "";
-        position: absolute;
-        top: 4px;
-        bottom: 16px;
-        left: 27px;
-        width: 2px;
-        border-radius: 1px;
-        background: var(--line);
-    }
-    .ladder.from-start::before { top: 26px; }
-    .ladder.to-finish::before { bottom: 38px; }
-    .ladder :global(.day:not(.expanded)) {
-        border-bottom: 0;
-    }
-    .ladder :global(.badge),
-    .ladder :global(.night) {
-        position: relative;
-        z-index: 1;
-    }
-    .ladder > :global(.night),
-    .endpoint {
-        padding-left: 8px;
-    }
-    .endpoint {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        min-height: 44px;
-    }
-    .end-mark {
-        position: relative;
-        z-index: 1;
-        width: 24px;
-        height: 24px;
-        flex: none;
-        display: grid;
-        place-items: center;
-        border-radius: 50%;
-        background: var(--ink);
-        color: var(--panel);
-    }
-    .endpoint strong,
-    .endpoint small {
-        display: block;
-    }
-    .endpoint strong {
-        font: 600 14px/1.3 var(--sans);
-        overflow-wrap: anywhere;
-    }
-    .endpoint small {
-        margin-top: 2px;
-        font-size: 13px;
-        color: var(--ink-soft);
-    }
+    /* A card glides over a card that leaves and over the seam. */
+    .slot { position: relative; z-index: 1; }
+    .slot:global([inert]) { z-index: 0; }
     button {
         border: 0;
         background: none;
         color: inherit;
         font: inherit;
         cursor: pointer;
-    }
-    .rest {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 8px;
-        color: var(--ink);
-    }
-    .badge {
-        width: 24px;
-        height: 24px;
-        flex: none;
-        display: grid;
-        place-items: center;
-        border: 1.5px dashed var(--line-strong);
-        border-radius: 50%;
-        color: var(--ink-soft);
-    }
-    .rest-text {
-        flex: 1;
-        min-width: 0;
-    }
-    .rest-name {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        text-align: left;
-    }
-    .rest-name strong {
-        font: 600 14px var(--sans);
-    }
-    .rest-name :global(svg) {
-        color: var(--ink-faint);
-    }
-    .rest small {
-        display: block;
-        margin-top: 2px;
-        font-size: 13px;
-        color: var(--ink-soft);
-    }
-    .rest input {
-        width: 100%;
-        height: 30px;
-        padding: 0 8px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        background: var(--panel);
-        color: var(--ink);
-        font-size: 14px;
     }
     .icon {
         display: grid;
@@ -430,64 +284,9 @@
         border-radius: 6px;
         color: var(--ink-soft);
     }
-    .icon:hover {
+    .icon:hover:not(:disabled) {
         background: var(--parchment-2);
         color: var(--ink);
     }
-    .between {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        min-height: 30px;
-        /* Centres the plus on the rail: 8 px list padding + 10 px + half its 20 px width = 28 px. */
-        padding-left: 10px;
-    }
-    .plus {
-        position: relative;
-        z-index: 1;
-        width: 20px;
-        height: 20px;
-        flex: none;
-        display: grid;
-        place-items: center;
-        box-sizing: border-box;
-        padding: 0;
-        border: 1.5px solid var(--ink-faint);
-        border-radius: 50%;
-        background: var(--panel);
-        color: var(--ink);
-    }
-    .plus:hover {
-        background: var(--ink);
-        color: var(--panel);
-    }
-    .add {
-        display: flex;
-        gap: 6px;
-        visibility: hidden;
-    }
-    .between:hover .add,
-    .between:focus-within .add,
-    .between.shown .add {
-        visibility: visible;
-    }
-    .add button {
-        display: flex;
-        align-items: center;
-        gap: 5px;
-        height: 26px;
-        padding: 0 9px;
-        border-radius: 6px;
-        background: var(--parchment-2);
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--ink);
-    }
-    .add button:hover {
-        background: var(--parchment-3);
-    }
-    .between button:focus-visible {
-        outline: 2px solid var(--ink);
-        outline-offset: 2px;
-    }
+    .icon:disabled { opacity: .4; cursor: default; }
 </style>

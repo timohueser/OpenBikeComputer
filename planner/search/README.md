@@ -18,7 +18,7 @@ OBC_SEARCH_DATA=RELEASE/search npm run dev --prefix planner/search
 
 Use the search directory of a planner release. Setup verifies the query model hash. Pass
 `--data-dir DIRECTORY` to store it elsewhere. The Python and Node `major.minor` versions are in
-`data/planner-runtime.toml`; the [runtime contract](../../specs/obc-data.md#service-runtimes)
+`data/planner-runtime.toml`; the [runtime contract](../../specs/obc-data-products.md#service-runtimes)
 defines them.
 
 ## Build
@@ -79,8 +79,8 @@ The server and the [native provider](../../companion-ios/PlannerSearch/README.md
 routing service. Search does not call routing.
 
 - Supply riding time only when every leg is routed. Stretch queries need routed segments. Without
-  cumulative distances, search measures the line. Split and join require unpinned nights and no
-  rest days; they preserve the line.
+  cumulative distances, search measures the line. Split and join require unpinned nights; they
+  preserve the line.
 - Opening filters use mapped `opening_hours`, each place's country holidays and the region time
   zone. Unknown hours are excluded and counted. Trip-day filters need a start date. Weekday filters
   need no date; date-dependent rules remain unknown. No filter predicts arrival time.

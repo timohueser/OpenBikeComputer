@@ -9,8 +9,8 @@ const byId = <T>(files: Record<string, unknown>) =>
 
 export const TREES = byId<Tree>(import.meta.glob('./trees/*.ts', { eager: true, import: 'default' }));
 
-/** A tree model, 1 tall. */
-export const tree = (id: string, season: Season, lod: Lod, seed = 1) => grow(TREES[id], season, lod, seed);
+/** A tree model, 1 tall; without `heads` as `grow` grows it. */
+export const tree = (id: string, season: Season, lod: Lod, seed = 1, heads = true) => grow(TREES[id], season, lod, seed, heads);
 
 /** Whether a tree model stands bare in a season. */
 export const bareIn = (id: string, season: Season) => {

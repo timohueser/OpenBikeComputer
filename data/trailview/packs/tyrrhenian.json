@@ -27,7 +27,7 @@
   "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1300, 1900], "weight": 2 },
   "tree-spurge": { "model": "tabaiba", "latin": "Euphorbia dendroides", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
   "spanish-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 1 },
-  "oleander": { "model": "laurel", "latin": "Nerium oleander", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 0.5 }
+  "oleander": { "latin": "Nerium oleander", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 0.5 }
  },
  "ground": {
   "garrigue": {},
@@ -35,8 +35,8 @@
   "diss-grass": { "model": "esparto", "latin": "Ampelodesmos mauritanicus", "on": ["grass", "shrub", "bare"], "height": [1.0, 2.0], "share": 0.1, "clumped": true },
   "fan-palm": {},
   "branched-asphodel": { "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true },
-  "prickly-pear": { "model": "cardon", "latin": "Opuntia ficus-indica", "on": ["shrub", "bare"], "height": [1, 2.5], "share": 0.02, "clumped": true },
-  "century-plant": { "model": "tajinaste", "latin": "Agave americana", "on": ["shrub", "bare"], "height": [1.5, 5], "share": 0.01 }
+  "prickly-pear": { "latin": "Opuntia ficus-indica", "on": ["shrub", "bare"], "height": [1, 2.5], "share": 0.02, "clumped": true },
+  "century-plant": { "model": "agave", "latin": "Agave americana", "on": ["shrub", "bare"], "share": 0.01 }
  },
  "herds": {
   "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },

@@ -1,6 +1,6 @@
 /**
- * The `UPDATE.BIN` reader, pinned to `specs/vectors/update-container-v2.bin` (the signed container
- * the device actually installs) and to `update-container-v1.bin` for the unsigned-reject case.
+ * The `UPDATE.BIN` reader, pinned to `specs/vectors/update-container.bin` (the signed container
+ * the device actually installs).
  *
  * Those fixtures are the same ones the Rust and iOS suites read, so this is the fourth
  * implementation held to one set of bytes rather than a fixture captured from this code. The
@@ -25,14 +25,9 @@ function repoRoot(): string {
     throw new Error("could not locate the repo root from " + import.meta.url);
 }
 
-/** The signed (v2) container — what a release publishes and what this reader must accept. */
+/** The signed container — what a release publishes and what this reader must accept. */
 const CONTAINER = new Uint8Array(
-    readFileSync(join(repoRoot(), "specs/vectors", "update-container-v2.bin")),
-);
-
-/** The unsigned container — a shape the device refuses, so this reader must too. */
-const CONTAINER_V1 = new Uint8Array(
-    readFileSync(join(repoRoot(), "specs/vectors", "update-container-v1.bin")),
+    readFileSync(join(repoRoot(), "specs/vectors", "update-container.bin")),
 );
 
 /** A copy with one byte changed — every rejection case is a one-byte edit of a valid file. */
@@ -98,7 +93,11 @@ describe("readUpdateImage", () => {
     it("refuses an unsigned container before spending the transfer on it", () => {
             // The device installs signed containers only. Learning that here costs a second;
             // learning it after the upload costs a minute of cable time.
-        const e = rejection(CONTAINER_V1);
+        const unsigned = resealed((h) => {
+            h.setUint16(48, 0, true);
+            h.setUint16(50, 0, true);
+        }).subarray(0, OBCU_HEADER_LEN + 128);
+        const e = rejection(unsigned);
         expect(e.code).toBe("unsigned");
         expect(e.message).toContain("not signed");
     });
