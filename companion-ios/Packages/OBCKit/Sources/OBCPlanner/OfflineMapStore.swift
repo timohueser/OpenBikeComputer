@@ -101,6 +101,10 @@ public actor OfflineMapStore {
     public func prepare(bounds: [Double], name: String,
                         status: @escaping @Sendable (Double, String) -> Void) async throws -> OfflineDownloadQuote {
         guard OfflineMap.valid(bounds) else { throw PlannerFailure.invalidData }
+        guard !installing else { throw OfflineMapFailure.unavailable("Another map is downloading.") }
+        // No list keeps the routing files of a quote: they stay in `objects/` until the next prepare,
+        // install, removal or discard.
+        try collectObjects()
         let entry = try await service()
         var request = URLRequest(url: entry.appending(path: "jobs"))
         request.httpMethod = "POST"
