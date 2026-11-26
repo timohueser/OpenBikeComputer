@@ -204,7 +204,7 @@ fn row_of(y: f64) -> i64 {
 /// and, at the first ring that asks, the chords of the ground ways but water and paths with the widest paved half-width
 /// of them.
 struct Context<'a> {
-    buildings: (Grid, Vec<([f64; 4], [f64; 4])>),
+    buildings: (Grid, Vec<[[f64; 4]; 2]>),
     rails: (Grid, Vec<[[f64; 2]; 2]>),
     water: Vec<Water>,
     ways: OnceCell<(Grid, Vec<Chord>, f64)>,
@@ -238,14 +238,14 @@ impl<'a> Context<'a> {
                     }
                 }
                 if f.kind == "building" && f.geometry == Geometry::Area && part.outer {
-                    boxes.push((bbox(&pts), square(part.tile)));
+                    boxes.push([bbox(&pts), square(part.tile)]);
                 }
                 if f.kind == "guard-rail" && f.geometry == Geometry::Line {
                     segments.extend(pts.windows(2).map(|w| [w[0], w[1]]));
                 }
             }
         }
-        let buildings = (Grid::of(4.0 * BUCKET, &boxes.iter().map(|b| b.0).collect::<Vec<_>>()), boxes);
+        let buildings = (Grid::of(4.0 * BUCKET, &boxes.iter().map(|b| b[0]).collect::<Vec<_>>()), boxes);
         let rails = (Grid::of(BUCKET, &segments.iter().map(|s| bbox(s)).collect::<Vec<_>>()), segments);
         Context { buildings, rails, water, ways: OnceCell::new(), g, half, input }
     }
@@ -291,7 +291,7 @@ impl<'a> Context<'a> {
         let (r, (grid, boxes)) = (TOWN_M / mpu, &self.buildings);
         let (mut found, mut n) = ([u32::MAX; TOWN_BUILDINGS], 0);
         grid.any(q, r, |k| {
-            let ([x0, y0, x1, y1], [s0, t0, s1, t1]) = boxes[k as usize];
+            let [[x0, y0, x1, y1], [s0, t0, s1, t1]] = boxes[k as usize];
             let d = libm::hypot((x0 - q[0]).max(q[0] - x1).max(0.0), (y0 - q[1]).max(q[1] - y1).max(0.0));
             let owned = (s0..s1).contains(&q[0]) && (t0..t1).contains(&q[1]);
             if d <= r && owned && !found.contains(&k) {
