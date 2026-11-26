@@ -12,8 +12,8 @@
 //! the graph's chord), on any ground rail way that it runs on into through joints and junctions, its metres carried
 //! over each node. That is one value per stroke metre, from the graph alone in global frame units, so all the track's
 //! lines take it and every cell gives it alike. A sleeper stands at each `SLEEPER_M` of stroke metres on the spans of
-//! both rails, or of one where the other seat lies past the cell: then that seat lies the gauge across at the same
-//! height. It sinks with them. A later track (`way_key`, the least of the track's ways about a point)
+//! both rails, or of one (its other seat past the cell or its rail stopped): then the other seat lies the gauge across
+//! at the same height. It sinks with them. A later track (`way_key`, the least of the track's ways about a point)
 //! stands `STACK_M` lower inside an earlier one's sleeper band. A flight's span splits into treads by its rise, each a box
 //! from under the face to its higher end's graph height, where its rings lie on its own carriageway; or on a fraying
 //! look, its logs lie where the curve crosses a height step. Every rule reads only the graph and the cell's block, and
@@ -526,14 +526,20 @@ impl Cx<'_> {
         let [x, y] = self.origin;
         let meets = |b: &[f64; 4]| b[2] >= x - r && b[0] <= x + c + r && b[3] >= y - r && b[1] <= y + c + r;
         let zones: Vec<(f64, f64)> = self.zones(w, meets).into_iter().map(|z| (z.0, z.1)).collect();
-        // The way's points and a point where the ramp bends, at each zone's ends and a ramp past them: so a line
-        // takes the ramp exactly and a ring on the crossing face. Each by its span, in the order the points read. A
-        // bend within a centimetre past another bend or of a way's point gives way, which no reading order changes.
+        // The way's points and a point where the ramp bends: at each zone's ends, a ramp past them, and midway
+        // between two zones nearer than two ramps; so a line takes the ramp exactly and a ring on the crossing face.
+        // Each by its span, in the order the points read. A bend within a centimetre past another bend or of a way's
+        // point gives way, which no reading order changes.
         let mut at: Vec<(At, u32)> =
             pts.iter().map(|p| (At { p: p.pos, t: p.t, along: p.along, z: p.z }, p.span)).collect();
         let ahead = pts.len() > 1 && pts[1].along > pts[0].along;
         let turn = if ahead != self.g.parts[self.g.ways[w as usize].part as usize].backward { 1.0 } else { -1.0 };
-        let bends: Vec<f64> = zones.iter().flat_map(|&(lo, hi)| [lo - RAMP_M, lo, hi, hi + RAMP_M]).collect();
+        let mut bends: Vec<f64> = zones.iter().flat_map(|&(lo, hi)| [lo - RAMP_M, lo, hi, hi + RAMP_M]).collect();
+        for (a, b) in zones.iter().flat_map(|a| zones.iter().map(move |b| (a, b))) {
+            if b.0 > a.1 && b.0 - a.1 < 2.0 * RAMP_M {
+                bends.push((a.1 + b.0) / 2.0);
+            }
+        }
         let near = |a: f64, b: f64| (a - b).abs() < 0.01;
         for &m in &bends {
             if bends.iter().any(|&b| b < m && near(b, m)) || pts.iter().any(|p| near(p.along, m)) {
@@ -567,16 +573,14 @@ impl Cx<'_> {
         for (m, q) in marks(self.g, w, SLEEPER_M).into_iter().filter(|x| in_cell(x.1)) {
             let words = match rails.each_ref().map(|r| seat(r, m)) {
                 [Some(a), Some(b)] => Some([a | SLEEPER << 28, b | flags << 28]),
-                // A seat alone where its rail's mirror in the middle lies past the cell: that seat lies the gauge
-                // across its span, to its left or right.
+                // A seat alone (the other past the cell, or its rail stopped under a platform): the other lies the
+                // gauge across its span, to its left or right, at its height.
                 [Some(a), None] | [None, Some(a)] => {
                     let r = &self.out.rings[(a & 0xffff) as usize..];
                     let [p, v] = [r[0].p, r[1].p].map(|x| x.map(f64::from));
                     let near = lerp(p, v, f64::from(a >> 16) / 4095.0);
-                    let far = sub(add(q, q, 1.0), near);
-                    let to_left = dot(sub(far, near), left(sub(v, p))) > 0.0;
-                    let side = if to_left { LEFT } else { 0 };
-                    (!on_square(far)).then_some([a | SLEEPER << 28, (AXIS | side | flags) << 28])
+                    let side = if dot(sub(q, near), left(sub(v, p))) > 0.0 { LEFT } else { 0 };
+                    Some([a | SLEEPER << 28, (AXIS | side | flags) << 28])
                 }
                 _ => None,
             };
