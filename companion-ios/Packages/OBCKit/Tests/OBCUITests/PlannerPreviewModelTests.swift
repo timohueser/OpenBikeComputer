@@ -129,6 +129,16 @@ struct PlannerPreviewModelTests {
         #expect(model.routePoints.map(\.coordinate) == model.geometry)
     }
 
+    @Test func aVisitInsideTheRouteMayTurnBackButAShapingPointAndTheEndsMayNot() async {
+        let source = PlannerTestSource()
+        let model = PlannerPreviewModel(sample: true, service: source)
+        model.addPoint(PlannerPreviewModel.sampleMapPlaces[2])
+        model.addPoint(PlannerPreviewModel.sampleMapPlaces[3], kind: .shape)
+        await model.calculateRoute()
+        #expect(model.points.map(\.kind) == [.visit, .visit, .shape, .visit])
+        #expect(await source.turnarounds == [[1]])
+    }
+
     @Test func overnightMovesWithItsPointAndEndpointMovesClearItAtomically() async throws {
         let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
         model.addPoint(PlannerPreviewModel.sampleMapPlaces[2])
