@@ -18,7 +18,7 @@
 //! look, its logs lie where the curve crosses a height step. Every rule reads only the graph and the cell's block, and
 //! each cut is reckoned from the lesser end of its segment, so two cells give a part on their line alike.
 
-use super::edges::{add, bbox, dist, dot, sub, to_segment, way_key, way_points, Grid, Point};
+use super::edges::{add, bbox, dist, dot, sub, to_segment, way_key, way_points, Grid};
 use crate::faces::records::{self, find, LINE};
 use crate::faces::{Rules, Surface};
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -492,13 +492,32 @@ impl Cx<'_> {
         let mut pts = Vec::new();
         way_points(self.g, w, 1, RING_M, &mut pts);
         let zones = self.zones(w);
+        // The way's points and a point where the ramp bends, at each zone's ends and a ramp past them: so a line
+        // takes the ramp exactly and a ring on the crossing face. Each by its span, in the order the points read. A
+        // bend within a centimetre past another bend or of a way's point gives way, which no reading order changes.
+        let mut at: Vec<(At, u32)> =
+            pts.iter().map(|p| (At { p: p.pos, t: p.t, along: p.along, z: p.z }, p.span)).collect();
+        let ahead = pts.len() > 1 && pts[1].along > pts[0].along;
+        let turn = if ahead != self.g.parts[self.g.ways[w as usize].part as usize].backward { 1.0 } else { -1.0 };
+        let bends: Vec<f64> = zones.iter().flat_map(|&(lo, hi)| [lo - RAMP_M, lo, hi, hi + RAMP_M]).collect();
+        let near = |a: f64, b: f64| (a - b).abs() < 0.01;
+        for &m in &bends {
+            if bends.iter().any(|&b| b < m && near(b, m)) || pts.iter().any(|p| near(p.along, m)) {
+                continue;
+            }
+            if let Some((k, s)) = span_at(self.g, w, m) {
+                let a = curve_at(self.g, w, k, s);
+                let i = at.partition_point(|x| (x.0.along < m) == ahead);
+                at.insert(i, (At { t: a.t.map(|v| v * turn), ..a }, k));
+            }
+        }
         let g = GAUGE_M[usize::from(narrow)];
         let n = u32::from(narrow) << 1;
         let mut rails = [Vec::new(), Vec::new()];
         let mut middle = Vec::new();
         // Each run of points with no jump of the graph between them.
-        for run in pts.chunk_by(|a, b| a.span.abs_diff(b.span) <= 1) {
-            let line = |off: f64, cx: &Cx| -> Vec<At> { run.iter().map(|p| cx.offset_point(p, off)).collect() };
+        for run in at.chunk_by(|a, b| a.1.abs_diff(b.1) <= 1) {
+            let line = |off: f64, cx: &Cx| -> Vec<At> { run.iter().map(|p| cx.offset_point(&p.0, off)).collect() };
             let (l, r, m) = (line(g, self), line(-g, self), line(0.0, self));
             rails[0].extend(self.line(&l, RAIL, n | 1, code, key, &zones));
             rails[1].extend(self.line(&r, RAIL, n, code, key, &zones));
@@ -542,10 +561,9 @@ impl Cx<'_> {
 
     /// A point of a way offset `off_m` to its left: the way's point and the offset each rounded, so two cells give it
     /// alike (a post point between samples is the curve's, not a whole unit).
-    fn offset_point(&self, p: &Point, off_m: f64) -> At {
-        let (n, k) = (left(p.t), off_m / self.mpu(p.pos));
-        let q = [0, 1].map(|i| libm::round(p.pos[i]) + libm::round(n[i] * k));
-        At { p: q, t: p.t, along: p.along, z: p.z }
+    fn offset_point(&self, p: &At, off_m: f64) -> At {
+        let (n, k) = (left(p.t), off_m / self.mpu(p.p));
+        At { p: [0, 1].map(|i| libm::round(p.p[i]) + libm::round(n[i] * k)), ..*p }
     }
 
     /// A flight's treads per span of the graph (`RISE_M`): a box between two rings on its middle line whose offsets
@@ -659,6 +677,14 @@ fn curve_at(g: &WayGraph, w: u32, k: u32, s: f64) -> At {
         along: span.along0_m + sign * s,
         z: p.z_m,
     }
+}
+
+/// The span of way w and its metres there at stroke metres m, where the graph holds it.
+fn span_at(g: &WayGraph, w: u32, m: f64) -> Option<(u32, f64)> {
+    let part = &g.parts[g.ways[w as usize].part as usize];
+    let sign = if part.backward { -1.0 } else { 1.0 };
+    let at = |k: u32| (m - part.spans[k as usize].along0_m) * sign;
+    spans_of(g, w).into_iter().find(|&(k, s0, s1)| (s0..=s1).contains(&at(k))).map(|(k, ..)| (k, at(k)))
 }
 
 /// The stroke metres of an arm's way at its node.
@@ -937,8 +963,8 @@ mod tests {
         assert!(spans.iter().any(|&r| surface(d.rings[r].p.map(f64::from)) == crossing), "the rails run through");
         assert!(spans.iter().any(|&r| (head(r) - FLUSH_M).abs() < 1e-9), "flush in the road");
         for &r in &spans {
-            let (dx, dh) = ((x(r + 1) - x(r)).abs(), (head(r + 1) - head(r)).abs());
-            assert!(dh <= (top - FLUSH_M) / RAMP_M * dx + 1e-6, "a head steps {dh} m over {dx} m at x {}", x(r));
+            let (dm, dh) = ((d.rings[r + 1].along - d.rings[r].along).abs(), (head(r + 1) - head(r)).abs());
+            assert!(dh <= (top - FLUSH_M) / RAMP_M * dm + 1e-9, "a head steps {dh} m over {dm} m at x {}", x(r));
             if x(r).abs() > 15.0 {
                 assert!((head(r) - top).abs() < 1e-9, "standing at x {}", x(r));
             }
