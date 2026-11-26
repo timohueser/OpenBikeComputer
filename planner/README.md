@@ -62,8 +62,9 @@ request, and never run two publications or deployments at the same time.
 - Wrangler reads the checkout, not a commit, so `deploy tiles` refuses uncommitted changes in
   `planner/tiles`. `deploy services` refuses them in `tools/vps`, `data/planner-runtime.toml`
   and `.python-version`.
-- Never deploy the Worker with a raw `wrangler deploy` or a dashboard paste: that loses the
-  rate-limit binding, and a `workers.dev` route bypasses the firewall rules of the zone.
+- Only `obc data deploy tiles` applies `wrangler.toml`. A Worker pasted in the dashboard has no
+  rate-limit binding and applies no limit, and a `workers.dev` route bypasses the firewall
+  rules of the zone.
 - `planner-service` and `obc-data` build in two separate cargo calls on the VPS. One call would
   unify their features.
 - The work folder of `router-build` must be on a disk, not tmpfs. A killed bake leaves

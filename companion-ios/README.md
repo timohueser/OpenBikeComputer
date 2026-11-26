@@ -112,7 +112,8 @@ On a device, accept the Local Network alert (Settings › Privacy & Security ›
   greps the Release binary for the marker `OBCMock:DEBUG-only`.
 - `PlannerDataSource` supplies one release for maps, search, routes and viewport layers, and
   `obcPlannerSource` passes it to the map views. `OfflinePlanner` connects installed releases
-  to native routing, search and map files. Offline maps are in Settings.
+  to native routing, search and map files. Offline maps are in Settings, with a shortcut in
+  the map menu of the planner.
 - OBCKit declares macOS only so that host tooling can compile and test it. The app is
   iPhone-only.
 - Personal signing stays out of git, so a fresh clone builds for the simulator with no setup.

@@ -49,8 +49,8 @@ are searched when needed. So:
 
 - Do not create a notes, evidence, scratch or plans file. GitHub issues are the plan, and git
   history is the archive.
-- A comment, a spec and a guide page hold no date, no issue number and no measurement of a past
-  build. A page may link the pull request that made a decision.
+- A comment, a guard, a spec, a guide page and a README hold no date, no issue number and no
+  measurement of a past build. A page may link the pull request that made a decision.
 - A rule is a check, or it is one sentence in a page. A number in a gate says where it came
   from: measured on a named build, or chosen by the owner for a stated reason.
 - `obc paths` holds the pages to the tree: the line caps, and each path, task and link that a

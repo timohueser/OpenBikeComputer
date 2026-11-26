@@ -33,6 +33,8 @@ obc test -p obc-sim          # any crate of the area
 obc test fixtures -p obc-sim # the tests that read fixture packages
 obc uart TRACK.gpx           # the feeder; obc debug builds and flashes debug-uart first
 bash tools/ci/test.sh bench-golden   # the bench gate
+obc exec cargo run -p obc-bench --release -- --repeat 9    # a stable timing sample
+obc exec cargo run -p obc-bench --release -- --corridor    # the route-corridor cases alone
 ```
 
 `obc sim` syncs the fixtures of its scenario on first use (see
@@ -62,8 +64,10 @@ with `obc ios-host`; see [`companion-ios/README.md`](../companion-ios/README.md)
 - A named `obc sim` scenario supplies its own track and rejects a second one.
 - A headless `--png` run must not write the developer's settings file, and never opens audio.
 - `obc test -p obc-bench` runs the unit tests only. The golden gate is the `bench-golden`
-  section. After an intended change of pixels or read counts, regenerate with
-  `cargo run -p obc-bench --release -- --write-golden sim/bench/golden.txt` in the same change.
+  section. A pure refactor leaves `sim/bench/golden.txt` untouched. After an intended change
+  of rendering or of a cache, regenerate it with
+  `cargo run -p obc-bench --release -- --write-golden sim/bench/golden.txt` in the same pull
+  request, and state the reason.
 - The feeder talks to the J-Link serial port of the development kit, not to the device's USB.
   The firmware must have the `debug-uart` feature, which replaces the real sensors.
 - The feeder sends a place search to Nominatim only on a press of Search, never for

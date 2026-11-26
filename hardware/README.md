@@ -59,7 +59,7 @@ or DRC: run them by hand from the main board README.
 
 The site publishes the report, the CSV files and the schematic PDFs from `develop`. A change
 under `hardware/` starts the site build, which installs KiCad and sets `OBC_BUILD_HARDWARE=1`.
-See [docs/README.md](../docs/README.md#check-and-preview) for the preview.
+See [docs/README.md](../docs/README.md#run-and-test) for the preview.
 
 ## How prices are computed
 

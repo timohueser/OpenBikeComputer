@@ -31,9 +31,9 @@ works: <https://openbikecomputer.com/>.
 | Discovery | `landmarks`, `photo`, `settlements`, `peak_view`, `find_place` |
 | Edges | `sensors`, `ble`, `dfu` |
 
-In `obc-fw-nrf54l/src`, the drivers are `vendor/`, `ble/`, `usb/`, `flpr/`, `semmc.rs`,
-`ls021_flpr.rs`, `com.rs`, `sensors.rs`, `buzzer.rs`, `panel_power.rs`, `flpr_mux.rs`,
-`card_io.rs` and `board.rs`. The rest is glue: the tasks in `main.rs`, the shared RAM block
+In `obc-fw-nrf54l`, the drivers are `vendor/` and, in `src/`, `ble/`, `usb/`, `flpr/`,
+`semmc.rs`, `ls021_flpr.rs`, `com.rs`, `sensors.rs`, `buzzer.rs`, `panel_power.rs`,
+`flpr_mux.rs`, `card_io.rs` and `board.rs`. The rest is glue: the tasks in `main.rs`, the shared RAM block
 (`arena.rs`), the one task that writes to the card, and the settings in RRAM.
 
 ## Run and test
@@ -46,6 +46,9 @@ obc check obc-fw-nrf54l      # clippy and the release build; also obc-boot, obc-
 obc shot NAME                # one UI frame; --check, --accept
 obc fmt                      # the workspace and the three standalone roots
 ```
+
+The workspace is a virtual manifest: a plain `cargo fmt` formats nothing, and `cargo fmt --all`
+skips the three standalone roots. `obc fmt` runs all four.
 
 Tests of the workspace crates need GEOS: a dev-dependency may reach a host crate, because it
 never enters the `no_std` build. The board image needs the `thumbv8m.main-none-eabihf` target
@@ -113,7 +116,8 @@ and resets into `obc-boot` ([its README](obc-boot/README.md) has the LED codes).
 - A large part of `App` uses the placement constructors (`init_in_place`). An `App` by value is
   larger than the device stack.
 - The shared RAM block (`arena.rs`) is one union: the board pays for its largest arm. Growth
-  below the largest arm is free. A guard is never held across an `.await`. Map and route caches
+  below the largest arm is free, and `const` asserts hold that each arm fits. A guard is never
+  held across an `.await`. Map and route caches
   are never arms. Peak View gives the block back on Back.
 - The display coprocessor (FLPR) is shared in time between the panel scan and the card host.
   Never stop it in the middle of a scan or switch it in the middle of a transfer.
@@ -131,6 +135,11 @@ and resets into `obc-boot` ([its README](obc-boot/README.md) has the LED codes).
   crate takes only `heapless`, `libm` and other foundation crates. Dev-dependencies are not
   checked.
 - Latitude and longitude are integers of microdegrees in every crate.
+- A "source" in these crates gives bytes (`ByteSource`) or map features (`MapScene`). It is not
+  a source data set such as OpenStreetMap.
+- A map `Style` stays at 12 bytes or less, because a map source keeps 256 of them in RAM.
+- The companion app has a Swift copy of the CRC-32 of `obc-crc`. The two must give the same
+  result.
 
 ## Decisions
 
@@ -141,10 +150,12 @@ and resets into `obc-boot` ([its README](obc-boot/README.md) has the LED codes).
   share one set of constants. The crate has no reader, because a reader carries policy: what to
   cache, what to skip. One reader crate for each format would make a host producer take a
   device reader with it.
-- `ByteSource` reads a byte range on request, so a map can be larger than the RAM.
+- `ByteSource` reads a byte range on request. A reader keeps small tables in RAM and streams
+  the rest, so a map can be larger than the RAM. The device cannot load a whole file or map it
+  into memory.
 - One renderer for every host, generic over the draw target, so a preview cannot differ from
   the panel. The walk methods of `MapScene` are generic, not trait objects: the renderer calls
-  them for each feature of a frame.
+  them for each feature of a frame, and the hot loop pays no dynamic dispatch.
 - The CRC is its own crate with no dependency, because the bootloader links it. The
   `slice-by-8` feature costs 7 KiB of flash for speed; the app turns it on, the bootloader
   does not. `obc-dfu` uses only `core` for the same reason.

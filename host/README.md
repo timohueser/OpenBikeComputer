@@ -14,7 +14,7 @@ workspace.
 | --- | --- |
 | `obc data` | [`obc-data`](obc-data/README.md): the engine, store, registry, targets, releases, serve and the commands; it knows no product. `obc-data-steps`: the `obc-data` binary, the products `device` and `planner`, the producers of prepared sources and the operator page. |
 | Device map | `obc-bake` (the bakery and the catalog tree; the `obc-pack` binary is here), `obc-pack` (content, [landmarks and peaks](obc-pack/src/landmarks/README.md), catalog), `obc-draw`, `obc-network`, `obc-map-core` (config, grid, framing), `obc-pbf` (PBF scans, polygons, GEOS), `obc-tree-walk`, `obcm-assemble` (cells to one `.obcm`). |
-| Sources | `obc-dem` (terrain to OBCT; [`reference/`](obc-dem/reference/README.md) is the national terrain archive), `obc-osm` (Osmium steps). |
+| Sources | [`obc-dem`](obc-dem/README.md) (terrain to OBCT; [`reference/`](obc-dem/reference/README.md) is the national terrain archive), `obc-osm` (Osmium steps). |
 | Places and search | `obc-places`, [`obc-search-bake`](obc-search-bake/README.md). |
 | TrailView | [`obc-trailview-features`](obc-trailview-features/README.md), [`obc-ground-plan`](obc-ground-plan/README.md), `obc-trailview-parts`. |
 | Tools and oracles | `obc-inspect` (`obc inspect FILE`), `obc-mkimage` (wrap and sign an update), `obc-vectors` (the builders of `specs/vectors/`), `obcm-testkit` (hand-written OBCM bytes), `obc-fixtures` (the fixture paths), `obc-file-source` (a file behind `ByteSource`), `obc-fit` (FIT for the web). |
@@ -77,6 +77,8 @@ Before you add a step or a product:
   `HashMap` or `HashSet`, no `mul_add`. A change of its width rules re-bakes the feature tiles.
 - A terrain bake needs the reference archive. A bake without `--reference` bakes every lifted
   cell again without its lift; `OBC_REFERENCE_ARCHIVE` in `tools/obc.local` names it once.
+- `obc-dem --bbox` is latitude first, the opposite of `obc-pack --bbox` and of the region
+  boxes in `data/`. For an Alpine box both orders look plausible, so nothing catches a mix-up.
 - The fixtures of the `obc-bake` ingest tests are in `builder/tests/corpus/`.
 
 ## Decisions
