@@ -60,7 +60,7 @@ map-wide language argument.
 
 `obc data` compiles the same content in `device/landmark-content` and `device/peak-content`, and
 writes one artifact per network cell in `device/landmarks/<leaf>` and `device/peaks/<leaf>`
-(`obcc-catalog.md` §14.3, `specs/obc-data.md`).
+(`obcc-catalog.md` §14.3, `specs/obc-data-products.md`).
 
 ### Local language fallback
 

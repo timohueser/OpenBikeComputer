@@ -1,5 +1,5 @@
 """The TrailView colour: the colour tiles of one region from the prepared texels of `colour`, and those
-texels of one zoom 10 block from the Sentinel-2 quarterly mosaics of CDSE (specs/obc-data.md#colour,
+texels of one zoom 10 block from the Sentinel-2 quarterly mosaics of CDSE (specs/obc-data-producers.md#colour,
 specs/trailview-tiles.md#colour).
 
 The `obc data` step is `planner/trailview-colour` (`--step`). `prepare --block X-Y --year YEAR` writes the
@@ -181,7 +181,7 @@ _readers = threading.local()
 
 
 class Prepared:
-    """The texels of `colour` of `year` in `files` ({path: file}), as `specs/obc-data.md#colour` defines
+    """The texels of `colour` of `year` in `files` ({path: file}), as `specs/obc-data-producers.md#colour` defines
     them. A worker thread opens a file once."""
 
     def __init__(self, files, year):

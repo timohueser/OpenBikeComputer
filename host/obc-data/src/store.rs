@@ -1,6 +1,6 @@
 //! The local store: read-only objects named by their SHA-256, the snapshot records that say
 //! which objects are which source version, the receipts that say which objects are which layer,
-//! and the events of each run. `specs/obc-data.md` describes the layout.
+//! and the events of each run. `specs/obc-data-store.md` describes the layout.
 
 pub mod gc;
 

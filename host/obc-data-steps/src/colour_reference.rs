@@ -1,6 +1,6 @@
 //! The producer of `colour`: the Sentinel-2 texels of the zoom 12 tiles of each zoom 10 block of its
 //! region, per quarter of the year `trailview.colour_year`, `<year>/<x>/<y>.pmtiles`
-//! (`specs/obc-data.md`). A version extends the version before: it makes only the files that the
+//! (`specs/obc-data-producers.md`). A version extends the version before: it makes only the files that the
 //! version before lacks. `tools/trailview/colour.py prepare` writes the file of one block.
 
 use std::collections::BTreeSet;
