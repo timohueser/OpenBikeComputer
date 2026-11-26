@@ -1,0 +1,270 @@
+<!doctype html>
+<!-- PROTOTYPE for GitHub issue 3836. A blind comparison of two routes for the same start and end.
+     `build_compare.py` puts the pairs of `pairs.json` in place of the DATA line and writes one file
+     that opens in a desktop browser. The map tiles come live from the tile servers. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Route compare</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root { --bg: #f6f7f5; --panel: #ffffff; --fg: #1c2420; --muted: #5d6a63; --line: #d5dbd6;
+          --a: #0b6fd6; --b: #d9480f; --pick: #1f7a4d; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: grid; grid-template-columns: 1fr 340px; font: 14px/1.45 system-ui, sans-serif;
+         background: var(--bg); color: var(--fg); }
+  #map { height: 100%; min-height: 300px; }
+  aside { display: flex; flex-direction: column; gap: 14px; padding: 16px; overflow-y: auto;
+          background: var(--panel); border-left: 1px solid var(--line); }
+  h1 { font-size: 16px; margin: 0; }
+  .muted { color: var(--muted); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  select, button, textarea { font: inherit; }
+  select { padding: 4px 6px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  .swatch { display: inline-block; width: 22px; height: 5px; border-radius: 3px; vertical-align: middle; margin-right: 6px; }
+  .votes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .votes button { padding: 10px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg);
+                  cursor: pointer; text-align: left; }
+  .votes button:hover { border-color: var(--fg); }
+  .votes button.on { border-color: var(--pick); background: #e3f3ea; font-weight: 600; }
+  kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; margin-right: 6px; background: #fff; }
+  textarea { width: 100%; min-height: 54px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; resize: vertical; }
+  .nav button, .tools button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; cursor: pointer; }
+  #reveal { font-size: 13px; padding: 8px; border-radius: 6px; background: var(--bg); }
+  #results { width: 100%; min-height: 120px; font: 12px ui-monospace, monospace; }
+  @media (max-width: 800px) { body { grid-template-columns: 1fr; grid-template-rows: 55vh auto; } aside { border-left: 0; border-top: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<aside>
+  <div>
+    <h1>Which route is better?</h1>
+    <div class="muted">Same start and end, two routers. The order is random for each pair.</div>
+  </div>
+  <div class="row">
+    <label for="set">Set</label>
+    <select id="set"></select>
+  </div>
+  <div class="row nav">
+    <button id="prev" title="Left arrow">Back</button>
+    <span id="position"></span>
+    <button id="next" title="Right arrow">Next</button>
+    <button id="open" title="First pair without an answer">Next open</button>
+  </div>
+  <table>
+    <thead><tr><th></th><th>km</th><th>climb m</th></tr></thead>
+    <tbody>
+      <tr><td><span class="swatch" style="background:var(--a)"></span>A</td><td id="a-km"></td><td id="a-up"></td></tr>
+      <tr><td><span class="swatch" style="background:var(--b)"></span>B</td><td id="b-km"></td><td id="b-up"></td></tr>
+    </tbody>
+  </table>
+  <div class="row">
+    <label><input type="checkbox" id="only-diff" checked> Thick line only where the two routes differ</label>
+  </div>
+  <div class="votes">
+    <button data-vote="A"><kbd>1</kbd>A is better</button>
+    <button data-vote="B"><kbd>2</kbd>B is better</button>
+    <button data-vote="same"><kbd>3</kbd>No real difference</button>
+    <button data-vote="bad"><kbd>4</kbd>Both are bad</button>
+  </div>
+  <div>
+    <label for="note" class="muted">What is wrong or good here? (optional)</label>
+    <textarea id="note"></textarea>
+  </div>
+  <div id="reveal" hidden></div>
+  <div class="tools">
+    <div class="row">
+      <button id="copy">Copy my answers</button>
+      <span id="tally" class="muted"></span>
+    </div>
+    <p class="muted">When you are done, press "Copy my answers" and paste the text into the chat. Your answers stay in this browser until then.</p>
+    <textarea id="results" hidden readonly></textarea>
+  </div>
+</aside>
+<script>
+/*DATA*/const DATA = { sets: [] };/*DATA*/
+</script>
+<script>
+// Each set: { id, title, area, profile, variants: [x, y], pairs: [{ id, from: [lat, lon], to: [lat, lon],
+//   routes: { x: { line: [[lat, lon], ...], km, up_m, facts: {...} }, y: {...} } }] }
+const KEY = 'route-compare-3836';
+let store = {};
+try { store = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { store = {}; }
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) {} };
+
+const map = L.map('map', { preferCanvas: true });
+const layers = {
+  'CyclOSM': L.tileLayer('https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png',
+    { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors, CyclOSM' }),
+  'OpenStreetMap': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }),
+  'swisstopo (Switzerland)': L.tileLayer('https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.pixelkarte-farbe/default/current/3857/{z}/{x}/{y}.jpeg',
+    { maxZoom: 18, attribution: '&copy; swisstopo' }),
+  'TopPlusOpen (Germany)': L.tileLayer('https://sgx.geodatenzentrum.de/wmts_topplus_open/tile/1.0.0/web/default/WEBMERCATOR/{z}/{y}/{x}.png',
+    { maxZoom: 18, attribution: '&copy; BKG' }),
+};
+layers['OpenStreetMap'].addTo(map);
+L.control.layers(layers).addTo(map);
+L.control.scale({ imperial: false }).addTo(map);
+const drawn = L.layerGroup().addTo(map);
+
+const $ = (id) => document.getElementById(id);
+let set = null, index = 0;
+
+// A stable coin for each pair, so A and B do not swap when the page loads again.
+function flipped(pairId) {
+  let h = 2166136261;
+  for (const c of 'flip' + pairId) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return (h >>> 13) & 1;
+}
+function sides(pair) {
+  const [x, y] = set.variants;
+  return flipped(pair.id) ? { A: y, B: x } : { A: x, B: y };
+}
+
+// The parts of `line` that are farther than about 25 m from every point of `other`.
+function differing(line, other) {
+  const cell = 0.0003, seen = new Set();
+  for (const [lat, lon] of other) seen.add(Math.round(lat / cell) + ':' + Math.round(lon / cell));
+  const near = ([lat, lon]) => {
+    const i = Math.round(lat / cell), j = Math.round(lon / cell);
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) if (seen.has((i + a) + ':' + (j + b))) return true;
+    return false;
+  };
+  const parts = []; let run = null;
+  line.forEach((point, k) => {
+    if (near(point)) { if (run) { run.push(point); parts.push(run); run = null; } }
+    else { if (!run) run = k > 0 ? [line[k - 1]] : []; run.push(point); }
+  });
+  if (run) parts.push(run);
+  return parts;
+}
+
+// Points every 30 m or less, so that `differing` sees a long straight road.
+function dense(line) {
+  const out = [];
+  for (let k = 0; k < line.length; k++) {
+    if (k > 0) {
+      const [a, b] = [line[k - 1], line[k]];
+      const metres = map.distance(a, b), steps = Math.floor(metres / 30);
+      for (let s = 1; s <= steps; s++) out.push([a[0] + (b[0] - a[0]) * s / (steps + 1), a[1] + (b[1] - a[1]) * s / (steps + 1)]);
+    }
+    out.push(line[k]);
+  }
+  return out;
+}
+
+function show(fit) {
+  const pair = set.pairs[index], side = sides(pair);
+  const answer = (store[set.id] || {})[pair.id] || {};
+  drawn.clearLayers();
+  const lines = { A: pair.routes[side.A].line, B: pair.routes[side.B].line };
+  const colour = { A: getComputedStyle(document.documentElement).getPropertyValue('--a').trim(),
+                   B: getComputedStyle(document.documentElement).getPropertyValue('--b').trim() };
+  const onlyDiff = $('only-diff').checked;
+  const fine = { A: dense(lines.A), B: dense(lines.B) };
+  for (const [name, other] of [['A', 'B'], ['B', 'A']]) {
+    L.polyline(lines[name], { color: colour[name], weight: onlyDiff ? 2 : 5, opacity: onlyDiff ? 0.55 : 0.8 }).addTo(drawn);
+    if (onlyDiff) for (const part of differing(fine[name], fine[other]))
+      L.polyline(part, { color: colour[name], weight: 6, opacity: 0.9 }).addTo(drawn);
+  }
+  L.circleMarker(pair.from, { radius: 7, color: '#000', fillColor: '#fff', fillOpacity: 1, weight: 2 }).bindTooltip('Start').addTo(drawn);
+  L.circleMarker(pair.to, { radius: 7, color: '#000', fillColor: '#000', fillOpacity: 1, weight: 2 }).bindTooltip('End').addTo(drawn);
+  if (fit) map.fitBounds(L.latLngBounds(lines.A.concat(lines.B)).pad(0.08));
+  for (const name of ['A', 'B']) {
+    const route = pair.routes[side[name]];
+    $(name.toLowerCase() + '-km').textContent = route.km.toFixed(1);
+    $(name.toLowerCase() + '-up').textContent = Math.round(route.up_m);
+  }
+  $('position').textContent = (index + 1) + ' of ' + set.pairs.length;
+  document.querySelectorAll('.votes button').forEach((b) => b.classList.toggle('on', b.dataset.vote === answer.vote));
+  $('note').value = answer.note || '';
+  const reveal = $('reveal');
+  reveal.hidden = !answer.vote;
+  if (answer.vote) {
+    const facts = (name) => Object.entries(pair.routes[side[name]].facts || {}).map(([k, v]) => k + ' ' + v).join(', ');
+    reveal.textContent = 'A: ' + facts('A') + '\nB: ' + facts('B');
+    reveal.style.whiteSpace = 'pre-wrap';
+  }
+  tally();
+}
+
+function tally() {
+  const answers = store[set.id] || {};
+  const done = set.pairs.filter((p) => (answers[p.id] || {}).vote).length;
+  $('tally').textContent = done + ' of ' + set.pairs.length + ' answered';
+}
+
+function vote(value) {
+  const pair = set.pairs[index];
+  store[set.id] = store[set.id] || {};
+  const answer = store[set.id][pair.id] = store[set.id][pair.id] || {};
+  answer.vote = value;
+  // Store the router that the answer names, not the letter.
+  answer.better = value === 'A' || value === 'B' ? sides(pair)[value] : value;
+  save(); show(false);
+}
+
+function results() {
+  const lines = [];
+  for (const s of DATA.sets) {
+    const answers = store[s.id] || {}, count = {};
+    const rows = s.pairs.filter((p) => (answers[p.id] || {}).vote || (answers[p.id] || {}).note).map((p) => {
+      const a = answers[p.id];
+      if (a.better) count[a.better] = (count[a.better] || 0) + 1;
+      return '  ' + p.id + ': ' + (a.better || '-') + (a.note ? ' | ' + a.note.replace(/\s+/g, ' ') : '');
+    });
+    if (!rows.length) continue;
+    lines.push('SET ' + s.id + ' (' + s.variants.join(' vs ') + '): ' + Object.entries(count).map(([k, v]) => k + ' ' + v).join(', '));
+    lines.push(...rows);
+  }
+  return lines.join('\n') || 'No answers yet.';
+}
+
+$('set').addEventListener('change', () => { set = DATA.sets[$('set').selectedIndex]; index = 0; show(true); });
+$('prev').addEventListener('click', () => { index = Math.max(0, index - 1); show(true); });
+$('next').addEventListener('click', () => { index = Math.min(set.pairs.length - 1, index + 1); show(true); });
+$('open').addEventListener('click', () => {
+  const answers = store[set.id] || {};
+  const k = set.pairs.findIndex((p) => !(answers[p.id] || {}).vote);
+  if (k >= 0) { index = k; show(true); }
+});
+$('only-diff').addEventListener('change', () => show(false));
+document.querySelectorAll('.votes button').forEach((b) => b.addEventListener('click', () => vote(b.dataset.vote)));
+$('note').addEventListener('input', () => {
+  const pair = set.pairs[index];
+  store[set.id] = store[set.id] || {};
+  (store[set.id][pair.id] = store[set.id][pair.id] || {}).note = $('note').value;
+  save();
+});
+$('copy').addEventListener('click', () => {
+  const text = results(), box = $('results');
+  box.hidden = false; box.value = text; box.select();
+  if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
+});
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  const votes = { '1': 'A', '2': 'B', '3': 'same', '4': 'bad' };
+  if (votes[e.key]) vote(votes[e.key]);
+  if (e.key === 'ArrowRight') $('next').click();
+  if (e.key === 'ArrowLeft') $('prev').click();
+});
+
+if (DATA.sets.length) {
+  for (const s of DATA.sets) $('set').add(new Option(s.title + ' (' + s.pairs.length + ')'));
+  set = DATA.sets[0];
+  show(true);
+} else {
+  map.setView([48.1, 7.85], 11);
+  $('position').textContent = 'No pairs in this file.';
+}
+</script>
+</body>
+</html>
