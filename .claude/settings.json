@@ -5,21 +5,5 @@
       "Bash(obc data deploy services *)",
       "Bash(obc data deploy tiles *)"
     ]
-  },
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/agent_time.py\"" }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/agent_time.py\"" }
-        ]
-      }
-    ]
   }
 }
