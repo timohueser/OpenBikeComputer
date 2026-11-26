@@ -13,7 +13,7 @@ description = "OBCU update-image container + boot-state RRAM page codec + boot-d
 # CRC-32/IEEE, shared with obc-ble. A dependency-free leaf, so it costs the bootloader's link
 # little.
 obc-crc = { workspace = true }
-# The OBCU v2 signature check, on BOTH sides of the pipeline: the armer verifies with it and
+# The OBCU signature check, on BOTH sides of the pipeline: the armer verifies with it and
 # `obc-mkimage` signs with it, so host and device can never drift onto different implementations.
 # Chosen over ed25519-dalek because it is `core`-only with no RNG or `zeroize` machinery pulled in,
 # has no transitive dependencies at all with default features off, and — the deciding feature —

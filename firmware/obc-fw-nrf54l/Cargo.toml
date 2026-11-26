@@ -146,25 +146,23 @@ heapless = "0.9"
 # `ptr::write`, the same warm-reset-safe pattern as APP/MAP_CACHE/ROUTE_CACHE, so no `static_cell`.)
 
 # --- The BLE stack — in **every** build ---
-# Nordic's SoftDevice Controller + MPSL, via alexmoon/nrf-sdc's Rust bindings. The crates.io
-# releases (nrf-sdc 0.3 / nrf-mpsl 0.3) predate nRF54L support *and* pin embassy-nrf 0.7, so this
-# is a **git pin**: main (unreleased 0.4.0) grows the `nrf54lm20-app-s` feature and targets exactly
-# the embassy set this crate already ships (embassy-nrf 0.11 / embassy-sync 0.8). The rev must
-# use the dedicated nrf54lm MPSL library: the generic `nrf54l` (= nRF54L15) library has a different
-# peripheral map, and `mpsl_init` busfaults on the LM20-DK at `0x5004_7004` (the L15's ECB00).
-# `central` must be on
-# anyway: trouble-host's *unconditional* Controller bound includes `LeCreateConnCancel` (its
+# Nordic's SoftDevice Controller + MPSL, via alexmoon/nrf-sdc's Rust bindings. 0.4 is the first
+# release with the `nrf54lm20-app-s` feature, and it uses the embassy set of this crate
+# (embassy-nrf 0.11 / embassy-sync 0.8). The feature selects the dedicated nrf54lm MPSL library:
+# the generic `nrf54l` (= nRF54L15) library has a different peripheral map, and `mpsl_init`
+# busfaults on the LM20-DK at `0x5004_7004` (the L15's ECB00). `central` must be on anyway:
+# trouble-host's *unconditional* Controller bound includes `LeCreateConnCancel` (its
 # cleanup path issues it even on peripheral-only hosts), and only the multirole SDC lib variant
 # exports that symbol — `peripheral` alone is a link error. Costs flash, not RAM (the Builder
 # never enables central roles, so the controller's memory stays peripheral-sized).
-nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", features = ["defmt", "peripheral", "central", "nrf54lm20-app-s"] }
+nrf-sdc = { version = "0.4", features = ["defmt", "peripheral", "central", "nrf54lm20-app-s"] }
 # `critical-section-impl` must live on nrf-mpsl (it *provides* the critical-section impl on
 # nRF54L, and it is the only one this crate has — see the cortex-m dep note above).
-nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", features = ["defmt", "critical-section-impl"] }
-# The HCI types nrf-sdc's controller trait + trouble-host speak; same ^0.9 both resolve.
-bt-hci = { version = "0.9", default-features = false, features = ["defmt"] }
-# The BLE host (released 0.7 pins embassy-executor 0.10 / embassy-sync 0.8 / embassy-time 0.5.1 —
-# again exactly this crate's set).
+nrf-mpsl = { version = "0.4", features = ["defmt", "critical-section-impl"] }
+# The HCI types nrf-sdc's controller trait + trouble-host speak; same ^0.10 both resolve.
+bt-hci = { version = "0.10", default-features = false, features = ["defmt"] }
+# The BLE host (0.8 uses embassy-executor 0.10 / embassy-sync 0.8 / embassy-time 0.5.1 and
+# bt-hci 0.10 — again exactly this crate's set).
 # `default-packet-pool-mtu-251` sizes the pool for the config we intend to ship (ATT MTU 247 =
 # link-layer 251 with DLE), so the reported RAM numbers are the shipping ones.
 # `security` turns on the LESC/SMP/bonding host: passkey pairing, the
@@ -177,12 +175,12 @@ bt-hci = { version = "0.9", default-features = false, features = ["defmt"] }
 # board reports connection and authentication state without formatting bond records.
 # `central` + `scan`: the BLE sensor manager runs the central role on the same
 # `Stack` as the phone-facing peripheral — `stack.central()` scans for + connects to HR/power/cadence
-# sensors while `stack.peripheral()` keeps advertising to the phone (0.7 supports concurrent roles on
-# one stack). `scan` pulls in `central`; the manager uses legacy scan (`Scanner::scan`) + legacy
+# sensors while `stack.peripheral()` keeps advertising to the phone (concurrent roles on one stack).
+# `scan` pulls in `central`; the manager uses legacy scan (`Scanner::scan`) + legacy
 # connect (`LeCreateConn`). nrf-sdc already carries `central` (its cleanup path needs
 # `LeCreateConnCancel`); the SDC's central/scan *buffers* are only allocated once the Builder calls
 # `.support_central()/.support_scan()/.central_count()` (see `ble/mod.rs`).
-trouble-host = { version = "0.7", features = ["derive", "peripheral", "central", "scan", "gatt", "security", "default-packet-pool", "default-packet-pool-mtu-251"] }
+trouble-host = { version = "0.8", features = ["derive", "peripheral", "central", "scan", "gatt", "security", "default-packet-pool", "default-packet-pool-mtu-251"] }
 # The `#[gatt_server]` macro's generated attribute-table storage references `static_cell` by name —
 # a hard requirement of trouble-host's codegen, not our statics (this crate's own runtime statics
 # stay on the warm-reset-safe `MaybeUninit`-in-`.bss` pattern; see `init_static` in main.rs).

@@ -22,9 +22,9 @@ embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "execu
 embassy-sync = "0.8.0"
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-futures = "0.1"
-nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", features = ["defmt", "peripheral", "central", "nrf54l15-app-s"] }
-nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", features = ["defmt", "critical-section-impl"] }
-trouble-host = { version = "0.7.0", default-features = false, features = ["defmt", "peripheral", "gatt", "default-packet-pool-mtu-27"] }
+nrf-sdc = { version = "0.4", features = ["defmt", "peripheral", "central", "nrf54l15-app-s"] }
+nrf-mpsl = { version = "0.4", features = ["defmt", "critical-section-impl"] }
+trouble-host = { version = "0.8.0", default-features = false, features = ["defmt", "peripheral", "extended-advertising", "gatt", "default-packet-pool-mtu-27"] }
 heapless = "0.9"
 static_cell = "2"
 cortex-m-rt = "0.7"

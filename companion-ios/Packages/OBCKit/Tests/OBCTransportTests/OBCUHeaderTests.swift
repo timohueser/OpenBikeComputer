@@ -4,8 +4,8 @@ import OBCDomain
 @testable import OBCTransport
 
 /// The app half of the shared OBCU pin: the signed container a release publishes
-/// (`specs/vectors/update-container-v2.bin`) and the unsigned shape the device refuses
-/// (`update-container-v1.bin`). `obc-vectors` regenerates them; a drift on either side goes red.
+/// (`specs/vectors/update-container.bin`). `obc-vectors` regenerates it; a drift on either side
+/// goes red.
 struct OBCUHeaderTests {
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent() // OBCTransportTests
@@ -26,7 +26,7 @@ struct OBCUHeaderTests {
     }
 
     @Test func decodesTheSharedContainerToPinnedFields() throws {
-        let container = try fixture("update-container-v2.bin")
+        let container = try fixture("update-container.bin")
         #expect(container.count == 256) // 64 header + 128 image + 64 signature
 
         let header = try #require(OBCUHeader.decode(container.prefix(OBCUHeader.length)))
@@ -40,29 +40,8 @@ struct OBCUHeaderTests {
         #expect(CRC32.checksum(container.prefix(OBCUHeader.headerCRCLength)) == 0x53AF_7E37)
     }
 
-    /// A v2 header still reads as header-version 1, and every field this decoder looks at is
-    /// byte-identical to the v1 fixture's. That is what lets an older bootloader install a v2 image.
-    @Test func readsEveryV1FieldIdenticallyFromBothContainers() throws {
-        let v1 = try fixture("update-container-v1.bin")
-        let v2 = try fixture("update-container-v2.bin")
-        let h1 = try #require(OBCUHeader.decode(v1.prefix(OBCUHeader.length)))
-        let h2 = try #require(OBCUHeader.decode(v2.prefix(OBCUHeader.length)))
-
-        #expect(h1.fwVersion == h2.fwVersion)
-        #expect(h1.imageLength == h2.imageLength)
-        #expect(h1.imageCRC32 == h2.imageCRC32)
-        // Header bytes 0..48 are literally the same bytes; only the marker and CRC move.
-        #expect(Array(v1.prefix(48)) == Array(v2.prefix(48)))
-        #expect(h1.sigScheme == OBCUHeader.sigSchemeNone)
-        #expect(h2.sigScheme == OBCUHeader.sigSchemeEd25519)
-        // The image sits at the same offset in both.
-        let imageV1 = v1[(v1.startIndex + OBCUHeader.length)...]
-        let imageV2 = v2[(v2.startIndex + OBCUHeader.length) ..< (v2.startIndex + OBCUHeader.length + 128)]
-        #expect(Array(imageV1) == Array(imageV2))
-    }
-
     @Test func validatesBothCRCsAndReadsTheVersionAndSize() throws {
-        let container = try fixture("update-container-v2.bin")
+        let container = try fixture("update-container.bin")
         let staged = try StagedFirmware.validate(container)
         #expect(staged.version == "1.2.0+abc1234")
         #expect(staged.imageByteCount == 128)
@@ -71,34 +50,34 @@ struct OBCUHeaderTests {
     }
 
     @Test func rejectsBadMagic() throws {
-        var container = try fixture("update-container-v2.bin")
+        var container = try fixture("update-container.bin")
         container[0] = UInt8(ascii: "X")
         #expect(OBCUHeader.decode(container.prefix(OBCUHeader.length)) == nil)
         #expect(throws: FirmwareImageError.notOBCU) { try StagedFirmware.validate(container) }
     }
 
     @Test func rejectsWrongHeaderVersion() throws {
-        var container = try fixture("update-container-v2.bin")
+        var container = try fixture("update-container.bin")
         container[4] = 2 // header_version 2
         #expect(OBCUHeader.decode(container.prefix(OBCUHeader.length)) == nil)
         #expect(throws: FirmwareImageError.notOBCU) { try StagedFirmware.validate(container) }
     }
 
     @Test func rejectsCorruptHeaderCRC() throws {
-        var container = try fixture("update-container-v2.bin")
+        var container = try fixture("update-container.bin")
         container[8] ^= 0xFF // flip image_len without fixing the header CRC
         #expect(OBCUHeader.decode(container.prefix(OBCUHeader.length)) == nil)
     }
 
     @Test func rejectsCorruptImageBody() throws {
-        var container = try fixture("update-container-v2.bin")
+        var container = try fixture("update-container.bin")
         container[OBCUHeader.length + 3] ^= 0xFF // header still valid; the image CRC now fails
         #expect(OBCUHeader.decode(container.prefix(OBCUHeader.length)) != nil)
         #expect(throws: FirmwareImageError.imageCRCMismatch) { try StagedFirmware.validate(container) }
     }
 
     @Test func rejectsTruncatedFile() throws {
-        let container = try fixture("update-container-v2.bin")
+        let container = try fixture("update-container.bin")
         // Drop the last 10 image bytes: the header says 128, the body is now short.
         let short = container.prefix(container.count - 10)
         #expect(throws: FirmwareImageError.truncated) { try StagedFirmware.validate(Data(short)) }
@@ -114,15 +93,20 @@ struct OBCUHeaderTests {
     /// The device installs signed containers only, so the picker refuses an unsigned one rather
     /// than spending a transfer on it.
     @Test func rejectsAnUnsignedContainer() throws {
-        let v1 = try fixture("update-container-v1.bin")
-        #expect(OBCUHeader.decode(v1.prefix(OBCUHeader.length)) != nil, "it still *decodes*")
-        #expect(throws: FirmwareImageError.unsigned) { try StagedFirmware.validate(v1) }
+        // The signed fixture with its scheme marker cleared, its header CRC resealed and no trailer.
+        let signed = try fixture("update-container.bin")
+        var unsigned = Data(signed.prefix(OBCUHeader.length + 128))
+        unsigned.replaceSubrange(48 ..< 52, with: [UInt8](repeating: 0, count: 4))
+        let crc = CRC32.checksum(unsigned.prefix(OBCUHeader.headerCRCLength))
+        unsigned.replaceSubrange(60 ..< 64, with: withUnsafeBytes(of: crc.littleEndian) { Array($0) })
+        #expect(OBCUHeader.decode(unsigned.prefix(OBCUHeader.length)) != nil, "it still *decodes*")
+        #expect(throws: FirmwareImageError.unsigned) { try StagedFirmware.validate(unsigned) }
     }
 
     /// Trailing bytes past `64 + image_len + sig_len` are slack, not an error. The
     /// container is trimmed to the exact container length; the signature trailer stays.
     @Test func acceptsTrailingSlackAndTrimsToExactLength() throws {
-        let container = try fixture("update-container-v2.bin")
+        let container = try fixture("update-container.bin")
         var padded = container
         padded.append(Data(repeating: 0xAB, count: 512)) // slack past the container
         #expect(padded.count == 256 + 512)

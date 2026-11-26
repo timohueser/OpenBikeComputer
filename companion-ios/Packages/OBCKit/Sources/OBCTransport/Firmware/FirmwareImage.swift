@@ -19,9 +19,8 @@ public struct OBCUHeader: Equatable, Sendable {
     public static let length = 64
     /// Magic: `OBCU`.
     public static let magic = Array("OBCU".utf8)
-    /// The only header layout this app reads. It is `1` for both container generations by design,
-    /// because the signature scheme, not this field, tells them apart. A different value is a hard
-    /// reject, never a silent migration.
+    /// The only header layout this app reads. A different value is a hard reject, never a silent
+    /// migration.
     public static let version: UInt16 = 1
     /// The signature scheme: 0 unsigned, 1 Ed25519.
     public static let sigSchemeNone: UInt16 = 0

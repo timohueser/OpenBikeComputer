@@ -276,7 +276,7 @@ describe("map upload from a file", () => {
         const wire = damageOneStreamWrite(link.host);
         const client = new FlatStoreClient(wire.link);
         try {
-            const container = vector("update-container-v2.bin");
+            const container = vector("update-container.bin");
 
             wire.arm();
             await expect(stageFirmware(client, container, context())).rejects.toMatchObject({ code: "checksum" });
@@ -314,7 +314,7 @@ describe("firmware update", () => {
         await withDevice({}, async ({ client, device }) => {
                 // The signed container — the only shape the device installs — and the trailer must
                 // reach it intact or it refuses the file as truncated.
-            const container = vector("update-container-v2.bin");
+            const container = vector("update-container.bin");
             const ctx = context();
             const { image, result } = await stageFirmware(client, container, ctx);
             expect(image.version).toBe("1.2.0+abc1234");
@@ -337,14 +337,9 @@ describe("firmware update", () => {
 
     it("refuses a damaged image locally, before spending a transfer on it", async () => {
         await withDevice({}, async ({ client, device }) => {
-            const broken = Uint8Array.from(vector("update-container-v2.bin"));
+            const broken = Uint8Array.from(vector("update-container.bin"));
             broken[70] ^= 0xff;
             await expect(stageFirmware(client, broken, context())).rejects.toMatchObject({ code: "image-crc" });
-            expect(device.entries).toEqual([]);
-
-                // …and so is an intact but *unsigned* one, which the device would refuse anyway.
-            const unsigned = vector("update-container-v1.bin");
-            await expect(stageFirmware(client, unsigned, context())).rejects.toMatchObject({ code: "unsigned" });
             expect(device.entries).toEqual([]);
         });
     });
@@ -354,7 +349,7 @@ describe("firmware update", () => {
         // is not installing and never was, so the honest report is the refusal itself — a page that
         // said "installing…" here would be claiming a reboot that never comes.
         await withDevice({}, async ({ client }) => {
-            const container = vector("update-container-v2.bin");
+            const container = vector("update-container.bin");
             const { result } = await stageFirmware(client, container, context());
             await expect(armUpdate(client, { objectId: result.objectId, revision: result.revision })).rejects
                 .toMatchObject({ code: "rejected" });
@@ -363,7 +358,7 @@ describe("firmware update", () => {
 
     it("arms the staged package where the device's policy allows it", async () => {
         await withDevice({ armPolicy: "allow" }, async ({ client, device }) => {
-            const { result } = await stageFirmware(client, vector("update-container-v2.bin"), context());
+            const { result } = await stageFirmware(client, vector("update-container.bin"), context());
             const armed = await armUpdate(client, { objectId: result.objectId, revision: result.revision });
             expect(armed.rollbackObjectId).toBeGreaterThan(0n);
             expect(armed.commitSequence).toBe(device.sequence);

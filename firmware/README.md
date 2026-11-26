@@ -156,10 +156,10 @@ cargo run -p obc-mkimage -- inspect UPDATE.BIN
 `wrap` refuses an image over `MAX_IMAGE_LEN`. It warns if the binary's first word is not a
 plausible initial stack pointer, which usually means an ELF or a wrong section order.
 
-**Signing is not optional on the device.** Without a seed, `wrap` emits an unsigned container and
-the armer rejects it. `obc-mkimage sign` attaches the trailer to an already-wrapped container, so
-you can build an artifact on one machine and sign it on the one that holds the key; `keygen` makes
-a keypair. Keys, the `OBCU_SIGNING_SEED` secret and the **rotation still owed before the first
+**Signing is not optional.** `wrap` needs a seed, and the armer rejects an unsigned container.
+`obc-mkimage sign` replaces the trailer of an already-wrapped container, so you can wrap with the
+test seed on one machine and re-sign on the one that holds the release key; `keygen` makes a
+keypair. Keys, the `OBCU_SIGNING_SEED` secret and the **rotation still owed before the first
 real release** are in [`obc-dfu/keys/README.md`](obc-dfu/keys/README.md).
 
 To install, upload the container and confirm on the device, or trigger the armer over the debug
