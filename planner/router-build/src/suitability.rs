@@ -13,7 +13,7 @@ pub struct Suitability {
 }
 
 #[derive(Clone, Copy)]
-enum Family {
+pub(crate) enum Family {
     Touring,
     Gravel,
     Mtb,
@@ -85,7 +85,7 @@ pub fn requires_equipment(tags: &Tags) -> bool {
         || !matches!(tag(tags, "via_ferrata_scale"), "" | "0" | "no")
 }
 
-fn surface_factor(road: &Road, tags: &Tags, weights: &[f64; 6]) -> f64 {
+pub(crate) fn surface_factor(road: &Road, tags: &Tags, weights: &[f64; 6]) -> f64 {
     if road.surface != Surface::Unknown {
         return weights[road.surface as usize];
     }
@@ -110,7 +110,7 @@ fn surface_factor(road: &Road, tags: &Tags, weights: &[f64; 6]) -> f64 {
 }
 
 /// `None` for an impassable way. Smoothness grades wheels, so it never concerns a walker.
-fn smoothness(value: &str, family: Family) -> Option<f64> {
+pub(crate) fn smoothness(value: &str, family: Family) -> Option<f64> {
     if matches!(family, Family::Hiking) {
         return Some(1.0);
     }
@@ -130,7 +130,7 @@ fn smoothness(value: &str, family: Family) -> Option<f64> {
     })
 }
 
-fn tracktype(value: &str, family: Family) -> f64 {
+pub(crate) fn tracktype(value: &str, family: Family) -> f64 {
     let grade = match value {
         "grade2" => 1,
         "grade3" => 2,

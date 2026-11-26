@@ -1,0 +1,159 @@
+//! PROTOTYPE. The cost of one road under a weighted bike profile as a sum of terms, in the order
+//! in which `suitability::way` and `cost::basis` multiply their factors. A later factor scales the
+//! terms before it, so each term is the cost that its factor adds on top of the factors before it.
+use crate::country::Country;
+use crate::source::Tags;
+use crate::suitability::{self, Family};
+use crate::{cost, road_bike::tag, traffic, Graph};
+use planner_router::model::{Profile, Road, Surface, Weighting, BIKE, PUSH};
+
+pub const N: usize = 17;
+pub const NAMES: [&str; N] = [
+    "distance",
+    "surface_tagged",
+    "surface_unknown",
+    "smoothness_tracktype",
+    "difficulty",
+    "pushing",
+    "traffic_stress",
+    "class_quiet_road",
+    "class_main_road",
+    "class_track",
+    "class_path",
+    "class_other",
+    "route_bonus",
+    "uncertain_access",
+    "climb",
+    "uncertain_node",
+    "rounding",
+];
+pub const NODE: usize = 15;
+
+/// The terms that the question names, each with the fine terms it sums.
+pub const GROUPS: [(&str, &[usize]); 11] = [
+    ("pure distance", &[0]),
+    ("surface factor", &[1, 2]),
+    ("smoothness/tracktype", &[3]),
+    ("traffic stress", &[6]),
+    ("class preference", &[7, 8, 9, 10, 11]),
+    ("route bonus", &[12]),
+    ("climb", &[14]),
+    ("uncertain access", &[13, 15]),
+    ("difficulty (mtb:scale, sac_scale)", &[4]),
+    ("pushing", &[5]),
+    ("rounding", &[16]),
+];
+
+pub type Terms = [f64; N];
+
+pub fn add(into: &mut Terms, terms: &Terms) {
+    into.iter_mut().zip(terms).for_each(|(a, b)| *a += b);
+}
+
+pub fn grouped(terms: &Terms) -> [f64; 11] {
+    GROUPS.map(|(_, fine)| fine.iter().map(|&i| terms[i]).sum())
+}
+
+/// The factors of `suitability::way` one by one. Their product times `class` is its factor.
+pub struct Factors {
+    pub surface: f64,
+    pub rolling: f64,
+    pub difficulty: f64,
+    pub push: f64,
+    pub stress: f64,
+    pub class: f64,
+    /// `Suitability::minimum_factor` and the factor of its basis.
+    pub floor: f64,
+    pub full: f64,
+}
+
+/// `None` where the profile excludes the road. Only for the touring family: the tables of
+/// `smoothness` and `tracktype` depend on the family.
+pub fn factors(road: &Road, tags: &Tags, country: Country, profile: &Profile) -> Option<Factors> {
+    let Weighting::Weighted { surface: weights, .. } = &profile.weighting else { return None };
+    assert!(profile.name.starts_with("touring"), "the term split knows the touring tables only");
+    let suit = suitability::way(road, tags, country, profile)?;
+    let (floor, full) = (suit.minimum_factor, suit.basis.factor);
+    let pushing = profile.mode(road) == PUSH;
+    let (surface, rolling, push, stress) = if road.class == 6 {
+        (1.0, 1.0, 1.0, 1.0)
+    } else {
+        (
+            suitability::surface_factor(road, tags, weights),
+            suitability::smoothness(tag(tags, "smoothness"), Family::Touring)?
+                .max(suitability::tracktype(tag(tags, "tracktype"), Family::Touring)),
+            if pushing { 4.0 } else { 1.0 },
+            if pushing { 1.0 } else { 1.0 + 0.6 * traffic::stress(tags, road.reversed, country) },
+        )
+    };
+    let difficulty = floor / (surface * rolling * push * stress);
+    Some(Factors { surface, rolling, difficulty, push, stress, class: full / floor, floor, full })
+}
+
+#[derive(Clone, Copy)]
+pub struct RoadTerms {
+    pub terms: Terms,
+    /// The cost of the road in the bake.
+    pub total: u64,
+    /// The cost with the whole class preference taken off a road in a signed route: the most that
+    /// a route bonus can do.
+    pub full_bonus: f64,
+    /// The cost with the surface factor of a paved road where the surface is unknown.
+    pub unknown_paved: f64,
+}
+
+/// The terms of road `id`, checked against the factor and the total of the real cost code.
+pub fn road(graph: &Graph, profile: &Profile, id: usize) -> Result<Option<RoadTerms>, String> {
+    let way = graph.osm.ways.row(graph.roads.way_row(id) as usize);
+    let mut road = Road::default();
+    graph.roads.get(id, &mut road);
+    let Some(real) = cost::way_basis(&way, road.reversed, profile) else { return Ok(None) };
+    let facts = way.facts;
+    let f = factors(&road, &way.tags, facts.country(), profile).ok_or("a road with a basis has no factors")?;
+    let length = f64::from(road.length_m);
+    let mut terms = [0.0; N];
+    terms[0] = length;
+    terms[if road.surface == Surface::Unknown { 2 } else { 1 }] = length * (f.surface - 1.0);
+    let mut product = f.surface;
+    for (term, factor) in [(3, f.rolling), (4, f.difficulty), (5, f.push), (6, f.stress)] {
+        terms[term] = length * product * (factor - 1.0);
+        product *= factor;
+    }
+    let class = match road.class {
+        1 => 7,
+        2 => 8,
+        3 => 9,
+        4 => 10,
+        _ => 11,
+    };
+    terms[class] = length * (f.full - f.floor);
+    let (mode, side) = (profile.mode(&road), usize::from(road.reversed));
+    let mut factor = f.full;
+    let mut floor = f.full;
+    if mode == BIKE && road.class != 6 && profile.route_bonus != 0.0 && facts.ranks != [0, 0] {
+        factor = f.floor + (f.full - f.floor).max(0.0) * (1.0 - f64::from(facts.ranks[side]) * profile.route_bonus);
+        terms[12] = length * (factor - f.full);
+        if facts.ranks[side] != 0 {
+            floor = f.floor;
+        }
+    }
+    if facts.doubts[side] & mode != 0 {
+        terms[13] = length * factor * 2.0;
+        factor *= 3.0;
+        floor *= 3.0;
+    }
+    if (factor - real.factor).abs() > 1e-9 * real.factor {
+        return Err(format!("road {id}: the terms give the factor {factor}, the bake gives {}", real.factor));
+    }
+    let compiled = real.compile(&road, profile)?;
+    terms[14] = compiled.penalties.last().map_or(0.0, |knot| knot.1);
+    let total = compiled.total();
+    terms[16] = total as f64 - terms.iter().sum::<f64>();
+    let paved = if road.surface == Surface::Unknown { factor / f.surface } else { factor };
+    Ok(Some(RoadTerms {
+        terms,
+        total,
+        full_bonus: length * floor + terms[14],
+        unknown_paved: length * paved + terms[14],
+    }))
+}

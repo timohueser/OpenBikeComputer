@@ -12,6 +12,7 @@ pub mod landmarks;
 pub mod layout;
 pub mod osm;
 pub mod overlays;
+pub mod prototype_census;
 mod road_bike;
 pub mod sort;
 pub mod source;
