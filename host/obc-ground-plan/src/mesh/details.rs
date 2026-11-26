@@ -6,8 +6,9 @@
 //! A track's lines are its rails (its middle ± the rail middle) and, on a rack line or a funicular, its middle. A
 //! line's rings are its way's samples and a point each `RING_M` of stroke metres, offset onto the line, its cuts by
 //! the cell lines, and where the face under it changes: read each `PROBE_M` and found to `BISECT_M`. A span stands on
-//! a rail bed, or sunk with its top `FLUSH_M` over a crossing face; a run of spans has a cap at each end but on a cell
-//! line. A sleeper stands at each `SLEEPER_M` of stroke metres where both its seats lie on standing spans of a bed and
+//! a rail bed or a crossing face, and a run of spans has a cap at each end but on a cell line. A line's top over its
+//! face sinks to `FLUSH_M` over `RAMP_M` before the band of a ground road or path that crosses it on a track's bed:
+//! continuous along the line, by the metres from its ring to the band along its tangent. A sleeper stands at each `SLEEPER_M` of stroke metres where both its seats lie on standing spans of a bed and
 //! its footprint crosses no jump of the stroke metres (another tile's span, a way's end); a seat past the cell line
 //! takes the ring where the sleeper's axis leaves the square. A later track (`way_key`) stands `STACK_M` lower inside
 //! an earlier one's sleeper band. A flight's span splits into treads by its rise, each a box from under the face to
@@ -50,6 +51,13 @@ const ROLLER_M: f64 = 8.0;
 const ROLLER_ALONG_M: f64 = 0.05;
 /// A later track stands this much lower inside an earlier one's sleeper band.
 const STACK_M: f64 = 0.01;
+/// A line's top over its face at a crossing, and the metres over which it rises to standing.
+const FLUSH_M: f64 = 0.004;
+const RAMP_M: f64 = 3.0;
+/// A line's top over its face where it stands: a sleeper's top and a rail, rack or cable (`plan/details.wgsl`).
+const SLEEPER_UP_M: f64 = 0.05;
+const TOP_M: [f64; 3] = [0.125, 0.09, 0.09];
+const RAIL_SCALE: f64 = 1.2;
 /// A sleeper's seat lies this near its rail's span (metres): the chord of the rail leaves its curve by less.
 const SEAT_M: f64 = 0.1;
 /// In a sleeper's second word: its second seat is the ring where its axis leaves the cell square.
@@ -202,12 +210,12 @@ fn pieces(a: &At, b: &At) -> Vec<(At, At)> {
     out
 }
 
-/// What stands on a line at a point: nothing, a span on the bed, or a span sunk into a crossing face; with the label.
+/// What a line stands on at a point: nothing, a rail bed, or a crossing face.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum State {
     None,
     Bed,
-    Sunk,
+    Crossing,
 }
 
 /// A station of a line in the cell: its point, its state and label there, and whether the line leaves the cell
@@ -252,6 +260,9 @@ struct Cx<'a> {
     out: Details,
     /// The chords of the ground tracks, each with its sleeper half (metres) and its way's `way_key`.
     tracks: (Grid, Vec<([V; 2], f64, u32)>),
+    /// The chords of the ground roads and paths, each with its band: carriageway, shoulder and widening (metres);
+    /// and the widest band.
+    roads: (Grid, Vec<([V; 2], f64)>, f64),
 }
 
 impl Cx<'_> {
@@ -271,7 +282,7 @@ impl Cx<'_> {
         let s = records::label(self.words, l)[0] & 0xff;
         let state = match s {
             x if x == Surface::RailBed as u32 => State::Bed,
-            x if x == Surface::Crossing as u32 => State::Sunk,
+            x if x == Surface::Crossing as u32 => State::Crossing,
             _ => State::None,
         };
         (state, l)
@@ -296,6 +307,53 @@ impl Cx<'_> {
             let ([a, b], half, other) = chords[k as usize];
             other < key && to_segment(q, a, b) * mpu <= half
         })
+    }
+
+    /// The metres along a line from q (on a ground track's line, unit tangent t) to the nearest band of a ground road
+    /// or path that crosses it on a track's bed: 0 inside one. The line meets a chord's line at x, |s| from q at the
+    /// angle θ, so the band begins band / sin θ before x. A chord counts where x lies on it or within its band past an
+    /// end, and in a ground track's sleeper band: not past a deck's end.
+    fn crossing_m(&self, q: V, t: V) -> f64 {
+        let (grid, chords, widest) = &self.roads;
+        let mpu = self.mpu(q);
+        let mut best = f64::INFINITY;
+        grid.any(q, (RAMP_M + 3.0 * widest) / mpu, |k| {
+            let ([a, b], band) = chords[k as usize];
+            if to_segment(q, a, b) * mpu <= band {
+                best = 0.0;
+                return true;
+            }
+            let u = [b[0] - a[0], b[1] - a[1]];
+            let (cross, len) = (t[0] * u[1] - t[1] * u[0], libm::hypot(u[0], u[1]));
+            if cross.abs() < 1e-9 * len {
+                return false;
+            }
+            let w = [a[0] - q[0], a[1] - q[1]];
+            let (s, r) = ((w[0] * u[1] - w[1] * u[0]) / cross, (w[0] * t[1] - w[1] * t[0]) / cross);
+            let past = band / mpu / len;
+            let x = [q[0] + s * t[0], q[1] + s * t[1]];
+            if (-past..=1.0 + past).contains(&r) && self.on_track(x) {
+                best = best.min((s.abs() * mpu - band * len / cross.abs()).max(0.0));
+            }
+            false
+        });
+        best
+    }
+
+    fn on_track(&self, q: V) -> bool {
+        let (grid, chords) = &self.tracks;
+        let mpu = self.mpu(q);
+        grid.any(q, SLEEPER_HALF_M[0] / mpu, |k| {
+            to_segment(q, chords[k as usize].0[0], chords[k as usize].0[1]) * mpu <= chords[k as usize].1
+        })
+    }
+
+    /// A ring's offset: lower inside an earlier track's sleeper band, and sunk toward a crossing band from a line's
+    /// top over its face `top_m` to `FLUSH_M`.
+    fn offset_at(&self, at: &At, key: u32, top_m: f64) -> f64 {
+        let ramp = (self.crossing_m(at.p, at.t) / RAMP_M).min(1.0);
+        let stack = if self.lowered(at.p, key) { -STACK_M } else { 0.0 };
+        stack - (top_m - FLUSH_M) * (1.0 - ramp)
     }
 
     fn ring(&mut self, at: &At, label: u32, offset: f64) -> u32 {
@@ -371,7 +429,9 @@ impl Cx<'_> {
                 self.probe(&a, &b, &mut st);
             }
         }
-        let stands = |i: usize| st[i].state != State::None && st[i].state == st[i + 1].state && !st[i].gap;
+        let stands = |i: usize| st[i].state != State::None && st[i + 1].state != State::None && !st[i].gap;
+        let scale = if kind == RAIL && flags & 2 == 0 { RAIL_SCALE } else { 1.0 };
+        let top = SLEEPER_UP_M + TOP_M[kind as usize] * scale;
         let mut spans = Vec::new();
         let mut i = 0;
         while i + 1 < st.len() {
@@ -380,26 +440,25 @@ impl Cx<'_> {
                 continue;
             }
             let mut j = i;
-            while j + 1 < st.len() && stands(j) && st[j].state == st[i].state {
+            while j + 1 < st.len() && stands(j) {
                 j += 1;
             }
-            let sunk = u32::from(st[i].state == State::Sunk) << 2;
             let first = self.out.rings.len() as u32;
             for s in &st[i..=j] {
-                let offset = if self.lowered(s.at.p, key) { -STACK_M } else { 0.0 };
+                let offset = self.offset_at(&s.at, key, top);
                 self.ring(&s.at, s.label, offset);
             }
             for k in i..j {
                 let r = first + (k - i) as u32;
-                self.item(lerp(st[k].at.p, st[k + 1].at.p, 0.5), [word(kind, r, flags | sunk), code]);
-                if st[i].state == State::Bed {
+                self.item(lerp(st[k].at.p, st[k + 1].at.p, 0.5), [word(kind, r, flags), code]);
+                if st[k].state == State::Bed && st[k + 1].state == State::Bed {
                     let along = [st[k].at.along, st[k + 1].at.along];
                     spans.push(Span { ring: r, a: st[k].at.p, b: st[k + 1].at.p, along });
                 }
             }
             for (end, k, r) in [(0, i, first), (1, j, first + (j - i) as u32)] {
                 if !on_line(st[k].at.p) {
-                    self.item(st[k].at.p, [word(CAP, r, flags | sunk | end << 3 | kind << 4), code]);
+                    self.item(st[k].at.p, [word(CAP, r, flags | end << 3 | kind << 4), code]);
                 }
             }
             i = j;
@@ -458,8 +517,13 @@ impl Cx<'_> {
                     let x = exit(near, far);
                     let (state, label) = self.bed(x);
                     if state == State::Bed {
-                        let offset = if self.lowered(x, key) { -STACK_M } else { 0.0 };
-                        let ring = self.ring(&At { p: x, t, along: m, z: 0.0 }, label, offset);
+                        let at = At { p: x, t, along: m, z: 0.0 };
+                        let offset = self.offset_at(
+                            &at,
+                            key,
+                            SLEEPER_UP_M + TOP_M[0] * if gauge.narrow { 1.0 } else { RAIL_SCALE },
+                        );
+                        let ring = self.ring(&at, label, offset);
                         self.item(q, [seat(a) | SLEEPER << 28, ring | (AXIS | flags) << 28]);
                     }
                 }
@@ -736,8 +800,21 @@ pub fn place(g: &WayGraph, input: &crate::CellInput, rules: &Rules, words: &[u32
         }
     }
     let boxes: Vec<[f64; 4]> = chords.iter().map(|c| bbox(&c.0)).collect();
+    let beds = (Grid::of(8192.0, &boxes), chords);
+    let mut roads = Vec::new();
+    for w in (0..g.ways.len()).filter(|&w| ground(w, Family::Road) || ground(w, Family::Path)) {
+        let s = section(w);
+        let samples = &g.samples[g.ways[w].samples.start as usize..g.ways[w].samples.end as usize];
+        for p in samples.windows(2).filter(|p| p[1].span <= p[0].span + 1) {
+            let band = s.half_m + s.shoulder_m + p[0].widen_m.max(p[1].widen_m);
+            roads.push(([p[0].pos, p[1].pos].map(|q| q.map(f64::from)), band));
+        }
+    }
+    let widest = roads.iter().map(|r| r.1).fold(0.0, f64::max);
+    let boxes: Vec<[f64; 4]> = roads.iter().map(|c| bbox(&c.0)).collect();
+    let roads = (Grid::of(8192.0, &boxes), roads, widest);
     let origin_y = input.key.origin().y as f64;
-    let mut cx = Cx { g, words, origin_y, out: Details::default(), tracks: (Grid::of(8192.0, &boxes), chords) };
+    let mut cx = Cx { g, words, origin_y, out: Details::default(), tracks: beds, roads };
     for w in tracks {
         let s = section(w);
         let Some(finish) = s.finish else { continue };
@@ -770,7 +847,7 @@ pub fn closure(d: &Details) -> Vec<String> {
     let mut out = Vec::new();
     let line = |r: usize| d.rings.get(r).is_some_and(|x| on_line(x.p.map(f64::from)));
     let sweep = |i: &Item| i.kind() <= CABLE;
-    // A swept span's line: its kind and its first flags (side, narrow, sunk).
+    // A swept span's line: its kind and its first flags (side, narrow).
     let key = |i: &Item, r: usize| (r, i.kind(), (i.words[0] >> 16) & 7);
     let mut spans: Vec<(usize, u32, u32)> = d.items.iter().filter(|i| sweep(i)).map(|i| key(i, i.ring())).collect();
     spans.sort_unstable();
@@ -879,7 +956,7 @@ mod tests {
     }
 
     #[test]
-    fn a_road_across_a_track_sinks_its_rails_where_it_crosses_and_lays_no_sleeper_there() {
+    fn a_road_across_a_track_sinks_its_rails_continuously_and_lays_no_sleeper_in_it() {
         let rail = line("railway", &[("railway", "rail")], &[[-150.0, 0.0], [150.0, 0.0]]);
         let (c, s) = (libm::cos(PI_3), libm::sin(PI_3));
         let road = line("road", &[("highway", "residential")], &[[-80.0 * c, -80.0 * s], [80.0 * c, 80.0 * s]]);
@@ -887,26 +964,26 @@ mod tests {
         assert!(closure(&d).is_empty(), "{:?}", closure(&d));
         let surface = |q: V| find(&words, q).map(|l| records::label(&words, l)[0] & 0xff);
         let crossing = Some(Surface::Crossing as u32);
-        let sunk = |i: &Item| (i.words[0] >> 18) & 1 == 1;
-        let point = |r: usize| d.rings[r].p.map(f64::from);
-        let spans: Vec<&Item> = of(&d, RAIL).filter(|i| sunk(i)).collect();
-        assert!(spans.len() >= 4, "both rails run sunk through the road");
-        assert!(spans.iter().all(|i| surface(lerp(point(i.ring()), point(i.ring() + 1), 0.5)) == crossing));
-        // Each rail's run on the bed ends with a cap within BISECT_M of the crossing face, on its own line.
-        let caps: Vec<&Item> = of(&d, CAP)
-            .filter(|i| !sunk(i) && (point(i.ring())[0] - CELL_UNITS as f64 / 2.0).abs() * mpu() < 30.0)
-            .collect();
-        assert_eq!(caps.len(), 4);
-        for i in caps {
-            let r = &d.rings[i.ring()];
-            let ahead = if (i.words[0] >> 19) & 1 == 1 { 1.0 } else { -1.0 };
-            let q = lerp(
-                point(i.ring()),
-                [point(i.ring())[0] + r.tangent[0], point(i.ring())[1] + r.tangent[1]],
-                ahead * BISECT_M / mpu(),
-            );
-            assert_eq!(surface(q), crossing, "the cap at {:?}", r.p);
+        let x = |r: usize| (f64::from(d.rings[r].p[0]) - CELL_UNITS as f64 / 2.0) * mpu();
+        // A rail head's height over the face under its ring.
+        let top = SLEEPER_UP_M + TOP_M[0] * RAIL_SCALE;
+        let head = |r: usize| d.rings[r].offset + top;
+        let spans: Vec<usize> = of(&d, RAIL).map(|i| i.ring()).filter(|&r| x(r).abs() < 30.0).collect();
+        assert!(
+            spans.iter().any(|&r| surface(d.rings[r].p.map(f64::from)) == crossing),
+            "both rails run through the road"
+        );
+        for &r in &spans {
+            let (dx, dh) = ((x(r + 1) - x(r)).abs(), (head(r + 1) - head(r)).abs());
+            assert!(dh <= (top - FLUSH_M) / RAMP_M * dx + 1e-6, "a head steps {dh} m over {dx} m at x {}", x(r));
+            if surface(d.rings[r].p.map(f64::from)) == crossing {
+                assert!((head(r) - FLUSH_M).abs() < 1e-6, "flush in the crossing at x {}", x(r));
+            }
+            if x(r).abs() > 15.0 {
+                assert!((head(r) - top).abs() < 1e-6, "standing at x {}", x(r));
+            }
         }
+        assert!(of(&d, CAP).all(|i| x(i.ring()).abs() > 5.0), "no rail ends at the crossing");
         assert!(of(&d, SLEEPER).all(|i| surface(middle(cell(), &d, i)) != crossing));
     }
 

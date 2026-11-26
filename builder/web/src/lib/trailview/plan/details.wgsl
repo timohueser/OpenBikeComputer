@@ -21,8 +21,7 @@ const D_SLEEPER_DEPTH_M: f32 = 0.12;
 const D_SLEEPER_ALONG_M: f32 = 0.13;
 const D_ROLLER_M: vec3f = vec3f(0.16, 0.05, 0.11);
 const D_RAIL_SCALE: f32 = 1.2;
-// A sunk rail's top over its crossing face; a tread's foot under its face.
-const D_FLUSH_M: f32 = 0.004;
+// A tread's foot under its face.
 const D_TREAD_SINK_M: f32 = 0.05;
 // As roads/parts.ts: a log's radius, its axis over the way's face and its foot under it, its half-lengths; its turn at
 // most (roads/tracks.ts).
@@ -238,12 +237,11 @@ fn d_vertex(index: u32, item: u32) -> DVertex {
     return out;
 }
 
-// Point k of the section of a swept part at ring r: on its line, its top `FLUSH_M` over the face where it is sunk.
+// Point k of the section of a swept part at ring r, on its line: the ring's offset sinks it toward a crossing.
 fn d_swept(kind: u32, bits: u32, r: DRing, k: u32, code: u32) -> DVertex {
     let p = d_section(kind, k);
     let scale = select(1.0, D_RAIL_SCALE, kind == D_RAIL && (bits & 2u) == 0u);
-    let top = select(0.09, 0.125, kind == D_RAIL) * scale;
-    let up = select(D_SLEEPER_UP_M + p.y * scale, D_FLUSH_M - top + p.y * scale, (bits & 4u) != 0u);
+    let up = D_SLEEPER_UP_M + p.y * scale;
     // A rail's frame across is the track's: its middle lies a gauge to the side of the rail's.
     let middle = select(0.0, select(-1.0, 1.0, (bits & 1u) != 0u) * rail_gauge(code), kind == D_RAIL);
     return DVertex(r.v.s + d_left(r.t) * p.x, r.v.h + up, 0u, middle + p.x, r.along / SLEEPER_SPACING_M, true);
