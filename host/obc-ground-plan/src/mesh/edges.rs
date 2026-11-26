@@ -199,11 +199,12 @@ fn row_of(y: f64) -> i64 {
     libm::floor(y / BUCKET) as i64
 }
 
-/// What the rules read of the features and the graph: the buildings' boxes, the mapped guard rails, the water areas,
+/// What the rules read of the features and the graph: the buildings' boxes with their tile's square, the mapped guard
+/// rails, the water areas,
 /// and, at the first ring that asks, the chords of the ground ways but water and paths with the widest paved half-width
 /// of them.
 struct Context<'a> {
-    buildings: (Grid, Vec<[f64; 4]>),
+    buildings: (Grid, Vec<[[f64; 4]; 2]>),
     rails: (Grid, Vec<[[f64; 2]; 2]>),
     water: Vec<Water>,
     ways: OnceCell<(Grid, Vec<Chord>, f64)>,
@@ -216,6 +217,10 @@ impl<'a> Context<'a> {
     fn new(input: &'a CellInput, g: &'a WayGraph, half: &'a [Option<Info>]) -> Context<'a> {
         let o = input.key.origin();
         let local = |p: &GlobalPoint| [(p.x - o.x) as f64, (p.y - o.y) as f64];
+        let square = |t| {
+            let [x0, y0, x1, y1] = tile_square(t);
+            [x0 - o.x, y0 - o.y, x1 - o.x, y1 - o.y].map(|v| v as f64)
+        };
         let (mut boxes, mut segments, mut water) = (Vec::new(), Vec::new(), Vec::<Water>::new());
         for f in &input.features {
             for part in &f.parts {
@@ -223,8 +228,7 @@ impl<'a> Context<'a> {
                 if WATER.contains(&f.kind.as_str()) && f.geometry == Geometry::Area {
                     // A polygon's outer ring comes first, then its holes.
                     if part.outer {
-                        let [x0, y0, x1, y1] = tile_square(part.tile);
-                        water.push(([x0 - o.x, y0 - o.y, x1 - o.x, y1 - o.y].map(|v| v as f64), BTreeMap::new()));
+                        water.push((square(part.tile), BTreeMap::new()));
                     }
                     let rows = &mut water.last_mut().expect("an outer ring first").1;
                     for (&a, &b) in pts.iter().zip(pts.iter().cycle().skip(1)) {
@@ -234,14 +238,14 @@ impl<'a> Context<'a> {
                     }
                 }
                 if f.kind == "building" && f.geometry == Geometry::Area && part.outer {
-                    boxes.push(bbox(&pts));
+                    boxes.push([bbox(&pts), square(part.tile)]);
                 }
                 if f.kind == "guard-rail" && f.geometry == Geometry::Line {
                     segments.extend(pts.windows(2).map(|w| [w[0], w[1]]));
                 }
             }
         }
-        let buildings = (Grid::of(4.0 * BUCKET, &boxes), boxes);
+        let buildings = (Grid::of(4.0 * BUCKET, &boxes.iter().map(|b| b[0]).collect::<Vec<_>>()), boxes);
         let rails = (Grid::of(BUCKET, &segments.iter().map(|s| bbox(s)).collect::<Vec<_>>()), segments);
         Context { buildings, rails, water, ways: OnceCell::new(), g, half, input }
     }
@@ -281,13 +285,16 @@ impl<'a> Context<'a> {
         })
     }
 
+    /// Whether q lies in a town, by the copies of the buildings in the tile that owns q: a tile holds each building
+    /// once, and its buffer (`buffer_m` of the features spec) holds every building within `TOWN_M`.
     fn town(&self, q: [f64; 2], mpu: f64) -> bool {
         let (r, (grid, boxes)) = (TOWN_M / mpu, &self.buildings);
         let (mut found, mut n) = ([u32::MAX; TOWN_BUILDINGS], 0);
         grid.any(q, r, |k| {
-            let [x0, y0, x1, y1] = boxes[k as usize];
+            let [[x0, y0, x1, y1], [s0, t0, s1, t1]] = boxes[k as usize];
             let d = libm::hypot((x0 - q[0]).max(q[0] - x1).max(0.0), (y0 - q[1]).max(q[1] - y1).max(0.0));
-            if d <= r && !found.contains(&k) {
+            let owned = (s0..s1).contains(&q[0]) && (t0..t1).contains(&q[1]);
+            if d <= r && owned && !found.contains(&k) {
                 (found[n], n) = (k, n + 1);
             }
             n == TOWN_BUILDINGS
@@ -604,9 +611,10 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
         })
     };
     let c = CELL_UNITS as f64;
-    // A ring this near the cell square may own a piece in it.
-    let near_cell = |q: [f64; 2], mpu: f64| {
-        let r = 2.0 * RING_M / mpu;
+    // A ring this near the cell square may own a piece in it; `past` widens the test for a chain's point by the metres
+    // from it to its rings.
+    let near_cell = |q: [f64; 2], mpu: f64, past: f64| {
+        let r = (2.0 * RING_M + past) / mpu;
         q[0] > -r && q[1] > -r && q[0] < c + r && q[1] < c + r
     };
     let mapped_any = input.features.iter().any(|f| f.kind == "guard-rail");
@@ -634,7 +642,8 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
             let pts = &pts[from..to];
             let n = pts.len();
             let mpu: Vec<f64> = pts.iter().map(|p| mpu_at(p.pos)).collect();
-            if n < 2 || !(0..n).any(|i| near_cell(pts[i].pos, mpu[i])) {
+            let edge_m = |i: usize| info[pts[i].way as usize].map_or(0.0, |x| x.1) + pts[i].widen;
+            if n < 2 || !(0..n).any(|i| near_cell(pts[i].pos, mpu[i], edge_m(i))) {
                 continue;
             }
             // Stroke metres in whole 1/1024 m, each step at the mean scale of its two rings: their sums and
@@ -663,13 +672,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                     let out = add(rings[i].0, rings[i].1, DROP_OUT_M / mpu[i]);
                     rings[i].2 && (ctx.terrain(out).is_some_and(|t| z - t > DROP_M) || ctx.water(out))
                 });
-                // A stop changes a share only within `JOIN_M` of a ring where a rail may stand, so the town test runs
-                // only there.
                 let may = metres_to(&m, &vec![false; n], &flat(n, |i| mapped[i] || drops[i]));
-                let town = flat(n, |i| rings[i].2 && may[i] <= JOIN_M && ctx.town(rings[i].0, mpu[i]));
-                let need = flat(n, |i| mapped[i] || (drops[i] && !town[i]));
-                let mut towns: Vec<f64> = town.iter().map(|&t| f64::from(u8::from(t))).collect();
-                without_stubs(&mut towns, &m, BREAK_M, ends);
                 let fold = |j: usize| dot(sub(rings[j + 1].0, rings[j].0), add(pts[j].t, pts[j + 1].t, 1.0)) <= 0.0;
                 let turn = |i: usize| {
                     let lo = (0..=i).rev().find(|&k| m[i] - m[k] >= BEND_M).unwrap_or(0);
@@ -680,13 +683,19 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                 let deli = flat(n, |i| {
                     let on = |step: f64| libm::fmod(pts[i].along, step) == 0.0;
                     rings[i].2
-                        && pts[i].post
                         && (on(STEP_M) || (on(BEND_STEP_M) && turn(i)))
-                        && near_cell(rings[i].0, mpu[i])
+                        && near_cell(rings[i].0, mpu[i], 0.0)
                         && !ctx.town(rings[i].0, mpu[i])
                 });
-                // Another way's band is read only where a stop can change a share or a delineator.
+                // A stop changes a share only within `JOIN_M` of a ring where a rail may stand, and a delineator only
+                // within `CLEAR_M` of it, so the band and the town tests run only there; the town test `BREAK_M` and a
+                // ring's step farther, so that a town that reaches `CLEAR_M` has its length.
                 let to_deli = metres_to(&m, &vec![false; n], &deli);
+                let clears = |i: usize, past: f64| may[i] <= JOIN_M || to_deli[i] < CLEAR_M + past;
+                let town = flat(n, |i| rings[i].2 && clears(i, BREAK_M + RING_M) && ctx.town(rings[i].0, mpu[i]));
+                let mut towns: Vec<f64> = town.iter().map(|&t| f64::from(u8::from(t))).collect();
+                without_stubs(&mut towns, &m, BREAK_M, ends);
+                let need = flat(n, |i| mapped[i] || (drops[i] && towns[i] == 0.0));
                 let stops = flat(n, |i| {
                     let bit = if side * pts[i].dir > 0.0 { 1 } else { 2 };
                     let front = add(rings[i].0, rings[i].1, -BEAM_FRONT_M / mpu[i]);
@@ -698,7 +707,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                         || (towns[i] > 0.0 && !mapped[i])
                         || (i > 0 && fold(i - 1))
                         || (i + 1 < n && fold(i))
-                        || ((may[i] <= JOIN_M || to_deli[i] < CLEAR_M) && ctx.in_other(front, &chain, mpu[i]))
+                        || (clears(i, 0.0) && ctx.in_other(front, &chain, mpu[i]))
                 });
                 let (share, to_stop) = shares(&m, &need, &stops, ends);
                 let ring = |i: usize| Ring {
@@ -716,7 +725,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                     let j = (f..n).find(|&k| sunk(k + 1) && sunk(k + 2)).expect("the last ring ends a run");
                     let (lo, hi) = (f.saturating_sub(1), (j + 1).min(n - 1));
                     let run: Vec<Ring> = (lo..=hi).map(ring).collect();
-                    if run.iter().any(|r| near_cell(r.edge, r.mpu)) {
+                    if run.iter().any(|r| near_cell(r.edge, r.mpu, 0.0)) {
                         out.rails.push(run);
                         // A post at each `POST_M` of its way's stroke metres between two rings of one way, where
                         // the beam stands: its point and normal out of the road are theirs, mixed from the ring of
@@ -822,17 +831,14 @@ pub(super) fn solids(b: &mut Build, edges: &Edges, words: &[u32]) {
     let east_north = |v: [f64; 2]| [v[0], -v[1], 0.0];
     let at = |r: &Ring, d: f64, a: f64| add(add(r.edge, r.out, -d / r.mpu), r.along, a / r.mpu);
     // A prism at ring r, its middle `d` in from the edge and its plan about that (in, along), cut by the cell square:
-    // one between each two offsets of `up`, on the label at its middle, or where a neighbour holds that, at its first
-    // point.
+    // through the offsets of `up`, on the label at its middle, or where a neighbour holds that, at its first point.
     let boxed = |b: &mut Build, part: usize, r: &Ring, d: f64, plan: &[[f64; 2]], up: &[f64]| {
         let mid = at(r, d, 0.0);
         let o = rounded(mid);
         let ring = clip(o, &plan.iter().map(|&[x, y]| sub(at(r, d + x, y), o.map(f64::from))).collect::<Vec<_>>());
         let inside = mid.iter().all(|v| (0.0..=c).contains(v));
         if let Some(label) = ring.first().and_then(|&p| find(words, (if inside { o } else { p }).map(f64::from))) {
-            for w in up.windows(2) {
-                prism(b, part, &ring, (label, w[1]), (label, w[0]));
-            }
+            prism(b, part, &ring, &up.iter().map(|&u| (label, u)).collect::<Vec<_>>());
         }
     };
     for run in &edges.rails {
