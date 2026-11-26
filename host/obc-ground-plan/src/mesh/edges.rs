@@ -674,9 +674,9 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                 // only there.
                 let may = metres_to(&m, &vec![false; n], &flat(n, |i| mapped[i] || drops[i]));
                 let town = flat(n, |i| rings[i].2 && may[i] <= JOIN_M && ctx.town(rings[i].0, mpu[i]));
-                let need = flat(n, |i| mapped[i] || (drops[i] && !town[i]));
                 let mut towns: Vec<f64> = town.iter().map(|&t| f64::from(u8::from(t))).collect();
                 without_stubs(&mut towns, &m, BREAK_M, ends);
+                let need = flat(n, |i| mapped[i] || (drops[i] && towns[i] == 0.0));
                 let fold = |j: usize| dot(sub(rings[j + 1].0, rings[j].0), add(pts[j].t, pts[j + 1].t, 1.0)) <= 0.0;
                 let turn = |i: usize| {
                     let lo = (0..=i).rev().find(|&k| m[i] - m[k] >= BEND_M).unwrap_or(0);
