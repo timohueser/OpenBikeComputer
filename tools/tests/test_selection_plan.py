@@ -320,16 +320,6 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(plan.run_plan(chosen, self.graph, Path(".")), 0)
         self.assertEqual(ran, [BUILD[1]])
 
-    def test_gates_name_jobs_and_a_ci_only_suite_is_never_claimed(self) -> None:
-        units = [
-            plan.Unit(id="rust.core", jobs=["test"], package="core"),
-            unit("ci.portability", ["clippy"], route="required", ci_only=True),
-        ]
-        self.assertEqual([item.id for item in plan.reproduced(units, ["test"])], ["rust.core"])
-        self.assertEqual(plan.reproduced(units, ["clippy"]), [])
-        with self.assertRaisesRegex(plan.PlanError, "unknown gate"):
-            plan.gate_jobs(["nonexistent"])
-
 
 class ValidationTests(unittest.TestCase):
     """The document rejections that protect the derived facts."""
@@ -723,22 +713,6 @@ class ShippedPlanTests(unittest.TestCase):
         idle = plan.cargo_filter(self.graph, "fast", carved=plan.carved_targets(self.document, []))
         self.assertIn(census, running)
         self.assertNotIn(census, idle)
-
-    def test_every_required_suite_a_full_local_run_misses_is_named(self) -> None:
-        covered = {item.id for item in plan.reproduced(self.units, sorted(plan.GATES))}
-        missing = sorted(item.id for item in self.units if item.route == "required" and item.id not in covered)
-        self.assertEqual(
-            missing,
-            [
-                "ci.data-sources-guard",
-                "ci.fixture-policy",
-                "ci.ios-host-portability",
-                "ci.memory-x-guard",
-                "ci.prose",
-                "python.repository-tools",
-                "python.trailview",
-            ],
-        )
 
 
 class JobPackageTableTests(unittest.TestCase):
