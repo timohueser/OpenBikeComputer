@@ -1,6 +1,6 @@
 # Builder
 
-The web app of the rider and what it needs in the browser: the Svelte app in `web/`, three
+The web app of the rider and what it needs in the browser: the Svelte app in `web/`, four
 Rust-to-WebAssembly bridges, the native USB transport, the map presets and OSM test fixtures.
 
 `web/` builds three pages. The planner is the app at `/plan/` of the site and the only page
@@ -50,7 +50,7 @@ and `web.ux-study`; `web.trailview-gpu` is manual and needs a GPU.
 
 ## Gotchas
 
-- The `pkg/` outputs of the bridges are generated and ignored. Vitest and `svelte-check` need
+- The outputs of the bridges are generated and ignored. Vitest and `svelte-check` need
   them. `obc site` builds them every time, because an existing output does not prove that it
   matches its Rust source.
 - The simulated device (`web/test-support/flat-device/`, `lib/usb/flat-device.ts`,
