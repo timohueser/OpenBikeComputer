@@ -336,6 +336,14 @@ describe('runs longer than one request', () => {
             [moved(48.03).slice(1, 4), `one:${coordinates[1]}`, `one:${coordinates[3]}`], [moved(48.03), undefined, undefined]]);
     });
 
+    it('lets a visit inside a run turn back, but not a shaping point or a visit that ends the run', async () => {
+        const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
+        vi.stubGlobal('fetch', fetch);
+        const coordinates = run(5);
+        await calculateLine(plan(coordinates, { 1: { kind: 'waypoint' }, 3: { kind: 'waypoint' }, 4: { leg: 'straight' } }), signal, new LegCache());
+        expect(bodies(fetch)).toEqual([expect.objectContaining({ points: coordinates.slice(0, 4), turnarounds: [1] })]);
+    });
+
     it('keeps consecutive turnarounds inside the request of an edit', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
         vi.stubGlobal('fetch', fetch);

@@ -165,7 +165,7 @@ const keys = new WeakMap<Trip, string>();
 export function routingKey(trip: Trip): string {
     let key = keys.get(trip);
     if (key === undefined) {
-        key = JSON.stringify([trip.bike ?? 'touring', planPreset(trip.bike, trip.preset), orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.anchor, p.turnaround])]);
+        key = JSON.stringify([trip.bike ?? 'touring', planPreset(trip.bike, trip.preset), orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.kind === 'waypoint', p.anchor, p.turnaround])]);
         keys.set(trip, key);
     }
     return key;
@@ -194,14 +194,15 @@ function expand(origin: Coordinate, run: RoutePoint[], leftOut: Set<string>) {
             coordinates.push(point.coordinate);
             owners.push(point);
             ends.set(coordinates.length - 2, point.id);
-            if (point.turnaround && n < run.length - 1) turnarounds.push(coordinates.length - 1);
+            if ((point.turnaround || point.kind === 'waypoint') && n < run.length - 1) turnarounds.push(coordinates.length - 1);
         }
     });
     return { coordinates, turnarounds, ends, owners };
 }
 
-/** Consecutive routed legs form one run, so a shaping point keeps its road direction. A point with no road near it is left
- * out, and a leg with no legal path is a gap, so that one bad point or leg never hides the line. */
+/** Consecutive routed legs form one run, so a shaping point keeps its road direction; a visit inside a run is a turnaround,
+ * so the route may turn back there. A point with no road near it is left out, and a leg with no legal path is a gap, so that
+ * one bad point or leg never hides the line. */
 export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCache): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
