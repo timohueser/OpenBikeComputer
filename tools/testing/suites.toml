@@ -146,9 +146,10 @@ triggers = ["builder/presets/**", "data/sources.toml"]
 name = "obc-map-core"
 triggers = ["builder/presets/**"]
 
+# Its steepness test reads the shared grade cases of the web app with `include_str!`.
 [[package]]
 name = "planner-router-build"
-triggers = ["data/sources.toml"]
+triggers = ["data/sources.toml", "builder/web/src/lib/planner/grade-cases.json"]
 
 # Both read the checked-in assembly fixture, so a change under `fixtures/` reaches them.
 [[package]]

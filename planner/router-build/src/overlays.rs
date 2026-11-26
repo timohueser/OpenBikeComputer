@@ -195,7 +195,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
     database.close().map_err(|(_, error)| text(error))
 }
 
-fn encode_coordinates(coordinates: &[[i32; 2]]) -> Result<Vec<u8>, String> {
+pub(crate) fn encode_coordinates(coordinates: &[[i32; 2]]) -> Result<Vec<u8>, String> {
     let mut previous = [0i32; 2];
     let deltas: Vec<_> = coordinates
         .iter()

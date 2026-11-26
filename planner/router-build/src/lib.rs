@@ -19,6 +19,7 @@ pub mod step;
 mod suitability;
 pub mod terrain;
 mod traffic;
+pub mod ways;
 mod work;
 
 use base::{Dictionary, Topology};

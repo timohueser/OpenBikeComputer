@@ -1,7 +1,8 @@
 //! The planner routing steps of `obc data`. Three work layers hold the bake up to the package, so
 //! that a stop or a new profile list repeats only the steps after it: `planner/routing-source`
 //! (the OSM objects with their facts), `planner/routing-roads` (the roads with their terrain and
-//! their topology) and `planner/routing-costs` (the costs of each profile). `planner/routing`
+//! their topology) and `planner/routing-costs` (the costs of each profile). `planner/routing-ways`
+//! writes the stretches of the ways with their steepness and trail grades. `planner/routing`
 //! writes the package, its overlay index, its route catalog, the routing blocks and the routes of
 //! each grid cell. `planner/route-facts` writes the facts of the routes of each grid cell.
 
@@ -28,6 +29,7 @@ use crate::{catalog, grid, overlays, Costs, Graph, Limits, SETS};
 pub const SOURCE: &str = "planner/routing-source";
 pub const ROADS: &str = "planner/routing-roads";
 pub const COSTS: &str = "planner/routing-costs";
+pub const WAYS: &str = "planner/routing-ways";
 pub const FACTS: &str = "planner/route-facts";
 pub const ROUTE_SOURCES: &str = "planner/route-sources";
 
@@ -186,6 +188,23 @@ pub fn costs(request: &Request) -> Result<(), String> {
     let mut layout = output(request, COSTS)?;
     costs.save(&mut layout)?;
     layout.finish()
+}
+
+/// The ways step. It reads the source and the roads layers. The layer `ways/` holds `ways.sqlite`
+/// (`ways::write`). Its metrics are the counts of the ways and of the stretches, and the share of
+/// the length without a steepness class.
+pub fn ways(request: &Request) -> Result<(), String> {
+    let _guard = start()?;
+    Guard::stage("open");
+    let (graph, _, _) = graph(request)?;
+    Guard::stage("ways");
+    eprintln!("Writing the stretches of {} directed roads", graph.roads.len());
+    let folder = request.output.join(folder_name(WAYS));
+    fs::create_dir(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let report = crate::ways::write(&folder.join(crate::ways::FILE), &graph)?;
+    let unclassified = report.unclassified_m / report.length_m.max(1.0);
+    let metrics = json!({"ways": report.ways, "stretches": report.stretches, "unclassified_share": unclassified});
+    fs::write(&request.metrics, metrics.to_string()).map_err(|e| e.to_string())
 }
 
 /// The package step. It reads the three work layers, the options `region`, `bounds` and
