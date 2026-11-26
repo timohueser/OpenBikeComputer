@@ -104,7 +104,7 @@ format-card *args:
     _run cargo run --release -p obc-usb --bin obc-format-card -- "$@"
 
 # Build & flash the board. Opts (space-separated): debug-uart  factory-demo-ride  build.
-# The radio and the USB plane are in every image (#889, #1530) — there is nothing to turn on.
+# The radio and the USB plane are in every image — there is nothing to turn on.
 # e.g.  obc flash            (real sensors)   obc flash debug-uart
 #       obc flash build      (compile only, no flash)
 [doc("Build & flash the board. Opts: debug-uart factory-demo-ride build (e.g. obc flash factory-demo-ride)")]
@@ -955,8 +955,7 @@ setup:
     mkdir -p "$HOME/.local/bin"
     ln -sf "$tools/obc" "$HOME/.local/bin/obc"
     _ok "linked ~/.local/bin/obc → $tools/obc"
-    # Completion is written for bash, but zsh runs it fine behind `bashcompinit` — and a zsh user
-    # with no ~/.bashrc used to get a cheerful "wired in" for a file their shell never reads. Wire
+    # Completion is written for bash, but zsh runs it fine behind `bashcompinit`. Wire
     # whichever rc files actually exist, plus the one $SHELL implies.
     comp="$tools/obc.bash"; rcs=()
     [[ -f "$HOME/.bashrc" || "$SHELL" == */bash ]] && rcs+=("$HOME/.bashrc")
