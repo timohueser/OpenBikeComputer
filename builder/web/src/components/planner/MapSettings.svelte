@@ -3,12 +3,16 @@
     import MapControlPanel from './MapControlPanel.svelte';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import type { DataLayer } from '../../lib/planner/layers/data-layer';
+    import type { WayLayer } from '../../lib/planner/way-layers';
 
-    let { contours = $bindable(), slopeAngle = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), theme = 'light' }: {
+    let { contours = $bindable(), slopeAngle = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), ways = false, wayLayer = $bindable(null), theme = 'light' }: {
         /** The data layers of the region; the map shows one or none. */
         dataLayers?: DataLayer[];
         /** The id of the shown data layer, or '' for none. */
         shownLayer?: string;
+        /** The release has the tiles of the ways; the map shows one layer of them or none. */
+        ways?: boolean;
+        wayLayer?: WayLayer | null;
         contours: boolean;
         slopeAngle: boolean;
         mapOverlays: OverlayOptions;
@@ -20,10 +24,12 @@
 
     interface Tile { id: string; label: string; on: boolean; toggle: () => void; icon?: string }
 
+    const wayLayers = [{ id: 'steepness', label: 'Steepness' }, { id: 'trail-grade', label: 'Trail grade' }] as const;
     const networks = [{ id: 'cycling', label: 'Cycling', icon: 'touring' }, { id: 'hiking', label: 'Hiking', icon: 'hiking' }, { id: 'mtb', label: 'MTB', icon: 'mtb' }] as const;
     const rows = $derived<{ label: string; tiles: Tile[] }[]>([
         { label: 'Routes, one at a time', tiles: networks.map(({ id, label, icon }) => ({ id, label, icon, on: mapOverlays.network === id,
             toggle: () => mapOverlays = { ...mapOverlays, network: mapOverlays.network === id ? 'none' : id } })) },
+        { label: 'Roads, one at a time', tiles: ways ? wayLayers.map(({ id, label }) => ({ id, label, on: wayLayer === id, toggle: () => wayLayer = wayLayer === id ? null : id })) : [] },
         { label: 'Conditions, one at a time', tiles: dataLayers.map(({ id, label }) => ({ id, label, on: shownLayer === id, toggle: () => shownLayer = shownLayer === id ? '' : id })) },
         { label: 'Map', tiles: [
             { id: 'contours', label: 'Contours', on: contours, toggle: () => contours = !contours },

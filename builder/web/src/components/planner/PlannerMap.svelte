@@ -20,6 +20,7 @@
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection, type RouteHint } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
     import { SlopeAngle } from "../../lib/planner/layers/slope-angle";
+    import { syncWays, type WayLayer } from "../../lib/planner/way-layers";
     import { nightView } from "../../lib/planner/view-change";
     import { mapCallout, type MapCallout } from "../../lib/planner/map-callout";
     import { dayLook, pinLook, type Week } from "../../lib/planner/week";
@@ -29,7 +30,7 @@
 
     let {
         segments = [], gaps = [], coordinates = [], highlightedLines = [], points = [], selectedId = null, hoveredId = null, callout = null,
-        drawing = null, highlightedPlaceIds = [], theme = "light", contours = true, slopeAngle = false, pickMode = false,
+        drawing = null, highlightedPlaceIds = [], theme = "light", contours = true, slopeAngle = false, wayLayer = null, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         placeKinds = [], highlightedKind = null, mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
         lines = [], onPick = null, part = null, week = null, lit = null, towns = [], litStop = null,
@@ -51,6 +52,8 @@
         hoveredId?: string | null;
         /** While picking, any map click places the overnight; the line takes no edits. */
         pickMode?: boolean; showRoute?: boolean; theme?: "light" | "dark"; contours?: boolean; slopeAngle?: boolean;
+        /** The layer of the ways that the map draws; the trail grade follows the travel mode. */
+        wayLayer?: WayLayer | null;
         /** The kinds of places that the map draws, and the one of them that it highlights. */
         placeKinds?: PlaceCategory[]; highlightedKind?: PlaceCategory | null;
         mapOverlays?: OverlayOptions;
@@ -726,6 +729,10 @@
     const slope = new SlopeAngle();
     // `ready` runs it again after a change of the theme, which loads a new style without the layer.
     $effect(() => { const shown = slopeAngle; if (map && ready) slope.sync(map, shown); });
+    $effect(() => {
+        const shown = wayLayer && { layer: wayLayer, hiking: accessMode === "walking", theme };
+        if (map && ready && config.layers.ways) syncWays(map, config.layers.ways, shown);
+    });
     const notes: maplibregl.Marker[] = [];
     $effect(() => {
         const list = showRoute ? dataLayer?.notes ?? [] : [];

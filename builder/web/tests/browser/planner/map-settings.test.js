@@ -12,26 +12,29 @@ const ARCHIVES = {
 const overlap = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 const inside = (inner, outer) => inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
 
-/** The planner at phone width with the map settings open. */
+/** The planner at phone width with the map settings open, and the paths that it requests from then on. */
 async function settings(page) {
+  const requested = [];
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route(url => url.hostname !== '127.0.0.1', route => {
     const request = route.request();
     if (request.method() === 'OPTIONS') return route.fulfill(CORS_PREFLIGHT);
-    const [, name, tile] = /^\/([a-z-]+)(\.json|\/)/.exec(new URL(request.url()).pathname) ?? [];
+    const { pathname } = new URL(request.url());
+    requested.push(pathname);
+    const [, name, tile] = /^\/([a-z-]+)(\.json|\/)/.exec(pathname) ?? [];
     if (ARCHIVES[name]) return route.fulfill(tile === '/' ? { headers: CORS_PREFLIGHT.headers, status: 204 } : { headers: CORS_PREFLIGHT.headers, json: ARCHIVES[name] });
     const response = respond(request);
     return response ? route.fulfill(response) : route.abort();
   });
   await page.goto('/planner.html#/planner');
   await page.getByRole('button', { name: 'Map settings' }).click();
-  return page.getByRole('dialog', { name: 'Map settings' });
+  return { popup: page.getByRole('dialog', { name: 'Map settings' }), requested };
 }
 
 test('the map settings show their pictures, and the legend of a data layer stands on the map above the date bar', async ({ page }) => {
-  const popup = await settings(page);
+  const { popup } = await settings(page);
   const pictures = popup.locator('img');
-  await expect(pictures).toHaveCount(9);
+  await expect(pictures).toHaveCount(11);
   await expect.poll(() => pictures.evaluateAll(images => images.filter(image => !image.complete || !image.naturalWidth).length)).toBe(0);
 
   // Wind has the widest legend.
@@ -47,8 +50,8 @@ test('the map settings show their pictures, and the legend of a data layer stand
   expect(legendBox.x >= dateBox.x && legendBox.x + legendBox.width <= dateBox.x + dateBox.width).toBe(true);
 });
 
-test('the legends of the signed routes, the slope angle and the snow layer stand over the date bar, clear of the map controls and of the scale bar', async ({ page }) => {
-  const popup = await settings(page);
+test('the legends of the signed routes, the roads, the slope angle and the snow layer stand over the date bar, clear of the map controls and of the scale bar', async ({ page }) => {
+  const { popup, requested } = await settings(page);
   await popup.getByRole('button', { name: 'Slope angle', exact: true }).click();
   await popup.getByRole('button', { name: 'Snow', exact: true }).click();
   await page.keyboard.press('Escape');
@@ -68,9 +71,19 @@ test('the legends of the signed routes, the slope angle and the snow layer stand
   expect((await slope.boundingBox()).height).toBe(far.height);
   await expect(snow).toBeVisible();
 
-  const stack = [routes, slope, snow, page.getByRole('group', { name: 'Layer date' })];
+  // The map requests the ways only while a layer of them is on.
+  const ways = () => requested.filter(path => path.startsWith('/ways')).length;
+  expect(ways()).toBe(0);
+  await page.getByRole('button', { name: 'Map settings' }).click();
+  await popup.getByRole('button', { name: 'Steepness', exact: true }).click();
+  await page.keyboard.press('Escape');
+  const roads = page.getByRole('status').filter({ hasText: 'Steepness' });
+  await expect(roads.getByRole('list', { name: 'Steepness colours' }).getByRole('listitem')).toHaveCount(7);
+  await expect.poll(ways).toBeGreaterThan(1);
+
+  const stack = [routes, roads, slope, snow, page.getByRole('group', { name: 'Layer date' })];
   const [map, controls, scale, ...boxes] = await Promise.all([page.locator('.map-area'), page.getByLabel('Map controls'), page.locator('.maplibregl-ctrl-scale'), ...stack].map(part => part.boundingBox()));
   for (const box of boxes) expect(inside(box, map) && !overlap(box, controls) && !overlap(box, scale)).toBe(true);
-  // From the top: the signed routes, the slope angle, the conditions layer, its date bar.
+  // From the top: the signed routes, the roads, the slope angle, the conditions layer, its date bar.
   expect(boxes.slice(1).every((box, i) => boxes[i].y + boxes[i].height <= box.y)).toBe(true);
 });

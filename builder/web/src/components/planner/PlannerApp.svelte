@@ -29,6 +29,8 @@
     import { hasTrailView } from '../../lib/planner/trailview';
     import { dataLayers } from '../../lib/planner/layers/registry';
     import { SLOPE_ANGLE_ZOOM, slopeLegend } from '../../lib/planner/layers/slope-angle';
+    import { WAYS_ZOOM, wayLegend, type WayLayer } from '../../lib/planner/way-layers';
+    import { fineTerrain } from '../../lib/trailview/stream/terrain';
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import { bandShare, networkLegend, routeKindTitles, type OverlayOptions } from '../../lib/planner/route-overlays';
     import type { BikeType } from '../../lib/planner/riding-profiles';
@@ -146,19 +148,13 @@
     let hoveredId = $state<string | null>(null);
     let contours = $state(true);
     let slopeAngle = $state(false);
+    let wayLayer = $state<WayLayer | null>(null);
     let mapZoom = $state(0);
     let mapOverlays = $state<OverlayOptions>({ network: 'cycling', access: true });
     let showRoute = $state(true);
     // The map shows one data layer at a time; '' shows none.
     let shownLayerId = $state('');
     const dataLayer = $derived(dataLayers.find(layer => layer.id === shownLayerId));
-    /** The legends of the layers that are on, from the top of their stack on the map. */
-    const legends = $derived<MapLegend[]>([
-        ...(mapOverlays.network !== 'none' ? [{ label: routeKindTitles[mapOverlays.network], legend: networkLegend(theme) }] : []),
-        ...(slopeAngle ? [{ label: 'Slope angle', legend: slopeLegend, ...(mapZoom < SLOPE_ANGLE_ZOOM ? { note: 'zoom in', faint: true } : {}) }] : []),
-        ...(dataLayer ? [{ label: dataLayer.label, ...(dataLayer.error ? { text: dataLayer.error } : dataLayer.source ? { legend: dataLayer.legend(theme) } : { text: 'Loading…' }) }] : []),
-    ]);
-    let legendsHeight = $state(0);
     // The layer date follows the trip start until the rider picks another day; it never changes the trip.
     let layerDate = $state<string | null>(null);
     const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
@@ -168,6 +164,29 @@
     let searchRevision = $state(0);
     let searchViewRevision = $state(0);
     let viewBounds = $state<[number, number, number, number]>(config.bounds);
+    // The steepness and the slope angle come from the heights. Where the middle of the map has no terrain of a national
+    // model, their pills say so.
+    const fine = fineTerrain(config);
+    let coarse = $state(false);
+    const heightsShown = $derived(slopeAngle || wayLayer === 'steepness');
+    $effect(() => {
+        if (!heightsShown) return;
+        const [west, south, east, north] = viewBounds;
+        let current = true;
+        fine([(west + east) / 2, (south + north) / 2]).then(held => { if (current) coarse = !held; }, () => {});
+        return () => { current = false; };
+    });
+    /** The end of the name of a pill: a layer draws from `zoom`, and one that comes from the heights names coarse terrain. */
+    const pillNote = (zoom: number, heights: boolean) => mapZoom < zoom ? { note: 'zoom in', faint: true }
+        : heights && coarse ? { note: 'coarse terrain here', hint: 'The heights here come from a 30 m model. Steep places can be wrong.' } : {};
+    /** The legends of the layers that are on, from the top of their stack on the map. */
+    const legends = $derived<MapLegend[]>([
+        ...(mapOverlays.network !== 'none' ? [{ label: routeKindTitles[mapOverlays.network], legend: networkLegend(theme) }] : []),
+        ...(wayLayer ? [{ ...wayLegend(wayLayer, trip.bike === 'hiking', theme), ...pillNote(WAYS_ZOOM, wayLayer === 'steepness') }] : []),
+        ...(slopeAngle ? [{ label: 'Slope angle', legend: slopeLegend, ...pillNote(SLOPE_ANGLE_ZOOM, true) }] : []),
+        ...(dataLayer ? [{ label: dataLayer.label, ...(dataLayer.error ? { text: dataLayer.error } : dataLayer.source ? { legend: dataLayer.legend(theme) } : { text: 'Loading…' }) }] : []),
+    ]);
+    let legendsHeight = $state(0);
     let here = $state<{ coordinate: Coordinate; at: number } | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
@@ -1321,7 +1340,7 @@
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
                     bind:this={map} {part} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {contours} {slopeAngle} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={legends.length ? legendsHeight + 34 : 0} onZoom={zoom => mapZoom = zoom} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedLines={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
+                    {theme} {contours} {slopeAngle} {wayLayer} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={legends.length ? legendsHeight + 34 : 0} onZoom={zoom => mapZoom = zoom} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedLines={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     placeKinds={placeChoice.kinds} highlightedKind={placeChoice.highlight}
@@ -1371,7 +1390,7 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.number) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:contours bind:slopeAngle />
+                    <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:contours bind:slopeAngle ways={!!config.layers.ways} bind:wayLayer />
                     <PlaceKinds />
                     {#if hasTrailView(config)}
                         <div class="control-group">

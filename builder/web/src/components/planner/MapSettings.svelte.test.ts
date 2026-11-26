@@ -11,9 +11,9 @@ afterEach(() => {
     document.body.replaceChildren();
 });
 
-function open(dataLayers: DataLayer[] = []) {
+function open(dataLayers: DataLayer[] = [], ways = false) {
     shown = mount(MapSettings, { target: document.body, props: {
-        dataLayers, contours: true, slopeAngle: false, mapOverlays: { network: 'cycling', access: true },
+        dataLayers, ways, contours: true, slopeAngle: false, mapOverlays: { network: 'cycling', access: true },
     } });
     click('Map settings');
 }
@@ -44,6 +44,20 @@ it('shows a conditions tile for each data layer of the region, and no row withou
     open();
     expect(row('Conditions, one at a time')).toBeNull();
     expect(row('Map')).not.toBeNull();
+});
+
+it('shows the row of the roads only for a release with the ways, and lights one of its layers at a time', () => {
+    open();
+    expect(row('Roads, one at a time')).toBeNull();
+    unmount(shown!);
+    open([], true);
+    expect(tiles('Roads, one at a time')).toEqual(['Steepness', 'Trail grade']);
+    expect(lit('Roads, one at a time')).toEqual([]);
+    click('Steepness');
+    click('Trail grade');
+    expect(lit('Roads, one at a time')).toEqual(['Trail grade']);
+    click('Trail grade');
+    expect(lit('Roads, one at a time')).toEqual([]);
 });
 
 it('switches the slope angle in the map row, which has no switch for the relief', () => {

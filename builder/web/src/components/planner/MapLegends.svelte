@@ -28,4 +28,5 @@
     .pill { justify-self: start; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 7px 12px; border-radius: 8px; background: var(--panel); box-shadow: var(--planner-shadow); font-size: 12px; color: var(--ink-soft); }
     strong { font-weight: 600; color: var(--ink); }
     .faint > :global(.legend) { opacity: 0.4; }
+    [title] { cursor: help; }
 </style>
