@@ -30,7 +30,7 @@ export const networkLevels = [
     { label: 'Unspecified network', color: '#626a70', dark: '#b0b8be', rank: 0 },
 ];
 const networkScopes: Record<string, string> = { i: 'International', n: 'National', r: 'Regional', l: 'Local' };
-export const routeKindTitles: Record<string, string> = { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'Mountain bike routes' };
+export const routeKindTitles: Record<string, string> = { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'MTB routes' };
 /** The reach of the network of a route, or '' when the network names none. MTB routes use the cycling values `icn` to `lcn`. */
 export function networkScope({ network }: Pick<NetworkRoute, 'network'>): string {
     return networkScopes[/^([inrl])[cw]n$/.exec(network ?? '')?.[1] ?? ''] ?? '';

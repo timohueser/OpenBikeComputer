@@ -30,7 +30,7 @@
     import { dataLayers } from '../../lib/planner/layers/registry';
     import { SLOPE_ANGLE_ZOOM, slopeLegend } from '../../lib/planner/layers/slope-angle';
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
-    import { bandShare, networkLegend, type OverlayOptions } from '../../lib/planner/route-overlays';
+    import { bandShare, networkLegend, routeKindTitles, type OverlayOptions } from '../../lib/planner/route-overlays';
     import type { BikeType } from '../../lib/planner/riding-profiles';
     import type { RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
@@ -154,9 +154,9 @@
     const dataLayer = $derived(dataLayers.find(layer => layer.id === shownLayerId));
     /** The legends of the layers that are on, from the top of their stack on the map. */
     const legends = $derived<MapLegend[]>([
-        ...(mapOverlays.network !== 'none' ? [{ label: { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'MTB routes' }[mapOverlays.network], legend: networkLegend(theme) }] : []),
-        ...(slopeAngle ? [{ label: 'Slope angle', ...(mapZoom < SLOPE_ANGLE_ZOOM ? { note: 'Zoom in to see it' } : { legend: slopeLegend }) }] : []),
-        ...(dataLayer ? [{ label: dataLayer.label, ...(dataLayer.error ? { note: dataLayer.error } : dataLayer.source ? { legend: dataLayer.legend(theme) } : { note: 'Loading…' }) }] : []),
+        ...(mapOverlays.network !== 'none' ? [{ label: routeKindTitles[mapOverlays.network], legend: networkLegend(theme) }] : []),
+        ...(slopeAngle ? [{ label: 'Slope angle', legend: slopeLegend, ...(mapZoom < SLOPE_ANGLE_ZOOM ? { note: 'zoom in', faint: true } : {}) }] : []),
+        ...(dataLayer ? [{ label: dataLayer.label, ...(dataLayer.error ? { text: dataLayer.error } : dataLayer.source ? { legend: dataLayer.legend(theme) } : { text: 'Loading…' }) }] : []),
     ]);
     let legendsHeight = $state(0);
     // The layer date follows the trip start until the rider picks another day; it never changes the trip.

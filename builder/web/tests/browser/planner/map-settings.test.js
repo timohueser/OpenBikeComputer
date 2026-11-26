@@ -55,13 +55,17 @@ test('the legends of the signed routes, the slope angle and the snow layer stand
   const routes = page.getByRole('status').filter({ hasText: 'Cycling routes' });
   const slope = page.getByRole('status').filter({ hasText: 'Slope angle' });
   const snow = page.getByRole('status').filter({ has: page.getByRole('img', { name: /^Snow colours/ }) });
-  // The slope angle draws from zoom 12; the map starts at zoom 7.
-  await expect(slope).toHaveText(/Zoom in to see it/);
+  // The slope angle draws from zoom 12; the map starts at zoom 7. The pill keeps its height, so a fit of the route that
+  // keeps clear of the pills does not move the zoom across 12 again.
+  await expect(slope).toHaveText(/Slope angle · zoom in/);
+  await expect(slope.getByRole('list', { name: 'Slope angle colours' }).getByRole('listitem')).toHaveCount(4);
+  const far = await slope.boundingBox();
   for (let i = 0; i < 5; i++) {
     await page.getByRole('button', { name: 'Zoom in' }).click();
     await page.waitForTimeout(500);
   }
-  await expect(slope.getByRole('list', { name: 'Slope angle colours' }).getByRole('listitem')).toHaveCount(4);
+  await expect(slope).not.toHaveText(/zoom in/);
+  expect((await slope.boundingBox()).height).toBe(far.height);
   await expect(snow).toBeVisible();
 
   const stack = [routes, slope, snow, page.getByRole('group', { name: 'Layer date' })];
