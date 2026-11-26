@@ -654,9 +654,9 @@ triggers = [
   "docs/**",
   # `build_docs.py` makes the tables of the data-sources page from it.
   "data/sources.toml",
-  # The agent on-ramps are owned here so they are not unowned paths. `build_docs.py` does not
-  # read them; the check that does is the unconditional `guards` job.
-  "AGENTS.md", "**/AGENTS.md", "companion-ios/README.md",
+  # The pages of the agents are owned here so they are not unowned paths. `build_docs.py` does
+  # not read them; the check that does is `ci.paths` in the unconditional `guards` job.
+  "AGENTS.md", "README.md", "**/README.md",
   # The agent skills are agent prose too.
   ".agents/**",
 ]
@@ -697,29 +697,14 @@ command = "python3 tools/check_fixture_policy.py"
 jobs = ["guards"]
 triggers = ["fixtures/catalog.toml", "tools/check_fixture_policy.py", "tools/fixtures.py"]
 
+# A page names paths and tasks of the whole tree, so a rename anywhere can break one. The suite is
+# required: it runs on every pull request.
 [[suite]]
-id = "ci.prose"
+id = "ci.paths"
 route = "required"
-command = "python3 tools/prose.py --check"
+command = "python3 tools/check_paths.py"
 jobs = ["guards"]
-triggers = ["tools/prose.py", "tools/testing/prose-baseline.json"]
-
-# `cairn check` fails for a new violation of a system whose doc is approved. For every doc, it
-# fails for a stale system map and a lost name in a Rules table.
-# It reads source paths (ownership), system docs (the Rules tables) and Cargo manifests (dependencies), so any
-# change to one of them selects it, and a documentation-only or data-only change does not.
-[[suite]]
-id = "ci.cairn"
-route = "ordinary"
-command = "python3 -m unittest discover -s tools/cairn/tests && python3 tools/cairn/cairn.py check"
-jobs = ["cairn"]
-triggers = [
-  "tools/cairn/**", ".cairn/**", "docs/design/**",
-  "**/Cargo.toml", "**/Cargo.lock",
-  "tools/obc",
-  "**/*.rs", "**/*.ts", "**/*.svelte", "**/*.py", "**/*.swift", "**/*.wgsl",
-  "**/*.js", "**/*.mjs", "**/*.sh", "**/*.h", "**/*.c",
-]
+triggers = ["tools/check_paths.py"]
 
 [[suite]]
 id = "ci.ios-host-portability"

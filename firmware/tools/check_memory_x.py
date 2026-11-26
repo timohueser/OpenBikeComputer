@@ -7,9 +7,6 @@ shadows the carved map that `build.rs` writes, and the M33 stack grows into the 
 
 from __future__ import annotations
 
-GOVERNS = ['firmware/obc-fw-nrf54l/memory.x', 'firmware/obc-fw-nrf54l/build.rs']
-RULE = 'The board image crate root holds no memory.x; build.rs writes the linker map into OUT_DIR.'
-
 import sys
 from pathlib import Path
 
