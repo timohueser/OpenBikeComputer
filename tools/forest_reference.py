@@ -1,4 +1,4 @@
-"""The blocks of the prepared source `forest`, as specs/obc-data.md defines them: per
+"""The blocks of the prepared source `forest`, as specs/obc-data-producers.md defines them: per
 cell of a zoom 12 tile at 256 px, the canopy height, the cover, the stems per hectare and the conifer
 share, 4 x 4 tiles to a zoom 10 block.
 

@@ -63,11 +63,13 @@ class ReadyPlanTests(unittest.TestCase):
         changed = ("docs/content/riding.md",)
         self.assertEqual(
             self.running(*changed),
-            [ready.CAIRN, "just check-docs"],
+            ["just check-docs"],
         )
         skipped = self.skipped(*changed)
         self.assertEqual(skipped["cargo fmt --all"], "no Rust source changed")
         self.assertEqual(skipped["cargo clippy"], "no Cargo package changed")
+        # A page inside a crate is not an input of the crate.
+        self.assertEqual(self.skipped("firmware/obc-app/README.md")["cargo clippy"], "no Cargo package changed")
         self.assertEqual(skipped["obc shot --check"], "no rendering, screen or i18n input changed")
         self.assertEqual(skipped["obc test affected --base origin/develop"], "the plan selects no unit")
 
@@ -85,41 +87,22 @@ class ReadyPlanTests(unittest.TestCase):
     def test_a_standalone_cargo_root_formats_through_its_manifest_and_lints_from_inside(self):
         running = self.running("firmware/obc-boot/src/main.rs", suites={"rust.obc-boot"})
         self.assertIn("cargo fmt --manifest-path firmware/obc-boot/Cargo.toml", running)
-        self.assertIn("cd firmware/obc-boot && cargo clippy --locked -- -D warnings", running)
-        self.assertIn(
-            "cd firmware/obc-boot && cargo clippy --locked --features rtt -- -D warnings", running
-        )
+        self.assertIn("bash tools/ci/obc-boot.sh clippy", running)
         self.assertNotIn("cargo fmt --all", running)
 
     def test_a_board_change_lints_the_ci_form(self):
         running = self.running("firmware/obc-fw-nrf54l/src/lib.rs", suites={"rust.obc-fw-nrf54l"})
-        self.assertIn(
-            "cd firmware/obc-fw-nrf54l && cargo clippy --locked -- -D warnings", running
-        )
-        self.assertIn(
-            "cd firmware/obc-fw-nrf54l && cargo clippy --locked --features debug-uart -- -D warnings",
-            running,
-        )
+        self.assertIn("bash tools/ci/obc-fw-nrf54l.sh clippy", running)
         # The board crate pins thumbv8m and has no test harness, so neither form may appear.
         self.assertFalse([command for command in running if "--all-targets" in command])
         self.assertFalse([command for command in running if "--manifest-path" in command and "clippy" in command])
 
-    def test_every_standalone_root_has_a_ci_clippy_command(self):
-        self.assertEqual(set(ready.STANDALONE_CLIPPY), set(ready.STANDALONE_ROOTS))
-
-    def test_the_table_holds_exactly_the_clippy_commands_the_workflow_runs(self):
-        """The table claims to be CI's commands, so the workflow is what it is compared against.
-
-        Only the root workspace lints with `--workspace`; every other clippy line in the
-        workflow belongs to a standalone root and must appear in the table verbatim.
-        """
-
-        workflow = test_plan.repository_root() / ".github" / "workflows" / "ci.yml"
-        found = set(re.findall(r"cargo clippy [^\"\n]*-D warnings", workflow.read_text()))
-        self.assertEqual(
-            {command for command in found if "--workspace" not in command},
-            {command for commands in ready.STANDALONE_CLIPPY.values() for command in commands},
-        )
+    def test_every_standalone_root_has_a_ci_script_with_a_clippy_section(self):
+        scripts = test_plan.repository_root() / "tools" / "ci"
+        for root in ready.STANDALONE_ROOTS:
+            script = scripts / f"{Path(root).name}.sh"
+            with self.subTest(root=root):
+                self.assertRegex(script.read_text(), r"\nSECTIONS=\([^)]*\bclippy\b")
 
     def test_test_policy_and_test_sources_select_the_suites_check(self):
         for path in ("tools/testing/suites.toml", "tools/test_plan.py", "firmware/ui-frames.toml", "tools/tests/test_ready.py"):
@@ -162,7 +145,7 @@ class ReadyPlanTests(unittest.TestCase):
             unit("ci.wasm-size", "bash builder/build-wasm-bridges.sh", FOUNDATION),
             unit("ci.licenses", "tools/licenses/gen-third-party.sh --check", FOUNDATION),
             unit("ci.ui-snapshots", "obc shot --check", FOUNDATION),
-            unit("ci.docs", "obc check docs", FOUNDATION),
+            unit("ci.docs", "just check-docs", FOUNDATION),
             test_plan.Unit(
                 id="ios.checks",
                 jobs=["ios-unit"],
@@ -179,7 +162,7 @@ class ReadyPlanTests(unittest.TestCase):
         self.assertIn(FOUNDATION, affected.reason)
         self.assertEqual(
             [gate.command for gate in gates if gate.run],
-            ["cargo fmt --all", ready.CAIRN, "python3 firmware/tools/check_dependencies.py", tools_tests],
+            ["cargo fmt --all", "python3 firmware/tools/check_dependencies.py", tools_tests],
         )
         self.assertEqual(lines["bash builder/build-wasm-bridges.sh"].reason, "ci.wasm-size is left to CI")
         self.assertEqual(
@@ -187,9 +170,9 @@ class ReadyPlanTests(unittest.TestCase):
         )
         # Nothing under docs/ changed, so the documentation gate does not speak for ci.docs.
         # A suite no running gate covers keeps its own line; that is the whole point here.
-        self.assertEqual(lines["obc check docs"].reason, "ci.docs is left to CI")
         self.assertEqual(
-            lines["just check-docs"].reason, "nothing under docs/ changed"
+            [gate.reason for gate in gates if gate.command == "just check-docs"],
+            ["nothing under docs/ changed", "ci.docs is left to CI"],
         )
         # The snapshot sweep stays CI's work: the budget gives it one run, and CI has it.
         self.assertEqual(lines["obc shot --check"].reason, "ci.ui-snapshots is left to CI")
@@ -205,10 +188,11 @@ class ReadyPlanTests(unittest.TestCase):
             self.assertTrue(gate.reason.strip(), gate.command)
 
         gates = self.plan("Cargo.toml", "docs/content/riding.md", suites=selected)
+        docs = [gate for gate in gates if gate.command == "just check-docs"]
+        self.assertEqual(len(docs), 1)
+        self.assertTrue(docs[0].run)
+        self.assertIn("and it runs ci.docs", docs[0].reason)
         lines = {gate.command: gate for gate in gates}
-        self.assertTrue(lines["just check-docs"].run)
-        self.assertIn("and it runs ci.docs", lines["just check-docs"].reason)
-        self.assertNotIn("obc check docs", lines)
         self.assertFalse(lines["obc test affected --base origin/develop"].run)
 
     def test_the_free_command_rule_reads_every_executable_a_command_names(self):

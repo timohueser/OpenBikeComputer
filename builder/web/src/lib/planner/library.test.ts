@@ -1,25 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { pinNight, addRestDay, setDrawnLeg } from './editor';
+import { pinNight, setDrawnLeg } from './editor';
 import { exportPlan, importPlan, newPlan, planSummary, savedWhen } from './library';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 
 describe('plan file', () => {
-    it('round-trips nights, dates, the pace, rest days and drawings under a new identity', () => {
-        const trip = { ...addRestDay(pinNight(testTrip(), undefined, 1, [7.2, 47.5], 'Camp'), 1), startDate: '2026-10-04', pace: 'easy' as const };
+    it('round-trips nights, dates, the pace and drawings under a new identity', () => {
+        const trip = { ...pinNight(testTrip(), undefined, 1, [7.2, 47.5], 'Camp'), startDate: '2026-10-04', pace: 'easy' as const };
         const plan = newPlan(setDrawnLeg(trip, 'finish', [[7, 47.5]]), 'Autumn tour');
         const imported = importPlan(exportPlan(plan));
         expect(imported.id).not.toBe(plan.id);
         expect(imported).toMatchObject({ name: plan.name, trip: JSON.parse(JSON.stringify(plan.trip)) });
         expect(imported.trip.pace).toBe('easy');
-    });
-
-    it('opens an older file with saved versions as its plan, and ignores the versions', () => {
-        const plan = newPlan(testTrip(), 'Tour'), file = JSON.parse(exportPlan(plan));
-        expect(file).not.toHaveProperty('versions');
-        const older = { ...file, open: 'v1', versions: [{ id: 'v1', at: '2026-01-01T09:00:00.000Z', summary: '', trip: file.trip }] };
-        const imported = importPlan(JSON.stringify(older));
-        expect(imported).toMatchObject({ name: 'Tour', trip: JSON.parse(JSON.stringify(plan.trip)) });
-        expect(imported).not.toHaveProperty('open');
     });
 
     it('writes the riding time at the pace of the plan into its summary', () => {

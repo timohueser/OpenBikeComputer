@@ -287,7 +287,8 @@ class TiledService(Source):
             return
         self.known().parent.mkdir(parents=True, exist_ok=True)
         part = self.known().with_name(f"{self.key}.{os.getpid()}.{threading.get_ident()}")
-        part.write_text(label(box), encoding="utf-8")
+        # Exact, because a rounded edge box can fall under the two-pixel rule of `Wcs10Source`.
+        part.write_text(",".join(repr(value) for value in box), encoding="utf-8")
         os.replace(part, self.known())
 
     def reads(self) -> bool:
@@ -469,6 +470,8 @@ class Wcs10Source(CoverageService):
     names a format with the server's word for it rather than a media type: Kartverket
     answers to `GeoTIFF` and Denmark's MapServer to `GTiff`. A bbox past the envelope is
     refused: Denmark answers `InvalidBoundingBox`, Saxony-Anhalt `InvalidParameterValue`.
+    Denmark also refuses a box one pixel wide inside the envelope, so a box with a side under
+    two pixels is not asked for: such a box only comes from a clip at the edge.
     """
 
     def __init__(self, *args, image_format="GeoTIFF", **kw):
@@ -486,6 +489,8 @@ class Wcs10Source(CoverageService):
         if grid is None:
             return None
         (lo_x, lo_y, hi_x, hi_y), (px, py) = grid
+        if min(px, py) < 2:
+            return None
         return (f"{self.service}?service=WCS&version=1.0.0&request=GetCoverage"
                 f"&coverage={self.coverage}&crs=EPSG:{self.epsg}"
                 f"&bbox={lo_x},{lo_y},{hi_x},{hi_y}&width={px}&height={py}"

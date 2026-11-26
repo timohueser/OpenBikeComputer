@@ -75,6 +75,19 @@
         color: var(--ink);
         box-shadow: var(--planner-shadow);
         list-style: none;
+        transition: opacity 140ms ease-out, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    /* The menu drops in under its button. A move changes no size, so `place` measures the menu as it ends. */
+    @starting-style {
+        menu {
+            opacity: 0;
+            transform: translateY(-4px);
+        }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        menu {
+            transition-property: opacity;
+        }
     }
     .control {
         padding: 3px 10px;

@@ -12,6 +12,13 @@ describe('callout placement', () => {
         expect(calloutBox('right', [500, 300], size, 20)).toEqual({ left: 130, top: 200, right: 480, bottom: 400 });
     });
 
+    it('puts the tip of a popup above or below the point under its marked part', () => {
+        expect(calloutBox('bottom', [500, 300], size, 20, 45)).toEqual({ left: 455, top: 70, right: 795, bottom: 280 });
+        expect(calloutBox('top-left', [500, 300], size, 20, 45)).toEqual(calloutBox('top-left', [500, 300], size, 20));
+        // A point near the left edge keeps the popup above it: the popup now opens to its right.
+        expect(placeCallout([70, 300], size, free, 20, 45).anchor).toBe('bottom');
+    });
+
     it('opens above the point when it fits', () => {
         expect(placeCallout([500, 300], size, free, 20)).toEqual({ anchor: 'bottom', pan: [0, 0] });
     });

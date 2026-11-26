@@ -71,7 +71,7 @@ pub static PLANNER_SNOW: Layer = whole("planner/snow", 2, &[&WEB_PLANNER]);
 /// holds what the stamp worker makes of the tiles; `stamp_version` of `specs/trailview-tiles.md` says
 /// which stamp code made it.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 35, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
+    Layer { revision: 38, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -198,7 +198,7 @@ impl Product for Planner {
         Pointer { key: "planner/catalog.json", step: catalog::STEP, path: "catalog.json" }
     }
 
-    /// The sources of the step table of `specs/obc-data.md`, and the ground sources that are
+    /// The sources of the step table of `specs/obc-data-products.md`, and the ground sources that are
     /// fetched: `osm-planet` of the ground chain is `planner/osm`.
     fn reads(&self, root: &Path) -> Vec<String> {
         let mut reads: Vec<String> = [

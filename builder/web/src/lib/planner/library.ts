@@ -22,7 +22,7 @@ const shapes = new WeakMap<RoutingLine, RouteSummary>();
 export function planSummary(trip: Trip, line: RoutingLine): RouteSummary {
     const view = planView(trip, line), { distance, hours, ascent } = view.summary;
     const numbers = { lengthM: Math.round(distance * 1000), climbM: Math.round(ascent), seconds: Math.round(hours * 3600),
-        bike: trip.bike ?? 'touring', days: Math.max(1, view.itinerary.length) };
+        bike: trip.bike ?? 'touring', days: Math.max(1, view.days.length) };
     let shape = shapes.get(line);
     if (!shape) shapes.set(line, shape = summarize<RouteSummary>(line.coordinates.map(([lon, lat], i) => [lon, lat, line.elevation[i]]), numbers));
     return { ...shape, ...numbers };

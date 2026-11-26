@@ -41,7 +41,7 @@
 <RouteCard name={trail.name ?? trail.ref ?? ''} href={trailHref(trail.id)} meta={[trail.loop ? 'Loop' : 'One way', count, kindName(trail)]} numbers={signedNumbers(trail)}
     {profile} failure={failed ? 'The trail could not load.' : undefined} more={record?.parts || record?.credit ? more : undefined} {onclose}>
     {#snippet picture()}{#if item}<SignedPicture {item} />{/if}{/snippet}
-    {#snippet mark()}<span class="mark"><TrailMarker symbol={trail.symbol} ref={trail.ref} /></span>{/snippet}
+    {#snippet mark()}<TrailMarker symbol={trail.symbol} ref={trail.ref} />{/snippet}
 </RouteCard>
 
 {#snippet more()}
@@ -50,12 +50,6 @@
 {/snippet}
 
 <style>
-    /* The mark stands on the first line of the name. */
-    .mark {
-        display: inline-block;
-        margin-right: 8px;
-        vertical-align: -5px;
-    }
     .credit {
         margin: 8px 0 0;
         color: var(--ink-soft);

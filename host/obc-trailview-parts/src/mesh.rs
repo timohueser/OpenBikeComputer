@@ -39,6 +39,16 @@ pub struct Station {
 }
 
 impl Station {
+    /// 1 where this station runs across the way that `other` does, else −1: a metre across one is `sign` metres across
+    /// the other, and a run from the right of one is the other's in reverse (`turned_run`).
+    pub fn sign(&self, other: &Station) -> f64 {
+        if self.ax * other.ax + self.ay * other.ay >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        }
+    }
+
     /// The station on a unit direction `d` in world units, across to its left, `scale` metres per metre across.
     pub fn across(p: [f64; 2], z: f64, d: [f64; 2], scale: f64) -> Station {
         let (l, k) = (left_of(d), scale / metres_per_unit(p[1]));
@@ -106,12 +116,20 @@ pub struct Builder<L: Fn([f64; 3]) -> f64> {
     indices: Vec<u32>,
     points: Vec<[f64; 3]>,
     daylight: L,
+    unfilled: usize,
 }
 
 impl<L: Fn([f64; 3]) -> f64> Builder<L> {
     /// A builder whose vertices take their daylight from `daylight` of their world point.
     pub fn new(daylight: L) -> Self {
-        Builder { words: Vec::new(), indices: Vec::new(), points: Vec::new(), daylight }
+        Builder { words: Vec::new(), indices: Vec::new(), points: Vec::new(), daylight, unfilled: 0 }
+    }
+
+    /// The triangles of a face's polygon (`seam::ear_clip`); a face that it does not cut whole counts as unfilled.
+    pub fn ear_clip(&mut self, poly: &[Corner]) -> Vec<[usize; 3]> {
+        let (out, whole) = crate::seam::ear_clip(poly);
+        self.unfilled += usize::from(!whole);
+        out
     }
 
     pub fn vertex(&mut self, p: [f64; 3], colour: u32, paint: Paint) -> u32 {
@@ -134,24 +152,18 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         self.vertex(s.at(c), colour, PLAIN)
     }
 
-    /// A quad of four vertices in order around it, turned to face `out`. A quad of no area makes no face.
+    /// A quad of four vertices in order around it, turned to face `out`: two triangles, each of no area none.
     pub fn quad(&mut self, v: [u32; 4], out: [f64; 3]) {
-        let n = self.normal(v[0], v[1], v[2], v[3]);
-        if n.iter().all(|c| c.abs() < 1e-12) {
-            return;
-        }
-        let facing = n[0] * out[0] + n[1] * out[1] + n[2] * out[2] >= 0.0;
-        self.indices.extend(if facing {
-            [v[0], v[1], v[2], v[0], v[2], v[3]]
-        } else {
-            [v[0], v[2], v[1], v[0], v[3], v[2]]
-        });
+        self.triangle(v[0], v[1], v[2], out);
+        self.triangle(v[0], v[2], v[3], out);
     }
 
-    /// A triangle turned to face `out`. A triangle of no area makes no face.
+    /// A triangle turned to face `out`. A triangle of no area makes no face, nor one with two corners on one point of
+    /// the mesh's words.
     pub fn triangle(&mut self, a: u32, b: u32, c: u32, out: [f64; 3]) {
         let n = self.normal(a, b, c, c);
-        if n.iter().all(|c| c.abs() < 1e-12) {
+        let at = |v: u32| &self.words[v as usize * WORDS..v as usize * WORDS + 3];
+        if n.iter().all(|c| c.abs() < 1e-12) || at(a) == at(b) || at(b) == at(c) || at(c) == at(a) {
             return;
         }
         let facing = n[0] * out[0] + n[1] * out[1] + n[2] * out[2] >= 0.0;
@@ -163,6 +175,32 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
     /// each, so every corner of both is a vertex of the faces beside it, and no face meets another in the middle of
     /// an edge. Two corners on each side make one quad.
     pub fn strip(&mut self, (s, a): (&Station, &[Corner]), (t, b): (&Station, &[Corner]), colour: u32, out: [f64; 3]) {
+        let (pa, pb): (Vec<[f64; 3]>, Vec<[f64; 3]>) =
+            (a.iter().map(|&c| s.at(c)).collect(), b.iter().map(|&c| t.at(c)).collect());
+        self.strip_at((&pa, a), (&pb, b), colour, out);
+    }
+
+    /// The faces of `strip` between two polylines of world points, each with its corners for the shares along it.
+    pub fn strip_at(
+        &mut self,
+        (pa, a): (&[[f64; 3]], &[Corner]),
+        (pb, b): (&[[f64; 3]], &[Corner]),
+        colour: u32,
+        out: [f64; 3],
+    ) {
+        // A side runs one way: no step of it turns back against the one before.
+        let folds = |c: &[Corner]| {
+            c.windows(3)
+                .any(|w| (w[1][0] - w[0][0]) * (w[2][0] - w[1][0]) + (w[1][1] - w[0][1]) * (w[2][1] - w[1][1]) < 0.0)
+        };
+        debug_assert!(!folds(a) && !folds(b), "a side of a strip folds back: {a:?} {b:?}");
+        let va: Vec<u32> = pa.iter().map(|&p| self.vertex(p, colour, PLAIN)).collect();
+        let vb: Vec<u32> = pb.iter().map(|&p| self.vertex(p, colour, PLAIN)).collect();
+        self.strip_of((&va, a), (&vb, b), out);
+    }
+
+    /// The faces of `strip` between two polylines of vertices, each with its corners for the shares along it.
+    pub fn strip_of(&mut self, (va, a): (&[u32], &[Corner]), (vb, b): (&[u32], &[Corner]), out: [f64; 3]) {
         let shares = |c: &[Corner]| {
             let mut run = vec![0.0];
             for w in c.windows(2) {
@@ -171,15 +209,7 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
             let all = run[run.len() - 1];
             run.iter().map(|r| if all > 0.0 { r / all } else { 0.0 }).collect::<Vec<f64>>()
         };
-        // A side runs one way: no step of it turns back against the one before.
-        let folds = |c: &[Corner]| {
-            c.windows(3)
-                .any(|w| (w[1][0] - w[0][0]) * (w[2][0] - w[1][0]) + (w[1][1] - w[0][1]) * (w[2][1] - w[1][1]) < 0.0)
-        };
-        debug_assert!(!folds(a) && !folds(b), "a side of a strip folds back: {a:?} {b:?}");
         let (sa, sb) = (shares(a), shares(b));
-        let va: Vec<u32> = a.iter().map(|&c| self.at(s, c, colour)).collect();
-        let vb: Vec<u32> = b.iter().map(|&c| self.at(t, c, colour)).collect();
         let (mut i, mut j) = (0, 0);
         while i + 1 < va.len() || j + 1 < vb.len() {
             if i + 1 < va.len() && (j + 1 == vb.len() || sa[i + 1] <= sb[j + 1]) {
@@ -193,7 +223,7 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
     }
 
     pub fn mesh(self) -> Mesh {
-        Mesh { vertices: self.words, indices: self.indices }
+        Mesh { vertices: self.words, indices: self.indices, unfilled: self.unfilled }
     }
 
     /// The normal of a, b, c, d by their diagonals, in metres east, north and up.
@@ -209,4 +239,14 @@ impl<L: Fn([f64; 3]) -> f64> Builder<L> {
         let w = [pd[0] - pb[0], pd[1] - pb[1], pd[2] - pb[2]];
         [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]]
     }
+}
+
+/// A run from the right in the metres of a station whose `sign` to another's is `sign`, from the right in the other's:
+/// each item `across` it, in reverse where the sign is −1.
+pub fn turned_run<T, U>(sign: f64, items: impl IntoIterator<Item = T>, across: impl Fn(T) -> U) -> Vec<U> {
+    let mut out: Vec<U> = items.into_iter().map(across).collect();
+    if sign < 0.0 {
+        out.reverse();
+    }
+    out
 }

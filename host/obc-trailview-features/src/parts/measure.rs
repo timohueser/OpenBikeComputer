@@ -17,7 +17,7 @@ use crate::tiles::{Tile, MAX_ZOOM};
 /// What to read about one opening: its point and unit direction into the tube, the metres across its frame row to the
 /// right and to the left, per metre in from it the points of the centre line and of both outer walls, and the ids of
 /// its chain's ways.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Ask {
     pub p: [f64; 2],
     pub dir: [f64; 2],
@@ -161,13 +161,23 @@ enum Read {
 /// The reads in one cell, each with its world point.
 type Reads = Vec<(Read, [f64; 2])>;
 
+/// The points that ask k reads: its stations, then its row.
+fn reads(k: usize, a: &Ask) -> impl Iterator<Item = (Read, [f64; 2])> + '_ {
+    let stations = (a.stations.iter().enumerate())
+        .flat_map(move |(i, st)| st.iter().enumerate().map(move |(w, &p)| (Read::Station(k, i, w), p)));
+    let left = left_of(a.dir);
+    let row = (0..=(a.right + a.left))
+        .map(move |j| (Read::Row(k, j as usize), offset(a.p, left, f64::from(j) - f64::from(a.right))));
+    stations.chain(row)
+}
+
 /// What a cell answers: the ground at its points, and per ask that reads in it the decks over its row, the rooms of the
 /// ways on top of its chain and whether a building holds a station of its centre line in the cell.
 type Answers = (Vec<(Read, Option<f64>)>, Vec<(usize, Vec<(f64, f64)>, Vec<f64>, bool)>);
 
 /// The sites of the asks. Each cell that holds a point to read is built once: a job takes the cells of one zoom-13
 /// tile, one at a time; as many jobs run at once as `memory` holds.
-pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize) -> (Vec<Site>, usize) {
+pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize) -> Vec<Site> {
     let z13 = |c: u32, r: u32| input.tiles.tiles.get(&(MAX_ZOOM, c, r));
     let id = |c: u32, r: u32, index: u32| z13(c, r).and_then(|t: &Tile| t.id(index));
     let mut sites: Vec<Site> = (asks.iter())
@@ -179,19 +189,9 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
         .collect();
     // The reads by cell, the cells by zoom-13 tile.
     let mut by_cell: BTreeMap<CellKey, Reads> = BTreeMap::new();
-    for (k, a) in asks.iter().enumerate() {
-        for (i, st) in a.stations.iter().enumerate() {
-            for (w, &p) in st.iter().enumerate() {
-                by_cell.entry(key_of(frame(p))).or_default().push((Read::Station(k, i, w), p));
-            }
-        }
-        let left = left_of(a.dir);
-        for j in 0..=(a.right + a.left) {
-            let p = offset(a.p, left, f64::from(j) - f64::from(a.right));
-            by_cell.entry(key_of(frame(p))).or_default().push((Read::Row(k, j as usize), p));
-        }
+    for (r, p) in asks.iter().enumerate().flat_map(|(k, a)| reads(k, a)) {
+        by_cell.entry(key_of(frame(p))).or_default().push((r, p));
     }
-    let cells = by_cell.len();
     let shift = obc_ground_plan::frame::CELL_ZOOM - u32::from(MAX_ZOOM);
     let mut jobs: BTreeMap<(u32, u32), Vec<(CellKey, Reads)>> = BTreeMap::new();
     for (key, reads) in by_cell {
@@ -262,7 +262,46 @@ pub(crate) fn sites(asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize
         site.decks.dedup();
         site.rooms.sort_by(f64::total_cmp);
     }
-    (sites, cells)
+    sites
+}
+
+/// The sites of the asks, each measured once for one ask and the open ends that its cells hold: as `sites` gives them,
+/// as the rooms are made again with the same openings; and the cells of all the asks.
+#[derive(Default)]
+pub(crate) struct Memo(std::cell::RefCell<Vec<(Ask, Vec<OpenEnd>, Site)>>);
+
+impl Memo {
+    pub fn sites(&self, asks: &[Ask], input: &Input, ends: &[OpenEnd], memory: usize) -> (Vec<Site>, usize) {
+        // The cells of an ask.
+        let cells_of = |a: &Ask| -> Vec<CellKey> {
+            let mut keys: Vec<CellKey> = reads(0, a).map(|(_, p)| key_of(frame(p))).collect();
+            keys.sort_unstable();
+            keys.dedup();
+            keys
+        };
+        let cells: Vec<Vec<CellKey>> = asks.iter().map(cells_of).collect();
+        // The open ends that the cells of an ask build with.
+        let inside = |e: &&OpenEnd, k: &CellKey| {
+            let [x0, y0, x1, y1] = k.grown();
+            (x0..=x1).contains(&e.way.x) && (y0..=y1).contains(&e.way.y)
+        };
+        let near: Vec<Vec<OpenEnd>> = cells
+            .iter()
+            .map(|keys| ends.iter().filter(|e| keys.iter().any(|k| inside(e, k))).copied().collect())
+            .collect();
+        let mut memo = self.0.borrow_mut();
+        let known = |memo: &[(Ask, Vec<OpenEnd>, Site)], i: usize| {
+            memo.iter().position(|(x, m, _)| *x == asks[i] && *m == near[i])
+        };
+        let missing: Vec<usize> = (0..asks.len()).filter(|&i| known(&memo, i).is_none()).collect();
+        let measured = sites(&missing.iter().map(|&i| asks[i].clone()).collect::<Vec<_>>(), input, ends, memory);
+        for (&i, site) in missing.iter().zip(measured) {
+            memo.push((asks[i].clone(), near[i].clone(), site));
+        }
+        let out = (0..asks.len()).map(|i| memo[known(&memo, i).expect("measured")].2.clone()).collect();
+        let all: std::collections::BTreeSet<CellKey> = cells.into_iter().flatten().collect();
+        (out, all.len())
+    }
 }
 
 /// The ask of an opening: `in_m` metres in along its chain from `s` (in `sign` of the chain's metres), with its walls at

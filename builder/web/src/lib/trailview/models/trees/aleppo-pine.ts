@@ -7,7 +7,10 @@ export default {
   fork: 0.5,
   crown: [0.76, 0.42, 0.42, 0.26],
   open: true,
-  // A bent, leaning trunk; it takes a random heading like any other tree.
+  stagger: true,
+  pads: true,
+  // A crooked, leaning trunk; it takes a random heading like any other tree.
+  crook: 0.045,
   sweep: 0.22,
   trunk: 0.035,
   flare: 1.4,

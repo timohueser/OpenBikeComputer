@@ -8,6 +8,8 @@ export default {
   // The umbrella: a dense, flat-topped crown on limbs that fan out from the top of a long bole.
   crown: [0.8, 0.38, 0.38, 0.2],
   pads: true,
+  billows: 5,
+  crook: 0.01,
   trunk: 0.032,
   flare: 1.4,
   // Grey-brown below, orange-red plates higher up.

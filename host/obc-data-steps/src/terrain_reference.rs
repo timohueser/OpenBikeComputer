@@ -1,5 +1,5 @@
 //! The producer of `terrain`: the national terrain models `dtm-<key>` as blocks of 4 × 4 tiles of
-//! the reference archive (`host/obc-dem/reference/README.md`), `18/<bi>/<bj>.tif` of the maximum
+//! the reference archive (`specs/obct-terrain.md` §10), `18/<bi>/<bj>.tif` of the maximum
 //! and `mean/18/<bi>/<bj>.tif` of the mean, and one `index.json`. A version makes each block of its
 //! region from every model with a tile in it near land, so the pixels of a block do not depend on
 //! the region, and keeps every other block of the version before without a copy. The index states

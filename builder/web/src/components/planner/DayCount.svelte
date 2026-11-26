@@ -45,33 +45,34 @@
 </div>
 
 <style>
-    /* A cell of the trip bar (`TripRow`). */
+    /* A well of the trip row (`TripRow`), which takes the free width of the line. */
     .days {
+        flex: 1;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        height: 44px;
-        padding: 0 4px;
+        min-width: 104px;
+        height: 36px;
+        padding: 0 2px;
         border-radius: 8px;
         background: var(--parchment-2);
     }
     button {
         display: grid;
         place-items: center;
-        width: 32px;
+        width: 30px;
         height: 32px;
         padding: 0;
         border: 0;
         border-radius: 6px;
         background: none;
-        color: var(--ink);
+        color: var(--ink-soft);
         cursor: pointer;
     }
     button:disabled, button[aria-disabled='true'] { cursor: default; opacity: .4; }
     button:focus-visible { outline: 2px solid var(--ink); outline-offset: 0; }
-    button:not(:disabled, [aria-disabled='true']):hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+    button:not(:disabled, [aria-disabled='true']):hover { color: var(--ink); }
     .count {
-        padding: 0 4px;
         white-space: nowrap;
         font: 700 14px var(--sans);
         color: var(--ink);

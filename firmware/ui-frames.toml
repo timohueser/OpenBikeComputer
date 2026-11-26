@@ -74,7 +74,7 @@ expect = "Home"
 args = ["--clock", "2025-07-10T09:41", "--battery", "45"]
 
 # The Route list: arrow-less, column-aligned two-line rows (distance under the name, the climb group
-# at a fixed second column) with no footer — hold-to-delete moved to the Route overview (T3, #681).
+# at a fixed second column) with no footer — hold-to-delete lives on the Route overview.
 [[frame]]
 name = "routemenu"
 map = "{grimsel}"
@@ -127,7 +127,7 @@ env = "trip-week"
 script = "p p p"
 expect = "RouteMenu"
 
-# The trip cascade-delete confirm (TR3): long-press the folder (`h` fires the completed hold) → the
+# The trip cascade-delete confirm: long-press the folder (`h` fires the completed hold) → the
 # warning-red hold-guarded "Delete all" + "Cancel" card, naming the trip. Entry selects Cancel.
 [[frame]]
 name = "trip-delete-confirm"
@@ -341,11 +341,11 @@ env = "tracks"
 script = "B d w p p p H"
 expect = "RideDetail"
 
-# The delete row HIDDEN while a ride is being recorded (owner review round 1 — no greyed face):
+# The delete row HIDDEN while a ride is being recorded (no greyed face):
 # ride route 0 (`p p p p` → Map, riding) **with the GPX replay driving fixes** — the tracking
 # session only starts once positions flow, and `is_tracking` (the hiding predicate) is
 # `session.is_some()`, so without `--gpx` this frame would wrongly show the live delete row. Then
-# out to the main Menu — a bare `B` reaches it from anywhere since #1515 D3 — step to the Rides
+# out to the main Menu — a bare `B` reaches it from anywhere — step to the Rides
 # station (`d w`), press through the trip folder into the detail: the page ends at the stat ledger
 # with NO Delete-ride row at all, and `H` fills nothing.
 [[frame]]
@@ -362,7 +362,7 @@ map = "{grimsel}"
 script = "B d d w"
 expect = "Menu"
 
-# POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing
+# POIs browser: the category list, then a populated nearest-16 list. The list's bearing
 # arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
 [[frame]]
 name = "assistant"
@@ -386,9 +386,9 @@ script = "A p p u p f"
 expect = "PoiList"
 args = ["--center", "8305000,46601000", "--heading", "0"]
 
-# POI detail (#444, reworked in #685): category glyph on the name row, the promoted distance +
+# POI detail: category glyph on the name row, the promoted distance +
 # bearing row, the hours block with the OPEN/CLOSED pill riding the "Today" caption line
-# (right-aligned — owner review round 2's overlay fix), and the full-width "Route here" footer
+# (right-aligned), and the full-width "Route here" footer
 # bar. The hours/badge need the hours-rich monaco fixture (grimsel has no shop hours). Pin the
 # Resupply "Carrefour" supermarket (--center on it → row 0), a fix + heading for the live arrow,
 # and a deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into the list, draws
@@ -409,7 +409,7 @@ script = "{place_detail}"
 expect = "PoiDetail"
 args = ["--center", "7416969,43730798", "--heading", "0", "--clock", "2025-01-06T12:00", "--clock-after-script", "2025-01-06T23:00"]
 
-# The layout worst case (owner review round 2's overlay bug): a two-line wrapping name
+# The layout worst case: a two-line wrapping name
 # ("Pharmacie du Jardin Exot..") + the format's two-intervals-per-day maximum (split lunch hours,
 # Mon 08:30-12:30 / 15:00-19:00) — the stack that used to push the badge under the Route-here
 # bar. With the badge on the Today line the whole block clears the footer. Pharmacy is one more
@@ -610,7 +610,7 @@ map = "{grimsel}"
 script = "B u p p d d p w"
 expect = "ContextDrawer"
 
-# The Bike type row is **gone** from this group (#1515 D4d): it is the one row of the create-route
+# The Bike type row is **gone** from this group: it is the one row of the create-route
 # confirm card's own context sheet now — see the `route-plan-context` frame, its only home.
 # Its four hero-bike frames left with it, and the group's remaining rows shift up one slot.
 # Data fields (row 0) — the WYSIWYG grid editor.
@@ -665,7 +665,7 @@ script = "B u p p p"
 expect = "StatFields"
 args = ["--stat-fields", "hr-graph,kj,power,power-graph"]
 
-# The Waypoints mode row (epic #523): the group's 4th row, under Climb. Three steps park the amber
+# The Waypoints mode row: the group's 4th row, under Climb. Three steps park the amber
 # cursor on it, showing the default `Approach` mode.
 [[frame]]
 name = "settings-ride-waypoints"
@@ -674,8 +674,8 @@ script = "B u p p d d d"
 expect = "Ride"
 
 # Display (group 1): Brightness (the quick drawer's row, reachable here too) and the idle-return
-# timeout. The three Map-overlay switches left this page in #1515 D4c — they are rows of the map's
-# own sheet now, see `map-display-sheet.png`, their only home. The second frame opens the timeout's
+# timeout. The three Map-overlay switches are rows of the map's
+# own sheet, see `map-display-sheet.png`, their only home. The second frame opens the timeout's
 # editor: an axis, so the knob sits on the committed 30 s and the track ends clamp.
 [[frame]]
 name = "display"
@@ -748,7 +748,7 @@ script = "B u p d d d p d d H"
 expect = "Connections"
 args = ["--ble", "paired"]
 
-# Sensors screen (BLE sensors epic #707, SE7) — the Sensors door, one step under the switch.
+# Sensors screen — the Sensors door, one step under the switch.
 # `--sensors screen`
 # drives the sim's fake central manager: the three-row list (Heart rate Connected 78%, Power
 # Searching, Cadence Not set — the HR row selected, so its hold-to-forget footer shows), and the scan
@@ -824,9 +824,9 @@ map = "{grimsel}"
 script = "B u p d*5 p d p p w"
 expect = "ContextDrawer"
 
-# The Language pick list (epic #602): the four languages by flag and endonym, the tick on the
+# The Language pick list: the four languages by flag and endonym, the tick on the
 # committed one. The cursor opens on it; two steps down park it on Français — pinning the ç glyph
-# the Latin font (#601) adds.
+# the Latin font adds.
 [[frame]]
 name = "language"
 map = "{grimsel}"
@@ -839,7 +839,7 @@ map = "{grimsel}"
 script = "B u p d*5 p d d p d d"
 expect = "Language"
 
-# The About page (#1149) — System row 4, above Reset: the read-only credits page.
+# The About page — System row 4, above Reset: the read-only credits page.
 [[frame]]
 name = "about"
 map = "{grimsel}"
@@ -854,7 +854,7 @@ map = "{grimsel}"
 script = "B u p d*5 p d*5 p p H"
 expect = "Reset"
 
-# The Firmware page (epic #615 S5, #620) — System row 3, the SD-sideload action ("Install update")
+# The Firmware page — System row 3, the SD-sideload action ("Install update")
 # over the read-only device-info rows.
 [[frame]]
 name = "firmware"
@@ -873,7 +873,7 @@ script = "{start_unguided} B u p d*5 p d d d p"
 expect = "Firmware"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
-# The SD-sideload update flow (epic #615 S5, #620). The scan/arm runs board-side; the script leaves
+# The SD-sideload update flow. The scan/arm runs board-side; the script leaves
 # the "Checking card..." wait on top (Firmware -> Install), and --dfu scan/error answer it
 # through the real notify_dfu_scan_result seam (the sim stages a synthetic package and runs the
 # real obc-dfu scan). --dfu progress then presses Install so the "Preparing update..." spinner shows.
@@ -949,7 +949,7 @@ script = "{dfu_pre}"
 expect = "DfuError"
 args = ["--dfu", "error=toolarge"]
 
-# OBCU v2 (#997): the file is intact but not signed by us — its own card, not "damaged".
+# The file is intact but not signed by us — its own card, not "damaged".
 [[frame]]
 name = "dfu-error-untrusted"
 map = "{grimsel}"
@@ -984,8 +984,8 @@ expect = "DfuFailed"
 args = ["--dfu", "failed=notstarted"]
 
 # Riding flows: Home press → Menu → Routes (p) → Route menu → pick (p) → overview → START (p) → Map.
-# The overview also carries the guarded Delete-route row (T3 #681, reordered by owner review round
-# 1): the bottommost element, below the START RIDE row. Since owner review round 3 the two action
+# The overview also carries the guarded Delete-route row: the bottommost element, below the
+# START RIDE row. The two action
 # rows are the Pause-menu (ride_control) family — entry selects START (the standard amber-selected
 # row), a step moves onto the Delete row (its shaded base draws only while selected), and only then
 # does a hold charge the delete. While the route is the active ride's the row is hidden entirely (no
@@ -1094,7 +1094,7 @@ expect = "Arrival"
 args = ["--gpx", "{gpx}", "--script-at", "5611", "--at", "5611"]
 
 # The Map's chrome overlays land here: the floating top-centre clock digits (pinned time via
-# --clock; bumped one font step up in #688 so the time reads at a glance), the bottom-left scale bar
+# --clock; one font step up so the time reads at a glance), the bottom-left scale bar
 # (corner normally, stepped above the chip band while a chip is up), and — priority order unchanged —
 # the bottom-centre one-slot warning chip.
 [[frame]]
@@ -1116,7 +1116,7 @@ script = "{start_unguided}"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "330", "--sensors", "demo"]
 
-# Settlement names (#1900). The Grimsel map is high alpine and holds almost no place records, so
+# Settlement names. The Grimsel map is high alpine and holds almost no place records, so
 # these three use the Freiburg package: 44 settlements over 20 km, one city, three towns, 26
 # villages and 14 hamlets. `--zoom` multiplies the bbox-fit zoom of *that* package, and the three
 # multipliers below put the camera at about 100, 30 and 15 metres per pixel; repacking the package
@@ -1251,7 +1251,7 @@ expect = "Statistics"
 args = ["--gpx", "{gpx}", "--at", "330", "--sensors", "demo", "--stat-fields", "hr-graph,power-graph,kj,cadence"]
 langs = ["de", "fr", "es"]
 
-# The EL9 time tiles (#1077): TIME TO GO (`h TO GO`) and ETA on the Statistics grid, beside the
+# The EL9 time tiles: TIME TO GO (`h TO GO`) and ETA on the Statistics grid, beside the
 # DIST TO GO / TO CLIMB pair they are derived from, at a pinned 14:40 wall clock. The A/B is the
 # point — the two frames ride the *same* replay over the *same* 19 km of geometry, and differ only
 # in whether the loaded route carries elevation:
@@ -1312,7 +1312,7 @@ script = "{start_unguided}"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--battery", "5", "--gpx", "{gpx}", "--at", "30"]
 
-# Waypoint UI (epic #523). specs/vectors holds two routes in filename order: id 0 = route-plain,
+# Waypoint UI. specs/vectors holds two routes in filename order: id 0 = route-plain,
 # id 1 = route-waypoints ("Vector Loop": named waypoints Brunnen @ ~0 m and Pass Summit @ ~1.70 km on
 # a 2.20 km track). The default `p p p p` rides id 0, so the extra `d` after the Route-menu press
 # (`p p r p p`) picks id 1 — the *only* route these shots use. `--gpx $WPTGPX` is the committed replay
@@ -1330,7 +1330,7 @@ args = ["--clock", "2025-06-29T14:00", "--gpx", "{wptgpx}", "--at", "5"]
 
 # (b) The Approach chip: replayed to ~300 m short of Pass Summit (inside the 500 m approach radius),
 # default `Approach` mode → the calm `◆ Pass Summit  299m` pill counts down at bottom-centre with the
-# full name visible (#688 widened the name allocation), the scale bar stepped up above the chip band.
+# full name visible, the scale bar stepped up above the chip band.
 [[frame]]
 name = "map-wpt-chip"
 map = "{grimsel}"
@@ -1366,7 +1366,7 @@ script = "{start_unguided} p"
 expect = "RideControl"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
-# The **map context** (#1515 D3, extended by D4c): a Down+Back squeeze (`C`) on the riding Map
+# The **map context**: a Down+Back squeeze (`C`) on the riding Map
 # raises the bottom sheet carrying the ride's secondary actions — Up ahead / Detour / POIs / Routes
 # — plus the fifth row only the Map declares, Map display. It replaced the compass RIDE menu, whose
 # own fifth station (Main menu) is now the global Back-hold escape. Same base as the quick-drawer
@@ -1386,7 +1386,7 @@ script = "{start_unguided} C"
 expect = "ContextDrawer"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
-# The **map display sheet** (#1515 D4c): the fifth row swaps the five-row sheet for the three
+# The **map display sheet**: the fifth row swaps the five-row sheet for the three
 # switches that are the only home the map's clock pill, scale bar and terrain layer have. `u` wraps
 # the cursor to the last row; there is **no settle token after the press**, because the swap is
 # instantaneous by design — a frame that needed one would be evidence the swap re-ran the open.
@@ -1421,7 +1421,7 @@ script = "p*4 b C"
 expect = "ContextDrawer"
 args = ["--gpx", "{gpx}", "--at", "30"]
 
-# The Climb view (epic #506, C4/C5): the current climb's grade-striped profile + cursor + the four
+# The Climb view: the current climb's grade-striped profile + cursor + the four
 # climb-scoped tiles. Reached with **no gesture at all** — `climb_mode` defaults to Auto, so riding
 # into a climb replaces the riding view with this screen on the entry edge. The `eta-route`
 # environment holds the Grimsel climb alone, so `p p p p` rides it and the replay (well inside the
@@ -1543,7 +1543,7 @@ args = ["--gpx", "{gpx}", "--at", "30", "--stat-fields", "next-water,next-resupp
 # so the Map station is two steps down from the Routes start (`d d w`). A live `--gpx` fix pins
 # the follow camera + marker so the frames reproduce (no route → no magenta line, no off-route chip).
 # (a) The route-less BROWSE map: Menu → Map (not tracking) → the follow map with clock + scale bar,
-# and — new in T6 (#684) — the one-shot `Press to start a ride` hint chip (a two-line pill, since the
+# and the one-shot `Press to start a ride` hint chip (a two-line pill, since the
 # sentence can't fit one line at 240 px) at the bottom on entry, the scale bar stepped above it. The
 # `-settled` frame runs the browse map ~4.8 s past entry (enough `w` tokens > the 4 s window) to prove
 # the hint auto-hides and the scale bar drops back to the corner. (The GPX replay runs after the
@@ -1562,9 +1562,8 @@ script = "B d d w p w*6"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 
-# (b) The start card (browse map → press, T6 #684): the hero bike (the current bike type's sprite +
-# colour) over its name, the two-row GPS / Battery checklist (the static Card row dropped
-# in owner review round 1), then Start ride / Back. `--battery 45` pins the % and the `--gpx --at
+# (b) The start card (browse map → press): the hero bike (the current bike type's sprite +
+# colour) over its name, the two-row GPS / Battery checklist, then Start ride / Back. `--battery 45` pins the % and the `--gpx --at
 # 30` fix makes GPS read `fix`; the second frame drops the `--gpx` (no fix) so GPS reads
 # `searching..` (and a low --battery to vary the row).
 [[frame]]
@@ -1681,8 +1680,7 @@ script = "p*4 h w"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40"]
 
-# Select tap walks the pan **mode ring** — Route Move -> Free Move -> Zoom (#1515 D3, where the
-# family moved off Back-hold); Select-hold changes the axis only once Free is active.
+# Select tap walks the pan **mode ring** — Route Move -> Free Move -> Zoom; Select-hold changes the axis only once Free is active.
 [[frame]]
 name = "map-pan-zoom"
 map = "{grimsel}"
@@ -1707,7 +1705,7 @@ script = "p*4 h p h w"
 expect = "Map"
 args = ["--clock", "2025-06-29T14:40"]
 
-# BLE connected indicator (#448): the static Bluetooth rune on the Home battery row and the menu
+# BLE connected indicator: the static Bluetooth rune on the Home battery row and the menu
 # title bar. `--ble connected` injects a linked phone, exactly as the sim control-panel toggle does.
 [[frame]]
 name = "home-ble"
@@ -1722,8 +1720,8 @@ script = "B w"
 expect = "Menu"
 args = ["--ble", "connected", "--battery", "100"]
 
-# BLE passkey card (#449): the host-pushed 6-digit LESC pairing code, rendered huge — plain
-# `000042` (ungrouped, owner review round 1) under the device<->phone pair glyph (#679).
+# BLE passkey card: the host-pushed 6-digit LESC pairing code, rendered huge — plain
+# `000042` (ungrouped) under the device<->phone pair glyph.
 # `--ble passkey=N` injects the passkey exactly as the sim control-panel "Pairing" toggle does;
 # the card auto-opens.
 [[frame]]
@@ -2032,11 +2030,11 @@ expect = "SetupAllSet"
 args = ["--fresh", "--ble", "connected+paired", "--sensors", "screen"]
 langs = ["de", "fr", "es"]
 
-# Route-upload popups (#451), all three variants. `--inject upload[-replace]=ID` raises the upload
+# Route-upload popups, all three variants. `--inject upload[-replace]=ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. specs/vectors holds
 # two routes: id 0 = route-plain, id 1 = route-waypoints (filename order).
 # Idle: "ROUTE RECEIVED" — a stats line, a mini elevation sparkline (route 0 has elevation), and
-# View route / Dismiss (#682).
+# View route / Dismiss.
 [[frame]]
 name = "route-received"
 map = "{grimsel}"
@@ -2054,7 +2052,7 @@ expect = "RouteSwap"
 args = ["--inject", "upload=1"]
 
 # Active route replaced (riding id 0, id 0 re-uploaded): the info-only "ROUTE UPDATED" card, with
-# the shared check in the glyph slot (#679).
+# the shared check in the glyph slot.
 [[frame]]
 name = "route-updated"
 map = "{grimsel}"
@@ -2063,7 +2061,7 @@ script = "p*4"
 expect = "RouteUpdated"
 args = ["--inject", "upload-replace=0"]
 
-# The trip-upload popup (epic #526): a committed trip always lands *after* its member routes, so one
+# The trip-upload popup: a committed trip always lands *after* its member routes, so one
 # "TRIP RECEIVED" card replaces the burst's last per-route popup. The `trips` environment is the
 # already-rescanned store the event's id resolves against (`TP1.OBT` → id 1, "Alpen Traverse").
 [[frame]]
@@ -2073,7 +2071,7 @@ env = "trips"
 expect = "TripReceived"
 args = ["--inject", "trip-upload=1"]
 
-# The map-transfer card (issue #927) — the only thing on glass through a multi-minute SD write, fed
+# The map-transfer card — the only thing on glass through a multi-minute SD write, fed
 # through the same level-style seam the board's ride loop polls. Two grades: receiving (modal, the
 # progress bar mid-write) and the terminal installed card (dismissable, "restart to use it").
 # Figures are kibibytes, so 120000/400000 KiB is the ~30 % point of a 390 MB map.
@@ -2090,7 +2088,7 @@ expect = "MapTransfer"
 args = ["--inject", "map-transfer=installed"]
 
 # …and each failure face, the dfu-error family's grammar applied to the map: one card per sentence
-# the rider can act on. `refused` is the volume-set case (#1044) — the one announce-time refusal
+# the rider can act on. `refused` is the volume-set case — the one announce-time refusal
 # that reaches the glass, because it lands on top of a stale "Map installed".
 [[frame]]
 name = "map-transfer-failed-storage"
@@ -2116,10 +2114,10 @@ map = "{grimsel}"
 expect = "MapTransfer"
 args = ["--inject", "map-transfer=failed:refused"]
 
-# Storage/sensor warnings (issue #504). The dismissable warning card is raised through the real
+# Storage/sensor warnings. The dismissable warning card is raised through the real
 # notify_warning seam: one missing sensor, and
 # the coalesced worst case (all three sensors absent + a storage error) — the widest layout
-# for the #679 glyph-slot triangle + per-sensor leading glyphs, pinning that nothing collides.
+# for the glyph-slot triangle + per-sensor leading glyphs, pinning that nothing collides.
 [[frame]]
 name = "warning-gps"
 map = "{grimsel}"
@@ -2140,7 +2138,7 @@ map = "{grimsel}"
 script = "B u p I"
 expect = "Home"
 
-# The universal quick drawer (#1515 D2): the Up+Select squeeze (`Q`) over the **riding Map**, which
+# The universal quick drawer: the Up+Select squeeze (`Q`) over the **riding Map**, which
 # is the base worth judging — the sheet's contrast, the four unlabelled icons, and the device-64 dim
 # LUT recessing a real map. States include the icon row, Bluetooth off, the held Assistant shortcut,
 # the nested brightness editor, the guarded power confirmation, and that
@@ -2236,7 +2234,7 @@ script = "B u p d*5 p p w"
 expect = "ContextDrawer"
 langs = ["de", "fr", "es"]
 
-# The `Next: <category>` tiles + their picker rows per language (epic #946, U5): the longest
+# The `Next: <category>` tiles + their picker rows per language: the longest
 # category words (de `Campingplatz` / `Fahrradladen`, fr `Hébergement`) are what the tile caption
 # and the icon-gutter picker row have to fit whole.
 [[frame]]
@@ -2297,7 +2295,7 @@ script = "p p p"
 expect = "RouteOverview"
 langs = ["de", "fr", "es"]
 
-# The route-plan sheet's one row label per language (#1515 D4d). "Type de vélo" / "Tipo de
+# The route-plan sheet's one row label per language. "Type de vélo" / "Tipo de
 # bici" are 168 px, the widest labels the centred row's 172 px budget holds, so these are the
 # frames that show that fit on-glass. No per-language *editor* frame: its choices are the map's
 # own §8.6 names, byte-identical in every column.
@@ -2310,7 +2308,7 @@ expect = "ContextDrawer"
 args = ["--center", "7416969,43730798", "--heading", "0", "--clock", "2025-01-06T12:00"]
 langs = ["de", "fr", "es"]
 
-# The trip cascade-delete confirm (epic #526, TR3), per-language — the wrapped warning line + the
+# The trip cascade-delete confirm, per-language — the wrapped warning line + the
 # shortened "Delete all" button are the copy to eyeball for clipping in the longer translations.
 [[frame]]
 name = "trip-delete-confirm"
@@ -2320,7 +2318,7 @@ script = "p p h"
 expect = "TripDelete"
 langs = ["de", "fr", "es"]
 
-# The received-route card family (#682): the idle card's View route / Dismiss rows, and the
+# The received-route card family: the idle card's View route / Dismiss rows, and the
 # mid-ride swap + ROUTE ACTIVE cards' Swap / Finish & new / Cancel rows — eyeball each for a
 # clipped option row now that the copy is per-language.
 [[frame]]
@@ -2358,7 +2356,7 @@ expect = "NavPlanning"
 args = ["--gpx", "{upgpx}", "--at", "25", "--hold", "detour"]
 langs = ["de", "fr", "es"]
 
-# The Sensors screen (epic #707, SE7): the three kind rows + status lines, per-language — eyeball
+# The Sensors screen: the three kind rows + status lines, per-language — eyeball
 # for a clipped kind label ("Herzfrequenz" / "Fréq. cardiaque" / "Frec. cardíaca") or status line.
 [[frame]]
 name = "sensors"
@@ -2368,7 +2366,7 @@ expect = "Sensors"
 args = ["--sensors", "screen"]
 langs = ["de", "fr", "es"]
 
-# The ride-start card (T6 #684): the checklist labels/values (GPS/Battery) are the copy to
+# The ride-start card: the checklist labels/values (GPS/Battery) are the copy to
 # eyeball for clipped rows in the longer translations. --battery 100 pins the widest % value.
 [[frame]]
 name = "ride-start"
@@ -2378,7 +2376,7 @@ expect = "RideStart"
 args = ["--battery", "100"]
 langs = ["de", "fr", "es"]
 
-# The browse-map start hint chip (T6 #684): the two-line pill in each language, to eyeball for a
+# The browse-map start hint chip: the two-line pill in each language, to eyeball for a
 # clipped line now that the copy is longer.
 [[frame]]
 name = "map-browse"
@@ -2388,7 +2386,7 @@ expect = "Map"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
 
-# The SD-sideload update flow (epic #615 S5): the System menu, the Firmware page (whose "Install
+# The SD-sideload update flow: the System menu, the Firmware page (whose "Install
 # update from card" label wraps to three Label lines in the longer translations), the
 # first-install confirm (the worst case for vertical fit — the two-row version table + the
 # no-undo note, which wraps to two Label lines), the progress spinner, an error card, and the
@@ -2490,12 +2488,12 @@ args = ["--dfu", "failed=notstarted"]
 langs = ["de", "fr", "es"]
 
 # title + the choice it stages. `Jetzt laden` is the width constraint on the row.
-# The quick drawer's five states per language (#1515 D2) — the copy to eyeball is the caption
+# The quick drawer's five states per language — the copy to eyeball is the caption
 # under the icon row, the brightness editor's title, and the two lines of the power confirmation,
 # each of which has to fit the sheet's width in the longer translations.
 # The map context's five row labels at 240 px — the sheet is all copy, so this is its overflow
 # check — and then its display sub-sheet, whose three labels have 36 px less room because the
-# slider takes it (#1515 D4c).
+# slider takes it.
 [[frame]]
 name = "map-context"
 map = "{grimsel}"

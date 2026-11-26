@@ -42,7 +42,7 @@
 
 <style>
     .inspect { width: 340px; max-width: 100%; padding: 12px 14px; font-size: 13px; color: var(--ink); }
-    .compact { width: auto; margin-top: 14px; padding: 12px 0 0; border-top: 1px solid var(--line); font-size: inherit; }
+    .inspect.compact { width: auto; max-width: none; padding: 8px 4px 0; border-top: 1px solid var(--line); font-size: inherit; }
     p { margin: 0; }
     .title { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
     .title strong { font-size: 14px; font-weight: 600; }

@@ -1,6 +1,6 @@
 /** Saves the library and the settings as one backup file, and adds the records of a backup file to the library. */
 import { smallPicture } from './photos';
-import { isPhotoEntry, isRideRecord, isRouteRecord, stateChecks, type LibraryState, type PhotoEntry, type RideRecord, type RouteRecord } from './records';
+import { isPhotoEntry, isRideRecord, isRouteRecord, stateChecks, type LibraryState, type PhotoEntry, type RideRecord } from './records';
 import type { Contents, Library } from './store';
 import { unzip, zip, type Entry } from './zip';
 
@@ -31,7 +31,7 @@ export async function saveBackup(library: Library, settings: object, photos = tr
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** The contents, the photos and the settings of a backup file. It refuses a file of another version and a damaged file. A
- * state value that fails its check is left out, so a backup with an older form of a state value still loads. */
+ * state value that fails its check is left out. */
 async function readBackup(file: Blob): Promise<{ contents: Contents; photos: { record: PhotoEntry; image: Blob }[]; settings: Record<string, unknown> }> {
     const notBackup = new Error('This file is not a library backup.');
     const entries = await unzip(file).catch(() => { throw notBackup; });
@@ -55,10 +55,8 @@ async function readBackup(file: Blob): Promise<{ contents: Contents; photos: { r
     }
     const copies = photos.map(record => ({ record, image: entries.get(photoPath(record)) }));
     if (!copies.every((copy): copy is { record: PhotoEntry; image: Blob } => !!copy.image)) throw damaged;
-    // A route of an older file has the field `open`, the id of a version.
-    const kept = routes.map(route => { const { open: _, ...rest } = route as RouteRecord & { open?: unknown }; return rest; });
     const checked = Object.fromEntries(Object.entries(state).filter(([key, value]) => Object.hasOwn(stateChecks, key) && stateChecks[key as keyof LibraryState](value)));
-    return { contents: { routes: kept, rides, files, state: checked as Partial<LibraryState> }, photos: copies, settings };
+    return { contents: { routes, rides, files, state: checked as Partial<LibraryState> }, photos: copies, settings };
 }
 
 /** Adds the new records of a backup file. The routes and the rides come all or none: a route is new when its id is not

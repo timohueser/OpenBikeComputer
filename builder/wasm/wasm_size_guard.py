@@ -7,49 +7,23 @@ The ground-plan, parts and webp budgets are their recorded sizes plus the owner'
 
 from __future__ import annotations
 
-GOVERNS = [
-    'builder/wasm/**',
-    'host/obcm-assemble/**',
-    'builder/ground-plan-wasm/**',
-    'host/obc-ground-plan/**',
-    'builder/trailview-parts-wasm/**',
-    'host/obc-trailview-parts/**',
-    'builder/webp-wasm/**',
-]
-RULE = 'A wasm bridge stays inside its recorded gzip and raw size budgets.'
-
 import argparse
 import gzip
 import sys
 from pathlib import Path
 
 
-# Measured in CI on the build with the outline's turns, the levels that the tiles carry, the faces' tile-line
-# vertices, the decks' ceilings and end faces, the shared water level and curve of the feature bake, line water
-# and its culverts with their mouths, the classifier's ford rule, and the storeys over the ground with their open
-# junction ends, their ends on the stubs' points, what each deck is made of, the junctions that lie on the
-# ground, a building passage of an older bake on the ground, and the plumbing of the storey under the ground (the
-# crate's feature `storeys` on and `bores` off, the crate at one codegen unit in the release profile, stable 1.100.0),
-# the sidewalks' slabs with their ends, rings and kerbs, and the portal line's levels with the cover's sides.
-# The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
-# The built tunnel ends (obc-trailview-parts) with their open stretches and the approaches to their openings add
-# about 36 kB gzipped; measured on that build with wasm-pack 0.15.0 and rustc 1.99.0, which gives the build before it
-# about 5 kB more than CI.
-GROUND_PLAN_MEASURED = {"gzipped": 828_795, "raw_wasm": 2_129_601}
-# The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
-# unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
-# A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
-# and dependency noise.
+# Measured in CI on the release build of `build-wasm-bridges.sh` (default features), wasm-pack 0.15.0, rustc 1.100.0.
+GROUND_PLAN_MEASURED = {"gzipped": 890_895, "raw_wasm": 2_286_659}
+# Chosen by the owner for toolchain and dependency noise, not code growth; raw gets the same fraction as gzipped.
 GROUND_PLAN_MARGIN_GZIPPED = 8 * 1024
 GROUND_PLAN_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * GROUND_PLAN_MEASURED["raw_wasm"] / GROUND_PLAN_MEASURED["gzipped"]),
 }
 
-# Measured in CI on the build of the tunnel parts' arch, tube, boxes and underpasses, with a tile's volumes built once
-# and selected per node, with wasm-pack 0.15.0 and rustc 1.100.0. The margin is the ground plan's, raw by the same
-# fraction.
-PARTS_MEASURED = {"gzipped": 125_922, "raw_wasm": 293_466}
+# Measured in CI on the same build as the ground plan. The margin is the ground plan's, raw by the same fraction.
+PARTS_MEASURED = {"gzipped": 161_975, "raw_wasm": 394_336}
 PARTS_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * PARTS_MEASURED["raw_wasm"] / PARTS_MEASURED["gzipped"]),

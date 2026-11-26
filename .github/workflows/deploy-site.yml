@@ -15,55 +15,29 @@ name: Deploy site
 # The site carries code only. The web app reads the active release from
 # `planner/catalog.json` at page load, so a data release never runs this workflow.
 #
-# ── What GitHub Pages can and cannot do (C6 #905; measured 2026-07-26) ──────────────
+# ── What GitHub Pages cannot do ─────────────────────────────────────────────────────
 #
-# Pages serves every object with a fixed header set and offers **no** configuration
-# surface for response headers — no `_headers`, no `.htaccess`, no per-path rules:
+# Pages sends the same response headers for every file, and this deploy cannot change them:
 #
-#     $ curl -sSI https://openbikecomputer.com/
-#     cache-control: max-age=600
-#     access-control-allow-origin: *
-#     (no Cross-Origin-Opener-Policy, no Cross-Origin-Embedder-Policy)
-#
-# Two consequences this deploy is designed around:
-#
-# 1. **Cache-Control is not ours to set.** Hashed assets cannot be marked `immutable`
-#    — they are served `max-age=600` like everything else. That is harmless: the
-#    filenames are content-hashed, so a new build is a new URL and an old max-age can
-#    never serve stale code. What it does mean is that "the catalog manifest must be
-#    short-lived" is unsatisfiable for anything served from here — and the manifest
-#    must not live here anyway, because a manifest published beside the site could
-#    only change by redeploying the site, which is exactly what #905 says a fresh bake
-#    must not require. So the manifest lives **with the artifacts**, on whatever object
-#    storage the bakery (B1 #898) publishes to, where its cache policy is that host's
-#    to set (obcc-catalog.md §11 states the ≤ 60 s expectation).
-#
-# 2. **No cross-origin isolation, ever, on this host.** Setting
-#    `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy:
-#    require-corp` is the only way to reach `crossOriginIsolated === true`, and with it
-#    `SharedArrayBuffer` — which is what wasm *threads* need (wasm-bindgen-rayon,
-#    Emscripten pthreads). Pages cannot set them, so anything needing threads (the
-#    hypothetical in-browser packer) forces a move to
-#    a host with header control. The service-worker shim that fakes isolation on static
-#    hosts is not a way out here: under `require-corp` every cross-origin subresource
-#    needs CORP/CORS headers, and this tier's whole point is fetching catalog cells
-#    from another origin. Nothing shipped today wants isolation — obc-web-convert and
-#    obc-web-demo are both single-threaded — so this is a recorded constraint, not a
-#    present problem.
+# 1. Cache-Control is `max-age=600` for every file. Built asset names are content-hashed,
+#    so a new build is a new URL. The catalog manifest must be short-lived, so it lives
+#    with the published data, never here.
+# 2. Pages sends no Cross-Origin-Opener-Policy or Cross-Origin-Embedder-Policy, so no page
+#    is cross-origin isolated and no page has `SharedArrayBuffer`. Code that needs wasm
+#    threads needs a host with header control.
 #
 # ── Portability across a domain move ───────────────────────────────────────────────
 #
 # The site is expected to move to its own domain, so nothing published here may assume
 # the project-Pages `/<repo>/` sub-path: trunk gets `--public-url ./` (which emits
-# `<base href="./">`) and Vite is configured `base: "./"` (#895), so the artifact is
+# `<base href="./">`) and Vite is configured `base: "./"`, so the artifact is
 # mountable at any prefix. The "mountable at any prefix" step below proves that on
 # every deploy by serving the artifact from a deep sub-path and fetching each page's
 # own assets through it.
 #
 # ── Which branch the world sees ────────────────────────────────────────────────────
 #
-# `develop`, per #905's acceptance criterion — the integration branch is what the
-# public site tracks. (It was `main`, which had drifted 365 commits behind.) One
+# `develop`: the integration branch is what the public site tracks. One
 # trigger only: two branches deploying into one Pages environment would fight.
 
 on:
@@ -126,10 +100,6 @@ jobs:
         with:
           tool: trunk@0.21.14,wasm-pack@0.15.0
 
-      # The stale check ignores the map's counts, so git can hold old ones.
-      - name: Refresh the system map for the explorer page
-        run: python3 tools/cairn/cairn.py map
-
       # --public-url ./ rather than /<repo>/: relative asset URLs work under the
       # project-Pages sub-path AND at a domain root, so the move costs a DNS record
       # instead of a rebuild. --release turns on wasm-opt (see data-wasm-opt in
@@ -139,8 +109,8 @@ jobs:
           OBC_BUILD_HARDWARE: "1"
         run: trunk build --release --config docs/Trunk.toml --public-url "./"
 
-      # The web app imports the shared obc-route GPX↔OBCR path (#896), the cell
-      # assembler (#1034), and the production-rendered skin preview (#1045). The shared
+      # The web app imports the shared obc-route GPX↔OBCR path, the cell
+      # assembler, and the production-rendered skin preview. The shared
       # script is also used by CI so the lists cannot drift.
       # None is optional: the frontend imports the generated bindings, so a missing
       # pkg/ is a build failure, not a degraded site.

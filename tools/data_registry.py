@@ -1,6 +1,6 @@
 """The data registry for Python steps: the credit of a source and the box of a region.
 
-specs/obc-data.md defines the files and `obc data` checks them. This module reads only what
+specs/obc-data-registry.md defines the files and `obc data` checks them. This module reads only what
 Python steps need, so it adds no rule of its own. Shell scripts call it as
 
     python3 tools/data_registry.py box REGION [--lat-first]

@@ -7,6 +7,11 @@ export default {
   // A compact, upright oval crown on a short trunk.
   fork: 0.32,
   crown: [0.6, 0.22, 0.22, 0.34],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.12 + 0.88 * t)) ** 0.7,
+  clumps: 11,
+  billows: 4,
+  bow: 0.3,
+  heads: { count: 110, width: 0.04, height: 0.5 },
   trunk: 0.035,
   flare: 1.4,
   // Smooth grey bark.

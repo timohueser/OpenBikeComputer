@@ -1,27 +1,28 @@
 import type { Tree } from '../trees';
 
 export default {
-  form: 'conifer',
+  form: 'broadleaf',
   name: 'Swiss stone pine',
   latin: 'Pinus cembra',
-  // A dense, broad column, leafy to the ground, with the rounded and often split top of an old tree.
-  base: 0.04,
-  radius: 0.24,
-  shape: (t) => (1 - t ** 2.2) ** 0.6,
-  overlap: 2,
-  // Branch tips turn up, as a pine's do.
-  droop: -0.05,
-  lobes: 6,
-  jitter: 0.25,
-  nod: 0.04,
+  // A dense, broad column of needle pads in whorls on a stout trunk, leafy nearly to the ground, with a round top.
+  fork: 0.1,
+  crown: [0.56, 0.21, 0.21, 0.42],
+  open: true,
+  stagger: true,
+  pads: true,
+  layers: 4,
+  dense: 2.1,
+  billows: 5,
+  crook: 0.01,
   trunk: 0.03,
   flare: 1.5,
   bark: ['#4a4440', '#6e6660'],
   // White lines on the needles give the dark green a blue cast.
-  needles: {
+  leaves: {
     winter: ['#1c2d26', '#2f473a', '#5e7864'],
     spring: ['#1d2f27', '#324c3d', '#6a866a'],
     summer: ['#1c2e26', '#30493b', '#647e66'],
     autumn: ['#1c2e26', '#2f483a', '#607a64'],
   },
+  twigs: ['#4a4440', '#5c5550', '#6e6660'],
 } satisfies Tree;

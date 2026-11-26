@@ -1,5 +1,5 @@
 //! The producer of `snow`: the tiles of zoom 6 to 12 of the snow archive of each zoom 6 block of its
-//! region, `<season>/<x>/<y>.pmtiles` for each season of `snow.seasons` (`specs/obc-data.md`). A
+//! region, `<season>/<x>/<y>.pmtiles` for each season of `snow.seasons` (`specs/obc-data-producers.md`). A
 //! version extends the version before: it makes only the files that the version before lacks, as
 //! the data of a past season does not change. `tools/planner_snow.py prepare` writes the files of
 //! one block, from the MODIS files of the archive dataset `modis-snow`, read in place.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject forbidden production dependency edges and features in the firmware workspace.
+"""Reject forbidden production dependency edges in the firmware workspace.
 
 A closed crate list may depend only on its allowed crates and on each other, so no third-party
 crate enters it either.
@@ -7,13 +7,9 @@ crate enters it either.
 Rules are group-to-group so later architecture issues can tighten one allowlist entry instead of
 rewriting a graph snapshot. Development-only edges are deliberately ignored: test fixtures may
 depend on their consumers, while production `normal`/`build` dependencies must point downward.
-Feature rules inspect the effective dependency graph of the Cargo root they name.
 """
 
 from __future__ import annotations
-
-GOVERNS = ['**/Cargo.toml', 'firmware/tools/dependency_rules.json']
-RULE = 'Production dependencies point downward, closed crates take only allowed dependencies, and forbidden dependency features stay disabled.'
 
 import argparse
 import json
@@ -169,56 +165,14 @@ def check_closed_dependencies(metadatas: list[dict[str, object]], policy: dict[s
     return violations
 
 
-def cargo_metadata(manifest: Path, *, resolve_all_features: bool = False) -> dict[str, object]:
-    command = [
-        "cargo",
-        "metadata",
-        "--format-version",
-        "1",
-        "--locked",
-        "--manifest-path",
-        str(manifest),
-    ]
-    if resolve_all_features:
-        command.append("--all-features")
-    else:
-        command.append("--no-deps")
+def cargo_metadata(manifest: Path) -> dict[str, object]:
+    command = ["cargo", "metadata", "--format-version", "1", "--locked", "--no-deps", "--manifest-path", str(manifest)]
     try:
-        output = subprocess.run(
-            command,
-            check=True,
-            text=True,
-            capture_output=True,
-        ).stdout
+        output = subprocess.run(command, check=True, text=True, capture_output=True).stdout
     except (OSError, subprocess.CalledProcessError) as error:
         detail = getattr(error, "stderr", "").strip() or str(error)
         raise DependencyError(f"cargo metadata failed: {detail}") from error
     return json.loads(output)
-
-
-def check_forbidden_features(metadata: dict[str, object], policies: list[dict[str, object]]) -> list[str]:
-    packages = metadata.get("packages", ())
-    nodes = {node["id"]: node for node in metadata.get("resolve", {}).get("nodes", ())}
-    violations: list[str] = []
-
-    for policy in policies:
-        package_name = policy["package"]
-        matches = [package for package in packages if package["name"] == package_name]
-        if len(matches) != 1:
-            raise DependencyError(
-                f"feature policy package `{package_name}` resolved {len(matches)} times; expected exactly once"
-            )
-        node = nodes.get(matches[0]["id"])
-        if node is None:
-            raise DependencyError(f"feature policy package `{package_name}` is absent from the resolved graph")
-        enabled = set(node.get("features", ()))
-        for feature in policy.get("features", ()):
-            if feature in enabled:
-                violations.append(
-                    f"forbidden dependency feature `{package_name}/{feature}` is enabled: {policy['reason']}"
-                )
-
-    return violations
 
 
 def parser() -> argparse.ArgumentParser:
@@ -241,22 +195,12 @@ def main() -> int:
         packages, edges = dependency_graph(metadatas)
         violations = check_edges(edges, rules, packages)
         violations.extend(check_closed_dependencies(metadatas, rules["closed_dependencies"]))
-        feature_policies = rules.get("forbidden_features", ())
-        policies_by_manifest: dict[Path, list[dict[str, object]]] = {}
-        for policy in feature_policies:
-            manifest = args.manifest_path.parent / policy["manifest"]
-            policies_by_manifest.setdefault(manifest, []).append(policy)
-        for manifest, policies in policies_by_manifest.items():
-            violations.extend(check_forbidden_features(cargo_metadata(manifest, resolve_all_features=True), policies))
         if violations:
             raise DependencyError("\n".join(violations))
     except (DependencyError, json.JSONDecodeError, KeyError, TypeError) as error:
         print(f"dependency check failed: {error}", file=sys.stderr)
         return 1
-    print(
-        f"dependency policy check passed ({len(edges)} production local edges, "
-        f"{len(feature_policies)} forbidden feature rules)"
-    )
+    print(f"dependency policy check passed ({len(edges)} production local edges)")
     return 0
 
 

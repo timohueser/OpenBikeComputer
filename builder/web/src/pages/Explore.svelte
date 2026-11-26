@@ -1,6 +1,6 @@
-<!-- The Explore page: the signed routes of the map view in a list with chips, on the map, and the selected one in a card
-     that opens it as a plan in the planner. With trail files, one tab lists the day routes and one the long trails. With
-     facts files, the day routes of hiking are a search: filters in the column, the results in a table under the map. -->
+<!-- The Explore page: the signed hikes of the map view, on the map, and the selected one in a card that opens it as a plan
+     in the planner. One search bar, a text field and three slots, holds the search. The day routes are a search, with its
+     rows in the list beside the map. With trail files, a second tab lists the long trails there. -->
 <script lang="ts">
     import { tick, untrack } from 'svelte';
     import { keepInHistory } from '../lib/keep-in-history.svelte';
@@ -11,38 +11,45 @@
     import { decodeCoordinates } from '../lib/planner/route-answer';
     import { routeColor } from '../lib/planner/route-colors';
     import { catalog, tooWide, trailsTooWide, type Box } from '../lib/planner/route-catalog';
-    import { gradeName, kinds, recordCredits, routePlan, type CatalogRecord, type RouteRecord, type TrailEntry } from '../lib/planner/signed-routes';
+    import { kinds, recordCredits, routePlan, type CatalogRecord, type RouteRecord, type TrailEntry } from '../lib/planner/signed-routes';
     import { hasTrailView, loadTrailView } from '../lib/planner/trailview';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import { distanceIn, heightIn } from '../lib/settings/format';
     import { today, type View } from '../lib/trailview/view';
     import Icon from '../lib/ui/Icon.svelte';
+    import Menu from '../lib/ui/Menu.svelte';
+    import type { FieldProps, Place as NamedPlace } from '../lib/ui/search-bar/Field.svelte';
+    import { rise, still } from '../lib/ui/search-bar/motion';
+    import SearchBar, { type Slot } from '../lib/ui/search-bar/SearchBar.svelte';
     import Segmented from '../lib/ui/Segmented.svelte';
     import type { TrailViewRoute } from '../components/planner/TrailViewWindow.svelte';
-    import SignedCard, { signedNumbers } from './explore/SignedCard.svelte';
+    import SignedCard from './explore/SignedCard.svelte';
     import SignedPicture from './explore/SignedPicture.svelte';
     import TrailCard, { trailParts } from './explore/TrailCard.svelte';
-    import ResultsTable from './explore/ResultsTable.svelte';
     import { firstRows, ROWS } from './explore/rows';
-    import { counts, defaultQuery, DRIVE_KM, driveCap, find, keepQuery, loadBox, openingQuery, queryParams, reachBox, storedQuery, suggestions,
-        type Loaded, type Query, type Shape, type Sort } from './explore/search';
-    import SearchFilters from './explore/SearchFilters.svelte';
-    import { addMarkerLayers, MARKER_LAYERS, mapData, markerClick, markerTip, startAt } from './explore/search-map';
+    import HikePanel from './explore/HikePanel.svelte';
+    import HikeRow from './explore/HikeRow.svelte';
+    import Journey from './explore/Journey.svelte';
+    import { counts, defaultQuery, DRIVE_KM, driveCap, find, GRADE_TOP, keepQuery, keepSearch, loadBox, openingQuery, queryParams, reachBox, readQuery, storedQuery,
+        storedSearches, suggestions, wishesOf, type Loaded, type Query, type Shape, type Sort } from './explore/search';
+    import { apply, changes, EXAMPLES, ignored, often, phraseTable, type Choice } from './explore/phrases';
+    import { effectiveQuery, resetSlot, slotSet, slotWords, type SlotId } from './explore/slots';
+    import Wishes from './explore/Wishes.svelte';
+    import { addMarkerLayers, MARKER_LAYERS, mapData, markerClick, markerTip, myLocation, startAt } from './explore/search-map';
     import type { MapOverlay } from './routes/RoutesMap.svelte';
-    import { LENGTH_TOP_M } from './explore/words';
+    import { hikes, LENGTH_TOP_M, SORT_WORDS, suggestionText } from './explore/words';
     import { signedHref } from './explore/signed-page';
-    import Chips from './routes/Chips.svelte';
-    import { farOrder, farTrailId, nearTrails, PROFILE_STEP_M, results, scale, showAt, signedItem, splitDay, trailItem, type Chips as ChipValues, type Item, type SignedItem, type TrailItem } from './routes/filter';
+    import { farOrder, farTrailId, findPlaces, nearTrails, PROFILE_STEP_M, results, scale, showAt, signedItem, splitDay, trailItem, type FoundPlace, type Item, type SignedItem,
+        type TrailItem } from './routes/filter';
     import ListAndMap from './routes/ListAndMap.svelte';
-    import PlaceSearch from './routes/PlaceSearch.svelte';
     import RouteRow from './routes/RouteRow.svelte';
 
     /** What the page keeps in `history.state.explore`, so that Back and "Find another route" find it again. The page of a
      * signed route gives `show`, the id of the route record to show: the first answer decides its tab and its card. The page
      * of a trail gives the long trails tab and the trail. `query` is the search of the day routes (`queryParams`), and `shape`
-     * the shape of its open row. */
-    interface Kept { chips: ChipValues; query?: string; view?: Box; tab?: Tab; selected?: string; shape?: Shape; trail?: number; stage?: string; show?: number }
+     * the shape of its selected row. */
+    interface Kept { query?: string; view?: Box; tab?: Tab; selected?: string; shape?: Shape; trail?: number; stage?: string; show?: number }
     type Place = { lon: number; lat: number; box?: Box };
     type Tab = 'day' | 'long';
     /** The files of a view: the records and the trails of a near view, or the trails of a far view. `trails` is null when
@@ -61,7 +68,6 @@
     const first = openingQuery(location.hash.includes('?') ? location.hash.slice(location.hash.indexOf('?') + 1) : undefined, kept?.query, storedQuery(), day);
     const firstView = first.view ?? kept?.view;
 
-    let chips = $state<ChipValues>(kept?.chips ?? { bike: 'hiking' });
     /** The page opens on the day routes; only the rider changes the tab. A release with no trail files has no tabs. */
     let tab = $state<Tab>(config.trails ? kept?.tab ?? 'day' : 'day');
     /** The selected route of the day routes tab. */
@@ -75,11 +81,16 @@
      * and the near view. */
     let trail = $state.raw<{ id: number; entry?: TrailEntry; record?: CatalogRecord; failed?: boolean }>(), stage = $state<string>();
 
-    const bike = $derived(chips.bike ?? 'hiking');
-    const graded = $derived(bike === 'hiking' || bike === 'mtb');
-    /** The day routes are the search: hiking in a release with facts files. */
-    const searching = $derived(tab === 'day' && bike === 'hiking' && !!config.facts);
-    const start = $derived(query.start);
+    /** Explore searches hikes only: the bike kinds of the bar are greyed out. */
+    const bike: Bike = 'hiking';
+    /** The day routes are the search. Without facts files, "From" and "On the way" are off. */
+    const searching = $derived(tab === 'day');
+    const facts = $derived(searching && !!config.facts);
+    /** The query that the day routes search, and the one that the bar shows: each value that is off has its default. */
+    const dayQuery = $derived(effectiveQuery(query, { from: !config.facts, way: !config.facts, trails: false }, day));
+    const shownOf = (next: Query) => effectiveQuery(next, tab === 'long' ? { from: true, way: true, trails: true } : { from: !config.facts, way: !config.facts, trails: false }, day);
+    const shownQuery = $derived(shownOf(query));
+    const start = $derived(dayQuery.start);
     /** The box whose cells the day routes load: the view, or with a start point the part of it in reach; null for none. */
     const from = $derived(searching && view ? loadBox({ start }, view) : view);
     /** The view needs more cell files than a view loads: the page lists the trails of the far files only. */
@@ -87,7 +98,7 @@
     /** The day routes have no list: their cells are too many. */
     const dayClosed = $derived(searching ? !!from && tooWide(from) : far);
     // The trails of a far answer are for each bike.
-    const answered = $derived(answer && answer.far === far && (far || answer.bike === bike) && (!searching || answer.facts) ? answer : undefined);
+    const answered = $derived(answer && answer.far === far && (far || answer.bike === bike) && (!facts || answer.facts) ? answer : undefined);
     const recordOf = (id: number) => catalog.record(id);
     /** A place of the loaded facts files: a new answer gives a new function, so a name that waited for its file shows. */
     const placeById = $derived.by(() => {
@@ -116,40 +127,38 @@
     const stale = $derived(!!answer && (answer.view !== view || answer.from !== from));
     const inViewOf = <T extends Item>(items: T[]) => stale ? results(items, {}, '', view) as T[] : items;
     const dayInView = $derived(inViewOf(dayItems)), longInView = $derived(inViewOf(trailItems));
-    const dayList = $derived(results(dayInView, chips, '', undefined, 'shortest') as SignedItem[]);
-    // A trail of 400 km matches no range of day routes: the Length and Climb chips belong to the day routes tab.
-    const longList = $derived((results(longInView, { ...chips, length: undefined, climb: undefined }, '') as TrailItem[]).sort(farOrder));
+    // The long trails keep the hardest grade of the search; its other values are for day routes.
+    const longList = $derived((results(longInView, { bike, grade: query.grade[1] < GRADE_TOP ? query.grade[1] : undefined }, '') as TrailItem[]).sort(farOrder));
     const wide = $derived(far && (!config.trails || trailsTooWide(view!)));
     const dayReady = $derived(!!answered && !dayClosed && !(stale && !dayInView.length));
     /** The loaded day routes with their facts, and the rows of the search in their order. */
     const loaded = $derived<Loaded>({ records: dayInView.map(item => item.record), factsOf: id => catalog.factsOf(id), place: id => catalog.place(id) });
-    const found = $derived(searching && dayReady ? find(query, loaded, sort) : []);
-    const tally = $derived(searching && dayReady ? counts(query, loaded, found) : undefined);
-    /** The rows that the other filters keep, for the bars of the Length and Climb sliders. */
-    const without = (key: 'length' | 'climb') => !query[key] ? found : searching && dayReady ? find({ ...query, [key]: undefined }, loaded) : [];
+    const found = $derived(searching && dayReady ? find(dayQuery, loaded, sort) : []);
+    const tally = $derived(searching && dayReady ? counts(dayQuery, loaded, found) : undefined);
+    /** The rows that the other values keep, for the bars of the Length and Climb sliders. */
+    const without = (key: 'length' | 'climb') => !dayQuery[key] ? found : searching && dayReady ? find({ ...dayQuery, [key]: undefined }, loaded) : [];
     const lengths = $derived(without('length').map(row => distanceIn(row.length_m)));
     const climbs = $derived(without('climb').map(row => heightIn(row.ascent_m)));
     /** For an empty list, the changes that help; the length widens by one step of its slider. */
     const helps = $derived(searching && dayReady && !found.length && loaded.records.length
-        ? suggestions(query, loaded, Math.round(scale([distanceIn(LENGTH_TOP_M)]).step / distanceIn(1))) : []);
-    /** A row of the search opens in place: the selected route in the open shape, else in its first shape. */
+        ? suggestions(dayQuery, loaded, Math.round(scale([distanceIn(LENGTH_TOP_M)]).step / distanceIn(1))) : []);
+    /** The row of the selected route: in the selected shape, else in its first shape. */
     const opened = $derived(selected === undefined ? undefined
         : found.find(row => String(row.record.id) === selected && row.shape === shape) ?? found.find(row => String(row.record.id) === selected));
     /** The routes of the rows, each once, in the order of the rows. */
     const foundItems = $derived([...new Set(found.map(row => row.record))].map(record => signedOf(record)));
-    const dayShown = $derived(searching ? foundItems : dayList);
+    const dayShown = $derived(foundItems);
     /** The rows of each tab, or undefined while the tab has no list for this view: the tab then shows no number. */
-    const dayRows = $derived(dayReady ? searching ? found : dayList : undefined);
+    const dayRows = $derived(searching && dayReady ? found : undefined);
     const longRows = $derived(answered && !wide && !(stale && !longInView.length) ? longList : undefined);
     const open = $derived(tab === 'day'
-        ? { rows: dayRows, inView: dayInView as Item[], closed: dayClosed, word: config.trails ? 'day route' : 'signed route' }
-        : { rows: longRows, inView: longInView as Item[], closed: wide, word: 'long trail' });
+        ? { rows: dayRows, inView: dayInView as Item[], closed: dayClosed, zoom: 'Zoom in to search.', loading: 'Loading the hikes…', none: 'No hike in this map view.' }
+        : { rows: longRows, inView: longInView as Item[], closed: wide, zoom: 'Zoom in to see the long trails.', loading: 'Loading the routes…', none: 'No long trail in this map view.' });
     const shown = $derived<(SignedItem | TrailItem)[]>(tab === 'day' ? dayShown : longList);
     const chosen = $derived(dayShown.find(item => item.id === selected));
     const staged = $derived(stage === undefined ? undefined : stageItems.find(item => item.id === stage));
-    /** The row of the selected route or trail of the open tab. */
-    const currentId = $derived(tab === 'day' ? selected : trail ? String(trail.id) : undefined);
-    const current = $derived(shown.find(item => item.id === currentId));
+    /** The id of the selected trail of the long trails tab. */
+    const currentId = $derived(trail ? String(trail.id) : undefined);
     /** What the trail card names: a trail restored from the history has nothing to name until its record comes. */
     const trailAbout = $derived(trail?.record ?? trail?.entry);
     /** A trail that is a route record has the card of a route. */
@@ -180,23 +189,18 @@
         if (credits) coverCredits = credits;
         covers += credits ? 1 : -1;
     }
-    /** The value of each day route that the other chips keep, for the bars of the slider of `key`. */
-    const values = (key: 'length' | 'climb') => results(dayInView, { ...chips, [key]: undefined }, '')
-        .map(({ summary }) => key === 'length' ? distanceIn(summary!.lengthM) : heightIn(summary!.climbM));
-    const count = (n: number) => `${n.toLocaleString('en')} signed route${n === 1 ? '' : 's'}`;
     const counted = (rows: unknown[] | undefined) => rows ? ` ${rows.length.toLocaleString('en')}` : '';
     /** No row to show yet: the first load, or a new view with no row of the last answer in it. */
     const waiting = $derived(!failed && !open.closed && !open.rows);
     const listed = $derived(!failed && !open.closed && !!open.rows && open.inView.length > 0);
-    // The tabs show the counts; a release with no tabs shows them under the chips.
-    const status = $derived(failed ? 'The routes could not load.' : open.closed ? `Zoom in to see the ${open.word}s.`
-        : waiting || stale ? 'Loading the routes…' : !open.inView.length ? `No ${open.word} in this map view.`
-        : config.trails ? '' : shown.length === open.inView.length ? `${count(open.inView.length)} in this map view` : `${shown.length.toLocaleString('en')} of ${count(open.inView.length)}`);
+    // The tabs show the counts of the long trails; the day routes show theirs over the list, with "Sort by".
+    const status = $derived(failed ? 'The routes could not load.' : open.closed ? open.zoom : waiting || stale ? open.loading : !open.inView.length ? open.none : '');
+    const nice = $derived(wishesOf(dayQuery, 'nice'));
 
     // A selected route that the list does not show any more closes its card. A selection from the history waits for
     // the first answer.
     $effect(() => {
-        if (selected && answer && !chosen) selected = undefined;
+        if (searching && selected && answer && !chosen) selected = undefined;
     });
     $effect(() => {
         if (stage !== undefined && answer && !staged) stage = undefined;
@@ -219,7 +223,7 @@
         }
     }
     function retry() {
-        if (view && from !== undefined) void load(view, from, bike, searching);
+        if (view && from !== undefined) void load(view, from, bike, facts);
     }
     /** The answer of a view whose files the catalog holds, else undefined. */
     function answerNow(box: Box, from: Box | null, kind: Bike, facts: boolean): Answer | undefined {
@@ -240,36 +244,51 @@
     // A view whose cell files or far files the catalog holds gets its answer before the page draws the view, so the list shows no
     // load. Another view loads its files `WAIT_MS` later.
     $effect.pre(() => {
-        const box = view, cells = from, kind = bike, facts = searching;
+        const box = view, cells = from, kind = bike, withFacts = facts;
         if (!box || cells === undefined) return;
-        const held = answerNow(box, cells, kind, facts);
+        const held = answerNow(box, cells, kind, withFacts);
         if (held) {
             loads++;
             failed = false;
             answer = held;
             return;
         }
-        const timer = setTimeout(() => void load(box, cells, kind, facts), WAIT_MS);
+        const timer = setTimeout(() => void load(box, cells, kind, withFacts), WAIT_MS);
         return () => clearTimeout(timer);
     });
 
     // The list draws its first rows, and more when the rider scrolls near their end, so a new view makes few rows.
     let rows = $state<HTMLElement>(), rowLimit = $state(ROWS);
-    const drawn = $derived(shown.length > rowLimit ? shown.slice(0, rowLimit) : shown);
-    const chosenAt = $derived(current ? shown.indexOf(current) : -1);
+    const dayDrawn = $derived(found.slice(0, rowLimit)), longDrawn = $derived(longList.slice(0, rowLimit));
+    /** The index of the row of the selected route or trail of the open tab, or -1. */
+    const chosenAt = $derived(tab === 'day' ? opened ? found.indexOf(opened) : -1 : longList.findIndex(item => item.id === currentId));
     function drawMore() {
-        if (rows && rowLimit < shown.length && rows.scrollTop + rows.clientHeight > rows.scrollHeight - 600) rowLimit += ROWS;
+        if (rows && rowLimit < (tab === 'day' ? found : longList).length && rows.scrollTop + rows.clientHeight > rows.scrollHeight - 600) rowLimit += ROWS;
     }
-    // A new list, from an answer, the chips or the tab, starts at its top with its first rows.
-    $effect.pre(() => {
-        void [answer, chips, tab];
-        rowLimit = firstRows(untrack(() => chosenAt));
+    /** Starts the list at its top with its first rows. */
+    function restart() {
+        rowLimit = firstRows(chosenAt);
         if (rows) rows.scrollTop = 0;
+    }
+    // A new tab, a new search or order of the day routes, or a new grade of the long trails starts the list again.
+    $effect.pre(() => {
+        void [tab, query.grade, searching && query, sort];
+        untrack(restart);
+    });
+    // So does a new answer, unless it holds the selected row: a selection that moves the map keeps the list where it is.
+    $effect.pre(() => {
+        void answer;
+        untrack(() => { if (chosenAt < 0) restart(); });
+    });
+    // A new search or order, and a list that comes, show as a short fade of the list.
+    $effect(() => {
+        void [searching && query, sort];
+        if (!still()) rows?.animate({ opacity: [0.55, 1] }, { duration: 180, easing: 'ease-out' });
     });
     // The selected route has its row and shows it: after a selection on the map or in TrailView, and in a new list,
     // which can move the route. Only the list scrolls, not the page.
     $effect(() => {
-        void [answer, chips, tab];
+        void [answer, tab, query.grade, searching && query, sort];
         const at = chosenAt;
         if (at < 0) return;
         untrack(() => { rowLimit = Math.max(rowLimit, at + 1); });
@@ -334,6 +353,74 @@
 
     /** The next click on the map picks the start point. */
     let picking = $state(false);
+
+    /** The slots of the search bar. "From" and "On the way" are off on the long trails tab and with no facts files. */
+    const words = $derived(slotWords(shownQuery, placeById, day));
+    const offText = $derived(tab === 'long' ? 'Not for long trails' : !config.facts ? 'No data for this map' : undefined);
+    const slots = $derived<Slot[]>([
+        { id: 'from', icon: 'locate', label: 'From', words: words.from, unset: 'Anywhere on the map', set: slotSet(shownQuery, 'from', day), off: offText },
+        { id: 'hike', icon: 'hiking', label: 'Hike', words: words.hike, unset: tab === 'long' ? 'Any grade' : 'Any length and shape', set: slotSet(shownQuery, 'hike', day) },
+        { id: 'way', icon: 'mountain', label: 'On the way', words: words.way, unset: 'Anything', set: slotSet(shownQuery, 'way', day), off: offText },
+    ]);
+    /** The open panel of the bar, and the query before the cross for its "Undo". */
+    let openSlot = $state<string>(), cleared = $state.raw<Query>(), bar = $state<SearchBar<Choice, FoundPlace & NamedPlace>>();
+    /** A change from the empty list takes its button away: the focus goes to the first row of the new list. */
+    function fromEmpty(change: () => void) {
+        change();
+        void tick().then(() => rows?.querySelector<HTMLElement>('.row')?.focus({ preventScroll: true }));
+    }
+    /** "Reset" of a slot. On the long trails tab "Hike" shows only the hardest grade, so its reset keeps the other values of
+     * the day search. */
+    const reset = (id: SlotId, from: Query): Query => tab === 'long' ? { ...from, grade: [from.grade[0], GRADE_TOP] } : resetSlot(from, id, day);
+    /** The cross resets each slot that is on: a slot that is off keeps its values for when it is on again. */
+    function clear() {
+        cleared = query;
+        setQuery(slots.filter(slot => !slot.off).reduce((next, slot) => reset(slot.id as SlotId, next), query));
+    }
+    /** On the long trails tab "Hike" changes only the hardest grade, so the day search keeps its lower grade. */
+    function setHike(change: Partial<Query>) {
+        if (tab !== 'long' || !change.grade) return setQuery(change);
+        const high = change.grade[1];
+        setQuery({ grade: [Math.min(query.grade[0], high), high] });
+    }
+    /** The text field of the bar. Its words and its suggestions are read in the browser; only a typed name asks the server
+     * for places, which move the map. */
+    let searches = $state(storedSearches());
+    /** The words of a choice that the open tab does not search stay in the field, with the text of what is off. */
+    const off = $derived(offText ? ignored(shownOf, offText, day) : () => undefined);
+    const phrases = $derived(phraseTable(loaded, off));
+    /** The words of the slots of a query; a search with none is no last search. */
+    const summary = (kept: Query) => Object.values(slotWords(kept, placeById, day)).flat().join(' · ');
+    /** The places of the server for a name, the ones in the map view first: a new view is a new search. */
+    const named = $derived.by(() => {
+        const box = view ?? [-180, -85, 180, 85];
+        return (name: string, signal: AbortSignal) => findPlaces(name, box, signal, true)
+            .then(found => found.map(one => ({ ...one, about: [one.kind.replaceAll('_', ' '), one.region].filter(Boolean).join(' · ') })));
+    });
+    const field = $derived<FieldProps<Choice, FoundPlace & NamedPlace>>({
+        table: phrases, label: 'Say what you want', placeholder: 'Say what you want, such as “loop with a hut”', examples: searches.length ? [] : EXAMPLES,
+        // The search that the slots show is no last search.
+        recent: searches.flatMap(text => {
+            const kept = readQuery(text, day).query, words = summary(kept);
+            return words && words !== summary(query) ? [{ text: words, run: () => setQuery(kept) }] : [];
+        }),
+        often: () => often(dayQuery, loaded, off), changes: choice => changes(dayQuery, choice), onvalues: send, places: named,
+        placesLabel: 'Move the map to', onplace: ({ lon, lat, box }) => place = { lon, lat, box }, onsearch: () => { if (summary(query)) searches = keepSearch(query, day, searches); },
+    });
+    function send(choices: Choice[]) {
+        setQuery(apply(query, choices));
+        if (choices.some(choice => choice.here)) void locate();
+    }
+    /** The start point from the browser for a choice that needs one. A start or a pin wins, also one that the rider sets
+     * meanwhile; with no location, "From" opens. */
+    async function locate() {
+        if (query.start || query.pin) return;
+        const at = await myLocation();
+        if (query.start || query.pin) return;
+        if (typeof at === 'string') openSlot = 'from';
+        else setQuery({ start: at, pin: undefined });
+    }
+
     const pick = $derived(searching && picking
         ? { text: 'Click the map where you start. Esc cancels.', onpick: (at: [number, number]) => { picking = false; setQuery({ start: startAt(at), pin: undefined }); } }
         : undefined);
@@ -341,7 +428,7 @@
      * routes give a new value, so the map asks for new tips. */
     const overlay = $derived.by<MapOverlay | undefined>(() => {
         if (!searching) return undefined;
-        const [now, files, rows, open] = [query, loaded, found, opened];
+        const [now, files, rows, open] = [dayQuery, loaded, found, opened];
         return {
             data: hovered => mapData(rows, now, (hovered === undefined ? undefined : rows.find(row => String(row.record.id) === hovered)) ?? open, id => catalog.place(id)),
             add: addMarkerLayers, hit: MARKER_LAYERS, tip: id => markerTip(id, now, files), onclick: id => setQuery(markerClick(id, now, id => catalog.place(id))),
@@ -352,21 +439,15 @@
         return { lon: (box[0] + box[2]) / 2, lat: (box[1] + box[3]) / 2, box };
     }
 
-    /** A new bike has other grades, so it clears the grade chip. */
-    function setChips(next: ChipValues) {
-        if (next.bike !== chips.bike) delete next.grade;
-        chips = next;
-    }
-
     // The record of the page of a signed route: in the day routes, else a trail of the far files or a stage of one.
     let show = kept?.show;
     $effect(() => {
         // An answer for another view or reach, as while a reset search loads, decides nothing.
-        if (show === undefined || !answer || stale || (searching && !answer.facts)) return;
+        if (show === undefined || !answer || stale || (facts && !answer.facts)) return;
         const id = show, record = answer.records?.find(one => one.id === id), at = record && showAt(record, answer.all, recordOf);
         // A last search that leaves out a day route, also by a start point elsewhere, gives way to the default search in the
         // view of the route; without a start point, the next answer holds the route. A stage of a trail keeps the search.
-        if (searching && (at ? at.tab === 'day' && !find(query, { ...loaded, records: [record!] }).length : !!(query.start || query.pin))) {
+        if (searching && (at ? at.tab === 'day' && !find(dayQuery, { ...loaded, records: [record!] }).length : !!(query.start || query.pin))) {
             query = defaultQuery(day);
             if (!at) return;
         }
@@ -381,9 +462,9 @@
     /** The page of a signed route. In the TrailView window the name is no link: Back from the page would start TrailView again. */
     const linkOf = (record: CatalogRecord) => trailView ? undefined : signedHref(record, config.bounds);
 
-    // Back from another page brings the view, the chips, the search and the selection again. While the search shows, the page
+    // Back from another page brings the view, the search and the selection again. While the search shows, the page
     // address holds its query and the view.
-    const keep = keepInHistory('explore', (): Kept => ({ chips, query: queryParams(query, day), view, tab, selected, shape, trail: trail?.id, stage }),
+    const keep = keepInHistory('explore', (): Kept => ({ query: queryParams(query, day), view, tab, selected, shape, trail: trail?.id, stage }),
         () => searching ? [ROUTES.explore, queryParams(query, day, view)].filter(Boolean).join('?') : ROUTES.explore);
     $effect(() => keepQuery(query, day));
     if (kept?.trail !== undefined) void openTrail(kept.trail).then(() => { if (trail?.id === kept.trail) stage = kept.stage; });
@@ -409,7 +490,7 @@
         notice = undefined;
         try {
             const [chunk, { default: component }] = await Promise.all([loadTrailView(), import('../components/planner/TrailViewWindow.svelte')]);
-            // The end of a pan or new chips during the load can change the list: one more try takes the new list.
+            // The end of a pan or a new search during the load can change the list: one more try takes the new list.
             for (let tries = 0; tries < 2; tries++) {
                 const listed = trailViewItems();
                 const routes = listed.map(({ id, record }): TrailViewRoute => ({
@@ -443,69 +524,98 @@
     function plan(item: SignedItem) {
         keep();
         const route = item.record as RouteRecord;
-        router.go(`${ROUTES.planner}/new`, { signed: { route, plan: routePlan(route), back: $state.snapshot({ chips, query: queryParams(query, day), view, tab, selected, shape, trail: trail?.id, stage }) } });
+        router.go(`${ROUTES.planner}/new`, { signed: { route, plan: routePlan(route), back: $state.snapshot({ query: queryParams(query, day), view, tab, selected, shape, trail: trail?.id, stage }) } });
     }
 </script>
 
-<!-- Escape in an open window closes only the window. -->
-<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) { if (picking) picking = false; else select(undefined); } }} />
+<!-- Escape in an open window closes only the window, and Escape that the search bar took closes only its panel. -->
+<svelte:window onkeydown={event => { if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector('dialog[open]')) { if (picking) picking = false; else select(undefined); } }} />
 
 <!-- TrailView shows the day routes of a near view only. -->
 <ListAndMap title="Explore" items={mapItems} shown={mapShown} {place} fit={0} look="signed" credits={covers ? [...coverCredits, ...credits] : credits}
     selected={tab === 'day' ? chosen ? [chosen.id] : [] : staged ? [staged.id] : []} {marked} {together} {overlay} {pick} onselect={select} onview={next => setView(wrapped(next))}
-    card={tab === 'day' ? chosen && !searching ? card : undefined : staged ? stageCard : trailAbout ? trailCard : undefined}
+    card={tab === 'day' ? chosen ? card : undefined : staged ? stageCard : trailAbout ? trailCard : undefined}
     mapButtons={hasTrailView(config) && tab === 'day' && dayShown.length && !dayClosed ? mapButtons : undefined} tabs={config.trails ? dayOrLong : undefined}
-    table={searching ? table : undefined}>
-    {#snippet list()}
-        <!-- The search field finds places only; a chosen place moves the map. -->
-        <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />
-        {#if searching}
-            <SearchFilters {query} today={day} cap={query.start ? driveCap(query.start[1]) : DRIVE_KM.max} counts={tally?.wishes ?? new Map()} ungraded={tally?.ungraded ?? 0}
-                {lengths} {climbs} place={placeById} fresh={!queryParams(query, day)} top={bikeChip} {picking} onpicking={on => picking = on} onchange={setQuery}
-                onreset={() => query = defaultQuery(day)} />
-        {:else}
-            <Chips bind:chips={() => chips, setChips} {view} keys={['bike', ...tab === 'day' ? ['length' as const, 'climb' as const] : [], ...graded ? ['grade' as const] : [], 'shape']} fixed={['bike']}
-                grades={bike === 'mtb' ? [0, 1, 2, 3].map(grade => gradeName('mtb', grade)) : [0, 1, 2, 3, 4, 5].map(grade => gradeName('hiking', grade))} {values} />
-            <p class={listed ? 'count' : 'note'} class:empty={!status} aria-live="polite">
-                {status}{#if failed}{' '}<button type="button" class="retry" onclick={retry}>Retry</button>{/if}
-            </p>
-            {#if waiting}
-                <ul class="waiting" aria-hidden="true">
-                    {#each { length: 5 }}<li><span class="thumb"></span><span class="lines"></span></li>{/each}
-                </ul>
-            {:else if listed}
-                <!-- The rows of the last view stay until the answer for this view comes. -->
-                <ul bind:this={rows} onscroll={drawMore}>
-                    {#each drawn as item (item.id)}
-                        <li>
-                            <RouteRow name={item.name} current={item.id === currentId} line={item.id} onclick={() => select(item.id)}
-                                parts={item.kind === 'trail' ? trailParts(item.entry) : signedNumbers(item.record)}>
-                                {#snippet picture()}<SignedPicture {item} {oncover} row />{/snippet}
-                            </RouteRow>
-                        </li>
-                    {:else}
-                        <li class="note">No route matches. Remove a chip.</li>
-                    {/each}
-                </ul>
-            {/if}
-        {/if}
-    {/snippet}
-</ListAndMap>
+    bar={searchBar} {list} />
 
-{#snippet bikeChip()}
-    <Chips bind:chips={() => chips, setChips} {view} keys={['bike']} fixed={['bike']} {values} />
+{#snippet list()}
+    {#if searching && listed}
+        <div class="top">
+            <h2 aria-live="polite">{#key found.length}<span in:rise>{hikes(found.length)}</span>{/key}</h2>
+            {#if found.length}
+                <Menu label="Sort by: {SORT_WORDS[sort]}" buttonClass="sort"
+                    items={Object.entries(SORT_WORDS).map(([value, label]) => ({ label, checked: value === sort, run: () => sort = value as Sort }))} />
+            {/if}
+        </div>
+    {:else}
+        <p class={listed ? 'count' : 'note'} class:empty={!status} aria-live="polite">
+            {status}{#if failed}{' '}<button type="button" class="retry" onclick={retry}>Retry</button>{/if}
+        </p>
+    {/if}
+    {#if waiting}
+        <ul class="waiting" aria-hidden="true">
+            {#each { length: 5 }}<li><span class="thumb"></span><span class="lines"></span></li>{/each}
+        </ul>
+    {:else if listed}
+        <!-- The rows of the last view stay until the answer for this view comes. -->
+        <ul bind:this={rows} onscroll={drawMore}>
+            {#if searching}
+                {#each dayDrawn as row (`${row.record.id}/${row.shape}`)}
+                    <li class="hike">
+                        <HikeRow {row} item={signedOf(row.record)} {nice} place={placeById} current={row === opened} {oncover}
+                            onclick={() => [selected, shape] = [String(row.record.id), row.shape]} />
+                    </li>
+                {:else}
+                    <li class="none">{@render empty()}</li>
+                {/each}
+            {:else}
+                {#each longDrawn as item (item.id)}
+                    <li>
+                        <RouteRow name={item.name} current={item.id === currentId} line={item.id} onclick={() => select(item.id)} parts={trailParts(item.entry)}>
+                            {#snippet picture()}<SignedPicture {item} {oncover} row />{/snippet}
+                        </RouteRow>
+                    </li>
+                {:else}
+                    <li class="note">No route matches. Change the search.</li>
+                {/each}
+            {/if}
+        </ul>
+    {/if}
 {/snippet}
 
-{#snippet table()}
-    <ResultsTable rows={dayRows ? found : undefined} note={failed ? 'The routes could not load.' : dayClosed ? 'Zoom in to search.' : 'Loading the hikes…'}
-        waiting={!failed && !dayClosed && !dayRows} none={!!dayRows && !dayInView.length} {query} {sort} {opened} suggestions={helps}
-        place={placeById} itemOf={record => signedOf(record)} {linkOf} {oncover} onsort={next => sort = next}
-        onopen={row => [selected, shape] = [row && String(row.record.id), row?.shape]} onquery={setQuery} onreset={() => query = defaultQuery(day)}
-        onplan={record => plan(signedOf(record))} onretry={failed ? retry : undefined} />
+{#snippet empty()}
+    <strong>No hike fits all of this.</strong>
+    {#if helps.length}
+        <span>One change would help:</span>
+        <span class="helps">
+            {#each helps as help, i (i)}
+                <button type="button" onclick={() => fromEmpty(() => setQuery(help.query))}>{suggestionText(help, dayQuery, placeById)}<span class="n">{hikes(help.count)}</span></button>
+            {/each}
+        </span>
+    {:else}
+        <span>{dayQuery.length || dayQuery.climb ? 'Widen the length or the climb.' : 'One change is not enough.'}</span>
+    {/if}
+    <button type="button" class="text" onclick={() => fromEmpty(() => bar?.clear())}>Clear the search</button>
+{/snippet}
+
+{#snippet searchBar()}
+    <SearchBar bind:this={bar} label="Search the hikes" {slots} {field} bind:open={openSlot} empty={!slots.some(slot => slot.set && !slot.off)} onreset={id => setQuery(reset(id as SlotId, query))}
+        onclear={clear} onundo={() => { if (cleared) query = cleared; }}>
+        {#snippet panel(id)}
+            {#if id === 'from'}
+                <Journey query={dayQuery} cap={start ? driveCap(start[1]) : DRIVE_KM.max} place={placeById} {picking}
+                    onpicking={on => { picking = on; if (on) openSlot = undefined; }} onchange={setQuery} />
+            {:else if id === 'hike'}
+                <HikePanel query={shownQuery} trails={tab === 'long'} lifts={!!config.facts} ungraded={tally?.ungraded ?? 0} {lengths} {climbs} onchange={setHike} />
+            {:else}
+                <Wishes query={dayQuery} today={day} counts={tally?.wishes ?? new Map()} place={placeById} onchange={setQuery} />
+            {/if}
+        {/snippet}
+    </SearchBar>
 {/snippet}
 
 {#snippet card(refocus: () => void)}
-    <SignedCard item={chosen!} href={linkOf(chosen!.record)} {oncover} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
+    <SignedCard item={chosen!} row={opened} href={linkOf(chosen!.record)} {oncover} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
 {/snippet}
 
 {#snippet dayOrLong()}
@@ -548,6 +658,47 @@
     .count {
         font-size: 13px;
     }
+    /* As high as the button of "Sort by", so the rows do not move when it goes or when the count comes. */
+    .top, p.note {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 30px;
+    }
+    .top {
+        justify-content: space-between;
+    }
+    p.note {
+        gap: 6px;
+    }
+    h2 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    /* A box, so the new count can rise into its place. */
+    h2 span {
+        display: inline-block;
+    }
+    /* Quiet buttons: the button of "Sort by" and "Clear the search". */
+    .top :global(.sort), .text {
+        min-height: 30px;
+        padding: 0 8px;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: var(--ink-soft);
+        font-size: 13px;
+        transition: background 120ms, color 120ms;
+    }
+    .top :global(.sort) {
+        margin-right: -8px;
+    }
+    .top :global(.sort:hover), .top :global(.sort[aria-expanded="true"]), .text:hover {
+        background: var(--parchment-2);
+        color: var(--ink);
+    }
     /* The tabs show the counts: the line keeps its place for the screen reader and takes no room. */
     .empty {
         display: none;
@@ -559,7 +710,11 @@
         background: none;
         color: var(--ink);
         font: inherit;
-        text-decoration: underline;
+        text-decoration: underline var(--line-strong);
+        text-underline-offset: 2px;
+    }
+    .retry:hover {
+        text-decoration-color: currentColor;
     }
     /* The map's controls keep their light look in both themes; this is the colour of their icons and text. */
     .trailview {
@@ -631,18 +786,76 @@
         content-visibility: auto;
         contain-intrinsic-size: auto calc(var(--row-picture-height) + 14px);
     }
+    /* A hike row has more lines than its picture, and as many as its wishes need: it draws, so the list has its real
+       height when it scrolls to the selected row. */
+    li.hike {
+        content-visibility: visible;
+    }
     li.note {
         padding: 6px;
+    }
+    /* The changes that help an empty list. */
+    .none {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 14px 6px;
+        color: var(--ink-soft);
+        content-visibility: visible;
+    }
+    .none strong {
+        color: var(--ink);
+        font-size: 15px;
+    }
+    /* As wide as the longest change, with the counts in one column. */
+    .helps {
+        display: grid;
+        gap: 6px;
+        max-width: 100%;
+    }
+    .helps button {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 32px;
+        align-items: center;
+        padding: 0 12px;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--ink);
+        font-size: 13px;
+        text-align: left;
+        transition: background 120ms;
+    }
+    .helps button:hover {
+        background: var(--parchment-2);
+    }
+    .n {
+        color: var(--ink-soft);
+        white-space: nowrap;
+    }
+    .text {
+        margin-left: -8px;
     }
     .waiting {
         overflow: hidden;
     }
+    /* The box of a row of `RouteRow`: a row that comes is where its grey row was. */
     .waiting li {
         display: grid;
         grid-template-columns: var(--row-picture-width) 1fr;
-        align-items: center;
-        gap: 12px;
-        padding: 6px;
+        align-items: start;
+        gap: 14px;
+        padding: 7px;
+        animation: wait 1.1s ease-in-out infinite alternate;
+    }
+    @keyframes wait {
+        to { opacity: 0.5; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .waiting li { animation: none; }
     }
     .waiting .thumb {
         height: var(--row-picture-height);
@@ -651,7 +864,8 @@
     }
     /* Two bars, where the name and the numbers of a row are. */
     .waiting .lines {
-        height: 30px;
+        height: 32px;
+        margin-top: 10px;
         background: linear-gradient(var(--parchment-2), var(--parchment-2)) 0 0 / 62% 12px no-repeat,
             linear-gradient(var(--parchment-2), var(--parchment-2)) 0 100% / 38% 10px no-repeat;
     }

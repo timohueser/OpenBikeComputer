@@ -1,5 +1,6 @@
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
+    import Callout from './Callout.svelte';
     import TrailMarker from './TrailMarker.svelte';
     import { networkLevels, networkScope, routeKindTitles, routeWebsite, type NetworkRoute, type OverlaySelection } from '../../lib/planner/route-overlays';
     let { selection, theme = 'light', onclose }: { selection: OverlaySelection; theme?: 'light' | 'dark'; onclose: () => void } = $props();
@@ -31,18 +32,29 @@
         if ((selection.conditional ?? 0) & bit) return 'Conditional';
         return values?.every(Boolean) ? 'Allowed' : values?.some(Boolean) ? 'One direction' : 'Not allowed';
     }
+    const permissions = $derived([['Riding', permission(selection.riding, 1)], ['Pushing', permission(selection.pushing, 4)], ['Walking', permission(selection.walking, 2)]]);
 </script>
 
-<section class="overlay-details" aria-label={title}>
-    <h2>{title}</h2>
-    <button class="close" aria-label="Close map details" onclick={onclose}><Icon name="close" size={15} /></button>
+<Callout label={title} onClose={onclose}>
     {#if selection.kind === 'access'}
-        <strong>{[selection.name, selection.ref].filter(Boolean).join(' · ') || 'Road or path'}</strong>
+        <header>
+            <span class="glyph warn"><Icon name="lock" size={16} /></span>
+            <div><h2>{title}</h2><p class="meta">{[selection.name, selection.ref].filter(Boolean).join(' · ') || 'Road or path'}</p></div>
+        </header>
+        <!-- The answer first: a word and a symbol for each way to pass. -->
+        <dl class="permissions">
+            {#each permissions as [way, answer] (way)}
+                <div class={{ yes: answer === 'Allowed', no: answer === 'Not allowed' }}><dt>{way}</dt><dd>{#if answer === 'Allowed'}<Icon name="check" size={13} />{:else if answer === 'Not allowed'}<Icon name="close" size={13} />{/if}{answer}</dd></div>
+            {/each}
+        </dl>
         <p>{restriction.detail}</p>
-        <dl class="permissions"><dt>Riding</dt><dd>{permission(selection.riding, 1)}</dd><dt>Pushing a bike</dt><dd>{permission(selection.pushing, 4)}</dd><dt>Walking</dt><dd>{permission(selection.walking, 2)}</dd></dl>
-        <details><summary>Mapped access details</summary><dl>{#each Object.entries(selection.tags ?? {}) as [key, value] (key)}<dt>{key}</dt><dd>{value}</dd>{/each}</dl></details>
+        <details><summary class="sub"><span>Mapped access details</span><Icon name="down" size={15} /></summary><dl class="tags">{#each Object.entries(selection.tags ?? {}) as [key, value] (key)}<dt>{key}</dt><dd>{value}</dd>{/each}</dl></details>
         <p class="note"><a href={`https://www.openstreetmap.org/way/${selection.way}`} target="_blank" rel="noreferrer">OpenStreetMap</a> · Closure reports are not live.</p>
     {:else}
+        <header>
+            <span class="glyph"><Icon name="route" size={16} /></span>
+            <div><h2>{title}</h2></div>
+        </header>
         <!-- The badge shows the first of the numbers that OSM joins with ";". -->
         <ul>{#each routes as { route, website } (route.id)}
             {@const scope = networkScope(route)}
@@ -58,27 +70,26 @@
             </li>
         {/each}</ul>
     {/if}
-</section>
+</Callout>
 
 <style>
-    /* The map sets the free room; the content scrolls as a last resort. */
-    .overlay-details { position: relative; box-sizing: border-box; width: 340px; max-width: var(--callout-width); max-height: var(--callout-room); overflow-y: auto; padding: 16px; color: var(--ink); font: 400 13px var(--sans); }
-    h2 { margin: 0 28px 12px 0; font: 600 14px var(--sans); }
-    button { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
-    .close { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; color: var(--ink-soft); }
-    .close:hover { background: var(--parchment-2); color: var(--ink); }
-    strong { display: block; font: 600 14px/1.4 var(--sans); overflow-wrap: anywhere; }
-    p { margin: 8px 0; line-height: 1.5; }
-    a { color: var(--link); text-underline-offset: 3px; overflow-wrap: anywhere; }
-    .note { margin-bottom: 0; color: var(--ink-soft); font-size: 12px; }
-    details { margin: 10px 0; }
-    summary { cursor: pointer; }
-    dl { margin: 8px 0; overflow-wrap: anywhere; }
-    dt { color: var(--ink-soft); font-size: 12px; }
-    dd { margin: 0 0 8px; }
-    .permissions { display: grid; grid-template-columns: 1fr auto; gap: 5px 16px; }
-    .permissions dd { margin: 0; font-size: 12px; }
-    ul { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+    strong { display: block; font: 600 13px/1.4 var(--sans); overflow-wrap: anywhere; }
+    p { color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+    a { overflow-wrap: anywhere; }
+    dl { margin: 0; overflow-wrap: anywhere; }
+    dd { margin: 0; }
+    .permissions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .permissions div { display: grid; gap: 2px; padding: 8px 10px; border-radius: 10px; background: var(--tile); font-size: 12px; }
+    .permissions dt { color: var(--ink-soft); font-size: 11px; }
+    .permissions dd { display: flex; align-items: center; gap: 5px; font-weight: 600; }
+    .yes dd { color: var(--water); }
+    .no dd { color: var(--coral); }
+    summary { list-style: none; }
+    summary::-webkit-details-marker { display: none; }
+    details[open] summary :global(svg) { transform: rotate(180deg); }
+    .tags { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; padding: 8px 4px 0; font-size: 12px; }
+    .tags dt { color: var(--ink-soft); }
+    ul { display: grid; gap: 12px; margin: 0; padding: 0 4px; list-style: none; }
     li { display: flex; align-items: flex-start; gap: 10px; }
     .marker { flex: none; display: flex; min-width: 24px; }
     .body { flex: 1; min-width: 0; }

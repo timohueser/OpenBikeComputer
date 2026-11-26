@@ -1,34 +1,36 @@
-<!-- The shapes that the rider accepts: loop and there and back, and the two lift shapes while lifts are on. At least one
-     shown shape stays on. -->
+<!-- The shapes that the rider accepts: loop, there and back, and the two lift shapes where lifts can apply. A lift shape
+     counts, and shows as pressed, only while lifts are on; a click on it turns lifts on. At least one shape that counts
+     stays on. -->
 <script lang="ts">
-    import Icon from '../../lib/ui/Icon.svelte';
     import { SHAPES, type Query, type Shape } from './search';
     import ShapeIcon from './ShapeIcon.svelte';
     import { SHAPE_WORDS } from './words';
 
-    let { query, onchange }: { query: Query; onchange: (change: Partial<Query>) => void } = $props();
+    let { query, lifts, onchange }: {
+        query: Query;
+        /** Lifts can apply: the release has facts files. */
+        lifts: boolean;
+        onchange: (change: Partial<Query>) => void;
+    } = $props();
 
     const lift = (shape: Shape) => shape === 'liftDown' || shape === 'liftUp';
-    const shown = $derived(SHAPES.filter(shape => query.lift || !lift(shape)));
-    const on = $derived(shown.filter(shape => query.shapes.includes(shape)));
+    const counted = $derived(SHAPES.filter(shape => query.lift || !lift(shape)));
+    const on = $derived(counted.filter(shape => query.shapes.includes(shape)));
 
     function toggle(shape: Shape) {
+        if (!counted.includes(shape)) return onchange({ lift: 'helps', shapes: SHAPES.filter(one => one === shape || on.includes(one)) });
         const next = query.shapes.includes(shape) ? query.shapes.filter(one => one !== shape) : SHAPES.filter(one => one === shape || query.shapes.includes(one));
-        if (next.some(one => shown.includes(one))) onchange({ shapes: next });
+        if (next.some(one => counted.includes(one))) onchange({ shapes: next });
     }
 </script>
 
-<section>
-    <div class="head"><h3>Shape</h3>{#if on.length === shown.length}<span class="value">All</span>{/if}</div>
-    <div class="tiles">
-        {#each shown as shape (shape)}
-            {@const pressed = query.shapes.includes(shape)}
-            <button type="button" class="tile" aria-pressed={pressed} title={pressed && on.length === 1 ? 'Keep at least one shape' : undefined}
-                onclick={() => toggle(shape)}><ShapeIcon {shape} />{SHAPE_WORDS[shape].label}</button>
-        {/each}
-    </div>
-    {#if !query.lift}<p class="hint"><Icon name="lift" size={14} />Tick Lifts in Getting there to also see hikes that ride a lift up or down.</p>{/if}
-</section>
+<div class="tiles">
+    {#each SHAPES.filter(shape => lifts || !lift(shape)) as shape (shape)}
+        {@const pressed = on.includes(shape)}
+        <button type="button" class="tile" aria-pressed={pressed} title={pressed && on.length === 1 ? 'Keep at least one shape' : undefined}
+            onclick={() => toggle(shape)}><ShapeIcon {shape} />{SHAPE_WORDS[shape].label}</button>
+    {/each}
+</div>
 
 <style>
     .tiles {
@@ -48,7 +50,12 @@
         color: var(--ink-soft);
         font: 13.5px/1.2 var(--sans);
         text-align: left;
-        transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background 120ms, border-color 120ms;
+        transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background 120ms, border-color 120ms, color 120ms;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .tile {
+            transition-property: background, border-color, color;
+        }
     }
     .tile :global(svg) {
         flex: none;

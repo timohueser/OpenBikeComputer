@@ -4,7 +4,7 @@ The planner climate archive of one region, `climate.pmtiles`: rain, temperature 
 week of ten years.
 
 - Writers: `tools/planner_climate.py`, from the daily values of the prepared source
-  [`climate`](obc-data.md#climate).
+  [`climate`](obc-data-producers.md#climate).
 - Readers: the web planner climate layer (`builder/web/src/lib/planner/layers/climate.ts`),
   `tools/planner_verify.py`.
 - Related: [planner release](planner-release.md), [planner snow tiles](planner-snow-tiles.md).

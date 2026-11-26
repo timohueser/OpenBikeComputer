@@ -8,7 +8,8 @@ export default {
   crown: [0.7, 0.36, 0.36, 0.3],
   fronds: 48,
   trunk: 0.045,
-  neck: 1,
+  // The trunk swells under the crown, where the old leaf bases stay.
+  neck: 1.15,
   flare: 1.3,
   bark: ['#5e5040', '#8a7860'],
   scars: 7,

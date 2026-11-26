@@ -338,19 +338,6 @@ describe('syncDevice', () => {
         await rig.close();
     });
 
-    it('starts the route of a day after a train where the train arrives', async () => {
-        const { rig, sync, routes, send } = setup();
-        rememberCard(SERIAL, CARD);
-        const alps = longTrip(2), arrival: RoutePoint = { id: 'arrival', kind: 'via', label: 'Station', coordinate: [8.3, 47.2], leg: 'transfer' };
-        const finish: RoutePoint = { ...point('finish', 'finish', 8.35), coordinate: [8.35, 47.2], drawn: [[8.3, 47.2, 400], [8.35, 47.2, 410]] };
-        await send({ ...alps, trip: { ...alps.trip, routeOrder: ['night-1', 'arrival'], points: [...alps.trip.points.slice(0, 2), arrival, finish] } });
-        expect(await sync()).toMatchObject({ trips: 1, problem: null });
-        const obcr = rig.device.payloadOf(routes()[1].objectId)!, view = new DataView(obcr.buffer, obcr.byteOffset);
-        // The start point of the header (`specs/obcr-route.md` §1).
-        expect([view.getInt32(24, true), view.getInt32(28, true)]).toEqual([8_300_000, 47_200_000]);
-        await rig.close();
-    });
-
     it('forgets a trip that the rider deleted on the device with its routes, and sends it again', async () => {
         const { rig, library, sync, routes, trips, send } = setup();
         rememberCard(SERIAL, CARD);
@@ -509,15 +496,14 @@ describe('syncDevice', () => {
     it('sends a plan of 40 days as two trips: days 1 to 32, and days 33 to 40 numbered from 1, each with its key and start date', async () => {
         const { rig, sync, send } = setup(CARD, 256);
         rememberCard(SERIAL, CARD);
-        const phone = seedPhoneTrip(rig), plan = longTrip(40), alps = { ...plan, trip: { ...plan.trip, startDate: '2026-07-01', restAfter: [10] } };
+        const phone = seedPhoneTrip(rig), plan = longTrip(40), alps = { ...plan, trip: { ...plan.trip, startDate: '2026-07-01' } };
         await send(alps);
         expect(await sync()).toMatchObject({ trips: 1, problem: null });
         const days = mine(rig, phone).filter(entry => entry.kind === ObjectKind.Route), start = Date.parse('2026-07-01') / 86_400_000;
         const [first, second] = mine(rig, phone).filter(entry => entry.kind === ObjectKind.Trip).map(entry => tripOf(rig.device.payloadOf(entry.objectId)!));
         expect([days[31].displayName, days[32].displayName, days[39].displayName]).toEqual(['Day 32 Camp 32', 'Day 1 Camp 33', 'Day 8']);
         expect([first.name, first.days, first.key, first.start]).toEqual(['Alps 1/2', days.slice(0, 32).map(day => day.objectId), tripKey(alps.id, alps.trip, 1), start]);
-        // Day 33 rides after the rest day that follows day 10.
-        expect([second.name, second.days, second.key, second.start]).toEqual(['Alps 2/2', days.slice(32).map(day => day.objectId), tripKey(alps.id, alps.trip, 2), start + 33]);
+        expect([second.name, second.days, second.key, second.start]).toEqual(['Alps 2/2', days.slice(32).map(day => day.objectId), tripKey(alps.id, alps.trip, 2), start + 32]);
         expect(first.key).not.toBe(second.key);
         expectUntouched(rig, phone);
         await rig.close();

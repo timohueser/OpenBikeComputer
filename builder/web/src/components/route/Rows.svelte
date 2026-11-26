@@ -13,7 +13,7 @@
     import { distanceTicks, fitTicks } from './ticks';
     import type { RouteSummary } from '../../lib/library/records';
     import { lineCoordinates } from '../../lib/library/summary';
-    import { phoneLink, phoneNumbers, websiteLink } from '../../lib/planner/contact-links';
+    import { phoneLink, phoneNumbers, websiteLabel, websiteLink } from '../../lib/planner/contact-links';
     import { orderedRoutePoints, planView, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { cumulative, nearestProgress, routeSlice } from '../../lib/planner/geo';
     import { profileGrades } from '../../lib/planner/grade-data';
@@ -80,7 +80,7 @@
     const samples = $derived(profileSamples(profile));
     const grades = $derived(profileGrades(samples, cumulative(profile.coordinates).at(-1) ?? 0));
     const totalM = $derived(line ? planView(trip, line).total * 1000 : summary.lengthM);
-    const days = $derived(facts?.days.filter(item => !item.rest) ?? []);
+    const days = $derived(facts?.days ?? []);
     const shown = $derived(days.find(item => String(item.number) === day) ?? { from: 0, to: 1 });
     const span = $derived(Math.max(1e-6, shown.to - shown.from));
     const x = (share: number) => (share - shown.from) / span;
@@ -244,7 +244,7 @@
         {#if hours}<OpeningHours value={hours} />{/if}
         {#if website || phone}
             <p class="contacts">
-                {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Website</a>{/if}
+                {#if website}<a href={website} target="_blank" rel="noopener noreferrer">{websiteLabel(website)}</a>{/if}
                 {#each phoneNumbers(phone) as number (number)}
                     {@const link = phoneLink(number)}
                     {#if link}<a href={link}>{number}</a>{:else}<span>{number}</span>{/if}
@@ -434,8 +434,10 @@
         flex-wrap: wrap;
         gap: 4px 12px;
     }
+    /* A long address has no place to break, so it breaks anywhere inside the panel. */
     .contacts a {
         color: var(--forest);
+        overflow-wrap: anywhere;
     }
     /* The bar stands beside its label; its legend follows under it. */
     .bar {

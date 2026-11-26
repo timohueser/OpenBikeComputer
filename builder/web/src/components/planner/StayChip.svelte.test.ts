@@ -13,18 +13,18 @@ const box = (label: string) => [...document.querySelectorAll('label')].find(row 
 describe('stay chip', () => {
     it('names one kind, the first kind and the count of the others, or any place for all five', () => {
         let value = $state<Stay[]>(['hut']);
-        chip = mount(StayChip, { target: document.body, props: { get value() { return value; }, onChange: () => {} } });
+        chip = mount(StayChip, { target: document.body, props: { label: 'Places to sleep on night 1', get value() { return value; }, onChange: () => {} } });
         flushSync();
         expect(trigger().textContent).toBe('Huts');
         value = ['camp', 'hostel', 'hotel']; flushSync();
         expect(trigger().textContent).toBe('Campsites +2');
         value = allStay; flushSync();
-        expect(trigger().textContent).toBe('Any place');
+        expect(trigger().textContent).toBe('All kinds');
     });
 
     it('keeps the last checked kind', () => {
         let value = $state<Stay[]>(['camp', 'hut']);
-        chip = mount(StayChip, { target: document.body, props: { get value() { return value; }, onChange: (kinds: Stay[]) => value = kinds } });
+        chip = mount(StayChip, { target: document.body, props: { label: 'Places to sleep on night 1', get value() { return value; }, onChange: (kinds: Stay[]) => value = kinds } });
         flushSync();
         trigger().click(); flushSync();
         expect(box('Campsites').disabled).toBe(false);
@@ -35,7 +35,7 @@ describe('stay chip', () => {
     });
 
     it('closes on Escape and gives the focus back when the only kind is the first', async () => {
-        chip = mount(StayChip, { target: document.body, props: { value: ['camp'], onChange: () => {} } });
+        chip = mount(StayChip, { target: document.body, props: { label: 'Places to sleep on night 1', value: ['camp'], onChange: () => {} } });
         flushSync();
         trigger().click(); await tick();
         expect(document.activeElement).toBe(box('Huts'));

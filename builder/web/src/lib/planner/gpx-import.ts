@@ -17,8 +17,8 @@ export interface ImportedLine {
 
 /** Chosen: a few metres drops recording noise and keeps the line visually exact. */
 const toleranceKm = .003;
-/** Two days whose ends are farther apart than this are joined by a transfer. */
-const transferMinKm = 0.2;
+/** A day that starts at most this far from the previous day end continues from that end. */
+const joinKm = 0.2;
 
 /** The line of a GPX file or a FIT course, simplified, with its waypoints. */
 export function importedLine(name: string, { points, waypoints }: Pick<GpxImport, 'points' | 'waypoints'>): ImportedLine {
@@ -63,8 +63,8 @@ export async function planOnRoads(lines: ImportedLine[], shape: (line: Coordinat
  * One file is a route; several are a trip with one day per file and a night at each day end. A kept line is one drawn
  * leg that repeats its ends, so their elevations stay; a day that continues from the previous day end also repeats that
  * end. A shaped line is routed through its shape points. A day that starts more than 200 m from the previous day end
- * starts with a transfer; a nearer day continues from that day end. The files' waypoints are markers, never route points;
- * each belongs to the leg of its own day whose straight line passes nearest it.
+ * starts with a routed leg to its first point; a nearer day continues from that day end. The files' waypoints are
+ * markers, never route points; each belongs to the leg of its own day whose straight line passes nearest it.
  */
 export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: ImportedLine[]): Trip {
     const points: RoutePoint[] = [], markers: RoutePoint[] = [];
@@ -75,9 +75,9 @@ export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: Importe
         const before = points.at(-1);
         const previous = lines[day - 1]?.line.at(-1);
         const [first, final] = [line[0], line.at(-1)!].map((c): Coordinate => [c[0], c[1]]);
-        const joined = !!before && kilometres(before.coordinate, first) <= transferMinKm;
+        const joined = !!before && kilometres(before.coordinate, first) <= joinKm;
         if (!before) add('start', first);
-        else if (!joined) add('via', first, { leg: 'transfer' });
+        else if (!joined) add('via', first);
         const from = points.length - 1;
         const stops = shape?.points ?? [first, final];
         for (let i = 1; i < stops.length; i++) {

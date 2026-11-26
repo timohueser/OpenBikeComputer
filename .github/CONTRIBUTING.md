@@ -14,24 +14,22 @@ Use each surface's README for its extra setup and checks: [simulator](../sim/des
 
 ## Check your change
 
-For a workspace Rust crate:
+While you work on a workspace Rust crate:
 
 ```sh
 ./tools/obc test -p obc-app
-cargo clippy -p obc-app --all-targets -- -D warnings
-cargo fmt --all
 ```
 
-Replace `obc-app` with the crate you change. For a standalone Cargo root or a non-Rust surface,
-use its README's checks. [The test guide](../docs/testing.md) explains suites and fixtures.
+Replace `obc-app` with the crate you change. For a non-Rust surface, use its README's checks.
 
 Before a push:
 
 ```sh
-./tools/obc ready --base origin/develop
+./tools/obc ready
 ```
 
-This runs the selected gates and prints a pull-request skeleton.
+This formats and lints the changed code, runs the suites the change selects, and prints a
+pull-request skeleton. [The test guide](../docs/testing.md) explains suites and fixtures.
 
 ## Open a pull request
 

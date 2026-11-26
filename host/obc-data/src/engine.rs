@@ -1,6 +1,6 @@
 //! The engine: it builds each step from snapshots, the layers of other steps and options, and
 //! reuses a step whose key the store has. A plan says what a run would fetch and build, a run
-//! builds it, and the state of each layer is computed when asked. `specs/obc-data.md` describes
+//! builds it, and the state of each layer is computed when asked. `specs/obc-data-layers.md` describes
 //! layers, steps, keys, receipts, plans, runs and states.
 
 pub mod cgroup;

@@ -15,7 +15,7 @@
   "lotus-jujube": { "model": "holm-oak", "latin": "Ziziphus lotus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
   "phoenician-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
   "retama-broom": { "model": "retama", "latin": "Retama sphaerocarpa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
-  "oleander": { "model": "laurel", "latin": "Nerium oleander", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 0.5 },
+  "oleander": { "latin": "Nerium oleander", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 0.5 },
   "tamarisk": { "model": "hawthorn", "latin": "Tamarix canariensis", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 0.5 }
  },
  "ground": {
@@ -24,8 +24,8 @@
   "garrigue": {},
   "fan-palm": {},
   "albaida": { "model": "tabaiba", "latin": "Anthyllis cytisoides", "on": ["shrub", "bare"], "height": [0.4, 1.0], "share": 0.12 },
-  "prickly-pear": { "model": "cardon", "latin": "Opuntia ficus-indica", "on": ["shrub", "bare"], "height": [1, 2.5], "share": 0.02, "clumped": true },
-  "century-plant": { "model": "tajinaste", "latin": "Agave americana", "on": ["shrub", "bare"], "height": [1.5, 5], "share": 0.01 }
+  "prickly-pear": { "latin": "Opuntia ficus-indica", "on": ["shrub", "bare"], "height": [1, 2.5], "share": 0.02, "clumped": true },
+  "century-plant": { "model": "agave", "latin": "Agave americana", "on": ["shrub", "bare"], "share": 0.01 }
  },
  "herds": {
   "goat": { "groups": 2, "size": [10, 40], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },

@@ -5,10 +5,12 @@ export default {
   name: 'Spanish broom',
   latin: 'Spartium junceum',
   fork: 0.06,
-  // An upright sheaf of bare, rush-like green rods, taller and narrower than common broom.
-  crown: [0.44, 0.34, 0.32, 0.56],
-  stems: 5,
-  trunk: 0.016,
+  // An upright sheaf of few, bare, rush-like green rods, taller and narrower than common broom.
+  crown: [0.5, 0.3, 0.28, 0.5],
+  dense: 0.4,
+  rods: 12,
+  heads: { count: 220, width: 0.04, height: 1.1 },
+  trunk: 0.03,
   flare: 1.1,
   bark: ['#4a5a34', '#5e7040'],
   leaves: {

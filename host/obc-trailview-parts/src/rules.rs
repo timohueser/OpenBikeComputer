@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use serde_json::Value;
 
 /// The rule values of the bake, in the order of `Bake`.
-const BAKE_FIELDS: [&str; 21] = [
+const BAKE_FIELDS: [&str; 20] = [
     "margin_m",
     "margin_narrow_m",
     "shell_m",
@@ -21,14 +21,13 @@ const BAKE_FIELDS: [&str; 21] = [
     "pair_max_m",
     "pair_max_deg",
     "slab_m",
-    "same_tube_gap_m",
-    "same_tube_stagger_m",
     "rock_cover_max_m",
     "free_max_m",
     "junction_shift_max_m",
     "narrow_bore_m",
     "grade_default",
     "vertex_gap_m",
+    "room_join_m",
 ];
 const GROUP_FIELDS: [&str; 7] = ["classes", "look", "collar_max_m", "wing_max_m", "least_height_m", "rock", "bore"];
 /// The values of the design, in the order of `Design`.
@@ -94,8 +93,6 @@ pub struct Bake {
     pub pair_max_m: f64,
     pub pair_max_deg: f64,
     pub slab_m: f64,
-    pub same_tube_gap_m: f64,
-    pub same_tube_stagger_m: f64,
     pub rock_cover_max_m: f64,
     pub free_max_m: f64,
     pub junction_shift_max_m: f64,
@@ -105,6 +102,8 @@ pub struct Bake {
     pub grade_default: f64,
     /// The vertices of a tube lie this far apart at least, but at its openings and at the joins of its ways.
     pub vertex_gap_m: f64,
+    /// Two tunnel ways that come nearer than a wall again within this are one room on.
+    pub room_join_m: f64,
 }
 
 /// The rules of the feature bake: `groups` and `bake`, its option `parts`.
@@ -220,14 +219,13 @@ impl Ladder {
             pair_max_m: v[10],
             pair_max_deg: v[11],
             slab_m: v[12],
-            same_tube_gap_m: v[13],
-            same_tube_stagger_m: v[14],
-            rock_cover_max_m: v[15],
-            free_max_m: v[16],
-            junction_shift_max_m: v[17],
-            narrow_bore_m: v[18],
-            grade_default: v[19],
-            vertex_gap_m: v[20],
+            rock_cover_max_m: v[13],
+            free_max_m: v[14],
+            junction_shift_max_m: v[15],
+            narrow_bore_m: v[16],
+            grade_default: v[17],
+            vertex_gap_m: v[18],
+            room_join_m: v[19],
         };
         let mut groups = Vec::new();
         for (name, row) in rows["groups"].as_object().ok_or("parts groups: not an object")? {

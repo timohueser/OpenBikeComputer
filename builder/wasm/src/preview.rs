@@ -11,8 +11,6 @@ use obcm_assemble::schema::{validate_style_pair, Schema, Skin};
 
 pub const FRAME_W: u32 = 240;
 pub const FRAME_H: u32 = 240;
-pub const SCHEMA_FRAME_W: u32 = 240;
-pub const SCHEMA_FRAME_H: u32 = 320;
 
 const CAMERA_LON: i32 = 7_814_000;
 const CAMERA_LAT: i32 = 48_130_000;
@@ -23,7 +21,6 @@ const TENINGEN_COVERAGE: BBox =
 const DEFAULT_METERS_PER_PIXEL: f32 = 5.0;
 const MIN_METERS_PER_PIXEL: f32 = 0.5;
 const MAX_MPP_SEARCH: f32 = 100_000.0;
-const MAX_SCHEMA_MPP: f32 = 100_000.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewErrorCode {
@@ -106,20 +103,6 @@ pub struct MapPreview {
     camera_bounds: BBox,
     render_stats: RenderStats,
     style_set: MapStyleSet,
-    dirty: bool,
-}
-
-/// A freshly native-packed schema preview. Unlike [`MapPreview`], these bytes already carry the
-/// edited style table, so opening never accepts a skin or rewrites the map. The frame matches the
-/// device's whole map plane.
-pub struct SchemaMapPreview {
-    bytes: Vec<u8>,
-    tables: MapTables,
-    cache: Box<MapCache>,
-    scratch: Box<RenderScratch>,
-    frame: RgbaFrame,
-    meters_per_pixel: f32,
-    render_stats: RenderStats,
     dirty: bool,
 }
 
@@ -324,85 +307,6 @@ impl MapPreview {
             self.camera.lon = add_delta(self.camera.lon, lon_shift);
             self.camera.lat = add_delta(self.camera.lat, lat_shift);
         }
-    }
-}
-
-impl SchemaMapPreview {
-    pub fn open(bytes: Vec<u8>) -> Result<Self, PreviewFailure> {
-        let tables = MapTables::parse(&SliceSource(&bytes)).map_err(read_failure)?;
-        Ok(Self {
-            bytes,
-            tables,
-            cache: MapCache::new_boxed(),
-            scratch: Box::new(RenderScratch::new()),
-            frame: RgbaFrame::new(SCHEMA_FRAME_W, SCHEMA_FRAME_H),
-            meters_per_pixel: DEFAULT_METERS_PER_PIXEL,
-            render_stats: RenderStats::default(),
-            dirty: true,
-        })
-    }
-
-    /// Select any authored LOD through the renderer's ordinary metres-per-pixel dispatch. The
-    /// upper cap is generous, so the coarsest LOD stays inspectable even when a map's bbox is
-    /// narrower than a whole frame.
-    pub fn set_meters_per_pixel(&mut self, value: f32) {
-        if !value.is_finite() || value <= 0.0 {
-            return;
-        }
-        let next = value.clamp(MIN_METERS_PER_PIXEL, MAX_SCHEMA_MPP);
-        if next != self.meters_per_pixel {
-            self.meters_per_pixel = next;
-            self.dirty = true;
-        }
-    }
-
-    pub fn meters_per_pixel(&self) -> f32 {
-        self.meters_per_pixel
-    }
-
-    pub fn lod_index(&self) -> usize {
-        let source = SliceSource(&self.bytes);
-        Reader::new(&source, &self.tables, &self.cache).select_lod_for_mpp(self.meters_per_pixel)
-    }
-
-    pub fn lod_count(&self) -> usize {
-        self.tables.lods().len()
-    }
-
-    pub fn stats(&self) -> RenderStats {
-        self.render_stats
-    }
-
-    pub fn frame(&mut self) -> &[u8] {
-        if self.dirty {
-            let source = SliceSource(&self.bytes);
-            let reader = Reader::new(&source, &self.tables, &self.cache);
-            let background = reader.backdrop_style().map_or(0xFFFF, |style| style.color);
-            let bbox = self.tables.bbox;
-            let center_lon = ((bbox.min_lon as i64 + bbox.max_lon as i64) / 2) as i32;
-            let center_lat = ((bbox.min_lat as i64 + bbox.max_lat as i64) / 2) as i32;
-            let camera_lon =
-                if bbox.min_lon <= CAMERA_LON && CAMERA_LON <= bbox.max_lon { CAMERA_LON } else { center_lon };
-            let camera_lat =
-                if bbox.min_lat <= CAMERA_LAT && CAMERA_LAT <= bbox.max_lat { CAMERA_LAT } else { center_lat };
-            let viewport = Viewport::new(
-                SCHEMA_FRAME_W as f32,
-                SCHEMA_FRAME_H as f32,
-                camera_lon,
-                camera_lat,
-                zoom_for_mpp(self.meters_per_pixel),
-            );
-            self.render_stats = self.scratch.render(
-                &mut self.frame,
-                &reader,
-                &viewport,
-                device_rgb888(background),
-                RenderConfig::default(),
-                device_rgb888,
-            );
-            self.dirty = false;
-        }
-        self.frame.as_rgba()
     }
 }
 
@@ -733,28 +637,5 @@ mod tests {
         }
         let modal = counts.values().copied().max().unwrap_or(0);
         (FRAME_W * FRAME_H) as usize - modal
-    }
-
-    #[test]
-    fn raw_schema_map_uses_device_geometry_lod_dispatch_and_frame_budgets() {
-        let mut preview = SchemaMapPreview::open(MAP.to_vec()).expect("packed map opens without restamping");
-        assert_eq!((SCHEMA_FRAME_W, SCHEMA_FRAME_H), (240, 320));
-
-        // Representative metres-per-pixel values for the fixture's authored ranges. Selection is
-        // the production reader policy, not a UI formula.
-        for (mpp, expected) in [(500.0, 0), (400.0, 1), (110.0, 4), (35.0, 7), (16.0, 9), (5.0, 11), (1.2, 13)] {
-            preview.set_meters_per_pixel(mpp);
-            assert_eq!(preview.lod_index(), expected, "{mpp} m/px");
-        }
-
-        preview.set_meters_per_pixel(5.0);
-        let pixels = preview.frame();
-        assert_eq!(pixels.len(), (240 * 320 * 4) as usize);
-        assert!(pixels.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 0xff));
-        let stats = preview.stats();
-        assert_eq!(stats.lod, 11);
-        assert!(stats.features_drawn <= obc_render::MAX_SPANS);
-        assert!(stats.points_drawn <= obc_render::MAX_FRAME_POINTS);
-        assert!(stats.line_rings + stats.poly_rings <= obc_render::MAX_FRAME_RINGS);
     }
 }

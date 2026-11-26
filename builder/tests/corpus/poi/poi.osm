@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <!--
-  Hand-authored POI-extraction corpus fixture (issue #422).
+  Hand-authored POI-extraction corpus fixture.
 
   Exercises the poi.rs pipeline end to end through ingest_osm: node + closed-way
   extraction, name folding, and the dedup pair. Coordinates sit near Freiburg on

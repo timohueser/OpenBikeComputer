@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { phoneLink, phoneNumbers, websiteLink } from './contact-links';
+import { phoneLink, phoneNumbers, websiteLabel, websiteLink } from './contact-links';
 import { asPlace } from './search/presentation';
 import { placeDetails } from './search/types';
 
@@ -9,6 +9,10 @@ describe('place contacts', () => {
         expect(websiteLink('//camp.example')).toBe('https://camp.example/');
         expect(websiteLink('http://camp.example')).toBe('http://camp.example/');
         for (const value of ['javascript:alert(1)','data:text/html,test','file:///tmp/place','https://',undefined]) expect(websiteLink(value)).toBeUndefined();
+    });
+    it('shows a web address without its scheme, its "www." and its last slash', () => {
+        expect(websiteLabel('https://www.camp.example/')).toBe('camp.example');
+        expect(websiteLabel('http://camp.example/de/kontakt/?ref=osm')).toBe('camp.example/de/kontakt?ref=osm');
     });
     it('keeps separate phone numbers and leaves ambiguous text undialled', () => {
         expect(phoneNumbers('+49 (123) 45-67; +33 123')).toEqual(['+49 (123) 45-67','+33 123']);

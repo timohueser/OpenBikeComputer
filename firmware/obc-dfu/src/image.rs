@@ -8,11 +8,8 @@
 //! [`ImageHeader::decode`] returns `Some` only for a valid CRC; bad magic, version or CRC give
 //! `None`.
 //!
-//! A signed container still carries header version 1. The bootloader is flashed once and never
-//! updated, and its decode rejects any other header version, so bumping the field would stop every
-//! fielded boot chain from installing. The signature marker lives in bytes `48..52`, which v1
-//! reserved, and the signature itself in a trailer past `64 + image_len`. `sig_scheme` is the
-//! signed/unsigned discriminator.
+//! The signature marker lives in bytes `48..52`, and the signature itself in a trailer past
+//! `64 + image_len`. `sig_scheme` is the signed/unsigned discriminator.
 
 use crate::crc32::crc32;
 use crate::layout::{RAM_END, RAM_START};
@@ -22,8 +19,7 @@ pub const HEADER_LEN: usize = 64;
 
 pub const MAGIC: [u8; 4] = *b"OBCU";
 
-/// The header-layout version, pinned at 1 forever; see the module doc. [`ImageHeader::decode`]
-/// rejects every other value.
+/// The header-layout version. [`ImageHeader::decode`] rejects every other value.
 pub const HEADER_VERSION: u16 = 1;
 
 /// Bytes the header CRC covers: everything but the trailing CRC itself.
@@ -136,7 +132,6 @@ impl ImageHeader {
         b[8..12].copy_from_slice(&self.image_len.to_le_bytes());
         b[12..16].copy_from_slice(&self.image_crc32.to_le_bytes());
         b[16..48].copy_from_slice(&self.fw_version);
-        // Bytes 48..52 were reserved in v1, so a zero marker gives a byte-identical header.
         b[48..50].copy_from_slice(&self.sig_scheme.to_le_bytes());
         b[50..52].copy_from_slice(&self.sig_len.to_le_bytes());
         // 52..60 still reserved (0)
@@ -146,8 +141,8 @@ impl ImageHeader {
     }
 
     /// `None` for bad magic, the wrong version, or a failed header CRC, and nothing else. Whether
-    /// this device installs what it decoded is the armer's policy call, not the codec's. Keeping
-    /// the reject set this narrow is what lets an older bootloader decode a signed header.
+    /// this device installs what it decoded is the armer's policy call, not the codec's: the
+    /// bootloader decodes the unsigned rollback snapshot with the same rule.
     pub fn decode(bytes: &[u8; HEADER_LEN]) -> Option<ImageHeader> {
         if bytes[0..4] != MAGIC {
             return None;

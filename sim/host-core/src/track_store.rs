@@ -86,7 +86,4 @@ impl TrackRepository for TrackStore {
     fn discard(&mut self) -> Result<(), RecorderError> {
         self.recorder.discard()
     }
-    fn append(&mut self, _point: TrackPoint) -> bool {
-        false
-    }
 }

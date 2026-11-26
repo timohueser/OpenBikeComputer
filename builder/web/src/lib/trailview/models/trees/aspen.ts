@@ -7,14 +7,18 @@ export default {
   // A slender, straight stem under a small, rounded, open crown high up.
   fork: 0.45,
   crown: [0.72, 0.24, 0.23, 0.26],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.15 + 0.85 * t)) ** 0.7,
+  clumps: 12,
   open: true,
+  dense: 0.85,
   stagger: true,
+  billows: 5,
+  bow: 0.15,
   trunk: 0.016,
   flare: 1.4,
   // Smooth grey-green bark, darker and cracked at the foot.
   bark: ['#4e4c44', '#a8ac98'],
   fade: [0.03, 0.15],
-  marks: ['#4a4840', 0.15],
   // Round leaves on flat stalks flutter and show their pale undersides.
   leaves: {
     winter: 'bare',

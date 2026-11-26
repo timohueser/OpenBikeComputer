@@ -74,6 +74,41 @@ export function near(grid: Grid, ax: number, ay: number, bx: number, by: number,
 export const along = (ax: number, ay: number, bx: number, by: number, x: number, y: number) =>
     Math.min(1, Math.max(0, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2 || 1)));
 
+/**
+ * A quarter of houses: a building of at most HOUSE_M2 counts, a hall or a whole block does not. Its cover is taken over
+ * cells of 2^COVER_SHIFT world units, about 26 m in the Alps, COVER_CELLS to each side of a place's cell: a square about 130 m across.
+ */
+const HOUSE_M2 = 1000, COVER_SHIFT = 10, COVER_CELLS = 2;
+const covers = new WeakMap<Town, Map<number, number>>();
+
+/**
+ * The share of the ground about x, y that houses cover, each house counted whole in the cell of its box's middle.
+ * `unit` is the metres per world unit there. Only the cells whose middle lies within `reach` world units of `square`
+ * (west, north, east, south) count: a tile holds the buildings of its square and its buffer, so two tiles see a place
+ * near their border alike.
+ */
+export function houseCover(town: Town, x: number, y: number, unit: number, square?: number[], reach = 0): number {
+    let cover = covers.get(town);
+    if (!cover) {
+        covers.set(town, (cover = new Map()));
+        town.rings.forEach((ring, b) => {
+            let twice = 0;
+            for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) twice += ring[j] * ring[i + 1] - ring[i] * ring[j + 1];
+            const area = Math.abs(twice) / 2, [x0, y0, x1, y1] = town.boxes[b], cell = key(Math.floor((x0 + x1) / 2) >> COVER_SHIFT, Math.floor((y0 + y1) / 2) >> COVER_SHIFT);
+            if (area * unit * unit <= HOUSE_M2) cover!.set(cell, (cover!.get(cell) ?? 0) + area / 4 ** COVER_SHIFT);
+        });
+    }
+    const size = 2 ** COVER_SHIFT, ci = Math.floor(x) >> COVER_SHIFT, cj = Math.floor(y) >> COVER_SHIFT;
+    let sum = 0, cells = 0;
+    for (let i = ci - COVER_CELLS; i <= ci + COVER_CELLS; i++) for (let j = cj - COVER_CELLS; j <= cj + COVER_CELLS; j++) {
+        const mx = (i + 0.5) * size, my = (j + 0.5) * size;
+        if (square && (mx < square[0] - reach || mx > square[2] + reach || my < square[1] - reach || my > square[3] + reach)) continue;
+        sum += cover.get(key(i, j)) ?? 0;
+        cells++;
+    }
+    return cells ? sum / cells : 0;
+}
+
 /** Whether a building comes within `reach` world units of x, y. */
 export function builtNear(town: Town, x: number, y: number, reach: number): boolean {
     let built = false;

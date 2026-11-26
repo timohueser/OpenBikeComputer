@@ -7,6 +7,9 @@ export default {
   // A small tree with a short bole under a dense, rounded crown.
   fork: 0.3,
   crown: [0.6, 0.44, 0.42, 0.4],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.2 + 0.8 * t)) ** 0.6,
+  clumps: 10,
+  billows: 6,
   sweep: 0.08,
   trunk: 0.045,
   flare: 1.4,

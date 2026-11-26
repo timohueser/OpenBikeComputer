@@ -37,11 +37,11 @@ export function networkScope({ network }: Pick<NetworkRoute, 'network'>): string
 const source = 'route-overlays';
 const labelZoom = 11;
 const activities = ['cycling', 'hiking', 'mtb'] as const;
-const interactiveLayers = [...activities.flatMap(activity => [`network-${activity}`, `network-${activity}-band`]), 'hiking-markers', 'access-symbols'];
+const interactiveLayers = [...activities.map(activity => `network-${activity}`), 'hiking-markers', 'access-symbols'];
 const layers = {
-    cycling: ['network-cycling', 'network-cycling-band', 'network-cycling-labels'],
-    hiking: ['network-hiking', 'network-hiking-band', 'network-hiking-labels', 'hiking-markers'],
-    mtb: ['network-mtb', 'network-mtb-band', 'network-mtb-labels'],
+    cycling: ['network-cycling', 'network-cycling-labels'],
+    hiking: ['network-hiking', 'network-hiking-labels', 'hiking-markers'],
+    mtb: ['network-mtb', 'network-mtb-labels'],
     access: ['access-lines', 'access-symbols'],
 } as const;
 
@@ -85,17 +85,15 @@ export function routeWebsite(value?: string | null): string | null {
 export interface RouteHint { point: { x: number; y: number }; name: string }
 const restMs = 450;
 
-// A network is a thin line over the roads while the basemap draws few of them. From `bandZoom` a band replaces it:
-// the band lies under the lines of the basemap and is wider than its roads and paths, so they stay visible on it, and
-// a planned route stays the strongest line. The band starts at the width of the line, which fades over one zoom level.
-const bandZoom = 12;
-const lineWidth: ExpressionSpecification = ['interpolate', ['linear'], ['zoom'], 6, 1.2, 10, 1.8, bandZoom, 2.4];
+// A network is a band at every zoom: it lies under the lines of the basemap and is wider than its roads and paths, so
+// they stay visible on it, and a planned route stays the strongest line. Where the basemap draws few roads, the band is
+// narrow.
 /** The share of the network colour in a band; a dark map needs more of it for the same contrast. */
 export const bandShare = { light: 0.4, dark: 0.5 };
 // The basemap draws a main road wider than a side road, and a side road wider than a path. The tiles name the class of
 // the road of a line in `road`, so the band shows about as far beside each of them. A line with no class is on a path.
 const byRoad = (path: number, minor: number, major: number): ExpressionSpecification => ['match', ['get', 'road'], 'major', major, 'minor', minor, path];
-const bandWidth: ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], bandZoom, 2.4, 13, byRoad(7, 7, 10), 15, byRoad(10, 13, 14), 18, byRoad(22, 24, 26)];
+const bandWidth: ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], 6, 1.6, 10, 2.6, 12, 3.4, 13, byRoad(7, 7, 10), 15, byRoad(10, 13, 14), 18, byRoad(22, 24, 26)];
 
 const accessStatus = (mode: AccessMode): ExpressionSpecification => ['get', `${mode}_status`];
 
@@ -142,10 +140,8 @@ export class RouteOverlays {
         const color = this.color;
         const layout: LineLayerSpecification['layout'] = { 'line-join': 'round', 'line-sort-key': ['get', 'rank'] };
         for (const activity of activities) {
-            this.map.addLayer({ id: `network-${activity}`, type: 'line', source, 'source-layer': activity, maxzoom: bandZoom + 1, layout,
-                paint: { 'line-color': color, 'line-opacity': this.lineOpacity, 'line-width': lineWidth } }, before);
             // Round ends close the step where a line of one road class meets a line of another.
-            this.map.addLayer({ id: `network-${activity}-band`, type: 'line', source, 'source-layer': activity, minzoom: bandZoom, layout: { ...layout, 'line-cap': 'round' },
+            this.map.addLayer({ id: `network-${activity}`, type: 'line', source, 'source-layer': activity, layout: { ...layout, 'line-cap': 'round' },
                 paint: { 'line-color': this.bandColor, 'line-width': bandWidth } }, underLines);
             this.map.addLayer({
                 id: `network-${activity}-labels`, type: 'symbol', source, 'source-layer': activity, minzoom: labelZoom,
@@ -189,10 +185,6 @@ export class RouteOverlays {
         return ['step', ['get', 'rank'], shade(3), 1, shade(2), 2, shade(1), 3, shade(0)];
     }
 
-    private get lineOpacity(): ExpressionSpecification {
-        return ['interpolate', ['linear'], ['zoom'], bandZoom, 1, bandZoom + 1, 0];
-    }
-
     // The band is the network colour mixed into the background colour of the basemap, not a transparent line: a wide
     // transparent line darkens where a hairpin makes it cross itself.
     private get bandColor(): ExpressionSpecification {
@@ -211,10 +203,7 @@ export class RouteOverlays {
             const shown = !this.mismatch && (kind === 'access' ? this.options.access : this.options.network === kind);
             for (const id of ids) if (this.map.getLayer(id)) this.map.setLayoutProperty(id, 'visibility', shown ? 'visible' : 'none');
         }
-        for (const activity of this.map.getLayer('network-cycling') ? activities : []) {
-            this.map.setPaintProperty(`network-${activity}`, 'line-opacity', this.lineOpacity);
-            this.map.setPaintProperty(`network-${activity}-band`, 'line-color', this.bandColor);
-        }
+        for (const activity of this.map.getLayer('network-cycling') ? activities : []) this.map.setPaintProperty(`network-${activity}`, 'line-color', this.bandColor);
         if (this.map.getLayer('access-lines')) {
             const status = accessStatus(this.accessMode);
             const filter: FilterSpecification = ['>=', ['zoom'], ['coalesce', ['get', `${this.accessMode}_minzoom`], 99]];

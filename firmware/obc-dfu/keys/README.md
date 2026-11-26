@@ -1,6 +1,6 @@
 # OBCU update-signing keys
 
-Ed25519 keys for the OBCU v2 update container ([`specs/obcu-update.md`](../../../specs/obcu-update.md)
+Ed25519 keys for the OBCU update container ([`specs/obcu-update.md`](../../../specs/obcu-update.md)
 §1.3). Every file here is one line of 64 lowercase hex characters (32 raw bytes) and a newline —
 what `obc-mkimage keygen` writes and [`obc_dfu::sig::hex32`](../src/sig.rs) parses at compile time.
 A malformed file is a build error.
@@ -9,7 +9,7 @@ A malformed file is a build error.
 |---|---|
 | `obcu-release.pub` | The production public key, `include_bytes!`d into `obc_dfu::sig::RELEASE_PUBKEY`. The armer trusts this key and nothing else. |
 | `test/obcu-test.seed` | The test secret seed. Public by construction — it is in the repo. |
-| `test/obcu-test.pub` | The test public key. Used by the host tests, `specs/vectors/update-container-v2.bin` and the simulator's synthetic package. |
+| `test/obcu-test.pub` | The test public key. Used by the host tests, `specs/vectors/update-container.bin` and the simulator's synthetic package. |
 
 **Never commit a production seed.** There is no private release key in this repository. The
 production seed lives only in the GitHub Actions environment secret `OBCU_SIGNING_SEED`

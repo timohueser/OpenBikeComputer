@@ -55,6 +55,7 @@ fn part(points: &[[f64; 2]], z: &[f64]) -> Part {
 
 const ROAD: [(&str, &str); 2] = [("highway", "residential"), ("tunnel", "yes")];
 const FOOT: [(&str, &str); 2] = [("highway", "footway"), ("tunnel", "yes")];
+const CYCLE: [(&str, &str); 2] = [("highway", "cycleway"), ("tunnel", "yes")];
 
 /// The ways of a test: (kind, tags, parts) by id; the tunnels are the ways of kind `tunnel`.
 #[derive(Default)]
@@ -62,7 +63,12 @@ struct Case {
     ways: Vec<(&'static str, Tags, Vec<Part>)>,
     /// The deck depth of a bridge way, by its place in `ways`.
     decks: HashMap<usize, f64>,
+    /// The bake's region (west, south, east, north), where not the default.
+    bounds: Option<[f64; 4]>,
 }
+
+/// The bake's region of a test.
+const BOUNDS: [f64; 4] = [8.3, 46.7, 8.5, 46.9];
 
 impl Case {
     /// A tunnel east from e0 to e1 at n, its floor at 500 m; its id.
@@ -89,7 +95,7 @@ impl Case {
             .filter(|(_, w)| w.0 == "tunnel")
             .map(|(id, w)| (id as u32, (w.1.clone(), w.2.clone())))
             .collect();
-        let (tiles, levels) = (Tiles::new([8.3, 46.7, 8.5, 46.9]), HashMap::new());
+        let (tiles, levels) = (Tiles::new(self.bounds.unwrap_or(BOUNDS)), HashMap::new());
         let tunnel_ways: HashSet<usize> = tunnels.keys().map(|&id| id as usize).collect();
         let input = Input {
             tunnels: &tunnels,
@@ -127,9 +133,9 @@ fn site<'a>(ground: &'a dyn Fn([f64; 2]) -> f64, rooms: &[f64], building: bool) 
     }
 }
 
-/// The kinds and the rung of each opening of way `id`.
+/// The kinds and the rung of each opening that way `id` enters.
 fn of(placed: &Placed, id: u32) -> Vec<(Vec<Kind>, &'static str)> {
-    placed.ends.iter().filter(|e| e.0 == id).map(|(_, e)| (e.kinds.clone(), e.rung)).collect()
+    placed.ends.iter().filter(|e| e.0.contains(&id)).map(|(_, e)| (e.kinds.clone(), e.rung)).collect()
 }
 
 fn records<'a>(placed: &'a Placed, kind: &str) -> Vec<&'a Tags> {
@@ -169,6 +175,10 @@ fn each_rung_gives_its_kinds_in_the_order_of_the_rungs() {
     case.tunnel(&FOOT, (0.0, 200.0), 0.0);
     let placed = case.place(&site(&ridge(200.0, 2.0), &[], false), &mut Vec::new());
     assert_eq!(of(&placed, 0), vec![(vec![Rock, Arch, Free], "hill"); 2]);
+    assert!(
+        records(&placed, "tunnel-end").iter().all(|t| t.contains_key("face")),
+        "a rock end holds its wall's numbers"
+    );
     // A footway 6 m long under a road on top at 503.5 m: an underpass at both ends. Its openings keep the floor's
     // height, so the floor of the tube cannot go down there: their section is as high as the road's underside (0.5 m
     // under it) less the shell allows, 2.5 m of the bore's 2.6 m. Under a building only: no part.
@@ -205,32 +215,43 @@ fn each_rung_gives_its_kinds_in_the_order_of_the_rungs() {
 }
 
 #[test]
-fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
+fn a_pair_has_one_frame_line_and_a_way_beside_a_wider_one_is_a_lane_of_its_room() {
     use Kind::*;
-    // Two road tunnels 20 m apart under one ridge; the second starts 3 m farther in. A footway 2.5 m beside the first
-    // lies in its tube.
+    // Two road tunnels 20 m apart under one ridge, which rises half as fast over the second; the second starts 3 m
+    // farther in. A footway 2.5 m beside the first comes nearer it than a wall: the two are one room of two lanes.
     let mut case = Case::default();
     let a = case.tunnel(&ROAD, (0.0, 200.0), 0.0);
     let b = case.tunnel(&ROAD, (3.0, 200.0), 20.0);
     let foot = case.tunnel(&FOOT, (0.0, 200.0), 2.5);
-    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
-    assert_eq!(of(&placed, a), vec![(vec![Pair, Arch, Free], "hill"); 2]);
-    assert_eq!(of(&placed, b), vec![(vec![Pair, Arch, Free], "hill"); 2]);
-    assert_eq!(of(&placed, foot), vec![(vec![], "same tube"); 2]);
-    // One record per pair, at the lower id. In the west the first opening moves 3 m in onto the line of the second,
-    // and its mate lies 20 m to its left; in the east, heading west, to its right.
+    let (steep, gentle) = (ridge(200.0, 1.0), ridge(200.0, 0.5));
+    let ground = |p: [f64; 2]| if p[1] < 10.0 { steep(p) } else { gentle(p) };
+    let placed = case.place(&site(&ground, &[], false), &mut Vec::new());
+    for id in [a, b, foot] {
+        assert_eq!(of(&placed, id), vec![(vec![Arch, Free], "hill"); 2], "way {id}");
+    }
+    assert_eq!(placed.metrics["rooms"]["rooms"].as_u64(), Some(1));
+    // The room's lanes from the right wall to the left: the footway runs at the road's side, with its way's width.
+    let tubes = records(&placed, "tunnel-tube");
+    let room = tubes.iter().find(|t| t["class"] == "residential footway").expect("the room");
+    let half = |tags: &[(&str, &str)]| {
+        widths().way("tunnel", &tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), false).half_m
+    };
+    assert_eq!(room["half"], num(half(&ROAD) + 0.6 + half(&FOOT)));
+    // One head per pair, a hole per room from the right: in the west, the room's two lanes move 3 m in onto the line of
+    // the second road, which lies about 20 m to the left; in the east, heading west, the second is the right hole.
     let ends = records(&placed, "tunnel-end");
     assert_eq!(ends.len(), 2);
-    let west = ends.iter().find(|t| t["mate"] == "20").expect("the west pair");
-    assert_eq!((west["part"].as_str(), west["shift"].as_str(), west["mate_shift"].as_str()), ("pair", "3", "0"));
-    assert!(ends.iter().any(|t| t["mate"] == "-20" && t["shift"] == "0"));
-    // A pair is not built yet: the device keeps the moved stretch a tunnel, and so does the measure of the numbers.
-    assert_eq!(placed.metrics["measured_again"].as_u64(), Some(0));
-    // The first tube widens to the far edge of the footway and its margin.
-    let foot_half = widths().way("tunnel", &tags(&FOOT), false).half_m;
-    assert_eq!(west["half"], num(2.5 + foot_half + 0.6));
-    assert!(!placed.tags.contains_key(&foot), "a chain with no part has no tag");
-    assert_eq!(placed.tags[&a]["parts"], "pair pair");
+    let west = ends.iter().find(|t| t["shift"] == "3 3 0").expect("the west pair");
+    assert_eq!((west["part"].as_str(), west["kind"].as_str()), ("arch", "arch arch"));
+    let east = ends.iter().find(|t| t["shift"] == "0 0 0").expect("the east pair");
+    assert_eq!(west["across"], east["across"]);
+    // Each room has its own collar: the hill over the second comes later, and the first moved 3 m in.
+    assert_eq!((west["collar"].as_str(), east["collar"].as_str()), ("4 9", "12 7"));
+    // A pair is built: the device opens the moved stretches, so the measure reads the four openings near them again.
+    assert_eq!(placed.metrics["measured_again"].as_u64(), Some(4));
+    for id in [a, foot] {
+        assert_eq!(placed.tags[&id]["parts"], "arch arch");
+    }
     // Where the nearer opening's way ends before the line of the other (a short first way), the two are no pair.
     let mut case = Case::default();
     let (a, _) = (case.tunnel(&ROAD, (0.0, 2.0), 0.0), case.tunnel(&ROAD, (2.0, 200.0), 0.0));
@@ -239,6 +260,28 @@ fn a_pair_has_one_frame_line_and_a_way_in_a_wider_tube_has_no_part() {
     assert_eq!(of(&placed, a), [(vec![Arch, Free], "hill")]);
     assert_eq!(of(&placed, b)[0], (vec![Arch, Free], "hill"));
     assert_eq!(placed.metrics["pairs_that_do_not_reach"].as_u64(), Some(1));
+    // A pair is one part of two chains: where the second chain forks in the hill, so that its end there has no part,
+    // the two are no pair.
+    let mut case = Case::default();
+    let a = case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let b = case.tunnel(&ROAD, (3.0, 200.0), 20.0);
+    for n in [60.0, -20.0] {
+        case.ways.push(("tunnel", tags(&ROAD), vec![part(&[[200.0, 20.0], [210.0, n]], &[500.0; 2])]));
+    }
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, a)[0], (vec![Arch, Free], "hill"));
+    assert_eq!(of(&placed, b)[0], (vec![Arch, Free], "hill"));
+    assert_eq!(placed.tags[&b]["parts"], "arch none");
+    // Two footways 3 m apart beside a road tube that starts 3 m farther in: the first comes nearer the road than a wall
+    // and is a lane of its room, which opens on the road's line; the second pairs with the room and moves onto it too.
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (3.0, 200.0), 0.0);
+    let f1 = case.tunnel(&FOOT, (0.0, 200.0), 4.5);
+    case.tunnel(&FOOT, (0.0, 200.0), 7.5);
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!(of(&placed, f1)[0].0[0], Arch);
+    let west = records(&placed, "tunnel-end").into_iter().find(|t| t["heading"] == "0").expect("the west head");
+    assert_eq!((west["shift"].as_str(), west["half"].split(' ').count()), ("0 3 3", 2));
 }
 
 #[test]
@@ -311,6 +354,14 @@ fn every_road_class_has_one_group() {
     for class in roads.as_object().unwrap().keys() {
         assert!(rules.group(class).is_some(), "{class}");
     }
+}
+
+/// A chord of a tunnel of one way, at most `CHORD_M` and a vertex gap long, lies within the tiles' buffer, so the
+/// read-back finds the chords at its vertices and a head of one hole at its end whole (`Faults::add`).
+#[test]
+fn a_chord_of_one_way_is_shorter_than_the_tiles_buffer() {
+    let rules = Ladder::parse(&crate::kinds::part_rows(&table(include_str!("../../../../data/trailview/parts.json"))));
+    assert!(crate::roads::CHORD_M + rules.unwrap().bake.vertex_gap_m < crate::tiles::BUFFER_M);
 }
 
 /// The tube records in metres east, west first: the east of both vertices, their floors and the record's height.
@@ -447,4 +498,782 @@ fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height
     assert_eq!(chords(&placed)[0].2, 4.0);
     assert_eq!(placed.metrics["low_stretches_at_least_height"].as_u64(), Some(1));
     assert_eq!(placed.metrics["floor_clashes"].as_u64(), Some(1));
+}
+
+#[test]
+fn the_crown_under_a_room_over_it_lies_under_that_rooms_floor_where_it_bends() {
+    // A footway tunnel at 506.2 m crosses the road tunnel at 20 degrees, and a footway at 508.7 m crosses on top of it,
+    // square to the road tunnel at `x` m east: the upper floor dips under that footway between two of its vertices.
+    // Wherever the upper axis lies within the road tunnel's half and shell, the road tunnel's crown lies under the upper
+    // underside (its floor less the slab), or the bake counts a tube clash. A tube record: its two points (metres east
+    // and north), their floors and its height.
+    type Tube = ([f64; 2], [f64; 2], Vec<f64>, f64);
+    let reach = widths().way("tunnel", &tags(&ROAD), false).half_m + 0.6 + 0.5;
+    for x in [95.0, 96.5, 104.0, 104.5] {
+        let mut case = Case::default();
+        case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+        let (s, c) = 20f64.to_radians().sin_cos();
+        let up = |u: f64| [100.0 + u * c, u * s];
+        case.ways.push(("tunnel", tags(&FOOT), vec![part(&[up(-80.0), up(0.0), up(80.0)], &[506.2; 3])]));
+        case.ways.push(("road", tags(&[("highway", "footway")]), vec![part(&[[x, -40.0], [x, 40.0]], &[508.7; 2])]));
+        let placed = case.place(&site(&|_| 530.0, &[], false), &mut Vec::new());
+        let tubes = |class: &str| -> Vec<Tube> {
+            (placed.features.iter())
+                .filter(|f| f.0 == "tunnel-tube" && f.1["class"] == class)
+                .map(|f| {
+                    (back(f.2.points[0]), back(f.2.points[1]), f.2.z.clone().unwrap(), f.1["height"].parse().unwrap())
+                })
+                .collect()
+        };
+        let (lower, upper) = (tubes("residential"), tubes("footway"));
+        let mut worst = f64::NEG_INFINITY;
+        for (a, b, z, height) in &lower {
+            for u in (0..=200).map(|k| f64::from(k) / 200.0) {
+                let q = [a[0] + u * (b[0] - a[0]), a[1] + u * (b[1] - a[1])];
+                // The upper underside at the nearest point of its axis.
+                let near = upper.iter().map(|(p, r, zu, _)| {
+                    let d = [r[0] - p[0], r[1] - p[1]];
+                    let t =
+                        (((q[0] - p[0]) * d[0] + (q[1] - p[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0.0, 1.0);
+                    ((q[0] - p[0] - t * d[0]).hypot(q[1] - p[1] - t * d[1]), zu[0] + t * (zu[1] - zu[0]) - 0.5)
+                });
+                if let Some((_, under)) = near.min_by(|x, y| x.0.total_cmp(&y.0)).filter(|n| n.0 <= reach) {
+                    worst = worst.max(z[0] + u * (z[1] - z[0]) + height + 0.5 - under);
+                }
+            }
+        }
+        let clashes = placed.metrics["tube_clashes"].as_u64().unwrap();
+        assert!(worst.is_finite(), "x {x}: no point of the road tunnel lies under the upper");
+        assert!(worst <= 0.005 || clashes > 0, "x {x}: the crown lies {worst:+.3} m over the upper underside");
+    }
+}
+
+/// The pairs of tube records of two rooms that come nearer than a wall at one level, as a tile holds them: each point
+/// rounded to the tile's grid (8 world units of 2^30), which with the decimals of the heights is the only allowance. A
+/// point reads another chord where its foot lies on it; two chords that end on one seam's line meet there.
+fn records_that_touch(placed: &Placed) -> Vec<String> {
+    const UNITS: f64 = (1u64 << 27) as f64;
+    let unit = |p: [f64; 2]| [(p[0] * UNITS).round() / UNITS, (p[1] * UNITS).round() / UNITS];
+    // Per record its two points, their floors, its half-width and its height.
+    type Record = ([f64; 2], [f64; 2], [f64; 2], f64, f64);
+    let tubes: Vec<Record> = (placed.features.iter())
+        .filter(|f| f.0 == "tunnel-tube")
+        .map(|f| {
+            let z = f.2.z.as_ref().unwrap();
+            // The higher of a chord's heights at its two vertices.
+            let num = |k: &str| f.1[k].split(' ').map(|v| v.parse::<f64>().unwrap()).fold(0.0, f64::max);
+            (unit(f.2.points[0]), unit(f.2.points[1]), [z[0], z[1]], num("half"), num("height"))
+        })
+        .collect();
+    // The rooms: the chords that share a vertex.
+    let mut room: Vec<usize> = (0..tubes.len()).collect();
+    for i in 0..tubes.len() {
+        for k in 0..i {
+            let shared = [tubes[i].0, tubes[i].1].iter().any(|p| *p == tubes[k].0 || *p == tubes[k].1);
+            if shared {
+                let (ri, rk) = (room[i], room[k]);
+                room.iter_mut().filter(|r| **r == ri.max(rk)).for_each(|r| *r = ri.min(rk));
+            }
+        }
+    }
+    let allowance = distance(unit([0.5, 0.5]), unit([0.5 + 1.0 / UNITS, 0.5 + 1.0 / UNITS]));
+    // The seams' lines: a point and the unit heading.
+    let seams: Vec<([f64; 2], [f64; 2])> = (placed.features.iter())
+        .filter(|f| f.0 == "tunnel-end" && f.1["part"] == "seam")
+        .map(|f| {
+            let h: f64 = f.1["heading"].parse().unwrap();
+            (unit(f.2.points[0]), [h.cos(), h.sin()])
+        })
+        .collect();
+    let on_seam = |t: &Record| {
+        (seams.iter().enumerate())
+            .filter(|(_, (p, d))| [t.0, t.1].iter().any(|q| super::along_dir(*p, *q, *d).abs() < 2.0 * allowance))
+            .map(|(s, _)| s)
+            .collect::<Vec<usize>>()
+    };
+    let mut out = Vec::new();
+    for (i, a) in tubes.iter().enumerate() {
+        let len = distance(a.0, a.1);
+        let mine = on_seam(a);
+        for k in
+            (0..tubes.len()).filter(|&k| room[k] != room[i] && !on_seam(&tubes[k]).iter().any(|s| mine.contains(s)))
+        {
+            let b = &tubes[k];
+            for m in 0..=len.ceil() as usize {
+                let u = (m as f64 / len.max(1.0)).min(1.0);
+                let p = [a.0[0] + u * (a.1[0] - a.0[0]), a.0[1] + u * (a.1[1] - a.0[1])];
+                let za = a.2[0] + u * (a.2[1] - a.2[0]);
+                let d = [b.1[0] - b.0[0], b.1[1] - b.0[1]];
+                let v = ((p[0] - b.0[0]) * d[0] + (p[1] - b.0[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1]);
+                if !(0.0..=1.0).contains(&v) {
+                    continue;
+                }
+                let foot = [b.0[0] + v * d[0], b.0[1] + v * d[1]];
+                let (gap, rise) = (distance(p, foot) - a.3 - b.3, b.2[0] + v * (b.2[1] - b.2[0]) - za);
+                let clear = gap >= 1.0 - 0.01 - allowance || rise >= a.4 + 1.0 - 0.01 || -rise >= b.4 + 1.0 - 0.01;
+                if !clear {
+                    out.push(format!("{:?} gap {gap:.2} rise {rise:.2}", back(p)));
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The layouts of the rooms' tests: road tunnels 200 m east, a first on the line 0 m north at the floor 500 m, and a
+/// second as the layout says; the count of rooms of lanes and of seams.
+fn layouts() -> Vec<(&'static str, Case, u64, u64)> {
+    let pair = |north: f64, start: f64, z: f64| {
+        let mut case = Case::default();
+        case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+        let line = [[start, north], [(start + 200.0) / 2.0, north], [200.0, north]];
+        case.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[z; 3])]));
+        case
+    };
+    let mut footway = Case::default();
+    footway.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let rise = 200.0 * 3f64.to_radians().tan();
+    footway.ways.push(("tunnel", tags(&FOOT), vec![part(&[[0.0, 4.3], [200.0, 4.3 + rise]], &[500.0; 2])]));
+    // A road tunnel 3 m over the first, crossing it at 40 degrees from 30 m east to 170 m east.
+    let mut cross = Case::default();
+    cross.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let t = 40f64.to_radians().tan();
+    cross.ways.push((
+        "tunnel",
+        tags(&ROAD),
+        vec![part(&[[30.0, -70.0 * t], [100.0, 0.0], [170.0, 70.0 * t]], &[503.0; 3])],
+    ));
+    let mut away = Case::default();
+    away.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let line = [[0.0, 7.0], [60.0, 7.0], [120.0, 40.0], [200.0, 40.0]];
+    away.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[500.0; 4])]));
+    // Twins 7 m apart for 60 m that part at 5 degrees.
+    let mut part5 = Case::default();
+    part5.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let t = 5f64.to_radians().tan();
+    let line = [[0.0, 7.0], [60.0, 7.0], [130.0, 7.0 + 70.0 * t], [200.0, 7.0 + 140.0 * t]];
+    part5.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[500.0; 4])]));
+    let (rail, _) = rail_over_rail();
+    vec![
+        ("twins that overlap", pair(5.0, 0.0, 500.0), 1, 0),
+        ("floors 3 m apart", pair(5.0, 0.0, 503.0), 1, 0),
+        ("floors 6 m apart", pair(5.0, 0.0, 506.0), 0, 0),
+        ("one 7 m under the other", pair(5.0, 0.0, 493.0), 0, 0),
+        ("a staggered start of 3 m", pair(5.0, 3.0, 500.0), 1, 0),
+        ("a staggered start of 60 m", pair(5.0, 60.0, 500.0), 1, 0),
+        ("a footway at 3 degrees beside a road", footway, 1, 1),
+        ("one that turns away", away, 1, 2),
+        ("twins that part at 5 degrees", part5, 1, 1),
+        ("a footway that turns away", path_turns().0, 1, 2),
+        ("one track 12 m over the other", rail, 2, 2),
+        ("two that cross", cross, 0, 0),
+    ]
+}
+
+const RAIL: [(&str, &str); 2] = [("railway", "rail"), ("tunnel", "yes")];
+
+/// A road tunnel 200 m east and a footway at the numbers of stagger-path (46.92647, 8.58401): 4.7 m beside the road's
+/// axis at the openings, 3.8 m 29 m in, then turned 40 and 60 degrees away to its own opening; and the footway's id.
+fn path_turns() -> (Case, u32) {
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    let (c40, s40, c60, s60) = (40f64.to_radians().cos(), 40f64.to_radians().sin(), 0.5, 60f64.to_radians().sin());
+    let turn = [32.0 + 5.0 * c40, 3.8 + 5.0 * s40];
+    let line = [
+        [0.0, 4.7],
+        [29.0, 3.8],
+        turn,
+        [turn[0] + 20.0 * c60, turn[1] + 20.0 * s60],
+        [turn[0] + 40.0 * c60, turn[1] + 40.0 * s60],
+    ];
+    let line = [line[0], [32.0, 3.8], line[2], line[3], line[4]];
+    case.ways.push(("tunnel", tags(&FOOT), vec![part(&line, &[500.0; 5])]));
+    (case, 1)
+}
+
+/// Two rail tunnels 200 m east, their axes 4 m apart, the second level with the first at its openings and 12 m over it
+/// in the middle; and the second's id.
+fn rail_over_rail() -> (Case, u32) {
+    let mut case = Case::default();
+    case.tunnel(&RAIL, (0.0, 200.0), 0.0);
+    let line = [[0.0, 4.0], [50.0, 4.0], [100.0, 4.0], [150.0, 4.0], [200.0, 4.0]];
+    case.ways.push(("tunnel", tags(&RAIL), vec![part(&line, &[500.0, 506.0, 512.0, 506.0, 500.0])]));
+    (case, 1)
+}
+
+#[test]
+fn a_lane_that_turns_away_ends_at_a_door() {
+    let hill = ridge(200.0, 1.0);
+    let placed = path_turns().0.place(&site(&hill, &[], false), &mut Vec::new());
+    let m = &placed.metrics;
+    let rooms = &m["rooms"];
+    assert_eq!(
+        (rooms["rooms"].as_u64(), rooms["caps"].as_u64(), rooms["doors"].as_u64()),
+        (Some(1), Some(1), Some(1)),
+        "{m}"
+    );
+    assert!(rooms["lanes_in_a_wall_m"].as_f64().unwrap() < 5.0, "{m}");
+    assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "{}", m["rooms_that_touch_places"]);
+    let half = |tags: &[(&str, &str)]| {
+        widths().way("tunnel", &tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), false).half_m
+    };
+    // The room is as wide as its two lanes: the road and the footway at its side with its way's width, on a line within
+    // `pair_max_deg` of it.
+    let most = half(&ROAD) + 0.6 + half(&FOOT) / 25f64.to_radians().cos() + 0.01;
+    for t in records(&placed, "tunnel-tube").into_iter().chain(records(&placed, "tunnel-end")) {
+        let widest = t["half"].split(' ').map(|v| v.parse::<f64>().unwrap()).fold(0.0, f64::max);
+        assert!(widest <= most, "a record {widest} m wide: {t:?}");
+    }
+    // The seam at the turn has the road's hole and the footway's door; the footway's own room starts with a cap.
+    let seams: Vec<&Tags> = records(&placed, "tunnel-end").into_iter().filter(|t| t["part"] == "seam").collect();
+    let turn = seams.iter().find(|t| t.contains_key("door")).expect("the seam with the door");
+    assert_eq!((turn["across"].split(' ').count(), turn["door"].split(' ').count()), (2, 4));
+    assert!(seams.iter().any(|t| !t["across"].contains(' ')), "the cap: {seams:?}");
+}
+
+#[test]
+fn a_track_that_climbs_over_the_other_is_its_own_tunnel() {
+    let hill = ridge(200.0, 1.0);
+    let placed = rail_over_rail().0.place(&site(&hill, &[], false), &mut Vec::new());
+    let m = &placed.metrics;
+    assert_eq!((m["rooms"]["rooms"].as_u64(), m["rooms"]["seams"].as_u64()), (Some(2), Some(2)), "{m}");
+    assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "{}", m["rooms_that_touch_places"]);
+    // No room has a step past the rail's least height and a roof, and the rise of 10 m of floor (0.12 m per metre).
+    let steps = m["largest_step_places"].as_str().unwrap();
+    let most = steps.split("; ").filter_map(|p| p.split(' ').nth(1)?.parse::<f64>().ok()).fold(0.0, f64::max);
+    assert!(most > 3.0 && most < 4.8 + 1.0 + 1.2, "steps {steps}");
+}
+
+#[test]
+fn rooms_keep_apart() {
+    let hill = ridge(200.0, 1.0);
+    let ground = site(&hill, &[], false);
+    for (name, case, rooms, seams) in layouts() {
+        let placed = case.place(&ground, &mut Vec::new());
+        let m = &placed.metrics;
+        assert_eq!(
+            (m["rooms"]["rooms"].as_u64(), m["rooms"]["seams"].as_u64()),
+            (Some(rooms), Some(seams)),
+            "{name}: {m}"
+        );
+        assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "{name}: {}", m["rooms_that_touch_places"]);
+        let touch = records_that_touch(&placed);
+        assert!(touch.is_empty(), "{name}: the records come nearer than a wall at {touch:?}");
+    }
+}
+
+#[test]
+fn a_seams_record_is_whole() {
+    let hill = ridge(200.0, 1.0);
+    let ground = site(&hill, &[], false);
+    let number = |t: &Tags, k: &str| t[k].split(' ').map(|v| v.parse::<f64>().unwrap()).collect::<Vec<f64>>();
+    let tile = distance(world(8.4, 46.8), [world(8.4, 46.8)[0] + 8.0 / (1u64 << 30) as f64, world(8.4, 46.8)[1]]);
+    for (name, case, _, seams) in layouts() {
+        let placed = case.place(&ground, &mut Vec::new());
+        let ends = records(&placed, "tunnel-end");
+        assert_eq!(ends.iter().filter(|t| t["part"] == "seam").count() as u64, seams, "{name}: {}", placed.metrics);
+        let tubes: Vec<&(&str, Tags, Part)> = placed.features.iter().filter(|f| f.0 == "tunnel-tube").collect();
+        // Per lane of a chord at a vertex: its axis and its floor.
+        let lanes_at = |f: &(&str, Tags, Part), k: usize| -> Vec<([f64; 2], f64)> {
+            let (a, b) = (f.2.points[0], f.2.points[1]);
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let l = d[0].hypot(d[1]);
+            let left = left_of([d[0] / l, d[1] / l]);
+            let pair = |tag: &str| {
+                f.1.contains_key(tag).then(|| number(&f.1, tag).into_iter().skip(k).step_by(2).collect::<Vec<f64>>())
+            };
+            let n = f.1["class"].split(' ').count();
+            let (off, up) = (pair("off").unwrap_or(vec![0.0; n]), pair("up").unwrap_or(vec![0.0; n]));
+            (0..n).map(|i| (offset(f.2.points[k], left, off[i]), f.2.z.as_ref().unwrap()[k] + up[i])).collect()
+        };
+        for seam in ends.iter().filter(|t| t["part"] == "seam") {
+            let (across, half) = (number(seam, "across"), number(seam, "half"));
+            // Each hole lies in the room before the line, a wall from the next.
+            for k in 1..across.len() {
+                assert!(
+                    across[k].abs() + half[k] <= half[0] + 1e-9,
+                    "{name}: hole {k} reaches past the room before: {seam:?}"
+                );
+            }
+            for k in 1..across.len() - 1 {
+                assert!(
+                    across[k + 1] - half[k + 1] - across[k] - half[k] >= 1.0 - 1e-9,
+                    "{name}: holes {k} and {} less than a wall apart: {seam:?}",
+                    k + 1
+                );
+            }
+            // Each hole's point is the first vertex of its room, within the tile's rounding; the lanes at the line have
+            // one floor on both sides, to the centimetre.
+            let f = placed.features.iter().find(|f| f.0 == "tunnel-end" && std::ptr::eq(&f.1, *seam)).unwrap();
+            let h: f64 = seam["heading"].parse().unwrap();
+            let lanes: Vec<([f64; 2], f64)> = tubes
+                .iter()
+                .flat_map(|t| [0, 1].map(|k| (t, k)))
+                .filter(|(t, k)| distance(t.2.points[*k], f.2.points[0]) < 60.0)
+                .flat_map(|(t, k)| lanes_at(t, k))
+                .collect();
+            for (k, &a) in across.iter().enumerate() {
+                let p = offset(f.2.points[0], left_of([h.cos(), h.sin()]), a);
+                let vertex =
+                    tubes.iter().flat_map(|t| t.2.points.iter()).map(|&q| distance(p, q)).fold(f64::INFINITY, f64::min);
+                assert!(vertex <= tile, "{name}: hole {k} lies {vertex:.3} m from the first vertex of its room");
+            }
+            for (i, x) in lanes.iter().enumerate() {
+                for y in lanes.iter().skip(i + 1).filter(|y| distance(x.0, y.0) < 0.05) {
+                    assert!((x.1 - y.1).abs() <= 0.02, "{name}: a lane's floor {} and {} at the seam", x.1, y.1);
+                }
+            }
+        }
+        // The two chords of a room at a vertex write the same strings there; no chord is shorter than the vertex gap,
+        // but for the rounding of a tile.
+        let at = |f: &(&str, Tags, Part), k: usize| {
+            let off =
+                f.1.get("off").map(|o| o.split(' ').skip(k).step_by(2).map(String::from).collect::<Vec<String>>());
+            (f.2.points[k], off)
+        };
+        for (i, a) in tubes.iter().enumerate() {
+            assert!(
+                distance(a.2.points[0], a.2.points[1]) >= 1.0 - 0.3,
+                "{name}: a chord of {} m",
+                distance(a.2.points[0], a.2.points[1])
+            );
+            for c in tubes.iter().skip(i + 1) {
+                for (ka, kc) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                    let ((pa, oa), (pc, oc)) = (at(a, ka), at(c, kc));
+                    if pa == pc && oa.is_some() && oc.is_some() && a.1["class"] == c.1["class"] {
+                        // Chords that meet against each other's way see the lanes the other way round.
+                        let flip: Vec<String> = oc
+                            .clone()
+                            .unwrap()
+                            .iter()
+                            .rev()
+                            .map(|v| crate::parts::num(-v.parse::<f64>().unwrap()))
+                            .collect();
+                        let same = oa.clone().unwrap().iter().map(|v| v.to_string()).collect::<Vec<_>>();
+                        assert!(oa == oc || same == flip, "{name}: two chords at a vertex: {oa:?} and {oc:?}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The records and chords that the builder does not find whole as the zoom-13 tiles of `bounds` hold them (`not_whole`):
+/// each chord that does not close, and each record of whose holes it finds some, not all, so their chords draw with no
+/// head.
+fn not_whole_in_tiles(placed: &Placed, bounds: [f64; 4]) -> Vec<String> {
+    let f = &placed.features;
+    (not_whole(f, &Tiles::new(bounds)).into_iter())
+        .filter(|(i, found)| f[*i].0 == "tunnel-tube" || found.contains(&true))
+        .map(|(i, found)| format!("{} at {:?} ({found:?})", f[i].0, back(f[i].2.points[0])))
+        .collect()
+}
+
+/// The case moved `east` metres east.
+fn moved(mut case: Case, east: f64) -> Case {
+    for (_, _, parts) in &mut case.ways {
+        for p in parts.iter_mut().flat_map(|part| part.points.iter_mut()) {
+            p[0] += east / metres(p[1]);
+        }
+    }
+    case
+}
+
+/// The metres east of the origin of `at` to the next edge between two zoom-13 tiles.
+fn tile_edge_east() -> f64 {
+    let o = world(8.4, 46.8);
+    let n = f64::from(1u32 << MAX_ZOOM);
+    ((o[0] * n).ceil() / n - o[0]) * metres(o[1])
+}
+
+/// What the rooms cannot build draws as tunnels of one way: a V at a fork, a pair whose mate forks, a V that folds, a
+/// room past the bounds.
+#[test]
+fn what_the_rooms_cannot_build_draws_alone() {
+    let hill = ridge(200.0, 1.0);
+    let ground = site(&hill, &[], false);
+    // A footway east from an opening to a fork 60 m in, and beside its opening a V of a footway: from an opening 1.22 m
+    // to its left 5 m in to a point on its axis and back to an opening 2.51 m to its left.
+    let mut v = Case::default();
+    let through = v.tunnel(&FOOT, (0.0, 60.0), 0.0);
+    for n in [20.0, -20.0] {
+        v.ways.push(("tunnel", tags(&FOOT), vec![part(&[[60.0, 0.0], [80.0, n]], &[500.0; 2])]));
+    }
+    v.ways.push(("tunnel", tags(&FOOT), vec![part(&[[0.0, 1.22], [5.0, 0.0], [0.0, 2.51]], &[500.0; 3])]));
+    // Two road tunnels 20 m apart, the second with a fork at its east end.
+    let mut pair = Case::default();
+    let single = pair.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    pair.tunnel(&ROAD, (0.0, 200.0), 20.0);
+    for n in [60.0, -20.0] {
+        pair.ways.push(("tunnel", tags(&ROAD), vec![part(&[[200.0, 20.0], [210.0, n]], &[500.0; 2])]));
+    }
+    // A V of a footway whose two openings lead 28 degrees apart: its legs come within a wall of each other.
+    let mut fold = Case::default();
+    fold.ways.push(("tunnel", tags(&FOOT), vec![part(&[[0.0, 1.5], [5.0, 0.0], [0.0, 5.0]], &[500.0; 3])]));
+    // A road tunnel whose east end lies past the bake's region.
+    let mut cut = Case::default();
+    cut.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    cut.bounds = Some([BOUNDS[0], BOUNDS[1], 8.4 + 100.0 / metres(world(8.4, 46.8)[1]) * 360.0, BOUNDS[3]]);
+    for (name, case) in [("the V", v), ("the pair", pair), ("the folded V", fold), ("the bounds", cut)] {
+        let placed = case.place(&ground, &mut Vec::new());
+        assert!(!records(&placed, "tunnel-tube").is_empty(), "{name}: nothing draws: {}", placed.metrics);
+        let faults = not_whole_in_tiles(&placed, case.bounds.unwrap_or(BOUNDS));
+        assert!(faults.is_empty(), "{name}: {faults:?}");
+        match name {
+            "the V" => assert!(placed.tags.contains_key(&through), "{name}"),
+            "the pair" => assert_eq!(placed.tags[&single]["parts"], "arch arch"),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn the_builder_reads_each_joint_back_from_the_tiles() {
+    let edge = tile_edge_east();
+    for (name, _, _, _) in layouts() {
+        // A tile edge through each 20 m of the layout, its heads and its seams.
+        for at in (0..=10).map(|k| -1.0 + 20.0 * f64::from(k)) {
+            let shift = edge - at;
+            let hill = |p: [f64; 2]| ridge(200.0, 1.0)([p[0] - shift, p[1]]);
+            let case = layouts().into_iter().find(|l| l.0 == name).unwrap().1;
+            let placed = moved(case, shift).place(&site(&hill, &[], false), &mut Vec::new());
+            assert!(!placed.features.is_empty(), "{name}: no parts: {}", placed.metrics);
+            let faults = not_whole_in_tiles(&placed, BOUNDS);
+            assert!(faults.is_empty(), "{name}, a tile edge {at} m east: {faults:?}");
+        }
+    }
+}
+
+/// A footway on top over the first chord of the footway's room behind the seam of "a footway at 3 degrees beside a
+/// road": across it at 13 m, 13.3 m and 16 m east, its underside at 502 m, across the room before the line at 12.1 m,
+/// and one that starts over the chord at 13.2 m and climbs 3 m. Wherever the way lies over the crown, the crown lies
+/// under its underside, also where the chord's far vertex lies out of the way's reach.
+#[test]
+fn a_way_over_the_first_chord_behind_a_seam_holds_the_floor_down() {
+    let reach = widths().way("road", &tags(&[("highway", "footway")]), false).outer_m() + 0.9 + 0.5;
+    let across = |x: f64| ([x, 4.6], [x, 30.0], 0.0);
+    for (a, b, climb) in [across(12.1), across(13.0), across(13.3), across(16.0), ([13.2, 4.6], [16.8, 30.0], 3.0)] {
+        let mut case = layouts().into_iter().find(|l| l.0 == "a footway at 3 degrees beside a road").unwrap().1;
+        case.ways.push(("road", tags(&[("highway", "footway")]), vec![part(&[a, b], &[502.5, 502.5 + climb])]));
+        let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+        let seams: Vec<f64> = (placed.features.iter())
+            .filter(|f| f.1.get("part").is_some_and(|p| p == "seam"))
+            .map(|f| back(f.2.points[0])[0])
+            .collect();
+        let chords: Vec<_> = (placed.features.iter())
+            .filter(|f| f.0 == "tunnel-tube" && f.1["half"] == "0.9")
+            .map(|f| {
+                (
+                    back(f.2.points[0]),
+                    back(f.2.points[1]),
+                    f.2.z.clone().unwrap(),
+                    f.1["height"].parse::<f64>().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(seams.len(), 1, "way at {a:?}");
+        assert!(chords.iter().any(|c| (c.0[0] - seams[0]).abs() < 0.01), "way at {a:?}: no chord starts at the line");
+        // The crown's shell (0.5 m) over the floor and the height, at 101 points of each chord within the way's reach.
+        let d = [b[0] - a[0], b[1] - a[1]];
+        for (p, q, z, height) in &chords {
+            for u in (0..=100).map(|k| f64::from(k) / 100.0) {
+                let e = [p[0] + u * (q[0] - p[0]), p[1] + u * (q[1] - p[1])];
+                let t = (((e[0] - a[0]) * d[0] + (e[1] - a[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0.0, 1.0);
+                if (e[0] - a[0] - t * d[0]).hypot(e[1] - a[1] - t * d[1]) <= reach {
+                    let (crown, under) = (z[0] + u * (z[1] - z[0]) + height + 0.5, 502.0 + t * climb);
+                    assert!(
+                        crown <= under + 0.005,
+                        "way at {a:?}: the crown at {e:?} is {crown:.3} m, the way {under:.3} m"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The road of "a footway at 3 degrees beside a road" split into two ways 0.46 m and 0.96 m behind the seam's line:
+/// the join is no vertex of the road's room behind the seam, its first chord leaves its own line within
+/// `pair_max_deg`, and no two rooms or records come nearer than a wall.
+#[test]
+fn a_room_behind_a_seam_whose_first_way_is_short_starts_clear_of_the_line() {
+    let rise = 200.0 * 3f64.to_radians().tan();
+    for x in [13.4, 13.9] {
+        let mut case = Case::default();
+        case.ways.push(("tunnel", tags(&ROAD), vec![part(&[[0.0, 0.0], [x, 0.0]], &[500.0; 2])]));
+        case.ways.push(("tunnel", tags(&ROAD), vec![part(&[[x, 0.0], [100.0, 0.0], [200.0, 0.0]], &[500.0; 3])]));
+        case.ways.push(("tunnel", tags(&FOOT), vec![part(&[[0.0, 4.3], [200.0, 4.3 + rise]], &[500.0; 2])]));
+        let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+        assert_eq!(records(&placed, "tunnel-end").iter().filter(|t| t["part"] == "seam").count(), 1, "split {x}");
+        let road: Vec<([f64; 2], [f64; 2])> = (placed.features.iter())
+            .filter(|f| f.0 == "tunnel-tube" && f.1["half"] == "3.1")
+            .map(|f| (back(f.2.points[0]), back(f.2.points[1])))
+            .collect();
+        let (p, q) = *road.iter().min_by(|a, b| a.0[0].total_cmp(&b.0[0])).unwrap();
+        let turn = (q[1] - p[1]).atan2(q[0] - p[0]).to_degrees().abs();
+        assert!(turn <= 25.0, "split {x}: the first chord {p:?} -> {q:?} turns {turn:.1} degrees");
+        assert!(road.iter().all(|c| (c.0[0] - x).abs() > 0.01 && (c.1[0] - x).abs() > 0.01), "split {x}: {road:?}");
+        let m = &placed.metrics;
+        assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "split {x}: {}", m["rooms_that_touch_places"]);
+        assert!(records_that_touch(&placed).is_empty(), "split {x}: {:?}", records_that_touch(&placed));
+    }
+}
+
+/// The faces that the builder draws of the records, each corner in metres east and north and its height.
+fn faces(placed: &Placed) -> Vec<[[f64; 3]; 3]> {
+    let rules = obc_trailview_parts::Rules::embedded();
+    const U: f64 = (1u64 << 30) as f64;
+    let (mut ends, mut chords) = (Vec::new(), Vec::new());
+    for (kind, tags, part) in &placed.features {
+        let (z, w) = (part.z.as_ref().unwrap(), |k: usize| [part.points[k][0] * U, part.points[k][1] * U]);
+        if *kind == "tunnel-end" {
+            ends.push(obc_trailview_parts::End::from_tags(w(0), z[0], tags, rules).unwrap());
+        } else {
+            let (a, b) = (w(0), w(1));
+            chords.push(
+                obc_trailview_parts::Chord::from_tags([a[0], a[1], z[0]], [b[0], b[1], z[1]], tags, rules).unwrap(),
+            );
+        }
+    }
+    let mesh = obc_trailview_parts::meshes([0.0, 0.0, U, U], &ends, &chords, rules);
+    let point = |i: u32| {
+        let v = &mesh.vertices[i as usize * obc_trailview_parts::WORDS..];
+        let p = back([v[0] as i32 as f64 / U, v[1] as i32 as f64 / U]);
+        [p[0], p[1], f64::from(f32::from_bits(v[2]))]
+    };
+    mesh.indices.chunks(3).map(|t| [point(t[0]), point(t[1]), point(t[2])]).collect()
+}
+
+/// A road tunnel that parts from the one beside it at 20 degrees 60 m in and opens 1.5 m, 3 m or 5 m later. No face
+/// that the builder draws crosses the seam's line inside the room before it, and a room behind the seam too short to
+/// hold a vertex outside its clear does not draw.
+#[test]
+fn a_room_behind_a_seam_crosses_no_line() {
+    for len in [1.5f64, 3.0, 5.0] {
+        let mut case = Case::default();
+        case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+        let (sn, cs) = 20f64.to_radians().sin_cos();
+        let line = [[0.0, 7.0], [60.0, 7.0], [60.0 + len * cs, 7.0 + len * sn]];
+        case.ways.push(("tunnel", tags(&ROAD), vec![part(&line, &[500.0; 3])]));
+        let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+        let m = &placed.metrics;
+        assert_eq!(m["rooms_that_touch"].as_u64(), Some(0), "{len} m: {}", m["rooms_that_touch_places"]);
+        assert!(records_that_touch(&placed).is_empty(), "{len} m: {:?}", records_that_touch(&placed));
+        assert_eq!(m["rooms"]["seams"].as_u64(), Some(u64::from(len > 2.0)), "{len} m: {m}");
+        let faces = faces(&placed);
+        for seam in placed.features.iter().filter(|f| f.1.get("part").is_some_and(|p| p == "seam")) {
+            let (p, h) = (back(seam.2.points[0]), seam.1["heading"].parse::<f64>().unwrap());
+            let half: f64 = seam.1["half"].split(' ').next().unwrap().parse().unwrap();
+            // Metres along the heading (east and north) behind the line, and across it.
+            let (along, across) = (
+                |q: &[f64; 3]| (q[0] - p[0]) * h.cos() - (q[1] - p[1]) * h.sin(),
+                |q: &[f64; 3]| (q[0] - p[0]) * h.sin() + (q[1] - p[1]) * h.cos(),
+            );
+            for f in faces.iter().filter(|f| f.iter().any(|q| across(q).abs() < half)) {
+                let (lo, hi) =
+                    f.iter().map(along).fold((f64::INFINITY, f64::NEG_INFINITY), |a, x| (a.0.min(x), a.1.max(x)));
+                assert!(lo > -0.01 || hi < 0.01, "{len} m: a face crosses the seam's line: {f:?}");
+            }
+        }
+    }
+}
+
+/// Motorway tunnels 200 m long east of south, 10 degrees to a tile edge, their openings on one frame line: the first
+/// `east` metres east of the edge, the next ones each `gaps` metres beside the space of the one before; the hill over
+/// them, and the first opening's point.
+fn motorways(east: f64, gaps: &[f64]) -> (Case, impl Fn([f64; 2]) -> f64, [f64; 2]) {
+    let mway = [("highway", "motorway"), ("tunnel", "yes")];
+    let wide = 2.0 * (widths().way("tunnel", &tags(&mway), false).half_m + 0.6);
+    let (s, c) = 10f64.to_radians().sin_cos();
+    let first = [tile_edge_east() + east, 0.0];
+    let at = |u: f64, v: f64| [first[0] - u * s + v * c, first[1] - u * c - v * s];
+    let mut case = Case::default();
+    let mut v = 0.0;
+    for k in 0..=gaps.len() {
+        v += if k > 0 { wide + gaps[k - 1] } else { 0.0 };
+        case.ways.push(("tunnel", tags(&mway), vec![part(&[at(200.0, v), at(100.0, v), at(0.0, v)], &[500.0; 3])]));
+    }
+    let hill = move |p: [f64; 2]| {
+        let u = (first[0] - p[0]) * s + (first[1] - p[1]) * c;
+        500.0 + u.min(200.0 - u).max(0.0)
+    };
+    (case, hill, first)
+}
+
+/// Four motorway tunnels 1.5 m apart open on one frame line at 10 degrees to a tile edge: their head spans 44 m. The
+/// tile west of the edge holds the first hole's chord and the head, not the last hole's chord, so there the builder
+/// does not build the head and the chord does not close. That opening has a head of its own, and the others share one.
+#[test]
+fn a_head_that_a_tile_does_not_hold_whole_gives_the_opening_there_a_head_of_its_own() {
+    // The first opening 1 m east of the edge; its tunnel goes in 10 degrees west of south, so its first chord (10 m)
+    // starts in the tile west of the edge; the last opening lies 44.4 m east of the edge, past that tile's buffer.
+    let (case, hill, first) = motorways(1.0, &[1.5; 3]);
+    let placed = case.place(&site(&hill, &[], false), &mut Vec::new());
+    let m = &placed.metrics;
+    assert_eq!((m["openings_apart"].as_u64(), m["joints_not_whole"].as_u64()), (Some(1), Some(0)), "{m}");
+    assert!(not_whole_in_tiles(&placed, BOUNDS).is_empty(), "{:?}", not_whole_in_tiles(&placed, BOUNDS));
+    let heads: Vec<(f64, Option<&String>)> = (placed.features.iter())
+        .filter(|f| f.0 == "tunnel-end" && back(f.2.points[0])[1].abs() < 10.0)
+        .map(|f| ((back(f.2.points[0])[0] - first[0]).abs(), f.1.get("across")))
+        .collect();
+    assert_eq!(heads.len(), 2, "{heads:?}");
+    assert!(heads.iter().any(|h| h.0 < 0.01 && h.1.is_none()), "the first opening's own head: {heads:?}");
+    assert!(heads.iter().any(|h| h.1.is_some_and(|a| a == "0 14.7 29.4")), "the others' head: {heads:?}");
+}
+
+/// The first two of five such tunnels lie 0.4 m apart, one room of two lanes, the first opening 7 m west of the edge:
+/// the tile west of it does not hold the head of four holes whole. The room's opening has a head of its own, and each
+/// tunnel draws.
+#[test]
+fn a_room_of_lanes_in_a_head_that_a_tile_does_not_hold_whole_keeps_its_tunnels() {
+    let (case, hill, _) = motorways(-7.0, &[0.4, 1.5, 1.5, 1.5]);
+    let placed = case.place(&site(&hill, &[], false), &mut Vec::new());
+    let m = &placed.metrics;
+    assert_eq!(m["rooms"]["rooms"].as_u64(), Some(1), "{m}");
+    assert_eq!((m["arms_alone"].as_u64(), m["joints_not_whole"].as_u64()), (Some(0), Some(0)), "{m}");
+    assert!(m["openings_apart"].as_u64() >= Some(1), "{m}");
+    assert!(not_whole_in_tiles(&placed, BOUNDS).is_empty(), "{:?}", not_whole_in_tiles(&placed, BOUNDS));
+    for id in 0..5 {
+        let parts = placed.tags.get(&id).and_then(|t| t.get("parts"));
+        assert!(parts.is_some_and(|p| !p.contains("none")), "tunnel {id} does not draw: {parts:?}");
+    }
+}
+
+/// A footway 5 m over a primary in one room, its outline 4.4 m inside the right wall, as a room that the primary makes
+/// wide on its other side: the walk at that wall lies at 5.15 m. The room's spring lies at or over it, so each wall
+/// rises from the floor to the spring; the outlines alone let the spring lie under the walk.
+#[test]
+fn a_rooms_spring_lies_at_or_over_its_floor_at_the_walls() {
+    let design = &obc_trailview_parts::Rules::embedded().design;
+    let lanes = [(-4.0, 1.6, 5.0, 2.4, 8), (4.0, 6.0, 0.0, 5.0, 8)];
+    let wall = 5.0 + design.kerb_m;
+    let h = rooms::hold(true, 10.0, design.spring, &lanes, 16, wall);
+    assert!(design.spring * h >= wall - 1e-9, "the spring {:.2} lies under the walk {wall}", design.spring * h);
+    let outlines = rooms::hold(true, 10.0, design.spring, &lanes, 16, 0.0);
+    assert!(design.spring * outlines < wall, "the outlines alone hold the walk: {outlines}");
+}
+
+/// The space of a chord in metres east and north: its two vertices, its floor and its height at each, its half-width
+/// and whether it is round.
+type Space = ([f64; 2], [f64; 2], [f64; 2], f64, [f64; 2], bool);
+
+/// Whether a point (metres east, north and its height) lies in a chord's space by more than 5 cm, under its arch.
+fn in_space(q: [f64; 3], (a, b, z, half, h, round): &Space) -> bool {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len = d[0].hypot(d[1]);
+    let along = ((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / len;
+    let lat = ((q[1] - a[1]) * d[0] - (q[0] - a[0]) * d[1]) / len;
+    let u = along / len;
+    let (floor, height) = (z[0] + u * (z[1] - z[0]), h[0] + u * (h[1] - h[0]));
+    let share = if *round { 0.6 + 0.4 * (1.0 - (lat / half).powi(2)).max(0.0).sqrt() } else { 1.0 };
+    let beside = along > 0.05 && along < len - 0.05 && lat.abs() < half - 0.05;
+    beside && q[2] > floor + 0.05 && q[2] < floor + height * share - 0.05
+}
+
+/// The faces of each head that lie in a room that is not its own, as the builder draws them: per record its wall,
+/// frame, sill and the shells of its collars alone (no face of a room), sampled, against each chord of another
+/// half-width.
+fn heads_in_rooms(placed: &Placed) -> Vec<String> {
+    let rules = obc_trailview_parts::Rules::embedded();
+    const U: f64 = (1u64 << 30) as f64;
+    let (mut ends, mut chords, mut spaces): (Vec<_>, Vec<_>, Vec<Space>) = (Vec::new(), Vec::new(), Vec::new());
+    for (kind, tags, part) in &placed.features {
+        let (z, w) = (part.z.as_ref().unwrap(), |k: usize| [part.points[k][0] * U, part.points[k][1] * U]);
+        if *kind == "tunnel-end" {
+            ends.push(obc_trailview_parts::End::from_tags(w(0), z[0], tags, rules).unwrap());
+        } else {
+            let (a, b) = (w(0), w(1));
+            let c = obc_trailview_parts::Chord::from_tags([a[0], a[1], z[0]], [b[0], b[1], z[1]], tags, rules).unwrap();
+            let round = tags["section"] == "round";
+            spaces.push((back(part.points[0]), back(part.points[1]), [z[0], z[1]], c.half, c.height, round));
+            chords.push(c);
+        }
+    }
+    let room = obc_trailview_parts::BORE | obc_trailview_parts::VOID | obc_trailview_parts::LAMP;
+    let mut out = Vec::new();
+    for (r, end) in ends.iter().enumerate().filter(|(_, e)| e.part != obc_trailview_parts::Part::Seam) {
+        let square = [end.at[0] - 1.0, end.at[1] - 1.0, end.at[0] + 1.0, end.at[1] + 1.0];
+        let mesh = obc_trailview_parts::meshes(square, &ends, &chords, rules);
+        let word = |i: u32, k: usize| mesh.vertices[i as usize * obc_trailview_parts::WORDS + k];
+        let point = |i: u32| {
+            let p = back([word(i, 0) as i32 as f64 / U, word(i, 1) as i32 as f64 / U]);
+            [p[0], p[1], f64::from(f32::from_bits(word(i, 2)))]
+        };
+        let other = |sp: &&Space| end.holes.iter().all(|h| (h.half - sp.3).abs() > 1e-6);
+        for t in mesh.indices.chunks(3).filter(|t| (word(t[0], 3) >> 24) & room == 0) {
+            let [a, b, c] = [t[0], t[1], t[2]].map(point);
+            let samples = (1..6).flat_map(|i| (1..6 - i).map(move |j| (f64::from(i) / 6.0, f64::from(j) / 6.0)));
+            for (s, v) in samples {
+                let q: [f64; 3] = std::array::from_fn(|k| a[k] + s * (b[k] - a[k]) + v * (c[k] - a[k]));
+                if let Some(sp) = spaces.iter().filter(other).find(|sp| in_space(q, sp)) {
+                    out.push(format!("record {r} at {q:.1?} in a room of half {}", sp.3));
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Two motorway tunnels east from `from` m to `to` m, one room of two lanes in a hill, and its half-width.
+fn hall(case: &mut Case, (from, to): (f64, f64)) -> f64 {
+    let mway = [("highway", "motorway"), ("tunnel", "yes")];
+    let half = widths().way("tunnel", &tags(&mway), false).half_m + 0.6;
+    for n in [-6.9, 6.9] {
+        case.ways.push(("tunnel", tags(&mway), vec![part(&[[from, n], [(from + to) / 2.0, n], [to, n]], &[500.0; 3])]));
+    }
+    6.9 + half
+}
+
+/// A footway underpass that opens 0.1 m beside the wall of a hall of two motorway lanes 40 m long, 2.6 m over its
+/// floor, its way 37 degrees off the hall's square: where it opens, its head stands in the hall. It opens further in,
+/// where its head clears the hall.
+#[test]
+fn a_box_whose_head_stands_in_a_hall_opens_where_it_clears() {
+    let mut case = Case::default();
+    let wall = hall(&mut case, (130.0, 170.0));
+    let (s, c) = 37f64.to_radians().sin_cos();
+    let foot =
+        [[150.0, wall + 0.1], [150.0 + 10.0 * s, wall + 0.1 + 10.0 * c], [150.0 + 20.0 * s, wall + 0.1 + 20.0 * c]];
+    case.ways.push(("tunnel", tags(&FOOT), vec![part(&foot, &[502.6; 3])]));
+    let placed = case.place(&site(&|_| 520.0, &[1.0], false), &mut Vec::new());
+    assert!(heads_in_rooms(&placed).is_empty(), "{:?}", heads_in_rooms(&placed));
+    let m = &placed.metrics;
+    assert_eq!((m["heads_in_rooms"].as_u64(), m["openings_moved_out_of_rooms"].as_u64()), (Some(0), Some(1)), "{m}");
+    let paths: Vec<&Tags> = records(&placed, "tunnel-end").into_iter().filter(|t| t["half"] == "0.9").collect();
+    assert!(paths.iter().any(|t| t["shift"].parse::<f64>().unwrap() >= 1.0), "{paths:?}");
+}
+
+/// A residential tunnel 5 m over a cycleway tunnel, their spaces 0.5 m over each other in plan, both 100 m long and
+/// opening side by side: the residential's head goes down to its foot through the cycleway's room at every metre it
+/// may move in. The bake counts it and does not move it.
+#[test]
+fn a_head_that_no_metre_in_clears_is_counted() {
+    let [road, cycle] = [&ROAD, &CYCLE].map(|t| widths().way("tunnel", &tags(t), false).half_m);
+    let mut case = Case::default();
+    case.ways.push(("tunnel", tags(&ROAD), vec![part(&[[0.0, 0.0], [50.0, 0.0], [100.0, 0.0]], &[505.0; 3])]));
+    let n = road + 0.6 + cycle + 0.3 - 0.5;
+    case.ways.push(("tunnel", tags(&CYCLE), vec![part(&[[-2.0, n], [50.0, n], [100.0, n]], &[500.0; 3])]));
+    let placed = case.place(&site(&ridge(100.0, 0.3), &[], false), &mut Vec::new());
+    let m = &placed.metrics;
+    assert_eq!((m["heads_in_rooms"].as_u64(), m["openings_moved_out_of_rooms"].as_u64()), (Some(2), Some(0)), "{m}");
+    assert!(!heads_in_rooms(&placed).is_empty());
+}
+
+/// A footway underpass east from 0 m to 20 m, its floor 504 m, 502 m and 496 m, over a cycleway tunnel under its west
+/// end at 496.5 m: the builder draws the west head down to `foot_m` under the lowest floor of the whole underpass, into
+/// the cycleway's room. The bake reads the same foot: the head opens where it clears.
+#[test]
+fn a_box_head_reaches_down_to_the_lowest_floor_of_its_underpass() {
+    let mut case = Case::default();
+    case.ways.push((
+        "tunnel",
+        tags(&FOOT),
+        vec![part(&[[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]], &[504.0, 502.0, 496.0])],
+    ));
+    case.ways.push(("tunnel", tags(&CYCLE), vec![part(&[[0.2, -50.0], [0.2, 0.0], [0.2, 50.0]], &[496.5; 3])]));
+    let placed = case.place(&site(&|_| 520.0, &[1.0], false), &mut Vec::new());
+    assert!(heads_in_rooms(&placed).is_empty(), "{:?}", heads_in_rooms(&placed));
+    let m = &placed.metrics;
+    assert_eq!((m["heads_in_rooms"].as_u64(), m["openings_moved_out_of_rooms"].as_u64()), (Some(0), Some(1)), "{m}");
 }

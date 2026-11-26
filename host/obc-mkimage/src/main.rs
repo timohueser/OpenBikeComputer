@@ -10,8 +10,8 @@
 //! obc-mkimage inspect UPDATE.BIN
 //! ```
 //!
-//! `wrap` prepends the 64-byte OBCU header to a raw app image (and, given a seed, signs it in the
-//! same step); `sign` attaches or replaces the Ed25519 trailer on an already-wrapped container;
+//! `wrap` prepends the 64-byte OBCU header to a raw app image and signs it in the same step; `sign`
+//! replaces the Ed25519 trailer on an already-wrapped container;
 //! `inspect` decodes, verifies both CRCs **and** the signature, and exits non-zero on any failure —
 //! it is the release workflow's gate. See `firmware/README.md` (§Firmware update images) for how the
 //! raw `.bin` is produced, and `specs/obcu-update.md` §1 for the bytes.
@@ -49,10 +49,10 @@ const USAGE: &str = "\
 usage:
   obc-mkimage keygen  --out-dir <dir> [--name <base>]
   obc-mkimage wrap    --bin <app.bin> --version <str> --out <UPDATE.BIN>
-                      [--sign-seed <file> | --sign-seed-env <VAR>]
+                      (--sign-seed <file> | --sign-seed-env <VAR>)
   obc-mkimage sign    --in <UPDATE.BIN> --out <file>
                       (--sign-seed <file> | --sign-seed-env <VAR>)
-  obc-mkimage inspect <UPDATE.BIN> [--pubkey <file>] [--allow-unsigned]
+  obc-mkimage inspect <UPDATE.BIN> [--pubkey <file>]
 
 Keys are 64 lowercase hex characters (32 raw bytes) on one line. `keygen` writes
 <base>.seed (SECRET) and <base>.pub. `inspect` verifies against the release key
@@ -102,8 +102,7 @@ fn keygen(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `wrap`: prepend the OBCU header to a raw image and write `<out>`; with a seed, sign it in the
-/// same pass (the release pipeline's one-shot path).
+/// `wrap`: prepend the OBCU header to a raw image, sign it, and write `<out>`.
 fn wrap(args: &[String]) -> Result<(), String> {
     let mut bin: Option<PathBuf> = None;
     let mut version: Option<String> = None;
@@ -123,6 +122,7 @@ fn wrap(args: &[String]) -> Result<(), String> {
     let bin = bin.ok_or("wrap: missing --bin")?;
     let version = version.ok_or("wrap: missing --version")?;
     let out = out.ok_or("wrap: missing --out")?;
+    let seed = seed_src.ok_or("wrap: need --sign-seed <file> or --sign-seed-env <VAR>")?.read()?;
 
     let image = std::fs::read(&bin).map_err(|e| format!("reading {}: {e}", bin.display()))?;
     if image.is_empty() {
@@ -156,38 +156,23 @@ fn wrap(args: &[String]) -> Result<(), String> {
     }
 
     let header = ImageHeader::new(&image, &version);
-    let blob = match &seed_src {
-        Some(src) => build_signed(header, &image, &src.read()?),
-        // Unsigned: byte-for-byte the v1 container. The device's armer rejects it (§1.4) — this is
-        // the local-experiment / `--allow-unsigned` shape, not something to publish.
-        None => {
-            eprintln!(
-                "warning: {} is UNSIGNED — a device running v2 firmware refuses to install it. \
-                 Pass --sign-seed/--sign-seed-env to sign.",
-                out.display()
-            );
-            let mut b = Vec::with_capacity(HEADER_LEN + image.len());
-            b.extend_from_slice(&header.encode());
-            b.extend_from_slice(&image);
-            b
-        }
-    };
+    let blob = build_signed(header, &image, &seed);
     std::fs::write(&out, &blob).map_err(|e| format!("writing {}: {e}", out.display()))?;
 
     println!(
-        "wrote {} — version \"{}\", image {} bytes, image_crc32 {:#010X}, {}",
+        "wrote {} — version \"{}\", image {} bytes, image_crc32 {:#010X}, Ed25519-signed by {}",
         out.display(),
         header.fw_version_str(),
         header.image_len,
         header.image_crc32,
-        if seed_src.is_some() { "Ed25519-signed (OBCU v2)" } else { "unsigned (OBCU v1)" }
+        hex(public_key_of(&seed).as_bytes())
     );
     Ok(())
 }
 
-/// `sign`: attach (or replace) the Ed25519 trailer on an already-wrapped container. Same result as
-/// `wrap --sign-seed`; separate so a build artifact can be signed later, on a machine that holds the
-/// key, without re-running the build.
+/// `sign`: replace the Ed25519 trailer on an already-wrapped container. Same result as `wrap` with
+/// that seed; separate so a build artifact can be re-signed later, on a machine that holds the key,
+/// without re-running the build.
 fn sign(args: &[String]) -> Result<(), String> {
     let mut input: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
@@ -199,10 +184,6 @@ fn sign(args: &[String]) -> Result<(), String> {
             "--out" => out = Some(next_value(&mut it, "--out")?.into()),
             "--sign-seed" => seed_src = Some(SeedSource::File(next_value(&mut it, "--sign-seed")?.into())),
             "--sign-seed-env" => seed_src = Some(SeedSource::Env(next_value(&mut it, "--sign-seed-env")?)),
-            // Compatibility aliases, deliberately absent from the help so both subcommands present
-            // one canonical signing vocabulary.
-            "--seed" => seed_src = Some(SeedSource::File(next_value(&mut it, "--seed")?.into())),
-            "--seed-env" => seed_src = Some(SeedSource::Env(next_value(&mut it, "--seed-env")?)),
             other => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
         }
     }
@@ -223,7 +204,7 @@ fn sign(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Header (marked signed) ‖ raw image ‖ 64-byte signature — the OBCU v2 container (§1).
+/// Header (marked signed) ‖ raw image ‖ 64-byte signature — the OBCU container (§1).
 fn build_signed(header: ImageHeader, image: &[u8], seed: &[u8; SEED_LEN]) -> Vec<u8> {
     let header = header.signed();
     let signature = sign_image(seed, &header, image);
@@ -235,18 +216,14 @@ fn build_signed(header: ImageHeader, image: &[u8], seed: &[u8; SEED_LEN]) -> Vec
 }
 
 /// `inspect`: decode + verify both CRCs + the signature, human-readable, non-zero exit on anything
-/// invalid. This is CI's gate on a release artifact, so every check is fatal by default; the one
-/// escape hatch is `--allow-unsigned`, for looking at a v1 container or a device-written
-/// `ROLLBACK.BIN`.
+/// invalid. This is CI's gate on a release artifact, so every check is fatal.
 fn inspect(args: &[String]) -> Result<(), String> {
     let mut path: Option<PathBuf> = None;
     let mut pubkey_path: Option<PathBuf> = None;
-    let mut allow_unsigned = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--pubkey" => pubkey_path = Some(next_value(&mut it, "--pubkey")?.into()),
-            "--allow-unsigned" => allow_unsigned = true,
             other if other.starts_with("--") => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
             other if path.is_none() => path = Some(other.into()),
             _ => return Err(format!("inspect: expected exactly one file argument\n\n{USAGE}")),
@@ -287,8 +264,8 @@ fn inspect(args: &[String]) -> Result<(), String> {
 
     let sig_ok = match (header.sig_scheme, header.sig_len as usize, trailer) {
         (obc_dfu::SIG_SCHEME_NONE, 0, _) => {
-            println!("  signature    : NONE (OBCU v1 container — a v2 device refuses to install it)");
-            allow_unsigned
+            println!("  signature    : NONE (unsigned — the device refuses to install it)");
+            false
         }
         (obc_dfu::SIG_SCHEME_ED25519, SIG_LEN, None) => {
             println!("  signature    : MISSING — the header claims a {}-byte trailer that isn't there", header.sig_len);

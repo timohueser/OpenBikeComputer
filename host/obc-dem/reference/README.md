@@ -10,9 +10,8 @@ elevation source; the bakery lifts a crest to the finer heights of the archive. 
 
 `obc data source prepare terrain --region R` adds a region to the version before: per block of
 4 × 4 tiles, `ingest.py fetch --block <bi>-<bj> <ti>-<tj>=<keys> …`, then `index-terrain`
-(`specs/obc-data.md` §`terrain`). `merge.py --step` is `device/reference/<leaf>` and
-`planner/reference`: the tiles of the version, cut out of their blocks into an archive of this
-contract.
+(`specs/obc-data-prepared.md` §`terrain`). `merge.py --step` is `device/reference/<leaf>` and
+`planner/reference`: the tiles of the version, cut out of their blocks into one archive.
 
 The steps need the uv group `terrain-reference` of the root `pyproject.toml`. One block by hand:
 
@@ -23,44 +22,9 @@ uv run --group terrain-reference python3 host/obc-dem/reference/ingest.py \
 
 ## The tile contract
 
-`write_tile` in `ingest/archive.py` writes it, and `tile_problems` in `tests/test_ingest.py`
-holds a tile to it. A prepared version of `terrain` packs the tiles 4 × 4 into blocks
-`18/<bi:04>/<bj:04>.tif` with the same encoding and one `index.json` of `contributors` and
-`sources` (`specs/obc-data.md` §`terrain`); `merge.py` cuts a tile out of its block, and writes
-`tiles` and `sha256` into the index of the archive.
-
-- **Lattice**: OBCT `GRID_ORIGIN` (−2^28 µdeg on both axes), step `2^6` µdeg
-  (`REFERENCE_STEP_LOG2 = 6`, about 7.1 m latitude and 4.9 m longitude at 47° N).
-- **Tile**: `2^16` µdeg square = 1024 × 1024 pixels, at `16/<ti:04>/<tj:04>.tif` under the archive
-  root, where `(ti, tj) = ((lat − ORIGIN) >> 16, (lon − ORIGIN) >> 16)`.
-- **Value**: `int16` little-endian orthometric metres, the **maximum** of every source pixel centre
-  inside the lattice square. A square that no centre reaches and that lies between four centres
-  with a height has their bilinear height (`fill_gaps`). `−32768` is the only nodata. Single
-  band, `PixelIsArea`, EPSG:4326, deflate, 256 × 256 internal tiles. The GeoTIFF stores rows
-  north-up.
-- **Mean** (prepared versions only): the **mean** of the same centres in `int32` decimetres, or
-  the same bilinear height, nodata `−2^31`, predictor 2, in `mean/`.
-- **Transform** must be exactly the lattice (`a = 2^6 / 1e6`, `e = −2^6 / 1e6`, origin on lattice
-  lines) within 1e-9 degrees. The baker does no reprojection and no resampling.
-- **`index.json`** at the archive root names every tile. A tile the index does not name is not in
-  the archive.
-
-```json
-{ "schema": 1, "step_log2": 6, "tile_log2": 16, "pool": "max",
-  "sources": { "ch": { "product": "swissALTI3D 2 m", "attribution": "© swisstopo",
-                       "licence": "…", "vertical_datum": "LN02/LHN95", "fetched": "2026-09-21",
-                       "glo30_bias_m": -1.42 } },
-  "tiles": { "3410/2882": "ch" },
-  "contributors": { "3410/2882": ["ch", "es"] },
-  "sha256": { "3410/2882": "9f86d0818…" } }
-```
-
-`pool` is `max` or `mean`. `sha256` is over the tile's **pixels**, not the file: two GDAL builds
-deflate the same heights into different bytes, and the terrain bakery keys its skip decision on
-the digest. `contributors` lists every source holding a pixel in the tile, best priority first;
-`tiles` names the first of them. `glo30_bias_m` is the median of model − GLO-30 that the terrain
-prepare measured once (`specs/obc-data.md` §`terrain`); the planner corrects GLO-30 by the bias of
-the best source of a tile. `index-terrain` writes it.
+[`specs/obct-terrain.md` §10](../../../specs/obct-terrain.md) is the contract of a tile and of
+`index.json`. `write_tile` in `ingest/archive.py` writes a tile, and `tile_problems` in
+`tests/test_ingest.py` checks one.
 
 ## The code
 

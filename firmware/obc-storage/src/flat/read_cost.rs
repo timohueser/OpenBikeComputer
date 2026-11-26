@@ -146,6 +146,6 @@ fn a_read_costs_the_same_at_the_back_of_an_object_as_at_the_front() {
 
     let front = flat_census(&vec![(u64::from(NAV_DATA_START), NAV_CHUNK)]);
     let back = flat_census(&vec![(u64::from(back_offset), NAV_CHUNK)]);
-    assert_eq!(front, back, "a read's cost must not depend on how far into the object it is (#500)");
+    assert_eq!(front, back, "a read's cost must not depend on how far into the object it is");
     assert_eq!(front, ReadCensus { commands: 2, blocks: 2 }, "an unaligned 512 B chunk spans two blocks");
 }

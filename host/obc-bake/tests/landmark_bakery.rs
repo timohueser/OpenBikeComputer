@@ -88,7 +88,7 @@ impl LandmarkCapture for FakeCapture {
         std::fs::write(
             out.join("manifest.json"),
             serde_json::json!({
-                "schema": 1,
+                "schema": 2,
                 "sources": [],
                 "places": [],
                 "coverage": { "country_complete": true },

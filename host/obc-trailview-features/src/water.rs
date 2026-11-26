@@ -653,7 +653,7 @@ fn components(after: &[&[usize]]) -> Vec<Vec<usize>> {
 /// The levels of the samples a..=b of a way: the highest levels that never rise downstream, lie under
 /// the cap, and lie at each sample under its low and its channel, so that the water lies in a channel
 /// under its banks at its own line. Within `skip` metres of a junction at its (start, end), the bank
-/// tops lie in the other waterway's bed and do not count, nor do they at a sample in a lake. A sample
+/// tops lie in the other waterway's channel and do not count, nor do they at a sample in a lake. A sample
 /// with no known terrain takes the level before it, or after it at the start. A reach never goes
 /// under a lake that it flows into.
 fn reach_levels(way: &Way, (a, b): (usize, usize), cap: f64, (start, end): (f64, f64)) -> Vec<f64> {

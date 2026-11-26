@@ -7,8 +7,10 @@
     import { GRADE_TOP, type Query } from './search';
     import { GRADES } from './words';
 
-    let { query, ungraded, onchange }: {
+    let { query, ungraded, upper = false, onchange }: {
         query: Query;
+        /** Only the hardest grade: no lower end and no routes with an unknown grade, as for long trails. */
+        upper?: boolean;
         /** The rows with no grade that "Include routes with an unknown grade" keeps. */
         ungraded: number;
         onchange: (change: Partial<Query>) => void;
@@ -17,7 +19,6 @@
     const HOVER_MS = 1000;
     const [low, high] = $derived(query.grade);
     const limited = $derived(low > 0 || high < GRADE_TOP);
-    const value = $derived(!limited ? 'Any' : low > 0 ? `A T${low + 1} part, up to T${high + 1}` : `Up to T${high + 1} · ${GRADES[high][0]}`);
 
     /** The grade whose drawing shows, and the grade that a click keeps open. */
     let shown = $state<number>(), kept = $state<number>(), group = $state<HTMLElement>();
@@ -49,17 +50,17 @@
     const ROCKS = [[40, 7], [92, 5], [196, 8], [236, 6], [64, 9], [214, 10], [20, 8], [262, 9]];
 </script>
 
-<section class="grade" bind:this={group}>
+<div class="grade" bind:this={group}>
     <div class="head">
-        <h3>Path difficulty</h3>
-        <button type="button" class="info" aria-expanded={kept !== undefined} aria-label="What the grades mean" onclick={event => { event.stopPropagation(); click(high); }}>
-            <Icon name="info" size={16} />
+        <button type="button" class="info" aria-expanded={kept !== undefined} onclick={event => { event.stopPropagation(); click(high); }}>
+            <Icon name="info" size={16} />What the grades mean
         </button>
-        <span class="value">{value}</span>
     </div>
     <div class="rail" style:--low={low} style:--high={high}>
-        <input type="range" min="0" max={GRADE_TOP} step="1" value={low} aria-label="Has a part of at least this grade" aria-valuetext="T{low + 1}"
-            oninput={event => onchange({ grade: [Math.min(Number(event.currentTarget.value), high), high] })} />
+        {#if !upper}
+            <input type="range" min="0" max={GRADE_TOP} step="1" value={low} aria-label="Has a part of at least this grade" aria-valuetext="T{low + 1}"
+                oninput={event => onchange({ grade: [Math.min(Number(event.currentTarget.value), high), high] })} />
+        {/if}
         <input type="range" min="0" max={GRADE_TOP} step="1" value={high} aria-label="Hardest grade allowed" aria-valuetext="T{high + 1}"
             oninput={event => onchange({ grade: [low, Math.max(Number(event.currentTarget.value), low)] })} />
     </div>
@@ -76,11 +77,11 @@
             <p><b>T{shown + 1} · {GRADES[shown][0]}</b>{GRADES[shown][1]}</p>
         </div>
     {/if}
-    {#if limited}
+    {#if limited && !upper}
         <label class="unknown"><input type="checkbox" checked={query.ungraded} onchange={event => onchange({ ungraded: event.currentTarget.checked })} />
             Include routes with an unknown grade<span class="count">{ungraded}</span></label>
     {/if}
-</section>
+</div>
 
 <!-- A hill at the steepness of the grade, its path, its rocks and the chain of T3. -->
 {#snippet sketch(grade: number)}
@@ -108,16 +109,22 @@
     .grade {
         position: relative;
     }
+    .head {
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 4px;
+    }
     .info {
-        display: inline-grid;
-        place-items: center;
-        width: 24px;
-        height: 24px;
-        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        min-height: 26px;
+        padding: 0 8px 0 5px;
         border: 0;
-        border-radius: 50%;
+        border-radius: 6px;
         background: none;
         color: var(--ink-soft);
+        font: 12.5px var(--sans);
     }
     .info:hover, .info[aria-expanded="true"] {
         background: var(--parchment-2);
@@ -224,6 +231,10 @@
         background: var(--panel);
         box-shadow: var(--planner-shadow);
         pointer-events: none;
+        animation: appear 140ms ease-out;
+    }
+    @keyframes appear {
+        from { opacity: 0; }
     }
     .drawing svg {
         display: block;

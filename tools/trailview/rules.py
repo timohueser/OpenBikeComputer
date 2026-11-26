@@ -211,7 +211,7 @@ def tables(materials):
     style = obj({
         "name": text, "about": text, "extends": text, "pitch": listed(number(0, 80), 2), "eave": number(0, 5), "verge": number(0, 5),
         "hip": number(0, 1), "timber": one_of("none", "upper", "all", "frame"), "shutters": one_of(True, False),
-        "balconies": one_of(True, False), "dormers": one_of(True, False), "chimneys": one_of(0, 1, 2), "spire": one_of("onion", "domes"),
+        "balconies": one_of(True, False), "flowers": one_of(True, False), "dormers": one_of(True, False), "chimneys": one_of(0, 1, 2), "spire": one_of("onion", "domes"),
         "windows": number(0.3, 1.5), "storeys": number(1, 8), "roof": one_of("cone", "flat"),
         "palette": obj({"render": listed(colour), "wood": listed(colour), "roof": listed(colour), "door": listed(colour),
                         "shutter": listed(colour), "plinth": lambda v, p: (listed(colour) if isinstance(v, list) else colour)(v, p),

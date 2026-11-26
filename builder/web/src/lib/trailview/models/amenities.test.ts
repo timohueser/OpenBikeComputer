@@ -19,7 +19,8 @@ describe('the guidepost', () => {
             sum[3]++;
             middles.set(r, sum);
         }
-        expect(middles.size).toBe(3);
+        // The post, its ridge and two plates.
+        expect(middles.size).toBe(4);
         for (let t = 0; t < count; t++) {
             const [ax, ay, az, bx, by, bz, cx, cy, cz] = points.slice(9 * t, 9 * t + 9), u = [bx - ax, by - ay, bz - az], w = [cx - ax, cy - ay, cz - az];
             const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], [sx, sy, sz, k] = middles.get(root(t))!;

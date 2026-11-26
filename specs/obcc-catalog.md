@@ -15,7 +15,7 @@ catalog, selects the [OBCA](obca-assembly.md) cells, and feeds them to the assem
   [`region-cells.example.json`](../host/obc-pack/schema/region-cells.example.json),
   [`terrain-index.example.json`](../host/obc-pack/schema/terrain-index.example.json).
 - Related: [OBCA](obca-assembly.md), [OBCM](obcm-map.md), [OBCT](obct-terrain.md),
-  [obc-data](obc-data.md).
+  [obc-data](obc-data-products.md#device).
 
 ## Conventions
 
@@ -116,7 +116,7 @@ separately from content identity.
 | `license_url` | string | Where that licence's text lives. |
 
 The producer takes `attribution`, `license` and `license_url` from the `osm-planet` entry of
-`data/sources.toml` ([obc-data](obc-data.md)).
+`data/sources.toml` ([obc-data](obc-data-registry.md#datasourcestoml)).
 
 The cell store is a derivative database of its source dataset, and this block is the
 machine-readable statement of that fact.
@@ -667,7 +667,7 @@ regions of the map.
 ### 14.4 Keys
 
 An artifact has the version of the layer `device/landmarks`. Its key is as
-[obc-data.md](obc-data.md) defines it: the version, the compiled capture, and for landmarks the OSM
+[obc-data-layers.md](obc-data-layers.md#keys) defines it: the version, the compiled capture, and for landmarks the OSM
 of the cell's leaf, which gives the OSM link and the hours of a landmark; and the options. The key
 of the compiled capture is the version, the capture, and the region's `.poly` and extract. A capture
 names the extract and the `.poly` that it read by their SHA-256, so its version says which OSM it

@@ -1,5 +1,6 @@
 <!-- The card of the selected signed route over the map: its line, its mark and name, what kind of route it is, its
-     numbers and profile, its description and official page, the credit of its source, and "Plan this route". -->
+     numbers and profile, its description and official page, the credit of its source, and "Plan this route". For a row of
+     the day-hike search, the numbers are those of its shape, and the facts of the row show over the description. -->
 <script module lang="ts">
     import { gradeName, type CatalogRecord } from '../../lib/planner/signed-routes';
     import { formatDistance, formatHeight } from '../../lib/settings/format';
@@ -26,11 +27,16 @@
     import { routeWebsite } from '../../lib/planner/route-overlays';
     import type { SignedItem } from '../routes/filter';
     import RouteCard from '../routes/RouteCard.svelte';
+    import HikeFacts from './HikeFacts.svelte';
+    import type { Row } from './search';
     import SignedPicture from './SignedPicture.svelte';
     import { shownDescription, stagePart } from './signed-page';
+    import { hikeNumbers } from './words';
 
-    let { item, href, oncover, onplan, ontrail, onclose }: {
+    let { item, row, href, oncover, onplan, ontrail, onclose }: {
         item: SignedItem;
+        /** The row of the day-hike search that the card shows: the route in one shape. */
+        row?: Row;
         /** The page of the route: the name links to it. */
         href?: string;
         /** As `oncover` of the picture: it is too small for its credits, so the page shows them with the map. */
@@ -53,31 +59,31 @@
     const website = $derived(routeWebsite(record.website));
     const description = $derived(shownDescription(record, recordOf));
     const about = $derived(!!(description || record.operator || website || record.credit));
+    // A row has the word of a loop only: another shape of a row has its sentence in the facts.
+    const shape = $derived(row ? row.shape === 'loop' && 'Loop' : record.loop ? 'Loop' : 'One way');
+    const kind = $derived('made' in record ? `Our ${record.loop ? 'loop' : 'route'}, made from signed hiking paths` : kindName(record));
 </script>
 
-<RouteCard name={item.name} {href} meta={[record.loop ? 'Loop' : 'One way', part, trailName, kindName(record)]} numbers={signedNumbers(record)} profile={item.profile}
-    more={about ? more : undefined} {onclose}>
+<RouteCard name={item.name} {href} meta={[shape, part, trailName, kind]} numbers={row ? hikeNumbers(row, 'Grade unknown') : signedNumbers(record)}
+    profile={item.profile} more={about || row ? more : undefined} {onclose}>
     {#snippet picture()}<SignedPicture {item} {oncover} />{/snippet}
-    {#snippet mark()}<span class="mark"><TrailMarker symbol={record.symbol} ref={record.ref} /></span>{/snippet}
+    {#snippet mark()}<TrailMarker symbol={record.symbol} ref={record.ref} />{/snippet}
     {#snippet buttons()}<button type="button" class="button primary" onclick={onplan}>Plan this route</button>{/snippet}
 </RouteCard>
 
 {#snippet more()}
-    <p class="about">
-        {#if description}<span class="description">{description}</span>{/if}
-        {#if record.operator}<span>{record.operator}</span>{/if}
-        {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Official page ↗</a>{/if}
-        {#if record.credit}<span>Route data: {record.credit}</span>{/if}
-    </p>
+    {#if row}<HikeFacts {row} highest={item.summary.highestM} place={id => catalog.place(id)} />{/if}
+    {#if about}
+        <p class="about">
+            {#if description}<span class="description">{description}</span>{/if}
+            {#if record.operator}<span>{record.operator}</span>{/if}
+            {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Official page ↗</a>{/if}
+            {#if record.credit}<span>Route data: {record.credit}</span>{/if}
+        </p>
+    {/if}
 {/snippet}
 
 <style>
-    /* The mark stands on the first line of the name. */
-    .mark {
-        display: inline-block;
-        margin-right: 8px;
-        vertical-align: -5px;
-    }
     .about {
         display: flex;
         flex-wrap: wrap;
@@ -85,6 +91,9 @@
         margin: 0;
         color: var(--ink-soft);
         font-size: 13px;
+    }
+    .about:not(:first-child) {
+        margin-top: 10px;
     }
     .description {
         flex-basis: 100%;
