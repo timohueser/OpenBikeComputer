@@ -112,16 +112,18 @@ fn signed_rows(signed: &signed::Signed, walking: bool) -> [Vec<Row>; 2] {
 }
 
 fn panel_row(name: &str, panel: &Panel) -> Row {
+    // A panel with no route has no ratio and no rate.
+    let number = |value: f64, digits| if value.is_finite() { json!(round(value, digits)) } else { json!("-") };
     let mut cells = row([
         ("set", json!(name)),
         ("pairs", json!(panel.pairs)),
         ("routes", json!(panel.routes)),
         ("km", json!(round(panel.total.length_m / 1000.0, 1))),
-        ("length / shortest, p50", json!(round(panel.detour[0], 3))),
-        ("length / shortest, p95", json!(round(panel.detour[1], 3))),
-        ("length / shortest, max", json!(round(panel.detour[2], 3))),
+        ("length / shortest, p50", number(panel.detour[0], 3)),
+        ("length / shortest, p95", number(panel.detour[1], 3)),
+        ("length / shortest, max", number(panel.detour[2], 3)),
     ]);
-    cells.extend(panel.total.rates().into_iter().map(|(name, rate)| (name.to_string(), json!(round(rate, 2)))));
+    cells.extend(panel.total.rates().into_iter().map(|(name, rate)| (name.to_string(), number(rate, 2))));
     cells
 }
 

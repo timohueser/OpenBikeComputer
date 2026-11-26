@@ -109,8 +109,18 @@ function show(fit) {
   drawn.clearLayers();
   $('position').textContent = pair ? (index + 1) + ' of ' + set.pairs.length : 'No pairs with two different routes.';
   $('tally').textContent = set.pairs.filter((p) => answer(p).vote).length + ' of ' + set.pairs.length + ' answered';
+  // A profile with no pair shows no answer of another profile.
+  const given = pair ? answer(pair) : {};
+  document.querySelectorAll('.votes button').forEach((b) => {
+    b.classList.toggle('on', !!pair && b.dataset.vote === given.vote);
+    b.disabled = !pair;
+  });
+  $('note').value = given.note || '';
+  $('note').disabled = !pair;
+  $('reveal').hidden = !given.vote;
+  for (const id of ['a-km', 'a-up', 'b-km', 'b-up']) $(id).textContent = '';
   if (!pair) return;
-  const a = first(pair), routes = { A: pair.routes[a], B: pair.routes[1 - a] }, given = answer(pair);
+  const a = first(pair), routes = { A: pair.routes[a], B: pair.routes[1 - a] };
   // Route B is the thin line on top, so both show where they run together.
   L.polyline(routes.A.line, { color: colour('--a'), weight: 8, opacity: 0.6 }).addTo(drawn);
   L.polyline(routes.B.line, { color: colour('--b'), weight: 3, opacity: 0.95 }).addTo(drawn);
@@ -124,11 +134,8 @@ function show(fit) {
     $(name.toLowerCase() + '-km').textContent = route.km.toFixed(1);
     $(name.toLowerCase() + '-up').textContent = Math.round(route.ascent_m);
   }
-  document.querySelectorAll('.votes button').forEach((b) => b.classList.toggle('on', b.dataset.vote === given.vote));
-  $('note').value = given.note || '';
   // The measures show only after the answer.
   const facts = (name) => name + ': ' + Object.entries(routes[name].measures).map(([k, v]) => k + ' ' + v).join(', ');
-  $('reveal').hidden = !given.vote;
   $('reveal').textContent = facts('A') + '\n\n' + facts('B');
 }
 

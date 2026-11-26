@@ -82,7 +82,7 @@ pub struct Panel {
     /// The sum of the measures of the routes.
     pub total: Measures,
     /// The length of a route against its shortest route: the median, the 95th percentile and the
-    /// largest.
+    /// largest. Not a number for a panel with no route.
     pub detour: [f64; 3],
 }
 
@@ -95,14 +95,12 @@ pub fn panel(net: &Net, pairs: &[Pair]) -> Result<Panel, String> {
         Ok(Some((measure(net, &route), shortest.iter().map(|&road| net.length(road)).sum::<f64>())))
     });
     let routes: Vec<_> = routes.collect::<Result<Vec<_>, String>>()?.into_iter().flatten().collect();
-    if routes.is_empty() {
-        return Err("no pair of a panel has a route".into());
-    }
     let mut total = Measures::default();
     routes.iter().for_each(|(measures, _)| total.add(measures));
     let mut detours: Vec<f64> = routes.iter().map(|(measures, shortest)| measures.length_m / shortest).collect();
     detours.sort_by(f64::total_cmp);
-    let quantile = |q: f64| detours[((detours.len() - 1) as f64 * q).round() as usize];
-    let detour = [quantile(0.5), quantile(0.95), quantile(1.0)];
+    // A panel with no route has no quantile.
+    let quantile = |q: f64| detours.get((detours.len().saturating_sub(1) as f64 * q).round() as usize).copied();
+    let detour = [0.5, 0.95, 1.0].map(|q| quantile(q).unwrap_or(f64::NAN));
     Ok(Panel { pairs: pairs.len(), routes: routes.len(), total, detour })
 }

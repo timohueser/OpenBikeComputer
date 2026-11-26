@@ -201,10 +201,12 @@ pub fn signed_share(net: &Net, step_m: f64) -> Result<Signed, String> {
                 share.near_m += length(signed) - shape::far(&signed_line, &Near::new(&router_line));
                 result.legs += 1;
                 result.legs_with_no_split += usize::from(signed == router);
+                let taken: HashSet<u32> = router.iter().copied().collect();
+                let same = signed.iter().filter(|road| taken.contains(road)).map(|&road| net.length(road));
+                share.same_road_m += same.sum::<f64>();
                 let (mut i, mut j) = (0, 0);
                 while i < signed.len() || j < router.len() {
                     if i < signed.len() && j < router.len() && signed[i] == router[j] {
-                        share.same_road_m += net.length(signed[i]);
                         (i, j) = (i + 1, j + 1);
                         continue;
                     }

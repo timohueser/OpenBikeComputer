@@ -145,6 +145,9 @@ fn a_panel_counts_a_pair_with_no_route() {
     let pairs = [Pair { from: 0, to: 9 }, Pair { from: 5, to: 5 }];
     let panel = panel(&region().net(), &pairs).unwrap();
     assert_eq!((panel.pairs, panel.routes, panel.total.length_m), (2, 1, 5_400.0));
+    // A panel with no route is a result too: the run still writes its numbers.
+    let none = super::panel::panel(&region().net(), &pairs[1..]).unwrap();
+    assert!((none.pairs, none.routes) == (1, 0) && none.detour[0].is_nan());
 }
 
 #[test]
