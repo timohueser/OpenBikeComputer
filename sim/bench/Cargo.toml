@@ -9,7 +9,7 @@ description = "Host render benchmark harness + CI pixel-hash and read-counter go
 obc-map-scene = { workspace = true }
 obc-reader = { workspace = true }
 obc-render = { workspace = true }
-# The OBCR route reader — the corridor bench (epic #946 U2) drives `Reader::corridor_pois` against a
+# The OBCR route reader — the corridor bench drives `Reader::corridor_pois` against a
 # real converted route rather than a fixture polyline, so the measured cost includes the chunk decode.
 obc-route = { workspace = true }
 # The `ByteSource` / `ByteSink` seam the corridor bench's read-counting source implements.
@@ -17,7 +17,7 @@ obc-formats = { workspace = true }
 # The app owns the route-overlay draw params; the route scene imports the stroke colour + weight
 # from here so the bench can't silently drift from what the Map screen actually draws.
 obc-app = { workspace = true }
-# `Framebuffer565` — the same RGB565 DrawTarget the banded device path renders into (obc-display, #807).
+# `Framebuffer565` — the same RGB565 DrawTarget the banded device path renders into (obc-display).
 obc-display = { workspace = true }
 # The deterministic bench fixture (`build_bench_map`) the committed frame hashes are computed over.
 obcm-testkit = { workspace = true }

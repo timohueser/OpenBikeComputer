@@ -1,8 +1,8 @@
 # OpenBikeComputer UI translation catalog - FRENCH.
 #
-# Real French content (epic #602, L4 #606). Every key in en.toml appears here in the
+# Real French content. Every key in en.toml appears here in the
 # SAME order (the build enforces presence); see en.toml for the key->Msg naming
-# convention and the #601 font repertoire (Latin-1 + Latin Extended-A) rule.
+# convention and the font repertoire (Latin-1 + Latin Extended-A) rule.
 # Fixed-width layouts (stat-tile captions, settings values, the waypoint panel) are
 # abbreviated to fit; format glue (leading/trailing spaces, \n) is preserved verbatim.
 
@@ -35,7 +35,7 @@ no_nav = "Pas de données routage"
 filter = "Filtre"
 sources = "Sources"
 
-# --- The "Up ahead" timeline (epic #946): merged waypoints + route-corridor POIs ---
+# --- The "Up ahead" timeline: merged waypoints + route-corridor POIs ---
 [up_ahead]
 everything = "Tout"
 none = "Rien devant"
@@ -110,8 +110,8 @@ sat = "sam"
 sun = "dim"
 
 # --- Short-date table (uppercase) — the Rides rows' line-2 `D MON` date and the Home date
-# line (T5, #683: abbreviated weekday + day + month, day-first). Months generic; the seven
-# weekday abbreviations (Monday-first) were added for the Home line ---
+# line (abbreviated weekday + day + month, day-first). Months generic; the seven
+# weekday abbreviations (Monday-first) serve the Home line ---
 [date]
 jan = "JAN"
 feb = "FÉV"
@@ -247,7 +247,7 @@ title = "SON"
 level = "Son"
 key_tones = "Bips touches"
 
-# --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
+# --- The map sheet's row labels — the only home these three switches have ---
 [map_context]
 landmarks = "Repères"
 campsites = "Camping"
@@ -289,7 +289,7 @@ off = "Arrêt"
 connected = "Connecté"
 advertising = "Visible"
 
-# --- Sensors settings screen (BLE sensors epic #707) ---
+# --- Sensors settings screen ---
 [sensors]
 title = "CAPTEURS"
 heart_rate = "Fréq. cardiaque"
@@ -408,7 +408,7 @@ day_one = "j"
 days = "j"
 no_days = "Aucun jour"
 
-# --- Trip cascade-delete confirm (epic #526, TR3) ---
+# --- Trip cascade-delete confirm ---
 [trip_delete]
 title = "SUPPRIMER VOYAGE"
 warn = "Supprime le voyage et ses parcours"
@@ -459,7 +459,7 @@ route_removed = "Parcours retiré"
 recording = "Sortie en cours"
 
 # --- Create-route (nav) confirm / planning / fail cards ---
-# --- The Detour flow (#882): planning copy, preview title, failure hints ---
+# --- The Detour flow: planning copy, preview title, failure hints ---
 [detour]
 title = "DÉTOUR"
 planning = "Calcul du détour..."
@@ -583,7 +583,7 @@ battery = "Batterie"
 show_route = "Voir la route"
 loading_day = "Chargement..."
 
-# --- System settings screen (epic #615 S5, #620) ---
+# --- System settings screen ---
 [system]
 title = "SYSTÈME"
 units = "Unités"
@@ -592,7 +592,7 @@ language = "Langue"
 update = "Firmware"
 about = "À propos"
 
-# --- About page (issue #1149): the credits + licences surface. Only the section
+# --- About page: the credits + licences surface. Only the section
 # captions are translated; the attribution texts are legal formulas and stay canonical. ---
 [about]
 title = "À PROPOS"

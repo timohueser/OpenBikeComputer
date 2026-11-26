@@ -24,20 +24,20 @@ obc-render = { workspace = true }
 obc-app = { workspace = true }
 # Semantic sensor/input/track/settings ports implemented by the simulator host.
 obc-ports = { workspace = true }
-# The backlight level → duty ladder the board drives (#1558), so the window dims its blit from the
+# The backlight level → duty ladder the board drives, so the window dims its blit from the
 # same table instead of a second curve. Default features only — no embassy reaches the host build.
 obc-platform = { workspace = true }
-# The DFU byte formats (epic #615 S5, #620): the sim stages a synthetic OBCU package with
+# The DFU byte formats: the sim stages a synthetic OBCU package with
 # `obc-dfu`'s encoder and runs the *real* `armer::scan` over it, so the "Install update from card"
 # confirm/progress/error screens render off the same validation the board runs.
 obc-dfu = { workspace = true }
 # The host glue shared with the landing page's wasm host (obc-web-demo): replay stepping, the
 # frame-interleaved NavPlan + its commit tail, the in-memory byte sink.
 obc-host-core = { workspace = true }
-# The board-agnostic self-diffing present core (epic #199 / issue #200): `diff_rows` + `row_hash` +
+# The board-agnostic self-diffing present core: `diff_rows` + `row_hash` +
 # the `spans_missed_changes` oracle. The sim drives the exact same row-diff the device present path
-# adopts in D2, under an exact full-frame diff oracle — so a systematic hash-diff bug fails here in
-# CI. The display seam (frame/presentation contracts + `ls021` rowdiff) lives in obc-display (#807).
+# uses, under an exact full-frame diff oracle — so a systematic hash-diff bug fails here in
+# CI. The display seam (frame/presentation contracts + `ls021` rowdiff) lives in obc-display.
 obc-display = { workspace = true }
 # Shared host GPX replay (the GpxPlayer / BaroSensor the control panel drives) — the same
 # crate the USB feeder (obc-usb-host) uses, so a recorded ride plays back identically here.
