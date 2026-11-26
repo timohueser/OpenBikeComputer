@@ -344,15 +344,26 @@ describe('runs longer than one request', () => {
         expect(bodies(fetch)).toEqual([expect.objectContaining({ points: coordinates.slice(0, 4), turnarounds: [1] })]);
     });
 
-    it('keeps consecutive turnarounds inside the request of an edit', async () => {
+    it('asks only for the legs of a moved visit between visits, and again one leg wider where a turnaround does not meet', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
         vi.stubGlobal('fetch', fetch);
         const cache = new LegCache();
-        const points = run(8);
-        await cache.route(points, [2, 3], 'touring', signal);
-        const edited = points.map((point, i): Coordinate => i === 4 ? [point[0], 48.01] : point);
-        await cache.route(edited, [2, 3], 'touring', signal);
-        expect(bodies(fetch)[1]).toMatchObject({ points: edited.slice(1, 6), turnarounds: [1, 2], start_position: `one:${points[1]}` });
+        const visits = (coordinates: Coordinate[]) => plan(coordinates, Object.fromEntries(coordinates.slice(1, -1).map((_, i) => [i + 1, { kind: 'waypoint' }])));
+        const coordinates = run(14);
+        await calculateLine(visits(coordinates), signal, cache);
+        const moved = (i: number) => coordinates.map((point, k): Coordinate => k === i ? [point[0], 48.01] : point);
+        const line = await calculateLine(visits(moved(6)), signal, cache);
+        expect(bodies(fetch).slice(1)).toEqual([{ points: moved(6).slice(5, 8), profile: 'touring', turnarounds: [1] }]);
+        expect(line.coordinates).toEqual(moved(6));
+        // The service snaps the first point of the next request to another road, so it does not meet the leg before it.
+        fetch.mockImplementationOnce(async (url, init) => {
+            const body = JSON.parse(init.body as string);
+            body.points[0] = [body.points[0][0], 48.001];
+            return routeService('one')(url, { ...init, body: JSON.stringify(body) });
+        });
+        const again = await calculateLine(visits(moved(9)), signal, cache);
+        expect(bodies(fetch).slice(2).map(body => [body.points, body.turnarounds])).toEqual([[moved(9).slice(8, 11), [1]], [moved(9).slice(7, 10), [1]]]);
+        expect(again.coordinates).toEqual(moved(9));
     });
 
     it('keeps each chunk as it arrives; after a failure or an abort, the chunk in flight is kept and no new chunk starts', async () => {
