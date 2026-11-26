@@ -348,8 +348,8 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
         }
     }
     // The metres across and along of the painted label's host lines: a junction's through pair (from its record), a
-    // way's own line (from its nearest segment in the bin), a stop arm's own line in its mouth. Their middles run on
-    // through it. A texel takes the look at its centre.
+    // way's own line or a forecourt's lanes (m_paint_frames, from their nearest segment in the bin), a stop arm's own
+    // line in its mouth. Their middles run on through it. A texel takes the look at its centre.
     out.across = M_FAR;
     let jr = m_junction(block, out.painted);
     let mouth = m_mouth(block, jr, qf, mpu);
@@ -363,13 +363,14 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
         out.along = frame.y;
         out.half = frame.z;
     } else if (out.painted != M_NONE) {
-        let line = mw(m_label(block, out.painted) + 2u);
         let samples = block + mw(block + 7u);
         let lines = block + mw(block + 6u);
         var best = M_FAR;
+        let frames = m_paint_frames(block, out.painted);
         for (var k = 0u; k < n; k++) {
             let s = mw(segs + k);
-            if ((s & 0xffffu) != line) {
+            let line = s & 0xffffu;
+            if (!m_frames(frames, line)) {
                 continue;
             }
             let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (s >> 16u));
@@ -380,8 +381,9 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
             let d = length(qf - a - t * u);
             if (d < best) {
                 best = d;
-                out.across = sign(m_cross(u, qf - a)) * d * mpu;
-                out.along = mix(mf(wa + 3u), mf(wb + 3u), t);
+                let e = m_frame_share(block, frames, line, s >> 16u, a, u, qf);
+                out.across = sign(m_cross(u, qf - a)) * length(qf - a - e * u) * mpu;
+                out.along = mix(mf(wa + 3u), mf(wb + 3u), e);
                 out.half = mix(mf(wa + 2u), mf(wb + 2u), t) * mpu;
             }
         }

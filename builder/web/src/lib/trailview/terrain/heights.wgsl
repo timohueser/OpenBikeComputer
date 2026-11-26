@@ -463,7 +463,13 @@ fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: ve
             near = min(near, dist - half - ln.side);
             least = min(least, dist);
         }
-        if (near >= feather && !kept) {
+        // A forecourt's line (rank 0) ends square on its start, feather included, as heights::present.
+        var behind = false;
+        if ((ln.rank & (H_FLAGS - 1u)) == 0u) {
+            let w0 = block + mw(block + 7u) + M_SAMPLE * ln.first;
+            behind = dot(q - vec2f(mi(w0), mi(w0 + 1u)), h_mitre(block, ln, 0u)) < 0.0;
+        }
+        if ((near >= feather || behind) && !kept) {
             k = end;
             continue;
         }

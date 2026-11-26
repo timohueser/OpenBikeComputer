@@ -150,9 +150,9 @@ fn nearest_way(q: vec2i, mpu: f32) -> vec3f {
     return out;
 }
 
-// Metres across from the middle of `line` (signed by side), along it and its half-width, from its nearest segment in
-// q's bin; across is M_FAR where none lies there.
-fn line_frame(q: vec2i, line: u32, mpu: f32) -> vec3f {
+// Metres across from the middle of the line that frames `label`'s paint (m_paint_frames; signed by side), along it and
+// its half-width, from the nearest such segment in q's bin; across is M_FAR where none lies there.
+fn line_frame(q: vec2i, label: u32, mpu: f32) -> vec3f {
     let block = params.block;
     let segs = m_bin_segments(block, vec2f(q));
     let samples = block + mw(block + 7u);
@@ -160,9 +160,11 @@ fn line_frame(q: vec2i, line: u32, mpu: f32) -> vec3f {
     let qf = vec2f(q);
     var best = M_FAR;
     var out = vec3f(M_FAR, 0.0, FACE_HALF_M);
+    let frames = m_paint_frames(block, label);
     for (var k = 0u; k < segs.y; k++) {
         let s = mw(segs.x + k);
-        if ((s & 0xffffu) != line) {
+        let line = s & 0xffffu;
+        if (!m_frames(frames, line)) {
             continue;
         }
         let wa = samples + M_SAMPLE * (mw(table + M_LINE * line + 2u) + (s >> 16u));
@@ -173,7 +175,8 @@ fn line_frame(q: vec2i, line: u32, mpu: f32) -> vec3f {
         let d = length(qf - a - t * u);
         if (d < best) {
             best = d;
-            out = vec3f(sign(m_cross(u, qf - a)) * d * mpu, mix(mf(wa + 3u), mf(wb + 3u), t), mix(mf(wa + 2u), mf(wb + 2u), t) * mpu);
+            let e = m_frame_share(block, frames, line, s >> 16u, a, u, qf);
+            out = vec3f(sign(m_cross(u, qf - a)) * length(qf - a - e * u) * mpu, mix(mf(wa + 3u), mf(wb + 3u), e), mix(mf(wa + 2u), mf(wb + 2u), t) * mpu);
         }
     }
     return out;
@@ -192,15 +195,15 @@ fn may_pave(label: u32) -> bool {
     return m_paved(params.block, label) || surface_code == S_SHOULDER || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM || surface_code == S_WATER || surface_code == S_SIDEWALK;
 }
 
-// The look and place words of a sidewalk corner on host line `line`: paving, the slab's width there as its half, and
-// its frame: the metres from its kerb (the paved outline's edge: the carriageways that rank before the sidewalks) and
-// the host's metres along.
-fn sidewalk_look(q: vec2i, line: u32, wall: u32, mpu: f32) -> vec2u {
+// The look and place words of a sidewalk corner of `label` on host line `line`: paving, the slab's width there as its
+// half, and its frame: the metres from its kerb (the paved outline's edge: the carriageways that rank before the
+// sidewalks) and the host's metres along.
+fn sidewalk_look(q: vec2i, label: u32, line: u32, wall: u32, mpu: f32) -> vec2u {
     let block = params.block;
     let row = h_walk_row(block, line);
     let w = select(0.0, h_walk_width(block, row, vec2f(q), mpu, false), row != 0u);
     let d = m_outline_metres(block, q, mpu);
-    return vec2u(look_word(MAT_SIDEWALK, 0u, w) | wall, place_word(max(d, 0.0), line_frame(q, line, mpu).y));
+    return vec2u(look_word(MAT_SIDEWALK, 0u, w) | wall, place_word(max(d, 0.0), line_frame(q, label, mpu).y));
 }
 
 // The look word and the place word of a corner with a label. A paved face takes its way's look and a frame:
@@ -229,7 +232,7 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
         return vec2u(look_word(MAT_WATER, 0u, 0.0), 0u);
     }
     if (surface_code == S_SIDEWALK && line != M_NONE) {
-        return sidewalk_look(q, line, wall, mpu);
+        return sidewalk_look(q, label, line, wall, mpu);
     }
     // A shoulder without a line looks like ground; its nearest way decides whether a step beside it is a wall.
     if (line == M_NONE && shoulder) {
@@ -254,7 +257,7 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let jr = m_junction(params.block, label);
     var f: vec3f;
     if (jr == M_NONE) {
-        f = line_frame(q, line, mpu);
+        f = line_frame(q, label, mpu);
     } else {
         // Each soil way keeps its tread through the junction: the nearest of all its arms.
         f = m_junction_frame(params.block, jr, vec2f(q), m_arms_with(jr, select(M_ARM_HOST, 0u, soil)), line, mpu).place;

@@ -156,6 +156,41 @@ fn m_line_finish(block: u32, line: u32) -> u32 {
     return select(mw(block + mw(block + 6u) + M_LINE * line + 1u), 0u, line == M_NONE);
 }
 
+// The lines that frame a label's paint: a forecourt's (its material line has the painter's rank 0) are its host lines,
+// its lanes' ground ways, so their lines run on over it, else its own line; every other label's is its material line.
+struct PaintFrames {
+    lines: vec4u,
+    // A forecourt's lanes run on past their ends: its face can reach past its lanes' ground (a bridge goes on from
+    // there), and their middles run on straight, not round the end.
+    run_on: bool,
+}
+
+fn m_paint_frames(block: u32, id: u32) -> PaintFrames {
+    let lw = m_label(block, id);
+    let material = mw(lw + 2u);
+    if (material == M_NONE || mw(block + mw(block + 6u) + M_LINE * material + 7u) != 0u) {
+        return PaintFrames(vec4u(material), false);
+    }
+    return PaintFrames(vec4u(mw(lw + 4u), mw(lw + 5u), mw(lw + 6u), mw(lw + 7u)), true);
+}
+
+fn m_frames(f: PaintFrames, line: u32) -> bool {
+    return any(f.lines == vec4u(line));
+}
+
+// The share along segment `seg` (from a, by u) of a line of `f`, of the foot of q: on the segment, and past the line's
+// ends where its lines run on.
+fn m_frame_share(block: u32, f: PaintFrames, line: u32, seg: u32, a: vec2f, u: vec2f, q: vec2f) -> f32 {
+    var t = dot(q - a, u) / max(dot(u, u), 1e-9);
+    if (!f.run_on || seg != 0u) {
+        t = max(t, 0.0);
+    }
+    if (!f.run_on || seg + 2u != mw(block + mw(block + 6u) + M_LINE * line + 3u)) {
+        t = min(t, 1.0);
+    }
+    return t;
+}
+
 fn m_extras(block: u32) -> u32 {
     return block + mw(block + 8u);
 }
