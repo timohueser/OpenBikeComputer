@@ -9,10 +9,11 @@ use crate::{Costs, Graph};
 use planner_router::model::{Point, Road, Surface, BIKE, FOOT, PUSH};
 use serde_json::{json, Value};
 
-/// A grid of streets 600 m apart, 10 columns by 3 rows, with the costs of `touring`. Node and
+/// A grid of streets 600 m apart, 10 columns by 4 rows, with the costs of `touring`. Node and
 /// junction `10 × row + column` are the same number. The streets of row 0 have the name `Main`.
 /// The regional cycle route 1 follows row 1. The local cycle route 2 runs from node 0 over row 2
-/// to node 9.
+/// to node 9. The national cycle route 3 follows row 3: there the street from node 33 to node 32
+/// is a one-way for cycling, and `touring` may not use the street between the nodes 34 and 35.
 struct Region {
     graph: Graph,
     topology: Topology,
@@ -39,15 +40,15 @@ fn way(a: u32, b: u32) -> i64 {
 
 fn region() -> Region {
     let mut graph = Graph::default();
-    for node in 0..30 {
+    for node in 0..40 {
         let point = Point { lat: 100_000 + node / 10 * 5_400, lon: 100_000 + node % 10 * 5_400, elevation: 0.0 };
         graph.points.push(point);
         graph.node_ids.push(node.into());
         graph.node_access.push(BIKE | FOOT | PUSH);
     }
     let (mut ways, mut roads) = (Builder::<Ways>::default(), Vec::new());
-    for a in 0..30 {
-        for b in [a + 1, a + 10].into_iter().filter(|&b| b < 30 && (b == a + 10 || b % 10 != 0)) {
+    for a in 0..40 {
+        for b in [a + 1, a + 10].into_iter().filter(|&b| b < 40 && (b == a + 10 || b % 10 != 0)) {
             let name = (b < 10).then_some(("name", "Main"));
             let tags = Tags::from_pairs([("highway", "residential")].into_iter().chain(name));
             ways.push(way(a, b), &[a.into(), b.into()], &tags);
@@ -61,8 +62,8 @@ fn region() -> Region {
                     length_m: shape[0].distance(shape[1]).round() as u32,
                     surface: Surface::Paved,
                     class: 1,
-                    access: BIKE | FOOT | PUSH,
-                    difficulty: 255,
+                    access: if (from, to) == (32, 33) { FOOT | PUSH } else { BIKE | FOOT | PUSH },
+                    difficulty: if (a, b) == (34, 35) { 3 } else { 255 },
                     shape,
                     ..Road::default()
                 });
@@ -77,6 +78,7 @@ fn region() -> Region {
     };
     route(1, "rcn", (10..20).collect());
     route(2, "lcn", [0, 10].into_iter().chain(20..30).chain([19, 9]).collect());
+    route(3, "ncn", (30..40).collect());
     let mut ways = ways.finish().0;
     let node = |id: i64| {
         let point = graph.points.values()[id as usize];
@@ -111,7 +113,16 @@ fn the_signed_share_tells_a_route_that_the_router_follows_from_one_that_it_leave
     // The router takes row 0, so only the two ends of route 2 are near its line.
     assert!(left.measured_m > 7_000.0 && left.near_m < 0.02 * left.measured_m, "{left:?}");
     assert_eq!(left.same_road_m, 0.0);
-    assert_eq!((signed.legs, signed.legs_with_no_split, signed.splits, signed.not_longer), (2, 1, 1, 0));
+    // Route 3 adds two legs with no split.
+    assert_eq!((signed.legs, signed.legs_with_no_split, signed.splits, signed.not_longer), (4, 3, 1, 0));
+}
+
+#[test]
+fn a_signed_line_is_cut_where_the_profile_may_not_ride_and_a_short_piece_is_not_measured() {
+    // The one-way and the closed street cut route 3 into the pieces 30 to 32, 33 to 34 and 35 to
+    // 39. The piece of 600 m is under 1 km.
+    let signed = signed_share(&region().net(), 10_000.0).unwrap();
+    assert_eq!(signed.levels[1].measured_m, 3_600.0);
 }
 
 #[test]
