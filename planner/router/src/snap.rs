@@ -1,8 +1,4 @@
-use crate::{
-    geometry,
-    model::{Point, Road},
-    Error, Result,
-};
+use crate::{geometry, model::Point, Error, Result};
 
 /// The snap radius for a point with no road within `Policy::radius_m`, and for a point whose
 /// nearest road no route reaches. The client shows the gap. Farther away, the nearest road is often
@@ -15,13 +11,8 @@ impl Default for Policy {
     }
 }
 
-/// The candidates among `roads`. `project` gives the attachment to a road within `policy.radius_m`,
-/// or none for a road that is farther or that the profile cannot use.
-pub(crate) fn candidates(
-    roads: impl IntoIterator<Item = u32>,
-    policy: Policy,
-    mut project: impl FnMut(u32) -> Result<Option<Candidate>>,
-) -> Result<Candidates> {
+/// Refuses a policy that the snap does not allow.
+pub(crate) fn check(policy: Policy) -> Result<()> {
     if !policy.ambiguity_m.is_finite()
         || !(0.0..=REACH_M).contains(&policy.ambiguity_m)
         || policy.max_candidates == 0
@@ -29,17 +20,19 @@ pub(crate) fn candidates(
     {
         return Err(Error::InvalidRequest("Invalid snapping policy".into()));
     }
-    let mut found = Vec::new();
-    for id in roads {
-        found.extend(project(id)?);
-    }
+    Ok(())
+}
+
+/// The candidates among the attachments `found`, in any order: the nearest, those within
+/// `policy.ambiguity_m` of it, and at most `policy.max_candidates`.
+pub(crate) fn select(mut found: Vec<Candidate>, policy: Policy) -> Candidates {
     found.sort_by(|a, b| a.snap_distance_m.total_cmp(&b.snap_distance_m).then(a.position.road.cmp(&b.position.road)));
     if let Some(nearest) = found.first().map(|c| c.snap_distance_m) {
         found.retain(|c| c.snap_distance_m <= nearest + policy.ambiguity_m);
     }
     let truncated = found.len() > policy.max_candidates;
     found.truncate(policy.max_candidates);
-    Ok(Candidates { truncated, retained: found })
+    Candidates { truncated, retained: found }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -90,23 +83,23 @@ pub fn window(point: Point, radius: f64) -> std::result::Result<[i32; 4], String
     Ok([point.lon - lon, point.lat - lat, point.lon + lon, point.lat + lat])
 }
 
-/// The attachment of `point` to road `id`, when the road is within `radius_m`.
-pub fn project(id: u32, road: &Road, point: Point, radius_m: f64) -> Option<Candidate> {
+/// The attachment of `point` to road `id` of shape `shape`, when the road is within `radius_m`.
+pub fn project(id: u32, shape: &[Point], point: Point, radius_m: f64) -> Option<Candidate> {
     let mut nearest: Option<(usize, f64, f64)> = None;
-    for (segment, pair) in road.shape.windows(2).enumerate() {
+    for (segment, pair) in shape.windows(2).enumerate() {
         let (t, distance) = geometry::project(point, pair[0], pair[1]);
         if nearest.is_none_or(|(.., best)| distance < best) {
             nearest = Some((segment, t, distance));
         }
     }
     let (segment, t, _) = nearest?;
-    let (a, b) = (road.shape[segment], road.shape[segment + 1]);
+    let (a, b) = (shape[segment], shape[segment + 1]);
     let projected = geometry::lerp(a, b, t);
     let snap_distance_m = point.distance(projected);
     if snap_distance_m > radius_m {
         return None;
     }
-    let lengths = road.shape.windows(2).map(|p| p[0].distance(p[1]));
+    let lengths = shape.windows(2).map(|p| p[0].distance(p[1]));
     let before: f64 = lengths.clone().take(segment).sum();
     let total: f64 = lengths.sum();
     if total <= 0.0 {
