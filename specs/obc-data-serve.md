@@ -65,8 +65,9 @@ When the serving release and the rollback fail one after the other, clients keep
 `release.json` no longer names, and the services of its planner release keep answering. Serve
 then writes a warning: an update can delete the files of that release.
 
-The services of a planner release read its files under `routing/`, `search/` and `offline/` in
-its install, `<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json`, which the list
+The install of a planner release, `<store>/serve/<target>/<planner id>/`, holds its files under
+`search/` and `offline/`, and its routing cells in `route-cells/`. The routing service reads `route-cells/` of the install, the
+search service `search/` and the downloads service `offline/`. The document `releases/<planner id>/release.json`, which the list
 of the named files names, lists them: format 1 in `files`; format 2 in the step indexes whose `folders` hold
 one of those folders, and in `files`. Serve downloads those indexes as objects after the document,
 checks their size and SHA-256, and keeps them with the files. Each file comes from an object of the store of serve, which downloads
@@ -75,14 +76,15 @@ to an `identity` object, or the decoded bytes of a `gzip` object under a tempora
 opens an existing file. Each file must have the SHA-256 and the size that the planner release
 gives. After the files, the install gets the document as `release.json`, the data of the file
 system goes to the disk, and the install writes the marker `installed` last, which holds the
-planner release id. Only a folder whose marker names it is an install; a fetch deletes the content
-of a folder without one first. The services read the region of the release from `release.json`.
+planner release id. Only a folder whose marker names it is an install; a fetch first deletes the
+content of a folder without one, except `route-cells/`. The services read the region of the release from `release.json`.
 When serve stops, it ends each download at its next read and each install between two files, and
 waits for them within the 10 seconds of its grace; a wait before a retry, a connection or a hash
 does not see the stop.
 
-A planner release whose files hold `routing/directory.bin` has a routing package of format 10
-([the route package contract](route-package.md)). Its files `routing/directory.bin`,
+A planner release has a routing package of format 10
+([the route package contract](route-package.md)). A fetch of a release without
+`routing/directory.bin` and `routing/package.json` fails. Its files `routing/directory.bin`,
 `routing/package.json` and `routing/objects/*` do not go into `routing/`. After the other files,
 the routing program installs all cells and all profile groups of the package in the folder
 `route-cells/` of the install:
@@ -138,8 +140,8 @@ Two limits keep one service that grows from taking the memory of the unit from i
   the service: `ROUTE_WORKERS`, else one for each CPU of the process. The limit counts private
   writable memory, not the read-only maps of the files.
 
-The kernel limits the maps of each process with `vm.max_map_count`. The VPS sets it to 1,048,576
-(`tools/vps/obc-data.sysctl`). An install with more files than
+The kernel limits the maps of each process with `vm.max_map_count`. The deploy sets it to the value
+of `tools/vps/obc-data.sysctl`. An install with more files than
 the limit allows does not start its routing service. The reason of a failed service ends with the
 last line of its standard error, unless a signal ended it, so the release fails with the message
 of the routing service.
@@ -173,7 +175,7 @@ commands in a row: the login, the configuration of `ssh` and the host key.
 | Action | Checks |
 | --- | --- |
 | Publish: an update of `prod` and `r2 legacy` | The `OBC_R2_*` variables; rclone on PATH |
-| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust, uv and the uv Python of `.python-version` of that user, a C compiler, Node of the `[target]` of `data/planner-runtime.toml`, the enabled unit, and `vm.max_map_count` of at least 1,048,576. The deploy installs the unit and the limit of memory maps of its commit. The Caddy route of the API is a check that the deploy does not wait for. `tools/vps/`, `data/planner-runtime.toml` and `.python-version` have no change that the commit does not hold |
+| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust, uv and the uv Python of `.python-version` of that user, a C compiler, Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The deploy installs the unit and the limit of memory maps of its commit, and applies the limit when the kernel has a lower one. The Caddy route of the API is a check that the deploy does not wait for. `tools/vps/`, `data/planner-runtime.toml` and `.python-version` have no change that the commit does not hold |
 | `deploy tiles` | The two variables; the token may list the Workers of the account; `planner/tiles` has no change that the commit does not hold |
 | Both | The commit of the checkout is on `origin/develop` after a fetch. An older commit of develop serves to go back |
 

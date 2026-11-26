@@ -160,7 +160,6 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
     let previous = previous.map(|release| release.load(in_store(store)).and_then(|lists| descriptor(&lists, store)));
     let previous = previous.transpose()?.map(|(_, files)| files);
     let changed = |name: &str| previous.as_ref().is_none_or(|old| old.get(name) != files.get(name));
-    let routing_changed = files.keys().any(|name| name.starts_with("routing/") && changed(name));
     let owned = lists.objects();
     let mut paths = BTreeMap::new();
     for (name, file) in &files {
@@ -172,7 +171,7 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
         {
             return Err(format!("planner file `{name}` is not a client object of this release"));
         }
-        if changed(name) || name.ends_with(".json") || routing_changed && name.starts_with("routing/") {
+        if changed(name) || name.ends_with(".json") {
             let file =
                 LayerFile { path: format!("objects/{}", stored.sha256), size: stored.bytes, sha256: stored.sha256 };
             paths.insert(file.path.clone(), checked(store, &file)?);

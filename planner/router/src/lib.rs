@@ -33,13 +33,13 @@ pub fn open(path: &Path, silent: bool) -> Result<region::Region<host::Maps>> {
         std::fs::read(&path).map_err(|e| Error::InvalidData(format!("{}: {e}", path.display())))
     };
     let (directory, info, marker) = (read("directory.bin")?, read("package.json")?, read(install::MARKER)?);
-    let maps = host::Maps::new(path, &directory)?;
+    let maps = host::Maps::new(path, &directory, &marker)?;
     region::Region::open(if silent { maps.silent() } else { maps }, directory, info, &marker)
 }
 
-/// A request that exceeds a fixed limit, and fails again on an idle service with the same data,
-/// gives `Limit`. A request that fails for memory that other requests hold, or for an allocation
-/// that fails, gives `Memory`: a retry can succeed.
+/// A request that exceeds a fixed limit, such as the search limit of the worker, gives `Limit`: it
+/// fails again with the same data. A request for which the system refuses memory, a map or a file
+/// handle gives `Memory`: a retry can succeed.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Invalid request: {0}")]

@@ -206,9 +206,7 @@ def verify(source):
     files = {**files, **document['files']}
     previous = json.loads((source / 'previous.json').read_bytes())['files'] if (source / 'previous.json').exists() else None
     changed = lambda name: previous is None or previous.get(name) != files[name]
-    routing_changed = any(changed(name) for name in files if name.startswith('routing/'))
-    selected = {name: entry for name, entry in files.items()
-                if changed(name) or name.endswith('.json') or routing_changed and name.startswith('routing/')}
+    selected = {name: entry for name, entry in files.items() if changed(name) or name.endswith('.json')}
     if any(name.startswith('maps/tiles/') and name.endswith('.pmtiles') and entry['bytes'] > grid_maps.PACK_BYTES
            for name, entry in files.items()):
         raise ValueError(f'A map pack is larger than {grid_maps.PACK_BYTES} bytes')

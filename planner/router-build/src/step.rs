@@ -141,7 +141,7 @@ pub fn source(request: &Request) -> Result<(), String> {
 /// (`partition::check_sizes`). The layer `roads/` holds the junctions and the roads in their final
 /// order, the roads with their heights, the cells (`partition::Cells`), the forbidden turns, the
 /// closure sets with those of the roads, the topology (`first`, `head`), and `roads.json`: the
-/// warnings of the manifest and the identities of its inputs, the OSM files and then the terrain.
+/// warnings of `package.json` and the identities of its inputs, the OSM files and then the terrain.
 pub fn roads(request: &Request) -> Result<(), String> {
     let sizes = cell_sizes(&request.options)?;
     let _guard = start()?;

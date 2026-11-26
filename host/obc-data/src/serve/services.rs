@@ -1,7 +1,7 @@
 //! The services of a planner release: routing, search and downloads, as processes on this machine
 //! that read the files of the release.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -297,7 +297,7 @@ pub fn prune(store: &Store, target: &Target, work: &Path, wanted: &[&Served]) ->
         let mut objects = objects(store, served)?;
         if installed(&work.join(&served.planner)) {
             let runtime = runtime(store, &read(store, &served.document)?)?;
-            let decoded: Vec<String> = (runtime.into_iter())
+            let decoded: HashSet<String> = (runtime.into_iter())
                 .filter(|(name, entry)| entry.transport.encoding != "identity" || cells(name))
                 .map(|(_, entry)| entry.transport.sha256)
                 .collect();

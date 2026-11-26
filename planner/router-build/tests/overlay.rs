@@ -433,15 +433,8 @@ fn the_search_gives_the_least_cost_and_candidates_on_random_graphs() {
                         _ => u64::MAX,
                     };
                     let expected = oracle(arcs, &starts, &ends, ceiling);
-                    let query = Query {
-                        starts: &starts,
-                        ends: &ends,
-                        ceiling,
-                        max_steps: usize::MAX,
-                        heap_bytes: usize::MAX,
-                        heap_limit: usize::MAX,
-                        cancelled: &|| false,
-                    };
+                    let query =
+                        Query { starts: &starts, ends: &ends, ceiling, max_steps: usize::MAX, cancelled: &|| false };
                     let found = data.region.search(name, query).unwrap();
                     let context = format!("graph {graphs}, install {kind}, {name}, call {call}");
                     let triple = found.as_ref().map(|f| (f.cost, ends[f.target].choice, starts[f.source].choice));

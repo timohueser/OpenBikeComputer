@@ -21,7 +21,7 @@ pub fn partition_key(from: u32, to: u32, partition: &Partition) -> u64 {
 }
 
 /// `key(from, to)` of each road of `ends`, in emit order.
-pub fn keys(ends: &Column<(u32, u32)>, key: impl Fn(u32, u32) -> Result<u64, String>) -> Result<Column<u64>, String> {
+pub fn keys(ends: &Column<(u32, u32)>, key: impl Fn(u32, u32) -> u64) -> Column<u64> {
     ends.values().iter().map(|&(from, to)| key(from, to)).collect()
 }
 
@@ -93,7 +93,7 @@ pub fn order(graph: &mut Graph, sizes: &[u32], terrain: Option<Height>) -> Resul
     let old = std::mem::take(&mut graph.roads);
     let ends = (0..old.len()).map(|road| (old.from(road), old.to(road))).collect();
     let partition = partition::partition(&graph.points, &ends, sizes)?;
-    let keys = keys(&ends, |from, to| Ok(partition_key(from, to, &partition)))?;
+    let keys = keys(&ends, |from, to| partition_key(from, to, &partition));
     let points = old.shapes.values().len() as u64;
     let mut buckets = Buckets::new(bounds(&keys, bucket_count(old.len() as u64, points)?));
     let rank = partition.rank.values();

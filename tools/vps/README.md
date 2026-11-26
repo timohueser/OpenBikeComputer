@@ -10,8 +10,8 @@ folder: `obc data update prod` publishes it.
 `obc data deploy`, and Services on the prod screen of `obc data ui`, check the one-time setup over
 SSH and print each missing step with its command: the user `obc-data`, `/opt/obc-data`, Rust,
 uv and the uv Python of [`.python-version`](../../.python-version) of that user, `build-essential`,
-Node of [`data/planner-runtime.toml`](../../data/planner-runtime.toml), the unit, the limit of
-memory maps, and after the first deploy the Caddy route. The site block imports `/etc/caddy/planner/*.caddy`.
+Node of [`data/planner-runtime.toml`](../../data/planner-runtime.toml), the unit, and after the
+first deploy the Caddy route. The site block imports `/etc/caddy/planner/*.caddy`.
 
 The machine of the page logs in as root with an SSH key, without a prompt. The screen shows the
 line of its public key to add on the VPS, and the fingerprint of the host key to compare with the
@@ -62,7 +62,14 @@ tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
   /opt/obc-data/current/target/release/planner-service ROUTE_CELLS --scrub
   ```
 
-  `ROUTE_CELLS` is the folder of the installed routing cells of the release.
+  `ROUTE_CELLS` is `route-cells/` of the install of the release,
+  `/var/lib/obc-data/store/serve/prod/<planner id>/route-cells`. To repair the install, delete each
+  file that the command names from `ROUTE_CELLS/cells/`, delete the marker `installed` of the
+  install, and restart the follower: `systemctl restart obc-data-serve`. The next fetch downloads
+  the objects of the routing package again, because the store deletes them after an install, and
+  writes only the deleted files. The disk needs room for these objects. Until the install ends,
+  the release does not serve: routing, search and downloads answer 503. For a large routing
+  package, this can take hours.
 - `/planner-api/version` gives the commit of the build, the layer formats that its services read
   and the format of the release manifest that it reads.
 

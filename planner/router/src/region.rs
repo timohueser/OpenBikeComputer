@@ -458,14 +458,12 @@ impl<H: Host> Region<H> {
 
     pub fn search(&mut self, metric: &str, query: Query<'_>) -> Result<Option<Found>> {
         let installed = self.shared.installed(metric)?;
-        let limit = self.limit.min(query.heap_bytes);
-        overlay::search(&self.shared, &mut self.workspace, installed, query, limit)
+        overlay::search(&self.shared, &mut self.workspace, installed, query, self.limit)
     }
 
     pub fn unpack(&mut self, metric: &str, legs: &[&Found], control: &Control<'_>) -> Result<Vec<Vec<u32>>> {
         let installed = self.shared.installed(metric)?;
-        let limit = self.limit.min(control.max_heap_bytes);
-        overlay::unpack(&self.shared, &mut self.workspace, installed, legs, control, limit)
+        overlay::unpack(&self.shared, &mut self.workspace, installed, legs, control, self.limit)
     }
 }
 

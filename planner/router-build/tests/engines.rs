@@ -6,6 +6,7 @@ use planner_router::compare::{self, Outcome};
 use planner_router::host::{self, Part};
 use planner_router::install;
 use planner_router::model::{Point, Profile, Road, Surface, BIKE, FOOT, PUSH};
+use planner_router::overlay::{Query, Seed};
 use planner_router::region::{Endpoint, Region};
 use planner_router::snap::{self, Candidates, Policy, REACH_M};
 use planner_router::{Control, Error, Request, Route, Router};
@@ -13,6 +14,7 @@ use planner_router_build::cells::{write, Info, Input};
 use planner_router_build::source::{Builder, Tags, Ways};
 use planner_router_build::tables::Tables;
 use planner_router_build::{base, Graph, Turn};
+use std::cell::Cell;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
@@ -146,7 +148,7 @@ impl Drop for Scratch {
 }
 
 /// One bake of `town()`: the package with its cost tables in `objects`, and the package with each
-/// cell open (#3301 rule 3) in `open`, as objects that `install` reads.
+/// cell open (reader rule 3 of specs/route-package.md) in `open`, as objects that `install` reads.
 const SIZES: [u32; 3] = [8, 32, 128];
 
 struct Bake {
@@ -511,6 +513,52 @@ fn only_the_chosen_legs_are_unpacked() {
     for control in [Control { max_roads: 1, ..Control::default() }, Control { max_steps: 1, ..Control::default() }] {
         assert!(matches!(router.route(&request, &control), Err(Error::Limit)));
     }
+    // So does the space of one search.
+    let mut region = bake.region(None);
+    region.set_search_limit(stats.peak_bytes / 2);
+    assert!(matches!(Router::new(region).route(&request, &Control::default()), Err(Error::Limit)));
+}
+
+#[test]
+fn a_cancellation_stops_a_search_and_an_unpacking_midway() {
+    let bake = bake("cancel");
+    let points = bake.graph.points.values();
+    let junction = |k: usize| [points[k].lon as f64 * 1e-6, points[k].lat as f64 * 1e-6];
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "points": [junction(0), junction(points.len() - 1)], "profile": "touring",
+    }))
+    .unwrap();
+    let route = Router::new(bake.memory("objects")).route(&request, &Control::default()).unwrap();
+    let seed = |node, cost| [Seed { node, cost, choice: 0 }];
+    // The cost of the end seed makes the search one-sided: the start side settles each road that
+    // is nearer than the end.
+    let (starts, ends) =
+        (seed(route.pieces().next().unwrap().road, 0), seed(route.pieces().last().unwrap().road, 1 << 40));
+    // Counts its calls and cancels each call after the first `stop`.
+    let (calls, stop) = (Cell::new(0), Cell::new(usize::MAX));
+    let cancelled = || {
+        calls.set(calls.get() + 1);
+        calls.get() > stop.get()
+    };
+    let rerun = |at: usize| (stop.set(at), calls.set(0));
+    let query = Query { starts: &starts, ends: &ends, ceiling: u64::MAX, max_steps: usize::MAX, cancelled: &cancelled };
+    // Each cell of the open package is open, so its search settles more than 1024 labels and polls
+    // again after them.
+    let mut open = bake.memory("open");
+    open.search("touring", query).unwrap().unwrap();
+    assert!(calls.get() > 1, "{} calls", calls.get());
+    rerun(calls.get() - 1);
+    assert!(matches!(open.search("touring", query), Err(Error::Cancelled)));
+    // The unpacking polls at each step of a cost table.
+    let mut region = bake.memory("objects");
+    rerun(usize::MAX);
+    let found = region.search("touring", query).unwrap().unwrap();
+    let control = Control { cancelled: &cancelled, ..Control::default() };
+    rerun(usize::MAX);
+    region.unpack("touring", &[&found], &control).unwrap();
+    assert!(calls.get() > 1, "{} calls", calls.get());
+    rerun(calls.get() - 1);
+    assert!(matches!(region.unpack("touring", &[&found], &control), Err(Error::Cancelled)));
 }
 
 #[test]

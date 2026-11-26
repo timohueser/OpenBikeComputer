@@ -95,5 +95,5 @@ snapped in, up to 4 MiB. One larger cell stays alone.
 
 The router retains 32 snap results. Default request limits are 64 points,
 8,192 batched attachment queries, and 250,000 each for the steps of one search path, the roads of
-the chosen legs of a route and the points of an answer. `Control` can lower these limits, cap the
-search queues and supply a cancellation callback. These are service budgets.
+the chosen legs of a route and the points of an answer. `Control` can lower these limits and supply a
+cancellation callback. These are service budgets.
