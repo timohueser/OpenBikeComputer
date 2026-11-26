@@ -67,7 +67,9 @@ tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
   file that the command names from `ROUTE_CELLS/cells/`, delete the marker `installed` of the
   install, and restart the follower: `systemctl restart obc-data-serve`. The next fetch downloads
   the objects of the routing package again, because the store deletes them after an install, and
-  writes only the deleted files. The disk needs room for these objects.
+  writes only the deleted files. The disk needs room for these objects. Until the install ends,
+  the release does not serve: routing, search and downloads answer 503. For a large routing
+  package, this can take hours.
 - `/planner-api/version` gives the commit of the build, the layer formats that its services read
   and the format of the release manifest that it reads.
 

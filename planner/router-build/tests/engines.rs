@@ -148,7 +148,7 @@ impl Drop for Scratch {
 }
 
 /// One bake of `town()`: the package with its cost tables in `objects`, and the package with each
-/// cell open (#3301 rule 3) in `open`, as objects that `install` reads.
+/// cell open (reader rule 3 of specs/route-package.md) in `open`, as objects that `install` reads.
 const SIZES: [u32; 3] = [8, 32, 128];
 
 struct Bake {

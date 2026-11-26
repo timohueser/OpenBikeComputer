@@ -66,7 +66,7 @@ When the serving release and the rollback fail one after the other, clients keep
 then writes a warning: an update can delete the files of that release.
 
 The install of a planner release, `<store>/serve/<target>/<planner id>/`, holds its files under
-`routing/`, `search/` and `offline/`. The routing service reads `route-cells/` of the install, the
+`search/` and `offline/`, and its routing cells in `route-cells/`. The routing service reads `route-cells/` of the install, the
 search service `search/` and the downloads service `offline/`. The document `releases/<planner id>/release.json`, which the list
 of the named files names, lists them: format 1 in `files`; format 2 in the step indexes whose `folders` hold
 one of those folders, and in `files`. Serve downloads those indexes as objects after the document,
