@@ -28,7 +28,7 @@ describe('plan file', () => {
         const file = JSON.parse(exportPlan(newPlan(testTrip(), 'Valid')));
         for (const invalid of [null, {}, { ...file, version: 99 }, { ...file, trip: {} },
             { ...file, trip: { ...file.trip, startDate: '2026-02-30' } },
-            { ...file, trip: { ...file.trip, points: [{ ...file.trip.points[0], anchor: [999, 0] }, file.trip.points[1]] } }]) {
+            { ...file, trip: { ...file.trip, points: [{ ...file.trip.points[0], coordinate: [999, 0] }, file.trip.points[1]] } }]) {
             expect(() => importPlan(JSON.stringify(invalid))).toThrow();
         }
         expect(() => importPlan('{')).toThrow();

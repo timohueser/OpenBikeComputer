@@ -16,7 +16,7 @@ export type LegMode = 'routed' | 'straight' | 'drawn';
 /** A kind of place to sleep. */
 export type Stay = 'camp' | 'hut' | 'hostel' | 'hotel' | 'shelter';
 export const allStay: Stay[] = ['camp', 'hut', 'hostel', 'hotel', 'shelter'];
-export type PointKind = 'start' | 'finish' | 'pass' | 'via' | 'waypoint' | 'detour' | 'night' | 'marker' | 'place';
+export type PointKind = 'start' | 'finish' | 'pass' | 'via' | 'waypoint' | 'night' | 'marker' | 'place';
 export interface RoutePoint {
     placeKind?: string;
     /** The search id of the mapped place the point was made from, such as `n123`; the point shows that place's details. */
@@ -36,8 +36,6 @@ export interface RoutePoint {
     /** Inner path of a drawn leg. The leg always joins its two points; moving a point routes its drawn legs again (`routeLegsAround`).
      * An imported line also repeats both points with their elevations, so the leg has a height at each end. */
     drawn?: DrawnCoordinate[];
-    /** A visit-and-return rejoins this exact position on the planned line. */
-    anchor?: Coordinate;
     /** The route turns back at this point. On the start of a loop, it counts once the start moves (`startLoopHere`). */
     turnaround?: true;
     /** A line about the place, such as a route file's waypoint description. */
@@ -158,7 +156,7 @@ export function removeRoutePoint(trip: Trip, id: string, placeName?: (coordinate
         label: p.kind === 'via' ? placeName?.(p.coordinate) ?? (removed.kind === 'start' ? startLabel : 'Finish') : p.label,
         // An endpoint with a name of its own, such as a visit's address, is no longer the planner's to replace.
         autoLabel: p.kind === 'via' || p.label === (removed.kind === 'start' ? startLabel : 'Finish') ? p.autoLabel : undefined,
-        night: undefined, anchor: undefined,
+        night: undefined,
         leg: removed.kind === 'start' ? undefined : p.leg, drawn: removed.kind === 'start' ? undefined : p.drawn,
     });
     const next: Trip = { ...trip, points, splits: undefined,
@@ -385,7 +383,7 @@ export function provisionalDays(trip: Trip, line: RoutingLine | undefined, night
 }
 
 /** The kinds of the points that `dayStops` lists. */
-export const stopKinds: PointKind[] = ['pass', 'waypoint', 'detour', 'marker'];
+export const stopKinds: PointKind[] = ['pass', 'waypoint', 'marker'];
 
 /** Stops inside a day in route order, with kilometres from the day start. */
 export function dayStops(trip: Trip, line: RoutingLine | undefined, day: Pick<Day, 'from' | 'to'>): { point: RoutePoint; km: number }[] {
@@ -646,12 +644,11 @@ export function thereAndBack(trip: Trip): Trip {
     if (!hasEndpoints(trip) || isThereAndBack(trip) || far.kind === 'start') return trip;
     // A point holds the leg that ends at it, so a point of the way back takes the leg of the point after it on the way out.
     const mirrored = (i: number) => ({ leg: route[i + 1].leg, drawn: route[i + 1].drawn?.slice().reverse() });
-    // The way back passes the anchor of a visit-and-return, not its place.
     const back = route.slice(1, -1).map((p, i): RoutePoint => ({ id: crypto.randomUUID(), kind: 'via', label: shapeLabel,
-        coordinate: [...p.anchor ?? p.coordinate], ...p.turnaround && { turnaround: true as const }, ...mirrored(i + 1) })).reverse();
-    // A loop has no finish, and a visit-and-return has a turn of its own at its place: both become a visit.
+        coordinate: [...p.coordinate], ...p.turnaround && { turnaround: true as const }, ...mirrored(i + 1) })).reverse();
+    // A loop has no finish: it becomes a visit.
     const turn = (p: RoutePoint): RoutePoint => p === far
-        ? { ...p, turnaround: true, ...(p.kind === 'finish' || p.kind === 'detour') && { kind: 'waypoint' as const, anchor: undefined } }
+        ? { ...p, turnaround: true, ...p.kind === 'finish' && { kind: 'waypoint' as const } }
         : p.kind === 'start' ? { ...p, turnaround: true, ...mirrored(0) } : p;
     return { ...trip, loop: true, splits: undefined, points: [...trip.points.map(turn), ...back],
         routeOrder: [...route.slice(1), ...back].map(p => p.id) };
@@ -664,7 +661,7 @@ export function oneWay(trip: Trip): Trip {
     // The way back repeats each turn of the way out, so the far point is the middle turn.
     const turns = route.flatMap((p, i) => i && p.turnaround ? [i] : []), at = turns[turns.length >> 1], far = route[at];
     const gone = new Set(route.slice(at + 1).map(p => p.id));
-    const finish: RoutePoint = { ...far, kind: 'finish', turnaround: undefined, anchor: undefined,
+    const finish: RoutePoint = { ...far, kind: 'finish', turnaround: undefined,
         // `night-N` names a night, and a shaping point has no name of its own.
         ...far.kind === 'night' && { id: crypto.randomUUID(), night: undefined },
         ...far.kind === 'via' && { label: endpointLabel('finish'), autoLabel: true } };
@@ -695,7 +692,7 @@ function startLoopAt(trip: Trip, id: string): Trip {
     const old = route[0];
     const unnamed = old.autoLabel || old.label === startLabel || old.label === shapeLabel;
     return { ...trip, splits: undefined, routeOrder: [...route.slice(index + 1), old, ...route.slice(1, index)].map(p => p.id),
-        points: trip.points.map(p => p.id === id ? { ...p, kind: 'start' as const, anchor: undefined }
+        points: trip.points.map(p => p.id === id ? { ...p, kind: 'start' as const }
             : p.id === old.id ? { ...p, kind: unnamed ? 'via' as const : 'waypoint' as const } : p) };
 }
 

@@ -6,7 +6,7 @@ export interface MapPoint {
     id: string;
     coordinate: Coordinate;
     label: string;
-    kind: "start" | "finish" | "via" | "night" | "place" | "waypoint" | "detour" | "pass" | "marker" | "dayend";
+    kind: "start" | "finish" | "via" | "night" | "place" | "waypoint" | "pass" | "marker" | "dayend";
     /** A `suggested` pin is not part of the route yet; a `moved` day end was dragged by the rider. */
     appearance?: "suggested" | "moved" | "option";
     /** The place category a `place` or `night` pin shows. */

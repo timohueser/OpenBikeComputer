@@ -417,7 +417,7 @@ describe('route endpoints', () => {
         expect(orderedRoutePoints(noFinish).at(-1)).toMatchObject({ id: 'v2', kind: 'finish', label: 'Finish' });
     });
 
-    it('clears overnight and detour semantics when promoting endpoints, and replaces an endpoint in place', () => {
+    it('clears overnight semantics when promoting endpoints, and replaces an endpoint in place', () => {
         const trip = pinNight(testTrip(), undefined, 1, along(.2), 'Camp');
         const next = removeRoutePoint(trip, 'start');
         const start = next.points.find(p => p.kind === 'start')!;

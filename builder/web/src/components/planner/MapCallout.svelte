@@ -53,7 +53,7 @@
         onStay: (ridingDay: number) => void;
         onAddVisit: (place: Place) => void;
         onRename: (label: string) => void;
-        onKind: (kind: EditableKind | 'detour') => void;
+        onKind: (kind: EditableKind) => void;
         onRemove: () => void;
         /** Extra details over the actions of an add callout, such as a data layer at this spot. */
         extra?: Snippet;
@@ -253,7 +253,6 @@
                 </div>
             {/if}
         {:else if kind === 'point' && point}
-            {@const current = point.kind === 'detour' ? 'waypoint' : point.kind}
             {@const typed = hasEndpoints && point.kind !== 'start' && point.kind !== 'finish'}
             {#if place}
                 <PlaceDetails {place} {title} error={detailsError} />
@@ -269,13 +268,13 @@
                 </div>
             {/if}
             <div class="dock">
-                {#if typed}{@render says(hint, { text: types.find(type => type.value === current)?.note ?? '' })}{/if}
+                {#if typed}{@render says(hint, { text: types.find(type => type.value === point.kind)?.note ?? '' })}{/if}
                 <div class="split">
                     {#if typed}
                         <div class="track" role="radiogroup" aria-label="Point type" style:--n={types.length}>
                             {#each types as type, i (type.value)}
-                                <button type="button" class="tile" role="radio" aria-checked={current === type.value} tabindex={current === type.value || (i === 0 && !types.some(t => t.value === current)) ? 0 : -1}
-                                    data-hint={type.note} data-aim={current === type.value ? '' : undefined}
+                                <button type="button" class="tile" role="radio" aria-checked={point.kind === type.value} tabindex={point.kind === type.value || (i === 0 && !types.some(t => t.value === point.kind)) ? 0 : -1}
+                                    data-hint={type.note} data-aim={point.kind === type.value ? '' : undefined}
                                     onclick={() => onKind(type.value)} onkeydown={(event) => radioKey(event, i, types.length, next => onKind(types[next].value))}>
                                     <Icon name={type.icon} size={21} />{type.label}
                                 </button>
