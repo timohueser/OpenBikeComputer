@@ -215,6 +215,24 @@ fn each_rung_gives_its_kinds_in_the_order_of_the_rungs() {
 }
 
 #[test]
+fn a_front_is_clear_unless_a_way_on_top_lies_on_it() {
+    // A footway 6 m long under a road on top: the road's core lies on both frame lines.
+    let fronts = |p: &Placed| records(p, "tunnel-end").iter().map(|t| t["front"].clone()).collect::<Vec<_>>();
+    let mut case = Case::default();
+    case.tunnel(&FOOT, (0.0, 6.0), 0.0);
+    let road = tags(&[("highway", "residential")]);
+    case.ways.push(("road", road.clone(), vec![part(&[[3.0, -50.0], [3.0, 50.0]], &[503.5; 2])]));
+    let placed = case.place(&site(&|_| 500.0, &[3.2], false), &mut Vec::new());
+    assert_eq!((fronts(&placed), placed.metrics["fronts_not_clear"].as_u64()), (vec!["0".to_string(); 2], Some(2)));
+    // A road tunnel under a hill with a road on top in its middle: both fronts are clear.
+    let mut case = Case::default();
+    case.tunnel(&ROAD, (0.0, 200.0), 0.0);
+    case.ways.push(("road", road, vec![part(&[[100.0, -50.0], [100.0, 50.0]], &[600.0; 2])]));
+    let placed = case.place(&site(&ridge(200.0, 1.0), &[], false), &mut Vec::new());
+    assert_eq!((fronts(&placed), placed.metrics["fronts_not_clear"].as_u64()), (vec!["1".to_string(); 2], Some(0)));
+}
+
+#[test]
 fn a_pair_has_one_frame_line_and_a_way_beside_a_wider_one_is_a_lane_of_its_room() {
     use Kind::*;
     // Two road tunnels 20 m apart under one ridge, which rises half as fast over the second; the second starts 3 m
@@ -364,13 +382,19 @@ fn a_chord_of_one_way_is_shorter_than_the_tiles_buffer() {
     assert!(crate::roads::CHORD_M + rules.unwrap().bake.vertex_gap_m < crate::tiles::BUFFER_M);
 }
 
-/// The tube records in metres east, west first: the east of both vertices, their floors and the record's height.
-fn chords(placed: &Placed) -> Vec<([f64; 2], [f64; 2], f64)> {
-    let mut out: Vec<([f64; 2], [f64; 2], f64)> = (placed.features.iter())
+/// A chord record's heights at its two vertices.
+fn heights(tags: &Tags) -> [f64; 2] {
+    let v: Vec<f64> = tags["height"].split(' ').map(|h| h.parse().unwrap()).collect();
+    [v[0], v[v.len() - 1]]
+}
+
+/// The tube records in metres east, west first: the east of both vertices, their floors and their heights.
+fn chords(placed: &Placed) -> Vec<([f64; 2], [f64; 2], [f64; 2])> {
+    let mut out: Vec<([f64; 2], [f64; 2], [f64; 2])> = (placed.features.iter())
         .filter(|f| f.0 == "tunnel-tube")
         .map(|f| {
             let (z, east) = (f.2.z.as_ref().unwrap(), |k: usize| back(f.2.points[k])[0]);
-            ([east(0), east(1)], [z[0], z[1]], f.1["height"].parse().unwrap())
+            ([east(0), east(1)], [z[0], z[1]], heights(&f.1))
         })
         .collect();
     out.sort_by(|x, y| x.0[0].total_cmp(&y.0[0]));
@@ -391,7 +415,7 @@ fn under(points: &[[f64; 2]], top: f64, deck: Option<f64>) -> Placed {
 }
 
 /// The floor of the tube records at metres east.
-fn floor_at(chords: &[([f64; 2], [f64; 2], f64)], e: f64) -> f64 {
+fn floor_at(chords: &[([f64; 2], [f64; 2], [f64; 2])], e: f64) -> f64 {
     let c = chords.iter().find(|c| c.0[0] <= e && e <= c.0[1]).unwrap();
     c.1[0] + (e - c.0[0]) / (c.0[1] - c.0[0]) * (c.1[1] - c.1[0])
 }
@@ -413,7 +437,7 @@ fn the_floor_keeps_the_crown_a_slab_under_a_way_on_top_within_the_grade_and_the_
     }
     assert!(floor_at(&chords, 100.0 - reach - 1.0) > 498.0 && floor_at(&chords, 100.0 + reach + 1.0) > 498.0);
     assert!(chords.iter().all(|c| (c.1[1] - c.1[0]).abs() <= 0.2 * (c.0[1] - c.0[0]) + 1e-9), "{chords:?}");
-    assert!(chords.iter().all(|c| c.2 == 5.0));
+    assert!(chords.iter().all(|c| c.2 == [5.0, 5.0]));
     let (first, last) = (chords[0], chords[chords.len() - 1]);
     assert_eq!((first.0[0], first.1[0], last.1[1]), (0.0, 500.0, 500.0));
     assert!(placed.features.iter().filter(|f| f.0 == "tunnel-end").all(|f| f.2.z.as_ref().unwrap()[0] == 500.0));
@@ -475,7 +499,7 @@ fn a_way_half_a_metre_beside_the_reach_cuts_nothing() {
     let chords = chords(&placed);
     assert!((floor_at(&chords, 141.4) - 498.0).abs() < 0.5, "{}", floor_at(&chords, 141.4));
     assert!([60.0, 80.0, 100.0, 110.0].iter().all(|&e| floor_at(&chords, e) == 500.0), "{chords:?}");
-    assert!(chords.iter().filter(|c| c.0[1] <= 118.0).all(|c| c.2 == 5.0));
+    assert!(chords.iter().filter(|c| c.0[1] <= 118.0).all(|c| c.2 == [5.0, 5.0]));
 }
 
 #[test]
@@ -485,8 +509,16 @@ fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height
     let near = [[3.0, -50.0], [3.0, 50.0]];
     let placed = under(&near, 505.5, None);
     let low = chords(&placed);
-    assert_eq!((low[0].1[0], low[0].2), (500.0, 4.5));
-    assert!(low.iter().all(|c| c.2 >= 4.5));
+    assert_eq!((low[0].1[0], low[0].2[0]), (500.0, 4.5));
+    // The roof follows the floor: two chords that share a vertex have one roof there.
+    for w in low.windows(2).filter(|w| w[0].0[1] == w[1].0[0]) {
+        assert!(
+            (w[0].1[1] + w[0].2[1] - w[1].1[0] - w[1].2[0]).abs() < 1e-9,
+            "a roof step at {} m: {low:?}",
+            w[0].0[1]
+        );
+    }
+    assert!(low.iter().all(|c| c.2[0] >= 4.5 && c.2[1] >= 4.5));
     let mut heights: Vec<&str> = records(&placed, "tunnel-end").iter().map(|t| t["height"].as_str()).collect();
     heights.sort_unstable();
     assert_eq!(heights, ["4.5", "5"], "the opening near the road takes the height of its first chord");
@@ -495,7 +527,7 @@ fn a_way_on_top_near_an_opening_makes_the_section_lower_down_to_the_least_height
     // At 504 m the section reaches the least height of a road (4 m), and the crown's shell still cuts the road on
     // top: a clash.
     let placed = under(&near, 504.0, None);
-    assert_eq!(chords(&placed)[0].2, 4.0);
+    assert_eq!(chords(&placed)[0].2[0], 4.0);
     assert_eq!(placed.metrics["low_stretches_at_least_height"].as_u64(), Some(1));
     assert_eq!(placed.metrics["floor_clashes"].as_u64(), Some(1));
 }
@@ -507,7 +539,7 @@ fn the_crown_under_a_room_over_it_lies_under_that_rooms_floor_where_it_bends() {
     // Wherever the upper axis lies within the road tunnel's half and shell, the road tunnel's crown lies under the upper
     // underside (its floor less the slab), or the bake counts a tube clash. A tube record: its two points (metres east
     // and north), their floors and its height.
-    type Tube = ([f64; 2], [f64; 2], Vec<f64>, f64);
+    type Tube = ([f64; 2], [f64; 2], Vec<f64>, [f64; 2]);
     let reach = widths().way("tunnel", &tags(&ROAD), false).half_m + 0.6 + 0.5;
     for x in [95.0, 96.5, 104.0, 104.5] {
         let mut case = Case::default();
@@ -520,9 +552,7 @@ fn the_crown_under_a_room_over_it_lies_under_that_rooms_floor_where_it_bends() {
         let tubes = |class: &str| -> Vec<Tube> {
             (placed.features.iter())
                 .filter(|f| f.0 == "tunnel-tube" && f.1["class"] == class)
-                .map(|f| {
-                    (back(f.2.points[0]), back(f.2.points[1]), f.2.z.clone().unwrap(), f.1["height"].parse().unwrap())
-                })
+                .map(|f| (back(f.2.points[0]), back(f.2.points[1]), f.2.z.clone().unwrap(), heights(&f.1)))
                 .collect()
         };
         let (lower, upper) = (tubes("residential"), tubes("footway"));
@@ -538,7 +568,7 @@ fn the_crown_under_a_room_over_it_lies_under_that_rooms_floor_where_it_bends() {
                     ((q[0] - p[0] - t * d[0]).hypot(q[1] - p[1] - t * d[1]), zu[0] + t * (zu[1] - zu[0]) - 0.5)
                 });
                 if let Some((_, under)) = near.min_by(|x, y| x.0.total_cmp(&y.0)).filter(|n| n.0 <= reach) {
-                    worst = worst.max(z[0] + u * (z[1] - z[0]) + height + 0.5 - under);
+                    worst = worst.max(z[0] + u * (z[1] - z[0]) + height[0] + u * (height[1] - height[0]) + 0.5 - under);
                 }
             }
         }
@@ -554,15 +584,14 @@ fn the_crown_under_a_room_over_it_lies_under_that_rooms_floor_where_it_bends() {
 fn records_that_touch(placed: &Placed) -> Vec<String> {
     const UNITS: f64 = (1u64 << 27) as f64;
     let unit = |p: [f64; 2]| [(p[0] * UNITS).round() / UNITS, (p[1] * UNITS).round() / UNITS];
-    // Per record its two points, their floors, its half-width and its height.
-    type Record = ([f64; 2], [f64; 2], [f64; 2], f64, f64);
+    // Per record its two points, their floors, its half-width and its heights there.
+    type Record = ([f64; 2], [f64; 2], [f64; 2], f64, [f64; 2]);
     let tubes: Vec<Record> = (placed.features.iter())
         .filter(|f| f.0 == "tunnel-tube")
         .map(|f| {
             let z = f.2.z.as_ref().unwrap();
-            // The higher of a chord's heights at its two vertices.
-            let num = |k: &str| f.1[k].split(' ').map(|v| v.parse::<f64>().unwrap()).fold(0.0, f64::max);
-            (unit(f.2.points[0]), unit(f.2.points[1]), [z[0], z[1]], num("half"), num("height"))
+            let half = f.1["half"].split(' ').map(|v| v.parse::<f64>().unwrap()).fold(0.0, f64::max);
+            (unit(f.2.points[0]), unit(f.2.points[1]), [z[0], z[1]], half, heights(&f.1))
         })
         .collect();
     // The rooms: the chords that share a vertex.
@@ -610,7 +639,8 @@ fn records_that_touch(placed: &Placed) -> Vec<String> {
                 }
                 let foot = [b.0[0] + v * d[0], b.0[1] + v * d[1]];
                 let (gap, rise) = (distance(p, foot) - a.3 - b.3, b.2[0] + v * (b.2[1] - b.2[0]) - za);
-                let clear = gap >= 1.0 - 0.01 - allowance || rise >= a.4 + 1.0 - 0.01 || -rise >= b.4 + 1.0 - 0.01;
+                let (ha, hb) = (a.4[0] + u * (a.4[1] - a.4[0]), b.4[0] + v * (b.4[1] - b.4[0]));
+                let clear = gap >= 1.0 - 0.01 - allowance || rise >= ha + 1.0 - 0.01 || -rise >= hb + 1.0 - 0.01;
                 if !clear {
                     out.push(format!("{:?} gap {gap:.2} rise {rise:.2}", back(p)));
                     break;
@@ -963,14 +993,7 @@ fn a_way_over_the_first_chord_behind_a_seam_holds_the_floor_down() {
             .collect();
         let chords: Vec<_> = (placed.features.iter())
             .filter(|f| f.0 == "tunnel-tube" && f.1["half"] == "0.9")
-            .map(|f| {
-                (
-                    back(f.2.points[0]),
-                    back(f.2.points[1]),
-                    f.2.z.clone().unwrap(),
-                    f.1["height"].parse::<f64>().unwrap(),
-                )
-            })
+            .map(|f| (back(f.2.points[0]), back(f.2.points[1]), f.2.z.clone().unwrap(), heights(&f.1)))
             .collect();
         assert_eq!(seams.len(), 1, "way at {a:?}");
         assert!(chords.iter().any(|c| (c.0[0] - seams[0]).abs() < 0.01), "way at {a:?}: no chord starts at the line");
@@ -981,7 +1004,8 @@ fn a_way_over_the_first_chord_behind_a_seam_holds_the_floor_down() {
                 let e = [p[0] + u * (q[0] - p[0]), p[1] + u * (q[1] - p[1])];
                 let t = (((e[0] - a[0]) * d[0] + (e[1] - a[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0.0, 1.0);
                 if (e[0] - a[0] - t * d[0]).hypot(e[1] - a[1] - t * d[1]) <= reach {
-                    let (crown, under) = (z[0] + u * (z[1] - z[0]) + height + 0.5, 502.0 + t * climb);
+                    let crown = z[0] + u * (z[1] - z[0]) + height[0] + u * (height[1] - height[0]) + 0.5;
+                    let under = 502.0 + t * climb;
                     assert!(
                         crown <= under + 0.005,
                         "way at {a:?}: the crown at {e:?} is {crown:.3} m, the way {under:.3} m"

@@ -68,7 +68,6 @@ pub(crate) struct Drawn<'a> {
     pub axes: Axes,
     ends: Vec<[Option<EndChord>; 2]>,
     floors: &'a [Option<Floor>],
-    lanes: Vec<bool>,
 }
 
 impl<'a> Drawn<'a> {
@@ -97,7 +96,7 @@ impl<'a> Drawn<'a> {
             }
         }
         let axes = Axes::new(&tubes);
-        Drawn { tubes, axes, ends, floors, lanes: rooms.lanes.iter().map(|l| l.len() > 1).collect() }
+        Drawn { tubes, axes, ends, floors }
     }
 
     /// The chord at a seam that metres s of tube t lie on, and the share along it from the line.
@@ -121,18 +120,9 @@ impl<'a> Drawn<'a> {
         [offset(p, l, -tube.half), offset(p, l, tube.half)]
     }
 
-    /// A room's height at metres s as the builder draws it: of a room of lanes, between its vertices; of a lone tube,
-    /// its chord's.
+    /// A room's height at metres s as the builder draws it: between its vertices.
     pub fn height(&self, t: usize, s: f64) -> f64 {
-        self.floors[t].as_ref().map_or(0.0, |f| {
-            let s = s + f.s[0];
-            let k = f.s.partition_point(|&x| x <= s).clamp(1, f.s.len() - 1);
-            if self.lanes[t] {
-                f.at(s).1
-            } else {
-                f.h[k - 1].min(f.h[k])
-            }
-        })
+        self.floors[t].as_ref().map_or(0.0, |f| f.at(s + f.s[0]).1)
     }
 }
 

@@ -544,6 +544,17 @@ pub(crate) fn place_with(input: &Input, measure: &ladder::Measure) -> Placed {
         m.insert("openings_moved_out_of_rooms".into(), heads_moved.into());
         m.insert("farthest_move_out_of_rooms_m".into(), ((farthest * 100.0).round() / 100.0).into());
         m.insert("heads_in_rooms".into(), stands.len().into());
+        // The ways whose opening's front a way on top covers: the ground plan builds no approach there.
+        let fronts = (placed.features.iter().filter(|f| f.0 == "tunnel-end"))
+            .filter_map(|f| Some((f.1.get("front")?.split(' ').filter(|&x| x == "0").count(), f.2.points[0])))
+            .filter(|f| f.0 > 0);
+        let (count, places) = fronts.fold((0, Vec::new()), |(n, mut p), (k, at)| {
+            let [lat, lon] = crate::degrees(at);
+            p.push(format!("{lat:.5},{lon:.5}"));
+            (n + k, p)
+        });
+        m.insert("fronts_not_clear".into(), count.into());
+        m.insert("fronts_not_clear_places".into(), places.into_iter().take(10).collect::<Vec<_>>().join("; ").into());
         let places = stands.iter().take(10).map(|s| {
             let [lat, lon] = crate::degrees(s.at);
             format!("{lat:.5},{lon:.5}")
@@ -742,6 +753,14 @@ fn records(rooms: &rooms::Rooms, openings: &[Opening], decided: &ladder::Decided
         let ways: Vec<rooms::Way> = n.holes.iter().flat_map(|h| rooms.ways(&openings[h.opening])).collect();
         t.insert("way".into(), ways.iter().map(|w| format!("{} {}", w.way[0], w.way[1])).collect::<Vec<_>>().join(" "));
         t.insert("shift".into(), ways.iter().map(|w| num(w.shift)).collect::<Vec<_>>().join(" "));
+        let d = [n.heading.cos(), n.heading.sin()];
+        let front = n.holes.iter().flat_map(|h| {
+            let (q, half) = (&openings[h.opening], up_cm(tube(h), decided.half[tube(h)]));
+            let at = offset(o.p, left_of(d), h.across);
+            let clear = heads::clear(input, (at, d), (half, q.floor + h.height));
+            rooms.ways(q).into_iter().map(move |_| if clear { "1" } else { "0" })
+        });
+        t.insert("front".into(), front.collect::<Vec<_>>().join(" "));
         if n.holes.len() > 1 {
             t.insert("across".into(), row(&|h| num(h.across)));
             t.insert("up".into(), row(&|h| num(openings[h.opening].floor - o.floor)));
@@ -898,7 +917,8 @@ fn lone(t: &Tube, kinds: [Option<Kind>; 2], (fl, common): (Option<&Floor>, &Tags
             let (p, q) = if rising { (w[0], w[1]) } else { (w[1], w[0]) };
             let ((pz, ph), (qz, qh)) = (fl.at(p.s), fl.at(q.s));
             let mut tube_tags = common.clone();
-            tube_tags.insert("height".into(), num(ph.min(qh)));
+            let (hp, hq) = (num(ph), num(qh));
+            tube_tags.insert("height".into(), if hp == hq { hp } else { format!("{hp} {hq}") });
             tube_tags.insert("class".into(), t.class.clone());
             if let Some(surface) = widest.get("surface") {
                 tube_tags.insert("surface".into(), surface.clone());

@@ -178,3 +178,46 @@ fn samples(
     }
     out
 }
+
+/// Whether the front of a hole is clear: no way that lies over its room there (its surface over the room's top
+/// `top`) has its core (`Widths::outer_m`) on the frame line within the reveal, `half` + `frame_m` to each side of the
+/// hole's axis at `at`, across the way in `dir`. The ground plan builds the approach of a clear front only, so it cuts
+/// no way on top. A deck and a tunnel way lie on another storey.
+pub(crate) fn clear(input: &Input, (at, dir): ([f64; 2], [f64; 2]), (half, top): (f64, f64)) -> bool {
+    let reach = half + obc_trailview_parts::Rules::embedded().design.frame_m;
+    let l = left_of(dir);
+    let (a, b) = (offset(at, l, -reach), offset(at, l, reach));
+    let ways =
+        input.ways.iter().enumerate().filter(|(w, _)| !input.decks.contains_key(w) && !input.tunnel_ways.contains(w));
+    !ways.into_iter().any(|(_, &(kind, tags, parts))| {
+        let core = input.widths.way(kind, tags, false).outer_m();
+        // A segment that lies farther than this from the hole's axis in either axis keeps off the frame line.
+        let far = (reach + core) / crate::metres(at[1]);
+        parts.iter().filter_map(|p| Some((&p.points, p.z.as_ref()?))).any(|(points, z)| {
+            (points.windows(2).zip(z.windows(2))).any(|(q, z)| {
+                let off = |k: usize| (q[0][k] - at[k]).abs().min((q[1][k] - at[k]).abs());
+                let apart = (0..2).any(|k| off(k) > far && (q[0][k] - at[k]).signum() == (q[1][k] - at[k]).signum());
+                if apart {
+                    return false;
+                }
+                let (d, u) = nearest(a, b, q[0], q[1]);
+                d <= core && z[0] + u * (z[1] - z[0]) > top
+            })
+        })
+    })
+}
+
+/// The metres between the segments a-b and p-q, and the share along p-q of its point nearest a-b.
+fn nearest(a: [f64; 2], b: [f64; 2], p: [f64; 2], q: [f64; 2]) -> (f64, f64) {
+    if let Some((_, u)) = super::measure::meet(a, b, p, q) {
+        return (0.0, u);
+    }
+    let foot = |x: [f64; 2], s: [f64; 2], e: [f64; 2]| {
+        let d = [e[0] - s[0], e[1] - s[1]];
+        let l2 = d[0] * d[0] + d[1] * d[1];
+        let t = if l2 > 0.0 { (((x[0] - s[0]) * d[0] + (x[1] - s[1]) * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        (distance(x, [s[0] + t * d[0], s[1] + t * d[1]]), t)
+    };
+    let ends = [(foot(p, a, b).0, 0.0), (foot(q, a, b).0, 1.0), foot(a, p, q), foot(b, p, q)];
+    ends.into_iter().fold((f64::INFINITY, 0.0), |m, x| if x.0 < m.0 { x } else { m })
+}

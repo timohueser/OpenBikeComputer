@@ -163,12 +163,13 @@ pub struct Hole {
     pub collar: f64,
 }
 
-/// A way that enters a head: the end vertex of the way in the frame of the ground plan, and the metres along the way
-/// from it to the opening.
+/// A way that enters a head: the end vertex of the way in the frame of the ground plan, the metres along the way
+/// from it to the opening, and whether its hole's front is clear (`front`): the ground plan builds its approach.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Way {
     pub way: [i64; 2],
     pub shift: f64,
+    pub clear: bool,
 }
 
 impl End {
@@ -255,8 +256,10 @@ impl End {
         if way.len() != 2 * shift.len() || shift.is_empty() {
             return Err("tags way, shift: not a vertex per shift".into());
         }
-        let ways =
-            shift.iter().enumerate().map(|(i, &shift)| Way { way: [way[2 * i], way[2 * i + 1]], shift }).collect();
+        let front = row_of(tags, "front", shift.len(), Some(0.0))?;
+        let ways = (shift.iter().zip(&front).enumerate())
+            .map(|(i, (&shift, &f))| Way { way: [way[2 * i], way[2 * i + 1]], shift, clear: f == 1.0 })
+            .collect();
         let walls = tags.contains_key("face");
         Ok(End {
             at,
@@ -289,7 +292,7 @@ pub struct Chord {
     pub b: [f64; 3],
     pub section: Section,
     pub half: f64,
-    /// At `a` and at `b`: of a room of lanes the room's height at each vertex, of a lone tube one height.
+    /// The room's height at `a` and at `b`.
     pub height: [f64; 2],
     pub look: String,
     pub lanes: Vec<Lane>,
@@ -464,8 +467,10 @@ pub fn near_volumes(square: [f64; 4], boxes: &[f64], floors: &[f64], rules: &Rul
 }
 
 /// A way that enters a built head: its point on the frame line, its unit way into the tube, the metres from its point
-/// to the jamb lines of its hole on each side (to the right negative), and the end vertex of the way and the metres
-/// along it to the opening (`way`, `shift`).
+/// to the jamb lines of its hole on each side (to the right negative), the end vertex of the way and the metres
+/// along it to the opening (`way`, `shift`), whether its front is clear (`Way::clear`), its room: the index of its
+/// hole, which the lanes of one hole share, and the room's floor at the frame line and at the front of the head wall,
+/// `recess_m` out.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mouth {
     pub at: [f64; 2],
@@ -473,6 +478,9 @@ pub struct Mouth {
     pub jamb: [f64; 2],
     pub way: [i64; 2],
     pub shift: f64,
+    pub clear: bool,
+    pub room: usize,
+    pub floor: [f64; 2],
 }
 
 /// The ways that enter the built heads.

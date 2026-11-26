@@ -481,13 +481,23 @@ impl<'a> Net<'a> {
                 let jamb = if sign > 0.0 { [lo - off, hi - off] } else { [off - hi, off - lo] };
                 (sign * off, jamb)
             });
+            let floor = [st.z, self.frame(e, -self.rules.design.recess_m).z];
             for (off, jamb) in lanes {
                 let p = st.at([off, 0.0]);
-                out.push(([p[0], p[1]], self.holes[e].way_in(), jamb));
+                out.push(([p[0], p[1]], self.holes[e].way_in(), jamb, e, floor));
             }
         }
         (out.into_iter().zip(&end.ways))
-            .map(|((at, into, jamb), w)| Mouth { at, into, jamb, way: w.way, shift: w.shift })
+            .map(|((at, into, jamb, room, floor), w)| Mouth {
+                at,
+                into,
+                jamb,
+                way: w.way,
+                shift: w.shift,
+                clear: w.clear,
+                room,
+                floor,
+            })
             .collect()
     }
 }
