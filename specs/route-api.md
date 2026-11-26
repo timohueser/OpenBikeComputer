@@ -19,7 +19,7 @@ a line. `GET /v1/region` describes the routing package. Request and answer bodie
 | `points` | 2 to 64 ordered `[longitude, latitude]` pairs in degrees |
 | `profile` | A profile ID from `GET /v1/region` |
 | `pace` | Optional: `cycling_kmh` (1 to 80, default 19), `walking_kmh` (0.5 to 15, default 4.5) and `personal_multiplier` (0.25 to 4, default 1) |
-| `turnarounds` | Optional interior point indices where a reversal is deliberate |
+| `turnarounds` | Optional interior point indices where the route may leave in either direction |
 | `start_position` | Optional leg position from an earlier answer. It pins the first point to that road position |
 | `end_position` | Optional leg position from an earlier answer. It pins the last point to that road position |
 

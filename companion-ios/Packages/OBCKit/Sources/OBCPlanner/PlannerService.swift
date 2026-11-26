@@ -131,7 +131,7 @@ public enum PlannerFailure: Error, Equatable, Sendable, LocalizedError {
 
 public protocol RoutePlanning: Sendable {
     func release() async throws -> PlannerRelease
-    /// `turnarounds` are interior point indices where the route turns back on purpose.
+    /// `turnarounds` are interior point indices where the route may leave in either direction.
     func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference,
                release: PlannerRelease) async throws -> PlannedPath
 }
