@@ -51,7 +51,8 @@ pub struct Signed {
 }
 
 /// The main line of `relation` inside the bounds as runs of node IDs, and the place of each node
-/// in `points`.
+/// in `points`. The runs have the order of `assemble::chain`, or of the members where they do not
+/// chain: no fork is pruned and no side trip is placed, as the route catalog does.
 fn line(graph: &Graph, relation: &Relation, points: &mut HashMap<i64, P>) -> Vec<Vec<i64>> {
     let mut members = Vec::new();
     for (member, role) in relation.members().filter(|(_, role)| assemble::is_main(role)) {

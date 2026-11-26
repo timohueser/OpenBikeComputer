@@ -224,7 +224,7 @@ osmium sort first.osm.pbf second.osm.pbf -o region.osm.pbf
 | Route | The cheapest roads from a junction to a junction, by the exact search of the router without landmarks. The production router snaps a point to a place on a road, so a short route can differ at its two ends |
 | Price list | The factor of `cost::way_basis` for a fixed list of tags, with the worldwide access defaults: the cost of 1 m of flat road. A cycling profile also has the factor on a regional and a national cycle route |
 | Signed route | A relation with `route=bicycle` for a cycling profile, `route=hiking` or `route=foot` for a walking profile, `type=route` or `superroute`, not `state=proposed` |
-| Signed line | The main line of a signed route with at least 5 km in the bounds, ordered as in the route catalog, on the directed roads of its member ways. A part with no road that the profile may use, or against a one-way for cycling, cuts the line. A piece under 1 km is not measured |
+| Signed line | The main line of a signed route with at least 5 km in the bounds: the runs of `assemble::main_line`, in the order of `assemble::chain` with gaps of at most 500 m, or in the order of the members where the runs do not chain. The bench does not prune forks or place side trips, as the route catalog does. The line lies on the directed roads of its member ways. A gap, a part with no road that the profile may use, and a part against a one-way for cycling cut the line. A piece under 1 km is not measured |
 | Leg | The signed line between two points at junctions about every 5 km. One search runs for each leg |
 | `near %` | The share of the signed length of the legs within 30 m of the router's line |
 | `same road %` | The share on a directed road that the router's route also takes |
