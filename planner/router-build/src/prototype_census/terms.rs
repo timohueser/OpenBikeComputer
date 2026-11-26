@@ -78,7 +78,8 @@ pub struct Factors {
 /// `smoothness` and `tracktype` depend on the family.
 pub fn factors(road: &Road, tags: &Tags, country: Country, profile: &Profile) -> Option<Factors> {
     let Weighting::Weighted { surface: weights, .. } = &profile.weighting else { return None };
-    assert!(profile.name.starts_with("touring"), "the term split knows the touring tables only");
+    assert!(profile.walking || profile.name.starts_with("touring"), "the term split knows touring and hiking only");
+    let family = if profile.walking { Family::Hiking } else { Family::Touring };
     let suit = suitability::way(road, tags, country, profile)?;
     let reclassed = variant::reclass(road, tags, profile);
     let road = reclassed.as_ref().unwrap_or(road);
@@ -89,10 +90,10 @@ pub fn factors(road: &Road, tags: &Tags, country: Country, profile: &Profile) ->
     } else {
         (
             suitability::surface_factor(road, tags, weights),
-            suitability::smoothness(tag(tags, "smoothness"), Family::Touring)?
-                .max(suitability::tracktype(tag(tags, "tracktype"), Family::Touring)),
+            suitability::smoothness(tag(tags, "smoothness"), family)?
+                .max(suitability::tracktype(tag(tags, "tracktype"), family)),
             if pushing { 4.0 } else { 1.0 },
-            if pushing { 1.0 } else { 1.0 + 0.6 * traffic::stress(tags, road.reversed, country) },
+            if pushing || profile.walking { 1.0 } else { 1.0 + 0.6 * traffic::stress(tags, road.reversed, country) },
         )
     };
     let difficulty = floor / (surface * rolling * push * stress);

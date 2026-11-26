@@ -76,8 +76,12 @@ pub(crate) fn label_bytes(nodes: usize) -> usize {
         .saturating_add(blocks.min(SPARE_BLOCKS) * 2 * size_of::<Vec<LabelBlock>>())
 }
 
-/// PROTOTYPE hook: the labels that all searches settled.
+/// PROTOTYPE hook: the labels that all searches settled, the labels that they set, the stale
+/// queue entries that they dropped, and their time in nanoseconds.
 pub static PROTOTYPE_SETTLED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PROTOTYPE_PUSHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PROTOTYPE_STALE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PROTOTYPE_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Default)]
 pub struct Workspace {
@@ -158,6 +162,8 @@ impl Workspace {
         if self.heaps.iter().map(Queue::bytes).sum::<usize>() > heap_bytes {
             self.clear_heaps();
         }
+        let prototype_clock = std::time::Instant::now();
+        let (mut prototype_pushed, mut prototype_stale) = (0u64, 0u64);
         let nodes = graph.nodes();
         for side in 0..2 {
             self.labels[side].reset(nodes)?;
@@ -194,6 +200,7 @@ impl Workspace {
                         break;
                     }
                     self.heaps[side].pop();
+                    prototype_stale += 1;
                 }
             }
             let top: [i128; 2] = std::array::from_fn(|i| self.heaps[i].top().map_or(i128::MAX, |v| v.0));
@@ -234,6 +241,7 @@ impl Workspace {
                     continue;
                 }
                 self.labels[side].set(to, next, arc as u32, origin)?;
+                prototype_pushed += 1;
                 self.push(side, (next, origin, to), rooms, potential)?;
                 let opposite = self.labels[1 - side].cost(to as usize);
                 if opposite != u64::MAX {
@@ -249,6 +257,9 @@ impl Workspace {
             }
         }
         PROTOTYPE_SETTLED.fetch_add(work as u64, std::sync::atomic::Ordering::Relaxed);
+        PROTOTYPE_PUSHED.fetch_add(prototype_pushed, std::sync::atomic::Ordering::Relaxed);
+        PROTOTYPE_STALE.fetch_add(prototype_stale, std::sync::atomic::Ordering::Relaxed);
+        PROTOTYPE_NANOS.fetch_add(prototype_clock.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
         let Some(meeting) = meeting else {
             return Ok(None);
         };

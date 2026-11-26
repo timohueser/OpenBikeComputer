@@ -11,6 +11,7 @@ mod grid;
 mod panel;
 mod prices;
 mod report;
+mod round3;
 mod terms;
 pub(crate) mod variant;
 
@@ -20,8 +21,8 @@ use planner_router::model::Point;
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// West, south, east, north of the Freiburg extract.
-const BOUNDS: [f64; 4] = [7.50, 47.78, 8.24, 48.31];
+/// West, south, east, north of the Freiburg extract: the box without `--bounds`.
+const FREIBURG: [f64; 4] = [7.50, 47.78, 8.24, 48.31];
 
 struct Options {
     pbf: PathBuf,
@@ -31,11 +32,14 @@ struct Options {
     profiles: String,
     package: bool,
     grid: bool,
+    /// `freiburg` or `alsace`: the parts of round three for that region.
+    round3: String,
+    bounds: [f64; 4],
 }
 
 fn options() -> Result<Options, String> {
     let usage =
-        "Usage: prototype_census --pbf FILE --out DIR [--dem DIR] [--step-km 5] [--profiles all] [--package] [--grid]";
+        "Usage: prototype_census --pbf FILE --out DIR [--dem DIR] [--step-km 5] [--profiles all] [--package] [--grid] [--round3 freiburg|alsace] [--bounds W,S,E,N]";
     let mut options = Options {
         pbf: PathBuf::new(),
         dem: None,
@@ -44,6 +48,8 @@ fn options() -> Result<Options, String> {
         profiles: "all".into(),
         package: false,
         grid: false,
+        round3: String::new(),
+        bounds: FREIBURG,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -56,6 +62,11 @@ fn options() -> Result<Options, String> {
             "--profiles" => options.profiles = value()?,
             "--package" => options.package = true,
             "--grid" => options.grid = true,
+            "--round3" => options.round3 = value()?,
+            "--bounds" => {
+                let values: Vec<f64> = value()?.split(',').filter_map(|v| v.parse().ok()).collect();
+                options.bounds = values.try_into().map_err(|_| usage)?;
+            }
             _ => return Err(usage.into()),
         }
     }
@@ -90,18 +101,20 @@ fn run() -> Result<(), String> {
         eprintln!("Stage {name}: {:.1} s", clock.elapsed().as_secs_f64());
         clock = Instant::now();
     };
-    let source = crate::osm::source(std::slice::from_ref(&options.pbf), BOUNDS)?;
+    let bounds = options.bounds;
+    let source = crate::osm::source(std::slice::from_ref(&options.pbf), bounds)?;
     lap("source: the OSM objects and the facts of each way");
     let mut vias: Vec<i64> = source.rules.values().iter().map(|rule| rule.via).collect();
     vias.sort_unstable();
     vias.dedup();
     let graph = match &options.dem {
         Some(dem) => {
-            let tiles = obc_dem::planner::tiles_in(dem, BOUNDS);
-            if tiles.len() != obc_dem::planner::tiles(BOUNDS).len() {
-                return Err(format!("{}: {} GLO-30 tiles, the box needs 4", dem.display(), tiles.len()));
+            let tiles = obc_dem::planner::tiles_in(dem, bounds);
+            let needed = obc_dem::planner::tiles(bounds).len();
+            if tiles.len() != needed {
+                return Err(format!("{}: {} GLO-30 tiles, the box needs {needed}", dem.display(), tiles.len()));
             }
-            let terrain = Terrain::open(&tiles, "Copernicus GLO-30", None, BOUNDS)?;
+            let terrain = Terrain::open(&tiles, "Copernicus GLO-30", None, bounds)?;
             let mut recent = Recent::default();
             let mut height = |point: Point| terrain.height(point.lat, point.lon, &mut recent);
             crate::osm::roads(source, Some(&mut height))?
@@ -117,7 +130,13 @@ fn run() -> Result<(), String> {
         "roads: junctions, roads WITHOUT terrain, turn rules, topology"
     });
     if options.grid {
-        return grid::run(&graph, &vias, options.step_m, &options.out);
+        return grid::run(&graph, &vias, options.step_m, bounds, &options.out);
+    }
+    match options.round3.as_str() {
+        "" => {}
+        "freiburg" => return round3::freiburg(&graph, &vias, options.step_m, bounds, &options.out),
+        "alsace" => return round3::alsace(&graph, &vias, options.step_m, bounds, &options.out),
+        _ => return Err("--round3 takes freiburg or alsace".into()),
     }
     let names: Vec<&str> = options.profiles.split(',').collect();
     let profiles = crate::profiles(&names)?;
@@ -151,13 +170,13 @@ fn run() -> Result<(), String> {
     let profile_count = profiles.len();
     if options.package {
         let digest = |bytes: &[u8]| Ok(planner_router::package::digest(bytes));
-        crate::package(&graph, topology, costs, ("prototype".into(), BOUNDS), vec![], String::new(), digest)?;
+        crate::package(&graph, topology, costs, ("prototype".into(), bounds), vec![], String::new(), digest)?;
         lap(&format!("package: landmarks and pages of {profile_count} profiles, hashed and not written"));
     }
     for ((min_line_m, suffix), census) in variants.into_iter().zip(&censuses) {
         let facts = report::Facts {
             inputs: vec![
-                format!("OSM: `{}`, box {BOUNDS:?}", options.pbf.display()),
+                format!("OSM: `{}`, box {bounds:?}", options.pbf.display()),
                 match &options.dem {
                     Some(dem) => format!("Terrain: Copernicus GLO-30 tiles in `{}`", dem.display()),
                     None => "Terrain: none".into(),

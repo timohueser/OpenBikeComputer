@@ -1,5 +1,5 @@
 //! PROTOTYPE. The tables of the census.
-use super::census::{Census, Split, Stretch, Tally, LEVELS};
+use super::census::{Census, Split, Stretch, Tally};
 use super::terms::{self, GROUPS, N, NAMES};
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -8,11 +8,11 @@ use std::fmt::Write;
 /// stretch is at least this long, so that a 30 m corner does not fill the list.
 const TOP_MIN_M: f64 = 300.0;
 
-fn km(metres: f64) -> String {
+pub fn km(metres: f64) -> String {
     format!("{:.1}", metres / 1000.0)
 }
 
-fn share(part: f64, whole: f64) -> String {
+pub fn share(part: f64, whole: f64) -> String {
     if whole > 0.0 {
         format!("{:.1} %", 100.0 * part / whole)
     } else {
@@ -60,7 +60,7 @@ fn top_fine(split: &Split) -> (&'static str, f64) {
 }
 
 /// The group of terms with the largest part of the cost difference, with that part.
-fn top_term(split: &Split) -> (&'static str, f64) {
+pub fn top_term(split: &Split) -> (&'static str, f64) {
     let (signed, router) = (terms::grouped(&split.signed.terms), terms::grouped(&split.router.terms));
     let mut best = ("none (equal cost)", 0.5);
     for (i, (name, _)) in GROUPS.iter().enumerate() {
@@ -108,7 +108,7 @@ pub fn splits_csv(census: &Census) -> String {
             i + 1,
             split.seen,
             split.relation,
-            LEVELS[usize::from(split.level)],
+            census.level_names[usize::from(split.level)],
             kind(split),
             degrees(split.from.lon),
             degrees(split.from.lat),
@@ -158,7 +158,7 @@ pub fn relations_csv(census: &Census) -> String {
             route.id,
             route.name.replace('"', "'"),
             route.network,
-            LEVELS[usize::from(route.level)],
+            census.level_names[usize::from(route.level)],
             km(t.line_m),
             km(t.lost_m),
             km(t.oneway_m),
@@ -200,7 +200,7 @@ fn follow_row(out: &mut String, name: &str, t: &Tally) {
     .unwrap();
 }
 
-fn ranking(out: &mut String, title: &str, splits: &[&Split], top: fn(&Split) -> (&'static str, f64)) {
+pub fn ranking(out: &mut String, title: &str, splits: &[&Split], top: fn(&Split) -> (&'static str, f64)) {
     let mut tally = BTreeMap::<&str, (usize, f64, f64)>::new();
     for split in splits {
         let entry = tally.entry(top(split).0).or_default();
@@ -337,7 +337,7 @@ pub fn census_md(census: &Census, facts: &Facts) -> String {
          split share |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
     );
     for level in (1..6).rev() {
-        follow_row(&mut out, LEVELS[level], &census.levels[level]);
+        follow_row(&mut out, census.level_names[level], &census.levels[level]);
     }
     follow_row(&mut out, "**all**", &census.total);
     writeln!(
@@ -359,7 +359,7 @@ pub fn census_md(census: &Census, facts: &Facts) -> String {
     out.push_str("\nThe relations with less main line than the limit, which the census leaves out:\n\n| level | relations | with a relation as a member | line km |\n|---|---|---|---|\n");
     for level in (1..6).rev() {
         let (count, metres, parents) = census.excluded[level];
-        writeln!(out, "| {} | {count} | {parents} | {} |", LEVELS[level], km(metres)).unwrap();
+        writeln!(out, "| {} | {count} | {parents} | {} |", census.level_names[level], km(metres)).unwrap();
     }
 
     let all: Vec<&Split> = census.splits.iter().collect();
@@ -573,7 +573,7 @@ pub fn census_md(census: &Census, facts: &Facts) -> String {
             difference(split) / (s.length_m / 1000.0),
             split.relation,
             census.routes.iter().find(|route| route.id == split.relation).map_or("", |route| route.name.as_str()),
-            LEVELS[usize::from(split.level)],
+            census.level_names[usize::from(split.level)],
             kind(split),
             place(split.from),
             place(split.to),

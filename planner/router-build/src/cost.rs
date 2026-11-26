@@ -151,6 +151,10 @@ fn basis(road: &Road, way: &Way, profile: &Profile) -> Option<CostBasis> {
             cost.factor = suitability.minimum_factor;
         }
     }
+    // PROTOTYPE hook: hiking (a).
+    if crate::prototype_census::variant::walk_bonus(way.id, profile) {
+        cost.factor = suitability.minimum_factor;
+    }
     if facts.doubts[usize::from(road.reversed)] & mode != 0 {
         cost.factor *= UNCERTAIN_ACCESS;
     }

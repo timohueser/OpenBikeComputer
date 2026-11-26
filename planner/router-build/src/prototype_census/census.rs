@@ -23,6 +23,26 @@ const TURN_DEGREES: f64 = 45.0;
 
 pub const LEVELS: [&str; 6] = ["", "other", "lcn", "rcn", "ncn", "icn"];
 
+/// The routes that a census measures, by the profile: cycle routes, or hiking routes on foot.
+pub struct Kind {
+    routes: &'static [&'static str],
+    /// The `network` value of each level; level 1 is a route with none of them.
+    pub levels: [&'static str; 6],
+    /// The tag keys of a signature.
+    signature: [&'static str; 5],
+}
+
+const CYCLING: Kind = Kind {
+    routes: &["bicycle"],
+    levels: LEVELS,
+    signature: ["highway", "surface", "bicycle", "tracktype", "maxspeed"],
+};
+const WALKING: Kind = Kind {
+    routes: &["hiking", "foot"],
+    levels: ["", "other", "lwn", "rwn", "nwn", "iwn"],
+    signature: ["highway", "surface", "foot", "tracktype", "sac_scale"],
+};
+
 /// One side of a split, or of a leg.
 #[derive(Clone, Default)]
 pub struct Stretch {
@@ -120,6 +140,8 @@ pub struct Census {
     /// By level, the relations with less main line than one step: their count, their line
     /// length, and those with a relation as a member.
     pub excluded: [(usize, f64, usize); 6],
+    /// The `network` value of each level.
+    pub level_names: [&'static str; 6],
     pub relations_seen: usize,
     pub relations_under_5km: usize,
     pub queries: usize,
@@ -132,7 +154,8 @@ pub struct Census {
 /// The graph with the costs of one profile and one variant, for the searches and the measures.
 pub struct Net<'a> {
     pub graph: &'a Graph,
-    profile: &'a Profile,
+    pub profile: &'a Profile,
+    pub kind: &'static Kind,
     first: &'a [u32],
     head: &'a [u32],
     totals: &'a [u32],
@@ -188,6 +211,7 @@ impl<'a> Net<'a> {
         Net {
             graph,
             profile,
+            kind: if profile.walking { &WALKING } else { &CYCLING },
             first,
             head,
             totals,
@@ -218,6 +242,9 @@ impl<'a> Net<'a> {
 
     /// The rider may not cycle on the road, but may in the other direction of its way.
     fn against_oneway(&self, road: u32) -> bool {
+        if self.profile.walking {
+            return false;
+        }
         let roads = &self.graph.roads;
         let access = self.graph.osm.ways.row(roads.way_row(road as usize) as usize).facts.access;
         let side = usize::from(roads.reversed(road as usize));
@@ -254,7 +281,7 @@ impl<'a> Net<'a> {
 
     fn signature(&self, road: u32) -> String {
         let way = self.graph.osm.ways.row(self.graph.roads.way_row(road as usize) as usize);
-        ["highway", "surface", "bicycle", "tracktype", "maxspeed"].map(|key| way.tags.get(key).unwrap_or("-")).join("|")
+        self.kind.signature.map(|key| way.tags.get(key).unwrap_or("-")).join("|")
     }
 
     pub fn line(&self, roads: &[u32]) -> Vec<P> {
@@ -340,15 +367,16 @@ impl<'a> Net<'a> {
 
 /// The level of each relation in a cycle route: its own network or that of a route above it, as
 /// `osm::cycle_ranks` gives it to the ways.
-fn levels(graph: &Graph) -> HashMap<i64, u8> {
+fn levels(graph: &Graph, kind: &Kind) -> HashMap<i64, u8> {
     let relations = &graph.osm.relations;
     let mut pending: Vec<(i64, u8)> = relations
         .iter()
         .filter(|r| {
-            r.tags.get("route") == Some("bicycle") && matches!(r.tags.get("type"), Some("route" | "superroute"))
+            kind.routes.contains(&r.tags.get("route").unwrap_or(""))
+                && matches!(r.tags.get("type"), Some("route" | "superroute"))
         })
         .map(|r| {
-            let level = LEVELS.iter().position(|name| r.tags.get("network") == Some(*name)).filter(|l| *l >= 2);
+            let level = kind.levels.iter().position(|name| r.tags.get("network") == Some(*name)).filter(|l| *l >= 2);
             (r.id, level.unwrap_or(1) as u8)
         })
         .collect();
@@ -481,15 +509,15 @@ fn anchors(lengths: &[f64], step_m: f64) -> Vec<usize> {
 }
 
 pub fn run(net: &mut Net, vias: &[i64], (step_m, min_line_m): (f64, f64)) -> Result<Census, String> {
-    let mut census = Census::default();
-    let graph = net.graph;
-    let levels = levels(graph);
+    let mut census = Census { level_names: net.kind.levels, ..Census::default() };
+    let (graph, kind) = (net.graph, net.kind);
+    let levels = levels(graph, kind);
     let mut node_points = HashMap::new();
     let mut lines = Vec::new();
     let mut rows = HashSet::new();
     for relation in graph.osm.relations.iter() {
         let tags = &relation.tags;
-        if tags.get("route") != Some("bicycle")
+        if !kind.routes.contains(&tags.get("route").unwrap_or(""))
             || !matches!(tags.get("type"), Some("route" | "superroute"))
             || tags.contains("state", "proposed")
         {
