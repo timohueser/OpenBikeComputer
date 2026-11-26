@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <!--
   Hand-authored OBCM packer corpus fixture (unit-level) — the WEST half of a
-  two-file split of tiny/tiny.osm, for the native multi-`.pbf` merge (#920).
+  two-file split of tiny/tiny.osm, for the native multi-`.pbf` merge.
 
   tiny_west + tiny_east together contain exactly the objects of tiny.osm, so
   `ingest_osm([west, east])` must equal `ingest_osm([tiny])` — same features, in

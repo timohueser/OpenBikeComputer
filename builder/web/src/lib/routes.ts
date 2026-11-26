@@ -34,12 +34,3 @@ export function parseRoute(hash: string): { route: Route; id?: string } {
     const id = best.length ? parts.slice(best.length).join("/") : undefined;
     return id ? { route: best.route, id } : { route: best.route };
 }
-
-/**
- * The firmware card's DOM id — a destination inside a page rather than a page, and the only one
- * the app navigates to on its own, since the update prompt scrolls the rider there. It lives with
- * the routes because it is the same kind of thing: a target two modules have to agree on, spelled
- * once. Not a hash route: the card is a section of the device surfaces, and making it a route
- * would mean two ways to be in the same place.
- */
-export const FIRMWARE_ANCHOR = "firmware-card";

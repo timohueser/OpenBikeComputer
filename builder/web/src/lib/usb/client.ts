@@ -12,8 +12,7 @@ import { NO_OBJECT, Opcode, hex, toSafeNumber, type ObjectRef, type ObjectKind,
 export { DEFAULT_BATCH_BYTES, UPLOAD_WINDOW } from "./client-io";
 export { blobSource, bytesSource } from "./source";
 export type { ObjectSource } from "./source";
-export { DeviceError, asDeviceError, refusalError, isFormatRecoveryState } from "./errors";
-export type { DeviceErrorCode } from "./errors";
+export { DeviceError, isFormatRecoveryState } from "./errors";
 export type { DeviceInfo };
 
 export const ZERO_STORE_ID = "00000000000000000000000000000000";

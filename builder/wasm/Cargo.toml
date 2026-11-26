@@ -38,7 +38,6 @@ obc-bake = { workspace = true }
 obc-places = { workspace = true }
 obc-map-core = { workspace = true }
 obc-ports = { workspace = true }
-obcm-testkit = { workspace = true }
 # The fixture cutter uses GEOS and must stay outside the production graph.
 obc-pack = { workspace = true }
 obc-vectors = { workspace = true }
