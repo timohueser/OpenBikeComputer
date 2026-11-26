@@ -1,5 +1,5 @@
 // Makes the tile pictures of the map settings from a running development server of the planner:
-// node planner/tile-pictures.mjs --base http://127.0.0.1:5316 [--only cycling,relief]
+// node planner/tile-pictures.mjs --base http://127.0.0.1:5316 [--only cycling,contours]
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { chromium } from '@playwright/test';
@@ -15,11 +15,11 @@ const TILES = {
     snow: { center: [8.671, 46.668], zoom: 9.5 },
     weather: { center: [8.6002, 46.706], zoom: 11 },
     wind: { center: [8.4017, 46.886], zoom: 8 },
-    relief: { center: [8.509, 46.859], zoom: 12 },
     contours: { center: [8.501, 46.767], zoom: 10.5 },
+    'slope-angle': { center: [8.2475, 46.9745], zoom: 12.5 },
     closures: { center: [8.5815, 46.63465], zoom: 14 },
 };
-const NAMES = { cycling: 'Cycling', hiking: 'Hiking', mtb: 'MTB', snow: 'Snow', weather: 'Weather', wind: 'Wind', relief: 'Relief', contours: 'Contours', closures: 'Closures' };
+const NAMES = { cycling: 'Cycling', hiking: 'Hiking', mtb: 'MTB', snow: 'Snow', weather: 'Weather', wind: 'Wind', contours: 'Contours', 'slope-angle': 'Slope angle', closures: 'Closures' };
 const LOOKS = ['light', 'dark'];
 // The tile shows 81 × 54 CSS px of the map at 2 device pixels.
 const SIZE = { width: 81, height: 54 };
@@ -38,13 +38,12 @@ for (const look of LOOKS) {
     const box = await page.locator('.map-area').boundingBox();
     const clip = { x: Math.round(box.x + (box.width - SIZE.width) / 2), y: Math.round(box.y + (box.height - SIZE.height) / 2), ...SIZE };
     for (const id of ids) {
-        // Each picture has its own layer and the relief; Relief and Contours stand alone.
-        const on = id === 'relief' || id === 'contours' ? [id] : [id, 'relief'];
+        // Each picture has its own layer alone, on the relief.
         await page.getByRole('button', { name: 'Map settings', exact: true }).click();
         const dialog = page.getByRole('dialog', { name: 'Map settings' });
         for (const tile of Object.keys(NAMES)) {
             const button = dialog.getByRole('button', { name: NAMES[tile], exact: true });
-            if (await button.count() && (await button.getAttribute('aria-pressed') === 'true') !== on.includes(tile)) await button.click();
+            if (await button.count() && (await button.getAttribute('aria-pressed') === 'true') !== (tile === id)) await button.click();
         }
         await page.keyboard.press('Escape');
         await page.evaluate(view => new Promise(resolve => {

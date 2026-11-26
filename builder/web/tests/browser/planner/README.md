@@ -26,7 +26,7 @@ The tiles of the map settings show crops of the planner map. To make them again,
 development server in `builder/web` (`npx vite --port 5316`), then run from `tests/browser`:
 
 ```sh
-node planner/tile-pictures.mjs --base http://127.0.0.1:5316 [--only cycling,relief]
+node planner/tile-pictures.mjs --base http://127.0.0.1:5316 [--only cycling,contours]
 ```
 
 The script writes `src/components/planner/tiles/<id>-<light|dark>.jpg`. It needs the network of
