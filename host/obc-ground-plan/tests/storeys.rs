@@ -353,8 +353,9 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         }
         let mesh = mesh_storeys(key, &with.storeys, &with.records, &rules.structures).unwrap();
         terrain.insert(key, fix.cell(key).terrain);
-        // An empty mesh still meets its neighbours: a guard rail of theirs may run on to the shared line.
-        if mesh.triangles.is_empty() {
+        // A cell with no storey and no edge feature still meets its neighbours: a guard rail of theirs may run on to
+        // the shared line.
+        if with.storeys.plans.is_empty() && mesh.triangles.is_empty() {
             built.insert(key, (with, mesh));
             continue;
         }
@@ -403,22 +404,19 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         }
     }
     let triangles: u32 = built.values().map(|(_, m)| m.triangles.len() as u32).sum();
+    let decks = built.values().filter(|(b, _)| !b.storeys.plans.is_empty()).count();
     for f in &faults {
         println!("FAULT {f}");
     }
     seams.sort();
     seams.dedup();
-    println!(
-        "{} cells with storeys, {triangles} storey triangles, {torn} torn pieces, {} faults",
-        built.len(),
-        faults.len()
-    );
+    println!("{decks} cells with storeys, {triangles} storey triangles, {torn} torn pieces, {} faults", faults.len());
     println!("{} seams where a stub meets its deck: {seams:#?}", seams.len());
     println!("{joints} edge triangles on a stub at its joint, {beside} on a ground way beside a deck");
     println!("{} open pieces with nothing past them: {open_ends:#?}", open_ends.len());
     assert!(open_ends.len() <= OPEN_MAX, "{} open pieces with nothing past them", open_ends.len());
     assert!(joints <= JOINT_MAX && beside <= BESIDE_MAX, "{joints} and {beside} edge triangles on ground ways");
     assert!(seams.len() <= SEAMS_MAX, "{} seams where a stub meets its deck, more than {SEAMS_MAX}", seams.len());
-    assert!(built.len() > 10, "the fixture's decks");
+    assert!(decks > 10, "the fixture's decks");
     assert!(faults.is_empty(), "{} faults: {:#?}", faults.len(), &faults[..faults.len().min(20)]);
 }
