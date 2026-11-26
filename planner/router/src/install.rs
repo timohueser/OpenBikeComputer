@@ -544,9 +544,15 @@ where
 pub fn installed(target: &Path) -> Result<(Vec<u8>, Plan)> {
     let read = |name: &str| fs::read(target.join(name)).map_err(io(target));
     let (directory, marker) = (read("directory.bin")?, read(MARKER)?);
-    let (groups, records) = cells::marker(&directory, &marker).map_err(invalid)?;
-    let files = items(&Directory::new(&directory).map_err(invalid)?, &records, groups)?;
-    Ok((directory, Plan { groups, records, files }))
+    let plan = marked(&directory, &marker)?;
+    Ok((directory, plan))
+}
+
+/// The installed cells and groups that the marker `marker` names, when it names `directory`.
+pub fn marked(directory: &[u8], marker: &[u8]) -> Result<Plan> {
+    let (groups, records) = cells::marker(directory, marker).map_err(invalid)?;
+    let files = items(&Directory::new(directory).map_err(invalid)?, &records, groups)?;
+    Ok(Plan { groups, records, files })
 }
 
 /// Reads each installed file of `target` again. Returns the names of the files whose SHA-256 or

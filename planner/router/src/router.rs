@@ -111,20 +111,10 @@ pub struct Control<'a> {
     pub max_roads: usize,
     /// The most steps of the path of one search.
     pub max_steps: usize,
-    /// Caps the search queues below what the memory budget leaves, so that the space of a search
-    /// does not depend on the cost tables in the cache.
-    pub max_heap_bytes: usize,
 }
 impl Default for Control<'_> {
     fn default() -> Self {
-        Self {
-            cancelled: &|| false,
-            max_queries: 8192,
-            max_points: 250_000,
-            max_roads: 250_000,
-            max_steps: 250_000,
-            max_heap_bytes: usize::MAX,
-        }
+        Self { cancelled: &|| false, max_queries: 8192, max_points: 250_000, max_roads: 250_000, max_steps: 250_000 }
     }
 }
 
@@ -536,8 +526,6 @@ impl<H: Host> Router<H> {
             ends: &ends,
             ceiling: best.as_ref().map_or(u64::MAX, |b| b.cost),
             max_steps: control.max_steps,
-            heap_bytes: control.max_heap_bytes,
-            heap_limit: control.max_heap_bytes,
             cancelled: control.cancelled,
         };
         let found = self.package.search(&self.metric, query)?;

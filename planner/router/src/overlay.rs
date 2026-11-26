@@ -37,10 +37,6 @@ pub struct Query<'a> {
     pub ceiling: u64,
     /// The most steps of the path.
     pub max_steps: usize,
-    /// The room of both search queues now.
-    pub heap_bytes: usize,
-    /// The room of both search queues on an idle service, at least `heap_bytes`.
-    pub heap_limit: usize,
     pub cancelled: &'a dyn Fn() -> bool,
 }
 

@@ -375,8 +375,10 @@ fn untried(legs: &mut [Leg], tried: &HashSet<usize>) -> Option<usize> {
 /// Each leg is first routed alone. Of the profiles over the budget, the worst leg with an untried
 /// shaping point gets that point, in the middle of its longest stretch away from the line, until
 /// the plan is within the budget or the points stop cutting its deviation. Then every shaping
-/// point that does not help goes. The whole plan is routed last; when it fails, its worst leg with
-/// an untried point gets that point and the search continues.
+/// point that does not help goes. The whole plan is routed last; when it fails, its worst leg gets
+/// its shaping point, also one that was tried before, and the search continues. The rounds still
+/// end after at most `ROUNDS`, and they do not repeat: the point lies strictly inside its leg and
+/// stays fixed, so each round routes a plan with one more fixed point.
 pub fn shape<H: Host>(
     router: &mut Router<H>,
     profiles: &[&str],

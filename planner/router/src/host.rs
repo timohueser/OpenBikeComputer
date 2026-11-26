@@ -91,12 +91,10 @@ mod maps {
     }
 
     impl Maps {
-        /// The host of the install in `folder` with the directory `directory`.
-        pub fn new(folder: &Path, directory: &[u8]) -> Result<Self> {
-            let (installed, plan) = install::installed(folder).map_err(|e| Error::InvalidData(e.to_string()))?;
-            if installed != directory {
-                return Err(Error::InvalidData(format!("{} holds another directory", folder.display())));
-            }
+        /// The host of the install in `folder` with the bytes of its `directory.bin` and
+        /// `install.bin`.
+        pub fn new(folder: &Path, directory: &[u8], marker: &[u8]) -> Result<Self> {
+            let plan = install::marked(directory, marker).map_err(|e| Error::InvalidData(e.to_string()))?;
             map_limit(plan.files.len() as u64)?;
             let directory = Directory::new(directory)?;
             let parts = directory.parts();
@@ -225,8 +223,9 @@ mod tests {
             std::fs::write(folder.join("cells").join(crate::install::name(1, 5, k)), bytes).unwrap();
         }
         std::fs::write(folder.join("directory.bin"), &directory).unwrap();
-        std::fs::write(folder.join("install.bin"), crate::cells::encode_marker(&directory, 0, &[0])).unwrap();
-        let maps = Maps::new(&folder, &directory).unwrap();
+        let marker = crate::cells::encode_marker(&directory, 0, &[0]);
+        std::fs::write(folder.join("install.bin"), &marker).unwrap();
+        let maps = Maps::new(&folder, &directory, &marker).unwrap();
         let mut memory = Memory::default();
         for (k, bytes) in files.iter().enumerate() {
             memory.insert(Part { record: 0, part: k as u8 }, bytes.clone());
