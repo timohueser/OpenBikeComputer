@@ -558,14 +558,7 @@ fn compile_selected(
         content.candidate_qids.push(qid.clone());
         // A landmark photo is taken at the landmark, so it has no camera-distance reference.
         let Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }) = prepare_article(
-            &Inputs {
-                root,
-                sources: &snapshot.sources,
-                locales: &locales,
-                output,
-                select_photos,
-                text_required: true,
-            },
+            &Inputs { root, sources: &snapshot.sources, locales: &locales, output, select_photos, text_required: true },
             &place,
             entity,
             &mut Found { omissions: &mut content.omissions, requests: &mut content.photo_requests },

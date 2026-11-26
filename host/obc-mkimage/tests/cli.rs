@@ -314,13 +314,7 @@ fn inspect_rejects_unknown_or_inconsistent_signature_markers() {
         blob[60..64].copy_from_slice(&header_crc.to_le_bytes());
         std::fs::write(&out_path, &blob).unwrap();
 
-        let i = bin()
-            .arg("inspect")
-            .arg(&out_path)
-            .arg("--pubkey")
-            .arg(test_key("pub"))
-            .output()
-            .unwrap();
+        let i = bin().arg("inspect").arg(&out_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
         assert!(!i.status.success(), "scheme {scheme}, length {sig_len} must not pass the release gate");
         assert!(String::from_utf8_lossy(&i.stdout).contains("UNSUPPORTED"));
     }
