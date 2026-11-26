@@ -52,7 +52,8 @@ assets, and their manifest. When the region recipe names a snow source, it also 
 `snow.pmtiles`, `snow-levels.pmtiles` and `snow-seasons.pmtiles` from the [snow tile
 contract](planner-snow-tiles.md). When the recipe has a `climate`
 field, it also contains `climate.pmtiles` from the [climate tile
-contract](planner-climate-tiles.md). The files of the release are exactly the files of the map
+contract](planner-climate-tiles.md). When the release has the part `routing`, it also contains
+`ways.pmtiles`. The files of the release are exactly the files of the map
 manifest and the manifest itself. `routing/` contains the three files in the [route package
 contract](route-package.md), plus `overlays.sqlite`. The overlay index stores the routing manifest
 identity and has the same OSM source. `search/` contains `pois/REGION.sqlite`,
@@ -128,6 +129,48 @@ planner shows access from the `MODE_minzoom` of its travel mode. A line names on
 start at or below the tile zoom. Lines with equal properties join where exactly two of them meet.
 The `routes` layer of a tile holds each route that its lines name. A tile with no features is
 absent.
+
+The ways database `ways.sqlite` is the file of the step `planner/routing-ways`. It is not a
+release file. It has SQLite `user_version=1` and one table `stretches`, with an index on `block`.
+A stretch is a part of a way with one steepness class.
+
+| Column | Value |
+| --- | --- |
+| `block` | A tile of zoom 9, as `x * 512 + y` |
+| `way` | The way ID |
+| `minzoom` | 13 for a way with `highway=service`, else 12 |
+| `slope` | The steepness class from 0 to 5, or NULL |
+| `mtb` | The `mtb:scale` from 0 to 6, or NULL for no grade |
+| `sac` | The `sac_scale` from 0 (`strolling`) to 6, or NULL for no tag and for a value that the bake does not know |
+| `trail` | 1 for a way with `highway` `path`, `footway`, `bridleway`, `steps` or `track`, else 0 |
+| `coordinates` | The encoding of `coordinates` of `geometries` in the overlay database |
+
+A stretch has one row for each block that the box of one of its segments touches when the box
+grows by 1/64 of a tile of zoom 12 on each side. The stretches come from the roads of the
+routing bake, without the ferries. The roads of a way join in their order along the way, and a
+road and the road of its other direction count once. When the roads of a way do not make one
+chain, each road is a chain. The steepness of a piece between two points of a chain is the
+height difference from 50 m before to 50 m after the middle of the piece, along the chain,
+divided by that distance. The window stops at the ends of the chain and at a point without a
+known height. A piece whose window is shorter than 20 m has no class. The class is the number of
+the limits 3, 6, 10, 15 and 20 % that the absolute steepness, rounded to 0.1 %, reaches. These are
+the steepness and the bands of `profileGrades` and `gradeBand` in
+`builder/web/src/lib/planner/grade-data.ts`. The cases in
+`builder/web/src/lib/planner/grade-cases.json` hold for both.
+
+`ways.pmtiles` holds the stretches of `ways.sqlite`. It has gzip MVT tiles from zoom 12 to 14,
+with extent 4096, and one layer `ways` of lines. A tile holds the rows of its block whose
+`minzoom` is at or below the tile zoom. Lines with equal properties join where exactly two of them
+meet. The feature ID is the way ID of the first way in the line. A line across the edge of a block
+can have another feature ID in each block. The metadata has `ways_format: 1`. A tile with no
+features is absent. An offline area does not hold the archive.
+
+| Property | Value, only when the stretch has one |
+| --- | --- |
+| `slope` | The steepness class, 0 to 5 |
+| `mtb` | 0 to 6 |
+| `sac` | 0 to 6 |
+| `trail` | `true` |
 
 The tile API serves `/releases/ID/basemap.json`, vector tiles at `/releases/ID/basemap/Z/X/Y.mvt`,
 `/releases/ID/places.json`, places tiles at `/releases/ID/places/Z/X/Y.mvt`,
@@ -232,7 +275,7 @@ table of `data/planner-runtime.toml`. `active` contains the release `id`, manife
 bounds, attribution, land cover attribution when the release has one, terrain attribution, device
 catalogue URL, map asset URLs, tile URLs, and routing, search and downloads API prefixes. `name` is
 the name of the recipe's region in `data/regions/`. `layers` maps the name of each data layer of the
-release to its TileJSON URL. `trailview_rules` is the URL of TrailView's ruleset when the release
+release to its TileJSON URL. It has `ways` when the release has `ways.pmtiles`. `trailview_rules` is the URL of TrailView's ruleset when the release
 has it. `routes` is the route catalog cell URL template on the tile API origin,
 `/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`. When the release has
 trail files, `trails` is the far file URL template `/releases/ID/routes/tiles/trails/{cell}.json`, where

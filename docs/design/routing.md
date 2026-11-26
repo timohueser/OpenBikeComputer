@@ -8,6 +8,7 @@ owns:
   - planner/router-build/**
   - planner/service/**
   - tools/planner_overlays.py
+  - tools/planner_ways.py
 depends_on:
   - data-engine
   - source-preparation

@@ -30,6 +30,7 @@ The store keeps only the work layer of each step and options that a run used las
 | `planner/routing-source` | Pass 1, the node join, the way facts, the turn rules | `source/` |
 | `planner/routing-roads` | The walks of the roads with the terrain, the turn restrictions, the topology | `roads/` |
 | `planner/routing-costs` | The way bases, the road pass, the snap bits | `costs/` |
+| `planner/routing-ways` | The stretches of the ways with their steepness and trail grades | `ways/` |
 | `planner/routing` | The landmarks, the package, the overlay index, the route catalog, the blocks and the routes | `routing/`, `blocks/`, `routes/` |
 | `planner/route-facts` | The places of the OSM extract, the shares and the facts of each route | `facts/` |
 
@@ -38,8 +39,8 @@ The store keeps only the work layer of each step and options that a run used las
 | A stop or a crash in a step | That step and the steps after it |
 | The profile list, or the revision of `planner/routing-costs` | Costs, package, facts |
 | `region`, `attribution` | Package, facts |
-| The GLO-30 tiles or the reference, or the revision of `planner/routing-roads` | Roads, costs, package, facts |
-| The OSM cut, the bounds, the router `FORMAT`, or the revision of `planner/routing-source` | All five |
+| The GLO-30 tiles or the reference, or the revision of `planner/routing-roads` | Roads, costs, ways, package, facts |
+| The OSM cut, the bounds, the router `FORMAT`, or the revision of `planner/routing-source` | All six |
 | The canopy archive, `snow-seasons`, or the revision of `planner/route-facts` | Facts |
 
 A change of the bytes of a work layer changes its format, of its content its revision. A column
