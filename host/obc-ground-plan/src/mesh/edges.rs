@@ -611,9 +611,10 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
         })
     };
     let c = CELL_UNITS as f64;
-    // A ring this near the cell square may own a piece in it.
-    let near_cell = |q: [f64; 2], mpu: f64| {
-        let r = 2.0 * RING_M / mpu;
+    // A ring this near the cell square may own a piece in it; `past` widens the test for a chain's point by the metres
+    // from it to its rings.
+    let near_cell = |q: [f64; 2], mpu: f64, past: f64| {
+        let r = (2.0 * RING_M + past) / mpu;
         q[0] > -r && q[1] > -r && q[0] < c + r && q[1] < c + r
     };
     let mapped_any = input.features.iter().any(|f| f.kind == "guard-rail");
@@ -641,7 +642,8 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
             let pts = &pts[from..to];
             let n = pts.len();
             let mpu: Vec<f64> = pts.iter().map(|p| mpu_at(p.pos)).collect();
-            if n < 2 || !(0..n).any(|i| near_cell(pts[i].pos, mpu[i])) {
+            let edge_m = |i: usize| info[pts[i].way as usize].map_or(0.0, |x| x.1) + pts[i].widen;
+            if n < 2 || !(0..n).any(|i| near_cell(pts[i].pos, mpu[i], edge_m(i))) {
                 continue;
             }
             // Stroke metres in whole 1/1024 m, each step at the mean scale of its two rings: their sums and
@@ -682,7 +684,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                     let on = |step: f64| libm::fmod(pts[i].along, step) == 0.0;
                     rings[i].2
                         && (on(STEP_M) || (on(BEND_STEP_M) && turn(i)))
-                        && near_cell(rings[i].0, mpu[i])
+                        && near_cell(rings[i].0, mpu[i], 0.0)
                         && !ctx.town(rings[i].0, mpu[i])
                 });
                 // A stop changes a share only within `JOIN_M` of a ring where a rail may stand, and a delineator only
@@ -723,7 +725,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                     let j = (f..n).find(|&k| sunk(k + 1) && sunk(k + 2)).expect("the last ring ends a run");
                     let (lo, hi) = (f.saturating_sub(1), (j + 1).min(n - 1));
                     let run: Vec<Ring> = (lo..=hi).map(ring).collect();
-                    if run.iter().any(|r| near_cell(r.edge, r.mpu)) {
+                    if run.iter().any(|r| near_cell(r.edge, r.mpu, 0.0)) {
                         out.rails.push(run);
                         // A post at each `POST_M` of its way's stroke metres between two rings of one way, where
                         // the beam stands: its point and normal out of the road are theirs, mixed from the ring of
