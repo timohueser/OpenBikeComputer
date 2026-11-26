@@ -1,7 +1,7 @@
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
     import MapControlPanel from './MapControlPanel.svelte';
-    import { bandShare, networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
+    import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import type { DataLayer } from '../../lib/planner/layers/data-layer';
 
     let { contours = $bindable(), slopeAngle = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), theme = 'light' }: {
@@ -36,7 +36,7 @@
 <MapControlPanel label="Map settings">
     {#snippet button()}<Icon name="layers" />{/snippet}
     <div class="settings">
-        {#each rows as row, i (row.label)}
+        {#each rows as row (row.label)}
             <div class="row" role="group" aria-label={row.label}>
                 {#each row.tiles as tile (tile.id)}
                     {@const src = pictures[`./tiles/${tile.id}-${theme}.jpg`]}
@@ -50,11 +50,6 @@
                     </button>
                 {/each}
             </div>
-            {#if i === 0 && mapOverlays.network !== 'none'}
-                <ul class="legend" aria-label="Route network colors" style:--band-share={`${bandShare[theme] * 100}%`}>
-                    {#each networkLevels as level (level.rank)}<li title={level.label}><span class="sample" style:color={theme === 'dark' ? level.dark : level.color}></span>{level.rank === 3 ? 'National / intl.' : level.rank === 0 ? 'Unspecified' : level.label}</li>{/each}
-                </ul>
-            {/if}
         {/each}
     </div>
 </MapControlPanel>
@@ -79,19 +74,4 @@
     .tile[aria-pressed="true"]:not(:focus-visible) .picture { outline: 2px solid var(--link); outline-offset: 1px; }
     .tile[aria-pressed="true"] .check { visibility: visible; }
     .tile[aria-pressed="true"] .name { font-weight: 650; color: var(--ink); }
-    /* A band with its line: the map draws a route network as a line when far out and as a band when close. */
-    .sample { flex: 0 0 14px; height: 8px; border-radius: 2px; background: linear-gradient(currentColor 0 0) center / 100% 2px no-repeat, color-mix(in srgb, currentColor var(--band-share), var(--parchment)); }
-    .legend { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8px; margin-top: -4px; font-size: 12px; color: var(--ink-soft); }
-    .legend li { justify-content: flex-start; min-height: 22px; }
-    ul {
-        margin: 0;
-        padding: 0;
-        list-style: none;
-    }
-    li {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-    }
 </style>

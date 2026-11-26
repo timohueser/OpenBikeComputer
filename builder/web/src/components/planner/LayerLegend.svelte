@@ -34,8 +34,11 @@
     .legend :global(li) { display: flex; align-items: center; gap: 6px; }
     .swatch { flex: 0 0 14px; height: 8px; border-radius: 2px; background: var(--swatch); box-shadow: inset 0 0 0 1px var(--line-strong); }
     .hatch { background: repeating-linear-gradient(135deg, transparent 0 2px, var(--swatch) 2px 3.5px); }
-    .line, .thin { height: 4px; box-shadow: none; }
+    .line, .thin, .band { box-shadow: none; }
+    .line { height: 4px; }
     .thin { height: 1.5px; border-radius: 0; }
+    /* A band with its line: the map draws a route network as a line when far out and as a band when close. `--band-share` is the share of the colour in the band. */
+    .band { background: linear-gradient(var(--swatch) 0 0) center / 100% 2px no-repeat, color-mix(in srgb, var(--swatch) var(--band-share), var(--parchment)); }
     .mark { flex: none; width: 20px; height: 20px; margin: -6px -3px; fill: none; stroke: var(--ink); stroke-linecap: round; stroke-linejoin: round; }
     .scale { align-items: flex-start; }
     .ramp { flex: 0 1 auto; width: 260px; min-width: 120px; }

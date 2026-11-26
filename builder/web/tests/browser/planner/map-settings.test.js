@@ -47,11 +47,12 @@ test('the map settings show their pictures, and the legend of a data layer stand
   expect(legendBox.x >= dateBox.x && legendBox.x + legendBox.width <= dateBox.x + dateBox.width).toBe(true);
 });
 
-test('the legends of the slope angle and of the snow layer stand over the date bar, clear of the map controls and of the scale bar', async ({ page }) => {
+test('the legends of the signed routes, the slope angle and the snow layer stand over the date bar, clear of the map controls and of the scale bar', async ({ page }) => {
   const popup = await settings(page);
   await popup.getByRole('button', { name: 'Slope angle', exact: true }).click();
   await popup.getByRole('button', { name: 'Snow', exact: true }).click();
   await page.keyboard.press('Escape');
+  const routes = page.getByRole('status').filter({ hasText: 'Cycling routes' });
   const slope = page.getByRole('status').filter({ hasText: 'Slope angle' });
   const snow = page.getByRole('status').filter({ has: page.getByRole('img', { name: /^Snow colours/ }) });
   // The slope angle draws from zoom 12; the map starts at zoom 7.
@@ -63,9 +64,9 @@ test('the legends of the slope angle and of the snow layer stand over the date b
   await expect(slope.getByRole('list', { name: 'Slope angle colours' }).getByRole('listitem')).toHaveCount(4);
   await expect(snow).toBeVisible();
 
-  const stack = [slope, snow, page.getByRole('group', { name: 'Layer date' })];
+  const stack = [routes, slope, snow, page.getByRole('group', { name: 'Layer date' })];
   const [map, controls, scale, ...boxes] = await Promise.all([page.locator('.map-area'), page.getByLabel('Map controls'), page.locator('.maplibregl-ctrl-scale'), ...stack].map(part => part.boundingBox()));
   for (const box of boxes) expect(inside(box, map) && !overlap(box, controls) && !overlap(box, scale)).toBe(true);
-  // From the top: the slope angle, the conditions layer, its date bar.
-  expect(boxes[0].y + boxes[0].height <= boxes[1].y && boxes[1].y + boxes[1].height <= boxes[2].y).toBe(true);
+  // From the top: the signed routes, the slope angle, the conditions layer, its date bar.
+  expect(boxes.slice(1).every((box, i) => boxes[i].y + boxes[i].height <= box.y)).toBe(true);
 });

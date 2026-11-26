@@ -27,15 +27,14 @@ const row = (label: string) => document.querySelector(`[role="group"][aria-label
 const tiles = (label: string) => [...row(label)!.querySelectorAll('button')].map(tile => tile.textContent?.trim());
 const lit = (label: string) => [...row(label)?.querySelectorAll('[aria-pressed="true"]') ?? []].map(tile => tile.textContent?.trim());
 
-it('lights one route network at a time, and a second click removes the network and its legend', () => {
+it('lights one route network at a time, and shows no legend: the legends are on the map', () => {
     open();
     expect(lit('Routes, one at a time')).toEqual(['Cycling']);
     click('Hiking');
     expect(lit('Routes, one at a time')).toEqual(['Hiking']);
-    expect(document.querySelector('[aria-label="Route network colors"]')).not.toBeNull();
+    expect(document.querySelector('ul')).toBeNull();
     click('Hiking');
     expect(lit('Routes, one at a time')).toEqual([]);
-    expect(document.querySelector('[aria-label="Route network colors"]')).toBeNull();
 });
 
 it('shows a conditions tile for each data layer of the region, and no row without one', () => {

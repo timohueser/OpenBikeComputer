@@ -1,5 +1,6 @@
 import type { ExpressionSpecification, FilterSpecification, LineLayerSpecification, Map, MapGeoJSONFeature, MapMouseEvent, VectorSourceSpecification } from 'maplibre-gl';
 import { PMTiles } from 'pmtiles';
+import type { Legend } from './layers/data-layer';
 import type { Coordinate } from './map-types';
 import { releaseFetch, releaseUrl } from './release';
 
@@ -90,6 +91,12 @@ const restMs = 450;
 // narrow.
 /** The share of the network colour in a band; a dark map needs more of it for the same contrast. */
 export const bandShare = { light: 0.4, dark: 0.5 };
+/** The legend of a shown network: the band of each level. */
+export function networkLegend(theme: 'light' | 'dark'): Legend {
+    return { swatches: networkLevels.map(level => ({
+        label: level.rank === 3 ? 'National / intl.' : level.rank === 0 ? 'Unspecified' : level.label, color: theme === 'dark' ? level.dark : level.color, shape: 'band',
+    })) };
+}
 // The basemap draws a main road wider than a side road, and a side road wider than a path. The tiles name the class of
 // the road of a line in `road`, so the band shows about as far beside each of them. A line with no class is on a path.
 const byRoad = (path: number, minor: number, major: number): ExpressionSpecification => ['match', ['get', 'road'], 'major', major, 'minor', minor, path];

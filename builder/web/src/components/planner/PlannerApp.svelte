@@ -30,7 +30,7 @@
     import { dataLayers } from '../../lib/planner/layers/registry';
     import { SLOPE_ANGLE_ZOOM, slopeLegend } from '../../lib/planner/layers/slope-angle';
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
-    import type { OverlayOptions } from '../../lib/planner/route-overlays';
+    import { bandShare, networkLegend, type OverlayOptions } from '../../lib/planner/route-overlays';
     import type { BikeType } from '../../lib/planner/riding-profiles';
     import type { RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
@@ -154,6 +154,7 @@
     const dataLayer = $derived(dataLayers.find(layer => layer.id === shownLayerId));
     /** The legends of the layers that are on, from the top of their stack on the map. */
     const legends = $derived<MapLegend[]>([
+        ...(mapOverlays.network !== 'none' ? [{ label: { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'MTB routes' }[mapOverlays.network], legend: networkLegend(theme) }] : []),
         ...(slopeAngle ? [{ label: 'Slope angle', ...(mapZoom < SLOPE_ANGLE_ZOOM ? { note: 'Zoom in to see it' } : { legend: slopeLegend }) }] : []),
         ...(dataLayer ? [{ label: dataLayer.label, ...(dataLayer.error ? { note: dataLayer.error } : dataLayer.source ? { legend: dataLayer.legend(theme) } : { note: 'Loading…' }) }] : []),
     ]);
@@ -1380,7 +1381,7 @@
                     {/if}
                 </div>
                 {#if legends.length}
-                    <div class="map-legends" bind:clientHeight={legendsHeight}>
+                    <div class="map-legends" bind:clientHeight={legendsHeight} style:--band-share={`${bandShare[theme] * 100}%`}>
                         <MapLegends {legends} />
                         {#if dataLayer && layerYear}<LayerDateBar date={shownDate} year={layerYear} variable={dataLayer.variable} onDate={(date) => layerDate = date} />{/if}
                     </div>
