@@ -68,6 +68,8 @@ class ReadyPlanTests(unittest.TestCase):
         skipped = self.skipped(*changed)
         self.assertEqual(skipped["cargo fmt --all"], "no Rust source changed")
         self.assertEqual(skipped["cargo clippy"], "no Cargo package changed")
+        # A page inside a crate is not an input of the crate.
+        self.assertEqual(self.skipped("firmware/obc-app/README.md")["cargo clippy"], "no Cargo package changed")
         self.assertEqual(skipped["obc shot --check"], "no rendering, screen or i18n input changed")
         self.assertEqual(skipped["obc test affected --base origin/develop"], "the plan selects no unit")
 

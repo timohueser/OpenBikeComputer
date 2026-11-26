@@ -20,13 +20,6 @@ sources are in [`sim/phone/app`](../sim/phone/app/README.md) and it links nothin
 | `OBCCompanionUITests/`, `scripts/` | The XCUITests and the website screenshot capture. |
 | `project.yml`, `project.local.yml` | The XcodeGen project and the personal signing team. |
 
-```text
-OBCDomain <- OBCProtocolV4 (+ OBCHost) <- OBCTransport <- OBCMock
-OBCDomain <- OBCFormats
-OBCDomain <- OBCPlanner (online client, offline installation and selection)
-OBCUI uses OBCDomain, OBCTransport, OBCPlanner and MapLibre
-```
-
 The app links two Rust libraries, `OBCHost` (`sim/phone/host`) and `planner-service`
 (`planner/service`), and bundles the JavaScript search of `planner/search`.
 

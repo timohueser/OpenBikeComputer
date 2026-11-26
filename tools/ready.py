@@ -85,6 +85,8 @@ def cargo_root(path: str) -> str:
 def owns(package: test_plan.Package, path: str) -> bool:
     """Whether a Cargo package contains a path, by the same rule the test plan uses."""
 
+    if Path(path).name in test_plan.PAGE_NAMES:
+        return False
     prefix = "" if package.root == test_plan.ROOT_WORKSPACE else f"{package.root}/"
     return path == package.manifest or (bool(prefix) and path.startswith(prefix))
 
