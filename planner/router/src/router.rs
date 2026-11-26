@@ -23,11 +23,6 @@ pub struct Request {
     pub profile: String,
     #[serde(default)]
     pub pace: Pace,
-    #[serde(default)]
-    pub alternatives: bool,
-    /// Asks for alternatives and leaves the primary route out of the response.
-    #[serde(default)]
-    pub alternatives_only: bool,
     /// Interior point indices where the rider explicitly permits a reversal.
     #[serde(default)]
     pub turnarounds: Vec<usize>,
@@ -38,11 +33,6 @@ pub struct Request {
     /// Pins the last point in the same way.
     #[serde(default)]
     pub end_position: Option<String>,
-}
-
-#[derive(Debug)]
-pub struct Response {
-    pub routes: Vec<Route>,
 }
 
 /// The part of a road that a path uses, between two fractions of its length.
@@ -87,7 +77,6 @@ pub struct Leg {
 #[derive(Clone, Debug)]
 pub struct Route {
     pub id: String,
-    pub reason: &'static str,
     pub package: String,
     pub profile: String,
     pub cost: u64,
@@ -96,9 +85,6 @@ pub struct Route {
     pub elapsed: Vec<f64>,
     pub legs: Vec<Leg>,
     pub snap_truncated: bool,
-    /// The middle request point of a corridor alternative: a request through the start, this point
-    /// and the finish gives the same line.
-    pub via: Option<[f64; 2]>,
 }
 
 impl Route {
@@ -161,7 +147,7 @@ struct Work {
 }
 
 pub struct Router<H> {
-    pub(crate) package: Region<H>,
+    package: Region<H>,
     metric: String,
     /// Snaps by point and profile.
     snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
@@ -179,21 +165,38 @@ impl<H: Host> Router<H> {
     /// Snapping attaches only to roads in a large connected part of the profile's graph, so a leg
     /// without a path means the points are truly disconnected and the client plans around it.
     pub fn route(&mut self, request: &Request, control: &Control<'_>) -> Result<Route> {
-        self.route_counted(request, control, &mut 0)
+        self.search(request, control, &mut Work::default())
     }
 
-    /// Routes after `queries` attachment queries of the same request, and adds the queries of
-    /// this route to it.
-    pub(crate) fn route_counted(
-        &mut self,
-        request: &Request,
-        control: &Control<'_>,
-        queries: &mut usize,
-    ) -> Result<Route> {
-        let mut work = Work { queries: *queries };
-        let result = self.search(request, control, &mut work);
-        *queries = work.queries;
-        result
+    /// The cost of a route with `metric`, or none when the metric excludes one of its roads or turns:
+    /// the cost of its pieces and of the turns of each leg between its start road, the roads of its
+    /// pieces and its end road. With the profile of the route, it is the cost of the route.
+    pub fn cost(&self, route: &Route, metric: &str) -> Result<Option<u64>> {
+        let mut cost = 0u64;
+        for leg in &route.legs {
+            for piece in &leg.pieces {
+                let endpoint = self.package.endpoint(metric, piece.road)?;
+                let Some(curve) = endpoint.cost.as_ref() else {
+                    return Ok(None);
+                };
+                let part = curve.prefix(piece.to).map_err(Error::InvalidData)?
+                    - curve.prefix(piece.from).map_err(Error::InvalidData)?;
+                cost = cost.checked_add(part).ok_or(Error::Limit)?;
+            }
+            let mut roads: Vec<u32> = std::iter::once(leg.start.road)
+                .chain(leg.pieces.iter().map(|piece| piece.road))
+                .chain([leg.end.road])
+                .collect();
+            roads.dedup();
+            for pair in roads.windows(2) {
+                let endpoint = self.package.endpoint(metric, pair[1])?;
+                let Some(turn) = endpoint.departures.iter().find(|d| d.state == pair[0]) else {
+                    return Ok(None);
+                };
+                cost = cost.checked_add(turn.penalty).ok_or(Error::Limit)?;
+            }
+        }
+        Ok(Some(cost))
     }
 
     fn search(&mut self, request: &Request, control: &Control<'_>, work: &mut Work) -> Result<Route> {
@@ -309,18 +312,22 @@ impl<H: Host> Router<H> {
                 }
             }
             if next.iter().all(|&cost| cost == u64::MAX) {
-                return Err(Error::NoPath);
+                return Err(Error::NoPath(stage_index));
             }
             costs = next;
             stages.push(paths);
         }
-        let (mut selected, &cost) = costs.iter().enumerate().min_by_key(|(_, cost)| *cost).ok_or(Error::NoPath)?;
+        let (mut selected, &cost) = costs
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, cost)| *cost)
+            .ok_or(Error::NoPath(stages.len().saturating_sub(1)))?;
         // Each leg departs from its start candidate and arrives at the candidate that the next leg
         // continues from; they differ only at a turnaround.
         let mut chosen = Vec::new();
         for (index, stage) in stages.into_iter().enumerate().rev() {
             let end = candidates[index + 1][selected].position;
-            let (previous, source, path) = stage.into_iter().nth(selected).flatten().ok_or(Error::NoPath)?;
+            let (previous, source, path) = stage.into_iter().nth(selected).flatten().ok_or(Error::NoPath(index))?;
             chosen.push((&candidates[index][source], end, path));
             selected = previous;
         }
@@ -357,7 +364,6 @@ impl<H: Host> Router<H> {
         }
         Ok(Route {
             id: digest(&identity),
-            reason: "primary",
             package: self.package.identity().to_owned(),
             profile: request.profile.clone(),
             cost,
@@ -365,7 +371,6 @@ impl<H: Host> Router<H> {
             elapsed,
             legs,
             snap_truncated: truncated,
-            via: None,
         })
     }
 

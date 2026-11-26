@@ -146,18 +146,6 @@ function cellInventory(dir: Directory): CellInventory {
     };
 }
 
-/** Inspect one existing revision without creating or sweeping cache directories. */
-export async function openCellInventory(revision: string): Promise<CellInventory | null> {
-    const root = await opfsRoot();
-    if (!root) return null;
-    try {
-        const home = await root.getDirectoryHandle(ROOT);
-        return cellInventory(await home.getDirectoryHandle(revision));
-    } catch {
-        return null;
-    }
-}
-
 /**
  * Open (creating if needed) the store for one catalog revision, and sweep the others away.
  *
@@ -205,7 +193,7 @@ export async function clearMapWorkStorage(): Promise<void> {
     for (const name of [ROOT, OUT, SCRATCH]) await removeDirectoryIfPresent(root, name);
 }
 
-/** Delete output and scratch from an interrupted run, without deleting reusable cells. */
+/** Delete output and scratch from an interrupted run, and leave its cells. */
 export async function clearAssemblyStorage(): Promise<void> {
     const root = await opfsRoot();
     if (!root) return;
@@ -236,14 +224,14 @@ export async function reclaimableAssemblyBytes(): Promise<number> {
     return bytes;
 }
 
-/** Delete only the assembled-map staging area, leaving reusable cells and merge scratch alone. */
+/** Delete only the assembled-map staging area, and leave the cells and the merge scratch. */
 export async function discardMapOutput(): Promise<void> {
     const root = await opfsRoot();
     if (!root) return;
     await removeDirectoryIfPresent(root, OUT);
 }
 
-/** Delete one run's cells after its readers have closed. Used when future reuse was not selected. */
+/** Delete one run's cells after its readers have closed. */
 export async function discardCellStore(revision: string): Promise<void> {
     const root = await opfsRoot();
     if (!root) return;

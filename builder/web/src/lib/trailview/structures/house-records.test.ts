@@ -54,6 +54,18 @@ describe('the house records of a feature tile', () => {
         expect(outlines.length / OUTLINE_WORDS).toBe(6 * 8 + 3 * 6);
     });
 
+    it('roofs an outline with slopes that follow it, from the eaves past its walls inward to a ridge', () => {
+        // Two long sides 20 units apart, the other two at 45 degrees.
+        const slanted = [3000, 3020, 3040, 3020, 3060, 3000, 3020, 3000];
+        const { records, outlines } = tileHouses([building('barn', slanted)], TILE);
+        expect((records[7] >> 6) & 1).toBe(OUTLINE);
+        const depth = 20 * 8 * metresPerUnit(TILE.y * EXTENT * 8 + 3010 * 8), floats = new Float32Array(outlines.buffer);
+        const inward = Array.from({ length: outlines.length / OUTLINE_WORDS }, (_, v) => v * OUTLINE_WORDS).filter(v => (outlines[v + 2] >>> 30) & 1).map(v => floats[v + 3]);
+        expect(Math.min(...inward)).toBeCloseTo(-0.4);
+        // The long sides meet in the middle: the ridge.
+        expect(Math.max(...inward)).toBeCloseTo(depth / 2, 1);
+    });
+
     it('draws a building in an industrial area as a hall, and the buildings of a farmyard as its house and its barns', () => {
         const kind = (tags: Record<string, string>, side: number) =>
             tileHouses([{ ...building('yes', rectangle(4000, 4000, side, side, 0)), tags: { building: 'yes', ...tags } }], TILE).records[7] & 15;

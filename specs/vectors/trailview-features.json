@@ -20,5 +20,12 @@
   {"kind": "lake", "tags": {"landuse": "reservoir", "water": "Stausee Göscheneralp"}, "geometry": "area",
    "parts": [{"outer": true, "xy": [[6000, 6000], [6400, 6100], [6200, 6500]]}]},
   {"kind": "orchard", "tags": {}, "geometry": "area",
-   "parts": [{"outer": true, "xy": [[-300, -300], [8492, -300], [8492, 8492], [-300, 8492]]}]}
+   "parts": [{"outer": true, "xy": [[-300, -300], [8492, -300], [8492, 8492], [-300, 8492]]}]},
+  {"kind": "tunnel-tube", "tags": {"along": "12.5", "class": "residential", "ends": "arch free", "half": "3.1",
+   "height": "5", "look": "concrete", "road": "2.5", "section": "round", "surface": "asphalt"}, "geometry": "line",
+   "parts": [{"outer": false, "xy": [[1000, 2000], [1050, 2010]], "z": [500.12, 500.4]}]},
+  {"kind": "tunnel-end", "tags": {"collar": "6", "face": "6.1", "foot": "-1.4", "half": "3.1", "heading": "0.197",
+   "height": "5", "left": "2.1 1.4", "look": "concrete", "part": "arch", "right": "1.8", "section": "round",
+   "shift": "0", "way": "8988521472 6056830976"}, "geometry": "point",
+   "parts": [{"outer": false, "xy": [[1000, 2000]], "z": [500.12]}]}
 ]

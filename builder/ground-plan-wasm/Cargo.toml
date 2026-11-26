@@ -10,10 +10,11 @@ description = "The TrailView ground plan in the browser: the cell build of obc-g
 crate-type = ["cdylib", "rlib"]
 
 # The storeys over the ground (decks), which the viewer draws. Without it the package links none of their faces,
-# records and shells.
+# records and shells. `bores`: the storey under the ground, which the viewer does not draw yet.
 [features]
 default = ["storeys"]
 storeys = ["obc-ground-plan/storeys"]
+bores = ["storeys", "obc-ground-plan/bores"]
 
 [dependencies]
 obc-ground-plan = { workspace = true }

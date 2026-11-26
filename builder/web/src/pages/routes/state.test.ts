@@ -4,8 +4,8 @@ import type { RouteRecord } from '../../lib/library/records';
 import { sentKey } from '../../lib/library/summary';
 import { deviceState } from './state';
 
-const route: RouteRecord = { id: 'r', revision: 1, name: 'Lake loop', updatedAt: 0, summary: null, trip: { points: [] } };
-const sent = { r: { device: 'card:7', key: sentKey(route) } };
+const route: RouteRecord = { id: 'r', name: 'Lake loop', updatedAt: 0, summary: null, trip: { points: [] } };
+const sent = { r: { key: sentKey(route), card: 'card', days: ['7', '8'], crcs: [1, 2], gone: [], trips: ['9', ''], tripKeys: ['5', ''] } };
 
 beforeEach(() => {
     remembered.device = { serial: '00AB', storeId: 'card', at: null, map: null, mapObject: null, built: null, routes: 1, bytes: { map: 0, routes: 0, rides: 0, other: 0 }, came: null, skipped: [] };
@@ -18,8 +18,10 @@ describe('deviceState', () => {
         expect(deviceState(route, ['r'], sent)).toBe('waiting');
     });
 
-    it('is not on the device for a route of another card, or with no remembered device', () => {
-        expect(deviceState(route, [], { r: { device: 'other:7', key: sentKey(route) } })).toBeUndefined();
+    it('is not on the device for a route of another card, with no finished send, or with no remembered device', () => {
+        expect(deviceState(route, [], { r: { ...sent.r, card: 'other' } })).toBeUndefined();
+        // The last send did not finish, or the trip object is gone while its days are there.
+        expect(deviceState(route, [], { r: { ...sent.r, key: '' } })).toBeUndefined();
         remembered.device = null;
         expect(deviceState(route, [], sent)).toBeUndefined();
     });

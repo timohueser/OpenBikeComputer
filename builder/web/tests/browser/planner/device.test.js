@@ -34,7 +34,7 @@ async function fill(page, state, remembered = null) {
   await page.waitForFunction(() => window.coverTest);
   await page.evaluate(async ({ summary, state, remembered }) => {
     const { library } = window.coverTest;
-    for (const [id, name] of [['lake', 'Lake loop'], ['pass', 'Pass day']]) await library.saveRoute({ id, revision: 0, name, updatedAt: 0, trip: {}, summary });
+    for (const [id, name] of [['lake', 'Lake loop'], ['pass', 'Pass day']]) await library.saveRoute({ id, name, updatedAt: 0, trip: {}, summary });
     for (const [key, value] of Object.entries(state)) await library.setState(key, value);
     if (remembered) localStorage.setItem('obc-device', JSON.stringify(remembered));
   }, { summary, state, remembered });
@@ -63,7 +63,7 @@ test('connected, the rows show the sync, the routes, the rides, the memory card,
   await page.goto('/planner.html?fake-device#/device');
   await page.waitForFunction(() => window.deviceTest);
   const route = await page.evaluate(() => window.deviceTest.route);
-  await fill(page, { sent: { lake: { device: route, key: '' } } });
+  await fill(page, { sent: { lake: route } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route(url => url.hostname !== '127.0.0.1', route => route.abort());
@@ -113,16 +113,28 @@ test('a sync turns the icon beside the chip, and after a problem the icon starts
   await expect(banner.getByRole('button', { name: 'Sync again' })).toBeVisible();
 });
 
-test('the remembered device with a card that has no format is not connected, and the page names the map builder', async ({ page }) => {
+test('a card with no format: Format asks first, then formats the card, and the device connects', async ({ page }) => {
   await fill(page, {}, device);
   await page.route(url => url.hostname !== '127.0.0.1', route => route.abort());
   await page.goto('/planner.html?fake-device#/device');
   await page.waitForFunction(() => window.deviceTest);
   await page.evaluate(() => window.deviceTest.plug(true));
   await expect(page.getByText('The memory card of OBC-4F2A needs a format.')).toBeVisible();
-  await expect(page.getByRole('link', { name: 'The map builder' })).toBeVisible();
   await expect(page.getByText('Not connected', { exact: true })).toBeVisible();
   await expect(chip(page).locator('.dot')).not.toHaveClass(/connected/);
+
+  // Cancel formats nothing.
+  await page.getByRole('button', { name: 'Format' }).click();
+  const question = page.getByRole('dialog', { name: 'Format the memory card of OBC-4F2A?' });
+  await expect(question).toContainText('erases the map, the routes and the rides');
+  await question.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByText('The memory card of OBC-4F2A needs a format.')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Format' }).click();
+  await question.getByRole('button', { name: 'Format' }).click();
+  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(row(page, 'Sync')).toContainText('In sync.');
+  await expect(row(page, 'Memory card').getByRole('button', { name: 'Format' })).toBeEnabled();
 });
 
 test('a browser with no WebUSB says that the cable works in Chrome and Edge, and offers no button', async ({ page }) => {

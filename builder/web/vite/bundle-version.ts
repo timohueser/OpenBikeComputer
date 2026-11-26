@@ -1,7 +1,7 @@
 // `virtual:NAME-version`: the version of the JavaScript that a worker runs to make what the device cache keeps, the
 // start of the SHA-256 of its entries bundled with every import inlined. `plan`: the plan worker's input preparation,
 // with the page decode that it imports, and the input walk; the cells also key by the hash of the bridge's wasm, which
-// the bundle only names by URL. `tree`: the tree models and their entry layout. `house`: the house records. The stamp
+// the bundle only names by URL. `house`: the house records. The stamp
 // version stays in stamp-bundle.ts: the data pipeline digests that file as the stamp bake's own (`stamp_sources`).
 
 import { createHash } from "node:crypto";
@@ -12,7 +12,6 @@ import { build, type Plugin } from "vite";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const ENTRIES: Record<string, string[]> = {
     plan: ["src/lib/trailview/plan/plan-worker.ts", "src/lib/trailview/plan/inputs.ts"],
-    tree: ["src/lib/trailview/vegetation/model-worker.ts", "src/lib/trailview/vegetation/model-entry.ts"],
     house: ["src/lib/trailview/structures/house-worker.ts"],
 };
 

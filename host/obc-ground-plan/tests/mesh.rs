@@ -12,6 +12,7 @@ use obc_ground_plan::faces::{records, Rules};
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::graph;
 use obc_ground_plan::mesh::{check, mesh_cell, Reads, Rim};
+use obc_ground_plan::openings;
 
 /// Ground triangles within `check::NEAR_END_M` of a deck end line steeper than a rock face where the terrain is not
 /// (`check::deck_ends`), measured on the revision 16 fixture with line water: the rock-face fall of an outline edge's
@@ -27,8 +28,11 @@ fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its
     let cells: Vec<CellKey> = (fixture.cells().into_iter())
         .filter(|k| k.feature_tiles().iter().all(|&(c, r)| fixture::feature_tile(&dir, c, r).is_some()))
         .collect();
+    // As the device builds a cell: the ways of the built tunnel ends on the ground up to their openings.
     let built = fixture.map(&cells, |key, input| {
-        let graph = graph::build(key, &input, &rules.sections);
+        let ends = openings::built(&input);
+        let mut graph = graph::build_open(key, &input, &rules.sections, None, &ends.open);
+        graph.mouths = ends.mouths;
         let built = records::build(&graph, &input, rules, key, 0, true);
         (key, Rim::of(&built.faces), built.faces, built.near.words, input.terrain)
     });

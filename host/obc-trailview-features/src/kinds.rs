@@ -15,7 +15,7 @@ const FIELDS: [&str; 7] = ["kind", "geometry", "match", "keep", "height", "min_z
 const HEIGHTS: [&str; 4] = ["surface", "pad", "profile", "none"];
 /// The fields of a road class that the road solver and the width rule read. The other fields of the
 /// table are the stamp profile of the engine, which `builder/web` checks.
-const CLASS_FIELDS: [&str; 12] = [
+const CLASS_FIELDS: [&str; 11] = [
     "half_m",
     "shoulder_m",
     "grade",
@@ -26,7 +26,6 @@ const CLASS_FIELDS: [&str; 12] = [
     "widen_m",
     "keep_m",
     "sidewalk_m",
-    "sidewalk_steep",
     "sidewalk_margin_m",
 ];
 /// The widest sidewalk: the walk byte of the engine's mask holds no more (`mask-walk.wgsl`).
@@ -216,6 +215,11 @@ pub fn level_rows(roads: &Value, waterways: &Value, plan: &Value) -> Value {
                        "structures": plan["structures"]})
 }
 
+/// The rules of the tunnel parts of the step's options: `groups` and `bake` of `parts.json`.
+pub fn part_rows(table: &Value) -> Value {
+    serde_json::json!({"groups": table["groups"], "bake": table["bake"]})
+}
+
 /// The finishes of the step's options: the fields of `FINISH_FIELDS` of each finish of the table.
 pub fn finish_rows(table: &Value) -> Value {
     rows_of(table, &FINISH_FIELDS)
@@ -340,7 +344,6 @@ pub fn classes(table: &Value) -> Result<(Vec<String>, Classes), String> {
             widen_m: field("widen_m"),
             keep_m: field("keep_m"),
             sidewalk_m: field("sidewalk_m"),
-            sidewalk_steep: field("sidewalk_steep"),
             sidewalk_margin_m: field("sidewalk_margin_m"),
         });
     }

@@ -8,9 +8,9 @@ const NORMAL_WEIGHT = 0.5, COLOUR_WEIGHT = 1;
 export const simplifierReady = MeshoptSimplifier.ready;
 
 /**
- * Tier k of a tree: the trunk of its own tier, which is a few triangles, and the crown of tier 0 with
- * at most `triangles` triangles, made by collapsing the edges where the place, the normal and the
- * colour change least. So every tier has the same crown parts, outline, normals and colours. `want`
+ * Tier k of a tree: the trunk of its own tier `own`, which is a few triangles, and the crown of `near`
+ * with at most `triangles` triangles, made by collapsing the edges where the place, the normal and the
+ * colour change least. So the tier has the crown parts, outline, normals and colours of `near`. `want`
  * is how bright tier 0 draws (`lit`), which every tier of one tree shares.
  */
 export function simplified(near: Grown, own: Grown, triangles: number, want = lit(near)): Grown {
@@ -28,8 +28,14 @@ export function simplified(near: Grown, own: Grown, triangles: number, want = li
         position: [...trunk(own.position), ...pick(near.position)], normal: [...trunk(own.normal), ...pick(near.normal)], color: [...trunk(own.color), ...pick(near.color)],
         index: [...trunkIndex, ...Array.from(index, v => at.get(v)!)], trunk: own.trunk, crown: near.crown,
     };
-    // Fewer triangles show the crown's lit and shaded sides in other shares: the crown's colours
-    // scale so that it draws as bright as tier 0, seen from the side.
+    return relit(far, want);
+}
+
+/**
+ * Fewer triangles show the crown's lit and shaded sides in other shares: scales the crown's colours of
+ * `far` so that it draws as bright as `want`, seen from the side.
+ */
+export function relit(far: Grown, want: number[]): Grown {
     const got = lit(far);
     for (let k = 3 * far.trunk; k < far.color.length; k++) far.color[k] *= want[k % 3] / Math.max(got[k % 3], 1e-6);
     return far;

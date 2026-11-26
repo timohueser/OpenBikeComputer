@@ -11,6 +11,7 @@ owns:
 depends_on:
   - content
   - data-engine
+  - web-foundations
 test_depends_on:
   - device-map-baking
 status: draft

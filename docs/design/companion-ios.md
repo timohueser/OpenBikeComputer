@@ -4,7 +4,10 @@ kind: shell
 purpose: "Runs the iPhone app that plans routes, sends them to the device and gets rides back."
 owns:
   - companion-ios/**
-depends_on: []
+depends_on:
+  - routing
+  - search
+  - simulators
 test_depends_on: []
 status: approved
 ---
@@ -15,7 +18,7 @@ status: approved
 
 The companion app runs on the rider's iPhone. The rider plans or imports a route and sends it to the device over Bluetooth. The app gets the recorded rides back from the device. It also keeps offline maps for the route planner, and tells the rider when a new firmware version is published.
 
-The app entry point [`OBCCompanionApp.swift`](../../companion-ios/OBCCompanion/OBCCompanionApp.swift) is the only place that selects how the app talks to the device: the real Bluetooth link, or a test double (`MockTransport`) in Debug builds. The screens, the device protocol and the planner client are in the Swift package [`OBCKit`](../../companion-ios/Packages/OBCKit/Package.swift). The app links two Rust libraries: the client of the device's object protocol (`OBCHost`), and the offline router and search (`planner-service`).
+The app entry point [`OBCCompanionApp.swift`](../../companion-ios/OBCCompanion/OBCCompanionApp.swift) is the only place that selects how the app talks to the device: the real Bluetooth link, or a test double (`MockTransport`) in Debug builds. The screens, the device protocol and the planner client are in the Swift package [`OBCKit`](../../companion-ios/Packages/OBCKit/Package.swift). The app links two Rust libraries: the client of the device's object protocol (`OBCHost`, from the phone simulator), and the offline router (`planner-service`). It also bundles the JavaScript place search of `planner/search`.
 
 The app does not define the wire format. The [Bluetooth contract](../../specs/ble-interface.md) defines it.
 

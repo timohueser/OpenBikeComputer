@@ -82,9 +82,9 @@ struct TripPlanTests {
 
         var full = apart
         while full.days < PlannerPlan.maxDays { full = try #require(full.appendingDay(points(30_000, 31_000), name: nil)) }
-        #expect(full.appendingDay(points(30_000, 31_000), name: nil) == nil, "a plan holds at most 14 days")
-        let long = Trip.joining((0..<15).map { points(Double($0) * 1_000, Double($0 + 1) * 1_000) }, id: TripID("t"), name: "T",
+        #expect(full.appendingDay(points(30_000, 31_000), name: nil) == nil, "a plan holds at most the day limit")
+        let long = Trip.joining((0...PlannerPlan.maxDays).map { points(Double($0) * 1_000, Double($0 + 1) * 1_000) }, id: TripID("t"), name: "T",
                                 bikeType: .road, now: Date(timeIntervalSince1970: 0))
-        #expect(long.dayCount == 15 && PlannerPlan.keptLine(long) == nil)
+        #expect(long.dayCount == PlannerPlan.maxDays + 1 && PlannerPlan.keptLine(long) == nil)
     }
 }

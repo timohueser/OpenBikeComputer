@@ -183,6 +183,8 @@ fn address_tags(mut tags: Tags) -> Tags {
                         | "cuisine"
                         | "population"
                         | "ele"
+                        | "tents"
+                        | "shelter_type"
                 )
         })
         .collect()

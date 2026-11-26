@@ -72,4 +72,15 @@ describe('the object shadow maps', () => {
         expect(shadow.pending).toBe(false);
         expect(shadow.due([60, 0, 20], 1.6, sunAt(4), NOTHING, false)).toBe(0);
     });
+
+    it('draws for the casters that frames which drew nothing saw', () => {
+        const shadow = new Shadow();
+        expect(shadow.due([0, 0, 0], 1.6, sun, NOTHING, false)).toBe(0);
+        expect(shadow.due([0, 0, 0], 1.6, sun, NOTHING, false)).toBe(1);
+        shadow.hold({ casters: true, reshaped: Infinity });
+        shadow.hold(NOTHING);
+        expect(shadow.due([0, 0, 0], 1.6, sun, NOTHING, false)).toBe(0);
+        expect(shadow.due([0, 0, 0], 1.6, sun, NOTHING, false)).toBe(1);
+        expect(shadow.due([0, 0, 0], 1.6, sun, NOTHING, false)).toBe(-1);
+    });
 });

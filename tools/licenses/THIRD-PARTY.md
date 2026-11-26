@@ -876,7 +876,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `bare-metal 0.2.5`, `heapless 0.8.0`, `heapless 0.9.3`, `nb 0.1.3`, `nb 1.1.0`, `vcell 0.1.3`
+Applies to: `bare-metal 0.2.5`, `heapless 0.9.4`, `nb 0.1.3`, `nb 1.1.0`, `vcell 0.1.3`
 
 ```text
 Copyright (c) 2017 Jorge Aparicio
@@ -2983,7 +2983,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `bare-metal 0.2.5`, `heapless 0.9.3`, `nb 0.1.3`, `nb 1.1.0`, `vcell 0.1.3`
+Applies to: `bare-metal 0.2.5`, `heapless 0.9.4`, `nb 0.1.3`, `nb 1.1.0`, `vcell 0.1.3`
 
 ```text
 Copyright (c) 2017 Jorge Aparicio
@@ -4515,7 +4515,7 @@ THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `form_urlencoded 1.2.2`
+Applies to: `form_urlencoded 1.2.3`
 
 ```text
 Copyright (c) 2013-2016 The rust-url developers
@@ -6154,7 +6154,7 @@ THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `form_urlencoded 1.2.2`
+Applies to: `form_urlencoded 1.2.3`
 
 ```text
 Copyright (c) 2013-2016 The rust-url developers

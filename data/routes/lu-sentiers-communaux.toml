@@ -1,0 +1,12 @@
+origin = 5
+countries = ["LU"]
+kind = "hiking"
+
+# A route is its start points and its line pieces, each with the `map_id` of the route. A label is
+# no route.
+[route]
+layer = "Sentiers communaux"
+key = "map_id"
+name = "{name}"
+name_strip = '^Sentiers[ _](?:locaux|thématiques)[ _](?:Sud:|Moselle_|Gutt?land ?_|Guttland )?|^Lokaler Wanderweg '
+drop = { is_label = ["True"] }

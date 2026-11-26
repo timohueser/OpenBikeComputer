@@ -1,16 +1,14 @@
 // One map run: cells fetched and verified against the catalog, assembled into ONE `.obcm` by
-// wasm in a Worker, and either downloaded normally or streamed straight to a connected device.
+// wasm in a Worker, and streamed straight to a connected device.
 //
 // A map is one file, so there is nothing to order, nothing to package and nothing to
-// acknowledge: the only question left is where it lands.
+// acknowledge.
 
 import { ASSEMBLE_PHASES, type AssemblePhase, type MemoryEstimate } from "../assemble/bridge";
 import {
     isWorkerResponse,
     requestTransferList,
     type AssembleWorkerRequest,
-    type CellReadMode,
-    type MapWriteMode,
     type WorkerCell,
     type WorkerSourceCell,
     type WorkerTerrainCell,
@@ -25,21 +23,16 @@ import {
     discardMapOutput,
     hasRoomFor,
     isStorageQuotaError,
-    openCellInventory,
     openCellStore,
     readMapOutput,
     reclaimableAssemblyBytes,
     STORAGE_QUOTA_MESSAGE,
-    type CellInventory,
 } from "../cells/store";
 import { projectedRunDiskBytes } from "../cells/quota";
 import { acquireMapWorkStorage } from "../cells/workBarrier";
-import { saveBlob } from "../download";
 import {
     downloadCells,
     planCells,
-    type CellDownloadPlan,
-    type CellDownloadProgress,
 } from "../catalog/download";
 import type { CoverageStore } from "./store.svelte";
 import type { JobContext } from "../device/progress";
@@ -47,16 +40,6 @@ import type { SendAssembledMap } from "../device/write";
 import { formatBytes, truncateUtf8 } from "../format";
 import type { FlatStoreClient } from "../usb/client";
 import type { PutResponse } from "../usb/protocol";
-
-const KEEP_CELLS_KEY = "obcm.keepMapCells";
-
-function loadKeepCells(): boolean {
-    try {
-        return globalThis.localStorage?.getItem(KEEP_CELLS_KEY) === "true";
-    } catch {
-        return false;
-    }
-}
 
 /** The engine's sort budget, which after the external merge **is** the wasm engine term. A
  *  chosen value: big enough that a DACH-scale sort is about a dozen runs, small enough that
@@ -90,8 +73,7 @@ export type Phase =
     | "cancelled"
     | "error";
 
-interface DeviceOutput {
-    readonly kind: "device";
+interface Output {
     readonly client: FlatStoreClient;
     readonly ctx: JobContext;
     readonly resolve: (result: PutResponse) => void;
@@ -104,56 +86,6 @@ interface DeviceOutput {
     transientCellRevision: string | null;
     releaseWork: (() => void) | null;
     readonly operations: Set<Promise<unknown>>;
-}
-interface DownloadOutput {
-    readonly kind: "download";
-    runId: number | null;
-    transientCellRevision: string | null;
-    releaseWork: (() => void) | null;
-    readonly operations: Set<Promise<unknown>>;
-}
-type Output = DownloadOutput | DeviceOutput;
-
-/**
- * The same plan minus every cell already in the store, and the tally of what that saved.
- *
- * A cell is "already here" when a file named by its catalog digest exists at the catalog's
- * length. The name **is** the SHA-256 `fetchVerified` matched before the file was written, and
- * the length catches a write torn by a crash or a quota refusal. Re-hashing every cell on every
- * run would cost seconds and a full read of exactly the bytes this exists to stop reading.
- *
- * Terrain is never skipped: it is not in the store.
- */
-interface CachedPlan {
-    plan: CellDownloadPlan;
-    cells: number;
-    bytes: number;
-}
-
-async function scanCached(
-    plan: CellDownloadPlan,
-    cells: CellInventory,
-    runOp: <T>(operation: () => Promise<T>) => Promise<T> = (operation) => operation(),
-): Promise<CachedPlan> {
-    const wanted: typeof plan.items = [];
-    let bytes = 0;
-    let have = 0;
-    let haveBytes = 0;
-    for (const item of plan.items) {
-        const present = item.band !== null && (await runOp(() => cells.has(item.cell.sha256, item.cell.bytes)));
-        if (present) {
-            have += 1;
-            haveBytes += item.cell.bytes;
-            continue;
-        }
-        wanted.push(item);
-        bytes += item.cell.bytes;
-    }
-    return {
-        plan: { ...plan, items: wanted, totalBytes: bytes },
-        cells: have,
-        bytes: haveBytes,
-    };
 }
 
 /** The build of one map from a coverage store. Call `start()` once, and `destroy()` when the
@@ -168,51 +100,26 @@ export class MapRun {
     readonly #startWait = new AbortController();
 
     #phase = $state<Phase>("idle");
-    #dlProgress = $state<CellDownloadProgress | null>(null);
-    #asmPhase = $state<AssemblePhase>("open");
-    #asmFraction = $state(0);
     /** When each assembly phase began, for the run's debug ledger. */
     #asmPhaseStart: Partial<Record<AssemblePhase, number>> = {};
-    /** The map, once there is one: what it is called and how big it is. */
-    #savedFile = $state<{ name: string; byteLength: number } | null>(null);
-    /** Whether the file actually reached the disk. Not `savedFile !== null`: it is
-     *  set the moment the map is delivered, and a cancel that raced the delivery
-     *  must not tell someone to go and discard a file nobody has. */
-    #persisted = $state(false);
-    /** The one delivery, so `done` can wait for a save/send that is still running rather
+    /** The one delivery, so `done` can wait for a send that is still running rather
      *  than declare the map finished behind it. */
     #delivery: Promise<void> = Promise.resolve();
     /** Set by `failRun`: a delivery that has not started must not write into an
      *  output that is being discarded. */
     #sinkClosed = false;
-    /** How this run's cells reached the assembler, as the worker reports it before the assembly
-     *  starts. Shown, because a bug report about a failed country-scale run has to say which. */
-    #readMode = $state<CellReadMode | null>(null);
-    /** …and where its map went, for the same reason. */
-    #writeMode = $state<MapWriteMode | null>(null);
-    /** Cells this run did not have to fetch, because a previous one already put
-     *  them in OPFS under the same digest. */
-    #cachedCells = $state(0);
-    #cachedBytes = $state(0);
-    /** Opt-in reuse. OPFS may still be the active run's necessary working disk when false. */
-    #keepCells = $state(loadKeepCells());
     // Starts true so the first readiness cannot briefly enable a run before
     // `start()` maintenance has joined the origin-global map-work barrier.
     #clearingCells = $state(true);
-    #cellStorageNotice = $state<string | null>(null);
-    #runWarnings = $state<string[]>([]);
-    #errorMessage = $state<string | null>(null);
     #abortCtl: AbortController | null = null;
     /** The name this run's file will be saved under, fixed when the run starts, so editing the
      *  selection mid-download cannot rename the map that is already being built from the old one. */
-    #runFileName = $state("OBC map.obcm");
+    #runFileName = "OBC map.obcm";
 
     #output = $state.raw<Output | null>(null);
-    #lastRunKind = $state<Output["kind"]>("download");
     #nextRunId = 0;
     #activeRunId = 0;
     #failure: Promise<void> = Promise.resolve();
-    #paused = $state(false);
 
     #estimate = $state<MemoryEstimate | null>(null);
     #estimateLedger = $state.raw<CoverageStore["ledger"]>(null);
@@ -220,9 +127,8 @@ export class MapRun {
     #estimateGeneration = 0;
     #estimatePending = $state(false);
     /** The estimate's own failure channel, never mixed into the run's. Cleared by the next
-     *  request; retried by bumping the nonce. */
+     *  request. */
     #estimateError = $state<string | null>(null);
-    #estimateNonce = $state(0);
     readonly #disposeEstimate: () => void;
 
     constructor(store: CoverageStore) {
@@ -232,28 +138,7 @@ export class MapRun {
         });
     }
 
-    get phase(): Phase { return this.#phase; }
-    get dlProgress(): CellDownloadProgress | null { return this.#dlProgress; }
-    get asmPhase(): AssemblePhase { return this.#asmPhase; }
-    get asmFraction(): number { return this.#asmFraction; }
-    get savedFile(): { name: string; byteLength: number } | null { return this.#savedFile; }
-    get persisted(): boolean { return this.#persisted; }
-    get readMode(): CellReadMode | null { return this.#readMode; }
-    get writeMode(): MapWriteMode | null { return this.#writeMode; }
-    get cachedCells(): number { return this.#cachedCells; }
-    get cachedBytes(): number { return this.#cachedBytes; }
-    get keepCells(): boolean { return this.#keepCells; }
-    get clearingCells(): boolean { return this.#clearingCells; }
-    get cellStorageNotice(): string | null { return this.#cellStorageNotice; }
-    get runWarnings(): string[] { return this.#runWarnings; }
-    get errorMessage(): string | null { return this.#errorMessage; }
-    get runFileName(): string { return this.#runFileName; }
-    get lastRunKind(): Output["kind"] { return this.#lastRunKind; }
-    get sendingToDevice(): boolean { return this.#output?.kind === "device"; }
     get estimateError(): string | null { return this.#estimateError; }
-    get refreshBlocked(): boolean { return this.#refreshBlocked; }
-    get memoryCaution(): string | null { return this.#memoryCaution; }
-    get running(): boolean { return this.#running; }
     get refusal(): string | null { return this.#refusal; }
     get ready(): boolean { return this.#ready; }
 
@@ -294,17 +179,16 @@ export class MapRun {
 
     destroy(): void {
         this.#destroyed = true;
-        const cause = new DOMException("the map builder was closed", "AbortError");
+        const cause = new DOMException("the map run was closed", "AbortError");
         this.#startWait.abort(cause);
         // Finalization starts only after the map is durable and its abort listener has been
         // detached. Let that owner finish its cleanup. Every earlier teardown goes through the
         // same barrier-owning failure path; independent close/discard calls here could race the
         // owner's outstanding put or a newly started run.
         if (this.#phase !== "finalizing") {
-            // Direct delivery is cancelled through the DeviceJob so the same signal reaches the
-            // in-flight PUT; its one abort listener enters failRun. Browser delivery has
-            // no outer controller, so it enters that owner path directly.
-            if (this.#output?.kind === "device" && !this.#output.settled) this.#output.ctx.cancel(cause);
+            // A run is cancelled through the DeviceJob so the same signal reaches the in-flight
+            // PUT; its one abort listener enters failRun.
+            if (this.#output && !this.#output.settled) this.#output.ctx.cancel(cause);
             else void this.#failRun(cause);
         }
         // With no run owner, the worker only serves the background estimate and can be dropped
@@ -342,14 +226,6 @@ export class MapRun {
                 break;
             case "progress":
                 this.#asmPhaseStart[msg.phase] ??= performance.now();
-                this.#asmPhase = msg.phase;
-                this.#asmFraction = msg.fraction;
-                break;
-            case "reading":
-                this.#readMode = msg.mode;
-                break;
-            case "writing":
-                this.#writeMode = msg.mode;
                 break;
             case "stored-map":
                 // The map never crossed the port: it is in OPFS, the worker has
@@ -362,13 +238,11 @@ export class MapRun {
                 void this.#delivery.catch(() => {});
                 break;
             case "file":
-                // No sink was available, so the bytes came across instead. Same
-                // delivery, but direct device delivery keeps the worker's transferred
-                // buffer as its sole resident copy instead of snapshotting it into a Blob.
+                // No sink was available, so the bytes came across instead. The send keeps the
+                // worker's transferred buffer as its sole resident copy instead of snapshotting
+                // it into a Blob.
                 this.#phase = "saving";
-                this.#delivery = this.#output?.kind === "device"
-                    ? this.#deliverResidentMap(msg.bytes, msg.byteLength)
-                    : this.#deliverMap(new Blob([msg.bytes as unknown as BlobPart]), msg.byteLength);
+                this.#delivery = this.#deliverResidentMap(msg.bytes, msg.byteLength);
                 void this.#delivery.catch(() => {});
                 break;
             case "done":
@@ -382,13 +256,12 @@ export class MapRun {
                     io: msg.io,
                     phaseMs: phaseDurations(this.#asmPhaseStart),
                 });
-                this.#runWarnings = msg.warnings;
                 try {
                     await this.#delivery;
                     // A direct PUT is durable now. Detach its abort listener synchronously:
                     // cancellation after commit must not race `failRun` against host-side
                     // cleanup and turn success into "cancelled".
-                    if (!this.#sinkClosed && this.#output?.kind === "device") {
+                    if (!this.#sinkClosed && this.#output) {
                         this.#output.removeAbort();
                         this.#output.ctx.phase("finalizing");
                         this.#phase = "finalizing";
@@ -409,7 +282,7 @@ export class MapRun {
                 // shared `output` after its cleanup finished.
                 this.#phase = "finalizing";
                 await this.#cleanupTransientCells();
-                if (this.#output?.kind === "device") {
+                if (this.#output) {
                     if (!this.#output.result) {
                         await this.#failRun(new Error("The device did not commit the assembled map."));
                         break;
@@ -471,14 +344,13 @@ export class MapRun {
                 `The assembler announced ${byteLength} bytes but delivered ${bytes.byteLength}; the map was not sent.`,
             );
         }
-        if (this.#output?.kind !== "device") throw new Error("The direct map destination was closed.");
+        if (!this.#output) throw new Error("The direct map destination was closed.");
         const { sendMapBytes } = await import("../device/write");
         this.#output.result = await sendMapBytes(this.#output.client, bytes, this.#runFileName, this.#output.ctx);
     }
 
-    /** Deliver the verified one-file result without ever materialising an OPFS
-     * map in the tab heap. Device PUT reads the Blob twice in bounded slices
-     * (CRC then transfer); browser download hands the same Blob to the browser. */
+    /** Send the verified one-file result without ever materialising an OPFS map in the tab
+     * heap: the PUT reads the Blob twice in bounded slices (CRC then transfer). */
     async #deliverMap(blob: Blob, byteLength: number) {
         if (this.#sinkClosed) return;
         if (blob.size !== byteLength) {
@@ -486,21 +358,14 @@ export class MapRun {
                 `The assembler announced ${byteLength} bytes but delivered ${blob.size}; the map was not sent.`,
             );
         }
-        const name = this.#runFileName;
-        if (this.#output?.kind === "device") {
-            const { sendMapBlob } = await import("../device/write");
-            this.#output.result = await sendMapBlob(this.#output.client, blob, name, this.#output.ctx);
-        } else {
-            // No picker here: one file, one ordinary download, one prompt.
-            saveBlob(blob, name);
-            this.#savedFile = { name, byteLength };
-        }
-        if (this.#output?.kind !== "device") this.#persisted = true;
+        if (!this.#output) throw new Error("The direct map destination was closed.");
+        const { sendMapBlob } = await import("../device/write");
+        this.#output.result = await sendMapBlob(this.#output.client, blob, this.#runFileName, this.#output.ctx);
     }
 
     #settleDevice(result: PutResponse | unknown, failed = false) {
         const current = this.#output;
-        if (current?.kind !== "device" || current.settled) return;
+        if (!current || current.settled) return;
         current.settled = true;
         current.removeAbort();
         if (failed) current.reject(result);
@@ -514,10 +379,7 @@ export class MapRun {
         try {
             await discardCellStore(revision);
         } catch {
-            this.#runWarnings = [
-                ...this.#runWarnings,
-                "Temporary map cells could not be deleted; use ‘Delete stored map data’.",
-            ];
+            // The next run clears the working files when it starts.
         }
     }
 
@@ -525,22 +387,8 @@ export class MapRun {
         try {
             await discardMapOutput();
         } catch {
-            this.#runWarnings = [
-                ...this.#runWarnings,
-                "The temporary assembled map could not be deleted; use ‘Delete stored map data’.",
-            ];
+            // The next run clears the working files when it starts.
         }
-    }
-
-    async setKeepCells(checked: boolean): Promise<void> {
-        this.#keepCells = checked;
-        this.#cellStorageNotice = null;
-        try {
-            globalThis.localStorage?.setItem(KEEP_CELLS_KEY, String(checked));
-        } catch {
-            // The choice still applies to this page; denied storage means it resets to off later.
-        }
-        if (!checked && !this.#running) await this.clearStoredCells(true);
     }
 
     async #initializeStorage() {
@@ -548,31 +396,13 @@ export class MapRun {
         try {
             release = await acquireMapWorkStorage(this.#startWait.signal);
             if (this.#destroyed) return;
-            if (!this.#keepCells) await clearMapWorkStorage();
+            await clearMapWorkStorage();
         } catch {
             // Startup maintenance is best-effort, as it was before serialization. A later run's
             // own probes give the actionable storage error.
         } finally {
             release?.();
             if (!this.#destroyed) this.#clearingCells = false;
-        }
-    }
-
-    async clearStoredCells(announce = true): Promise<void> {
-        this.#clearingCells = true;
-        if (announce) this.#cellStorageNotice = null;
-        const release = await acquireMapWorkStorage();
-        try {
-            await clearMapWorkStorage();
-            if (announce) this.#cellStorageNotice = "Stored map downloads deleted.";
-        } catch {
-            if (announce) {
-                this.#cellStorageNotice =
-                    "Stored map downloads could not be deleted. Close other builder tabs and try again.";
-            }
-        } finally {
-            release();
-            this.#clearingCells = false;
         }
     }
 
@@ -587,11 +417,8 @@ export class MapRun {
         // continuation no longer owns any shared run state and must be a no-op.
         const owner = this.#output;
         if (runId === 0 || this.#activeRunId !== runId || owner?.runId !== runId) return;
-        const direct = owner.kind === "device";
-        if (owner.kind === "device") {
-            if (owner.failing || owner.settled) return;
-            owner.failing = true;
-        }
+        if (owner.failing || owner.settled) return;
+        owner.failing = true;
         this.#activeRunId = 0;
         const controller = this.#abortCtl;
         this.#abortCtl = null;
@@ -616,10 +443,9 @@ export class MapRun {
         if ((deliveryCause as { code?: unknown } | null)?.code === "link") cause = deliveryCause;
         const cancelled = cause instanceof DOMException && cause.name === "AbortError";
         await this.#cleanupTransientCells(owner);
-        if (direct) await this.#cleanupDirectOutput();
+        await this.#cleanupDirectOutput();
         owner.releaseWork?.();
         owner.releaseWork = null;
-        this.#errorMessage = cause instanceof Error ? cause.message : String(cause);
         this.#phase = cancelled ? "cancelled" : "error";
         this.#settleDevice(cause, true);
         this.#output = null;
@@ -696,7 +522,7 @@ export class MapRun {
         const admittedEstimate = this.#estimate;
         const admissionId = this.#estimateGeneration;
         const requireDisk = this.#estimateOnDisk;
-        if (this.#destroyed) throw new DOMException("the map builder was closed", "AbortError");
+        if (this.#destroyed) throw new DOMException("the map run was closed", "AbortError");
         if (this.#estimateGeneration !== admissionId || this.#estimate !== admittedEstimate || !this.#ready) {
             throw new Error("The map selection changed. Wait for its memory check before trying again.");
         }
@@ -704,22 +530,11 @@ export class MapRun {
         out.runId = runId;
         this.#activeRunId = runId;
         this.#output = out;
-        this.#lastRunKind = out.kind;
         this.#runFileName = this.#mapFileName();
-        this.#errorMessage = null;
-        this.#savedFile = null;
-        this.#persisted = false;
         this.#delivery = Promise.resolve();
         this.#sinkClosed = false;
-        this.#runWarnings = [];
-        this.#dlProgress = null;
-        this.#asmFraction = 0;
-        this.#readMode = null;
-        this.#writeMode = null;
-        this.#cachedCells = 0;
-        this.#cachedBytes = 0;
         this.#phase = "downloading";
-        if (out.kind === "device") out.ctx.phase("downloading", l.totalBytes);
+        out.ctx.phase("downloading", l.totalBytes);
 
         const plan = planCells(resolution, store.catalog, indices, store.terrain, store.articles);
         const cells: WorkerCell[] = [];
@@ -737,18 +552,15 @@ export class MapRun {
         out.releaseWork = await runOp(() => acquireMapWorkStorage(runAbort.signal), async (release) => release());
 
         // Cells go to disk when this browser will take them, which keeps a country's
-        // worth out of the tab's heap, and with the opt-in above a later build can
-        // reuse them. The raster deliberately does not: its objects are small and it
-        // is downloaded last. Probed by writing and reading a file back, not by
+        // worth out of the tab's heap. The raster deliberately does not: its objects are
+        // small and it is downloaded last. Probed by writing and reading a file back, not by
         // sniffing for a method: a store that cannot be written to is worse than none.
         const revision = cellStoreRevision(store.catalog);
-        // Unchecked means no reuse in either direction. OPFS still carries this run when available,
+        // No run reuses the cells of another. OPFS still carries this run when available,
         // because that working disk is what makes country-sized assembly possible.
-        if (!this.#keepCells) {
-            await runOp(clearCellStores);
-        }
+        await runOp(clearCellStores);
         const writable = await runOp(cellStoreWritable);
-        out.transientCellRevision = writable && !this.#keepCells ? revision : null;
+        out.transientCellRevision = writable ? revision : null;
         let cellStore = writable
             ? await runOp(
                   () => openCellStore(revision),
@@ -764,23 +576,15 @@ export class MapRun {
               )
             : null;
         if (!cellStore) out.transientCellRevision = null;
-        let fetchPlan = plan;
         if (cellStore) {
-            const cached = await scanCached(plan, cellStore, runOp);
-            fetchPlan = cached.plan;
-            this.#cachedCells = cached.cells;
-            this.#cachedBytes = cached.bytes;
             // Asked once, before a byte is fetched, and about the WHOLE run — cells, the
             // map the sink writes, the merge's spill — because all three live in OPFS: a
             // store with room for the cells but not the output would fail at the first
             // write, after the download.
             const reclaimable = await runOp(reclaimableAssemblyBytes);
-            const hasRoom = await runOp(() => hasRoomFor(projectedRunDiskBytes(l, this.#cachedBytes), reclaimable));
+            const hasRoom = await runOp(() => hasRoomFor(projectedRunDiskBytes(l), reclaimable));
             if (!hasRoom) {
                 cellStore = null;
-                fetchPlan = plan;
-                this.#cachedCells = 0;
-                this.#cachedBytes = 0;
             } else {
                 // Only an admitted run replaces the previous temporary output. A refused run leaves
                 // it alone, and accepted work reclaims the bytes before the first download.
@@ -794,7 +598,7 @@ export class MapRun {
 
         try {
             await runOp(() =>
-                downloadCells(fetchPlan, {
+                downloadCells(plan, {
                     fetchImpl: store.client.fetchImpl,
                     onCell: async (item, bytes) => {
                         if (item.article) {
@@ -825,8 +629,7 @@ export class MapRun {
                         }
                     },
                     onProgress: (p) => {
-                        this.#dlProgress = p;
-                        if (out.kind === "device") out.ctx.progress(p.receivedBytes, p.totalBytes);
+                        out.ctx.progress(p.receivedBytes, p.totalBytes);
                     },
                     signal: runAbort.signal,
                 }),
@@ -852,8 +655,7 @@ export class MapRun {
         }
 
         this.#phase = "assembling";
-        if (out.kind === "device") out.ctx.phase("assembling", 0);
-        this.#asmPhase = "open";
+        out.ctx.phase("assembling", 0);
         this.#asmPhaseStart = { open: performance.now() };
         const req: AssembleWorkerRequest = {
             type: "assemble",
@@ -892,17 +694,6 @@ export class MapRun {
         this.#ensureWorker().postMessage(req, { transfer: requestTransferList(req) });
     }
 
-    download(): void {
-        const out: DownloadOutput = {
-            kind: "download",
-            runId: null,
-            transientCellRevision: null,
-            releaseWork: null,
-            operations: new Set(),
-        };
-        void this.#begin(out).catch((cause) => this.#failRun(cause, out.runId ?? 0));
-    }
-
     /** Assemble this selection and stream its verified `.obcm` directly into
      * the connected device's v4 flat-store PUT. The Blob is OPFS-backed when
      * this host passed the writable-storage probe, and memory-priced otherwise. */
@@ -913,8 +704,7 @@ export class MapRun {
                     ctx.signal.reason ?? new DOMException("cancelled", "AbortError"),
                     device.runId ?? 0,
                 );
-            const device: DeviceOutput = {
-                kind: "device",
+            const device: Output = {
                 client,
                 ctx,
                 resolve,
@@ -943,53 +733,14 @@ export class MapRun {
             });
         });
 
-    readonly #refreshBlocked = $derived(this.#output?.kind === "device" || this.#phase === "finalizing");
-
-    /** Quiesce this catalog before a replacement can admit another assembly. */
-    async pauseForRefresh(): Promise<() => void> {
-        if (this.#refreshBlocked) throw new Error("Wait for the map send or cleanup to finish before refreshing.");
-        this.#paused = true;
-        this.#estimateGeneration += 1;
-        await this.#failRun(new DOMException("the map catalog is being refreshed", "AbortError"));
-        this.#worker?.terminate();
-        this.#worker = null;
-        return () => { this.#paused = false; };
-    }
-
-    cancel(): void {
-        const cause = new DOMException("cancelled", "AbortError");
-        // Direct assembly and PUT are one DeviceJob. Ask its controller to
-        // cancel so both this button and TransferBar cancel the same signal;
-        // merely aborting the cell downloader would let a live PUT commit and
-        // only then paint the run as cancelled.
-        if (this.#output?.kind === "device") {
-            this.#output.ctx.cancel(cause);
-            return;
-        }
-        if (this.#phase === "downloading") {
-            this.#abortCtl?.abort(cause);
-        } else if (this.#phase === "assembling" || this.#phase === "saving") {
-            // The worker is blocked inside one synchronous wasm call and cannot read
-            // a message — terminate IS the cancel. Nothing usable is left behind: a
-            // partial `.obcm` fails its own header checks, and the file is only saved
-            // once the run says it finished.
-            void this.#failRun(cause);
-        }
-    }
-
-    retryEstimate(): void {
-        this.#estimateNonce += 1;
-    }
-
     #estimateEffect() {
-        void this.#estimateNonce; // the retry button's lever
         const l = this.#ledger;
         const estimateId = ++this.#estimateGeneration;
         this.#estimate = null;
         this.#estimateLedger = null;
         const phase = this.#phase;
         const idle = phase === "idle" || phase === "done" || phase === "cancelled" || phase === "error";
-        if (!l || !l.isFinal || l.cellCount === 0 || !idle || this.#clearingCells || this.#paused) {
+        if (!l || !l.isFinal || l.cellCount === 0 || !idle || this.#clearingCells) {
             // Every exit clears the pending flag: a selection that empties or a run
             // that starts must not leave "waiting for an estimate" latched with
             // nothing left to answer it.
@@ -1001,15 +752,6 @@ export class MapRun {
         const totalCellBytes = l.totalBytes;
         // Both artifact classes stay resident even when map cells stream from disk.
         const terrainBytes = (l.terrain?.bytes ?? 0) + (l.articleBytes ?? 0);
-        const reuseCells = this.#keepCells;
-        const store = this.#store;
-        const resolution = store.resolution;
-        const indices = store.indices;
-        const catalog = store.catalog;
-        const plan = reuseCells && resolution && indices
-            ? planCells(resolution, catalog, indices, store.terrain, store.articles)
-            : null;
-        const revision = cellStoreRevision(catalog);
         this.#estimatePending = true;
         this.#estimateError = null;
         // Debounced: a slider mid-drag changes the figures every frame, and the
@@ -1021,13 +763,8 @@ export class MapRun {
             // sync-handle probe.
             void (async () => {
                 const writable = await cellStoreWritable();
-                let storedCellBytes = 0;
-                if (writable && plan) {
-                    const cells = await openCellInventory(revision);
-                    if (cells) storedCellBytes = (await scanCached(plan, cells)).bytes;
-                }
                 const reclaimable = writable ? await reclaimableAssemblyBytes() : 0;
-                const diskNeed = projectedRunDiskBytes(l, storedCellBytes);
+                const diskNeed = projectedRunDiskBytes(l);
                 const onDisk = writable && (await hasRoomFor(diskNeed, reclaimable));
                 if (this.#destroyed || estimateId !== this.#estimateGeneration || l !== this.#ledger) return;
                 this.#estimateLedger = l;
@@ -1062,16 +799,6 @@ export class MapRun {
         );
     });
 
-    readonly #memoryCaution = $derived.by(() => {
-        const estimate = this.#estimate;
-        if (!estimate || !estimate.fits) return null;
-        if (estimate.headroomBytes >= estimate.budgetBytes * 0.15) return null;
-        return (
-            `Close to the browser's memory budget: about ${formatBytes(estimate.peakBytes)} projected of ` +
-            `${formatBytes(estimate.budgetBytes)}. It will probably assemble; a smaller area is the sure thing.`
-        );
-    });
-
     readonly #running = $derived(
         this.#phase === "downloading" || this.#phase === "assembling" || this.#phase === "saving" || this.#phase === "finalizing",
     );
@@ -1088,7 +815,6 @@ export class MapRun {
             l.cellCount > 0 &&
             this.#refusal === null &&
             !this.#running &&
-            !this.#paused &&
             !this.#clearingCells &&
             this.#estimate !== null &&
             this.#estimateLedger === l &&

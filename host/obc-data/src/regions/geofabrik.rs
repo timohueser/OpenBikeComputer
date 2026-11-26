@@ -68,6 +68,7 @@ pub fn parse(body: &[u8]) -> Result<BTreeMap<String, Area>, String> {
             .pbf
             .strip_prefix("https://download.geofabrik.de/")
             .and_then(|path| path.strip_suffix("-latest.osm.pbf"))
+            .map(folder)
             .filter(|path| !path.is_empty() && path.split('/').all(crate::is_kebab))
             .ok_or_else(|| format!("Geofabrik area `{}` has no valid public PBF URL", properties.id))?
             .to_string();
@@ -145,6 +146,15 @@ pub fn parse(body: &[u8]) -> Result<BTreeMap<String, Area>, String> {
     Ok(areas)
 }
 
+/// The area of the PBF path `path`: Geofabrik serves an area in a folder of its own
+/// (`europe/monaco/monaco`); an index in the store can name it without one (`europe/monaco`).
+fn folder(path: &str) -> &str {
+    match path.rsplit_once('/') {
+        Some((folder, file)) if folder.rsplit('/').next() == Some(file) => folder,
+        _ => path,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,7 +169,7 @@ mod tests {
             })
         };
         let mut body = serde_json::json!({"type":"FeatureCollection", "features":[
-            feature("parent", "europe", None), feature("child", "europe/test", Some("parent"))]});
+            feature("parent", "europe", None), feature("child", "europe/test/test", Some("parent"))]});
         body["features"][0]["properties"]["iso3166-1:alpha2"] = serde_json::json!(["DE"]);
         let bytes = serde_json::to_vec(&body).unwrap();
         let areas = parse(&bytes).unwrap();

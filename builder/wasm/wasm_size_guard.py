@@ -2,12 +2,19 @@
 """Gate each production wasm bridge on raw WASM and gzipped WASM plus glue.
 
 The test-device variant is measured but does not ship. Raising a cap needs a reason in the PR.
-The ground-plan budget is its recorded CI size plus the owner's margin; both parts print.
+The ground-plan and parts budgets are their recorded CI sizes plus the owner's margin; both parts print.
 """
 
 from __future__ import annotations
 
-GOVERNS = ['builder/wasm/**', 'host/obcm-assemble/**', 'builder/ground-plan-wasm/**', 'host/obc-ground-plan/**']
+GOVERNS = [
+    'builder/wasm/**',
+    'host/obcm-assemble/**',
+    'builder/ground-plan-wasm/**',
+    'host/obc-ground-plan/**',
+    'builder/trailview-parts-wasm/**',
+    'host/obc-trailview-parts/**',
+]
 RULE = 'A wasm bridge stays inside its recorded gzip and raw size budgets.'
 
 import argparse
@@ -20,9 +27,16 @@ from pathlib import Path
 # vertices, the decks' ceilings and end faces, the shared water level and curve of the feature bake, line water
 # and its culverts with their mouths, the classifier's ford rule, and the storeys over the ground with their open
 # junction ends, their ends on the stubs' points, what each deck is made of, the junctions that lie on the
-# ground, and a building passage of an older bake on the ground (the crate's feature `storeys` on, stable 1.100.0).
+# ground, a building passage of an older bake on the ground, and the plumbing of the storey under the ground (the
+# crate's feature `storeys` on and `bores` off, the crate at one codegen unit in the release profile, stable 1.100.0),
+# the sidewalks' slabs with their ends, rings and kerbs, and the portal line's levels with the cover's sides.
 # The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
-GROUND_PLAN_MEASURED = {"gzipped": 808_099, "raw_wasm": 2_090_936}
+# The built tunnel ends (obc-trailview-parts) with their open stretches and the approaches to their openings add
+# about 36 kB gzipped; the ways of the lanes of a head (the parts' `mouths`) about 2 kB more, measured in CI with
+# wasm-pack 0.15.0 and rustc 1.100.0. The guard rails and delineators of the roads (the crate's `mesh::edges`) add
+# about 29 kB gzipped, which the owner allows. The rails, sleepers, rack, cable and step treads of tracks and steps (the
+# crate's `mesh::details`) add about 26 kB gzipped, which the owner allows.
+GROUND_PLAN_MEASURED = {"gzipped": 890_895, "raw_wasm": 2_286_659}
 # The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
 # unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
 # A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
@@ -33,14 +47,24 @@ GROUND_PLAN_MARGIN = {
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * GROUND_PLAN_MEASURED["raw_wasm"] / GROUND_PLAN_MEASURED["gzipped"]),
 }
 
+# Measured in CI on the build of the tunnel parts' arch, tube, boxes and underpasses, with a tile's volumes built once
+# and selected per node, the rim and the closed free end, and the rooms: lanes in a chord, heads with a hole per room
+# and the seam face, with wasm-pack 0.15.0 and rustc 1.100.0. The margin is the ground plan's, raw by the same fraction.
+PARTS_MEASURED = {"gzipped": 161_975, "raw_wasm": 394_336}
+PARTS_MARGIN = {
+    "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
+    "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * PARTS_MEASURED["raw_wasm"] / PARTS_MEASURED["gzipped"]),
+}
+
 BUDGETS = {
     # Preserve the sum of the conversion, assembly and preview caps. Consolidation does not
     # increase the permitted production download or raw WASM size.
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
     "ground-plan": {key: GROUND_PLAN_MEASURED[key] + GROUND_PLAN_MARGIN[key] for key in GROUND_PLAN_MEASURED},
+    "parts": {key: PARTS_MEASURED[key] + PARTS_MARGIN[key] for key in PARTS_MEASURED},
 }
 # A budget made of a measured size and a margin prints both, so a reviewer sees growth inside the margin.
-BUDGET_PARTS = {"ground-plan": (GROUND_PLAN_MEASURED, GROUND_PLAN_MARGIN)}
+BUDGET_PARTS = {"ground-plan": (GROUND_PLAN_MEASURED, GROUND_PLAN_MARGIN), "parts": (PARTS_MEASURED, PARTS_MARGIN)}
 
 ADVICE = {
     "builder": (
@@ -48,12 +72,14 @@ ADVICE = {
         " --target wasm32-unknown-unknown. GEOS, obc-pack and the test device must stay out."
     ),
     "ground-plan": "Check the dependency graph with cargo tree -p obc-ground-plan-bridge --target wasm32-unknown-unknown.",
+    "parts": "Check the dependency graph with cargo tree -p obc-trailview-parts-bridge --target wasm32-unknown-unknown.",
 }
 
 PKG_DIRS = {
     "builder": Path("builder/web/src/lib/core/pkg"),
     "flat-device": Path("builder/web/test-support/flat-device/pkg"),
     "ground-plan": Path("builder/web/src/lib/trailview/plan/pkg"),
+    "parts": Path("builder/web/src/lib/trailview/structures/pkg"),
 }
 UNBUDGETED = {"flat-device"}
 

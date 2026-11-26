@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { validateStyleMin } from '@maplibre/maplibre-gl-style-spec';
 import { testConfig } from '../../../test-support/planner/config';
-import { plannerConfig } from './config';
+import { plannerConfig, regionPlace } from './config';
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -13,7 +13,7 @@ describe('planner config', () => {
     it('gives the planner map the basemap, assets, terrain and coverage of one release', async () => {
         const { mapStyle } = await import('./map-style');
         for (const theme of ['light', 'dark'] as const) {
-            const style = mapStyle(theme, testConfig, 'dem://tiles', 'contours://tiles');
+            const style = mapStyle(theme, testConfig, { dem: 'dem://tiles', contours: 'contours://tiles' });
             expect(validateStyleMin(style)).toEqual([]);
             expect(style.sources.basemap).toHaveProperty('url', testConfig.basemap);
             expect((style.sources.basemap as { attribution: string }).attribution).toContain(testConfig.attribution);
@@ -37,6 +37,18 @@ describe('planner config', () => {
             expect(style.layers.some((layer) => layer.type === 'background')).toBe(true);
             expect(style.layers.every((layer) => !('source' in layer) || layer.source === 'basemap')).toBe(true);
         }
+    });
+
+    it('gives the basemap the hill shading, and the contour lines only when asked', async () => {
+        const { basemapStyle } = await import('./map-style');
+        const shaded = basemapStyle('light', testConfig, { dem: 'dem://tiles' });
+        const contoured = basemapStyle('light', testConfig, { dem: 'dem://tiles', contours: 'contours://tiles' });
+        for (const style of [shaded, contoured]) expect(validateStyleMin(style)).toEqual([]);
+        expect(Object.keys(shaded.sources)).toEqual(['basemap', 'terrain']);
+        // A page map shows the long credit of the terrain behind its own button, not in the line of the base map.
+        expect(contoured.sources.terrain).not.toHaveProperty('attribution');
+        expect(shaded.layers.filter(layer => 'source' in layer && layer.source !== 'basemap').map(layer => layer.id)).toEqual(['relief']);
+        expect(contoured.layers.filter(layer => 'source' in layer && layer.source !== 'basemap').map(layer => layer.id)).toEqual(['relief', 'contour-lines', 'contour-labels']);
     });
 
     it('refuses a config without a field that the planner reads', () => {
@@ -129,12 +141,12 @@ const BOUNDS = [7.734375, 47.51720069783939, 9.140625, 47.98992166741417];
 const record = (id: number, cells: string[]) => ({ id, kind: 'hiking', name: `Route ${id}`, rank: 1, loop: false,
     length_m: 3000, ascent_m: 10, descent_m: 10, cells, line_udeg: [8000000, 47800000, 100, 100], via: [] });
 
-async function catalog(url: string, files: Record<string, unknown>) {
-    vi.stubEnv('VITE_PLANNER_CONFIG', JSON.stringify({ ...testConfig, routes: url, bounds: BOUNDS }));
+async function catalog(url: string, files: Record<string, unknown>, trails = {}) {
+    vi.stubEnv('VITE_PLANNER_CONFIG', JSON.stringify({ ...testConfig, routes: url, bounds: BOUNDS, ...trails }));
     const fetch = vi.fn(async (url: string) => url in files
         ? new Response(JSON.stringify(files[url])) : new Response('Archive not found', { status: 404 }));
     vi.stubGlobal('fetch', fetch);
-    return { fetch, loadRouteCell: (await import('./map-data')).loadRouteCell };
+    return { fetch, ...await import('./map-data') };
 }
 
 describe('route catalog cells', () => {
@@ -157,6 +169,16 @@ describe('route catalog cells', () => {
         await expect(loadRouteCell('9-268-178')).rejects.toThrow('404');
     });
 
+    it('reads a facts file, and treats a covered cell without one as an error', async () => {
+        const tiles = 'https://tiles.example/releases/id/routes/tiles';
+        const facts = { format: 1, places: {}, routes: { 7: { paved_pct: 3, big_road_pct: 0, water_pct: 0 } } };
+        const { fetch, loadFactsCell } = await catalog(`${tiles}/{cell}.json`, { [`${tiles}/facts/9-267-178.json`]: facts }, { facts: `${tiles}/facts/{cell}.json` });
+        expect(await loadFactsCell('9-267-178')).toEqual(facts);
+        await expect(loadFactsCell('9-268-178')).rejects.toThrow('404');
+        expect(await loadFactsCell('9-269-178')).toBeNull();
+        expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
     it('reads the cells of a regional release from its one region file', async () => {
         const url = 'https://planner.example/routes/freiburg.json';
         const long = { ...record(10, ['9-267-178', '9-268-178', '9-269-178']), stages: [21, 22] };
@@ -165,5 +187,45 @@ describe('route catalog cells', () => {
         expect((await loadRouteCell('9-268-178'))?.map((route) => route.id)).toEqual([10, 22]);
         expect(await loadRouteCell('9-269-178')).toBeNull();
         expect(fetch).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('trail files', () => {
+    const tiles = 'https://tiles.example/releases/id/routes/tiles';
+
+    it('reads a covered far file and a trail record file', async () => {
+        const far = { id: 10, kind: 'hiking', rank: 2, loop: false, length_m: 9e4, ascent_m: 900, far_udeg: [[8000000, 47800000, 100, 100]] };
+        const long = { ...record(10, ['9-267-178']), stages: [21, 22], parts: [{ id: 21, end_m: 3000 }] };
+        const { fetch, loadTrailCell, loadTrailRecord } = await catalog(`${tiles}/{cell}.json`, {
+            [`${tiles}/trails/7-66-44.json`]: { format: 1, tolerance_m: 100, trails: [far] },
+            [`${tiles}/long/10.json`]: { format: 1, routes: [long] },
+        }, { trails: `${tiles}/trails/{cell}.json`, trail: `${tiles}/long/{id}.json` });
+        expect(await loadTrailCell('7-66-44')).toEqual([far]);
+        // The bounds are in the zoom 7 row 44.
+        expect(await loadTrailCell('7-66-45')).toBeNull();
+        expect(await loadTrailRecord(10)).toEqual(long);
+        expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('fetches nothing for a grid release with no trail files, and reads a trail of a regional release from its region file', async () => {
+        const grid = await catalog(`${tiles}/{cell}.json`, {});
+        expect(await grid.loadTrailCell('7-66-44')).toBeNull();
+        expect(await grid.loadTrailRecord(10)).toBeNull();
+        expect(grid.fetch).not.toHaveBeenCalled();
+        vi.resetModules();
+        const url = 'https://planner.example/routes/freiburg.json';
+        const long = { ...record(10, ['9-267-178']), stages: [21] };
+        const regional = await catalog(url, { [url]: { format: 1, routes: [long, record(21, ['9-267-178'])] } });
+        expect(await regional.loadTrailRecord(10)).toEqual(long);
+    });
+});
+
+describe('region place', () => {
+    it('gives the place inside the bounds and on their edge, and nothing outside', () => {
+        const bounds: [number, number, number, number] = [7.6, 46.47, 8.95, 47.25];
+        expect(regionPlace(bounds, { lng: 8.3, lat: 46.9 })).toEqual([8.3, 46.9]);
+        expect(regionPlace(bounds, { lng: 7.6, lat: 47.25 })).toEqual([7.6, 47.25]);
+        expect(regionPlace(bounds, { lng: 7.59, lat: 46.9 })).toBeNull();
+        expect(regionPlace(bounds, { lng: 8.3, lat: 47.26 })).toBeNull();
     });
 });

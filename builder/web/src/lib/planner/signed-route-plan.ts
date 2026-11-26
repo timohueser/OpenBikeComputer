@@ -3,14 +3,11 @@ import type { Coordinate } from './geo';
 import type { BikeType } from './riding-profiles';
 import type { CatalogRecord } from './signed-routes';
 
-/** The route API takes at most this many points. */
-const MAX_POINTS = 64;
-
 /** Index 0 in `turnarounds` marks a loop start where the route turns back. The route request sends only interior indices, so it counts once "Start the loop here" moves the start. */
 export interface RoutePlan { points: Coordinate[]; turnarounds: number[] }
 
-/** The stage plans of a long route in one plan, each stage finish joined to the next stage start. Null when it needs more points than a request takes. */
-export function joinedPlan(stages: RoutePlan[]): RoutePlan | null {
+/** The stage plans of a long route in one plan, each stage finish joined to the next stage start. */
+export function joinedPlan(stages: RoutePlan[]): RoutePlan {
     const joined: RoutePlan = { points: [], turnarounds: [] };
     for (const { points, turnarounds } of stages) {
         const last = joined.points.at(-1);
@@ -19,7 +16,7 @@ export function joinedPlan(stages: RoutePlan[]): RoutePlan | null {
         joined.turnarounds.push(...turnarounds.map(index => index + offset));
         joined.points.push(...points.slice(skip));
     }
-    return joined.points.length <= MAX_POINTS ? joined : null;
+    return joined;
 }
 
 /**
@@ -33,7 +30,7 @@ export function routeBase(route: CatalogRecord, trip: Trip): Trip {
         : ['road', 'gravel', 'touring'].includes(bike) ? bike : 'touring';
     const hardest = route.hardest ?? 0;
     const preset = activity === 'hiking' && hardest > 1 ? 'Alpine' : activity === 'mtb' && hardest > 2 ? 'Technical' : 'Balanced';
-    return { ...emptyTrip(trip.mode), name: route.name ?? route.ref, bike: activity, preset, pace: trip.pace, startDate: trip.startDate };
+    return { ...emptyTrip(), name: route.name ?? route.ref, bike: activity, preset, pace: trip.pace, startDate: trip.startDate };
 }
 
 /** A plan of `base` that follows `plan`, from the route's own start. At a turnaround the route turns back. A loop plan ends at its start. */

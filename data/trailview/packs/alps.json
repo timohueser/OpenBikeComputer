@@ -35,8 +35,8 @@
   "simmental-cattle": { "groups": 1, "size": [3, 12], "on": ["pasture", "grassland"] },
   "alpine-sheep": { "model": "sheep", "latin": "Ovis aries (White Alpine)", "groups": 1, "size": [10, 40], "on": ["rough-grass", "heath"] },
   "goat": { "groups": 1, "size": [3, 10], "on": ["rough-grass", "scrub", "heath"] },
-  "chamois": { "model": "goat", "latin": "Rupicapra rupicapra", "groups": 1, "size": [1, 5], "on": ["scree", "bare-rock"] },
-  "alpine-ibex": { "model": "goat", "latin": "Capra ibex", "groups": 1, "size": [2, 6], "on": ["bare-rock", "scree"] }
+  "chamois": { "latin": "Rupicapra rupicapra", "groups": 1, "size": [1, 5], "on": ["scree", "bare-rock"] },
+  "alpine-ibex": { "model": "ibex", "latin": "Capra ibex", "groups": 1, "size": [2, 6], "on": ["bare-rock", "scree"] }
  },
  "rows": { "orchard": "hawthorn" },
  "style": { "si": "black-forest-farmhouse", "it-21": "slate-stone-house", "it-23": "slate-stone-house", "it-25": "slate-stone-house", "ch-ti": "slate-stone-house", "fr-pac": "slate-stone-house", "de-by": "bavarian-chalet", "at": "bavarian-chalet", "*": "chalet" }

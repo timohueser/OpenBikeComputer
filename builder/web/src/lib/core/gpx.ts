@@ -33,9 +33,9 @@ function read<T>(fn: () => string): T {
 
 // The five entities that `readGpx` reads.
 const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
-const escape = (text: string) => text.replace(/[&<>"']/g, c => ENTITIES[c]);
+export const escapeMarkup = (text: string) => text.replace(/[&<>"']/g, c => ENTITIES[c]);
 const place = ({ lat, lon }: LatLon) => `lat="${(lat / 1e6).toFixed(6)}" lon="${(lon / 1e6).toFixed(6)}"`;
-const text = (tag: string, value: string | undefined) => value ? `<${tag}>${escape(value)}</${tag}>` : "";
+const text = (tag: string, value: string | undefined) => value ? `<${tag}>${escapeMarkup(value)}</${tag}>` : "";
 
 const number = (tag: string, value: number | undefined) => value === undefined ? "" : `<${tag}>${value}</${tag}>`;
 /** The schema types `hr` and `cad` as unsigned bytes: a value out of range has no element. */

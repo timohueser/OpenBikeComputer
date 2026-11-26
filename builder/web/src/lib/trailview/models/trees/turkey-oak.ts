@@ -7,6 +7,11 @@ export default {
   // A tall, straight bole under an upright oval crown.
   fork: 0.36,
   crown: [0.62, 0.3, 0.28, 0.4],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.12 + 0.88 * t)) ** 0.9,
+  clumps: 12,
+  stagger: true,
+  billows: 4,
+  bow: 0.2,
   trunk: 0.045,
   flare: 1.4,
   bark: ['#36302c', '#4e4640'],

@@ -34,7 +34,7 @@
   "goat": { "groups": 1, "size": [8, 30], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
   "cattle": { "model": "brown-cattle", "groups": 2, "size": [4, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
   "horse": { "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "heath", "pasture", "arable"] },
-  "iberian-ibex": { "model": "goat", "latin": "Capra pyrenaica", "groups": 1, "size": [3, 12], "on": ["bare-rock", "scree", "sparse"] }
+  "iberian-ibex": { "model": "ibex", "latin": "Capra pyrenaica", "groups": 1, "size": [3, 12], "on": ["bare-rock", "scree", "sparse"] }
  },
  "rows": { "orchard": "hawthorn" },
  "style": "village-house"

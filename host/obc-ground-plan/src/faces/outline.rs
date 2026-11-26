@@ -105,10 +105,41 @@ struct Place {
     radius: f64,
 }
 
+/// Whether place v lies within `tol` units of the corner that a point's round shapes: its circle, or its kite (its
+/// centre, its feet and the corner where the tangents at its feet meet). A kerb's round smaller than its pair's corner
+/// round lies in that round's kite, so the outline leaves the kerb's corner to it whatever its radius.
+fn shapes(c: &Circle, v: P, tol: f64) -> bool {
+    let f = |p: P| [f64::from(p[0]), f64::from(p[1])];
+    let (o, q) = (f(c.centre), f(v));
+    if (libm::hypot(q[0] - o[0], q[1] - o[1]) - c.radius).abs() < tol {
+        return true;
+    }
+    let (a, b) = (f(c.feet[0]), f(c.feet[1]));
+    let m = [(a[0] + b[0]) / 2.0 - o[0], (a[1] + b[1]) / 2.0 - o[1]];
+    let m2 = m[0] * m[0] + m[1] * m[1];
+    if c.radius <= 0.0 || m2 <= 0.0 {
+        return false;
+    }
+    let s = c.radius * c.radius / m2;
+    let kite = [o, a, [o[0] + s * m[0], o[1] + s * m[1]], b];
+    let side = |k: usize| {
+        let (p, r) = (kite[k], kite[(k + 1) % 4]);
+        (r[0] - p[0]) * (q[1] - p[1]) - (r[1] - p[1]) * (q[0] - p[0])
+    };
+    let near = |k: usize| {
+        let (p, r) = (kite[k], kite[(k + 1) % 4]);
+        let (u, w) = ([r[0] - p[0], r[1] - p[1]], [q[0] - p[0], q[1] - p[1]]);
+        let l2 = u[0] * u[0] + u[1] * u[1];
+        let t = if l2 > 0.0 { ((w[0] * u[0] + w[1] * u[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        libm::hypot(w[0] - t * u[0], w[1] - t * u[1]) < tol
+    };
+    (0..4).all(|k| side(k) >= 0.0) || (0..4).all(|k| side(k) <= 0.0) || (0..4).any(near)
+}
+
 /// The rounds at the corners of the paved outline `paved` (outer rings counter-clockwise, holes
 /// clockwise: the paved side on the left). A place gets the circle tangent to the outline's two
-/// edges from it, off the paved area, unless it lies on a round of `circles` (centre, radius in
-/// units) or the round of a sharper place within `len_m` that is first: a place is first if it lies
+/// edges from it, off the paved area, unless it lies in the corner of a point's round of `circles`
+/// (`shapes`) or on the round of a sharper place within `len_m` that is first: a place is first if it lies
 /// on the round of no sharper place within `len_m`. So a place's round depends on the places within
 /// twice `len_m` only, in no order of rings. The rounds of the places within `len_m` + `r_max` of
 /// the window can reach it; `beyond(p)` is the distance of p past the window (metres). `units(m, p)`
@@ -116,7 +147,7 @@ struct Place {
 pub fn rounds(
     paved: &Rings,
     lines: &[WayLine],
-    circles: &[(P, f64)],
+    circles: &[&Circle],
     beyond: &dyn Fn(P) -> f64,
     units: &dyn Fn(f64, P) -> f64,
     len_m: f64,
@@ -159,7 +190,7 @@ pub fn rounds(
         fills[j]
             .get_or_init(|| {
                 let p = &places[j];
-                if circles.iter().any(|&(o, rho)| on(o, rho, p.v)) {
+                if circles.iter().any(|c| shapes(c, p.v, units(0.1, p.v))) {
                     return None;
                 }
                 round_at(paved, lines, &paved[p.ring], p.at, p.radius, units, len_m, r_max)

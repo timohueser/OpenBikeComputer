@@ -50,11 +50,8 @@ export interface View { date: string; theme: Theme }
 export interface DataLayer<Samples = unknown> {
     id: string;
     label: string;
-    /** A PlannerIcon name. */
+    /** A name of `lib/ui/Icon.svelte`. */
     icon: string;
-    description: string;
-    /** A limit of the data, beside the attribution. */
-    caveat: string;
     /** Attribution and resolution, once the data has loaded. */
     readonly source: string;
     readonly error: string;

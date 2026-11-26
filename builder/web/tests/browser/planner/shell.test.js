@@ -30,3 +30,15 @@ test('a change of the hash closes an open window of the planner', async ({ page 
   await page.getByRole('link', { name: 'Planner' }).click();
   await expect(page.locator('.maplibregl-canvas')).toBeVisible();
 });
+
+test('the credits of the planner map open only at their button', async ({ page }) => {
+  await start(page, '/planner.html#/planner');
+  const credits = page.locator('.maplibregl-ctrl-attrib');
+  const text = credits.locator('.maplibregl-ctrl-attrib-inner');
+  await expect(credits).toHaveClass(/maplibregl-compact( |$)/);
+  await expect(text).toBeHidden();
+  await credits.getByLabel('Toggle attribution').click();
+  await expect(text).toBeVisible();
+  await credits.getByLabel('Toggle attribution').click();
+  await expect(text).toBeHidden();
+});

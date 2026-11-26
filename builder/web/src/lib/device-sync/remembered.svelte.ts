@@ -1,6 +1,6 @@
 /** Remembers the one device that the sync works with, and what the last sync found on it, in `localStorage`. */
 import { deviceHolder } from '../device/session.svelte';
-import type { MapBox } from '../library/records';
+import type { NextMap } from '../library/records';
 
 /** Bytes on the card by the kind of object. */
 export interface DeviceBytes { map: number; routes: number; rides: number; other: number }
@@ -16,7 +16,7 @@ export interface RememberedDevice {
     /** `objectId:revision` of the map on the card, or null without one. */
     mapObject: string | null;
     /** The area and the colours of the map `object` that this browser sent to the card. */
-    built: { object: string; regions: string[]; boxes: MapBox[]; light: string; dark: string } | null;
+    built: ({ object: string } & Omit<NextMap, 'bytes'>) | null;
     routes: number;
     bytes: DeviceBytes;
     /** The rides that came in on `day`, a local `YYYY-MM-DD`. */

@@ -74,14 +74,14 @@ channels, stable and prerelease, and the path of a published package never chang
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<img src="../../assets/diagrams/software-firmware-updates-02.svg" alt="A release candidate triggers a build, signature, and inspection. Verified packages are published to GitHub and the update service. The companion or builder can upload a published or local package with PUT. The rider then confirms the install on the device." data-inline-svg>
+<img src="../../assets/diagrams/software-firmware-updates-02.svg" alt="A release candidate triggers a build, signature, and inspection. Verified packages are published to GitHub and the update service. The companion or the web app can upload a package with PUT. The rider then confirms the install on the device." data-inline-svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>Release clients stage an update package. The install itself starts on the device.</figcaption>
 </figure>
 
-The companion app uploads a package over Bluetooth, the map builder uploads one over USB, and
-either client can upload a local file. The card is not user-accessible, so a computer cannot copy a
+The companion app uploads a package over Bluetooth, and it can also upload a local file. The web
+app uploads a published package over USB from its Device page. The card is not user-accessible, so a computer cannot copy a
 package onto it directly.
 
 Both clients check the package header, the CRCs, and the size before they upload, and check the

@@ -1,5 +1,5 @@
 /**
- * Links out of the builder, in one place.
+ * Links out of the app, in one place.
  *
  * The docs and the landing page (with the live demo on it) are the other two
  * surfaces of the same site, and where they are depends on how *this* bundle was
@@ -8,8 +8,8 @@
  *   * unset — the default — means the site is somewhere else, so name it
  *     absolutely. That is the dev server: it is not served from the site, and a
  *     relative link there would point at nothing.
- *   * set to a relative prefix (the deploy passes `../`, because the builder is
- *     published at `/builder/` beside `/docs/`) means the site is right here.
+ *   * set to a relative prefix (the deploy passes `../`, because the app is
+ *     published at `/plan/` beside `/docs/`) means the site is right here.
  *     Nothing absolute is baked in, so the whole artifact survives the move to a
  *     custom domain — see .github/workflows/deploy-site.yml.
  *

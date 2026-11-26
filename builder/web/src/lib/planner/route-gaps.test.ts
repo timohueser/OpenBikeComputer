@@ -3,22 +3,28 @@ import { settings } from '../settings/settings.svelte';
 import { calculateLine, type EngineRoute } from './routing';
 import { emptyTrip, planView, type RoutePoint, type Trip } from './editor';
 import type { LegCache } from './route-legs';
-import { gapNote, routeGaps } from './route-gaps';
+import { gapLabel, routeGaps } from './route-gaps';
 
 // The router attaches each point to the nearest road: here the equator, from 0° to 0.02°.
 const road: EngineRoute = {
-    id: 'r', reason: 'primary', package: 'p', profile: 'hiking', geometry: [[0, 0], [0.01, 0], [0.02, 0]],
+    package: 'p', profile: 'hiking', geometry: [[0, 0], [0.01, 0], [0.02, 0]],
     elevation: [null, null, null], elapsed: [0, 1, 2], edges: {},
     totals: { distance_m: 2224, ascent_m: 0, seconds: 2, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 },
     legs: [{ from_index: 0, to_index: 2, start: 'a', end: 'b', totals: { distance_m: 2224, ascent_m: 0, seconds: 2, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 } }],
     snap_truncated: false,
 };
-const legs = { route: async () => road } as unknown as LegCache;
+// One leg for each stop: out along the road, back, and out again.
+const legs = { route: async (points: unknown[]) => {
+    const forward = road.geometry, back = [...forward].reverse();
+    const geometry = points.slice(1).flatMap((_, k) => (k % 2 ? back : forward).slice(k ? 1 : 0));
+    return { ...road, geometry, elevation: geometry.map(() => null), elapsed: geometry.map((_, i) => i),
+        legs: points.slice(1).map((_, k) => ({ ...road.legs[0], from_index: 2 * k, to_index: 2 * k + 2 })) };
+} } as unknown as LegCache;
 const point = (id: string, kind: RoutePoint['kind'], coordinate: [number, number], leg?: RoutePoint['leg']): RoutePoint =>
     ({ id, kind, coordinate, label: id, leg });
 
-async function gaps(points: RoutePoint[]) {
-    const plan: Trip = { ...emptyTrip(), bike: 'hiking', points, routeOrder: points.slice(1, -1).map(point => point.id) };
+async function gaps(points: RoutePoint[], loop?: boolean) {
+    const plan: Trip = { ...emptyTrip(), bike: 'hiking', points, loop, routeOrder: points.slice(1, loop ? undefined : -1).map(point => point.id) };
     const line = await calculateLine(plan, new AbortController().signal, legs);
     return routeGaps(planView(plan, line).stops, line.coordinates);
 }
@@ -30,13 +36,19 @@ describe('route gaps', () => {
         expect(others).toEqual([]);
         expect(gap.point.id).toBe('f');
         expect(gap.coordinates).toEqual([[0.02, 0], [0.02, 0.002]]);
-        expect(gapNote([gap])).toBe('Route ends 220 m before the selected point — no accessible path');
-        expect(gapNote([{ ...gap, point: { ...gap.point, kind: 'start' } }, { ...gap, km: 1.24 }]))
-            .toBe('Route misses 2 selected points by up to 1.2 km — no accessible path');
+        expect(gap.at).toBeCloseTo(2.224, 2);
+        expect(gapLabel(gap)).toBe('Ends 220 m before your point');
+        expect(gapLabel({ ...gap, point: { ...gap.point, kind: 'start' }, km: 1.24 })).toBe('Starts 1.2 km from your point');
         settings.units = 'mi';
         onTestFinished(() => { settings.units = 'km'; });
-        expect(gapNote([gap])).toBe('Route ends 0.1\u00a0mi before the selected point — no accessible path');
-        expect(gapNote([{ ...gap, km: 1.24 }])).toBe('Route ends 0.8\u00a0mi before the selected point — no accessible path');
+        expect(gapLabel(gap)).toBe('Ends 0.1\u00a0mi before your point');
+        expect(gapLabel({ ...gap, km: 1.24 })).toBe('Ends 0.8\u00a0mi before your point');
+    });
+
+    it('names an off-road loop start once, where the route starts', async () => {
+        const [gap, ...others] = await gaps([point('s', 'start', [0, 0.002]), point('v', 'via', [0.02, 0])], true);
+        expect(others).toEqual([]);
+        expect([gap.point.id, gap.at]).toEqual(['s', 0]);
     });
 
     it('leaves the join to a manual leg to that leg', async () => {

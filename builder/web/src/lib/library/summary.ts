@@ -26,7 +26,7 @@ export const lineKey = (item: RouteRecord | RideRecord) => hash(`${item.summary?
 export const sentKey = (route: RouteRecord) => hash(JSON.stringify([route.name, route.trip]));
 
 /** The points of the summary line as [longitude, latitude]. */
-export function lineCoordinates({ line }: Summary): [number, number][] {
+export function lineCoordinates({ line }: Pick<Summary, 'line'>): [number, number][] {
     return Array.from({ length: line.length / 2 }, (_, i) => [line[2 * i], line[2 * i + 1]]);
 }
 

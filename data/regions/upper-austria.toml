@@ -1,0 +1,6 @@
+name = "Upper Austria"
+kind = "box"
+# west, south, east, north
+box = [12.7, 47.4, 15.1, 48.8]
+countries = ["AT"]
+time_zone = "Europe/Vienna"

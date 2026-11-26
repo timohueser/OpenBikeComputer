@@ -188,7 +188,7 @@ export function windYear(route: { row: ArrayLike<number>; speeds: ArrayLike<numb
     return { label, columns: WEEKS, rows: [{ label: '', cells }], fills: headFills(theme) };
 }
 
-export const WIND_NOTE = '~9 km grid, daytime wind (09–18 h)';
+const WIND_NOTE = '~9 km grid, daytime wind (09–18 h)';
 
 /** The rose of a point chart: the shares by towards-sector, the travel bearing on a route and the facts beside it. */
 export interface RoseView { shares: number[]; bearing?: number; month: string; facts: string[] }

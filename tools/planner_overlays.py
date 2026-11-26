@@ -15,6 +15,8 @@ from . import planner_geo as geo, planner_mvt as mvt, step_request
 LAYERS = ("cycling", "hiking", "mtb", "access", "routes")
 # The basemap's deepest zoom. The planner draws deeper zooms from these tiles.
 MAX_ZOOM = 14
+# The planner draws a route line as a band from this zoom, wider than the road that the line follows.
+ROAD_ZOOM = 12
 # Tile units around each tile: line joins and caps at the edge draw without a seam.
 BUFFER = 64
 # Half a screen pixel of a 512 pixel tile; the deepest zoom keeps the full precision for overzoom.
@@ -36,15 +38,17 @@ def coordinates(blob):
     return points
 
 
-def properties(kind, attributes, routes, visible):
+def properties(kind, attributes, routes, visible, roads):
     """The tile properties of one feature and the IDs of the routes it names.
 
-    A route line names only the routes that its zoom draws. The tile's `routes` layer holds their details once."""
+    A route line names only the routes that its zoom draws. The tile's `routes` layer holds their details once.
+    With `roads`, a route line on a road names the class of the road; without it, lines of different roads join."""
     if kind == "access":
         return {key: json.dumps(value, separators=(",", ":"), sort_keys=True) if isinstance(value, (list, dict)) else value
                 for key, value in attributes.items()}, []
     members = [routes[identity] for identity in attributes["routes"] if visible(routes[identity]["rank"])]
     result = {"rank": attributes["rank"], "ref": attributes["ref"], "routes": json.dumps([route["id"] for route in members])}
+    if roads and attributes.get("road"): result["road"] = attributes["road"]
     # Members are in rank order; the first route with a trail blaze marks the way.
     marker = next((route["symbol"] for route in members if route["symbol"]), "")
     if kind == "hiking" and marker: result["marker"] = marker
@@ -161,7 +165,7 @@ def derive(index, destination, credit):
         values, groups, lines = {}, {}, []
         for minimum, kind, way, attribute, geometry in features:
             if minimum > zoom: continue
-            if (kind, attribute) not in values: values[kind, attribute] = properties(kind, attributes[attribute], routes, visible)
+            if (kind, attribute) not in values: values[kind, attribute] = properties(kind, attributes[attribute], routes, visible, zoom >= ROAD_ZOOM)
             tags, members = values[kind, attribute]
             if kind == "access": lines.append((kind, way, tags, members, geometries[geometry]))
             else: groups.setdefault((kind, json.dumps(tags, sort_keys=True)), (tags, members, []))[2].append((way, geometries[geometry]))

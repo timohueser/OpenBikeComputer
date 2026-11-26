@@ -82,6 +82,8 @@
       "obc-search-bake",
       "obc-sim",
       "obc-trailview-features",
+      "obc-trailview-parts",
+      "obc-trailview-parts-bridge",
       "obc-tree-walk",
       "obc-usb",
       "obc-usb-host",

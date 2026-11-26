@@ -1,0 +1,12 @@
+origin = 8
+countries = ["LU"]
+kind = "hiking"
+
+# A route is its start points and its line pieces, each with the `map_id` of the route. A label is
+# no route.
+[route]
+layer = "Sentiers CFL"
+key = "map_id"
+name = "{name}"
+name_strip = '(?i)^CFL_\w+\s*NEW\s*:'
+drop = { is_label = ["True"] }

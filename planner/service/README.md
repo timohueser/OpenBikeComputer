@@ -23,7 +23,7 @@ config; see the [planner README](../../builder/web/src/components/planner/README
 ```sh
 curl http://127.0.0.1:8788/v1/route \
   -H 'Content-Type: application/json' \
-  --data '{"points":[[7.849,47.997],[8.154,47.902]],"profile":"touring","alternatives":true}'
+  --data '{"points":[[7.849,47.997],[8.154,47.902]],"profile":"touring"}'
 ```
 
 ## Phone library
@@ -60,7 +60,7 @@ cargo clippy -p planner-service --all-targets --no-default-features -- -D warnin
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ROUTE_LISTEN` | `127.0.0.1:8788` | Listen address |
-| `ROUTE_WORKERS` | CPUs of the process | Concurrent requests, at least 1; heavy requests use at most half |
+| `ROUTE_WORKERS` | CPUs of the process | Concurrent requests, at least 1; shape requests use at most half |
 | `ROUTE_ORIGIN` | Unset | One allowed browser origin; omit for same-origin proxy |
 
 - `GET /health` reports process health.
@@ -68,11 +68,11 @@ cargo clippy -p planner-service --all-targets --no-default-features -- -D warnin
 - `POST /v1/route` calculates a route.
 - `POST /v1/shape` finds the plan points of a route that follows a line.
 
-A route request with `alternatives` or `alternatives_only`, and a shape request, can use at most
-`max(1, workers / 2)` workers. With 1 worker, a light request waits behind a heavy request. A
-request waits up to 1 second for its worker, then receives `503 busy`. A request that exceeds a
-fixed limit receives `422 limit`; a worker with no memory for it at that moment answers `503 busy`. Workers share the maps of
-the installed files and use the engine's default search limit; see
+Shape requests can use at most `max(1, workers / 2)` workers. With 1 worker, a route request waits
+behind a shape request. A request waits up to 1 second for its worker, then receives `503 busy`. A
+request that exceeds a fixed limit receives `422 limit`; a worker with no memory for it at that
+moment answers `503 busy`. Workers share the maps of the installed files and use the engine's
+default search limit; see
 [engine bounds](../router/README.md#bounds). A route request has a 15-second cooperative deadline,
 a shape request 30 seconds. Disconnects cancel its work. The body limit is 64 KiB. SIGTERM or SIGINT stops it after its open requests
 finish. A panic or another internal failure answers `500 internal` and writes the cause to

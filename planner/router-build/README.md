@@ -22,6 +22,7 @@ them.
 ## Layers
 
 The store keeps only the work layer of each step and options that a run used last (`cache`).
+`planner/routing` and `planner/route-facts` (part `route-facts`) are client layers.
 
 | Step | Runs | Layer |
 | --- | --- | --- |
@@ -29,14 +30,16 @@ The store keeps only the work layer of each step and options that a run used las
 | `planner/routing-roads` | The walks, the partition into cells, the order with the terrain, the turn restrictions, the topology | `roads/` |
 | `planner/routing-costs` | The way bases, the road pass, the snap bits | `costs/` |
 | `planner/routing` | The package, the overlay index, the route catalog and the routes of each grid cell | `routing/`, `cells/`, `routes/` |
+| `planner/route-facts` | The places of the OSM extract, the shares and the facts of each route | `facts/` |
 
 | Change | Steps that run |
 | --- | --- |
 | A stop or a crash in a step | That step and the steps after it |
-| The profile list, or the revision of `planner/routing-costs` | Costs, package |
-| `region`, `countries`, `attribution`, `download_level` | Package |
-| The GLO-30 tiles or the reference, `cell_sizes`, or the revision of `planner/routing-roads` | Roads, costs, package |
-| The OSM cut, the bounds, the format of the work layers, or the revision of `planner/routing-source` | All four |
+| The profile list, or the revision of `planner/routing-costs` | Costs, package, facts |
+| `region`, `attribution`, `download_level` | Package, facts |
+| The GLO-30 tiles or the reference, `cell_sizes`, or the revision of `planner/routing-roads` | Roads, costs, package, facts |
+| The OSM cut, the bounds, the format of the work layers, or the revision of `planner/routing-source` | All five |
+| The canopy archive, `snow-seasons`, or the revision of `planner/route-facts` | Facts |
 
 A change of the bytes of a work layer changes its format, of its content its revision. A column
 is one file of little-endian values; `layout.json` gives its type and count (`column::Layout`).
@@ -107,12 +110,14 @@ the peak own memory of each stage: `import` (source and roads), `partition` and 
 
 The builder also writes `route-catalog.json`, the signed routes in the format of
 [the catalog contract](../../specs/route-catalog.md). The step metrics are its report: the counts,
-the dropped relations by reason and the shaping points. The catalog needs the `touring`, `road`,
-`gravel`, `mtb/technical` and `hiking/alpine` profiles. Name the region's countries, so that the
-catalog can omit route marks in France. When France is the only country, no record has a route
-mark. A region with France and another country fails. The builder checks the profiles and
-countries before the import. The catalog routes on an install of all cells of the package of its
-bake, with one router for each CPU; each router holds only its search.
+the dropped relations by reason and the shaping points. The builder leaves out connector legs
+([selection](../../specs/route-catalog.md#selection)). The catalog needs the `touring`, `road`,
+`gravel`, `mtb/technical` and `hiking/alpine` profiles. A route in France has no route mark. The
+builder checks the profiles before the import. The catalog routes on an install of all cells of the
+package of its bake, with one router for each CPU; each router holds only its search.
+
+The step also writes the [trail files](../../specs/route-catalog.md#trail-files) into `routes/trails/`
+and `routes/long/`; the metric `trail_files` gives their sizes.
 
 ## Terrain
 
@@ -177,10 +182,10 @@ profiles.
 
 Touring, gravel, MTB and hiking use separate surface and road-class tables, and add smoothness,
 track grade, trail grade and traffic. Hiking also adds trail visibility. Touring and gravel have a
-less-climbing variant with three times the climb cost. A signed cycle route discounts only the preference above the physical and
+less-climbing variant with triple climb cost. A signed cycle route discounts only the preference above the physical and
 traffic cost, in the direction that its member role gives. Access rules apply to every variant.
 MTB permits S2 at most and `mtb/technical` every grade; hiking permits T2 at most and
-`hiking/alpine` T4. Alternatives keep the difficulty limit of the request.
+`hiking/alpine` every known grade up to T6.
 
 The package holds the roads, their geometry and possible closures, the turns, the costs and snap
 bits of each profile, and the cost tables of each cell, separate from map tiles. A profile's snap

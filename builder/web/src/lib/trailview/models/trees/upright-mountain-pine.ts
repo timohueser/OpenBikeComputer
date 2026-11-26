@@ -4,15 +4,18 @@ export default {
   form: 'conifer',
   name: 'Upright mountain pine',
   latin: 'Pinus uncinata',
-  // A narrow, dark cone of the treeline on one straight stem, leafy to the ground, blunter than a spruce.
-  base: 0.04,
-  radius: 0.16,
-  shape: (t) => 1 - 0.5 * t,
-  overlap: 1.7,
-  // Branch tips turn up, as a pine's do, so the tiers' rims rise instead of hanging.
-  droop: -0.08,
-  lobes: 5,
-  jitter: 0.3,
+  // A narrow, dark cone of the treeline on one straight stem, leafy nearly to the ground, blunter than a spruce.
+  base: 0.1,
+  radius: 0.17,
+  shape: (t) => 1 - 0.7 * t,
+  overlap: 1.1,
+  // Whorls of brushes that turn up, as a pine's do.
+  droop: -0.2,
+  lobes: 4,
+  jitter: 0.2,
+  whorls: 8,
+  tufts: 0.62,
+  lift: 0.6,
   trunk: 0.022,
   flare: 1.5,
   // Grey-brown scaly plates, never the orange of a Scots pine.

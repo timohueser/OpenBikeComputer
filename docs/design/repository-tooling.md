@@ -27,12 +27,14 @@ owns:
   - tools/check_fixture_policy.py
   - tools/cairn/**
   - .cairn/**
+  - .agents/skills/**
   - tools/ci/**
   - tools/licenses/**
   - tools/vps/**
   - tools/tests/**
   - tools/testing/**
   - firmware/tools/check_dependencies.py
+  - firmware/tools/check_memory_x.py
   - firmware/tools/resource_guard.py
   - firmware/tools/strict_align_probe.rs
   - firmware/tools/tests/__init__.py

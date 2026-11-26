@@ -15,6 +15,13 @@ use crate::{world, Part, Tags};
 /// input reaches this far past the tiles of the region, more than the longest aerial lift.
 pub const LIFT_REACH_M: f64 = 20000.0;
 const METRES_PER_DEGREE: f64 = 111320.0;
+/// Up to this size, the input is renumbered before the cut. Osmium's extract keeps bit sets up to the
+/// largest ID of the file, 3.97 GiB on the Swiss OSM and as much on any file with the IDs of OSM.
+/// `osmium renumber` keeps 8 bytes per object in vectors that double, 16 bytes per object while one
+/// doubles. The limit assumes at most 0.22 objects per byte of input: then the vectors stay under 4 GiB.
+/// Two samples, with Osmium's buffers: the Swiss OSM (549 MB, 0.12 objects per byte) and the Irish OSM
+/// (417 MB, 0.15 objects per byte) took 11.8 bytes per object. A denser input can take more.
+const RENUMBER_MAX_BYTES: u64 = 1_200_000_000;
 /// The landuse areas whose value a building in them keeps as its tag `landuse`. They are not features.
 pub const LANDUSE: [&str; 2] = ["farmyard", "industrial"];
 /// The Osmium program: `OBC_OSMIUM`, else `osmium` on the path; and its version.
@@ -82,11 +89,19 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
         set.into_iter().collect()
     };
     let area = |zoom: u8, reach_m: f64| reach(tiles, zoom, reach_m).map(|v| format!("{v:.7}")).join(",");
+    // Renumbered from 1 in the order of the file, the IDs of the cut take MBs in the bit sets of the extract
+    // and of the filter. The export writes no IDs, so the objects that it gives stay the same.
+    let size = std::fs::metadata(pbf).map_err(|e| format!("{}: {e}", pbf.display()))?.len();
+    let numbered = (size <= RENUMBER_MAX_BYTES).then(|| work.join("numbered.osm.pbf"));
+    if let Some(numbered) = &numbered {
+        run(binary, &[&"renumber", &pbf, &"-o", numbered])?;
+    }
+    let input = numbered.as_deref().unwrap_or(pbf);
     // The cut comes first: the filter keeps the nodes of each way that it keeps, so alone it leaves most
     // of a file.
     let cut = |name: &str, bounds: String, entries: &[&Entry], more: &[String]| -> Result<PathBuf, String> {
         let (area_pbf, kept) = (work.join(format!("{name}-area.osm.pbf")), work.join(format!("{name}.osm.pbf")));
-        run(binary, &[&"extract", &"-b", &bounds, &"-s", &"smart", &pbf, &"-o", &area_pbf])?;
+        run(binary, &[&"extract", &"-b", &bounds, &"-s", &"smart", &input, &"-o", &area_pbf])?;
         let mut args: Vec<&dyn AsRef<std::ffi::OsStr>> = vec![&"tags-filter", &area_pbf];
         let filters: Vec<String> = expressions(entries).into_iter().chain(more.iter().cloned()).collect();
         args.extend(filters.iter().map(|f| f as &dyn AsRef<std::ffi::OsStr>));
@@ -106,8 +121,8 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
     args.extend(paths.iter().map(|p| p as &dyn AsRef<std::ffi::OsStr>));
     args.extend([&"-o" as &dyn AsRef<std::ffi::OsStr>, &out]);
     run(binary, &args)?;
-    for path in paths {
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    for path in paths.iter().chain(&numbered) {
+        std::fs::remove_file(path).map_err(|e| e.to_string())?;
     }
     Ok(out)
 }
@@ -124,11 +139,21 @@ pub enum Selected {
 /// its first point, and each outer ring precedes its holes.
 pub type Object = (Selected, Tags, Vec<Part>);
 
-/// Each object of an active kind to `each`, the points and the lines first and then the areas, each in
+/// The geometry types of an export of Osmium: of the points and the lines, and of the areas.
+pub const ALL: [&str; 2] = ["point,linestring", AREAS];
+pub const AREAS: &str = "polygon";
+
+/// Each object of an active kind and of the geometry `types` to `each`, in the order of `types`, each in
 /// the order of the file. Osmium writes a point or a line as it reads it but buffers the areas, so one
 /// export of both would put an area among the lines where its buffer ran full.
-pub fn objects(entries: &[Entry], pbf: &Path, binary: &Path, mut each: impl FnMut(Object)) -> Result<(), String> {
-    for types in ["point,linestring", "polygon"] {
+pub fn objects(
+    entries: &[Entry],
+    pbf: &Path,
+    binary: &Path,
+    types: &[&str],
+    mut each: impl FnMut(Object),
+) -> Result<(), String> {
+    for &types in types {
         let mut child = Command::new(binary)
             .arg("export")
             .arg(pbf)
@@ -297,6 +322,7 @@ mod tests {
             .lines()
             .filter_map(|line| line.strip_prefix('w')?.split(' ').next()?.parse().ok())
             .collect();
-        assert_eq!(kept, [101, 103]);
+        // The cut numbers the objects from 1 in the order of the file: ways 101 and 103 are ways 1 and 3.
+        assert_eq!(kept, [1, 3]);
     }
 }

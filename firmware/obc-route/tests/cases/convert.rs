@@ -294,9 +294,42 @@ fn authored_points_use_the_gpx_emitter_and_reject_unsupported_capacity() {
     assert!(sink.buf.is_empty());
 
     let points: Vec<_> = (0..MAX_ROUTE_CHUNKS * (MAX_POINTS_PER_CHUNK - 1) + 2)
-        .map(|k| RoutePoint { lon: k as i32 * 9, lat: 0, ele: (k % 2) as i16, surface: 0, elevation_incomplete: false })
+        .map(|k| RoutePoint {
+            lon: k as i32 * 9,
+            lat: 0,
+            ele: ((k % 2) * 3) as i16,
+            surface: 0,
+            elevation_incomplete: false,
+        })
         .collect();
     assert_eq!(points_to_obcr(&points, &[], "Too Long", BikeType::Road, &mut sink), Err(Error::TooLarge));
+}
+
+#[cfg(feature = "alloc")]
+#[test]
+fn planned_points_keep_the_climb_of_all_points() {
+    use obc_elevation::DeadBand;
+    use obc_route::{convert::points_to_obcr, BikeType};
+    // Each step moves at least 1 m. The line bends only at the second point, which is kept; the
+    // 3 m rise after it counts against the dead-band reference, not against the bend.
+    let heights = [100, 101, 103, 100, 101, 102, 104, 106, 105, 103, 102, 100];
+    let points: Vec<_> = heights
+        .into_iter()
+        .enumerate()
+        .map(|(k, ele)| RoutePoint {
+            lon: 7_800_000 + k as i32 * 500,
+            lat: 48_000_000 + if k == 0 { 300 } else { 0 },
+            ele,
+            surface: 0,
+            elevation_incomplete: false,
+        })
+        .collect();
+    let mut band = DeadBand::<f64>::new();
+    heights.iter().for_each(|&e| band.push(f64::from(e)));
+    let mut sink = VecSink::default();
+    let stats = points_to_obcr(&points, &[], "Crest", BikeType::Road, &mut sink).unwrap();
+    assert_eq!((stats.total_ascent_m, stats.total_descent_m), (band.ascent() as u32, band.descent() as u32));
+    assert!((stats.point_count as usize) < heights.len(), "points {}", stats.point_count);
 }
 
 #[cfg(feature = "alloc")]

@@ -22,6 +22,9 @@ export interface ZipEntry {
 /** An entry that is encrypted, or packed with a method other than stored or deflated. */
 export class UnsupportedPacking extends Error {}
 
+/** The entries do not fit in a ZIP file with no ZIP64 records: 4 GiB or more, or more than 65,535 entries. */
+export class TooLarge extends Error {}
+
 const crcTable = Uint32Array.from({ length: 256 }, (_, i) => {
     let c = i;
     for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
@@ -55,7 +58,7 @@ async function measure(stream: ReadableStream<Uint8Array<ArrayBuffer>>, limit = 
 const utf8 = 0x0800, stored = 0, deflated = 8, needed = 10, max32 = 0xffffffff;
 // 1980-01-01 00:00, the first date that a ZIP file can hold.
 const dosTime = 0, dosDate = (1 << 5) | 1;
-const tooLarge = () => new Error('The library is too large for one backup file.');
+const tooLarge = () => new TooLarge('The library is too large for one backup file.');
 
 /** The fields from "version needed" to "extra length", which the local and the central header share. */
 function shared(view: DataView, at: number, crc: number, size: number, nameLength: number): void {
@@ -67,14 +70,17 @@ function shared(view: DataView, at: number, crc: number, size: number, nameLengt
     view.setUint16(at + 24, 0, true);
 }
 
-/** Reads each entry one time for its CRC-32. The result holds the entry blobs, not copies of their bytes. */
+/** Reads each entry one time for its CRC-32, one entry after the other. The result holds the entry blobs, not copies
+ * of their bytes. It throws `TooLarge` before it reads an entry. */
 export async function zip(entries: Entry[]): Promise<Blob> {
-    if (entries.length > 0xffff) throw tooLarge();
+    const encoder = new TextEncoder(), names = entries.map(entry => encoder.encode(entry.name));
+    // Each entry has a local header, its content and a central header; the end record follows.
+    const total = entries.reduce((sum, entry, i) => sum + 30 + 46 + 2 * names[i].length + entry.data.size, 22);
+    if (entries.length > 0xffff || total > max32) throw tooLarge();
     const parts: BlobPart[] = [], central: Uint8Array<ArrayBuffer>[] = [];
     let offset = 0;
-    for (const { name, data } of entries) {
-        const path = new TextEncoder().encode(name), { crc } = await measure(data.stream());
-        if (offset + 30 + path.length + data.size > max32) throw tooLarge();
+    for (const [i, { data }] of entries.entries()) {
+        const path = names[i], { crc } = await measure(data.stream());
         const local = new Uint8Array(30 + path.length), view = new DataView(local.buffer);
         view.setUint32(0, 0x04034b50, true);
         shared(view, 4, crc, data.size, path.length);
@@ -90,7 +96,6 @@ export async function zip(entries: Entry[]): Promise<Blob> {
         offset += local.length + data.size;
     }
     const size = central.reduce((sum, header) => sum + header.length, 0);
-    if (offset + size > max32) throw tooLarge();
     const end = new DataView(new ArrayBuffer(22));
     end.setUint32(0, 0x06054b50, true);
     end.setUint16(8, entries.length, true);

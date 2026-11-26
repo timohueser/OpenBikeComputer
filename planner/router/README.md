@@ -3,7 +3,7 @@
 Coordinate routing over installs of the regional [route package](../../specs/route-package.md). No dependency on OBC firmware, HTTP, a map
 renderer or an itinerary model. The default build needs Rust and `std`; the same core compiles for
 native iOS and WebAssembly. Run browser queries in a worker. The [route API](../../specs/route-api.md)
-defines snapping, direction continuity, alternatives, pace and request limits.
+defines snapping, direction continuity, pace and request limits.
 
 ## Run
 
@@ -14,9 +14,9 @@ let region = planner_router::open(std::path::Path::new("/data/freiburg"), false)
 let mut router = Router::new(region);
 let request: Request = serde_json::from_str(r#"{
   "points": [[7.849,47.997],[8.154,47.902]],
-  "profile": "touring", "alternatives": true
+  "profile": "touring"
 }"#)?;
-let result = router.routes(&request, &Control::default())?;
+let route = router.route(&request, &Control::default())?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -79,10 +79,6 @@ turns at each other junction.
 - Snapping uses only roads that the prepared profile permits. A disconnected leg returns `NoPath`;
   it does not retry other roads.
 - Missing terrain stays unknown and uses level slope for moving time.
-- Alternative discovery is bounded, not exhaustive. All routes share one query budget.
-  Cancellation, a limit or a lack of memory keeps the routes already found; no alternatives is a
-  valid answer.
-- Corridor probes apply to two-point requests.
 - Keep itinerary state and learned pace outside this crate. Preserve a chosen route when the
   itinerary changes.
 - `elapsed` is moving time along the route geometry, not an arrival clock time.

@@ -64,6 +64,8 @@ pub fn reach_rows(bank_m: f64, culvert_max_m: f64) -> Vec<Reach> {
 
 /// The zones of the culverts whose crossing lies in `bx` (cell units), over the lines of the faces, and their
 /// mouths: where the water's middle line meets a zone's outline, with water in front of it.
+// One call site: inlined into it in every code unit layout.
+#[inline]
 pub(super) fn candidates(ctx: &Ctx, lines: &[WayLine], bx: [i32; 4]) -> (Vec<Cand>, Vec<CulvertMouth>) {
     let g = ctx.graph;
     let of_way: BTreeMap<u32, usize> = lines.iter().enumerate().map(|(i, l)| (l.way, i)).collect();

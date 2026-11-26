@@ -51,7 +51,7 @@ export function validateInput(input) {
     const p = input.plan;
     if (
       !Array.isArray(p.coordinates) ||
-      p.coordinates.length > 20000 ||
+      p.coordinates.length > contract.line_points ||
       !p.coordinates.every(coord)
     )
       fail();

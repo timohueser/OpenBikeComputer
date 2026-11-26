@@ -1,5 +1,5 @@
 /** The days, the climbs and the waypoints of a plan along its calculated line, as the Route page lists them. */
-import { dayStops, planView, stopKinds, type ItineraryDay, type RoutePoint, type Trip } from './editor';
+import { dayStops, planView, stopKinds, type Day, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, cumulative, nearestProgress, type Coordinate } from './geo';
 import { profileHeightAt, profileSamples, sampleIndex } from './profile-data';
 import type { RoutingLine } from './routing';
@@ -19,8 +19,8 @@ export const STEEPEST_KM = .5;
 const EPSILON = 5e-4;
 
 export interface RouteFacts {
-    /** The days of the itinerary; a riding day has its waypoints, a rest day none. */
-    days: (ItineraryDay & { stops: Waypoint[] })[];
+    /** The days, each with its waypoints. */
+    days: (Day & { stops: Waypoint[] })[];
     climbs: Climb[];
     stops: Waypoint[];
 }
@@ -32,7 +32,7 @@ export function routeFacts(trip: Trip, line: RoutingLine): RouteFacts {
     const view = planView(trip, line);
     const stops = dayStops(trip, line, { from: 0, to: 1 }).map(({ point, km }, i) => ({ point, km, number: i + 1 }));
     const byId = new Map(stops.map(stop => [stop.point.id, stop]));
-    const days = view.itinerary.map(day => ({ ...day, stops: day.rest ? [] : dayStops(trip, line, day).map(({ point }) => byId.get(point.id)!) }));
+    const days = view.days.map(day => ({ ...day, stops: dayStops(trip, line, day).map(({ point }) => byId.get(point.id)!) }));
     const km = cumulative(line.coordinates), samples = profileSamples(line), total = km.at(-1) || 1;
     // The heights are linear between the points, so the steepest window starts or ends at a point.
     const steepest = (from: number, to: number, gradient: number) => {

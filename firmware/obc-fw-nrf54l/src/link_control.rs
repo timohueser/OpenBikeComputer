@@ -1,9 +1,8 @@
 //! Link-control state that does not live in the flat store: RRAM-backed settings, and the
 //! bond and config hand-off.
 //!
-//! Route, trip, ride, transfer and catalog ownership all live in [`crate::flat_store`]. This module
-//! stays only for the surfaces that have not moved: config and bond state, and the on-glass DFU
-//! request hand-off.
+//! Route, trip, ride, transfer and catalog state live in [`crate::flat_store`]. This module holds
+//! config and bond state, and the on-glass DFU request hand-off.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 

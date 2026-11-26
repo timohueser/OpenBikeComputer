@@ -57,7 +57,7 @@ test('the POI builder retains contact aliases and descriptions for named and unn
   } finally {db?.close();connection?.close();rmSync(directory,{recursive:true,force:true});}
 });
 
-test('shelters that are no place to sleep leave the shelter kind; a picnic roof becomes a rest place',()=>{
+test('shelters that give a rider no shelter get no record; a picnic roof becomes a rest place',()=>{
   const directory=mkdtempSync(join(tmpdir(),'obc-shelters-'));
   const shelter=(object_id,shelter_type,name)=>({object_type:'N',object_id,centroid:[8,48],osm_key:'amenity',osm_value:'shelter',
     ...(name?{name:{name}}:{}),extra:shelter_type?{shelter_type}:{}});
@@ -67,8 +67,22 @@ test('shelters that are no place to sleep leave the shelter kind; a picnic roof 
   try {
     connection=writePlaces(directory,records);
     assert.deepEqual(connection.prepare('SELECT kind,name FROM places ORDER BY id').all().map(row=>({...row})),[
-      {kind:'shelter',name:'shelter'},{kind:'public_transport_shelter',name:'Church'},{kind:'picnic_site',name:'Barbecue site'},
+      {kind:'shelter',name:'shelter'},{kind:'picnic_site',name:'Barbecue site'},
       {kind:'shelter',name:'Forest hut'},{kind:'picnic_site',name:'picnic site'},
+    ]);
+  } finally {connection?.close();rmSync(directory,{recursive:true,force:true});}
+});
+
+test('caravan sites and camp sites that take no tents get no record',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'obc-caravans-'));
+  const camp=(object_id,osm_value,extra)=>({object_type:'N',object_id,centroid:[8,48],osm_key:'tourism',osm_value,
+    name:{name:`Camp ${object_id}`},extra});
+  const records=[camp(1,'caravan_site',{}),camp(2,'camp_site',{tents:'no'}),camp(3,'camp_site',{}),camp(4,'camp_site',{tents:'yes'})];
+  let connection;
+  try {
+    connection=writePlaces(directory,records);
+    assert.deepEqual(connection.prepare('SELECT kind,name FROM places ORDER BY id').all().map(row=>({...row})),[
+      {kind:'campsite',name:'Camp 3'},{kind:'campsite',name:'Camp 4'},
     ]);
   } finally {connection?.close();rmSync(directory,{recursive:true,force:true});}
 });

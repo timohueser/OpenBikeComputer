@@ -459,8 +459,8 @@ fn an_install_of_some_cells_routes_on_its_roads() {
                     dearer += 1;
                 }
             }
-            (Err(Error::NoPath), Ok(all)) => assert!(!on_installed(&all), "{request:?}"),
-            (Err(Error::NoPath), Err(Error::NoPath)) => {}
+            (Err(Error::NoPath(_)), Ok(all)) => assert!(!on_installed(&all), "{request:?}"),
+            (Err(Error::NoPath(_)), Err(Error::NoPath(_))) => {}
             (route, all) => panic!("{request:?}: {:?} against {:?}", route.map(|r| r.cost), all.map(|r| r.cost)),
         }
     }
@@ -505,9 +505,9 @@ fn two_layouts_of_one_bake_give_the_same_routes() {
         let set = compare::requests(&old, &profile.name, 15, 17, min_m, max_m);
         assert!(set.len() >= 5, "{}: {} requests", profile.name, set.len());
         for (k, request) in set.iter().enumerate() {
-            // No request stays on one road or asks for alternatives; the projected points of the
-            // kinds 0 and 4 lie in the band, up to the snap reach of both points.
-            assert!(compare::kind(k, min_m) < 5 && !request.alternatives);
+            // No request stays on one road; the projected points of the kinds 0 and 4 lie in the
+            // band, up to the snap reach of both points.
+            assert!(compare::kind(k, min_m) < 5);
             let [first, last] = [request.points[0], request.points[request.points.len() - 1]].map(|[lon, lat]| Point {
                 lat: (lat * 1e6).round() as i32,
                 lon: (lon * 1e6).round() as i32,
@@ -524,7 +524,7 @@ fn two_layouts_of_one_bake_give_the_same_routes() {
             // Each route starts at its pin, and `verdict` found the two starts at one coordinate.
             if let (Some(pin), Ok(rx), Ok(ry)) = (&request.start_position, &x.result, &y.result) {
                 let moved_pin = moved.start_position.as_ref().expect("a moved pin");
-                assert_eq!((&rx.routes[0].legs[0].start.id(), &ry.routes[0].legs[0].start.id()), (pin, moved_pin));
+                assert_eq!((&rx.legs[0].start.id(), &ry.legs[0].start.id()), (pin, moved_pin));
                 pinned += 1;
                 moved_ids += usize::from(moved_pin != pin);
             }

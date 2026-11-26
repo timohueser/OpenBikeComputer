@@ -6,7 +6,7 @@ import { OVERVIEW, weekMonth, type ClimateMeta, type ClimateTile } from './clima
 import { lineBearings, speedRow, windRow } from './climate-route';
 import { openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
 import { weekOf, type DataLayer, type Line, type Theme, type View } from './data-layer';
-import { ARROW_ICONS, WIND_NOTE, arrowStride, headClasses, headFills, mapLegend, speedPaint, viewTiles, windChart, windMap, windYear } from './wind';
+import { ARROW_ICONS, arrowStride, headClasses, headFills, mapLegend, speedPaint, viewTiles, windChart, windMap, windYear } from './wind';
 
 const CELLS = 'wind', ARROWS = 'wind-arrows';
 const EMPTY: FeatureCollection = { type: 'FeatureCollection', features: [] };
@@ -57,8 +57,6 @@ class WindLayer implements DataLayer<Samples> {
     id = 'wind';
     label = 'Wind';
     icon = 'wind';
-    description = 'Where the daytime wind blows most often, and how strong it is.';
-    caveat = `${WIND_NOTE}.`;
     meta = $state.raw<ClimateMeta | null>(null);
     error = $state('');
     private map?: Map;

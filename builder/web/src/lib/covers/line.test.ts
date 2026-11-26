@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Summary } from '../library/records';
-import { along, distanceAt, nearest, pack, runs } from './line';
+import { along, distanceAt, fromAbove, nearest, pack, runs } from './line';
 
 // Nine points 100 m apart on the equator. In the image they run along y = 0; point 6 has no place.
 const x = [0, 100, 110, 210, 220, 320, NaN, 400, 500];
@@ -52,5 +52,11 @@ describe('the line of a cover', () => {
         expect(at!.x).toBeCloseTo(1960, 0);
         expect(at!.y).toBeCloseTo(840, 0);
     });
-});
 
+    it('shows a line from above with the north up, with the longer side of its box as 1', () => {
+        // 0.2° to the east at the equator and 0.1° to the south.
+        const { points, width, height } = fromAbove([[8, 0.05], [8.2, 0.05], [8.2, -0.05]]);
+        expect([width, height].map(side => Number(side.toFixed(6)))).toEqual([1, 0.5]);
+        expect(points.map(point => point.map(side => Number(side.toFixed(6))))).toEqual([[0, 0], [1, 0], [1, 0.5]]);
+    });
+});

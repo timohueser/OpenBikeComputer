@@ -1,0 +1,10 @@
+name = "SchweizMobil hiking, cycling and mountain bike routes (FEDRO), GeoPackage"
+sources = ["schweizmobil-hiking", "schweizmobil-cycling", "schweizmobil-mtb"]
+coverage = "Switzerland and Liechtenstein"
+urls = [
+  "https://data.geo.admin.ch/ch.astra.wanderland/wanderland/wanderland_2056.gpkg",
+  "https://data.geo.admin.ch/ch.astra.veloland/veloland/veloland_2056.gpkg",
+  "https://data.geo.admin.ch/ch.astra.mountainbikeland/mountainbikeland/mountainbikeland_2056.gpkg",
+]
+bytes_estimate = 326_000_000
+notes = "One GeoPackage for each network, in LV95. FEDRO updates them once a year. The date of the STAC item of a dataset is its data date."

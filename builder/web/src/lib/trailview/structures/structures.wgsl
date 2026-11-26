@@ -47,6 +47,8 @@ struct StructureIn {
     @location(3) road: vec2f,
     // A track's sleepers from its start; a road's metres along its stroke; NO_SLEEPERS elsewhere.
     @location(4) sleepers: f32,
+    // A part's share of daylight from 0 to 1; -1 where the boxes of the portals give it.
+    @location(5) daylight: f32,
 }
 
 struct StructureOut {
@@ -58,6 +60,7 @@ struct StructureOut {
     @location(3) @interpolate(flat) colour: vec4f,
     @location(4) road: vec2f,
     @location(5) sleepers: f32,
+    @location(6) daylight: f32,
 }
 
 // Vertex flags, as in mesh.ts.
@@ -70,6 +73,8 @@ const BORE_FACE: u32 = 128u;
 // As anchored.ts: a face in the colour of the rock under it; an edge of a cable's ribbon. An anchor that is a point.
 const STONE_FACE: u32 = 32u;
 const CABLE_EDGE: u32 = 64u;
+// As UPRIGHT of anchored.ts.
+const UPRIGHT: i32 = 16384;
 const POINT_ANCHOR: u32 = 1u;
 const ABSOLUTE_ANCHOR: u32 = 2u;
 // The model grey that a stone face takes the rock's colour over: GREY of models/rocks.ts, squared as the albedo is.
@@ -120,6 +125,7 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     out.colour = v.colour;
     out.road = v.road * ROAD_RANGE_M;
     out.sleepers = v.sleepers;
+    out.daylight = v.daylight;
     return out;
 }
 
@@ -130,9 +136,9 @@ fn daylight(u: vec2f, h: f32) -> f32 {
     var light = 0.0;
     for (var i = 0u; i < u32(portals[0].x); i++) {
         let b = portals[2u + 3u * i];
-        let q = box_point(portals[1u + 3u * i], portals[3u + 3u * i].x, u, h);
+        let q = box_point(portals[1u + 3u * i], b, portals[3u + 3u * i], u, h);
         let from_facade = abs(q.x);
-        let off = max(q.y - b.y, max(b.w - 1.0 - q.z, q.z - b.z));
+        let off = max(abs(q.y) - b.y, max(b.w - 1.0 - q.z, q.z - b.z));
         light = max(light, (1.0 - smoothstep(0.0, DAYLIGHT_M, from_facade)) * (1.0 - smoothstep(0.0, 1.0 + from_facade, off)));
     }
     return light;
@@ -199,9 +205,10 @@ fn anchored(v: AnchoredIn, first: u32) -> StructureOut {
     out.sleepers = NO_SLEEPERS;
     if ((flags & CABLE_EDGE) != 0u) {
         // The ribbon turns to the eye and is at least CABLE_PIXELS wide; `road.x` keeps the share that the cable covers.
-        let tangent = vec3f(pb - pa, z.y - z.x - 4.0 * an.sag * (1.0 - 2.0 * t));
-        // The edge's w is the cable's diameter in mm, its sign the side.
-        let diameter = abs(f32(v.offset.w)) * 0.001;
+        // The edge's w is the cable's diameter in mm, its sign the side; from UPRIGHT on, the cable runs straight up.
+        let w = abs(v.offset.w);
+        let tangent = select(vec3f(pb - pa, z.y - z.x - 4.0 * an.sag * (1.0 - 2.0 * t)), vec3f(0.0, 0.0, 1.0), w >= UPRIGHT);
+        let diameter = f32(w % UPRIGHT) * 0.001;
         let width = max(diameter, CABLE_PIXELS * length(p) * frame.pixel);
         p += normalize(cross(tangent, p)) * sign(f32(v.offset.w)) * 0.5 * width;
         out.road = vec2f(max(diameter / width, CABLE_COVER), 0.0);
@@ -276,7 +283,12 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     }
     if ((flags & BORE_FACE) != 0u) {
         let lamps = albedo * TUNNEL_LIGHT * (0.8 + 0.2 * n.z) * mix(DIM, 1.0, exp(-length(in.relative) / DIM_M));
-        lit = lamps + daylight(in.u, in.altitude) * light_up(albedo, n, 0.0, 1.0, look.horizon.w);
+        // A part's face has its share of daylight; a bore of today's tunnels takes it from the portals' boxes.
+        var day = in.daylight;
+        if (day < 0.0) {
+            day = daylight(in.u, in.altitude);
+        }
+        lit = lamps + day * light_up(albedo, n, 0.0, 1.0, look.horizon.w);
     }
     if ((flags & (VOID_FACE | LAMP_FACE)) != 0u) {
         lit = albedo;

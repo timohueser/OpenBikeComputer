@@ -96,8 +96,9 @@ finds the runs of that field. A stream has no length: the streams before it give
 `kind`, `key` and `value` are indices from 0 into the strings of the tile. The tags of a feature are
 sorted by key. `geometry` is 0 for a point, 1 for a line and 2 for an area. The features of a tile
 come in a fixed order: first the kinds that no solver sets, in the order of the OSM file, the points
-and the lines before the areas; then the buildings, the lifts, the rivers and lakes, the roads,
-paths and tracks, the bridge piers, the catenary masts, the platforms and the sea. So the bytes of a
+and the lines before the areas; then the crosses, the buildings, the lifts, the rivers and lakes, the roads,
+paths and tracks, the bridge piers, the catenary masts, the platforms, the sea, the tunnel tubes and the tunnel
+ends. So the bytes of a
 tile do not depend on how much of the file lies outside the region.
 
 ### Coordinates
@@ -154,9 +155,9 @@ The road solver:
   go, so that it does not move the road,
 - holds each vertex of a way on the ground within 5 m of the terrain across the way at each sample:
   of the range from the lowest to the highest terrain at the sample and at ± the half-width of the
-  way, square to it. On a slope the terrain under the centre line is not the bed of the road. Past
+  way, square to it. On a slope the terrain under the centre line is not the base of the road. Past
   5 m the bound gives way to the other limits, and past 8 m only to the pins of the approaches, the
-  fords and the ways side by side, which cost as much, so a segment can pass the grade of its class
+  fords and the beds, which cost as much, so a segment can pass the grade of its class
   there. A sample of a segment that ends where a bridge runs through has no bound: steps or a ramp
   that meet a deck there take its height. The end of a bridge that meets no way or a tunnel (a
   portal) stands on the terrain the same way,
@@ -170,28 +171,57 @@ The road solver:
   length, so the grade does not pull a portal off the terrain. A side tunnel or a shaft that ends on
   another tunnel has the grade that its ends give it, so it never lifts that tunnel. A tunnel that
   branches inside the mountain holds the grade only on its straightest line from portal to portal,
-- holds a way of a class without a grade, where it leaves a road of a class with one, as a ramp:
-  for 15 m from the junction, where no pin of the approach holds it, its grade differs from the
-  terrain's under it by at most 25 %. The ramps are solved last, with every other height fixed, so a
-  ramp bends its way and moves no road and no junction. Over unknown terrain, a way has no ramp,
+- holds a way of a class without a grade, where it leaves a road of a class with one or a bed, as a
+  ramp: for 15 m from the junction or the end of the bed, where no pin of the approach holds it, its
+  grade differs from the terrain's under it by at most 25 %. The ramps are solved last, with every
+  other height fixed, so a ramp bends its way and moves no road and no junction. Over unknown
+  terrain, a way has no ramp,
 - gives ways that share a vertex one height there, and puts the first 4 m of a side road on the
   surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
   way between two junctions. The through road is the first class of the table at the junction, and
   of two ways of that class, the pair that runs most nearly straight on,
-- puts each vertex of a way on the ground at the height of the nearest way on the ground of the same
-  layer that runs the same way beside it, not past the first or the last vertex of that way: a track
-  within 6 m of a track, so that the tracks of a double line lie at one height, and a road or path
-  where its carriageway overlaps that of another road or path, so that the two have one surface. A way follows only a way after it in the bake's
-  order. A vertex keeps its own height where the terrain under the two ways differs by more than
-  0.5 m, there or within 100 m along its way: a ramp or a flyover,
+- puts ways side by side on one bed. A vertex of a way is beside the nearest way that meets each of
+  these conditions. That way runs within 26° of the way, it is not of the way's stroke (the ways that
+  run on from each other, see Alignment), and the foot of the vertex on it is not past an end of its
+  stroke. An opening is an end of a way where a way in another state (on the ground, in a tunnel, on
+  a bridge) runs on within 60° of straight on, or at any angle where no way in its own state runs
+  on: a portal or the end of a bridge, not a tunnel or a bridge that leaves a way to the side. On
+  the ground its reach runs from it along the stroke while the ground lasts, for the ramp length of
+  the leader, whichever of the two has the opening: the length that the class of the leader needs to
+  leave the terrain by 8 m at its grade, at least 10 m. On a bridge or in a tunnel, which leave the
+  terrain anyway, the reach is 10 m. The two share each opening that reaches either of them: the
+  other has one between the same two states on the same `layer`s beside it, at most 10 m farther
+  apart than the two ways. So two ways part before an opening of one alone, where that one climbs or
+  digs to it. The two are in the same state and on the same `layer`, or each lies within 10 m of
+  their shared opening between the two. It comes first: a class earlier in the table, or of one
+  class a way earlier in the bake's order. It is the leader. No other way of the two groups (tracks;
+  roads with `highway=track`; paths) lies nearer on that side, and a way whose stroke meets the
+  vertex does not count. It is near: for a path beside a road or a `highway=track`, the edges of the
+  two carriageways lie at most 2 m apart; a track lies within 6 m of a track; two other ways of one
+  group have carriageways that overlap. On a
+  run of such vertices along a way, d is the terrain under the way less the terrain under the foot,
+  every 2 m on the ground, and d30 is the median of d over the 30 m around a vertex. A vertex of two
+  tracks where d30 lies more than 3 m from the median of d over the run is not beside, and nor is a
+  vertex of two roads or two paths where d30 lies more than 0.5 m from 0: the terrain cannot tell
+  two levels with a steady offset from a slope. A run where the line of least squares through d
+  climbs by more than 5 % (3 % where most of the run lies beside a way of its own group), over 15 m
+  of the ground or more, is not beside: the legs of a zigzag climb against each other, and a ramp
+  leaves at its own grade. Runs that meet where a way runs on into the next, as the strokes join,
+  make a stretch. A stretch of 30 m or more that has a run on the ground is a bed. So a bed in a
+  tunnel or on a bridge continues a bed on the ground. On a bed the way has the height of its leader
+  at its foot and no forces of its own: no terrain sample, no ground bound, no grade and no
+  smoothness between vertices of the bed, no line of its tunnel chain (a chain stops at each vertex of
+  a bed), no approach, and no ford, cover, deck or pass that holds a vertex of the bed. Where a way
+  leaves a bed, its first 15 m are a ramp as below, also on the ways that it runs on into,
 - ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel keeps to
   a straight line between the two ends of its chain of tunnel ways that meet end to end, so a side
   tunnel or a shaft that joins it follows it and does not lift it. The line weighs less than the
   ground: the ground at a portal and the limits along the tunnel bend it. A way on the ground that
   meets a tunnel ends its chain there: a portal, on the ground. A tunnel chain with an end that
-  meets no way runs level from its other end, or on the grade of the road that runs on into it
-  there. A bridge never sags under the straight line between the two ends of its chain of bridge
-  ways,
+  meets no way runs level from its other end: a row as heavy as the line holds that end at the
+  height of the other one, so a way that crosses over the chain near its other end bends it there
+  and does not tilt it. A bridge never sags under the straight line between the two ends of its
+  chain of bridge ways,
 - raises a bridge that is not a culvert where it crosses a waterway, or a road, a path or a track on
   the ground that it does not meet: its road lies at least 1.5 m (water), 4.5 m (road), 2.5 m (path)
   or 6 m (track) over it, plus a deck of 1 m, or 0.4 m for a path. The way below may sink to give
@@ -214,7 +244,8 @@ The road solver:
   the ground passes over or under it,
 - puts a vertex that a road or a path shares with a river or a stream, where each passes through it
   or meets another part of its own there (only open water counts: a culvert part that starts there
-  makes no ford), and the crossing of a way tagged `ford` or
+  makes no ford, and water more than the largest `underground_m` of `waterways.json` under the terrain
+  there is underground, which the ground plan does not draw), and the crossing of a way tagged `ford` or
   `bridge=low_water_crossing` with a waterway, 0.2 m below the water. A road or a track does so only
   over water wider than `culvert_width_m`: over narrower water it takes the culvert's cover below,
   tagged as a ford or not. A path tagged
@@ -242,9 +273,10 @@ move by 1 cm, which on a long stiff deck can leave the heights metres from that 
 limits 100 times more, and the ground past 8 m 100 times more again. A first solve without limits
 gives the weights of the fit, the culverts and the covers that hold; the ramps act after the rest.
 
-The bake fails when a vertex of a way on the ground (not a bridge and not a tunnel, and not where a
-deck runs through it) lies more than 10 m past the terrain across its way, the range of the ground
-bound above: the owner's gate; the message names the worst places. Its metrics hold this census, and
+The bake fails when a vertex of a way on the ground (not a bridge and not a tunnel, not where a
+deck runs through it, and not on a bed, where its leader holds it) lies more than 10 m past the
+terrain across its way, the range of the ground bound above: the owner's gate; the message names the
+worst places. Its metrics hold this census, and
 the same one of the rivers and streams, which does not fail the bake. The bake log and the metrics
 also count the places (one per position, where several ways share a vertex) more than 10 m off the
 terrain under their centre line, which the gate does not.
@@ -374,24 +406,25 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
 1. OSM decides first. `sidewalk` `both` or `yes` gives both sides, `left` or `right` that side
    only, `no`, `none` and `separate` none. Then `sidewalk:both`, `sidewalk:left` and
    `sidewalk:right` set their sides: `yes` gives one, `no` and `separate` none.
-2. A side without a tag has a sidewalk where 3 buildings stand within 40 m of the middle of the
-   sidewalk, on that side of the way's middle line. A building counts by the mean of the vertices
-   of its outer ring.
-3. A gap under 40 m along the stroke between two such pieces closes, where no tag decides it.
-4. A side has no sidewalk where the ground from 2 m to 6 m past the road's edge rises or falls by
-   more than `sidewalk_steep` of the class per metre, unless a tag puts one there. The road's edge
-   lies its half-width (see Heights) and its widening from its middle.
-5. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
-   sidewalk's width and `sidewalk_margin_m` of the class.
-6. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
-   river or a stream: within that way's half-width and half the sidewalk's width. A way that
-   meets the road does not count within 12 m of their junction, and a waterway's bed does not
-   count within that distance of a vertex that it shares with a culvert part, or where the water
-   lies under a road or a track that crosses it on a culvert by the rule of Heights and holds its
-   cover there: within the road's outer half-width, its widening and the bed's half-width, over
-   the sine of their angle, along the water from the crossing. The pipe runs on.
-7. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
-   runs on to it where rules 4 to 6 let it.
+2. A side without a tag has a sidewalk where 2 buildings stand within 25 m of the road's middle
+   line, on either side of it. A building counts by the box of its outer ring.
+3. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
+   sidewalk's width and `sidewalk_margin_m` of the class. The road's edge lies its half-width (see
+   Heights) and its widening from its middle.
+4. A side has no sidewalk where its middle lies on the footprint of another way on the ground or on
+   the channel of a river or a stream: within that way's half-width and half the sidewalk's width. A
+   way that meets the road does not count within 12 m of their junction, and a waterway's channel
+   does not count within that distance of a vertex that it shares with a culvert part, or where the
+   water lies under a road or a track that crosses it on a culvert by the rule of Heights and holds
+   its cover there: within the road's outer half-width, its widening and the channel's half-width,
+   over the sine of their angle, along the water from the crossing. The pipe runs on.
+5. A gap under 40 m along the stroke between two pieces closes, where no tag `no`, no way without
+   a sidewalk and no bend of rule 3 lies in it. Rules 5 and 6 come after rule 4: the footprint of
+   another way and a stretch without buildings do not stop them.
+6. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
+   runs on to it, where no tag `no`, no way without a sidewalk and no bend of rule 3 lies between.
+7. A piece that ends at a junction at one end and inside the stroke off a junction at the other,
+   and is shorter than 15 m, goes.
 8. A piece under 50 m goes, after rules 1 to 7 have decided every way of the solve. A piece is a
    run of sidewalk on one side that stops at both ends, followed across the vertices where it
    carries on into another line's sidewalk on the same side, and its length is the sum over those
@@ -420,6 +453,9 @@ The bake adds these to the features of the road solver:
 | tag `levels` | each way of the road solver with a state (see below), at zoom 13 | `S` then `m K S` per end line: the state where the way's metres along begin, then per end line in rising metres its metres along, its kind (`A` a deck's end, `P` a portal, `C` a closed end) and the state past it. A state is `D` on a deck, `B` in a bore, `O` on the ground, `H` not drawn |
 | tag `storey` | each way of a deck that lies over another deck, at zoom 13 | Its storey over the ground, 2 or more. A deck without the tag lies on storey 1 |
 | tag `slab` | each way of a deck whose room gives less than its full depth (ladder step 2), at zoom 13 | The depth of its slab in metres |
+| line `tunnel-tube` | each chord of the curve of a chain of tunnel ways with a part, at zoom 13 | Two vertices; the heights are the floor. See Tunnel parts |
+| point `tunnel-end` | each opening with a part of its own, at zoom 13 | The middle of its frame line; the height is the floor there. See Tunnel parts |
+| tag `parts` | each tunnel way of a room that draws, at zoom 13 | The parts of the two ends of its chain, as `ends` of a `tunnel-tube`: of the head that its opening enters |
 
 The bake decides `levels`, `storey` and `slab` by the levels of the ground plan (`graph::levels` of
 `host/obc-ground-plan`, and `graph::level_tags` for the tags) with the rule tables of its own build. The options
@@ -428,15 +464,23 @@ class and waterway kind, and the `structures` of `plan.json`), so a change of th
 of the code of the levels takes a new revision. The bake builds each zoom-16 cell of each zoom-13 tile that holds a
 way of the road solver as the viewer does: from the zoom-13 tiles of the bake and the terrain tiles of zooms 13 and
 12 of the grid. Each cell decides the ways inside its square. A way has a state where it is a bridge or a tunnel, or
-where it ends at the body of a way that it crosses. A station of a tunnel is `B` where the ground over it gives
-the least room of its class (`bore_least_m` and `roof_least_m`, less `lift_max_m` where no paved way lies on that
-ground). Else it is `O` within `open_max_m` (30 m) of a tag end and before the first `B` from its nearer tag end,
-also where its floor lies over the terrain (the way goes on as a way on the ground until the cover holds), but `H`
-where a paved way lies on top of it: more than the lower `snap_height_m` of the two ways over its floor. Else it is
-`H`. The A lines of one deck group that cross or lie within
+where it ends at the body of a way that it crosses (the smaller way, the later row of `roads.json`; of one row, the
+tunnel). A tunnel is a way of the kind `tunnel`, or a way of a ground kind tagged `tunnel=yes` (the shallow tunnels
+above). A point of a tunnel has room where, at five points across the floor of its way (the edges of its core, of its
+carriageway, and its centre line), the ground over the floor lies at least the least room of its class over it
+(`bore_least_m` and `roof_least_m`). That ground is the lowest paved way on the ground that covers the point, else
+the plain terrain lifted by `lift_max_m`; a way that ends at the tunnel is not part of it. A cell finds of its tunnel
+ways their stretches with room, under a paved way on top (more than the lower `snap_height_m` of the two ways over
+its floor) and over the body of a way that they end at, their tag ends, and the tunnel ways that go on at each end;
+the cell that holds an end finds it. The bake decides the states along each whole chain of tunnel ways from what all
+cells found: from each tag end the tunnel is `O` up to the first point with room, its portal line, at most
+`open_max_m` (300 m); behind the line it is `B` where it has room, up to `body_m` (30 m) along the chain; else `H`. A
+way on top of an open stretch makes it `H` there (a door), except where it goes on over a stretch with room: there it
+is the lid of the bore. A stretch over the body of a way that the tunnel ends at is `H`. A chain goes on at an end
+only where one tunnel way goes on. A cell reads no chain, so the open stretch takes none of a cell's reach. The A lines of one deck group that cross or lie within
 `edge_band_m` of each other move in together: each A moves in along its way to where its centre line meets the line
 normal to their mean direction into the decks through the farthest one in, and each end line stays square to its own
-way. One pass merges them; a cell merges the A lines that it sees. The storey is one per deck group, the deck ways that share a
+way. An A does not move onto or past a way that passes below its deck with room. One pass merges them; a cell merges the A lines that it sees. The storey is one per deck group, the deck ways that share a
 point, joined over all cells: 1, and one more than each group under it at a crossing that a cell owns and whose
 ladder gives a deck (full or thin). A crossing of a group over itself lifts nothing. The metres along of a way are
 those of its stroke (see Alignment): `along_code` at the first vertex of each part, and the length of the ground
@@ -503,7 +547,7 @@ chord's direction at their shared vertex, and its tangents shorten until it leav
 centimetres. The rules of the ways at water (fords, covers, culverts) read the
 levels at the vertices of the map and the straight line between them: at a crossing between two of
 them, that level can lie off the level of the tiles. Near a junction, within the bank
-top's distance of the widest waterway there, the bank tops lie in the other waterway's bed and do
+top's distance of the widest waterway there, the bank tops lie in the other waterway's channel and do
 not count. A pit on the line lowers the level there and after it, until the terrain falls under it.
 The width w of a waterway is its `width` tag where it is above 0, else `width_m` of its `waterway`
 value in `data/trailview/waterways.json`, and its half-width is half of w. Waterways that share a vertex are one network: a
@@ -529,6 +573,312 @@ With `has_z` 1, each vertex has a `z_code`. `z_code` 0 means not solved: the hei
 never 0 m. Otherwise `z_code − 1` is the zigzag difference in centimetres from the last solved
 height of the feature, which starts at 0. A height is in metres in the vertical datum of
 `planner/terrain`.
+
+### Tunnel parts
+
+The bake selects a part for each opening of a tunnel and writes it as the kinds `tunnel-tube` and `tunnel-end`
+(`parts` of `host/obc-trailview-features`). The rule values come from `data/trailview/parts.json`, the option `parts`
+of the step: per group of road classes `look`, `collar_max_m`, `wing_max_m` and `least_height_m`, and the values of
+`bake`. The values below are those names.
+
+A chain is a run of the ways of the kind `tunnel` that meet end to end: it goes on through each vertex where the
+ends of two such ways meet and no other such way has a vertex. A shallow tunnel lies on the ground in the ground plan
+and belongs to no chain. A chain end opens where no other way of the kind `tunnel` has a vertex at its end vertex;
+else the tube goes on in the hill there and that end has no opening. The tube is the curve of the chain's ways (at most 10 m between
+vertices), joined. Its section is that of its widest way: `half` is the way's half-width with its widening and
+`margin_m` (`margin_narrow_m` where the bore is `narrow_bore_m` or less), `height` is its bore.
+
+An opening lies at the end vertex of its way. Where the vertex holds two or more arms of other ways of the road solver
+(the end of a way is one arm, a vertex inside a way two), the opening moves in along the chain to the first whole metre where both ends of its frame line, `half` + `shell_m` to
+each side, lie farther from each other way's line than that way's outer half-width; at most `junction_shift_max_m`,
+half the chain and the length of its own way. Where the two openings of a chain would meet, both stay at the ends
+of the chain (`shift` 0). The ground plan builds the stretch from the vertex to the opening as a
+way on the ground (`graph::build_open`).
+
+A head and the shells of its collars move out of each other room that draws where a move clears them (see Rooms; the
+rooms of the head's holes and those open to them through a seam's hole are its own). Where a point of them lies in
+another room's space by more than the bake's centimetre (the room's outline swept along its axis, `half` to each side,
+from its floor to its arch), the openings of the head move in along their ways by the least whole metres that clear it,
+within the limits of a shift above, and the rooms and the ladder are made again. A head that no metre clears stays and
+is counted (`heads_in_rooms`, with places; `openings_moved_out_of_rooms` and `farthest_move_out_of_rooms_m` count the
+moves). The bake reads a head as the builder draws it: its wall from `-recess_m` to `face_m` − `recess_m` across its
+frame line, `half` + `shell_m` (a rim: and `frame_m`) past its outer holes and its wing rows past that, from its foot to
+`face` (a rim: to each hole's frame); per hole the shell of its collar, `half` + `shell_m` to each side of its room's
+axis, from the foot to `shell_m` over its crown, out to the builder's reach (`need` of `obc-trailview-parts`; a box
+meets the other end's part at the middle of its room). Its foot is the record's, or `foot_m` under the lowest floor of
+each hole's room out to that `need` (of a box, the whole room).
+
+The bake measures each opening on the ground of the ground plan: each cell that holds a point to read is built as the
+viewer builds it, with the tags of the levels and the stretches to the openings on the ground, without the storey
+under the ground (the step's metric `ground_plan_bores` says which). The ladder reads a first measure with the
+stretches of all openings. The numbers read the stretches that the device opens: of each opening of a room that draws
+(see below); the openings near a stretch that the first measure opened otherwise are measured again. Where that
+ground no longer fits the kind (no cover, or cover past the limit), the end takes its next kind, and a pair with such
+an end is no pair. The cover at a metre in is the least ground
+over the centre line and both outer walls (`half` + `shell_m` across), less the floor; the metre is covered where
+the cover is at least `height` + `shell_m` + `cover_m`.
+
+The ladder, the measure and the floor read each room (see Rooms) as one tube: its `half`, its `height`, its length,
+and the family and the group of its widest lane. Each opening takes the first kind of part that fits, by these rungs
+in order:
+
+1. No part where a vertex of the chain has no height.
+2. A room whose lanes' chains are all shorter than `underpass_max_m`, with a way or a track on top: `box` at its
+   openings. Its height comes from the floor of the tube, as for every part. A short chain under a building only has
+   no part.
+3. An end that meets no way and is covered at its opening: `free`.
+4. An end whose first covered metre lies within `collar_max_m`: `rock` for a group with `rock` covered within
+   `rock_cover_max_m`; else `arch`.
+5. Else `free`.
+
+What draws is decided once, in the bake, by the rule of the builder (`built` of `host/obc-trailview-parts`). A room
+draws where each of its ends is a seam or an opening with a part, and where it is not taken out. The rooms of one seam,
+and the rooms of one arm, draw together or not at all. A room whose seam holds no hole for a room behind it, or whose
+arm has an opening in no room, does not draw; nor does a room whose line leaves the bake's region, a room behind a seam
+that is too short for its `clear`, or a room whose cap finds no place a wall from its door (see Rooms). Of two openings
+within `pair_max_m` and `pair_max_deg` (also the two ends of one room) whose rooms draw, that lie at one level (neither
+over the other, see Rooms) and less than two `shell_m` apart across, the narrower room does not draw, then the one with
+the higher id. These rules repeat until no room leaves. A room that does not draw writes no record, and its ways have no
+tag `parts`, but for a room alone (below).
+
+What the rooms cannot build draws as a tunnel of one way: the arms of a room that does not draw run beside no other, and
+the rooms are made again, until each room draws or is alone, the whole of one chain with no seam. A room alone draws by
+the same rule; the region does not take it out. A room alone that does not draw, and is not taken out, writes the
+records of a tunnel of one way where an end has a part: its chords and its ways' tag `parts` name `none` at the other
+end, so the builder builds neither them nor that part's head, and the head is in no link.
+
+Openings on one frame line share one head, a hole per opening, of rooms that draw:
+
+- Two ends of rung 4 of one family (rail or not) within `pair_max_m` and `pair_max_deg`, whose rooms lie two
+  `shell_m` or more apart across, their axes `JOINT_MAX_M` or less apart across: a pair. The nearest pairs come
+  first, each opening in one pair.
+- Two openings of any kinds within `pair_max_m` and `pair_max_deg` whose rooms lie at one level and less than two
+  `frame_m` and two `shell_m` apart across.
+
+`JOINT_MAX_M` (`parts`) is 29 m, well under `BUFFER_M` (40 m). The bake reads the records of rooms that draw back as
+the zoom-13 tiles of its region hold them, each tile with its buffer, with the builder's `read_back` of
+`host/obc-trailview-parts`: each record in the tile that owns its point, each chord in the tile that owns its first
+vertex. The builder closes an end of a chord at the opening of a record that it builds, one whose holes it all finds,
+or where another chord meets it. Where it does not find a hole, or an end of a chord does not close, the joint is made
+again: at a head, each such opening has a head of its own (`openings_apart`), and its room keeps its lanes; at a seam
+or inside a room of lanes, the arms of that room run beside no other. A head of one hole and the inner vertices of a
+room alone are whole in each tile: its chords are shorter than `BUFFER_M`. `joints_not_whole` counts the records and
+chords that the written placement does not hold whole.
+
+The openings that these links join lie on the frame line of their group's far opening (see Rooms): the others move in
+along their ways to it. Where a way does not reach that line within `pair_max_m`, half its chain and its own way, its
+pair breaks and each opening has a head of its own. A head has one `tunnel-end`, at its first hole from the right of
+the line. The kind of each hole gives its collar and its section; the head is a wall where one of them is `arch` or
+`box`, else a rim round each hole.
+
+The point of a `tunnel-end` lies on the axis of its first hole at its opening. The frame of a head runs from `half` +
+`shell_m` right of the axis of its first hole to `half` + `shell_m` left of the axis of its last.
+
+The numbers, in metres over the floor of the opening unless named:
+
+- `collar`: the metres to the first covered metre. For `box` it is at most half the chain. For `free` it is at most
+  `free_max_m` and half the chain, and that limit where no metre is covered. Each hole has its own.
+- `face`: the highest ground on the frame line plus `coping_m`, at least `height` + `shell_m` + `band_m`, at most
+  `height` + `shell_m` + `face_over_crown_max_m`, and at most the underside of a deck over the frame line or its wing
+  walls less `coping_m`. In a head of holes, the least is over the highest crown and the most over the lowest;
+  where the least lies over the most, the least holds. A deck is over them where that lies over the floor: a way that
+  goes on from the opening on a deck is not. So a deck can make `face` lower than `height` + `shell_m`.
+- `left`, `right`: a row of wall tops, one per metre out from the outer edge of the frame, the ground plus
+  `coping_m`, from `coping_m` up to `face`. A row ends before the first metre whose ground lies under the floor +
+  `wing_ground_m`, or that comes within `wall_m` of another room or another head, or at `wing_max_m`, and has one
+  value at least. `left` is to the left of the way into the tube.
+- `foot`: the lowest ground under the frame, its wing walls and its collars, less `foot_m`. The floors count as
+  ground there, so `foot` is at most −`foot_m`.
+
+The tags, numbers in metres with at most 2 decimals, the values of a row separated by a space. A row holds one value
+per lane of a room from its right wall to its left, or per hole of a head from the right of its line; a row of pairs
+holds `a b` per item, its values at the first and the second vertex. A room of one lane writes no `off`, `edge` or
+`up`, and a head of one hole no `across`, `up` or `kind`.
+
+| Tag | On | Value |
+| --- | --- | --- |
+| `section` | both | `round`, or `box` for an underpass and for each room of a seam with one; a row on an end |
+| `half`, `height` | both | The inside half-width and height: of a tube, of the room; `height` of a lone tube the height of its chord, of a room of lanes a pair, its height at each vertex; of an end, a row: of each hole's room, its height there (see The floor of a tube). A room of two lanes or more rounds both up to the centimetre |
+| `look` | both | `concrete`, `masonry` or `rock`: of the group, `rock` for a head whose holes are all `rock` |
+| `class`, `surface` | tube | A row: the class of `roads.json` and the `surface` tag of each lane's way, `-` for a way with none |
+| `road` | tube | A row: the half-width of each lane's carriageway |
+| `along` | tube | A row: the metres along the stroke of each lane's way at the first vertex, negative where the way runs against the chord |
+| `off` | tube | A row of pairs: the metres to the left of the chord to each lane's axis |
+| `up` | tube | A row of pairs: each lane's floor over the chord's floor; absent where all are 0 |
+| `edge` | tube | A row of pairs: per two lanes the metres to the left of the chord to the edge between them |
+| `ends` | tube | The parts of the room's two ends, the end behind the first vertex first: `arch`, `rock`, `box`, `free`, `seam`, or `none` for an end with no part of its own |
+| `part` | end | `arch`, `rock`, `box` or `free`: of the first hole; `seam` for a seam |
+| `heading` | end | Radians from x to y of world coordinates, three decimals: square to the frame line, into the tube of its group's far opening; of a seam, from the room before the line into those behind it |
+| `collar` | end | A row: the collar of each hole; of `free`, the length of its shell |
+| `across`, `up` | end | A row: each hole's metres to the left of the point, and its floor over the point's floor |
+| `kind` | end | A row: the part of each hole |
+| `face`, `left`, `right` | end | Where the head is a wall: not on `free`, nor on a head of rims |
+| `foot` | end | |
+| `way` | end | A row of the ways that enter the head, from the right: the end vertex of each, `x y` in the frame of the ground plan (2^34 units per side): the point that each zoom-13 tile holds, a quarter unit times 32, or a whole unit times 128 on a way with no alignment |
+| `shift` | end | A row: per way the metres along it from `way` to the line; 0 where it did not move |
+| `door` | seam | Per lane of the room before the line that ends on it: its door's metres to the left of the point, half-width, floor over the point's and the bore of its way, four values per door |
+
+A seam has the tags `part`, `heading`, `half`, `height`, `across`, `up` and `door` only. Its point lies on the axis of
+the room before the line, at that room's end; its height is that room's floor there. Its first hole is that room:
+`across` and `up` 0, the room's `half` and its height there. Each other hole is a room behind the line, from the right
+(see Rooms): its first vertex is the hole's point as the record gives it, and its first chord tapers from the hole's
+`half` to its own. A seam of one hole is a cap: the room ends there in the hill, and the builder draws the seam's face
+dark, as a closed end. The builder draws a door dark, up to the spring of the room before the line.
+
+Each `tunnel-tube` has the two vertices of one chord of the room from end to end (an opening or a seam), in the rising
+metres along the stroke of its base lane's way, so a tile that holds a piece of the room holds whole records. A room
+end with no opening and no seam holds its end vertex. The two chords at a vertex write the same values for it. A tube
+of one lane at a seam has a vertex between its ends, in the middle of its metres outside the `clear` of each end
+(`vertex_gap_m` at an end with none). Today's app reads neither kind. The tag `levels` and the heights of a tunnel way
+do not change with the parts.
+
+A way that ends at an opening of a built head widens its shoulder and the layers out of it, so its core's edge (where
+its wall or bank stands) reaches the jamb lines of its lane (the wall or the edge to the next lane, the farther of
+the two from its axis), and narrows back to its own width over `approach_m` of `design` in
+`data/trailview/parts.json`, or over the way where it is shorter.
+
+#### Rooms
+
+Two tunnel ways whose spaces come nearer than a wall are one room for as long as they lie beside each other. An arm is
+a chain that opens at both ends, has a height at each vertex and does not fold; another chain is in no run and no head.
+A chain folds where its axis comes within its width and `wall_m` of itself, at metres more than twice that apart along
+it, and does not lie over itself there by its `height`, `shell_m` and `slab_m` (a V or a hairpin; a spiral passes over
+itself); it is alone. An arm's
+space at a metre is `half` to each side of its axis, and from its height to that plus `height`. Two spaces lie apart
+where the gap (the distance of the axes less the two halves) is at least `wall_m`, two `shell_m`, or one lies over the
+other by its `height`, `shell_m` and `slab_m`, each less 0.01 m (the bake's centimetre).
+
+The bake reads each arm every whole metre from opening to opening against the axes of the other arms near it, with
+the heights of the road solver. At a metre another arm is, tested in this order:
+
+- open: its foot lies past its openings;
+- apart: the gap is `wall_m` or more, less 0.01 m;
+- over: the one lies over the other by the lower one's `least_height_m` and `roof_m` (`shell_m` + `slab_m`) or more;
+- with: the two axes lead one way, or against each other, within `pair_max_deg`;
+- across: else.
+
+- A run is a stretch of metres with each other, as both arms' own metres see it: at a corner of one arm the other's
+  foot stays at the corner. Holes shorter than `room_join_m` close. A run shorter than `vertex_gap_m` is a crossing.
+- A run ends where an arm opens: at the openings of both arms on that side, on a frame line. Else it ends in the hill
+  at its last metre, with a seam. Where the next metres are across, of the two arms the narrower (then the higher id)
+  turns away: its lane ends on the seam's line with a door, and its arm is in no room until the first metre
+  `vertex_gap_m` or more past the line where it is with or across no arm (`lanes_in_a_wall`); there its room starts
+  with a cap. The cap moves on along the arm a metre at a time until its face lies a wall from the room before the
+  door, as the builder draws that room's chord at the seam (see below); a room with no such metre does not draw.
+- A stretch of metres over or across that no run holds, as either arm's metres read it, is over and under: by height
+  where its metres are all over, else by the floor (they cross; where the two arms read it apart, they cross). Next to
+  a run only a stretch with metres over counts, by height.
+- Each arm is cut where a run ends in the hill and where a lane that turned away is a room again; a cut inside a run
+  cuts the other arm at its foot, until no cut is new, and a cut within `vertex_gap_m` of another is that cut. The
+  stretches between the cuts are lanes, and the lanes that a run joins are one room.
+- The base of a room is its widest lane, then the lowest id. Its centre line runs in the middle between the
+  outermost edges of its lanes: on the line at each end, and at each vertex of the base and the foot of each vertex
+  of another lane, its vertices `vertex_gap_m` apart at least. At a vertex each lane has a place on the ring's line:
+  the metres from the centre line to its axis, and its half-width along the line (its half over the cosine of its
+  turn, at most `mitre_max`). A lane of a narrow bore (`narrow_bore_m` or less) in a room with a wider lane lies at
+  the side of the nearest wider lane, edge to edge, with its way's half-width and no margin; narrow lanes on one side
+  lie side by side outward, the nearest first. `half` of the room is the largest place and half-width. The edge
+  between two lanes lies in the middle between the left edge of the one and the right edge of the next.
+- The lanes of a room that open at one end open on one frame line: the line of the far opening, the one that no
+  other opening of the room lies past by more than 0.2 m, then the farthest in. The others move in along their
+  ways, within half their chain and their own way. A lane whose way does not reach the line is counted
+  (`lanes_off_the_line`).
+- Where one side of the cuts of one place is one room, that place is a seam: a line square to that room's base
+  through its cut, with a heading from that room (the room before the line) into the others. The lanes of all its
+  rooms end on the line. A place with no such room is counted, and its rooms end with no part.
+
+A seam is written from the row of the room before it: per lane its place, its half-width along the line and its floor. A
+hole per room behind the line runs from the right side of its first lane to the left side of its last, a door over a
+lane that ends on the line; a side between two lanes lies in the middle between them. Each is cut back by `shell_m` from
+a side that it shares with another, so the tubes behind stand a wall apart and no side stands on the step between two
+floors; the outer side of an outer lane lies at the room's wall. A side lies on a whole centimetre, so `across` and
+`half` of a hole or a door are whole millimetres, as each position on the line is. A room behind the line starts at its
+hole's point as the record gives it, with the places of the row kept inside the hole. No vertex but its other end lies
+nearer to the hole than `clear`: its metres sideways from its own line over the sine of `pair_max_deg`, so that its
+first chord leaves that line within `pair_max_deg`; its `half` times the tangent of `pair_max_deg`, so that its ring
+there, turned by as much, lies wholly behind the line; and `vertex_gap_m` at least. A join of two ways nearer than that
+is no vertex either. A room behind a seam that is shorter than the `clear` of its two ends together (`vertex_gap_m` at
+an end with none) holds no vertex outside them, and its ring at its other end can reach before the line: it does not
+draw. The room before the line is as wide as its own lanes. A seam whose row holds no hole for a room behind it, or
+whose rooms are not side by side in the row, is not whole.
+
+A group of openings that links join (see the rungs) has the frame line of its far opening: one whose line no opening
+of the group within `pair_max_m` and `pair_max_deg` of it lies past by more than 0.2 m, the one with the most such
+openings, then the farthest in along the group's way. Those openings move in onto the line along their ways and take
+its heading; one whose way does not reach the line, or that lies past it, stays. The others of the group, with each
+that stays, form the next group.
+
+The bake counts, on the final floors, halves and heights as the builder draws them, each two rooms that draw and
+still come nearer than a wall and do not lie apart, read every metre and at each vertex from both rooms
+(`rooms_that_touch`, with places).
+Past a room's end its space ends at the face across that end. A room's chord at a seam runs from its outline on the
+line (its hole, or of the room before the line its own `half`) to its ring at the next vertex, the edges straight, as
+the builder draws it. Past an end and on such a chord the gap runs between the two sections. A room before a seam and
+a room behind it are open to each other through the hole: of the two, only the part of a section on the other's side
+of the line counts.
+
+#### The floor of a tube
+
+Between its openings, the floor of a tube touches no other way. The bake lowers it so that the shell of the crown
+lies under each way on top. The heights of a `tunnel-tube` are this floor, and the `z` of a `tunnel-end` is the height
+of the road solver there. The bake sets the floor before the numbers of the openings.
+
+The rule runs once per arm from opening to opening, at the vertices of each room that the arm runs in, under the ways on
+top of that room read over its `half`, with the arm's heights, grade and least height; a vertex of two rooms (on a
+seam's line) once, under the ways of both. So a lane has one floor on both sides of a seam. A room's floor at a vertex
+is its lowest lane's, and a lane's `up` its floor over that. A room of lanes is as high at a vertex as the least that
+holds the outline of each lane on its floor there, read at the corners of the room's outline as the builder draws it (a
+box section: the highest lane's top), and whose spring lies `kerb_m` or more over the floor of the lane at each wall, so
+each wall rises from the floor to the spring. Where the shell of its crown would rise over a way on top, every lane
+there is lower by as much, each to its least height, and the room is as high as the ways on top let it be, at least as
+high as its lowered lanes need. At a seam's line it is as high as the rooms behind it need, each read at the corners of
+its outline as the builder draws it (`arch_segments` per lane), at its floor and its height as the records give them. A
+lone tube's chord takes the lesser height of its two vertices. A room over another in a stretch of over and under is a
+way on top of it, its underside its floor less `slab_m`: by height it makes only the section of the room under lower, by
+the floor the floor too. The bake solves the arms from the highest down: an arm after each arm of each room over a room
+that it runs in, and a room's floor with its last arm's.
+
+- The curve of a way with heights, not of the kind `gallery`, is read on each chord of the tube that its reach (its
+  outer half-width + `half` + `shell_m`) overlaps, at its nearest points to the points of the chord where its underside
+  over the chord can bend: the ends of the overlap, and where the nearest point of a segment of its curve is an end of
+  that segment or, of a room over this one, a vertex of that room's floor. Between these points the underside and the
+  floor are both linear along the chord. A vertex at such a point reads the way there. A point inside the chord caps
+  both vertices of the chord, unless both vertices read the way and its underside there lies at or over the line between
+  theirs. So the floor lies under the way along the whole chord. A read counts where the foot of its point on the whole
+  chain, extended past an end with an opening along its end chord, lies between the openings, each grown by the way's
+  outer half-width; at a seam the foot stays on the line, as a way over the room before it lies over the room behind it
+  too. The way lies on top where its height at that point is more than the at-grade band over the road solver's height
+  of the chain at the foot (the lesser `snap_height_m` of the two classes, as at a crossing of the ground plan). A way
+  that goes on from the chain's end meets it at the chain's height, so it lies at grade. Its underside is its height
+  less its `deck` on a bridge, else less `slab_m`.
+- The tube gets a vertex where it enters and leaves the reach of each way within reach that is not of the kind
+  `tunnel`, at grade or not. Its vertices lie at least `vertex_gap_m` apart, so each chord keeps its direction in
+  the units of a tile: the openings and the joins of its ways stay, and a point of the curve nearer than that to a
+  vertex is that vertex. An end of a reach nearer than that to a vertex inside the reach lies that far past the vertex,
+  out of the reach, so a chord that leaves the reach there is short; nearer than that to another vertex, it is none.
+  Behind a seam no vertex lies nearer to the hole than `clear` (see Rooms).
+- A chord may rise by the `grade` of the class of the widest way (`grade_default` for a class with none) times its
+  length, or by the rise of the road solver's chord there, the larger.
+- The cap at a vertex is the least underside of the ways on top there, less `shell_m` and `height`. The floor is the
+  highest profile that is at most the road solver's height and the cap, and that keeps the rise of each chord. Then
+  the floor rises where the rise from an opening needs it: the two ends keep their heights.
+- Where the floor lies over the cap, the inside height there is `height` less that difference, at least
+  `least_height_m` of the group. A chord takes the lesser height of its two vertices, and an opening takes the height
+  of the chord at its vertex.
+- The bake counts a clash, once per way, where a way lies over the floor (past an opening, the chain) by more than
+  the at-grade band and the shell of the crown lies over its underside: the metres of the crown's top over the
+  underside, not the depth of a cut beside the tube. It reads each chord at these points, with the chord's height as
+  the builder draws it. This holds the ways on top that the floor could not
+  clear, and a way that was at grade with the road solver's height where the floor went down under it. Another way of
+  the kind `tunnel` lowers the floor only as a room over this one; its clashes are counted apart, as tube clashes.
+
+### Summit crosses
+
+A `cross` within 50 m of a `peak` takes the tag `summit:cross` `yes`. A peak with a `name` and with
+no cross within 50 m gets a `cross` with that tag alone at its node, except a peak tagged
+`summit:cross` `no`. The crosses come in the order of the file, then the added crosses in the order
+of their peaks. A peak is no feature of the tiles. A peak tagged `summit:cross` `yes` is a `cross`,
+the first entry that matches it.
 
 ### Sea
 
@@ -557,8 +907,8 @@ The bake validates the table before it reads OSM, and a test of `host/obc-trailv
 validates the committed table. A `path` keeps `sac_scale` and `surface`: a reader takes the look of
 steps from them. A `road` keeps `service`, and a `main-road`, a `road` and a `path` keep `lit`: a
 reader tells a driveway from them and lights a way. A kind needs no engine module: `street-lamp`
-and `level-crossing` are for the ground plan's placement. The table is part of the options of the step, so a change to it
-bakes the layer again.
+and `level-crossing` are for the ground plan's placement, and a `peak` only places summit crosses.
+The table is part of the options of the step, so a change to it bakes the layer again.
 
 ### Add a kind
 

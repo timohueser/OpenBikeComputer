@@ -23,5 +23,5 @@ obc-display = { workspace = true }
 obcm-testkit = { workspace = true }
 # Same 0.8 the render path uses, so `Rgb565`/`DrawTarget` unify.
 embedded-graphics = { workspace = true }
-# Same 0.8 the firmware uses — the corridor query fills a caller-owned `heapless::Vec`.
+# Same version the firmware uses — the corridor query fills a caller-owned `heapless::Vec`.
 heapless = { workspace = true }

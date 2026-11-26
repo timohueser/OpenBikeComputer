@@ -20,9 +20,9 @@ export function distanceTicks(fromM: number, toM: number, width: number, fine = 
     return ticks;
 }
 
-/** The ticks of `wanted` that fit on `width` pixels, the first ones first: a tick that would touch a kept one is left
- * out. A label sits as `Lanes` places it: shifted left by its share of the axis. */
-export function fitTicks(wanted: Tick[], width: number): Tick[] {
+/** The ticks of `wanted` that fit on `width` pixels, the first ones first: a tick that would touch a kept one or a label
+ * of `taken` is left out. A label sits as `Lanes` places it: shifted left by its share of the axis. */
+export function fitTicks(wanted: Tick[], width: number, taken: Tick[] = []): Tick[] {
     const extent = ({ at, label }: Tick) => {
         const size = label.length * TICK_CHAR_PX;
         return [at * width - at * size, at * width + (1 - at) * size];
@@ -30,7 +30,7 @@ export function fitTicks(wanted: Tick[], width: number): Tick[] {
     const kept: Tick[] = [];
     for (const tick of wanted) {
         const [left, right] = extent(tick);
-        if (kept.every(other => { const [a, b] = extent(other); return right + TICK_GAP_PX <= a || left >= b + TICK_GAP_PX; })) kept.push(tick);
+        if ([...taken, ...kept].every(other => { const [a, b] = extent(other); return right + TICK_GAP_PX <= a || left >= b + TICK_GAP_PX; })) kept.push(tick);
     }
     return kept;
 }

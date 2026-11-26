@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EMPTY_MESHES } from './node-bytes';
 import { Stamps, type BakedNodes } from './stamps';
+import { stampRank } from './terrain';
 import type { Node } from './lod';
 import type { Request } from './stamp-worker';
 
@@ -10,24 +11,33 @@ const name = ({ level, x, y }: Node) => `${level}/${x}/${y}`;
 /**
  * A stamp worker whose structure meshes hold a 4-byte `anchors` (so they are the worker's). `jobs` are the jobs in the
  * order in which it got them, which is the order in which a worker takes them; `answer` answers the first `count` jobs
- * that wait. Without `held` each job answers at once.
+ * that wait, `answerJob` the job named `job`. Without `held` each job answers at once.
  */
 function fakeWorker(held = false) {
-    const jobs: string[] = [], waiting: (() => void)[] = [];
+    const jobs: string[] = [], waiting: { job: string; answer: () => void }[] = [];
     Object.assign(globalThis, {
         Worker: class {
             onmessage?: (event: { data: unknown }) => void;
             postMessage({ id, what, node }: { id: number; what: Request; node: Node }) {
-                jobs.push(`${what} ${name(node)}`);
+                const job = `${what} ${name(node)}`;
+                jobs.push(job);
                 const stamps = { data: null, heights: false, mask: false, water: null, meshes: null, floors: null, portals: null };
                 const answer = () => this.onmessage?.({ data: { id, result: what === 'meshes' ? WORKER : stamps } });
-                if (held) waiting.push(answer);
+                if (held) waiting.push({ job, answer });
                 else queueMicrotask(answer);
             }
             terminate() {}
         },
     });
-    return { jobs, answer: (count = waiting.length) => waiting.splice(0, count).forEach(answer => answer()) };
+    return {
+        jobs,
+        answer: (count = waiting.length) => waiting.splice(0, count).forEach(({ answer }) => answer()),
+        answerJob: (job: string) => {
+            const at = waiting.findIndex(held => held.job === job);
+            if (at < 0) throw new Error(`no job ${job} waits`);
+            waiting.splice(at, 1)[0].answer();
+        },
+    };
 }
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -92,30 +102,61 @@ describe('the structure meshes of an owner node', () => {
             worker.answer(count);
             await settle();
         };
+        const answerJob = async (job: string) => {
+            worker.answerJob(job);
+            await settle();
+        };
         await wish(nodes, rank);
-        return { stamps, jobs: worker.jobs, wish, answer };
+        return { stamps, jobs: worker.jobs, wish, answer, answerJob };
     };
 
-    it('wait for every stamp request, and a stamp wish that comes later waits for one structure job at most', async () => {
-        // The owner nodes hold the eye, so they rank first: their stamps go first, their meshes after every stamp.
-        const { stamps, jobs, wish, answer } = await frame([...owners, near(0), near(1)], node => (node.level === 15 ? node.x - L15.x : 10));
-        expect(jobs).toEqual([...owners.map(node => `stamps ${name(node)}`), `stamps ${name(near(0))}`, `stamps ${name(near(1))}`]);
-        // The owner nodes' stamps came, two stamp requests are on their way: no structure job.
+    it('go one at a time after the wishes about the eye and before the farther ones, and pass no wish of a lower rank on its way', async () => {
+        // In the terrain's rank: the owner nodes hold the eye, so their stamps are first, and their structure jobs come
+        // after every first wish. Twelve far wishes follow, more than go out at once; then nine wishes about the eye.
+        const far = Array.from({ length: 12 }, (_, i) => near(i)), eye = Array.from({ length: 9 }, (_, i) => near(20 + i)), about = new Set(eye.map(name));
+        const stampsOf = (nodes: Node[]) => nodes.map(node => `stamps ${name(node)}`), meshesOf = (node: Node) => `meshes ${name(node)}`;
+        const rank = (owner: (node: Node) => number) => (node: Node, meshes?: boolean) =>
+            node.level === 15 ? stampRank(true, owner(node), meshes) : stampRank(about.has(name(node)), about.has(name(node)) ? 5 : 10, meshes);
+        const { stamps, jobs, wish, answer } = await frame([...owners, ...far], rank(node => node.x - L15.x));
+        expect(jobs).toEqual(stampsOf([...owners, ...far.slice(0, 5)]));
+        // The owner nodes' stamps came: the structure job of the first goes before the far wishes that it outranks.
         await answer(3);
-        expect(jobs.length).toBe(5);
-        await answer();
-        // One structure job, of the first owner node in the rank. No other follows while it is on its way.
-        expect(jobs.slice(5)).toEqual([`meshes ${name(owners[0])}`]);
-        // The camera moves: a new stamp wish goes to the worker behind that one job, and the last owner node now ranks first.
-        await wish([near(2)], node => (node.level === 15 ? L15.x + 2 - node.x : 10));
-        expect(jobs.slice(6)).toEqual([`stamps ${name(near(2))}`]);
+        expect(jobs.slice(8)).toEqual([meshesOf(owners[0]), ...stampsOf(far.slice(5, 8))]);
+        // The camera moves: the wishes about the eye come, and the last owner node ranks first. No other structure job
+        // goes while one is on its way, nor while a wish about the eye waits or is on its way.
+        await wish(eye, rank(node => L15.x + 2 - node.x));
+        expect(jobs.length).toBe(12);
         await answer();
         expect(stamps.known(owners[0])?.meshes).toBe(WORKER);
-        expect(jobs.slice(7)).toEqual([`meshes ${name(owners[2])}`]);
+        expect(jobs.slice(12)).toEqual(stampsOf(eye.slice(0, 8)));
+        await answer(1);
+        expect(jobs.slice(20)).toEqual(stampsOf(eye.slice(8)));
         await answer();
+        expect(jobs.slice(21)).toEqual([meshesOf(owners[2])]);
         await answer();
-        expect(jobs.slice(8)).toEqual([`meshes ${name(owners[1])}`]);
+        expect(jobs.slice(22)).toEqual([meshesOf(owners[1])]);
+        await answer();
         expect(stamps.loading).toBe(false);
         expect(owners.map(node => stamps.known(node)?.meshes)).toEqual([WORKER, WORKER, WORKER]);
+    });
+
+    it('wait for a wish about the eye that waits for a free request', async () => {
+        // Two owner nodes hold the eye. Their stamps and the requests of eight far wishes fill the worker.
+        const far = Array.from({ length: 8 }, (_, i) => near(i)), eye = near(20);
+        const rank = (node: Node, meshes?: boolean) =>
+            node.level === 15 ? stampRank(true, node.x - L15.x, meshes) : stampRank(node.x === eye.x, node.x === eye.x ? 5 : 10, meshes);
+        const { jobs, wish, answer, answerJob } = await frame([...owners.slice(0, 2), ...far], rank);
+        await answer(2);
+        expect(jobs.length).toBe(11);
+        expect(jobs).toContain(`meshes ${name(owners[0])}`);
+        // A frame wishes for a node about the eye while every request is far. When the first job answers, the second
+        // waits for that wish, not only for the requests on their way.
+        await wish([eye], rank);
+        await answerJob(`meshes ${name(owners[0])}`);
+        expect(jobs.length).toBe(11);
+        await answer(1);
+        expect(jobs.slice(11)).toEqual([`stamps ${name(eye)}`]);
+        await answer();
+        expect(jobs.slice(12)).toEqual([`meshes ${name(owners[1])}`]);
     });
 });

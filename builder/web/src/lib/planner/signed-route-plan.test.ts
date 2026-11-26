@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyTrip, orderedRoutePoints, startLoopHere } from './editor';
-import type { Coordinate } from './geo';
 import { LegCache } from './route-legs';
 import { decodeCoordinates } from './route-answer';
 import { calculateLine } from './routing';
@@ -34,19 +33,15 @@ describe('signed route plans', () => {
         expect([preset('hiking'), preset('foot', 1), preset('hiking', 2), preset('mtb', 2), preset('mtb', 3), preset('bicycle', 5)])
             .toEqual(['Balanced', 'Balanced', 'Alpine', 'Balanced', 'Technical', 'Balanced']);
         expect(routeBase({ ...record(103), kind: 'bicycle' }, { ...base(), bike: 'gravel', pace: 'fast' }).pace).toBe('fast');
+        // A signed route opens as a one-day route, also while a multi-day trip is open.
+        expect(routeBase(record(103), { ...base(), mode: 'trip', days: 4 }).mode).toBe('route');
     });
 
     it('joins the stages of a long route at their shared ends', () => {
         const [first, second] = [routePlan(record(402)), routePlan(record(403))];
         expect(joinedPlan([first, second])).toEqual({ points: [...first.points, ...second.points.slice(1)], turnarounds: [] });
         const turning = { ...second, turnarounds: [2] };
-        expect(joinedPlan([first, turning])!.turnarounds).toEqual([5]);
-    });
-
-    it('offers a long route whole only when the joined plan fits one request', () => {
-        const stage = (from: number) => ({ points: Array.from({ length: 22 }, (_, i): Coordinate => [8 + (from + i) / 100, 48]), turnarounds: [] });
-        expect(joinedPlan([stage(0), stage(21), stage(42)])!.points).toHaveLength(64);
-        expect(joinedPlan([stage(0), stage(21), stage(42), stage(63)])).toBeNull();
+        expect(joinedPlan([first, turning]).turnarounds).toEqual([5]);
     });
 
     it('builds a loop plan from the own start of the route with its shaping points', () => {
@@ -67,7 +62,7 @@ describe('signed route plans', () => {
         const udeg = plan.points.flatMap(([lon, lat], i) => i ? [Math.round((lon - plan.points[i - 1][0]) * 1e6), Math.round((lat - plan.points[i - 1][1]) * 1e6)]
             : [Math.round(lon * 1e6), Math.round(lat * 1e6)]);
         const totals = { distance_m: 1, ascent_m: 0, seconds: 1, surface_m: [0, 1, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
-        const answer = { id: 'route', reason: 'primary', package: 'test', profile: 'hiking', coordinates_udeg: udeg, elevation_dm: plan.points.map(() => 0),
+        const answer = { package: 'test', profile: 'hiking', coordinates_udeg: udeg, elevation_dm: plan.points.map(() => 0),
             elapsed_s: plan.points.map(() => 1), edges: {}, totals, snap_truncated: false,
             legs: plan.points.slice(1).map((_, i) => ({ from_index: i, to_index: i + 1, start: `${i}`, end: `${i + 1}`, totals })) };
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [answer] }) });

@@ -1,13 +1,12 @@
 import { IDBFactory } from 'fake-indexeddb';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { emptyTrip, orderedRoutePoints, setDays, type RoutePoint, type Trip } from './editor';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { emptyTrip, orderedRoutePoints, planTitle, setDays, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { Library } from '../library/store';
+import { newPlan } from './library';
 import { PlanSession } from './plan-session.svelte';
-import { newVersion } from './versions';
 import * as routing from './routing';
 import { routingKey } from './routing';
-import type { AnswerRoute } from './route-answer';
 import { routeService } from '../../../test-support/planner/route-service';
 import { testLine } from '../../../test-support/planner/trip';
 
@@ -16,43 +15,30 @@ const point = (id: string, kind: RoutePoint['kind'], coordinate: Coordinate): Ro
 const plan: Trip = { ...emptyTrip(), daysSet: true, points: [point('start', 'start', [8, 48]), point('finish', 'finish', [8.1, 48])] };
 const moved = (trip: Trip, lon: number): Trip => ({ ...trip, points: trip.points.map(p => p.id === 'finish' ? { ...p, coordinate: [lon, 48] } : p) });
 
-/** The stub route service, its request bodies, and a switch that holds the next answers until `release`. Address search
- * answers `places`, which finds no place unless a test sets one. */
-function service(alternatives: AnswerRoute[] = []) {
+/** The stub route service and a switch that holds the next answers until `release`. */
+function service() {
     const answer = routeService();
     let held: Promise<void> | undefined, release = () => {};
     const fetch = vi.fn(async (url: string, init: RequestInit): Promise<unknown> => {
         await held;
-        const body = JSON.parse(init.body as string);
-        return body.alternatives_only ? { ok: true, json: async () => ({ routes: alternatives }) } : answer(url, init);
+        return answer(url, init);
     });
-    const places = vi.fn(async (_url: string, _init: RequestInit): Promise<unknown> => ({ ok: true, json: async () => ({ type: 'places', results: [] }) }));
-    vi.stubGlobal('fetch', (url: string, init: RequestInit) => (url.endsWith('/query') ? places : fetch)(url, init));
+    vi.stubGlobal('fetch', fetch);
     return {
         fetch,
-        places,
-        bodies: () => fetch.mock.calls.map(([, init]) => JSON.parse(init.body as string)),
         hold() { held = new Promise(resolve => release = () => { held = undefined; resolve(); }); },
         release: () => release(),
     };
 }
 
-/** A route of the alternatives answer through `line`, as one leg. */
-function alternative(id: string, reason: string, profile: string, line: Coordinate[], via?: Coordinate): AnswerRoute {
-    const totals = { distance_m: 9000, ascent_m: 0, seconds: 900, surface_m: [0, 9000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
-    return { id, reason, package: 'test', profile, snap_truncated: false, totals, ...via ? { via } : {},
-        coordinates_udeg: line.flat().map((value, i, flat) => Math.round(value * 1e6) - (i > 1 ? Math.round(flat[i - 2] * 1e6) : 0)),
-        elevation_dm: line.map(() => null), elapsed_s: line.map((_, i) => i && 300),
-        legs: [{ from_index: 0, to_index: line.length - 1, start: 'a', end: 'b', totals }] };
+/** The `sessionStorage` of one tab: a reload of the tab keeps it. */
+function tab(items = new Map<string, string>()) {
+    vi.stubGlobal('sessionStorage', { getItem: (key: string) => items.get(key) ?? null, setItem: (key: string, value: string) => items.set(key, value),
+        removeItem: (key: string) => items.delete(key) });
+    return items;
 }
 
-function options(session: PlanSession) {
-    const options = session.routeOptions;
-    if (options.state !== 'ready') throw new Error(`Route options are ${options.state}.`);
-    return options;
-}
-const choice = (session: PlanSession) => session.routeOptions.state === 'ready' ? session.routeOptions.choice : undefined;
-
+beforeEach(() => { tab(); });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const active = async (library: Library) => {
@@ -88,261 +74,68 @@ describe('plan session', () => {
         expect(routes.fetch).toHaveBeenCalledTimes(requests);
     });
 
-    it('keeps the alternatives through picks: a corridor is one shaping point, a profile the preset, and its legs need no request', async () => {
-        const via: Coordinate = [8.05, 48.02];
-        const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via),
-            alternative('climb', 'less_climbing', 'touring/less-climbing', [[8, 48], [8.1, 48]])]);
-        const session = new PlanSession();
-        session.commit(plan);
-        await vi.waitFor(() => expect(session.line).toBeDefined());
-        session.findAlternatives();
-        await vi.waitFor(() => expect(choice(session)).toBe('primary'));
-        const [primary, corridor, lower] = options(session).routes;
-        expect(routes.bodies().map(body => [body.points, body.alternatives_only])).toEqual([[[[8, 48], [8.1, 48]], undefined], [[[8, 48], [8.1, 48]], true]]);
-        const pick = async (route: typeof primary) => {
-            expect(session.pickAlternative(route)).toBe(true);
-            expect(choice(session)).toBe(route.id);
-            await vi.waitFor(() => expect(session.line).toBeDefined());
-        };
-        await pick(lower);
-        expect(session.trip).toMatchObject({ preset: 'Less climbing', points: plan.points });
-        expect(routes.fetch).toHaveBeenCalledTimes(2);
-        await pick(corridor);
-        expect(session.trip.preset).toBe('Balanced');
-        expect(orderedRoutePoints(session.trip).map(p => [p.kind, p.coordinate])).toEqual([['start', [8, 48]], ['via', via], ['finish', [8.1, 48]]]);
-        expect(routes.bodies().at(-1)).toMatchObject({ points: [[8, 48], via, [8.1, 48]], profile: 'touring' });
-        for (const route of [lower, corridor, primary]) await pick(route);
-        expect(session.trip).toMatchObject({ preset: 'Balanced', points: plan.points });
-        expect(routes.fetch).toHaveBeenCalledTimes(3);
-        // The checked route adds no Undo step: one Undo returns to the corridor.
-        expect(session.pickAlternative(primary)).toBe(false);
-        expect(session.undo() && choice(session)).toBe('corridor');
-        expect(routes.fetch).toHaveBeenCalledTimes(3);
-    });
-
     it('takes a rename of another page over its own later save, deletes its plan after a rename, and opens an empty plan when another page removes its plan', async () => {
         service();
         const library = new Library(new IDBFactory()), session = new PlanSession();
         await session.start(library);
         session.commit(plan);
         await vi.waitFor(() => expect(session.line).toBeDefined());
-        await session.saved();
+        expect(await session.save('Lake')).toBe(true);
         const id = session.plan.id;
         await library.renameRoute(id, 'Lake loop');
         await vi.waitFor(() => expect(session.plan.name).toBe('Lake loop'));
-        session.commit(moved(plan, 8.2));
-        expect(await session.saved()).toBe(true);
+        session.commit({ ...moved(plan, 8.2), mode: 'trip' });
+        expect(await session.save()).toBe(true);
         expect(await library.route(id)).toMatchObject({ name: 'Lake loop', trip: { points: moved(plan, 8.2).points } });
         await session.rename(session.plan, 'Lake round');
         await vi.waitFor(() => expect(session.plan.name).toBe('Lake round'));
         expect(await session.remove(session.plan)).toBe(true);
         expect(await library.route(id)).toBeUndefined();
+        // The empty plan after a delete is a one-day route, also when the deleted route was a multi-day trip.
+        expect(session.trip.mode).toBe('route');
 
-        session.commit(plan);
+        session.commit({ ...plan, mode: 'trip' });
         await vi.waitFor(() => expect(session.line).toBeDefined());
-        await session.saved();
+        await session.save('Second');
         const second = session.plan.id;
 
         await library.removeRoute(second);
         await vi.waitFor(() => expect(session.plan.id).not.toBe(second));
-        expect([session.trip.points, session.saveError]).toEqual([[], '']);
+        expect([session.trip.points, session.trip.mode, session.saveError]).toEqual([[], 'route', '']);
         session.close();
     });
 
-    it('previews an option without an edit, applies it as one Undo step, and refuses options of an earlier plan', async () => {
-        const via: Coordinate = [8.05, 48.02];
-        const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via)]);
-        const session = new PlanSession();
-        await session.start(new Library(new IDBFactory()));
-        session.commit(plan);
-        await vi.waitFor(() => expect(session.line).toBeDefined());
-        session.findAlternatives();
-        await vi.waitFor(() => expect(choice(session)).toBe('primary'));
-        const [primary, corridor] = options(session).routes;
-        await session.saved();
-        const save = vi.spyOn(session, 'save');
-        const before = session.trip;
-
-        session.previewOption(corridor.id);
-        expect([session.compared, session.trip, session.canRedo]).toEqual([corridor, before, false]);
-        session.previewOption(primary.id);
-        expect(session.compared).toBeUndefined();
-        session.previewOption(corridor.id);
-        session.previewOption(null);
-        expect([session.compared, session.trip]).toEqual([undefined, before]);
-        expect(save).not.toHaveBeenCalled();
-
-        session.previewOption(corridor.id);
-        expect(session.pickAlternative(corridor)).toBe(true);
-        expect([session.compared, choice(session), save.mock.calls.length]).toEqual([undefined, 'corridor', 1]);
-        expect(session.undo() && session.trip).toBe(before);
-
-        // An edit makes the options stale; they never apply to the edited plan.
-        session.previewOption(corridor.id);
-        session.commit(moved(plan, 8.2));
-        expect([session.routeOptions.state, session.compared]).toEqual(['stale', undefined]);
-        expect(session.pickAlternative(corridor)).toBe(false);
-        await vi.waitFor(() => expect(session.line).toBeDefined());
-        routes.fetch.mockResolvedValueOnce({ ok: false, json: async () => ({ message: 'Routing is unavailable. Retry shortly.' }) });
-        session.findAlternatives();
-        await vi.waitFor(() => expect(session.routeOptions).toEqual({ state: 'error', message: 'Routing is unavailable. Retry shortly.' }));
-        session.findAlternatives();
-        await vi.waitFor(() => expect(choice(session)).toBe('primary'));
-        expect(session.pickAlternative(corridor)).toBe(false);
-        session.close();
-    });
-
-    it('keeps the options of a plan that Undo returns to during a request for the edit, and offers no corridor without via', async () => {
-        const via: Coordinate = [8.05, 48.02];
-        const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via),
-            alternative('bare', 'corridor', 'touring', [[8, 48], [8.05, 47.98], [8.1, 48]])]);
-        const session = new PlanSession();
-        session.commit(plan);
-        await vi.waitFor(() => expect(session.line).toBeDefined());
-        session.findAlternatives();
-        await vi.waitFor(() => expect(choice(session)).toBe('primary'));
-        expect(options(session).routes.map(route => route.id)).toEqual(['primary', 'corridor']);
-        session.commit(moved(plan, 8.2));
-        await vi.waitFor(() => expect(session.line).toBeDefined());
-        routes.hold();
-        session.findAlternatives();
-        session.undo();
-        session.findAlternatives();
-        session.previewOption('corridor');
-        routes.release();
-        await routes.fetch.mock.results.at(-1)!.value;
-        await new Promise(resolve => setTimeout(resolve));
-        expect([choice(session), session.compared?.id]).toEqual(['primary', 'corridor']);
-    });
-
-    it('names a corridor option after the nearest city, town or village within 3 km of its via', async () => {
-        const via: Coordinate = [8.05, 48.02];
-        const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via)]);
-        const place = (name: string, kind: string, distance: number) => ({ name, kind, distance });
-        routes.places.mockResolvedValueOnce({ ok: true, json: async () => ({ type: 'places',
-            results: [place('Oberneuhäuser', 'hamlet', .4), place('Kirchzarten', 'village', .8), place('Freiburg', 'city', 2.9)] }) });
-        const session = new PlanSession();
-        session.commit(plan);
-        await vi.waitFor(() => expect(session.line).toBeDefined());
-        session.findAlternatives();
-        await vi.waitFor(() => expect(session.optionPlaces).toEqual({ corridor: 'Kirchzarten' }));
-        const { view, request } = JSON.parse(routes.places.mock.calls[0][1].body as string);
-        expect([(view[0] + view[2]) / 2, (view[1] + view[3]) / 2].map(n => n.toFixed(6))).toEqual(via.map(n => n.toFixed(6)));
-        expect(request).toEqual({ type: 'places', what: ['town'], radius: { value: 3, unit: 'km' } });
-    });
-
-    it('calculates each saved version once, a failed one again on retry, and opens a version with its line', async () => {
+    it('calculates the lines of two trips once, a failed one again on retry, and drops the line of a trip no longer asked for', async () => {
         const routes = service();
         const session = new PlanSession();
         await session.start(new Library(new IDBFactory()));
-        session.commit(plan);
-        await vi.waitFor(() => expect(session.line).toBeDefined());
         const valley = moved(plan, 8.2), ridge = moved(plan, 8.3);
-        await session.saveVersions([newVersion(valley, undefined, 'Valley'), newVersion(ridge, undefined, 'Ridge')]);
         routes.fetch.mockResolvedValueOnce({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.' }) });
-        session.findVersionLines();
-        await vi.waitFor(() => expect(Object.values(session.versionLines)).toHaveLength(2));
-        expect(Object.values(session.versionLines).filter(line => line === 'No legal route.')).toHaveLength(1);
+        session.findLines([valley, ridge]);
+        await vi.waitFor(() => expect(Object.values(session.foundLines)).toHaveLength(2));
+        expect(Object.values(session.foundLines).filter(line => line === 'No legal route.')).toHaveLength(1);
         const requests = routes.fetch.mock.calls.length;
-        session.findVersionLines();
+        session.findLines([valley, ridge]);
         expect(routes.fetch).toHaveBeenCalledTimes(requests);
-        session.findVersionLines(true);
-        await vi.waitFor(() => expect(Object.values(session.versionLines).every(line => typeof line === 'object')).toBe(true));
+        session.findLines([valley, ridge], true);
+        await vi.waitFor(() => expect(Object.values(session.foundLines).every(line => typeof line === 'object')).toBe(true));
         expect(routes.fetch).toHaveBeenCalledTimes(requests + 1);
-        expect(await session.openVersion(session.versions.find(v => v.name === 'Valley')!.id)).toBe(true);
-        expect(session.line).toBe(session.versionLines[routingKey(valley)]);
-        expect(routes.fetch).toHaveBeenCalledTimes(requests + 1);
+        session.findLines([valley, moved(plan, 8.4)]);
+        await vi.waitFor(() => expect(Object.keys(session.foundLines).sort()).toEqual([routingKey(valley), routingKey(moved(plan, 8.4))].sort()));
         session.close();
     });
 
-    it('keeps the edits of the open version when another opens, and saves a plan of no version first', async () => {
-        service();
-        const session = new PlanSession();
-        await session.start(new Library(new IDBFactory()));
-        session.commit(plan);
-        await session.saveNewVersion('A');
-        const a = session.openId!;
-        session.commit(moved(plan, 8.2));
-        await session.saveNewVersion('B');
-        const b = session.openId!;
-        session.commit(moved(plan, 8.3));
-        expect(await session.openVersion(b)).toBe(true);
-        expect(session.trip).toEqual(moved(plan, 8.3));
-        expect(await session.openVersion(a)).toBe(true);
-        expect([session.trip, session.openId]).toEqual([plan, a]);
-        session.commit(moved(plan, 8.4));
-        expect(await session.openVersion(b)).toBe(true);
-        expect([session.trip, session.openId]).toEqual([moved(plan, 8.3), b]);
-        expect(await session.openVersion(a)).toBe(true);
-        expect(session.trip).toEqual(moved(plan, 8.4));
-        expect(session.versions.map(v => [v.id, v.name]).sort()).toEqual([[a, 'A'], [b, 'B']].sort());
-
-        await session.saveVersions(session.versions.filter(v => v.id !== a));
-        expect(session.openId).toBeUndefined();
-        session.commit(moved(plan, 8.5));
-        expect(await session.openVersion(b)).toBe(true);
-        expect(session.versions.map(v => [v.name, v.trip])).toEqual([[undefined, moved(plan, 8.5)], ['B', moved(plan, 8.3)]]);
-        session.close();
-    });
-
-    it('undoes a switch of versions in one step, with the open version from before', async () => {
-        service();
-        const factory = new IDBFactory();
-        const session = new PlanSession();
-        await session.start(new Library(factory));
-        session.commit(plan);
-        await session.saveNewVersion('A');
-        const a = session.openId;
-        session.commit(moved(plan, 8.2));
-        await session.saveNewVersion('B');
-        const b = session.openId;
-        expect(await session.openVersion(a!)).toBe(true);
-        expect(session.undo()).toBe(true);
-        expect([session.trip, session.openId]).toEqual([moved(plan, 8.2), b]);
-        await session.saved();
-        expect((await active(new Library(factory)))?.open).toBe(b);
-        session.close();
-    });
-
-    it('keeps the earlier steps with the version saved from them, so Undo makes no copies and no empty version', async () => {
-        service();
-        const session = new PlanSession();
-        await session.start(new Library(new IDBFactory()));
-        session.commit(plan);
-        session.commit(moved(plan, 8.2));
-        await session.saveNewVersion('A');
-        const a = session.openId;
-        expect(session.undo()).toBe(true);
-        expect([session.trip, session.openId]).toEqual([plan, a]);
-
-        expect(session.undo()).toBe(true);
-        const b = newVersion(moved(plan, 8.9), undefined, 'B');
-        await session.saveVersions([b, ...session.versions]);
-        expect(await session.openVersion(b.id)).toBe(true);
-        expect(session.versions.find(v => v.id === a)?.trip).toEqual(moved(plan, 8.2));
-
-        const c = newVersion(moved(plan, 8.8), undefined, 'C');
-        await session.saveVersions([c]);
-        expect(session.openId).toBeUndefined();
-        expect(await session.openVersion(c.id)).toBe(true);
-        expect(session.undo()).toBe(true);
-        expect(await session.openVersion(c.id)).toBe(true);
-        expect(session.versions.map(v => v.name)).toEqual([undefined, 'C']);
-        session.close();
-    });
-
-    it('duplicates a plan that is not open with the versions saved for it', async () => {
+    it('duplicates a plan that is not open with its summary', async () => {
         service();
         const session = new PlanSession();
         await session.start(new Library(new IDBFactory()));
         session.commit(plan);
         await vi.waitFor(() => expect(session.line).toBeDefined());
-        await session.saveVersions([newVersion(plan, undefined, 'Valley')]);
+        await session.save('First');
         const first = session.plan;
         expect(await session.newPlan()).toBe(true);
-        expect(session.versions).toEqual([]);
         expect(await session.duplicate(first)).toBe(true);
-        expect([session.plan.id === first.id, session.versions.map(v => v.name)]).toEqual([false, ['Valley']]);
+        expect(session.plan.id).not.toBe(first.id);
         expect(session.plan.summary).toEqual(first.summary);
         expect(first.summary).not.toBeNull();
         session.close();
@@ -352,7 +145,7 @@ describe('plan session', () => {
         service();
         const factory = new IDBFactory(), library = new Library(factory), session = new PlanSession();
         await session.start(library);
-        await library.saveRoute({ id: 'no-trip', revision: 0, name: '', updatedAt: 1, summary: null, trip: {} });
+        await library.saveRoute({ id: 'no-trip', name: '', updatedAt: 1, summary: null, trip: {} });
         const db = await new Promise<IDBDatabase>(resolve => { const request = factory.open('obc-library'); request.onsuccess = () => resolve(request.result); });
         const tx = db.transaction('routes', 'readwrite');
         tx.objectStore('routes').put({ id: 'no-record' });
@@ -371,14 +164,16 @@ describe('plan session', () => {
         const first = new PlanSession();
         await first.start(new Library(factory));
         first.commit(plan);
+        await vi.waitFor(() => expect(first.line).toBeDefined());
+        await first.save('Lake');
         const library = new Library(factory);
-        await vi.waitFor(async () => expect((await active(library))?.summary).toBeTruthy());
         const saved = (await active(library))!;
         expect(saved.trip).toEqual(plan);
         expect(saved.summary).toMatchObject({ line: [8, 48, 8.1, 48], days: 1, bike: 'touring', bounds: [8, 48, 8.1, 48] });
         expect(saved.summary!.lengthM).toBeCloseTo(7440, -2);
         first.close();
         const opened = vi.fn();
+        tab();
         const second = new PlanSession(opened);
         await second.start(new Library(factory));
         expect(opened).toHaveBeenCalledOnce();
@@ -388,17 +183,19 @@ describe('plan session', () => {
         await library.close();
     });
 
-    it('guesses the day count of each new line in the Undo step of the edit, with one save, until the rider sets it', async () => {
+    it('guesses the day count of each new line in the Undo step of the edit, with one draft write, until the rider sets it', async () => {
         // Riding hours by the number of route points.
         const hours: Record<number, number> = { 2: 25, 3: 40, 4: 60 };
         vi.spyOn(routing, 'calculateLine').mockImplementation(async trip => {
             const line = testLine(trip), seconds = hours[orderedRoutePoints(trip).length] * 3600;
             return { ...line, elapsed: line.elapsed.map(s => s * seconds / line.seconds), seconds };
         });
-        const session = new PlanSession(), saved: number[] = [];
-        vi.spyOn(session, 'save').mockImplementation(async () => { saved.push(session.trip.days); });
+        const session = new PlanSession(), library = new Library(new IDBFactory()), saved: number[] = [];
+        await session.start(library);
+        vi.spyOn(library, 'saveDraft').mockImplementation(async draft => { saved.push((draft.trip as Trip).days); });
         const visit = (trip: Trip, id: string): Trip => ({ ...trip, routeOrder: [...trip.routeOrder, id], points: [...trip.points, point(id, 'waypoint', [8.05, 48.1])] });
-        session.commit({ ...plan, daysSet: undefined });
+        // Only a multi-day trip has a guessed count.
+        session.commit({ ...plan, mode: 'trip', daysSet: undefined });
         await vi.waitFor(() => expect(session.trip.days).toBe(4));
         session.commit(visit(session.trip, 'a'));
         // A step of the same route before its line arrives.
@@ -416,6 +213,22 @@ describe('plan session', () => {
         expect(session.trip).toMatchObject({ days: 5, daysSet: true });
     });
 
+    it('names an automatic endpoint in the open step only while it stays put, and unnames it when it moves', () => {
+        vi.spyOn(routing, 'calculateLine').mockImplementation(async trip => testLine(trip));
+        const session = new PlanSession();
+        session.commit({ ...plan, points: plan.points.map(p => p.id === 'start' ? { ...p, label: 'Start', autoLabel: true } : p) });
+        session.autoName('start', [8, 48], 'Sempach');
+        // A late answer for an earlier position, and a name for a point that the rider named.
+        session.autoName('start', [7.9, 48], 'Elsewhere');
+        session.autoName('finish', [8.1, 48], 'Elsewhere');
+        expect(planTitle(session.trip)).toBe('Sempach → finish');
+        expect([session.undo(), session.trip.points, session.redo(), planTitle(session.trip)]).toEqual([true, [], true, 'Sempach → finish']);
+        session.movePoint('start', [8.02, 48]);
+        session.movePoint('finish', [8.2, 48]);
+        expect(session.trip.points.map(p => [p.label, p.autoLabel])).toEqual([['Start', true], ['finish', undefined]]);
+        session.close();
+    });
+
     it('changes the pace and the guessed days in one Undo step with no route request, and starts a new plan at Moderate', async () => {
         service();
         const calculate = vi.spyOn(routing, 'calculateLine').mockImplementation(async trip => {
@@ -424,7 +237,7 @@ describe('plan session', () => {
         });
         const session = new PlanSession();
         await session.start(new Library(new IDBFactory()));
-        session.commit({ ...plan, daysSet: undefined });
+        session.commit({ ...plan, mode: 'trip', daysSet: undefined });
         await vi.waitFor(() => expect(session.trip.days).toBe(4));
         session.commit({ ...session.trip, pace: 'fast' });
         expect([session.trip.days, session.stale]).toEqual([3, false]);
@@ -433,7 +246,533 @@ describe('plan session', () => {
         expect(calculate).toHaveBeenCalledOnce();
         session.redo();
         expect(await session.newPlan()).toBe(true);
-        expect(session.trip.pace).toBeUndefined();
+        expect([session.trip.pace, session.trip.mode]).toEqual([undefined, 'route']);
         session.close();
+    });
+});
+
+describe('save and draft', () => {
+    /** A session on a new library, with the library and its database. */
+    async function open(factory = new IDBFactory()) {
+        const library = new Library(factory), session = new PlanSession();
+        await session.start(library);
+        return { session, library, factory };
+    }
+    const draftTrip = async (library: Library, id: string) => (await library.draft(id))?.trip as Trip | undefined;
+    const settled = (session: PlanSession) => session.saved();
+
+    it('writes each edit to the draft and not to the route, and Undo back to the clean step deletes the draft', async () => {
+        service();
+        const { session, library } = await open();
+        expect([session.stored, session.changed, session.canSave]).toEqual([false, false, false]);
+        session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        await settled(session);
+        const id = session.plan.id;
+        expect([session.changed, session.canSave, sessionStorage.getItem('obc-draft')]).toEqual([true, true, id]);
+        expect([await library.routes(), await draftTrip(library, id)]).toEqual([[], plan]);
+        session.undo();
+        await settled(session);
+        expect([session.changed, await library.draft(id), sessionStorage.getItem('obc-draft')]).toEqual([false, undefined, null]);
+        vi.spyOn(library, 'saveRoute').mockRejectedValueOnce(new Error('Full'));
+        expect([await session.save('Empty'), session.changed]).toEqual([false, false]);
+        session.close();
+    });
+
+    it('stores null for a save before the line, writes only the summary when the line arrives, and writes no draft for it', async () => {
+        const routes = service();
+        const { session, library } = await open();
+        routes.hold();
+        session.commit(plan);
+        const drafts = vi.spyOn(library, 'saveDraft'), saves = vi.spyOn(library, 'saveRoute');
+        const saving = session.save('Lake loop');
+        routes.release();
+        expect(await saving).toBe(true);
+        const id = session.plan.id;
+        expect(saves.mock.calls[0][0]).toMatchObject({ name: 'Lake loop', summary: null });
+        expect([session.stored, session.changed, session.canSave, await library.draft(id)]).toEqual([true, false, false, undefined]);
+        await vi.waitFor(async () => expect((await library.route(id))?.summary).not.toBeNull());
+        expect([drafts.mock.calls.length, (await library.route(id))!.updatedAt]).toEqual([0, session.plan.updatedAt]);
+        expect(await library.state('active')).toBe(id);
+        session.close();
+    });
+
+    it('gives an imported route its summary with no draft', async () => {
+        service();
+        const { session, library } = await open();
+        const file = new File([JSON.stringify({ format: 'openbikecomputer-plan', version: 1, name: 'Import', trip: plan })], 'import.obcplan');
+        await session.importFiles([file]);
+        const id = session.plan.id;
+        await vi.waitFor(async () => expect((await library.route(id))?.summary).not.toBeNull());
+        expect([session.changed, await library.draft(id)]).toEqual([false, undefined]);
+        session.close();
+    });
+
+    it('writes the summary of an import after a rename to the same name before its line arrives', async () => {
+        const routes = service();
+        const { session, library } = await open();
+        routes.hold();
+        await session.importFiles([new File([JSON.stringify({ format: 'openbikecomputer-plan', version: 1, name: 'Import', trip: plan })], 'import.obcplan')]);
+        const id = session.plan.id;
+        await session.rename(session.plan, 'Import');
+        // The page follows the rename after its write.
+        await new Promise(resolve => setTimeout(resolve, 20));
+        routes.release();
+        await vi.waitFor(async () => expect((await library.route(id))?.summary).not.toBeNull());
+        session.close();
+    });
+
+    it('makes the route changed at Undo across a save, and gives the flags of before back when a save fails', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const id = session.plan.id;
+        session.commit(moved(plan, 8.2));
+        await session.save();
+        session.undo();
+        await settled(session);
+        expect([session.changed, await draftTrip(library, id)]).toEqual([true, plan]);
+        session.redo();
+        await settled(session);
+        expect([session.changed, await library.draft(id)]).toEqual([false, undefined]);
+
+        const full = Object.assign(new Error('Full'), { name: 'QuotaExceededError' });
+        vi.spyOn(library, 'saveRoute').mockRejectedValueOnce(full).mockRejectedValueOnce(Object.assign(new Error('Old'), { name: 'OutdatedError' }));
+        session.commit(moved(plan, 8.3));
+        // A line that arrives later writes the draft, and a write that succeeds ends the error.
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        expect(await session.save()).toBe(false);
+        expect([session.changed, session.saveError]).toEqual([true, 'Browser storage is full. Delete routes you do not need, then save again.']);
+        expect([(await library.route(id))!.trip, await draftTrip(library, id)]).toEqual([moved(plan, 8.2), moved(plan, 8.3)]);
+        expect(await session.save()).toBe(false);
+        expect([session.saveError, await session.saved()]).toEqual(['The app was updated in another tab. Download the plan file to keep your changes, then reload.', false]);
+        session.undo();
+        expect(session.changed).toBe(false);
+        session.close();
+    });
+
+    it('continues the draft of the tab at a reload, for a stored route and a new route, and clears a key that names no draft', async () => {
+        service();
+        const first = await open();
+        first.session.commit(plan);
+        await first.session.save('Lake loop');
+        const stored = first.session.plan.id;
+        first.session.commit(moved(plan, 8.2));
+        await settled(first.session);
+        first.session.close();
+        const reloaded = await open(first.factory);
+        expect([reloaded.session.plan.id, reloaded.session.trip, reloaded.session.stored, reloaded.session.changed]).toEqual([stored, moved(plan, 8.2), true, true]);
+        expect(reloaded.session.undo() && reloaded.session.trip).toEqual(plan);
+
+        expect(await reloaded.session.newPlan()).toBe(true);
+        reloaded.session.commit(plan);
+        await settled(reloaded.session);
+        const fresh = reloaded.session.plan.id;
+        reloaded.session.close();
+        const again = await open(first.factory);
+        expect([again.session.plan.id, again.session.trip, again.session.stored, again.session.changed]).toEqual([fresh, plan, false, true]);
+        expect([again.session.undo(), again.session.trip]).toEqual([false, plan]);
+        again.session.close();
+
+        sessionStorage.setItem('obc-draft', 'gone');
+        await first.library.setState('active', stored);
+        const cleared = await open(first.factory);
+        expect([sessionStorage.getItem('obc-draft'), cleared.session.plan.id, cleared.session.changed]).toEqual([null, stored, false]);
+        cleared.session.close();
+    });
+
+    it('discards the changes as one Undo step, for a stored route and a new route, and Undo writes the draft again', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const id = session.plan.id;
+        session.commit(moved(plan, 8.2));
+        await session.discard();
+        await settled(session);
+        expect([session.trip, session.changed, await library.draft(id)]).toEqual([plan, false, undefined]);
+        session.undo();
+        await settled(session);
+        expect([session.trip, session.changed, await draftTrip(library, id)]).toEqual([moved(plan, 8.2), true, moved(plan, 8.2)]);
+
+        await session.newPlan();
+        session.commit(plan);
+        await session.discard();
+        await settled(session);
+        expect([session.trip.points, session.changed, await library.draft(session.plan.id)]).toEqual([[], false, undefined]);
+        expect(session.undo() && session.trip).toEqual(plan);
+        session.close();
+    });
+
+    it('keeps the changes and the draft at a rename, and the draft of the route that another route replaces', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const id = session.plan.id;
+        await session.newPlan();
+        session.commit(moved(plan, 8.4));
+        await session.save('Other');
+        const other = session.plan.id;
+        await session.open(id);
+        session.commit(moved(plan, 8.2));
+        await session.rename(session.plan, 'Lake round');
+        await vi.waitFor(() => expect(session.plan.name).toBe('Lake round'));
+        await settled(session);
+        expect([session.changed, await draftTrip(library, id)]).toEqual([true, moved(plan, 8.2)]);
+        await session.open(other);
+        expect([session.changed, sessionStorage.getItem('obc-draft'), await draftTrip(library, id)]).toEqual([false, null, moved(plan, 8.2)]);
+        expect((await library.route(id))!.trip).toEqual(plan);
+        session.close();
+    });
+
+    it('stores the route that a save started with, and leaves the route that opens during the save as it opened', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const id = session.plan.id;
+        session.commit(moved(plan, 8.2));
+        const saving = session.save();
+        expect(await session.newPlan()).toBe(true);
+        expect(await saving).toBe(true);
+        expect([session.plan.id === id, session.stored, session.trip.points]).toEqual([false, false, []]);
+        session.commit(moved(plan, 8.3));
+        await session.save('Other');
+        expect((await library.route(id))!.trip).toEqual(moved(plan, 8.2));
+        session.close();
+    });
+
+    it('keeps an edit that the rider makes while a copy is stored in the draft of the copy', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const copying = session.saveCopy('Lake loop (copy)');
+        session.commit(moved(plan, 8.2));
+        expect(await copying).toBe(true);
+        await settled(session);
+        expect([session.changed, await draftTrip(library, session.plan.id), sessionStorage.getItem('obc-draft')]).toEqual([true, moved(plan, 8.2), session.plan.id]);
+        session.close();
+    });
+
+    it('duplicates the stored record of the open route, not its changes', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const stored = session.plan;
+        session.commit(moved(plan, 8.2));
+        expect(await session.duplicate(stored)).toBe(true);
+        expect([session.plan.name, (await library.route(session.plan.id))!.trip]).toEqual(['Lake loop (copy)', plan]);
+        session.close();
+    });
+
+    it('enables Save for a new route with points and a stored route with changes, and a line or a place name on a clean step changes nothing', async () => {
+        service();
+        const routed = globalThis.fetch;
+        vi.stubGlobal('fetch', (url: string, init: RequestInit) => url.endsWith('/reverse')
+            ? Promise.resolve({ ok: true, json: async () => ({ label: 'Dorfstraße 12' }) }) : routed(url, init));
+        const { session, library } = await open();
+        const state = () => [session.stored, session.changed, session.canSave];
+        expect(state()).toEqual([false, false, false]);
+        session.commit(plan);
+        expect(state()).toEqual([false, true, true]);
+        await session.save('Lake loop');
+        expect(state()).toEqual([true, false, false]);
+        session.commit(moved(plan, 8.2));
+        expect(state()).toEqual([true, true, true]);
+        const visit = { ...point('visit', 'waypoint', [8.05, 48.02]), autoLabel: true, label: '48.02000, 8.05000' };
+        const named: Trip = { ...plan, points: [...plan.points, visit], routeOrder: ['visit'] };
+        await library.saveRoute({ ...session.plan, id: 'named', name: 'Named', trip: named });
+        const drafts = vi.spyOn(library, 'saveDraft');
+        expect(await session.open('named')).toBe(true);
+        await session.nameVisit(visit);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        expect([session.trip.points.at(-1)!.label, state(), drafts.mock.calls.length]).toEqual(['Dorfstraße 12', [true, false, false], 0]);
+        session.close();
+    });
+
+    it('shows a save that fails while the rider asks for another route: the route stays open and changed, with the error', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const id = session.plan.id;
+        session.commit(moved(plan, 8.2));
+        let fail!: (error: Error) => void;
+        vi.spyOn(library, 'saveRoute').mockImplementationOnce(() => new Promise((_, reject) => fail = reject));
+        const saving = session.save();
+        // The question before another route reads `changed` after the save in flight.
+        const asked = session.whenSaved().then(() => [session.plan.id, session.trip, session.changed, session.saveError]);
+        await vi.waitFor(() => expect(fail).toBeDefined());
+        fail(Object.assign(new Error('Full'), { name: 'QuotaExceededError' }));
+        expect(await asked).toEqual([id, moved(plan, 8.2), true, 'Browser storage is full. Delete routes you do not need, then save again.']);
+        expect(await saving).toBe(false);
+        session.close();
+    });
+
+    it('discards the changes after a save in flight to the state that the save stored', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        session.commit(moved(plan, 8.2));
+        const saving = session.save();
+        session.commit(moved(plan, 8.3));
+        await session.discard();
+        expect(await saving).toBe(true);
+        expect([session.trip, session.changed, (await library.route(session.plan.id))!.trip]).toEqual([moved(plan, 8.2), false, moved(plan, 8.2)]);
+        session.close();
+    });
+
+    it('gives the clean flag back to the step that was clean when a save fails while an edit drops the oldest Undo step', async () => {
+        service();
+        const { session, library } = await open();
+        for (let i = 0; i < 52; i++) session.commit(moved(plan, 8.1 + i / 1000));
+        await session.save('Lake loop');
+        const saved = session.trip;
+        session.commit(moved(plan, 8.3));
+        let fail!: (error: Error) => void;
+        vi.spyOn(library, 'saveRoute').mockImplementationOnce(() => new Promise((_, reject) => fail = reject));
+        const saving = session.save();
+        session.commit(moved(plan, 8.4));
+        await vi.waitFor(() => expect(fail).toBeDefined());
+        fail(new Error('Full'));
+        expect(await saving).toBe(false);
+        session.undo();
+        expect([session.trip, session.changed]).toEqual([moved(plan, 8.3), true]);
+        session.undo();
+        expect([session.trip, session.changed]).toEqual([saved, false]);
+        session.close();
+    });
+
+    it('reports no discard when a queued save already stored the open step', async () => {
+        service();
+        const { session } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        session.commit(moved(plan, 8.2));
+        void session.save();
+        session.commit(moved(plan, 8.3));
+        const queued = session.save();
+        expect([await session.discard(), session.trip, await queued]).toEqual([false, moved(plan, 8.3), true]);
+        session.close();
+    });
+
+    it('leaves each step changed when the step that was clean before a failed save is gone from the history', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        session.commit(moved(plan, 8.2));
+        await session.save('Lake loop');
+        session.undo();
+        let fail!: (error: Error) => void;
+        vi.spyOn(library, 'saveRoute').mockImplementationOnce(() => new Promise((_, reject) => fail = reject));
+        const saving = session.save();
+        session.commit(moved(plan, 8.3));
+        await vi.waitFor(() => expect(fail).toBeDefined());
+        fail(new Error('Full'));
+        expect(await saving).toBe(false);
+        expect([session.changed, session.canSave, (await library.route(session.plan.id))!.trip]).toEqual([true, true, moved(plan, 8.2)]);
+        session.undo();
+        expect(session.changed).toBe(true);
+        session.close();
+    });
+
+    it('deletes the draft when a save fails after an Undo back to the stored step', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const id = session.plan.id;
+        session.commit(moved(plan, 8.2));
+        let fail!: (error: Error) => void;
+        vi.spyOn(library, 'saveRoute').mockImplementationOnce(() => new Promise((_, reject) => fail = reject));
+        const saving = session.save();
+        session.undo();
+        await settled(session);
+        await vi.waitFor(() => expect(fail).toBeDefined());
+        fail(Object.assign(new Error('Full'), { name: 'QuotaExceededError' }));
+        expect(await saving).toBe(false);
+        await settled(session);
+        expect([session.changed, await library.draft(id), sessionStorage.getItem('obc-draft'), session.saveError])
+            .toEqual([false, undefined, null, 'Browser storage is full. Delete routes you do not need, then save again.']);
+        session.close();
+    });
+
+    it('writes the draft again when a save fails after an Undo and a Redo deleted it', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const id = session.plan.id;
+        session.commit(moved(plan, 8.2));
+        let fail!: (error: Error) => void;
+        vi.spyOn(library, 'saveRoute').mockImplementationOnce(() => new Promise((_, reject) => fail = reject));
+        const saving = session.save();
+        session.undo();
+        session.redo();
+        await settled(session);
+        await vi.waitFor(() => expect(fail).toBeDefined());
+        fail(Object.assign(new Error('Full'), { name: 'QuotaExceededError' }));
+        expect(await saving).toBe(false);
+        await settled(session);
+        expect([session.changed, await draftTrip(library, id), sessionStorage.getItem('obc-draft'), session.saveError])
+            .toEqual([true, moved(plan, 8.2), id, 'Browser storage is full. Delete routes you do not need, then save again.']);
+        session.close();
+    });
+
+    it('stores a copy as a new route with one clean step, and leaves the first route as it was stored', async () => {
+        service();
+        const { session, library } = await open();
+        session.commit(plan);
+        await session.save('Lake loop');
+        const first = session.plan.id;
+        session.commit(moved(plan, 8.2));
+        await settled(session);
+        expect(await session.saveCopy('Lake loop (copy)')).toBe(true);
+        await settled(session);
+        const copy = session.plan.id;
+        expect([copy !== first, session.stored, session.changed, session.plan.name]).toEqual([true, true, false, 'Lake loop (copy)']);
+        expect([(await library.route(first))!.trip, (await library.route(copy))!.trip, await library.draft(first)]).toEqual([plan, moved(plan, 8.2), undefined]);
+        session.undo();
+        expect(session.changed).toBe(true);
+        session.redo();
+        session.undo(); session.undo();
+        expect([session.trip.points, session.changed]).toEqual([[], true]);
+        session.close();
+    });
+
+    /** A stored route "Lake loop" with the draft `moved(plan, 8.2)` that a closed tab wrote, and a new tab. */
+    async function returned(factory = new IDBFactory()) {
+        const closed = tab(), first = await open(factory);
+        first.session.commit(plan);
+        await first.session.save('Lake loop');
+        first.session.commit(moved(plan, 8.2));
+        await settled(first.session);
+        first.session.close();
+        tab();
+        return { ...await open(factory), id: first.session.plan.id, closed };
+    }
+
+    it('offers the draft of a closed tab on the stored route, and a reload continues the own draft with no offer', async () => {
+        service();
+        const { session, factory, id, closed } = await returned();
+        expect([session.plan.id, session.trip, session.changed, session.offer?.trip]).toEqual([id, plan, false, moved(plan, 8.2)]);
+        session.close();
+        tab(closed);
+        const reloaded = await open(factory);
+        expect([reloaded.session.trip, reloaded.session.offer]).toEqual([moved(plan, 8.2), null]);
+        reloaded.session.close();
+
+        tab();
+        const saving = await open(factory);
+        saving.session.commit(moved(plan, 8.3));
+        expect([saving.session.earlier?.trip, await saving.session.save(), saving.session.earlier]).toEqual([moved(plan, 8.2), true, null]);
+        saving.session.close();
+    });
+
+    it('restores the offer as the own draft, and "×" and the first edit each remove it with an Undo that brings it back', async () => {
+        service();
+        const restored = await returned();
+        expect(await restored.session.restore()).toBe(true);
+        await settled(restored.session);
+        expect([restored.session.trip, restored.session.changed, restored.session.offer, sessionStorage.getItem('obc-draft')]).toEqual([moved(plan, 8.2), true, null, restored.id]);
+        expect(restored.session.undo() && restored.session.trip).toEqual(plan);
+        restored.session.close();
+
+        const dismissed = await returned();
+        await dismissed.session.dismiss();
+        expect([dismissed.session.offer, dismissed.session.earlier?.trip, await dismissed.library.draft(dismissed.id)]).toEqual([null, moved(plan, 8.2), undefined]);
+        expect(await dismissed.session.restore()).toBe(true);
+        await settled(dismissed.session);
+        expect([dismissed.session.trip, dismissed.session.earlier, await draftTrip(dismissed.library, dismissed.id)]).toEqual([moved(plan, 8.2), null, moved(plan, 8.2)]);
+        dismissed.session.close();
+
+        const edited = await returned();
+        edited.session.commit(moved(plan, 8.3));
+        await settled(edited.session);
+        expect([edited.session.offer, edited.session.earlier?.trip, await draftTrip(edited.library, edited.id)]).toEqual([null, moved(plan, 8.2), moved(plan, 8.3)]);
+        // Ctrl+Z after the first edit deletes the own draft, and the Undo of the status line still brings the offer back.
+        edited.session.undo();
+        await settled(edited.session);
+        expect([edited.session.earlier?.trip, await edited.library.draft(edited.id)]).toEqual([moved(plan, 8.2), undefined]);
+        expect(await edited.session.restore()).toBe(true);
+        await settled(edited.session);
+        expect([edited.session.trip, await draftTrip(edited.library, edited.id)]).toEqual([moved(plan, 8.2), moved(plan, 8.2)]);
+        edited.session.close();
+    });
+
+    it('leaves a draft that another tab wrote since the offer at "×", and "Restore" applies the draft as it is stored now', async () => {
+        service();
+        const changed = await returned();
+        await changed.library.saveDraft({ id: changed.id, updatedAt: Date.now() + 1, trip: moved(plan, 8.4) });
+        const dismissing = changed.session.dismiss();
+        expect(changed.session.earlier).toBeNull();
+        await dismissing;
+        expect([changed.session.offer, changed.session.earlier, await draftTrip(changed.library, changed.id)]).toEqual([null, null, moved(plan, 8.4)]);
+        changed.session.close();
+
+        const newer = await returned();
+        await newer.library.saveDraft({ id: newer.id, updatedAt: Date.now() + 1, trip: moved(plan, 8.4) });
+        expect([await newer.session.restore(), newer.session.trip]).toEqual([true, moved(plan, 8.4)]);
+        newer.session.close();
+
+        const gone = await returned();
+        await gone.library.removeDraft(gone.id);
+        expect([await gone.session.restore(), gone.session.offer, gone.session.trip, gone.session.changed]).toEqual([false, null, plan, false]);
+        gone.session.close();
+    });
+
+    it('offers the newest draft of a route that is not stored to an empty plan with its own id, until "×" or "Restore"', async () => {
+        service();
+        const library = new Library(new IDBFactory());
+        for (const [id, updatedAt] of [['a', 1], ['b', 2], ['c', 3]] as const) await library.saveDraft({ id, updatedAt, trip: moved(plan, 8 + updatedAt / 10) });
+        await library.saveRoute({ ...newPlan(plan, 'Stored'), id: 'stored' });
+        await library.saveDraft({ id: 'stored', updatedAt: 4, trip: moved(plan, 8.4) });
+        await library.saveDraft({ id: 'unreadable', updatedAt: 5, trip: {} });
+        const session = new PlanSession();
+        await session.start(library);
+        const shown = () => [session.stored, session.trip.points, session.offer?.id];
+        expect(shown()).toEqual([false, [], 'c']);
+        expect(session.plan.id).not.toBe('c');
+        for (const _ of [1, 2]) {
+            await session.newPlan();
+            expect(shown()).toEqual([false, [], 'c']);
+        }
+        await session.dismiss();
+        await session.newPlan();
+        expect(shown()).toEqual([false, [], 'b']);
+        expect(await session.restore()).toBe(true);
+        expect([session.plan.id, session.trip, session.changed]).toEqual(['b', moved(plan, 8.2), true]);
+        // A route that is not stored has nothing under its draft, so Ctrl+Z cannot delete it.
+        await settled(session);
+        expect([session.undo(), await draftTrip(library, 'b')]).toEqual([false, moved(plan, 8.2)]);
+        // "Discard" at the question keeps the draft of the route that the rider leaves, and does not offer it at once.
+        await settled(session);
+        await session.newPlan();
+        expect(shown()).toEqual([false, [], 'a']);
+        session.close();
+    });
+
+    it('keeps the new route of another tab when an empty plan that offers its draft is edited and saved', async () => {
+        service();
+        const factory = new IDBFactory();
+        tab();
+        const b = await open(factory);
+        b.session.commit(plan);
+        await settled(b.session);
+        tab();
+        const a = await open(factory);
+        expect(a.session.offer?.id).toBe(b.session.plan.id);
+        a.session.commit(moved(plan, 8.3));
+        expect(await a.session.save('A route')).toBe(true);
+        expect([a.session.offer, a.session.earlier, await draftTrip(a.library, b.session.plan.id)]).toEqual([null, null, plan]);
+        expect(await b.session.save('B route')).toBe(true);
+        expect((await a.library.routes()).map(route => [route.name, route.trip]).sort()).toEqual([['A route', moved(plan, 8.3)], ['B route', plan]]);
+        a.session.close();
+        b.session.close();
     });
 });

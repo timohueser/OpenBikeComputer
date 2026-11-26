@@ -149,7 +149,7 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | `host/` | Host tools, map bakers, fixtures, and test support |
 | `planner/` | Router, build tools, service, search, and tile worker |
 | `sim/` | Desktop, web and phone simulators, host core, replay, feeder and benchmarks |
-| `builder/` | Web builder, Rust/WASM core, USB transport, presets, and server |
+| `builder/` | Web app, Rust/WASM core, USB transport, and presets |
 | `companion-ios/` | SwiftUI companion app and shared iOS package |
 | `specs/` | Normative binary, wire, and vector contracts |
 | `fixtures/` | Scenario registry, source provenance, and fixture builders |

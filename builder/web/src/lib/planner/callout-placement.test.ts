@@ -12,6 +12,13 @@ describe('callout placement', () => {
         expect(calloutBox('right', [500, 300], size, 20)).toEqual({ left: 130, top: 200, right: 480, bottom: 400 });
     });
 
+    it('puts the tip of a popup above or below the point under its marked part', () => {
+        expect(calloutBox('bottom', [500, 300], size, 20, 45)).toEqual({ left: 455, top: 70, right: 795, bottom: 280 });
+        expect(calloutBox('top-left', [500, 300], size, 20, 45)).toEqual(calloutBox('top-left', [500, 300], size, 20));
+        // A point near the left edge keeps the popup above it: the popup now opens to its right.
+        expect(placeCallout([70, 300], size, free, 20, 45).anchor).toBe('bottom');
+    });
+
     it('opens above the point when it fits', () => {
         expect(placeCallout([500, 300], size, free, 20)).toEqual({ anchor: 'bottom', pan: [0, 0] });
     });
@@ -35,5 +42,18 @@ describe('callout placement', () => {
         // A narrow map: no room beside the point, and the date bar below it.
         const narrow = { left: 16, top: 16, right: 400, bottom: 300 };
         expect(placeCallout([200, 120], [340, 180], narrow, 20)).toEqual({ anchor: 'top', pan: [0, 30] });
+    });
+
+    it('pans to an anchor whose popup fits the free area, not to one that no pan can fit', () => {
+        // As wide as the free area: beside the point the tip makes it wider.
+        const box = { left: 8, top: 8, right: 218, bottom: 231 }, point: [number, number] = [30, 120];
+        const { anchor, pan } = placeCallout(point, [210, 160], box, 16);
+        const placed = calloutBox(anchor, [point[0] - pan[0], point[1] - pan[1]], [210, 160], 16);
+        expect(placed.left >= box.left && placed.right <= box.right && placed.top >= box.top && placed.bottom <= box.bottom).toBe(true);
+    });
+
+    it('pans the least distance also when the popup is larger than the free area', () => {
+        // Wider than the map: above the point needs a pan of 100 px down, below it only 5 px to the side.
+        expect(placeCallout([100, 30], [210, 100], { left: 0, top: 0, right: 200, bottom: 200 }, 20)).toEqual({ anchor: 'top', pan: [-5, 0] });
     });
 });

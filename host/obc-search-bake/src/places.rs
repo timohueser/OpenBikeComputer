@@ -115,6 +115,7 @@ pub fn record(f: &Feature, i: usize, index: &Index<'_>) -> Option<Value> {
                         | "wikidata"
                         | "wikipedia"
                         | "shelter_type"
+                        | "tents"
                 )
         })
         .map(|(k, v)| (k.as_str(), v.as_str()))

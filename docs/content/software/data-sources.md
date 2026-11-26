@@ -28,6 +28,11 @@ cover of Europe. Elsewhere the canopy reads a global model from satellite imager
 against the Swiss one. One TrailView layer has no global source: the lithology reads maps of
 Europe.
 
+Some countries publish their signed routes as open data. The registry holds these route sources
+for the route catalog: the row of a source gives its licence and credit, and its route
+description in `data/routes/` says which layers and fields of its files make a route. So a new
+country needs a description, not new code.
+
 The [data contract](src:specs/obc-data.md) defines the registry, how each layer reads its sources,
 and where each credit goes.
 

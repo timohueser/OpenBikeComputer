@@ -14,7 +14,7 @@
 //! `--json FILE`, the line of each request as JSON. `--areas INSTALL` prints the table for the
 //! download level of `compare::areas`.
 //!
-//! "ms" is the time of `routes` and `answer::answer`. With `--cold`, NEW routes once alone first:
+//! "ms" is the time of `route` and `answer::answer`. With `--cold`, NEW routes once alone first:
 //! "cold open ms" is the open after the eviction, and "cold ms", "cold faults" and "cold read KB"
 //! are those of that route; "new ms" and the other columns of NEW then describe the last warm
 //! route, which reuses the snaps of the first. The other columns of NEW are the sums of the
@@ -142,10 +142,10 @@ fn legs_km(request: &Request) -> Vec<f64> {
     km.map(|km| (km * 10.0).round() / 10.0).collect()
 }
 
-/// The outcome, the cost of the first route, the time and the settled labels of one side.
+/// The outcome, the cost of the route, the time and the settled labels of one side.
 fn side(routed: &Routed, settled: usize) -> Value {
     let (outcome, cost) = match &routed.result {
-        Ok(response) => ("ok".to_string(), response.routes.first().map(|route| route.cost)),
+        Ok(route) => ("ok".to_string(), Some(route.cost)),
         Err(error) => (compare::error_kind(error), None),
     };
     json!({ "outcome": outcome, "cost": cost, "ms": ms(routed.time), "settled": settled })
@@ -405,7 +405,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let router = new.insert(open(new_path, options.silent)?);
                         let open_ms = ms(opened.elapsed());
                         let (routed, faults, read) = (Instant::now(), major_faults(), read_bytes());
-                        let _ = router.routes(&moved, &planner_router::Control::default());
+                        let _ = router.route(&moved, &planner_router::Control::default());
                         cold = json!({
                             "open_ms": open_ms,
                             "ms": ms(routed.elapsed()),

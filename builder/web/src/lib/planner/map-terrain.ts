@@ -1,11 +1,14 @@
 import contour from 'maplibre-contour';
 import type * as maplibre from 'maplibre-gl';
+import type { Relief } from './map-style';
 
 /** The plugin's worker messages give up after 20 s, so a longer fetch limit has no effect. */
 const DEM_TIMEOUT_MS = 20_000;
 const TERRAIN_SOURCES = new Set(['terrain', 'contours']);
 const FIRST_RETRY_MS = 5_000;
 const RETRIES = 3;
+/** The contour lines: for each zoom, the step of a line and of a line with its height (`level` 1), in metres. */
+const CONTOURS = { thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: 'contours', elevationKey: 'ele', levelKey: 'level' };
 
 type TileEvent = { sourceId?: string; tile?: { tileID: { canonical: { x: number; y: number; z: number } } } };
 type Retry = { source: string; key: string; x: number; y: number; z: number };
@@ -16,7 +19,8 @@ function terrainTile({ sourceId: source, tile }: TileEvent): Retry | undefined {
     return { source, key: `${source}/${z}/${x}/${y}`, x, y, z };
 }
 
-/** Keep one bounded DEM cache per map surface; the plugin has no manager disposal API. */
+/** The app keeps one source, so its maps share one bounded DEM cache; the plugin has no manager disposal API. The relief
+ * of a lease reads that cache, so the hill shading and the contour lines share each terrain tile. */
 export function terrainSource(url: string) {
     let source: InstanceType<typeof contour.DemSource> | undefined;
     let users = 0;
@@ -26,7 +30,8 @@ export function terrainSource(url: string) {
             if (users++ === 0) source.setupMaplibre(library);
             let active = true;
             const dem = source;
-            return { dem, release() {
+            const relief = (): Relief => ({ dem: dem.sharedDemProtocolUrl, contours: dem.contourProtocolUrl(CONTOURS) });
+            return { dem, relief, release() {
                 if (!active) return;
                 active = false;
                 if (--users === 0) {

@@ -33,6 +33,19 @@ struct Attributes {
     structure: bool,
 }
 
+/// The surface class of a `surface` value: the one definition of a paved way for the router and the
+/// route facts.
+pub fn surface_class(value: &str) -> Surface {
+    match value {
+        "asphalt" | "paved" | "concrete" | "concrete:plates" | "concrete:lanes" | "paving_stones" => Surface::Paved,
+        "compacted" | "fine_gravel" => Surface::Compacted,
+        "gravel" | "pebblestone" => Surface::Gravel,
+        "ground" | "dirt" | "earth" | "grass" | "unpaved" => Surface::Dirt,
+        "sand" | "mud" | "rock" | "stone" | "cobblestone" | "sett" => Surface::Rough,
+        _ => Surface::Unknown,
+    }
+}
+
 /// Conditional restrictions do not count: the router keeps them open, and the route reports them.
 fn access(tags: &Tags, defaults: u8, direction: &str) -> u8 {
     source::access(|key| tags.get(key), defaults, direction, true)
@@ -62,14 +75,7 @@ fn attributes(tags: &Tags, country: Country, counts: &mut Counts) -> Option<Attr
     if modes == [0, 0] {
         return None;
     }
-    let surface = match tags.get("surface").unwrap_or("") {
-        "asphalt" | "paved" | "concrete" | "concrete:plates" | "concrete:lanes" | "paving_stones" => Surface::Paved,
-        "compacted" | "fine_gravel" => Surface::Compacted,
-        "gravel" | "pebblestone" => Surface::Gravel,
-        "ground" | "dirt" | "earth" | "grass" | "unpaved" => Surface::Dirt,
-        "sand" | "mud" | "rock" | "stone" | "cobblestone" | "sett" => Surface::Rough,
-        _ => Surface::Unknown,
-    };
+    let surface = surface_class(tags.get("surface").unwrap_or(""));
     let difficulty = tags
         .get("mtb:scale")
         .and_then(|v| v.trim_end_matches(['+', '-']).parse::<u8>().ok())
@@ -226,7 +232,7 @@ fn read(paths: &[PathBuf], mut visit: impl FnMut(OsmObj)) -> Result<(), String> 
     Ok(())
 }
 
-fn copy_tags(tags: &osmpbfreader::Tags) -> Tags<'static> {
+pub(crate) fn copy_tags(tags: &osmpbfreader::Tags) -> Tags<'static> {
     Tags::from_pairs(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
 }
 
@@ -1115,6 +1121,8 @@ mod tests {
             BIKE | FOOT | PUSH
         );
         assert_eq!(crossing(&tags(&[("barrier", "gate"), ("access", "no")]), &mut Counts::new()), 0);
+        let gate = |value| node_closures([("barrier", "gate"), ("access", value)].into_iter()).len();
+        assert_eq!([gate("destination"), gate("private")], [0, 1]);
     }
 
     #[test]
@@ -1216,8 +1224,10 @@ mod tests {
         assert!(profiles.iter().filter(|p| !p.walking).all(|p| p.permits(&road) == (p.name == "mtb/technical")));
         let alpine = path(&[("highway", "path"), ("sac_scale", "alpine_hiking")]);
         assert!(profiles.iter().all(|p| p.permits(&alpine) == (p.name == "hiking/alpine")));
-        let climbing = path(&[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")]);
-        assert!(profiles.iter().all(|p| !p.permits(&climbing)));
+        let demanding = path(&[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")]);
+        assert!(profiles.iter().all(|p| p.permits(&demanding) == (p.name == "hiking/alpine")));
+        let unknown = path(&[("highway", "path"), ("sac_scale", "ddemanding_mountain_hiking")]);
+        assert!(profiles.iter().all(|p| !p.permits(&unknown)));
     }
 
     #[test]

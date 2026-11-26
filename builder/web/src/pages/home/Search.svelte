@@ -5,7 +5,7 @@
     import { router } from '../../lib/router.svelte';
     import { ROUTES } from '../../lib/routes';
     import { formatDistance } from '../../lib/settings/format';
-    import Icon from '../../components/planner/PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { findPlaces, results, type Box, type FoundPlace, type Item } from '../routes/filter';
 
     let { items }: { items: Item[] } = $props();

@@ -1,0 +1,26 @@
+name = "Trail layers of the Luxembourg tourism ministry, GeoJSON of the geoportal"
+sources = [
+  "lu-sentiers-communaux",
+  "lu-sentiers-syndicats",
+  "lu-auto-pedestres",
+  "lu-sentiers-cfl",
+  "lu-ivv-permanents",
+  "lu-naturwanderpark",
+  "lu-traumschleifen",
+  "lu-vtt",
+  "lu-velo-course",
+]
+coverage = "Luxembourg"
+urls = [
+  "https://data.public.lu/fr/datasets/r/a0e3dbe3-47c4-4feb-b4b2-c49982a59139",
+  "https://data.public.lu/fr/datasets/r/d22a27c7-ded3-4b60-add7-9d0a0cafb935",
+  "https://data.public.lu/fr/datasets/r/9e2af977-407a-4800-981c-7214750f8f27",
+  "https://data.geoportail.lu/mymaps?category=12&format=geojson",
+  "https://data.public.lu/fr/datasets/r/978e0a6d-a01c-4bb7-80d6-583606296ef1",
+  "https://data.public.lu/fr/datasets/r/f87b4e8f-7207-4565-9b79-f9f7d2a2d8dd",
+  "https://data.public.lu/fr/datasets/r/5372b99e-2b91-4418-8ab5-0368f25b295b",
+  "https://data.public.lu/fr/datasets/r/699cef85-6fcd-498e-a499-7d97e294be8a",
+  "https://data.public.lu/fr/datasets/r/e4cf1f84-61a2-4ed6-bb2e-b1fae3cdea40",
+]
+bytes_estimate = 25_000_000
+notes = "One layer for each link. data.geoportail.lu makes each answer and answers HEAD with 405: a get downloads each again and keeps it while its bytes stay."

@@ -168,7 +168,7 @@ fn the_vocabulary_names_every_code_with_its_colour() {
         v[key].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect::<Vec<_>>()
     };
     assert_eq!(names("surfaces")[Surface::CornerFill as usize], "corner_fill");
-    assert_eq!(names("surfaces").len(), Surface::DeckEdge as usize + 1);
+    assert_eq!(names("surfaces").len(), Surface::Sidewalk as usize + 1);
     assert_eq!(names("edges")[EdgeKind::CellBorder as usize], "cell_border");
     assert_eq!(v["surfaces"][0]["fill"], serde_json::Value::Null, "terrain has no fill");
     assert!(v["edges"].as_array().unwrap().iter().all(|e| colour(&e["colour"])));
@@ -221,6 +221,7 @@ fn plan_of(w: &FaceWords, cell: CellKey) -> FacePlan {
                     w.ring_vertices[r[0] as usize..][..r[1] as usize].to_vec()
                 })
                 .collect(),
+            under: u32::MAX,
         })
         .collect();
     let edges = (w.edges.chunks(EDGE_WORDS))
@@ -268,6 +269,7 @@ fn the_face_words_keep_every_field_of_the_plan() {
         reach_m: 0.0,
         legs: [0, 0],
         rings,
+        under: u32::MAX,
     };
     let mut way = face(1, Owner::Way(7), Surface::Carriageway, vec![vec![0, 1, 2, 3], vec![4, 5, 6]]);
     (way.material, way.crossing, way.rank, way.inside, way.reach_m, way.level) = (Some(7), Some(9), 0, true, 2.75, 2);

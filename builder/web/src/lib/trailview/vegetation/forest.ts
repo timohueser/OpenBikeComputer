@@ -1,4 +1,5 @@
 import type { PlannerConfig } from '../../planner/config';
+import type { Budget } from '../budget';
 import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import { size, type Node } from '../terrain/lod';
@@ -59,9 +60,9 @@ export class Forest implements Producer {
     /** Whether the last update changed what the forest draws, other than by the camera. */
     newContent = false;
 
-    constructor(config: PlannerConfig, rules: Rules, trees: TreeModels, private readonly instances: Instances, wake: () => void, stop: AbortSignal) {
+    constructor(config: PlannerConfig, rules: Rules, trees: TreeModels, private readonly instances: Instances, wake: () => void, stop: AbortSignal, budget: Budget) {
         instances.produce(this);
-        this.canopy = new Canopy(config, wake, stop);
+        this.canopy = new Canopy(config, wake, stop, budget.loads.canopy);
         this.most = windowSide(Math.max(Math.abs(config.bounds[1]), Math.abs(config.bounds[3])));
         this.planted = bits(rules.vocabulary.materials.flatMap((material, code) => (material.rows ? [code] : [])));
         // tools/trailview/rules.py checks that a region has SPECIES tree species at most, each with its model.

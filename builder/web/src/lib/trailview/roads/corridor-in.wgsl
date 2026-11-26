@@ -22,3 +22,10 @@ fn corridor_in(in: CorridorOut) -> CorridorOut {
 
 // A piece corner's label in its cell's records: here none is kept.
 fn corridor_label(out: ptr<function, CorridorOut>, label: u32) {}
+
+// A piece's tail (pieces.ts): here none is kept, and no pixel drops.
+fn corridor_tail(out: ptr<function, CorridorOut>, tail: u32) {}
+
+fn corridor_dropped(in: CorridorOut) -> bool {
+    return false;
+}

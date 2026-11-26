@@ -349,14 +349,24 @@ impl<H: Host> Region<H> {
         }
         snap::candidates(roads, policy, |id| {
             let place = shared.place(id)?;
-            let group = Group::new(shared.part(&place.cell, 2 + installed.group)?)?;
-            if !group.allowed(&group.level1(place.index, &place.level1)?, installed.place, place.road)? {
+            if !shared.allowed(installed, &place)? {
                 return Ok(None);
             }
             let mut road = self.road.borrow_mut();
             shared.road(&place, &mut road)?;
             Ok(snap::project(id, &road, point, policy.radius_m))
         })
+    }
+
+    /// The IDs of the installed roads.
+    pub fn road_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.shared.cells.iter().flat_map(|cell| cell.first_road..cell.first_road + cell.roads)
+    }
+
+    /// Whether `metric` snaps to `road`: the road lies in a large connected part of its graph.
+    pub fn allowed(&self, metric: &str, road: u32) -> Result<bool> {
+        let shared = &*self.shared;
+        shared.allowed(shared.installed(metric)?, &shared.place(road)?)
     }
 
     /// Applies `f` to a road, decoded into the road of this handle.
@@ -436,6 +446,12 @@ impl<H: Host> Shared<H> {
             .iter()
             .find(|installed| installed.profile.name == name)
             .ok_or_else(|| Error::InvalidRequest(format!("Profile {name} is not installed")))
+    }
+
+    /// The snap bit of the road of `place` for `installed`.
+    fn allowed(&self, installed: &Installed, place: &Place) -> Result<bool> {
+        let group = Group::new(self.part(&place.cell, 2 + installed.group)?)?;
+        group.allowed(&group.level1(place.index, &place.level1)?, installed.place, place.road)
     }
 
     /// The size of part `part` of `cell`; 0 for a part that the cell does not have.

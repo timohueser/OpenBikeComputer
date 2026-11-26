@@ -37,4 +37,12 @@ describe('sameMap', () => {
         expect(sameArea(map, { ...map, dark: 'custom-night' })).toBe(true);
         expect(sameMap(map, { ...map, dark: 'custom-night' })).toBe(false);
     });
+
+    it('sees an edited map style as another map, and a version that is not known as the same', () => {
+        const mine: MapArea = { ...map, light: 'custom-day', lightVersion: 1, darkVersion: 4 };
+        expect(sameMap(mine, { ...mine })).toBe(true);
+        expect(sameMap(mine, { ...mine, lightVersion: 2 })).toBe(false);
+        expect(sameMap(mine, { ...mine, darkVersion: 5 })).toBe(false);
+        expect(sameMap(mine, { ...map, light: 'custom-day' })).toBe(true);
+    });
 });

@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Request exceeds 64 KiB".into());
     }
     let request: Request = serde_json::from_slice(&bytes)?;
-    let response = Router::new(region).routes(&request, &Control::default())?;
-    serde_json::to_writer(std::io::stdout(), &planner_router::answer::answer(&response))?;
+    let route = Router::new(region).route(&request, &Control::default())?;
+    serde_json::to_writer(std::io::stdout(), &planner_router::answer::answer(&route))?;
     Ok(())
 }

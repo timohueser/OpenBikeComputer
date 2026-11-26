@@ -4,17 +4,22 @@
 //! their topology) and `planner/routing-costs` (the costs of each profile). `planner/routing`
 //! writes the package of format 10, its overlay index, its route catalog and the routes of each
 //! grid cell. `planner/routing/cells/grid` publishes the files of the package.
+//! `planner/route-facts` writes the facts of the routes of each grid cell.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use obc_data::engine::Request;
+use obc_data::pmtiles::Archive;
 use obc_dem::planner::{Recent, Terrain};
 use planner_router::model::Point;
 use serde_json::{json, Value};
 
 use crate::base::Topology;
 use crate::column::Layout;
+use crate::facts::{places::Places, shares::Roads, Route};
 use crate::osm::{Counts, Source};
 use crate::source::{Data, Sets};
 use crate::tables::{self, Tables};
@@ -25,6 +30,8 @@ use crate::{catalog, grid, overlays, Costs, Graph, SETS};
 pub const SOURCE: &str = "planner/routing-source";
 pub const ROADS: &str = "planner/routing-roads";
 pub const COSTS: &str = "planner/routing-costs";
+pub const FACTS: &str = "planner/route-facts";
+pub const ROUTE_SOURCES: &str = "planner/route-sources";
 
 fn text(options: &Value, name: &str) -> Result<String, String> {
     options[name].as_str().map(str::to_string).ok_or(format!("option `{name}` is not a string"))
@@ -225,29 +232,27 @@ pub fn costs(request: &Request) -> Result<(), String> {
     layout.finish()
 }
 
-/// The package step. It reads the three work layers and the options `region`, `bounds`,
-/// `countries`, the ISO codes of the countries of the region for the route catalog,
-/// `attribution`, the credit of the OSM data, `cell_sizes` of the roads layer and `download_level`.
-/// The layer:
+/// The package step. It reads the three work layers, the options `region`, `bounds`,
+/// `attribution`, the credit of the OSM data, `cell_sizes` of the roads layer and
+/// `download_level`, and, when the request has it, `route-sources.json` of the layer
+/// `planner/route-sources`: the routes of the second sources. The layer:
 ///
 /// - `routing/`: `overlays.sqlite` and `route-catalog.json`;
 /// - `cells/`: the objects, `package.json` and `directory.bin` of the package (`cells::write`);
-/// - `routes/<cell>.json`: the routes of each grid cell.
+/// - `routes/<cell>.json`: the routes of each grid cell;
+/// - `routes/trails/<cell>.json`: the far file of each cell at `grid::TRAIL_ZOOM`;
+/// - `routes/long/<id>.json`: the record of each trail.
 ///
-/// Its metrics are the report of the route catalog.
+/// Its metrics are the report of the route catalog and `trail_files`, the sizes of the trail files.
 pub fn step(request: &Request) -> Result<(), String> {
     let options = &request.options;
     let _guard = start()?;
     Guard::stage("open");
     let bounds = obc_dem::step::bounds(options)?;
-    let countries = list(options, "countries")?;
-    if countries.is_empty() {
-        return Err("option `countries` is empty: the routes of each cell come from the route catalog".into());
-    }
     let (region, attribution) = (text(options, "region")?, text(options, "attribution")?);
     let (sizes, level) = (cell_sizes(options)?, download_level(options)?);
     let costs = Costs::open(&folder(request, COSTS)?)?;
-    let france = catalog::check(&countries, &costs.profiles)?;
+    catalog::check(&costs.profiles)?;
     let (mut graph, topology, identities) = graph(request)?;
     let routing = request.output.join("routing");
     fs::create_dir(&routing).map_err(|e| format!("{}: {e}", routing.display()))?;
@@ -278,20 +283,40 @@ pub fn step(request: &Request) -> Result<(), String> {
     overlays::write(&routing.join(overlays::FILE), &summary.identity, bounds, &osm)?;
     Guard::exempt("catalog");
     eprintln!("Writing the route catalog");
-    let report = catalog::write(&routing, &cells, osm, france)?;
+    let sources = request.layers.get(ROUTE_SOURCES).and_then(|files| files.get(catalog::sources::FILE));
+    let (trails, report) = catalog::write(&routing, &cells, osm, sources.map(PathBuf::as_path))?;
     let cells = grid::cells(bounds);
     let catalog = fs::read(routing.join(catalog::FILE)).map_err(|e| e.to_string())?;
     let catalog: Value = serde_json::from_slice(&catalog).map_err(|e| e.to_string())?;
     let ids: Vec<&str> = cells.iter().map(|(id, _)| id.as_str()).collect();
     let routes = request.output.join("routes");
-    fs::create_dir(&routes).map_err(|e| format!("{}: {e}", routes.display()))?;
-    for (cell, document) in grid::route_tiles(&catalog, &ids)? {
-        let path = routes.join(format!("{cell}.json"));
-        let mut bytes = serde_json::to_vec(&crate::sort_keys(document)).expect("JSON values serialize");
-        bytes.push(b'\n');
-        fs::write(&path, bytes).map_err(|e| e.to_string())?;
-    }
-    fs::write(&request.metrics, report.to_json().to_string()).map_err(|e| e.to_string())
+    let files = |folder: &Path, documents: Vec<(String, Value)>| -> Result<Vec<(String, usize)>, String> {
+        fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+        let sizes = documents.into_iter().map(|(name, document)| {
+            let bytes = grid::file_bytes(&document);
+            fs::write(folder.join(format!("{name}.json")), &bytes).map_err(|e| e.to_string())?;
+            Ok((name, bytes.len()))
+        });
+        sizes.collect()
+    };
+    files(&routes, grid::route_tiles(&catalog, &ids)?.into_iter().collect())?;
+    let far_cells = grid::cells_at(bounds, grid::TRAIL_ZOOM);
+    let far_ids: Vec<&str> = far_cells.iter().map(|(id, _)| id.as_str()).collect();
+    let entries: Vec<&Value> = trails.iter().map(|(entry, _)| entry).collect();
+    let far = grid::trail_tiles(&entries, &far_ids, catalog::trails::TRAIL_FILE_BYTES)?;
+    let tolerances: BTreeMap<String, Value> =
+        far.iter().map(|(cell, file)| (cell.clone(), file["tolerance_m"].clone())).collect();
+    let far = files(&routes.join("trails"), far.into_iter().collect())?;
+    let long =
+        trails.into_iter().map(|(entry, record)| (entry["id"].to_string(), json!({"format": 1, "routes": [record]})));
+    let long = files(&routes.join("long"), long.collect())?;
+    let largest = |files: &[(String, usize)]| files.iter().map(|f| f.1).max().unwrap_or(0);
+    let mut metrics = report.to_json();
+    metrics["trail_files"] = json!({
+        "far_files": far.len(), "largest_far_bytes": largest(&far), "tolerances_m": tolerances,
+        "record_files": long.len(), "largest_record_bytes": largest(&long),
+    });
+    fs::write(&request.metrics, metrics.to_string()).map_err(|e| e.to_string())
 }
 
 /// The grid step of the package. It reads `cells/` of `planner/routing` and writes `objects/`, each
@@ -349,4 +374,154 @@ pub fn cells_step(request: &Request) -> Result<(), String> {
     bytes.push(b'\n');
     fs::write(request.output.join("index.json"), bytes).map_err(|e| e.to_string())?;
     fs::write(&request.metrics, json!({"files": count}).to_string()).map_err(|e| e.to_string())
+}
+
+/// The route records of the catalog cells, for the route facts.
+struct Catalog {
+    /// Each record with a line once, by id.
+    routes: Vec<Route>,
+    /// The ids of the records of each cell file.
+    cells: BTreeMap<String, Vec<i64>>,
+    /// The size of each cell file.
+    bytes: Vec<usize>,
+    /// The routes of kind `hiking` or `foot`, and of them those with no `hardest`.
+    hiking: usize,
+    ungraded: usize,
+}
+
+/// The catalog of the files `routes/<cell>.json` of the routing layer `files` for each of
+/// `cells`. The far files and the trail record files do not count.
+fn catalog(files: &BTreeMap<String, PathBuf>, cells: impl IntoIterator<Item = String>) -> Result<Catalog, String> {
+    let cells = cells.into_iter().map(|id| (id, Vec::new())).collect();
+    let mut catalog = Catalog { routes: Vec::new(), cells, bytes: Vec::new(), hiking: 0, ungraded: 0 };
+    let mut routes = BTreeMap::new();
+    for (path, object) in files {
+        let name = path.strip_prefix("routes/").and_then(|name| name.strip_suffix(".json"));
+        let Some(ids) = name.and_then(|name| catalog.cells.get_mut(name)) else { continue };
+        let bytes = fs::read(object).map_err(|e| format!("{path}: {e}"))?;
+        catalog.bytes.push(bytes.len());
+        let file: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        for record in file["routes"].as_array().into_iter().flatten() {
+            let id = record["id"].as_i64().ok_or(format!("{path}: a record has no id"))?;
+            ids.push(id);
+            if routes.contains_key(&id) {
+                continue;
+            }
+            if let Some(route) = Route::read(record)? {
+                if matches!(route.kind.as_str(), "hiking" | "foot") {
+                    catalog.hiking += 1;
+                    catalog.ungraded += usize::from(record.get("hardest").is_none());
+                }
+                routes.insert(id, route);
+            }
+        }
+    }
+    catalog.routes = routes.into_values().collect();
+    Ok(catalog)
+}
+
+/// The route facts step. It reads the OSM extract of `planner/osm/bounds`, the source layer, the
+/// cell files of `planner/routing`, the GLO-30 tiles of its bounds and, when the request has them,
+/// the canopy archive of `planner/trailview-canopy` and `snow-seasons.pmtiles` of `planner/snow`.
+/// The options are `bounds` and `terrain_attribution`, the credit of GLO-30. The layer `facts/` holds the facts file of each
+/// grid cell. Its metrics are `facts::report`, the counts of the places and of the extract, the
+/// sizes of the facts and the catalog files, and the seconds of each stage.
+pub fn facts(request: &Request) -> Result<(), String> {
+    let _guard = start()?;
+    let mut stage_s = serde_json::Map::new();
+    let mut clock = Instant::now();
+    let mut lap = |name: &str| {
+        stage_s.insert(name.into(), json!((clock.elapsed().as_secs_f64() * 10.0).round() / 10.0));
+        clock = Instant::now();
+    };
+    Guard::stage("routes");
+    let bounds = obc_dem::step::bounds(&request.options)?;
+    let credit = text(&request.options, "terrain_attribution")?;
+    let routing = request.layers.get("planner/routing").ok_or("the step reads no layer planner/routing")?;
+    let cells = grid::cells(bounds).into_iter().map(|(id, _)| id);
+    let Catalog { routes, cells, bytes: catalog_bytes, hiking, ungraded } = catalog(routing, cells)?;
+    lap("routes");
+    Guard::stage("places");
+    let pbf = request.layers.get("planner/osm/bounds").and_then(|files| files.get("osm.pbf"));
+    let extract = crate::extract::read(
+        pbf.ok_or("the step reads no planner/osm/bounds osm.pbf")?,
+        &crate::facts::places::wanted,
+    )?;
+    let terrain = Terrain::open(&obc_dem::step::glo30(request, bounds), &credit, None, bounds)?;
+    let mut recent = Recent::default();
+    let places = Places::new(&extract, &mut |p| terrain.height(p[1], p[0], &mut recent))?;
+    let incomplete = extract.incomplete;
+    drop((extract, terrain, recent));
+    lap("places");
+    Guard::stage("shares");
+    let osm = Data::open(&folder(request, SOURCE)?)?;
+    let roads = Roads::new(&osm);
+    let archive = |layer: &str, file: &str| {
+        let path = request.layers.get(layer).and_then(|files| files.get(file));
+        path.map(|path| Archive::open(path).map_err(|e| format!("{}: {e}", path.display()))).transpose()
+    };
+    let canopy = archive("planner/trailview-canopy", "trailview-canopy.pmtiles")?;
+    let snow = archive("planner/snow", "snow-seasons.pmtiles")?;
+    let entries = crate::facts::entries(&routes, &places, &roads, [canopy.as_ref(), snow.as_ref()])?;
+    lap("shares");
+    Guard::stage("write");
+    let output = request.output.join("facts");
+    fs::create_dir(&output).map_err(|e| format!("{}: {e}", output.display()))?;
+    let mut facts_bytes = Vec::new();
+    for (cell, document) in crate::facts::files(&cells, &entries, &places) {
+        let bytes = grid::file_bytes(&document);
+        facts_bytes.push(bytes.len());
+        fs::write(output.join(format!("{cell}.json")), &bytes).map_err(|e| e.to_string())?;
+    }
+    lap("write");
+    let sizes = |mut sizes: Vec<usize>| {
+        sizes.sort_unstable();
+        json!({"max": sizes.last(), "median": sizes.get(sizes.len() / 2), "total": sizes.iter().sum::<usize>()})
+    };
+    let counts = &places.counts;
+    let mut metrics = crate::facts::report(&entries);
+    metrics["places"] = json!(counts.kinds);
+    metrics["lifts_without_height"] = json!(counts.lifts_without_height);
+    metrics["private_lifts"] = json!(counts.private_lifts);
+    metrics["area_large_with_capacity"] = json!(counts.area_large_with_capacity);
+    metrics["of_them_50_or_more"] = json!(counts.of_them_50_or_more);
+    metrics["incomplete_areas"] = json!(incomplete);
+    metrics["hiking_records"] = json!(hiking);
+    metrics["hiking_without_grade"] = json!(ungraded);
+    metrics["facts_bytes"] = sizes(facts_bytes);
+    metrics["catalog_bytes"] = sizes(catalog_bytes);
+    metrics["stage_s"] = Value::Object(stage_s);
+    fs::write(&request.metrics, metrics.to_string()).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_facts_read_each_route_of_the_cell_files_once() {
+        let dir = std::env::temp_dir().join(format!("obc-facts-catalog-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let line = crate::catalog::encode(&[[8_000_000, 47_000_000], [8_001_000, 47_000_000]]);
+        let route = |id: i64| json!({"id": id, "kind": "hiking", "loop": false, "length_m": 76, "line_udeg": line});
+        // Record 2 is a long route: it has no line. The far file and the trail record file are no
+        // cell files.
+        let files = [
+            ("routes/9-1-1.json", json!({"format": 1, "routes": [route(1), {"id": 2, "kind": "hiking"}]})),
+            ("routes/9-1-2.json", json!({"format": 1, "routes": [route(1)]})),
+            ("routes/trails/7-0-0.json", json!({"format": 1, "routes": [route(3)]})),
+            ("routes/long/4.json", json!({"format": 1, "routes": [route(4)]})),
+        ];
+        let mut layer = BTreeMap::new();
+        for (i, (path, document)) in files.iter().enumerate() {
+            fs::write(dir.join(i.to_string()), document.to_string()).unwrap();
+            layer.insert(path.to_string(), dir.join(i.to_string()));
+        }
+        let catalog = catalog(&layer, ["9-1-1", "9-1-2", "9-1-3"].map(String::from)).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(catalog.routes.iter().map(|route| route.id).collect::<Vec<_>>(), [1]);
+        let cells = BTreeMap::from([("9-1-1".into(), vec![1, 2]), ("9-1-2".into(), vec![1]), ("9-1-3".into(), vec![])]);
+        assert_eq!(catalog.cells, cells);
+        assert_eq!((catalog.bytes.len(), catalog.hiking, catalog.ungraded), (2, 1, 1));
+    }
 }

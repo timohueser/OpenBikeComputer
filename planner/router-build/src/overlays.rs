@@ -35,6 +35,17 @@ fn kind(tags: &Tags) -> Option<&'static str> {
     }
 }
 
+/// How wide the basemap draws the road of a way: `major`, `minor`, or empty for a path or a track. The planner draws
+/// a route line wider than the road it follows. The basemap draws a link as wide as a side road.
+fn road(tags: &Tags) -> &'static str {
+    match tag(tags, "highway") {
+        "motorway" | "trunk" | "primary" | "secondary" | "tertiary" => "major",
+        "residential" | "unclassified" | "living_street" | "service" | "road" => "minor",
+        link if link.ends_with("_link") => "minor",
+        _ => "",
+    }
+}
+
 fn rank(network: &str) -> u8 {
     match network {
         "icn" | "iwn" => 4,
@@ -102,7 +113,7 @@ fn memberships(relations: &Table<Relations>) -> (Sorted<(i64, i64)>, BTreeMap<i6
 pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result<(), String> {
     let mut database = Connection::open(path).map_err(text)?;
     database
-        .execute_batch("PRAGMA journal_mode=OFF; PRAGMA cache_size=-65536; PRAGMA user_version=2;")
+        .execute_batch("PRAGMA journal_mode=OFF; PRAGMA cache_size=-65536; PRAGMA user_version=3;")
         .map_err(text)?;
     let transaction = database.transaction().map_err(text)?;
     transaction
@@ -151,7 +162,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
             if let Some(first) = selected.first() {
                 properties.push((
                     activity,
-                    json!({ "way": way.id, "kind": activity,
+                    json!({ "way": way.id, "kind": activity, "road": road(&way.tags),
                     "rank": first["rank"], "ref": first["ref"],
                     "routes": selected.iter().map(|route| &route["id"]).collect::<Vec<_>>() }),
                 ));
@@ -297,10 +308,18 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
+        let cycling: String = database
+            .query_row(
+                "SELECT a.properties FROM features f JOIN attributes a ON a.id=f.attributes WHERE f.kind='cycling'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         drop(database);
         std::fs::remove_file(&path).unwrap();
         // Way 1 carries three routes. Way 2 keeps only the run before its missing node; way 3 is one access line.
         assert_eq!(counts, (5, 3, 3, 2));
+        assert_eq!(cycling, r#"{"rank":2,"ref":"","road":"major","routes":[1]}"#);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Coordinate } from '../geo';
+import contract from '../../../../../../planner/search/query/contract.json' with { type: 'json' };
 import { searchLine } from './plan';
 
 describe('search line', () => {
@@ -21,5 +22,18 @@ describe('search line', () => {
         // A 60 s stop in the last 0.3 m keeps that point; rounding its kilometre up would pass the exact end.
         const line: Coordinate[] = [[8, 48], [8.01, 48], [8.0100039, 48]];
         expect(searchLine(line, [0, .7446, .74489], [0, 100, 160]).km).toEqual([0, .74489, .74489]);
+    });
+    it('thins a line over the search limit until it fits, and keeps a line at the limit as before', () => {
+        // Every other point lies 18 m off the road. Each point is 12 to 18 m off the line of any two kept points around it,
+        // so the first tolerance keeps each point and the doubled one none.
+        const limit = contract.line_points;
+        const line = (n: number): Coordinate[] => Array.from({ length: n }, (_, i) => [8 + i * .0013, 48 + (i % 2) * 18 / 111_195]);
+        const km = (n: number) => Array.from({ length: n }, (_, i) => i * .1);
+        expect(searchLine(line(limit), km(limit)).coordinates).toHaveLength(limit);
+        // The pace changes at each point by 25 s against the mean, so the time tolerance must grow too.
+        const seconds = Array.from({ length: limit + 1 }, (_, i) => 30 * i - (i % 2) * 25);
+        const thinned = searchLine(line(limit + 1), km(limit + 1), seconds);
+        expect(thinned.coordinates.length).toBeLessThanOrEqual(limit);
+        expect([thinned.km[0], thinned.km.at(-1)]).toEqual([0, km(limit + 1)[limit]]);
     });
 });

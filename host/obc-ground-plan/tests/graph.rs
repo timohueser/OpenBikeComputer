@@ -11,7 +11,8 @@ use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::{metres_per_unit, CellKey, CELL_UNITS};
 use obc_ground_plan::graph::{
-    build, build_levelled, check, check_levels, level_tags, levels, s_at, Arm, Level, Sample, State, Station, WayGraph,
+    build, build_levelled, check, check_levels, level_tags, levels, s_at, Arm, Level, Run, Sample, State, Station,
+    WayGraph,
 };
 use obc_ground_plan::sections::Sections;
 use obc_ground_plan::tile::Tags;
@@ -180,9 +181,12 @@ fn neighbouring_cells_agree_near_their_border_g5() {
 /// The levels that the fixture's tiles carry are those that `levels` gives the cells: the tags of each feature are
 /// those that the bake's merge (`level_tags::merge`) gives of what the cells find, storey and slab included; and the
 /// graph of the storeys (`build_levelled`) gives every way inside a cell's square the level of its stretch's state,
-/// with no way on a HIDDEN stretch, and cuts each bridge at its end lines. A change of the levels or of their rules takes a new bake of the fixture.
+/// with no way on a HIDDEN stretch, and cuts each bridge at its end lines; with the bores each tunnel too (without them
+/// a tunnel way keeps its level). A change of the levels or of their rules takes a new bake of the fixture.
 /// A cut of the storeys' graph lies this near its end line (metres): `level_tags::split` merges closer stations.
 const CUT_M: f64 = 1e-6;
+/// Whether the graph of the storeys splits the tunnel ways by their states (the feature `bores`).
+const BORES: bool = cfg!(feature = "bores");
 
 #[test]
 fn the_tiles_carry_the_levels_of_each_cell() {
@@ -191,6 +195,7 @@ fn the_tiles_carry_the_levels_of_each_cell() {
     // A feature by its kind and tags, the same in each tile that holds it; and its level tags.
     let (mut ids, mut carried_tags) = (BTreeMap::<String, u32>::new(), BTreeMap::<u32, Tags>::new());
     let (mut found, mut groups, mut over) = (BTreeMap::<u32, Vec<level_tags::Found>>::new(), Vec::new(), Vec::new());
+    let mut links = Vec::new();
     for (key, computed) in graphs() {
         let input = fixture.cell(key);
         let cell = level_tags::found(&computed, &input, Sections::embedded());
@@ -208,6 +213,7 @@ fn the_tiles_carry_the_levels_of_each_cell() {
         }
         groups.extend(cell.groups.into_iter().map(|g| g.into_iter().map(&mut id).collect::<Vec<_>>()));
         over.extend(cell.over.into_iter().map(|(l, u)| (id(l), id(u))));
+        links.extend(cell.links.into_iter().map(|(a, ma, da, b, mb, db)| (id(a), ma, da, id(b), mb, db)));
         // The graph of the storeys gives each stretch the level of its state, and holds no HIDDEN stretch.
         let levelled = build_levelled(key, &input, Sections::embedded(), Rules::embedded().structures.edge_band_m);
         let k = |st: &Station| (st.span, st.u);
@@ -228,11 +234,12 @@ fn the_tiles_carry_the_levels_of_each_cell() {
         for w in (0..levelled.ways.len() as u32).filter(|&w| level_tags::inside(&levelled, w)) {
             let way = &levelled.ways[w as usize];
             let part = &levelled.parts[way.part as usize];
-            if part.level == Level::Tunnel || (way.level == Level::Deck && part.level != Level::Deck) {
+            if (!BORES && part.level == Level::Tunnel) || (way.level == Level::Deck && part.level != Level::Deck) {
                 continue;
             }
             let want = match state(&middle(&levelled, w)) {
                 Some(State::Deck) => Level::Deck,
+                Some(State::Bore) => Level::Tunnel,
                 Some(State::Open) => Level::Ground,
                 Some(State::Hidden) => {
                     faults.push(format!("{key:?} way {w}: it lies on a HIDDEN stretch"));
@@ -252,31 +259,40 @@ fn the_tiles_carry_the_levels_of_each_cell() {
             let span = &part.spans[st.span as usize];
             span.along0_m + if part.backward { -1.0 } else { 1.0 } * s_at(span, st.u)
         };
+        let structure = |g: &WayGraph, part: u32| match g.parts[part as usize].level {
+            Level::Deck => true,
+            Level::Tunnel => BORES,
+            Level::Ground => false,
+        };
         let cuts: Vec<(u32, f64)> = (levelled.ways.iter())
-            .filter(|w| levelled.parts[w.part as usize].level == Level::Deck)
+            .filter(|w| structure(&levelled, w.part))
             .flat_map(|w| [(w.part, along(&levelled, &w.from)), (w.part, along(&levelled, &w.to))])
             .collect();
         for l in computed.levels.end_lines.iter().filter(|l| level_tags::inside(&computed, l.way)) {
-            if computed.parts[l.at.part as usize].level != Level::Deck {
+            let m = along(&computed, &l.at);
+            // A tunnel's line between two HIDDEN stretches (a closed end of two cells' runs) bounds no way.
+            let drawn = computed.parts[l.at.part as usize].level != Level::Tunnel
+                || (computed.levels.runs.iter().filter(|r| r.way == l.way && r.state != State::Hidden))
+                    .any(|r| [r.from, r.to].iter().any(|st| (along(&computed, st) - m).abs() <= CUT_M));
+            if !structure(&computed, l.at.part) || !drawn {
                 continue;
             }
             ends += 1;
-            let m = along(&computed, &l.at);
             if !cuts.iter().any(|&(p, c)| p == l.at.part && (c - m).abs() <= CUT_M) {
                 faults
                     .push(format!("{key:?} way {}: no way of the storeys' graph ends at its end line ({m} m)", l.way));
             }
         }
-        for r in
-            computed.levels.runs.iter().filter(|r| r.state == State::Hidden && level_tags::inside(&computed, r.way))
-        {
+        let tunnel = |part: u32| computed.parts[part as usize].level == Level::Tunnel;
+        let hidden = |r: &&Run| r.state == State::Hidden && level_tags::inside(&computed, r.way);
+        for r in computed.levels.runs.iter().filter(hidden).filter(|r| BORES || !tunnel(r.from.part)) {
             let st = Station { part: r.from.part, span: (r.from.span + r.to.span) / 2, u: 0.5 };
             if k(&st) > k(&r.from) && k(&st) < k(&r.to) && levelled.way_at(&st, Level::Ground).is_some() {
                 faults.push(format!("{key:?} way {}: a way of the storeys' graph lies on its HIDDEN stretch", r.way));
             }
         }
     }
-    let merged = level_tags::merge(&found, &groups, &over);
+    let merged = level_tags::merge(&found, &groups, &over, &links, &Rules::embedded().structures);
     let mut counts = BTreeMap::<String, usize>::new();
     for (id, carried) in &carried_tags {
         let want = merged.get(id).cloned().unwrap_or_default();

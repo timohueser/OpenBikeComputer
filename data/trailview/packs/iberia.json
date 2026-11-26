@@ -23,7 +23,7 @@
  },
  "herds": {
   "sheep": { "groups": 2, "size": [15, 60], "on": ["pasture", "grassland", "arable"] },
-  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
+  "iberian-pig": { "model": "pig", "latin": "Sus scrofa domesticus", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
   "cattle": { "model": "brown-cattle", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
   "goat": { "groups": 1, "size": [8, 30], "on": ["scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
  },

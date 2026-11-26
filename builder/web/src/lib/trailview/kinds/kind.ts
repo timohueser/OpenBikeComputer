@@ -1,9 +1,10 @@
 // What a kind module is, and the shared handlers that most kinds use. A kind module in kinds/ has the name
 // of its entry in data/trailview/kinds.json and default-exports a Kind; the registry (index.ts) finds it,
 // so a new kind changes no other file of the engine.
-import { geometry, type Model } from '../models/flat';
+import type { Model } from '../models/flat';
+import { mesh } from '../models/sculpt';
 import { EXTENT, unitScale, type Feature } from '../stream/features';
-import type { ModelSpec } from '../instances/instances';
+import type { FloatMesh } from '../models/model-file';
 import type { AnchoredBuilder } from '../structures/anchored';
 import { GROUND, mix, type MeshBuilder, station, type Corner } from '../structures/mesh';
 import type { Light } from '../structures/light-pools';
@@ -48,10 +49,13 @@ export interface Build {
     cornered: (x: number, y: number) => boolean;
 }
 
+/** A model as its generator makes it: its mesh per tier, finest first, where each tier ends in metres, and whether it casts a shadow. */
+export interface ModelSource { tiers: { mesh: FloatMesh; until: number }[]; casts?: boolean }
+
 export interface Kind {
     build(feature: Placed, out: Build): void;
-    /** The models that `place` names, each 1 tall with its base at the origin, for the instances. */
-    models?: Record<string, () => ModelSpec>;
+    /** The models that `place` names, each 1 tall with its base at the origin: the build makes their model files (models/bake.ts). */
+    models?: Record<string, () => ModelSource>;
     /** The light that a model sheds on the ground about it at night, by the model's name. */
     lights?: Record<string, Light>;
 }
@@ -133,10 +137,13 @@ export function modelKind(name: string, model: () => Model, reach: number, { fac
     };
 }
 
-/** A model in metres as the instances take it, 1 tall, with its height in metres; it draws to `reach` metres. */
-export function unitModel(model: () => Model, reach: number): { height: number; spec: () => ModelSpec } {
-    const height = Math.max(...model().points.filter((_, i) => i % 3 === 2));
-    return { height, spec: () => ({ tiers: [{ mesh: geometry(model().place(0, [0, 0, 0], 1 / height)), until: reach }] }) };
+/**
+ * A model in metres as the instances take it, 1 tall, with its height in metres; it draws to `reach` metres. A model
+ * with a far tier (tier 1 of its sculpt) draws that from `near` metres on.
+ */
+export function unitModel(model: (tier?: number) => Model, reach: number, near?: number): { height: number; spec: () => ModelSource } {
+    const height = Math.max(...model().points.filter((_, i) => i % 3 === 2)), tier = (t: number) => mesh(model(t).place(0, [0, 0, 0], 1 / height));
+    return { height, spec: () => ({ tiers: near ? [{ mesh: tier(0), until: near }, { mesh: tier(1), until: reach }] : [{ mesh: tier(0), until: reach }] }) };
 }
 
 /** The smallest rectangle about a ring, one side along an edge: its middle in world units, the angle of its width counter-clockwise from east, and its width and depth in metres. */

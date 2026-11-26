@@ -38,6 +38,14 @@ pub struct Head {
     pub modified_at: Option<u64>,
 }
 
+impl Head {
+    /// Whether upstream names no version of the file: no `ETag` and no day. Its size then need not
+    /// be that of the body, as a service that makes its answer for each request gives.
+    pub fn bare(&self) -> bool {
+        self.etag.is_none() && self.modified.is_none()
+    }
+}
+
 #[derive(Debug)]
 pub struct Downloaded {
     pub object: PathBuf,
@@ -116,21 +124,30 @@ fn pause(url: &str, delay: Duration) -> Result<(), String> {
     }
 }
 
-/// `text` with the query of each URL in it left out: a query can sign the URL, such as a SAS token,
-/// and a log line must not show it.
-pub fn without_queries(text: &str) -> String {
+/// `url` as a log line, an error, a manifest and a mirror path name it: without its query, which
+/// can sign it, such as a SAS token, and with `@` and the first 16 hex digits of the SHA-256 of the
+/// query when it has one, so that two queries of one path stay apart.
+pub fn shown(url: &str) -> String {
+    match url.split_once('?') {
+        Some((path, query)) => format!("{path}@{}", &store::sha256_hex(query.as_bytes())[..16]),
+        None => url.to_string(),
+    }
+}
+
+/// `text` with each URL in it [`shown`].
+pub fn shown_in(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) =
         rest.find("://").and_then(|at| rest[..at].rfind(char::is_whitespace).map_or(Some(0), |space| Some(space + 1)))
     {
         let end = rest[at..].find(char::is_whitespace).map_or(rest.len(), |end| at + end);
-        let token = &rest[at..end];
         out.push_str(&rest[..at]);
-        match token.find('?') {
-            // A URL before a `: reason` keeps its `:`.
-            Some(query) => out.push_str(&format!("{}{}", &token[..query], if token.ends_with(':') { ":" } else { "" })),
-            None => out.push_str(token),
+        // A URL before a `: reason` keeps its `:`.
+        let token = &rest[at..end];
+        match token.strip_suffix(':') {
+            Some(url) => out.push_str(&format!("{}:", shown(url))),
+            None => out.push_str(&shown(token)),
         }
         rest = &rest[end..];
     }
@@ -266,12 +283,15 @@ impl Http {
     }
 
     /// What a `HEAD` request of `url` tells, after redirects. A 404 is an error that [`not_found`]
-    /// knows.
+    /// knows. A server that does not answer `HEAD` (405) tells nothing: a [`Head::bare`] head.
     pub fn head(&self, url: &str) -> Result<Head, String> {
         // The size of the bytes as upstream stores them, as a download asks for them.
         let request = self.authorize("HEAD", url, self.agent.head(url)).header("accept-encoding", "identity");
         let response =
             request.config().timeout_global(Some(SMALL)).build().call().map_err(|e| no_answer("HEAD", url, e))?;
+        if response.status().as_u16() == 405 {
+            return Ok(Head::default());
+        }
         if !response.status().is_success() {
             return Err(format!("HEAD {url}: HTTP {}", response.status().as_u16()));
         }
@@ -378,7 +398,7 @@ impl Http {
             if failures == ATTEMPTS {
                 return Err(why);
             }
-            eprintln!("obc data: {} — retrying", without_queries(&why));
+            eprintln!("obc data: {} — retrying", shown_in(&why));
             pause(url, self.backoff * 2u32.pow(failures - 1))?;
         }
     }
@@ -463,7 +483,7 @@ impl Http {
             if failures == ATTEMPTS {
                 return Err(why);
             }
-            eprintln!("obc data: {} — retrying", without_queries(&why));
+            eprintln!("obc data: {} — retrying", shown_in(&why));
             pause(url, delay.min(RETRY_AFTER).max(self.backoff * 2u32.pow(failures - 1)))?;
         }
         let _ = fs::remove_file(validator);
@@ -587,13 +607,9 @@ impl Http {
                 let done = crate::engine::runs::bytes(current);
                 match expect.bytes.or(total) {
                     Some(whole) => {
-                        eprintln!(
-                            "obc data: {}: {done} / {} downloaded",
-                            without_queries(url),
-                            crate::engine::runs::bytes(whole)
-                        )
+                        eprintln!("obc data: {}: {done} / {} downloaded", shown(url), crate::engine::runs::bytes(whole))
                     }
-                    None => eprintln!("obc data: {}: {done} downloaded", without_queries(url)),
+                    None => eprintln!("obc data: {}: {done} downloaded", shown(url)),
                 }
                 reported = std::time::Instant::now();
             }

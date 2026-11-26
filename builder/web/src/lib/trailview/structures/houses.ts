@@ -12,17 +12,18 @@ import type { FeatureTiles } from '../terrain/stamps';
 import { OUTLINE_WORDS, RECORD_WORDS, type TileHouses } from './house-records';
 import { stopped } from '../stream/terrain';
 import { CAPS, DeviceCache } from '../terrain/device-cache';
+import { MiB, type Budget } from '../budget';
 
 /** Houses on the GPU at most, and the bytes of outline vertices. */
-const HOUSES = 2 ** 16, OUTLINE_BYTES = 2 * 2 ** 20;
-/** The houses of the zoom 14 tiles within this many metres of the eye draw; tiles kept, and tile requests in flight at most. */
-const RADIUS_M = 8000, KEPT = 400, REQUESTS = 6;
+const HOUSES = 2 ** 16, OUTLINE_BYTES = 4 * 2 ** 20;
+/** The houses of the zoom 14 tiles within this many metres of the eye draw; tiles kept. */
+const RADIUS_M = 8000, KEPT = 400;
 /** Each zoom 14 tile takes its houses from its quarter of the zoom 13 feature tile. */
 const ZOOM = 14, EARTH_M = 40075016.686;
 /** Words of `Style` in houses.wgsl. */
 export const STYLE_WORDS = 36;
 /** Words of `Kept` and bytes of `Drawn` in houses.wgsl; the bytes of `Params` and where its styles start; the stride of the dynamic offset of `DrawOf`. */
-const FIT_WORDS = 4, DRAWN_BYTES = 192, STYLES_AT = 48 + 128 * 16 + 256 * 16, STYLES = 64, PARAMS_BYTES = STYLES_AT + STYLES * STYLE_WORDS * 4, DRAW_STRIDE = 256;
+const FIT_WORDS = 4, DRAWN_BYTES = 224, STYLES_AT = 48 + 128 * 16 + 256 * 16, STYLES = 64, PARAMS_BYTES = STYLES_AT + STYLES * STYLE_WORDS * 4, DRAW_STRIDE = 256;
 /**
  * Houses drawn in a frame at most; past ROOM of them, the narrowest on screen go first. The sun's view
  * holds the casters of a shadow map (light/shadow.ts): up to 2 100 on the kit's flights (measured).
@@ -51,14 +52,15 @@ const LISTS = 4 * DRAWS + 4;
 const NO_DRAWS = new Uint32Array(HOUSES).fill(0xffffffff);
 const TIMBER = ['none', 'upper', 'all', 'frame'];
 /** The flags of `Style` in houses.wgsl. */
-export const SHUTTERS = 1, BALCONIES = 2, ONION_DOME = 4, DORMERS = 8, WOODEN = 16, CONE_ROOF = 32, FLAT_ROOF = 64;
+export const SHUTTERS = 1, BALCONIES = 2, ONION_DOME = 4, DORMERS = 8, WOODEN = 16, CONE_ROOF = 32, FLAT_ROOF = 64, FLOWERS = 128;
 /**
  * The pad of a house, as `Params` in houses.wgsl: the floor stands `plinth` metres over the lowest
- * ground about the footprint, and at most `burial` storeys under the highest, a full storey where
- * the ground falls by `steep` storeys or more; the walls reach `margin` metres under the lowest. A
- * house wider than `full` pixels draws in full detail; one narrower than `least` not at all.
+ * ground about the footprint, at most the storeys that show under it and a base of `basement` metres
+ * over it, and at most `burial` storeys under the highest, a full storey where the ground falls by
+ * `steep` storeys or more; the walls reach `margin` metres under the lowest. A house wider than `full` pixels draws in full detail; one narrower than
+ * `least` not at all.
  */
-export const PAD = { burial: 0.5, steep: [2, 3], plinth: 0.3, margin: 1.0, full: 40, least: 1.0 };
+export const PAD = { burial: 0.5, steep: [2, 3], plinth: 0.3, basement: 1.5, margin: 1.0, full: 40, least: 1.0 };
 
 /** What the fit culls the tiles with: the camera-relative view and projection, and the eye in the frame. */
 export interface HouseCamera { viewProj: Float32Array; eye: [number, number, number] }
@@ -105,7 +107,7 @@ export function styleWords(rules: Rules): { styles: Uint32Array<ArrayBuffer>; re
     list.forEach((style, i) => {
         const at = i * STYLE_WORDS, { palette } = style, lists = [palette.render, palette.wood, palette.roof, palette.door, palette.shutter, [palette.plinth].flat()];
         const flags = (style.shutters ? SHUTTERS : 0) | (style.balconies ? BALCONIES : 0) | (style.spire ? ONION_DOME : 0) | (style.dormers ? DORMERS : 0)
-            | (style.spire === 'domes' ? WOODEN : 0) | (style.roof === 'cone' ? CONE_ROOF : 0) | (style.roof === 'flat' ? FLAT_ROOF : 0);
+            | (style.spire === 'domes' ? WOODEN : 0) | (style.roof === 'cone' ? CONE_ROOF : 0) | (style.roof === 'flat' ? FLAT_ROOF : 0) | (style.flowers ? FLOWERS : 0);
         f.set([style.pitch[0], style.pitch[1], style.eave, style.verge, style.hip], at);
         u.set([Math.max(0, TIMBER.indexOf(style.timber)), flags, style.chimneys], at + 5);
         f.set([style.storeys ?? 0, style.windows ?? 1], at + 8);
@@ -172,10 +174,10 @@ export class Houses {
     private readonly cache?: Promise<DeviceCache | undefined>;
 
     /**
-     * An abort of `stop` ends the worker. With `cache`, the release and the version of the house worker's code,
+     * An abort of `stop` ends the worker; `budget` gives the tile requests in flight at most and the worker's cap. With `cache`, the release and the version of the house worker's code,
      * a tile's records come from the device cache where it holds them, and go there once made.
      */
-    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal, cache?: { release: string; version: string }) {
+    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal, private readonly budget: Budget, cache?: { release: string; version: string }) {
         if (!features) return;
         if (cache) this.cache = DeviceCache.open('houses', cache.release, cache.version, CAPS.houses).catch(() => undefined);
         const worker = this.worker = new Worker(new URL('./house-worker.ts', import.meta.url), { type: 'module' });
@@ -265,7 +267,7 @@ export class Houses {
         }
         wanted.sort((a, b) => a.d - b.d);
         for (const { name, x, y } of wanted) {
-            if (this.tiles.has(name) || this.pending.has(name) || this.pending.size >= REQUESTS) continue;
+            if (this.tiles.has(name) || this.pending.has(name) || this.pending.size >= this.budget.loads.houses) continue;
             this.pending.add(name);
             this.load(x, y).then(result => this.keep(name, result), error => {
                 if (!stopped(error)) console.warn(`House tile ${name}: ${error instanceof Error ? error.message : error}`);
@@ -440,6 +442,7 @@ export class Houses {
         new Uint32Array(params).set([this.count, capacity]);
         new Float32Array(params).set([PAD.burial, PAD.plinth, PAD.margin, full, least, ...PAD.steep], 2);
         new Uint32Array(params)[10] = shown.length;
+        new Float32Array(params)[11] = PAD.basement;
         new Uint32Array(params, 48).set(this.regions.subarray(0, 512));
         // Each tile's first workgroup of `fit` and of `refit`, so that they run no workgroup without houses.
         const ranges = new Uint32Array(params, 48 + 128 * 16, 4 * RANGES);
@@ -493,7 +496,7 @@ export class Houses {
         const id = this.next++;
         const made = await new Promise<TileHouses | null>(resolve => {
             this.waiting.set(id, resolve);
-            this.worker!.postMessage({ id, tile, owned: { level: ZOOM, x, y }, body }, [body]);
+            this.worker!.postMessage({ id, tile, owned: { level: ZOOM, x, y }, body, bytes: this.budget.caps.house * MiB }, [body]);
         });
         if (made) void cache?.write(key, [made.records, made.outlines]).catch(() => {});
         return made;

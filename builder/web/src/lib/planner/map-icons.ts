@@ -7,12 +7,14 @@ const colors = {
 };
 const ratio = 2;
 
-/** Draws place and access symbols on demand for the active theme. */
+/** Draws place and access symbols for the active theme, trail markers, and the clear boxes `place-box-W-H` of the place marks, on demand. */
 export function mapIcon(id: string): { image: ImageData; pixelRatio: number } | null {
     if (id.startsWith('trail:')) {
         const image = trailImage(id.slice(6));
         return image ? { image, pixelRatio: ratio } : null;
     }
+    const box = id.match(/^place-box-(\d+)-(\d+)$/);
+    if (box) return { image: new ImageData(Number(box[1]), Number(box[2])), pixelRatio: 1 };
     const match = id.match(/^(?:poi-(\w+)|(access|conditional|push|no-bikes))-(light|dark)$/);
     const category = match?.[1] as PlaceCategory | undefined;
     if (!match || (category && !placeCategories[category])) return null;

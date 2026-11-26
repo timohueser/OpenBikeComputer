@@ -3,6 +3,7 @@
 // on the slot's four corners; and the meshes of its storeys over the ground, their slots all plain concrete. A terrain vertex of the strip is the terrain's own
 // vertex at its level-18 grid point, made by the same code, so the strip meets the terrain without a crack.
 // #include ../roads/corridor.wgsl
+// #include ../terrain/portal-box.wgsl
 // #include cells.wgsl
 
 // As Piece of corners.wgsl.
@@ -21,10 +22,19 @@ struct Piece {
     // A storey mesh's first triangle of its railings and posts, and of its piers (mesh/shell.rs's PARTS).
     railings: u32,
     piers: u32,
+    // The first triangle of storey 0's guard rails and of its delineators.
+    rails: u32,
+    delineators: u32,
+    // The first word of storey 0's details' rings and of their items (plan/details.wgsl).
+    rings: u32,
+    items: u32,
 }
 
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
 @group(0) @binding(2) var<uniform> params: Piece;
+// The boxes of the tunnels' portals and parts that the cell meets (pieces.ts): x the count; then per box its words, as
+// portal-box.wgsl reads them, but the middle of its start in world units from the cell's origin.
+@group(0) @binding(4) var<storage, read> boxes: array<vec4f>;
 
 // As NO_LABEL of corners.wgsl: the plain terrain.
 const NO_LABEL: u32 = 33554431u;
@@ -52,13 +62,14 @@ fn corner_at(k: u32) -> PieceVertex {
         // At the finest level 17 the mesh lies over level-17 nodes: the vertex is the terrain's level-17 vertex at
         // the even point that it slides to, by the same code, so that it lands where the terrain's does (the strip
         // at morph 1). The mesh's range lies within level 18's, so at the finest level 18 its nodes are level 18.
+        // Its `u` is the point where it draws, which the snap and the morph move off its grid point: the box test reads it.
         if (surface.finest < 18u) {
             let even = u - ((surface.anchor + u) & vec2i(64));
             let v = grid_vertex_by(even, 17u, !plan_near(even), true);
-            return PieceVertex(vec2f(u), v.s, v.h);
+            return PieceVertex(units_of(v.s), v.s, v.h);
         }
         let v = grid_vertex_by(u, 18u, !plan_near(u), true);
-        return PieceVertex(vec2f(u), v.s, v.h);
+        return PieceVertex(units_of(v.s), v.s, v.h);
     }
     let u = vec2f(params.origin - surface.anchor) + vec2f(q) / 16.0;
     return PieceVertex(u, lod_space(u), bitcast<f32>(piece[params.out + 4u * k]));
@@ -102,6 +113,11 @@ fn on_water(k: u32) -> bool {
     return (piece[params.out + 4u * k + 1u] & MAT_BITS) == MAT_WATER;
 }
 
+// Whether corner k lies on a sidewalk's slab (MAT_SIDEWALK of corners.wgsl): a step beside it is its kerb.
+fn on_sidewalk(k: u32) -> bool {
+    return (piece[params.out + 4u * k + 1u] & MAT_BITS) == MAT_SIDEWALK;
+}
+
 // A corner's metres across and half-width, and its metres along, from its look and place words.
 struct CornerPlace {
     road: vec2f,
@@ -141,9 +157,10 @@ fn piece_out(v: PieceVertex, word: u32, place: CornerPlace, normal: vec3f) -> Co
 }
 
 @vertex
-fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
+fn piece_vertex(@builtin(vertex_index) k: u32, @builtin(instance_index) tail: u32) -> CorridorOut {
     let o = params.out + 4u * k;
     var out = piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+    corridor_tail(&out, tail);
     if (MOUTH) {
         // The corner's label, as corners.wgsl reads it.
         let label = (piece[2u * k] >> 19u) | (((piece[2u * k + 1u] >> 19u) & 0xfffu) << 13u);
@@ -157,7 +174,7 @@ fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
 // neighbour slot is that edge exactly and no pixel falls between them at any heights. Where the step turns,
 // the diagonal joins the lower corners at p and q: the fold then hangs below both faces, hidden.
 @vertex
-fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
+fn slot_vertex(@builtin(vertex_index) index: u32, @builtin(instance_index) tail: u32) -> CorridorOut {
     let w = params.slots + 4u * (index / 6u);
     var c = array(corner_at(piece[w]), corner_at(piece[w + 1u]), corner_at(piece[w + 2u]), corner_at(piece[w + 3u]));
     let dp = c[0].h - c[3].h;
@@ -181,11 +198,14 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
     // An end face (the mesh's last slots, on a deck end line) is plain concrete at any height. A step whose upper
     // side is water falls as water (its look foams on the upright slot). A step beside a wall class's road surface
-    // that stands as high as a wall is a wall, of concrete beside a bridge's ground stretch; any other is a bank of
-    // the ground, as on a path or a track.
+    // that stands as high as a wall is a wall, of concrete beside a bridge's ground stretch; a lower one beside a
+    // sidewalk is its kerb; any other is a bank of the ground, as on a path or a track.
     let upper = select(vec2u(piece[w + 2u], piece[w + 3u]), vec2u(piece[w], piece[w + 1u]), rise > 0.0);
     let wall = (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M;
     var mat = select(MAT_GROUND, select(MAT_WALL, MAT_CAP, on_bridge(piece[w]) || on_bridge(piece[w + 3u])), wall);
+    if (!wall && (on_sidewalk(piece[w]) || on_sidewalk(piece[w + 3u]))) {
+        mat = MAT_KERB;
+    }
     if (on_water(upper.x) || on_water(upper.y)) {
         mat = MAT_WATER;
     }
@@ -201,7 +221,9 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     if (mat == MAT_WALL || mat == MAT_CAP) {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }
-    return piece_out(v, word, place, normal);
+    var out = piece_out(v, word, place, normal);
+    corridor_tail(&out, tail);
+    return out;
 }
 
 // A culvert's mouth (the mesh's mouths, 4 words each: its corner on the water and its corner in the zone, the zone
@@ -331,6 +353,10 @@ fn storey_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
         let n = normalize(cross(vec3f(b.s - a.s, b.h - a.h), vec3f(c.s - a.s, c.h - a.h)) + vec3f(0.0, 0.0, 1e-9));
         var mat = select(build, select(MAT_STEEL, MAT_WOOD, build == MAT_TIMBER), i >= params.railings);
         mat = select(mat, MAT_CAP, i >= params.piers);
+        mat = select(mat, MAT_RAIL, i >= params.rails);
+        // A delineator's band: a triangle whose corners' offsets lie between 0.74 and 0.9 m (DELI_UP_M of mesh/edges.rs).
+        let up = bitcast<f32>(piece[params.offsets + piece[t]]) + bitcast<f32>(piece[params.offsets + piece[t + 1u]]) + bitcast<f32>(piece[params.offsets + piece[t + 2u]]);
+        mat = select(mat, select(MAT_DELI, MAT_DELI_BAND, up > 3.0 * 0.74 && up < 3.0 * 0.9), i >= params.delineators);
         let word = mat | (480u << HALF_SHIFT);
         out = piece_out(v, word, CornerPlace(vec2f(v.h, half_of(word)), v.s.x + v.s.y), n);
     }
@@ -355,4 +381,21 @@ fn storey_caster(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f 
     let u = vec2f(params.origin - surface.anchor) + vec2f(q) / 16.0;
     let all = known(storey_height(piece[t])) && known(storey_height(piece[t + 1u])) && known(storey_height(piece[t + 2u]));
     return select(vec4f(0.0, 0.0, 2.0, 1.0), frame.view_proj * vec4f(corner_point(PieceVertex(u, lod_space(u), storey_height(k))), 1.0), all);
+}
+
+// Whether a point `u` units about the anchor at height `h` lies in a box of the cell, as the terrain's fragment tests
+// its boxes. A pixel of a piece's tail, which draws with CUT, drops there (`corridor_dropped`): the drawn point itself
+// is tested, at the heights of the drawn corners, so no ground of the mesh shows in a tunnel's room.
+fn in_box(u: vec2f, h: f32) -> bool {
+    let origin = vec2f(params.origin - surface.anchor);
+    for (var i = 0u; i < u32(boxes[0].x); i++) {
+        let a = boxes[1u + 3u * i];
+        let b = boxes[2u + 3u * i];
+        let c = boxes[3u + 3u * i];
+        let q = box_point(vec4f(a.xy + origin, a.zw), b, c, u, h);
+        if (box_plan(b, c, q) < 0.0 && box_wall(b, c, q) < 0.0 && q.z > b.w) {
+            return true;
+        }
+    }
+    return false;
 }

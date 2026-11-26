@@ -134,7 +134,7 @@ impl Profile {
                 },
                 mtb_pace: false,
                 route_bonus: 0.0,
-                // Up to `mountain_hiking` (T2); `hiking/alpine` goes to T4.
+                // Up to `mountain_hiking` (T2); `hiking/alpine` goes to T6.
                 max_difficulty: 2,
             },
         ];
@@ -162,8 +162,9 @@ impl Profile {
             })
             .collect();
         profiles.extend(variants);
-        // Explicit skill choices. T5 and T6 need climbing; MTB has no upper limit.
-        for (base, name, difficulty) in [("mtb", "mtb/technical", 6), ("hiking", "hiking/alpine", 4)] {
+        // Explicit skill choices up to the highest known grade, so an unknown grade value (255)
+        // stays refused. Alpine keeps off T5 and T6 paths only through their cost factors.
+        for (base, name, difficulty) in [("mtb", "mtb/technical", 6), ("hiking", "hiking/alpine", 6)] {
             let mut profile = profiles.iter().find(|p| p.name == base).unwrap().clone();
             profile.name = name.into();
             profile.max_difficulty = difficulty;
@@ -245,19 +246,23 @@ impl Pace {
     }
 
     pub fn segment_seconds(&self, from: Point, to: Point, walk: bool, mtb: bool) -> f64 {
-        let p = [from, to];
-        let distance = p[0].distance(p[1]);
-        let gradient = if p[0].elevation == NO_ELEVATION || p[1].elevation == NO_ELEVATION {
+        let rise = if from.elevation == NO_ELEVATION || to.elevation == NO_ELEVATION {
             0.0
         } else {
-            (p[1].elevation as f64 - p[0].elevation as f64) / distance.max(1.0)
+            to.elevation as f64 - from.elevation as f64
         };
+        self.seconds(from.distance(to), rise, walk, mtb)
+    }
+
+    /// The moving time over `distance_m` that rises by `rise_m`, a drop when negative.
+    pub fn seconds(&self, distance_m: f64, rise_m: f64, walk: bool, mtb: bool) -> f64 {
+        let gradient = rise_m / distance_m.max(1.0);
         let minutes_per_km = if walk {
             60.0 / self.walking_kmh * (3.5 * ((gradient.clamp(-0.5, 0.5) + 0.05).abs() - 0.05)).exp()
         } else {
             60.0 / self.cycling_kmh * cycling_pace(gradient, mtb) / cycling_pace(0.0, false)
         };
-        distance / 1000.0 * minutes_per_km * 60.0 * self.personal_multiplier
+        distance_m / 1000.0 * minutes_per_km * 60.0 * self.personal_multiplier
     }
 }
 
@@ -334,7 +339,7 @@ mod tests {
             let sac = (1..=6).filter(|&t| profile.permits(&Road { hiking_difficulty: Some(t), ..path.clone() }));
             let mtb = (0..=6).filter(|&s| profile.permits(&Road { difficulty: s, ..path.clone() }));
             let expected = match profile.name.as_str() {
-                "hiking/alpine" => (4, 6),
+                "hiking/alpine" => (6, 6),
                 "mtb/technical" => (2, 6),
                 name if name.starts_with("hiking") => (2, 6),
                 name if name.starts_with("mtb") => (2, 2),

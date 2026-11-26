@@ -6,19 +6,12 @@ export const GRID = 64;
 export const FINEST = 18;
 /** The coarsest level with pages: the quadrants of tile 0/0/0. */
 export const COARSEST = 1;
-/** The morph band of a CDLOD level, in levels of log2 distance, as MORPH in drawn-height.wgsl. */
-export const MORPH = 0.3;
 /** Calm frames in a row before the quality rises again (terrain.ts), and before the meshes draw again after a frame below level 17 (pieces.ts). */
 export const CALM = 120;
 /** Nodes along an edge of the LOD map window of each level. */
 export const MAP = 32;
 /** A node splits this far, in levels, before its finest point reaches the next level, so float32 shaders see exact plateaus. */
 const MARGIN = 1e-3;
-/**
- * CDLOD ranges in node sizes. Below the least, a node can reach past the morph band of its parent's
- * level, and neighbours would not meet; above the most, a level leaves its LOD map window.
- */
-export const RANGE = { least: 4.6, most: 8 } as const;
 /** The near field: metres about the eye where the level-17 nodes and the kinds' near meshes draw. `nearReady()` waits for it. */
 export const NEAR_M = 2000;
 /** The field about the eye that `eyeReady()` waits for: the view's position is final once it draws. */
@@ -55,6 +48,8 @@ export interface Rule {
     readonly finest: number;
     /** The distance in metres where the LOD is 0. */
     readonly range: number;
+    /** The morph band at the far end of each level, in levels of log2 distance. */
+    readonly morph: number;
     /** Whether some point of the node wants a level finer than its own + `coarser`. */
     split(node: Node, coarser?: number): boolean;
     /** Whether some point of a drawn node morphs toward its parent's level, so the node reads its parent's page. */
@@ -77,18 +72,18 @@ export function distances(eye: Eye, { level, x, y }: Node): [number, number] {
 
 /**
  * CDLOD (Strugar 2009) by distance: the LOD is log2(range / d) with a plateau at each whole level and
- * a morph band of MORPH at its far end. `factor` is the range of a level in its node sizes.
+ * a morph band of `morph` levels at its far end. `factor` is the range of a level in its node sizes (`lod` of budget.ts).
  */
-export function cdlod(eye: Eye, factor: number, finest = FINEST): Rule {
+export function cdlod(eye: Eye, factor: number, morph: number, finest = FINEST): Rule {
     const range = factor * UNITS * eye.anchor.unit;
     const plateau = (q: number) => {
         const k = Math.floor(q);
-        return Math.min(finest, Math.max(COARSEST, k - 1 + Math.min(1, (q - k) / MORPH)));
+        return Math.min(finest, Math.max(COARSEST, k - 1 + Math.min(1, (q - k) / morph)));
     };
     return {
-        finest, range,
+        finest, range, morph,
         split: (node, coarser = 0) => node.level + coarser < finest && Math.log2(range / distances(eye, node)[0]) > node.level + 1 + coarser - MARGIN,
-        morphs: node => Math.log2(range / distances(eye, node)[1]) < node.level + MORPH + MARGIN,
+        morphs: node => Math.log2(range / distances(eye, node)[1]) < node.level + morph + MARGIN,
         lod: ([sx, sy]) => plateau(Math.log2(range / Math.hypot(sx, sy, eye.above))),
     };
 }

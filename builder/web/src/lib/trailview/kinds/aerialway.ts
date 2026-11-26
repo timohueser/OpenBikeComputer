@@ -1,6 +1,6 @@
 // Cable cars and ski lifts: a station at each end of the line, a pylon at each vertex between (the bake
 // adds the pylons that OSM lacks), two cables that sag from anchor to anchor, and carriers on them.
-import { CABLE_AT_STATION_M, carrier, pylon, station, TRACK_HALF_M, type Rig } from '../models/aerialways';
+import { CABLE_AT_STATION_M, carrier, pylon, pylonFittings, station, TRACK_HALF_M, type Rig } from '../models/aerialways';
 import type { Model } from '../models/flat';
 import { metresBetween } from '../structures/anchored';
 import { rgb } from '../structures/mesh';
@@ -44,7 +44,9 @@ export default {
                 if (!out.owns(...at(v))) continue;
                 if (!end(v)) {
                     // A pylon stays in the anchored mesh: its foot is the end of its cables' spans.
-                    anchored.model(model(`pylon ${rig} ${seed}`, () => pylon(rig, high, seed)), anchored.point(...at(v), yaw(v - 1, v + 1)));
+                    const foot = anchored.point(...at(v), yaw(v - 1, v + 1));
+                    anchored.model(model(`pylon ${rig} ${seed}`, () => pylon(rig, high, seed)), foot);
+                    out.near.anchored.model(model(`fittings ${rig}`, () => pylonFittings(rig, high)), foot);
                 } else if (own[v ? 1 : 0]) {
                     anchored.model(model(`station ${rig} ${seed}`, () => station(rig, seed)), anchored.point(...at(v), v ? yaw(v, v - 1) : yaw(v, v + 1)));
                 }

@@ -4,9 +4,14 @@ export default {
   form: 'broadleaf',
   name: 'Black alder',
   latin: 'Alnus glutinosa',
-  // A straight stem up a narrow, near conical crown of very dark leaves.
+  // A straight stem up through a cone of very dark leaves, on level limbs.
   fork: 0.25,
-  crown: [0.6, 0.22, 0.22, 0.46],
+  crown: [0.6, 0.25, 0.25, 0.44],
+  shape: t => 1 - 0.85 * Math.max(0, t - 0.15),
+  clumps: 15,
+  stagger: true,
+  billows: 3,
+  bow: -0.25,
   trunk: 0.03,
   flare: 1.5,
   bark: ['#3a3430', '#5a524a'],

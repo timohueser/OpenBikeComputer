@@ -1,16 +1,17 @@
 //! The route answer that clients decode, as `specs/route-api.md` specifies it.
 use crate::{
     model::{Totals, NO_ELEVATION, PUSH},
-    router::{Piece, Response, Route},
+    router::{Piece, Route},
 };
 use serde::Serialize;
 use serde_json::{json, Value};
 
-pub fn answer(response: &Response) -> Value {
-    json!({ "routes": response.routes.iter().map(route).collect::<Vec<_>>() })
+/// The `routes` list of the answer holds the one route.
+pub fn answer(route: &Route) -> Value {
+    json!({ "routes": [encode(route)] })
 }
 
-fn route(route: &Route) -> Value {
+fn encode(route: &Route) -> Value {
     let mut previous = [0i64; 2];
     let coordinates: Vec<i64> = route
         .points
@@ -30,9 +31,8 @@ fn route(route: &Route) -> Value {
         .collect();
     let mut time = 0;
     let elapsed: Vec<i64> = route.elapsed.iter().map(|&seconds| delta(&mut time, seconds, 1.0)).collect();
-    let mut value = json!({
+    json!({
         "id": route.id,
-        "reason": route.reason,
         "package": route.package,
         "profile": route.profile,
         "coordinates_udeg": coordinates,
@@ -48,11 +48,7 @@ fn route(route: &Route) -> Value {
         })).collect::<Vec<_>>(),
         "snap_truncated": route.snap_truncated,
         "totals": totals(&route.totals()),
-    });
-    if let Some(via) = route.via {
-        value["via"] = json!(via);
-    }
-    value
+    })
 }
 
 /// The run channels; a route of one point has no edges and no channels.
@@ -164,7 +160,6 @@ mod tests {
             .collect();
         Route {
             id: value(&source["id"]),
-            reason: value::<String>(&source["reason"]).leak(),
             package: value(&source["package"]),
             profile: value(&source["profile"]),
             cost: 0,
@@ -172,14 +167,12 @@ mod tests {
             elapsed: value(&source["elapsed"]),
             legs,
             snap_truncated: value(&source["snap_truncated"]),
-            via: value(&source["via"]),
         }
     }
 
     #[test]
     fn encodes_the_shared_vector() {
         let vector: Value = serde_json::from_str(include_str!("../../../specs/vectors/route-answer.json")).unwrap();
-        let routes = vector["routes"].as_array().unwrap().iter().map(source).collect();
-        assert_eq!(answer(&Response { routes }), vector["answer"]);
+        assert_eq!(answer(&source(&vector["routes"][0])), vector["answer"]);
     }
 }

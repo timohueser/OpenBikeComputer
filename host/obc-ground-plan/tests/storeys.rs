@@ -1,5 +1,5 @@
 //! The storeys over the ground over every cell of the TrailView fixture: storey 0 reads the same with them, each
-//! storey is a planar partition, each shell part closes, no parapet or railing stands in a paved face of its
+//! storey is a planar partition, each shell part and each run of track details closes, no parapet or railing stands in a paved face of its
 //! storey or in a way of storey 0, no slot of a top is a wall between two deck ways, no bar stands on two decks, no
 //! edge stands across the
 //! mouth of a way that goes on at another level, something goes on past every open piece, a stub and its deck share
@@ -20,7 +20,8 @@ use obc_ground_plan::faces::records::{self, find};
 use obc_ground_plan::faces::{window, EdgeKind, Rules, Surface};
 use obc_ground_plan::frame::{metres_per_unit, CellKey, CELL_UNITS};
 use obc_ground_plan::graph::Family;
-use obc_ground_plan::mesh::shell::{border, closure, mesh_storeys, on_paved, StoreyMesh};
+use obc_ground_plan::mesh::details;
+use obc_ground_plan::mesh::shell::{self, border, closure, mesh_storeys, on_paved, StoreyMesh};
 use obc_ground_plan::mesh::{mesh_cell, CellMesh, Reads, Rim, NO_LABEL};
 use obc_ground_plan::tile::TileCache;
 
@@ -96,9 +97,11 @@ fn open_without_ground(key: CellKey, m: &StoreyMesh, w: &[u32]) -> Vec<String> {
 /// this of the deck's top under it (metres): a parapet's height.
 const STAND_M: f64 = 1.0;
 /// Edge triangles over a stub where it meets its deck at a joint with a bend (the deck's end square to its own way,
-/// the stub's to its), and over another way's ground stretch beside a deck (their strokes overlap): measured on the
-/// fixture at the junction rule's build. The B6 seams and GP12.8 own them; the counts must not grow.
-const JOINT_MAX: usize = 25;
+/// the stub's to its), and over another way's ground stretch beside a deck (their strokes overlap). `BESIDE_MAX` is
+/// measured on the fixture at the junction rule's build and must not grow. `JOINT_MAX` is measured on the fixture at
+/// the passage rule's build, where decks that keep a passage end nearer their joints; the owner accepts that growth,
+/// because an open passage counts for more than a seam at a deck end. The B6 seams and GP12.8 own both.
+const JOINT_MAX: usize = 42;
 const BESIDE_MAX: usize = 235;
 
 /// The edge faces, parapets, railings and posts of the storeys that stand in a carriageway, rail bed or crossing of
@@ -326,6 +329,36 @@ fn edges_in_mouths(key: CellKey, m: &StoreyMesh, b: &CellBuild, band_m: f64) -> 
     out
 }
 
+/// The faults of a cell's track and step details: an item that names a ring past the table, a swept span whose end
+/// neither goes on in a span of its line nor has a cap.
+fn details_closure(d: &details::Details) -> Vec<String> {
+    use details::{CABLE, CAP, LOG};
+    let line = |i: &details::Item| (i.kind(), (i.words[0] >> 16) & 7);
+    let mut spans: Vec<_> = d.items.iter().filter(|i| i.kind() <= CABLE).map(|i| (i.ring(), line(i))).collect();
+    spans.sort_unstable();
+    let mut caps: Vec<_> = (d.items.iter().filter(|i| i.kind() == CAP))
+        .map(|i| (i.ring(), (i.words[0] >> 20) & 3, (i.words[0] >> 16) & 15))
+        .collect();
+    caps.sort_unstable();
+    let mut out = Vec::new();
+    for i in &d.items {
+        let r = i.ring();
+        if r + 1 >= d.rings.len() + usize::from(i.kind() == CAP || i.kind() == LOG) {
+            out.push(format!("{:?}: ring {r} past the table", i.words));
+        } else if i.kind() <= CABLE {
+            let (kind, flags) = line(i);
+            let on = |n: usize| spans.binary_search(&(n, (kind, flags))).is_ok();
+            if (r == 0 || !on(r - 1)) && caps.binary_search(&(r, kind, flags)).is_err() {
+                out.push(format!("a {kind} span at ring {r} starts with no cap"));
+            }
+            if !on(r + 1) && caps.binary_search(&(r + 1, kind, flags | 8)).is_err() {
+                out.push(format!("a {kind} span at ring {r} ends with no cap"));
+            }
+        }
+    }
+    out
+}
+
 fn shell_part(m: &StoreyMesh, t: usize) -> &'static str {
     (0..obc_ground_plan::mesh::shell::PARTS.len())
         .find(|&k| m.part(k).contains(&t))
@@ -339,7 +372,9 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
     let mut cache = TileCache::new(16);
     let mut faults = Vec::new();
     let mut built: BTreeMap<CellKey, (CellBuild, StoreyMesh)> = BTreeMap::new();
+    let mut terrain = BTreeMap::new();
     let (mut torn, mut seams, mut joints, mut beside, mut open_ends) = (0, Vec::new(), 0, 0, Vec::new());
+    let mut pierced = false;
     for key in fix.cells() {
         let without = build_request(fix.request(key), &mut cache, rules, &mut || 0.0).unwrap();
         let with = build_storeys(fix.request(key), &mut cache, rules, &mut || 0.0).unwrap();
@@ -347,6 +382,14 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         assert_eq!(without.far, with.far, "{key:?}: the far block");
         if with.storeys.plans.is_empty() {
             assert_eq!(without.records, with.records, "{key:?}: a cell with no deck has the records of storey 0 alone");
+        }
+        let mesh = mesh_storeys(key, &with.storeys, &with.records, &rules.structures).unwrap();
+        terrain.insert(key, fix.cell(key).terrain);
+        faults.extend(details_closure(&with.storeys.details).into_iter().map(|f| format!("{key:?} details: {f}")));
+        // A cell with no storey and no edge feature still meets its neighbours: a guard rail of theirs may run on to
+        // the shared line.
+        if with.storeys.plans.is_empty() && mesh.triangles.is_empty() {
+            built.insert(key, (with, mesh));
             continue;
         }
         // Storey 0 reads the same label and height at a grid of points.
@@ -368,9 +411,16 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
                 partition(plan, window(key, 0.0)).into_iter().map(|f| format!("{key:?} storey {}: {f:?}", plan.level)),
             );
         }
-        let mesh = mesh_storeys(key, &with.storeys, &with.records, &rules.structures).unwrap();
         assert_eq!(mesh.stats.unlabelled, 0, "{key:?}: a sheet face has no label");
         faults.extend(closure(&mesh));
+        // The closure check sees a delineator that lacks a face.
+        let delineators = mesh.part(shell::PARTS.iter().position(|&p| p == "delineator").unwrap());
+        if !pierced && !delineators.is_empty() {
+            let mut open = mesh.clone();
+            open.triangles[delineators.start] = [0; 3];
+            assert!(closure(&open).len() > closure(&mesh).len(), "{key:?}: a delineator without a face passes");
+            pierced = true;
+        }
         faults.extend(on_paved(&mesh, &with.storeys, &with.records));
         faults.extend(walls_between_decks(key, &mesh, &with));
         faults.extend(edges_in_mouths(key, &mesh, &with, rules.structures.edge_band_m));
@@ -390,27 +440,25 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
     for (&key, (b, m)) in &built {
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {
             if let Some((ob, om)) = built.get(&other) {
-                faults.extend(border((m, &b.records), (om, &ob.records), east));
+                faults.extend(border((m, &b.records, &terrain[&key]), (om, &ob.records, &terrain[&other]), east));
             }
         }
     }
     let triangles: u32 = built.values().map(|(_, m)| m.triangles.len() as u32).sum();
+    let decks = built.values().filter(|(b, _)| !b.storeys.plans.is_empty()).count();
     for f in &faults {
         println!("FAULT {f}");
     }
     seams.sort();
     seams.dedup();
-    println!(
-        "{} cells with storeys, {triangles} storey triangles, {torn} torn pieces, {} faults",
-        built.len(),
-        faults.len()
-    );
+    println!("{decks} cells with storeys, {triangles} storey triangles, {torn} torn pieces, {} faults", faults.len());
     println!("{} seams where a stub meets its deck: {seams:#?}", seams.len());
     println!("{joints} edge triangles on a stub at its joint, {beside} on a ground way beside a deck");
     println!("{} open pieces with nothing past them: {open_ends:#?}", open_ends.len());
     assert!(open_ends.len() <= OPEN_MAX, "{} open pieces with nothing past them", open_ends.len());
     assert!(joints <= JOINT_MAX && beside <= BESIDE_MAX, "{joints} and {beside} edge triangles on ground ways");
     assert!(seams.len() <= SEAMS_MAX, "{} seams where a stub meets its deck, more than {SEAMS_MAX}", seams.len());
-    assert!(built.len() > 10, "the fixture's decks");
+    assert!(decks > 10, "the fixture's decks");
     assert!(faults.is_empty(), "{} faults: {:#?}", faults.len(), &faults[..faults.len().min(20)]);
+    assert!(pierced, "the fixture has no delineator to check the closure with");
 }

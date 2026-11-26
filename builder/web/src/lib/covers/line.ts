@@ -45,6 +45,16 @@ export function runs(points: CoverPoints): Run[] {
     return joined.map(({ from, to, visible }) => ({ from, to, visible }));
 }
 
+/** A line of [longitude, latitude] from above with the north up: x to the east and y to the south from the north-west
+ * corner of its box, with the longer side of the box as 1. */
+export function fromAbove(line: [number, number][]): { points: [number, number][]; width: number; height: number } {
+    const lons = line.map(point => point[0]), lats = line.map(point => point[1]);
+    const west = Math.min(...lons), north = Math.max(...lats), across = Math.cos((north + Math.min(...lats)) / 2 * Math.PI / 180);
+    const flat = line.map(([lon, lat]) => [(lon - west) * across, north - lat]);
+    const width = Math.max(...flat.map(point => point[0])), height = Math.max(...flat.map(point => point[1])), size = Math.max(width, height) || 1;
+    return { points: flat.map(([x, y]) => [x / size, y / size]), width: width / size, height: height / size };
+}
+
 /** The metres along the route at each point of the summary line, from 0 to `lengthM`: the simplified line is shorter than the route. */
 export function metresAlong({ line, lengthM }: Summary): Float64Array {
     const metres = new Float64Array(line.length / 2);

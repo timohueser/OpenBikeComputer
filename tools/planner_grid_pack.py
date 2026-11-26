@@ -1,4 +1,4 @@
-"""Pack planner routing, assets, model or joined fonts without rebuilding their inputs."""
+"""Pack planner routing, route facts, assets, model or joined fonts without rebuilding their inputs."""
 
 import argparse
 from pathlib import Path
@@ -9,7 +9,7 @@ from . import planner_offline as offline, planner_runtime as runtime, step_reque
 def routing(layers):
     """The route catalog files of each grid cell."""
     inputs = layers["planner/routing"]
-    return {f"routes/tiles/{Path(name).name}": source for name, source in inputs.items() if name.startswith("routes/")}
+    return {f"routes/tiles/{name.removeprefix('routes/')}": source for name, source in inputs.items() if name.startswith("routes/")}
 
 
 def pack_index(request, kind, files, **extra):
@@ -25,7 +25,7 @@ def step(request):
         files = routing(request["layers"])
     else:
         layer, = request["layers"].values()
-        prefix = {"assets": "maps/", "model": "search/", "trailview-rules": "trailview/"}[kind]
+        prefix = {"assets": "maps/", "model": "search/", "trailview-rules": "trailview/", "facts": "routes/tiles/"}[kind]
         files = {prefix + name: source for name, source in layer.items()}
     pack_index(request, kind, files)
 

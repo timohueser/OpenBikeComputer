@@ -1,6 +1,6 @@
 //! Map access uses the importer's mode rules, without treating every one-way road as closed.
 use crate::country::Country;
-use crate::source::{self, Access, Way};
+use crate::source::{self, Way};
 use planner_router::{
     closures::Kind,
     model::{BIKE, FOOT, PUSH},
@@ -29,14 +29,12 @@ pub fn feature(way: &Way, country: Country) -> Option<Value> {
             return "conditional";
         }
         if modes.iter().all(|m| m & primary != 0) {
-            if strict.iter().all(|m| m & primary != 0) {
+            let mode = if walking { "foot" } else { "bicycle" };
+            let doubts = directions.map(|d| source::inherited(&get, mode, d).and_then(source::doubt));
+            if strict.iter().all(|m| m & primary != 0) || doubts.iter().all(Option::is_none) {
                 return "";
             }
-            let private = directions.iter().any(|&d| {
-                source::inherited(&get, if walking { "foot" } else { "bicycle" }, d)
-                    .is_some_and(|value| source::classify(value) == Access::Uncertain(Kind::Private))
-            });
-            return if private { "private" } else { "limited" };
+            return if doubts.contains(&Some(Kind::Private)) { "private" } else { "limited" };
         }
         if modes.iter().any(|m| m & primary != 0) {
             return "directional";
@@ -104,7 +102,6 @@ mod tests {
             (vec![("bicycle", "no"), ("bicycle:pushing", "no")], "no_bikes"),
             (vec![("access", "no")], "closed"),
             (vec![("access", "private")], "private"),
-            (vec![("access", "destination")], "limited"),
             (vec![("access", "permit")], "limited"),
             (vec![("access", "agricultural")], "limited"),
             (vec![("bicycle", "discouraged")], "limited"),
@@ -126,6 +123,7 @@ mod tests {
         for tags in [
             vec![("access", "no"), ("bicycle", "yes"), ("foot", "yes")],
             vec![("access:conditional", "agricultural @ hazmat:water")],
+            vec![("access", "destination")],
             vec![("motor_vehicle:conditional", "no @ (wet)")],
             vec![("highway", ""), ("access", "private")],
             vec![("area", "yes"), ("access", "private")],

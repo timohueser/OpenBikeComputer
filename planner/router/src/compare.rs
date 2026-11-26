@@ -6,7 +6,6 @@ use crate::{
     install,
     model::{Point, Road, NO_ELEVATION},
     region::Region,
-    router::Response,
     snap::{Candidates, Policy, Position, REACH_M},
     Control, Error, Request, Router,
 };
@@ -17,18 +16,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// The kinds of request, by `index % 8`, or by `index % 5` for a request set with a least
-/// distance: the kinds 5 to 7 stay on one road or within 40 km.
-pub const KINDS: [&str; 8] =
-    ["points", "junctions", "via-junction", "turnaround", "pinned", "one-road", "one-road-back", "alternatives"];
+/// The kinds of request, by `index % 7`, or by `index % 5` for a request set with a least
+/// distance: the kinds 5 and 6 stay on one road.
+pub const KINDS: [&str; 7] =
+    ["points", "junctions", "via-junction", "turnaround", "pinned", "one-road", "one-road-back"];
 
 /// The index in `KINDS` of request `index` of a set with the least distance `min_m`.
 pub fn kind(index: usize, min_m: f64) -> usize {
     index % if min_m > 0.0 { 5 } else { KINDS.len() }
 }
-
-/// The most distance of a request with alternatives.
-const ALTERNATIVES_M: f64 = 40_000.0;
 
 fn xorshift(state: &mut u64) -> u64 {
     *state ^= *state << 13;
@@ -90,7 +86,6 @@ pub fn requests<H: Host>(
             break;
         }
         let kind = kind(requests.len(), min_m);
-        let max_m = if kind == 7 { max_m.min(ALTERNATIVES_M) } else { max_m };
         // A spot: a drawn point that snaps, and its nearest road.
         let mut spot = |around: Option<Point>| {
             for _ in 0..1_000 {
@@ -155,7 +150,6 @@ pub fn requests<H: Host>(
                 request["start_position"] = json!(pin(&first));
                 request["end_position"] = json!(pin(&last));
             }
-            7 => request["alternatives"] = json!(true),
             _ => {}
         }
         requests.push(serde_json::from_value(request).expect("a request of known fields"));
@@ -174,29 +168,26 @@ pub enum Outcome {
 }
 
 /// The answer of a route without the name of its package.
-fn answers(response: &Response) -> Vec<Value> {
-    let answer = crate::answer::answer(response);
-    let mut routes = answer["routes"].as_array().cloned().unwrap_or_default();
-    for route in &mut routes {
-        if let Some(route) = route.as_object_mut() {
-            route.remove("package");
-        }
+fn answer(route: &crate::Route) -> Value {
+    let mut answer = crate::answer::answer(route)["routes"][0].take();
+    if let Some(answer) = answer.as_object_mut() {
+        answer.remove("package");
     }
-    routes
+    answer
 }
 
-/// One side of a request: the result, its answers and the time of `routes` and `answer::answer`.
+/// One side of a request: the result, its answer and the time of `route` and `answer::answer`.
 pub struct Routed {
-    pub result: crate::Result<Response>,
-    pub answers: Vec<Value>,
+    pub result: crate::Result<crate::Route>,
+    pub answer: Option<Value>,
     pub time: Duration,
 }
 
 pub fn route<H: Host>(router: &mut Router<H>, request: &Request) -> Routed {
     let started = Instant::now();
-    let result = router.routes(request, &Control::default());
-    let answers = result.as_ref().map(answers).unwrap_or_default();
-    Routed { result, answers, time: started.elapsed() }
+    let result = router.route(request, &Control::default());
+    let answer = result.as_ref().ok().map(answer);
+    Routed { result, answer, time: started.elapsed() }
 }
 
 /// The name of the error kind, as `NoPath`.
@@ -243,8 +234,8 @@ pub fn repin<A: Host, B: Host>(old: &Region<A>, new: &Region<B>, request: &Reque
     Some(moved)
 }
 
-/// Compares the two sides of a request. A difference is the `Err`. On two layouts (`layouts`), a
-/// route gives its reason, its cost and the coordinates of its leg ends, not its roads.
+/// Compares the two sides of a request. A difference is the `Err`. On two layouts (`layouts`), the
+/// route gives its cost and the coordinates of its leg ends, not its roads.
 pub fn verdict<A: Host, B: Host>(
     old: &Router<A>,
     new: &Router<B>,
@@ -252,68 +243,46 @@ pub fn verdict<A: Host, B: Host>(
     b: &Routed,
     layouts: bool,
 ) -> Result<Outcome, String> {
-    let truncated = |routed: &Routed| routed.result.as_ref().is_ok_and(|r| r.routes.iter().any(|r| r.snap_truncated));
+    let truncated = |routed: &Routed| routed.result.as_ref().is_ok_and(|r| r.snap_truncated);
     if layouts && (truncated(a) || truncated(b)) {
         return Ok(Outcome::Skipped);
     }
-    let (ra, rb) = match (&a.result, &b.result) {
-        (Ok(ra), Ok(rb)) => (ra, rb),
+    let (x, y) = match (&a.result, &b.result) {
+        (Ok(x), Ok(y)) => (x, y),
         (Err(ea), Err(eb)) if std::mem::discriminant(ea) == std::mem::discriminant(eb) => return Ok(Outcome::Same),
-        (ra, rb) => {
-            return Err(format!(
-                "old {:?}, new {:?}",
-                ra.as_ref().map(|r| r.routes.len()),
-                rb.as_ref().map(|r| r.routes.len())
-            ))
-        }
+        (x, y) => return Err(format!("old {:?}, new {:?}", x.as_ref().map(|r| r.cost), y.as_ref().map(|r| r.cost))),
     };
-    for (k, (x, y)) in ra.routes.iter().zip(&rb.routes).enumerate() {
-        if layouts {
-            let (ex, ey) = (leg_ends(old.package(), x)?, leg_ends(new.package(), y)?);
-            if (x.reason, x.cost, &ex) != (y.reason, y.cost, &ey) {
-                return Err(format!(
-                    "route {k}: old {} {} {ex:?}, new {} {} {ey:?}",
-                    x.reason, x.cost, y.reason, y.cost
-                ));
-            }
-            // The unpacked roads cost what the search found, each side on its own data; other
-            // roads at the same cost are a tie.
-            let (cx, cy) = (old.cost(x, &x.profile), new.cost(y, &y.profile));
-            if !matches!(cx, Ok(Some(c)) if c == x.cost) || !matches!(cy, Ok(Some(c)) if c == y.cost) {
-                return Err(format!("route {k}: its roads cost old {cx:?}, new {cy:?}, not {}", x.cost));
-            }
-            continue;
+    if layouts {
+        let (ex, ey) = (leg_ends(old.package(), x)?, leg_ends(new.package(), y)?);
+        if (x.cost, &ex) != (y.cost, &ey) {
+            return Err(format!("old {} {ex:?}, new {} {ey:?}", x.cost, y.cost));
         }
-        let position = |p: &Position| (p.road, p.fraction.to_bits());
-        let ends = |route: &crate::Route| -> Vec<_> {
-            route.legs.iter().map(|leg| (position(&leg.start), position(&leg.end))).collect()
-        };
-        if (x.reason, x.cost, x.snap_truncated, ends(x)) != (y.reason, y.cost, y.snap_truncated, ends(y)) {
-            return Err(format!(
-                "route {k}: old {} {} {:?}, new {} {} {:?}",
-                x.reason,
-                x.cost,
-                ends(x),
-                y.reason,
-                y.cost,
-                ends(y)
-            ));
+        // The unpacked roads cost what the search found, each side on its own data; other roads
+        // at the same cost are a tie.
+        let (cx, cy) = (old.cost(x, &x.profile), new.cost(y, &y.profile));
+        if !matches!(cx, Ok(Some(c)) if c == x.cost) || !matches!(cy, Ok(Some(c)) if c == y.cost) {
+            return Err(format!("its roads cost old {cx:?}, new {cy:?}, not {}", x.cost));
         }
-        let pieces = |route: &crate::Route| -> Vec<_> {
-            route.pieces().map(|piece| (piece.road, piece.from.to_bits(), piece.to.to_bits())).collect()
-        };
-        if pieces(x) != pieces(y) {
-            return match old.cost(y, &y.profile) {
-                Ok(Some(cost)) if cost == y.cost => Ok(Outcome::Tie),
-                cost => Err(format!("route {k}: other roads at cost {}, which the old data costs {cost:?}", y.cost)),
-            };
-        }
-        if a.answers.get(k) != b.answers.get(k) {
-            return Err(format!("route {k}: the answers differ"));
-        }
+        return Ok(Outcome::Same);
     }
-    if ra.routes.len() != rb.routes.len() {
-        return Err(format!("old {} routes, new {}", ra.routes.len(), rb.routes.len()));
+    let position = |p: &Position| (p.road, p.fraction.to_bits());
+    let ends = |route: &crate::Route| -> Vec<_> {
+        route.legs.iter().map(|leg| (position(&leg.start), position(&leg.end))).collect()
+    };
+    if (x.cost, x.snap_truncated, ends(x)) != (y.cost, y.snap_truncated, ends(y)) {
+        return Err(format!("old {} {:?}, new {} {:?}", x.cost, ends(x), y.cost, ends(y)));
+    }
+    let pieces = |route: &crate::Route| -> Vec<_> {
+        route.pieces().map(|piece| (piece.road, piece.from.to_bits(), piece.to.to_bits())).collect()
+    };
+    if pieces(x) != pieces(y) {
+        return match old.cost(y, &y.profile) {
+            Ok(Some(cost)) if cost == y.cost => Ok(Outcome::Tie),
+            cost => Err(format!("other roads at cost {}, which the old data costs {cost:?}", y.cost)),
+        };
+    }
+    if a.answer != b.answer {
+        return Err("the answers differ".into());
     }
     Ok(Outcome::Same)
 }

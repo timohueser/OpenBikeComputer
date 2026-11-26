@@ -1,6 +1,7 @@
 <script lang="ts">
-    /** The credits of an image of the map data, behind a button in a lower corner of the positioned parent. */
-    let { credits, side = 'right' }: { credits: string[]; side?: 'left' | 'right' } = $props();
+    /** The credits of an image of the map data, behind a button in a lower corner of the positioned parent. A credit
+     * with `href` is a link, such as the licence of a source. */
+    let { credits, side = 'right' }: { credits: (string | { text: string; href: string })[]; side?: 'left' | 'right' } = $props();
     let open = $state(false);
     let box = $state<HTMLElement>();
     const id = $props.id();
@@ -11,7 +12,9 @@
 {#if credits.length}
     <!-- Touch has no hover, so a tap toggles the credits. -->
     <div class="credits {side}" class:open bind:this={box}>
-        <small {id} role="tooltip">{credits.join(' · ')}</small>
+        <small {id} role="tooltip">
+            {#each credits as credit, i (i)}{#if i}{' · '}{/if}{#if typeof credit === 'string'}{credit}{:else}<a href={credit.href} target="_blank" rel="noreferrer">{credit.text}</a>{/if}{/each}
+        </small>
         <button type="button" aria-label="Credits" aria-describedby={id}
             onclick={event => { if ('pointerType' in event && event.pointerType === 'touch') open = !open; }}>
             <svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0" /></svg>
@@ -44,6 +47,9 @@
         background: var(--panel);
         color: var(--ink-soft);
         font: 11px var(--sans);
+    }
+    a {
+        color: inherit;
     }
     button {
         display: grid;

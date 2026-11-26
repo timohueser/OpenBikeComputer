@@ -5,6 +5,9 @@
 //! Node IDs stand in for coordinates. Only the forward branch of a one-way split enters the line,
 //! and appendices are not built.
 
+use planner_router::shape::NEAR_M;
+use std::collections::{BTreeSet, HashMap, HashSet};
+
 /// A member way, with its nodes in OSM order.
 pub struct Member {
     pub nodes: Vec<i64>,
@@ -113,6 +116,134 @@ pub fn chain(runs: &[Vec<i64>], distance: &dyn Fn(i64, i64) -> f64, max_gap: f64
         }
     }
     Some(chain.into())
+}
+
+type Adjacency = HashMap<i64, BTreeSet<i64>>;
+type Runs = Vec<Vec<i64>>;
+
+/// The nodes from `from` over its neighbour `to`, up to a node without exactly two neighbours or
+/// back at `from`.
+fn walk(graph: &Adjacency, from: i64, to: i64) -> Vec<i64> {
+    let mut path = vec![from];
+    let (mut prev, mut cur) = (from, to);
+    loop {
+        path.push(cur);
+        if cur == from || graph[&cur].len() != 2 {
+            return path;
+        }
+        let next = *graph[&cur].iter().find(|&&n| n != prev).expect("a node with two neighbours");
+        (prev, cur) = (cur, next);
+    }
+}
+
+fn length(nodes: &[i64], distance: &dyn Fn(i64, i64) -> f64) -> f64 {
+    nodes.windows(2).map(|w| distance(w[0], w[1])).sum()
+}
+
+/// Takes the runs as an undirected graph of nodes and removes its dead-end branches: from a node
+/// with one neighbour to the first node with three or more. The shortest goes first, while all
+/// removed branches together are at most `share` of the length of the rest. `None` when a node
+/// with three or more neighbours remains. Gives the parts of the line, the part with the first
+/// node of the runs first, and the removed branches in the order of removal, each from its tip to
+/// the node where it left.
+pub fn prune_forks(runs: &[Vec<i64>], distance: &dyn Fn(i64, i64) -> f64, share: f64) -> Option<(Runs, Runs)> {
+    let mut graph = Adjacency::new();
+    for w in runs.iter().flat_map(|run| run.windows(2)).filter(|w| w[0] != w[1]) {
+        graph.entry(w[0]).or_default().insert(w[1]);
+        graph.entry(w[1]).or_default().insert(w[0]);
+    }
+    let mut order = Vec::new();
+    let mut rank = HashMap::new();
+    for &node in runs.iter().flatten() {
+        rank.entry(node).or_insert_with(|| {
+            order.push(node);
+            order.len()
+        });
+    }
+    let mut rest: f64 = graph.iter().flat_map(|(&a, next)| next.range(a + 1..).map(move |&b| distance(a, b))).sum();
+    let (mut removed, mut branches) = (0.0, Vec::new());
+    loop {
+        let shortest = order
+            .iter()
+            .filter(|tip| graph.get(tip).is_some_and(|next| next.len() == 1))
+            .map(|&tip| walk(&graph, tip, *graph[&tip].first().unwrap()))
+            .filter(|branch| graph[branch.last().unwrap()].len() >= 3)
+            .map(|branch| (length(&branch, distance), branch))
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let Some((m, branch)) = shortest else { break };
+        if removed + m > share * (rest - m) {
+            break;
+        }
+        (removed, rest) = (removed + m, rest - m);
+        for w in branch.windows(2) {
+            graph.get_mut(&w[0]).unwrap().remove(&w[1]);
+            graph.get_mut(&w[1]).unwrap().remove(&w[0]);
+        }
+        graph.retain(|_, next| !next.is_empty());
+        branches.push(branch);
+    }
+    if graph.values().any(|next| next.len() > 2) {
+        return None;
+    }
+    let mut seen = HashSet::new();
+    let mut parts = Vec::new();
+    for &node in order.iter().filter(|node| graph.contains_key(node)) {
+        if seen.contains(&node) {
+            continue;
+        }
+        // A ring runs on as the runs leave its first node.
+        let next = &graph[&node];
+        let windows = || runs.iter().flat_map(|run| run.windows(2));
+        let ahead = windows().find(|w| w[0] == node && next.contains(&w[1])).map(|w| w[1]).or_else(|| {
+            let entry = windows().find(|w| w[1] == node && next.contains(&w[0]))?;
+            next.iter().copied().find(|&n| n != entry[0])
+        });
+        let ahead = ahead.unwrap_or(*next.first().unwrap());
+        let mut part = walk(&graph, node, ahead);
+        if part[part.len() - 1] != node {
+            let behind = next.iter().find(|&&n| n != ahead);
+            let mut back = behind.map_or(vec![node], |&to| walk(&graph, node, to));
+            back.reverse();
+            part = [back, part[1..].to_vec()].concat();
+            // A part runs from the end that the runs reach first.
+            if rank[&part[0]] > rank[&part[part.len() - 1]] {
+                part.reverse();
+            }
+        }
+        seen.extend(part.iter().copied());
+        parts.push(part);
+    }
+    Some((parts, branches))
+}
+
+/// Puts each removed branch back into the runs, the last removed first, so that a branch that left
+/// from another branch finds its node. A branch whose tip is the first node of the member order,
+/// `ends[0]`, starts the line when the line starts at its node; the same for the last node,
+/// `ends[1]`, at the end of the line. Any other branch is an out-and-back side trip at its node. A
+/// side trip of at most `NEAR_M` does not come back: it cannot change the shaping check.
+pub fn side_trips(runs: &mut [Vec<i64>], branches: &[Vec<i64>], ends: [i64; 2], distance: &dyn Fn(i64, i64) -> f64) {
+    for branch in branches.iter().rev() {
+        let (&junction, out) = branch.split_last().unwrap();
+        let last = runs.len() - 1;
+        let start = branch[0] == ends[0] && runs[0][0] == junction;
+        let end = branch[0] == ends[1] && runs[last].last() == Some(&junction);
+        if start {
+            runs[0].splice(0..0, out.iter().copied());
+        }
+        if end {
+            runs[last].extend(out.iter().rev());
+        }
+        if !start && !end && length(branch, distance) > NEAR_M {
+            // A branch that leaves from a dropped branch is not longer than it, so it is dropped too.
+            let (run, at) = runs
+                .iter()
+                .enumerate()
+                .find_map(|(r, run)| run.iter().position(|&n| n == junction).map(|k| (r, k)))
+                .expect("a branch leaves from the line or from a branch put back before");
+            let trip: Vec<i64> = out.iter().rev().chain(&out[1..]).chain([&junction]).copied().collect();
+            runs[run].splice(at + 1..at + 1, trip);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -614,6 +745,65 @@ mod tests {
         assert_eq!(chain(&shuffled, &distance, 10.0).unwrap(), [vec![0, 9], vec![10, 20], vec![21, 30], vec![31, 40]]);
         // The second run starts inside the first: a branch.
         assert_eq!(chain(&[vec![10, 20, 30], vec![20, 25]], &distance, 10.0), None);
+    }
+
+    #[test]
+    fn short_side_branches_become_side_trips_and_others_stay_a_fork() {
+        // A main line of 1,000 m east through nodes 0 to 4, 250 m apart, and the tips of branches
+        // north of it: 5 is 50 m from node 2, 6 is 200 m, 7 to 9 are 40 m from nodes 1 to 3, and
+        // 10 is 20 m from node 2.
+        let at = |n: i64| match n {
+            0..=4 => (250.0 * n as f64, 0.0),
+            5 => (500.0, 50.0),
+            6 => (500.0, 200.0),
+            7..=9 => (250.0 * (n - 6) as f64, 40.0),
+            _ => (500.0, 20.0),
+        };
+        let distance = |a: i64, b: i64| {
+            let ((ax, ay), (bx, by)) = (at(a), at(b));
+            (ax - bx).hypot(ay - by)
+        };
+        let prune = |runs: &[Vec<i64>]| prune_forks(runs, &distance, 0.1);
+        let main = vec![0, 1, 2, 3, 4];
+        // A branch of 5 % is a side trip.
+        let (mut parts, branches) = prune(&[main.clone(), vec![2, 5]]).unwrap();
+        assert_eq!((&parts, &branches), (&vec![main.clone()], &vec![vec![5, 2]]));
+        side_trips(&mut parts, &branches, [0, 4], &distance);
+        assert_eq!(parts, [vec![0, 1, 2, 5, 2, 3, 4]]);
+        // One branch of 20 %, or three of 4 %: more than 10 % of the rest.
+        assert_eq!(prune(&[main.clone(), vec![2, 6]]), None);
+        assert_eq!(prune(&[main.clone(), vec![1, 7], vec![2, 8], vec![3, 9]]), None);
+        // A stub of 20 m comes off and does not come back.
+        let (mut parts, branches) = prune(&[main.clone(), vec![2, 10]]).unwrap();
+        side_trips(&mut parts, &branches, [0, 4], &distance);
+        assert_eq!(parts, [main]);
+    }
+
+    #[test]
+    fn a_ring_runs_in_member_order_and_a_first_branch_starts_the_line() {
+        // A ring of 4 km through the corners 1, 5, 3 and 2, in that order; a stem of 100 m from 8 to
+        // node 1, and a branch of 50 m from node 5 to 9. The smallest neighbour of node 1 is 2.
+        let at = |n: i64| match n {
+            1 => (0.0f64, 0.0),
+            5 => (1000.0, 0.0),
+            3 => (1000.0, 1000.0),
+            2 => (0.0, 1000.0),
+            8 => (-100.0, 0.0),
+            _ => (1000.0, -50.0),
+        };
+        let distance = |a: i64, b: i64| {
+            let ((ax, ay), (bx, by)) = (at(a), at(b));
+            (ax - bx).hypot(ay - by)
+        };
+        let runs = [vec![8, 1], vec![1, 5, 3, 2, 1], vec![5, 9]];
+        let (mut parts, branches) = prune_forks(&runs, &distance, 0.1).unwrap();
+        assert_eq!(parts, [vec![1, 5, 3, 2, 1]]);
+        let mut out_and_back = parts.clone();
+        side_trips(&mut parts, &branches, [8, 9], &distance);
+        assert_eq!(parts, [vec![8, 1, 5, 9, 5, 3, 2, 1]]);
+        // The stem is also the end of the member order: the line comes back along it.
+        side_trips(&mut out_and_back, &branches, [8, 8], &distance);
+        assert_eq!(out_and_back, [vec![8, 1, 5, 9, 5, 3, 2, 1, 8]]);
     }
 
     #[test]

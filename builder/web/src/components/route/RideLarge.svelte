@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onDestroy, untrack } from 'svelte';
     import Window from '../../lib/ui/Window.svelte';
-    import Lanes from './Lanes.svelte';
+    import Lanes from '../../lib/ui/Lanes.svelte';
     import Plot from './Plot.svelte';
     import { distanceTicks, fitTicks } from './ticks';
     import ZoneTimes from './ZoneTimes.svelte';

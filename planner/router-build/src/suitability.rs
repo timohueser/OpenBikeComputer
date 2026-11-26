@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn each_permitted_grade_costs_more_than_the_one_below() {
-        for (name, top) in [("touring", 1), ("gravel", 1), ("mtb/technical", 6), ("hiking/alpine", 4)] {
+        for (name, top) in [("touring", 1), ("gravel", 1), ("mtb/technical", 6), ("hiking/alpine", 6)] {
             let walking = name.starts_with("hiking");
             let mut previous = 0.0;
             for grade in u8::from(walking)..=top {

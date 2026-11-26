@@ -9,9 +9,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use obc_data::engine::Request;
+use obc_data::pmtiles::{tile_id, Archive};
 use serde_json::json;
 
-use crate::pmtiles::{self, Archive, Header};
+use crate::pmtiles::{self, Header};
 use crate::tiles::{Tiles, MAX_ZOOM, MIN_ZOOM};
 
 /// The stamp process, from the repository root, where a step starts, with its V8 heap capped.
@@ -168,7 +169,7 @@ fn frames(
             let word = |at: usize| u32::from_le_bytes(place[at..at + 4].try_into().expect("four bytes"));
             let mut bytes = vec![0; word(9) as usize];
             output.read_exact(&mut bytes).map_err(ended)?;
-            nodes.push((pmtiles::tile_id(place[0], word(1), word(5)), pmtiles::gzip(&bytes)));
+            nodes.push((tile_id(place[0], word(1), word(5)), pmtiles::gzip(&bytes)));
         }
     }
     drop(input);

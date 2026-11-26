@@ -12,7 +12,7 @@ import { BRIDGE, metresPerUnit, PROFILES, RAIL, ROAD, TUNNEL, type Line, type Sh
 import { RIGHT } from '../terrain/town';
 
 /** The shapes of a tile with these lines and buildings alone. */
-const tileOf = (lines: Line[], buildings: unknown[] = []) => ({ lines, lakes: [], seas: [], pads: [], areas: [], buildings }) as unknown as Shapes;
+const tileOf = (lines: Line[], buildings: unknown[] = []) => ({ zoom: 13, lines, lakes: [], seas: [], pads: [], areas: [], buildings }) as unknown as Shapes;
 
 describe('kinds', () => {
     it('draws only kinds of the table', () => {

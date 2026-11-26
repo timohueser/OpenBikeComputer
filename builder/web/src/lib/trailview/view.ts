@@ -1,5 +1,6 @@
 import { MAX_ALTITUDE, WALK_EYE, type Mode } from './frame/camera';
 import { FINEST } from './terrain/lod';
+import type { Tier } from './budget';
 
 export const WEATHERS = ['sunny', 'cloudy', 'rainy'] as const;
 /**
@@ -80,8 +81,8 @@ export const groundPlanOf = (search: string) => new URLSearchParams(search).get(
 /** The finest terrain level of the page, `finest=16` to `18`: a debug option that caps it as a lower quality does. Read once. */
 export const finestOf = (search: string) => number(new URLSearchParams(search).get('finest'), 16, FINEST) ?? FINEST;
 
-/** The share of the terrain's page pools that the page holds, `pool=0.5`: a debug option for the pools of a small device. Read once. */
-export const poolOf = (search: string) => number(new URLSearchParams(search).get('pool'), 0.05, 1) ?? 1;
+/** The tier of the page, `tier=phone`, else `desktop`. Read once, as the render scale is. */
+export const tierOf = (search: string): Tier => (new URLSearchParams(search).get('tier') === 'phone' ? 'phone' : 'desktop');
 
 /** The query string of a view. Parameters that are not part of a view stay as they are in `search`. */
 export function formatView(view: View, search = ''): string {

@@ -9,11 +9,12 @@
   <node id="8" lat="48.0035" lon="8.0035"><tag k="amenity" v="cafe"/><tag k="name" v="Coffee"/></node>
   <node id="9" lat="48.0032" lon="8.0032"><tag k="place" v="hamlet"/><tag k="railway" v="station"/><tag k="name" v="Station"/></node>
   <node id="30" lat="48.0036" lon="8.0036"><tag k="highway" v="bus_stop"/><tag k="name" v="Bus"/></node>
+  <node id="31" lat="48.0037" lon="8.0037"><tag k="amenity" v="shelter"/><tag k="shelter_type" v="picnic_shelter"/><tag k="name" v="Roof"/></node>
   <way id="10"><nd ref="3"/><nd ref="4"/><nd ref="5"/><nd ref="6"/><nd ref="3"/><tag k="tourism" v="hotel"/><tag k="name" v="Inn"/></way>
   <way id="11"><nd ref="3"/><nd ref="4"/><nd ref="5"/></way>
   <way id="12"><nd ref="5"/><nd ref="6"/><nd ref="3"/></way>
   <way id="13"><nd ref="3"/><nd ref="4"/><nd ref="5"/><nd ref="6"/><nd ref="3"/><tag k="highway" v="pedestrian"/><tag k="amenity" v="marketplace"/><tag k="name" v="Market Square"/></way>
-  <relation id="20"><member type="way" ref="11" role="outer"/><member type="way" ref="12" role="outer"/><tag k="type" v="multipolygon"/><tag k="tourism" v="camp_site"/><tag k="name" v="Camp"/></relation>
+  <relation id="20"><member type="way" ref="11" role="outer"/><member type="way" ref="12" role="outer"/><tag k="type" v="multipolygon"/><tag k="tourism" v="camp_site"/><tag k="tents" v="no"/><tag k="name" v="Camp"/></relation>
   <relation id="21"><member type="way" ref="11" role="outer"/><member type="way" ref="99" role="outer"/><tag k="type" v="multipolygon"/><tag k="shop" v="supermarket"/><tag k="name" v="Incomplete"/></relation>
   <relation id="22"><member type="way" ref="11" role="outer"/><member type="way" ref="12" role="outer"/><member type="node" ref="7" role="admin_centre"/><tag k="type" v="boundary"/><tag k="boundary" v="administrative"/><tag k="admin_level" v="8"/><tag k="name" v="Testdorf"/><tag k="name:en" v="Test Village"/></relation>
 </osm>

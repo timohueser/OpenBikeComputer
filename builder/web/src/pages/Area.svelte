@@ -1,13 +1,14 @@
 <script lang="ts">
     import { onMount } from 'svelte';
+    import L from 'leaflet';
     import CoverageMap from '../components/coverage/CoverageMap.svelte';
     import SkinStep from '../components/coverage/SkinStep.svelte';
-    import Icon from '../components/planner/PlannerIcon.svelte';
+    import Icon from '../lib/ui/Icon.svelte';
     import { CatalogClient } from '../lib/catalog/client';
     import { CoverageStore } from '../lib/coverage/store.svelte';
     import { remembered } from '../lib/device-sync/remembered.svelte';
     import { formatBytes } from '../lib/format';
-    import type { NextMap, RouteRecord } from '../lib/library/records';
+    import { allOnCard, type NextMap, type RouteRecord } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { planTitle } from '../lib/planner/editor';
     import { isPlan } from '../lib/planner/library';
@@ -17,7 +18,7 @@
     import { formatDistance } from '../lib/settings/format';
     import Segmented from '../lib/ui/Segmented.svelte';
     import Window from '../lib/ui/Window.svelte';
-    import { deviceArea, sameMap } from '../lib/device-sync/area';
+    import { areaOf, deviceArea, sameMap } from '../lib/device-sync/area';
     import { routesOutside } from './area/outside';
 
     let { library, active }: { library: Library; active: boolean } = $props();
@@ -31,6 +32,8 @@
     let unsaved = $state('');
     let tool = $state<Tool | 'none'>('region');
     let colours = $state(false);
+    let creditsOpen = $state(false);
+    let mapBox = $state<HTMLElement>(), dataCredits = $state<HTMLElement>();
     /** The stored map that waits: Done writes only a value that differs from it. */
     let stored: NextMap | null = null;
     let routes = $state.raw<RouteRecord[]>([]);
@@ -46,12 +49,35 @@
         const line = route.summary?.line ?? [];
         return line.length ? [Array.from({ length: line.length / 2 }, (_, i): [number, number] => [line[2 * i + 1], line[2 * i]])] : [];
     }));
+    /** What the data lacks in the chosen area, known when each part has its cells. */
+    const missing = $derived.by(() => {
+        if (!store || bytes === null) return null;
+        const map = store.holeCells().length > 0, elevation = (store.ledger?.terrain?.missingCount ?? 0) > 0;
+        return map || elevation ? { map, elevation } : null;
+    });
+    /** The credits of the data of the map for the device, which open with the credit of the base map. */
+    const credits = $derived.by(() => {
+        const source = store?.catalog.source, terrain = store?.catalog.terrain;
+        return [
+            ...(source ? [source.attribution, { text: source.license, href: source.license_url }] : []),
+            ...(terrain ? [terrain.attribution, ...terrain.references.map(from => `Summit heights from ${from.product}: ${from.attribution} (${from.licence})`)] : []),
+        ];
+    });
     const nameOf = (route: RouteRecord) => route.name || (isPlan(route) ? planTitle(route.trip) : 'Route');
     const leaving = $derived.by(() => {
         if (!store || !parts.length || bytes === null) return [];
         const checked = routes.filter(route => onDevice.has(route.id) && route.summary);
         return routesOutside(store, checked.map(route => ({ id: route.id, line: route.summary!.line })))
             .map(outside => ({ ...outside, name: nameOf(checked.find(route => route.id === outside.id)!) }));
+    });
+
+    // The data credits stand in Leaflet's corner, above its credit line, so the two open and wrap as one. As in
+    // Leaflet's own controls, a click or a wheel on them does not reach the map.
+    $effect(() => {
+        if (!store || !dataCredits) return;
+        mapBox?.querySelector('.leaflet-bottom.leaflet-right')?.prepend(dataCredits);
+        L.DomEvent.disableClickPropagation(dataCredits);
+        L.DomEvent.disableScrollPropagation(dataCredits);
     });
 
     onMount(() => {
@@ -65,7 +91,7 @@
             if (start) made.setArea(start);
             stored = next ?? null;
             const card = remembered.device?.storeId;
-            onDevice = new Set([...waiting ?? [], ...Object.entries(sent ?? {}).filter(([, copy]) => copy.device.startsWith(`${card}:`)).map(([id]) => id)]);
+            onDevice = new Set([...waiting ?? [], ...Object.entries(sent ?? {}).filter(([, copy]) => allOnCard(copy, card)).map(([id]) => id)]);
             routes = all;
             store = made;
         })().catch(error => { if (live) failure = error instanceof Error ? error.message : String(error); });
@@ -75,7 +101,7 @@
     /** Writes the map that the device gets next, or none when it is the map on the device or has no part. */
     async function done() {
         if (store) {
-            const area = store.area(), known = deviceArea(remembered.device, store.catalog.regions);
+            const area = areaOf(store), known = deviceArea(remembered.device, store.catalog.regions);
             const next = !parts.length || bytes === null || (known && sameMap(area, known)) ? null : { ...area, bytes };
             const same = next && stored ? sameMap(next, stored) && next.bytes === stored.bytes : next === stored;
             try {
@@ -98,8 +124,13 @@
         <p class="problem" role="alert">The map catalogue did not load: {failure}</p>
     {:else}
         <div class="cards">
-            <div class="map">
+            <div class="map" class:credits-open={creditsOpen} bind:this={mapBox}>
                 {#if store}<CoverageMap {store} {active} bind:tool rail={false} pale routes={lines} />{/if}
+                <p class="leaflet-control data-credits" bind:this={dataCredits}>{#each credits as credit, i (i)}{#if i}{' · '}{/if}{#if typeof credit === 'string'}{credit}{:else}<a href={credit.href} target="_blank" rel="noreferrer">{credit.text}</a>{/if}{/each}</p>
+                <!-- Leaflet has no compact credit: this button shows and hides all credits, as MapLibre's button does. -->
+                <button type="button" class="credits-button" aria-label="Toggle attribution" aria-expanded={creditsOpen} onclick={() => creditsOpen = !creditsOpen}>
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0" /></svg>
+                </button>
             </div>
             {#if store}
                 <section class="side" aria-label="The area">
@@ -132,6 +163,14 @@
                                     {/if}
                                 </div>
                             {/each}
+                        </div>
+                    {/if}
+                    {#if missing}
+                        <div class="missing">
+                            {#if missing.map}
+                                <p>Map data is missing in a part of this area. <button type="button" class="link" onclick={() => store!.focusWarnings('hole')}>Show on the map</button></p>
+                            {/if}
+                            {#if missing.elevation}<p>Elevation data is missing in a part of this area. Climbs there read as flat.</p>{/if}
                         </div>
                     {/if}
                     <div class="colours">
@@ -201,6 +240,7 @@
         min-height: 0;
     }
     .map {
+        position: relative;
         grid-column: 2;
         grid-row: 1;
         overflow: hidden;
@@ -208,14 +248,49 @@
         border-radius: 10px;
         background: var(--parchment-2);
     }
-    /* The credit of the map has the letters and the colours of the page. */
-    .map :global(.leaflet-control-attribution) {
-        padding: 2px 8px;
-        border-top-left-radius: 6px;
-        color: var(--ink-soft) !important;
-        font: 11px/1.5 var(--sans);
+    /* The panes of the map stay under the button of the credits. */
+    .map :global(.map-wrap) {
+        isolation: isolate;
     }
-    .map :global(.leaflet-control-attribution a) {
+    /* The credit of the map has the letters and the colours of the page, and opens beside its button. */
+    .map :global(.leaflet-control-attribution), .data-credits {
+        margin: 0 40px 10px 0 !important;
+        padding: 2px 8px;
+        border-radius: 12px;
+        background: var(--panel) !important;
+        color: var(--ink-soft) !important;
+        font: 11px/20px var(--sans);
+    }
+    .data-credits {
+        margin-bottom: 4px !important;
+    }
+    /* The open credits wrap inside the map. */
+    .map :global(.leaflet-bottom.leaflet-right) {
+        left: 10px;
+    }
+    .map:not(.credits-open) :global(.leaflet-control-attribution), .map:not(.credits-open) .data-credits, .data-credits:empty {
+        display: none;
+    }
+    .credits-button {
+        position: absolute;
+        z-index: 2;
+        right: 10px;
+        bottom: 10px;
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        border-radius: 12px;
+        background: var(--panel);
+        color: var(--ink);
+    }
+    .credits-button svg {
+        width: 24px;
+        height: 24px;
+    }
+    .map :global(.leaflet-control-attribution a), .data-credits a {
         color: inherit;
     }
     .map :global(.leaflet-attribution-flag) {
@@ -250,7 +325,7 @@
         padding: 0;
         list-style: none;
     }
-    .parts li, .leaving, .colours, footer {
+    .parts li, .leaving, .missing, .colours, footer {
         border-top: 1px solid var(--line);
     }
     .parts li {
@@ -297,9 +372,14 @@
         border-radius: 50%;
         background: var(--amber);
     }
-    .leaving p {
+    .leaving p, .missing {
         color: var(--ink-soft);
         font-size: 13.5px;
+    }
+    .missing {
+        display: grid;
+        gap: 6px;
+        padding: 12px 0;
     }
     .answers {
         display: flex;

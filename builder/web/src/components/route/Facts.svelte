@@ -1,6 +1,7 @@
 <script lang="ts">
+    import type { Snippet } from 'svelte';
     import Card from '../../lib/ui/Card.svelte';
-    import Icon from '../planner/PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { townOf } from './towns';
     import type { RouteSummary } from '../../lib/library/records';
     import { distanceIn, formatAlong, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
@@ -12,8 +13,9 @@
     import { kindLabel } from '../../lib/planner/search/presentation';
 
     /** The left card of the Route page: the numbers of the stored summary, then the days, the climbs and the waypoints
-     * of the calculated line, or the routing error. The opened climb is the selected part of the page. */
-    let { summary, trip, line, facts, error, changed, opened, onopen }: {
+     * of the calculated line, or the routing error. The opened climb is the selected part of the page. A summary with no
+     * time shows "–" for it. */
+    let { summary, trip, line, facts, error, changed, opened, onopen, lead, more, foot }: {
         summary: RouteSummary | null;
         trip: Trip;
         /** The calculated line, which `facts` belongs to. */
@@ -24,6 +26,12 @@
         changed: boolean;
         opened?: Climb;
         onopen: (climb: Climb | undefined) => void;
+        /** A line over the numbers. */
+        lead?: string;
+        /** After the numbers. */
+        more?: Snippet;
+        /** At the end of the card. */
+        foot?: Snippet;
     } = $props();
 
     // A climb of an earlier line or route does not stay open.
@@ -91,15 +99,17 @@
         {#if shownClimb && line}
             {@render climbCard(shownClimb, line)}
         {:else}
+            {#if lead}<p class="lead-line">{lead}</p>{/if}
             <dl class="numbers">
                 {@render number('Length', summary ? formatDistance(summary.lengthM) : '–')}
                 {@render number('Climb', summary ? formatHeight(summary.climbM) : '–')}
                 {#if !days}
-                    {@render number('Time', summary ? duration(summary.seconds / 3600) : '–')}
+                    {@render number('Time', summary?.seconds ? duration(summary.seconds / 3600) : '–')}
                     {@render number('Highest point', summary?.highestM != null ? formatHeight(summary.highestM) : '–')}
                 {/if}
             </dl>
             {#if changed}<p class="note">Changed since the last save</p>{/if}
+            {@render more?.()}
 
             {#if error}
                 <p class="note" role="alert">{error}</p>
@@ -109,22 +119,18 @@
                 <h3>Days</h3>
                 <ol class="days">
                     {#each days as day (day.number)}
-                        {#if day.rest}
-                            <li class="day"><span class="lead">Day {day.number}</span><strong>{trip.restNames?.[day.restIndex!] || 'Rest day'}</strong></li>
-                        {:else}
-                            {@const from = day.ridingNumber === 1 ? ends[0]?.label : trip.points.find(p => p.kind === 'night' && p.night === day.ridingNumber - 1)?.label}
-                            {@const last = day.ridingNumber === days.filter(d => !d.rest).length}
-                            <li class="day">
-                                <span class="lead">Day {day.number}</span>
-                                <span>
-                                    <strong>{dayTitle(from, last ? finish?.label : day.pinned?.label)}</strong>
-                                    <small>{formatDistance(day.distance * 1000)} · {formatHeight(day.ascent)} up · {duration(day.hours)}</small>
-                                </span>
-                            </li>
-                            {#each day.stops as stop (stop.point.id)}{@render pin(stop, about(stop.point))}{/each}
-                            {#if !last}
-                                <li class="sleep"><span class="lead"><span class="pin night"><Icon name="moon" size={11} /></span></span><span>{day.pinned?.label ?? 'Not chosen'}<small>Night</small></span></li>
-                            {/if}
+                        {@const from = day.number === 1 ? ends[0]?.label : trip.points.find(p => p.kind === 'night' && p.night === day.number - 1)?.label}
+                        {@const last = day.number === days.length}
+                        <li class="day">
+                            <span class="lead">Day {day.number}</span>
+                            <span>
+                                <strong>{dayTitle(from, last ? finish?.label : day.pinned?.label)}</strong>
+                                <small>{formatDistance(day.distance * 1000)} · {formatHeight(day.ascent)} up · {duration(day.hours)}</small>
+                            </span>
+                        </li>
+                        {#each day.stops as stop (stop.point.id)}{@render pin(stop, about(stop.point))}{/each}
+                        {#if !last}
+                            <li class="sleep"><span class="lead"><span class="pin night"><Icon name="moon" size={11} /></span></span><span>{day.pinned?.label ?? 'Not chosen'}<small>Night</small></span></li>
                         {/if}
                     {/each}
                 </ol>
@@ -142,6 +148,7 @@
                     <ol class="rows">{#each facts.stops as stop (stop.point.id)}{@render pin(stop, [about(stop.point), at(stop.km)].filter(Boolean).join(' · '))}{/each}</ol>
                 {/if}
             {/if}
+            {#if foot}<div class="foot">{@render foot()}</div>{/if}
         {/if}
     </Card>
 </div>
@@ -155,6 +162,18 @@
         flex-direction: column;
         height: 100%;
         overflow: auto;
+    }
+    .lead-line {
+        margin: 0 0 12px;
+        color: var(--ink-soft);
+        font-size: 13px;
+    }
+    /* The foot stands at the bottom of a card that is higher than its content. */
+    .foot {
+        margin-top: auto;
+        padding-top: 20px;
+        color: var(--ink-soft);
+        font-size: 12.5px;
     }
     .numbers {
         display: grid;

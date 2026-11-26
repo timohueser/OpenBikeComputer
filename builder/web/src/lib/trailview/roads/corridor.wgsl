@@ -76,8 +76,11 @@ const WALL_BIAS_M: f32 = 0.3;
 override PIECE: bool = false;
 // A stop arm's junction faces of the ground plan's mesh (plan/pieces.ts): their pixels find the mouth (corridor_in).
 override MOUTH: bool = false;
+// The ground plan's track and step details (plan/details.wgsl): no paint hands over to them, as no corridor draws.
+override PLAN_DETAILS: bool = false;
 // A piece that reaches past the level-18 plateau of the LOD fades out by a dither across the band where the
-// terrain morphs to level 17, and the terrain's far look shows through: the frames resolve the two.
+// terrain morphs to level 17, and the terrain's far look shows through: the frames resolve the two. A piece's
+// triangles near a box draw with it too, and drop their pixels in a box (`corridor_dropped`).
 override CUT: bool = false;
 // A piece's edge looks (lines, fray, grass) lie within this of its frame's edge. Its edge opens by how much farther
 // the paved area goes on past the frame's edge, from the first to the second.
@@ -350,18 +353,21 @@ fn wall_rock(in: CorridorOut, su: vec2f) -> WallRock {
 
 @fragment
 fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
+    if (PIECE && CUT && corridor_dropped(raw)) {
+        discard;
+    }
     var in = raw;
-    if (MOUTH) {
+    if (PIECE) {
         in = corridor_in(raw);
     }
-    if (!PIECE && paint_draws(length(in.relative.xy), in.clip.xy)) {
+    if (!PIECE && !PLAN_DETAILS && paint_draws(length(in.relative.xy), in.clip.xy)) {
         discard;
     }
     // Whole two level-17 cells past where the terrain sinks (level 18's morph start), as far as its sunk
     // corners' triangles reach and the terrain takes no snap (PLAN_TRIANGLE_UNITS of cells.wgsl); gone
     // where level 18 ends. In metres, so the same at the finest level 17.
     if (PIECE && CUT) {
-        let sink = surface.range * exp2(-18.0 - MORPH);
+        let sink = surface.range * exp2(-18.0 - surface.morph);
         let d = length(vec3f(lod_space(in.u), surface.above));
         if (dither(in.clip.xy + DETAIL_DITHER) >= 1.0 - smoothstep(sink + 256.0 * surface.unit, surface.range * exp2(-18.0), d)) {
             discard;

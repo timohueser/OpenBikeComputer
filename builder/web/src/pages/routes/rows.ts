@@ -1,5 +1,6 @@
 /** The rows of the ridden view: one for each trip, each group of rides on one road, and each other ride. */
-import type { Trip } from '../../lib/library/trips';
+import type { Bike } from '../../lib/library/records';
+import { tripDays, type Trip } from '../../lib/library/trips';
 import { rideItem, type RideItem } from './filter';
 
 export interface Row {
@@ -26,7 +27,7 @@ export function rideRows(shown: RideItem[], trips: Trip[], groups: Map<string, s
         const trip = tripOf.get(item.id);
         if (trip) {
             if (!rows.has(`trip:${trip.id}`)) rows.set(`trip:${trip.id}`, { kind: 'trip', id: trip.id, name: trip.name,
-                rides: trip.rides.map(rideItem), days: trip.days.at(-1)! - trip.days[0] + 1, at: trip.rides.at(-1)!.summary.start * 1000 });
+                rides: trip.rides.map(rideItem), days: tripDays(trip), at: trip.rides.at(-1)!.summary.start * 1000 });
             continue;
         }
         const group = groups.get(item.id) ?? item.id;
@@ -37,6 +38,12 @@ export function rideRows(shown: RideItem[], trips: Trip[], groups: Map<string, s
         else rows.set(`group:${id}`, { kind: 'group', id, name: routeNames.get(id) ?? rides[0].name, rides, at: rides[0].at });
     }
     return [...rows.values()].sort((a, b) => b.at - a.at);
+}
+
+/** The activity of the rides of a row, when all have the same one. */
+export function rowBike(row: Row): Bike | undefined {
+    const bike = row.rides[0].summary.bike;
+    return row.rides.every(ride => ride.summary.bike === bike) ? bike : undefined;
 }
 
 /** "24 Oct 2026". */

@@ -1,6 +1,6 @@
 import type { Place, Stay } from '../editor';
 import { placeCategories, poiKinds, type PlaceCategory } from '../poi-kinds';
-import type { QueryPoint, Where, QueryRequest, SearchPlace } from './types';
+import type { QueryPoint, SearchPlace } from './types';
 import contract from '../../../../../../planner/search/query/contract.json' with { type: 'json' };
 
 /** The query language that search accepts. */
@@ -13,24 +13,21 @@ const kinds: Record<string, { category: string | null }> = contract.kinds, dataK
 export function category(kind: string): PlaceCategory {
     return (poiKinds[kind]?.category ?? kinds[kind]?.category ?? kinds[dataKinds[kind]]?.category ?? (Object.hasOwn(placeCategories, kind) ? kind : 'viewpoint')) as PlaceCategory;
 }
-/** The category of a place to sleep, such as `camp`; undefined for any other kind, such as a town. */
-export function sleepCategory(placeKind?: string): PlaceCategory | undefined {
-    const found = placeKind ? category(placeKind) : undefined;
-    return found === 'camp' || found === 'hotel' || found === 'shelter' ? found : undefined;
-}
-const stayKinds: Record<string, Stay> = { campsite: 'camp', caravan_site: 'camp', hut: 'hut', hostel: 'hostel', hotel: 'hotel',
+const stayKinds: Record<string, Stay> = { campsite: 'camp', hut: 'hut', hostel: 'hostel', hotel: 'hotel',
     guest_house: 'hotel', motel: 'hotel', chalet: 'hotel', shelter: 'shelter' };
-/** The kind of place to sleep of a place kind, such as `camp` for `caravan_site`; undefined for any other kind. */
+/** The kind of place to sleep of a place kind, such as `hotel` for `guest_house`; undefined for any other kind. */
 export const stayKind = (placeKind?: string): Stay | undefined => placeKind && Object.hasOwn(stayKinds, placeKind) ? stayKinds[placeKind] : undefined;
-/** Why a night that a train or bus leaves from does not move. */
-export const trainNightText = 'A train or bus leaves from here. Remove it to move this night.';
-/** The five kinds of place to sleep as the trip row and a night list them. */
-export const stayOptions: { kind: Stay; label: string; icon?: string }[] = [
-    { kind: 'camp', label: 'Campsites', icon: 'camp' }, { kind: 'hut', label: 'Huts' }, { kind: 'hostel', label: 'Hostels' },
-    { kind: 'hotel', label: 'Hotels', icon: 'hotel' }, { kind: 'shelter', label: 'Shelters' },
+/** The map category of a place to sleep, such as `camp`; undefined for any other kind, such as a town. */
+export const sleepCategory = (placeKind?: string): PlaceCategory | undefined => stayKind(placeKind) ? category(placeKind!) : undefined;
+/** The five kinds of place to sleep as the route preferences and a night list them. */
+export const stayOptions: { kind: Stay; label: string }[] = [
+    { kind: 'camp', label: 'Campsites' }, { kind: 'hut', label: 'Huts' }, { kind: 'hostel', label: 'Hostels' },
+    { kind: 'hotel', label: 'Hotels' }, { kind: 'shelter', label: 'Shelters' },
 ];
+/** The icon of a kind of place to sleep. */
+export const stayIcon = (stay?: Stay) => ({ camp: 'camp', hut: 'hotel', hostel: 'hotel', hotel: 'hotel' } as Record<string, string>)[stay ?? ''] ?? 'moon';
 /** The icon of a night by the kind of place it is at. */
-export const sleepIcon = (placeKind?: string) => ({ camp: 'camp', hut: 'hotel', hostel: 'hotel', hotel: 'hotel' } as Record<string, string>)[stayKind(placeKind) ?? ''] ?? 'moon';
+export const sleepIcon = (placeKind?: string) => stayIcon(stayKind(placeKind));
 export function asPlace(p: SearchPlace): Place {
     return { id: p.source, placeKind: p.kind, label: p.name, kind: 'place', category: category(p.kind), coordinate: [p.lon, p.lat],
         locality: p.city, openingHours: p.opening_hours, hoursStatus: p.hoursStatus, website: p.website, phone: p.phone, content: p.content,
@@ -44,30 +41,4 @@ export function pointLabel(p: QueryPoint): string {
     if ('day' in p) return `Day ${p.day} ${p.part ?? 'end'}`;
     const a = p.along;
     return `${a.ref === 'km' ? '' : `From ${a.ref}: `}${a.at ? `${a.at.value} ${a.at.unit}` : `${a.from?.value ?? 0}–${a.to?.value ?? 'end'} ${a.to?.unit ?? a.from?.unit ?? 'km'}`}`;
-}
-export function whereLabel(w: Where): string {
-    if (w.anchor) return 'Near the selected point';
-    return [w.day ? `Day ${w.day}${w.part ? ` ${w.part}` : ''}` : w.scope === 'route' ? w.part ? `Near route ${w.part}` : 'Along the route' : w.scope === 'here' ? 'Near your location' : '',
-        w.near ? `${w.near.length > 1 ? 'Between' : 'Near'} ${w.near.map(pointLabel).join(' and ')}` : '',
-        w.along ? pointLabel({ along: w.along }) : '', w.before ? `Before ${pointLabel(w.before)}` : '', w.after ? `After ${pointLabel(w.after)}` : '',
-    ].filter(Boolean).join(' · ') || 'In this map view';
-}
-export function fieldLabel(key: string, value: unknown): string {
-    if (key === 'where') return whereLabel(value as Where);
-    if (['from','to','point','at','near'].includes(key)) return `${key}: ${pointLabel(value as QueryPoint)}`;
-    if (key === 'via') return `Via ${(value as QueryPoint[]).map(pointLabel).join(', ')}`;
-    if (key === 'what') return Array.isArray(value) ? value.map(kindLabel).join(', ') : kindLabel(String(value));
-    if (key === 'open') { const o = value as QueryRequest['open']; return o?.now ? 'Open now' : `Open ${o?.weekday ?? `on Day ${o?.day}`}`; }
-    if (typeof value === 'object' && value && 'unit' in value && 'value' in value) return `${kindLabel(key)}: ${value.value} ${value.unit}`;
-    return `${kindLabel(key)}: ${kindLabel(String(value))}`;
-}
-
-// Settlement kinds from the largest down.
-const settlements = ['city', 'town', 'village', 'suburb', 'district', 'hamlet', 'locality', 'isolated_dwelling'];
-
-/** Starts for signed routes near a typed name, best first: an exact name before others, then the larger settlement, then the search order. */
-export function routesPlaces(results: SearchPlace[], name: string): SearchPlace[] {
-    const typed = name.trim().toLowerCase();
-    const rank = (place: SearchPlace) => (place.name.toLowerCase() === typed ? 0 : 100) + (settlements.includes(place.kind) ? settlements.indexOf(place.kind) : 50);
-    return [...results].sort((a, b) => rank(a) - rank(b));
 }

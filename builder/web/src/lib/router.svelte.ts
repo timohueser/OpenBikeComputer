@@ -13,6 +13,9 @@ class Router {
     id = $state<string | undefined>();
     /** `#/settings` is a window over the page before it: `route` and `id` keep that page, so it is not created again. */
     settings = $state(false);
+    /** The page before the current one in this tab: set when the address names another page or another id. Undefined after
+     * a load of the app. */
+    from = $state<Route>();
 
     constructor() {
         // A first address of the settings gets the home page in an entry before it, so each close of the window is Back.
@@ -21,7 +24,7 @@ class Router {
             history.replaceState(history.state, "", ROUTES.home);
             history.pushState(history.state, "", settings);
         }
-        this.read();
+        this.read(true);
         window.addEventListener("hashchange", () => this.read());
     }
 
@@ -41,10 +44,11 @@ class Router {
         if (this.settings) history.back();
     }
 
-    private read() {
+    private read(first = false) {
         const { route, id } = parseRoute(location.hash);
         this.settings = route === "settings";
         if (!this.settings) {
+            if (!first && (route !== this.route || id !== this.id)) this.from = this.route;
             this.route = route;
             this.id = id;
         }

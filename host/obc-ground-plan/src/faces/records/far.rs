@@ -17,6 +17,7 @@
 //! | 7, 8, 9 | the offsets of the samples, the keys and the sides |
 //! | 10 | the cell's row of zoom 16 |
 //! | 11, 12, 14 | the length of the block: the near block's blend edges, junctions and outline edges are empty; 13 is 0 |
+//! | 15 | 0: no sidewalks' table |
 //! | rules | `heights::RULES` words, as the near block's |
 //! | lines | `LINE` words per record line, as the near block's, but word 2 is its first sample in this block and word 3 its count of samples here |
 //! | samples | `SAMPLE` words each, as the near block's, but word 4 is the rank (0 to n − 1, below 2^20) of the sample's global name among the n names of this block's samples |
@@ -43,7 +44,7 @@ use crate::graph::WayGraph;
 use crate::CellInput;
 
 /// "OBF" and the layout's version.
-pub const MAGIC_FAR: u32 = 0x4f42_4602;
+pub const MAGIC_FAR: u32 = 0x4f42_4603;
 /// The viewer's road mask reaches this far past a way's core (`MASK_M` of `terrain/features.wgsl`).
 pub const MASK_M: f64 = 12.75;
 /// The segments on each side of its own that the stroke of a segment reads.

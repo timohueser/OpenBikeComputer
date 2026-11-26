@@ -12,14 +12,7 @@
         "types": ["vite/client", "node", "@webgpu/types"],
         "strict": true,
         "noUnusedLocals": true,
-        "noUnusedParameters": true,
-        // The platform alias vite.config.ts rewrites per build target. Type
-        // checking pins it to the dev host — the one `npm run dev` and
-        // `npm run build` use; the web host is still checked as a file, against
-        // the `Platform` interface it annotates itself with.
-        "paths": {
-            "$host": ["./src/lib/platform/dev.ts"]
-        }
+        "noUnusedParameters": true
     },
     // `test-support/` holds what the suites need and the app must not have: the loader for the wasm
     // test device, and the device smoke's phases. It is checked to the same bar; its generated

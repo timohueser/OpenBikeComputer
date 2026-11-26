@@ -1,4 +1,4 @@
-<svg viewBox="0 0 720 416" role="img" aria-label="A release candidate triggers a build, signature, and inspection. Verified packages are published to GitHub and the update service. The companion or builder can upload a published or local package with PUT. The rider then confirms the install on the device." xmlns="http://www.w3.org/2000/svg" width="720" height="416" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+<svg viewBox="0 0 720 416" role="img" aria-label="A release candidate triggers a build, signature, and inspection. Verified packages are published to GitHub and the update service. The companion or the web app can upload a package with PUT. The rider then confirms the install on the device." xmlns="http://www.w3.org/2000/svg" width="720" height="416" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
   <defs><marker id="software-firmware-updates-2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
   <text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Release and delivery</text>
   <rect class="d-panel" x="20" y="56" width="200" height="72" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
@@ -16,8 +16,8 @@
 <path class="d-flow" d="M600 164 H240" fill="none" stroke="#a4501e" stroke-width="2" />
   <path class="d-flow" d="M240 164 L240 202" marker-end="url(#software-firmware-updates-2)" fill="none" stroke="#a4501e" stroke-width="2" />
   <rect class="d-panel" x="20" y="205" width="440" height="74" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
-  <text class="d-title" x="240" y="230" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Companion (BLE) or builder (USB)</text>
-  <text class="d-sub" x="240" y="250" text-anchor="middle" fill="#5c5a2e" font-size="12px">Download a release, or select a local package</text>
+  <text class="d-title" x="240" y="230" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Companion (BLE) or web app (USB)</text>
+  <text class="d-sub" x="240" y="250" text-anchor="middle" fill="#5c5a2e" font-size="12px">A release, or a local file (companion)</text>
   <rect class="d-panel" x="500" y="205" width="200" height="74" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
   <text class="d-title" x="600" y="230" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Local package</text>
   <text class="d-sub" x="600" y="250" text-anchor="middle" fill="#5c5a2e" font-size="12px">A file on the computer</text>

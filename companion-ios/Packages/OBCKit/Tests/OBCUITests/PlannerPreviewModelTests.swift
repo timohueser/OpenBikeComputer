@@ -394,28 +394,40 @@ struct PlannerPreviewModelTests {
         #expect(PlannerRoutesText.summary(PlannerRouteFilters(), activity: .touring) == "10 km · Loop")
     }
 
-    @Test func nightsEndDaysAtAnyPointUpToFourteenDays() async throws {
+    @Test func theRouteListCreditsTheSourceOfItsRoutesOnce() throws {
+        let source = "Bundesamt für Strassen, Kanton, Stiftung SchweizMobil"
+        let fields = #""kind":"hiking","name":"Route","rank":1,"loop":true,"length_m":4000,"ascent_m":0,"descent_m":0,"cells":[]"#
+        let routes = try JSONDecoder().decode([CatalogRecord].self, from: Data("""
+        [{"id":-1,\(fields),"credit":"\(source)"},{"id":2,\(fields)},{"id":-3,\(fields),"credit":"\(source); Other"}]
+        """.utf8))
+        let release = "© OpenStreetMap contributors"
+        #expect(PlannerRoutesText.credits(release, routes: routes) == "\(release) · \(source) · Other")
+        #expect(PlannerRoutesText.credits(release, routes: [routes[1]]) == release)
+    }
+
+    @Test func nightsEndDaysAtAnyPointUpToTheDayLimit() async throws {
         let at = { (lon: Double) in Coordinate(latitude: 47.9, longitude: lon) }
-        let vias = (1...14).map { PlanPoint(id: "v\($0)", label: "Shaping point", coordinate: at(7.8 + 0.01 * Double($0)), kind: .via) }
+        let limit = PlannerPlan.maxDays
+        let vias = (1...limit).map { PlanPoint(id: "v\($0)", label: "Shaping point", coordinate: at(7.8 + 0.01 * Double($0)), kind: .via) }
         let plan = PlannerPlan(points: [PlanPoint(id: "start", label: "A", coordinate: at(7.8), kind: .start)] + vias
-            + [PlanPoint(id: "finish", label: "B", coordinate: at(8.0), kind: .finish)], routeOrder: vias.map(\.id))
+            + [PlanPoint(id: "finish", label: "B", coordinate: at(7.86 + 0.01 * Double(limit)), kind: .finish)], routeOrder: vias.map(\.id))
         let model = PlannerPreviewModel(plan: plan, service: PlannerTestSource())
-        for via in vias.prefix(13) { model.setNight(id: via.id, true, name: "Camp \(via.id)") }
-        #expect(model.dayCount == 14 && !model.canAddDay)
-        model.setNight(id: "v14", true)
-        #expect(!model.isNight("v14"), "a plan holds at most 14 days")
+        for via in vias.prefix(limit - 1) { model.setNight(id: via.id, true, name: "Camp \(via.id)") }
+        #expect(model.dayCount == limit && !model.canAddDay)
+        model.setNight(id: "v\(limit)", true)
+        #expect(!model.isNight("v\(limit)"), "a plan holds at most the day limit")
         #expect(model.nights.first?.place.name == "Camp v1" && model.nights.allSatisfy { $0.kind == .visit })
         await model.calculateRoute()
-        #expect(model.dayStats.count == 14 && model.exportPlan().days == 14 && model.exportPlan().mode == .trip)
+        #expect(model.dayStats.count == limit && model.exportPlan().days == limit && model.exportPlan().mode == .trip)
 
         model.movePoint(id: "v1", to: at(7.815))
         #expect(model.isNight("v1") && model.points[1].place.coordinate == at(7.815))
         model.setNight(id: "v1", false)
-        #expect(model.dayCount == 13 && model.canAddDay)
+        #expect(model.dayCount == limit - 1 && model.canAddDay)
         // A new night lands in ride order, not before the finish.
         await model.calculateRoute()
         model.endDay(at: .init(id: "camp", name: "Camp", coordinate: Coordinate(latitude: 47.9005, longitude: 7.8455)))
-        #expect(model.points.firstIndex { $0.id == "camp" } == 5 && model.isNight("camp") && model.dayCount == 14)
+        #expect(model.points.firstIndex { $0.id == "camp" } == 5 && model.isNight("camp") && model.dayCount == limit)
         model.clearNights()
         #expect(model.dayCount == 1)
     }

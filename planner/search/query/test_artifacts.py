@@ -1,11 +1,16 @@
 import json
 import pytest
+import lexicon
 import schema
 from artifacts import check_labels, fingerprints, label_contract, model_identity
 
 
 def test_contract_json_is_generated_from_the_schema():
     assert schema.CONTRACT.read_text() == schema.contract_json(), 'Run python3 query/schema.py'
+
+
+def test_marks_json_is_generated_from_the_word_lists():
+    assert lexicon.MARKS.read_text() == lexicon.marks_json(), 'Run python3 query/lexicon.py marks'
 
 
 def test_label_order_is_part_of_the_model_contract(tmp_path):

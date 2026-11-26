@@ -5,12 +5,11 @@ import { decodedTiles, fetchTile, openSource, requestSignal, type Source } from 
 import { worldPixel } from '../../planner/layers/mercator';
 import { DEEPEST, FORMAT } from './features';
 import type { PageData } from './heights';
+import { BUDGETS, MiB, type Budget } from '../budget';
 
 /** The deepest stored zoom: the planner's zooms 0 to 12, and zoom 13 where a national model holds the ground. */
 export const TILE_ZOOM = 13;
 const WORKERS = 2;
-/** Feature tile bodies kept for the terrain and the houses, which read the same tiles. */
-const FEATURE_BODIES = 32 * 2 ** 20;
 
 /** Where the stored terrain comes from: the body of tile z/x/y (undefined where it is absent) and its pages. */
 export interface TerrainSource {
@@ -85,10 +84,10 @@ export interface EyeTiles {
 /**
  * The tiles of a release, with the deepest terrain tile and the feature tile under the eye started at
  * once: they load while the engine opens the ground and compiles its pipelines. The first fetch of the
- * terrain tile takes its body. An abort of `stop` ends every request.
+ * terrain tile takes its body. `caps` of the budget size the feature bodies kept. An abort of `stop` ends every request.
  */
-export function eyeTiles(config: PlannerConfig, lonLat: [number, number], stop: AbortSignal): EyeTiles {
-    const fetch = releaseTiles(config, stop), features = featureTiles(config, stop), at = (z: number) => worldPixel(lonLat, 2 ** z).map(Math.floor);
+export function eyeTiles(config: PlannerConfig, lonLat: [number, number], caps: Budget['caps'], stop: AbortSignal): EyeTiles {
+    const fetch = releaseTiles(config, stop), features = featureTiles(config, stop, caps.featureBodies), at = (z: number) => worldPixel(lonLat, 2 ** z).map(Math.floor);
     const [ex, ey] = at(TILE_ZOOM), [fx, fy] = at(DEEPEST);
     let early: Promise<ArrayBuffer | undefined> | undefined = fetch(TILE_ZOOM, ex, ey);
     // The features keep their body; a view that never asks for the terrain tile leaves its failure unseen.
@@ -126,9 +125,10 @@ export function pageDecoder(stop: AbortSignal): TerrainSource['decode'] {
 
 /**
  * The feature tiles of a release: a copy of the body of tile z/x/y, undefined where it is absent.
- * Undefined when the release has no feature layer. An abort of `stop` ends every request.
+ * Undefined when the release has no feature layer. It keeps `keptMiB` of bodies for the terrain and the houses, which
+ * read the same tiles. An abort of `stop` ends every request.
  */
-export function featureTiles(config: PlannerConfig, stop = new AbortController().signal): ((z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>) | undefined {
+export function featureTiles(config: PlannerConfig, stop = new AbortController().signal, keptMiB = BUDGETS.desktop.caps.featureBodies): ((z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>) | undefined {
     const url = (config.layers as Record<string, string | undefined>)['trailview-features'];
     if (!url) return undefined;
     let source: Promise<Source | undefined> | undefined;
@@ -143,7 +143,7 @@ export function featureTiles(config: PlannerConfig, stop = new AbortController()
         source ??= open();
         source.catch(() => (source = undefined));
         return (await source)?.get(z, x, y, AbortSignal.any([signal, stop]));
-    }, body => body.buffer, FEATURE_BODIES, body => body.byteLength);
+    }, body => body.buffer, keptMiB * MiB, body => body.byteLength);
     return async (z, x, y) => (await tiles.tile(z, x, y))?.slice(0);
 }
 

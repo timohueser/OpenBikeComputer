@@ -1,21 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { emptyTrip, setEndpoint, addRestDay, setDays, maxRidingDays, pinNight, reorderPoint, setDrawnLeg, type Trip } from './editor';
+import { emptyTrip, setEndpoint, setDays, maxRidingDays, pinNight, reorderPoint, setDrawnLeg, type Trip } from './editor';
 import { isTrip } from './trip-validation';
 import { planPace } from './riding-profiles';
-import { newVersion } from './versions';
 import { testTrip } from '../../../test-support/planner/trip';
 
 describe('stored planner data', () => {
-    it('round-trips a trip with ordered nights, drawings and rest days at the riding-day limit', () => {
+    it('round-trips a trip with ordered nights and drawings at the riding-day limit', () => {
         const plan = setDays(testTrip(), maxRidingDays);
         const first = pinNight(plan, undefined, 1, [7.2, 47.5], 'First night');
         const pinned = pinNight(first, undefined, 2, [7, 47.5], 'Second night');
         const drawn = setDrawnLeg(pinned, 'night-1', [[7.3, 47.6]]);
         const noted = { ...drawn, points: drawn.points.map(p => p.id === 'night-2' ? { ...p, note: 'Hut, cash only' } : p) };
-        const trip = addRestDay(reorderPoint(noted, 'night-2', 1), 2);
+        const trip = reorderPoint(noted, 'night-2', 1);
         expect(isTrip(JSON.parse(JSON.stringify(trip)))).toBe(true);
-        expect(newVersion(trip, undefined, 'Trip').trip.points.find(p => p.id === 'night-2')?.note).toBe('Hut, cash only');
-        expect(newVersion(trip, undefined, 'Trip').trip).toEqual(trip);
     });
 
     it('rejects invalid endpoint roles, invalid geometry and broken route references', () => {
@@ -32,7 +29,7 @@ describe('stored planner data', () => {
             { ...trip, nightStay: { 3: ['hut'] } }, { ...trip, nightStay: { 1: [] } },
             { ...trip, routeOrder: undefined }, { ...trip, routeOrder: ['missing'] }, { ...trip, routeOrder: ['finish'] },
             { ...trip, points: [...trip.points, { ...trip.points[0], id: 'shape', kind: 'via' }] },
-            { ...trip, restAfter: [4] }, { ...trip, splits: { 3: .5 } },
+            { ...trip, splits: { 3: .5 } },
             { ...trip, points: [...trip.points, { ...trip.points[0], id: 'night-3', kind: 'night', night: 3 }] },
             { ...trip, points: [trip.points[0], { ...trip.points[1], leg: 'ferry' }] },
             { ...trip, preset: 7 }, { ...trip, pace: 1 }, { ...trip, points: [...trip.points, { ...trip.points[0], id: 'pin', kind: 'marker', legEnd: 7 }] },
@@ -41,14 +38,13 @@ describe('stored planner data', () => {
         // A pace that this reader does not know reads as Moderate.
         expect(isTrip({ ...trip, pace: 'relaxed' })).toBe(true);
         expect(planPace({ pace: 'relaxed' })).toBe('moderate');
-        expect(isTrip({ ...trip, points: [trip.points[0], { ...trip.points[1], leg: 'transfer' }] })).toBe(true);
         for (const value of invalid) expect(isTrip(value), JSON.stringify(value)).toBe(false);
     });
 
-    it('reads the kinds of places to sleep, and ignores the targets and the sleep choice of older plans', () => {
+    it('reads the kinds of places to sleep, and ignores the targets, the sleep choice and the rest days of older plans', () => {
         const trip = testTrip();
         expect(isTrip({ ...trip, daysSet: true, stay: ['hut', 'shelter'], nightStay: { 1: ['hotel'], 2: ['camp'] } })).toBe(true);
-        expect(isTrip({ ...trip, sleep: 'camping', climbTarget: 800, budget: 'distance', target: 80, limit: 50 })).toBe(true);
+        expect(isTrip({ ...trip, sleep: 'camping', climbTarget: 800, budget: 'distance', target: 80, limit: 50, restAfter: [1], restNames: ['Lake'] })).toBe(true);
         expect(isTrip({ ...trip, sleep: 'tent', climbTarget: -1, budget: 'weeks', target: 0, limit: null })).toBe(true);
     });
 
@@ -59,10 +55,9 @@ describe('stored planner data', () => {
         expect(isTrip(shorter)).toBe(true);
     });
 
-    it('round-trips empty and one-endpoint drafts and versions', () => {
+    it('round-trips empty and one-endpoint drafts', () => {
         for (const trip of [emptyTrip(), setEndpoint(emptyTrip('trip'), 'finish', [8, 48], 'Finish')]) {
             expect(isTrip(JSON.parse(JSON.stringify(trip)))).toBe(true);
-            expect(newVersion(trip, undefined).trip).toEqual(trip);
         }
         expect(isTrip({ ...emptyTrip(), points: [{ ...testTrip().points[0], kind: 'via' }] })).toBe(false);
     });

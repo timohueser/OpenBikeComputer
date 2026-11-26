@@ -114,7 +114,7 @@ dependencies = [
  "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
  "futures-intrusive",
- "heapless 0.9.3",
+ "heapless",
 ]
 
 [[package]]
@@ -611,7 +611,7 @@ dependencies = [
  "embedded-io-async 0.7.0",
  "futures-core",
  "futures-sink",
- "heapless 0.9.3",
+ "heapless",
 ]
 
 [[package]]
@@ -647,7 +647,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "168297bf80aaf114b3c9ad589bf38b01b3009b9af7f97cd18086c5bbf96f5693"
 dependencies = [
  "embassy-executor-timer-queue",
- "heapless 0.9.3",
+ "heapless",
 ]
 
 [[package]]
@@ -664,7 +664,7 @@ dependencies = [
  "embassy-time",
  "embassy-usb-driver",
  "embedded-io-async 0.7.0",
- "heapless 0.9.3",
+ "heapless",
 ]
 
 [[package]]
@@ -966,19 +966,9 @@ dependencies = [
 
 [[package]]
 name = "heapless"
-version = "0.8.0"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
-dependencies = [
- "hash32",
- "stable_deref_trait",
-]
-
-[[package]]
-name = "heapless"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+checksum = "411fdef4df93751117bd9ef8caa0e7f99c65dafec5bd84313eb8e2fdd75e32f2"
 dependencies = [
  "hash32",
  "stable_deref_trait",
@@ -1247,7 +1237,7 @@ name = "obc-app"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
- "heapless 0.8.0",
+ "heapless",
  "libm",
  "obc-crc",
  "obc-elevation",
@@ -1293,7 +1283,7 @@ dependencies = [
 name = "obc-formats"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless",
  "obc-ports",
 ]
 
@@ -1314,8 +1304,7 @@ dependencies = [
  "embassy-usb",
  "embedded-graphics",
  "embedded-storage",
- "heapless 0.8.0",
- "heapless 0.9.3",
+ "heapless",
  "nrf-mpsl",
  "nrf-sdc",
  "obc-app",
@@ -1349,7 +1338,7 @@ dependencies = [
 name = "obc-map-scene"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless",
  "libm",
 ]
 
@@ -1361,7 +1350,7 @@ dependencies = [
  "embassy-sync",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "heapless 0.8.0",
+ "heapless",
  "obc-ports",
 ]
 
@@ -1373,7 +1362,7 @@ version = "0.1.0"
 name = "obc-reader"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless",
  "libm",
  "miniz_oxide",
  "obc-formats",
@@ -1385,7 +1374,7 @@ name = "obc-render"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
- "heapless 0.8.0",
+ "heapless",
  "libm",
  "obc-map-scene",
 ]
@@ -1394,7 +1383,7 @@ dependencies = [
 name = "obc-route"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless",
  "libm",
  "obc-crc",
  "obc-elevation",
@@ -1415,7 +1404,7 @@ dependencies = [
 name = "obc-storage"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless",
  "obc-crc",
  "obc-formats",
  "obc-link",
@@ -1877,7 +1866,7 @@ dependencies = [
  "embassy-time",
  "embedded-io 0.7.1",
  "futures",
- "heapless 0.9.3",
+ "heapless",
  "p256",
  "rand",
  "rand_chacha",

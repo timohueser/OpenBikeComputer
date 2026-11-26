@@ -3,18 +3,49 @@
 //
 // This module imports nothing local: scripts/trailview-stamps.mjs loads it in plain Node.
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, type Plugin } from "vite";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const REPO = path.join(ROOT, "../..");
 /** The bake entry: the stamp worker, the node bytes and the baked nodes of a feature tile. */
 const ENTRY = "src/lib/trailview/terrain/stamp-bake.ts";
+/**
+ * The parts bridge, which the stamp code inlines: the hash of the sources that built its package, and those sources,
+ * the tracked files but their Markdown. builder/build-wasm-bridges.sh writes the hash when it builds the package.
+ */
+const PARTS_BUILT = "src/lib/trailview/structures/pkg/sources.sha256";
+const PARTS_SOURCES = ["host/obc-trailview-parts", "builder/trailview-parts-wasm", "data/trailview/parts.json", ":(exclude)*.md"];
+const WASM = /data:application\/wasm;base64,[A-Za-z0-9+/=]*/g;
+
+const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
+
+/** The hash of the parts bridge's sources: the SHA-256 of the lines `<SHA-256>  <path>` of their files, by path from the repository. */
+export function partsSources(): string {
+    const files = execFileSync("git", ["ls-files", "-z", "--", ...PARTS_SOURCES], { cwd: REPO, encoding: "utf8" }).split("\0").filter(Boolean);
+    return sha256(files.sort().map(file => `${sha256(readFileSync(path.join(REPO, file)))}  ${file}\n`).join(""));
+}
 
 /**
- * The module of the bake with every import inlined, its version (the start of the SHA-256 of the module, so of
- * the stamp code and the tables that it reads) and the files of the modules in it.
+ * The version of the bake's code: the start of its SHA-256, with the inlined WASM module, the parts bridge, replaced
+ * by the hash of its sources, so two builds of the same sources give one version. It refuses a second inlined module,
+ * and a package whose recorded sources (`recorded`) are not `sources`.
+ */
+export function versionOf(code: string, recorded: string | undefined, sources: string): string {
+    const modules = new Set(code.match(WASM));
+    if (!modules.size) return sha256(code).slice(0, 16);
+    if (modules.size > 1) throw new Error(`stampBundle: ${modules.size} inlined WASM modules; only the parts bridge has its sources here`);
+    if (recorded?.trim() !== sources) throw new Error(`stampBundle: ${PARTS_BUILT} ${recorded === undefined ? "is missing" : "names other sources"}; run bash builder/build-wasm-bridges.sh`);
+    return sha256(code.replace(WASM, sources)).slice(0, 16);
+}
+
+/**
+ * The module of the bake with every import inlined, its version (`versionOf`: of the stamp code, the tables that it
+ * reads and the sources of the WASM that it inlines) and the files of the modules in it.
  */
 export async function stampBundle(): Promise<{ code: string; version: string; modules: string[] }> {
     const out = await build({
@@ -22,7 +53,9 @@ export async function stampBundle(): Promise<{ code: string; version: string; mo
         build: { ssr: ENTRY, write: false, minify: false, rollupOptions: { output: { inlineDynamicImports: true } } },
     });
     const [chunk] = (Array.isArray(out) ? out[0] : out as { output: { code: string; moduleIds: string[] }[] }).output;
-    return { code: chunk.code, version: createHash("sha256").update(chunk.code).digest("hex").slice(0, 16), modules: chunk.moduleIds };
+    const built = path.join(ROOT, PARTS_BUILT), inlines = chunk.code.search(WASM) >= 0;
+    const version = versionOf(chunk.code, existsSync(built) ? readFileSync(built, "utf8") : undefined, inlines ? partsSources() : "");
+    return { code: chunk.code, version, modules: chunk.moduleIds };
 }
 
 /** The bundle of the build: the page and each worker read one version. The dev server drops it when a module of the bake changes. */

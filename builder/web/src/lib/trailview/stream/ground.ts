@@ -1,6 +1,7 @@
 import type { PlannerConfig } from '../../planner/config';
 import { decodedTiles, openSource, requestSignal, type Source, type Tiles } from '../../planner/layers/archive';
 import { releaseFetch } from '../../planner/release';
+import { MiB, type Budget } from '../budget';
 import type { GroundResult } from '../ground/pages';
 import { rulesOf, type Rules } from '../rules/regions';
 import type { GroundDate } from './ground-pages';
@@ -19,9 +20,9 @@ const SNOW = 'snow';
 const FORMATS = { ground: ['trailview_format', 3], colour: ['trailview_format', 2], snow: ['snow_format', 1] } as const;
 /** The coarsest snow zoom that a missing tile reads: one coarser than the MODIS zoom of the snow archive. */
 const SNOW_COARSE = 7;
-const WORKERS = 2;
-/** Tile bodies kept per archive, so a new device or a page that comes back builds again without a request. */
-const BODIES = 16 * 2 ** 20;
+export const WORKERS = 2;
+/** The archives that keep tile bodies: the ground, the four colour quarters and the snow. */
+export const ARCHIVES = Object.keys(NAMES).length + 1;
 
 /** Why TrailView does not read an archive as a layer; undefined where it reads it. */
 function unread(source: Source, layer: Body['layer']): string | undefined {
@@ -54,7 +55,8 @@ export class GroundSource {
     private readonly waiting = new Map<number, { worker: Worker; resolve: (data: GroundResult) => void; reject: (error: Error) => void }>();
     private next = 0;
 
-    private constructor(readonly rules: Rules, sources: Partial<Record<Layer, Source>>, private readonly urls: Partial<Record<string, string>>, private readonly workers: Worker[], private readonly stop: AbortSignal) {
+    /** `caps` of the budget: the bodies kept per archive, so a new device or a page that comes back builds again without a request, and the decoded images of each worker. */
+    private constructor(readonly rules: Rules, sources: Partial<Record<Layer, Source>>, private readonly urls: Partial<Record<string, string>>, private readonly workers: Worker[], private readonly stop: AbortSignal, private readonly caps: Budget['caps']) {
         this.archives = Object.fromEntries(Object.entries(sources).map(([layer, source]) => [layer, { source, tiles: this.kept(source) }]));
         for (const worker of this.workers) {
             worker.onmessage = ({ data }) => {
@@ -77,9 +79,9 @@ export class GroundSource {
     /**
      * The ground of a config; undefined when it has no ruleset or no ground archive. Only the rules
      * and the ground fail it: another archive that does not open is left out. An abort of `stop` ends
-     * its requests and its workers.
+     * its requests and its workers. `caps` of the budget size the bodies and the decoded images kept.
      */
-    static async open(config: PlannerConfig, stop = new AbortController().signal): Promise<GroundSource | undefined> {
+    static async open(config: PlannerConfig, caps: Budget['caps'], stop = new AbortController().signal): Promise<GroundSource | undefined> {
         const urls = config.layers as Partial<Record<string, string>>;
         if (!config.trailview_rules || !urls[NAMES.ground]) return undefined;
         const snow = urls[SNOW] ? openSource(urls[SNOW]) : undefined;
@@ -101,7 +103,7 @@ export class GroundSource {
                 // The snow fails only its loads: `snowArchive` takes its failure.
                 snow?.catch(() => undefined),
             ]);
-            const ground = new GroundSource(rules, Object.fromEntries(entries.filter(([, source]) => source)), urls, workers, stop);
+            const ground = new GroundSource(rules, Object.fromEntries(entries.filter(([, source]) => source)), urls, workers, stop, caps);
             // A worker that cannot decode the ground fails it once, not every tile.
             await Promise.all(workers.map(worker => ground.post(worker)));
             ground.snowArchive(snow);
@@ -157,12 +159,12 @@ export class GroundSource {
         return { pages: built.pages, complete: complete && built.complete };
     }
 
-    /** The answer of a worker to a job, or to its decode probe without one. */
+    /** The answer of a worker to a job, or without one to its first message: its cap and its decode probe. */
     private post(worker: Worker, job?: GroundJob, transfer: ArrayBuffer[] = []): Promise<GroundResult> {
         const id = this.next++;
         return new Promise((resolve, reject) => {
             this.waiting.set(id, { worker, resolve, reject });
-            worker.postMessage({ id, job }, transfer);
+            worker.postMessage(job ? { id, job } : { id, bytes: this.caps.groundDecode * MiB }, transfer);
         });
     }
 
@@ -218,6 +220,6 @@ export class GroundSource {
                 this.failed++;
                 throw error;
             }
-        }, body => body.buffer, BODIES, body => body.byteLength);
+        }, body => body.buffer, this.caps.groundBodies * MiB, body => body.byteLength);
     }
 }

@@ -14,14 +14,14 @@ const summary = {
     lengthM: 400, climbM: 0, highestM: null, seconds: 0, bike: 'road',
 } satisfies Summary;
 
-/** A context that keeps the colour and the strength of each stroke, and the x where its path starts. */
+/** A context that keeps the colour and the strength of each stroke, and the x where its path starts and ends. */
 function recorder() {
-    const strokes: { colour: string; alpha: number; from: number }[] = [];
-    let from = 0;
+    const strokes: { colour: string; alpha: number; from: number; to: number }[] = [];
+    let from = 0, to = 0;
     const context = {
         globalAlpha: 1, strokeStyle: '', fillStyle: '', lineWidth: 1, lineCap: '', lineJoin: '',
-        drawImage() {}, beginPath() {}, moveTo(x: number) { from = x; }, lineTo() {}, arc() {}, fill() {},
-        stroke() { strokes.push({ colour: context.strokeStyle, alpha: context.globalAlpha, from }); },
+        drawImage() {}, beginPath() {}, moveTo(x: number) { from = x; }, lineTo(x: number) { to = x; }, arc() {}, fill() {},
+        stroke() { strokes.push({ colour: context.strokeStyle, alpha: context.globalAlpha, from, to }); },
     };
     return { context: context as unknown as CanvasRenderingContext2D, strokes };
 }
@@ -51,5 +51,20 @@ describe('the line of a cover', () => {
     it('draws a part shorter than one segment in the colour of the line', () => {
         const strong = strokesOf([120, 130]).filter(stroke => stroke.colour === LINE);
         expect(strong.map(stroke => stroke.from)).toEqual([100]);
+    });
+
+    it('leaves out the trimmed metres at each end, with the cut inside a segment', () => {
+        const ends = (drawn: typeof cover, trim: number) => {
+            const { context, strokes } = recorder();
+            drawCover(context, drawn, { box: [400, 100], line: true, trim });
+            const strong = strokes.filter(stroke => stroke.colour === LINE);
+            return [Math.min(...strong.map(stroke => stroke.from)), Math.max(...strong.map(stroke => stroke.to))];
+        };
+        // 150 m of 400 m: the cuts are in the second and in the third segment.
+        expect(ends(cover, 150)).toEqual([150, 250]);
+        // One segment of 400 m holds both cuts.
+        const long = { ...cover, points: pack({ x: Float32Array.of(0, 400), y: Float32Array.of(50, 50), distance: Float32Array.of(1000, 1000), visible: Uint8Array.of(1, 1) }),
+            summary: { ...summary, line: [0, 0, 0.0036, 0], heights: [null, null] } };
+        expect(ends(long, 100)).toEqual([100, 300]);
     });
 });

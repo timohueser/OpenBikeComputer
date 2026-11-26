@@ -1,28 +1,41 @@
+<!-- The trip row: the shape of the route, the day count and the dates, as three wells in one line. The day cards show
+     the dates, so the row shows none. -->
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
-    import { allStay, fewestDays, maxRidingDays, setDays, type Stay, type Trip } from '../../lib/planner/editor';
+    import DayCount from './DayCount.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
+    import { radioKey } from '../../lib/ui/Segmented.svelte';
+    import { isThereAndBack, multiDay, oneWay, thereAndBack, type Trip } from '../../lib/planner/editor';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
-    import { stayOptions as kinds } from '../../lib/planner/search/presentation';
+    import type { RoutingLine } from '../../lib/planner/routing';
 
-    let { trip, onChange }: { trip: Trip; onChange: (next: Trip, description: string) => void } = $props();
+    let { trip, line, onChange, onShape, onDays, onLimit }: {
+        trip: Trip; line: RoutingLine | undefined;
+        onChange: (next: Trip, description: string) => void;
+        /** A change of the shape, which adds or removes route points. */
+        onShape: (next: Trip, description: string) => void;
+        /** A change of the day count, which can change the type of the route. */
+        onDays: (next: Trip, description: string) => void;
+        /** A press of + at the most days. */
+        onLimit: () => void;
+    } = $props();
 
     let dating = $state(false);
     let root = $state<HTMLDivElement>();
-    const stay = $derived(trip.stay ?? allStay);
-    const range = $derived.by(() => {
-        if (!trip.startDate) return 'Start date';
-        const last = addDays(trip.startDate, trip.days + (trip.restAfter?.length ?? 0) - 1);
-        return `${weekdayLabel(trip.startDate, trip.startDate.slice(0, 7) !== last.slice(0, 7))} – ${weekdayLabel(last, true)}`;
-    });
+    const back = $derived(isThereAndBack(trip));
+    const loop = $derived(!!trip.loop && !back);
+    // The first shape is the route as planned, and its word names what the route is: a loop is no third choice.
+    const shapes = $derived([
+        { icon: loop ? 'loop' : 'one-way', label: loop ? 'Loop' : 'One way', chosen: !back,
+            choose: () => onShape(oneWay(trip), 'One way · the route ends at the far point') },
+        { icon: 'back', label: 'There and back', chosen: back,
+            choose: () => onShape(thereAndBack(trip), 'There and back · the route returns the same way') },
+    ]);
+    const last = $derived(trip.startDate && addDays(trip.startDate, multiDay(trip) ? trip.days - 1 : 0));
+    const range = $derived(!trip.startDate || !last ? 'Any date' : last === trip.startDate ? weekdayLabel(last, true)
+        : `${weekdayLabel(trip.startDate, trip.startDate.slice(0, 7) !== last.slice(0, 7))} – ${weekdayLabel(last, true)}`);
 
-    function changeDays(days: number) {
-        onChange(setDays(trip, days), `${days} riding ${days === 1 ? 'day' : 'days'}`);
-    }
-
-    function toggle(kind: Stay) {
-        const next = allStay.filter(k => k === kind ? !stay.includes(k) : stay.includes(k));
-        onChange({ ...trip, stay: next.length === allStay.length ? undefined : next },
-            `Sleeping in ${kinds.filter(k => next.includes(k.kind)).map(k => k.label.toLowerCase()).join(', ')}`);
+    function choose(index: number) {
+        if (!shapes[index].chosen) shapes[index].choose();
     }
 
     function close() {
@@ -34,14 +47,31 @@
 <svelte:window onpointerdown={(event) => { if (dating && !root?.contains(event.target as Node)) dating = false; }} />
 
 <div class="trip-row">
+    <div class="well shape" role="radiogroup" aria-label="Route shape">
+        {#each shapes as { icon, label, chosen }, index (index)}
+            <button type="button" role="radio" aria-checked={chosen} aria-label={chosen ? undefined : label} title={chosen ? undefined : label}
+                tabindex={chosen ? 0 : -1} onclick={() => choose(index)} onkeydown={(event) => radioKey(event, index, shapes.length, choose)}>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    {#if icon === 'loop'}
+                        <path d="M5 19c-3-6 1-14 8-14s9 8 4 12-9 2-12 2Z" /><circle cx="5" cy="19" r="1.7" fill="currentColor" />
+                    {:else if icon === 'back'}
+                        <path d="M4 8.5h15m-4-4 4 4-4 4M20 15.5H5m4-4-4 4 4 4" />
+                    {:else}
+                        <circle cx="4.5" cy="12" r="1.7" fill="currentColor" /><path d="M9 12h11m-4.5-4.5L20 12l-4.5 4.5" />
+                    {/if}
+                </svg>{#if chosen}{label}{/if}
+            </button>
+        {/each}
+    </div>
+    <DayCount {trip} {line} onChange={onDays} {onLimit} />
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="dates" bind:this={root} onkeydown={(event) => { if (event.key === 'Escape' && dating) { event.stopPropagation(); close(); } }}>
-        <button type="button" class="date" class:guess={!trip.startDate} aria-label={`Trip dates: ${range}`} aria-expanded={dating} onclick={() => dating = !dating}>
-            <Icon name="calendar" size={15} />{range}
+        <button type="button" class="well date" class:set={!!trip.startDate} aria-label={`Trip dates: ${range}`} title={`Trip dates: ${range}`} aria-expanded={dating} onclick={() => dating = !dating}>
+            <Icon name="calendar" size={16} />
         </button>
         {#if dating}
             <div class="popover">
-                <label>First riding day
+                <label>First day
                     <input type="date" value={trip.startDate ?? ''} onchange={(event) => {
                         const date = event.currentTarget.value;
                         onChange({ ...trip, startDate: date || undefined }, date ? 'Dates set' : 'Dates cleared');
@@ -54,62 +84,68 @@
             </div>
         {/if}
     </div>
-    <div class="days" role="group" aria-label="Number of riding days">
-        <button type="button" aria-label="One day fewer" disabled={trip.days <= fewestDays(trip)} onclick={() => changeDays(trip.days - 1)}><Icon path="M5 12h14" size={15} /></button>
-        <span class="count"><span class:guess={!trip.daysSet}>{trip.days} riding {trip.days === 1 ? 'day' : 'days'}</span></span>
-        <button type="button" aria-label="One day more" disabled={trip.days >= maxRidingDays} onclick={() => changeDays(trip.days + 1)}><Icon name="plus" size={15} /></button>
-    </div>
-    <div class="stay" role="group" aria-label="Where you sleep">
-        <span>Sleep in</span>
-        {#each kinds as { kind, label, icon } (kind)}
-            {@const on = stay.includes(kind)}
-            <button type="button" aria-pressed={on} disabled={on && stay.length === 1} onclick={() => toggle(kind)}>{#if icon}<Icon name={icon} size={14} />{/if}{label}</button>
-        {/each}
-    </div>
 </div>
 
 <style>
+    /* The wells wrap in a narrow side panel. */
     .trip-row {
+        position: relative;
         display: flex;
-        align-items: center;
-        gap: 16px;
         flex-wrap: wrap;
-        flex: 1;
-        min-width: 0;
-        font-size: 13px;
-        color: var(--ink-soft);
+        gap: 6px;
     }
-    button {
-        font: inherit;
-        color: inherit;
-        cursor: pointer;
-    }
-    button:disabled { cursor: default; opacity: .45; }
-    button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-    .dates { position: relative; }
-    .date {
+    /* The look of the three wells; the day count (`DayCount`) has the same one. */
+    .well {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        height: 34px;
-        padding: 0 10px;
-        border: 1px solid var(--line-strong);
+        height: 36px;
+        border: 0;
         border-radius: 8px;
-        background: var(--panel);
+        background: var(--parchment-2);
         color: var(--ink);
-        font-weight: 600;
+        font: 600 13px var(--sans);
+    }
+    button { cursor: pointer; }
+    button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+    .shape { padding: 2px; gap: 2px; }
+    .shape button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 32px;
+        padding: 0 9px;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: var(--ink-soft);
+        font: inherit;
         white-space: nowrap;
     }
-    .date.guess {
-        border: 1.5px dashed var(--ink-soft);
+    .shape button:hover { color: var(--ink); }
+    .shape button[aria-checked="true"] {
+        background: var(--panel);
+        color: var(--ink);
+        box-shadow: inset 0 0 0 1px var(--line-strong);
+    }
+    .shape button:focus-visible { outline-offset: 0; }
+    .date {
+        width: 36px;
+        padding: 0;
+        justify-content: center;
         color: var(--ink-soft);
     }
+    .date.set { color: var(--ink); }
+    .date:hover { background: color-mix(in srgb, var(--ink) 8%, var(--parchment-2)); }
+    .date[aria-expanded="true"] { outline: 2px solid var(--ink); outline-offset: -2px; }
     .popover {
         position: absolute;
         z-index: 40;
-        bottom: 42px;
+        /* Under the start of the row, not of the date well: the well is the last one, and a phone is narrow. */
+        top: 100%;
         left: 0;
-        width: 280px;
+        width: min(280px, 100%);
+        box-sizing: border-box;
+        margin-top: 4px;
         padding: 14px;
         border-radius: 8px;
         background: var(--panel);
@@ -138,12 +174,12 @@
         gap: 8px;
         margin-top: 12px;
     }
+    .clear, .done { font: 600 13px var(--sans); }
     .clear {
         padding: 0;
         border: 0;
         background: none;
         color: var(--coral);
-        font-weight: 600;
     }
     .done {
         margin-left: auto;
@@ -153,71 +189,5 @@
         border-radius: 6px;
         background: var(--amber);
         color: var(--on-amber);
-        font-weight: 600;
     }
-    .days {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        padding: 2px;
-        border: 1px solid var(--line-strong);
-        border-radius: 8px;
-    }
-    .days button {
-        display: grid;
-        place-items: center;
-        width: 30px;
-        height: 30px;
-        padding: 0;
-        border: 0;
-        border-radius: 6px;
-        background: none;
-        color: var(--ink);
-    }
-    .days button:not(:disabled):hover { background: var(--parchment-2); }
-    .count {
-        min-width: 108px;
-        text-align: center;
-        font-size: 14px;
-        color: var(--ink);
-        font-variant-numeric: tabular-nums;
-    }
-    .count span {
-        padding-bottom: 1px;
-        border-bottom: 2px solid var(--ink);
-        font-weight: 700;
-    }
-    .count span.guess {
-        border-bottom: 1.5px dashed var(--ink-soft);
-        font-weight: 600;
-    }
-    .stay {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        flex-wrap: wrap;
-        margin-left: auto;
-        padding: 2px;
-        border-radius: 6px;
-        background: var(--parchment-2);
-    }
-    .stay > span { padding: 0 6px 0 8px; }
-    .stay button {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        min-height: 30px;
-        padding: 0 10px;
-        border: 0;
-        border-radius: 5px;
-        background: transparent;
-        font-weight: 600;
-        white-space: nowrap;
-    }
-    .stay button[aria-pressed="true"] {
-        background: var(--panel);
-        color: var(--ink);
-        box-shadow: inset 0 0 0 1px var(--line-strong);
-    }
-    .stay button:disabled { opacity: 1; }
 </style>

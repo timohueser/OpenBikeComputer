@@ -1,23 +1,19 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
+    import Callout from './Callout.svelte';
     import TrailMarker from './TrailMarker.svelte';
-    import { trailMarker } from '../../lib/planner/trail-markers';
-    import { networkName, routeKindTitles, routeWebsite, type OverlaySelection } from '../../lib/planner/route-overlays';
-    import type { Coordinate } from '../../lib/planner/map-types';
-    let { selection, onclose, onuse, canPlan, onplan }: {
-        selection: OverlaySelection; onclose: () => void; onuse: () => void;
-        /** Whether a route is in the route catalog, so "Plan this route" can plan it. */
-        canPlan?: (id: number, at: Coordinate) => Promise<'plan' | 'too-long' | 'missing'>;
-        onplan?: (id: number) => void;
-    } = $props();
-    let plannable = $state<Record<number, 'plan' | 'too-long' | 'missing'>>({});
-    $effect(() => {
-        const { routes = [], coordinate } = selection;
-        let current = true;
-        plannable = {};
-        for (const { id } of canPlan ? routes : []) canPlan!(id, coordinate).then(status => { if (current) plannable = { ...plannable, [id]: status }; }, () => {});
-        return () => { current = false; };
+    import { networkLevels, networkScope, routeKindTitles, routeWebsite, type NetworkRoute, type OverlaySelection } from '../../lib/planner/route-overlays';
+    let { selection, theme = 'light', onclose }: { selection: OverlaySelection; theme?: 'light' | 'dark'; onclose: () => void } = $props();
+    // Relations with one name, number and network are one route to a rider: a route and its parts, or its two directions.
+    const routes = $derived.by(() => {
+        const groups = new Map<string, NetworkRoute[]>();
+        for (const route of selection.routes ?? []) {
+            const key = route.name || route.ref ? JSON.stringify([route.name, route.ref, route.network]) : String(route.id);
+            groups.set(key, [...groups.get(key) ?? [], route]);
+        }
+        return [...groups.values()].map(members => ({ route: members[0], website: members.map(route => routeWebsite(route.website)).find(Boolean) }));
     });
+    const levelColor = (rank: number) => networkLevels.find(level => level.rank === Math.min(rank, 3))?.[theme === 'dark' ? 'dark' : 'color'];
     const access: Record<string, { title: string; detail: string }> = {
         construction: { title: 'Under construction', detail: 'OSM maps this section as construction. The router excludes it.' },
         closed: { title: 'No access', detail: 'The mapped rules exclude this travel mode. This is not just a requirement to dismount.' },
@@ -36,60 +32,68 @@
         if ((selection.conditional ?? 0) & bit) return 'Conditional';
         return values?.every(Boolean) ? 'Allowed' : values?.some(Boolean) ? 'One direction' : 'Not allowed';
     }
+    const permissions = $derived([['Riding', permission(selection.riding, 1)], ['Pushing', permission(selection.pushing, 4)], ['Walking', permission(selection.walking, 2)]]);
 </script>
 
-<section class="overlay-details" aria-label={title}>
-    <div class="heading"><strong>{title}</strong><button class="close" aria-label="Close map details" onclick={onclose}><Icon name="close" size={16} /></button></div>
+<Callout label={title} onClose={onclose}>
     {#if selection.kind === 'access'}
-        <b>{[selection.name, selection.ref].filter(Boolean).join(' · ') || 'Road or path'}</b>
+        <header>
+            <span class="glyph warn"><Icon name="lock" size={16} /></span>
+            <div><h2>{title}</h2><p class="meta">{[selection.name, selection.ref].filter(Boolean).join(' · ') || 'Road or path'}</p></div>
+        </header>
+        <!-- The answer first: a word and a symbol for each way to pass. -->
+        <dl class="permissions">
+            {#each permissions as [way, answer] (way)}
+                <div class={{ yes: answer === 'Allowed', no: answer === 'Not allowed' }}><dt>{way}</dt><dd>{#if answer === 'Allowed'}<Icon name="check" size={13} />{:else if answer === 'Not allowed'}<Icon name="close" size={13} />{/if}{answer}</dd></div>
+            {/each}
+        </dl>
         <p>{restriction.detail}</p>
-        <dl class="permissions"><dt>Riding</dt><dd>{permission(selection.riding, 1)}</dd><dt>Pushing a bike</dt><dd>{permission(selection.pushing, 4)}</dd><dt>Walking</dt><dd>{permission(selection.walking, 2)}</dd></dl>
-        <details><summary>Mapped access details</summary><dl>{#each Object.entries(selection.tags ?? {}) as [key, value] (key)}<dt>{key}</dt><dd>{value}</dd>{/each}</dl></details>
-        <a href={`https://www.openstreetmap.org/way/${selection.way}`} target="_blank" rel="noreferrer">View road in OpenStreetMap</a>
+        <details><summary class="sub"><span>Mapped access details</span><Icon name="down" size={15} /></summary><dl class="tags">{#each Object.entries(selection.tags ?? {}) as [key, value] (key)}<dt>{key}</dt><dd>{value}</dd>{/each}</dl></details>
+        <p class="note"><a href={`https://www.openstreetmap.org/way/${selection.way}`} target="_blank" rel="noreferrer">OpenStreetMap</a> · Closure reports are not live.</p>
     {:else}
-        <ul>{#each selection.routes ?? [] as route (route.id)}
-            {@const website = routeWebsite(route.website)}
+        <header>
+            <span class="glyph"><Icon name="route" size={16} /></span>
+            <div><h2>{title}</h2></div>
+        </header>
+        <!-- The badge shows the first of the numbers that OSM joins with ";". -->
+        <ul>{#each routes as { route, website } (route.id)}
+            {@const scope = networkScope(route)}
             <li>
-                {#if route.kind === 'hiking' && route.symbol && trailMarker(route.symbol)}<TrailMarker symbol={route.symbol} description={route.symbol_text ?? ''} />{/if}
-                <div>
-                    {#if website}<a href={website} target="_blank" rel="noreferrer">{route.name || route.ref || 'Unnamed route'}{route.name && route.ref ? ` · ${route.ref}` : ''}</a>
-                    {:else}<b class="route-name">{route.name || route.ref || 'Unnamed route'}{route.name && route.ref ? ` · ${route.ref}` : ''}</b>{/if}
-                    <span>{networkName(route)}</span>
-                    {#if route.kind === 'hiking' && route.symbol_text}<span>{route.symbol_text}</span>{/if}
-                    {#if plannable[route.id] === 'plan'}<button class="plan" onclick={() => onplan?.(route.id)}>Plan this route</button>
-                    {:else if plannable[route.id] === 'too-long'}<span>Too long for one plan · Plan a stage in the Routes view</span>
-                    {:else if plannable[route.id] === 'missing'}<span>Not in the route catalog</span>{/if}
-                </div>
+                <span class="marker"><TrailMarker symbol={route.symbol} description={route.symbol_text ?? ''} ref={route.ref?.split(';')[0]} /></span>
+                <span class="body">
+                    <strong>{route.name || route.ref || 'Unnamed route'}</strong>
+                    {#if scope || website}<small>
+                        {#if scope}<i style:background={levelColor(route.rank)}></i>{scope}{/if}{#if scope && website}{' · '}{/if}
+                        {#if website}<a href={website} target="_blank" rel="noreferrer">{new URL(website).hostname.replace(/^www\./, '')}</a>{/if}
+                    </small>{/if}
+                </span>
             </li>
         {/each}</ul>
     {/if}
-    <p class="source">From the regional OSM snapshot.{selection.kind === 'access' ? ' This is not live closure information.' : ''}</p>
-    <button class="use" onclick={onuse}>Use this location</button>
-</section>
+</Callout>
 
 <style>
-    .overlay-details { position: absolute; z-index: 3; left: 12px; bottom: 38px; width: min(320px, calc(100% - 80px)); max-height: calc(100% - 54px); overflow: auto; padding: 14px; border-radius: 8px; background: var(--panel); box-shadow: var(--planner-shadow); color: var(--ink); font-size: 13px; }
-    .heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
-    strong { font-size: 15px; }
-    b { font-weight: 600; }
-    p { margin: 8px 0; line-height: 1.45; }
-    .source { color: var(--ink-soft); font-size: 12px; margin-top: 12px; }
-    button { cursor: pointer; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font: inherit; }
-    button:hover { background: var(--parchment-2); }
-    .close { display: grid; place-items: center; padding: 6px; border: 0; }
-    .use { width: 100%; margin-top: 4px; }
-    .plan { margin-top: 6px; min-height: 30px; font-weight: 600; font-size: 12.5px; }
-    a { color: var(--link); text-underline-offset: 3px; overflow-wrap: anywhere; }
-    details { margin: 10px 0; }
-    summary { cursor: pointer; }
-    dl { margin: 8px 0; overflow-wrap: anywhere; }
-    dt { color: var(--ink-soft); font-size: 12px; }
-    dd { margin: 0 0 8px; }
-    .permissions { display: grid; grid-template-columns: 1fr auto; gap: 5px 16px; }
-    .permissions dd { margin: 0; font-size: 12px; }
-    ul { margin: 0; padding: 0; list-style: none; }
+    strong { display: block; font: 600 13px/1.4 var(--sans); overflow-wrap: anywhere; }
+    p { color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+    a { overflow-wrap: anywhere; }
+    dl { margin: 0; overflow-wrap: anywhere; }
+    dd { margin: 0; }
+    .permissions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .permissions div { display: grid; gap: 2px; padding: 8px 10px; border-radius: 10px; background: var(--tile); font-size: 12px; }
+    .permissions dt { color: var(--ink-soft); font-size: 11px; }
+    .permissions dd { display: flex; align-items: center; gap: 5px; font-weight: 600; }
+    .yes dd { color: var(--water); }
+    .no dd { color: var(--coral); }
+    summary { list-style: none; }
+    summary::-webkit-details-marker { display: none; }
+    details[open] summary :global(svg) { transform: rotate(180deg); }
+    .tags { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; padding: 8px 4px 0; font-size: 12px; }
+    .tags dt { color: var(--ink-soft); }
+    ul { display: grid; gap: 12px; margin: 0; padding: 0 4px; list-style: none; }
     li { display: flex; align-items: flex-start; gap: 10px; }
-    li + li { margin-top: 12px; }
-    .route-name { font-weight: 500; overflow-wrap: anywhere; }
-    li span { display: block; color: var(--ink-soft); font-size: 12px; margin-top: 3px; }
+    .marker { flex: none; display: flex; min-width: 24px; }
+    .body { flex: 1; min-width: 0; }
+    small { display: block; margin-top: 2px; font: 400 13px/1.4 var(--sans); color: var(--ink-soft); }
+    /* The colour of the route's network on the map. */
+    small i { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; }
 </style>

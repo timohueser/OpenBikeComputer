@@ -81,7 +81,7 @@ export function alongRange(along, range, context) {
   let origin =
     along.ref === 'km' ? 0 : along.ref === 'end' ? range[1] : range[0];
   if (along.ref === 'here') {
-    if (!context.here) throw new Error('Set your location to use “from here”.');
+    if (!context.here) throw Object.assign(new Error('Set your location to use “from here”.'), { code: 'location' });
     const pos = routePositions(line, ds)(context.here);
     if (pos.distance > 1)
       throw new Error('Your location is more than 1 km from the route.');

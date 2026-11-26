@@ -21,17 +21,17 @@ table in [OBCR](src:specs/obcr-route.md), and the device's trip progress record 
 
 ## One line on the phone, day routes on the device
 
-On the phone, a trip is one line with day ends on it. It is not a folder of separate routes. The
+On the phone, a trip is one line with day ends on it, not a folder of separate routes. The
 line and the day ends come from the trip's plan: the same plan object the web planner uses
 ([planner plan](src:specs/planner-plan.md)). The rider edits the plan in the phone's planner, and a
 save makes the line and the day ends from it again.
 
-The device does not know this line. At upload, the phone cuts the line at the day ends into one
-route per day. Each day route has the trip's bike type and a name such as "Day 2 Ulrichen". Then
-the phone writes a small trip object that lists the day routes in ride order. The navigator on the
-device sees only ordinary routes, so every route feature works on a trip day without extra code.
-The phone sends only the day routes that changed, and it sends the trip object last. An
-interrupted upload so never leaves a trip that points at nothing.
+The device does not know this line. At upload, the phone or the web planner cuts the line at the
+day ends into one route per day. Each day route has the trip's bike type and a name such as "Day 2
+Ulrichen". Then it writes a trip object that lists the day routes in ride order. The
+navigator on the device sees only ordinary routes, so every route feature works on a trip day
+without extra code. It sends only the changed day routes, and the trip object last, so an
+interrupted upload never leaves a trip that points at nothing.
 
 ### Day ends are places
 
@@ -51,41 +51,42 @@ and rides belong to a day number, so they stay with that number when the day cou
 An import asks once: keep the file's line, or plan it on roads. When the planner cannot follow
 the line, the phone keeps it and says why. One file is saved as a route and its page opens. When
 the rider shares several files at once, the phone asks to make one trip from them. It proposes an
-order that chains the file ends. The rider can drag the rows into a different order.
+order that chains the file ends; the rider can drag the rows into another order.
 Between two rows, the sheet says "joins" or shows the gap. A trip made from files gets one day per
 file, with the day ends on the file boundaries, and its page opens. Its plan has each file's
 line, kept or planned, with a night at each day end and a transfer leg where the next file starts
-more than 200 m away. A trip has at most 14 days, the limit of the plan format: the phone does not
-add a 15th file and says so in one line. Add to trip and Group into trip keep each route's line as
-a drawn leg.
+more than 200 m away. A trip has at most 32 days, the size of the device's trip progress record: the
+phone does not add a 33rd file and says so in one line. Add to trip and Group into trip keep each
+route's line as a drawn leg.
 
 ### Days in the planner
 
-In the web planner, a "Multi-day trip" plan splits its route into riding days. The elevation
-profile is the timeline. Each day has a label with its date, distance and riding time, each night
-has a marker, and each rest day has a narrow column. While the profile is open, a row above it
-holds the start date, the day count and the kinds of places to sleep.
+In the web planner, one row above the stops holds the route shape, the day count and the start
+date. "There and back" returns the route through the same points, so the rider plans only the way
+out. "+" makes a route a multi-day trip, and "−" from the lowest count undoes it. With a start date,
+each day shows its date. The stay kinds are in the route preferences.
+In the list, a day is a card. Its number has the colour of its line on the
+map. The card shows where the day starts and ends, its distance, climb and riding time, its elevation
+profile, and below them its night. The elevation profile is the timeline: days by colour and
+night markers. From 15 riding days, a strip of all days frames one week: the list, profile, map and
+town search show only that week; the map draws the other days thin and grey. A trip has at most 64
+riding days. Above 32, the device gets two trips: "Alps 1/2" and "Alps 2/2".
 
-A guessed value has a dashed line, and a value that the rider set has a solid line. The planner
-guesses the day count from the riding time at the plan's pace. After each route or pace change, it
-guesses the count and the suggested nights again. Pinned nights and a set day count stay. When the
-guess has fewer nights, what the rider set on a lost night goes with it; Undo brings it back. The
-day count is the only control for the length of the days. A bar for the riding time of each day
-shows the hard days.
+A guessed day count is grey and dotted; a set one is dark. The planner guesses the day count from
+the riding time at the plan's pace. After each route or pace change, it guesses the count and the
+suggested nights again. Pinned nights and a set count stay. When the guess has fewer nights,
+what the rider set on a lost night goes with it; Undo brings it back.
 
-"Choose" or "Change" on a night, or its marker in the profile, opens the night in the day list.
-"Stay here" on a town moves the night there, and so does a drag of the day end. "Stay here" on a
-campsite or a hotel keeps the night. A kept night is a place, with a filled marker. A moved night is
-a point on the route, with a dotted marker on the map. "Let the planner choose" makes the night a
-suggestion again. "This night" sets other kinds of places for this night only. A night of one kind
-only (campsites, huts or shelters) ends at a place of that kind. Other nights end in the town, as
-"Around Ulrichen", because the planner cannot pick a hotel in the rider's price range. With a start
-date, each night shows its sunset and its usual night temperature.
-
-The plus sign between two days adds a rest day or a train or bus. The next day starts where the
-train or bus arrives. When the arrival is on the route ahead, the train or bus skips the route
-between. A night that a train or bus leaves from is kept, and it cannot move until the rider
-removes the train or bus.
+"Choose" or "Change" on a night, or its profile marker, opens the night between the cards of its
+two days. Its stops are in route order: towns, and places on their own. The two cards show the
+days as they become with the stop under the pointer, so the rider compares before a click. A stop
+opens in place, and one button ends the day in the town or at a place selected in it. "All days" or
+Escape goes back one level. The town moves the night, as does a drag of the day end. A campsite or
+a hotel keeps it. A kept night is a place, with a filled marker. A moved night is a point on the
+route, with a dotted marker. "Let the planner choose" makes the night a suggestion again. The night
+sets other kinds for itself only. A night of one kind only (campsites, huts or shelters) ends at a
+place of that kind. Other nights end in the town, as "Sleep near Ulrichen", because the planner
+cannot pick a hotel in the rider's price range.
 
 The plan stores which values the rider set ([planner plan](src:specs/planner-plan.md)).
 
@@ -93,12 +94,16 @@ On the phone, "Edit" on the trip page opens the phone's planner, where "End day 
 Save offers "Save changes", which writes the plan into the trip, and "Save as copy…", which makes a
 new trip.
 
-### Saved versions
+### Save and copies
 
-The Version menu in the top bar switches between the saved versions. A switch first writes the open
-plan back into its version, so no work is lost. "Compare versions" shows both routes on one map,
-the days of both versions side by side with their riding time, and both elevation profiles on one
-scale. The compare screen has no share button, because the planner keeps plans only in the browser.
+The planner stores a route at "Save"; the first save asks for its name. Until then, changes stay
+in the browser as a draft. Before another route opens, the planner asks to save or discard
+them.
+
+### Compare routes
+
+"Compare routes…" in "More" shows two saved routes on one map, their days side by side with
+riding times, and both elevation profiles on one scale.
 
 ### Transfers
 
@@ -107,11 +112,10 @@ a bus or a ferry. The phone and the device derive this from the two day routes. 
 has no field for it. 200 m is also the distance at which the device's START RIDE asks how to get
 to the start, so that prompt covers the way to the next start.
 
-In the plan, a transfer is a leg mode: "Transfer (not ridden)" in the leg menu, or "Train or bus"
-between two days of the day list. The planner draws it as a muted dashed straight line and does not
-count it in distance, time, climb or the day figures; the profile has a gap there. A trip saved
-from the plan has a gap in its line at each transfer, so the day routes and the trip totals do not
-contain it.
+In the phone's planner, a transfer is a leg mode: "Transfer (not ridden)" in the leg menu. The
+planner draws it as a muted dashed straight line and does not count it in distance, time, climb or
+the day figures; the profile has a gap there. A trip saved from the plan has a gap in its line at
+each transfer, so the day routes and the trip totals do not contain it.
 
 In the journal, the rider can label a transfer as Train, Bus, Ferry or Car. The label never goes
 to the device.
@@ -142,9 +146,8 @@ early stop, the row first builds the joined route.
 
 ### Stopping early
 
-A rider does not always reach the planned day end. When the rider finishes 20 km before the end of
-Day 2, Day 3 is next. The device then builds the next day itself: the rest of Day 2, then Day 3. It
-uses the same splice code as detours and visits
+When the rider finishes 20 km before the end of Day 2, Day 3 is next. The device then builds the
+next day itself: the rest of Day 2, then Day 3. It uses the same splice code as detours and visits
 ([`splice.rs`](src:firmware/obc-route/src/splice.rs)), so the navigator receives an ordinary route.
 
 <figure class="fig">
@@ -184,9 +187,8 @@ tomorrow's profile. After an early stop, tomorrow is the rest of Day 2 and Day 3
 card loads it. After the last day, **TRIP DONE** shows today's ledger, the trip name, the day count
 and the totals of the trip's rides.
 
-The opt-in data field **Trip to go** (tile caption TRIP KM) shows the rest of the loaded day plus
-the routes of the later days. A transfer is not ridden, so it does not count. The rider adds the
-field in the data-field editor.
+The opt-in data field **Trip to go** (tile caption TRIP KM, in the data-field editor) shows the rest
+of the loaded day plus the routes of the later days, without transfers.
 
 Each ride records its trip key, its day, the trip name and the bike type in its footer. So the
 device and the phone group the rides of a trip without dates, and the device's ride list shows
@@ -235,8 +237,8 @@ rows.
 
 ### Library, sharing and editing
 
-The rides list has a year menu and bike-type filters, a totals card, and a map with every ride on
-it. The rider can share a ride as a GPX file or as an image, or save it as a route. A saved route
+The rides list has a year menu and bike-type filters, a totals card, and a map of every ride. The
+rider can share a ride as a GPX file or as an image, or save it as a route. A saved route
 keeps the ride's line and bike type, and its page opens.
 
 The rider can trim a ride or merge it with the next ride. When the next ride starts

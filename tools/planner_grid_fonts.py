@@ -8,8 +8,9 @@ import tempfile
 
 from . import planner_mvt as mvt, planner_grid_pack as pack, planner_offline as offline, step_request
 
-# A copy of the basemap text fields: protomaps `layers(..., {lang: "en"})` and `planner-poi-icons`
-# in `map-style.ts`. A style, `lang` or protomaps change must update it.
+# A copy of the basemap text fields: protomaps `layers(..., {lang: "en"})` in `map-style.ts`, and
+# the place names: `planner-poi-icons` in `companion-ios/ReplayAssets/prepare.mjs` and `PlaceMarks.svelte`. A style,
+# `lang` or protomaps change must update it.
 LABEL_KEYS ={"name", "name:en", "pgf:name", "name2", "pgf:name2", "name3", "pgf:name3",
               "ref", "ref:en", "shield_text", "addr_housenumber"}
 

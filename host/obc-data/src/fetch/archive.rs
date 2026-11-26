@@ -1,6 +1,6 @@
 //! The archive in `OBC_DATA_ARCHIVE`: whole datasets on drives of their own. The variable names one
 //! or more roots, each a complete archive. A file of an `https://` URL is at `mirror/<host>/<path>`
-//! of its root. The manifest `manifest/<dataset>.json` lists each file of a dataset by that path
+//! of its root, and the answer of a URL with a query at the path that [`http::shown`] gives. The manifest `manifest/<dataset>.json` lists each file of a dataset by that path
 //! with its size in `bytes` and its `sha256`, and gives the `version` of the dataset. The archive
 //! serves only a listed file of the listed size: an unlisted file can be one that is still
 //! downloading. A problem of the archive is a warning and no file, so that it never stops a fetch
@@ -157,7 +157,7 @@ impl Archive {
         Some(roots()).filter(|roots| !roots.is_empty()).map(Self::new)
     }
 
-    /// The file of an `https://` URL without a query, a fragment or a `.` or `..` segment.
+    /// The file of an `https://` URL without a fragment or a `.` or `..` segment.
     pub fn find(&self, url: &str) -> Option<Held> {
         self.held(&mirror_path(url)?)
     }
@@ -210,10 +210,11 @@ impl Archive {
     }
 }
 
-/// `mirror/<host>/<path>` of an `https://` URL without a query, a fragment or a `.` or `..` segment.
+/// `mirror/<host>/<path>` of an `https://` URL without a fragment or a `.` or `..` segment, its query
+/// [`http::shown`]: no file name holds a query.
 pub fn mirror_path(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://").filter(|rest| !rest.contains(['?', '#']))?;
-    Some(format!("mirror/{rest}")).filter(|path| confined(path))
+    let rest = url.strip_prefix("https://").filter(|rest| !rest.contains('#'))?;
+    Some(format!("mirror/{}", http::shown(rest))).filter(|path| confined(path))
 }
 
 impl Held {
@@ -416,5 +417,16 @@ mod tests {
         assert!(Archive::new(vec![first.clone(), bare.clone()]).sha256s().is_none(), "a root without `manifest/`");
         std::fs::create_dir_all(bare.join("manifest")).unwrap();
         assert!(Archive::new(vec![first, bare]).sha256s().is_none(), "a root without a manifest");
+    }
+
+    #[test]
+    fn the_mirror_path_of_a_url_with_a_query_holds_a_digest_of_the_query() {
+        let url = "https://example.org/wfs?REQUEST=GetFeature&TYPENAMES=a:b";
+        let path = mirror_path(url).unwrap();
+        assert!(path.starts_with("mirror/example.org/wfs@") && !path.contains(['?', '=', '&', ':']), "{path}");
+        assert_eq!(format!("https://{}", &path["mirror/".len()..]), http::shown(url));
+        assert_ne!(path, mirror_path("https://example.org/wfs?REQUEST=GetFeature&TYPENAMES=a:c").unwrap());
+        assert_eq!(mirror_path("https://example.org/wfs").unwrap(), "mirror/example.org/wfs");
+        assert!(mirror_path("https://example.org/wfs#x").is_none());
     }
 }

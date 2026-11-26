@@ -7,7 +7,12 @@ export default {
   // A small, rounded tree, often on two stems, with smooth grey bark.
   fork: 0.3,
   crown: [0.6, 0.4, 0.38, 0.38],
+  shape: t => Math.sin(Math.PI * Math.min(1, 0.2 + 0.8 * t)) ** 0.6,
+  clumps: 11,
+  billows: 3,
+  heads: { count: 90, width: 0.05, height: 1.2 },
   stems: 2,
+  leaders: true,
   trunk: 0.03,
   flare: 1.3,
   bark: ['#5e605a', '#8e928a'],

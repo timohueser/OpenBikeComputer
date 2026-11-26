@@ -121,7 +121,7 @@
                     {/if}
                 </li>
                 <li>Open <a href="#/">Bake</a>, choose a small area, and bake it. A small box takes a few minutes.</li>
-                <li>Start <b>Serve</b> and open the web planner or the map builder from there.</li>
+                <li>Start <b>Serve</b> and open the web app from there.</li>
                 <li>Read the <a href="#/overview">Overview</a>: sources on the left, layers in the middle, targets on the right.</li>
             </ol>
         </section>

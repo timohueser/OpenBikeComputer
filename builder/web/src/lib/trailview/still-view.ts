@@ -13,12 +13,12 @@ const RAD = Math.PI / 180;
 const HEADING_STEP = 30, SUN_DEG = 60;
 /** The tilts that the search tests, from the flattest to the steepest; it halves their range down to TILT_STEP. */
 const FLAT = -20, STEEP = -89, TILT_STEP = 2;
-/** The share of the route that a view must show. */
+/** The share of the points of the lines that a view must show. */
 const SHOWN = 0.85;
-/** Each point of the route stays inside this share of the half width and the half height. */
+/** Each point of a line stays inside this share of the half width and the half height. */
 const FILL = 0.9;
-/** The points of the route that the search tests: 200 resolve the shown share to 0.5 %. */
-const POINTS = 200;
+/** The points of the lines that the search tests, shared by their lengths: 200 resolve the shown share to 0.5 %. A line gets at least LEAST_POINTS, so many lines get more. */
+const POINTS = 200, LEAST_POINTS = 3;
 /** A point stands this far above the ground. The ground hides it when it comes this near the line of sight: the clearance stands for trees. */
 const POINT_M = 1, TREES_M = 20;
 /** The line of sight leaves out this many cells at the point: they hold the point's own ground. */
@@ -43,19 +43,19 @@ interface Axes { forward: Vec; right: Vec; up: Vec }
 interface Candidate { eye: Vec; distance: number; heading: number; pitch: number; axes: Axes }
 
 /**
- * The cover view of a line of [lon, lat] points for an image of `width` × `height` pixels, with the sun
+ * The cover view of lines of [lon, lat] points for an image of `width` × `height` pixels, with the sun
  * at bearing `sun` in degrees: for each heading every HEADING_STEP that does not look within SUN_DEG of
- * the sun, the lowest tilt that shows SHOWN of the route, with the route centred and as near as the frame
- * permits. Of these views it takes the one that draws the route longest on the screen. The search works
- * in metres about the centre of the route, with the curvature of the Earth taken off, as the engine
- * draws it. Undefined when the route is less than LEAST_M across, when no view fits, or when the eye
- * must be higher than MAX_ALTITUDE.
+ * the sun, the lowest tilt that shows SHOWN of the points of the lines, with the lines centred and as
+ * near as the frame permits. Of these views it takes the one that draws the lines longest on the screen.
+ * The search works in metres about the centre of the lines, with the curvature of the Earth taken off, as
+ * the engine draws it. A line of fewer than two points is left out. Undefined when the lines are less than
+ * LEAST_M across, when no view fits, or when the eye must be higher than MAX_ALTITUDE.
  */
-export function chooseView(line: readonly [number, number][], grid: HeightGrid, { width, height, sun }: { width: number; height: number; sun: number }): Camera | undefined {
-    if (line.length < 2) return undefined;
+export function chooseView(lines: readonly (readonly [number, number][])[], grid: HeightGrid, { width, height, sun }: { width: number; height: number; sun: number }): Camera | undefined {
+    const drawn = lines.filter(line => line.length > 1);
+    if (!drawn.length) return undefined;
     const tanV = Math.tan(VFOV / 2 * RAD), tanH = tanV * width / height;
-    const lons = line.map(p => p[0]), lats = line.map(p => p[1]);
-    const frame = frameAt((Math.min(...lons) + Math.max(...lons)) / 2, (Math.min(...lats) + Math.max(...lats)) / 2);
+    const box = boxOf(drawn), frame = frameAt((box[0] + box[2]) / 2, (box[1] + box[3]) / 2);
     const drop = (east: number, north: number) => CURVATURE * (east * east + north * north);
     const cellOf = (lon: number, lat: number) => {
         const [x, y] = worldPixel([lon, lat], grid.size);
@@ -65,10 +65,12 @@ export function chooseView(line: readonly [number, number][], grid: HeightGrid, 
         const i = Math.floor(x), j = Math.floor(y);
         return i >= 0 && j >= 0 && i < grid.width && j < grid.height ? grid.heights[j * grid.width + i] : NaN;
     };
-    const points = resample(line, POINTS).map(([lon, lat]) => {
+    const counts = pointCounts(drawn);
+    // `first` starts a line: the drawn length leaves out the step to it.
+    const points = drawn.flatMap((line, k) => resample(line, counts[k]).map(([lon, lat], i) => {
         const [east, north] = frame.local(lon, lat), [x, y] = cellOf(lon, lat);
-        return { at: [east, north, groundAt(x, y) + POINT_M - drop(east, north)] as Vec, x, y };
-    });
+        return { at: [east, north, groundAt(x, y) + POINT_M - drop(east, north)] as Vec, x, y, first: !i };
+    }));
     if (points.some(({ at }) => Number.isNaN(at[2]))) return undefined;
     const across = (axis: 0 | 1) => Math.max(...points.map(({ at }) => at[axis])) - Math.min(...points.map(({ at }) => at[axis]));
     if (Math.max(across(0), across(1)) < LEAST_M) return undefined;
@@ -119,11 +121,11 @@ export function chooseView(line: readonly [number, number][], grid: HeightGrid, 
         }
         return { ...fitted, heading, pitch, axes };
     };
-    /** The length of the route on the screen in pixels. */
+    /** The length of the lines on the screen in pixels. */
     const length = ({ eye, axes }: Candidate) => {
         const screen = project(eye, axes);
         let sum = 0;
-        for (let i = 1; i < screen.length; i++) sum += Math.hypot((screen[i][0] - screen[i - 1][0]) * width, (screen[i][1] - screen[i - 1][1]) * height) / 2;
+        for (let i = 1; i < screen.length; i++) if (!points[i].first) sum += Math.hypot((screen[i][0] - screen[i - 1][0]) * width, (screen[i][1] - screen[i - 1][1]) * height) / 2;
         return sum;
     };
     /** Heights in the search lie on the plane about the centre: the eye's altitude adds the drop back. */
@@ -155,16 +157,16 @@ export function chooseView(line: readonly [number, number][], grid: HeightGrid, 
 }
 
 /**
- * The cover view of a line of [lon, lat] points (`chooseView`) from the terrain tiles of the release,
- * lit by the sun at the date and the time of the view. The grid comes from the deepest zoom at which the
- * route's box, with PAD of its size beyond it on each side, needs at most MAX_TILES tiles. Undefined when
- * the route leaves the bounds of the release, or when no view fits.
+ * The cover view of lines of [lon, lat] points (`chooseView`) from the terrain tiles of the release, lit
+ * by the sun at the date and the time of the view. A line with a point outside the bounds of the release
+ * is left out. The grid comes from the deepest zoom at which the box of the lines, with PAD of its size
+ * beyond it on each side, needs at most MAX_TILES tiles. Undefined when no line is left, or when no view fits.
  */
-export async function coverView(line: readonly [number, number][], config: PlannerConfig, { width, height, date, time, weather }: { width: number; height: number } & Pick<View, 'date' | 'time' | 'weather'>): Promise<View | undefined> {
+export async function coverView(lines: readonly (readonly [number, number][])[], config: PlannerConfig, { width, height, date, time, weather }: { width: number; height: number } & Pick<View, 'date' | 'time' | 'weather'>): Promise<View | undefined> {
     const [west, south, east, north] = config.bounds;
-    if (!line.length || line.some(([lon, lat]) => lon < west || lon > east || lat < south || lat > north)) return undefined;
-    const lons = line.map(p => p[0]), lats = line.map(p => p[1]);
-    const box = [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)], centre: [number, number] = [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2];
+    const inside = lines.filter(line => line.length && line.every(([lon, lat]) => lon >= west && lon <= east && lat >= south && lat <= north));
+    if (!inside.length) return undefined;
+    const box = boxOf(inside), centre: [number, number] = [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2];
     // The pad is a share of the longer side, in degrees of latitude: a long thin route leaves its eye room to the side.
     const pad = PAD * Math.max((box[2] - box[0]) * Math.cos(centre[1] * RAD), box[3] - box[1]), padLon = pad / Math.cos(centre[1] * RAD);
     const tilesAt = (z: number) => {
@@ -183,7 +185,7 @@ export async function coverView(line: readonly [number, number][], config: Plann
         instant = instantAt(date, minutes + 60, TIME_ZONE);
     }
     const sun = solarPosition(centre, solarTerms(instant)).bearing / RAD;
-    const camera = chooseView(line, grid, { width, height, sun });
+    const camera = chooseView(inside, grid, { width, height, sun });
     return camera && { ...camera, date, time, weather, debug: 'off', plan: 'off' };
 }
 
@@ -200,11 +202,34 @@ async function heightGrid(config: PlannerConfig, { z, x0, y0, columns, rows }: {
     return { size: TILE * 2 ** z, x0: x0 * TILE, y0: y0 * TILE, width, height, heights };
 }
 
-/** `count` points at even distances along the line. */
-function resample(line: readonly [number, number][], count: number): [number, number][] {
+/** The box of the points of the lines: west, south, east, north. */
+function boxOf(lines: readonly (readonly [number, number][])[]): [number, number, number, number] {
+    let [west, south, east, north] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const line of lines) for (const [lon, lat] of line) {
+        west = Math.min(west, lon);
+        south = Math.min(south, lat);
+        east = Math.max(east, lon);
+        north = Math.max(north, lat);
+    }
+    return [west, south, east, north];
+}
+
+/** The sample points of each line that the search tests: its share of POINTS by its length, and at least LEAST_POINTS. */
+export function pointCounts(lines: readonly (readonly [number, number][])[]): number[] {
+    const lengths = lines.map(line => distances(line).at(-1)!), total = lengths.reduce((sum, length) => sum + length, 0);
+    return lengths.map(length => Math.max(LEAST_POINTS, Math.round(POINTS * length / total || 0)));
+}
+
+/** The distance of each point from the start of the line, in degrees of latitude. */
+function distances(line: readonly [number, number][]): number[] {
     const along = [0];
     for (let i = 1; i < line.length; i++) along.push(along[i - 1] + Math.hypot((line[i][0] - line[i - 1][0]) * Math.cos(line[i][1] * RAD), line[i][1] - line[i - 1][1]));
-    const out: [number, number][] = [];
+    return along;
+}
+
+/** `count` points at even distances along the line. */
+function resample(line: readonly [number, number][], count: number): [number, number][] {
+    const along = distances(line), out: [number, number][] = [];
     for (let s = 0, i = 0; s < count; s++) {
         const t = along.at(-1)! * s / (count - 1);
         while (i < line.length - 2 && along[i + 1] < t) i++;

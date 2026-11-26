@@ -12,7 +12,7 @@ import { stopped } from '../stream/terrain';
 import { CAPS, DeviceCache } from './device-cache';
 import { bridge, planWorker } from '../plan/bridge';
 import { cellInputs, type CellInputs, type StoredTiles } from '../plan/inputs';
-import { HEAP_LIMIT } from '../plan/plan';
+import { BUDGETS, MiB, type Budget } from '../budget';
 import { feature_tiles, wanted } from '../plan/pkg/obc_ground_plan_bridge.js';
 import type { CellBuilt, Failed, Meshed, Missing, PlanRequest } from '../plan/plan-worker';
 import { distances, key, type Node } from './lod';
@@ -31,11 +31,7 @@ export const ROWS = (RECORDS_MB * 2 ** 20) / (MODEL_ROW * 4);
 /** The table's first word, as M_TABLE of model.wgsl, and its cells per side about the eye. */
 const TABLE_MAGIC = 0x4f42540a;
 const TABLE = 48;
-/**
- * Plan workers, and the builds asked for per worker: one runs, and one waits with its inputs for the next free worker.
- * Two workers halve the time to a full view after a jump.
- */
-export const WORKERS = 2;
+/** The builds asked for per plan worker: one runs, and one waits with its inputs for the next free worker. */
 const JOBS = 2;
 /**
  * The rows that a build for rows starts with: free for its block, after the blocks of the nearer cells.
@@ -184,10 +180,11 @@ export class Records {
     /**
      * `meshed` takes each cell's mesh as it arrives, `unmeshed` each cell whose mesh leaves. `cache` names the
      * data of the tiles and the version of the plan worker's input preparation (`virtual:plan-version`): without
-     * it, nothing is cached.
+     * it, nothing is cached. `budget` gives the plan workers and the heap past which a worker starts again.
      */
     constructor(private readonly features: FeatureTiles | undefined, private readonly stored: StoredTiles, private readonly onChange: () => void, private readonly stop: AbortSignal,
-        private readonly meshed: (mesh: CellMeshBytes) => void = () => {}, private readonly unmeshed: (node: Node) => void = () => {}, private readonly cacheKey?: { release: string; version: string }) {
+        private readonly meshed: (mesh: CellMeshBytes) => void = () => {}, private readonly unmeshed: (node: Node) => void = () => {}, private readonly cacheKey?: { release: string; version: string },
+        private readonly budget: Budget = BUDGETS.desktop) {
         stop.addEventListener('abort', () => this.pool.forEach(({ worker }) => worker.terminate()));
         if (!features) {
             this.error = 'the release has no feature tiles';
@@ -208,7 +205,7 @@ export class Records {
             }
             this.words = vocabulary.words.wanted;
             this.module = module;
-            for (let k = 0; k < WORKERS; k++) this.spawn(k);
+            for (let k = 0; k < this.budget.planWorkers; k++) this.spawn(k);
         } catch (error) {
             this.error = `the records bridge did not start: ${error instanceof Error ? error.message : error}`;
             this.onChange();
@@ -256,7 +253,7 @@ export class Records {
      */
     private recycle(k: number): void {
         const slot = this.pool[k];
-        if (slot.heap > HEAP_LIMIT && !slot.jobs.size && !this.asked.length && ![...this.cells.values()].some(cell => cell.worker === k)) this.restart(k);
+        if (slot.heap > this.budget.caps.planHeap * MiB && !slot.jobs.size && !this.asked.length && ![...this.cells.values()].some(cell => cell.worker === k)) this.restart(k);
     }
 
     private receive(k: number, worker: Worker, data: { type: 'ready'; error?: string } | CellBuilt | Meshed | Missing | Failed): void {
@@ -554,7 +551,7 @@ export class Records {
      * cell comes from the device cache, or its build waits for its inputs and then for a free worker.
      */
     private ask(node: Node, distance: number): boolean {
-        if (!this.module || this.asked.length + this.pool.filter(slot => slot.build !== undefined).length >= WORKERS * JOBS) return false;
+        if (!this.module || this.asked.length + this.pool.filter(slot => slot.build !== undefined).length >= this.budget.planWorkers * JOBS) return false;
         const name = key(node), id = this.next++, keep = this.meshWanted.has(name);
         const old = this.cells.get(name);
         // A built cell keeps its block while it builds again for its mesh; an `over` cell keeps its size and its rim.

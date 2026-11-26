@@ -1,0 +1,4 @@
+# The stamp version takes the bytes of the parts bridge's sources: one line ending on every machine.
+host/obc-trailview-parts/** text eol=lf
+builder/trailview-parts-wasm/** text eol=lf
+data/trailview/parts.json text eol=lf

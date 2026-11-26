@@ -27,13 +27,24 @@ pub(crate) struct Line {
     tags: Vec<(&'static str, &'static str)>,
     points: Vec<[f64; 2]>,
     pub z: Vec<f64>,
+    pub grade: Vec<f64>,
     /// Per vertex, the sides of the segment from it on with a sidewalk: 1 left, 2 right.
-    walk: Vec<u8>,
+    pub walk: Vec<u8>,
+    /// The alignment's stroke metres at the first vertex, and whether they run backward.
+    pub plan: (f64, bool),
 }
 
 pub(crate) fn line(kind: &'static str, tags: &[(&'static str, &'static str)], points: &[[f64; 2]]) -> Line {
     let n = points.len();
-    Line { kind, tags: tags.to_vec(), points: points.to_vec(), z: vec![500.0; n], walk: vec![0; n] }
+    Line {
+        kind,
+        tags: tags.to_vec(),
+        points: points.to_vec(),
+        z: vec![500.0; n],
+        grade: vec![0.0; n],
+        walk: vec![0; n],
+        plan: (0.0, false),
+    }
 }
 
 pub(crate) fn road(points: &[[f64; 2]]) -> Line {
@@ -65,10 +76,10 @@ fn feature(l: &Line, tile: (u32, u32), index: u32) -> Feature {
         })
         .collect();
     let plan = Some(Alignment {
-        along_m: 0.0,
-        backward: false,
+        along_m: l.plan.0,
+        backward: l.plan.1,
         tangent,
-        grade: vec![0.0; n],
+        grade: l.grade.clone(),
         bank: vec![0.0; n],
         widen: vec![0.0; n],
         side: vec![0; n],
@@ -181,7 +192,7 @@ fn the_land_between_hairpin_legs_stays_land_past_the_turns_corner_zone() {
 }
 
 #[test]
-fn a_junction_corner_takes_the_lesser_class_radius_and_the_sidewalk_one_on_a_sidewalk_side() {
+fn a_junction_corner_takes_the_lesser_class_radius_and_the_one_walk_radius_where_one_side_walks() {
     // A residential road runs south from a tertiary one, with a sidewalk on its left: the east.
     let host = line("road", &[("highway", "tertiary")], &[[-80.0, 0.0], [0.0, 0.0], [80.0, 0.0]]);
     let mut guest = road(&[[0.0, 0.0], [0.0, 80.0]]);
@@ -196,11 +207,37 @@ fn a_junction_corner_takes_the_lesser_class_radius_and_the_sidewalk_one_on_a_sid
         let c = p.corners.iter().find(|c| (o.x + i64::from(c.centre[0]) > centre.x) == east && c.radius_m > 0.0);
         c.map(|c| c.radius_m).unwrap()
     };
-    let east = residential.corner_radius_walk_m.min(tertiary.corner_radius_walk_m);
+    let east = Rules::embedded().plan.walk.radius_one_walk_m;
     let west = residential.corner_radius_m.min(tertiary.corner_radius_m);
     assert!(east < west);
     assert!((radius(true) - east).abs() < 0.01, "{} m east", radius(true));
     assert!((radius(false) - west).abs() < 0.01, "{} m west", radius(false));
+}
+
+#[test]
+fn a_one_walk_round_shapes_the_kerb_inside_the_seams_of_its_class_corner_round() {
+    // The T of the test above, with and without the sidewalk: the 0.8 m round at the east corner changes the paving
+    // there only. The junction's face reaches as far along each arm as with the class's round, and meets the arms in
+    // straight seams.
+    let host = line("road", &[("highway", "tertiary")], &[[-80.0, 0.0], [0.0, 0.0], [80.0, 0.0]]);
+    let guest = road(&[[0.0, 0.0], [0.0, 80.0]]);
+    let mut walking = guest.clone();
+    walking.walk[0] = 1;
+    let reach = |lines: &[Line]| {
+        let (p, graph) = plan_of(cell(), lines);
+        let bent: Vec<_> =
+            (check::artefacts(&p, &graph).into_iter()).filter(|a| a.kind == check::ArtefactKind::BentBorder).collect();
+        assert!(bent.is_empty(), "{bent:?}");
+        let junction = p.faces.iter().filter(|f| matches!(f.owner, Owner::Junction(_)));
+        let pts: Vec<[i32; 2]> =
+            junction.flat_map(|f| f.rings.iter().flatten().map(|&v| p.vertices[v as usize])).collect();
+        let x = pts.iter().map(|q| q[0]);
+        [x.clone().min().unwrap(), x.max().unwrap(), pts.iter().map(|q| q[1]).max().unwrap()]
+    };
+    let (plain, walk) = (reach(&[host.clone(), guest]), reach(&[host, walking]));
+    for k in 0..3 {
+        assert!((plain[k] - walk[k]).abs() <= 2 * slice::PRECISION, "{plain:?} {walk:?}");
+    }
 }
 
 #[test]
@@ -333,7 +370,7 @@ fn a_face_that_the_precision_cuts_in_two_keeps_its_hole_in_the_part_that_holds_i
             }
         })
         .collect();
-    let plan = output(cell(), 0, &Map::new(snap_round(&patches)), &labels, FaceStats::default());
+    let plan = output(cell(), 0, &Map::new(snap_round(&patches)), &labels, None, FaceStats::default());
     assert!(partition(&plan, win).is_empty());
     let parts: Vec<&Face> = plan.faces.iter().filter(|f| f.surface == Surface::Carriageway).collect();
     assert_eq!(parts.len(), 2, "the collapsed neck splits the face");
@@ -726,31 +763,35 @@ fn a_stop_mouth_between_two_widths_widens_the_narrow_arm_without_a_step() {
     assert_eq!(keeps_route(&words, jr, [0.2, narrow + 0.1]), None);
 }
 
+/// The segments on the cell line x = `CELL_UNITS` after the slice of `window` and the snap rounding,
+/// each with the winding of `rings` in its patch. The rings get their tile-line points first, as
+/// `candidates` gives them.
+fn sides_on_cell_line(window: [i32; 4], rings: &Rings) -> Vec<([P; 2], i32)> {
+    let c = CELL_UNITS as i32;
+    let rings: Rings = rings.iter().map(|r| geom::with_grid_lines(r, slice::TILE)).collect();
+    let (patches, _) = slice(window, &rings, &[]);
+    let snapped = snap_round(&patches);
+    let at = |i: u32| snapped.verts[i as usize];
+    let mut on: Vec<([P; 2], i32)> = (patches.iter().zip(&snapped.patches))
+        .flat_map(|(patch, segs)| {
+            let winding = inner_point(patch).map_or(0, |q| geom::winding(&rings, q));
+            segs.iter().map(move |&[a, b]| ([at(a), at(b)], winding))
+        })
+        .filter(|([a, b], _)| a[0] == c && b[0] == c)
+        .map(|([a, b], winding)| (if a < b { [a, b] } else { [b, a] }, winding))
+        .collect();
+    on.sort_unstable();
+    on
+}
+
 #[test]
 fn two_cells_give_one_side_to_their_line_where_an_edge_passes_a_tile_corner_on_it() {
     // A ring's edge leaves the cell line x = C at y = t + 27 or t + 15 and crosses the tile line y = t
     // 0.53 or 0.30 units off the cell line, beside the tile corner (C, t); or it crosses the cell line
-    // at that corner. Each also mirrored and reversed. Per window, the segments on the cell line after
-    // the snap rounding, each with whether its patch lies in the ring, which goes through `prepare`
-    // twice (as `split_legs` does) and then gets its tile-line points, as `candidates` gives them.
+    // at that corner. Each also mirrored and reversed. The ring goes through `prepare` twice, as
+    // `split_legs` does.
     let (c, t) = (CELL_UNITS as i32, 7 * slice::TILE as i32);
-    let sides = |window: [i32; 4], ring: &[P]| {
-        let rings: Rings =
-            prepare(&prepare(&vec![ring.to_vec()])).iter().map(|r| geom::with_grid_lines(r, slice::TILE)).collect();
-        let (patches, _) = slice(window, &rings, &[]);
-        let snapped = snap_round(&patches);
-        let at = |i: u32| snapped.verts[i as usize];
-        let mut on: Vec<([P; 2], bool)> = (patches.iter().zip(&snapped.patches))
-            .flat_map(|(patch, segs)| {
-                let inside = inner_point(patch).is_some_and(|q| geom::winding(&rings, q) != 0);
-                segs.iter().map(move |&[a, b]| ([at(a), at(b)], inside))
-            })
-            .filter(|([a, b], _)| a[0] == c && b[0] == c)
-            .map(|([a, b], inside)| (if a < b { [a, b] } else { [b, a] }, inside))
-            .collect();
-        on.sort_unstable();
-        on
-    };
+    let sides = |window: [i32; 4], ring: &[P]| sides_on_cell_line(window, &prepare(&prepare(&vec![ring.to_vec()])));
     let wedge = |on: [P; 2], low: P| {
         vec![[c - 40, t + 300], on[0], on[1], low, [c + 300, t - 379], [c + 300, t + 300], [c, t + 300]]
     };
@@ -769,5 +810,327 @@ fn two_cells_give_one_side_to_their_line_where_an_edge_passes_a_tile_corner_on_i
         let east = sides([c, t - 400, c + 400, t + 400], &ring);
         assert!(west.len() >= 3, "{west:?}");
         assert_eq!(west, east, "ring {ring:?}");
+    }
+}
+
+#[test]
+fn two_cells_give_one_side_to_their_line_where_two_edges_cross_each_other_beside_it() {
+    // Two rings' edges leave the cell line x = C at y and y + 4 and cross each other at (C + 0.04,
+    // y + 2); also mirrored. Only the cell on that side computes the crossing, and its snap rounding
+    // puts the crossing on the cell line.
+    let (c, y) = (CELL_UNITS as i32, 3 * slice::TILE as i32 + 1000);
+    let a = vec![[c - 300, y], [c, y], [c + 68, y + 3450], [c - 300, y + 3450]];
+    let b = vec![[c - 300, y - 3446], [c + 68, y - 3446], [c, y + 4], [c - 300, y + 4]];
+    let sides = |square: [i32; 4], window: [i32; 4], rings: &Rings| {
+        let mut rings = prepare(rings);
+        merge_crossings(square, &mut [&mut rings], &mut Vec::new());
+        sides_on_cell_line(window, &rings)
+    };
+    let mirror = |r: &Vec<P>| r.iter().map(|p| [2 * c - p[0], p[1]]).collect::<Vec<P>>();
+    for rings in [vec![a.clone(), b.clone()], vec![mirror(&a), mirror(&b)]] {
+        let west = sides([0, 0, c, c], [c - 400, y - 400, c, y + 400], &rings);
+        let east = sides([c, 0, 2 * c, c], [c, y - 400, c + 400, y + 400], &rings);
+        assert!(!west.is_empty());
+        assert_eq!(west, east, "rings {rings:?}");
+    }
+}
+
+#[test]
+fn two_edges_that_meet_at_a_vertex_beside_a_cell_line_keep_their_crossings_apart() {
+    // The tip 2 units off the line is a vertex, which no snap moves onto the line.
+    let (c, y) = (CELL_UNITS as i32, 3 * slice::TILE as i32 + 1000);
+    let spike = vec![vec![[c - 300, y], [c, y], [c + 2, y + 50], [c, y + 100], [c - 300, y + 100]]];
+    let mut rings = prepare(&spike);
+    merge_crossings([0, 0, c, c], &mut [&mut rings], &mut Vec::new());
+    assert_eq!(rings, spike);
+}
+
+/// A residential road through a bore of 120 m under ground 3.1 m over the road: storey 0 and the floor are one map,
+/// the bore is the prism under storey 0's triangles, and the cover holds the least room over the floor (its lift lies
+/// within `lift_max_m`).
+#[cfg(feature = "bores")]
+#[test]
+fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
+    use crate::mesh::shell::{closure, mesh_storeys_with};
+    use crate::mesh::{mesh_cell, Reads, NO_LABEL};
+    let key = cell();
+    let levels = ("levels", "O 40 P B 160 P O");
+    let bore = line("tunnel", &[("highway", "residential"), ("tunnel", "yes"), levels], &[[-100.0, 0.0], [100.0, 0.0]]);
+    let mut input = input_of(key, &[bore]);
+    input.terrain = plane(key, &|_, _| 503.1);
+    let rules = Rules::embedded();
+    let b = crate::cell::build_input(&input, rules);
+    let m0 = mesh_cell(&b.faces, &b.records, &Reads::of(&b.faces, &[]), &mut || 0.0).unwrap();
+    let m = mesh_storeys_with(key, &b.storeys, &b.records, &rules.structures, Some(&m0)).unwrap();
+    assert!(b.storeys.plans.iter().any(|p| p.level < 0), "a storey under the ground");
+    assert!(!b.storeys.portals.is_empty(), "pieces on the portal lines");
+    assert!(closure(&m).is_empty(), "{:?}", closure(&m));
+    let t = |p: P| {
+        input.terrain.height(GlobalPoint { x: key.origin().x + i64::from(p[0]), y: key.origin().y + i64::from(p[1]) })
+    };
+    let h0 = |k: usize| {
+        let (p, l, terrain) = m0.corner(k);
+        let t = t(p).unwrap();
+        if terrain || l == NO_LABEL {
+            t
+        } else {
+            heights::height_at(&b.records, [f64::from(p[0]), f64::from(p[1])], Some(l), t).h
+        }
+    };
+    // The floor's triangles by their points, and the lids: storey 0's corners of the triangles on the same points.
+    let points = |t: &[u32; 3], c: &dyn Fn(u32) -> P| {
+        let mut p = t.map(c);
+        p.sort_unstable();
+        p
+    };
+    let floors: std::collections::BTreeSet<[P; 3]> =
+        m.triangles[m.part(0)].iter().map(|t| points(t, &|k| m.corner(k as usize).0)).collect();
+    let mut ground: BTreeMap<P, Vec<f64>> = BTreeMap::new();
+    for t in &m0.triangles {
+        if floors.contains(&points(t, &|k| m0.corner(k as usize).0)) {
+            for &k in t {
+                ground.entry(m0.corner(k as usize).0).or_default().push(h0(k as usize));
+            }
+        }
+    }
+    let sec = rules.sections.way("road", &[("highway".to_string(), "residential".to_string())].into(), false);
+    // The floor's and the roof's heights by point.
+    let by_point = |part: std::ops::Range<usize>| {
+        let mut out: BTreeMap<P, f64> = BTreeMap::new();
+        for &k in m.triangles[part].iter().flatten() {
+            let h = m.corner_height(k as usize, &b.records, &input.terrain);
+            let e = out.entry(m.corner(k as usize).0).or_insert(h);
+            *e = e.min(h);
+        }
+        out
+    };
+    let (floor, roof) = (by_point(m.part(0)), by_point(m.part(1)));
+    let mut corners = 0;
+    for (p, &hf) in &floor {
+        // One map: every floor triangle is a triangle of storey 0's mesh.
+        let lid = ground.get(p).expect("a floor point is a point of storey 0's triangles over the floor");
+        // The prism: the roof lies its plate under storey 0 at the point, and the cover holds the least room.
+        let (least, hr) = (lid.iter().copied().fold(f64::INFINITY, f64::min), roof[p]);
+        assert!(hr <= least - sec.roof_least_m + 1e-3, "{p:?}: roof {hr} under storey 0 {least}");
+        assert!(hr - hf >= sec.bore_least_m - 1e-3, "{p:?}: room {} under the cover", hr - hf);
+        let lift = lid.iter().copied().fold(f64::NEG_INFINITY, f64::max) - t(*p).unwrap();
+        assert!(lift <= rules.structures.lift_max_m + 1e-3, "{p:?}: the cover {lift} m over the terrain");
+        corners += 1;
+    }
+    assert!(corners > 100, "{corners} floor corners");
+    // The way's cut ends square on the portal line (x −60): in front of it the ground beside the way lies in the
+    // cut, behind it the ground beside the cover is the terrain.
+    let ground_at = |x: f64, y: f64| {
+        let o = key.origin();
+        let g = at([x, y]);
+        let q = [(g.x - o.x) as f64, (g.y - o.y) as f64];
+        heights::height_at(&b.records, q, records::find(&b.records, q), 503.1).h
+    };
+    for y in [-6.0, 6.0] {
+        assert!(ground_at(-62.0, y) < 503.1 - 0.5, "in front of the portal line at {y}: {}", ground_at(-62.0, y));
+        assert!(ground_at(-58.0, y) >= 503.1 - 1e-3, "behind the portal line at {y}: {}", ground_at(-58.0, y));
+    }
+}
+
+/// The slant of the ways into the hill (`entrance`): storey 0's corners on a portal line lie off it by a few frame
+/// units.
+#[cfg(feature = "bores")]
+const SLANT: [f64; 2] = [0.94, 0.341];
+
+/// A hill over metres along the slant: level at 500 m, rising from 80 m before the cell's centre to 506 m.
+#[cfg(feature = "bores")]
+fn hill(along: f64) -> f64 {
+    500.0 + ((along + 80.0) * 0.3).clamp(0.0, 6.0)
+}
+
+/// A residential tunnel way at 500 m along the slant, `off` metres to its left, from 100 m before the cell's centre to
+/// 100 m past it, with its `levels`.
+#[cfg(feature = "bores")]
+fn tube(off: f64, levels: &'static str) -> Line {
+    let (u, n) = (SLANT, [-SLANT[1], SLANT[0]]);
+    let ends = [-100.0, 100.0].map(|a| [a * u[0] + off * n[0], a * u[1] + off * n[1]]);
+    line("tunnel", &[("highway", "residential"), ("tunnel", "yes"), ("levels", levels)], &ends)
+}
+
+/// Storey 0's seams at the portals of a cell.
+#[cfg(feature = "bores")]
+struct Seams {
+    /// The largest step off the portal lines (within 10 m of one) between the cover and a ground face beside it.
+    step: f64,
+    /// The count of those slots.
+    sides: usize,
+    /// The largest difference between a ground corner on a portal line (within 2 cm) and its own face 3 cm to its side:
+    /// behind the line for the cover, in front of it for every other face.
+    side: f64,
+    /// The least height over the terrain of the ground within 12 m behind the first way's portal line and 14 m beside
+    /// its centre line.
+    under: f64,
+}
+
+/// A cell built from `ways` over the hill, storey 0's mesh and its seams at the portals.
+#[cfg(feature = "bores")]
+fn entrance(ways: &[Line]) -> (crate::cell::CellBuild, Terrain, crate::mesh::CellMesh, Seams) {
+    use crate::mesh::{mesh_cell, Reads, NO_LABEL};
+    let key = cell();
+    let mut input = input_of(key, ways);
+    let (centre, u) = (at([0.0, 0.0]), SLANT);
+    input.terrain = plane(key, &|x, y| hill(x * u[0] + y * u[1]));
+    let b = crate::cell::build_input(&input, Rules::embedded());
+    let m0 = mesh_cell(&b.faces, &b.records, &Reads::of(&b.faces, &[]), &mut || 0.0).unwrap();
+    let o = key.origin();
+    // Metres along the slant and to its left of a point from a point.
+    let rel = |p: [f64; 2], from: [f64; 2]| {
+        let v = [(p[0] - from[0]) * mpu(), (p[1] - from[1]) * mpu()];
+        [v[0] * u[0] + v[1] * u[1], v[1] * u[0] - v[0] * u[1]]
+    };
+    let f = |p: P| [f64::from(p[0]), f64::from(p[1])];
+    // The portal points (the joints of a ground way and a bore), each with the sign of the slant into its bore: toward
+    // the cell's centre, which every bore holds.
+    let mid = [(centre.x - o.x) as f64, (centre.y - o.y) as f64];
+    let level = |a: &crate::graph::Arm| b.graph.ways[a.way as usize].level;
+    let portals: Vec<([f64; 2], f64)> = (b.graph.joints.iter())
+        .filter(|j| {
+            j.arms.iter().any(|a| level(a) == Level::Tunnel) && j.arms.iter().any(|a| level(a) == Level::Ground)
+        })
+        .map(|j| (f(j.pos), rel(mid, f(j.pos))[0].signum()))
+        .collect();
+    // Metres past the nearest portal line within its way's reach (negative in front of it), and the slant into its bore.
+    let past = |p: P| {
+        let near = portals.iter().map(|&(x, into)| (rel(f(p), x), into)).filter(|(r, _)| r[1].abs() < 13.0);
+        let nearest = near.min_by(|a, c| a.0[0].abs().total_cmp(&c.0[0].abs()));
+        nearest.map_or((f64::INFINITY, 1.0), |(r, into)| (r[0] * into, into))
+    };
+    let t = |p: P| input.terrain.height(GlobalPoint { x: o.x + i64::from(p[0]), y: o.y + i64::from(p[1]) }).unwrap();
+    let surface = |l: u32| (l != NO_LABEL).then(|| records::label(&b.records, l)[0] & 0xff);
+    let ground = |l: u32| {
+        surface(l).is_none_or(|s| [Surface::Terrain, Surface::Slope, Surface::Cover].map(|x| x as u32).contains(&s))
+    };
+    let cover = |l: u32| surface(l) == Some(Surface::Cover as u32);
+    let at_label = |q: [f64; 2], l: u32, t: f64| heights::height_at(&b.records, q, Some(l), t).h;
+    let h0 = |k: usize| {
+        let (p, l, terrain) = m0.corner(k);
+        if terrain || l == NO_LABEL {
+            t(p)
+        } else {
+            at_label(f(p), l, t(p))
+        }
+    };
+    let mut seams = Seams { step: 0.0, sides: 0, side: 0.0, under: f64::INFINITY };
+    // A slot is [a left, b left, b right, a right].
+    for s in &m0.steps {
+        let [a, b2, c, d] = s.map(|k| k as usize);
+        let (la, ld) = (m0.corner(a).1, m0.corner(d).1);
+        let (ma, mb) = (past(m0.corner(a).0).0, past(m0.corner(b2).0).0);
+        let on_line = ma.abs() < 0.05 && mb.abs() < 0.05;
+        if cover(la) == cover(ld) || !ground(la) || !ground(ld) || on_line || ma.abs().min(mb.abs()) > 10.0 {
+            continue;
+        }
+        seams.step = seams.step.max((h0(a) - h0(d)).abs().max((h0(b2) - h0(c)).abs()));
+        seams.sides += 1;
+    }
+    // The first way's first portal: on its centre line, the nearer to the start.
+    let ours = portals.iter().map(|x| x.0).filter(|&x| rel(x, mid)[1].abs() < 1.0);
+    let first = ours.min_by(|a, c| rel(*a, mid)[0].total_cmp(&rel(*c, mid)[0]));
+    for k in 0..m0.corners.len() {
+        let (p, l, terrain) = m0.corner(k);
+        if terrain || l == NO_LABEL || !ground(l) {
+            continue;
+        }
+        let (m, into) = past(p);
+        if m.abs() < 0.02 {
+            // Its face's side: behind the line for the cover, in front for every other face.
+            let side = if cover(l) { 0.03 } else { -0.03 } * into / mpu();
+            let q = [f(p)[0] + side * u[0], f(p)[1] + side * u[1]];
+            seams.side = seams.side.max((h0(k) - at_label(q, l, t(p))).abs());
+        }
+        let r = first.map_or([f64::NAN; 2], |x| rel(f(p), x));
+        if (0.02..12.0).contains(&r[0]) && r[1].abs() < 14.0 {
+            seams.under = seams.under.min(h0(k) - t(p));
+        }
+    }
+    (b, input.terrain, m0, seams)
+}
+
+/// Twin bores side by side into a hill at a slant, their portals 10 m apart along it: the cover's end parts each way's
+/// cut in front of its portal line from the ground behind it, and the ground behind it, also the other way's slope
+/// band beside the first bore, meets the cover with no step off the line; a corner on a portal line reads its face's
+/// side; the mouth keeps the least room.
+#[cfg(feature = "bores")]
+#[test]
+fn the_ground_beside_the_cover_meets_it_with_no_step() {
+    use crate::mesh::shell::mesh_storeys_with;
+    let (b, terrain, m0, seams) = entrance(&[tube(0.0, "O 40 P B 160 P O"), tube(9.0, "O 50 P B 150 P O")]);
+    assert!(seams.sides > 0, "the cover meets the ground off the portal lines");
+    assert!(seams.step < 0.05, "a step of {} m between the cover and the ground beside it", seams.step);
+    assert!(seams.side < 0.1, "a corner on a portal line {} m off its face's side", seams.side);
+    // The mouth: the floor's points within 3 m behind the first line keep the least room under the roof.
+    let rules = Rules::embedded();
+    let m = mesh_storeys_with(b.key, &b.storeys, &b.records, &rules.structures, Some(&m0)).unwrap();
+    let sec = rules.sections.way("road", &[("highway".to_string(), "residential".to_string())].into(), false);
+    let by_point = |part: std::ops::Range<usize>| {
+        let mut out: BTreeMap<P, f64> = BTreeMap::new();
+        for &k in m.triangles[part].iter().flatten() {
+            let h = m.corner_height(k as usize, &b.records, &terrain);
+            let e = out.entry(m.corner(k as usize).0).or_insert(h);
+            *e = e.min(h);
+        }
+        out
+    };
+    let behind = |p: P| {
+        let (g, o) = (at([0.0, 0.0]), b.key.origin());
+        let v = [(o.x + i64::from(p[0]) - g.x) as f64 * mpu(), (o.y + i64::from(p[1]) - g.y) as f64 * mpu()];
+        v[0] * SLANT[0] + v[1] * SLANT[1] + 60.0
+    };
+    let (floor, roof) = (by_point(m.part(0)), by_point(m.part(1)));
+    let mouth: Vec<(&P, &f64)> = floor.iter().filter(|(p, _)| (0.0..3.0).contains(&behind(**p))).collect();
+    assert!(!mouth.is_empty(), "floor points in the mouth");
+    for (p, &hf) in mouth {
+        assert!(roof[p] - hf >= sec.bore_least_m - 1e-3, "{p:?}: room {} in the mouth", roof[p] - hf);
+    }
+}
+
+/// A bore into a hill at a slant beside a road on the terrain, whose slope band reaches behind the portal line: the cut
+/// of the way that enters ends on the line, so the ground behind it stands at the terrain.
+#[cfg(feature = "bores")]
+#[test]
+fn the_cut_of_the_way_that_enters_ends_on_its_portal_line() {
+    let (u, n) = (SLANT, [-SLANT[1], SLANT[0]]);
+    let along: Vec<f64> = (0..=40).map(|i| -100.0 + 5.0 * f64::from(i)).collect();
+    let mut beside = road(&along.iter().map(|a| [a * u[0] + 12.0 * n[0], a * u[1] + 12.0 * n[1]]).collect::<Vec<_>>());
+    beside.z = along.iter().map(|&a| hill(a)).collect();
+    let (.., seams) = entrance(&[tube(0.0, "O 40 P B 160 P O"), beside]);
+    assert!(seams.under > -0.1, "the ground {} m under the terrain behind the portal line", seams.under);
+    assert!(seams.step < 0.05, "a step of {} m between the cover and the ground beside it", seams.step);
+    assert!(seams.side < 0.1, "a corner on a portal line {} m off its face's side", seams.side);
+}
+
+/// A road that passes over its own bore 4 m up, as a way on top, before it descends into it (a spiral): an opening
+/// lies only on the bore's end lines, not under the road on top.
+#[cfg(feature = "bores")]
+#[test]
+fn a_way_over_its_own_bore_opens_it_only_at_its_ends() {
+    let key = cell();
+    let points = [[20.0, 30.0], [20.0, -30.0], [-40.0, -30.0], [-40.0, 0.0], [100.0, 0.0], [120.0, 0.0]];
+    let levels = ("levels", "O 140 P B 290 P O");
+    let mut way = line("tunnel", &[("highway", "residential"), ("tunnel", "yes"), levels], &points);
+    way.z = vec![504.0, 504.0, 500.0, 500.0, 500.0, 500.0];
+    let mut input = input_of(key, &[way]);
+    input.terrain = plane(key, &|_, _| 503.1);
+    let b = crate::cell::build_input(&input, Rules::embedded());
+    assert!(!b.storeys.portals.is_empty(), "pieces on the portal lines");
+    // The end lines: the joints of a ground way and a bore.
+    let level = |a: &crate::graph::Arm| b.graph.ways[a.way as usize].level;
+    let ends: Vec<[i32; 2]> = (b.graph.joints.iter())
+        .filter(|j| {
+            j.arms.iter().any(|a| level(a) == Level::Tunnel) && j.arms.iter().any(|a| level(a) == Level::Ground)
+        })
+        .map(|j| j.pos)
+        .collect();
+    assert_eq!(ends.len(), 2, "two portals");
+    for piece in &b.storeys.portals {
+        for p in [piece.a, piece.b] {
+            let near = |e: &[i32; 2]| libm::hypot(f64::from(p[0] - e[0]), f64::from(p[1] - e[1])) * mpu() < 10.0;
+            assert!(ends.iter().any(near), "a portal piece at {p:?}, off the end lines");
+        }
     }
 }

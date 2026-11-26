@@ -6,6 +6,7 @@
     import { router } from '../lib/router.svelte';
     import { loadBackup, saveBackup } from '../lib/library/backup';
     import type { Library } from '../lib/library/store';
+    import { TooLarge } from '../lib/library/zip';
     import RiderValue from './RiderValue.svelte';
     import { RANGES, readSettings, settings, updateSettings, type Units } from '../lib/settings/settings.svelte';
     import { heartRateZones, powerZones } from '../lib/settings/zones';
@@ -53,8 +54,17 @@
         }
     }
 
+    /** With its photos, the library is too large for one backup file: the button saves a backup with no photos. */
+    let noPhotos = $state(false);
+
     const save = () => run(async () => {
-        saveBlob(await saveBackup(library, $state.snapshot(settings)), `openbikecomputer-${new Date().toLocaleDateString('en-CA')}.zip`);
+        try {
+            saveBlob(await saveBackup(library, $state.snapshot(settings), !noPhotos), `openbikecomputer-${new Date().toLocaleDateString('en-CA')}.zip`);
+        } catch (error) {
+            if (noPhotos || !(error instanceof TooLarge) || !(await library.photoIds()).length) throw error;
+            noPhotos = true;
+            return 'With its photos, the library is too large for one backup file. A backup with no photos holds the routes and the rides.';
+        }
     });
 
     function load(chosen: File | undefined) {
@@ -63,7 +73,8 @@
         void run(async () => {
             const added = await loadBackup(library, chosen);
             if (added.settings) updateSettings(readSettings(added.settings));
-            return `Added ${plural(added.routes, 'route')} and ${plural(added.rides, 'ride')}.`;
+            return added.photos ? `Added ${plural(added.routes, 'route')}, ${plural(added.rides, 'ride')} and ${plural(added.photos, 'photo')}.`
+                : `Added ${plural(added.routes, 'route')} and ${plural(added.rides, 'ride')}.`;
         });
     }
 
@@ -99,7 +110,7 @@
             {#if counts}<strong>{plural(counts.routes, 'route')} and {plural(counts.rides, 'ride')}</strong> are saved in this browser only.{/if}
         </p>
         <div class="buttons">
-            <button type="button" onclick={save} disabled={busy || !counts || counts.routes + counts.rides === 0}>Save a backup file</button>
+            <button type="button" onclick={save} disabled={busy || !counts || counts.routes + counts.rides === 0}>{noPhotos ? 'Save a backup with no photos' : 'Save a backup file'}</button>
             <button type="button" onclick={() => file.click()} disabled={busy}>Load a backup file</button>
             <input bind:this={file} type="file" accept=".zip,application/zip" hidden onchange={event => load(event.currentTarget.files?.[0])} />
             <button type="button" class="danger" onclick={() => confirming = true} disabled={busy}>Delete all</button>

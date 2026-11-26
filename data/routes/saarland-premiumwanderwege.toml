@@ -1,0 +1,10 @@
+origin = 14
+countries = ["DE"]
+kind = "hiking"
+
+# The answer of the WFS names no layer, so the reader takes its one layer.
+[route]
+key = "NAME"
+name = "{NAME}"
+description = "{BESCHREIBUNG}"
+website = "{URL}"

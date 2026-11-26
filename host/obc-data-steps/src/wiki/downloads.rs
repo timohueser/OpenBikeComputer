@@ -138,9 +138,13 @@ fn discover(context: &Planning, key: &str, prefix: &str, suffix: &str, area: Opt
     }
     if key == "osm" || key.starts_with("osm:") {
         let base = area.map_or("https://planet.openstreetmap.org/pbf/".into(), |area| {
-            format!("https://download.geofabrik.de/{}.html", area)
+            format!("https://download.geofabrik.de/{area}/")
         });
-        let names = links(&http.text(&base, "text/html")?);
+        // Geofabrik links its files with absolute URLs, the planet page with names.
+        let names: Vec<String> = links(&http.text(&base, "text/html")?)
+            .iter()
+            .filter_map(|href| href.rsplit('/').next().map(str::to_string))
+            .collect();
         let completed: Vec<_> = names.iter().filter(|name| names.contains(&format!("{name}.md5"))).cloned().collect();
         let (date, name) =
             newest(&completed, prefix, suffix).ok_or_else(|| format!("{base}: no completed OSM archive"))?;

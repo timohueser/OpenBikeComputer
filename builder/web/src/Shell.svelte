@@ -9,6 +9,8 @@
     interface Page {
         /** The text of its link in the top bar; a page with no label has no link. */
         label?: string;
+        /** The page is a part of the page of this top bar link, which shows as current. */
+        section?: Route;
         /** The page stays mounted, hidden, while another page shows. */
         keep?: boolean;
         load: () => Promise<{ default: Component<PageProps> }>;
@@ -23,6 +25,11 @@
         planner: { label: 'Planner', keep: true, load: () => initCore().then(() => import('./components/planner/PlannerApp.svelte')) },
         // The list shows from the library alone; the map and the place search load the map catalogue after it.
         routes: { label: 'Routes', load: () => import('./pages/Routes.svelte') },
+        // The page waits for the release, which names the route catalog.
+        explore: { label: 'Explore', load: () => import('./pages/Explore.svelte') },
+        // The page loads the core only for an export.
+        signed: { section: 'explore', load: () => import('./pages/Signed.svelte') },
+        trail: { section: 'explore', load: () => import('./pages/Trail.svelte') },
         // The page writes GPX and FIT.
         route: { load: () => initCore().then(() => import('./pages/Route.svelte')) },
         // The page reads and writes GPX and FIT.
@@ -38,6 +45,7 @@
     import './styles/shell.css';
     import TopBar from './components/TopBar.svelte';
     import Window from './lib/ui/Window.svelte';
+    import { LINKS } from './lib/constants';
     import { ROUTES } from './lib/routes';
     import { router } from './lib/router.svelte';
     import { startTheme } from './lib/theme.svelte';
@@ -59,7 +67,7 @@
         sync: deviceSync.running || deviceSync.map ? 'running' as const : rememberedReady() && deviceSync.problem ? 'problem' as const : null,
     });
     const links = $derived(Object.entries(PAGES).flatMap(([route, page]) =>
-        page.label ? [{ href: ROUTES[route as Route], label: page.label, current: route === current || ROUTES[current].startsWith(`${ROUTES[route as Route]}/`) }] : []));
+        page.label ? [{ href: ROUTES[route as Route], label: page.label, current: route === current || PAGES[current]?.section === route || ROUTES[current].startsWith(`${ROUTES[route as Route]}/`) }] : []));
 
     $effect(() => {
         const route = current;
@@ -115,9 +123,9 @@
         <a href={siteBase}>OpenBikeComputer</a>
         <a href={`${siteBase}docs/`}>Docs</a>
         <a href={`${siteBase}blog/`}>Blog</a>
-        <a href={`${siteBase}builder/`}>Map builder</a>
         <a href={`${siteBase}docs/impressum/`}>Impressum</a>
         <a href={`${siteBase}docs/datenschutz/`}>Datenschutz</a>
+        <a href={LINKS.licenses}>Licences</a>
     </footer>
 </div>
 

@@ -2,8 +2,7 @@
 // Vite actually emits is asserted here, against what Rollup put in the emitted
 // output rather than against source imports or a grep of them.
 //
-// One file, because Vitest isolates by file and not by test. Two builds,
-// because `web` and `production` (the dev host) are two different module graphs.
+// One file, because Vitest isolates by file and not by test: the product is built once.
 
 import { build } from "vite";
 import { describe, expect, it } from "vitest";
@@ -61,12 +60,10 @@ function product(mode: string, env: Record<string, string> = {}): Promise<Built>
     return next;
 }
 
-/** The static web tier as `.github/workflows/deploy-site.yml` builds it, and the
- *  maintainer dev host. `VITE_SITE_BASE` only sets the link
- *  prefix in `lib/constants.ts`, so the deployed build stands for `npm run build:web`
- *  too. */
-const web = () => product("web", { VITE_SITE_BASE: "../" });
-const dev = () => product("production");
+/** The product as `.github/workflows/deploy-site.yml` builds it. `VITE_SITE_BASE` only sets the
+ *  link prefix in `lib/constants.ts`, so the deployed build stands for `npm run build` too.
+ *  Vitest sets `NODE_ENV=test`, which would make it a development build with the pretend device. */
+const web = () => product("planner", { VITE_SITE_BASE: "../", NODE_ENV: "production" });
 
 /** Every source module in every emitted chunk of one product, and only the ones
  *  Rollup put in an entry chunk. */
@@ -86,45 +83,6 @@ function textFiles(b: Built): Map<string, string> {
     }
     return files;
 }
-
-/** Source modules the static web tier must not contain: only the dev host has them. */
-const DEV_ONLY = {
-    "the FastAPI client": /\/src\/lib\/api\/client\.ts$/,
-    "the dev host": /\/src\/lib\/platform\/dev\.ts$/,
-    "the style editor route": /\/src\/routes\/Advanced\.svelte/,
-    "the style editor components": /\/src\/components\/advanced\//,
-};
-
-describe("bundle split", () => {
-    it("keeps build and style-editor code out of the web target", async () => {
-        const modules = modulesOf(await web());
-        // An empty build, or one that quietly picked another host, would pass
-        // every assertion below.
-        expect(modules.some((id) => id.endsWith("/src/lib/platform/web.ts"))).toBe(true);
-        expect(modules.some((id) => id.includes("/src/routes/Home.svelte"))).toBe(true);
-
-        const found = Object.entries(DEV_ONLY).flatMap(([what, re]) =>
-            modules.filter((id) => re.test(id)).map((id) => `${what}: ${id}`),
-        );
-        expect(found).toEqual([]);
-
-        expect(modules.some((id) => id.includes("/src/components/coverage/CoverageHome.svelte"))).toBe(
-            true,
-        );
-    }, 180_000);
-
-    it("ships the maintainer style editor only in the dev target", async () => {
-        const modules = modulesOf(await dev());
-        const missing = Object.entries(DEV_ONLY)
-            .filter(([, re]) => !modules.some((id) => re.test(id)))
-            .map(([what]) => what);
-        expect(missing).toEqual([]);
-
-        // Localhost is a secure WebUSB context, so this build keeps the same lazy
-        // browser transport.
-        expect(modules.some((id) => id.endsWith("/src/lib/usb/webusb.ts"))).toBe(true);
-    }, 180_000);
-});
 
 // Whatever the bundler puts in the bundle, its licence text has to ship beside
 // it. A list of `dependencies` would prove nothing: Svelte is a devDependency
@@ -197,17 +155,18 @@ function offenders(files: Map<string, string>, needle: string | RegExp): string[
 const ROOTED_SITE_PATH = /["'`(=,]\/OpenBikeComputer\//;
 
 /**
- * The site's own origin, which a portable bundle must never contain.
+ * The site's own origin at the start of a string, which a portable bundle must never contain.
  * `updates.openbikecomputer.com` is the firmware-update host: an endpoint the
  * app fetches a manifest from, not a self-reference, and moving the site does
- * not move it.
+ * not move it. The planner names the site inside its user agent for Wikipedia,
+ * which is not a link.
  */
-const SITE_ORIGIN = /https?:\/\/(?:www\.)?openbikecomputer\.com/;
+const SITE_ORIGIN = /["'`]https?:\/\/(?:www\.)?openbikecomputer\.com/;
 
 describe("deployment portability", () => {
     it("references its own assets relatively", async () => {
-        const html = textFiles(await web()).get("index.html") ?? "";
-        // The build produced an index.html with script/style refs at all…
+        const html = textFiles(await web()).get("planner.html") ?? "";
+        // The build produced a page with script/style refs at all…
         expect(html).toMatch(/<script[^>]+src="/);
         // …and every local ref in it is relative, not rooted at "/".
         const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]);
@@ -256,10 +215,11 @@ describe("the USB stack's chunk", () => {
         );
         expect(shipped).toEqual([]);
         const wasm = built.filter((item) => item.type === "asset" && item.fileName.endsWith(".wasm"));
-        expect(wasm).toHaveLength(1);
-        const source = wasm[0].source;
-        expect(source).toBeInstanceOf(Uint8Array);
-        const exports = WebAssembly.Module.exports(new WebAssembly.Module(source as Uint8Array<ArrayBuffer>));
-        expect(exports.some((entry) => /flatdevice|devicereaction/.test(entry.name))).toBe(false);
+        expect(wasm.length).toBeGreaterThan(0);
+        for (const { source } of wasm) {
+            expect(source).toBeInstanceOf(Uint8Array);
+            const exports = WebAssembly.Module.exports(new WebAssembly.Module(source as Uint8Array<ArrayBuffer>));
+            expect(exports.some((entry) => /flatdevice|devicereaction/.test(entry.name))).toBe(false);
+        }
     }, 180_000);
 });

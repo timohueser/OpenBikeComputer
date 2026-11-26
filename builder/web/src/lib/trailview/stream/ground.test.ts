@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PlannerConfig } from '../../planner/config';
 import type { Source } from '../../planner/layers/archive';
+import { BUDGETS } from '../budget';
 import { GroundSource } from './ground';
 
 const opens = vi.hoisted(() => new Map<string, () => Promise<unknown>>());
@@ -28,7 +29,7 @@ async function ground(snow?: () => Promise<unknown>) {
         layers.snow = 'snow';
         opens.set('snow', snow);
     }
-    const opened = (await GroundSource.open({ trailview_rules: 'rules', layers } as unknown as PlannerConfig))!;
+    const opened = (await GroundSource.open({ trailview_rules: 'rules', layers } as unknown as PlannerConfig, BUDGETS.desktop.caps))!;
     return (z = 5, x = 3, y = 4, band = 10) => opened.pages(z, x, y, [0, 1], { weight: 0, band }, 0);
 }
 
@@ -94,7 +95,7 @@ describe('the decode probe', () => {
         opens.clear();
         opens.set('ground', async () => source(undefined, { trailview_format: 3 }));
         const config = { trailview_rules: 'rules', layers: { 'trailview-ground': 'ground' } } as unknown as PlannerConfig;
-        await expect(GroundSource.open(config)).rejects.toThrow('premultiplied');
+        await expect(GroundSource.open(config, BUDGETS.desktop.caps)).rejects.toThrow('premultiplied');
         expect(terminate).toHaveBeenCalledTimes(2);
     });
 });

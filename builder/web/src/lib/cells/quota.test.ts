@@ -12,10 +12,4 @@ describe("projectedRunDiskBytes", () => {
             }),
         ).toBe(2_453_810_944);
     });
-
-    it("does not charge free quota again for cells already included in origin usage", () => {
-        const ledger = { totalBytes: 100, core: { bytes: 20 }, terrain: { bytes: 10 } };
-        expect(projectedRunDiskBytes(ledger, 30)).toBe(210);
-        expect(projectedRunDiskBytes(ledger, 1_000)).toBe(150);
-    });
 });

@@ -60,12 +60,8 @@ async function releaseCatalog(): Promise<{ url: string; body: string }> {
 }
 
 export const platform: Platform = {
-    name: "web",
-
     catalog: fetchCatalog,
     catalogFetch: globalThis.fetch,
-
-    styleEditor: null,
 
     // This host *is* the site, so its header links back out to the rest of it.
     siteNav: LINKS,

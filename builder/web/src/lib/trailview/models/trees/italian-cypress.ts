@@ -6,8 +6,9 @@ export default {
   latin: 'Cupressus sempervirens',
   base: 0.04,
   radius: 0.065,
-  // A slim column of lumpy sprays that tapers over its top third to a point.
-  shape: (t) => (1 + 0.6 * t) * (1 - t ** 2) ** 0.8,
+  // A dense flame: widest a third of the way up, drawn out to a point.
+  shape: (t) => 1.75 * (t + 0.03) ** 0.3 * (1 - t) ** 0.85,
+  column: true,
   overlap: 3,
   droop: 0.05,
   lobes: 5,

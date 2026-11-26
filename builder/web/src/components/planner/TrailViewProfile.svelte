@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
     import { heightRange, profileHeightAt, profilePaths, type ProfileSample } from '../../lib/planner/profile-data';

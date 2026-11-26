@@ -4,10 +4,13 @@ export default {
   form: 'broadleaf',
   name: 'Common broom',
   latin: 'Cytisus scoparius',
-  fork: 0,
-  // An upright sheaf of green switches, taller and less round than gorse.
-  crown: [0.42, 0.45, 0.4, 0.58],
-  trunk: 0,
+  fork: 0.04,
+  // A round sheaf of many slim green switches, taller and less dense than gorse.
+  crown: [0.5, 0.5, 0.46, 0.5],
+  dense: 0.55,
+  rods: 24,
+  heads: { count: 150, width: 0.03, height: 1.2 },
+  trunk: 0.016,
   flare: 1,
   bark: ['#3e4a2a', '#56663a'],
   leaves: {

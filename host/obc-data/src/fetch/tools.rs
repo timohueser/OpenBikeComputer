@@ -40,7 +40,7 @@ pub(super) fn basemap(root: &Path, store: &Store, http: &Http, request: &Request
             return Ok(snapshot);
         }
     }
-    let archive = files(store, http, request)?;
+    let archive = files(root, store, http, request)?;
     let work = store.partial(&format!("{version}-{name}"));
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let work = std::path::absolute(work).map_err(|e| e.to_string())?;

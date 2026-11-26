@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onDestroy, tick } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import DateStepper from './DateStepper.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
     import { clock, daylight } from '../../lib/planner/solar';

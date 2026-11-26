@@ -19,6 +19,7 @@ owns:
   - tools/planner_mvt.py
   - tools/planner_offline.py
   - tools/planner_runtime.py
+  - tools/planner_route_sources.py
   - tools/planner_snow.py
   - tools/planner_verify.py
   - tools/planner_mvt_verify.mjs

@@ -1,4 +1,4 @@
-import { heightIn } from '../settings/format';
+import { formatAlong, formatDistance, formatHeight, heightIn } from '../settings/format';
 import type { RoutingLine } from './routing';
 import { cumulative, firstIndex } from './geo';
 
@@ -50,6 +50,11 @@ export function profilePaths(samples: readonly ProfileSample[], low: number, hig
     return { line: runs.map(run => run.line).join(' '), area: runs.map(run => run.area).join(' ') };
 }
 
+/** The samples from `from` to `to` and one more on each side, so that the paths of neighbouring stretches join. */
+export function sampleSlice(samples: readonly ProfileSample[], from: number, to: number): readonly ProfileSample[] {
+    return samples.slice(Math.max(0, sampleIndex(samples, from) - 1), sampleIndex(samples, to) + 1);
+}
+
 function profileChange(from: number, to: number, line: ProfileLine | undefined, direction: number): number {
     const samples = profileSamples(line);
     let ascent = 0;
@@ -83,4 +88,10 @@ export function profileHeightAt(progress: number, samples: readonly ProfileSampl
     const a = samples[i - 1], b = samples[i];
     if (a.height === null || b.height === null) return null;
     return a.height + (b.height - a.height) * (progress - a.progress) / (b.progress - a.progress || 1);
+}
+
+/** The numbers of a selected part, such as "km 6.1 to km 9.1 · 3.0 km · 200 m up"; a null gain is left out. */
+export function formatPart(fromM: number, toM: number, gainM: number | null, lengthM = toM - fromM): string {
+    return [`${formatAlong(fromM)} to ${formatAlong(toM)}`, formatDistance(lengthM), gainM === null ? '' : `${formatHeight(gainM)} up`]
+        .filter(Boolean).join(' · ');
 }

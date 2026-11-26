@@ -1,6 +1,6 @@
 /**
  * What a long device write reports while it runs — the seam between the flows (`write.ts`, plain
- * TypeScript, tested under Node) and the thing that renders them (`job.svelte.ts`, runes).
+ * TypeScript, tested under Node) and the thing that shows them (`lib/device-sync/state.svelte.ts`).
  *
  * It lives in its own file so the flows never import a `.svelte.ts` module: everything with logic in
  * it stays framework-free.
