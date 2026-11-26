@@ -73,20 +73,15 @@ const L2CAP_RXQ: u8 = 3;
 
 /// The SDC memory block for this exact config. It must be at least `Builder::required_memory()`:
 /// the SDC errors out of `build()` if the block is smaller and warns if it is bigger. The value is
-/// the `ble: sdc required_memory` line the boot log prints. Re-read that line and re-pin after any
-/// change to the builder, the buffer config or [`SENSOR_LINKS`].
-pub(crate) const SDC_MEM_SIZE: usize = 11336;
+/// the per-link upper bound of this SDC release's `sdc.h`, rounded up to 8. The
+/// `ble: sdc required_memory` line of the boot log gives the exact need: re-pin to it after any
+/// change to the SDC release, the builder, the buffer config or [`SENSOR_LINKS`].
+pub(crate) const SDC_MEM_SIZE: usize = 11368;
 
 /// TrouBLE's host arena: connection state, the packet pool at MTU 251, and the single-peer bond
 /// storage the `security` feature adds.
-pub(crate) type Resources = HostResources<
-    nrf_sdc::SoftdeviceController<'static>,
-    DefaultPacketPool,
-    CONNECTIONS_MAX,
-    L2CAP_CHANNELS_MAX,
-    ADV_SETS_MAX,
-    BONDS_MAX,
->;
+pub(crate) type Resources =
+    HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, ADV_SETS_MAX, BONDS_MAX>;
 
 /// The radio's resident statics, summed into [`RESIDENT_BYTES`] for the resource report. Large
 /// values live in `.bss` statics instead of `ble::run` locals, because a value built in the async
