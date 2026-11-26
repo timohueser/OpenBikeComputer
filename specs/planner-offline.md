@@ -109,12 +109,12 @@ form of each text. Text with a character from U+0600 to U+08FF adds the Arabic p
 U+FB00 to U+FEFF. A missing range file stops the labels of each tile that requests it.
 
 The selected release has `offline` with `format: 4`, `id`, `zoom`, and `cells`. Each cell has
-`id`, `bounds`, and `files`: the cell's search databases and route catalog file. Its `region` is
-`area-` and the first 24 hex digits of the selection ID. A selection takes the union of the `packs`
-of its cells and the two files of the route package in `shared`. Its `routing_package` is the
-SHA-256 of `routing/directory.bin`, the identity of the route package. It has no
-`routing/blocks.json`. The TileJSON bounds and `terrain_bounds` of a selection are the box of its
-cells, so a route can leave the map of its area. `maps/basemap.json`, `maps/overlays.json` and `maps/terrain.json` are TileJSON for these
+`id`, `bounds`, and `files`: the cell's search databases and route catalog file. The release's
+`region` is `area-` and the first 24 hex digits of the selection ID. A selection takes the union of
+the `packs` of its cells and the two files of the route package in `shared`. Its `routing_package`
+is the SHA-256 of `routing/directory.bin`, the identity of the route package. The TileJSON bounds
+and `terrain_bounds` of a selection are the box of its cells, so a route can leave the map of its
+area. `maps/basemap.json`, `maps/overlays.json` and `maps/terrain.json` are TileJSON for these
 packs. Their tile URLs use the host `offline.openbikecomputer.invalid`, which the app serves from
 the installed packs. The app finds the pack of a tile by the rule above, from the files of the
 bundle.
