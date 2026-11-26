@@ -363,7 +363,8 @@ impl Cx<'_> {
         let (mut mine, mut other) = (key, u32::MAX);
         grid.any(q, SLEEPER_HALF_M[0] / mpu, |k| {
             let ([a, b], half, place, v) = chords[k as usize];
-            if to_segment(q, a, b) * mpu <= half {
+            // A way at or past `key` can neither lower the track's place nor stand under it.
+            if place < key && to_segment(q, a, b) * mpu <= half {
                 if v == w || self.own[w as usize].contains(&v) {
                     mine = mine.min(place);
                 } else {
