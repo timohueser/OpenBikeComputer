@@ -65,19 +65,27 @@ public actor OfflineMapStore {
         defer { installing = false }
         // A stopped install can leave cells of the pending map in its routing folder. With no listed map of
         // the package the folder goes, also when it is only partly written; else the listed maps install
-        // again from the copies in the folder, which their complete install wrote.
-        if let pending = try? pending() {
+        // again from the copies in the folder, which their complete install wrote. The quote is decoded
+        // directly: `pending()` also checks the free space, which can fail.
+        let path = root.appending(path: "pending.json")
+        if let data = try? Data(contentsOf: path),
+           let pending = try? JSONDecoder().decode(OfflineDownloadQuote.self, from: data),
+           OfflineFile.validHash(pending.map.routing) {
             let target = routing(pending.map)
             let areas = try maps().filter { $0.routing == pending.map.routing }.map(\.bounds)
             if areas.isEmpty {
                 if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
             } else {
-                try await installer.install(package: target.appending(path: "package.json"),
-                    directory: target.appending(path: "directory.bin"), target: target, areas: areas,
-                    objects: root.appending(path: "objects")) { _, _ in }
+                do {
+                    try await installer.install(package: target.appending(path: "package.json"),
+                        directory: target.appending(path: "directory.bin"), target: target, areas: areas,
+                        objects: root.appending(path: "objects")) { _, _ in }
+                } catch PlannerFailure.invalidData where !areas.isEmpty {
+                    // As in `remove`: the cells of a listed map can be gone after a removal that stopped
+                    // before `maps.json`; the folder stays, and their routes that miss a cell go online.
+                }
             }
         }
-        let path = root.appending(path: "pending.json")
         if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
         let downloads = root.appending(path: "downloads")
         if FileManager.default.fileExists(atPath: downloads.path) { try FileManager.default.removeItem(at: downloads) }
@@ -93,6 +101,10 @@ public actor OfflineMapStore {
     public func prepare(bounds: [Double], name: String,
                         status: @escaping @Sendable (Double, String) -> Void) async throws -> OfflineDownloadQuote {
         guard OfflineMap.valid(bounds) else { throw PlannerFailure.invalidData }
+        guard !installing else { throw OfflineMapFailure.unavailable("Another map is downloading.") }
+        // No list keeps the routing files of a quote: they stay in `objects/` until the next prepare,
+        // install, removal or discard.
+        try collectObjects()
         let entry = try await service()
         var request = URLRequest(url: entry.appending(path: "jobs"))
         request.httpMethod = "POST"
@@ -310,7 +322,8 @@ public actor OfflineMapStore {
         // Allocate for object tails, directory blocks, and both copies of atomically written metadata.
         let metadata = try JSONEncoder().encode(bundle).count + Int(bundle.release.bytes) * 2
         return try sum(try missing.map { try allocated($0.bytes) }
-            + unique(missingRouting).map { try allocated($0.bytes) } + missingRouting.map { try allocated($0.part_bytes ?? 0) }
+            // The plan lists only the parts that the install folder lacks, also when their objects are downloaded.
+            + unique(missingRouting).map { try allocated($0.bytes) } + routing.map { try allocated($0.part_bytes ?? 0) }
             + copies.map { try allocated($0) } + [
             sum(missing.filter { $0.transport.encoding == "gzip" }.map(\.transport.bytes).sorted(by: >).prefix(4).map { try allocated($0) }),
             allocated(Int64(metadata) * 2), block * Int64(directories.count + bundle.files.count + 4)])

@@ -109,12 +109,12 @@ form of each text. Text with a character from U+0600 to U+08FF adds the Arabic p
 U+FB00 to U+FEFF. A missing range file stops the labels of each tile that requests it.
 
 The selected release has `offline` with `format: 4`, `id`, `zoom`, and `cells`. Each cell has
-`id`, `bounds`, and `files`: the cell's search databases and route catalog file. Its `region` is
-`area-` and the first 24 hex digits of the selection ID. A selection takes the union of the `packs`
-of its cells and the two files of the route package in `shared`. Its `routing_package` is the
-SHA-256 of `routing/directory.bin`, the identity of the route package. It has no
-`routing/blocks.json`. The TileJSON bounds and `terrain_bounds` of a selection are the box of its
-cells, so a route can leave the map of its area. `maps/basemap.json`, `maps/overlays.json` and `maps/terrain.json` are TileJSON for these
+`id`, `bounds`, and `files`: the cell's search databases and route catalog file. The release's
+`region` is `area-` and the first 24 hex digits of the selection ID. A selection takes the union of
+the `packs` of its cells and the two files of the route package in `shared`. Its `routing_package`
+is the SHA-256 of `routing/directory.bin`, the identity of the route package. The TileJSON bounds
+and `terrain_bounds` of a selection are the box of its cells, so a route can leave the map of its
+area. `maps/basemap.json`, `maps/overlays.json` and `maps/terrain.json` are TileJSON for these
 packs. Their tile URLs use the host `offline.openbikecomputer.invalid`, which the app serves from
 the installed packs. The app finds the pack of a tile by the rule above, from the files of the
 bundle.
@@ -167,9 +167,8 @@ area, so two maps that share cells both count them.
 
 The app checks free space before transfer. Its estimate includes filesystem allocation, missing
 decoded objects, the four largest temporary compressed objects, installation metadata, each missing
-cell object of the route package and its installed part, and for a new routing package the copies
-of `package.json` and `directory.bin` in its install folder. At most
-four downloads run at once. Compressed objects are decoded and removed individually. Verification
+cell object of the route package, the installed bytes of each missing part, and for a new routing
+package the copies of `package.json` and `directory.bin` in its install folder. At most four downloads run at once. Compressed objects are decoded and removed individually. Verification
 precedes the atomic library update. The library is excluded from device backups. Deletion retains
 shared objects that another map or the pending download needs.
 
