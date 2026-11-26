@@ -667,7 +667,7 @@ export const KERB_RISE_M = 0.12;
 const PIECE_M = 8;
 /**
  * A sidewalk on the inside of a bend needs this much more radius than its outer edge, and it ends ROOM_ALONG_M before and after
- * such a bend. This is the bake's rule of D1 (#3049); D2 (#3050) reads the bake's decision instead and deletes it here.
+ * such a bend, as the bake's sidewalks (`roads/sidewalks.rs` of `obc-trailview-features`) do.
  */
 const BEND_ROOM_M = 1;
 /** A sidewalk ends this far before and after a bend where it has no room. */
