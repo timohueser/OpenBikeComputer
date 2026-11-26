@@ -63,11 +63,13 @@ class ReadyPlanTests(unittest.TestCase):
         changed = ("docs/content/riding.md",)
         self.assertEqual(
             self.running(*changed),
-            [ready.CAIRN, "just check-docs"],
+            ["just check-docs"],
         )
         skipped = self.skipped(*changed)
         self.assertEqual(skipped["cargo fmt --all"], "no Rust source changed")
         self.assertEqual(skipped["cargo clippy"], "no Cargo package changed")
+        # A page inside a crate is not an input of the crate.
+        self.assertEqual(self.skipped("firmware/obc-app/README.md")["cargo clippy"], "no Cargo package changed")
         self.assertEqual(skipped["obc shot --check"], "no rendering, screen or i18n input changed")
         self.assertEqual(skipped["obc test affected --base origin/develop"], "the plan selects no unit")
 
@@ -160,7 +162,7 @@ class ReadyPlanTests(unittest.TestCase):
         self.assertIn(FOUNDATION, affected.reason)
         self.assertEqual(
             [gate.command for gate in gates if gate.run],
-            ["cargo fmt --all", ready.CAIRN, "python3 firmware/tools/check_dependencies.py", tools_tests],
+            ["cargo fmt --all", "python3 firmware/tools/check_dependencies.py", tools_tests],
         )
         self.assertEqual(lines["bash builder/build-wasm-bridges.sh"].reason, "ci.wasm-size is left to CI")
         self.assertEqual(

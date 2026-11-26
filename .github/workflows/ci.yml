@@ -117,8 +117,8 @@ jobs:
         run: python3 tools/check_data_sources.py
       - name: No memory.x shadows the board image's carved map
         run: python3 firmware/tools/check_memory_x.py
-      - name: Prose budgets, published pages and links
-        run: python3 tools/prose.py --check
+      - name: Pages, links and named tasks
+        run: python3 tools/check_paths.py
       - uses: actions/setup-python@v5
         with:
           python-version-file: .python-version
@@ -162,30 +162,6 @@ jobs:
           if-no-files-found: error
       - name: Large fixture policy
         run: python3 tools/check_fixture_policy.py
-
-  # Report only until a system doc is approved, but a stale system map always fails. The Rust
-  # adapter reads `cargo metadata`, so the job needs the toolchain but builds nothing.
-  cairn:
-    needs: selection
-    if: contains(fromJSON(needs.selection.outputs.jobs), 'cairn')
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_sha || github.sha }}
-          # The baseline check reads the baseline at the plan's base commit.
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: false
-      - name: cairn unit tests
-        run: python3 -m unittest discover -s tools/cairn/tests -v
-      # A baseline may not grow by hand, so this step fails on that even in report mode.
-      - name: System docs against the code
-        env:
-          BASE: ${{ needs.selection.outputs.base }}
-        run: python3 tools/cairn/cairn.py check --base "$BASE"
 
   # Each tools/ci script below is the one definition of its steps: `obc check NAME` runs it locally.
   fmt:
@@ -1183,7 +1159,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, cairn, fmt, clippy, test, ui-snapshots, packer-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, verification, planner-search]
+    needs: [selection, guards, fmt, clippy, test, ui-snapshots, packer-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, verification, planner-search]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

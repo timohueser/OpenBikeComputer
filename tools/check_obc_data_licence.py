@@ -10,9 +10,6 @@ link into the crate and are not checked.
 
 from __future__ import annotations
 
-GOVERNS = ['host/obc-data/Cargo.toml', 'Cargo.lock']
-RULE = 'host/obc-data is MIT OR Apache-2.0 and depends on no GPL crate.'
-
 import json
 import re
 import subprocess

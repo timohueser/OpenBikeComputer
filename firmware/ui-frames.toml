@@ -949,7 +949,7 @@ script = "{dfu_pre}"
 expect = "DfuError"
 args = ["--dfu", "error=toolarge"]
 
-# OBCU v2: the file is intact but not signed by us — its own card, not "damaged".
+# The file is intact but not signed by us — its own card, not "damaged".
 [[frame]]
 name = "dfu-error-untrusted"
 map = "{grimsel}"

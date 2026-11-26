@@ -12,25 +12,55 @@ The goal for this codebase is to make this a robust and extendable open source m
 - Prefer small, well-bounded modules over growing monoliths.
 - Make the smallest change that meets the request. Do not add adjacent features without approval.
 - Test are good! But avoid endless smoke thests and too many "regression tests". Write focused, high quality tests, never add tests just for the sake of adding them.
-- **Keep code and comments concise, current, and focused on the present behavior.** A comment states an invariant, a non-obvious reason or a gotcha. It never says what the code plainly does, what the code used to do, or which issue changed it. A module's one-sentence purpose comment, written by cairn `document`, states its intent.
+- **Keep code and comments concise, current, and focused on the present behavior.** A comment states an invariant, a non-obvious reason or a gotcha. It never says what the code plainly does, what the code used to do, or which issue changed it.
 - None of this project is deployed to consumers yet, there is no need to keep backwards compatability, or write migration systems if we change any datastructure or file format. Breaking changes are fine at this stage of developement. "This will break the old format" is never an argument against making a change. The one exception is the settings blob in RRAM: released devices will receive firmware updates that change settings, so its versioned codec stays. It may be simplified, never deleted.
 
-## Repository layout
+## Memory
 
-The layout table is in [README.md](README.md#repository-layout). The root Cargo workspace lists
-its crates in `Cargo.toml`. Keep device-reachable dependencies in `firmware/`.
-The nRF54L board image, the bootloader and the sensor simulator are standalone Cargo roots; build
-and test them from their own directories. The nearest README has the surface's setup;
-`companion-ios/README.md` is the iOS on-ramp.
+This file and the `README.md` of each top-level directory are the memory of the agents and
+people who work here. This file loads into every session, so each line costs every reader
+attention. An area page is read when work starts in that area. A page holds what the code cannot
+show: what the area is for, where to start, how to run and test it, what will bite you, and why
+it is the way it is. A page states the present.
+
+| Area | Page |
+| --- | --- |
+| The device crates, the board image, the bootloader | [firmware/README.md](firmware/README.md) |
+| Host tools: `obc data`, the map bakers, test oracles | [host/README.md](host/README.md) |
+| The simulators, the host core, replay, the render bench | [sim/README.md](sim/README.md) |
+| The web app, its WebAssembly bridges, the USB transport | [builder/README.md](builder/README.md) |
+| The planner services: router, search, tiles | [planner/README.md](planner/README.md) |
+| The iPhone app | [companion-ios/README.md](companion-ios/README.md) |
+| The registry of sources, regions and targets | [data/README.md](data/README.md) |
+| The contracts: formats, protocols, test vectors | [specs/README.md](specs/README.md) |
+| Large test data and scenarios | [fixtures/README.md](fixtures/README.md) |
+| The site, the guide, the blog | [docs/README.md](docs/README.md) |
+| The electronics and the parts list | [hardware/README.md](hardware/README.md) |
+| The `obc` command, test selection, CI, the guards | [tools/README.md](tools/README.md) |
+
+The READMEs below the top level have the build, flash and run instructions of their code.
+[PRODUCT.md](PRODUCT.md) holds the principles that decide a design question. The root Cargo
+workspace lists its crates in `Cargo.toml`; the board image, the bootloader and the sensor
+simulator are standalone Cargo roots.
+
+The pull request is the record: what happened, what was measured, what was tried. It may end
+with a `Learned:` section: what the next agent should know. Git history and pull request bodies
+are searched when needed. So:
+
+- Do not create a notes, evidence, scratch or plans file. GitHub issues are the plan, and git
+  history is the archive.
+- A comment, a guard, a spec, a guide page and a README hold no date, no issue number and no
+  measurement of a past build. A page may link the pull request that made a decision.
+- A rule is a check, or it is one sentence in a page. A number in a gate says where it came
+  from: measured on a named build, or chosen by the owner for a stated reason.
+- `obc paths` holds the pages to the tree: the line caps, and each path, task and link that a
+  page names.
+- Before a large change, the plan is in its issue and a fresh reader reviews it there (the
+  skill `plan-review`).
 
 ## Build and verification
 
 - Run `obc` inside the task's checkout and check the printed root. `obc help TASK` describes a task.
-- Obtain explicit owner permission before offloading builds or working data to another machine to bypass local memory or disk limits.
-- Never print `tools/obc.local` or the files in `~/.config/openbikecomputer/`: they hold operator settings and secrets. List the names with `grep -oE '^\s*(export\s+)?[A-Za-z0-9_]+=' FILE`.
-- Do not run planner publications or deployments concurrently.
-- Publish to prod only with a review ID that the owner approved: `obc data update prod --yes --expect ID`.
-- After a production data update, run the route pictures steps of `builder/web/tests/browser/trailview/README.md`.
 - Verify a change with two commands:
 
   ```sh
@@ -42,14 +72,21 @@ and test them from their own directories. The nearest README has the surface's s
   graph is left to CI. [docs/testing.md](docs/testing.md) explains the plan.
 - Run a command that no task covers with `obc exec`: a raw shell lacks the tools of `obc.local`,
   GEOS and the Cargo target of the checkout.
-- For a non-Rust surface, run that surface's own focused command from its README. Select whole
-  suites, never single tests.
+- For a non-Rust surface, run that surface's own command from its README. Select whole suites,
+  never single tests.
 - Prove claims with tests and measurements, and keep each run short. A run that takes minutes, in
   CI or local, committed or temporary, must earn its time: take the smallest sample that answers
   the question, and do not repeat it without a reason. Before a run over 5 minutes becomes routine
   or repeats, report to the owner what it costs and why it is needed.
 - Report exact checks run and left out. `obc clean` removes old test scratch and old cargo
   artifacts in `$CARGO_TARGET_DIR`; read its dry run before `--apply`.
+- Obtain explicit owner permission before offloading builds or working data to another machine to
+  bypass local memory or disk limits.
+- Never print `tools/obc.local` or the files in `~/.config/openbikecomputer/`: they hold operator
+  settings and secrets. List the names with `grep -oE '^\s*(export\s+)?[A-Za-z0-9_]+=' FILE`.
+- Production: publish only with a review ID that the owner approved
+  (`obc data update prod --yes --expect ID`), and never run two publications or deployments at
+  the same time. [data/README.md](data/README.md) has what follows a production update.
 
 ## How reviews work
 
@@ -60,43 +97,6 @@ run's failures; never read a raw CI log. Resource figures come from one head bui
 against `resource_baseline.json`; never rebuild the base.
 
 Use `obc pr list|view` for PR metadata and `body|comments|checks` when needed; for narrower GitHub reads, select `gh --json` fields or filter connector results before they enter context.
-
-## What gets recorded where
-
-Every durable artifact answers one question. If it answers two, it is in the wrong place.
-
-| Kind | Answers | Lives in |
-| --- | --- | --- |
-| Contract | what must the bytes be? | `specs/` |
-| Guide | how does the product work, and why? | `docs/content/`, listed in `nav.json` |
-| README | how do I build, run and flash this, and what will bite me? | next to the code |
-| Rule | what must we not break? | the guard that enforces it, with `GOVERNS` and `RULE`, or one sentence here |
-| Principle | which idea decides a design question? | `PRODUCT.md` |
-| Requirement | what must it do for a rider? | the verification console |
-| Record | what happened, measured how? | the pull request; GitHub generates the release notes from it |
-
-There is no other home. A design study, an experiment log, a measurement, a version history or a
-"what we tried" belongs in the pull request that did it. Do not create a notes, evidence, scratch
-or plans file; GitHub issues are the plan and git history is the archive.
-
-A date, an issue or pull-request number, or a measurement from a past build is the signature of a
-record. It does not appear in a contract, a guide, a README, a guard or a comment.
-
-A rule is a check or it is one sentence in this file. A number in a gate says where it came from:
-measured on a named build, or chosen by the owner for a stated reason. `obc governs PATH` lists
-every guard, suite, contract and budget that reaches a file. `obc prose
---check` budgets guide pages, READMEs, specs, system docs, skill files, guard docstrings and this
-file; an over-budget file must not grow.
-
-## Documentation
-
-- Write documentation, issues and pull requests in ASD-STE100 Simplified Technical English: short
-  sentences, present tense, one meaning per word.
-- A guide page says why and links the spec with `[text](src:path)`; it never restates a spec
-  table. A README is instructions and reference tables, not explanation.
-- On a pull request, say whether public docs changed. If they did, the change is its own `docs:`
-  commit.
-- After editing public docs, run `python3 docs/build_docs.py --check-links`.
 
 ## System requirements and release evidence
 

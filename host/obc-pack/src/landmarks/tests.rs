@@ -38,11 +38,11 @@ fn retained_category_chain_is_verified_and_only_its_first_page_is_selected() {
         ]
     }]});
     let sources = Sources::from(sources);
-    let members = category_members(&root, &sources, &place, &["Category:Example".into()], 2).unwrap();
+    let members = category_members(&root, &sources, &place, &["Category:Example".into()]).unwrap();
     assert_eq!(members.into_iter().collect::<Vec<_>>(), ["A.jpg", "B.jpg"]);
     let bounded = json!({"commons_categories":[{"title":"Category:Example","complete":false,"limit":100,
         "pages":[{"path":captures[0].0,"continuation":null}]}]});
-    assert_eq!(category_members(&root, &sources, &bounded, &["Category:Example".into()], 2).unwrap().len(), 2);
+    assert_eq!(category_members(&root, &sources, &bounded, &["Category:Example".into()]).unwrap().len(), 2);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -68,14 +68,14 @@ fn commons_category_rejects_missing_or_unconsumed_pages() {
     };
     let unconsumed = listing(json!([{"path":path,"continuation":null}]));
     let sources = Sources::from(Vec::from(sources));
-    assert!(category_members(&root, &sources, &unconsumed, &["Category:Example".into()], 2)
+    assert!(category_members(&root, &sources, &unconsumed, &["Category:Example".into()])
         .unwrap_err()
         .contains("unconsumed"));
     let missing = listing(json!([
         {"path":path,"continuation":null},
         {"path":"categories/missing.json","continuation":continuation}
     ]));
-    assert!(category_members(&root, &sources, &missing, &["Category:Example".into()], 2)
+    assert!(category_members(&root, &sources, &missing, &["Category:Example".into()])
         .unwrap_err()
         .contains("unregistered source"));
     let failed = json!({"commons_categories":[{
@@ -84,11 +84,7 @@ fn commons_category_rejects_missing_or_unconsumed_pages() {
             {"path":"categories/missing.json","continuation":continuation}
         ]
     }]});
-    assert!(category_members(&root, &sources, &failed, &["Category:Example".into()], 2).unwrap().is_empty());
-    let legacy = json!({"commons_categories":[{"title":"Category:Example","path":path}]});
-    assert!(category_members(&root, &sources, &legacy, &["Category:Example".into()], 1)
-        .unwrap_err()
-        .contains("schema 1 cannot prove complete commons category coverage"));
+    assert!(category_members(&root, &sources, &failed, &["Category:Example".into()]).unwrap().is_empty());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -118,7 +114,7 @@ fn commons_category_rejects_a_page_after_the_terminal_response() {
         ]
     }]});
     let sources = Sources::from(sources);
-    assert!(category_members(&root, &sources, &place, &["Category:Example".into()], 2)
+    assert!(category_members(&root, &sources, &place, &["Category:Example".into()])
         .unwrap_err()
         .contains("page follows a terminal response"));
     fs::remove_dir_all(root).unwrap();
@@ -320,7 +316,7 @@ fn offline_compiler_and_filtered_photo_requests_preserve_production_order() {
     }
     pin(batch, "https://www.wikidata.org/", serde_json::to_vec(&json!({"entities":entities})).unwrap());
     let manifest = root.join("manifest.json");
-    fs::write(&manifest, serde_json::to_vec(&json!({"schema":1,"sources":sources,"places":places})).unwrap()).unwrap();
+    fs::write(&manifest, serde_json::to_vec(&json!({"schema":2,"sources":sources,"places":places})).unwrap()).unwrap();
     let boundary = root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
     let first = compile(&manifest, &boundary, &root.join("first"), false).unwrap();
@@ -390,7 +386,7 @@ fn places_are_visited_in_the_order_the_capture_batched_them() {
     }
     places.reverse();
     let manifest = root.join("manifest.json");
-    fs::write(&manifest, serde_json::to_vec(&json!({"schema":1,"sources":sources,"places":places})).unwrap()).unwrap();
+    fs::write(&manifest, serde_json::to_vec(&json!({"schema":2,"sources":sources,"places":places})).unwrap()).unwrap();
     let boundary = root.join("boundary.json");
     fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#).unwrap();
 
