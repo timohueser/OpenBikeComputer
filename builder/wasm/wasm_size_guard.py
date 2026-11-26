@@ -35,7 +35,7 @@ from pathlib import Path
 # about 36 kB gzipped; the ways of the lanes of a head (the parts' `mouths`) about 2 kB more, measured in CI with
 # wasm-pack 0.15.0 and rustc 1.100.0. The guard rails and delineators of the roads (the crate's `mesh::edges`) add
 # about 29 kB gzipped, which the owner allows.
-GROUND_PLAN_MEASURED = {"gzipped": 864_155, "raw_wasm": 2_212_929}
+GROUND_PLAN_MEASURED = {"gzipped": 863_916, "raw_wasm": 2_212_617}
 # The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
 # unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
 # A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
