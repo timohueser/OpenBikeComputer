@@ -1,6 +1,7 @@
 //! The request data of an install of format 10: snapping, the roads, their costs, the turns into
-//! them, their closures, and the cells with a cost table. It reads the parts through a `Host`, keeps
-//! no cache and decodes nothing at open.
+//! them, their closures, and the cells with a cost table. It reads the parts through a `Host` and
+//! decodes nothing at open. A `Region` keeps the decoded shapes of the last level-1 cells that it
+//! snapped in.
 
 use crate::{
     cells::{
@@ -13,12 +14,13 @@ use crate::{
     model::{Point, Profile, Road},
     overlay::{self, Found, Query, Stats, Workspace, SEARCH_BYTES},
     router::Control,
+    shapes::Shapes,
     snap::{self, Candidates, Policy},
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{cell::RefCell, collections::BTreeSet, sync::Arc};
+use std::{cell::RefCell, sync::Arc};
 
 /// How a road joins the search. Its arrival state is its road ID.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -222,6 +224,7 @@ impl<H: Host> Ids<'_, H> {
 pub struct Region<H> {
     shared: Arc<Shared<H>>,
     road: RefCell<Road>,
+    shapes: RefCell<Shapes>,
     workspace: Workspace,
     /// The search limit: the most bytes of the labels, queues and reverse turns of one search.
     limit: usize,
@@ -261,14 +264,14 @@ impl<H: Host> Region<H> {
         }
         let identity = digest(&directory);
         let shared = Shared { host, directory, header, downloads, identity, info, profiles, cells, uppers, sizes };
-        let (road, workspace) = (RefCell::default(), Workspace::default());
-        Ok(Self { shared: Arc::new(shared), road, workspace, limit: SEARCH_BYTES })
+        let (road, shapes, workspace) = (RefCell::default(), RefCell::default(), Workspace::default());
+        Ok(Self { shared: Arc::new(shared), road, shapes, workspace, limit: SEARCH_BYTES })
     }
 
     /// A handle for another worker.
     pub fn fork(&self) -> Self {
-        let workspace = Workspace::default();
-        Self { shared: Arc::clone(&self.shared), road: RefCell::default(), workspace, limit: self.limit }
+        let (road, shapes, workspace) = (RefCell::default(), RefCell::default(), Workspace::default());
+        Self { shared: Arc::clone(&self.shared), road, shapes, workspace, limit: self.limit }
     }
 
     pub fn host(&self) -> &H {
@@ -314,8 +317,11 @@ impl<H: Host> Region<H> {
         let installed = shared.installed(metric)?;
         let window = snap::window(point, policy.radius_m).map_err(Error::InvalidRequest)?;
         let directory = shared.directory();
-        let mut roads = BTreeSet::new();
-        let limit = |roads: &BTreeSet<u32>| if roads.len() > 100_000 { Err(Error::Limit) } else { Ok(()) };
+        // The level-1 cells that meet the window, in ascending road ID, and the long roads whose
+        // box meets it that these cells do not hold.
+        let (mut listed, mut long) = (Vec::new(), Vec::new());
+        let mut roads = 0;
+        let limit = |roads: u32| if roads > 100_000 { Err(Error::Limit) } else { Ok(()) };
         for record in directory.meeting(window)? {
             let found = shared.cells.binary_search_by_key(&(record as u32), |cell| cell.record);
             let cell = shared.cells[found.map_err(|_| {
@@ -327,35 +333,62 @@ impl<H: Host> Region<H> {
                 let level1 = geometry.level1(index)?;
                 let end = first.checked_add(level1.roads).ok_or_else(|| invalid("a road count above 32 bits"))?;
                 if meets(level1.bounds, window) {
-                    roads.extend(first..end);
+                    listed.push((cell, index, first..end));
+                    roads += level1.roads;
                 }
                 first = end;
             }
-            limit(&roads)?;
+            limit(roads)?;
         }
         for cell in &shared.cells {
-            let long = directory.boxes(cell.record as usize)?.1;
-            if long == [0; 4] || !meets(long, window) {
+            let boxed = directory.boxes(cell.record as usize)?.1;
+            if boxed == [0; 4] || !meets(boxed, window) {
                 continue;
             }
             let geometry = Geometry::new(shared.part(cell, GEOMETRY)?)?;
             for k in 0..geometry.long {
                 let (index, bounds) = geometry.long(k)?;
-                if meets(bounds, window) {
-                    roads.insert(cell.first_road.checked_add(index).ok_or_else(|| invalid("a long road"))?);
+                let id = cell.first_road.checked_add(index).ok_or_else(|| invalid("a long road"))?;
+                let held = listed.partition_point(|(.., range)| range.end <= id);
+                if meets(bounds, window) && listed.get(held).is_none_or(|(.., range)| !range.contains(&id)) {
+                    long.push(id);
+                    roads += 1;
                 }
             }
-            limit(&roads)?;
+            limit(roads)?;
         }
-        snap::candidates(roads, policy, |id| {
-            let place = shared.place(id)?;
-            if !shared.allowed(installed, &place)? {
-                return Ok(None);
+        snap::check(policy)?;
+        let mut found = Vec::new();
+        let mut shapes = self.shapes.borrow_mut();
+        for (cell, index, range) in listed {
+            let decoded = shapes.get((cell.record, index), |decoded| {
+                let geometry = Geometry::new(shared.part(&cell, GEOMETRY)?)?;
+                let level1 = geometry.level1(index)?;
+                let mut road = self.road.borrow_mut();
+                for k in 0..level1.roads {
+                    geometry.road(&level1, k, &mut road)?;
+                    decoded.push(&road.shape);
+                }
+                Ok(())
+            })?;
+            let level1 = Topology::new(shared.part(&cell, TOPOLOGY)?)?.level1(index)?;
+            let (group, group_cell) = shared.group(&cell, index, &level1, installed.group)?;
+            for k in 0..decoded.len() {
+                let (shape, bounds) = decoded.road(k);
+                if meets(bounds, window) && group.allowed(&group_cell, installed.place, k)? {
+                    found.extend(snap::project(range.start + k, shape, point, policy.radius_m));
+                }
             }
-            let mut road = self.road.borrow_mut();
-            shared.road(&place, &mut road)?;
-            Ok(snap::project(id, &road, point, policy.radius_m))
-        })
+        }
+        for id in long {
+            let place = shared.place(id)?;
+            if shared.allowed(installed, &place)? {
+                let mut road = self.road.borrow_mut();
+                shared.road(&place, &mut road)?;
+                found.extend(snap::project(id, &road.shape, point, policy.radius_m));
+            }
+        }
+        Ok(snap::select(found, policy))
     }
 
     /// The IDs of the installed roads.

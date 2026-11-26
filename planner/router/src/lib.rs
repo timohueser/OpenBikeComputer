@@ -14,6 +14,7 @@ pub mod overlay;
 pub mod region;
 pub mod router;
 pub mod shape;
+mod shapes;
 pub mod snap;
 pub use router::{Control, Request, Route, Router};
 

@@ -317,6 +317,25 @@ fn a_missing_cell_is_a_missing_region_and_gives_no_turn() {
 }
 
 #[test]
+fn a_snap_gives_the_same_candidates_cold_and_warm() {
+    let bake = bake("warm");
+    let warm = bake.region(None);
+    let roads: Vec<u32> = warm.road_ids().filter(|&road| warm.allowed("touring", road).unwrap()).collect();
+    for radius_m in [Policy::default().radius_m, REACH_M] {
+        let policy = Policy { radius_m, ..Policy::default() };
+        for point in snap_points(&bake.graph) {
+            // Each road that the profile can use, with no window and no box test.
+            let project = |road| warm.with_road(road, |decoded| snap::project(road, &decoded.shape, point, radius_m));
+            let all = roads.iter().filter_map(|&road| project(road).unwrap()).collect();
+            let reference = candidates(&snap::select(all, policy));
+            let cold = warm.fork().snap(point, "touring", policy).unwrap();
+            assert_eq!(candidates(&cold), reference, "{point:?} {radius_m} m");
+            assert_eq!(candidates(&warm.snap(point, "touring", policy).unwrap()), reference, "{point:?} {radius_m} m");
+        }
+    }
+}
+
+#[test]
 fn a_route_costs_what_its_pieces_and_turns_cost() {
     let bake = bake("cost");
     let graph = &bake.graph;
