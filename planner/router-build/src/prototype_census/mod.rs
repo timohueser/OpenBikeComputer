@@ -7,9 +7,12 @@
 //! `tools/prototype_route_census/run.sh` runs it. It bakes one box in memory with the real import
 //! and the real costs, writes the price list, and runs the census.
 mod census;
+mod grid;
+mod panel;
 mod prices;
 mod report;
 mod terms;
+pub(crate) mod variant;
 
 use crate::base::Topology;
 use obc_dem::planner::{Recent, Terrain};
@@ -27,10 +30,12 @@ struct Options {
     step_m: f64,
     profiles: String,
     package: bool,
+    grid: bool,
 }
 
 fn options() -> Result<Options, String> {
-    let usage = "Usage: prototype_census --pbf FILE --out DIR [--dem DIR] [--step-km 5] [--profiles all] [--package]";
+    let usage =
+        "Usage: prototype_census --pbf FILE --out DIR [--dem DIR] [--step-km 5] [--profiles all] [--package] [--grid]";
     let mut options = Options {
         pbf: PathBuf::new(),
         dem: None,
@@ -38,6 +43,7 @@ fn options() -> Result<Options, String> {
         step_m: 5000.0,
         profiles: "all".into(),
         package: false,
+        grid: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -49,6 +55,7 @@ fn options() -> Result<Options, String> {
             "--step-km" => options.step_m = 1000.0 * value()?.parse::<f64>().map_err(|e| e.to_string())?,
             "--profiles" => options.profiles = value()?,
             "--package" => options.package = true,
+            "--grid" => options.grid = true,
             _ => return Err(usage.into()),
         }
     }
@@ -103,11 +110,15 @@ fn run() -> Result<(), String> {
     };
     crate::check_closures(&graph)?;
     let topology = Topology::new(&graph.roads, graph.points.len())?;
+    variant::prepare(&graph);
     lap(if options.dem.is_some() {
         "roads: junctions, roads with GLO-30 heights, turn rules, topology"
     } else {
         "roads: junctions, roads WITHOUT terrain, turn rules, topology"
     });
+    if options.grid {
+        return grid::run(&graph, &vias, options.step_m, &options.out);
+    }
     let names: Vec<&str> = options.profiles.split(',').collect();
     let profiles = crate::profiles(&names)?;
     crate::check(&graph, &profiles)?;
@@ -121,8 +132,8 @@ fn run() -> Result<(), String> {
     let variants = [(options.step_m, ""), (1000.0, "_from_1km")];
     let mut censuses = Vec::new();
     for (min_line_m, _) in variants {
-        let lines = (options.step_m, min_line_m);
-        censuses.push(census::run(&graph, &profiles[touring], (first, head), (totals, turns), &vias, lines)?);
+        let mut net = census::Net::new(&graph, &profiles[touring], (first, head), (totals, turns));
+        censuses.push(census::run(&mut net, &vias, (options.step_m, min_line_m))?);
     }
     lap("census, twice (not a stage of the bake)");
 

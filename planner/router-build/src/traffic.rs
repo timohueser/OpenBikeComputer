@@ -79,7 +79,7 @@ pub fn stress(tags: &Tags, reversed: bool, country: Country) -> f64 {
 }
 
 /// A numeric limit in km/h or mph; a zone code such as `DE:urban` is unknown.
-fn speed(value: &str) -> Option<f64> {
+pub(crate) fn speed(value: &str) -> Option<f64> {
     let value = value.trim();
     let (number, scale) = match value.strip_suffix("mph") {
         Some(number) => (number, 1.609_344),

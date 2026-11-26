@@ -1,13 +1,14 @@
 //! PROTOTYPE. The cost of one road under a weighted bike profile as a sum of terms, in the order
 //! in which `suitability::way` and `cost::basis` multiply their factors. A later factor scales the
 //! terms before it, so each term is the cost that its factor adds on top of the factors before it.
+use super::variant;
 use crate::country::Country;
 use crate::source::Tags;
 use crate::suitability::{self, Family};
 use crate::{cost, road_bike::tag, traffic, Graph};
 use planner_router::model::{Profile, Road, Surface, Weighting, BIKE, PUSH};
 
-pub const N: usize = 17;
+pub const N: usize = 18;
 pub const NAMES: [&str; N] = [
     "distance",
     "surface_tagged",
@@ -26,11 +27,14 @@ pub const NAMES: [&str; N] = [
     "climb",
     "uncertain_node",
     "rounding",
+    "turn_cost",
 ];
 pub const NODE: usize = 15;
+/// The turn cost of a variant; 0 today.
+pub const TURN: usize = 17;
 
 /// The terms that the question names, each with the fine terms it sums.
-pub const GROUPS: [(&str, &[usize]); 11] = [
+pub const GROUPS: [(&str, &[usize]); 12] = [
     ("pure distance", &[0]),
     ("surface factor", &[1, 2]),
     ("smoothness/tracktype", &[3]),
@@ -42,6 +46,7 @@ pub const GROUPS: [(&str, &[usize]); 11] = [
     ("difficulty (mtb:scale, sac_scale)", &[4]),
     ("pushing", &[5]),
     ("rounding", &[16]),
+    ("turn cost", &[17]),
 ];
 
 pub type Terms = [f64; N];
@@ -50,7 +55,7 @@ pub fn add(into: &mut Terms, terms: &Terms) {
     into.iter_mut().zip(terms).for_each(|(a, b)| *a += b);
 }
 
-pub fn grouped(terms: &Terms) -> [f64; 11] {
+pub fn grouped(terms: &Terms) -> [f64; 12] {
     GROUPS.map(|(_, fine)| fine.iter().map(|&i| terms[i]).sum())
 }
 
@@ -65,6 +70,8 @@ pub struct Factors {
     /// `Suitability::minimum_factor` and the factor of its basis.
     pub floor: f64,
     pub full: f64,
+    /// The road class that the class preference and the surface rule use.
+    pub road_class: u8,
 }
 
 /// `None` where the profile excludes the road. Only for the touring family: the tables of
@@ -73,6 +80,8 @@ pub fn factors(road: &Road, tags: &Tags, country: Country, profile: &Profile) ->
     let Weighting::Weighted { surface: weights, .. } = &profile.weighting else { return None };
     assert!(profile.name.starts_with("touring"), "the term split knows the touring tables only");
     let suit = suitability::way(road, tags, country, profile)?;
+    let reclassed = variant::reclass(road, tags, profile);
+    let road = reclassed.as_ref().unwrap_or(road);
     let (floor, full) = (suit.minimum_factor, suit.basis.factor);
     let pushing = profile.mode(road) == PUSH;
     let (surface, rolling, push, stress) = if road.class == 6 {
@@ -87,7 +96,17 @@ pub fn factors(road: &Road, tags: &Tags, country: Country, profile: &Profile) ->
         )
     };
     let difficulty = floor / (surface * rolling * push * stress);
-    Some(Factors { surface, rolling, difficulty, push, stress, class: full / floor, floor, full })
+    Some(Factors {
+        surface,
+        rolling,
+        difficulty,
+        push,
+        stress,
+        class: full / floor,
+        floor,
+        full,
+        road_class: road.class,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -109,7 +128,8 @@ pub fn road(graph: &Graph, profile: &Profile, id: usize) -> Result<Option<RoadTe
     graph.roads.get(id, &mut road);
     let Some(real) = cost::way_basis(&way, road.reversed, profile) else { return Ok(None) };
     let facts = way.facts;
-    let f = factors(&road, &way.tags, facts.country(), profile).ok_or("a road with a basis has no factors")?;
+    let plain = graph.roads.attributes(id);
+    let f = factors(&plain, &way.tags, facts.country(), profile).ok_or("a road with a basis has no factors")?;
     let length = f64::from(road.length_m);
     let mut terms = [0.0; N];
     terms[0] = length;
@@ -119,7 +139,7 @@ pub fn road(graph: &Graph, profile: &Profile, id: usize) -> Result<Option<RoadTe
         terms[term] = length * product * (factor - 1.0);
         product *= factor;
     }
-    let class = match road.class {
+    let class = match f.road_class {
         1 => 7,
         2 => 8,
         3 => 9,
@@ -127,33 +147,26 @@ pub fn road(graph: &Graph, profile: &Profile, id: usize) -> Result<Option<RoadTe
         _ => 11,
     };
     terms[class] = length * (f.full - f.floor);
+    // The route bonus is what the real factor takes off the full factor, before the doubt.
     let (mode, side) = (profile.mode(&road), usize::from(road.reversed));
-    let mut factor = f.full;
-    let mut floor = f.full;
-    if mode == BIKE && road.class != 6 && profile.route_bonus != 0.0 && facts.ranks != [0, 0] {
-        factor = f.floor + (f.full - f.floor).max(0.0) * (1.0 - f64::from(facts.ranks[side]) * profile.route_bonus);
-        terms[12] = length * (factor - f.full);
-        if facts.ranks[side] != 0 {
-            floor = f.floor;
-        }
+    let doubt = if facts.doubts[side] & mode != 0 { 3.0 } else { 1.0 };
+    let discounted = real.factor / doubt;
+    if discounted > f.full * (1.0 + 1e-9) || discounted < f.floor * (1.0 - 1e-9) {
+        return Err(format!("road {id}: the factor {discounted} is not from {} to {}", f.floor, f.full));
     }
-    if facts.doubts[side] & mode != 0 {
-        terms[13] = length * factor * 2.0;
-        factor *= 3.0;
-        floor *= 3.0;
-    }
-    if (factor - real.factor).abs() > 1e-9 * real.factor {
-        return Err(format!("road {id}: the terms give the factor {factor}, the bake gives {}", real.factor));
-    }
+    terms[12] = length * (discounted - f.full);
+    terms[13] = length * discounted * (doubt - 1.0);
     let compiled = real.compile(&road, profile)?;
     terms[14] = compiled.penalties.last().map_or(0.0, |knot| knot.1);
     let total = compiled.total();
     terms[16] = total as f64 - terms.iter().sum::<f64>();
-    let paved = if road.surface == Surface::Unknown { factor / f.surface } else { factor };
+    let signed = mode == BIKE && road.class != 6 && facts.ranks[side] != 0;
+    let floor = if signed { f.floor } else { discounted };
+    let paved = if road.surface == Surface::Unknown { real.factor / f.surface } else { real.factor };
     Ok(Some(RoadTerms {
         terms,
         total,
-        full_bonus: length * floor + terms[14],
+        full_bonus: length * floor * doubt + terms[14],
         unknown_paved: length * paved + terms[14],
     }))
 }

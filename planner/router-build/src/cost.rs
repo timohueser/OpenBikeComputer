@@ -146,6 +146,10 @@ fn basis(road: &Road, way: &Way, profile: &Profile) -> Option<CostBasis> {
         let preference = (cost.factor - suitability.minimum_factor).max(0.0);
         cost.factor = suitability.minimum_factor
             + preference * (1.0 - f64::from(facts.ranks[usize::from(road.reversed)]) * profile.route_bonus);
+        // PROTOTYPE hook: V4.
+        if facts.ranks[usize::from(road.reversed)] != 0 && crate::prototype_census::variant::full_bonus(road.class) {
+            cost.factor = suitability.minimum_factor;
+        }
     }
     if facts.doubts[usize::from(road.reversed)] & mode != 0 {
         cost.factor *= UNCERTAIN_ACCESS;
@@ -212,7 +216,8 @@ pub(crate) fn transition(
     let doubt = passes && graph.node_doubts.values()[junction] & profile.mode(b) != 0;
     let doubt = if doubt { UNCERTAIN_NODE } else { 0.0 };
     if !matches!(profile.weighting, Weighting::RoadBike(_)) {
-        return Some(doubt as u64);
+        // PROTOTYPE hook: V2 and V2T.
+        return Some(doubt as u64 + crate::prototype_census::variant::turn_cost(graph, profile, before, after));
     }
     let (arrival, departure) = (roads.shape(before as usize), roads.shape(after as usize));
     let mut cost = doubt + turn(arrival[arrival.len() - 2], arrival[arrival.len() - 1], departure[1], wb.turn);

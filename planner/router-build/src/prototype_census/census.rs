@@ -1,6 +1,7 @@
 //! PROTOTYPE. The census: each signed cycle route as chains of directed roads, a search between
 //! points about every `step_m` on each chain, and each split of the two road lists.
-use super::terms::{self, Terms, NODE};
+use super::terms::{self, Terms, NODE, TURN};
+use super::variant;
 use crate::base::group;
 use crate::catalog::assemble::{self, Member};
 use crate::column::Column;
@@ -18,8 +19,6 @@ use std::time::Instant;
 const MIN_CHAIN_M: f64 = 1_000.0;
 /// The longest hole of a relation that `assemble::chain` joins, as in the route catalog.
 const MAX_GAP_M: f64 = 500.0;
-/// The length before and after a junction that gives the heading there.
-const HEADING_M: f64 = 15.0;
 const TURN_DEGREES: f64 = 45.0;
 
 pub const LEVELS: [&str; 6] = ["", "other", "lcn", "rcn", "ncn", "icn"];
@@ -130,15 +129,15 @@ pub struct Census {
     pub unmatched_runs: usize,
 }
 
-struct Net<'a> {
-    graph: &'a Graph,
+/// The graph with the costs of one profile and one variant, for the searches and the measures.
+pub struct Net<'a> {
+    pub graph: &'a Graph,
     profile: &'a Profile,
     first: &'a [u32],
     head: &'a [u32],
     totals: &'a [u32],
     turns: &'a [u32],
     arrivals: (Column<u32>, Column<u32>),
-    departures: (Column<u32>, Column<u32>),
     search: SearchGraph,
     costs: Costs,
     workspace: Workspace,
@@ -178,26 +177,42 @@ fn at(group: &(Column<u32>, Column<u32>), junction: u32) -> &[u32] {
     &group.1.values()[start[junction as usize] as usize..start[junction as usize + 1] as usize]
 }
 
-/// Metres east and north from `a` to `b`.
-fn vector(a: Point, b: Point) -> (f64, f64) {
-    let scale = (f64::from(a.lat) * 1e-6).to_radians().cos();
-    (f64::from(b.lon - a.lon) * 0.111_32 * scale, f64::from(b.lat - a.lat) * 0.111_32)
-}
+impl<'a> Net<'a> {
+    /// `totals` and `turns` are the costs of the roads and of the arcs of `first` and `head`.
+    pub fn new(
+        graph: &'a Graph,
+        profile: &'a Profile,
+        (first, head): (&'a [u32], &'a [u32]),
+        (totals, turns): (&'a [u32], &'a [u32]),
+    ) -> Self {
+        Net {
+            graph,
+            profile,
+            first,
+            head,
+            totals,
+            turns,
+            arrivals: group(graph.roads.to.values(), graph.points.len()),
+            search: reverse(first, head),
+            costs: Costs { roads: Numbers::U32(totals.to_vec()), turns: Arc::new(Numbers::U32(turns.to_vec())) },
+            workspace: Workspace::default(),
+            road_terms: HashMap::new(),
+        }
+    }
 
-impl Net<'_> {
     fn from(&self, road: u32) -> u32 {
         self.graph.roads.from(road as usize)
     }
 
-    fn to(&self, road: u32) -> u32 {
+    pub fn to(&self, road: u32) -> u32 {
         self.graph.roads.to(road as usize)
     }
 
-    fn length(&self, road: u32) -> f64 {
+    pub fn length(&self, road: u32) -> f64 {
         f64::from(self.graph.roads.length_m.values()[road as usize])
     }
 
-    fn allowed(&self, road: u32) -> bool {
+    pub fn allowed(&self, road: u32) -> bool {
         self.totals[road as usize] != u32::MAX
     }
 
@@ -216,33 +231,10 @@ impl Net<'_> {
         (self.turns[arc] != u32::MAX).then_some(u64::from(self.turns[arc]))
     }
 
-    /// The undirected road ends at a junction.
-    fn degree(&self, junction: u32) -> usize {
-        let roads = &self.graph.roads;
-        let key = |road: u32, other: u32| (roads.way_row(road as usize), other, roads.length_m.values()[road as usize]);
-        let mut ends: Vec<_> = at(&self.departures, junction).iter().map(|&road| key(road, self.to(road))).collect();
-        ends.extend(at(&self.arrivals, junction).iter().map(|&road| key(road, self.from(road))));
-        ends.sort_unstable();
-        ends.dedup();
-        ends.len()
-    }
-
-    /// The change of heading from the end of `before` to the start of `after`, in degrees.
-    fn bend(&self, before: u32, after: u32) -> f64 {
-        let (a, b) = (self.graph.roads.shape(before as usize), self.graph.roads.shape(after as usize));
-        let end = a[a.len() - 1];
-        let back = a.iter().rev().skip(1).find(|p| p.distance(end) >= HEADING_M).unwrap_or(&a[0]);
-        let ahead = b.iter().skip(1).find(|p| p.distance(b[0]) >= HEADING_M).unwrap_or(&b[b.len() - 1]);
-        let (u, v) = (vector(*back, end), vector(b[0], *ahead));
-        let lengths = u.0.hypot(u.1) * v.0.hypot(v.1);
-        if lengths == 0.0 {
-            return 0.0;
-        }
-        ((u.0 * v.0 + u.1 * v.1) / lengths).clamp(-1.0, 1.0).acos().to_degrees()
-    }
-
-    fn is_turn(&self, before: u32, after: u32) -> bool {
-        self.degree(self.to(before)) >= 3 && self.bend(before, after) > TURN_DEGREES
+    /// A change of heading over 45° at a junction of three or more road ends.
+    pub fn is_turn(&self, before: u32, after: u32) -> bool {
+        variant::context().degree[self.to(before) as usize] >= 3
+            && variant::cosine(self.graph, before, after).acos().to_degrees() > TURN_DEGREES
     }
 
     fn terms(&mut self, road: u32) -> Result<terms::RoadTerms, String> {
@@ -265,7 +257,7 @@ impl Net<'_> {
         ["highway", "surface", "bicycle", "tracktype", "maxspeed"].map(|key| way.tags.get(key).unwrap_or("-")).join("|")
     }
 
-    fn line(&self, roads: &[u32]) -> Vec<P> {
+    pub fn line(&self, roads: &[u32]) -> Vec<P> {
         let mut line: Vec<P> = Vec::new();
         for &road in roads {
             line.extend(self.graph.roads.shape(road as usize).iter().map(|p| [p.lon, p.lat]));
@@ -303,7 +295,9 @@ impl Net<'_> {
         let path: Vec<u32> = before.into_iter().chain(roads.iter().copied()).chain(after).collect();
         for (i, pair) in path.windows(2).enumerate() {
             let node = self.turn(pair[0], pair[1]).ok_or("a path takes a forbidden turn")? as f64;
-            stretch.terms[NODE] += node;
+            let turn = variant::turn_cost(self.graph, self.profile, pair[0], pair[1]) as f64;
+            stretch.terms[NODE] += node - turn;
+            stretch.terms[TURN] += turn;
             stretch.full_bonus += node;
             stretch.unknown_paved += node;
             if (i > 0 || before.is_none() || entry) && self.is_turn(pair[0], pair[1]) {
@@ -316,7 +310,15 @@ impl Net<'_> {
 
     /// The cheapest road sequence from junction `from` to junction `to`, with the road that it
     /// arrives by at `from` first, and its cost.
-    fn route(&mut self, from: u32, to: u32) -> Result<Option<(Vec<u32>, u64)>, String> {
+    pub fn route(&mut self, from: u32, to: u32) -> Result<Option<(Vec<u32>, u64)>, String> {
+        let mut workspace = std::mem::take(&mut self.workspace);
+        let found = self.route_in(&mut workspace, from, to);
+        self.workspace = workspace;
+        found
+    }
+
+    /// `route` with the labels and the queues of `workspace`, so that threads can share the net.
+    pub fn route_in(&self, workspace: &mut Workspace, from: u32, to: u32) -> Result<Option<(Vec<u32>, u64)>, String> {
         let seeds = |junction: u32| -> Vec<Seed> {
             let arriving = at(&self.arrivals, junction).iter().filter(|&&road| self.allowed(road));
             arriving.take(255).enumerate().map(|(i, &road)| Seed { node: road, cost: 0, choice: i as u8 }).collect()
@@ -331,7 +333,7 @@ impl Net<'_> {
             heap_limit: 1 << 30,
             cancelled: &|| false,
         };
-        let found = self.workspace.run(&self.search, &self.costs, query).map_err(|e| e.to_string())?;
+        let found = workspace.run(&self.search, &self.costs, query).map_err(|e| e.to_string())?;
         Ok(found.map(|found| (found.roads, found.cost)))
     }
 }
@@ -478,30 +480,9 @@ fn anchors(lengths: &[f64], step_m: f64) -> Vec<usize> {
     anchors
 }
 
-pub fn run(
-    graph: &Graph,
-    profile: &Profile,
-    (first, head): (&[u32], &[u32]),
-    (totals, turns): (&[u32], &[u32]),
-    vias: &[i64],
-    (step_m, min_line_m): (f64, f64),
-) -> Result<Census, String> {
+pub fn run(net: &mut Net, vias: &[i64], (step_m, min_line_m): (f64, f64)) -> Result<Census, String> {
     let mut census = Census::default();
-    let points = graph.points.len();
-    let mut net = Net {
-        graph,
-        profile,
-        first,
-        head,
-        totals,
-        turns,
-        arrivals: group(graph.roads.to.values(), points),
-        departures: group(graph.roads.from.values(), points),
-        search: reverse(first, head),
-        costs: Costs { roads: Numbers::U32(totals.to_vec()), turns: Arc::new(Numbers::U32(turns.to_vec())) },
-        workspace: Workspace::default(),
-        road_terms: HashMap::new(),
-    };
+    let graph = net.graph;
     let levels = levels(graph);
     let mut node_points = HashMap::new();
     let mut lines = Vec::new();

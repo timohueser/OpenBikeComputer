@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # PROTOTYPE for GitHub issue 3836: the price list and the route census of the `touring` profile.
 #
-#   tools/prototype_route_census/run.sh [extra options of the example, such as --step-km 5]
+#   tools/prototype_route_census/run.sh           the price list and the census
+#   tools/prototype_route_census/run.sh --grid    the grid of candidate cost changes (grid.md, grid/)
 #
 # LAB holds the data and the output: osm/freiburg.osm.pbf, dem/ (GLO-30 tiles, fetched when
 # absent) and census/ (the tables).

@@ -76,6 +76,9 @@ pub(crate) fn label_bytes(nodes: usize) -> usize {
         .saturating_add(blocks.min(SPARE_BLOCKS) * 2 * size_of::<Vec<LabelBlock>>())
 }
 
+/// PROTOTYPE hook: the labels that all searches settled.
+pub static PROTOTYPE_SETTLED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[derive(Default)]
 pub struct Workspace {
     labels: [Labels; 2],
@@ -245,6 +248,7 @@ impl Workspace {
                 }
             }
         }
+        PROTOTYPE_SETTLED.fetch_add(work as u64, std::sync::atomic::Ordering::Relaxed);
         let Some(meeting) = meeting else {
             return Ok(None);
         };

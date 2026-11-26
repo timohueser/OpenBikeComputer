@@ -27,6 +27,9 @@ pub fn way(road: &Road, tags: &Tags, country: Country, profile: &Profile) -> Opt
     if requires_equipment(tags) {
         return None;
     }
+    // PROTOTYPE hook: V1.
+    let reclassed = crate::prototype_census::variant::reclass(road, tags, profile);
+    let road = reclassed.as_ref().unwrap_or(road);
     let family = match profile.name.split('/').next().unwrap_or("") {
         _ if profile.walking => Family::Hiking,
         "mtb" => Family::Mtb,
@@ -60,6 +63,12 @@ pub fn way(road: &Road, tags: &Tags, country: Country, profile: &Profile) -> Opt
         minimum_factor = surface_factor(road, tags, surface) * rolling * difficulty * if pushing { 4.0 } else { 1.0 };
     }
     let mut preference = *weights.get(road.class as usize)?;
+    // PROTOTYPE hook: V3.
+    if let Some(slow) =
+        crate::prototype_census::variant::main_road_preference(tags, road.reversed, profile).filter(|_| road.class == 2)
+    {
+        preference = slow;
+    }
     if !profile.walking && !pushing && !ferry {
         // A cycle track or lane takes part of the dislike of a main road away.
         if road.class == 2 {
@@ -98,6 +107,8 @@ pub(crate) fn surface_factor(road: &Road, tags: &Tags, weights: &[f64; 6]) -> f6
         "grade4" => &[Dirt],
         "grade5" => &[Dirt, Rough],
         _ => match road.class {
+            // PROTOTYPE hook: V5.
+            0..=2 if crate::prototype_census::variant::paved_unknown(tags) => &[Paved],
             0..=2 => &[Unknown, Paved],
             3 => &[Unknown, Gravel, Dirt],
             // S0 is solid gravel or earth without expected rocks, roots or steps.
