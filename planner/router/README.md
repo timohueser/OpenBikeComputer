@@ -89,7 +89,9 @@ One router runs one query at a time. The search limit of a region is the most by
 the queues and the reverse turns of one search: 64 MiB after `open`, and `set_search_limit`
 changes it. Above it a search returns `Limit`. A failed allocation returns `Memory`. This is not a
 process RAM guarantee: the maps of the installed files, results and host serialization add memory.
-`Region::fork` gives a worker its own search space; forks share the directory and the host.
+`Region::fork` gives a worker its own search space; forks share the directory and the host. Each
+region handle, and so each worker, keeps the decoded shapes of the last level-1 cells that it
+snapped in, up to 4 MiB. One larger cell stays alone.
 
 The router retains 32 snap results. Default request limits are 64 points,
 8,192 batched attachment queries, and 250,000 each for the steps of one search path, the roads of
