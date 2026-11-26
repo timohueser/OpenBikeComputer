@@ -51,9 +51,11 @@ const ROLLER_M: f64 = 8.0;
 const ROLLER_ALONG_M: f64 = 0.05;
 /// A later track stands this much lower inside an earlier one's sleeper band.
 const STACK_M: f64 = 0.01;
-/// A line's top over its face at a crossing, and the metres over which it rises to standing.
+/// A line's top over its face at a crossing, and the metres over which it rises to standing. A crossing's band is the
+/// carriageway, which wins over a bed, about the graph's chord, and `SAG_M`: a chord leaves its curve by less.
 const FLUSH_M: f64 = 0.004;
 const RAMP_M: f64 = 3.0;
+const SAG_M: f64 = 0.1;
 /// A line's top over its face where it stands: a sleeper's top and a rail, rack or cable (`plan/details.wgsl`).
 const SLEEPER_UP_M: f64 = 0.05;
 const TOP_M: [f64; 3] = [0.125, 0.09, 0.09];
@@ -260,8 +262,7 @@ struct Cx<'a> {
     out: Details,
     /// The chords of the ground tracks, each with its sleeper half (metres) and its way's `way_key`.
     tracks: (Grid, Vec<([V; 2], f64, u32)>),
-    /// The chords of the ground roads and paths, each with its band: carriageway, shoulder and widening (metres);
-    /// and the widest band.
+    /// The chords of the ground roads and paths, each with its band (metres), and the widest band.
     roads: (Grid, Vec<([V; 2], f64)>, f64),
 }
 
@@ -806,7 +807,7 @@ pub fn place(g: &WayGraph, input: &crate::CellInput, rules: &Rules, words: &[u32
         let s = section(w);
         let samples = &g.samples[g.ways[w].samples.start as usize..g.ways[w].samples.end as usize];
         for p in samples.windows(2).filter(|p| p[1].span <= p[0].span + 1) {
-            let band = s.half_m + s.shoulder_m + p[0].widen_m.max(p[1].widen_m);
+            let band = s.half_m + p[0].widen_m.max(p[1].widen_m) + SAG_M;
             roads.push(([p[0].pos, p[1].pos].map(|q| q.map(f64::from)), band));
         }
     }
