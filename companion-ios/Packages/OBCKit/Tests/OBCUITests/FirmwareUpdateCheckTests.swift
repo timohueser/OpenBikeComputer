@@ -13,7 +13,7 @@ struct FirmwareUpdateCheckTests {
 
     private static let containerURL = URL(string: "https://updates.openbikecomputer.com/fw/UPDATE.BIN")!
 
-    /// A phone-acceptable OBCU v2 container tagged with `version`: correct CRCs and a signature
+    /// A phone-acceptable OBCU container tagged with `version`: correct CRCs and a signature
     /// marker, so `StagedFirmware` accepts it. The phone treats the signature itself as opaque.
     private func container(version: String, imageLen: Int = 96) -> Data {
         var image = Data()

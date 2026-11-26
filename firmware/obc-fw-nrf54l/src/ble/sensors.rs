@@ -549,7 +549,8 @@ async fn run_scan(stack: &'static SensorStack) {
     SCAN_ARMED.store(true, Ordering::Relaxed);
     info!("ble: [sensor] scanning for {} s", SCAN_SECS);
 
-    let mut scanner = Scanner::new(stack.central());
+    let mut central = stack.central();
+    let mut scanner = Scanner::new(&mut central);
     let config = ScanConfig {
         active: true,
         interval: SCAN_INTERVAL,

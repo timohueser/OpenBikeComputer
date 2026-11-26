@@ -32,8 +32,7 @@ The files are the contract: a drift on any side fails that side's tests.
 | `status-command-result.bin` | `status` msg 3 §4.3 | the answer to an accepted `installFw`: `cmd` 3, `ok`, `detail` 0. Pins the four-byte layout and the position of `detail` |
 | `config-v1.bin` | `config` §7.3 | name `OBC Tourer`, `units` 0 (metric). `obc-ble` decodes and re-encodes it (`firmware/obc-ble/tests/cases/vectors.rs`) |
 | `command-set-clock.bin` | `setClock` §4.4 cmd 5 | `utc` 1783598400 (2026-07-09T12:00:00Z) · `offset_min` 120 |
-| `update-container-v1.bin` | OBCU container ([`obcu-update.md`](../obcu-update.md) §1), **unsigned/v1** | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader`. It is the shape of a fielded container and of the device-written rollback snapshot. With the v2 file below, it pins the offset compatibility across implementations |
-| `update-container-v2.bin` | OBCU container (§1), **Ed25519-signed/v2** | the *same* header table and the *same* 128-byte image as v1 — `header_version` still `1` (§1.2) — with `sig_scheme`/`sig_len` in v1's reserved bytes `48..52` and a 64-byte signature trailer after the image. Signed with the committed **test** key (`firmware/obc-dfu/keys/test/`); signing is deterministic. A decoder must read every v1 field from it byte-identically |
+| `update-container.bin` | OBCU container ([`obcu-update.md`](../obcu-update.md) §1), Ed25519-signed | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128, `sig_scheme` 1, `sig_len` 64), a 128-byte raw image and a 64-byte signature trailer. Signed with the committed **test** key (`firmware/obc-dfu/keys/test/`); signing is deterministic. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`), the web planner and the iOS `OBCUHeader` |
 | `trip-v3.bin` | trip object v3 (spec §7.7) | "Alpen Traverse", key `0x0123_4567_89AB_CDEF`, start date 20360 (Monday 2025-09-29), 3 days: route 7 ending on the line at 82,000 m, route 8 leaving the line at 73,600 m, and full-width route `0x1_0000_0063` joining at 400 m with `leave_m` `0xFFFF_FFFF`; 64-byte header + 16 bytes/day |
 | `terrain-shard.obcd` | OBCT container ([`obct-terrain.md`](../obct-terrain.md) §4) | a 2 × 2 cell rectangle at ≈ 46.97°N / 7.98°E over a **plane** (`100 + 3·di + 5·dj` m), with the far cell **absent** (the `0` directory sentinel) and one `NODATA` sample. Posting is the v1 `2^9`; the cell is `2^14`, not the v1 `2^19`, because both are header data. Bilinear interpolation over a plane has a closed form for a second implementation to check against; the differing coefficients (3 vs 5) catch a transposed lat/lon |
 | `route-answer.json` | route answer ([`route-api.md`](../route-api.md)) | one route before (`routes`) and after (`answer`) encoding. The route has six points, one unknown height, two legs and four edge channels: two `surfaces` runs, three `pushing` runs, three `closures` runs and three `sac_scale` runs. The `planner-router` encoder test and the decoder tests of the web planner and `OBCKit` read it |
@@ -61,7 +60,7 @@ Then update `manifest.json` to match and flag the app side **and** the web
 builder's two consumers — the conversion bridge and the USB protocol client. All
 of them pin the same bytes.
 
-One builder input is **not** a literal. `update-container-v2.bin`'s 64-byte trailer comes
+One builder input is **not** a literal. `update-container.bin`'s 64-byte trailer comes
 from `obc_dfu::sign_image`; that signer is deterministic, so the fixture does not change on
 regeneration.
 

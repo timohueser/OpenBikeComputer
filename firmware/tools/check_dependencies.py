@@ -11,9 +11,6 @@ depend on their consumers, while production `normal`/`build` dependencies must p
 
 from __future__ import annotations
 
-GOVERNS = ['**/Cargo.toml', 'firmware/tools/dependency_rules.json']
-RULE = 'Production dependencies point downward, and closed crates take only allowed dependencies.'
-
 import argparse
 import json
 import subprocess

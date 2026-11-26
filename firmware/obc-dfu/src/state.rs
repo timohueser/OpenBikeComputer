@@ -25,17 +25,9 @@ pub const WDT_TIMEOUT_TICKS: u32 = 24 * 32768;
 
 const MAGIC: [u8; 4] = *b"OBCB";
 
-/// The layout this crate writes. Bump it on any byte-layout change; an unknown version decodes to
-/// `Idle`, because a format skew must never read as a live install request.
-///
-/// Readers accept [`FORMAT_VERSION_V1`] too: the bootloader is flashed by probe and is not updated
-/// by DFU, so a fielded bootloader keeps writing v1 pages after the app updates. `Armed`/`Trial`
-/// payloads are identical in v1 and v2; a v1 `Idle` body ends after the installed option and
-/// decodes with `last_outcome: None`.
+/// The layout this crate writes and reads. Bump it on any byte-layout change; an unknown version
+/// decodes to `Idle`, because a format skew must never read as a live install request.
 const FORMAT_VERSION: u16 = 2;
-
-/// Accepted by [`BootState::decode`], never written; see [`FORMAT_VERSION`].
-const FORMAT_VERSION_V1: u16 = 1;
 
 // Fixed header offsets (little-endian throughout).
 const OFF_MAGIC: usize = 0; //  4 : magic
@@ -400,7 +392,7 @@ impl BootState {
             return None;
         }
         let version = u16::from_le_bytes([bytes[OFF_VERSION], bytes[OFF_VERSION + 1]]);
-        if version != FORMAT_VERSION && version != FORMAT_VERSION_V1 {
+        if version != FORMAT_VERSION {
             return None;
         }
         let blob_len = u32::from_le_bytes([
@@ -429,14 +421,7 @@ impl BootState {
         match bytes[OFF_TAG] {
             TAG_IDLE => {
                 let (installed, c) = get_opt_header(body, HDR_LEN)?;
-                // A v1 Idle body ends after the installed option. Gate on the version: the zero
-                // padding that follows must not parse as an outcome field.
-                let last_outcome = if version == FORMAT_VERSION_V1 {
-                    None
-                } else {
-                    let (last_outcome, _) = get_opt_outcome(body, c)?;
-                    last_outcome
-                };
+                let (last_outcome, _) = get_opt_outcome(body, c)?;
                 Some(BootState::Idle { installed, last_outcome })
             }
             TAG_ARMED => {
