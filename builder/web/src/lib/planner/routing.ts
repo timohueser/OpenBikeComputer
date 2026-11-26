@@ -171,20 +171,17 @@ export function routingKey(trip: Trip): string {
     return key;
 }
 
-/** The request points of a run of routed plan points after `origin`, without the points of `leftOut`. `ends` maps each
- * leg that ends at a plan point to the point's id, and `owners` gives the plan point of each request point after the
- * origin. */
+/** The request points of a run of routed plan points after `origin`, without the points of `leftOut`. `owners[k]` is
+ * the plan point at which leg `k` ends. */
 function expand(origin: Coordinate, run: RoutePoint[], leftOut: Set<string>) {
-    const coordinates: Coordinate[] = [origin], turnarounds: number[] = [], ends = new Map<number, string>();
-    const owners: (RoutePoint | undefined)[] = [undefined];
+    const coordinates: Coordinate[] = [origin], turnarounds: number[] = [], owners: RoutePoint[] = [];
     run.forEach((point, n) => {
         if (leftOut.has(point.id)) return;
         coordinates.push(point.coordinate);
         owners.push(point);
-        ends.set(coordinates.length - 2, point.id);
         if (point.turnaround && n < run.length - 1) turnarounds.push(coordinates.length - 1);
     });
-    return { coordinates, turnarounds, ends, owners };
+    return { coordinates, turnarounds, owners };
 }
 
 /** Consecutive routed legs form one run, so a shaping point keeps its road direction. A point with no road near it is left
@@ -259,7 +256,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
                 // The first and the last request point, a start, a finish or a point beside a manual leg, stay, so that the
                 // manual leg keeps its join: the leg at the point becomes a gap.
                 else if (point === 0 || point === last) gap(point === 0 ? 0 : last - 1);
-                else leftOut.add(request.owners[point!]!.id);
+                else leftOut.add(request.owners[point! - 1].id);
                 request = expand(origin, run, leftOut);
             }
         }
@@ -269,11 +266,10 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         result.unknownSurfaceKm += route.totals.surface_m[0] / 1000;
         result.pushingKm += route.totals.pushing_m / 1000;
         result.unknownElevationKm += route.totals.unknown_elevation_m / 1000;
-        const stopAt = new Map([...request.ends].map(([leg, id]) => [id, route.legs[leg].to_index]));
+        const stopAt = new Map(request.owners.map((point, k) => [point.id, route.legs[k].to_index]));
         // A gap belongs to the stop after it.
-        const ends = [...request.ends];
         route.legs.forEach((leg, k) => {
-            const id = leg.gap && ends.find(([end]) => end >= k)![1];
+            const id = leg.gap && request.owners[k].id;
             if (id && !result.gapLegs.includes(id)) result.gapLegs.push(id);
         });
         // A point left out stops where the line passes nearest to it, between the points around it.

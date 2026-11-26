@@ -646,7 +646,7 @@ export function thereAndBack(trip: Trip): Trip {
     const mirrored = (i: number) => ({ leg: route[i + 1].leg, drawn: route[i + 1].drawn?.slice().reverse() });
     const back = route.slice(1, -1).map((p, i): RoutePoint => ({ id: crypto.randomUUID(), kind: 'via', label: shapeLabel,
         coordinate: [...p.coordinate], ...p.turnaround && { turnaround: true as const }, ...mirrored(i + 1) })).reverse();
-    // A loop has no finish: it becomes a visit.
+    // A loop has no finish, so the far finish becomes a visit.
     const turn = (p: RoutePoint): RoutePoint => p === far
         ? { ...p, turnaround: true, ...p.kind === 'finish' && { kind: 'waypoint' as const } }
         : p.kind === 'start' ? { ...p, turnaround: true, ...mirrored(0) } : p;

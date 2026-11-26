@@ -136,12 +136,12 @@ describe('planning modes', () => {
             const line = testLine(trip);
             return { ...line, elapsed: line.elapsed.map(s => s * hours * 3600 / line.seconds), seconds: hours * 3600 };
         };
-        const detoured = (trip: Trip): Trip => ({ ...trip, routeOrder: ['visit'], points: [...trip.points, { id: 'visit', kind: 'waypoint', label: 'Visit', coordinate: [7.9, 47.2] }] });
+        const withVisit = (trip: Trip): Trip => ({ ...trip, routeOrder: ['visit'], points: [...trip.points, { id: 'visit', kind: 'waypoint', label: 'Visit', coordinate: [7.9, 47.2] }] });
         const route = guessedTrip({ ...testTrip(), daysSet: undefined }, riding(testTrip(), 25));
         expect(route.days).toBe(4);
-        expect(guessedTrip(detoured(route), riding(detoured(route), 28)).days).toBe(4);
+        expect(guessedTrip(withVisit(route), riding(withVisit(route), 28)).days).toBe(4);
         const set = setDays(route, 5);
-        expect(guessedTrip(detoured(set), riding(detoured(set), 40)).days).toBe(5);
+        expect(guessedTrip(withVisit(set), riding(withVisit(set), 40)).days).toBe(5);
         expect(guessedTrip(route, undefined)).toBe(route);
         const kept = pinNight(route, undefined, 5, along(.9), 'Hut');
         expect(guessedTrip(kept, riding(kept, 25)).days).toBe(6);
