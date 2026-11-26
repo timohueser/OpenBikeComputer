@@ -199,11 +199,12 @@ fn row_of(y: f64) -> i64 {
     libm::floor(y / BUCKET) as i64
 }
 
-/// What the rules read of the features and the graph: the buildings' boxes, the mapped guard rails, the water areas,
+/// What the rules read of the features and the graph: the buildings' boxes with their tile's square, the mapped guard
+/// rails, the water areas,
 /// and, at the first ring that asks, the chords of the ground ways but water and paths with the widest paved half-width
 /// of them.
 struct Context<'a> {
-    buildings: (Grid, Vec<[f64; 4]>),
+    buildings: (Grid, Vec<([f64; 4], [f64; 4])>),
     rails: (Grid, Vec<[[f64; 2]; 2]>),
     water: Vec<Water>,
     ways: OnceCell<(Grid, Vec<Chord>, f64)>,
@@ -216,6 +217,10 @@ impl<'a> Context<'a> {
     fn new(input: &'a CellInput, g: &'a WayGraph, half: &'a [Option<Info>]) -> Context<'a> {
         let o = input.key.origin();
         let local = |p: &GlobalPoint| [(p.x - o.x) as f64, (p.y - o.y) as f64];
+        let square = |t| {
+            let [x0, y0, x1, y1] = tile_square(t);
+            [x0 - o.x, y0 - o.y, x1 - o.x, y1 - o.y].map(|v| v as f64)
+        };
         let (mut boxes, mut segments, mut water) = (Vec::new(), Vec::new(), Vec::<Water>::new());
         for f in &input.features {
             for part in &f.parts {
@@ -223,8 +228,7 @@ impl<'a> Context<'a> {
                 if WATER.contains(&f.kind.as_str()) && f.geometry == Geometry::Area {
                     // A polygon's outer ring comes first, then its holes.
                     if part.outer {
-                        let [x0, y0, x1, y1] = tile_square(part.tile);
-                        water.push(([x0 - o.x, y0 - o.y, x1 - o.x, y1 - o.y].map(|v| v as f64), BTreeMap::new()));
+                        water.push((square(part.tile), BTreeMap::new()));
                     }
                     let rows = &mut water.last_mut().expect("an outer ring first").1;
                     for (&a, &b) in pts.iter().zip(pts.iter().cycle().skip(1)) {
@@ -234,14 +238,14 @@ impl<'a> Context<'a> {
                     }
                 }
                 if f.kind == "building" && f.geometry == Geometry::Area && part.outer {
-                    boxes.push(bbox(&pts));
+                    boxes.push((bbox(&pts), square(part.tile)));
                 }
                 if f.kind == "guard-rail" && f.geometry == Geometry::Line {
                     segments.extend(pts.windows(2).map(|w| [w[0], w[1]]));
                 }
             }
         }
-        let buildings = (Grid::of(4.0 * BUCKET, &boxes), boxes);
+        let buildings = (Grid::of(4.0 * BUCKET, &boxes.iter().map(|b| b.0).collect::<Vec<_>>()), boxes);
         let rails = (Grid::of(BUCKET, &segments.iter().map(|s| bbox(s)).collect::<Vec<_>>()), segments);
         Context { buildings, rails, water, ways: OnceCell::new(), g, half, input }
     }
@@ -281,13 +285,16 @@ impl<'a> Context<'a> {
         })
     }
 
+    /// Whether q lies in a town, by the copies of the buildings in the tile that owns q: a tile holds each building
+    /// once, and its buffer (`buffer_m` of the features spec) holds every building within `TOWN_M`.
     fn town(&self, q: [f64; 2], mpu: f64) -> bool {
         let (r, (grid, boxes)) = (TOWN_M / mpu, &self.buildings);
         let (mut found, mut n) = ([u32::MAX; TOWN_BUILDINGS], 0);
         grid.any(q, r, |k| {
-            let [x0, y0, x1, y1] = boxes[k as usize];
+            let ([x0, y0, x1, y1], [s0, t0, s1, t1]) = boxes[k as usize];
             let d = libm::hypot((x0 - q[0]).max(q[0] - x1).max(0.0), (y0 - q[1]).max(q[1] - y1).max(0.0));
-            if d <= r && !found.contains(&k) {
+            let owned = (s0..s1).contains(&q[0]) && (t0..t1).contains(&q[1]);
+            if d <= r && owned && !found.contains(&k) {
                 (found[n], n) = (k, n + 1);
             }
             n == TOWN_BUILDINGS
