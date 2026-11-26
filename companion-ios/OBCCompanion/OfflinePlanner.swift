@@ -24,7 +24,7 @@ actor OfflinePlanner {
         let manifest = try JSONDecoder().decode(OfflineManifest.self, from: Data(contentsOf: directory.appending(path: "release.json")))
         let blocks = manifest.offline
         try blocks.validate()
-        OfflineTilesProtocol.register(id: blocks.id, directory: directory, mapZoom: blocks.map_zoom)
+        OfflineTilesProtocol.register(id: blocks.id, directory: directory)
         let assets = directory.appending(path: "maps/assets").absoluteString
         let release = PlannerRelease(id: map.id, region: map.region, bounds: map.bounds,
             basemap: directory.appending(path: "maps/basemap.json"),
@@ -84,12 +84,11 @@ private struct OfflineBlocks: Decodable {
     }
     let format: Int
     let zoom: Int
-    let map_zoom: Int?
     let id: String
     let cells: [Cell]
     func validate() throws {
         let hex = CharacterSet(charactersIn: "0123456789abcdef")
-        guard zoom == 9, format == 4, map_zoom == nil, id.count == 64, id.unicodeScalars.allSatisfy(hex.contains),
+        guard zoom == 9, format == 4, id.count == 64, id.unicodeScalars.allSatisfy(hex.contains),
               !cells.isEmpty, Set(cells.map(\.id)).count == cells.count,
               cells.allSatisfy({ $0.id.range(of: "^9-[0-9]+-[0-9]+$", options: .regularExpression) != nil
                   && $0.bounds.count == 4 && $0.bounds.allSatisfy(\.isFinite)
