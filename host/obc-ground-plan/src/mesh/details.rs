@@ -408,14 +408,21 @@ impl Cx<'_> {
         spans
     }
 
-    /// The seat at q of a span of `spans` about stroke metres m, within `SEAT_M`: its ring and share.
-    fn seat(&self, spans: &[Span], q: V, m: f64) -> Option<(u32, f64)> {
-        // The spans by their least stroke metres; a span is at most `RING_M` long.
-        let (from, to) =
-            (spans.partition_point(|s| s.lo() < m - 1.5 - RING_M), spans.partition_point(|s| s.lo() <= m + 0.5));
-        let near = |s: &&Span| s.along[0].max(s.along[1]) >= m - 0.5;
+    /// The seat at q on the nearest span of `lines` about stroke metres m, within `SEAT_M`: its ring and share.
+    fn seat(&self, lines: &[Vec<Span>], q: V, m: f64) -> Option<(u32, f64)> {
+        // Each line's spans by their least stroke metres; a span is at most `RING_M` long.
         let d = |s: &Span| to_segment(q, s.a, s.b);
-        let best = spans[from..to].iter().filter(near).min_by(|x, y| d(x).total_cmp(&d(y)))?;
+        let mut best: Option<&Span> = None;
+        for spans in lines {
+            let (from, to) =
+                (spans.partition_point(|s| s.lo() < m - 1.5 - RING_M), spans.partition_point(|s| s.lo() <= m + 0.5));
+            for s in spans[from..to].iter().filter(|s| s.along[0].max(s.along[1]) >= m - 0.5) {
+                if best.is_none_or(|b| d(s) < d(b)) {
+                    best = Some(s);
+                }
+            }
+        }
+        let best = best?;
         let v = [best.b[0] - best.a[0], best.b[1] - best.a[1]];
         let t = ((q[0] - best.a[0]) * v[0] + (q[1] - best.a[1]) * v[1]) / (v[0] * v[0] + v[1] * v[1]).max(1e-12);
         (d(best) * self.mpu(q) <= SEAT_M).then_some((best.ring, t.clamp(0.0, 1.0)))
@@ -443,7 +450,7 @@ impl Cx<'_> {
             let (n, off) = (left(t), g / self.mpu(q));
             let seats = [[q[0] + n[0] * off, q[1] + n[1] * off], [q[0] - n[0] * off, q[1] - n[1] * off]];
             let inside = seats.map(closed);
-            let refs = [0, 1].map(|k| inside[k].then(|| self.seat(&rails[k], seats[k], m)).flatten());
+            let refs = [0, 1].map(|k| inside[k].then(|| self.seat(&rails, seats[k], m)).flatten());
             match (refs, inside) {
                 ([Some(a), Some(b)], _) => self.item(q, [seat(a) | SLEEPER << 28, seat(b) | flags << 28]),
                 ([Some(a), None], [true, false]) | ([None, Some(a)], [false, true]) => {
@@ -461,7 +468,7 @@ impl Cx<'_> {
         }
         if gauge.cable {
             for (m, q, ..) in marks(self.g, w, ROLLER_M, ROLLER_ALONG_M).into_iter().filter(|x| in_cell(x.1)) {
-                if let Some(a) = self.seat(&cable, q, m) {
+                if let Some(a) = self.seat(std::slice::from_ref(&cable), q, m) {
                     self.item(q, [seat(a) | ROLLER << 28, gauge.code]);
                 }
             }
