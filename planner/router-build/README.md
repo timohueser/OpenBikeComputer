@@ -185,6 +185,62 @@ possible closures and compressed landmark bounds, separate from map tiles. A pro
 mark the roads in a large strongly connected part of its graph (`connectivity`); the build log
 counts the roads in fragments and prints the landmark scale.
 
+## Route bench
+
+```sh
+# The route measures of a region with the cost code of this checkout: bench.json and bench.md in OUT.
+obc exec cargo run --release -p planner-router-build --example route_bench -- run \
+  --pbf region.osm.pbf --dem DEM --bounds W,S,E,N --out OUT
+
+# Two checkouts: run each with the same pairs file, then write the page of the blind comparison.
+route_bench run … --pairs pairs.json --out A    # in the first checkout
+route_bench run … --pairs pairs.json --out B    # in the second checkout
+route_bench compare A/routes.json B/routes.json --names old,new --out compare.html
+
+# Several extracts: one file with its nodes in ID order.
+osmium sort first.osm.pbf second.osm.pbf -o region.osm.pbf
+```
+
+| Input of `run` | Value |
+| --- | --- |
+| `--pbf FILE` | One OSM extract with its nodes in ID order |
+| `--dem DIR` | The folder with the Copernicus GLO-30 tiles of the bounds |
+| `--bounds W,S,E,N` | The region, in degrees |
+| `--out DIR` | The folder of the output files |
+| `--profiles NAME,…` | The profiles, or `all`. The default is `touring` |
+| `--town W,S,E,N` | Adds the town panel: both ends of its pairs lie inside this box |
+| `--pairs FILE` | Adds `routes.json`. The run draws the pairs into a missing file, and reads an existing file |
+| `--pairs-box W,S,E,N` | Both ends of a drawn pair lie inside this box. The default is the bounds |
+
+| Output | Content |
+| --- | --- |
+| `bench.json` | Each number of the run |
+| `bench.md` | The same numbers as tables: for each profile the signed routes and the panels, then the price list |
+| `routes.json` | For each pair and profile the line, the km, the ascent and the measures of the route, or `null` for no route |
+| The page of `compare` | The two routes of a pair on a map of live tiles, in a random order that stays the same. It takes one answer for each pair and gives the answers as text. It leaves out a pair with no route in a run, and a pair with the same routes |
+
+| Measure | Definition |
+| --- | --- |
+| Route | The cheapest roads from a junction to a junction, by the exact search of the router without landmarks. The production router snaps a point to a place on a road, so a short route can differ at its two ends |
+| Price list | The factor of `cost::way_basis` for a fixed list of tags, with the worldwide access defaults: the cost of 1 m of flat road. A cycling profile also has the factor on a regional and a national cycle route |
+| Signed route | A relation with `route=bicycle` for a cycling profile, `route=hiking` or `route=foot` for a walking profile, `type=route` or `superroute`, not `state=proposed` |
+| Signed line | The main line of a signed route with at least 5 km in the bounds, ordered as in the route catalog, on the directed roads of its member ways. A part with no road that the profile may use, or against a one-way for cycling, cuts the line. A piece under 1 km is not measured |
+| Leg | The signed line between two points at junctions about every 5 km. One search runs for each leg |
+| `near %` | The share of the signed length of the legs within 30 m of the router's line |
+| `same road %` | The share on a directed road that the router's route also takes |
+| Split | From the first road of a leg that differs to the next road that both lines take. The same two stretches count once |
+| Panel `random` | 100 pairs each within 10 % of 5, 15 and 40 km in a straight line. SplitMix64 with a fixed seed draws junctions where a road with the snap bit of the profile arrives. A pair has a route |
+| Panel `town` | 100 pairs of 3 to 8 km |
+| Pairs of `--pairs` | 40 pairs, a third each within 10 % of 6, 12 and 22 km. Each end snaps to the nearest junction where a road with the snap bit of the profile arrives |
+| `length / shortest` | The length of a route against the shortest route on the roads and turns that the profile may take |
+| Turn | A change of heading over 45° at a junction of three or more road ends. The headings are taken over 15 m |
+| Leave-and-rejoin event | The next road shares no `name`, `ref` or signed route with the road before, and a road within 2 km of route length shares one again |
+| Signal node | A signal at a junction inside the route, not at its two ends |
+| Fast main road | Class 2 with a limit over 50 km/h or no tagged limit, and no cycle track by `traffic::protection` |
+| Slow main road | Class 2 with a tagged limit of 50 km/h or less |
+| `signed route %` | The length on a way of a signed route |
+| Same routes | Each route has at most 10 % of its length farther than 30 m from the other |
+
 ## Pitfalls
 
 - Rebuild packages after you change the profile code. Rider validation is required.
