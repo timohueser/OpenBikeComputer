@@ -12,7 +12,7 @@ npm run test:planner --prefix builder/web/tests/browser
 limit. The log shows each phase of the session, so the growth is easy to find.
 The test also fails when, at load, a terrain or overlay request comes before the last basemap,
 glyph or sprite request.
-Cloudflare bills `basemap`, `places`, `overlays`, `terrain`, `glyphs` and `sprites`. The VPS serves the rest.
+Cloudflare bills `basemap`, `places`, `overlays`, `ways`, `terrain`, `glyphs` and `sprites`. The VPS serves the rest.
 
 After a deliberate change, set each limit by the rule in `basis`.
 
@@ -30,4 +30,4 @@ node planner/tile-pictures.mjs --base http://127.0.0.1:5316 [--only cycling,cont
 ```
 
 The script writes `src/components/planner/tiles/<id>-<light|dark>.jpg`. It needs the network of
-the planner release.
+the planner release. The pictures `steepness` and `trail-grade` need a release with `ways`.
