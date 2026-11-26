@@ -225,9 +225,9 @@ pub(crate) fn transition(
     }
     let (arrival, departure) = (roads.shape(before as usize), roads.shape(after as usize));
     let mut cost = doubt + turn(arrival[arrival.len() - 2], arrival[arrival.len() - 1], departure[1], wb.turn);
-    if graph.signals.values()[junction] != 0 {
-        cost += 20.0;
-    }
+    // PROTOTYPE hook: the signal cost of `road` by the cluster rule.
+    cost += crate::prototype_census::variant::road_signal(graph, before)
+        .unwrap_or(if graph.signals.values()[junction] != 0 { 20.0 } else { 0.0 });
     if wb.ferry && !wa.ferry {
         cost += 10_000.0;
     }

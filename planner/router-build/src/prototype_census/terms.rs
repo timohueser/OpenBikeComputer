@@ -74,12 +74,16 @@ pub struct Factors {
     pub road_class: u8,
 }
 
-/// `None` where the profile excludes the road. Only for the touring family: the tables of
-/// `smoothness` and `tracktype` depend on the family.
+/// `None` where the profile excludes the road. The family is that of `suitability::way`: the
+/// tables of `smoothness` and `tracktype` depend on it.
 pub fn factors(road: &Road, tags: &Tags, country: Country, profile: &Profile) -> Option<Factors> {
     let Weighting::Weighted { surface: weights, .. } = &profile.weighting else { return None };
-    assert!(profile.walking || profile.name.starts_with("touring"), "the term split knows touring and hiking only");
-    let family = if profile.walking { Family::Hiking } else { Family::Touring };
+    let family = match profile.name.split('/').next().unwrap_or("") {
+        _ if profile.walking => Family::Hiking,
+        "mtb" => Family::Mtb,
+        "gravel" => Family::Gravel,
+        _ => Family::Touring,
+    };
     let suit = suitability::way(road, tags, country, profile)?;
     let reclassed = variant::reclass(road, tags, profile);
     let road = reclassed.as_ref().unwrap_or(road);

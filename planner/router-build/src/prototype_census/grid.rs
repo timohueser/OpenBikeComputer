@@ -29,6 +29,10 @@ pub const BASE: Variant = Variant {
     signal: 0,
     walk_bonus: false,
     walk_turn: 0,
+    cluster: 0,
+    keys: variant::KEYS_ALL,
+    road_signal: false,
+    entry: false,
 };
 const LIMITS: &str = "V1+V2T-100";
 
@@ -125,6 +129,19 @@ pub fn measure(
     name: &str,
     variants: &[(&'static str, Variant)],
     panels: &[Panel],
+    lists: (&Path, &str),
+) -> Result<Vec<Row>, String> {
+    measure_with(graph, topology, Some((vias, step_m)), name, variants, panels, lists)
+}
+
+/// `measure`, with an empty census and no split list where `census` is `None`.
+pub fn measure_with(
+    graph: &Graph,
+    topology: &Topology,
+    census: Option<(&[i64], f64)>,
+    name: &str,
+    variants: &[(&'static str, Variant)],
+    panels: &[Panel],
     (lists, prefix): (&Path, &str),
 ) -> Result<Vec<Row>, String> {
     std::fs::create_dir_all(lists).map_err(|e| e.to_string())?;
@@ -137,7 +154,10 @@ pub fn measure(
         let costs = bake(graph, topology, name, variant)?;
         let mut net = Net::new(graph, profile, arcs, (costs.roads[0].totals.values(), costs.roads[0].turns.values()));
         let bake_s = lap();
-        let census = census::run(&mut net, vias, (step_m, step_m))?;
+        let census = match census {
+            Some((vias, step_m)) => census::run(&mut net, vias, (step_m, step_m))?,
+            None => Census::default(),
+        };
         let census_s = lap();
         let (mut measures, mut settled) = (Vec::new(), 0.0);
         for (i, panel) in panels.iter().enumerate() {
@@ -148,8 +168,10 @@ pub fn measure(
             }
             measures.push(routes.iter().map(|roads| panel::measure(&net, roads)).collect());
         }
-        let file = lists.join(format!("splits_{prefix}{}.csv", variant_name.replace('+', "_")));
-        std::fs::write(&file, report::splits_csv(&census)).map_err(|e| format!("{}: {e}", file.display()))?;
+        if census.queries > 0 {
+            let file = lists.join(format!("splits_{prefix}{}.csv", variant_name.replace('+', "_")));
+            std::fs::write(&file, report::splits_csv(&census)).map_err(|e| format!("{}: {e}", file.display()))?;
+        }
         let seconds = [bake_s, census_s, lap()];
         eprintln!(
             "Variant {variant_name}: bake {:.1} s, census {:.1} s, panels {:.1} s",
@@ -261,12 +283,9 @@ pub const PANEL_NOTE: &str =
     "300 pairs of junctions where a road with the snap bit of `touring` arrives, the same for \
      each variant: 100 each at 5, 15 and 40 km straight-line distance (within 10 %), SplitMix64 with a fixed seed.";
 
-/// Table B for panel `index` of each row. `full` adds the table of the surfaces and the seconds.
-pub fn panel_table(text: &mut String, title: &str, note: &str, rows: &[Row], index: usize, panel: &Panel, full: bool) {
-    write!(
-        text,
-        "\n{title}\n\n\
-         {note} Each route is the cheapest road sequence from any road that arrives at the first junction to any \
+/// What a route of a panel is, and the columns of table B.
+pub const PANEL_LEGEND: &str =
+    "Each route is the cheapest road sequence from any road that arrives at the first junction to any \
          road that arrives at the second, by plain bidirectional Dijkstra: no snap to a road position, no \
          landmarks. The rates pool all routes, so the long routes weigh most.\n\n\
          - `/ shortest`: route length against the shortest route on the roads and turns that the profile may take.\n\
@@ -283,7 +302,18 @@ pub fn panel_table(text: &mut String, title: &str, note: &str, rows: &[Row], ind
          the route length with no tagged limit, all classes.\n\
          - `differs`: the routes with more than 10 % of their length farther than 30 m from the route of the \
          first row.\n\
-         - `settled`: the labels that the plain search settles for each query.\n\n\
+         - `settled`: the labels that the plain search settles for each query.";
+
+/// Table B for panel `index` of each row. `full` adds the table of the surfaces and the seconds.
+pub fn panel_table(text: &mut String, title: &str, note: &str, rows: &[Row], index: usize, panel: &Panel, full: bool) {
+    panel_rows(text, title, &format!("{note} {PANEL_LEGEND}"), rows, index, panel, full);
+}
+
+/// `panel_table` with `note` alone above the rows.
+pub fn panel_rows(text: &mut String, title: &str, note: &str, rows: &[Row], index: usize, panel: &Panel, full: bool) {
+    write!(
+        text,
+        "\n{title}\n\n{note}\n\n\
          | variant | / shortest p50 | p95 | max | / V0 sum | / V0 p95 | turns per km | leave and rejoin per 100 km | \
          signals per 100 km | signalled junctions per 100 km | fast main km per 100 km | slow main km per 100 km | \
          class 1 at 80 km per 100 km | class 1 over 50 km per 100 km | no limit | differs | settled |\n\

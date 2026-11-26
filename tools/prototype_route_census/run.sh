@@ -6,6 +6,8 @@
 #   tools/prototype_route_census/run.sh --round3  the signal cost, Alsace, hiking (round3.md, round3/)
 #   tools/prototype_route_census/run.sh --round4  the pairs for the map, Engelberg, Ireland
 #                                                 (pairs.json, round4.md, round4/)
+#   tools/prototype_route_census/run.sh --round5  the signal clusters, the through keys, the other
+#                                                 profiles (round5.md, round5/)
 #
 # LAB holds the data and the output: osm/freiburg.osm.pbf, osm/alsace/alsace-latest.osm.pbf,
 # osm/switzerland/<canton>.osm.pbf, osm/ireland/ireland.osm.pbf, dem/ (GLO-30 tiles, fetched when
@@ -44,6 +46,18 @@ sorted() {
 census() {
     cargo run --release -p planner-router-build --example prototype_census -- --dem "$LAB/dem" --out "$LAB/census" "$@"
 }
+# The merged cantons and the box of Galway, made when absent.
+extracts() {
+    tiles N46_00_E007 N46_00_E008 N52_00_W010 N52_00_W009 N53_00_W010 N53_00_W009
+    if [ ! -s "$SWISS/central.osm.pbf" ]; then
+        osmium prepare_osm.py merge "$SWISS/central.osm.pbf" "$SWISS"/{lucerne,nidwalden,obwalden,schwyz,uri}.osm.pbf
+    fi
+    if [ ! -s "$IRELAND/galway.osm.pbf" ]; then
+        osmium prepare_osm.py clip "$IRELAND/galway.osm.pbf" "$IRELAND/ireland.osm.pbf" "$GALWAY_BOUNDS"
+    fi
+    sorted "$SWISS/central.osm.pbf"
+    sorted "$IRELAND/galway.osm.pbf"
+}
 
 cd "$ROOT"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$LAB/target}"
@@ -66,15 +80,7 @@ case "${1:-}" in
     echo "Wrote $LAB/census/round3.md"
     ;;
 --round4)
-    tiles N46_00_E007 N46_00_E008 N52_00_W010 N52_00_W009 N53_00_W010 N53_00_W009
-    if [ ! -s "$SWISS/central.osm.pbf" ]; then
-        osmium prepare_osm.py merge "$SWISS/central.osm.pbf" "$SWISS"/{lucerne,nidwalden,obwalden,schwyz,uri}.osm.pbf
-    fi
-    if [ ! -s "$IRELAND/galway.osm.pbf" ]; then
-        osmium prepare_osm.py clip "$IRELAND/galway.osm.pbf" "$IRELAND/ireland.osm.pbf" "$GALWAY_BOUNDS"
-    fi
-    sorted "$SWISS/central.osm.pbf"
-    sorted "$IRELAND/galway.osm.pbf"
+    extracts
     census --pbf "$FREIBURG" --round4 freiburg
     census --pbf "$SWISS/central.osm.pbf" --bounds "$SWISS_BOUNDS" --round4 engelberg
     census --pbf "$IRELAND/galway.osm.pbf" --bounds "$GALWAY_BOUNDS" --round4 galway
@@ -89,6 +95,41 @@ case "${1:-}" in
             "$HERE/round4_notes.md"
     } >"$LAB/census/round4.md"
     echo "Wrote $LAB/census/round4.md"
+    ;;
+--round5)
+    extracts
+    tiles N47_00_E006 N48_00_E006 N49_00_E006 N49_00_E007 N49_00_E008
+    sorted "$ALSACE"
+    cargo build --release -p planner-router-build --example prototype_census
+    parts="$LAB/census/round5"
+    mkdir -p "$parts"
+    {
+        echo
+        echo "# D. The time of each run"
+        echo
+        echo "The wall time of each \`prototype_census\` process on $(nproc) threads: the import of the box with its"
+        echo "GLO-30 heights, the draw of the panels, and the rows. The build of the binary is not in it."
+        echo
+        echo "| run | seconds |"
+        echo "|---|---|"
+    } >"$parts/times.md"
+    timed() {
+        local start=$SECONDS
+        census "${@:2}"
+        echo "| $1 | $((SECONDS - start)) |" >>"$parts/times.md"
+    }
+    timed Freiburg --pbf "$FREIBURG" --round5 freiburg
+    timed Galway --pbf "$IRELAND/galway.osm.pbf" --bounds "$GALWAY_BOUNDS" --round5 galway
+    timed Engelberg --pbf "$SWISS/central.osm.pbf" --bounds "$SWISS_BOUNDS" --round5 engelberg
+    timed Alsace --pbf "$ALSACE" --bounds "$ALSACE_BOUNDS" --round5 alsace
+    {
+        echo "# Round five: signal clusters, through keys, other profiles (prototype for issue 3836)"
+        echo
+        echo "The stand-ins measure the reach of an idea. They are not proposals, and nothing is tuned."
+        echo "\`tools/prototype_route_census/run.sh --round5\` writes this file."
+        cat "$parts"/A?_*.md "$parts"/B?_*.md "$parts"/C_*.md "$parts/times.md" "$HERE/round5_notes.md"
+    } >"$LAB/census/round5.md"
+    echo "Wrote $LAB/census/round5.md"
     ;;
 *)
     census --pbf "$FREIBURG" --package "$@"

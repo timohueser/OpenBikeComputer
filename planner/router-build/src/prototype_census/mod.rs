@@ -14,6 +14,7 @@ mod prices;
 mod report;
 mod round3;
 mod round4;
+mod round5;
 mod terms;
 pub(crate) mod variant;
 
@@ -38,12 +39,14 @@ struct Options {
     round3: String,
     /// `freiburg`, `engelberg` or `galway`: the part of round four for that region.
     round4: String,
+    /// `freiburg`, `engelberg`, `galway` or `alsace`: the part of round five for that region.
+    round5: String,
     bounds: [f64; 4],
 }
 
 fn options() -> Result<Options, String> {
     let usage =
-        "Usage: prototype_census --pbf FILE --out DIR [--dem DIR] [--step-km 5] [--profiles all] [--package] [--grid] [--round3 freiburg|alsace] [--bounds W,S,E,N]";
+        "Usage: prototype_census --pbf FILE --out DIR [--dem DIR] [--step-km 5] [--profiles all] [--package] [--grid] [--round3 freiburg|alsace] [--round4 freiburg|engelberg|galway] [--round5 freiburg|engelberg|galway|alsace] [--bounds W,S,E,N]";
     let mut options = Options {
         pbf: PathBuf::new(),
         dem: None,
@@ -54,6 +57,7 @@ fn options() -> Result<Options, String> {
         grid: false,
         round3: String::new(),
         round4: String::new(),
+        round5: String::new(),
         bounds: FREIBURG,
     };
     let mut args = std::env::args().skip(1);
@@ -69,6 +73,7 @@ fn options() -> Result<Options, String> {
             "--grid" => options.grid = true,
             "--round3" => options.round3 = value()?,
             "--round4" => options.round4 = value()?,
+            "--round5" => options.round5 = value()?,
             "--bounds" => {
                 let values: Vec<f64> = value()?.split(',').filter_map(|v| v.parse().ok()).collect();
                 options.bounds = values.try_into().map_err(|_| usage)?;
@@ -150,6 +155,14 @@ fn run() -> Result<(), String> {
         "engelberg" => return round4::engelberg(&graph, &vias, options.step_m, bounds, &options.out),
         "galway" => return round4::galway(&graph, &vias, options.step_m, bounds, &options.out),
         _ => return Err("--round4 takes freiburg, engelberg or galway".into()),
+    }
+    match options.round5.as_str() {
+        "" => {}
+        "freiburg" => return round5::freiburg(&graph, &vias, options.step_m, bounds, &options.out),
+        "engelberg" => return round5::engelberg(&graph, &vias, options.step_m, bounds, &options.out),
+        "galway" => return round5::galway(&graph, bounds, &options.out),
+        "alsace" => return round5::alsace(&graph, &vias, options.step_m, bounds, &options.out),
+        _ => return Err("--round5 takes freiburg, engelberg, galway or alsace".into()),
     }
     let names: Vec<&str> = options.profiles.split(',').collect();
     let profiles = crate::profiles(&names)?;

@@ -11,7 +11,7 @@ use std::fmt::Write;
 use std::path::Path;
 use std::time::Instant;
 
-const TODAY: Variant = Variant {
+pub const TODAY: Variant = Variant {
     path_as_cycleway: false,
     turn: 0,
     through: false,
@@ -21,9 +21,13 @@ const TODAY: Variant = Variant {
     signal: 0,
     walk_bonus: false,
     walk_turn: 0,
+    cluster: 0,
+    keys: variant::KEYS_ALL,
+    road_signal: false,
+    entry: false,
 };
 /// V1 + V2T-100 + S60.
-const FIRST: Variant = Variant { signal: 60, ..BASE };
+pub const FIRST: Variant = Variant { signal: 60, ..BASE };
 /// `FIRST` + V4.
 const SIGNED: Variant = Variant { full_bonus: true, ..FIRST };
 const TRIO: [(&str, Variant); 3] = [("today", TODAY), ("first", FIRST), ("first+signed", SIGNED)];

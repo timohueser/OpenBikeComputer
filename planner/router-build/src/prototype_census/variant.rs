@@ -5,7 +5,8 @@ use crate::road_bike::tag;
 use crate::source::Tags;
 use crate::{traffic, Graph};
 use planner_router::model::{Point, Profile, Road};
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::sync::OnceLock;
 
@@ -13,6 +14,13 @@ use std::sync::OnceLock;
 const HEADING_M: f64 = 15.0;
 /// Signal nodes that a road shorter than this joins are one signalled junction.
 const SIGNAL_GROUP_M: u32 = 40;
+/// The lengths `R` of the cluster rule that `prepare` builds.
+pub const CLUSTER_M: [u32; 2] = [40, 60];
+/// The key rules of V2T. `name`, `ref` and route relation; `name` and route relation; or the
+/// first, but a `ref` is no key where one of the two roads is a main road (class 2).
+pub const KEYS_ALL: u32 = 0;
+pub const KEYS_NO_REF: u32 = 1;
+pub const KEYS_NO_MAIN_REF: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Variant {
@@ -35,10 +43,20 @@ pub struct Variant {
     /// Hiking (b): the turn cost `T` on foot, with the through rule on names, refs and hiking
     /// routes; 0 for none.
     pub walk_turn: u32,
+    /// The length `R` of the cluster rule of the signal cost; 0 for the rule of the 40 m road.
+    pub cluster: u32,
+    /// The key rule of V2T: `KEYS_ALL`, `KEYS_NO_REF` or `KEYS_NO_MAIN_REF`.
+    pub keys: u32,
+    /// `road` pays `signal` by its rule in place of its own 20 m for each signal node.
+    pub road_signal: bool,
+    /// The cluster rule pays where the route enters a cluster at any node, not only at a signal
+    /// node.
+    pub entry: bool,
 }
 
 static FLAGS: AtomicU32 = AtomicU32::new(0);
-static NUMBERS: [AtomicU32; 3] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
+static NUMBERS: [AtomicU32; 5] =
+    [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
 
 pub fn set(variant: Variant) {
     let flags = [
@@ -48,9 +66,13 @@ pub fn set(variant: Variant) {
         variant.full_bonus,
         variant.paved_unknown,
         variant.walk_bonus,
+        variant.road_signal,
+        variant.entry,
     ];
     FLAGS.store(flags.iter().enumerate().map(|(bit, on)| u32::from(*on) << bit).sum(), Relaxed);
-    for (number, value) in NUMBERS.iter().zip([variant.turn, variant.signal, variant.walk_turn]) {
+    for (number, value) in
+        NUMBERS.iter().zip([variant.turn, variant.signal, variant.walk_turn, variant.cluster, variant.keys])
+    {
         number.store(value, Relaxed);
     }
 }
@@ -68,6 +90,10 @@ pub fn get() -> Variant {
         turn: NUMBERS[0].load(Relaxed),
         signal: NUMBERS[1].load(Relaxed),
         walk_turn: NUMBERS[2].load(Relaxed),
+        cluster: NUMBERS[3].load(Relaxed),
+        keys: NUMBERS[4].load(Relaxed),
+        road_signal: on(6),
+        entry: on(7),
     }
 }
 
@@ -84,6 +110,116 @@ pub struct Context {
     routes: [Routes; 2],
     /// The ways of the hiking routes.
     walked: HashSet<i64>,
+    /// The clusters of the signal nodes for each `CLUSTER_M`.
+    clusters: [Clusters; 2],
+}
+
+/// The clusters of one `R`: each is a set of signal nodes that a path of roads of at most `R`
+/// metres in total joins, with the junctions on those paths. A path takes any road of the graph in
+/// any direction.
+pub struct Clusters {
+    /// The cluster of each junction, from 1; 0 for none.
+    of: Vec<u32>,
+    pub sizes: Vec<Size>,
+}
+
+pub struct Size {
+    pub signals: usize,
+    pub nodes: usize,
+    /// The largest straight-line distance between two nodes of the cluster.
+    pub across_m: f64,
+    pub at: Point,
+}
+
+impl Clusters {
+    fn new(graph: &Graph, radius: u32) -> Self {
+        let (roads, signals, points) = (&graph.roads, graph.signals.values(), graph.points.values());
+        let mut ends = Vec::new();
+        for road in (0..roads.len()).filter(|&road| roads.length_m.values()[road] <= radius) {
+            let length = roads.length_m.values()[road];
+            ends.push((roads.from(road), roads.to(road), length));
+            ends.push((roads.to(road), roads.from(road), length));
+        }
+        ends.sort_unstable();
+        ends.dedup();
+        // The junctions within `radius` of a junction, with their distances along the roads.
+        let ball = |start: u32| {
+            let mut best = HashMap::from([(start, 0u32)]);
+            let mut queue = BinaryHeap::from([Reverse((0u32, start))]);
+            while let Some(Reverse((metres, node))) = queue.pop() {
+                if best[&node] < metres {
+                    continue;
+                }
+                let first = ends.partition_point(|end| end.0 < node);
+                for &(_, next, length) in ends[first..].iter().take_while(|end| end.0 == node) {
+                    let through = metres + length;
+                    if through <= radius && best.get(&next).is_none_or(|&known| through < known) {
+                        best.insert(next, through);
+                        queue.push(Reverse((through, next)));
+                    }
+                }
+            }
+            best
+        };
+        let nodes: Vec<u32> = (0..signals.len() as u32).filter(|&node| signals[node as usize] != 0).collect();
+        let balls: Vec<HashMap<u32, u32>> = nodes.iter().map(|&node| ball(node)).collect();
+        let index: HashMap<u32, usize> = nodes.iter().enumerate().map(|(i, &node)| (node, i)).collect();
+        let mut group: Vec<usize> = (0..nodes.len()).collect();
+        fn find(group: &mut [usize], mut node: usize) -> usize {
+            while group[node] != node {
+                group[node] = group[group[node]];
+                node = group[node];
+            }
+            node
+        }
+        let mut joined = Vec::new();
+        for (i, ball) in balls.iter().enumerate() {
+            for j in ball.keys().filter_map(|node| index.get(node).copied()).filter(|&j| j > i) {
+                let (a, b) = (find(&mut group, i), find(&mut group, j));
+                group[a] = b;
+                joined.push((i, j));
+            }
+        }
+        let mut of = vec![0u32; signals.len()];
+        let mut ids = HashMap::new();
+        for (i, &node) in nodes.iter().enumerate() {
+            let next = ids.len() as u32 + 1;
+            of[node as usize] = *ids.entry(find(&mut group, i)).or_insert(next);
+        }
+        // A junction on a path of at most `radius` between two signal nodes is in their cluster.
+        for (i, j) in joined {
+            for (&node, &metres) in &balls[i] {
+                if balls[j].get(&node).is_some_and(|&more| metres + more <= radius) {
+                    of[node as usize] = of[nodes[i] as usize];
+                }
+            }
+        }
+        let mut members = vec![Vec::new(); ids.len()];
+        for (node, &cluster) in of.iter().enumerate().filter(|(_, &cluster)| cluster != 0) {
+            members[cluster as usize - 1].push(node);
+        }
+        let sizes = members.iter().map(|members| {
+            let across = members.iter().flat_map(|&a| members.iter().map(move |&b| points[a].distance(points[b])));
+            Size {
+                signals: members.iter().filter(|&&node| signals[node] != 0).count(),
+                nodes: members.len(),
+                across_m: across.fold(0.0, f64::max),
+                at: points[members[0]],
+            }
+        });
+        Clusters { sizes: sizes.collect(), of }
+    }
+
+    /// The cluster of a junction, from 1; 0 for none.
+    pub fn of(&self, junction: u32) -> u32 {
+        self.of[junction as usize]
+    }
+
+    /// Whether `road` arrives at a node of a cluster from a node that is not in it.
+    pub fn enters(&self, graph: &Graph, road: u32) -> bool {
+        let (from, to) = (self.of(graph.roads.from(road as usize)), self.of(graph.roads.to(road as usize)));
+        to != 0 && from != to
+    }
 }
 
 static CONTEXT: OnceLock<Context> = OnceLock::new();
@@ -141,7 +277,8 @@ pub fn prepare(graph: &Graph) {
         list.sort_unstable();
         list.dedup();
     }
-    let _ = CONTEXT.set(Context { degree, names, routes, walked });
+    let clusters = CLUSTER_M.map(|radius| Clusters::new(graph, radius));
+    let _ = CONTEXT.set(Context { degree, names, routes, walked, clusters });
 }
 
 impl Context {
@@ -161,9 +298,15 @@ impl Context {
         labels
     }
 
-    fn through(&self, before: u32, after: u32, walking: bool) -> bool {
+    pub fn clusters(&self, radius: u32) -> &Clusters {
+        &self.clusters[CLUSTER_M.iter().position(|&built| built == radius).expect("an `R` of `CLUSTER_M`")]
+    }
+
+    /// Whether the way rows `before` and `after` share a through key; `by_ref` says whether the
+    /// `ref` is a key.
+    pub fn through(&self, before: u32, after: u32, walking: bool, by_ref: bool) -> bool {
         let (a, b) = (self.names[before as usize], self.names[after as usize]);
-        if a[0] != 0 && a[0] == b[0] || a[1] != 0 && a[1] == b[1] {
+        if a[0] != 0 && a[0] == b[0] || by_ref && a[1] != 0 && a[1] == b[1] {
             return true;
         }
         let routes = &self.routes[usize::from(walking)];
@@ -203,6 +346,25 @@ pub fn signalled(graph: &Graph, road: u32) -> bool {
         && !(roads.length_m.values()[road] < SIGNAL_GROUP_M && signals[roads.from(road) as usize] != 0)
 }
 
+/// Whether the route pays the signal cost where `road` arrives: by the cluster rule of
+/// `variant.cluster`, or by the rule of the 40 m road for 0.
+fn pays_signal(graph: &Graph, variant: Variant, road: u32) -> bool {
+    match variant.cluster {
+        0 => signalled(graph, road),
+        radius => {
+            (variant.entry || graph.signals.values()[graph.roads.to(road as usize) as usize] != 0)
+                && context().clusters(radius).enters(graph, road)
+        }
+    }
+}
+
+/// The hook of `cost::transition` for `road`: the signal cost where `before` arrives, or `None`
+/// for its cost of today.
+pub fn road_signal(graph: &Graph, before: u32) -> Option<f64> {
+    let variant = get();
+    variant.road_signal.then(|| if pays_signal(graph, variant, before) { f64::from(variant.signal) } else { 0.0 })
+}
+
 /// The signal nodes, and the signalled junctions that they form: the groups of signal nodes that
 /// roads shorter than `SIGNAL_GROUP_M` join.
 pub fn signal_counts(graph: &Graph) -> (usize, usize) {
@@ -237,12 +399,17 @@ pub fn turn_cost(graph: &Graph, profile: &Profile, before: u32, after: u32) -> u
     }
     let (context, roads) = (context(), &graph.roads);
     let (a, b) = (before as usize, after as usize);
-    let mut cost = if signal != 0 && signalled(graph, before) { u64::from(signal) } else { 0 };
+    let mut cost = if signal != 0 && pays_signal(graph, variant, before) { u64::from(signal) } else { 0 };
     if turn != 0 && context.degree[roads.to(a) as usize] >= 3 {
         let u_turn = roads.way(a) == roads.way(b) && roads.from(a) == roads.to(b);
+        let by_ref = match variant.keys {
+            KEYS_NO_REF => false,
+            KEYS_NO_MAIN_REF => roads.class(a) != 2 && roads.class(b) != 2,
+            _ => true,
+        };
         let through = (variant.through || profile.walking)
             && !u_turn
-            && context.through(roads.way_row(a), roads.way_row(b), profile.walking);
+            && context.through(roads.way_row(a), roads.way_row(b), profile.walking, by_ref);
         if !through {
             cost += (f64::from(turn) * (1.0 - cosine(graph, before, after))).round() as u64;
         }

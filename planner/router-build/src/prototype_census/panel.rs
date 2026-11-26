@@ -10,6 +10,8 @@ use rayon::prelude::*;
 /// A route that is on the same name, ref or route relation again within this length left it and
 /// joined it again.
 const REJOIN_M: f64 = 2000.0;
+/// The `R` of the clusters that `Measures::entered` counts, for each variant.
+pub const CLUSTERS_M: u32 = 60;
 
 /// The pairs of a panel: for each class, `count` pairs with a straight-line distance from `min_km`
 /// to `max_km`, of junctions inside `inside` (west, south, east, north in degrees).
@@ -37,6 +39,14 @@ pub struct Measures {
     /// than 40 m joins to the signal node before.
     pub signals: u32,
     pub signalled: u32,
+    /// The clusters of `CLUSTERS_M` that the route enters; those that it enters at a signal node,
+    /// where the cluster rule pays; and those that it enters at a node with no signal and then
+    /// passes a signal node of, where the rule does not pay.
+    pub entered: u32,
+    pub paid: u32,
+    pub free: u32,
+    /// The clusters of R = 40 m that the route enters.
+    pub entered_40: u32,
     /// Main roads (class 2) with a limit over 50 km/h or no tagged limit, and no cycle track.
     pub fast_main_m: f64,
     /// Main roads with a tagged limit of 50 km/h or less.
@@ -124,6 +134,8 @@ pub fn measure(net: &Net, roads: &[u32]) -> Measures {
     let all = &graph.roads;
     let mut measures = Measures::default();
     let (mut labels, mut starts) = (Vec::with_capacity(roads.len()), Vec::with_capacity(roads.len()));
+    // The route is in a cluster that it entered at a node with no signal, and has passed no signal node of it.
+    let (clusters, mut unpaid) = (context.clusters(CLUSTERS_M), false);
     for (i, &road) in roads.iter().enumerate() {
         let id = road as usize;
         let way = graph.osm.ways.row(all.way_row(id) as usize);
@@ -133,6 +145,18 @@ pub fn measure(net: &Net, roads: &[u32]) -> Measures {
         if let Some(&next) = roads.get(i + 1) {
             measures.signals += u32::from(graph.signals.values()[all.to(id) as usize] != 0);
             measures.signalled += u32::from(variant::signalled(graph, road));
+            measures.entered_40 += u32::from(context.clusters(40).enters(graph, road));
+            let signal = graph.signals.values()[all.to(id) as usize] != 0;
+            if clusters.enters(graph, road) {
+                measures.entered += 1;
+                measures.paid += u32::from(signal);
+                unpaid = !signal;
+            } else if clusters.of(all.to(id)) == 0 {
+                unpaid = false;
+            } else if unpaid && signal {
+                measures.free += 1;
+                unpaid = false;
+            }
             measures.turns += u32::from(net.is_turn(road, next));
         }
         let speed = variant::speed_limit(&way.tags, reversed);
