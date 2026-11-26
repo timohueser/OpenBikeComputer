@@ -670,13 +670,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                     let out = add(rings[i].0, rings[i].1, DROP_OUT_M / mpu[i]);
                     rings[i].2 && (ctx.terrain(out).is_some_and(|t| z - t > DROP_M) || ctx.water(out))
                 });
-                // A stop changes a share only within `JOIN_M` of a ring where a rail may stand, so the town test runs
-                // only there.
                 let may = metres_to(&m, &vec![false; n], &flat(n, |i| mapped[i] || drops[i]));
-                let town = flat(n, |i| rings[i].2 && may[i] <= JOIN_M && ctx.town(rings[i].0, mpu[i]));
-                let mut towns: Vec<f64> = town.iter().map(|&t| f64::from(u8::from(t))).collect();
-                without_stubs(&mut towns, &m, BREAK_M, ends);
-                let need = flat(n, |i| mapped[i] || (drops[i] && towns[i] == 0.0));
                 let fold = |j: usize| dot(sub(rings[j + 1].0, rings[j].0), add(pts[j].t, pts[j + 1].t, 1.0)) <= 0.0;
                 let turn = |i: usize| {
                     let lo = (0..=i).rev().find(|&k| m[i] - m[k] >= BEND_M).unwrap_or(0);
@@ -692,8 +686,15 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                         && near_cell(rings[i].0, mpu[i])
                         && !ctx.town(rings[i].0, mpu[i])
                 });
-                // Another way's band is read only where a stop can change a share or a delineator.
+                // A stop changes a share only within `JOIN_M` of a ring where a rail may stand, and a delineator only
+                // within `CLEAR_M` of it, so the band and the town tests run only there; the town test `BREAK_M` and a
+                // ring's step farther, so that a town that reaches `CLEAR_M` has its length.
                 let to_deli = metres_to(&m, &vec![false; n], &deli);
+                let clears = |i: usize, past: f64| may[i] <= JOIN_M || to_deli[i] < CLEAR_M + past;
+                let town = flat(n, |i| rings[i].2 && clears(i, BREAK_M + RING_M) && ctx.town(rings[i].0, mpu[i]));
+                let mut towns: Vec<f64> = town.iter().map(|&t| f64::from(u8::from(t))).collect();
+                without_stubs(&mut towns, &m, BREAK_M, ends);
+                let need = flat(n, |i| mapped[i] || (drops[i] && towns[i] == 0.0));
                 let stops = flat(n, |i| {
                     let bit = if side * pts[i].dir > 0.0 { 1 } else { 2 };
                     let front = add(rings[i].0, rings[i].1, -BEAM_FRONT_M / mpu[i]);
@@ -705,7 +706,7 @@ pub fn place(g: &WayGraph, input: &CellInput, rules: &Rules) -> Edges {
                         || (towns[i] > 0.0 && !mapped[i])
                         || (i > 0 && fold(i - 1))
                         || (i + 1 < n && fold(i))
-                        || ((may[i] <= JOIN_M || to_deli[i] < CLEAR_M) && ctx.in_other(front, &chain, mpu[i]))
+                        || (clears(i, 0.0) && ctx.in_other(front, &chain, mpu[i]))
                 });
                 let (share, to_stop) = shares(&m, &need, &stops, ends);
                 let ring = |i: usize| Ring {
