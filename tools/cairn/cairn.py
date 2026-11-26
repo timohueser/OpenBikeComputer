@@ -11,7 +11,6 @@ Usage: python3 tools/cairn/cairn.py
          check [--base REF] [--update | --accept]
          map
          leaves SYSTEM
-         model ROLE [--harness claude-code|codex]
          report [--publish]
 """
 
@@ -403,17 +402,6 @@ def print_leaves(system: str, found: list[Leaf], units: list[dict], lines: dict[
             print(f"  {lines[path]:>6,}  {path}")
 
 
-# ── the skill budget ─────────────────────────────────────────────────────────
-
-
-def skill_tokens(root: Path, settings: dict) -> list[tuple[str, int, int]]:
-    """Each skill file as (path, tokens, limit). Four bytes count as one token."""
-    folder = root / settings["path"]
-    files = [(folder / "SKILL.md", settings["router_tokens"])]
-    files += [(path, settings["reference_tokens"]) for path in sorted((folder / "reference").glob("*.md"))]
-    return [(path.relative_to(folder).as_posix(), path.stat().st_size // 4, limit) for path, limit in files]
-
-
 # ── the rules tables ─────────────────────────────────────────────────────────
 
 
@@ -735,39 +723,6 @@ def with_map(page: str, block: str, name: str) -> str:
 # ── commands ─────────────────────────────────────────────────────────────────
 
 
-HARNESSES = ("claude-code", "codex")
-
-
-def harness() -> str | None:
-    """Claude Code sets `CLAUDECODE=1`. Codex sets no variable on every command it runs, so it
-    needs `--harness codex`."""
-    return "claude-code" if os.environ.get("CLAUDECODE") == "1" else None
-
-
-def model_for(config: dict, role: str, harness: str | None) -> tuple[str, str] | None:
-    """The model of a role in a harness and its effort, or None when the role runs on the
-    session's own model."""
-    roles = config["roles"]
-    if role not in roles:
-        raise CairnError(f"unknown role `{role}`; the roles are {', '.join(roles)}")
-    tier = roles[role]["tier"]
-    models = config["tiers"].get(harness or "", {})
-    return (models[tier], roles[role].get("effort", "")) if tier in models else None
-
-
-def model_command(args: argparse.Namespace) -> int:
-    try:
-        found = model_for(json.loads((ROOT / CONFIG).read_text()), args.role, args.harness or harness())
-    except (CairnError, OSError, KeyError, ValueError) as error:
-        print(f"cairn: {error}", file=sys.stderr)
-        return 1
-    if found is None:
-        print("inherit")
-        return 0
-    print(f"model: {found[0]}\neffort: {found[1]}")
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -779,15 +734,10 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("map", help="rewrite the generated block of the system map, and its JSON")
     leaf = commands.add_parser("leaves", help="print a system's files in leaves, with the systems that each leaf's crate uses")
     leaf.add_argument("system")
-    model = commands.add_parser("model", help="print the model and effort of a role in the current harness")
-    model.add_argument("role")
-    model.add_argument("--harness", choices=HARNESSES, help="the harness, instead of the one the environment shows")
-    weekly = commands.add_parser("report", help="print the weekly report on skipped pull requests, the ratchet and the docs to check")
+    weekly = commands.add_parser("report", help="print the weekly report on the ratchet and the docs to check")
     weekly.add_argument("--publish", action="store_true", help="also write it to the open issue labelled cairn-report")
     args = parser.parse_args(argv)
 
-    if args.command == "model":
-        return model_command(args)
     if args.command == "report":
         # Not `import report`: that name is the ratchet report below.
         from report import main as weekly
@@ -826,7 +776,6 @@ def main(argv: list[str] | None = None) -> int:
         wider = widened(shown_at(ROOT, commit), config) if commit else False
         # An approval at the base still holds, so a change cannot lift it to hide its own violation.
         was_approved = approved_at(ROOT, commit, config["docs"].rstrip("/")) if commit else set()
-        skill = skill_tokens(ROOT, config["skill"]) if "skill" in config else []
         lost = lost_names(ROOT, config["docs"])
     except (CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         print(f"cairn: {error}", file=sys.stderr)
@@ -853,16 +802,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\ncairn: the baseline grew since the merge base with {args.base}; only `--update` changes it:")
         for line in added:
             print(f"  {line}")
-    over = [name for name, tokens, limit in skill if tokens > limit]
-    if skill:
-        print(f"\ncairn: skill tokens (bytes / 4) in {config['skill']['path']}:")
-        for name, tokens, limit in skill:
-            print(f"  {'FAIL' if name in over else '    '} {name}: {tokens:,} of {limit:,}")
     for line in lost:
         print(f"\ncairn: {line}")
     for p in stale:
         print(f"\ncairn: {p.relative_to(ROOT)} is out of date; run `obc cairn map` or `python3 tools/cairn/cairn.py map`")
-    return 1 if failing or added or over or lost or stale else 0
+    return 1 if failing or added or lost or stale else 0
 
 
 if __name__ == "__main__":

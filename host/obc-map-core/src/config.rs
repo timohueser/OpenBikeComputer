@@ -26,8 +26,8 @@ const MAX_LODS: usize = 16;
 const DEFAULT_CHUNK_SIZE: usize = 4096;
 const DEFAULT_MARKER_COLOR: u16 = 0xF800;
 
-/// Deterministically generated fallback schema, served by the web builder when an `obc-pack` binary
-/// is unavailable. A test requires it to stay semantically identical to the generated output.
+/// The checked-in generated schema. A test requires it to stay semantically identical to the
+/// generated output.
 pub const CONFIG_SCHEMA_JSON: &str = include_str!("../schema/config.schema.json");
 
 /// Version of the `obc-pack schema` envelope itself; bump only on breaking changes to the envelope
@@ -93,8 +93,8 @@ pub fn config_schema() -> Value {
     schema
 }
 
-/// Stable pretty representation used to regenerate the checked-in web-builder
-/// fallback: `obc-pack schema --config > host/obc-map-core/schema/config.schema.json`.
+/// Stable pretty representation used to regenerate the checked-in schema:
+/// `obc-pack schema --config > host/obc-map-core/schema/config.schema.json`.
 pub fn config_schema_json() -> String {
     let mut text = serde_json::to_string_pretty(&config_schema()).expect("config schema serializes");
     text.push('\n');
@@ -1320,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_tooling_metadata_remains_compatible() {
+    fn unknown_tooling_metadata_is_ignored() {
         let config = Config::parse(
             r#"{
                 "_meta":{"id":"custom"}, "disabled":["highway/path"], "future_root":true,
@@ -1333,7 +1333,7 @@ mod tests {
     }
 
     #[test]
-    fn null_defaults_and_required_colors_match_legacy_behavior() {
+    fn null_means_default_and_required_colors_are_not_nullable() {
         let config = Config::parse(
             r#"{
                 "lods": null, "marker": null, "chunk_size": null,
@@ -1341,7 +1341,7 @@ mod tests {
                 "routing":{"min_component_edges":null,"profiles":null}
             }"#,
         )
-        .expect("legacy null-as-default fields remain accepted");
+        .expect("null-as-default fields are accepted");
         assert_eq!(config.lods.len(), 1);
         assert_eq!(config.features[0].1["path"].weight, 1);
         assert_eq!(config.routing, default_routing());

@@ -3,7 +3,7 @@
 `semmc_firmware_v0.1.1.bin` is the **position-independent RISC-V image the FLPR (VPR00) runs to
 become an SD/eMMC host controller**. The M33 copies it into the sEMMC carve, points `INITPC` at the
 carve base, and then drives the card through the register interface (VRI) the image exposes at
-carve base + 16,896. See `src/semmc.rs` for the driver and issue #1158 for the full contract.
+carve base + 16,896. See `src/semmc.rs` for the driver.
 
 ## Provenance
 
@@ -40,9 +40,6 @@ curl -sfL https://raw.githubusercontent.com/nrfconnect/sdk-nrfxlib/main/softperi
  | python3 -c "import sys,re;open('semmc_firmware_v0.1.1.bin','wb').write(bytes(int(x,16)&0xff for x in re.findall(r'0x[0-9a-fA-F]+',sys.stdin.read().split('semmc_firmware_bin[] = {',1)[1].split('};',1)[0])))"
 shasum -a 256 semmc_firmware_v0.1.1.bin   # must match the table above
 ```
-
-This reproduces the byte-identical image the feasibility bench (#1145, 2026-08-05/06) ran on glass
-at 14.7 MB/s read / 8.2 MB/s write.
 
 ## Metadata header (first 32 B) — what the carve is derived from
 

@@ -121,6 +121,27 @@ tube. They keep the style through their parts and their proportions.
 A town has two street lamps. An old quarter, where houses cover a third of the ground, has
 lanterns; every other street and every main road has the modern lamp.
 
+## Houses
+
+A house comes from a footprint, a style and a seed. A style is a data file with a few numbers and
+colours, so a region gets its own look without code, and a hundred styles stay cheap.
+
+- **A house fits its hill.** A real house on a slope is as tall to the valley as the ground falls.
+  The valley side shows more storeys with windows, down to the ground, over a stone base. A
+  tall blank base looks like a tower, and a house cut into the hill looks buried.
+- **The door stands on the ground.** People walk in where the ground is, at any storey.
+- **Fine detail is paint with soft edges.** Window frames, glazing bars, roof courses and railing
+  boards are paint on flat faces. The thin parts fade with the distance: a far window is a dark
+  rectangle that does not flicker.
+- **Real parts where the outline shows them.** A chimney with its slab and pot, a ridge cap and a
+  balcony with a flower box are parts of the close stage. The far stage keeps the outline only.
+- **A village is not a row of copies.** The seed of a house gives it its storeys, a chimney or
+  none, a balcony, flowers, wood or render, and a slight weathering. The style sets the limits.
+- **Every footprint has a roof.** A footprint that no rectangle fits has a hipped roof that follows
+  its outline.
+
+![TrailView houses on a steep slope: storeys with windows down to the ground, doors on the ground](../../assets/trailview-models/houses.jpg)
+
 ## A new model
 
 A new model or a change to a model is a change of look. The review page

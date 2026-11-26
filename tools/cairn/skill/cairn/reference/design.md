@@ -16,7 +16,7 @@ Set the size from its signals. One signal of a larger size is enough to move up.
 
 | Size | Signals | Goldfish tests |
 | --- | --- | --- |
-| S | 1 system, no contract change, no new dependency between systems, up to 500 changed lines | critic, with the role `goldfish-critic-s` |
+| S | 1 system, no contract change, no new dependency between systems, up to 500 changed lines | critic, at the balanced tier |
 | M | 2 or 3 systems, a compatible contract change, a new dependency between systems, or more than 500 changed lines | critic |
 | L | more than 3 systems, a breaking contract change, a new or split system, or a change that released versions cannot easily undo, such as a stored format | critic and readiness |
 

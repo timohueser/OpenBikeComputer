@@ -4,8 +4,7 @@
 //! - [`HostLoop`] and the [`RouteRepository`], [`RideRepository`], [`TrackRepository`] and
 //!   [`TripCatalog`] traits — the shared typed executor the frame-stepped hosts run
 //!   `App::run_pass` behind, so the delete, rescan, nav and track sequencing lives once here.
-//! - [`ActiveRouteSession`] and [`fill_nav_preview`] — the resident parsed active route and the
-//!   shared overview-preview fill.
+//! - [`ActiveRouteSession`] — the resident parsed active route.
 //! - [`replay_step`] — advance a GPX replay and tick the app on the playback clock.
 //! - [`NavPlan`] and [`commit_nav_plan`] — the resumable route planner held across frames, one
 //!   bounded step per frame, and the shared commit tail.
@@ -75,14 +74,8 @@ pub use replay::{initial_camera, replay_advance, ReplaySensors};
 pub use repo::{
     AppendStatus, RideRepository, RouteLease, RoutePublication, RouteRepository, TrackRepository, TripCatalog,
 };
-pub use session::{fill_nav_preview, ActiveRouteSession};
+pub use session::ActiveRouteSession;
 pub use settings_store::FileSettingsStore;
 pub use sink::VecSink;
 pub use stores::{MemRideStore, MemTrackStore};
 pub use track_store::TrackStore;
-
-/// Session ID band retained by legacy folder and summary-only ride fixtures.
-pub const RIDE_ID_BASE: obc_app::CatalogObjectId = 1 << 32;
-
-/// Session ID band retained by legacy trip fixtures. Physical deletion also carries its kind.
-pub const TRIP_ID_BASE: obc_app::CatalogObjectId = 1 << 48;

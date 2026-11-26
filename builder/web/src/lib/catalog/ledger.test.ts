@@ -188,7 +188,7 @@ describe("pricing a region from the root (OBCC §6)", () => {
         expect(ledger.totalBytes).toBe(plain.regions[0].bytes);
     });
 
-    it("applies the coarse-context rule to the root's per-band partial counts (#1032)", () => {
+    it("applies the coarse-context rule to the root's per-band partial counts", () => {
         const entry = {
             ...exampleCatalog.regions[0],
             partial_cell_count_by_band: { coarse: 1, fine: 1, mid: 0, network: 0 },

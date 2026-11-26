@@ -1,4 +1,4 @@
-//! Legacy route planner screens, cancellation, failure, and clipped redraw contracts.
+//! Route planner screens, cancellation, failure, and clipped redraw contracts.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::navigator::{NavigatorError, NavigatorOutcome, PlannerWork};
@@ -47,7 +47,7 @@ fn render(app: &mut App, bytes: &[u8]) {
     render_into(app, bytes, &mut buf);
 }
 
-/// Set up the legacy category screen, then load the nearest Water detail.
+/// Set up the category screen, then load the nearest Water detail.
 fn open_detail(app: &mut App, bytes: &[u8]) {
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
     let _ = app.ui.stack.push(Screen::PoiList(crate::screen::PoiListScreen::new(obc_reader::PoiCategory::Water))); // → POI list

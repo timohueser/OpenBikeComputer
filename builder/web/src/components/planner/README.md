@@ -16,7 +16,7 @@ obc data serve
 `obc data update` publishes a target, and the VPS follower of
 [`tools/vps/README.md`](../../../../../tools/vps/README.md) runs the planner services of `prod`.
 The [release contract](../../../../../specs/planner-release.md) defines the files. The
-[runtime target](../../../../../specs/obc-data.md#service-runtimes) of the services is in
+[runtime target](../../../../../specs/obc-data-products.md#service-runtimes) of the services is in
 [`data/planner-runtime.toml`](../../../../../data/planner-runtime.toml).
 
 ## Client configuration

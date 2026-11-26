@@ -22,7 +22,7 @@ enum ShareMapSnapshot {
         return draw(stages, on: snapshot)
     }
 
-    /// The same casing, stroke and end marks as the live map's `TrackMapContent`. A dashed stage
+    /// The same casing, stroke and end marks as the live map's `TrackMapView`. A dashed stage
     /// draws thinner and without the casing, as on the trip review's map.
     private static func draw(_ stages: [MultiTrackPreviewView.Stage], on snapshot: MKMapSnapshotter.Snapshot) -> UIImage {
         let format = UIGraphicsImageRendererFormat()

@@ -198,7 +198,7 @@ impl Product for Planner {
         Pointer { key: "planner/catalog.json", step: catalog::STEP, path: "catalog.json" }
     }
 
-    /// The sources of the step table of `specs/obc-data.md`, and the ground sources that are
+    /// The sources of the step table of `specs/obc-data-products.md`, and the ground sources that are
     /// fetched: `osm-planet` of the ground chain is `planner/osm`.
     fn reads(&self, root: &Path) -> Vec<String> {
         let mut reads: Vec<String> = [

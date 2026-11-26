@@ -530,7 +530,7 @@ impl<'b> Ls021Flpr<'b> {
             core::hint::spin_loop();
         }
         SCAN_SEQ.store(0, Ordering::Relaxed);
-        cortex_m::asm::dmb(); // ack-read ordering, as in the async path (issue #346)
+        cortex_m::asm::dmb(); // ack-read ordering, as in the async path
         self.check_ack(total, t_frame)
     }
 

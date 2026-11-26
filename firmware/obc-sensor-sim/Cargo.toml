@@ -27,7 +27,6 @@ nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "f54b6389ffa
 trouble-host = { version = "0.7.0", default-features = false, features = ["defmt", "peripheral", "gatt", "default-packet-pool-mtu-27"] }
 heapless = "0.9"
 static_cell = "2"
-cortex-m = "0.7"
 cortex-m-rt = "0.7"
 defmt = "1.0"
 defmt-rtt = "1.0"

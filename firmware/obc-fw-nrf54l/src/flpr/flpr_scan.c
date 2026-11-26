@@ -1,23 +1,17 @@
-/* flpr_scan.c — LS021 FLPR direct-framebuffer scan blob (issue #347, epic #353).
+/* flpr_scan.c — LS021 FLPR direct-framebuffer scan blob.
  *
- * Successor to the F4/F5 ping-pong blob (flpr_pingpong.c, issues #154/#155): keeps the *complete*
- * LS021 waveform — the gate scan (`GSP`/`GCK`/`GEN`), the frame envelope (`INTB`), the DDR inner
- * data-shift loop — and changes exactly one thing: **where the wire words come from**. The
- * ping-pong predated the resident framebuffer: the M33 packed each row into two shared buffers and
- * both cores ran a per-row ready/consumed handshake. Today the resident device-64 framebuffer is a
- * stable byte-per-pixel plane in shared SRAM, so this blob reads it **directly** (`fb_addr` in the
- * control block, stride = 240 bytes/row) and packs the wire words itself — the per-row handshake,
- * both row buffers, and the M33's whole-frame busy-poll packing loop are gone. The M33's present
- * becomes "publish spans, ring the doorbell, await the EGU20 ack".
+ * Drives the complete LS021 waveform — the gate scan (`GSP`/`GCK`/`GEN`), the frame envelope
+ * (`INTB`), the DDR inner data-shift loop. The resident device-64 framebuffer is a stable
+ * byte-per-pixel plane in shared SRAM, so this blob reads it **directly** (`fb_addr` in the
+ * control block, stride = 240 bytes/row) and packs the wire words itself. The M33's present is
+ * "publish spans, ring the doorbell, await the EGU20 ack".
  *
  * **The pack is a line-for-line port of `obc-display/src/ls021/wire.rs`** (`pack_pair` /
  * `pack_row`) — the host-tested normative reference; its test module (golden-reference words,
  * odd/even interleave, area-gradation split) is the spec for `pack_word` below. Wire behavior is
  * byte-identical to the M33-packed path.
  *
- * Still ported from the analyzer-verified M33 `PanelBus` driver (epic #139; the bit-bang driver
- * itself was retired in #176, the protocol it proved is the golden reference). The two hard-won
- * protocol rules from #143 carry over verbatim:
+ * Two protocol rules hold for every frame:
  *   • **`INTB` HIGH for the whole frame** — `INTB` low means "no write" (the panel holds its image),
  *     so every frame, the init-black one included, is enveloped in `INTB` high.
  *   • **`GCK` *level* selects the area block on the SAME gate line** — one pixel row = one `GCK`
@@ -25,13 +19,13 @@
  *     the **LSB plane** in the `GCK`-LOW phase (the 1/3-area block), a `GEN` pulse latching each.
  *     There is no MSB/LSB select pin; `GCK` level is it. 320 gate lines, one gate advance per row.
  *
- * **Partial / dirty-row updates (issue #163)** are unchanged: the scan is driven by a dirty-row
+ * **Partial / dirty-row updates**: the scan is driven by a dirty-row
  * span list (`n_spans` + `spans[]`, packed `(start_row << 16) | count`, ascending + disjoint): it
  * fast-forwards the gate over clean rows (`dummy_advance`, GEN idle — nothing latches, the row
  * keeps its memory), writes only the spanned rows, and **stops early** after the last one. A full
  * frame is the degenerate `n_spans=1, spans[0]=(0,320)`.
  *
- * The round-trip, per frame (contract v2 — see `Control` in ls021_flpr.rs):
+ * The round-trip, per frame (see `Control` in ls021_flpr.rs):
  *   M33   publishes the span list + `fb_addr`, writes cmd = CMD_RUN_FRAME, dsb, bumps m33_seq
  *         (seq last), then **awaits the EGU20 ack** (or times out).
  *   FLPR  polls m33_seq; on a change, for CMD_RUN_FRAME runs the span-masked scan straight out of
@@ -40,7 +34,7 @@
  *         frame_count, writes status = dirty rows scanned + flpr_seq = m33_seq (seq last, fenced),
  *         and pokes EGU20 → the M33's EGU20 IRQ wakes the awaiting present.
  *
- * **Two ports (the F2 lesson, still load-bearing).** The timing-critical bus — the 6 data lines +
+ * **Two ports.** The timing-critical bus — the 6 data lines +
  * `BCK` — is all on **P2** (the FLPR's fast trace domain); the gate lines (`GSP`/`GCK`/`GEN`/
  * `INTB`) and `BSP` are on P1 as the contiguous P1.10-14 run. COM (`VCOM`/`VB`/`VA`,
  * P1.22/23/24) free-runs on the **M33** the
@@ -57,10 +51,10 @@
 
 /* The M33<->FLPR cross-core contract — the control-block address, layout magic / status stamps,
  * command codes, and the span cap — generated into $OUT_DIR by build.rs (its `contract` module is
- * the single definition site, issue #346); the blob compile passes -I $OUT_DIR. */
+ * the single definition site); the blob compile passes -I $OUT_DIR. */
 #include "flpr_contract.h"
 
-/* ── GPIO, secure aliases (the all-secure nrf54l15-app-s build F1 already drives). Each OUTSET/
+/* ── GPIO, secure aliases. Each OUTSET/
  * OUTCLR is one atomic write, no read-modify-write of OUT. Offsets: OUT +0x00, OUTSET +0x04,
  * OUTCLR +0x08 (nRF54L15 PAC). ──
  *   P2 base 0x5005_0400 — source data + BCK (the FLPR's fast trace domain).
@@ -72,26 +66,24 @@
 
 /* Source-bus pin masks on P2. Bit position = P2 pin index.
  *
- * The six data lines are **sparse** on P2 since the sEMMC storage pivot (issue #1158): the fixed
- * card pads own P2.00–05, so the display data sits on the four pins the retired SD-SPI path freed
- * (P2.06/.08/.09/.10) plus two pads time-shared with the card — B0=P2.00 (sEMMC D3) and B1=P2.04
+ * The six data lines are **sparse** on P2: the fixed sEMMC card pads own P2.00–05, so the display
+ * data sits on four free pins (P2.06/.08/.09/.10) plus two pads time-shared with the card — B0=P2.00 (sEMMC D3) and B1=P2.04
  * (sEMMC D1). Their CTRLSEL flips per mode: GPIO while the panel scans (this blob drives them via
  * OUTSET/OUTCLR), VPR while the card transfers; display and storage never run simultaneously.
- * `*0` lines carry the **even** pixel, `*1` lines the **odd** pixel, exactly as before:
+ * `*0` lines carry the **even** pixel, `*1` lines the **odd** pixel:
  *   R0=P2.06  R1=P2.08  G0=P2.09  G1=P2.10  B0=P2.00  B1=P2.04
  * `pack_word` below packs a pixel pair's 6 data bits already shifted to these positions
  * (DATA_MASK), so presenting a column is `OUTCLR the zeros, OUTSET the ones`. The normative,
  * host-tested pack (`obc-display/src/ls021/wire.rs`) carries the same positions and its golden
  * tests pin them — the two sides move together. */
 #define DATA_MASK 0x751u       /* P2.00,.04,.06,.08,.09,.10 = B0,B1,R0,R1,G0,G1 (the 6 data lines) */
-#define BCK_MASK  (1u << 7)    /* P2.07 = BCK (source/shift clock) — unchanged by the rehome */
+#define BCK_MASK  (1u << 7)    /* P2.07 = BCK (source/shift clock) */
 
 /* Gate + frame pin masks on P1 (bit position = P1 pin index). All µs-scale, so P1 is fine — P2 is
  * reserved for the fast bus.
  *
  * ⚠️ **These masks MUST stay in lock-step with the M33 `Output::new` pins in `main.rs`** — if a
- * pin is not broken out on your DK, remap it here *and* there (issue #165 moved them off the
- * SD/VCOM pins the bring-up bench borrowed). */
+ * pin is not broken out on your DK, remap it here *and* there. */
 #define BSP_MASK  (1u << 14)   /* P1.14 = BSP  (sub-line start pulse) */
 #define GSP_MASK  (1u << 10)   /* P1.10 = GSP  (gate start pulse, once per frame) */
 #define GCK_MASK  (1u << 11)   /* P1.11 = GCK  (gate clock — HIGH = MSB/2-3 phase, LOW = LSB/1-3 phase; P1.01 is NFC on the LM20-DK) */
@@ -99,14 +91,13 @@
 #define INTB_MASK (1u << 13)   /* P1.13 = INTB (frame envelope — HIGH for the whole frame write) */
 
 /* FLPR → M33 doorbell via EGU20 (secure 0x500C_9000) — the M33 arms EGU20's TRIGGERED[0] IRQ and
- * awaits it as the frame ack (issue #347; previously written but unarmed). */
+ * awaits it as the frame ack. */
 #define EGU20_TRIGGER0 (*(volatile uint32_t *)0x500C9000u)
 
 /* ── Shared control block at the SHARED-page base FLPR_CONTROL_ADDR (see the generated flpr.ld /
- * memory.x). **Contract v2** (issue #347): the ping-pong `buf[2]` descriptors are gone; `fb_addr`
- * points the scan at the resident framebuffer instead. Layout is normative and identical to the
- * Rust `Control` in ls021_flpr.rs — keep them in sync (firmware/docs/ls021-flpr.md). All fields
- * u32, little-endian. ── */
+ * memory.x). `fb_addr` points the scan at the resident framebuffer. Layout is normative and
+ * identical to the Rust `Control` in ls021_flpr.rs — keep them in sync. All fields u32,
+ * little-endian. ── */
 typedef struct {
     volatile uint32_t magic;       /* 0x00 M33: layout/version tag, checked before acting */
     volatile uint32_t m33_seq;     /* 0x04 M33: command sequence counter (the doorbell) */
@@ -140,47 +131,43 @@ static inline void fence(void)
     __asm__ volatile("fence" ::: "memory");
 }
 
-/* ── TIMING POLICY (issue #348, owner-decided 2026-07-04) — read this before touching a constant.
+/* ── TIMING POLICY (owner-decided) — read this before touching a constant.
  *
- * **Calibration** (software round-trip, the LA is retired; full record + method in
- * `firmware/docs/flpr-timing.md`): one busy() iteration = **80.5 ns** at this clock (12.4 iters/µs
- * — NOT the historical "13"), plus **~102 ns call overhead** per busy() call. `ITERS_PER_US`
- * below keeps the legacy 13 label for the once-per-frame/µs-scale uses where 4.6 % doesn't
- * matter; the spec-bound GEN constants are pinned in raw recalibrated iters instead.
+ * **Calibration** (software round-trip): one busy() iteration = **80.5 ns** at this clock
+ * (12.4 iters/µs), plus **~102 ns call overhead** per busy() call. `ITERS_PER_US` below rounds to
+ * 13 for the once-per-frame/µs-scale uses where 4.6 % doesn't matter; the spec-bound GEN
+ * constants are pinned in raw calibrated iters instead.
  *
- * **The source bus runs deliberately over-spec** — this is the accepted #348 decision, not an
- * accident. The DDR drive (F5) latches the source bus on BOTH BCK edges; the spec asks
- * ≥660 ns per BCK half (`thwBCK`/`tlwBCK`) and ≥335 ns data setup (`tsRGB`). Since #348 there is
- * **no explicit wait in the hot loop at all**: the pack of the next word + the GPIO presents ARE
- * the half-width ≈ **210 ns** (~3× under spec). Glass-verified clean (solids, map colours, fine
- * contours, bulge — the F5 column-doubling mode checked). Caveats, in writing:
- *   - **single-unit validation** (one bench panel, room temperature); the LM20 build must re-run
- *     the glass checks and timing captures in `firmware/docs/flpr-timing.md`;
- *   - in-spec halves (660 ns) were *costed*: ~+36 ms/frame (~80 ms total) — declined;
+ * **The source bus runs deliberately over-spec** — an owner decision, not an accident. The DDR
+ * drive latches the source bus on BOTH BCK edges; the spec asks ≥660 ns per BCK half
+ * (`thwBCK`/`tlwBCK`) and ≥335 ns data setup (`tsRGB`). There is **no explicit wait in the hot
+ * loop at all**: the pack of the next word + the GPIO presents ARE the half-width ≈ **210 ns**
+ * (~3× under spec). Glass-verified clean (solids, map colours, fine contours, bulge, the
+ * column-doubling mode). Caveats:
+ *   - **single-unit validation** (one bench panel, room temperature);
+ *   - in-spec halves (660 ns) cost ~+36 ms/frame (~80 ms total) — declined;
  *   - colours sparkle / doubled columns on a future unit ⇒ re-pace the hot loop: add a
  *     `busy(k)` after each present in `drive_subline` (k=1 ≈ +183 ns/half ≈ +14 ms/frame).
  *
  * **The gate timings are electrical minimums and stay in-spec** (GCK↔GEN setup/hold ≥16.37 µs,
  * GEN valid ≥24.56 µs): `GEN_SETUP`/`GEN_HIGH` sit ~2 % over their minimums by *measured* time —
- * do NOT trim further (the old 13-label had them accidentally ~7 % over; #348 reclaimed exactly
- * that). `gen_pulse` still has no *leading* setup busy — the ≥16.37 µs GCK↔GEN setup is supplied
- * by the ~26 µs data shift that always precedes it. `GCK_SETTLE` is NOT an enumerated minimum
- * (audited #348): 1 µs, matching the spec's only GCK-width floor (fast-forward ≥1 µs).
+ * do NOT trim further. `gen_pulse` has no *leading* setup busy — the ≥16.37 µs GCK↔GEN setup is
+ * supplied by the ~26 µs data shift that always precedes it. `GCK_SETTLE` is NOT an enumerated
+ * minimum: 1 µs, matching the spec's only GCK-width floor (fast-forward ≥1 µs).
  *
- * **VPR fast-I/O (CSR/VIO) was evaluated and declined** (#348 stretch): at ~210 ns halves the
- * pack dominates the word, GPIO stores don't; the modelled gain (~3–4 ms) doesn't buy the Zicsr
- * toolchain requirement or even narrower pulses. Revisit only with a measured need. ── */
-#define ITERS_PER_US      13u /* legacy µs label (true rate 12.4 — see the policy block) */
+ * **No VPR fast-I/O (CSR/VIO)**: at ~210 ns halves the pack dominates the word, GPIO stores
+ * don't; the modelled gain (~3–4 ms) doesn't buy the Zicsr toolchain requirement or even narrower
+ * pulses. Revisit only with a measured need. ── */
+#define ITERS_PER_US      13u /* rounded µs label (true rate 12.4 — see the policy block) */
 #define GCK_SETTLE_ITERS  (1u * ITERS_PER_US)   /* settle after a GCK level change before shifting — NOT an
-                                                 * enumerated spec minimum (audited #348); 1 µs matches the
+                                                 * enumerated spec minimum; 1 µs matches the
                                                  * spec's only GCK-width floor (fast-forward ≥1 µs) */
 #define GEN_SETUP_ITERS   207u                  /* GCK↔GEN setup AND hold (spec ≥16.37 µs): 102 ns call
-                                                 * + 207 × 80.5 ns ≈ 16.77 µs — in-spec, ~2.5 % margin
-                                                 * (recalibrated #348; 13 iters/µs was really 12.4) */
+                                                 * + 207 × 80.5 ns ≈ 16.77 µs — in-spec, ~2.5 % margin */
 #define GEN_HIGH_ITERS    310u                  /* GEN valid-output window (spec ≥24.56 µs): ≈ 25.06 µs
-                                                 * — in-spec, ~2 % margin (recalibrated #348) */
+                                                 * — in-spec, ~2 % margin */
 #define GCK_HIGH_ITERS    (2u * ITERS_PER_US)   /* GCK high width for a DUMMY advance only (spec ≥1 µs
-                                                 * fast-forward; 2 µs = 2× margin — #348, and the dominant
+                                                 * fast-forward; 2 µs = 2× margin, and the dominant
                                                  * cost of a partial push's gate fast-forward) */
 #define FRAME_SETUP_ITERS (10u * ITERS_PER_US)  /* INTB→GSP and GSP→first GCK framing setup */
 
@@ -198,11 +185,10 @@ static void busy(uint32_t iters)
  * each 2-bit device-64 channel (`0b00_RR_GG_BB`): 1 = the MSB plane (level>>1, the 2/3-area
  * block), 0 = the LSB plane (level&1, the 1/3-area block).
  *
- * #348 lever 3: the loads are **not volatile** — the fb is stable for the whole scan by contract
- * (the M33 awaits the ack before touching it), so gcc may schedule/hoist them freely — and the
- * old `k ≥ COLS_PER_SUBLINE → 0` bounds branch is gone from the hot loop: `drive_subline` now
- * clocks the 4 trailing dummy/flush columns separately (they are constant black). Callers only
- * pass k < COLS_PER_SUBLINE. */
+ * The loads are **not volatile** — the fb is stable for the whole scan by contract (the M33
+ * awaits the ack before touching it), so gcc may schedule/hoist them freely — and there is no
+ * bounds branch in the hot loop: `drive_subline` clocks the 4 trailing dummy/flush columns
+ * separately (they are constant black). Callers only pass k < COLS_PER_SUBLINE. */
 static inline uint32_t pack_word(const uint8_t *row, uint32_t k, uint32_t shift)
 {
     uint32_t even = row[2u * k];
@@ -235,7 +221,7 @@ static void drive_subline(const uint8_t *row, uint32_t shift)
 
     GPIO1_OUTSET = BSP_MASK; /* BSP high — start of the sub-line (the chart's BSP envelope) */
     /* ── words 0..117, pipelined: each presented word's setup window / BCK half IS the pack of the
-     * next word (#348 — no explicit waits left in the hot loop). The last data pair is peeled below
+     * next word (no explicit waits in the hot loop). The last data pair is peeled below
      * because its "next word" would run past the row. ── */
     for (uint32_t k = 0; k < COLS_PER_SUBLINE - 2u; k += 2) {
         /* ── rising-edge column: word k (already packed) ── */
@@ -281,8 +267,8 @@ static void drive_subline(const uint8_t *row, uint32_t shift)
  * cells, GCK LOW → the 1/3-area (LSB) cells. Fired clear of the GCK edges (GCK↔GEN setup/hold
  * ≥16.37 µs). The **GCK↔GEN setup is already supplied by the long data shift** that ran before this
  * call (hundreds of µs of GCK-stable time ≫ 16.37 µs), so the *leading* setup busy is redundant and
- * dropped (an F5 speed-tune saving ~11 ms/frame); only the GEN-high window and the *trailing* hold
- * (GEN-low → the next GCK edge, which follows immediately) remain. Mirrors `PanelBus::gen_pulse`. */
+ * dropped (~11 ms/frame); only the GEN-high window and the *trailing* hold
+ * (GEN-low → the next GCK edge, which follows immediately) remain. */
 static void gen_pulse(void)
 {
     GPIO1_OUTSET = GEN_MASK;
@@ -293,8 +279,7 @@ static void gen_pulse(void)
 
 /* One DUMMY gate advance: a clean GCK period (high→low) with GEN/BCK idle — the pipeline-fill /
  * "necessary signal" blank rows bracketing the 320 data rows. `release_gsp` drops GSP on the rising
- * edge (the very first advance of a frame, so GSP high overlaps GCK(1) per the chart). Mirrors
- * `PanelBus::dummy_advance`. */
+ * edge (the very first advance of a frame, so GSP high overlaps GCK(1) per the chart). */
 static void dummy_advance(int release_gsp)
 {
     GPIO1_OUTSET = GCK_MASK;
@@ -313,7 +298,7 @@ static void dummy_advance(int release_gsp)
  *   • LSB phase — drop GCK (same gate line, NOT an advance), shift the LSB sub-line (`shift = 0`),
  *     GEN → latches the 1/3-area cells while GCK is LOW.
  * The advance to the next row is the GCK rising edge that opens the next call's MSB phase, so there
- * is exactly one gate advance per pixel row. Mirrors `PanelBus::write_gate_line`. */
+ * is exactly one gate advance per pixel row. */
 static void write_gate_row(const uint8_t *row)
 {
     /* ── MSB phase: GCK HIGH selects the 2/3-area block; this rising edge advances the gate ── */
@@ -329,7 +314,7 @@ static void write_gate_row(const uint8_t *row)
     gen_pulse(); /* latch 1/3-area cells — GCK now LOW */
 }
 
-/* Run one frame as a **span-masked scan** (issue #163) straight out of the framebuffer. The gate
+/* Run one frame as a **span-masked scan** straight out of the framebuffer. The gate
  * token walks a shift register top-down — `GSP` loads it, every `GCK` period (a `dummy_advance` OR
  * a `write_gate_row`'s MSB-phase rising edge) advances it one row — so to reach visible row N you
  * must clock past 0..N-1, but you can:
@@ -361,7 +346,7 @@ static uint32_t run_frame(void)
 
     /* The fb *pointer* comes from the (volatile) control block; the pixel bytes it points at are
      * stable for the whole scan by contract (the M33 awaits the ack), so they are read non-volatile
-     * and gcc may schedule the pack loads freely (#348 lever 3). */
+     * and gcc may schedule the pack loads freely. */
     const uint8_t *fb = (const uint8_t *)(uintptr_t)CTRL->fb_addr;
     uint32_t n_spans = CTRL->n_spans;
     if (n_spans > MAX_DIRTY_SPANS) {
@@ -395,7 +380,7 @@ static uint32_t run_frame(void)
 
 void flpr_main(void)
 {
-    /* Boot handshake: confirm the control block layout, then stamp ALIVE (the F0/F1 boot proof). */
+    /* Boot handshake: confirm the control block layout, then stamp ALIVE (the boot proof). */
     if (CTRL->magic != LAYOUT_MAGIC) {
         CTRL->status = FLPR_BADMAG;
         for (;;) {
@@ -420,7 +405,7 @@ void flpr_main(void)
 
         uint32_t rows = 0;
         if (cmd == CMD_RUN_FRAME) {
-            /* Run the span-masked scan (#163) straight out of the framebuffer (#347): fast-forward
+            /* Run the span-masked scan straight out of the framebuffer: fast-forward
              * clean rows, pack+write the dirty spans, early-stop after the last dirty row. */
             rows = run_frame();
             CTRL->frame_count++; /* frames drained (liveness + the round-trip contract) */
@@ -431,6 +416,6 @@ void flpr_main(void)
         CTRL->flpr_seq = seq; /* seq last = the ack guard the M33 reads */
         fence();              /* ack visible before we ring the doorbell */
 
-        EGU20_TRIGGER0 = 1u; /* ring the M33: EGU20.EVENTS_TRIGGERED[0] → the armed M33 EGU20 IRQ (#347) */
+        EGU20_TRIGGER0 = 1u; /* ring the M33: EGU20.EVENTS_TRIGGERED[0] → the armed M33 EGU20 IRQ */
     }
 }

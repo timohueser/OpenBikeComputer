@@ -8,7 +8,6 @@ export const OVERVIEW = 8, DETAIL = 9;
 export type Level = typeof OVERVIEW | typeof DETAIL;
 
 export type Plane = 'orography' | 'lapse_tmax' | 'lapse_tmin' | 'rose' | 'wet_share' | 'wet_days' | 'rain' | 'tmax' | 'tmin' | 'wind';
-export type WeekPlane = 'wet_share' | 'rain' | 'tmax' | 'tmin' | 'wind';
 
 interface Code { bytes: 1 | 2; signed: boolean; missing: number; value: (code: number) => number }
 const u8 = (value: (code: number) => number): Code => ({ bytes: 1, signed: false, missing: 255, value });

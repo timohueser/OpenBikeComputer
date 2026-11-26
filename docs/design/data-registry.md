@@ -23,7 +23,7 @@ The data registry is a set of TOML and JSON files in `data/`, with no code. `obc
 - [`trailview/`](../../data/trailview/README.md) holds the rules of the TrailView ground and features.
 - `routes/` holds a description for each route source: which layers and fields of its files make a route.
 
-The data engine reads `sources.toml` with [`sources.rs`](../../host/obc-data/src/sources.rs), and the other files with its modules for regions, targets, machines and datasets. Python steps read it with [`data_registry.py`](../../tools/data_registry.py). The [data contract](../../specs/obc-data.md) defines the format.
+The data engine reads `sources.toml` with [`sources.rs`](../../host/obc-data/src/sources.rs), and the other files with its modules for regions, targets, machines and datasets. Python steps read it with [`data_registry.py`](../../tools/data_registry.py). The [data contract](../../specs/obc-data-registry.md) defines the format.
 
 ## Rules that must hold
 

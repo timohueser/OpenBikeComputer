@@ -103,7 +103,7 @@ triggers = ["builder/presets/**", "data/regions/**", "data/sources.toml", "build
 [[package]]
 name = "obc-data"
 # A test validates the examples of the operator page against the schemas of `--json`.
-triggers = ["data/**", "tools/basemap_tool.py", "specs/obc-data.md", "builder/web/test-support/data/**"]
+triggers = ["data/**", "tools/basemap_tool.py", "specs/obc-data-cli.md", "specs/obc-data.schema.json", "builder/web/test-support/data/**"]
 
 # Its tests plan the checked-in live environment and run the Python steps.
 [[package]]
@@ -136,7 +136,7 @@ triggers = ["sim/bench/golden.txt"]
 name = "obc-display"
 triggers = ["firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c"]
 
-# Both write credits from data/sources.toml, which obc-data embeds without a Cargo edge to it.
+# It writes credits from data/sources.toml, which obc-data embeds without a Cargo edge to it.
 [[package]]
 name = "obc-pack"
 triggers = ["builder/presets/**", "data/sources.toml"]
@@ -146,9 +146,10 @@ triggers = ["builder/presets/**", "data/sources.toml"]
 name = "obc-map-core"
 triggers = ["builder/presets/**"]
 
+# It writes credits from data/sources.toml, and a test reads the route sources example of the spec.
 [[package]]
 name = "planner-router-build"
-triggers = ["data/sources.toml"]
+triggers = ["data/sources.toml", "specs/obc-data-products.md"]
 
 # Both read the checked-in assembly fixture, so a change under `fixtures/` reaches them.
 [[package]]
@@ -459,7 +460,7 @@ rust_excludes = ["firmware/obc-app/src/harness/**"]
 route = "ordinary"
 command = "tools/build-ios-host.sh --mac-only && npm ci --prefix companion-ios/ReplayAssets && cd companion-ios/Packages/OBCKit && xcodebuild test -scheme OBCKit-Package -destination 'platform=macOS' -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO"
 jobs = ["ios-unit"]
-fixtures = ["captured-met", "legacy-library"]
+fixtures = ["captured-met"]
 platforms = ["macos"]
 triggers = [
   "builder/web/src/lib/planner/poi-kinds.*", "planner/search/place-kinds.json",
@@ -531,7 +532,7 @@ triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
 [[suite]]
 id = "ci.rust-builds"
 route = "ordinary"
-command = "obc check device board wasm"
+command = "obc check device obc-fw-nrf54l obc-boot obc-sensor-sim wasm"
 jobs = ["boot", "device", "embedded", "packer-python", "ui-snapshots", "wasm"]
 foundation = true
 triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/install-riscv.sh"]
@@ -542,7 +543,7 @@ route = "ordinary"
 command = "obc check deny"
 jobs = ["deny"]
 foundation = true
-triggers = ["tools/licenses/deny.toml"]
+triggers = ["tools/licenses/deny.toml", "tools/licenses/board-features.toml"]
 
 # The other half of the dependency work, and a different job: the `test` job runs this script as
 # one step. It reads `cargo metadata` and compiles nothing, so a plan too large to run locally
@@ -639,14 +640,14 @@ triggers = [
 [[suite]]
 id = "ci.web-build"
 route = "ordinary"
-command = "obc check frontend"
+command = "cd builder/web && npm run check && npm test"
 jobs = ["web"]
 triggers = ["planner/search/place-kinds.json", "docs/assets/theme.css", "docs/assets/fonts/**", "builder/web/package.json", "builder/web/package-lock.json", "builder/web/src/**"]
 
 [[suite]]
 id = "ci.docs"
 route = "required"
-command = "obc check docs"
+command = "just check-docs"
 jobs = ["docs"]
 triggers = [
   "docs/**",
@@ -655,8 +656,8 @@ triggers = [
   # The agent on-ramps are owned here so they are not unowned paths. `build_docs.py` does not
   # read them; the check that does is the unconditional `guards` job.
   "AGENTS.md", "**/AGENTS.md", "companion-ios/README.md",
-  # The third-party agent skills and their lock file are agent prose too.
-  ".agents/skills/**", "skills-lock.json",
+  # The agent skills are agent prose too.
+  ".agents/**",
 ]
 
 [[suite]]
@@ -703,7 +704,7 @@ jobs = ["guards"]
 triggers = ["tools/prose.py", "tools/testing/prose-baseline.json"]
 
 # `cairn check` fails for a new violation of a system whose doc is approved. For every doc, it
-# fails for a stale system map, a lost name in a Rules table and a skill file over its budget.
+# fails for a stale system map and a lost name in a Rules table.
 # It reads source paths (ownership), system docs (the Rules tables) and Cargo manifests (dependencies), so any
 # change to one of them selects it, and a documentation-only or data-only change does not.
 [[suite]]
@@ -722,9 +723,8 @@ triggers = [
 [[suite]]
 id = "ci.ios-host-portability"
 route = "required"
-command = "cargo check -p obc-ios-host --target aarch64-apple-ios --locked"
+command = "bash tools/ci/clippy.sh ios-host"
 jobs = ["clippy"]
-ci_only = true
 
 # The app links OBCKit, and no Swift dependency graph exists to derive that edge: an
 # OBCKit API change breaks `xcodebuild build` without touching a file under OBCCompanion/.

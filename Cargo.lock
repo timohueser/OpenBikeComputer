@@ -3991,7 +3991,6 @@ dependencies = [
  "obc-map-scene",
  "obc-places",
  "obc-tree-walk",
- "serde_json",
 ]
 
 [[package]]
@@ -4954,7 +4953,6 @@ dependencies = [
  "rayon",
  "rusqlite",
  "serde_json",
- "sha2 0.10.9",
 ]
 
 [[package]]

@@ -37,7 +37,8 @@ impl Region {
 }
 
 /// The Geofabrik regions in `dir`, a directory laid out like `data/regions/`, or in the
-/// `data/regions/` of the repository above the current directory. The legacy bakery reads only a single source area whose path equals the saved id.
+/// `data/regions/` of the repository above the current directory. Only a region whose single source area is its own id
+/// is baked.
 pub fn load(dir: Option<&Path>) -> Result<Vec<Region>, String> {
     let dir = match dir {
         Some(dir) => dir.to_path_buf(),

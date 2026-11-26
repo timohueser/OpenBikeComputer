@@ -9,7 +9,7 @@ copy: ai
 The device and planner consume built data, not a live source query. A region chooses the
 coverage. Product options choose what to build. Source versions choose the input bytes.
 Keeping these choices explicit makes a result repeatable and lets unchanged work be reused.
-The [data contract](src:specs/obc-data.md) defines these boundaries.
+The [layers contract](src:specs/obc-data-layers.md) defines these boundaries.
 
 ## Layer versions, not code
 
@@ -17,7 +17,7 @@ Each layer, such as the device map, has two numbers. Its format is the number th
 check, so a reader that needs new data makes the layer stale with no other edit. Its revision
 changes by hand in the change that improves the output. A refactor changes neither number, so it
 rebuilds nothing. A rebuild that gives the same bytes stops there: the layers that read it keep
-their keys. The [key contract](src:specs/obc-data.md) defines what a key holds.
+their keys. The [key contract](src:specs/obc-data-layers.md) defines what a key holds.
 
 A layer is stale for exactly three causes. Its version changed. A source has a newer version to
 use. Or an input changed, such as a layer or a source that it reads, or its options. `obc data`
@@ -57,7 +57,7 @@ selection outcomes.
 A target is a place that serves data: the public bucket, or a folder on one machine. A target
 serves one release. The release records its settings, every output with the source versions that
 it read, and the pointers that clients read first. So a target needs no other state, and any
-machine can read what it serves. The [target contract](src:specs/obc-data.md) defines the files.
+machine can read what it serves. The [target contract](src:specs/obc-data-targets.md) defines the files.
 
 An update compares the steps of now with the serving release. It bakes only the stale layers and
 keeps every other output by reference. A kept output is read from the files of the release, not
@@ -73,6 +73,6 @@ the next update reuses what it baked. Files of the older publishers are never wr
 services of a new release start beside those of the current release, and clients get the new
 release only when its services answer. So a client never switches to a release whose routing or
 search does not answer. The rollback stays loaded, so a rollback is instant. The
-[serve contract](src:specs/obc-data.md) defines what it answers.
+[serve contract](src:specs/obc-data-serve.md) defines what it answers.
 
 Use the [data README](src:host/obc-data/README.md) for setup, credentials and daily commands.

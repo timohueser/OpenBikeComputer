@@ -12,7 +12,6 @@ owns:
   - tools/obc-dev.sh
   - tools/sccache-rustc.sh
   - tools/ready.py
-  - tools/agent_time.py
   - tools/test_plan.py
   - tools/ci_*.py
   - tools/governs.py
@@ -27,7 +26,7 @@ owns:
   - tools/check_fixture_policy.py
   - tools/cairn/**
   - .cairn/**
-  - .agents/skills/**
+  - .agents/**
   - tools/ci/**
   - tools/licenses/**
   - tools/vps/**

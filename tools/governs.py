@@ -16,6 +16,7 @@ Usage: python3 tools/governs.py PATH [PATH ...]
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import subprocess
@@ -53,7 +54,7 @@ def guards(path: str) -> list[tuple[str, str, bool]]:
         rule = re.search(r"^RULE = (['\"])(.*?)\1$", text, re.M)
         if not scope or not rule:
             continue
-        patterns = json.loads(scope.group(1).replace("'", '"'))
+        patterns = ast.literal_eval(scope.group(1))
         if any(matches(path, p) for p in patterns):
             wide = all(p.startswith("**") for p in patterns)
             found.append((script.name, rule.group(2), wide))

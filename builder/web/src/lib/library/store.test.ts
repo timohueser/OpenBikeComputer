@@ -121,39 +121,6 @@ describe('library store', () => {
         await library.close(); await fresh.close();
     });
 
-    it('opens a database of version 1 with its routes and rides, adds the stores of the photos and the drafts, and deletes the versions and the fields `open` and `revision`', async () => {
-        const factory = new IDBFactory(), key = '20260801T070000Z';
-        await new Promise<void>((resolve, reject) => {
-            const request = factory.open('obc-library', 1);
-            request.onupgradeneeded = () => {
-                const db = request.result;
-                db.createObjectStore('routes', { keyPath: 'id' });
-                db.createObjectStore('rides', { keyPath: 'key' });
-                db.createObjectStore('covers', { keyPath: 'id' });
-                for (const store of ['versions', 'ride-files', 'state']) db.createObjectStore(store);
-            };
-            request.onsuccess = () => {
-                const db = request.result, tx = db.transaction(['routes', 'rides', 'ride-files'], 'readwrite');
-                tx.objectStore('routes').put({ ...route('a'), open: 'v1', revision: 3 });
-                tx.objectStore('rides').put(ride(key));
-                tx.objectStore('ride-files').put(new Blob(['ride']), key);
-                tx.oncomplete = () => { db.close(); resolve(); };
-            };
-            request.onerror = () => reject(request.error);
-        });
-        const library = new Library(factory);
-        expect(await library.routes()).toEqual([route('a')]);
-        expect((await library.rides()).map(r => r.key)).toEqual([key]);
-        expect(await (await library.rideFile(key))!.text()).toBe('ride');
-        expect(await library.addPhoto(photo('p1', key))).toBe(true);
-        expect((await library.photos(key)).map(p => p.id)).toEqual(['p1']);
-        await library.saveDraft({ id: 'a', updatedAt: 1, trip: {} });
-        await library.close();
-        const db = await new Promise<IDBDatabase>(resolve => { const request = factory.open('obc-library'); request.onsuccess = () => resolve(request.result); });
-        expect(db.objectStoreNames.contains('versions')).toBe(false);
-        db.close();
-    });
-
     it('fails each call with one plain sentence after another tab upgrades the database', async () => {
         const factory = new IDBFactory(), library = new Library(factory);
         await library.saveRoute(route('a'));

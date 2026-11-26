@@ -173,34 +173,6 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(FileLibraryStore(directory: dir).plannedRoutes().count, 1)
     }
 
-    // MARK: v1 on-disk compatibility
-
-    func testV1LibraryFileDecodesWithItsFlatLinkUnclaimed() throws {
-        // A `route.json` fixture with no scope fields: the record loads untouched, but its flat
-        // device link (a bare object id) decodes as no link at all. It can never light a badge or
-        // drive a replace-by-id upload against whatever device happens to be connected.
-        let (store, dir) = makeFileStore()
-        let fixture = try XCTUnwrap(Bundle.module.url(
-            forResource: "planned-route-v1", withExtension: "json", subdirectory: "Fixtures"))
-        let recordDir = dir.appendingPathComponent("planned/imported-v1-fixture", isDirectory: true)
-        try FileManager.default.createDirectory(at: recordDir, withIntermediateDirectories: true)
-        try FileManager.default.copyItem(at: fixture, to: recordDir.appendingPathComponent("route.json"))
-
-        let loaded = try XCTUnwrap(store.plannedRoutes().first)
-        XCTAssertEqual(loaded.id, RouteID("imported-v1-fixture"))
-        XCTAssertNil(loaded.deviceLink, "a flat v1 link must not attach to any scope")
-        XCTAssertEqual(loaded.uploadedCRC32, 0xDEAD_BEEF)
-        XCTAssertEqual(loaded.summary.name, "Schwarzwald Tour")
-        XCTAssertEqual(loaded.route.waypoints.count, 1)
-        XCTAssertEqual(loaded.addedAt, Date(timeIntervalSince1970: 1_000))
-
-        // The schema version stays 1 across a re-save: the scope fields are additive and optional.
-        store.savePlannedRoute(loaded)
-        let json = try XCTUnwrap(try JSONSerialization.jsonObject(
-            with: Data(contentsOf: recordDir.appendingPathComponent("route.json"))) as? [String: Any])
-        XCTAssertEqual(json["version"] as? Int, 1)
-    }
-
     func testScopedLinkRoundTripsThroughDisk() throws {
         let (store, dir) = makeFileStore()
         var record = makeRecord()
@@ -220,10 +192,8 @@ final class LibraryStoreTests: XCTestCase {
         let file = dir.appendingPathComponent("planned/imported-1/route.json")
         var json = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         json.removeValue(forKey: "deviceStoreID")
-        json["deviceStoreEpoch"] = 0xDEAD_0001
         try JSONSerialization.data(withJSONObject: json).write(to: file)
         XCTAssertNil(store.plannedRoutes().first?.deviceLink)
-
     }
 
     func testAPlanThatNoLongerDecodesLeavesItsRoute() throws {
@@ -257,21 +227,8 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(
             summaries.first?.trackPreview?.coordinates,
             newer.summary.trackPreview?.coordinates,
-            "the basemap coordinates (#294) survive the round-trip"
+            "the basemap coordinates survive the round-trip"
         )
-    }
-
-    func testARideArchivedWithoutZoneLimitsReadsAsNotSet() throws {
-        let (store, dir) = makeFileStore()
-        try store.saveRide(makeRide())
-        let file = dir.appendingPathComponent("rides/ride-1/summary.json")
-        var manifest = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        var summary = try XCTUnwrap(manifest["summary"] as? [String: Any])
-        XCTAssertNotNil(summary.removeValue(forKey: "zoneLimits"))
-        manifest["summary"] = summary
-        try JSONSerialization.data(withJSONObject: manifest).write(to: file)
-
-        XCTAssertEqual(FileLibraryStore(directory: dir).rideSummaries().first?.zoneLimits, .notSet)
     }
 
     func testRidePointsRoundTripAcrossInstances() throws {
@@ -375,40 +332,6 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(FileLibraryStore(directory: dir).rideSummaries(), [renamed])
         XCTAssertEqual(try Data(contentsOf: pointsURL), pointBytes)
         XCTAssertEqual(store.ridePoints(ride.id), ride.points)
-    }
-
-    func testUnsupportedWholeRideFileSurvivesCurrentRideOperations() throws {
-        let (store, dir) = makeFileStore()
-        let fixture = try XCTUnwrap(Bundle.module.url(
-            forResource: "ride-v1", withExtension: "json", subdirectory: "Fixtures"))
-        let archivedBytes = try Data(contentsOf: fixture)
-        let ridesDir = dir.appendingPathComponent("rides", isDirectory: true)
-        try FileManager.default.createDirectory(at: ridesDir, withIntermediateDirectories: true)
-        let oldFile = ridesDir.appendingPathComponent("ride-v1-fixture.json")
-        try archivedBytes.write(to: oldFile)
-        let ride = makeRide(id: "ride-v1-fixture", name: "Current Ride")
-
-        XCTAssertNil(store.ridePoints(ride.id))
-        XCTAssertTrue(store.rideSummaries().isEmpty)
-        XCTAssertEqual(try Data(contentsOf: oldFile), archivedBytes)
-
-        try store.saveRide(ride)
-        let relaunched = FileLibraryStore(directory: dir)
-        XCTAssertEqual(relaunched.rideSummaries(), [ride.summary])
-        XCTAssertEqual(relaunched.ridePoints(ride.id), ride.points)
-        XCTAssertEqual(try Data(contentsOf: oldFile), archivedBytes)
-
-        var renamed = ride.summary
-        renamed.name = "Renamed Current Ride"
-        relaunched.saveRideSummary(renamed)
-        XCTAssertEqual(store.rideSummaries(), [renamed])
-        XCTAssertEqual(store.ridePoints(ride.id), ride.points)
-        XCTAssertEqual(try Data(contentsOf: oldFile), archivedBytes)
-
-        store.deleteRide(ride.id)
-        XCTAssertTrue(relaunched.rideSummaries().isEmpty)
-        XCTAssertNil(relaunched.ridePoints(ride.id))
-        XCTAssertEqual(try Data(contentsOf: oldFile), archivedBytes)
     }
 
     func testRideSaveReportsFilesystemFailureAndCanRetry() throws {

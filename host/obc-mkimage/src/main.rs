@@ -199,10 +199,6 @@ fn sign(args: &[String]) -> Result<(), String> {
             "--out" => out = Some(next_value(&mut it, "--out")?.into()),
             "--sign-seed" => seed_src = Some(SeedSource::File(next_value(&mut it, "--sign-seed")?.into())),
             "--sign-seed-env" => seed_src = Some(SeedSource::Env(next_value(&mut it, "--sign-seed-env")?)),
-            // Compatibility aliases, deliberately absent from the help so both subcommands present
-            // one canonical signing vocabulary.
-            "--seed" => seed_src = Some(SeedSource::File(next_value(&mut it, "--seed")?.into())),
-            "--seed-env" => seed_src = Some(SeedSource::Env(next_value(&mut it, "--seed-env")?)),
             other => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
         }
     }

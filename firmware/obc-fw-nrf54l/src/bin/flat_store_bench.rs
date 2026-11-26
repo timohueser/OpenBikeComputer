@@ -1615,7 +1615,7 @@ fn verdict(label: &str, measured: u64, plan: u64) {
         warn!("{=str}: MISS — {=u64} us against {=u64} us ({=u64}/100x, inside 2x)", label, measured, plan, ratio);
     } else {
         error!(
-            "{=str}: MISS >2x — {=u64} us against {=u64} us ({=u64}/100x) — flag on #1256",
+            "{=str}: MISS >2x — {=u64} us against {=u64} us ({=u64}/100x) — report it",
             label, measured, plan, ratio
         );
     }
