@@ -203,6 +203,23 @@ struct OfflineMapsTests {
         #expect(try await store.pending() == nil)
     }
 
+    /// A resumed install plans the parts that the folder still lacks, whose objects can be downloaded already.
+    @Test func theSpaceCheckCountsThePartsOfDownloadedRoutingObjects() async throws {
+        let root = temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cell = Data("cell".utf8)
+        let object = OfflineFile(bytes: Int64(cell.count), sha256: OfflineBundle.hash(cell), part_bytes: 1 << 40)
+        let (quote, bytes) = try fixture()
+        let store = OfflineMapStore(root: root, routing: FakeRouting(objects: [object]), capacity: { _ in 1 << 30 })
+        try stage(quote, bytes: bytes, root: root)
+        try cell.write(to: root.appending(path: "objects/\(object.sha256)"))
+        do {
+            try await store.install(quote, allowMobileData: true) { _, _, _ in }
+            Issue.record("The install passed the space check")
+        } catch OfflineMapFailure.notEnoughSpace(_, _) {}
+        #expect(try await store.maps().isEmpty)
+    }
+
     @Test(arguments: ["../escape", "/absolute", "maps/../../escape", "release.json"])
     func rejectsUnsafeBundlePaths(_ path: String) throws {
         let (quote, _) = try fixture(path: path)

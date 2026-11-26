@@ -167,9 +167,8 @@ area, so two maps that share cells both count them.
 
 The app checks free space before transfer. Its estimate includes filesystem allocation, missing
 decoded objects, the four largest temporary compressed objects, installation metadata, each missing
-cell object of the route package and its installed part, and for a new routing package the copies
-of `package.json` and `directory.bin` in its install folder. At most
-four downloads run at once. Compressed objects are decoded and removed individually. Verification
+cell object of the route package, the installed bytes of each missing part, and for a new routing
+package the copies of `package.json` and `directory.bin` in its install folder. At most four downloads run at once. Compressed objects are decoded and removed individually. Verification
 precedes the atomic library update. The library is excluded from device backups. Deletion retains
 shared objects that another map or the pending download needs.
 

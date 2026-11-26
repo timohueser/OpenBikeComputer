@@ -310,7 +310,8 @@ public actor OfflineMapStore {
         // Allocate for object tails, directory blocks, and both copies of atomically written metadata.
         let metadata = try JSONEncoder().encode(bundle).count + Int(bundle.release.bytes) * 2
         return try sum(try missing.map { try allocated($0.bytes) }
-            + unique(missingRouting).map { try allocated($0.bytes) } + missingRouting.map { try allocated($0.part_bytes ?? 0) }
+            // The plan lists only the parts that the install folder lacks, also when their objects are downloaded.
+            + unique(missingRouting).map { try allocated($0.bytes) } + routing.map { try allocated($0.part_bytes ?? 0) }
             + copies.map { try allocated($0) } + [
             sum(missing.filter { $0.transport.encoding == "gzip" }.map(\.transport.bytes).sorted(by: >).prefix(4).map { try allocated($0) }),
             allocated(Int64(metadata) * 2), block * Int64(directories.count + bundle.files.count + 4)])
