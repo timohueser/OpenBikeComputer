@@ -83,7 +83,7 @@ pub fn percent(part: f64, whole: f64) -> String {
 }
 
 /// The costs of the profile `name` under `variant`, as the bake computes them.
-fn bake(graph: &Graph, topology: &Topology, name: &str, variant: Variant) -> Result<crate::Costs, String> {
+pub fn bake(graph: &Graph, topology: &Topology, name: &str, variant: Variant) -> Result<crate::Costs, String> {
     variant::set(variant);
     crate::costs(graph, topology, &crate::profiles(&[name])?)
 }
@@ -278,11 +278,16 @@ pub fn panel_table(text: &mut String, title: &str, note: &str, rows: &[Row], ind
          shorter than 40 m joins to the signal node before.\n\
          - Fast main road: class 2, a limit over 50 km/h or no tagged limit, and no cycle track by \
          `traffic::protection`. Slow main road: class 2 with a tagged limit of 50 km/h or less.\n\
-         - `differs`: the routes with more than 10 % of their length farther than 30 m from the route of V0.\n\
+         - `class 1 at 80`: quiet roads (class 1: residential, unclassified, tertiary, service) with a tagged \
+         limit of 80 km/h or more; `class 1 over 50`: with a tagged limit over 50 km/h. `no limit`: the share of \
+         the route length with no tagged limit, all classes.\n\
+         - `differs`: the routes with more than 10 % of their length farther than 30 m from the route of the \
+         first row.\n\
          - `settled`: the labels that the plain search settles for each query.\n\n\
          | variant | / shortest p50 | p95 | max | / V0 sum | / V0 p95 | turns per km | leave and rejoin per 100 km | \
          signals per 100 km | signalled junctions per 100 km | fast main km per 100 km | slow main km per 100 km | \
-         differs | settled |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
+         class 1 at 80 km per 100 km | class 1 over 50 km per 100 km | no limit | differs | settled |\n\
+         |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
     )
     .unwrap();
     let sum = |routes: &[Measures], pick: fn(&Measures) -> f64| routes.iter().map(pick).sum::<f64>();
@@ -296,7 +301,7 @@ pub fn panel_table(text: &mut String, title: &str, note: &str, rows: &[Row], ind
             routes.iter().zip(base).filter(|(m, base)| shape::far(&m.line, &Near::new(&base.line)) > 0.1 * m.length_m);
         writeln!(
             text,
-            "| {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.2} | {:.2} | {} | {} |",
+            "| {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.2} | {:.2} | {:.2} | {:.2} | {} | {} | {} |",
             row.name,
             quantile(&detour, 0.5),
             quantile(&detour, 0.95),
@@ -309,6 +314,9 @@ pub fn panel_table(text: &mut String, title: &str, note: &str, rows: &[Row], ind
             100.0 * sum(routes, |m| f64::from(m.signalled)) / km,
             100.0 * sum(routes, |m| m.fast_main_m) / 1000.0 / km,
             100.0 * sum(routes, |m| m.slow_main_m) / 1000.0 / km,
+            100.0 * sum(routes, |m| m.fast_quiet_m) / 1000.0 / km,
+            100.0 * sum(routes, |m| m.quiet_over_50_m) / 1000.0 / km,
+            percent(sum(routes, |m| m.no_limit_m) / 1000.0, km),
             percent(differs.count() as f64, routes.len() as f64),
             if index == 0 { format!("{:.0}", row.settled) } else { "-".into() },
         )

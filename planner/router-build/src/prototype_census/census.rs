@@ -144,6 +144,9 @@ pub struct Census {
     pub level_names: [&'static str; 6],
     pub relations_seen: usize,
     pub relations_under_5km: usize,
+    /// The relations with main line inside the box, and the length of that line.
+    pub relations_in_box: usize,
+    pub line_in_box_m: f64,
     pub queries: usize,
     pub query_seconds: f64,
     pub optimality_violations: usize,
@@ -529,6 +532,10 @@ pub fn run(net: &mut Net, vias: &[i64], (step_m, min_line_m): (f64, f64)) -> Res
             .iter()
             .map(|run| run.windows(2).map(|w| shape::distance(node_points[&w[0]], node_points[&w[1]])).sum::<f64>())
             .sum();
+        if line_m > 0.0 {
+            census.relations_in_box += 1;
+            census.line_in_box_m += line_m;
+        }
         if line_m < min_line_m {
             census.relations_under_5km += 1;
             let level = usize::from(levels.get(&relation.id).copied().unwrap_or(1));

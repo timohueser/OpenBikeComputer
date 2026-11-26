@@ -8,10 +8,12 @@
 //! and the real costs, writes the price list, and runs the census.
 mod census;
 mod grid;
+mod pairs;
 mod panel;
 mod prices;
 mod report;
 mod round3;
+mod round4;
 mod terms;
 pub(crate) mod variant;
 
@@ -34,6 +36,8 @@ struct Options {
     grid: bool,
     /// `freiburg` or `alsace`: the parts of round three for that region.
     round3: String,
+    /// `freiburg`, `engelberg` or `galway`: the part of round four for that region.
+    round4: String,
     bounds: [f64; 4],
 }
 
@@ -49,6 +53,7 @@ fn options() -> Result<Options, String> {
         package: false,
         grid: false,
         round3: String::new(),
+        round4: String::new(),
         bounds: FREIBURG,
     };
     let mut args = std::env::args().skip(1);
@@ -63,6 +68,7 @@ fn options() -> Result<Options, String> {
             "--package" => options.package = true,
             "--grid" => options.grid = true,
             "--round3" => options.round3 = value()?,
+            "--round4" => options.round4 = value()?,
             "--bounds" => {
                 let values: Vec<f64> = value()?.split(',').filter_map(|v| v.parse().ok()).collect();
                 options.bounds = values.try_into().map_err(|_| usage)?;
@@ -137,6 +143,13 @@ fn run() -> Result<(), String> {
         "freiburg" => return round3::freiburg(&graph, &vias, options.step_m, bounds, &options.out),
         "alsace" => return round3::alsace(&graph, &vias, options.step_m, bounds, &options.out),
         _ => return Err("--round3 takes freiburg or alsace".into()),
+    }
+    match options.round4.as_str() {
+        "" => {}
+        "freiburg" => return round4::freiburg(&graph, &vias, options.step_m, bounds, &options.out),
+        "engelberg" => return round4::engelberg(&graph, &vias, options.step_m, bounds, &options.out),
+        "galway" => return round4::galway(&graph, &vias, options.step_m, bounds, &options.out),
+        _ => return Err("--round4 takes freiburg, engelberg or galway".into()),
     }
     let names: Vec<&str> = options.profiles.split(',').collect();
     let profiles = crate::profiles(&names)?;

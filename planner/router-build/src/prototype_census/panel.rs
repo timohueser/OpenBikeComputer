@@ -41,6 +41,11 @@ pub struct Measures {
     pub fast_main_m: f64,
     /// Main roads with a tagged limit of 50 km/h or less.
     pub slow_main_m: f64,
+    /// Quiet roads (class 1) with a tagged limit of 80 km/h or more, and over 50 km/h.
+    pub fast_quiet_m: f64,
+    pub quiet_over_50_m: f64,
+    /// Roads of any class with no tagged limit.
+    pub no_limit_m: f64,
     pub signed_m: f64,
     /// By `Surface`, from `Unknown`.
     pub surface_m: [f64; 6],
@@ -49,7 +54,7 @@ pub struct Measures {
 }
 
 /// SplitMix64.
-fn random(state: &mut u64) -> u64 {
+pub fn random(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -57,26 +62,33 @@ fn random(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// The pairs of `spec`, from the junctions where a road with a snap bit of `snappable` arrives.
-/// Each pair has a route in `net`.
-pub fn sample(net: &Net, snappable: &[u64], spec: &Spec) -> Result<Vec<Pair>, String> {
+/// The junctions where a road with a snap bit of `snappable` arrives, inside `inside`.
+pub fn junctions(net: &Net, snappable: &[u64], inside: Option<[f64; 4]>) -> Result<Vec<u32>, String> {
     let roads = &net.graph.roads;
     let points = net.graph.points.values();
-    let inside = |junction: u32| {
-        let (lon, lat) =
-            (f64::from(points[junction as usize].lon) * 1e-6, f64::from(points[junction as usize].lat) * 1e-6);
-        spec.inside.is_none_or(|[west, south, east, north]| lon >= west && lon <= east && lat >= south && lat <= north)
+    let within = |junction: u32| {
+        let point = points[junction as usize];
+        let (lon, lat) = (f64::from(point.lon) * 1e-6, f64::from(point.lat) * 1e-6);
+        inside.is_none_or(|[west, south, east, north]| lon >= west && lon <= east && lat >= south && lat <= north)
     };
     let mut junctions: Vec<u32> = (0..roads.len())
         .filter(|&road| snappable[road / 64] & (1 << (road % 64)) != 0)
         .map(|road| roads.to(road))
-        .filter(|&junction| inside(junction))
+        .filter(|&junction| within(junction))
         .collect();
     junctions.sort_unstable();
     junctions.dedup();
     if junctions.len() < 2 {
-        return Err("the panel has no junctions".into());
+        return Err("the box of a panel has no junctions".into());
     }
+    Ok(junctions)
+}
+
+/// The pairs of `spec`, from the junctions where a road with a snap bit of `snappable` arrives.
+/// Each pair has a route in `net`.
+pub fn sample(net: &Net, snappable: &[u64], spec: &Spec) -> Result<Vec<Pair>, String> {
+    let junctions = junctions(net, snappable, spec.inside)?;
+    let points = net.graph.points.values();
     let (mut state, mut workspace, mut pairs) = (spec.seed, Workspace::default(), Vec::new());
     for &(min_km, max_km, count) in spec.classes {
         let (mut found, mut tries) = (0, 0u64);
@@ -123,9 +135,19 @@ pub fn measure(net: &Net, roads: &[u32]) -> Measures {
             measures.signalled += u32::from(variant::signalled(graph, road));
             measures.turns += u32::from(net.is_turn(road, next));
         }
+        let speed = variant::speed_limit(&way.tags, reversed);
+        if speed.is_none() {
+            measures.no_limit_m += length;
+        }
+        if all.class(id) == 1 && speed.is_some_and(|speed| speed >= 80.0) {
+            measures.fast_quiet_m += length;
+        }
+        if all.class(id) == 1 && speed.is_some_and(|speed| speed > 50.0) {
+            measures.quiet_over_50_m += length;
+        }
         if all.class(id) == 2 {
             let track = traffic::protection(&way.tags, reversed, way.facts.country()) == Protection::Track;
-            match variant::speed_limit(&way.tags, reversed) {
+            match speed {
                 Some(speed) if speed <= 50.0 => measures.slow_main_m += length,
                 _ if !track => measures.fast_main_m += length,
                 _ => {}
