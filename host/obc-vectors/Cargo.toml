@@ -8,7 +8,7 @@ description = "S0 wire-protocol shared test vectors (ble-interface.md): builders
 [dependencies]
 obc-formats = { workspace = true }
 obc-route = { workspace = true }
-# Only for the OBCU v2 fixture's Ed25519 signature (#997). The container's *header* is still
+# Only for the OBCU v2 fixture's Ed25519 signature. The container's *header* is still
 # hand-built from the spec's field table like every other fixture here — a signature is the one
 # thing a builder cannot transcribe from prose.
 obc-dfu = { workspace = true }
