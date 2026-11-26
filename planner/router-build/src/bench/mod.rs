@@ -137,6 +137,7 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
     let topology = Topology::new(&graph.roads, graph.points.len())?;
     crate::check(&graph, &profiles)?;
     let costs = crate::costs(&graph, &topology, &profiles)?;
+    let states = net::states(topology.first.values(), topology.head.values());
     eprintln!("Import and costs: {:.0} s", clock.elapsed().as_secs_f64());
 
     let prices: Vec<Row> = prices::price_list(&profiles)
@@ -156,7 +157,7 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
     let (mut results, mut routes, mut ends) = (serde_json::Map::new(), serde_json::Map::new(), None);
     for (index, profile) in profiles.iter().enumerate() {
         let clock = Instant::now();
-        let net = Net::new(&graph, &topology, &costs, index);
+        let net = Net::new(&graph, &topology, &states, &costs, index);
         let [shares, legs] = signed_rows(&signed::signed_share(&net, STEP_M)?, profile.walking);
         let draw = |classes, inside| panel::panel(&net, &panel::sample(&net, &Spec { classes, inside })?);
         let mut panels = vec![panel_row("random", &draw(panel::PANEL, None)?)];

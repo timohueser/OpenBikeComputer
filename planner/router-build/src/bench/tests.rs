@@ -1,5 +1,5 @@
 use super::measures::measure;
-use super::net::Net;
+use super::net::{states, Net};
 use super::pairs::compare;
 use super::panel::{sample, Class, Pair, Spec};
 use super::signed::signed_share;
@@ -16,12 +16,13 @@ use serde_json::{json, Value};
 struct Region {
     graph: Graph,
     topology: Topology,
+    states: planner_router::base::Graph,
     costs: Costs,
 }
 
 impl Region {
     fn net(&self) -> Net<'_> {
-        Net::new(&self.graph, &self.topology, &self.costs, 0)
+        Net::new(&self.graph, &self.topology, &self.states, &self.costs, 0)
     }
 
     /// The roads of the route over the junctions `nodes`.
@@ -86,7 +87,8 @@ fn region() -> Region {
     graph.link_ways();
     let topology = Topology::new(&graph.roads, graph.points.len()).unwrap();
     let costs = crate::costs(&graph, &topology, &crate::profiles(&["touring"]).unwrap()).unwrap();
-    Region { graph, topology, costs }
+    let states = states(topology.first.values(), topology.head.values());
+    Region { graph, topology, states, costs }
 }
 
 #[test]

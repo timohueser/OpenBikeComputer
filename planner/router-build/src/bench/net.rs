@@ -23,7 +23,7 @@ pub struct Net<'a> {
     pub ends: Vec<u8>,
     /// The signed routes of the profile that list each way row.
     pub routes: HashMap<u32, Vec<i64>>,
-    states: States,
+    states: &'a States,
     /// The costs of the bake, then the length of each road as its cost.
     weights: [Weights; 2],
 }
@@ -37,8 +37,9 @@ pub fn signed(profile: &Profile, tags: &Tags) -> bool {
         && !tags.contains("state", "proposed")
 }
 
-/// The state graph of the search, with the arcs of `first` and `head` by their end too.
-fn states(first: &[u32], head: &[u32]) -> States {
+/// The state graph of the search, with the arcs of `first` and `head` by their end too. One graph
+/// serves each profile.
+pub fn states(first: &[u32], head: &[u32]) -> States {
     let nodes = first.len() - 1;
     let mut reverse_first = vec![0u32; nodes + 1];
     for &to in head {
@@ -67,8 +68,9 @@ fn states(first: &[u32], head: &[u32]) -> States {
 }
 
 impl<'a> Net<'a> {
-    /// `costs` holds the costs of `graph` on `topology`, and those of its profile `index`.
-    pub fn new(graph: &'a Graph, topology: &'a Topology, costs: &'a Costs, index: usize) -> Self {
+    /// `costs` holds the costs of `graph` on `topology`, and those of its profile `index`. `states`
+    /// is the state graph of `topology`.
+    pub fn new(graph: &'a Graph, topology: &'a Topology, states: &'a States, costs: &'a Costs, index: usize) -> Self {
         let (roads, profile) = (&graph.roads, &costs.profiles[index]);
         let (totals, turns) = (costs.roads[index].totals.values(), costs.roads[index].turns.values());
         let lengths = roads.length_m.values().iter().zip(totals);
@@ -103,7 +105,7 @@ impl<'a> Net<'a> {
             arrivals: group(roads.to.values(), graph.points.len()),
             ends,
             routes,
-            states: states(topology.first.values(), topology.head.values()),
+            states,
             weights: [weights(totals.to_vec(), turns.to_vec()), weights(lengths, legal)],
         }
     }
@@ -183,7 +185,7 @@ impl<'a> Net<'a> {
             heap_limit: 1 << 30,
             cancelled: &|| false,
         };
-        let found = Workspace::default().run(&self.states, weights, query).map_err(|e| e.to_string())?;
+        let found = Workspace::default().run(self.states, weights, query).map_err(|e| e.to_string())?;
         Ok(found.map(|found| found.roads[1..].to_vec()))
     }
 }
