@@ -18,7 +18,7 @@ heapless = { workspace = true }
 obc-formats = { workspace = true }
 obc-map-scene = { workspace = true }
 # `no_std` float math for the `geo` distance core (`cosf`/`sqrtf` on the M33's f32 FPU).
-libm = { workspace = true } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
+libm = { workspace = true } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the alignment-UB tripwire)
 miniz_oxide = { workspace = true }
 
 [dev-dependencies]

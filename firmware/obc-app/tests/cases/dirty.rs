@@ -161,7 +161,7 @@ fn a_battery_change_does_not_redraw_the_riding_views() {
                                                   // screen's own, drained here so the assertion below is about the battery and nothing else.
     host.frame(&mut app, 5_000, &[], None, Some(75));
 
-    assert!(!host.frame(&mut app, 30_000, &[], None, Some(60)).map, "a battery delta must not dirty the map (#209)");
+    assert!(!host.frame(&mut app, 30_000, &[], None, Some(60)).map, "a battery delta must not dirty the map");
     assert_eq!(app.state.device.battery_pct, 60, "the new level is still stored, just not drawn here");
 }
 

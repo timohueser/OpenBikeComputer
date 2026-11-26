@@ -217,7 +217,7 @@ impl MapDisplay {
     #[inline(always)]
     pub(crate) async fn present_bulge(&mut self, overlay_span: Option<(u16, u16)>) {
         if self.degraded {
-            return; // FLPR down for good (#349) — no push to retry against.
+            return; // FLPR down for good — no push to retry against.
         }
         if let Some((y0, rows)) = overlay_span {
             let t_push = Instant::now();

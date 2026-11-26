@@ -27,7 +27,6 @@ The commands below use the copied `ops/` directory.
    Caddy terminates TLS and forwards to `127.0.0.1:3100`.
 5. Start the service.
 
-Remove `VERIFICATION_AGENT_TOKEN` from existing configurations; the service does not accept it.
 Caddy replaces incoming forwarded-address headers. The localhost-only service trusts one proxy
 hop for login rate limits. Configure trusted addresses explicitly for a second proxy.
 Never enter credentials through HTTP.

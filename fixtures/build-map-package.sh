@@ -28,7 +28,7 @@
 # do the land polygons. Needs only the workspace toolchain (obc-pack
 # builds with system GEOS) — the crop is `obc-pack --bbox`, which keeps complete
 # ways and completes renderable area relations during ingest, so osmium-tool is
-# no longer required to regenerate a fixture. The three bboxes below remain the
+# not required to regenerate a fixture. The three bboxes below remain the
 # canonical camera coverage. Relation completion can recover polygons (and
 # therefore change bytes) when a fixture is next deliberately refreshed.
 #
@@ -54,7 +54,7 @@ box() { # box <region> [--lat-first]: the box of a data/regions/ box region
 # --- Pinned provenance (canonical — do not derive from fixture headers) -----
 GRIMSEL_AREA="europe/switzerland" # Geofabrik area of the source extract
 GRIMSEL_BBOX="$(box grimsel)" # Grimsel Pass region (lon,lat,lon,lat)
-# grimsel-demo: the landing-page live-demo map (epic #624 S4, #629). A tight
+# grimsel-demo: the landing-page live-demo map. A tight
 # corridor hand-picked around the `grimsel-climb.gpx` track (which spans
 # 8.291,46.561 -> 8.340,46.654), padded ~2 km each side so the demo tours have
 # accommodation POIs + a routable nav graph around the ride (verified: the POI
@@ -84,9 +84,9 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     land="$(store_path land-polygons)"
     local extra=(--land "$land")
     # A map with a committed terrain sidecar is packed WITH it, so the fixture
-    # carries real §8.3 ascent and (preset v6, #1094/#1095/#1104) the traced E3
-    # contours. The sidecar itself never changes here — this script's `terrain`
-    # owns it, on the DEM's own revision track.
+    # carries real §8.3 ascent and the traced E3 contours. The sidecar itself
+    # never changes here — this script's `terrain` owns it, on the DEM's own
+    # revision track.
     [[ -n "$terrain" ]] && extra=(--terrain "$terrain")
     if [[ "$name" == grimsel-demo && -n "${OBC_DEMO_LANDMARKS:-}" ]]; then
         extra+=(--landmarks "$OBC_DEMO_LANDMARKS")
@@ -210,7 +210,7 @@ do_freiburg() {
       --output "$BUILD_DIR/sim-freiburg.tar.gz"
 }
 
-# === Terrain sidecars (OBCT, epic #1068 / #1070) =============================
+# === Terrain sidecars (OBCT) ================================================
 # `build-map-package.sh terrain [dem_dir]` bakes the two `.obcd` terrain
 # companions from Copernicus GLO-30. Self-contained: it shares nothing with the
 # `.obcm` path above, because terrain has no OSM in it at all.

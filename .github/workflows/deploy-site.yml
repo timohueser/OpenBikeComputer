@@ -15,7 +15,7 @@ name: Deploy site
 # The site carries code only. The web app reads the active release from
 # `planner/catalog.json` at page load, so a data release never runs this workflow.
 #
-# ── What GitHub Pages can and cannot do (C6 #905; measured 2026-07-26) ──────────────
+# ── What GitHub Pages can and cannot do ─────────────────────────────────────────────
 #
 # Pages serves every object with a fixed header set and offers **no** configuration
 # surface for response headers — no `_headers`, no `.htaccess`, no per-path rules:
@@ -33,9 +33,8 @@ name: Deploy site
 #    never serve stale code. What it does mean is that "the catalog manifest must be
 #    short-lived" is unsatisfiable for anything served from here — and the manifest
 #    must not live here anyway, because a manifest published beside the site could
-#    only change by redeploying the site, which is exactly what #905 says a fresh bake
-#    must not require. So the manifest lives **with the artifacts**, on whatever object
-#    storage the bakery (B1 #898) publishes to, where its cache policy is that host's
+#    only change by redeploying the site, which a fresh bake must not require. So the manifest lives **with the artifacts**, on whatever object
+#    storage the bakery publishes to, where its cache policy is that host's
 #    to set (obcc-catalog.md §11 states the ≤ 60 s expectation).
 #
 # 2. **No cross-origin isolation, ever, on this host.** Setting
@@ -55,15 +54,14 @@ name: Deploy site
 #
 # The site is expected to move to its own domain, so nothing published here may assume
 # the project-Pages `/<repo>/` sub-path: trunk gets `--public-url ./` (which emits
-# `<base href="./">`) and Vite is configured `base: "./"` (#895), so the artifact is
+# `<base href="./">`) and Vite is configured `base: "./"`, so the artifact is
 # mountable at any prefix. The "mountable at any prefix" step below proves that on
 # every deploy by serving the artifact from a deep sub-path and fetching each page's
 # own assets through it.
 #
 # ── Which branch the world sees ────────────────────────────────────────────────────
 #
-# `develop`, per #905's acceptance criterion — the integration branch is what the
-# public site tracks. (It was `main`, which had drifted 365 commits behind.) One
+# `develop`: the integration branch is what the public site tracks. One
 # trigger only: two branches deploying into one Pages environment would fight.
 
 on:
@@ -139,8 +137,8 @@ jobs:
           OBC_BUILD_HARDWARE: "1"
         run: trunk build --release --config docs/Trunk.toml --public-url "./"
 
-      # The web app imports the shared obc-route GPX↔OBCR path (#896), the cell
-      # assembler (#1034), and the production-rendered skin preview (#1045). The shared
+      # The web app imports the shared obc-route GPX↔OBCR path, the cell
+      # assembler, and the production-rendered skin preview. The shared
       # script is also used by CI so the lists cannot drift.
       # None is optional: the frontend imports the generated bindings, so a missing
       # pkg/ is a build failure, not a degraded site.

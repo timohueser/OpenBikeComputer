@@ -1,6 +1,6 @@
 // #include unknown.wgsl
 // The terrain mesh: one grid of 64 × 64 cells, instanced per node. A vertex morphs toward the next
-// coarser grid by its node's level − LOD, as `grid_vertex` gives it, and drops with the curvature.
+// coarser grid by its node's level − LOD, as `grid_vertex_by` gives it, and drops with the curvature.
 // #include drawn-mesh.wgsl
 // #include portal-box.wgsl
 // #include ../ground/look.wgsl

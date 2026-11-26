@@ -6,7 +6,7 @@ publish = false # internal host tool — not published to crates.io
 description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / bake). The producer side of specs/obct-terrain.md."
 
 # The **container writer is this crate's wasm-reachable half**. `obcm-assemble` places published
-# cells into a terrain shard (EL4, #1072) and compiles for `wasm32-unknown-unknown`, so it takes this
+# cells into a terrain shard and compiles for `wasm32-unknown-unknown`, so it takes this
 # crate with `default-features = false` — which drops the DEM decoder and the HTTP client and leaves
 # `container`, whose only dependencies are `obc-formats` and `obc-elevation`. The alternative was a
 # second OBCT writer inside the assembler, which is exactly the drift `container`'s module header
@@ -45,9 +45,9 @@ obc-formats = { workspace = true }
 # and every test reads its own output back through `obc_elevation::TerrainReader`. Depending on a
 # `no_std` foundation crate from a host tool is the allowed direction (`dependency_rules.json`).
 obc-elevation = { workspace = true }
-# The GeoTIFF decoder. **Pure Rust** — this is what the #1070 spike proved against a real GLO-30
-# tile: float32 samples (`SampleFormat = 3`), Adobe DEFLATE (`Compression = 8`) with the
-# *floating-point* horizontal predictor (`Predictor = 3`), 1024 × 1024 internal tiles. Default
+# The GeoTIFF decoder. **Pure Rust**, proved against a real GLO-30 tile: float32 samples
+# (`SampleFormat = 3`), Adobe DEFLATE (`Compression = 8`) with the *floating-point* horizontal
+# predictor (`Predictor = 3`), 1024 × 1024 internal tiles. Default
 # features are off deliberately: `fax`, `jpeg` and `lzw` are codecs no DEM ships in, and every one
 # of them is decoder surface this tool would otherwise carry for nothing.
 tiff = { version = "0.11", default-features = false, features = ["deflate"], optional = true }

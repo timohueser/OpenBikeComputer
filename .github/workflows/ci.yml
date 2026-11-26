@@ -17,7 +17,7 @@ name: CI
 #   * There is no board in CI, so every embedded target is build-only.
 #   * The toolchain (channel + rustfmt/clippy + the thumbv8m / wasm32 targets) is declared once in
 #     //rust-toolchain.toml and shared with local dev. It intentionally tracks floating stable.
-#   * obc-boot (the 32 KB DFU bootloader, #617) is excluded + standalone the same way as the
+#   * obc-boot (the 32 KB DFU bootloader) is excluded + standalone the same way as the
 #     board crate; its job adds a flash-size guard against the 32 KB slot.
 #   * obc-builder-bridge is a workspace library and the builder's shared WASM core.
 #     The wasm-bridges job gates its production size and hands the same bytes to frontend jobs.
@@ -476,9 +476,8 @@ jobs:
       matrix:
         include:
           # default = the shipping LS021/FLPR map + two-plane path (real sensors, no host feed).
-          # It is the whole device: the **USB device plane** (#889) since 2026-07-26 and the **radio**
-          # (#1530) since the `ble` feature was retired are compiled, linted and resource-gated by the
-          # default legs below — no separate USB or BLE matrix leg exists or is needed, and neither
+          # It is the whole device: the **USB device plane** and the **radio** are compiled, linted
+          # and resource-gated by the default legs below — no separate USB or BLE matrix leg exists or is needed, and neither
           # plane can rot in a profile nobody builds.
           - { name: "clippy (default = LS021/FLPR)", cmd: "cargo clippy --locked -- -D warnings" }
           # debug-uart = default + the VCOM host sensor/telemetry feed (the obc-platform debug codec).
@@ -515,11 +514,11 @@ jobs:
       - name: "obc-fw-nrf54l: ${{ matrix.name }}"
         working-directory: firmware/obc-fw-nrf54l
         run: ${{ matrix.cmd }}
-      # FAR-00's one ELF parser extends the pre-existing boot/poll guards with actual linked
-      # `.bss + .data`, exact framebuffer count/size, and the report-only target `size_of` table.
+      # One ELF parser gates the boot and poll frames, the actual linked `.bss + .data`, the exact
+      # framebuffer count/size, and the report-only target `size_of` table.
       # Run against the production ELF first; the resource-report rebuild is a separate diagnostic
       # artifact and never changes what ships.
-      # `board` also subsumes #677's steady-state poll-frame parser: the largest single `sub sp` in
+      # `board` also gates the steady-state poll frame: the largest single `sub sp` in
       # every `TaskStorage<F>::poll`, capped at 12 KiB, with stale-symbol and stale-instruction
       # diagnostics covered by unit tests.
       - name: "obc-fw-nrf54l: default resource baseline"
@@ -531,7 +530,7 @@ jobs:
           rustup component add llvm-tools
           python3 ../tools/resource_guard.py board --profile default \
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
-          # The resident `App`'s own construction frame (#1446), measured on the **shipping** link —
+          # The resident `App`'s own construction frame, measured on the **shipping** link —
           # hence here, before the resource-report rebuild below overwrites this same path.
           # `App::init_idle` writes each field straight into the `.bss` slot, so its frame is small
           # (1,572 B) and must stay that way: the field plan's two row forms differ by four tokens,
@@ -590,7 +589,7 @@ jobs:
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l \
             --match 'flat_store' --limit 16384
 
-  # The obc-boot bootloader (epic #615, #617): workspace-excluded like the board crate, built
+  # The obc-boot bootloader: workspace-excluded like the board crate, built
   # from its own directory so its .cargo/config.toml selects thumbv8m. No test harness and no
   # FLPR blob (no RISC-V gcc needed). The size guard is the real gate: the shipping (default,
   # no-rtt) release image's flash footprint — .vector_table + .text + .rodata + .data — must fit
@@ -685,7 +684,7 @@ jobs:
       - name: obc-data depends on no GPL crate
         run: python3 tools/check_obc_data_licence.py
       # deny.toml gates which licences may enter the tree; THIRD-PARTY.md is the *text* those
-      # licences require us to hand over with a binary (#1149). Both belong to the same job:
+      # licences require us to hand over with a binary. Both belong to the same job:
       # the dependency bump that changes one changes the other, and a stale notice file is only
       # ever discovered at a release tag otherwise, where release.yml links it by tag.
       # Pinned: the committed file is a byte-for-byte diff target, so a generator that changed
@@ -745,7 +744,7 @@ jobs:
           name: web-demo-browser-${{ github.run_attempt }}
           path: .artifacts/web-demo/
           if-no-files-found: error
-      # The assembly engine (#1024) has to stay browser-shippable: P4 runs *this* code in a tab, so
+      # The assembly engine has to stay browser-shippable: P4 runs *this* code in a tab, so
       # the library must carry no filesystem and no native dependency. Building it for wasm32 with
       # the `cli` feature off is the guard — the CLI is the native driver and owns every std::fs call
       # in the crate, so a stray `std::fs` in the engine fails here rather than in P4.
@@ -1031,8 +1030,8 @@ jobs:
   # a hard dependency, not an optimisation, and it is why the downloads land before `npm ci`:
   # every step below needs them — the TS wrappers import the generated bindings, so `npm run check`
   # type-checks against them, and the vitest suites fail without the artifacts.
-  # The assembly bridge's suite is also the *headless smoke* for #1034: it assembles the checked-in
-  # cell fixture in Node and compares the result to the bytes the native CLI wrote.
+  # The assembly bridge's suite is also the *headless smoke* of the cell assembler: it assembles
+  # the checked-in cell fixture in Node and compares the result to the bytes the native CLI wrote.
   web:
     needs: [selection, wasm-bridges]
     if: contains(fromJSON(needs.selection.outputs.jobs), 'web')

@@ -5,15 +5,15 @@ edition = "2021"
 publish = false # internal firmware crate — not published to crates.io
 description = "OBCU update-image container + boot-state RRAM page codec + boot-decision logic (SD-staged DFU). no_std, core-only — shared by the obc-boot bootloader, the board crate, obc-app, and the obc-mkimage host tool."
 
-# Foundation crate for the DFU epic: the byte formats and the pure boot-decision logic
+# Foundation crate for DFU: the byte formats and the pure boot-decision logic
 # every other piece shares. `core`-only (no alloc, no heapless) so the 32 KB bootloader
 # links it cheaply; host-tested to the settings-codec bar. A workspace member so the plain
 # `cargo test` below exercises it on the host, exactly like obc-reader / obc-ble.
 [dependencies]
-# CRC-32/IEEE, shared with obc-ble. A dependency-free leaf, so it does not cost the bootloader's
-# link anything the old in-crate copy didn't.
+# CRC-32/IEEE, shared with obc-ble. A dependency-free leaf, so it costs the bootloader's link
+# little.
 obc-crc = { workspace = true }
-# The OBCU v2 signature check (#997), on BOTH sides of the pipeline: the armer verifies with it and
+# The OBCU v2 signature check, on BOTH sides of the pipeline: the armer verifies with it and
 # `obc-mkimage` signs with it, so host and device can never drift onto different implementations.
 # Chosen over ed25519-dalek because it is `core`-only with no RNG or `zeroize` machinery pulled in,
 # has no transitive dependencies at all with default features off, and — the deciding feature —
@@ -21,11 +21,9 @@ obc-crc = { workspace = true }
 # into the single 512-byte-chunk pass it already makes over a ~900 KB image instead of needing the
 # whole image in RAM on a 256 KB part.
 #
-# `obc-boot` never verifies (locked in #773 — it is flash-once, so the trust root must live in the
-# app), never calls into `sig`, and the unreachable code is dropped whole by its link: `llvm-nm` on
-# the bootloader ELF finds **zero** `ed25519_compact` symbols, so this dependency costs it nothing
-# but build time and it needed no edit at all. (Its `.text` still moves +156 B — that is the
-# `ImageHeader` codec growing by two fields, not cryptography.)
+# `obc-boot` never verifies (it is flash-once, so the trust root must live in the app), never
+# calls into `sig`, and the unreachable code is dropped whole by its link: the bootloader ELF holds
+# **zero** `ed25519_compact` symbols, so this dependency costs it only build time.
 #
 # `opt_size` is NOT optional here: without it the crate's default `double_scalarmult_vartime` unrolls
 # into ~265 KB of Thumb (383 KB for the whole crate) under the board's opt-level — a fifth of the app

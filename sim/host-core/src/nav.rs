@@ -43,10 +43,6 @@ impl NavPlan {
         self.planner.set_assistant_candidate();
     }
 
-    pub fn set_unresolved_avoidance(&mut self) {
-        self.planner.set_unresolved_avoidance();
-    }
-
     pub fn set_attribution_map(&mut self, map: obc_formats::obcr::RouteSourceKey) {
         self.planner.set_attribution_map(map);
     }

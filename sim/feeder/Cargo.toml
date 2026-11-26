@@ -12,7 +12,7 @@ obc-ports = { workspace = true }
 # shared threshold so hardware-in-the-loop taps/holds cannot drift.
 obc-app = { workspace = true }
 # The canonical debug-link wire codec (`Telemetry`/`parse_telemetry`/`format_fix`), authored once on
-# the device side and reused here so the two halves can't drift (issue #71). DEFAULT features only — the
+# the device side and reused here so the two halves can't drift. DEFAULT features only — the
 # pure codec is always compiled, so this pulls NO embassy-sync (that lives behind `debug-link`).
 obc-platform = { workspace = true }
 # The shared GPX replay core — the same GpxPlayer/BaroSensor the simulator drives, so a recorded

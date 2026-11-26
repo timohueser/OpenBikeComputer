@@ -269,9 +269,9 @@ const fn kind_of(quantity: usize) -> SensorKind {
 pub(crate) struct ScanEventHandler;
 
 impl EventHandler for ScanEventHandler {
-    // The trait methods exist only under trouble-host's `scan` feature, which the board's `ble`
-    // feature always enables, and this module compiles only under `ble`. A board-crate
-    // `#[cfg(feature = "scan")]` would read the board crate's feature set and drop every report.
+    // The trait methods exist only under trouble-host's `scan` feature, which the board's
+    // trouble-host dependency always enables. A board-crate `#[cfg(feature = "scan")]` would read
+    // the board crate's feature set and drop every report.
     fn on_adv_reports(&self, reports: bt_hci::param::LeAdvReportsIter) {
         if !SCAN_ARMED.load(Ordering::Relaxed) {
             return;
