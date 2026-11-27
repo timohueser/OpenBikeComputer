@@ -1,6 +1,6 @@
 use super::measures::measure;
 use super::net::{states, Net};
-use super::pairs::compare;
+use super::pairs::{compare, overlay};
 use super::panel::{panel, sample, Class, Pair, Spec};
 use super::signed::signed_share;
 use crate::base::Topology;
@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 /// The regional cycle route 1 follows row 1. The local cycle route 2 runs from node 0 over row 2
 /// to node 9. The national cycle route 3 follows row 3: there the street from node 33 to node 32
 /// is a one-way for cycling, and `touring` may not use the street between the nodes 34 and 35.
+/// Node 27 to node 37 is a cycleway, and node 28 to node 38 a path with `bicycle=designated`.
 struct Region {
     graph: Graph,
     topology: Topology,
@@ -50,7 +51,13 @@ fn region() -> Region {
     for a in 0..40 {
         for b in [a + 1, a + 10].into_iter().filter(|&b| b < 40 && (b == a + 10 || b % 10 != 0)) {
             let name = (b < 10).then_some(("name", "Main"));
-            let tags = Tags::from_pairs([("highway", "residential")].into_iter().chain(name));
+            let (highway, class) = match (a, b) {
+                (27, 37) => ("cycleway", 0),
+                (28, 38) => ("path", 4),
+                _ => ("residential", 1),
+            };
+            let designated = (class == 4).then_some(("bicycle", "designated"));
+            let tags = Tags::from_pairs([("highway", highway)].into_iter().chain(name).chain(designated));
             ways.push(way(a, b), &[a.into(), b.into()], &tags);
             for (from, to) in [(a, b), (b, a)] {
                 let shape = vec![graph.points.values()[from as usize], graph.points.values()[to as usize]];
@@ -61,7 +68,7 @@ fn region() -> Region {
                     reversed: from > to,
                     length_m: shape[0].distance(shape[1]).round() as u32,
                     surface: Surface::Paved,
-                    class: 1,
+                    class,
                     access: if (from, to) == (32, 33) { FOOT | PUSH } else { BIKE | FOOT | PUSH },
                     difficulty: if (a, b) == (34, 35) { 3 } else { 255 },
                     shape,
@@ -148,6 +155,20 @@ fn a_panel_counts_a_pair_with_no_route() {
     // A panel with no route is a result too: the run still writes its numbers.
     let none = super::panel::panel(&region().net(), &pairs[1..]).unwrap();
     assert!((none.pairs, none.routes) == (1, 0) && none.detour[0].is_nan());
+}
+
+#[test]
+fn the_overlay_has_the_cycle_paths_and_the_signed_ways_and_no_ordinary_street() {
+    let region = region();
+    let overlay = overlay(&region.net(), &[Pair { from: 0, to: 39 }]);
+    let place = |node: usize| {
+        let point = region.graph.points.values()[node];
+        [f64::from(point.lat) / 1e6, f64::from(point.lon) / 1e6]
+    };
+    let has = |kind: &str, a, b| overlay[kind].as_array().unwrap().contains(&json!([place(a), place(b)]));
+    assert!(has("cycle path", 27, 37) && has("cycle path", 28, 38) && has("signed route", 10, 11));
+    // Node 0 to node 1 is a street of no kind.
+    assert!(!["cycle path", "cycle lane or track", "signed route"].iter().any(|kind| has(kind, 0, 1)));
 }
 
 #[test]

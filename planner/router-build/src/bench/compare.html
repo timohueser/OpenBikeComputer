@@ -23,6 +23,7 @@
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
   th, td { text-align: right; padding: 3px 6px; border-bottom: 1px solid var(--line); }
   th:first-child, td:first-child { text-align: left; }
+  #kinds span { display: inline-block; width: 24px; vertical-align: middle; }
   .swatch { display: inline-block; width: 22px; height: 5px; border-radius: 3px; vertical-align: middle; margin-right: 6px; }
   .votes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .votes button { padding: 10px 8px; background: var(--bg); text-align: left; }
@@ -52,6 +53,7 @@
       <tr><td><span class="swatch" style="background:var(--b)"></span>B</td><td id="b-km"></td><td id="b-up"></td></tr>
     </tbody>
   </table>
+  <div id="kinds" class="row"></div>
   <div class="votes">
     <button data-vote="A">1 &nbsp; A is better</button>
     <button data-vote="B">2 &nbsp; B is better</button>
@@ -69,7 +71,8 @@
 </aside>
 <script>
 // { names: [x, y], sets: [{ profile, pairs: [{ id, ends: [[lat, lon], [lat, lon]],
-//   routes: [{ line: [[lat, lon], …], km, ascent_m, measures }, the same of y] }] }] }
+//   routes: [{ line: [[lat, lon], …], km, ascent_m, measures }, the same of y] }],
+//   overlay: { kind: [line, …] } }] }
 const DATA = /*DATA*/null;
 // FNV-1a.
 function hash(text) {
@@ -96,6 +99,30 @@ L.control.layers(layers).addTo(map);
 L.control.scale({ imperial: false }).addTo(map);
 const drawn = L.layerGroup().addTo(map);
 let set = DATA.sets[0], index = 0;
+
+// The cycling facts of the map, under the routes: the line style of each kind of the overlay.
+const KINDS = {
+  'signed route': { color: '#7b3fb5', weight: 11, opacity: 0.3 },
+  'cycle path': { color: '#00802b', weight: 2.5, opacity: 0.9 },
+  'cycle lane or track': { color: '#00802b', weight: 2.5, opacity: 0.9, dashArray: '5 6' },
+};
+map.createPane('facts').style.zIndex = 350;
+const facts = Object.entries(KINDS).map(([kind, style]) => {
+  const layer = L.polyline([], { ...style, pane: 'facts', interactive: false }).addTo(map);
+  const label = $('kinds').appendChild(document.createElement('label'));
+  const line = Math.min(style.weight, 8) + 'px ' + (style.dashArray ? 'dashed ' : 'solid ') + style.color;
+  label.innerHTML = '<input type="checkbox" checked> <span style="border-top: ' + line + '; opacity: ' +
+    style.opacity + '"></span> ' + kind;
+  label.firstChild.addEventListener('change', (e) => e.target.checked ? layer.addTo(map) : layer.remove());
+  return { kind, layer, label };
+});
+// A profile shows the kinds that its overlay has.
+function overlay() {
+  for (const { kind, layer, label } of facts) {
+    layer.setLatLngs((set.overlay || {})[kind] || []);
+    label.hidden = !layer.getLatLngs().length;
+  }
+}
 
 const answers = () => store[set.profile] = store[set.profile] || {};
 const answer = (pair) => answers()[pair.id] = answers()[pair.id] || {};
@@ -164,7 +191,7 @@ function results() {
 }
 
 const go = (to) => { index = Math.max(0, Math.min(set.pairs.length - 1, to)); show(true); };
-$('set').addEventListener('change', () => { set = DATA.sets[$('set').selectedIndex]; go(0); });
+$('set').addEventListener('change', () => { set = DATA.sets[$('set').selectedIndex]; overlay(); go(0); });
 $('prev').addEventListener('click', () => go(index - 1));
 $('next').addEventListener('click', () => go(index + 1));
 $('open').addEventListener('click', () => {
@@ -192,6 +219,7 @@ document.addEventListener('keydown', (e) => {
 
 for (const s of DATA.sets) $('set').add(new Option(s.profile + ' (' + s.pairs.length + ' pairs)'));
 map.setView([0, 0], 2);
+overlay();
 show(true);
 </script>
 </body>

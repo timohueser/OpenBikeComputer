@@ -165,6 +165,7 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
         dem.display()
     );
     let (mut results, mut routes, mut sets) = (serde_json::Map::new(), serde_json::Map::new(), None);
+    let mut overlay = serde_json::Map::new();
     for (index, profile) in profiles.iter().enumerate() {
         let clock = Instant::now();
         let net = Net::new(&graph, &topology, &states, &costs, index);
@@ -187,6 +188,7 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
         for (name, pairs) in &by_set {
             if *name == COMPARE {
                 routes.insert(profile.name.clone(), pairs::routes(&net, pairs)?);
+                overlay.insert(profile.name.clone(), pairs::overlay(&net, pairs));
             } else {
                 panels.push(panel_row(name, &panel::panel(&net, pairs)?));
             }
@@ -203,7 +205,8 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
     write(&out.join("bench.json"), &format!("{bench:#}\n"))?;
     write(&out.join("bench.md"), &text)?;
     if let Some(sets) = sets {
-        write(&out.join("routes.json"), &json!({"pairs": sets[COMPARE], "routes": routes}).to_string())?;
+        let routes = json!({"pairs": sets[COMPARE], "routes": routes, "overlay": overlay});
+        write(&out.join("routes.json"), &routes.to_string())?;
     }
     Ok(())
 }

@@ -217,8 +217,8 @@ osmium sort first.osm.pbf second.osm.pbf -o region.osm.pbf
 | --- | --- |
 | `bench.json` | Each number of the run |
 | `bench.md` | The same numbers as tables: for each profile the signed routes and the panels, then the price list |
-| `routes.json` | For each pair of the set `compare` and each profile the line, the km, the ascent and the measures of the route, or `null` for no route |
-| The page of `compare` | The two routes of a pair on a map of live tiles, in a random order that stays the same. It takes one answer for each pair and gives the answers as text. It leaves out a pair with no route in a run, and a pair with the same routes |
+| `routes.json` | For each pair of the set `compare` and each profile the line, the km, the ascent and the measures of the route, or `null` for no route. For each profile the overlay: the lines of the ways of each overlay kind in the box of those pairs, with a margin of about 1 km |
+| The page of `compare` | The two routes of a pair on a map of live tiles, in a random order that stays the same. Under them it draws the overlay of the first run, with one checkbox for each kind. It takes one answer for each pair and gives the answers as text. It leaves out a pair with no route in a run, and a pair with the same routes |
 
 | Measure | Definition |
 | --- | --- |
@@ -242,6 +242,7 @@ osmium sort first.osm.pbf second.osm.pbf -o region.osm.pbf
 | Fast main road | Class 2 with a limit over 50 km/h or no tagged limit, and no cycle track by `traffic::protection` |
 | Slow main road | Class 2 with a tagged limit of 50 km/h or less |
 | `signed route %` | The length on a way of a signed route |
+| Overlay kind | `cycle path`: a cycleway, or a `highway=path` or `highway=footway` with `bicycle=designated`. `cycle lane or track`: `traffic::protection` gives a lane or a track in one of the two directions. `signed route`: a way of a signed route. A walking profile has only the last kind |
 | Same routes | Each route has at most 10 % of its length farther than 30 m from the other |
 
 ## Pitfalls
