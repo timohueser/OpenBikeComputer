@@ -1,6 +1,6 @@
 // The plan worker: builds cells of the ground plan in its own instance of the bridge. A worker blocked
 // in a build cannot read its inbox, so a cancel or a trap ends it (plan.ts and model.ts start another).
-import { imagePixels } from '../../planner/layers/terrain';
+import { terrainPixels } from '../stream/exact-pixels';
 import { tilePages, type PageData } from '../stream/heights';
 import { debugMesh, type DebugMesh, type Vocabulary } from './debug';
 import { meshBytes } from './mesh';
@@ -71,7 +71,7 @@ async function plain(body: ArrayBuffer): Promise<Uint8Array> {
 function pagesOf(name: string, body: ArrayBuffer): Promise<(PageData | null)[]> {
     let pages = decoded.get(name);
     if (pages) decoded.delete(name);
-    else pages = imagePixels(new Uint8Array(body)).then(rgba => tilePages(rgba.data, rgba.width));
+    else pages = terrainPixels(body).then(({ data, size }) => tilePages(data, size));
     pages.catch(() => decoded.delete(name));
     decoded.set(name, pages);
     for (const old of decoded.keys()) if (decoded.size > TILES) decoded.delete(old);
