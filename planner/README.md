@@ -56,7 +56,7 @@ request, and never run two publications or deployments at the same time.
   a release whose format the services cannot read, and `obc data update prod` waits for it, up
   to 24 hours, then leaves prod as it was.
 - The format numbers must agree between code and data: the routing package (`FORMAT` in
-  `router/src/package.rs`), the search schema and grid (`search/federation.mjs`,
+  `router/src/cells.rs`), the search schema and grid (`search/federation.mjs`,
   `search/installation.mjs`) and the tile grids (`tiles/src/grid.mjs`). `--formats` on a server
   prints them and opens no data.
 - Wrangler reads the checkout, not a commit, so `deploy tiles` refuses uncommitted changes in

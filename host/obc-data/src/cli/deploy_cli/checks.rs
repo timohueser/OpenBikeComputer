@@ -245,11 +245,17 @@ pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check>
         Ok(output) => return vec![credential, refused(login, &host, &String::from_utf8_lossy(&output.stderr), home)],
         Err(e) => return vec![credential, Check::failed(login, e, "Check the host and the network.", Vec::new())],
     };
-    let said = String::from_utf8_lossy(&output.stdout);
+    let mut checks = vec![credential, Check::passed(login)];
+    checks.extend(setup(&String::from_utf8_lossy(&output.stdout), &host, (python, node)));
+    checks
+}
+
+/// The checks of the one-time setup of the VPS `host` from `said`, the lines of [`PROBE`].
+fn setup(said: &str, host: &str, (python, node): (&str, &str)) -> Vec<Check> {
     let has: BTreeSet<&str> = said.lines().map(str::trim).collect();
     let ssh = |command: &str| format!("ssh {host} '{command}'");
     let as_user = |command: &str| format!("ssh {host} \"runuser -u obc-data -- sh -c '{command}'\"");
-    let mut checks = vec![credential, Check::passed(login)];
+    let mut checks = Vec::new();
     let mut need = |name: &str, line: &str, fix: &str, commands: Vec<String>| {
         checks.push(match has.contains(line) {
             true => Check::passed(name),

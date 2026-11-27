@@ -41,8 +41,8 @@ current, serving, release of `planner/next.json`, rollback, and counts each plan
    stops between two files, and goes on after the file goes. A fetch first compares the formats of
    the layers of the release with the formats that the services read (see
    [Service runtimes](obc-data-products.md#service-runtimes)). A layer in another format fails the planner release
-   before anything downloads: `needs a routing service that reads planner/routing format 9; it
-   reads 8`. Then the fetch downloads the objects and installs the files. Serve keeps reading the
+   before anything downloads: `needs a routing service that reads planner/routing format 10; it
+   reads 9`. Then the fetch downloads the objects and installs the files. Serve keeps reading the
    two files and checking the services meanwhile.
 2. The services of the first two planner releases of the order that have an install run. The
    services of each other installed planner release stop, and its files stay.
@@ -65,8 +65,9 @@ When the serving release and the rollback fail one after the other, clients keep
 `release.json` no longer names, and the services of its planner release keep answering. Serve
 then writes a warning: an update can delete the files of that release.
 
-The services of a planner release read its files under `routing/`, `search/` and `offline/` in
-its install, `<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json`, which the list
+The install of a planner release, `<store>/serve/<target>/<planner id>/`, holds its files under
+`search/` and `offline/`, and its routing cells in `route-cells/`. The routing service reads `route-cells/` of the install, the
+search service `search/` and the downloads service `offline/`. The document `releases/<planner id>/release.json`, which the list
 of the named files names, lists them: format 1 in `files`; format 2 in the step indexes whose `folders` hold
 one of those folders, and in `files`. Serve downloads those indexes as objects after the document,
 checks their size and SHA-256, and keeps them with the files. Each file comes from an object of the store of serve, which downloads
@@ -75,15 +76,38 @@ to an `identity` object, or the decoded bytes of a `gzip` object under a tempora
 opens an existing file. Each file must have the SHA-256 and the size that the planner release
 gives. After the files, the install gets the document as `release.json`, the data of the file
 system goes to the disk, and the install writes the marker `installed` last, which holds the
-planner release id. Only a folder whose marker names it is an install; a fetch deletes the content
-of a folder without one first. The services read the region of the release from `release.json`.
+planner release id. Only a folder whose marker names it is an install; a fetch first deletes the
+content of a folder without one, except `route-cells/`. The services read the region of the release from `release.json`.
 When serve stops, it ends each download at its next read and each install between two files, and
 waits for them within the 10 seconds of its grace; a wait before a retry, a connection or a hash
 does not see the stop.
 
+A planner release has a routing package of format 10
+([the route package contract](route-package.md)). A fetch of a release without
+`routing/directory.bin` and `routing/package.json` fails. Its files `routing/directory.bin`,
+`routing/package.json` and `routing/objects/*` do not go into `routing/`. After the other files,
+the routing program installs all cells and all profile groups of the package in the folder
+`route-cells/` of the install:
+`planner-service <install>/route-cells --install DIRECTORY PACKAGE OBJECTS 2`. `DIRECTORY` and
+`PACKAGE` are the objects of `routing/directory.bin` and `routing/package.json` in the store of
+serve, and `OBJECTS` is `objects/` of that store, which holds each object as
+`<first two hex digits>/<SHA-256>`. The installer runs at nice 10 on 2 threads, checks each object
+while it writes, and drops each file from the page cache after its sync, so that an install does
+not evict the files of the serving release. A stop of the fetch kills it. A fetch keeps
+`route-cells/` of a folder without the marker, and the next install goes on from its complete
+files. A failed install fails the fetch with its exit status and, after an exit that is not
+from a signal, the last line of the installer: `the routing cells (exit status: 1): <why>`. The
+exit status 3 means that a published object is missing or damaged, and the last line is
+`object <SHA-256>: <why>`: serve deletes that object from its store, so that the next fetch
+downloads it again. The marker `installed` comes after the routing cells.
+
 Before the objects of the files download, the fetch checks the disk. The install needs the bytes
 of each object that the store lacks, the decoded bytes of each file that is not `identity`, and a
-reserve of 5 % of the file system for the logs, the downloads cache and the file system. When the
+reserve of 5 % of the file system for the logs, the downloads cache and the file system. For a
+routing package of format 10, the fetch first downloads `routing/directory.bin` and
+`routing/package.json`, and the install also needs the installed bytes of the files that
+`route-cells/` lacks, which `planner-service <install>/route-cells --missing DIRECTORY PACKAGE`
+prints. When the
 free bytes of the file system of the store are fewer, nothing downloads. Then, when the planner
 release is not the one of the rollback, and no other release names the planner release of the
 rollback, serve stops the services of the rollback, deletes its install, writes `WARNING: no
@@ -98,11 +122,29 @@ read the two files and each release that they name: a start without a network de
 `obc data clean` does not touch the installs. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
 releases that the two files name change, and after fetches, serve deletes there each object and
 each unfinished download that the services of none of them read, once no fetch runs. A `gzip`
-object of a planner release with an install goes too: the install holds its decoded file. A fetch
+object and a file of the routing package of format 10 of a planner release with an install go
+too: the install holds the decoded file. A fetch
 for a planner release that no release names any more stops between two files. For a
 `dir` target, download bundles name the origin of the machine on its network when serve starts,
 else `http://127.0.0.1:8710`. For an R2 target, they name `api_origin` and
 `<objects_origin>/objects` of the planner pointer.
+
+The routing service gets `<install>/route-cells` as its argument.
+It maps each file there at its first use and keeps the map, so its RSS counts the mapped pages.
+Two limits keep one service that grows from taking the memory of the unit from it:
+
+- Search and downloads start with `oom_score_adj` 1000, so when the unit runs out of memory the
+  kernel kills one of them first, not the routing service with its larger RSS.
+- The routing service starts with `RLIMIT_DATA` of (workers + 1) GiB: 1 GiB for each worker and
+  1 GiB for the shared part. `planner-service --workers` prints the worker count by the rule of
+  the service: `ROUTE_WORKERS`, else one for each CPU of the process. The limit counts private
+  writable memory, not the read-only maps of the files.
+
+The kernel limits the maps of each process with `vm.max_map_count`. The deploy sets it to the value
+of `tools/vps/obc-data.sysctl`. An install with more files than
+the limit allows does not start its routing service. The reason of a failed service ends with the
+last line of its standard error, unless a signal ended it, so the release fails with the message
+of the routing service.
 
 For a `dir` target, serve builds the routing service with cargo when it starts. For an R2 target,
 the routing service is the `planner-service` program beside the program of serve, and serve
@@ -133,7 +175,7 @@ commands in a row: the login, the configuration of `ssh` and the host key.
 | Action | Checks |
 | --- | --- |
 | Publish: an update of `prod` and `r2 legacy` | The `OBC_R2_*` variables; rclone on PATH |
-| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust, uv and the uv Python of `.python-version` of that user, a C compiler, Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The deploy installs the unit of its commit. The Caddy route of the API is a check that the deploy does not wait for. `tools/vps/`, `data/planner-runtime.toml` and `.python-version` have no change that the commit does not hold |
+| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust, uv and the uv Python of `.python-version` of that user, a C compiler, Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The deploy installs the unit and the limit of memory maps of its commit, and applies the limit when the kernel has a lower one. The Caddy route of the API is a check that the deploy does not wait for. `tools/vps/`, `data/planner-runtime.toml` and `.python-version` have no change that the commit does not hold |
 | `deploy tiles` | The two variables; the token may list the Workers of the account; `planner/tiles` has no change that the commit does not hold |
 | Both | The commit of the checkout is on `origin/develop` after a fetch. An older commit of develop serves to go back |
 
