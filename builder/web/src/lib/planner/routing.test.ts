@@ -336,15 +336,42 @@ describe('runs longer than one request', () => {
             [moved(48.03).slice(1, 4), `one:${coordinates[1]}`, `one:${coordinates[3]}`], [moved(48.03), undefined, undefined]]);
     });
 
-    it('keeps consecutive turnarounds inside the request of an edit', async () => {
+    it('lets a visit or a night inside a run turn back, but not a shaping point or a stop that ends the run', async () => {
+        const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
+        vi.stubGlobal('fetch', fetch);
+        const coordinates = run(8);
+        await calculateLine(plan(coordinates, { 1: { kind: 'waypoint' }, 2: { kind: 'night', night: 1 }, 4: { kind: 'night', night: 2 }, 5: { leg: 'straight' },
+            6: { kind: 'waypoint' }, 7: { leg: 'straight' } }), signal, new LegCache());
+        expect(bodies(fetch)).toEqual([expect.objectContaining({ points: coordinates.slice(0, 5), turnarounds: [1, 2] }),
+            expect.objectContaining({ points: coordinates.slice(5, 7), turnarounds: [] })]);
+    });
+
+    it('asks only for the legs of a moved visit between visits, pinned only at a shaping point, and again one leg wider where a turnaround does not meet', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
         vi.stubGlobal('fetch', fetch);
         const cache = new LegCache();
-        const points = run(8);
-        await cache.route(points, [2, 3], 'touring', signal);
-        const edited = points.map((point, i): Coordinate => i === 4 ? [point[0], 48.01] : point);
-        await cache.route(edited, [2, 3], 'touring', signal);
-        expect(bodies(fetch)[1]).toMatchObject({ points: edited.slice(1, 6), turnarounds: [1, 2], start_position: `one:${points[1]}` });
+        const visits = (coordinates: Coordinate[], via = -1) =>
+            plan(coordinates, Object.fromEntries(coordinates.slice(1, -1).map((_, i) => [i + 1, { kind: i + 1 === via ? 'via' : 'waypoint' }])));
+        // The largest requests carry 100 visits.
+        await calculateLine(visits(run(102)), signal, new LegCache());
+        expect(bodies(fetch).map(body => body.points.length)).toEqual([64, 39]);
+        fetch.mockClear();
+        const coordinates = run(14);
+        await calculateLine(visits(coordinates, 7), signal, cache);
+        const moved = (i: number) => coordinates.map((point, k): Coordinate => k === i ? [point[0], 48.01] : point);
+        const line = await calculateLine(visits(moved(6), 7), signal, cache);
+        expect(bodies(fetch).slice(1)).toEqual([{ points: moved(6).slice(5, 8), profile: 'touring', turnarounds: [1], end_position: `one:${coordinates[7]}` }]);
+        expect(line.coordinates).toEqual(moved(6));
+        // The service snaps the first point of the next request to another road, so it does not meet the leg before it.
+        fetch.mockImplementationOnce(async (url, init) => {
+            const body = JSON.parse(init.body as string);
+            body.points[0] = [body.points[0][0], 48.001];
+            return routeService('one')(url, { ...init, body: JSON.stringify(body) });
+        });
+        const again = await calculateLine(visits(moved(9), 7), signal, cache);
+        expect(bodies(fetch).slice(2).map(body => [body.points, body.turnarounds, body.start_position, body.end_position])).toEqual([
+            [moved(9).slice(8, 11), [1], undefined, undefined], [moved(9).slice(7, 10), [1], `one:${coordinates[7]}`, undefined]]);
+        expect(again.coordinates).toEqual(moved(9));
     });
 
     it('keeps each chunk as it arrives; after a failure or an abort, the chunk in flight is kept and no new chunk starts', async () => {
