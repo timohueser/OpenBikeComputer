@@ -35,6 +35,14 @@ pub fn way(road: &Road, tags: &Tags, country: Country, profile: &Profile) -> Opt
     };
     let ferry = road.class == 6;
     let pushing = profile.mode(road) == PUSH;
+    // A shared foot and cycle path is no trail for a rider; a difficulty grade makes it one.
+    let shared = !profile.walking
+        && road.class == 4
+        && matches!(tag(tags, "highway"), "path" | "footway")
+        && tag(tags, "bicycle") == "designated"
+        && road.mtb_scale().is_none()
+        && road.hiking_difficulty.is_none();
+    let class = if shared { 0 } else { road.class };
     let mut minimum_factor = 1.0;
     if !ferry {
         let rolling = smoothness(tag(tags, "smoothness"), family)?.max(tracktype(tag(tags, "tracktype"), family));
@@ -57,9 +65,10 @@ pub fn way(road: &Road, tags: &Tags, country: Country, profile: &Profile) -> Opt
             // SAC grades foot travel, but a mountain hiking path still warns of hard bike passage.
             mtb.max(if road.hiking_difficulty.is_some_and(|d| d >= 2) { 1.5 } else { 1.0 })
         };
-        minimum_factor = surface_factor(road, tags, surface) * rolling * difficulty * if pushing { 4.0 } else { 1.0 };
+        minimum_factor =
+            surface_factor(road, class, tags, surface) * rolling * difficulty * if pushing { 4.0 } else { 1.0 };
     }
-    let mut preference = *weights.get(road.class as usize)?;
+    let mut preference = *weights.get(class as usize)?;
     if !profile.walking && !pushing && !ferry {
         // A cycle track or lane takes part of the dislike of a main road away.
         if road.class == 2 {
@@ -85,7 +94,8 @@ pub fn requires_equipment(tags: &Tags) -> bool {
         || !matches!(tag(tags, "via_ferrata_scale"), "" | "0" | "no")
 }
 
-fn surface_factor(road: &Road, tags: &Tags, weights: &[f64; 6]) -> f64 {
+/// `class` is the class of `road` for the profile.
+fn surface_factor(road: &Road, class: u8, tags: &Tags, weights: &[f64; 6]) -> f64 {
     if road.surface != Surface::Unknown {
         return weights[road.surface as usize];
     }
@@ -97,7 +107,7 @@ fn surface_factor(road: &Road, tags: &Tags, weights: &[f64; 6]) -> f64 {
         "grade3" => &[Gravel, Dirt],
         "grade4" => &[Dirt],
         "grade5" => &[Dirt, Rough],
-        _ => match road.class {
+        _ => match class {
             0..=2 => &[Unknown, Paved],
             3 => &[Unknown, Gravel, Dirt],
             // S0 is solid gravel or earth without expected rocks, roots or steps.
@@ -239,6 +249,21 @@ mod tests {
                 previous = factor;
             }
         }
+    }
+
+    #[test]
+    fn a_shared_path_costs_a_rider_as_a_cycleway_unless_it_has_a_difficulty_grade() {
+        let factor = |road: &Road, pairs: &[(&str, &str)], name: &str| {
+            let profile = Profile::presets().into_iter().find(|p| p.name == name).unwrap();
+            way(road, &tags(pairs), Country::default(), &profile).unwrap().basis.factor
+        };
+        let path = Road { surface: Surface::Unknown, class: 4, ..road() };
+        let (shared, plain) = ([("highway", "path"), ("bicycle", "designated")], [("highway", "path")]);
+        let cycleway = factor(&Road { class: 0, ..path.clone() }, &[("highway", "cycleway")], "touring");
+        assert_eq!(factor(&path, &shared, "touring"), cycleway);
+        assert_eq!(factor(&path, &shared, "hiking"), factor(&path, &plain, "hiking"));
+        let graded = Road { difficulty: 1, ..path };
+        assert_eq!(factor(&graded, &shared, "touring"), factor(&graded, &plain, "touring"));
     }
 
     #[test]
