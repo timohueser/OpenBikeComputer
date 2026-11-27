@@ -1,11 +1,9 @@
 //! The numbers of one route of the route bench.
 use super::net::Net;
+use crate::junction;
 use crate::source::Tags;
 use crate::traffic::{self, Protection};
-use planner_router::model::Point;
 
-/// The length before and after a junction that gives the heading there.
-const HEADING_M: f64 = 15.0;
 const TURN_DEGREES: f64 = 45.0;
 /// A route that is on the same name, ref or route relation again within this length left it and
 /// joined it again.
@@ -20,8 +18,9 @@ pub struct Measures {
     pub turns: u32,
     /// Leave-and-rejoin events.
     pub events: u32,
-    /// Signal nodes at the junctions inside the route, not at its two ends.
-    pub signals: u32,
+    /// The signalled junctions that the route enters inside, not at its two ends
+    /// (`Junctions::enters`).
+    pub signalled: u32,
     /// On a main road with a limit over `SLOW_KMH` or no tagged limit, and no cycle track.
     pub fast_main_m: f64,
     /// On a main road with a tagged limit up to `SLOW_KMH`.
@@ -38,7 +37,7 @@ impl Measures {
         self.ascent_m += other.ascent_m;
         self.turns += other.turns;
         self.events += other.events;
-        self.signals += other.signals;
+        self.signalled += other.signalled;
         self.fast_main_m += other.fast_main_m;
         self.slow_main_m += other.slow_main_m;
         self.signed_m += other.signed_m;
@@ -55,7 +54,7 @@ impl Measures {
         let mut rates = vec![
             ("turns per km", f64::from(self.turns) / km),
             ("leave-and-rejoin events per 100 km", 100.0 * f64::from(self.events) / km),
-            ("signal nodes per 100 km", 100.0 * f64::from(self.signals) / km),
+            ("signalled junctions per 100 km", 100.0 * f64::from(self.signalled) / km),
             ("fast main road %", percent(self.fast_main_m)),
             ("slow main road %", percent(self.slow_main_m)),
             ("signed route %", percent(self.signed_m)),
@@ -82,20 +81,8 @@ fn limit(tags: &Tags, reversed: bool) -> Option<f64> {
 /// Whether the route turns from road `before` onto road `after`: a change of heading over
 /// `TURN_DEGREES` at a junction of three or more road ends.
 fn turns(net: &Net, before: u32, after: u32) -> bool {
-    let roads = &net.graph.roads;
-    let (arrival, departure) = (roads.shape(before as usize), roads.shape(after as usize));
-    let (end, start) = (arrival[arrival.len() - 1], departure[0]);
-    let back = arrival.iter().rev().skip(1).find(|point| point.distance(end) >= HEADING_M).unwrap_or(&arrival[0]);
-    let ahead = departure.iter().skip(1).find(|point| point.distance(start) >= HEADING_M);
-    // East and north from `a` to `b`, in microdegrees of latitude.
-    let vector = |a: Point, b: Point| {
-        (f64::from(b.lon - a.lon) * (f64::from(a.lat) * 1e-6).to_radians().cos(), f64::from(b.lat - a.lat))
-    };
-    let (u, v) = (vector(*back, end), vector(start, *ahead.unwrap_or(&departure[departure.len() - 1])));
-    let lengths = u.0.hypot(u.1) * v.0.hypot(v.1);
-    net.ends[roads.to(before as usize) as usize] >= 3
-        && lengths > 0.0
-        && ((u.0 * v.0 + u.1 * v.1) / lengths).clamp(-1.0, 1.0).acos().to_degrees() > TURN_DEGREES
+    net.ends[net.to(before) as usize] >= 3
+        && junction::cosine(net.graph, before, after) < TURN_DEGREES.to_radians().cos()
 }
 
 /// The measures of the route `roads`.
@@ -111,7 +98,7 @@ pub fn measure(net: &Net, roads: &[u32]) -> Measures {
         measures.length_m += length;
         measures.ascent_m += f64::from(all.ascent_m.values()[id]);
         if let Some(&next) = roads.get(i + 1) {
-            measures.signals += u32::from(graph.signals.values()[all.to(id) as usize] != 0);
+            measures.signalled += u32::from(net.junctions.enters(graph, road));
             measures.turns += u32::from(turns(net, road, next));
         }
         if all.class(id) == 2 {

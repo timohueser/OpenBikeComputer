@@ -10,6 +10,7 @@ mod signed;
 mod tests;
 
 use crate::base::Topology;
+use crate::junction::Junctions;
 use crate::Graph;
 use net::Net;
 use obc_dem::planner::{Recent, Terrain};
@@ -149,6 +150,7 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
     let topology = Topology::new(&graph.roads, graph.points.len())?;
     crate::check(&graph, &profiles)?;
     let costs = crate::costs(&graph, &topology, &profiles)?;
+    let junctions = Junctions::new(&graph);
     eprintln!("Import and costs: {:.0} s", clock.elapsed().as_secs_f64());
 
     let prices: Vec<Row> = prices::price_list(&profiles)
@@ -169,7 +171,7 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
     let mut overlay = serde_json::Map::new();
     for (index, profile) in profiles.iter().enumerate() {
         let clock = Instant::now();
-        let net = Net::new(&graph, &topology, &costs, index);
+        let net = Net::new(&graph, &topology, &junctions, &costs, index);
         let [shares, legs] = signed_rows(&signed::signed_share(&net, STEP_M)?, profile.walking);
         if let (Some(path), None) = (options.get("pairs"), &sets) {
             sets = Some(pairs::sets(Path::new(path), &net, &specs)?);

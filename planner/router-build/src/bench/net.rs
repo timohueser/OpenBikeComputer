@@ -1,6 +1,7 @@
 //! The graph of a region with the costs of one profile, and the two searches of the route bench.
 use crate::base::{group, Topology};
 use crate::column::Column;
+use crate::junction::{self, Junctions};
 use crate::source::Tags;
 use crate::{Costs, Graph};
 use planner_router::model::Profile;
@@ -11,6 +12,7 @@ use std::collections::{BinaryHeap, HashMap};
 pub struct Net<'a> {
     pub graph: &'a Graph,
     pub profile: &'a Profile,
+    pub junctions: &'a Junctions,
     topology: &'a Topology,
     totals: &'a [u32],
     turns: &'a [u32],
@@ -29,15 +31,19 @@ pub struct Net<'a> {
 /// Whether `tags` are those of a signed route of the activity of `profile`: a hiking route for a
 /// walking profile, else a cycle route.
 pub fn signed(profile: &Profile, tags: &Tags) -> bool {
-    let routes: &[&str] = if profile.walking { &["hiking", "foot"] } else { &["bicycle"] };
-    tags.get("route").is_some_and(|route| routes.contains(&route))
-        && matches!(tags.get("type"), Some("route" | "superroute"))
-        && !tags.contains("state", "proposed")
+    junction::signed(tags, if profile.walking { &["hiking", "foot"] } else { &["bicycle"] })
 }
 
 impl<'a> Net<'a> {
-    /// `costs` holds the costs of `graph` on `topology`, and those of its profile `index`.
-    pub fn new(graph: &'a Graph, topology: &'a Topology, costs: &'a Costs, index: usize) -> Self {
+    /// `costs` holds the costs of `graph` on `topology`, and those of its profile `index`;
+    /// `junctions` are those of `graph`.
+    pub fn new(
+        graph: &'a Graph,
+        topology: &'a Topology,
+        junctions: &'a Junctions,
+        costs: &'a Costs,
+        index: usize,
+    ) -> Self {
         let (roads, profile) = (&graph.roads, &costs.profiles[index]);
         let (totals, turns) = (costs.roads[index].totals.values(), costs.roads[index].turns.values());
         let lengths = roads.length_m.values().iter().zip(totals);
@@ -64,6 +70,7 @@ impl<'a> Net<'a> {
         Net {
             graph,
             profile,
+            junctions,
             topology,
             totals,
             turns,

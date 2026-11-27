@@ -4,6 +4,7 @@ use super::pairs::{compare, overlay};
 use super::panel::{panel, sample, Class, Pair, Spec};
 use super::signed::signed_share;
 use crate::base::Topology;
+use crate::junction::Junctions;
 use crate::source::{Builder, Data, Id, NodeRef, Relations, Tags, Ways};
 use crate::{Costs, Graph};
 use planner_router::model::{Point, Road, Surface, BIKE, FOOT, PUSH};
@@ -18,12 +19,19 @@ use serde_json::{json, Value};
 struct Region {
     graph: Graph,
     topology: Topology,
+    junctions: Junctions,
     costs: Costs,
 }
 
 impl Region {
+    fn new(graph: Graph) -> Self {
+        let topology = Topology::new(&graph.roads, graph.points.len()).unwrap();
+        let costs = crate::costs(&graph, &topology, &crate::profiles(&["touring"]).unwrap()).unwrap();
+        Region { junctions: Junctions::new(&graph), graph, topology, costs }
+    }
+
     fn net(&self) -> Net<'_> {
-        Net::new(&self.graph, &self.topology, &self.costs, 0)
+        Net::new(&self.graph, &self.topology, &self.junctions, &self.costs, 0)
     }
 
     /// The roads of the route over the junctions `nodes`.
@@ -93,9 +101,7 @@ fn region() -> Region {
     ways.set_points(ways.references().iter().map(|&id| node(id)).collect());
     graph.osm = Data { ways, relations: relations.finish().0, ..Data::default() };
     graph.link_ways();
-    let topology = Topology::new(&graph.roads, graph.points.len()).unwrap();
-    let costs = crate::costs(&graph, &topology, &crate::profiles(&["touring"]).unwrap()).unwrap();
-    Region { graph, topology, costs }
+    Region::new(graph)
 }
 
 #[test]
@@ -107,6 +113,18 @@ fn a_route_counts_its_turns_and_its_leave_and_rejoin_events() {
     assert_eq!((measures.turns, measures.events), (4, 1));
     let straight = measure(&region.net(), &region.roads(&[0, 1, 2, 3]));
     assert_eq!((straight.turns, straight.events), (0, 0));
+}
+
+#[test]
+fn a_route_through_a_group_of_two_signal_nodes_enters_one_signalled_junction() {
+    // A street over the junctions 0 to 3, with the signal nodes 1 and 2 20 m apart.
+    let points = [[0, 0], [0, 1000], [0, 1180], [0, 2180]];
+    let street: &[(&str, &str)] = &[("highway", "residential")];
+    let mut graph =
+        crate::junction::tests::graph(&points, &[(1, &[0, 1], street), (2, &[1, 2], street), (3, &[2, 3], street)]);
+    graph.signals = [0, 1, 1, 0].into_iter().collect();
+    let region = Region::new(graph);
+    assert_eq!(measure(&region.net(), &region.roads(&[0, 1, 2, 3])).signalled, 1);
 }
 
 #[test]
