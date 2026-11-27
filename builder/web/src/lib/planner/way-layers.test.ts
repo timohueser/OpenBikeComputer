@@ -40,23 +40,23 @@ it('gives the steepness the flat band and the climb bands of the elevation profi
 
 it('gives the Hiking profile the hiking grades and each other profile the MTB grades', () => {
     const labels = (hiking: boolean) => { const { label, legend } = wayLegend('trail-grade', hiking, 'light'); return [label, ...('swatches' in legend ? legend.swatches.map(swatch => swatch.label) : [])]; };
-    expect(labels(true)).toEqual(['Hiking grade', 'No grade', 'T1', 'T2', 'T3', 'T4', 'T5', 'T6']);
-    expect(labels(false)).toEqual(['MTB grade', 'No grade', 'S0', 'S1', 'S2', 'S3', 'S4', 'S5+']);
+    expect(labels(true)).toEqual(['Hiking grade', 'No grade', 'T1', 'T2–T3', 'T4–T6']);
+    expect(labels(false)).toEqual(['MTB grade', 'No grade', 'S0', 'S1', 'S2', 'S3+']);
 });
 
-it('draws the trails only, each on a casing, with the lowest hiking grade as T1 and the two highest MTB grades as S5+', () => {
+it('draws the trails only, each on a casing, with the hiking grades in the three sign colours and the MTB grades from S3 as S3+', () => {
     const { map, layers, sources } = fakeMap();
     syncWays(map, 'https://tiles.test/ways.json', { layer: 'trail-grade', hiking: true, theme: 'light' });
     expect(layers.map(layer => layer.id)).toEqual(['roads', 'ways-casing', 'ways', 'labels']);
     expect(layers.slice(1, 3).map(layer => layer.filter)).toEqual(Array(2).fill(['==', ['get', 'trail'], true]));
     const sac = (value?: number) => colour(layers[2], value === undefined ? { mtb: 2 } : { sac: value });
-    expect(sac(0)).toBe(sac(1));
-    expect(new Set([undefined, 1, 2, 3, 4, 5, 6].map(sac)).size).toBe(7);
+    expect([0, 1, 2, 3, 4, 5, 6].map(sac)).toEqual([0, 0, 1, 1, 2, 2, 2].map(index => [sac(1), sac(2), sac(4)][index]));
+    expect(new Set([undefined, 1, 2, 4].map(sac)).size).toBe(4);
 
     syncWays(map, 'https://tiles.test/ways.json', { layer: 'trail-grade', hiking: false, theme: 'light' });
     const mtb = (value?: number) => colour(layers[2], value === undefined ? { sac: 2 } : { mtb: value });
-    expect(mtb(6)).toBe(mtb(5));
-    expect(new Set([undefined, 0, 1, 2, 3, 4, 5].map(mtb)).size).toBe(7);
+    expect([4, 5, 6].map(mtb)).toEqual(Array(3).fill(mtb(3)));
+    expect(new Set([undefined, 0, 1, 2, 3].map(mtb)).size).toBe(5);
 
     // A layer that is off has no style layer; the source stays for the next one.
     syncWays(map, 'https://tiles.test/ways.json', null);

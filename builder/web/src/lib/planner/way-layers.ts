@@ -19,28 +19,24 @@ const steepness: WayScale = {
     label: 'Steepness', property: 'slope', trails: false, none: band(gradeBands.at(-1)!),
     classes: gradeBands.slice(gradeThresholds.length, -1).map((row, value) => ({ ...band(row), values: [value] })),
 };
-/** `mtb:scale` in the colours of ski pistes; S5 and S6 share the last class. */
+const blue = { light: '#2166ac', dark: '#5a9ae0' }, red = { light: '#c62828', dark: '#ef5350' };
+/** `mtb:scale` in the colours of ski pistes: green, blue, red, and black from S3. */
 const mtb: WayScale = {
     label: 'MTB grade', property: 'mtb', trails: true, none: ungraded,
     classes: [
         { label: 'S0', light: '#3a9a3e', dark: '#5cc760', values: [0] },
-        { label: 'S1', light: '#2166ac', dark: '#5a9ae0', values: [1] },
-        { label: 'S2', light: '#c62828', dark: '#ef5350', values: [2] },
-        { label: 'S3', light: '#111111', dark: '#f2f2f2', values: [3] },
-        { label: 'S4', light: '#7b1fa2', dark: '#ce93d8', values: [4] },
-        { label: 'S5+', light: '#f08c00', dark: '#ffb340', values: [5, 6] },
+        { label: 'S1', ...blue, values: [1] },
+        { label: 'S2', ...red, values: [2] },
+        { label: 'S3+', light: '#111111', dark: '#f2f2f2', values: [3, 4, 5, 6] },
     ],
 };
-/** `sac_scale` in the colours of the Swiss hiking signs: yellow, then white-red-white, then white-blue-white. `strolling`, 0, draws as T1. */
+/** `sac_scale` in the colours of the Swiss hiking signs: yellow, white-red-white, white-blue-white. `strolling`, 0, draws as T1. */
 const sac: WayScale = {
     label: 'Hiking grade', property: 'sac', trails: true, none: ungraded,
     classes: [
         { label: 'T1', light: '#e0b000', dark: '#f2cf3a', values: [0, 1] },
-        { label: 'T2', light: '#e2541c', dark: '#f27a4a', values: [2] },
-        { label: 'T3', light: '#a3121c', dark: '#e0404a', values: [3] },
-        { label: 'T4', light: '#4f8fe0', dark: '#7fb2f0', values: [4] },
-        { label: 'T5', light: '#1f4ea8', dark: '#4a7ee0', values: [5] },
-        { label: 'T6', light: '#14214f', dark: '#c8d6ff', values: [6] },
+        { label: 'T2–T3', ...red, values: [2, 3] },
+        { label: 'T4–T6', ...blue, values: [4, 5, 6] },
     ],
 };
 
