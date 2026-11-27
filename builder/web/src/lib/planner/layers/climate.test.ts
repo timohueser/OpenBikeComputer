@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { Coordinate } from '../map-types';
 import {
-    DETAIL, OVERVIEW, SECTORS, cellAt, climateMeta,
-    climateTile, locate, read, typicalRain, temperatureAt, weekMonth, wetDaysOf7, windChance, windMode, windRose,
+    DETAIL, OVERVIEW, cellAt, climateMeta,
+    climateTile, locate, read, typicalRain, temperatureAt, weekMonth, wetDaysOf7,
 } from './climate';
-import { lineBearings, weatherRows, windRow } from './climate-route';
+import { weatherRows } from './climate-route';
 import { climateSource, detailCell, sampleLine, type TileGetter } from './climate-source';
 import { specTile } from '../../../../test-support/planner/climate-tiles';
 
@@ -92,49 +92,6 @@ describe('climate values', () => {
         expect(typicalRain(even.map((mm, week) => week === 10 ? NaN : week === 11 ? 12 : mm), 2016)[10]).toBeCloseTo(33 / 4);
         expect(Number.isNaN(typicalRain(new Array(52).fill(NaN), 2016)[0])).toBe(true);
     });
-
-    it('turns the wind rose to the direction the wind blows towards', () => {
-        const t = specTile(OVERVIEW);
-        for (let s = 0; s < SECTORS; s++) t.set('rose', 2 * SECTORS + s, 0, s === 4 ? 150 : 10); // March, mostly from the east
-        const rose = windRose(t.tile(), 0, 2);
-        expect(rose.reduce((a, b) => a + b)).toBeCloseTo(1);
-        expect(rose.indexOf(Math.max(...rose))).toBe(12);
-        expect(windMode(rose)?.towards).toBe(12);
-        expect(windMode(windRose(t.tile(), 1, 2))).toBeUndefined();
-    });
-
-    it('finds the main direction, its steadiness and a second opposite direction', () => {
-        const rose = (shares: Record<number, number>) => {
-            const rest = (1 - Object.values(shares).reduce((a, b) => a + b, 0)) / (SECTORS - Object.keys(shares).length);
-            return Array.from({ length: SECTORS }, (_, s) => shares[s] ?? rest);
-        };
-        expect(windMode(rose({ 3: 1 }))).toEqual({ towards: 3, steadiness: 1 });
-        expect(windMode(rose({}))?.steadiness).toBeCloseTo(3 / 16);
-        expect(windMode(rose({}))?.opposite).toBeUndefined();
-        // Valley channelling: up and down the valley, little across it.
-        expect(windMode(rose({ 15: 0.1, 0: 0.25, 1: 0.1, 7: 0.1, 8: 0.2, 9: 0.1 }))).toMatchObject({ towards: 0, opposite: 8 });
-        // A second direction up to 45° off straight opposite still counts.
-        expect(windMode(rose({ 0: 0.4, 9: 0.05, 10: 0.2, 11: 0.05 }))?.opposite).toBe(10);
-        // Westerlies with a weak return are one direction.
-        const weak = windMode(rose({ 3: 0.15, 4: 0.25, 5: 0.15, 12: 0.12 }));
-        expect(weak?.towards).toBe(4);
-        expect(weak?.opposite).toBeUndefined();
-    });
-
-    it('splits the wind into head, cross and tail chances for a bearing', () => {
-        const north = Array.from({ length: SECTORS }, (_, s) => s === 0 ? 1 : 0); // blows towards the north
-        expect(windChance(north, 0)).toEqual({ head: 0, cross: 0, tail: 1 });
-        expect(windChance(north, 180)).toEqual({ head: 1, cross: 0, tail: 0 });
-        expect(windChance(north, 90)).toEqual({ head: 0, cross: 1, tail: 0 });
-        expect(windChance(north, 225)).toEqual({ head: 0.5, cross: 0.5, tail: 0 });
-        expect(windChance(north, 213.75).head).toBe(1);
-        const even = Array.from({ length: SECTORS }, () => 1 / SECTORS);
-        for (const bearing of [0, 10, 100, 359]) {
-            const chance = windChance(even, bearing);
-            expect(chance.head).toBeCloseTo(0.25);
-            expect(chance.tail).toBeCloseTo(0.25);
-        }
-    });
 });
 
 /** A tile getter over fixed tiles that counts its requests. */
@@ -157,8 +114,6 @@ describe('climate along a route', () => {
             for (let month = 0; month < 12; month++) {
                 t.set('lapse_tmax', month, cell, -65);
                 t.set('lapse_tmin', month, cell, -65);
-                t.set('rose', 16 * month + 8, cell, 200); // from the south: blows towards the north
-                for (let s = 0; s < 16; s++) if (s !== 8) t.set('rose', 16 * month + s, cell, 0);
             }
         }
         return t.tile();
@@ -186,19 +141,6 @@ describe('climate along a route', () => {
         const valley = await sampleLine([[7.86, 47.99], [7.87, 47.99], [7.88, 47.99]], get);
         expect(weatherRows(valley, [0, 1, 2], [0, 0, 2000]).high[0]).toBeCloseTo((0.5 * 10 + 1 * 10 + 0.5 * -3) / 2);
         expect(Number.isNaN(weatherRows([undefined], [0]).low[0])).toBe(true);
-    });
-
-    it('gives the headwind chance per month for the travel direction', async () => {
-        const { get } = counted([overview()]);
-        const north: Coordinate[] = [[7.86, 47.99], [7.96, 48.0]];
-        const cells = await sampleLine(north, get);
-        expect([...windRow(cells, [0, 8], lineBearings(north))]).toEqual(new Array(12).fill(0));
-        expect([...windRow(cells, [0, 8], [180, 180])]).toEqual(new Array(12).fill(1));
-    });
-
-    it('measures the travel bearing between the neighbours of each point', () => {
-        expect([...lineBearings([[0, 0], [1, 0], [1, 1]])].map(Math.round)).toEqual([90, 45, 0]);
-        expect(Math.round(lineBearings([[10, 60], [9, 60]])[0])).toBe(270);
     });
 });
 

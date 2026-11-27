@@ -25,7 +25,7 @@ export const SLOPE_ANGLE = 'slope-angle';
  * The layer that a new data layer goes under: the relief, so the hillshade shades it, or the slope angle when the map
  * has it, so the slope angle stays over a conditions layer whichever of them shows first.
  */
-export const layerOver = (map: Map) => [SLOPE_ANGLE, 'relief'].find(id => map.getLayer(id));
+const layerOver = (map: Map) => [SLOPE_ANGLE, 'relief'].find(id => map.getLayer(id));
 
 /**
  * A data layer of raster tiles under the relief, so the hillshade shades them. The look, everything

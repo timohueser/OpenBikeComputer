@@ -42,16 +42,15 @@ async function zoomTo12(page) {
 test('the map settings show their pictures, and the legend of a data layer stands on the map above the date bar', async ({ page }) => {
   const { popup } = await settings(page);
   const pictures = popup.locator('img');
-  await expect(pictures).toHaveCount(11);
+  await expect(pictures).toHaveCount(10);
   await expect.poll(() => pictures.evaluateAll(images => images.filter(image => !image.complete || !image.naturalWidth).length)).toBe(0);
 
-  // Wind has the widest legend.
-  await popup.getByRole('button', { name: 'Wind', exact: true }).click();
-  const legend = page.getByRole('status').filter({ has: page.getByRole('img', { name: /^Wind colours/ }) });
+  await popup.getByRole('button', { name: 'Weather', exact: true }).click();
+  const legend = page.getByRole('status').filter({ has: page.getByRole('img', { name: /^Weather colours/ }) });
   const dateBar = page.getByRole('group', { name: 'Layer date' });
   await expect(legend).toBeVisible();
   await expect(dateBar).toBeVisible();
-  await expect(popup.getByRole('img', { name: /^Wind colours/ })).toHaveCount(0);
+  await expect(popup.getByRole('img', { name: /^Weather colours/ })).toHaveCount(0);
   const [map, legendBox, dateBox] = await Promise.all([page.locator('.map-area'), legend, dateBar].map(part => part.boundingBox()));
   expect(inside(legendBox, map) && inside(dateBox, map)).toBe(true);
   expect(overlap(legendBox, dateBox)).toBe(false);

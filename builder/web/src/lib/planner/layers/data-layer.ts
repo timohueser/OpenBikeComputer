@@ -32,7 +32,7 @@ export interface Grid {
     legend?: Legend;
 }
 
-/** The years at one point: one grid per variable, and an optional view beside them, such as a wind rose. */
+/** The years at one point: one grid per variable, and an optional view beside them. */
 export interface Chart {
     headline: string;
     grids: Grid[];
