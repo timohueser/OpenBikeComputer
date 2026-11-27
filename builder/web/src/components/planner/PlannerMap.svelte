@@ -19,6 +19,8 @@
     import { grownHull, span } from "../../lib/planner/town-area";
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection, type RouteHint } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
+    import { SlopeAngle } from "../../lib/planner/layers/slope-angle";
+    import { syncWays, type WayLayer } from "../../lib/planner/way-layers";
     import { nightView } from "../../lib/planner/view-change";
     import { mapCallout, type MapCallout } from "../../lib/planner/map-callout";
     import { dayLook, pinLook, type Week } from "../../lib/planner/week";
@@ -28,11 +30,11 @@
 
     let {
         segments = [], gaps = [], coordinates = [], highlightedLines = [], points = [], selectedId = null, hoveredId = null, callout = null,
-        drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
+        drawing = null, highlightedPlaceIds = [], theme = "light", contours = true, slopeAngle = false, wayLayer = null, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         placeKinds = [], highlightedKind = null, mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
         lines = [], onPick = null, part = null, week = null, lit = null, towns = [], litStop = null,
-        onStopHover, onStopOpen, onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onMoveStart, onRouteHover, onDayClick, popup,
+        onStopHover, onStopOpen, onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, onMoveStart, onZoom, onRouteHover, onDayClick, popup,
     }: {
         /** Lines that take no edits, such as the days of two saved routes, each in its colour and width; a later line
          * draws on top. */
@@ -49,7 +51,9 @@
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
         hoveredId?: string | null;
         /** While picking, any map click places the overnight; the line takes no edits. */
-        pickMode?: boolean; showRoute?: boolean; theme?: "light" | "dark"; hillshade?: boolean; contours?: boolean;
+        pickMode?: boolean; showRoute?: boolean; theme?: "light" | "dark"; contours?: boolean; slopeAngle?: boolean;
+        /** The layer of the ways that the map draws; the trail grade follows the travel mode. */
+        wayLayer?: WayLayer | null;
         /** The kinds of places that the map draws, and the one of them that it highlights. */
         placeKinds?: PlaceCategory[]; highlightedKind?: PlaceCategory | null;
         mapOverlays?: OverlayOptions;
@@ -94,6 +98,8 @@
         onRiderMove?: () => void;
         /** The map starts to move, by the rider or by the page. */
         onMoveStart?: () => void;
+        /** The zoom of the map, at its start and at each change. */
+        onZoom?: (zoom: number) => void;
         /** The place on the route under the pointer, as route progress, or null off the route. */
         onRouteHover?: (progress: number | null) => void;
         /** A click on the line of a day outside the week. */
@@ -418,7 +424,7 @@
     function syncTerrain() {
         if (!map?.getLayer("relief")) return;
         for (const id of ["contour-lines", "contour-labels"]) map.setLayoutProperty(id, "visibility", basemapComplete && contours ? "visible" : "none");
-        map.setLayoutProperty("relief", "visibility", basemapComplete && hillshade ? "visible" : "none");
+        map.setLayoutProperty("relief", "visibility", basemapComplete ? "visible" : "none");
     }
 
     function reportView(event?: { type: string; preserveSearch?: boolean }) {
@@ -547,7 +553,7 @@
         appliedTheme = theme;
         useMapProtocols();
         const terrainLease = terrain.acquire(maplibregl);
-        // The switches of the map show or hide the relief and the contour lines (`syncTerrainAndOverlays`).
+        // The relief and the contour lines show when the basemap is complete (`syncTerrainAndOverlays`).
         relief = terrainLease.relief();
         insertDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-insert-dot" }) });
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
@@ -633,6 +639,8 @@
             map.on("movestart", (event) => { onMoveStart?.(); if (event.originalEvent) { wholeRoute = false; onRiderMove?.(); } overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
             map.on("zoom", drawTowns);
+            map.on("zoom", () => onZoom?.(map!.getZoom()));
+            onZoom?.(map.getZoom());
             map.on("moveend", drawTowns);
             map.on("idle", () => loading = false);
             map.on("dataloading", () => loading = true);
@@ -706,7 +714,7 @@
     });
     $effect(() => { void [towns, litStop]; if (ready) untrack(drawTowns); });
     $effect(() => { const stop = overStop; untrack(() => onStopHover?.(stop)); });
-    $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
+    $effect(() => { contours; if (ready) syncTerrain(); });
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { void showRoute; if (ready) syncRouteVisibility(); });
     $effect(() => { void lines; if (ready) (map?.getSource("lines") as GeoJSONSource | undefined)?.setData(linesData()); });
@@ -718,6 +726,13 @@
         shown?.sync(map, { shown: true, date, theme });
     }
     $effect(() => { void [dataLayer?.shown, dataLayer?.date, dataLayer?.shown?.variable?.value]; if (ready) untrack(syncDataLayer); });
+    const slope = new SlopeAngle();
+    // `ready` runs it again after a change of the theme, which loads a new style without the layer.
+    $effect(() => { const shown = slopeAngle; if (map && ready) slope.sync(map, shown); });
+    $effect(() => {
+        const shown = wayLayer && { layer: wayLayer, hiking: accessMode === "walking", theme };
+        if (map && ready && config.layers.ways) syncWays(map, config.layers.ways, shown);
+    });
     const notes: maplibregl.Marker[] = [];
     $effect(() => {
         const list = showRoute ? dataLayer?.notes ?? [] : [];

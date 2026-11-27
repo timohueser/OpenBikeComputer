@@ -1,4 +1,4 @@
-import { PMTiles } from 'pmtiles';
+import { PMTiles, findTile, zxyToTileId } from 'pmtiles';
 import STAMP_VERSION from 'virtual:stamp-version';
 import type { PlannerConfig } from '../../planner/config';
 import { decodedTiles, fetchTile, openSource, requestSignal, type Source } from '../../planner/layers/archive';
@@ -24,19 +24,17 @@ export const stopped = (error: unknown) => error instanceof DOMException && erro
 const LEVELS = [13, 12, 11, 10, 9];
 
 /**
- * The stored tiles of a release. The tile service serves zooms 0 to 12. Zoom 13 is in PMTiles packs
- * (specs/planner-release.md), read with range requests through their pointers in the block index of a
- * zoom 7 square beside the manifest. Grid format 3 has a pack per zoom 11 tile. Grid format 4 reads the
- * deepest pack from zoom 13 back to zoom 9. A config without a manifest reads zoom 13 from the tile
- * template too. An abort of `stop` ends every request.
+ * The packs of zoom 13 of a release: PMTiles archives (specs/planner-release.md), read with range requests through
+ * their pointers in the block index of a zoom 7 square beside the manifest. Grid format 3 has a pack per zoom 11 tile.
+ * Grid format 4 reads the deepest pack from zoom 13 back to zoom 9. The answer for tile x/y is the pack that can hold
+ * it, undefined where the index names none.
  */
-export function releaseTiles(config: PlannerConfig, stop = new AbortController().signal): TerrainSource['fetch'] {
-    const signal = () => AbortSignal.any([requestSignal(), stop]);
+function terrainPacks(manifest: string, signal: () => AbortSignal): (x: number, y: number) => Promise<PMTiles | undefined> {
     type Pointer = { sha256: string; encoding: string };
     const files = new Map<string, Promise<unknown>>();
     // A public file of the release, undefined where it is absent: a plain fetch, as an area without zoom
     // 13 has no pointer, and that 404 is no reason to read the catalogue again.
-    const file = (manifest: string, path: string): Promise<unknown> => {
+    const file = (path: string): Promise<unknown> => {
         let entry = files.get(path);
         if (!entry) {
             entry = fetch(new URL(`public/${path}`, manifest), { signal: signal() }).then(async response => {
@@ -51,9 +49,9 @@ export function releaseTiles(config: PlannerConfig, stop = new AbortController()
     };
     // One PMTiles per pack, so that its header and directories are read once.
     const packs = new Map<string, PMTiles>();
-    const pack = async (manifest: string, x: number, y: number) => {
-        const grid = (await file(manifest, 'grid.json')) as { format?: number } | undefined;
-        const index = (await file(manifest, `maps/tiles/terrain/13/7-${x >> 6}-${y >> 6}.json`)) as Record<string, Pointer> | undefined;
+    return async (x, y) => {
+        const grid = (await file('grid.json')) as { format?: number } | undefined;
+        const index = (await file(`maps/tiles/terrain/13/7-${x >> 6}-${y >> 6}.json`)) as Record<string, Pointer> | undefined;
         const name = (grid?.format === 4 ? LEVELS : [11]).map(level => `${level}-${x >> (TILE_ZOOM - level)}-${y >> (TILE_ZOOM - level)}.pmtiles`)
             .find(name => index && Object.hasOwn(index, name));
         if (!name) return undefined;
@@ -66,9 +64,42 @@ export function releaseTiles(config: PlannerConfig, stop = new AbortController()
         }
         return entry;
     };
+}
+
+/**
+ * The stored tiles of a release. The tile service serves zooms 0 to 12. Zoom 13 is in the packs of `terrainPacks`.
+ * A config without a manifest reads zoom 13 from the tile template too. An abort of `stop` ends every request.
+ */
+export function releaseTiles(config: PlannerConfig, stop = new AbortController().signal): TerrainSource['fetch'] {
+    const signal = () => AbortSignal.any([requestSignal(), stop]);
+    const pack = config.manifest ? terrainPacks(config.manifest, signal) : undefined;
     return async (z, x, y) => {
-        if (z === TILE_ZOOM && config.manifest) return (await (await pack(config.manifest, x, y))?.getZxy(z, x, y, signal()))?.data;
+        if (z === TILE_ZOOM && pack) return (await (await pack(x, y))?.getZxy(z, x, y, signal()))?.data;
         return fetchTile(config.terrain, z, x, y, signal());
+    };
+}
+
+/**
+ * Whether a release holds the terrain tile of zoom 13 at a coordinate: there a national model holds the ground, and
+ * elsewhere the heights come from the 30 m model alone. The directories of the pack answer, so no tile loads. A config
+ * without a manifest has no block index and answers true.
+ */
+export function fineTerrain(config: PlannerConfig): (lonLat: [number, number]) => Promise<boolean> {
+    const pack = config.manifest ? terrainPacks(config.manifest, requestSignal) : undefined;
+    return async lonLat => {
+        if (!pack) return true;
+        const [x, y] = worldPixel(lonLat, 2 ** TILE_ZOOM).map(Math.floor), archive = await pack(x, y);
+        if (!archive) return false;
+        // The steps of `PMTiles.getZxy` up to the entry of the tile: the walk depends on the directory layout of the pmtiles library.
+        const header = await archive.getHeader(), id = zxyToTileId(TILE_ZOOM, x, y);
+        let offset = header.rootDirectoryOffset, length = header.rootDirectoryLength;
+        for (let depth = 0; depth <= 3; depth++) {
+            const entry = findTile(await archive.cache.getDirectory(archive.source, offset, length, header, requestSignal()), id);
+            if (!entry || entry.runLength > 0) return !!entry;
+            offset = header.leafDirectoryOffset + entry.offset;
+            length = entry.length;
+        }
+        return false;
     };
 }
 

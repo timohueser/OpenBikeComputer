@@ -6,6 +6,7 @@ import { OVERVIEW, weekMonth, type ClimateMeta, type ClimateTile } from './clima
 import { lineBearings, speedRow, windRow } from './climate-route';
 import { openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
 import { weekOf, type DataLayer, type Line, type Theme, type View } from './data-layer';
+import { layerOver } from './raster';
 import { ARROW_ICONS, arrowStride, headClasses, headFills, mapLegend, speedPaint, viewTiles, windChart, windMap, windYear } from './wind';
 
 const CELLS = 'wind', ARROWS = 'wind-arrows';
@@ -117,8 +118,8 @@ class WindLayer implements DataLayer<Samples> {
         const visibility = this.shown ? 'visible' : 'none';
         map.addSource(CELLS, { type: 'geojson', data: EMPTY, attribution: this.source });
         map.addSource(ARROWS, { type: 'geojson', data: EMPTY });
-        // Under the relief, so the hillshade shades the colours; without antialiasing, neighbour cells have no seams.
-        map.addLayer({ id: CELLS, type: 'fill', source: CELLS, layout: { visibility }, paint: { 'fill-color': speedPaint(theme), 'fill-antialias': false } }, map.getLayer('relief') ? 'relief' : undefined);
+        // Under the relief, so the hillshade shades the colours, and under the slope angle; without antialiasing, neighbour cells have no seams.
+        map.addLayer({ id: CELLS, type: 'fill', source: CELLS, layout: { visibility }, paint: { 'fill-color': speedPaint(theme), 'fill-antialias': false } }, layerOver(map));
         // Over roads and under labels. The speed label sits below the arrow, clear of its turning radius; the
         // basemap labels are higher, so they are placed first and a colliding speed label is dropped.
         map.addLayer({

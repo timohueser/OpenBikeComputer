@@ -269,7 +269,7 @@ time_zone = "Europe/Berlin"
     let archive = std::fs::read(store.object(&overlays.files[0].sha256)).unwrap();
     assert_eq!((&archive[..7], archive[7]), (&b"PMTiles"[..], 3), "overlays.pmtiles is a PMTiles v3 archive");
     assert!(overlays.metrics["tiles"].as_u64().unwrap() > 0, "the cycle route draws tiles");
-    for kind in ["places", "overlays", "terrain"] {
+    for kind in ["places", "overlays", "terrain", "ways"] {
         let name = format!("planner/{kind}/grid");
         let receipt = &built.iter().find(|built| built.receipt.step == name).unwrap().receipt;
         let index = receipt.files.iter().find(|file| file.path == "index.json").unwrap();
@@ -420,6 +420,8 @@ for entries in [catalog['assets'], *(cell[key] for cell in cells for key in ('fi
     let tiles = format!("https://tiles.openbikecomputer.com/releases/{id}/routes/tiles");
     assert_eq!(pointer["active"]["trails"], format!("{tiles}/trails/{{cell}}.json"));
     assert_eq!(pointer["active"]["trail"], format!("{tiles}/long/{{id}}.json"));
+    let ways = format!("https://tiles.openbikecomputer.com/releases/{id}/ways.json");
+    assert_eq!(pointer["active"]["layers"], serde_json::json!({"ways": ways}), "the roads draw a ways archive");
     let settings = Settings { region: AREA.into(), ..Settings::default() };
     let files = Files { outputs, ..Files::default() };
     let time = "2026-10-01T00:00:00Z".to_string();

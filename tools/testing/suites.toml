@@ -146,10 +146,11 @@ triggers = ["builder/presets/**", "data/sources.toml"]
 name = "obc-map-core"
 triggers = ["builder/presets/**"]
 
-# It writes credits from data/sources.toml, and a test reads the route sources example of the spec.
+# It writes credits from data/sources.toml, a test reads the route sources example of the spec, and
+# its steepness test reads the shared grade cases of the web app with `include_str!`.
 [[package]]
 name = "planner-router-build"
-triggers = ["data/sources.toml", "specs/obc-data-products.md"]
+triggers = ["data/sources.toml", "specs/obc-data-products.md", "builder/web/src/lib/planner/grade-cases.json"]
 
 # Both read the checked-in assembly fixture, so a change under `fixtures/` reaches them.
 [[package]]

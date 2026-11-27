@@ -11,9 +11,9 @@ afterEach(() => {
     document.body.replaceChildren();
 });
 
-function open(dataLayers: DataLayer[] = []) {
+function open(dataLayers: DataLayer[] = [], ways = false) {
     shown = mount(MapSettings, { target: document.body, props: {
-        dataLayers, hillshade: true, contours: true, mapOverlays: { network: 'cycling', access: true },
+        dataLayers, ways, contours: true, slopeAngle: false, mapOverlays: { network: 'cycling', access: true },
     } });
     click('Map settings');
 }
@@ -24,24 +24,46 @@ function click(label: string) {
 }
 
 const row = (label: string) => document.querySelector(`[role="group"][aria-label="${label}"]`);
+const tiles = (label: string) => [...row(label)!.querySelectorAll('button')].map(tile => tile.textContent?.trim());
 const lit = (label: string) => [...row(label)?.querySelectorAll('[aria-pressed="true"]') ?? []].map(tile => tile.textContent?.trim());
 
-it('lights one route network at a time, and a second click removes the network and its legend', () => {
+it('lights one route network at a time, and shows no legend: the legends are on the map', () => {
     open();
     expect(lit('Routes, one at a time')).toEqual(['Cycling']);
     click('Hiking');
     expect(lit('Routes, one at a time')).toEqual(['Hiking']);
-    expect(document.querySelector('[aria-label="Route network colors"]')).not.toBeNull();
+    expect(document.querySelector('ul')).toBeNull();
     click('Hiking');
     expect(lit('Routes, one at a time')).toEqual([]);
-    expect(document.querySelector('[aria-label="Route network colors"]')).toBeNull();
 });
 
 it('shows a conditions tile for each data layer of the region, and no row without one', () => {
     open([{ id: 'snow', label: 'Snow' } as DataLayer]);
-    expect([...row('Conditions, one at a time')!.querySelectorAll('button')].map(tile => tile.textContent?.trim())).toEqual(['Snow']);
+    expect(tiles('Conditions, one at a time')).toEqual(['Snow']);
     unmount(shown!);
     open();
     expect(row('Conditions, one at a time')).toBeNull();
     expect(row('Map')).not.toBeNull();
+});
+
+it('shows the row of the roads only for a release with the ways, and lights one of its layers at a time', () => {
+    open();
+    expect(row('Roads, one at a time')).toBeNull();
+    unmount(shown!);
+    open([], true);
+    expect(tiles('Roads, one at a time')).toEqual(['Steepness', 'Trail grade']);
+    expect(lit('Roads, one at a time')).toEqual([]);
+    click('Steepness');
+    click('Trail grade');
+    expect(lit('Roads, one at a time')).toEqual(['Trail grade']);
+    click('Trail grade');
+    expect(lit('Roads, one at a time')).toEqual([]);
+});
+
+it('switches the slope angle in the map row, which has no switch for the relief', () => {
+    open();
+    expect(tiles('Map')).toEqual(['Contours', 'Slope angle', 'Closures']);
+    expect(lit('Map')).toEqual(['Contours', 'Closures']);
+    click('Slope angle');
+    expect(lit('Map')).toEqual(['Contours', 'Slope angle', 'Closures']);
 });

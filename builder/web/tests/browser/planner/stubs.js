@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 export const HOSTS = { tiles: 'tiles.test', api: 'api.test', catalog: 'maps.openbikecomputer.com' };
 
 /** The tile Worker serves these, and Cloudflare bills them; the VPS serves `api`. */
-export const CLOUDFLARE = ['basemap', 'places', 'overlays', 'terrain', 'glyphs', 'sprites'];
+export const CLOUDFLARE = ['basemap', 'places', 'overlays', 'ways', 'terrain', 'glyphs', 'sprites'];
 
 const PIXEL = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
@@ -12,7 +12,7 @@ const PIXEL = Buffer.from(
 );
 const BOUNDS = [7.45, 47.5, 10.5, 49.85];
 /** The zoom range of each vector archive, as the tile Worker's TileJSON gives it. */
-const ZOOMS = { basemap: [0, 14], places: [11, 11], overlays: [6, 14] };
+const ZOOMS = { basemap: [0, 14], places: [11, 11], overlays: [6, 14], ways: [12, 14] };
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-headers': 'content-type',
@@ -28,6 +28,7 @@ export function classify(url) {
     if (pathname.startsWith('/sprites')) return 'sprites';
     if (pathname.startsWith('/places')) return 'places';
     if (pathname.startsWith('/routes/')) return 'routes';
+    if (pathname.startsWith('/ways')) return 'ways';
     return pathname.startsWith('/overlays') ? 'overlays' : 'basemap';
   }
   if (hostname === HOSTS.api) {
@@ -169,6 +170,7 @@ export function respond(request) {
     case 'basemap':
     case 'places':
     case 'overlays':
+    case 'ways':
       return url.pathname === `/${kind}.json`
         ? json({ tilejson: '3.0.0', tiles: [`https://${HOSTS.tiles}/${kind}/{z}/{x}/{y}.mvt`], minzoom: ZOOMS[kind][0], maxzoom: ZOOMS[kind][1], bounds: BOUNDS, routing_package: 'budget-test' })
         : url.pathname === `/places/${PLACE_TILE}.mvt` ? { headers: CORS, contentType: 'application/x-protobuf', body: PLACES } : { headers: CORS, status: 204 };

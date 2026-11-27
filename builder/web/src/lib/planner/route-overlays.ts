@@ -1,5 +1,6 @@
 import type { ExpressionSpecification, FilterSpecification, LineLayerSpecification, Map, MapGeoJSONFeature, MapMouseEvent, VectorSourceSpecification } from 'maplibre-gl';
 import { PMTiles } from 'pmtiles';
+import type { Legend } from './layers/data-layer';
 import type { Coordinate } from './map-types';
 import { releaseFetch, releaseUrl } from './release';
 
@@ -29,7 +30,7 @@ export const networkLevels = [
     { label: 'Unspecified network', color: '#626a70', dark: '#b0b8be', rank: 0 },
 ];
 const networkScopes: Record<string, string> = { i: 'International', n: 'National', r: 'Regional', l: 'Local' };
-export const routeKindTitles: Record<string, string> = { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'Mountain bike routes' };
+export const routeKindTitles: Record<string, string> = { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'MTB routes' };
 /** The reach of the network of a route, or '' when the network names none. MTB routes use the cycling values `icn` to `lcn`. */
 export function networkScope({ network }: Pick<NetworkRoute, 'network'>): string {
     return networkScopes[/^([inrl])[cw]n$/.exec(network ?? '')?.[1] ?? ''] ?? '';
@@ -90,6 +91,12 @@ const restMs = 450;
 // narrow.
 /** The share of the network colour in a band; a dark map needs more of it for the same contrast. */
 export const bandShare = { light: 0.4, dark: 0.5 };
+/** The legend of a shown network: the band of each level. */
+export function networkLegend(theme: 'light' | 'dark'): Legend {
+    return { swatches: networkLevels.map(level => ({
+        label: level.rank === 3 ? 'National / intl.' : level.rank === 0 ? 'Unspecified' : level.label, color: theme === 'dark' ? level.dark : level.color, shape: 'band',
+    })) };
+}
 // The basemap draws a main road wider than a side road, and a side road wider than a path. The tiles name the class of
 // the road of a line in `road`, so the band shows about as far beside each of them. A line with no class is on a path.
 const byRoad = (path: number, minor: number, major: number): ExpressionSpecification => ['match', ['get', 'road'], 'major', major, 'minor', minor, path];

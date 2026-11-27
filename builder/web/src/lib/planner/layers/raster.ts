@@ -10,12 +10,22 @@ export interface RasterOptions {
     /** Draws tile z/x/y of a look from the look alone; undefined leaves the tile empty. */
     draw(look: string, z: number, x: number, y: number, signal: AbortSignal): Promise<ImageData | undefined>;
     paint?: RasterLayerSpecification['paint'];
+    /** The view zoom from which the layer draws; without it, each zoom that has tiles. */
+    minzoom?: number;
     /** Hears the error of a failed tile, and no error when a new look starts, which draws every tile again. */
     report(error?: unknown): void;
 }
 
 /** An empty body draws a transparent tile. */
 const empty = () => ({ data: new ArrayBuffer(0) });
+
+export const SLOPE_ANGLE = 'slope-angle';
+
+/**
+ * The layer that a new data layer goes under: the relief, so the hillshade shades it, or the slope angle when the map
+ * has it, so the slope angle stays over a conditions layer whichever of them shows first.
+ */
+export const layerOver = (map: Map) => [SLOPE_ANGLE, 'relief'].find(id => map.getLayer(id));
 
 /**
  * A data layer of raster tiles under the relief, so the hillshade shades them. The look, everything
@@ -33,7 +43,7 @@ export class Raster {
     }
 
     sync(map: Map, shown: boolean, look: string) {
-        const { id } = this.options;
+        const { id, minzoom } = this.options;
         if (!shown) {
             // A hidden layer starts no work; it redraws its tiles when it shows again.
             this.generation.abort();
@@ -61,7 +71,7 @@ export class Raster {
             // A newer look installs instead; a theme change, which loads a new style, has a newer look.
             if (generation.aborted || map.getSource(id)) return;
             map.addSource(id, { type: 'raster', tiles: [template], tileSize: 256, ...extent });
-            map.addLayer({ id, type: 'raster', source: id, paint: { 'raster-fade-duration': 0, ...this.options.paint } }, map.getLayer('relief') ? 'relief' : undefined);
+            map.addLayer({ id, type: 'raster', source: id, ...(minzoom === undefined ? {} : { minzoom }), paint: { 'raster-fade-duration': 0, ...this.options.paint } }, layerOver(map));
         }, () => {});
     }
 

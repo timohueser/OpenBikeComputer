@@ -78,7 +78,8 @@ class Layer:
                                 + encode(3, kind) + encode(4, b"".join(map(varint, geometry))))
 
     def encode(self):
-        # Strings are field 1 and non-negative integers field 5 of a tile value.
-        values = (encode(4, encode(1, v.encode()) if t is str else encode(5, v)) for t, v in self.values)
+        # Strings are field 1, non-negative integers field 5 and booleans field 7 of a tile value.
+        values = (encode(4, encode(1, v.encode()) if t is str else encode(7 if t is bool else 5, int(v)))
+                  for t, v in self.values)
         return encode(3, encode(15, 2) + encode(1, self.name.encode()) + bytes(self.features)
                       + b"".join(encode(3, key.encode()) for key in self.keys) + b"".join(values) + encode(5, EXTENT))

@@ -2,7 +2,7 @@
 //! region, `planner/osm/bounds` its cut to the bounds and a margin, `planner/basemap` the offline
 //! Protomaps map, `planner/terrain` the terrain of the maps, `planner/routing` the routing package
 //! with its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
-//! `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
+//! `planner/ways`, `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
 //! the optional layers `planner/climate`, `planner/snow` and `planner/trailview-*`
 //! are Python steps.
 //! Each map producer is intermediate. Its `/grid` step partitions and packs the client tiles.
@@ -51,6 +51,8 @@ pub static PLANNER_TERRAIN: Layer =
 pub static PLANNER_ROUTING_SOURCE: Layer = Layer { revision: 2, ..work(step::SOURCE) };
 pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
 pub static PLANNER_ROUTING_COSTS: Layer = Layer { revision: 2, ..work(step::COSTS) };
+/// `ways.sqlite` holds no router types: its format is its `user_version`.
+pub static PLANNER_ROUTING_WAYS: Layer = Layer { format: 1, ..work(step::WAYS) };
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
     revision: 37,
@@ -64,6 +66,9 @@ pub static PLANNER_ROUTE_FACTS: Layer = whole(step::FACTS, planner_router_build:
 pub static PLANNER_SEARCH: Layer = Layer { revision: 3, ..whole("planner/search", 6, &[&SEARCH_SERVICE]) };
 /// The rider places of the search.
 pub static PLANNER_PLACES: Layer = whole("planner/places", 1, &[&WEB_PLANNER]);
+/// The steepness and the trail grades of the ways. Its format is `ways_format` of
+/// `specs/planner-release.md`.
+pub static PLANNER_WAYS: Layer = whole("planner/ways", 1, &[&WEB_PLANNER]);
 pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER]);
 /// The snow archives of `specs/planner-snow-tiles.md`.
 pub static PLANNER_SNOW: Layer = whole("planner/snow", 2, &[&WEB_PLANNER]);
@@ -676,6 +681,20 @@ impl Planner {
                 ["planner/trailview-canopy", "planner/snow"].map(|name| steps.iter().any(|step| step.name == name));
             steps.extend(route_facts(bounds, tiles(bounds, &land, &glo30), listed));
         }
+        // The steps of the ways come with `routing`, but are not in `PARTS`: the offline files do
+        // not read them.
+        if on("routing") {
+            let roads = vec![Input::step(step::SOURCE), Input::step(step::ROADS)];
+            steps.push(work(&PLANNER_ROUTING_WAYS, roads, json!({}), &functions::ROUTING_WAYS));
+            steps.push(python(
+                &PLANNER_WAYS,
+                "planner/ways",
+                vec![Input::step(step::WAYS)],
+                json!({"bounds": bounds, "attribution": attribution("osm-planet")}),
+                ("tools.planner_ways", Some("planner-maps")),
+                &["ways.pmtiles"],
+            ));
+        }
         let maps = [
             "basemap",
             "places",
@@ -686,6 +705,7 @@ impl Planner {
             "trailview-stamps",
             "trailview-ground",
             "trailview-canopy",
+            "ways",
         ];
         let grids = steps
             .iter_mut()
@@ -2005,10 +2025,13 @@ mod tests {
             "search/addresses",
             "places",
             "basemap",
+            "routing-ways",
+            "ways",
             "terrain/grid",
             "overlays/grid",
             "places/grid",
             "basemap/grid",
+            "ways/grid",
             "routing/grid",
             "assets/grid",
             "model/grid",
@@ -2048,7 +2071,9 @@ mod tests {
                 "planner/search/pois",
                 "planner/search/addresses",
                 "planner/places",
-                "planner/basemap"
+                "planner/basemap",
+                "planner/routing-ways",
+                "planner/ways"
             ]
         );
         let get = |name: &str| steps.iter().find(|step| step.name == name).unwrap();
@@ -2250,6 +2275,8 @@ mod tests {
                 ["planner", "routing-source"] => "planner/routing-source",
                 ["planner", "routing-roads"] => "planner/routing-roads",
                 ["planner", "routing-costs"] => "planner/routing-costs",
+                ["planner", "routing-ways"] => "planner/routing-ways",
+                ["planner", "ways", ..] => "planner/ways",
                 ["planner", "routing" | "overlays", ..] => "planner/routing",
                 ["planner", "route-facts", ..] => "planner/route-facts",
                 ["planner", "search" | "model", ..] => "planner/search",
@@ -2272,8 +2299,8 @@ mod tests {
         let named: BTreeSet<&str> = steps.iter().map(|step| step.layer.name).collect();
         assert_eq!(
             named.len(),
-            21,
-            "seventeen operator layers, the OSM of the region and the work layers of the routing: {named:?}"
+            23,
+            "eighteen operator layers, the OSM of the region and the work layers of the routing: {named:?}"
         );
 
         // A target holds only client files: a step reads only those of a step of another layer

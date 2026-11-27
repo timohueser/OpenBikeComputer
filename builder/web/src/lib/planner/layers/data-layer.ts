@@ -4,13 +4,15 @@ import type { Coordinate } from '../map-types';
 
 export type Theme = 'light' | 'dark';
 
-/** The data archives of a region; each data layer reads one or more. */
-export type Archive = 'snow' | 'snow-levels' | 'snow-seasons' | 'climate';
+/** The data archives of a region; each data layer reads one or more, and `ways` holds the steepness and the trail grades of the ways. */
+export type Archive = 'snow' | 'snow-levels' | 'snow-seasons' | 'climate' | 'ways';
 
 export interface Swatch {
     label: string;
     color: string;
     hatch?: boolean;
+    /** What the map draws in the colour: a line, a thin line, or the band of a signed route; an area without it. */
+    shape?: 'line' | 'thin' | 'band';
 }
 
 /** A map symbol in the legend: a stroke path in a 24 px box. */

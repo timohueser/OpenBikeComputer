@@ -1,0 +1,28 @@
+[
+    { "case": "3 %", "distance_m": [0, 40], "height_m": [0, 1.2], "slope": [1] },
+    { "case": "2.9 %", "distance_m": [0, 40], "height_m": [0, 1.16], "slope": [0] },
+    { "case": "6 %", "distance_m": [0, 40], "height_m": [0, 2.4], "slope": [2] },
+    { "case": "5.9 %", "distance_m": [0, 40], "height_m": [0, 2.36], "slope": [1] },
+    { "case": "10 %", "distance_m": [0, 40], "height_m": [0, 4], "slope": [3] },
+    { "case": "9.9 %", "distance_m": [0, 40], "height_m": [0, 3.96], "slope": [2] },
+    { "case": "15 %", "distance_m": [0, 40], "height_m": [0, 6], "slope": [4] },
+    { "case": "14.9 %", "distance_m": [0, 40], "height_m": [0, 5.96], "slope": [3] },
+    { "case": "20 %", "distance_m": [0, 40], "height_m": [0, 8], "slope": [5] },
+    { "case": "19.9 %", "distance_m": [0, 40], "height_m": [0, 7.96], "slope": [4] },
+    { "case": "a descent of 6 %", "distance_m": [0, 40], "height_m": [10, 7.6], "slope": [2] },
+    { "case": "2.96 % rounds to 3.0 %", "distance_m": [0, 40], "height_m": [0, 1.184], "slope": [1] },
+    { "case": "2.94 % rounds to 2.9 %", "distance_m": [0, 40], "height_m": [0, 1.176], "slope": [0] },
+    {
+        "case": "the window stops at the ends",
+        "distance_m": [0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200],
+        "height_m": [0, 0, 0, 0, 0, 0, 3, 6, 9, 12, 15],
+        "slope": [0, 0, 0, 1, 2, 2, 3, 4, 4, 4]
+    },
+    { "case": "a window below 20 m", "distance_m": [0, 15], "height_m": [0, 3], "slope": [null] },
+    {
+        "case": "a height that is not known",
+        "distance_m": [0, 20, 40, 60, 80, 100],
+        "height_m": [0, 1, null, 2, 6, 10],
+        "slope": [1, null, null, 5, 5]
+    }
+]
