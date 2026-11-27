@@ -1,5 +1,5 @@
 """The capture of a prepackaged file of the Copernicus Land Monitoring Service (CLMS), as
-specs/obc-data.md (Fetch) says: the service key signs a grant for an access token, the token
+specs/obc-data-store.md (Fetch) says: the service key signs a grant for an access token, the token
 orders the file, and the finished order links a zip archive. The program takes
 one member of that archive, which can also be inside a zip archive in it. A zip of the file from
 the archive drive (`--archive`) replaces the order, and needs no key.

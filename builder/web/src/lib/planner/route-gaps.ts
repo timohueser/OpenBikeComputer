@@ -22,8 +22,8 @@ export function routeGaps(stops: { point: RoutePoint; distance: number }[], coor
     // A loop lists its start again as the closing stop.
     const seen = new Set<string>();
     return stops.flatMap(({ point, distance }, i) => {
-        // A manual leg from the point already joins the route to it; after a detour, it starts at the anchor.
-        if ((point.kind !== 'detour' && (stops[i + 1]?.point.leg ?? 'routed') !== 'routed') || seen.has(point.id)) return [];
+        // A manual leg from the point already joins the route to it.
+        if ((stops[i + 1]?.point.leg ?? 'routed') !== 'routed' || seen.has(point.id)) return [];
         const attached = coordinateAt(coordinates, distance / total);
         const km = kilometres(attached, point.coordinate);
         if (km <= shortestKm) return [];

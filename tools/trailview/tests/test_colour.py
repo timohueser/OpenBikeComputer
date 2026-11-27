@@ -1,6 +1,6 @@
 """The colour tiles keep the rules of the prototype's bake: no snow in a quarter's colour, summer chroma
 in winter shadow, and the alpha codes of specs/trailview-tiles.md; a block file of `colour` holds the
-codes and the looks of specs/obc-data.md."""
+codes and the looks of specs/obc-data-producers.md."""
 
 import io
 import tempfile

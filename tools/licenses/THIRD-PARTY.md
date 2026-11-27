@@ -40,7 +40,7 @@ _the image the device runs, and the one served from updates.openbikecomputer.com
 
 ### Apache License 2.0
 
-Applies to: `nrf-mpsl-sys 0.2.1`, `nrf-sdc-sys 0.2.1`
+Applies to: `nrf-mpsl-sys 0.3.0`, `nrf-sdc-sys 0.3.0`
 
 ```text
                                  Apache License
@@ -286,7 +286,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ### BSD 3-Clause "New" or "Revised" License
 
-Applies to: `nrf-mpsl-sys 0.2.1`, `nrf-sdc-sys 0.2.1`
+Applies to: `nrf-mpsl-sys 0.3.0`, `nrf-sdc-sys 0.3.0`
 
 ```text
 Copyright (c) 2017 - 2026, Nordic Semiconductor ASA
@@ -343,7 +343,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ### Hewlett-Packard BSD variant license
 
-Applies to: `nrf-mpsl-sys 0.2.1`, `nrf-sdc-sys 0.2.1`
+Applies to: `nrf-mpsl-sys 0.3.0`
 
 ```text
 /****************************************************************************
@@ -2005,7 +2005,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `embassy-usb-synopsys-otg 0.4.0`, `bt-hci 0.9.0`
+Applies to: `embassy-usb-synopsys-otg 0.4.0`
 
 ```text
 Copyright (c) Embassy project contributors
@@ -2103,7 +2103,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `nrf-mpsl 0.3.0`, `nrf-sdc 0.4.0`
+Applies to: `nrf-mpsl 0.4.0`, `nrf-sdc 0.4.0`
 
 ```text
 Copyright (c) nrf-sdc project contributors
@@ -2459,7 +2459,7 @@ SOFTWARE.
 
 ### MIT License
 
-Applies to: `btuuid 0.1.1`, `cortex-m-rt-macros 0.7.5`, `cortex-m-rt 0.7.5`, `defmt-parser 1.0.0`, `defmt-rtt 1.2.0`, `defmt 0.3.100`, `embassy-embedded-hal 0.6.0`, `embassy-executor-macros 0.8.0`, `embassy-executor-timer-queue 0.1.0`, `embassy-executor 0.10.0`, `embassy-futures 0.1.2`, `embassy-hal-internal 0.4.0`, `embassy-hal-internal 0.5.0`, `embassy-net-driver-channel 0.4.0`, `embassy-net-driver 0.2.0`, `embassy-nrf 0.11.0`, `embassy-sync 0.8.0`, `embassy-time-driver 0.2.2`, `embassy-time-queue-utils 0.3.2`, `embassy-time 0.5.1`, `embassy-usb-driver 0.2.2`, `embassy-usb 0.6.0`, `embedded-graphics-core 0.4.1`, `libm 0.2.16`, `panic-probe 1.0.0`, `trouble-host-macros 0.5.0`, `trouble-host 0.7.0`, `void 1.0.2`, `windows-link 0.2.1`, `windows-result 0.4.1`, `windows-sys 0.61.2`
+Applies to: `bt-hci-transport 0.1.0`, `bt-hci 0.10.1`, `btuuid 0.1.1`, `cortex-m-rt-macros 0.7.5`, `cortex-m-rt 0.7.5`, `defmt-parser 1.0.0`, `defmt-rtt 1.2.0`, `defmt 0.3.100`, `embassy-embedded-hal 0.6.0`, `embassy-executor-macros 0.8.0`, `embassy-executor-timer-queue 0.1.0`, `embassy-executor 0.10.0`, `embassy-futures 0.1.2`, `embassy-hal-internal 0.4.0`, `embassy-hal-internal 0.5.0`, `embassy-net-driver-channel 0.4.0`, `embassy-net-driver 0.2.0`, `embassy-nrf 0.11.0`, `embassy-sync 0.8.0`, `embassy-time-driver 0.2.2`, `embassy-time-queue-utils 0.3.2`, `embassy-time 0.5.1`, `embassy-usb-driver 0.2.2`, `embassy-usb 0.6.0`, `embedded-graphics-core 0.4.1`, `libm 0.2.16`, `panic-probe 1.0.0`, `trouble-host-macros 0.6.0`, `trouble-host 0.8.0`, `void 1.0.2`, `windows-link 0.2.1`, `windows-result 0.4.1`, `windows-sys 0.61.2`
 
 ```text
 MIT License
@@ -3900,66 +3900,6 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `flate2 1.1.9`
-
-```text
-Copyright (c) 2014-2026 Alex Crichton
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-```
-
-### MIT License
-
-Applies to: `cobs 0.3.0`
-
-```text
-Copyright (c) 2015 The cobs.rs Developers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-```
-
-### MIT License
-
 Applies to: `digest 0.10.7`
 
 ```text
@@ -3997,39 +3937,6 @@ Applies to: `block-buffer 0.10.4`
 
 ```text
 Copyright (c) 2018-2019 The RustCrypto Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-```
-
-### MIT License
-
-Applies to: `postcard 1.1.3`
-
-```text
-Copyright (c) 2019 Anthony James Munns
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -4192,12 +4099,12 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `crc32fast 1.5.0`
+Applies to: `ruzstd 0.9.1`
 
 ```text
 MIT License
 
-Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
+Copyright (c) 2019 Moritz Borcherding
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -4221,68 +4128,7 @@ SOFTWARE.
 
 ### MIT License
 
-Applies to: `simd-adler32 0.3.9`
-
-```text
-MIT License
-
-Copyright (c) [2021] [Marvin Countryman]
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-```
-
-### MIT License
-
-Applies to: `miniz_oxide 0.8.9`
-
-```text
-MIT License
-
-Copyright 2013-2014 RAD Game Tools and Valve Software
-Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
-Copyright (c) 2017 Frommi
-Copyright (c) 2017-2024 oyvindln
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-```
-
-### MIT License
-
-Applies to: `adler2 2.0.1`, `itoa 1.0.18`, `proc-macro2 1.0.106`, `quote 1.0.45`, `serde 1.0.228`, `serde_core 1.0.228`, `serde_derive 1.0.228`, `serde_json 1.0.150`, `syn 2.0.117`, `syn 3.0.3`, `thiserror-impl 2.0.21`, `thiserror 2.0.21`, `unicode-ident 1.0.24`, `zmij 1.0.21`
+Applies to: `itoa 1.0.18`, `proc-macro2 1.0.106`, `quote 1.0.45`, `serde 1.0.228`, `serde_core 1.0.228`, `serde_derive 1.0.228`, `serde_json 1.0.150`, `syn 2.0.117`, `syn 3.0.3`, `thiserror-impl 2.0.21`, `thiserror 2.0.21`, `unicode-ident 1.0.24`, `zmij 1.0.21`
 
 ```text
 Permission is hereby granted, free of charge, to any
@@ -4948,33 +4794,6 @@ THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `cobs 0.3.0`
-
-```text
-Copyright (c) 2015 The cobs.rs Developers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-```
-
-### MIT License
-
 Applies to: `httparse 1.10.1`
 
 ```text
@@ -5265,39 +5084,6 @@ Applies to: `block-buffer 0.10.4`
 
 ```text
 Copyright (c) 2018-2019 The RustCrypto Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-```
-
-### MIT License
-
-Applies to: `postcard 1.1.3`
-
-```text
-Copyright (c) 2019 Anthony James Munns
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -5691,6 +5477,35 @@ Applies to: `crc32fast 1.5.0`
 MIT License
 
 Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+### MIT License
+
+Applies to: `ruzstd 0.9.1`
+
+```text
+MIT License
+
+Copyright (c) 2019 Moritz Borcherding
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -6618,33 +6433,6 @@ THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `cobs 0.3.0`
-
-```text
-Copyright (c) 2015 The cobs.rs Developers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-```
-
-### MIT License
-
 Applies to: `httparse 1.10.1`
 
 ```text
@@ -6935,39 +6723,6 @@ Applies to: `block-buffer 0.10.4`
 
 ```text
 Copyright (c) 2018-2019 The RustCrypto Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-```
-
-### MIT License
-
-Applies to: `postcard 1.1.3`
-
-```text
-Copyright (c) 2019 Anthony James Munns
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -7361,6 +7116,35 @@ Applies to: `crc32fast 1.5.0`
 MIT License
 
 Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+### MIT License
+
+Applies to: `ruzstd 0.9.1`
+
+```text
+MIT License
+
+Copyright (c) 2019 Moritz Borcherding
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

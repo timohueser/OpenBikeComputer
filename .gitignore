@@ -69,6 +69,7 @@ builder/web/src/lib/core/pkg/
 builder/web/test-support/flat-device/pkg/
 builder/web/src/lib/trailview/plan/pkg/
 builder/web/src/lib/trailview/structures/pkg/
+builder/web/src/lib/trailview/stream/webp/
 # `obc` dev-task tooling (in tools/): personal defaults + the web builder's
 # virtualenv + the optional local maps drop. The tooling itself (everything in
 # tools/ except obc.local) is committed.

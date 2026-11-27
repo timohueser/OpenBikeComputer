@@ -1,4 +1,4 @@
-//! Import legacy fixture trip references into the card's object namespace.
+//! Resolve the day routes of a fixture trip, which name routes by import order, to card object ids.
 
 use obc_formats::io::SliceSource;
 use obc_host_core::VecSink;

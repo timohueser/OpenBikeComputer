@@ -1,6 +1,6 @@
 //! The engine: it builds each step from snapshots, the layers of other steps and options, and
 //! reuses a step whose key the store has. A plan says what a run would fetch and build, a run
-//! builds it, and the state of each layer is computed when asked. `specs/obc-data.md` describes
+//! builds it, and the state of each layer is computed when asked. `specs/obc-data-layers.md` describes
 //! layers, steps, keys, receipts, plans, runs and states.
 
 pub mod cgroup;
@@ -8,7 +8,7 @@ pub mod changes;
 pub mod plan;
 mod process;
 pub use process::{child, peak_rss, python_executable, Usage};
-pub(crate) use process::{copy_lines, ended, panicked};
+pub(crate) use process::{copy_lines, ended, last_line, panicked};
 #[cfg(unix)]
 pub(crate) use process::{try_wait_pid, wait_pid};
 

@@ -18,7 +18,7 @@ OBC_SEARCH_DATA=RELEASE/search npm run dev --prefix planner/search
 
 Use the search directory of a planner release. Setup verifies the query model hash. Pass
 `--data-dir DIRECTORY` to store it elsewhere. The Python and Node `major.minor` versions are in
-`data/planner-runtime.toml`; the [runtime contract](../../specs/obc-data.md#service-runtimes)
+`data/planner-runtime.toml`; the [runtime contract](../../specs/obc-data-products.md#service-runtimes)
 defines them.
 
 ## Build

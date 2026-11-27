@@ -17,7 +17,7 @@ name: CI
 #   * There is no board in CI, so every embedded target is build-only.
 #   * The toolchain (channel + rustfmt/clippy + the thumbv8m / wasm32 targets) is declared once in
 #     //rust-toolchain.toml and shared with local dev. It intentionally tracks floating stable.
-#   * obc-boot (the 32 KB DFU bootloader, #617) is excluded + standalone the same way as the
+#   * obc-boot (the 32 KB DFU bootloader) is excluded + standalone the same way as the
 #     board crate; its job adds a flash-size guard against the 32 KB slot.
 #   * obc-builder-bridge is a workspace library and the builder's shared WASM core.
 #     The wasm-bridges job gates its production size and hands the same bytes to frontend jobs.
@@ -117,8 +117,8 @@ jobs:
         run: python3 tools/check_data_sources.py
       - name: No memory.x shadows the board image's carved map
         run: python3 firmware/tools/check_memory_x.py
-      - name: Prose budgets, published pages and links
-        run: python3 tools/prose.py --check
+      - name: Pages, links and named tasks
+        run: python3 tools/check_paths.py
       - uses: actions/setup-python@v5
         with:
           python-version-file: .python-version
@@ -127,7 +127,7 @@ jobs:
           version: &python-uv-version "0.8.17"
       - name: Install Python test reporter
         run: uv sync --locked --group dev --group planner-snow --group forest-reference --group route-sources
-      - name: Test plan drift
+      - name: Test plan drift, and the job table against this workflow
         run: uv run --locked --group dev python tools/test_plan.py check
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
@@ -160,38 +160,10 @@ jobs:
           name: python-trailview-${{ github.run_attempt }}
           path: .artifacts/python/trailview/*.xml
           if-no-files-found: error
-      - name: The job table and this workflow describe the same jobs
-        run: uv run --locked --group dev python tools/test_plan.py validate-filters
       - name: Large fixture policy
         run: python3 tools/check_fixture_policy.py
 
-  # Report only until a system doc is approved, but a stale system map always fails. The Rust
-  # adapter reads `cargo metadata`, so the job needs the toolchain but builds nothing.
-  cairn:
-    needs: selection
-    if: contains(fromJSON(needs.selection.outputs.jobs), 'cairn')
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_sha || github.sha }}
-          # The baseline check reads the baseline at the plan's base commit.
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: false
-      - name: cairn unit tests
-        run: python3 -m unittest discover -s tools/cairn/tests -v
-      # A baseline may not grow by hand, so this step fails on that even in report mode.
-      - name: System docs against the code
-        env:
-          BASE: ${{ needs.selection.outputs.base }}
-        run: python3 tools/cairn/cairn.py check --base "$BASE"
-
-  # cargo fmt --check for all Cargo roots. rustfmt walks up from each file and finds the
-  # shared .rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
-  # manifest needs `--all`, the board crate + bootloader are checked on their own.
+  # Each tools/ci script below is the one definition of its steps: `obc check NAME` runs it locally.
   fmt:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'fmt')
@@ -204,20 +176,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-      - name: cargo fmt --check (host workspace + standalone crates)
-        run: |
-          rc=0
-          echo "::group::firmware workspace"
-          cargo fmt --all --check || rc=1
-          cargo fmt --check --manifest-path firmware/obc-sensor-sim/Cargo.toml || rc=1
-          echo "::endgroup::"
-          echo "::group::obc-fw-nrf54l (workspace-excluded)"
-          cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml || rc=1
-          echo "::endgroup::"
-          echo "::group::obc-boot (workspace-excluded)"
-          cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml || rc=1
-          echo "::endgroup::"
-          exit $rc
+      - name: cargo fmt --check (every Cargo root)
+        run: bash tools/ci/fmt.sh
 
   # Blocking clippy on the host workspace: -D warnings from day one (the baseline is clean).
   clippy:
@@ -240,11 +200,10 @@ jobs:
       # eframe system libs. See .github/actions/setup-host-deps.
       - uses: ./.github/actions/setup-host-deps
       - name: cargo clippy (workspace, all targets + features)
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      # The iOS portability gate: the shared stack has to keep type-checking for the phone, and
-      # only a Mac can link or run it. A type-check is cheap enough to ride this Linux job.
+        run: bash tools/ci/clippy.sh workspace
+      # Only a Mac can link or run the iOS host. A type-check is cheap enough to ride this Linux job.
       - name: cargo check (iOS host, aarch64-apple-ios)
-        run: cargo check -p obc-ios-host --target aarch64-apple-ios --locked
+        run: bash tools/ci/clippy.sh ios-host
 
   test:
     needs: selection
@@ -476,15 +435,14 @@ jobs:
       matrix:
         include:
           # default = the shipping LS021/FLPR map + two-plane path (real sensors, no host feed).
-          # It is the whole device: the **USB device plane** (#889) since 2026-07-26 and the **radio**
-          # (#1530) since the `ble` feature was retired are compiled, linted and resource-gated by the
-          # default legs below — no separate USB or BLE matrix leg exists or is needed, and neither
+          # It is the whole device: the **USB device plane** and the **radio** are compiled, linted
+          # and resource-gated by the default legs below — no separate USB or BLE matrix leg exists or is needed, and neither
           # plane can rot in a profile nobody builds.
-          - { name: "clippy (default = LS021/FLPR)", cmd: "cargo clippy --locked -- -D warnings" }
           # debug-uart = default + the VCOM host sensor/telemetry feed (the obc-platform debug codec).
-          - { name: "clippy (debug-uart)", cmd: "cargo clippy --locked --features debug-uart -- -D warnings" }
-          # The real flashed default artifact (LS021/FLPR) under fat LTO + the N3 RAM-budget assert.
-          - { name: "build (default = LS021/FLPR, release)", cmd: "set -o pipefail; cargo build --release --locked -vv 2>&1 | tee $RUNNER_TEMP/obc-fw-default-build.log" }
+          - { name: "clippy (default = LS021/FLPR, debug-uart)", section: clippy }
+          # The flashed release image under fat LTO. Only a linked image shows that it fits its
+          # RAM and flash regions.
+          - { name: "build (default = LS021/FLPR, release)", section: build }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -507,19 +465,16 @@ jobs:
           tool: cargo-nextest@0.9.143
       - name: Sensor simulator tests, lint and device build
         if: matrix.name == 'build (default = LS021/FLPR, release)'
-        run: |
-          bash firmware/obc-sensor-sim/check.sh
-          cd firmware/obc-sensor-sim
-          cargo clippy --locked --lib --tests -- -D warnings
-          cargo clippy --locked --features device --bin obc-sensor-sim --target thumbv8m.main-none-eabihf -- -D warnings
+        run: bash tools/ci/obc-sensor-sim.sh
       - name: "obc-fw-nrf54l: ${{ matrix.name }}"
-        working-directory: firmware/obc-fw-nrf54l
-        run: ${{ matrix.cmd }}
-      # FAR-00's one ELF parser extends the pre-existing boot/poll guards with actual linked
-      # `.bss + .data`, exact framebuffer count/size, and the report-only target `size_of` table.
+        env:
+          OBC_BUILD_LOG: ${{ runner.temp }}/obc-fw-default-build.log
+        run: bash tools/ci/obc-fw-nrf54l.sh ${{ matrix.section }}
+      # One ELF parser gates the boot and poll frames, the actual linked `.bss + .data`, the exact
+      # framebuffer count/size, and the report-only target `size_of` table.
       # Run against the production ELF first; the resource-report rebuild is a separate diagnostic
       # artifact and never changes what ships.
-      # `board` also subsumes #677's steady-state poll-frame parser: the largest single `sub sp` in
+      # `board` also gates the steady-state poll frame: the largest single `sub sp` in
       # every `TaskStorage<F>::poll`, capped at 12 KiB, with stale-symbol and stale-instruction
       # diagnostics covered by unit tests.
       - name: "obc-fw-nrf54l: default resource baseline"
@@ -531,16 +486,10 @@ jobs:
           rustup component add llvm-tools
           python3 ../tools/resource_guard.py board --profile default \
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
-          # The resident `App`'s own construction frame (#1446), measured on the **shipping** link —
-          # hence here, before the resource-report rebuild below overwrites this same path.
-          # `App::init_idle` writes each field straight into the `.bss` slot, so its frame is small
-          # (1,572 B) and must stay that way: the field plan's two row forms differ by four tokens,
-          # and demoting a `=> Type::init_in_place` row to a plain one silently materialises that
-          # component on the boot stack. Nothing else here would notice — resident RAM, `.uninit`,
-          # flash, the poll frame and the task bodies are all unchanged by a stack temporary — while
-          # a by-value `App` is 50,520 B against 55,000 B of residual main stack, i.e. the MSPLIM
-          # HardFault `mount_in_place` already cost us once. 4,096 is the measured figure with
-          # headroom, on the same ratchet policy as the frame legs below.
+          # The construction frame of the resident `App`, on the shipping link, before the
+          # resource-report rebuild overwrites this path. `App::init_idle` writes each field into its
+          # `.bss` slot. A `=> Type::init_in_place` row demoted to a plain row puts that component on
+          # the boot stack, and no other gate sees it. 4,096 is the measured frame with headroom.
           python3 ../tools/resource_guard.py frames \
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l \
             --match init_idle --limit 4096
@@ -558,27 +507,12 @@ jobs:
           python3 ../tools/resource_guard.py frames \
             --elf target/thumbv8m.main-none-eabihf/release/flat_store_bench \
             --match flat_store_bench --limit 36864
-      # The same ceiling, on the **shipping image** — new with FS7.5-c1, because the app now links the
-      # flat store and the bench gates above cannot see it there.
-      #
-      # Two needles, because the frames land in two crates: `obc_storage::flat` is the store, and
-      # `flat_store` is the board's binding and storage task. The second one is where the largest frame
-      # in this image actually is — `flat_store::serve` at 10,688 B, which is `Store::commit`'s 9,984
-      # inlined into the task's out-of-line request handler — so a gate pointed only at the store would
-      # measure 6,336 and miss it. That is not hypothetical: this leg exists because the first build of
-      # the board mount had `FlatStore::mount` inlined into the board helper, which carried 22,656 B
-      # while the store's own needle read 6,336 and passed. `mount`/`mount_in_place` are
-      # `#[inline(never)]` now for exactly that reason, and these two needles are what says so.
-      #
-      # 16,384 is the bench's limit, deliberately: the same code, so the same ceiling — and the app has
-      # far less residual stack to spend it against (56,088 B since FS7.5-c2, 37,640 at c1) than the
-      # bench does.
-      #
-      # What keeps `mount_in_place` OUT OF LINE is not these needles — they only measure whichever
-      # symbols happen to exist. It is `boot_chain_roots` in resource_baseline.json:
-      # `resolve_symbol` raises a stale-root error when a baselined root stops being a symbol, which
-      # is exactly what inlining it away would do. These needles measure the frames; that check is
-      # what guarantees there is a frame here to measure at all.
+      # The same ceiling on the shipping image, which links the flat store. Two needles, because the
+      # frames land in two crates: `obc_storage::flat` is the store, and `flat_store` is the board's
+      # binding and storage task, where `Store::commit` inlines into the request handler. A gate on
+      # the store alone misses that frame. 16,384 is the bench's limit: the same code, the same ceiling.
+      # `boot_chain_roots` in resource_baseline.json keeps `mount_in_place` out of line: the guard
+      # fails with a stale root when a baselined root stops being a symbol.
       - name: "obc-fw-nrf54l: flat store frame ceiling (shipping image)"
         if: matrix.name == 'build (default = LS021/FLPR, release)'
         working-directory: firmware/obc-fw-nrf54l
@@ -590,7 +524,7 @@ jobs:
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l \
             --match 'flat_store' --limit 16384
 
-  # The obc-boot bootloader (epic #615, #617): workspace-excluded like the board crate, built
+  # The obc-boot bootloader: workspace-excluded like the board crate, built
   # from its own directory so its .cargo/config.toml selects thumbv8m. No test harness and no
   # FLPR blob (no RISC-V gcc needed). The size guard is the real gate: the shipping (default,
   # no-rtt) release image's flash footprint — .vector_table + .text + .rodata + .data — must fit
@@ -600,9 +534,6 @@ jobs:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'boot')
     runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: firmware/obc-boot
     steps:
       - uses: actions/checkout@v4
         with:
@@ -617,13 +548,14 @@ jobs:
         with:
           workspaces: firmware/obc-boot
           key: thumbv8m-boot
-      - name: "obc-boot: clippy (default)"
-        run: cargo clippy --locked -- -D warnings
-      - name: "obc-boot: clippy (rtt)"
-        run: cargo clippy --locked --features rtt -- -D warnings
+      - name: "obc-boot: clippy (default, rtt)"
+        run: bash tools/ci/obc-boot.sh clippy
       - name: "obc-boot: build (release)"
-        run: set -o pipefail; cargo build --release --locked -vv 2>&1 | tee "$RUNNER_TEMP/obc-boot-build.log"
+        env:
+          OBC_BUILD_LOG: ${{ runner.temp }}/obc-boot-build.log
+        run: bash tools/ci/obc-boot.sh build
       - name: "obc-boot: 32 KB size guard"
+        working-directory: firmware/obc-boot
         run: |
           python3 ../tools/resource_guard.py build-rustflags \
             --log "$RUNNER_TEMP/obc-boot-build.log" --crate obc-boot
@@ -650,10 +582,9 @@ jobs:
           workspaces: .
           key: thumbv8m
       - name: cargo build -p obc-app (thumbv8m.main, nRF54L)
-        run: cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked
-      # Keep the protocol-v4 engine and codec no_std; the fixture producer is host-only.
+        run: bash tools/ci/device.sh obc-app
       - name: cargo build -p obc-link (thumbv8m.main, nRF54L)
-        run: cargo build -p obc-link --target thumbv8m.main-none-eabihf --locked
+        run: bash tools/ci/device.sh obc-link
       - name: thumbv8m +strict-align backend probe
         run: python3 firmware/tools/resource_guard.py strict-align
 
@@ -674,18 +605,18 @@ jobs:
         with:
           tool: cargo-deny
       - name: cargo-deny (firmware workspace)
-        run: cargo deny --all-features --config tools/licenses/deny.toml check
-      - name: cargo-deny (obc-fw-nrf54l board crate)
-        run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config tools/licenses/deny.toml check
+        run: bash tools/ci/deny.sh workspace
+      - name: cargo-deny (obc-fw-nrf54l board crate, and its feature bans)
+        run: bash tools/ci/deny.sh obc-fw-nrf54l
       - name: cargo-deny (obc-boot bootloader)
-        run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features --config tools/licenses/deny.toml check
+        run: bash tools/ci/deny.sh obc-boot
       - name: cargo-deny (obc-sensor-sim)
-        run: cargo deny --manifest-path firmware/obc-sensor-sim/Cargo.toml --all-features --config tools/licenses/deny.toml check
+        run: bash tools/ci/deny.sh obc-sensor-sim
       # deny.toml skips the repository's own crates, so it cannot see obc-data reach one.
       - name: obc-data depends on no GPL crate
         run: python3 tools/check_obc_data_licence.py
       # deny.toml gates which licences may enter the tree; THIRD-PARTY.md is the *text* those
-      # licences require us to hand over with a binary (#1149). Both belong to the same job:
+      # licences require us to hand over with a binary. Both belong to the same job:
       # the dependency bump that changes one changes the other, and a stale notice file is only
       # ever discovered at a release tag otherwise, where release.yml links it by tag.
       # Pinned: the committed file is a byte-for-byte diff target, so a generator that changed
@@ -721,7 +652,7 @@ jobs:
         with:
           tool: trunk@0.21.14
       - name: trunk build (obc-web-demo → wasm)
-        run: trunk build --config docs/Trunk.toml
+        run: bash tools/ci/wasm.sh web-demo
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -745,12 +676,9 @@ jobs:
           name: web-demo-browser-${{ github.run_attempt }}
           path: .artifacts/web-demo/
           if-no-files-found: error
-      # The assembly engine (#1024) has to stay browser-shippable: P4 runs *this* code in a tab, so
-      # the library must carry no filesystem and no native dependency. Building it for wasm32 with
-      # the `cli` feature off is the guard — the CLI is the native driver and owns every std::fs call
-      # in the crate, so a stray `std::fs` in the engine fails here rather than in P4.
+      # The browser runs the assembly engine, so it must carry no filesystem and no native dependency.
       - name: cargo build -p obcm-assemble --lib (wasm32, engine only)
-        run: cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
+        run: bash tools/ci/wasm.sh obcm-assemble
 
   # Build the shared core, its test-device feature variant, the ground plan bridge and the parts
   # bridge. Gate production bytes and run check 7 before handing the same artifacts to frontend
@@ -777,7 +705,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Build builder core, test device, ground plan and parts bridges
+      - name: Build builder core, test device, ground plan, parts and WebP bridges
         run: bash builder/build-wasm-bridges.sh
       - name: Builder core size budget
         run: python3 builder/wasm/wasm_size_guard.py
@@ -785,6 +713,8 @@ jobs:
         run: python3 builder/wasm/wasm_size_guard.py --module ground-plan
       - name: Parts bridge size budget
         run: python3 builder/wasm/wasm_size_guard.py --module parts
+      - name: WebP bridge size budget
+        run: python3 builder/wasm/wasm_size_guard.py --module webp
       # Every run: it writes the native digests that the browser jobs compare with the viewer's.
       - name: Ground plan check 7, native and WASM bytes
         run: bash builder/ground-plan-wasm/check-bytes.sh
@@ -802,6 +732,11 @@ jobs:
         with:
           name: obc-trailview-parts-bridge-pkg
           path: builder/web/src/lib/trailview/structures/pkg
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-webp-bridge-pkg
+          path: builder/web/src/lib/trailview/stream/webp
           retention-days: 1
       # The test device. No size budget: it ships to nobody and only the `web` job downloads it.
       - uses: actions/upload-artifact@v4
@@ -1031,8 +966,8 @@ jobs:
   # a hard dependency, not an optimisation, and it is why the downloads land before `npm ci`:
   # every step below needs them — the TS wrappers import the generated bindings, so `npm run check`
   # type-checks against them, and the vitest suites fail without the artifacts.
-  # The assembly bridge's suite is also the *headless smoke* for #1034: it assembles the checked-in
-  # cell fixture in Node and compares the result to the bytes the native CLI wrote.
+  # The assembly bridge's suite is also the *headless smoke* of the cell assembler: it assembles
+  # the checked-in cell fixture in Node and compares the result to the bytes the native CLI wrote.
   web:
     needs: [selection, wasm-bridges]
     if: contains(fromJSON(needs.selection.outputs.jobs), 'web')
@@ -1057,6 +992,10 @@ jobs:
         with:
           name: obc-trailview-parts-bridge-pkg
           path: builder/web/src/lib/trailview/structures/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-webp-bridge-pkg
+          path: builder/web/src/lib/trailview/stream/webp
       # The device the USB suites run against. The shipped bundle must not contain this package.
       - uses: actions/download-artifact@v4
         with:
@@ -1128,6 +1067,10 @@ jobs:
         with:
           name: obc-trailview-parts-bridge-pkg
           path: builder/web/src/lib/trailview/structures/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-webp-bridge-pkg
+          path: builder/web/src/lib/trailview/stream/webp
       # The planner build of the browser tests holds the pretend device of `?fake-device`.
       - uses: actions/download-artifact@v4
         with:
@@ -1231,7 +1174,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, cairn, fmt, clippy, test, ui-snapshots, packer-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, verification, planner-search]
+    needs: [selection, guards, fmt, clippy, test, ui-snapshots, packer-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, verification, planner-search]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

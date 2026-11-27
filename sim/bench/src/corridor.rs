@@ -7,7 +7,7 @@ use obc_reader::{
 
 //
 // The Up-ahead list's data source (`Reader::corridor_pois`) is an on-demand snapshot, not a frame
-// stage, so it doesn't belong in the scene matrix — but it is the epic's named cost risk and its
+// stage, so it doesn't belong in the scene matrix — but it is a named cost risk and its
 // budget conversation has to happen on numbers. This mode reports the **deterministic** half exactly
 // (source `read_at` calls + bytes: the device does one card read per call, so this is the SD-read
 // count) plus host wall time. On-target wall clock is a different machine and stays a hardware
@@ -227,7 +227,7 @@ pub(super) fn run_corridor_matrix(iters: usize) -> (Vec<CorridorResult>, Vec<u8>
 pub(super) fn print_corridor_table(results: &[CorridorResult], route: &[u8]) {
     let src = SliceSource(route);
     let idx = obc_route::RouteIndex::read(&src).expect("fixture route parses");
-    println!("route-corridor POI snapshot (epic #946 U2) — one `Reader::corridor_pois` take");
+    println!("route-corridor POI snapshot — one `Reader::corridor_pois` take");
     println!(
         "fixture route: {} points, {} OBCR chunks, {:.1} km\n",
         idx.point_count,

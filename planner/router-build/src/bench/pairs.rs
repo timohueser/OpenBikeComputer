@@ -111,7 +111,7 @@ pub fn overlay(net: &Net, pairs: &[Pair]) -> Value {
 /// km, its ascent and its measures, or `null` where the pair has no route.
 pub fn routes(net: &Net, pairs: &[Pair]) -> Result<Value, String> {
     let route = |pair: &Pair| -> Result<Value, String> {
-        let roads = net.route(pair.from, pair.to)?.filter(|roads| !roads.is_empty());
+        let roads = net.route(pair.from, pair.to).filter(|roads| !roads.is_empty());
         let Some(roads) = roads else { return Ok(Value::Null) };
         let measures = measure(net, &roads);
         let rates: serde_json::Map<_, _> =

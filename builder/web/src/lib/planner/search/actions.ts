@@ -148,7 +148,7 @@ export function placeCheck(act: Act, place: SearchPlace, plan: SearchContext['pl
   if (!day || !hasEndpoints(trip)) return { reason: 'Choose a start and finish first.' };
   const kind = act === 'add_point' ? trip.points.find((p) => p.placeId === place.source)?.kind : undefined;
   const stop = plan.days.length > 1 ? `Stop on Day ${day.number}` : 'Stop on the route';
-  const words: Partial<Record<RoutePoint['kind'], string>> = { start: 'Start', finish: 'Finish', night: `Night of Day ${day.number}`, waypoint: stop, pass: stop, via: stop, detour: stop };
+  const words: Partial<Record<RoutePoint['kind'], string>> = { start: 'Start', finish: 'Finish', night: `Night of Day ${day.number}`, waypoint: stop, pass: stop, via: stop };
   if (kind && words[kind]) return { point: words[kind] };
   return act === 'end_day' && day === plan.days.at(-1) ? { reason: 'The last day ends at the finish.' } : {};
 }

@@ -1,4 +1,4 @@
-"""A route source reads into the common form of specs/obc-data.md, by its description alone."""
+"""A route source reads into the common form of specs/obc-data-products.md, by its description alone."""
 
 import hashlib
 import json

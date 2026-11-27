@@ -3,16 +3,14 @@
 The byte format of a field firmware update: the update-image container (§1), the boot-state page
 (§2) and the storage-blob stage carve (§3).
 
-- Version: container shape v2 (Ed25519-signed); the armer rejects v1 (§1.4). Header Version is `1`
-  in both shapes (§1.2). Boot-state Format Version `0x0002`; readers also accept `0x0001` (§2.1).
-  Stage Version `0x0001` (§3.2).
+- Version: container Header Version `1` (§1.1). Boot-state Format Version `0x0002` (§2.1). Stage
+  Version `0x0001` (§3.2).
 - Writers: `host/obc-mkimage` (`wrap`, `sign`: containers); the app-side armer
   (`firmware/obc-dfu/src/armer.rs`: rollback snapshots, boot-state page, stage carve); `obc-boot`
   (boot-state page).
 - Readers: the armer; `obc-boot`; `obc-mkimage inspect`; the iOS app (container header).
 - Code authority: `firmware/obc-dfu` (`no_std`), which `obc-boot` links.
-- Test vectors: [`vectors/`](vectors/README.md) (`update-container-v1.bin`,
-  `update-container-v2.bin`).
+- Test vectors: [`vectors/`](vectors/README.md) (`update-container.bin`).
 - Related: [flat-store format](flat-store-format.md), [flat-store protocol](flat-store-protocol.md);
   the same conventions as [OBCM](obcm-map.md) and [OBCR](obcr-route.md).
 
@@ -32,7 +30,7 @@ The byte format of a field firmware update: the update-image container (§1), th
 ```
 [OBCU header]   (64 bytes, fixed)
 [raw image]     (image_len bytes — the app's objcopy -O binary output, vector table first)
-[signature]     (sig_len bytes — v2 only; 64 for Ed25519, absent when sig_scheme = 0)
+[signature]     (sig_len bytes — 64 for Ed25519, absent when sig_scheme = 0)
 ```
 
 The container is one **update-package object** (kind `7`) in the flat store
@@ -40,41 +38,37 @@ The container is one **update-package object** (kind `7`) in the flat store
 filesystem and no sideload path. The armer validates the header, the full image CRC, **and the
 signature** before arming (§1.4).
 
-Two container shapes exist, distinguished by the header's `Sig Scheme` field — **not** by Header
-Version, which stays `1` forever (§1.2):
+The header's `Sig Scheme` field selects the container's signature:
 
-| Shape | `Sig Scheme` | Bytes | Produced by | Armer verdict |
-| :-- | :-- | :-- | :-- | :-- |
-| **v1**, unsigned | `0` | `64 + image_len` | `obc-mkimage wrap` with no seed; the device's own rollback snapshot | **rejected** (§1.4) |
-| **v2**, Ed25519 | `1` | `64 + image_len + 64` | `obc-mkimage wrap --sign-seed` / `sign` | accepted iff the signature verifies |
+| `Sig Scheme` | Bytes | Produced by | Armer verdict |
+| :-- | :-- | :-- | :-- |
+| `1`, Ed25519 | `64 + image_len + 64` | `obc-mkimage wrap` / `sign` | accepted iff the signature verifies |
+| `0`, unsigned | `64 + image_len` | the device's own rollback snapshot (§2.3) only | **rejected** (§1.4) |
 
 ### 1.1 Header (64 bytes)
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCU"` |
-| 4 | Header Version | 2 | `uint16` | `0x0001` — **in v2 too** (§1.2); readers reject any other value |
+| 4 | Header Version | 2 | `uint16` | `0x0001`; readers reject any other value |
 | 6 | Reserved | 2 | — | `0` |
 | 8 | Image Len | 4 | `uint32` | Bytes of the raw image following the header |
 | 12 | Image CRC-32 | 4 | `uint32` | CRC-32/IEEE over the raw image **only** |
 | 16 | FW Version | 32 | `char[32]` | UTF-8 `git describe` string, NUL-padded |
-| 48 | Sig Scheme | 2 | `uint16` | `0` unsigned (v1) · `1` Ed25519 (v2, §1.3). The v1/v2 discriminator |
+| 48 | Sig Scheme | 2 | `uint16` | `0` unsigned · `1` Ed25519 (§1.3) |
 | 50 | Sig Len | 2 | `uint16` | Bytes of the signature trailer: `0` when Sig Scheme = 0, `64` for Ed25519 |
 | 52 | Reserved | 8 | — | `0` |
 | 60 | Header CRC-32 | 4 | `uint32` | CRC-32/IEEE over header bytes `0..60` |
 
-`Sig Scheme` and `Sig Len` occupy bytes `48..52`, which v1 reserves as zero. Bytes `52..60` stay
-reserved and MUST be zero. An unsigned container (both fields `0`) is **byte-identical to a v1
-container**, including its Header CRC-32.
+Bytes `6..8` and `52..60` are reserved and MUST be zero.
 
 **Decode rule** (`ImageHeader::decode(&[u8; 64]) -> Option`): return `None` on bad magic, a Header
 Version other than `1`, or a Header CRC-32 that doesn't match bytes `0..60`; otherwise `Some`. A
-**valid CRC ⇒ `Some`**, and a version change is a hard reject, never a silent migration. The rule
-**MUST stay unchanged**: `Sig Scheme`/`Sig Len` are decoded but never validated here, so the decoder
-reads v1 and v2 alike (§1.2). Whether a decoded container may be *installed* is the armer's policy
-call (§1.4), not the codec's. The raw-image CRC (offset 12) is verified **separately**, against the
-staged image bytes, by whoever is about to trust them (the armer over the file, the bootloader over
-the resolved extents).
+**valid CRC ⇒ `Some`**, and a version change is a hard reject, never a silent migration.
+`Sig Scheme`/`Sig Len` are decoded but never validated here. Whether a decoded container may be
+*installed* is the armer's policy call (§1.4), not the codec's. The raw-image CRC (offset 12) is
+verified **separately**, against the staged image bytes, by whoever is about to trust them (the
+armer over the file, the bootloader over the resolved extents).
 
 `FW Version` is read back with trailing NULs trimmed; an over-long version string is truncated to 32
 bytes on a UTF-8 char boundary at wrap time (never mid-codepoint).
@@ -88,34 +82,12 @@ be refused for its own framing. A container is delivered as a `PUT` of kind `7`
 ([`flat-store-protocol.md`](flat-store-protocol.md) §3.6, §4). Bytes past `64 + Image Len + Sig Len`
 in the delivered file are ignored (§2.3).
 
-### 1.2 Header Version stays 1 — the flash-once bootloader guarantee (normative)
+### 1.2 What the installer reads (normative)
 
-`obc-boot` lives in a 32 KB region, is flashed **once by SWD probe**, and is **never updated by
-DFU**. Its header decoder never changes and hard-rejects any Header Version but `1`. A bumped Header
-Version fails the install's header check on every fielded bootloader, and the device falls back to
-the old app on every future update.
-
-**A v2 container MUST carry Header Version `0x0001`.** The table is the complete set of fields the
-bootloader's install engine consumes: it decodes the container header off the card, compares it
-against the `ImageHeader` embedded in the boot-state page's `StagedRef`, CRCs the next `Image Len`
-bytes, and flashes exactly those.
-
-| What the fielded bootloader reads | Offset | v1 | v2 |
-| :-- | :-- | :-- | :-- |
-| Magic | `0..4` | `OBCU` | **identical** |
-| Header Version | `4..6` | `1` | **identical** |
-| Image Len | `8..12` | raw image bytes | **identical** |
-| Image CRC-32 | `12..16` | over the raw image | **identical** |
-| FW Version | `16..48` | NUL-padded string | **identical** |
-| Header CRC-32 | `60..64` | over bytes `0..60` | recomputed — it now covers the marker |
-| Image bytes | `64 .. 64+Image Len` | the raw image | **identical, same offset** |
-| Anything past the image | — | "ignored" | the signature trailer — still ignored |
-
-Only bytes `48..52` and the header CRC that covers them differ. A v1 decoder never looks at
-`48..60`, so a v2 header decodes to the same `(Image Len, Image CRC-32, FW Version)` triple. The
-bootloader's header-equality check matches because the app writes into the boot-state page the same
-64 bytes that sit on the card. **The bootloader needs no change to install v2 images, and MUST NOT
-be required to verify signatures.**
+`obc-boot` is flashed by SWD probe and is not updated by DFU. Its install engine decodes the
+container header off the card (§1.1) and compares it with the `ImageHeader` embedded in the
+boot-state page's `StagedRef` (§2.3). It then CRCs the next `Image Len` bytes and flashes exactly
+those. It reads nothing past the image, and it performs **no signature check**.
 
 ### 1.3 The signature (normative)
 
@@ -154,10 +126,9 @@ the rider sees:
 
 1. The 64-byte header decodes per §1.1 → else *bad header*.
 2. `0 < Image Len ≤ MAX_IMAGE_LEN` → else *oversize*.
-3. `Sig Scheme` = `1` **and** `Sig Len` = `64` → else ***unsigned***. This one bucket covers a plain
-   v1 container, a marker-cleared v2 container, and any future scheme this firmware cannot verify.
-   **An unsigned container is rejected, not merely flagged**: if a v1 wrapper were installable, an
-   attacker would omit the signature instead of forging it.
+3. `Sig Scheme` = `1` **and** `Sig Len` = `64` → else ***unsigned***. This covers a container
+   with no signature and any scheme this firmware cannot verify. **An unsigned container is
+   rejected, not merely flagged.**
 4. The file is at least `64 + Image Len + Sig Len` bytes → else *truncated*.
 5. The trailer parses as an Ed25519 signature under the trusted key → else *bad signature*. (Checked
    before the image is read.)
@@ -190,7 +161,7 @@ CRC-32. `blob_len` (offset 8) is the total encoded length including the CRC; the
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCB"` |
-| 4 | Format Version | 2 | `uint16` | Writers emit `0x0002`; readers accept `0x0001` and `0x0002` |
+| 4 | Format Version | 2 | `uint16` | `0x0002`; readers reject any other value (§2.4) |
 | 6 | State Tag | 1 | `uint8` | `0` Idle · `1` Armed · `2` Trial |
 | 7 | Reserved | 1 | — | `0` |
 | 8 | Blob Len | 4 | `uint32` | Total encoded length, incl. CRC; a multiple of 16 |
@@ -202,16 +173,6 @@ is the app's boot-outcome reconcile, which matches the recorded generation again
 left behind. Nothing compares generations to *reject* a page. `Idle` pins the header field to `0`,
 so the counter is not monotonic across a cycle (`Idle 0 → Armed 1 → Idle 0`). A torn, blank or stale
 page fails the CRC frame and decodes to `Idle` regardless of generation (§2.4).
-
-**Version compatibility (normative).** Readers **MUST accept both** `0x0001` and `0x0002`; writers
-**MUST emit** `0x0002`. The `Armed` and `Trial` payload layouts are byte-identical across the two
-versions; a `0x0001` `Idle` body ends after the installed option (§2.2) and decodes with no Last
-Outcome — the decoder gates this on the version field and MUST NOT parse the zero padding after a v1
-payload as an outcome record. A fielded bootloader is **not** updated by DFU (§1.2), so it keeps
-writing `0x0001` pages after the app updates. The one degraded pair is a `0x0001` bootloader reading
-a `0x0002` `Armed` page: it cannot decode it, falls back to `Idle` and jumps, so the install never
-starts and the app reports a not-started failure. It is recoverable by reflashing the bootloader and
-is never a revert loop.
 
 ### 2.2 Payload by State Tag
 
@@ -235,8 +196,8 @@ failed verification before the app slot was erased; `ArmAbandoned` = the bootloa
 `Armed` card it could not read within a bounded retry budget and, **because nothing had been erased
 yet**, cleared the arm and booted the intact old app (§2.4). `Outcome Generation` lets the app's
 boot-outcome reconcile bind the outcome to the arm marker it left before the install reboot.
-`Has Outcome = 0` is a plain steady-state `Idle`, a fresh device, or an `Idle` written by a `0x0001`
-writer (§2.1). The record is absent from the `Armed`/`Trial` payloads.
+`Has Outcome = 0` is a plain steady-state `Idle` or a fresh device. The record is absent from the
+`Armed`/`Trial` payloads.
 
 **Tag `1` — Armed** (`update: StagedRef, rollback: Option<StagedRef>`): an update is staged; the
 installer flashes it.
@@ -290,7 +251,7 @@ a `StagedRef` where either pair disagrees.
 
 **What the extents cover.** The chain locates the **whole staged object**: the armer resolves the
 container as-is, so the chain's byte stream begins with the object's own 64-byte OBCU header (§1.1)
-followed by the raw image. Everything past `64 + Len` — the v2 signature trailer (§1.3), and the
+followed by the raw image. Everything past `64 + Len` — the signature trailer (§1.3), and the
 slack in the object's last extent — is ignored by the installer. `Len` / `Image CRC-32` remain
 **raw-image** values: the installer's verify pass reads the leading 64 bytes only to check they
 decode to exactly the `Header` recorded above, then CRCs the next `Len` bytes — and its flash pass
@@ -300,7 +261,7 @@ arithmetic lives once, in `obc-dfu`'s install engine.
 
 **The rollback snapshot is unsigned.** The armer's copy of the running image, written from the app
 slot into the **rollback reserve** ([`flat-store-format.md`](flat-store-format.md) §3.1, kind `8`)
-before an install, is a **v1/unsigned** container (`Sig Scheme` = `0`). The device cannot
+before an install, is an **unsigned** container (`Sig Scheme` = `0`). The device cannot
 reconstruct the original release signature from slot bytes, and nothing needs one: the snapshot
 never passes through the armer's scan (§1.4), and the bootloader's rollback path validates it by
 CRC. The `StagedRef` the armer records for the snapshot carries the same unsigned header, so the
@@ -310,12 +271,11 @@ installer's header-equality check still matches.
 
 **`BootState::decode(&[u8]) -> BootState`** returns `Idle { installed: None, last_outcome: None }`
 for **anything** but a clean read of a known format: too short, bad magic, a Format Version other
-than `1` or `2` (§2.1), a `Blob Len` that is out of range or not a multiple of 16, a failed
+than `2` (§2.1), a `Blob Len` that is out of range or not a multiple of 16, a failed
 whole-blob CRC, an unknown State Tag, an unknown Outcome Kind, an Extent Count over `MAX_EXTENTS`, a
 `StagedRef` whose redundant `Len`/`Image CRC-32` disagree with its embedded header (§2.3), or a
-nested `ImageHeader` whose own CRC fails. A version-`1` page decodes with `0x0001` semantics:
-`Armed`/`Trial` identically, `Idle` with `last_outcome: None`. The bootloader always receives a sane
-state, also after a torn write.
+nested `ImageHeader` whose own CRC fails. The bootloader always receives a sane state, also after a
+torn write.
 
 The bootloader turns the decoded state into an action with the pure function
 **`decide(&BootState) -> BootDecision`**:

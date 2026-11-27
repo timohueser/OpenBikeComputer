@@ -26,7 +26,7 @@ async function readJSON(bucket, path, limit = 1024) {
   return value;
 }
 
-export async function gridConfig(bucket, prefix) {
+async function gridConfig(bucket, prefix) {
   const grid = await readJSON(bucket, `${prefix}/public/grid.json`);
   if (grid.format === 4 || (grid.format === 3 && Number.isInteger(grid.map_zoom) && grid.map_zoom >= 9 && grid.map_zoom <= 14)) {
     return grid;

@@ -2,20 +2,10 @@
 """Gate each production wasm bridge on raw WASM and gzipped WASM plus glue.
 
 The test-device variant is measured but does not ship. Raising a cap needs a reason in the PR.
-The ground-plan and parts budgets are their recorded CI sizes plus the owner's margin; both parts print.
+The ground-plan, parts and webp budgets are their recorded sizes plus the owner's margin; both parts print.
 """
 
 from __future__ import annotations
-
-GOVERNS = [
-    'builder/wasm/**',
-    'host/obcm-assemble/**',
-    'builder/ground-plan-wasm/**',
-    'host/obc-ground-plan/**',
-    'builder/trailview-parts-wasm/**',
-    'host/obc-trailview-parts/**',
-]
-RULE = 'A wasm bridge stays inside its recorded gzip and raw size budgets.'
 
 import argparse
 import gzip
@@ -23,37 +13,27 @@ import sys
 from pathlib import Path
 
 
-# Measured in CI on the build with the outline's turns, the levels that the tiles carry, the faces' tile-line
-# vertices, the decks' ceilings and end faces, the shared water level and curve of the feature bake, line water
-# and its culverts with their mouths, the classifier's ford rule, and the storeys over the ground with their open
-# junction ends, their ends on the stubs' points, what each deck is made of, the junctions that lie on the
-# ground, a building passage of an older bake on the ground, and the plumbing of the storey under the ground (the
-# crate's feature `storeys` on and `bores` off, the crate at one codegen unit in the release profile, stable 1.100.0),
-# the sidewalks' slabs with their ends, rings and kerbs, and the portal line's levels with the cover's sides.
-# The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
-# The built tunnel ends (obc-trailview-parts) with their open stretches and the approaches to their openings add
-# about 36 kB gzipped; the ways of the lanes of a head (the parts' `mouths`) about 2 kB more, measured in CI with
-# wasm-pack 0.15.0 and rustc 1.100.0. The guard rails and delineators of the roads (the crate's `mesh::edges`) add
-# about 29 kB gzipped, which the owner allows. The rails, sleepers, rack, cable and step treads of tracks and steps (the
-# crate's `mesh::details`) add about 26 kB gzipped, which the owner allows.
+# Measured in CI on the release build of `build-wasm-bridges.sh` (default features), wasm-pack 0.15.0, rustc 1.100.0.
 GROUND_PLAN_MEASURED = {"gzipped": 890_895, "raw_wasm": 2_286_659}
-# The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
-# unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
-# A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
-# and dependency noise.
+# Chosen by the owner for toolchain and dependency noise, not code growth; raw gets the same fraction as gzipped.
 GROUND_PLAN_MARGIN_GZIPPED = 8 * 1024
 GROUND_PLAN_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * GROUND_PLAN_MEASURED["raw_wasm"] / GROUND_PLAN_MEASURED["gzipped"]),
 }
 
-# Measured in CI on the build of the tunnel parts' arch, tube, boxes and underpasses, with a tile's volumes built once
-# and selected per node, the rim and the closed free end, and the rooms: lanes in a chord, heads with a hole per room
-# and the seam face, with wasm-pack 0.15.0 and rustc 1.100.0. The margin is the ground plan's, raw by the same fraction.
+# Measured in CI on the same build as the ground plan. The margin is the ground plan's, raw by the same fraction.
 PARTS_MEASURED = {"gzipped": 161_975, "raw_wasm": 394_336}
 PARTS_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
     "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * PARTS_MEASURED["raw_wasm"] / PARTS_MEASURED["gzipped"]),
+}
+
+# Measured on the build that adds the WebP bridge (rustc 1.99.0, wasm-pack 0.15.0), with the owner's margin.
+WEBP_MEASURED = {"gzipped": 69_494, "raw_wasm": 177_325}
+WEBP_MARGIN = {
+    "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
+    "raw_wasm": round(GROUND_PLAN_MARGIN_GZIPPED * WEBP_MEASURED["raw_wasm"] / WEBP_MEASURED["gzipped"]),
 }
 
 BUDGETS = {
@@ -62,9 +42,14 @@ BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
     "ground-plan": {key: GROUND_PLAN_MEASURED[key] + GROUND_PLAN_MARGIN[key] for key in GROUND_PLAN_MEASURED},
     "parts": {key: PARTS_MEASURED[key] + PARTS_MARGIN[key] for key in PARTS_MEASURED},
+    "webp": {key: WEBP_MEASURED[key] + WEBP_MARGIN[key] for key in WEBP_MEASURED},
 }
 # A budget made of a measured size and a margin prints both, so a reviewer sees growth inside the margin.
-BUDGET_PARTS = {"ground-plan": (GROUND_PLAN_MEASURED, GROUND_PLAN_MARGIN), "parts": (PARTS_MEASURED, PARTS_MARGIN)}
+BUDGET_PARTS = {
+    "ground-plan": (GROUND_PLAN_MEASURED, GROUND_PLAN_MARGIN),
+    "parts": (PARTS_MEASURED, PARTS_MARGIN),
+    "webp": (WEBP_MEASURED, WEBP_MARGIN),
+}
 
 ADVICE = {
     "builder": (
@@ -73,6 +58,7 @@ ADVICE = {
     ),
     "ground-plan": "Check the dependency graph with cargo tree -p obc-ground-plan-bridge --target wasm32-unknown-unknown.",
     "parts": "Check the dependency graph with cargo tree -p obc-trailview-parts-bridge --target wasm32-unknown-unknown.",
+    "webp": "Check the dependency graph with cargo tree -p obc-webp-bridge --target wasm32-unknown-unknown.",
 }
 
 PKG_DIRS = {
@@ -80,6 +66,7 @@ PKG_DIRS = {
     "flat-device": Path("builder/web/test-support/flat-device/pkg"),
     "ground-plan": Path("builder/web/src/lib/trailview/plan/pkg"),
     "parts": Path("builder/web/src/lib/trailview/structures/pkg"),
+    "webp": Path("builder/web/src/lib/trailview/stream/webp"),
 }
 UNBUDGETED = {"flat-device"}
 

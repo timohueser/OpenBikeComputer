@@ -13,15 +13,6 @@ describe('plan file', () => {
         expect(imported.trip.pace).toBe('easy');
     });
 
-    it('opens an older file with saved versions as its plan, and ignores the versions', () => {
-        const plan = newPlan(testTrip(), 'Tour'), file = JSON.parse(exportPlan(plan));
-        expect(file).not.toHaveProperty('versions');
-        const older = { ...file, open: 'v1', versions: [{ id: 'v1', at: '2026-01-01T09:00:00.000Z', summary: '', trip: file.trip }] };
-        const imported = importPlan(JSON.stringify(older));
-        expect(imported).toMatchObject({ name: 'Tour', trip: JSON.parse(JSON.stringify(plan.trip)) });
-        expect(imported).not.toHaveProperty('open');
-    });
-
     it('writes the riding time at the pace of the plan into its summary', () => {
         const trip = testTrip(), line = testLine(trip);
         expect(planSummary(trip, line).seconds).toBe(Math.round(line.seconds));
@@ -37,7 +28,7 @@ describe('plan file', () => {
         const file = JSON.parse(exportPlan(newPlan(testTrip(), 'Valid')));
         for (const invalid of [null, {}, { ...file, version: 99 }, { ...file, trip: {} },
             { ...file, trip: { ...file.trip, startDate: '2026-02-30' } },
-            { ...file, trip: { ...file.trip, points: [{ ...file.trip.points[0], anchor: [999, 0] }, file.trip.points[1]] } }]) {
+            { ...file, trip: { ...file.trip, points: [{ ...file.trip.points[0], coordinate: [999, 0] }, file.trip.points[1]] } }]) {
             expect(() => importPlan(JSON.stringify(invalid))).toThrow();
         }
         expect(() => importPlan('{')).toThrow();

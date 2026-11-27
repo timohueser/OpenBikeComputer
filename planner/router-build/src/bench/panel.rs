@@ -67,7 +67,7 @@ pub fn sample(net: &Net, spec: &Spec) -> Result<Vec<Pair>, String> {
             let mut pick = || junctions[(random(&mut state) % junctions.len() as u64) as usize];
             let (from, to) = (pick(), pick());
             let km = points[from as usize].distance(points[to as usize]) / 1000.0;
-            if km >= least_km && km <= most_km && net.route(from, to)?.is_some() {
+            if km >= least_km && km <= most_km && net.route(from, to).is_some() {
                 pairs.push(Pair { from, to });
             }
         }
@@ -89,9 +89,9 @@ pub struct Panel {
 /// The pooled measures of the routes of `pairs`. A pair with no route counts only as a pair.
 pub fn panel(net: &Net, pairs: &[Pair]) -> Result<Panel, String> {
     let routes = pairs.par_iter().map(|pair| {
-        let route = net.route(pair.from, pair.to)?.filter(|route| !route.is_empty());
+        let route = net.route(pair.from, pair.to).filter(|route| !route.is_empty());
         let Some(route) = route else { return Ok(None) };
-        let shortest = net.shortest(pair.from, pair.to)?.ok_or("a pair has a route, but no shortest route")?;
+        let shortest = net.shortest(pair.from, pair.to).ok_or("a pair has a route, but no shortest route")?;
         Ok(Some((measure(net, &route), shortest.iter().map(|&road| net.length(road)).sum::<f64>())))
     });
     let routes: Vec<_> = routes.collect::<Result<Vec<_>, String>>()?.into_iter().flatten().collect();

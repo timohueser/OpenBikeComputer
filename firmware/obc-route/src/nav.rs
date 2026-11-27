@@ -546,7 +546,6 @@ pub struct NavPlanner {
     /// Elevation fill state. It lives here because the fill spans emit steps.
     ele: EleFill,
     map_source: Option<obc_formats::obcr::RouteSourceKey>,
-    unresolved_avoidance: bool,
     assistant_candidate: bool,
 }
 
@@ -576,10 +575,6 @@ impl NavPlanner {
 
     pub fn set_assistant_candidate(&mut self) {
         self.assistant_candidate = true;
-    }
-
-    pub fn set_unresolved_avoidance(&mut self) {
-        self.unresolved_avoidance = true;
     }
 
     /// A planner for one route request. It touches nothing yet: the first
@@ -633,7 +628,6 @@ impl NavPlanner {
             core::ptr::addr_of_mut!((*slot).corridor).write(corridor);
             core::ptr::addr_of_mut!((*slot).ele).write(EleFill::new());
             core::ptr::addr_of_mut!((*slot).map_source).write(None);
-            core::ptr::addr_of_mut!((*slot).unresolved_avoidance).write(false);
             core::ptr::addr_of_mut!((*slot).assistant_candidate).write(false);
             ObcrEmitter::init_in_place(core::ptr::addr_of_mut!((*slot).em));
             let Self {
@@ -662,7 +656,6 @@ impl NavPlanner {
                 corridor: _,
                 ele: _,
                 map_source: _,
-                unresolved_avoidance: _,
                 assistant_candidate: _,
                 em: _,
             } = &*slot;
@@ -1005,8 +998,7 @@ impl NavPlanner {
         em.set_bike_type(self.bike);
         em.set_flags(
             obc_formats::obcr::FLAG_TEMPORARY
-                | if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 }
-                | if self.unresolved_avoidance { obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE } else { 0 },
+                | if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 },
         );
         self.emit_started = true;
         if self.chain_len == 1 {

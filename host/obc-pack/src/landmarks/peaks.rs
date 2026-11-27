@@ -363,7 +363,6 @@ pub fn compile(
                 output,
                 select_photos,
                 text_required: false,
-                snapshot_schema: snapshot.schema,
             },
             place,
             &entity,

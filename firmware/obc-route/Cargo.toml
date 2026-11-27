@@ -14,7 +14,7 @@ external-fixtures = []
 
 [dependencies]
 heapless = { workspace = true }
-libm = { workspace = true } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
+libm = { workspace = true } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the alignment-UB tripwire)
 obc-crc = { workspace = true } # the stored checksum of a candidate measured while it is composed
 obc-elevation = { workspace = true } # the shared elevation dead-band + (from EL7) the OBCT sampler
 obc-formats = { workspace = true }

@@ -8,10 +8,6 @@
 //! gestures, and the runner in `obc_host_core::trace` only controls when completed outcomes are
 //! delivered.
 
-// A shared test corpus is compiled into every binary that includes it, and each uses a subset.
-#![allow(dead_code)]
-
-use obc_app::catalog_state::CatalogError;
 use obc_app::device_core::ModeState;
 use obc_app::device_core::{
     DerivedInputs, DerivedTargets, ExternalFacts, NavigatorTag, OperationToken, OutcomeSlots, PassClock, PassInputs,
@@ -23,10 +19,9 @@ use obc_app::screen::Screen;
 use obc_app::{App, AppState, Gesture, Mode, RecorderIntent, RideSummary, RouteSummary, TripInput};
 use obc_formats::io::{ByteSink, SliceSource};
 use obc_host_core::trace::{
-    FeederCall, FeederKind, NormalizationSeed, ObjectKey, ObjectKind, RevisionKey, ScenarioStep, TimeKey, Trace,
-    TraceInput, TraceRecorder, TraceScenario, TraceSink,
+    FeederCall, FeederKind, NormalizationSeed, ObjectKey, ObjectKind, RevisionKey, ScenarioStep, TimeKey, TraceInput,
+    TraceRecorder, TraceScenario, TraceSink,
 };
-use obc_host_core::{RideRepository, RouteRepository, TripCatalog};
 use obc_map_scene::BBox;
 use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors};
 use obc_route::{gpx_to_obcr, NavError, RouteIndex, RouteReader};
@@ -746,97 +741,6 @@ pub fn visible_state(app: &App, settings_revision: u16, delete_attempts: u16) ->
     }
 }
 
-struct BorrowedRoutes<'a> {
-    catalog: &'a mut Vec<RouteSummary>,
-    ids: &'a mut Vec<u64>,
-    fail_delete_once: &'a mut bool,
-    delete_attempts: &'a mut u16,
-}
-
-impl RouteRepository for BorrowedRoutes<'_> {
-    fn catalog(&self) -> &[RouteSummary] {
-        self.catalog
-    }
-
-    fn ids(&self) -> &[u64] {
-        self.ids
-    }
-
-    fn delete_by_id(&mut self, id: u64) -> Result<bool, CatalogError> {
-        *self.delete_attempts = self.delete_attempts.saturating_add(1);
-        if std::mem::take(self.fail_delete_once) {
-            return Err(CatalogError::RemoveFailed);
-        }
-        let Some(index) = self.ids.iter().position(|candidate| *candidate == id) else { return Ok(false) };
-        self.ids.remove(index);
-        self.catalog.remove(index);
-        Ok(true)
-    }
-
-    fn write_nav_route(&mut self, _bytes: &[u8]) -> Option<u64> {
-        None
-    }
-
-    fn sync_active(&mut self, _want: Option<usize>) -> bool {
-        false
-    }
-
-    fn active_source(&self) -> Option<&dyn obc_formats::io::ByteSource> {
-        None
-    }
-
-    fn invalidate_active(&mut self) {}
-}
-
-struct BorrowedRides<'a> {
-    catalog: &'a mut Vec<obc_app::RideEntry>,
-}
-
-impl RideRepository for BorrowedRides<'_> {
-    fn catalog(&self) -> &[obc_app::RideEntry] {
-        self.catalog
-    }
-
-    fn delete_by_id(&mut self, id: u64) -> Result<bool, CatalogError> {
-        let Some(index) = self.catalog.iter().position(|entry| entry.id == id) else { return Ok(false) };
-        self.catalog.remove(index);
-        Ok(true)
-    }
-
-    fn fill_track(
-        &self,
-        _id: u64,
-        _profile: &mut obc_route::Profile,
-        _facts: &mut obc_route::RideTrackFacts,
-    ) -> Option<Vec<(i32, i32)>> {
-        None
-    }
-}
-
-struct BorrowedTrips<'a> {
-    present: &'a mut bool,
-    stage_ids: &'a [u64],
-}
-
-impl TripCatalog for BorrowedTrips<'_> {
-    fn delete_by_id(&mut self, id: u64) -> Result<bool, CatalogError> {
-        if *self.present && id == TRIP {
-            *self.present = false;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    fn refeed(&self, app: &mut App) {
-        if *self.present {
-            app.set_trips(&[TripInput { id: TRIP, key: 1, name: "Alps", start_date: 0, stage_ids: self.stage_ids }]);
-        } else {
-            app.set_trips(&[]);
-        }
-    }
-}
-
 /// Every platform capability — the fixture device implements all of them.
 pub const EVERY_CAPABILITY: PlatformSupport =
     PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
@@ -1219,15 +1123,4 @@ pub fn normalization_seed() -> NormalizationSeed {
         revisions: vec![(1, RevisionKey(0)), (2, RevisionKey(1))],
         times: vec![(1_720_000_000, TimeKey(0)), (1_720_000_060, TimeKey(1)), (1_720_000_120, TimeKey(2))],
     }
-}
-
-pub fn step<'a>(
-    trace: &'a Trace<VisibleState>,
-    name: &'static str,
-) -> &'a obc_host_core::trace::TraceStep<VisibleState> {
-    trace
-        .steps
-        .iter()
-        .find(|step| step.input == TraceInput::Named(name))
-        .unwrap_or_else(|| panic!("{} has no {name} step", trace.scenario))
 }

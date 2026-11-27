@@ -1,5 +1,14 @@
 use planner_router::model::{Point, NO_ELEVATION};
 
+/// The side of a fine cell, in microdegrees: the terrain visits the roads by cell, so that it keeps
+/// few squares decoded.
+const CELL: i32 = 10_000;
+
+/// The fine cell (latitude, longitude) of `point`.
+pub(crate) fn cell(point: Point) -> (i32, i32) {
+    (point.lat.div_euclid(CELL), point.lon.div_euclid(CELL))
+}
+
 /// The ground height at a point, or `None` where it is unknown.
 pub type Height<'a> = &'a mut dyn FnMut(Point) -> Result<Option<f64>, String>;
 

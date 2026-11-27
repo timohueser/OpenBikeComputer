@@ -9,7 +9,7 @@ import tempfile
 from . import planner_runtime as runtime
 
 
-COMPRESSED = {".bin", ".pmtiles", ".webp", ".png"}
+COMPRESSED = {".pmtiles", ".webp", ".png"}
 CHUNK = 1024 * 1024
 
 

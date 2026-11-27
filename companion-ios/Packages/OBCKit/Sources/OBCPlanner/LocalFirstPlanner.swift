@@ -1,14 +1,18 @@
 import Foundation
 import OBCDomain
 
-/// Each route uses one complete graph. Separately downloaded graphs never form a union.
+/// The maps of one routing package share one install; each route uses the install of the first map that
+/// holds its points.
 public actor LocalFirstPlanner: PlannerDataSource {
     public nonisolated var supportsOffline: Bool { true }
-    public typealias Open = @Sendable (OfflineMap, URL) async throws -> any PlannerDataSource
+    /// Opens a map from its release folder and its routing install.
+    public typealias Open = @Sendable (OfflineMap, URL, URL) async throws -> any PlannerDataSource
     private let store: OfflineMapStore
     private let online: any PlannerDataSource
     private let open: Open
     private var cached: (id: String, source: any PlannerDataSource)?
+    /// The map IDs of the last listing: a change drops `cached`.
+    private var listed: Set<String> = []
 
     public init(store: OfflineMapStore, online: any PlannerDataSource = PlannerService.shared, open: @escaping Open) {
         self.store = store; self.online = online; self.open = open
@@ -18,13 +22,14 @@ public actor LocalFirstPlanner: PlannerDataSource {
         let maps: [OfflineMap]
         do { maps = try await store.maps() }
         catch { try cancellation(error); maps = [] }
-        if let cached, !maps.contains(where: { $0.id == cached.id }) { self.cached = nil }
+        // An install or a removal changes the files of a routing install, so a route after it opens a new reader.
+        if Set(maps.map(\.id)) != listed { cached = nil; listed = Set(maps.map(\.id)) }
         return maps.sorted { area($0.bounds) < area($1.bounds) }
     }
 
     private func source(_ map: OfflineMap) async throws -> any PlannerDataSource {
         if let cached, cached.id == map.id { return cached.source }
-        let source = try await open(map, store.root.appending(path: "releases/\(map.id)"))
+        let source = try await open(map, store.root.appending(path: "releases/\(map.id)"), store.routing(map))
         cached = (map.id, source)
         return source
     }

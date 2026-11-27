@@ -70,12 +70,16 @@ const legKeys = (points: Coordinate[], turnarounds: number[], profile: string) =
 const RETRIES = 2, RETRY_MS = 1000;
 
 /** The legs `first` to `last` as consecutive leg ranges `[from, to]` of at most one request each. Each range starts at the
- * end point of the range before, and no range ends at a turnaround: only an interior turnaround may depart on the other road. */
-export function chunks(first: number, last: number, turnarounds: number[]): [number, number][] {
+ * end point of the range before. A range ends at a turnaround only where no other point fits, because a join there can
+ * cost another request, and at a point of `inside` only where no other point fits at all. */
+export function chunks(first: number, last: number, turnarounds: number[], inside = new Set<number>()): [number, number][] {
     const spans: [number, number][] = [];
     for (let from = first; from <= last;) {
-        let to = Math.min(from + MAX_REQUEST_POINTS - 2, last);
-        while (to < last && to > from && turnarounds.includes(to + 1)) to--;
+        const most = Math.min(from + MAX_REQUEST_POINTS - 2, last);
+        const fits = (avoid: (point: number) => boolean) => {
+            for (let to = most; to > from; to--) if (to === last || !avoid(to + 1)) return to;
+        };
+        const to = fits(point => turnarounds.includes(point)) ?? fits(point => inside.has(point)) ?? most;
         spans.push([from, to]);
         from = to + 1;
     }
@@ -91,20 +95,24 @@ export class LegCache {
 
     /** The route through a run of routed points. The legs that are not cached go out in `chunks`, at most two requests at a
      * time. The first chunk of each run of missing legs is pinned to the cached leg before it, and the last chunk to the
-     * cached leg after it, so each such join keeps its direction; a gap pins nothing. Each answer is kept as it arrives, so
-     * a failed or aborted route asks only for the rest. Then each leg that does not join the leg before it goes out again,
-     * pinned to both neighbours. A leg with no path under a pin goes out once more one leg wider on that side, so that its
-     * point can pass the other way; with no leg in the error, on each pinned side. An error names its point or leg by its
-     * index in `points`. */
+     * cached leg after it, so each such join keeps its direction; a gap or a turnaround pins nothing. Each answer is kept as
+     * it arrives, so a failed or aborted route asks only for the rest. Then each leg that does not join the leg before it
+     * goes out again, pinned to both neighbours; at a turnaround, both legs go out again in one request. A leg with no path
+     * under a pin goes out once more one leg wider on that side, so that its point can pass the other way; with no leg in
+     * the error, on each pinned side. An error names its point or leg by its index in `points`. */
     async route(points: Coordinate[], turnarounds: number[], profile: string, signal: AbortSignal, restarted = false): Promise<EngineRoute> {
         const turn = (index: number) => turnarounds.includes(index);
-        // A turnaround joins legs in either direction, and a gap joins any leg.
-        const joins = (a: Leg | undefined, b: Leg | undefined, at: number) => !a || !b || a.gap || b.gap || a.package === b.package && (turn(at) || a.end === b.start);
-        const pin = (leg: Leg | undefined) => leg?.gap ? undefined : leg;
+        // At a turnaround the legs meet at one snapped point in either direction, and a gap joins any leg.
+        const meet = (a: Leg, b: Leg) => a.geometry.at(-1)![0] === b.geometry[0][0] && a.geometry.at(-1)![1] === b.geometry[0][1];
+        const joins = (a: Leg | undefined, b: Leg | undefined, at: number) =>
+            !a || !b || a.gap || b.gap || a.package === b.package && (turn(at) ? meet(a, b) : a.end === b.start);
+        // A position names a direction, so a pin at a turnaround would forbid the turn back.
+        const pin = (leg: Leg | undefined, at: number) => leg?.gap || turn(at) ? undefined : leg;
         const keys = legKeys(points, turnarounds, profile);
         const legs = keys.map(key => this.legs.get(key));
-        // The legs that went out wider, and the legs that went out again to join their neighbours.
-        const widened = new Set<number>(), joined = new Set<number>();
+        // The legs that went out wider, the legs that went out again to join their neighbours, and the turnarounds that
+        // went out again inside one request.
+        const widened = new Set<number>(), joined = new Set<number>(), inside = new Set<number>();
         for (let round = 0; ; round++) {
             for (let k = 1; k < legs.length; k++) {
                 if (joins(legs[k - 1], legs[k], k)) continue;
@@ -115,21 +123,24 @@ export class LegCache {
                     this.coordinates = 0;
                     return this.route(points, turnarounds, profile, signal, true);
                 }
-                // A leg pinned to both neighbours joins them, unless the service ignores its pins.
-                if (joined.has(k)) throw new Error('The routing service returned an invalid response.');
-                if (round) joined.add(k);
+                // A leg pinned to both neighbours joins them, unless the service ignores its pins; one request meets itself.
+                if (joined.has(k) || inside.has(k)) throw new Error('The routing service returned an invalid response.');
+                if (turn(k)) {
+                    inside.add(k);
+                    legs[k - 1] = undefined;
+                } else if (round) joined.add(k);
                 legs[k] = undefined;
             }
             const spans: Span[] = [];
             for (let first = legs.findIndex(leg => !leg), last = first; first >= 0; first = legs.findIndex((leg, k) => k > last && !leg)) {
                 last = first;
                 while (last + 1 < legs.length && !legs[last + 1]) last++;
-                // A turnaround stays inside the request: only an interior turnaround may depart on the other road.
-                while (turn(first) && !legs[first - 1]?.gap) first--;
-                while (turn(last + 1) && !legs[last + 1]?.gap) last++;
-                const gap = chunks(Math.max(first, (spans.at(-1)?.to ?? -1) + 1), last, turnarounds);
-                spans.push(...gap.map(([from, to], c) => ({ from, to, pins: { start_position: c ? undefined : pin(legs[from - 1])?.end,
-                    end_position: c < gap.length - 1 ? undefined : pin(legs[to + 1])?.start } })));
+                // A turnaround whose legs did not meet stays inside the request.
+                while (inside.has(first) && !legs[first - 1]?.gap) first--;
+                while (inside.has(last + 1) && !legs[last + 1]?.gap) last++;
+                const gap = chunks(Math.max(first, (spans.at(-1)?.to ?? -1) + 1), last, turnarounds, inside);
+                spans.push(...gap.map(([from, to], c) => ({ from, to, pins: { start_position: c ? undefined : pin(legs[from - 1], from)?.end,
+                    end_position: c < gap.length - 1 ? undefined : pin(legs[to + 1], to + 1)?.start } })));
             }
             if (!spans.length) break;
             // After a failure no request starts; the one in flight ends and is kept.

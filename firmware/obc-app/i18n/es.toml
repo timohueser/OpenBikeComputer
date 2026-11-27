@@ -1,8 +1,8 @@
 # OpenBikeComputer UI translation catalog - SPANISH.
 #
-# Real Spanish content (epic #602, L4 #606). Every key in en.toml appears here in the
+# Real Spanish content. Every key in en.toml appears here in the
 # SAME order (the build enforces presence); see en.toml for the key->Msg naming
-# convention and the #601 font repertoire (Latin-1 + Latin Extended-A) rule.
+# convention and the font repertoire (Latin-1 + Latin Extended-A) rule.
 # Fixed-width layouts (stat-tile captions, settings values, the waypoint panel) are
 # abbreviated to fit; format glue (leading/trailing spaces, \n) is preserved verbatim.
 
@@ -35,7 +35,7 @@ no_nav = "Sin datos de rutas"
 filter = "Filtro"
 sources = "Fuentes"
 
-# --- The "Up ahead" timeline (epic #946): merged waypoints + route-corridor POIs ---
+# --- The "Up ahead" timeline: merged waypoints + route-corridor POIs ---
 [up_ahead]
 everything = "Todo"
 none = "Nada por delante"
@@ -110,8 +110,8 @@ sat = "sáb"
 sun = "dom"
 
 # --- Short-date table (uppercase) — the Rides rows' line-2 `D MON` date and the Home date
-# line (T5, #683: abbreviated weekday + day + month, day-first). Months generic; the seven
-# weekday abbreviations (Monday-first) were added for the Home line ---
+# line (abbreviated weekday + day + month, day-first). Months generic; the seven
+# weekday abbreviations (Monday-first) serve the Home line ---
 [date]
 jan = "ENE"
 feb = "FEB"
@@ -247,7 +247,7 @@ title = "SONIDO"
 level = "Sonido"
 key_tones = "Tonos teclas"
 
-# --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
+# --- The map sheet's row labels — the only home these three switches have ---
 [map_context]
 landmarks = "Hitos"
 campsites = "Camping"
@@ -259,7 +259,7 @@ categories = "Categorías"
 map_display = "Pantalla"
 clock = "Reloj"
 scale_bar = "Escala"
-# "Curvas de nivel" needed the old settings row's two lines; a sheet row has one, so the
+# "Curvas de nivel" needs two lines and a sheet row has one, so the
 # self-contained "Relieve" is the reading that fits beside the slider.
 contours = "Relieve"
 
@@ -289,7 +289,7 @@ off = "Apagado"
 connected = "Conectado"
 advertising = "Visible"
 
-# --- Sensors settings screen (BLE sensors epic #707) ---
+# --- Sensors settings screen ---
 [sensors]
 title = "SENSORES"
 heart_rate = "Frec. cardíaca"
@@ -408,7 +408,7 @@ day_one = "día"
 days = "días"
 no_days = "Sin días"
 
-# --- Trip cascade-delete confirm (epic #526, TR3) ---
+# --- Trip cascade-delete confirm ---
 [trip_delete]
 title = "ELIMINAR VIAJE"
 warn = "Elimina el viaje y todas sus rutas"
@@ -459,7 +459,7 @@ route_removed = "Ruta eliminada"
 recording = "Grabando salida"
 
 # --- Create-route (nav) confirm / planning / fail cards ---
-# --- The Detour flow (#882): planning copy, preview title, failure hints ---
+# --- The Detour flow: planning copy, preview title, failure hints ---
 [detour]
 title = "DESVÍO"
 planning = "Planeando desvío..."
@@ -583,7 +583,7 @@ battery = "Batería"
 show_route = "Ver ruta"
 loading_day = "Cargando día..."
 
-# --- System settings screen (epic #615 S5, #620) ---
+# --- System settings screen ---
 [system]
 title = "SISTEMA"
 units = "Unidades"
@@ -592,7 +592,7 @@ language = "Idioma"
 update = "Firmware"
 about = "Acerca de"
 
-# --- About page (issue #1149): the credits + licences surface. Only the section
+# --- About page: the credits + licences surface. Only the section
 # captions are translated; the attribution texts are legal formulas and stay canonical. ---
 [about]
 title = "ACERCA DE"

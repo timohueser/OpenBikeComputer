@@ -19,6 +19,8 @@ from . import planner_geo, planner_grid, planner_runtime
 
 
 FORMATS = {"planner/index": planner_runtime.INDEX_FORMAT}
+# The route package of a selection: the phone plans and installs its cells with these files.
+DIRECTORY, PACKAGE = "routing/directory.bin", "routing/package.json"
 
 
 def contains(outer, inner):
@@ -47,7 +49,8 @@ class Downloads:
         self.source, self.cache = source.resolve(), cache.resolve()
         body = (self.source / "catalog.json").read_bytes()
         self.publication = json.loads(body)
-        if self.publication["format"] != planner_runtime.INDEX_FORMAT:
+        if (self.publication["format"] != planner_runtime.INDEX_FORMAT
+                or not {DIRECTORY, PACKAGE} <= self.publication["shared"].keys()):
             raise ValueError("Unsupported offline publication")
         self.identity, self.manifest = hashlib.sha256(body).hexdigest(), self.publication["release"]
         self.cells = set(self.publication["cells"])
@@ -77,7 +80,7 @@ class Downloads:
             digests.append(hashlib.sha256(body).hexdigest())
         actual = [min(c["bounds"][0] for c in cells), min(c["bounds"][1] for c in cells),
                   max(c["bounds"][2] for c in cells), max(c["bounds"][3] for c in cells)]
-        identity = hashlib.sha256(planner_runtime.encoded({"format": 6, "source": self.identity, "bounds": actual,
+        identity = hashlib.sha256(planner_runtime.encoded({"format": 7, "source": self.identity, "bounds": actual,
                                                            "cells": digests, "objects_url": self.objects_url})).hexdigest()
         destination = self.cache / identity
         if not (destination / "bundle.json").exists():
@@ -86,20 +89,10 @@ class Downloads:
 
     def quote(self, destination, actual, cells, identity):
         publication = self.publication
-        selected = [c for c in cells if c.get("routing")]
-        selections = []
-        for cell in selected:
-            path = self.source / cell["routing"]["manifest"]
-            if not path.resolve().is_relative_to(self.source) or planner_runtime.digest(path) != cell["routing"]["sha256"]:
-                raise ValueError("Routing cell checksum mismatch")
-            selections.append(json.loads(path.read_bytes()))
-        graph = planner_grid.routing(selections, [c["routing"]["adjacency"] for c in selected], "area-" + identity[:24], actual)
-        geometry = [min([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) if i < 2
-                    else max([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) for i in range(4)]
-        terrain = planner_geo.terrain_bounds(geometry)
+        terrain = planner_geo.terrain_bounds(actual)
         files = {name: publication["assets"][source] for name, source in publication["shared"].items()}
         for cell in cells:
-            for key in ("files", "packs", "routing_packs"): files.update(cell[key])
+            for key in ("files", "packs"): files.update(cell[key])
         files = dict(sorted(files.items()))
         generated = {}
         def metadata(name, document):
@@ -108,16 +101,13 @@ class Downloads:
             transport = {"bytes": len(wire), "sha256": hashlib.sha256(wire).hexdigest(), "encoding": "gzip"}
             generated[transport["sha256"]] = wire
             files[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "transport": transport}
-            return files[name]["sha256"]
-        package = metadata("routing/blocks.json", graph)
         for kind, minzoom, maxzoom in (("basemap", 0, 14), ("places", 11, 11), ("overlays", 6, 14), ("terrain", 0, 12)):
             metadata(f"maps/{kind}.json", {"tilejson": "3.0.0", "tiles": [
                 f"https://offline.openbikecomputer.invalid/{identity}/{kind}/{{z}}/{{x}}/{{y}}"],
-                "minzoom": minzoom, "maxzoom": maxzoom, "bounds": terrain if kind == "terrain" else geometry})
-        release = {**self.manifest, "format": 1, "region": graph["data"]["region"], "bounds": actual,
-                   "routing_package": package, "terrain_bounds": terrain,
-                   "offline": {"format": 3, "id": identity, "zoom": publication["zoom"],
-                               "source_routing": publication["routing_source"],
+                "minzoom": minzoom, "maxzoom": maxzoom, "bounds": terrain if kind == "terrain" else actual})
+        release = {**self.manifest, "format": 1, "region": "area-" + identity[:24], "bounds": actual,
+                   "routing_package": files[DIRECTORY]["sha256"], "terrain_bounds": terrain,
+                   "offline": {"format": 4, "id": identity, "zoom": publication["zoom"],
                                "cells": [{"id": c["id"], "bounds": c["bounds"], "files": list(c["files"])} for c in cells]},
                    "files": {name: {k: item[k] for k in ("bytes", "sha256")} for name, item in files.items()}}
         encoded = planner_runtime.encoded(release)
@@ -193,7 +183,7 @@ def handler(downloads):
         def do_GET(self):
             path = unquote(urlsplit(self.path).path)
             if path == "/catalog":
-                return self.json({"format": 1, "sha256": downloads.identity, "bounds": downloads.manifest["bounds"],
+                return self.json({"format": 2, "sha256": downloads.identity, "bounds": downloads.manifest["bounds"],
                                   "zoom": downloads.publication["zoom"]})
             match = re.fullmatch(r"/bundles/([0-9a-f]{64})/(bundle.json|release.json|objects/[0-9a-f]{64})", path)
             directory = match and downloads.selection(match[1])

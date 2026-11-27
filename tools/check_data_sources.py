@@ -15,9 +15,6 @@ an `origin` of its own.
 
 from __future__ import annotations
 
-GOVERNS = ['justfile', 'host/**', 'planner/**', 'sim/**', 'tools/**', 'fixtures/**', 'builder/usb/**', 'data/archive/**', 'data/sources.toml', 'data/routes/**']
-RULE = 'Every host that code in justfile, host/, planner/, sim/, tools/, fixtures/ and builder/usb/, or a dataset of data/archive/, fetches from is a source in data/sources.toml or a listed non-bake host, and each source names what reads it, what for and where its kept copy is; each route description names a planner source kept in the archive, has known keys and its own origin.'
-
 import re
 import subprocess
 import sys
@@ -158,7 +155,7 @@ def main() -> int:
     problems = undocumented(registry)
     routes = route_problems(registry, {path.stem: path.read_text() for path in (ROOT / "data/routes").glob("*.toml")})
     if routes:
-        print("data sources: the route descriptions of data/routes/ break specs/obc-data.md:", file=sys.stderr)
+        print("data sources: the route descriptions of data/routes/ break specs/obc-data-registry.md:", file=sys.stderr)
         for problem in routes:
             print(f"  {problem}", file=sys.stderr)
     if problems:

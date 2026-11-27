@@ -195,7 +195,7 @@ pub fn signed_share(net: &Net, step_m: f64) -> Result<Signed, String> {
                 if from == to {
                     continue;
                 }
-                let Some(router) = net.route(from, to)? else { continue };
+                let Some(router) = net.route(from, to) else { continue };
                 let (signed_line, router_line) = (net.line(signed), net.line(&router));
                 share.measured_m += length(signed);
                 share.near_m += length(signed) - shape::far(&signed_line, &Near::new(&router_line));

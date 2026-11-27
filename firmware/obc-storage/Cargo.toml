@@ -18,7 +18,7 @@ heapless = { workspace = true }
 obc-link = { workspace = true }
 
 [dev-dependencies]
-# The read cutover's pin (FS7.5-c2, #1420): `flat::map_read` commits a real OBCM map into a flat
+# The read path's pin: `flat::map_read` commits a real OBCM map into a flat
 # store and drives the renderer's own `MapTables`/`Reader` over it through `StoreSource`, against a
 # `SliceSource` over the same bytes as the oracle. Dev-only, and deliberately upward — the device
 # image resolves `obc-storage` without either, and the alternative (asserting field values instead

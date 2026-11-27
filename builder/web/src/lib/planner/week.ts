@@ -39,7 +39,7 @@ export function dayLook(week: Week | null, lit: number | null, day: number): 'co
     return day === lit ? 'lit' : !week || inside(week, day) ? 'colour' : 'quiet';
 }
 
-const shaping = new Set<MapPoint['kind']>(['via', 'waypoint', 'detour', 'pass']);
+const shaping = new Set<MapPoint['kind']>(['via', 'waypoint', 'pass']);
 
 /** How the map shows a pin outside the week: a night mark as a dot, a shaping point not at all. */
 export function pinLook(week: Week | null, point: MapPoint): 'shown' | 'dot' | 'hidden' {

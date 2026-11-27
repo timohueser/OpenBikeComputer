@@ -11,7 +11,7 @@ the stamp worker makes of the feature tiles for some terrain nodes.
   `tools/planner_trailview_canopy.py`, `host/obc-trailview-features/src/stamps.rs`.
 - Readers: the TrailView engine (`builder/web/src/lib/trailview/`), `tools/planner_verify.py`; the
   canopy: also the route facts (`planner/router-build/src/facts/shares.rs`).
-- Related: the optional planner layers `trailview-*` of [obc-data.md](obc-data.md),
+- Related: the optional planner layers `trailview-*` of [obc-data-products.md](obc-data-products.md#planner),
   [the planner snow tiles](planner-snow-tiles.md), [TrailView feature tiles](trailview-features.md).
 
 ## Archives
@@ -119,7 +119,7 @@ A source of the chain has these keys:
 | --- | --- |
 | `raster` | GeoTIFFs of class values. With `px_m`, finer than its pixels, a shore takes the majority of `inland-water` within half a pixel |
 | `vector` | A GeoPackage, a zipped Shapefile or GeoJSON, by the file name |
-| `arcgis-features`, `archive-features` | The GeoJSON of its capture over the bounds, see [Fetch](obc-data.md#fetch) |
+| `arcgis-features`, `archive-features` | The GeoJSON of its capture over the bounds, see [Fetch](obc-data-store.md#fetch) |
 | `osm` | The areas of `osm.pbf` of `planner/osm` |
 
 A class matches by its `match`:
@@ -148,7 +148,7 @@ archive for this rule.
 ## Colour
 
 `trailview-colour` has four archives, `q1` to `q4`, from the zoom 12 texels of the prepared
-source [`colour`](obc-data.md#colour) of the year `trailview.colour_year`. Quarter q holds the
+source [`colour`](obc-data-producers.md#colour) of the year `trailview.colour_year`. Quarter q holds the
 months 3q − 2 to 3q. A texel has the colour of the quarter and its NDVI code.
 
 The bake applies these rules to the texels of `colour`, in this order:
@@ -242,7 +242,7 @@ with these rules:
 `trailview-canopy` holds the forest of each cell of zoom 12 at 256 × 256 cells, 26 m at 47° N:
 the canopy height, the cover, a class of the stems per hectare and the leaf type. It holds no tree
 position. Its bake reads the zoom 12 tiles out of the blocks of the prepared source
-[`forest`](obc-data.md#forest), one window each.
+[`forest`](obc-data-producers.md#forest), one window each.
 
 | Field | Value |
 | --- | --- |

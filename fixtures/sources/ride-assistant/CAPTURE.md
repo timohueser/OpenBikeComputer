@@ -50,10 +50,8 @@ only after its URL, byte count and digest check out. Failed requests stay failed
 candidate list, boundary, category policy, language set or locale policy needs a **new** output
 directory. Never run two capture processes against one output directory.
 
-Manifest schema 2 records the request identity of every Commons category page. You can resume a
-schema 1 capture in the same output directory to add missing continuation pages and write schema
-2. The capture verifies and reuses each successful page. The compiler rejects all schema 1
-category records because they cannot prove that every page was consumed.
+Manifest schema 2 records the request identity of every Commons category page, so the compiler
+can prove that every page was consumed. The compiler rejects any other manifest schema.
 
 An incomplete acquisition exits with status 2 and keeps the bytes it captured. Unresolved source
 requests or class closure make country coverage incomplete: do not report their absence as zero
@@ -82,6 +80,6 @@ such run by source manifest, boundary, compiler, policy and output hashes.
 ## Retention
 
 Keep the capture locally while the country build and its validation need it. Keep the source
-hashes, the recipe, the compiler identity and the measured counts in Git, and remove the local raw
-capture when that work is done. A fresh acquisition sees new upstream data; it cannot reproduce an
+hashes, the compiler identity and the measured counts in Git, and remove the local raw capture when
+that work is done. A fresh acquisition sees new upstream data; it cannot reproduce an
 old capture from its hashes alone.

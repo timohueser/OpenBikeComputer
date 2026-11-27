@@ -38,7 +38,7 @@ fn every_string_is_renderable() {
     assert!(
         offenders.is_empty(),
         "i18n: {} string(s) contain a char outside the device font repertoire (Latin-1 + Latin \
-         Extended-A, per obc-render #489/#601) — they would render as a silent `?` on-glass:\n{}",
+         Extended-A, per obc-render) — they would render as a silent `?` on-glass:\n{}",
         offenders.len(),
         offenders.join("\n"),
     );

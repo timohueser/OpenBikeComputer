@@ -87,7 +87,8 @@ fn import(pbf: &Path, dem: &Path, bounds: [f64; 4]) -> Result<Graph, String> {
     let terrain = Terrain::open(&tiles, "", None, bounds)?;
     let mut recent = Recent::default();
     let mut height = |point: Point| terrain.height(point.lat, point.lon, &mut recent);
-    crate::osm::import(&[pbf.to_path_buf()], bounds, Some(&mut height))
+    // The bench reads no cells, so the region is one cell.
+    crate::osm::import(&[pbf.to_path_buf()], bounds, &[(1 << 24) - 1], Some(&mut height))
 }
 
 fn signed_rows(signed: &signed::Signed, walking: bool) -> [Vec<Row>; 2] {
@@ -147,7 +148,6 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
     let topology = Topology::new(&graph.roads, graph.points.len())?;
     crate::check(&graph, &profiles)?;
     let costs = crate::costs(&graph, &topology, &profiles)?;
-    let states = net::states(topology.first.values(), topology.head.values());
     eprintln!("Import and costs: {:.0} s", clock.elapsed().as_secs_f64());
 
     let prices: Vec<Row> = prices::price_list(&profiles)
@@ -168,7 +168,7 @@ fn run(options: &HashMap<&str, &str>) -> Result<(), String> {
     let mut overlay = serde_json::Map::new();
     for (index, profile) in profiles.iter().enumerate() {
         let clock = Instant::now();
-        let net = Net::new(&graph, &topology, &states, &costs, index);
+        let net = Net::new(&graph, &topology, &costs, index);
         let [shares, legs] = signed_rows(&signed::signed_share(&net, STEP_M)?, profile.walking);
         if let (Some(path), None) = (options.get("pairs"), &sets) {
             sets = Some(pairs::sets(Path::new(path), &net, &specs)?);

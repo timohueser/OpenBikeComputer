@@ -6,24 +6,24 @@ publish = false  # internal firmware crate — not published to crates.io
 description = "Board-agnostic no_std firmware source/handoff adapters over obc-ports — written once, reused by every OBC board crate: the button debouncer, the transport-agnostic debug-sensor protocol, the real-sensor and BLE-sensor cross-task hand-offs, and the stub fuel gauge. The display seam, sensor decoders, and SD adapters live in the sibling obc-display / obc-sensors / obc-storage crates."
 
 [features]
-# Transport-agnostic fake-sensor debug protocol (issue #38). The pure codec in `debug_link` (line
+# Transport-agnostic fake-sensor debug protocol. The pure codec in `debug_link` (line
 # parser, `Telemetry`/fix encoders, `LineReader`) is always compiled — board-agnostic and
 # dependency-light (only `obc_ports` types + heapless) — so the host feeder reuses one canonical wire
 # format with default features. This feature adds only the embassy-sync `Signal`/`Channel` hand-off
 # plus the LocationSource/AltimeterSource/CompassSource impls that bridge parsed samples to the app
 # poll (the fresh-fix latch); the board crate owns the actual transport driver (the nRF runs it over
-# UART/VCOM). Off by default so the host workspace build never pulls embassy-sync; the board firmware
-# turns it on in its own default features.
+# UART/VCOM). Off by default so the host workspace build never pulls embassy-sync; the board
+# firmware's `debug-uart` feature turns it on.
 debug-link = ["dep:embassy-sync"]
 
-# Real-sensor cross-task hand-off (issue #218). The pure decode (`ubx`, `bmp581`, …) lives in the
-# sibling `obc-sensors` crate (#807) — board-agnostic, dependency-light, host-tested with no feature.
+# Real-sensor cross-task hand-off. The pure decode (`ubx`, `bmp581`, …) lives in the
+# sibling `obc-sensors` crate — board-agnostic, dependency-light, host-tested with no feature.
 # This feature adds only the embassy-sync `Signal` plumbing + the LocationSource/AltimeterSource/
 # TemperatureSource impls (`sensor_link`) that bridge the board's I²C sensor task to the app poll.
-# The board firmware turns it on in its default features; the host workspace never pulls embassy-sync.
+# The board firmware always turns it on; the host workspace never pulls embassy-sync.
 sensor-link = ["dep:embassy-sync"]
 
-# Async button edge-wake (issue #219). Adds `ButtonInput::wait_for_any_press` — the input plane
+# Async button edge-wake. Adds `ButtonInput::wait_for_any_press` — the input plane
 # `await`s a falling edge on any button instead of polling at the loop rate, so an idle device sleeps
 # until a press. Pulls only the `embedded-hal-async` `Wait` trait (which `embassy_nrf::gpio::Input`
 # implements) + `embassy-futures` for the 4-way `select`. Off by default so the host/sim build never
@@ -39,12 +39,12 @@ obc-ports = { workspace = true }
 # `gpio::Input` implements this, so `ButtonInput` is board-agnostic.
 embedded-hal = "1.0"
 
-# The async `Wait` trait the `input-wait` edge-wake speaks (issue #219), board-agnostic like
+# The async `Wait` trait the `input-wait` edge-wake speaks, board-agnostic like
 # `embedded-hal`'s `InputPin`: `embassy_nrf::gpio::Input` implements it, so `wait_for_any_press` stays
 # generic. Optional — only the `input-wait` feature pulls it.
 embedded-hal-async = { version = "1.0", optional = true }
 
-# `select` over the four buttons' edge-wait futures for `input-wait` (issue #219). Optional — only
+# `select` over the four buttons' edge-wait futures for `input-wait`. Optional — only
 # that feature pulls it; pinned to the 0.1 the nRF board crate already resolves.
 embassy-futures = { version = "0.1", optional = true }
 
@@ -60,5 +60,5 @@ embassy-sync = { version = "0.8", optional = true }
 [dev-dependencies]
 # `cargo test --features debug-link` compiles the Signal-based sources, which reference
 # `critical_section::with`; the std impl satisfies the link on the host. Dev-only — it never
-# reaches the firmware build (which provides cortex-m's single-core impl), so no double impl.
+# reaches the firmware build (which takes MPSL's impl), so no double impl.
 critical-section = { version = "1.1", features = ["std"] }

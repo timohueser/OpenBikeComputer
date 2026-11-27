@@ -19,7 +19,7 @@ DATA_LAYERS = {
 }
 # The format of the offline catalog, of its cell files and of `search/<region>.grid.json`: the format of
 # `planner/index`, the layer that writes them.
-INDEX_FORMAT = 4
+INDEX_FORMAT = 5
 # The format of `public/grid.json`, `GRID` of host/obc-data/src/cli/deploy_cli.rs: format 4 keeps the
 # pointers of all packs of a base square of a map layer in the block index of the square two zooms
 # above it, which holds 4 × 4 base squares (specs/planner-release.md).

@@ -176,11 +176,11 @@ def catalog_source(sites):
         output.extend(f"    {key}: {json.dumps(value, ensure_ascii=False)}," for key, value in site.items() if key not in ("key", "peaks"))
         output.append("    peaks: &[")
         for peak in sorted(site["peaks"], key=lambda p: p["azimuth_q4"]):
-            # These legacy fixture inputs retained projected bearings, not original OSM coordinates.
+            # The inputs give a bearing and a distance from the observer, not OSM coordinates.
             angle = math.radians(peak["azimuth_q4"] / 4)
-            lat = peak.get("lat", round(site["observer_lat"] + peak["distance_m"] * math.cos(angle) / 0.11132))
-            lon = peak.get("lon", round(site["observer_lon"] + peak["distance_m"] * math.sin(angle) /
-                           (0.11132 * math.cos(math.radians(site["observer_lat"] / 1e6)))))
+            lat = round(site["observer_lat"] + peak["distance_m"] * math.cos(angle) / 0.11132)
+            lon = round(site["observer_lon"] + peak["distance_m"] * math.sin(angle) /
+                        (0.11132 * math.cos(math.radians(site["observer_lat"] / 1e6))))
             values = dict(peak, lat=lat, lon=lon, visible=peak.get("visible", True), angle_q4=peak.get("angle_q4", 0))
             identity += 1
             fields = [f"source: obc_formats::obcm::SourceId({identity})"]

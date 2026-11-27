@@ -2,15 +2,18 @@
 
 A raster of ground heights on the [OBCA](obca-assembly.md) cell grid: the sample lattice (§1), the
 512-byte tile and the terrain cell (§2, §3), the container (§4), the sampling rules (§5), the
-geographic surface index (§8) and the crest-lift producer rule (§9).
+geographic surface index (§8), the crest-lift producer rule (§9) and its reference
+archive (§10).
 
 - Version: `0x01` and `3`. Both are current. §1–§5 define the native v1 raster, which is also the
   base height plane of v3; §8 defines what v3 adds and overrides. A reader refuses every other
   version, version 2 included (§4.5, §8.1).
 - Writers: `host/obc-dem` (`obc-dem bake`, cell blocks); `host/obc-bake` (terrain stage, published
-  cells); `host/obcm-assemble` (an assembly's raster, `obca-assembly.md` §4.3).
+  cells); `host/obcm-assemble` (an assembly's raster, `obca-assembly.md` §4.3);
+  `host/obc-dem/reference` (§10).
 - Readers: [`firmware/obc-elevation`](../firmware/obc-elevation) (reference reader, sampler and
-  tile cache); `host/obcm-assemble` (verify, `obca-assembly.md` §4.8).
+  tile cache); `host/obcm-assemble` (verify, `obca-assembly.md` §4.8);
+  `host/obc-dem/src/reference.rs` (§10).
 - Code authority: [`firmware/obc-formats/src/obct.rs`](../firmware/obc-formats/src/obct.rs)
   (magic, version, field offsets, fixed lengths, sentinels, layout arithmetic); `obct_surface.rs`
   for §8. Producers and consumers import these facts and do not transcribe them.
@@ -541,8 +544,8 @@ A node with `NODATA` anywhere in the 3 × 3 native lattice around it MUST NOT be
 the dilation: there is no bilinear surface there to measure a gap against.
 
 `node_max` and the gap are sampled on a probe grid the producer chooses. The v1 bakery uses **every
-reference pixel inside the node's half-posting cell**: its reference is an archive on a `2^6` µdeg
-lattice, so that is 64 probes per node at the v1 posting.
+reference pixel inside the node's half-posting cell**: its reference is the section 10 archive on a
+`2^6` µdeg lattice, so that is 64 probes per node at the v1 posting.
 
 A probe that is a **maximum over an area** must have its gap measured against the **highest point of
 the surface over that same area**, not against the surface under one point of it. Each archive pixel
@@ -580,3 +583,57 @@ reader can check it; `obc-dem bake` prints it.
 A change of reference archive changes the baked samples, so it is a terrain revision bump and hence
 a navigation re-bake (`obcc-catalog.md` §13.4). The reference DEM keeps its own attribution, which
 MUST travel with every container derived from it.
+
+---
+
+## 10. The reference archive
+
+The reference DEM of section 9.
+
+### 10.1 Lattice and paths
+
+| Item | Value |
+| --- | --- |
+| Origin | OBCT `GRID_ORIGIN`, −2^28 µdeg on both axes |
+| Step | `2^6` µdeg (`REFERENCE_STEP_LOG2 = 6`) |
+| Tile | A `2^16` µdeg square of 1024 × 1024 pixels, at `16/<ti:04>/<tj:04>.tif` under the archive root |
+| Tile id | `(ti, tj) = ((lat − GRID_ORIGIN) >> 16, (lon − GRID_ORIGIN) >> 16)`, written `<ti:04>/<tj:04>` |
+| Block | Only in a prepared version of `terrain`: 4 × 4 tiles in one file, `18/<bi:04>/<bj:04>.tif` for the maximum and `mean/18/<bi:04>/<bj:04>.tif` for the mean ([`obc-data-prepared.md`](obc-data-prepared.md#terrain)) |
+
+### 10.2 Pixels
+
+| Property | Pool `max` | Pool `mean` |
+| --- | --- | --- |
+| Value | The maximum of every source pixel centre inside the lattice square, `int16` orthometric metres | The mean of the same centres, `int32` decimetres |
+| Nodata | `−32768`, the only one | `−2^31`, the only one |
+| Square that no centre reaches, between four centres with a height | Their bilinear height (`fill_gaps`) | Their bilinear height |
+| File | Little-endian GeoTIFF, one band, `PixelIsArea`, EPSG:4326, deflate, 256 × 256 internal tiles, rows north-up | The same, with predictor 2 |
+| Transform | The lattice (`a = 2^6 / 1e6`, `e = −2^6 / 1e6`, origin on lattice lines) within 1e-9 degrees | The same |
+
+A reader MUST refuse a tile that breaks a row of this table. A reader does not resample.
+
+### 10.3 `index.json`
+
+`index.json` at the archive root names every tile; no other tile is in the archive.
+
+```json
+{ "schema": 1, "step_log2": 6, "tile_log2": 16, "pool": "max",
+  "sources": { "ch": { "product": "swissALTI3D 2 m", "attribution": "© swisstopo",
+                       "licence": "…", "vertical_datum": "LN02/LHN95", "fetched": "YYYY-MM-DD",
+                       "glo30_bias_m": -1.42 } },
+  "tiles": { "3410/2882": "ch" },
+  "contributors": { "3410/2882": ["ch", "es"] },
+  "sha256": { "3410/2882": "9f86d0818…" } }
+```
+
+| Field | Value |
+| --- | --- |
+| `schema` | `1` |
+| `step_log2` | `6` |
+| `tile_log2` | `16` |
+| `pool` | `max` or `mean`: the pool of every tile |
+| `sources` | Per source key: `product`, `attribution`, `licence`, `vertical_datum`, `fetched` (the fetch date) and, optionally, `glo30_bias_m` |
+| `sources.<key>.glo30_bias_m` | The median of model − GLO-30 that the `terrain` prepare measures ([`obc-data-prepared.md`](obc-data-prepared.md#terrain)). The planner corrects GLO-30 by the bias of the best source of a tile |
+| `tiles` | Tile id to the first source of its `contributors` |
+| `contributors` | Tile id to every source with a pixel in the tile, best priority first |
+| `sha256` | Tile id to the SHA-256 of the tile's pixels, row-major, little-endian, in their dtype. It is not the digest of the file: two GDAL builds deflate the same heights into different bytes |

@@ -15,51 +15,41 @@ description = "nRF54LM20-DK board firmware for OpenBikeComputer — the real har
 [workspace]
 
 [features]
-# Default build = the **real map/ride app on the reflective LS021B7DD02 panel** (issues #165 / #173),
-# driven by the FLPR (the VPR RISC-V coprocessor): mount the SD card, stream the `.obcm`, render it
-# into the resident RGB222 framebuffer through the shared `obc-app`, and have the FLPR scan the whole
-# frame to the LS021 in one push. This is the shipping target path (buttons #126, sensors/GPX #127) —
-# the LS021/FLPR panel is the only display path. `build.rs` always emits the carve-out (the M33
-# shrinks to 248 KB; the top 8 KB is the FLPR image + handshake page) and cross-compiles the RISC-V
-# blob, so the build needs a RISC-V gcc (`brew install riscv64-elf-gcc`) and the Board-Configurator
-# settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off).
-# The default build also drives the **real sensors** (issue #218): a u-blox SAM-M10Q GPS + a Bosch
-# BMP581 altimeter on a shared TWIM22 I²C bus (P1.04/03/05). `obc-platform/sensor-link` pulls the
-# embassy-sync `Signal` hand-off the board's `sensors::sensor_task` publishes through. Real sensors
-# are the *baseline* — selected by the **absence** of `debug-uart` — so a board with no Qwiic
-# hardware attached still builds and idles waiting for a fix (RTT shows the probes); for indoor work
-# without a sky view build `--features debug-uart`.
-# Build with `cargo run --release` (add `--features debug-uart` to stream a recorded ride from a host).
-# See `firmware/docs/ls021-flpr.md` + the crate README.
+# The build without features is the shipping image: the map/ride app on the reflective LS021B7DD02
+# panel, driven by the FLPR (the VPR RISC-V coprocessor). It mounts the SD card, streams the
+# `.obcm`, renders it into the resident RGB222 framebuffer through the shared `obc-app`, and has
+# the FLPR scan the whole frame to the LS021 in one push. `build.rs` cross-compiles the RISC-V
+# blob, so the build needs a RISC-V gcc (`brew install riscv64-elf-gcc`) and the
+# Board-Configurator settings (3.3 V VDDM, ext-memory-off, VCOM HWFC off).
+# It also drives the real sensors: a u-blox SAM-M10Q GPS + a Bosch BMP581 altimeter on a shared
+# TWIM22 I²C bus (P1.04/03/05). `obc-platform/sensor-link` pulls the embassy-sync `Signal` hand-off
+# the board's `sensors::sensor_task` publishes through. Real sensors are selected by the
+# **absence** of `debug-uart`, so a board with no Qwiic hardware attached still builds and idles
+# waiting for a fix (RTT shows the probes); for indoor work without a sky view build
+# `--features debug-uart`.
 #
-# **There is one build** (LM20, 2026-07-23): map + ride loop + on-device router + the full BLE stack
-# + the USB device plane in one image — no separate non-BLE shape and no separate non-USB shape
-# either (the 512 KB part fits them together; `firmware/tools/resource_baseline.json` holds the
-# margins). The critical-section impl therefore comes from MPSL on every
-# build, and the radio crates below are plain dependencies rather than optional ones (#1530): the
-# `ble` feature named a configuration that had not compiled for months, so there is no `default`
-# list — the features below are all opt-in overlays on the one shape.
+# **There is one build**: map + ride loop + on-device router + the full BLE stack + the USB device
+# plane in one image (`firmware/tools/resource_baseline.json` holds the margins). The
+# critical-section impl therefore comes from MPSL on every build, and the radio crates below are
+# plain dependencies. There is no `default` list: the features below are all opt-in overlays on
+# the one shape.
 
 # Factory station only: write the marked demo ride, then halt until normal firmware is flashed.
 factory-demo-ride = []
 
-# Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127). The
-# nRF54L15 has no USB peripheral, so the debug-sensor /
+# Stream fake GPS / altimeter / compass from a host over the **VCOM UART**. The debug-sensor /
 # telemetry stream rides the DK's onboard J-Link USB-CDC **VCOM** (UARTE20, TX P1_16 / RX P1_17);
 # defmt logs share the same cable over RTT. Brings up a `BufferedUarte` (interrupt-fed RX ring so a
 # long map render never drops bytes) and feeds `obc-platform`'s transport-agnostic debug codec +
-# fresh-fix sources into the app, replacing the real-sensor path with a recorded host ride. Off by
-# default — a plain `cargo run` drives the **real** SAM-M10Q/BMP581 sensors (issue #218); enable with
-# `--features debug-uart` to drive the board from a recorded ride via `obc-usb-host --port <VCOM
-# tty>` (the indoor path that needs no sky view). Enables the protocol + sources in obc-platform
-# (`debug-link` is the transport-agnostic handoff gate there; the board crate owns the concrete UARTE
-# driver). Takes precedence over the real sensors.
+# fresh-fix sources into the app, replacing the real-sensor path with a recorded host ride. Enables
+# the protocol + sources in obc-platform (`debug-link` is the transport-agnostic handoff gate there;
+# the board crate owns the concrete UARTE driver). Takes precedence over the real sensors.
 debug-uart = ["obc-platform/debug-link"]
 
 # Developer/CI-only compile-time allocation report. This adds a self-describing
 # `.obc_resources` table to the ELF so `firmware/tools/resource_guard.py` can read exact
 # target-side `size_of` values without running on a board. Shipping builds never enable it, so the
-# table costs them no flash or RAM. See `firmware/docs/ARCHITECTURE_RESOURCE_BASELINE.md`.
+# table costs them no flash or RAM.
 resource-report = []
 
 # Destructive maintenance mode for `flat_store_bench` only. It initializes one
@@ -70,18 +60,17 @@ flat-store-reset = []
 
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54lm20-app-s` selects the secure-app die
-# (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
-# embassy-time with the GRTC (the nRF54L has no legacy RTC time-driver); `gpiote` is the
-# GPIO task/event peripheral the button input path (#126) needs; `time` pulls the
-# embassy-time integration. Pinned to embassy-nrf 0.11.0 (first release with nRF54L15).
+# (the only partition we use — no TF-M split); `time-driver-grtc` backs embassy-time with the
+# GRTC (the nRF54L has no RTC time-driver); `gpiote` is the GPIO task/event peripheral the button
+# input path needs; `time` pulls the embassy-time integration.
 embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf54lm20-app-s", "time-driver-grtc", "gpiote", "time", "unstable-pac"] }
 # embassy-executor 0.10. `executor-thread`
 # is the thread-mode executor `#[embassy_executor::main]` runs on; `executor-interrupt` adds the
-# high-priority `InterruptExecutor` the two-plane input/overlay plane runs on (#126 — pended from
+# high-priority `InterruptExecutor` the two-plane input/overlay plane runs on (pended from
 # SWI01; see `src/board.rs`'s interrupt ladder and `src/input_plane.rs`'s executor contract).
 # `platform-cortex-m` supplies the Cortex-M architecture backend.
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
-# Cross-executor sync (#126): the lock-free `Channel` carrying recognised gestures from the
+# Cross-executor sync: the lock-free `Channel` carrying recognised gestures from the
 # high-priority input plane to the thread-mode map plane, the async `Mutex` guarding the shared SD +
 # settings store, and the blocking `Mutex` over the `InputPlane`. ^0.8.0 is what the
 # embassy-nrf 0.11 ecosystem resolves.
@@ -89,8 +78,8 @@ embassy-sync = { version = "0.8.0", features = ["defmt"] }
 # `Timer` + the embassy-time backend (driven by `time-driver-grtc` above). `defmt-timestamp-uptime`
 # prefixes each RTT log line with the uptime — handy during bring-up.
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
-# `select3` for the sensor task (issue #218): race the GPS TX-Ready edge against the DDC-poll timeout
-# (the fallback that makes TX-Ready optional) and a #117 fix-rate change. Tiny, no-alloc embassy util.
+# `select3` for the sensor task: race the GPS TX-Ready edge against the DDC-poll timeout
+# (the fallback that makes TX-Ready optional) and a fix-rate change. Tiny, no-alloc embassy util.
 embassy-futures = "0.1"
 
 # defmt logging over RTT via the DK's onboard J-Link (`cargo run` flashes + streams).
@@ -103,32 +92,30 @@ defmt-rtt = { version = "1.0", features = ["disable-blocking-mode"] }
 panic-probe = { version = "1.0", features = ["print-defmt"] }
 
 # defmt + embassy need a critical-section 1.0 impl; embassy-nrf does not bundle one. Ours is
-# MPSL's (`nrf-mpsl/critical-section-impl`) — the only one in the tree since #931 dropped the
-# radio-less `cs-single-core` alternative, which is one of the reasons the radio is not optional.
+# MPSL's (`nrf-mpsl/critical-section-impl`) and the only one in the tree, which is one of the
+# reasons the radio is not optional.
 # `inline-asm` for cortex-m 0.7's asm.
 cortex-m = { version = "0.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
 
 # `NorFlash`/`ReadNorFlash` — the traits embassy-nrf's `Rramc` (RRAM controller) driver implements;
-# the persistent settings store (#193) reads/writes its 16-byte blob to the carved RRAM page through
+# the persistent settings store reads/writes its 16-byte blob to the carved RRAM page through
 # them. Pinned to the 0.3 embassy-nrf 0.11 resolves so the trait types unify.
 embedded-storage = "0.3"
 
 # The board-agnostic glue: the `Panel` banded-display seam + the `Band` frame-absolute draw view
 # the source/handoff adapters over obc-ports: the button debouncer, the debug-sensor codec + its
 # `debug-link` sources, the `sensor-link`/BLE-sensor hand-offs, and the stub fuel gauge.
-# `debug-link` stays off (no embassy-sync) until the sensor stream at N6. (#807 split the display
-# seam, sensor decoders, and SD adapters into the sibling crates below.)
 obc-platform = { path = "../obc-platform", features = ["sensor-link", "input-wait"] }
-# The display seam (#807): the generic frame/presentation contracts the LS021/FLPR backend
+# The display seam: the generic frame/presentation contracts the LS021/FLPR backend
 # implements, the `FbDevice64` map plane the shared renderer draws into, `Framebuffer565`'s
 # `RawFb`/`Pack` the overlay composite reuses, and the `ls021` pairing (geometry/rowdiff/wire/
-# composite). embedded-graphics only. (was `obc-platform::{framebuffer,panel,ls021,display_contracts}`)
+# composite). embedded-graphics only.
 obc-display = { path = "../obc-display" }
-# The pure sensor chip/protocol decoders (#807): UBX / BMP581 / ICM-20948 / compass. The board owns
+# The pure sensor chip/protocol decoders: UBX / BMP581 / ICM-20948 / compass. The board owns
 # the concrete `Twim` transactions in `sensors.rs`; these decode the bytes. No embassy, host-tested.
 obc-sensors = { path = "../obc-sensors" }
-# The board-agnostic flat store (#807).
+# The board-agnostic flat store.
 obc-storage = { path = "../obc-storage" }
 # The transport-free v4 engine and wire codecs shared by BLE, USB, and the flat store.
 obc-link = { path = "../obc-link", features = ["fast-crc"] }
@@ -139,18 +126,18 @@ obc-render = { path = "../obc-render" }
 # colour + target types unify across the path.
 embedded-graphics = "0.8"
 
-# microSD storage (issue #123). The board owns the physical card driver; the raw-card store lives
+# microSD storage. The board owns the physical card driver; the raw-card store lives
 # in obc-storage, and format parsers live in obc-reader/obc-route.
 obc-app = { path = "../obc-app" } # the screen tree, the pass, and the map render
 obc-ports = { path = "../obc-ports" } # Semantic sensor/input/track/settings contracts implemented by board composition.
 obc-formats = { path = "../obc-formats" } # Shared object codecs used by board composition.
-obc-reader = { path = "../obc-reader" } # the streamed `Reader` + `.bss` `MapCache` the N4 map path renders from (#125)
+obc-reader = { path = "../obc-reader" } # the streamed `Reader` + `.bss` `MapCache` the map path renders from
 obc-route = { path = "../obc-route" } # Route and finished-ride readers used by board composition.
-# The OBCT terrain reader + its `.bss` tile cache (EL7, epic #1068): the board mounts the map's
+# The OBCT terrain reader + its `.bss` tile cache: the board mounts the map's
 # `.OBD` sidecar into the `ElevationSource` the router fills a planned route's elevation from.
 obc-elevation = { path = "../obc-elevation" }
-# The SD-staged DFU foundation (epic #615): the OBCU container + boot-state codec the app-side
-# armer reads/writes (S4, #619), plus its pure scan/arm/confirm decision core (`obc_dfu::armer`).
+# The SD-staged DFU foundation: the OBCU container + boot-state codec the app-side
+# armer reads/writes, plus its pure scan/arm/confirm decision core (`obc_dfu::armer`).
 obc-dfu = { path = "../obc-dfu" }
 # Bounded strings and vectors used by the app and link planes.
 heapless = "0.9"
@@ -158,30 +145,27 @@ heapless = "0.9"
 # `InputPlane` mutex, the VCOM ring buffers — is parked in `.bss` via an in-place `MaybeUninit` +
 # `ptr::write`, the same warm-reset-safe pattern as APP/MAP_CACHE/ROUTE_CACHE, so no `static_cell`.)
 
-# --- The BLE stack (issue #270; pins proven by the #269 spike) — in **every** build (#1530) ---
-# Nordic's SoftDevice Controller + MPSL, via alexmoon/nrf-sdc's Rust bindings. The crates.io
-# releases (nrf-sdc 0.3 / nrf-mpsl 0.3) predate nRF54L support *and* pin embassy-nrf 0.7, so this
-# is a **git pin**: main (unreleased 0.4.0) grows the `nrf54lm20-app-s` feature and targets exactly
-# the embassy set this crate already ships (embassy-nrf 0.11 / embassy-sync 0.8) — no embassy bump
-# or patch needed. Rev pinned at **f54b638** (2026-07-02, "use dedicated nrf54lm MPSL lib for
-# nRF54LM20A"): earlier revs mapped the LM20 to the generic `nrf54l` (= nRF54L15) MPSL library,
-# whose peripheral map differs — `mpsl_init` busfaulted at `0x5004_7004` (the L15's ECB00; the
-# LM20 moved it to 0x5004_B000) on every boot of the LM20-DK. Same embassy set, so drop-in. The device is peripheral-only (phone connects to us), but `central` must be on
-# anyway: trouble-host's *unconditional* Controller bound includes `LeCreateConnCancel` (its
+# --- The BLE stack — in **every** build ---
+# Nordic's SoftDevice Controller + MPSL, via alexmoon/nrf-sdc's Rust bindings. 0.4 is the first
+# release with the `nrf54lm20-app-s` feature, and it uses the embassy set of this crate
+# (embassy-nrf 0.11 / embassy-sync 0.8). The feature selects the dedicated nrf54lm MPSL library:
+# the generic `nrf54l` (= nRF54L15) library has a different peripheral map, and `mpsl_init`
+# busfaults on the LM20-DK at `0x5004_7004` (the L15's ECB00). `central` must be on anyway:
+# trouble-host's *unconditional* Controller bound includes `LeCreateConnCancel` (its
 # cleanup path issues it even on peripheral-only hosts), and only the multirole SDC lib variant
 # exports that symbol — `peripheral` alone is a link error. Costs flash, not RAM (the Builder
 # never enables central roles, so the controller's memory stays peripheral-sized).
-nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", features = ["defmt", "peripheral", "central", "nrf54lm20-app-s"] }
+nrf-sdc = { version = "0.4", features = ["defmt", "peripheral", "central", "nrf54lm20-app-s"] }
 # `critical-section-impl` must live on nrf-mpsl (it *provides* the critical-section impl on
-# nRF54L, and since #931 it is the only one this crate has — see the cortex-m dep note above).
-nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", features = ["defmt", "critical-section-impl"] }
-# The HCI types nrf-sdc's controller trait + trouble-host speak; same ^0.9 both resolve.
-bt-hci = { version = "0.9", default-features = false, features = ["defmt"] }
-# The BLE host (released 0.7 pins embassy-executor 0.10 / embassy-sync 0.8 / embassy-time 0.5.1 —
-# again exactly this crate's set).
+# nRF54L, and it is the only one this crate has — see the cortex-m dep note above).
+nrf-mpsl = { version = "0.4", features = ["defmt", "critical-section-impl"] }
+# The HCI types nrf-sdc's controller trait + trouble-host speak; same ^0.10 both resolve.
+bt-hci = { version = "0.10", default-features = false, features = ["defmt"] }
+# The BLE host (0.8 uses embassy-executor 0.10 / embassy-sync 0.8 / embassy-time 0.5.1 and
+# bt-hci 0.10 — again exactly this crate's set).
 # `default-packet-pool-mtu-251` sizes the pool for the config we intend to ship (ATT MTU 247 =
 # link-layer 251 with DLE), so the reported RAM numbers are the shipping ones.
-# `security` (A8, issue #276) turns on the LESC/SMP/bonding host: passkey pairing, the
+# `security` turns on the LESC/SMP/bonding host: passkey pairing, the
 # per-characteristic encryption gate, and the peer-IRK resolving list for bonded reconnect.
 # It pulls p256/aes/cmac/rand{,_core,_chacha} — all no_std here (trouble pins them
 # `default-features=false`), and the SMP CSPRNG is auto-seeded from the controller's `LeRand`
@@ -189,14 +173,14 @@ bt-hci = { version = "0.9", default-features = false, features = ["defmt"] }
 # host requires (LTK reply, enable-encryption, the resolving-list set, LeRand).
 # Keep the host's logging features off. Its security logs format bond keys and identities; the
 # board reports connection and authentication state without formatting bond records.
-# `central` + `scan` (SE6, epic #707): the BLE sensor manager runs the central role on the same
+# `central` + `scan`: the BLE sensor manager runs the central role on the same
 # `Stack` as the phone-facing peripheral — `stack.central()` scans for + connects to HR/power/cadence
-# sensors while `stack.peripheral()` keeps advertising to the phone (0.7 supports concurrent roles on
-# one stack). `scan` pulls in `central`; the manager uses legacy scan (`Scanner::scan`) + legacy
+# sensors while `stack.peripheral()` keeps advertising to the phone (concurrent roles on one stack).
+# `scan` pulls in `central`; the manager uses legacy scan (`Scanner::scan`) + legacy
 # connect (`LeCreateConn`). nrf-sdc already carries `central` (its cleanup path needs
 # `LeCreateConnCancel`); the SDC's central/scan *buffers* are only allocated once the Builder calls
 # `.support_central()/.support_scan()/.central_count()` (see `ble/mod.rs`).
-trouble-host = { version = "0.7", features = ["derive", "peripheral", "central", "scan", "gatt", "security", "default-packet-pool", "default-packet-pool-mtu-251"] }
+trouble-host = { version = "0.8", features = ["derive", "peripheral", "central", "scan", "gatt", "security", "default-packet-pool", "default-packet-pool-mtu-251"] }
 # The `#[gatt_server]` macro's generated attribute-table storage references `static_cell` by name —
 # a hard requirement of trouble-host's codegen, not our statics (this crate's own runtime statics
 # stay on the warm-reset-safe `MaybeUninit`-in-`.bss` pattern; see `init_static` in main.rs).
@@ -205,7 +189,7 @@ static_cell = "2"
 # persisted link settings. A workspace member built here for the M33 target.
 obc-ble = { path = "../obc-ble" }
 
-# --- The USB device stack (issue #889) — in **every** build; the device plane is not optional ---
+# --- The USB device stack — in **every** build; the device plane is not optional ---
 # embassy's async USB device stack. 0.6 is the release that pairs with the `embassy-usb-driver` 0.2
 # trait version embassy-nrf 0.11 implements for the LM20's USBHS, so no patch or bump anywhere.
 # `default-features = false` drops `usbd-hid` (we expose one vendor interface, no HID). `msos-descriptor`
@@ -214,7 +198,7 @@ obc-ble = { path = "../obc-ble" }
 embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt"] }
 
 [build-dependencies]
-# build.rs sizes the SEMMC_STAGE linker region (the armer→bootloader blob handoff, #1158) from
+# build.rs sizes the SEMMC_STAGE linker region (the armer→bootloader blob handoff) from
 # `obc_dfu::blobstage::STAGE_LEN` — the one definition the armer, the bootloader and the spec
 # share — and asserts the vendored image (+ header line) fits it. Host-compiled; core-only.
 obc-dfu = { path = "../obc-dfu" }
@@ -229,8 +213,8 @@ debug = 2
 # The vendored Synopsys OTG driver `embassy-nrf`'s USBHS wrapper is a thin shell over. It is where
 # the bulk OUT endpoint's transfer arming lives, and upstream arms exactly **one** max packet at a
 # time — the endpoint NAKs from the moment a packet lands until this firmware's task has been
-# scheduled, copied it out and cleared NAK, which is ~70% of the measured 342 µs/packet that capped
-# map uploads at ~1.4 MB/s (#1173). The fork arms a burst of packets on that one endpoint.
+# scheduled, copied it out and cleared NAK, which caps map uploads. The fork arms a burst of packets
+# on that one endpoint.
 #
 # **Vendored rather than git-pinned** for the same reasons `vendor/semmc` is: CI must build offline
 # and reproducibly, and a fork this small is easier to review as a diff against a pristine copy

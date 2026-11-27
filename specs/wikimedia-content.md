@@ -1,13 +1,13 @@
 # Shared Wikimedia content
 
 The landmark and peak content: the compact facts that the prepared source [`wiki`](#the-wiki-source)
-holds, and how the compilers read them. The compiled device formats in [obc-data](obc-data.md) and
+holds, and how the compilers read them. The compiled device formats in [obc-data](obc-data-products.md#device) and
 [OBCM](obcm-map.md) are separate outputs.
 
 - Writers: the producer of `wiki` (`host/obc-data-steps/src/wiki.rs`) with the steps of `tools/wiki`
   (`facts.py` holds the compact fact format).
 - Readers: the landmark and peak compilers (`host/obc-pack/src/landmarks/`), the device cell steps.
-- Related: [obc-data `wiki`](obc-data.md#wiki), [OBCM](obcm-map.md), [planner
+- Related: [obc-data `wiki`](obc-data-producers.md#wiki), [OBCM](obcm-map.md), [planner
   release](planner-release.md).
 
 ## Policy owners
@@ -145,14 +145,14 @@ selected inputs and policy.
 
 ## The `wiki` source
 
-The prepared source `wiki` ([obc-data](obc-data.md#wiki)) holds the compact facts of each OSM
+The prepared source `wiki` ([obc-data](obc-data-producers.md#wiki)) holds the compact facts of each OSM
 subject in the selected coverage: an object with a `wikidata` or `wikipedia` tag. Its version has
 these files:
 
 | Path | Holds |
 | --- | --- |
 | `cells/<i>-<j>.tar.zst` | The facts of each subject whose box touches the `2^20` µdeg OBCA cell `(i, j)`; `<i>` and `<j>` have four digits or more |
-| `common.tar.zst` | The classes, and the facts of each subject without a box or whose box touches more than 16 cells. A version that [extends](obc-data.md#wiki) another keeps each earlier common fact whose kind and key no shard of this run holds, until a version of everything replaces it |
+| `common.tar.zst` | The classes, and the facts of each subject without a box or whose box touches more than 16 cells. A version that [extends](obc-data-producers.md#wiki) another keeps each earlier common fact whose kind and key no shard of this run holds, until a version of everything replaces it |
 | `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects that the run read, those in `common`, those without a resolved link, the unresolved work of each kind, and the compiles of the producer that failed (`photo_compile_failures`) |
 
 The version manifest records the coverage, the article languages and `publish_text` of its run. An

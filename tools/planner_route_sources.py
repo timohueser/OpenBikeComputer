@@ -1,4 +1,4 @@
-"""The routes of the route sources in a box: `route-sources.json`, as `specs/obc-data.md` defines it.
+"""The routes of the route sources in a box: `route-sources.json`, as `specs/obc-data-products.md` defines it.
 
 A description `data/routes/<id>.toml` says which layers and fields of the files of a source make a
 route and its stages, so a new source needs no code."""

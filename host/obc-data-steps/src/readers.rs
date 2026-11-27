@@ -2,7 +2,7 @@
 
 use obc_data::engine::Reader;
 
-/// The planner services wait at Router ready, as `specs/obc-data.md` says.
+/// The planner services wait at Router ready, as `specs/obc-data-targets.md` says.
 macro_rules! service {
     ($name:literal) => {
         Reader {

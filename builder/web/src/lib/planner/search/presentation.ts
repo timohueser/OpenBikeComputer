@@ -6,7 +6,6 @@ import contract from '../../../../../../planner/search/query/contract.json' with
 /** The query language that search accepts. */
 export { contract };
 export const kindLabel = (kind: string) => kind.replaceAll('_', ' ');
-export const allKinds = Object.keys(contract.kinds);
 const kinds: Record<string, { category: string | null }> = contract.kinds, dataKinds: Record<string, string> = contract.data;
 /** The map category of a query kind or a search-data kind, such as `shop` for `shop=yes`. A kind without one shows as a
  * viewpoint. */
