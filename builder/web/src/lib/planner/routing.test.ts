@@ -336,12 +336,14 @@ describe('runs longer than one request', () => {
             [moved(48.03).slice(1, 4), `one:${coordinates[1]}`, `one:${coordinates[3]}`], [moved(48.03), undefined, undefined]]);
     });
 
-    it('lets a visit inside a run turn back, but not a shaping point or a visit that ends the run', async () => {
+    it('lets a visit or a night inside a run turn back, but not a shaping point or a stop that ends the run', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
         vi.stubGlobal('fetch', fetch);
-        const coordinates = run(5);
-        await calculateLine(plan(coordinates, { 1: { kind: 'waypoint' }, 3: { kind: 'waypoint' }, 4: { leg: 'straight' } }), signal, new LegCache());
-        expect(bodies(fetch)).toEqual([expect.objectContaining({ points: coordinates.slice(0, 4), turnarounds: [1] })]);
+        const coordinates = run(8);
+        await calculateLine(plan(coordinates, { 1: { kind: 'waypoint' }, 2: { kind: 'night', night: 1 }, 4: { kind: 'night', night: 2 }, 5: { leg: 'straight' },
+            6: { kind: 'waypoint' }, 7: { leg: 'straight' } }), signal, new LegCache());
+        expect(bodies(fetch)).toEqual([expect.objectContaining({ points: coordinates.slice(0, 5), turnarounds: [1, 2] }),
+            expect.objectContaining({ points: coordinates.slice(5, 7), turnarounds: [] })]);
     });
 
     it('asks only for the legs of a moved visit between visits, pinned only at a shaping point, and again one leg wider where a turnaround does not meet', async () => {
