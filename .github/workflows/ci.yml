@@ -705,7 +705,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Build builder core, test device, ground plan and parts bridges
+      - name: Build builder core, test device, ground plan, parts and WebP bridges
         run: bash builder/build-wasm-bridges.sh
       - name: Builder core size budget
         run: python3 builder/wasm/wasm_size_guard.py
@@ -713,6 +713,8 @@ jobs:
         run: python3 builder/wasm/wasm_size_guard.py --module ground-plan
       - name: Parts bridge size budget
         run: python3 builder/wasm/wasm_size_guard.py --module parts
+      - name: WebP bridge size budget
+        run: python3 builder/wasm/wasm_size_guard.py --module webp
       # Every run: it writes the native digests that the browser jobs compare with the viewer's.
       - name: Ground plan check 7, native and WASM bytes
         run: bash builder/ground-plan-wasm/check-bytes.sh
@@ -730,6 +732,11 @@ jobs:
         with:
           name: obc-trailview-parts-bridge-pkg
           path: builder/web/src/lib/trailview/structures/pkg
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-webp-bridge-pkg
+          path: builder/web/src/lib/trailview/stream/webp
           retention-days: 1
       # The test device. No size budget: it ships to nobody and only the `web` job downloads it.
       - uses: actions/upload-artifact@v4
@@ -985,6 +992,10 @@ jobs:
         with:
           name: obc-trailview-parts-bridge-pkg
           path: builder/web/src/lib/trailview/structures/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-webp-bridge-pkg
+          path: builder/web/src/lib/trailview/stream/webp
       # The device the USB suites run against. The shipped bundle must not contain this package.
       - uses: actions/download-artifact@v4
         with:
@@ -1056,6 +1067,10 @@ jobs:
         with:
           name: obc-trailview-parts-bridge-pkg
           path: builder/web/src/lib/trailview/structures/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-webp-bridge-pkg
+          path: builder/web/src/lib/trailview/stream/webp
       # The planner build of the browser tests holds the pretend device of `?fake-device`.
       - uses: actions/download-artifact@v4
         with:
