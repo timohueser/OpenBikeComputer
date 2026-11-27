@@ -204,7 +204,7 @@ export class PlanSession {
 
     /** Names a visit whose label is still its coordinate after the nearest address. A name is metadata: no Undo step. */
     async nameVisit(point: RoutePoint): Promise<void> {
-        if (!point.autoLabel || !['waypoint', 'detour'].includes(point.kind) || point.label !== coordinateName(point.coordinate)) return;
+        if (!point.autoLabel || point.kind !== 'waypoint' || point.label !== coordinateName(point.coordinate)) return;
         const coordinate: Coordinate = [...point.coordinate];
         const label = await visitName(coordinate);
         if (label) this.autoName(point.id, coordinate, label);

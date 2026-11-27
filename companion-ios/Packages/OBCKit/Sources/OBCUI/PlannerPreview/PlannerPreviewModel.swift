@@ -623,8 +623,7 @@ public final class PlannerPreviewModel {
         }
     }
 
-    /// The editor state of a plan. Pass and detour points have no kind of their own here: a pass is a
-    /// shaping point and a detour a stop.
+    /// The editor state of a plan. A pass point has no kind of its own here: it is a shaping point.
     private static func state(_ plan: PlannerPlan) -> State {
         let route = plan.routePoints
         var state = State()

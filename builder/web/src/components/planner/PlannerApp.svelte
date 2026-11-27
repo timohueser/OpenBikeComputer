@@ -46,7 +46,7 @@
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, endpointLabel,
         type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
-    import { coordinateAt, cumulative, nearestOnLine, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
+    import { coordinateAt, cumulative, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import { placeChoice } from '../../lib/planner/place-choice.svelte';
     import { config } from '../../lib/planner/map-data';
     import { beforeReload } from '../../lib/planner/release';
@@ -1051,7 +1051,7 @@
         commit(next, 'Point renamed');
     }
 
-    function changeKind(kind: EditableKind | 'detour') {
+    function changeKind(kind: EditableKind) {
         const point = selectedPoint;
         if (!point) return;
         if (kind === 'night') {
@@ -1062,11 +1062,10 @@
         }
         // A night point takes a fresh id, so its `night-N` id stays free for pinning.
         const id = point.kind === 'night' ? crypto.randomUUID() : point.id;
-        const autoLabel = ['waypoint', 'detour'].includes(kind) && (point.kind === 'via' || point.autoLabel);
+        const autoLabel = kind === 'waypoint' && (point.kind === 'via' || point.autoLabel);
         const label = autoLabel ? coordinateName(point.coordinate) : point.label;
         const next = replacePoint(trip, session.line, point.id, { ...point, id, kind, night: undefined, label, autoLabel: autoLabel || undefined,
-            ...kind === 'via' && { placeId: undefined, placeKind: undefined },
-            anchor: kind === 'detour' ? nearestOnLine(coordinates, point.coordinate).at : undefined });
+            ...kind === 'via' && { placeId: undefined, placeKind: undefined } });
         commit(next, 'Point type updated');
         selectedId = id;
         void session.nameVisit(next.points.find(p => p.id === id)!);

@@ -168,39 +168,23 @@ const stopsHere = (point: RoutePoint) => point.kind === 'waypoint' || point.kind
 export function routingKey(trip: Trip): string {
     let key = keys.get(trip);
     if (key === undefined) {
-        key = JSON.stringify([trip.bike ?? 'touring', planPreset(trip.bike, trip.preset), orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', stopsHere(p), p.anchor, p.turnaround])]);
+        key = JSON.stringify([trip.bike ?? 'touring', planPreset(trip.bike, trip.preset), orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], stopsHere(p), p.turnaround])]);
         keys.set(trip, key);
     }
     return key;
 }
 
-/** The request points of a run of routed plan points after `origin`, without the points of `leftOut`: a detour goes to its
- * place and back to its anchor. A left-out detour at the end of the run keeps its anchor, where the manual leg after it
- * starts. `ends` maps each leg that ends at a plan point to the point's id, and `owners` gives the plan point of each
- * request point after the origin. */
+/** The request points of a run of routed plan points after `origin`, without the points of `leftOut`. `owners[k]` is
+ * the plan point at which leg `k` ends. */
 function expand(origin: Coordinate, run: RoutePoint[], leftOut: Set<string>) {
-    const coordinates: Coordinate[] = [origin], turnarounds: number[] = [], ends = new Map<number, string>();
-    const owners: (RoutePoint | undefined)[] = [undefined];
+    const coordinates: Coordinate[] = [origin], turnarounds: number[] = [], owners: RoutePoint[] = [];
     run.forEach((point, n) => {
-        if (leftOut.has(point.id)) {
-            if (n < run.length - 1) return;
-            coordinates.push(point.anchor!);
-            owners.push(point);
-            ends.set(coordinates.length - 2, point.id);
-        } else if (point.kind === 'detour') {
-            if (!point.anchor) throw new Error('Choose a return point on the route for this visit.');
-            coordinates.push(point.anchor, point.coordinate, point.anchor);
-            owners.push(point, point, point);
-            turnarounds.push(coordinates.length - 2);
-            ends.set(coordinates.length - 3, point.id);
-        } else {
-            coordinates.push(point.coordinate);
-            owners.push(point);
-            ends.set(coordinates.length - 2, point.id);
-            if ((point.turnaround || stopsHere(point)) && n < run.length - 1) turnarounds.push(coordinates.length - 1);
-        }
+        if (leftOut.has(point.id)) return;
+        coordinates.push(point.coordinate);
+        owners.push(point);
+        if ((point.turnaround || stopsHere(point)) && n < run.length - 1) turnarounds.push(coordinates.length - 1);
     });
-    return { coordinates, turnarounds, ends, owners };
+    return { coordinates, turnarounds, owners };
 }
 
 /** Consecutive routed legs form one run, so a shaping point keeps its road direction; a visit or a night inside a run is a
@@ -240,8 +224,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
     result.stops.push({ id: points[0].id, distance: 0 });
     for (let i = 1; i < points.length;) {
         const end = points[i];
-        const before = points[i - 1];
-        const origin = before.kind === 'detour' ? before.anchor ?? before.coordinate : before.coordinate;
+        const origin = points[i - 1].coordinate;
         if (end.leg && end.leg !== 'routed') {
             const drawn: DrawnCoordinate[] = [origin, ...(end.leg === 'drawn' ? end.drawn ?? [] : []), end.coordinate];
             const line = drawn.map((c): Coordinate => [c[0], c[1]]);
@@ -277,8 +260,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
                 // The first and the last request point, a start, a finish or a point beside a manual leg, stay, so that the
                 // manual leg keeps its join: the leg at the point becomes a gap.
                 else if (point === 0 || point === last) gap(point === 0 ? 0 : last - 1);
-                // A detour is left out with its anchors.
-                else leftOut.add(request.owners[point!]!.id);
+                else leftOut.add(request.owners[point! - 1].id);
                 request = expand(origin, run, leftOut);
             }
         }
@@ -288,11 +270,10 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         result.unknownSurfaceKm += route.totals.surface_m[0] / 1000;
         result.pushingKm += route.totals.pushing_m / 1000;
         result.unknownElevationKm += route.totals.unknown_elevation_m / 1000;
-        const stopAt = new Map([...request.ends].map(([leg, id]) => [id, route.legs[leg].to_index]));
-        // A gap belongs to the stop after it. The way back from a detour at the end of the run has none: it belongs to the detour.
-        const ends = [...request.ends];
+        const stopAt = new Map(request.owners.map((point, k) => [point.id, route.legs[k].to_index]));
+        // A gap belongs to the stop after it.
         route.legs.forEach((leg, k) => {
-            const id = leg.gap && (ends.find(([end]) => end >= k) ?? ends.at(-1)!)[1];
+            const id = leg.gap && request.owners[k].id;
             if (id && !result.gapLegs.includes(id)) result.gapLegs.push(id);
         });
         // A point left out stops where the line passes nearest to it, between the points around it.

@@ -792,10 +792,7 @@
         return svg;
     }
 
-    const pointIcons = {
-        waypoint: "M6 21V3m0 1c4-3 8 3 12 0v9c-4 3-8-3-12 0",
-        detour: "M8 5 3 10l5 5M3 10h11a5 5 0 0 1 0 10h-2",
-    };
+    const visitIcon = "M6 21V3m0 1c4-3 8 3 12 0v9c-4 3-8-3-12 0";
     // The start plays and the finish waves a chequered flag, as in the iPhone planner. A loop has only its start.
     const endpointIcons = {
         start: '<path d="M9 6.5v11l9-5.5z" fill="currentColor" />',
@@ -831,8 +828,8 @@
             const title = dayEnd ? `${point.appearance === "moved" ? "Day end you moved" : "Day end suggested"} · drag along the route` : point.label + (draggable ? " · drag to move" : "");
             if ((point.kind === "place" || point.kind === "night") && point.category) {
                 button.append(markerIcon(placeCategories[point.category].icon));
-            } else if (point.kind === "waypoint" || point.kind === "detour") {
-                button.append(markerIcon(pointIcons[point.kind]));
+            } else if (point.kind === "waypoint") {
+                button.append(markerIcon(visitIcon));
             } else if (point.kind === "start" || point.kind === "finish") {
                 button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" draggable="false">${endpointIcons[point.kind]}</svg>`;
             } else {
@@ -970,8 +967,6 @@
     :global([data-theme="dark"] .planner-map-pin.place) { color: var(--cream, #fff2d1); }
     :global(.planner-map-pin svg) { width: 21px; height: 21px; }
     :global(.planner-map-pin.waypoint) { background: var(--ink-soft, #5c5a2e); }
-    :global(.planner-map-pin.detour) { background: var(--panel, #fff); color: var(--ink-soft, #5c5a2e); border-color: var(--ink-soft, #5c5a2e); }
-    :global(.planner-map-pin.detour svg) { width: 18px; height: 18px; }
     :global(.planner-map-pin.suggested) { color: var(--ink-soft, #5c5a2e); background: #e7ecdf; border: 2px dashed var(--ink-soft, #5c5a2e); box-shadow: none; }
     :global(.planner-map-pin.night:not(.suggested)) { color: var(--panel, #fff); background: var(--pin-color, var(--ink, #1c1b14)); }
     :global(.planner-map-pin.dayend) { width: 24px; height: 24px; font: 600 11px var(--sans, sans-serif); color: var(--pin-color); background: var(--panel, #fff); border: 2px dashed var(--pin-color); }

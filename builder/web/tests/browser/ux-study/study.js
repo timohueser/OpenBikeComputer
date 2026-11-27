@@ -70,9 +70,9 @@ const FURKA_PASS = [8.415184, 46.572685];
 const ANDERMATT = [8.594815, 46.63405];
 const LUCERNE = [8.305812, 47.052144];
 const FOOD = new Set(placeKinds.food);
-// The kinds of the planner's points that the route goes to: a visit, a visit-and-return, and a place that a
-// search sentence routes through. A marker only lies beside the route.
-const STOPS = new Set(['waypoint', 'detour', 'pass']);
+// The kinds of the planner's points that the route goes to: a visit and a place that a search sentence routes
+// through. A marker only lies beside the route.
+const STOPS = new Set(['waypoint', 'pass']);
 
 const from = (line, start, end) => startsAt(line, start) && endsAt(line, end);
 const meiringenToGrimsel = ({ summary }) => from(summary.line, MEIRINGEN_STATION, GRIMSEL_PASS);

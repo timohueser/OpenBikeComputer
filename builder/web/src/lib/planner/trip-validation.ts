@@ -25,11 +25,10 @@ function stay(value: unknown): boolean {
 function point(value: unknown): value is RoutePoint {
     return record(value) && typeof value.id === 'string' && value.id.length > 0 && typeof value.label === 'string'
         && coordinate(value.coordinate)
-        && typeof value.kind === 'string' && ['start', 'finish', 'pass', 'via', 'waypoint', 'detour', 'night', 'marker'].includes(value.kind)
+        && typeof value.kind === 'string' && ['start', 'finish', 'pass', 'via', 'waypoint', 'night', 'marker'].includes(value.kind)
         && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn'].includes(value.leg)))
         && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(c =>
             Array.isArray(c) && (coordinate(c) || (c.length === 3 && coordinate(c.slice(0, 2)) && finite(c[2]))))))
-        && (value.anchor === undefined || coordinate(value.anchor))
         && (value.placeKind === undefined || typeof value.placeKind === 'string')
         && (value.placeId === undefined || typeof value.placeId === 'string')
         && (value.locality === undefined || typeof value.locality === 'string')

@@ -32,7 +32,6 @@ const cases = [
   ['change-bike', route([MEIRINGEN, GRIMSEL], { bike: 'mtb' }), true],
   ['change-bike', route([MEIRINGEN, GRIMSEL], { bike: 'gravel' }), false],
   ['lunch-stop', route([MEIRINGEN, GRIMSEL], { stops: [stop('waypoint', 'restaurant', 0.5)] }), true],
-  ['lunch-stop', route([MEIRINGEN, GRIMSEL], { stops: [stop('detour', 'cafe', 0.6)] }), true],
   ['lunch-stop', route([MEIRINGEN, GRIMSEL], { stops: [stop('pass', 'restaurant', 0.4)] }), true],
   ['lunch-stop', route([MEIRINGEN, GRIMSEL], { stops: [stop('waypoint', 'restaurant', 0.1)] }), false],
   ['lunch-stop', route([MEIRINGEN, GRIMSEL], { stops: [stop('marker', 'restaurant', 0.5)] }), false],
