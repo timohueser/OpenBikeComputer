@@ -1,0 +1,227 @@
+<!doctype html>
+<!-- The blind comparison of the route bench. `route_bench compare` puts the routes of two runs in
+     place of the data marker. Leaflet and the map tiles come from the network. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Route compare</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root { color-scheme: light; --bg: #f6f7f5; --fg: #1c2420; --muted: #5d6a63; --line: #d5dbd6; --a: #0b6fd6; --b: #d9480f; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: grid; grid-template-columns: 1fr 340px; font: 14px/1.45 system-ui, sans-serif; color: var(--fg); background: #fff; }
+  #map { height: 100%; min-height: 300px; }
+  aside { display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow-y: auto; border-left: 1px solid var(--line); }
+  h1 { font-size: 16px; margin: 0; }
+  .muted { color: var(--muted); margin: 0; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  /* Each control sets its text and its ground, so a dark theme of the viewer cannot split them. */
+  select, button, textarea { font: inherit; color: var(--fg); background: #fff; }
+  button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  #kinds span { display: inline-block; width: 24px; vertical-align: middle; }
+  .swatch { display: inline-block; width: 22px; height: 5px; border-radius: 3px; vertical-align: middle; margin-right: 6px; }
+  .votes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .votes button { padding: 10px 8px; background: var(--bg); text-align: left; }
+  .votes button.on { border-color: #1f7a4d; background: #e3f3ea; font-weight: 600; }
+  textarea { width: 100%; min-height: 54px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; }
+  #reveal { margin: 0; padding: 8px; border-radius: 6px; background: var(--bg); font: inherit; white-space: pre-wrap; }
+  #results { min-height: 120px; font: 12px ui-monospace, monospace; }
+  @media (max-width: 800px) { body { grid-template-columns: 1fr; grid-template-rows: 55vh auto; } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<aside>
+  <h1>Which route is better?</h1>
+  <p class="muted">The same start and end, two routers. A coin for each pair says which of them is route A.</p>
+  <select id="set" aria-label="Profile"></select>
+  <div class="row">
+    <button id="prev">Back</button>
+    <span id="position"></span>
+    <button id="next">Next</button>
+    <button id="open">Next open</button>
+  </div>
+  <table>
+    <thead><tr><th></th><th>km</th><th>climb m</th></tr></thead>
+    <tbody>
+      <tr><td><span class="swatch" style="background:var(--a)"></span>A</td><td id="a-km"></td><td id="a-up"></td></tr>
+      <tr><td><span class="swatch" style="background:var(--b)"></span>B</td><td id="b-km"></td><td id="b-up"></td></tr>
+    </tbody>
+  </table>
+  <div id="kinds" class="row"></div>
+  <div class="votes">
+    <button data-vote="A">1 &nbsp; A is better</button>
+    <button data-vote="B">2 &nbsp; B is better</button>
+    <button data-vote="same">3 &nbsp; No real difference</button>
+    <button data-vote="bad">4 &nbsp; Both are bad</button>
+  </div>
+  <textarea id="note" placeholder="What is wrong or good here? (optional)"></textarea>
+  <pre id="reveal" hidden></pre>
+  <div class="row">
+    <button id="copy">Copy my answers</button>
+    <span id="tally" class="muted"></span>
+  </div>
+  <p class="muted">Your answers stay in this browser. The copy names the run of each answer.</p>
+  <textarea id="results" hidden readonly></textarea>
+</aside>
+<script>
+// { names: [x, y], sets: [{ profile, pairs: [{ id, ends: [[lat, lon], [lat, lon]],
+//   routes: [{ line: [[lat, lon], …], km, ascent_m, measures }, the same of y] }],
+//   overlay: { kind: [line, …] } }] }
+const DATA = /*DATA*/null;
+// FNV-1a.
+function hash(text) {
+  let h = 2166136261;
+  for (const c of text) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+// The answers belong to the routes of this page, so the key has the hash of the data.
+const KEY = 'route-bench-compare ' + hash(JSON.stringify(DATA));
+let store = {};
+try { store = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) {}
+const $ = (id) => document.getElementById(id);
+const colour = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+const map = L.map('map', { preferCanvas: true });
+const layers = {
+  'OpenStreetMap': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }),
+  'CyclOSM': L.tileLayer('https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png',
+    { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors, CyclOSM' }),
+};
+layers['OpenStreetMap'].addTo(map);
+L.control.layers(layers).addTo(map);
+L.control.scale({ imperial: false }).addTo(map);
+const drawn = L.layerGroup().addTo(map);
+let set = DATA.sets[0], index = 0;
+
+// The cycling facts of the map, under the routes: the line style of each kind of the overlay.
+const KINDS = {
+  'signed route': { color: '#7b3fb5', weight: 11, opacity: 0.3 },
+  'cycle path': { color: '#00802b', weight: 2.5, opacity: 0.9 },
+  'cycle lane or track': { color: '#00802b', weight: 2.5, opacity: 0.9, dashArray: '5 6' },
+};
+map.createPane('facts').style.zIndex = 350;
+const facts = Object.entries(KINDS).map(([kind, style]) => {
+  const layer = L.polyline([], { ...style, pane: 'facts', interactive: false }).addTo(map);
+  const label = $('kinds').appendChild(document.createElement('label'));
+  const line = Math.min(style.weight, 8) + 'px ' + (style.dashArray ? 'dashed ' : 'solid ') + style.color;
+  label.innerHTML = '<input type="checkbox" checked> <span style="border-top: ' + line + '; opacity: ' +
+    style.opacity + '"></span> ' + kind;
+  label.firstChild.addEventListener('change', (e) => e.target.checked ? layer.addTo(map) : layer.remove());
+  return { kind, layer, label };
+});
+// A profile shows the kinds that its overlay has.
+function overlay() {
+  for (const { kind, layer, label } of facts) {
+    layer.setLatLngs((set.overlay || {})[kind] || []);
+    label.hidden = !layer.getLatLngs().length;
+  }
+}
+
+const answers = () => store[set.profile] = store[set.profile] || {};
+const answer = (pair) => answers()[pair.id] = answers()[pair.id] || {};
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) {} };
+
+// The run of route A, 0 or 1: a coin that stays the same for a pair when the page loads again.
+const first = (pair) => (hash(set.profile + pair.id) >>> 13) & 1;
+
+function show(fit) {
+  const pair = set.pairs[index];
+  drawn.clearLayers();
+  $('position').textContent = pair ? (index + 1) + ' of ' + set.pairs.length : 'No pairs with two different routes.';
+  $('tally').textContent = set.pairs.filter((p) => answer(p).vote).length + ' of ' + set.pairs.length + ' answered';
+  // A profile with no pair shows no answer of another profile.
+  const given = pair ? answer(pair) : {};
+  document.querySelectorAll('.votes button').forEach((b) => {
+    b.classList.toggle('on', !!pair && b.dataset.vote === given.vote);
+    b.disabled = !pair;
+  });
+  $('note').value = given.note || '';
+  $('note').disabled = !pair;
+  $('reveal').hidden = !given.vote;
+  for (const id of ['a-km', 'a-up', 'b-km', 'b-up']) $(id).textContent = '';
+  if (!pair) return;
+  const a = first(pair), routes = { A: pair.routes[a], B: pair.routes[1 - a] };
+  // Route B is the thin line on top, so both show where they run together.
+  L.polyline(routes.A.line, { color: colour('--a'), weight: 8, opacity: 0.6 }).addTo(drawn);
+  L.polyline(routes.B.line, { color: colour('--b'), weight: 3, opacity: 0.95 }).addTo(drawn);
+  const end = (at, fill, text) =>
+    L.circleMarker(at, { radius: 7, color: '#000', fillColor: fill, fillOpacity: 1, weight: 2 }).bindTooltip(text).addTo(drawn);
+  end(pair.ends[0], '#fff', 'Start');
+  end(pair.ends[1], '#000', 'End');
+  // Leaflet drops a new view while it animates a zoom.
+  if (fit) map.fitBounds(L.latLngBounds(routes.A.line.concat(routes.B.line)).pad(0.08), { animate: false });
+  for (const [name, route] of Object.entries(routes)) {
+    $(name.toLowerCase() + '-km').textContent = route.km.toFixed(1);
+    $(name.toLowerCase() + '-up').textContent = Math.round(route.ascent_m);
+  }
+  // The measures show only after the answer.
+  const facts = (name) => name + ': ' + Object.entries(routes[name].measures).map(([k, v]) => k + ' ' + v).join(', ');
+  $('reveal').textContent = facts('A') + '\n\n' + facts('B');
+}
+
+function vote(value) {
+  const pair = set.pairs[index];
+  if (!pair) return;
+  const run = { A: first(pair), B: 1 - first(pair) }[value];
+  Object.assign(answer(pair), { vote: value, better: run === undefined ? value : DATA.names[run] });
+  save();
+  show(false);
+}
+
+function results() {
+  const lines = [];
+  for (const s of DATA.sets) {
+    const given = store[s.profile] || {}, count = {};
+    const rows = s.pairs.filter((p) => given[p.id] && (given[p.id].vote || given[p.id].note)).map((p) => {
+      const g = given[p.id];
+      if (g.better) count[g.better] = (count[g.better] || 0) + 1;
+      return '  pair ' + p.id + ': ' + (g.better || '-') + (g.note ? ' | ' + g.note.replace(/\s+/g, ' ') : '');
+    });
+    if (rows.length) lines.push(s.profile + ' (' + DATA.names.join(' against ') + '): ' +
+      Object.entries(count).map(([k, v]) => k + ' ' + v).join(', '), ...rows);
+  }
+  return lines.join('\n') || 'No answers yet.';
+}
+
+const go = (to) => { index = Math.max(0, Math.min(set.pairs.length - 1, to)); show(true); };
+$('set').addEventListener('change', () => { set = DATA.sets[$('set').selectedIndex]; overlay(); go(0); });
+$('prev').addEventListener('click', () => go(index - 1));
+$('next').addEventListener('click', () => go(index + 1));
+$('open').addEventListener('click', () => {
+  const k = set.pairs.findIndex((p) => !answer(p).vote);
+  if (k >= 0) go(k);
+});
+document.querySelectorAll('.votes button').forEach((b) => b.addEventListener('click', () => vote(b.dataset.vote)));
+$('note').addEventListener('input', () => {
+  if (set.pairs[index]) { answer(set.pairs[index]).note = $('note').value; save(); }
+});
+$('copy').addEventListener('click', () => {
+  const box = $('results');
+  box.hidden = false;
+  box.value = results();
+  box.select();
+  if (navigator.clipboard) navigator.clipboard.writeText(box.value).catch(() => {});
+});
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  const votes = { '1': 'A', '2': 'B', '3': 'same', '4': 'bad' };
+  if (votes[e.key]) vote(votes[e.key]);
+  if (e.key === 'ArrowRight') $('next').click();
+  if (e.key === 'ArrowLeft') $('prev').click();
+});
+
+for (const s of DATA.sets) $('set').add(new Option(s.profile + ' (' + s.pairs.length + ' pairs)'));
+map.setView([0, 0], 2);
+overlay();
+show(true);
+</script>
+</body>
+</html>

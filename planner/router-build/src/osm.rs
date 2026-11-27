@@ -766,7 +766,7 @@ fn emit(
 /// `osm` holds every highway with the node of each reference, the relations that may be
 /// preserved and the node members of `Data`. Gives each way its facts, and keeps the ways with a
 /// present node and the relations that may be preserved.
-fn scan(mut osm: Data, mut sets: Sets, mut counts: Counts) -> Source {
+pub(crate) fn scan(mut osm: Data, mut sets: Sets, mut counts: Counts) -> Source {
     let mut facts = facts(&osm, &mut sets, &mut counts);
     let mut rules = Column::default();
     for relation in osm.relations.iter() {
