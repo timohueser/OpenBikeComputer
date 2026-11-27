@@ -2,13 +2,14 @@
 use crate::{
     base::{narrow, Dictionary, Topology},
     column::{split_mut, Column},
+    junction::{self, Junctions},
     road_bike,
     source::{Data, Way},
     suitability, Graph, CHUNK,
 };
 use planner_router::{
     closures::Closure,
-    cost::{turn, CostBasis},
+    cost::CostBasis,
     model::{Profile, Road, Weighting, BIKE, FOOT, PUSH},
 };
 use rayon::prelude::*;
@@ -183,13 +184,15 @@ pub(crate) fn check_nodes(graph: &Graph) -> Result<(), String> {
 }
 
 /// The cost of the turn from road `before` to road `after`, whose bases are `wa` and `wb`, or
-/// `None` where the profile may not take it.
+/// `None` where the profile may not take it. A cycling profile adds `turn`, the cost of the junction
+/// (`Junctions::cost`).
 pub(crate) fn transition(
     graph: &Graph,
     profile: &Profile,
     (wa, wb): (Option<CostBasis>, Option<CostBasis>),
     before: u32,
     after: u32,
+    turn: u64,
 ) -> Option<u64> {
     let roads = &graph.roads;
     let (a, b) = (&roads.attributes(before as usize), &roads.attributes(after as usize));
@@ -198,9 +201,9 @@ pub(crate) fn transition(
     }
     // A U-turn onto the reverse of the same road does not pass the node, so a closed gate at
     // the end of a spur still lets the rider turn back; its access and doubt do not apply.
-    let passes = !(a.way == b.way && a.from == b.to && a.to == b.from);
-    let junction = b.from as usize;
-    let access = if passes { graph.node_access.values()[junction] } else { BIKE | FOOT | PUSH };
+    let passes = !junction::back(roads, before, after);
+    let node = b.from as usize;
+    let access = if passes { graph.node_access.values()[node] } else { BIKE | FOOT | PUSH };
     if access & profile.modes() == 0 {
         return None;
     }
@@ -209,21 +212,19 @@ pub(crate) fn transition(
     if (pushing(a) || pushing(b) || access & BIKE == 0) && !graph.permits_turn(before, after, true) {
         return None;
     }
-    let doubt = passes && graph.node_doubts.values()[junction] & profile.mode(b) != 0;
-    let doubt = if doubt { UNCERTAIN_NODE } else { 0.0 };
-    if !matches!(profile.weighting, Weighting::RoadBike(_)) {
-        return Some(doubt as u64);
+    let doubt = passes && graph.node_doubts.values()[node] & profile.mode(b) != 0;
+    let mut cost = if doubt { UNCERTAIN_NODE } else { 0.0 };
+    if profile.walking {
+        return Some(cost as u64);
     }
-    let (arrival, departure) = (roads.shape(before as usize), roads.shape(after as usize));
-    let mut cost = doubt + turn(arrival[arrival.len() - 2], arrival[arrival.len() - 1], departure[1], wb.turn);
-    if graph.signals.values()[junction] != 0 {
-        cost += 20.0;
-    }
-    if wb.ferry && !wa.ferry {
-        cost += 10_000.0;
-    }
-    if !pushing(a) && (pushing(b) || access & BIKE == 0) {
-        cost += 300.0;
+    cost += turn as f64;
+    if matches!(profile.weighting, Weighting::RoadBike(_)) {
+        if wb.ferry && !wa.ferry {
+            cost += 10_000.0;
+        }
+        if !pushing(a) && (pushing(b) || access & BIKE == 0) {
+            cost += 300.0;
+        }
     }
     Some(cost.round() as u64)
 }
@@ -239,13 +240,14 @@ pub(crate) struct RoadCosts {
 }
 
 /// The costs of `profiles`, `group` profiles at a time. The chunks of `CHUNK` roads run in
-/// parallel; a chunk reads each road and its shape once for the group, and writes its own range of
-/// each column.
+/// parallel; a chunk reads each road and its shape and computes the cost of each junction once for
+/// the group, and writes its own range of each column.
 pub(crate) fn road_pass(
     graph: &Graph,
     topology: &Topology,
     profiles: &[Profile],
     bases: &WayBases,
+    junctions: &Junctions,
     group: usize,
 ) -> Result<Vec<RoadCosts>, String> {
     let (roads, (first, head)) = (&graph.roads, (topology.first.values(), topology.head.values()));
@@ -277,18 +279,22 @@ pub(crate) fn road_pass(
         }
         let results = parts.into_par_iter().enumerate().map(|(chunk, mut outputs)| {
             let (start, end) = (starts[chunk], starts[chunk + 1]);
-            let mut road = Road::default();
+            let (mut road, mut junction_costs) = (Road::default(), Vec::new());
             for id in start..end {
                 roads.get(id, &mut road);
                 let arcs = first[id] as usize..first[id + 1] as usize;
+                let onward = junction::onward(graph, topology, id as u32);
+                junction_costs.clear();
+                junction_costs
+                    .extend(head[arcs.clone()].iter().map(|&after| junctions.cost(graph, id as u32, after, onward)));
                 for ((profile, &index), [totals, ids, turns]) in profiles.iter().zip(indices).zip(&mut outputs) {
                     let (total, basis) = road_cost(graph, profile, (bases, index), id, &road)?;
                     (totals[id - start], ids[id - start]) = (total, basis);
                     let wa = bases.value(basis);
-                    for arc in arcs.clone() {
+                    for (arc, &turn) in arcs.clone().zip(&junction_costs) {
                         let after = head[arc];
                         let wb = bases.get(index, roads.way_row(after as usize), roads.reversed(after as usize));
-                        let cost = transition(graph, profile, (wa, wb), id as u32, after);
+                        let cost = transition(graph, profile, (wa, wb), id as u32, after, turn);
                         turns[arc - first[start] as usize] = narrow(cost)?;
                     }
                 }
@@ -321,6 +327,8 @@ pub struct Costing<'a> {
     graph: &'a Graph,
     profile: &'a Profile,
     dictionary: &'a Dictionary,
+    topology: Topology,
+    junctions: Junctions,
     /// The total cost of each road; `u32::MAX` where the profile excludes it.
     pub totals: Column<u32>,
     /// The dictionary index of the exact factors that each road's curve compiles from; 0 where
@@ -340,10 +348,11 @@ impl<'a> Costing<'a> {
         profile.validate()?;
         check_nodes(graph)?;
         let topology = Topology::new(&graph.roads, graph.points.len())?;
-        let mut costs = road_pass(graph, &topology, std::slice::from_ref(profile), bases, 1)?;
+        let junctions = Junctions::new(graph);
+        let mut costs = road_pass(graph, &topology, std::slice::from_ref(profile), bases, &junctions, 1)?;
         renumber(&mut costs, bases, dictionary)?;
         let RoadCosts { totals, bases, .. } = costs.pop().expect("one profile");
-        Ok(Self { graph, profile, dictionary, totals, bases })
+        Ok(Self { graph, profile, dictionary, topology, junctions, totals, bases })
     }
 
     /// The exact factors of `road`, or `None` where the profile excludes it.
@@ -352,7 +361,9 @@ impl<'a> Costing<'a> {
     }
 
     pub fn transition(&self, before: u32, after: u32) -> Option<u64> {
-        transition(self.graph, self.profile, (self.basis(before), self.basis(after)), before, after)
+        let onward = junction::onward(self.graph, &self.topology, before);
+        let turn = self.junctions.cost(self.graph, before, after, onward);
+        transition(self.graph, self.profile, (self.basis(before), self.basis(after)), before, after, turn)
     }
 }
 
@@ -577,18 +588,38 @@ mod tests {
     }
 
     #[test]
-    fn a_bend_costs_the_same_inside_a_way_and_at_a_junction() {
+    fn a_bend_coefficient_puts_the_cost_of_a_bend_on_the_curve_where_the_road_bends() {
         let a = point(0, 0.0);
         let b = point(1000, 0.0);
         let c = Point { lat: 1000, ..b };
         let bent = road(vec![a, b, c]);
         let compiled = cost(&bent, "road");
-        assert_eq!(turn(a, b, c, 90.0), 90.0);
         assert_eq!(compiled.total(), bent.length_m as u64 + 90);
         let before = compiled.prefix(0.49).unwrap();
         let after = compiled.prefix(0.5).unwrap();
         assert!((92..=93).contains(&(after - before)));
         let prefixes: Vec<_> = [0.0, 0.2, 0.49, 0.5, 0.9, 1.0].iter().map(|&f| compiled.prefix(f).unwrap()).collect();
         assert_eq!(prefixes.windows(2).map(|p| p[1] - p[0]).sum::<u64>(), compiled.total());
+    }
+
+    #[test]
+    fn road_pays_the_turn_of_touring_and_nothing_for_a_bend_inside_a_road() {
+        // Junction 1 joins 0 in the west, 2 in the east, and 3 by a road that leaves to the north
+        // and bends to the east at 4.
+        use crate::junction::tests::{graph, road};
+        let points = [[0, 0], [0, 1000], [0, 2000], [1000, 2000], [1000, 1000]];
+        let street: &[(&str, &str)] = &[("highway", "service")];
+        let graph = graph(&points, &[(1, &[0, 1], street), (2, &[1, 2], street), (3, &[1, 4, 3], street)]);
+        let (before, bent) = (road(&graph, 0, 1), road(&graph, 1, 3));
+        let turns = ["road", "touring"].map(|name| {
+            let profile = Profile::presets().into_iter().find(|p| p.name == name).unwrap();
+            let mut dictionary = Dictionary::default();
+            let costing = costing(&graph, &profile, &mut dictionary);
+            if name == "road" {
+                assert_eq!(costing.totals.values()[bent as usize], graph.roads.length_m.values()[bent as usize]);
+            }
+            costing.transition(before, bent)
+        });
+        assert_eq!(turns, [Some(100); 2]);
     }
 }

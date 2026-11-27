@@ -159,7 +159,7 @@ The `profiles` option names the profile IDs, or `all` for all 10 metrics.
 
 | Road profile | Preference |
 | --- | --- |
-| `road` | BRouter fastbike surfaces, traffic stress, turns and downhill costs; trunk roads cost 10 times more |
+| `road` | BRouter fastbike surfaces, traffic stress and downhill costs; trunk roads cost 10 times more |
 | `road/less-climbing` | Additional uphill cost above the slope threshold |
 
 Road weights derive from the MIT-licensed BRouter
@@ -182,15 +182,29 @@ profiles.
 | Steps and via ferrata | Cycling profiles never use steps; no profile uses a via ferrata |
 
 Touring, gravel, MTB and hiking use separate surface and road-class tables, and add smoothness,
-track grade, trail grade and traffic. Hiking also adds trail visibility. Touring and gravel have a
-less-climbing variant with triple climb cost. A signed cycle route discounts only the preference above the physical and
-traffic cost, in the direction that its member role gives. Access rules apply to every variant.
-MTB permits S2 at most and `mtb/technical` every grade; hiking permits T2 at most and
-`hiking/alpine` every known grade up to T6.
+track grade, trail grade and traffic. Hiking also adds trail visibility. Touring, gravel and MTB
+give a `path` or `footway` with `bicycle=designated` and no `mtb:scale` or `sac_scale` the class
+of a cycleway. Touring and gravel have a less-climbing variant with triple climb cost. A signed
+cycle route discounts only the preference above the physical and traffic cost, in the direction
+that its member role gives. Access rules apply to every variant. MTB permits S2 at most and
+`mtb/technical` every grade; hiking permits T2 at most and `hiking/alpine` every known grade up to
+T6.
 
 The package holds the roads, their geometry and possible closures, the turns, the costs and snap
 bits of each profile, and the cost tables of each cell, separate from map tiles. A profile's snap
 bits mark the roads in a large strongly connected part of its graph (`connectivity`).
+
+## Junction costs
+
+Each cycling profile, `road` too, pays for a junction in its turn costs (`src/junction.rs`); a
+walking profile does not. The numbers come from the prototype records of the route-quality
+tracker. No road has a cost for a bend inside it.
+
+| Rule | Cost |
+| --- | --- |
+| Turn | 100 m × (1 − cosine of the change of heading), where two or more roads other than the road back depart and the next road is not the through road. The headings are taken over the last and the first 15 m |
+| Through road | The next road is of the same way, its way has the same `name`, or both ways are members of one signed cycle route. The road back is never the through road |
+| Signalled junction | 60 m where a road enters a signal group from outside it. A group is the signal nodes that roads of at most 40 m in total join, in any direction, with the junctions on those roads; the joins chain |
 
 ## Route bench
 
@@ -245,7 +259,7 @@ osmium sort first.osm.pbf second.osm.pbf -o region.osm.pbf
 | `length / shortest` | The length of a route against the shortest route on the roads and turns that the profile may take |
 | Turn | A change of heading over 45° at a junction of three or more road ends. The headings are taken over 15 m |
 | Leave-and-rejoin event | The next road shares no `name`, `ref` or signed route with the road before, and a road within 2 km of route length shares one again |
-| Signal node | A signal at a junction inside the route, not at its two ends |
+| Signalled junction | A road inside the route that enters a signal group ([junction costs](#junction-costs)), not at its two ends |
 | Fast main road | Class 2 with a limit over 50 km/h or no tagged limit, and no cycle track by `traffic::protection` |
 | Slow main road | Class 2 with a tagged limit of 50 km/h or less |
 | `signed route %` | The length on a way of a signed route |

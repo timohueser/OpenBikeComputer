@@ -9,6 +9,7 @@ pub mod country;
 pub mod extract;
 pub mod facts;
 pub mod grid;
+mod junction;
 pub mod layout;
 pub mod osm;
 pub mod overlays;
@@ -663,14 +664,15 @@ pub fn costs(graph: &Graph, topology: &Topology, profiles: &[Profile]) -> Result
     work::Guard::stage("way-bases");
     let bases = cost::way_bases(&graph.osm, profiles)?;
     work::Guard::stage("road-pass");
+    let junctions = junction::Junctions::new(graph);
     // The random reads of a road group go to the way bases of its profiles: they take a quarter
-    // of the budget at most.
+    // of the budget that the junctions leave, at most.
     let ways = graph.osm.ways.len().max(1) as u64;
-    let group = (budget / 4 / (8 * ways)).clamp(1, profiles.len().max(1) as u64) as usize;
-    let mut costs = cost::road_pass(graph, topology, profiles, &bases, group)?;
+    let group = (budget.saturating_sub(junctions.bytes()) / 4 / (8 * ways)).clamp(1, profiles.len().max(1) as u64);
+    let mut costs = cost::road_pass(graph, topology, profiles, &bases, &junctions, group as usize)?;
     let mut dictionary = Dictionary::default();
     cost::renumber(&mut costs, &bases, &mut dictionary)?;
-    drop(bases);
+    drop((bases, junctions));
     work::Guard::stage("snap");
     let states = connectivity::States::new(topology, roads, graph.points.len());
     let jobs = profile_jobs(budget, graph, topology);
@@ -772,7 +774,8 @@ mod tests {
         let topology = Topology::new(&graph.roads, graph.points.len()).unwrap();
         let bases = cost::way_bases(&graph.osm, &profiles).unwrap();
         assert!(graph.osm.ways.len() > 2 * CHUNK, "the ways fill several chunks");
-        let costs = cost::road_pass(&graph, &topology, &profiles, &bases, 2).unwrap();
+        let junctions = junction::Junctions::new(&graph);
+        let costs = cost::road_pass(&graph, &topology, &profiles, &bases, &junctions, 2).unwrap();
         let bits = |basis: Option<CostBasis>| basis.map(|b| (b.factor.to_bits(), b.turn.to_bits(), b.ferry));
         for (profile, costs) in profiles.iter().zip(&costs) {
             let alone = |road: u32| {
@@ -789,7 +792,8 @@ mod tests {
             }
             assert!(distinct.len() > 3, "{}: the ways have different bases", profile.name);
             for (arc, (before, after)) in topology.edges().enumerate() {
-                let turn = cost::transition(&graph, profile, (alone(before), alone(after)), before, after);
+                let junction = junctions.cost(&graph, before, after, junction::onward(&graph, &topology, before));
+                let turn = cost::transition(&graph, profile, (alone(before), alone(after)), before, after, junction);
                 assert_eq!(costs.turns.values()[arc], base::narrow(turn).unwrap(), "{}", profile.name);
             }
         }

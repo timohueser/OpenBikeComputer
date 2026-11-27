@@ -50,7 +50,7 @@ pub static PLANNER_TERRAIN: Layer =
 /// or the terrain the roads, of the cost code the costs.
 pub static PLANNER_ROUTING_SOURCE: Layer = Layer { revision: 2, ..work(step::SOURCE) };
 pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
-pub static PLANNER_ROUTING_COSTS: Layer = Layer { revision: 2, ..work(step::COSTS) };
+pub static PLANNER_ROUTING_COSTS: Layer = Layer { revision: 3, ..work(step::COSTS) };
 /// `ways.sqlite` holds no router types: its format is its `user_version`.
 pub static PLANNER_ROUTING_WAYS: Layer = Layer { format: 1, ..work(step::WAYS) };
 /// The routing package, its grid and the route network overlays.
