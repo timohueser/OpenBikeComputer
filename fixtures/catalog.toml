@@ -90,9 +90,9 @@ tracked_sources = { "manifest.json" = "sources/ride-assistant/assistant-terrain.
 
 [packages.assistant-wiki]
 summary = "Pinned Wiki entities, article revisions, Commons originals and credits for four review sites"
-archive = "packages/d0e56c73a18abf03a07db73a9a90b97fc4862cc85f79381dcfa8eb51ee2589f1.tar.gz"
-sha256 = "d0e56c73a18abf03a07db73a9a90b97fc4862cc85f79381dcfa8eb51ee2589f1"
-bytes = 62334071
+archive = "packages/651b6d0320a32e2e22407eacd54b928fbb0fa2c8ebd2a55bd9d01e2864d70a38.tar.gz"
+sha256 = "651b6d0320a32e2e22407eacd54b928fbb0fa2c8ebd2a55bd9d01e2864d70a38"
+bytes = 62334065
 provenance = "Sources captured 2026-09-14. Exact URLs, source dates, revisions, hashes and limits are in manifest.json and fixtures/sources/ride-assistant/README.md."
 license = "CC0-1.0 (Wikidata); article and image licenses in captured source notices"
 tracked_sources = { "manifest.json" = "sources/ride-assistant/assistant-wiki.json", "regions.geojson" = "sources/ride-assistant/regions.geojson" }
