@@ -1,5 +1,6 @@
 // Decodes the ground, colour and snow tiles of a ground tile and builds its pages, off the main thread.
 import { colourTexels, groundPages, type GroundDate, type Raster } from './ground-pages';
+import { wasmPixels, type Pixels } from './exact-pixels';
 
 /** A tile body of a layer of specs/trailview-tiles.md. */
 export interface Body { key: string; z: number; x: number; y: number; body: ArrayBuffer; layer: 'ground' | 'colour' | 'snow' }
@@ -25,7 +26,7 @@ let gl: WebGL2RenderingContext | null | undefined;
  * The RGBA bytes of an image as stored. A 2D canvas premultiplies alpha, which loses the bytes under
  * an alpha below 255, as the region of a ground tile, so the pixels go through a WebGL texture.
  */
-async function straightPixels(body: ArrayBuffer): Promise<{ size: number; data: Uint8Array }> {
+async function webglPixels(body: ArrayBuffer): Promise<Pixels> {
     if (!gl || gl.isContextLost()) gl = new OffscreenCanvas(1, 1).getContext('webgl2');
     if (!gl) throw new Error('The ground decodes through WebGL 2, which this worker does not have.');
     const bitmap = await createImageBitmap(new Blob([body]), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
@@ -49,32 +50,45 @@ async function straightPixels(body: ArrayBuffer): Promise<{ size: number; data: 
 }
 
 /**
- * A 2 × 2 lossless WebP of (200, 100, 50) under alpha 0, 1, 2 and 255. Every ground texel has an alpha
- * of at most 61, so a decode that premultiplies scales every byte of the ground.
+ * A 2 × 2 lossless WebP of (200, 100, 50) under alpha 0, 1, 2 and 255. The alpha of a ground texel is
+ * its region id, so a decode that premultiplies changes the bytes of every texel with data.
  */
 const PROBE = 'UklGRioAAABXRUJQVlA4TB4AAAAvAUAAEB8wZIM8MgKSJP9vDuIBYJANUKYKs4j+xw4=';
-let probed: Promise<void> | undefined;
 
-/** Fails where this worker does not decode the RGB under a low alpha exactly. */
-function probe(): Promise<void> {
-    probed ??= straightPixels(Uint8Array.from(atob(PROBE), c => c.charCodeAt(0)).buffer).then(({ data }) => {
-        const exact = [0, 1, 2, 255].every((alpha, i) => [200, 100, 50, alpha].every((byte, c) => data[4 * i + c] === byte));
-        if (!exact) throw new Error('This browser does not decode the RGB under a low alpha exactly, which the ground needs.');
-    });
-    return probed;
+/** Whether a decode gives the probe's bytes: the RGB under a low alpha exactly. */
+async function exact(decode: (body: ArrayBuffer) => Promise<Pixels>): Promise<boolean> {
+    const { data } = await decode(Uint8Array.from(atob(PROBE), c => c.charCodeAt(0)).buffer);
+    return [0, 1, 2, 255].every((alpha, i) => [200, 100, 50, alpha].every((byte, c) => data[4 * i + c] === byte));
 }
+
+let straight: Promise<(body: ArrayBuffer) => Promise<Pixels>> | undefined;
+
+/** The exact decode of the ground tiles: the browser's through WebGL where it is exact, else WASM. */
+function straightDecode(): Promise<(body: ArrayBuffer) => Promise<Pixels>> {
+    straight ??= exact(webglPixels).then(async browser => {
+        if (browser) return webglPixels;
+        console.info('TrailView decodes the ground tiles in WASM: this browser does not decode the colour under a low alpha exactly.');
+        if (!(await exact(wasmPixels))) throw new Error('This browser does not decode the RGB under a low alpha exactly, which the ground needs.');
+        return wasmPixels;
+    });
+    return straight;
+}
+
+/** Fails where this worker has no exact decode. */
+const probe = (): Promise<unknown> => straightDecode();
 
 /** The bytes of a tile as `groundPages` reads them. */
 async function decode({ body, layer }: Body): Promise<{ size: number; channels: number; data: Uint8Array }> {
     if (layer === 'colour') {
         // The NDVI tile, then the colour: the RIFF header of the NDVI tile gives its length.
         const split = 8 + new DataView(body).getUint32(4, true);
-        const [ndvi, rgb] = await Promise.all([straightPixels(body.slice(0, split)), straightPixels(body.slice(split))]);
+        const [ndvi, rgb] = await Promise.all([webglPixels(body.slice(0, split)), webglPixels(body.slice(split))]);
         if (ndvi.size !== 256 || rgb.size !== 512) throw new Error(`A colour tile has a ${ndvi.size} px NDVI tile and ${rgb.size} px colour.`);
         return { size: rgb.size, channels: 4, data: colourTexels(ndvi.data, rgb.data) };
     }
-    const { size, data } = await straightPixels(body);
-    if (layer === 'ground') return { size, channels: 4, data };
+    // Only the ground carries data under an alpha below 255; the colour and snow images are opaque, which every browser decodes exactly.
+    if (layer === 'ground') return { channels: 4, ...(await (await straightDecode())(body)) };
+    const { size, data } = await webglPixels(body);
     // A snow tile is a run image: the first band in red, the last band in green.
     const run = new Uint8Array(2 * size * size);
     for (let i = 0; i < size * size; i++) {

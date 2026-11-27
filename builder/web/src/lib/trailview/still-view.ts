@@ -1,9 +1,9 @@
 import type { PlannerConfig } from '../planner/config';
 import { worldPixel } from '../planner/layers/mercator';
-import { imagePixels } from '../planner/layers/terrain';
 import { instantAt, solarPosition, solarTerms } from '../planner/solar';
 import { MAX_ALTITUDE, VFOV } from './frame/camera';
 import { CURVATURE, frameAt } from './frame/frame';
+import { terrainPixels } from './stream/exact-pixels';
 import { heightOf } from './stream/heights';
 import { releaseTiles } from './stream/terrain';
 import { TIME_ZONE, type View } from './view';
@@ -195,7 +195,7 @@ async function heightGrid(config: PlannerConfig, { z, x0, y0, columns, rows }: {
     await Promise.all(Array.from({ length: columns * rows }, async (_, k) => {
         const column = k % columns, row = Math.floor(k / columns), body = await fetch(z, x0 + column, y0 + row);
         if (!body) return;
-        const { data, width: side } = await imagePixels(new Uint8Array(body));
+        const { data, size: side } = await terrainPixels(body);
         if (side !== TILE) throw new Error(`A terrain tile has ${side} px, not ${TILE}.`);
         for (let j = 0; j < TILE; j++) for (let i = 0; i < TILE; i++) heights[(row * TILE + j) * width + column * TILE + i] = heightOf(data, 4 * (j * TILE + i));
     }));

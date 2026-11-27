@@ -19,7 +19,7 @@ a line. `GET /v1/region` describes the routing package. Request and answer bodie
 | `points` | 2 to 64 ordered `[longitude, latitude]` pairs in degrees |
 | `profile` | A profile ID from `GET /v1/region` |
 | `pace` | Optional: `cycling_kmh` (1 to 80, default 19), `walking_kmh` (0.5 to 15, default 4.5) and `personal_multiplier` (0.25 to 4, default 1) |
-| `turnarounds` | Optional interior point indices where a reversal is deliberate |
+| `turnarounds` | Optional interior point indices where the route may leave in either direction |
 | `start_position` | Optional leg position from an earlier answer. It pins the first point to that road position |
 | `end_position` | Optional leg position from an earlier answer. It pins the last point to that road position |
 
@@ -32,7 +32,7 @@ The answer is `{"routes": [...]}`. It holds one route. The route has these field
 | Field | Value |
 | --- | --- |
 | `id` | 64-character lowercase hex route identity |
-| `package` | Routing package identity |
+| `package` | The SHA-256 of `directory.bin` of the route package |
 | `profile` | Profile ID of this route |
 | `coordinates_udeg` | Integer microdegrees: longitude and latitude of each point, flat |
 | `elevation_dm` | Integer decimetres, or `null` where the height is unknown |
@@ -160,7 +160,7 @@ route request. The deadline is 30 s.
 
 | Field | Value |
 | --- | --- |
-| `package` | Routing package identity |
+| `package` | The SHA-256 of `directory.bin` of the route package |
 | `region` | Region ID |
 | `bounds` | `[west, south, east, north]` in degrees |
 | `profiles` | The profile IDs that requests can use |

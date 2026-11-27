@@ -143,8 +143,8 @@ public final class PlannerPreviewModel {
         var route: [PlannerPreviewPoint] { points + (loop ? points.prefix(1) : []) }
         var coordinates: [Coordinate] { route.map(\.place.coordinate) }
         var legIDs: [LegID] { zip(route, route.dropFirst()).map { LegID(from: $0.id, to: $1.id) } }
-        /// Only an interior point turns back, so a loop start sends its turnaround once the start moves.
-        var turnarounds: [Int] { points.indices.filter { points[$0].turnaround && $0 > 0 && $0 < coordinates.count - 1 } }
+        /// Only an interior point turns back, so a loop start sends its turnaround once the start moves. A visit may turn back.
+        var turnarounds: [Int] { points.indices.filter { (points[$0].turnaround || points[$0].kind == .visit) && $0 > 0 && $0 < coordinates.count - 1 } }
     }
     private var state = State()
     private var past: [State] = []

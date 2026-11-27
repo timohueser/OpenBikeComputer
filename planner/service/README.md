@@ -7,14 +7,17 @@ The HTTP service and the phone library around the [route engine](../router/READM
 
 ```sh
 cargo build --release -p planner-service
-target/release/planner-service /data/routes/freiburg --verify
-target/release/planner-service /data/routes/freiburg
+target/release/planner-service /data/route-cells/freiburg --scrub
+target/release/planner-service /data/route-cells/freiburg
 target/release/planner-service --formats
 ```
 
-`--formats` prints the format of the routing package that the service reads, such as
-`{"planner/routing":9}`. `obc data serve` starts no release in another format, and starts one
-service for each planner release that it serves. The planner calls the `routing` prefix of its
+The argument is an install of the [route package](../../specs/route-package.md), which
+`--install` writes; the service fails at its start when the install does not open. `--scrub` reads
+each installed file again and names those whose SHA-256 differs. `--formats` prints the format of
+the routing package that the service reads: `{"planner/routing":10}`. `obc data serve` starts no
+release in another format of `planner/routing`, and starts one service for each planner release
+that it serves, on `<planner folder>/route-cells/`. The planner calls the `routing` prefix of its
 config; see the [planner README](../../builder/web/src/components/planner/README.md).
 
 ```sh
@@ -30,7 +33,15 @@ library contains no HTTP stack. [`tools/build-planner-ios.sh`](../../tools/build
 builds it. `planner_router_call` answers `route` and `shape` with the same code as
 `POST /v1/route` and `POST /v1/shape`. The host serializes the calls on a handle.
 `planner_router_cancel` is safe from any thread: it stops the call in progress, which then answers
-`cancelled`.
+`cancelled`. The budget of `planner_router_open` is the search limit of one search; 0 takes the
+engine's default of 64 MiB.
+
+`planner_routing_plan` and `planner_routing_install` take a JSON request: the paths `package`,
+`directory` and `target`, the `areas` of all maps of one routing package as `[west, south, east,
+north]`, and for the install the folder `objects`. The plan answers the objects that `target`
+lacks and the installed bytes. The install calls its progress callback from its workers, one call
+at a time; a callback that returns false stops it with `cancelled`, and a later call goes on. An
+install with no area deletes `target`.
 
 ```sh
 cargo build --release -p planner-service --lib --no-default-features --target aarch64-apple-ios
@@ -46,10 +57,19 @@ cargo clippy -p planner-service --all-targets --no-default-features -- -D warnin
 
 ## Reference
 
+| Command | Purpose |
+| --- | --- |
+| `planner-service INSTALL` | Serves the install |
+| `planner-service INSTALL --scrub` | Reads each installed file again; fails and names each file whose SHA-256 differs |
+| `planner-service INSTALL --missing DIRECTORY PACKAGE` | Prints the installed bytes of the files of all cells and profile groups that `INSTALL` lacks |
+| `planner-service INSTALL --install DIRECTORY PACKAGE OBJECTS THREADS` | Installs all cells and profile groups on `THREADS` workers from `OBJECTS`, which holds each object as `OBJECTS/<first two hex digits>/<SHA-256>`. Exit status 3: an object is missing or damaged, and the last line of standard error is `object <SHA-256>: <why>`; 1: another failure |
+| `planner-service --formats` | Prints the format of the routing package that the service reads |
+| `planner-service --workers` | Prints the worker count: `ROUTE_WORKERS`, else the CPUs of the process |
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ROUTE_LISTEN` | `127.0.0.1:8788` | Listen address |
-| `ROUTE_WORKERS` | CPUs of the process, at most 12 | Concurrent requests, from 1 to 12; shape requests use at most half |
+| `ROUTE_WORKERS` | CPUs of the process | Concurrent requests, at least 1; shape requests use at most half |
 | `ROUTE_ORIGIN` | Unset | One allowed browser origin; omit for same-origin proxy |
 
 - `GET /health` reports process health.
@@ -58,12 +78,12 @@ cargo clippy -p planner-service --all-targets --no-default-features -- -D warnin
 - `POST /v1/shape` finds the plan points of a route that follows a line.
 
 Shape requests can use at most `max(1, workers / 2)` workers. With 1 worker, a route request waits
-behind a shape request. A request waits up to 1 second for its worker, then receives `503 busy`. A request that exceeds a
-fixed limit receives `422 limit`; a worker with no memory for it at that moment answers `503 busy`. Workers share immutable
-routing data and use the engine's default memory budget; see
+behind a shape request. A request waits up to 1 second for its worker, then receives `503 busy`. A
+request that exceeds a fixed limit receives `422 limit`; a worker with no memory for it at that
+moment answers `503 busy`. Workers share the maps of the installed files and use the engine's
+default search limit; see
 [engine bounds](../router/README.md#bounds). A route request has a 15-second cooperative deadline,
-a shape request 30 seconds. Disconnects cancel its work. The body limit is 64 KiB. The service
-loads the `touring` profile before it listens. SIGTERM or SIGINT stops it after its open requests
+a shape request 30 seconds. Disconnects cancel its work. The body limit is 64 KiB. SIGTERM or SIGINT stops it after its open requests
 finish. A panic or another internal failure answers `500 internal` and writes the cause to
 standard error. A worker that panicked gets a new router.
 
@@ -71,6 +91,6 @@ standard error. A worker that panicked gets a new router.
 
 - Put a public service behind TLS and an OS memory and CPU limit.
 - The default worker count is the number of CPUs of the process, which includes a systemd
-  `CPUQuota`. Measure the busy memory again before you raise `MAX_WORKERS` or serve a larger
-  package.
-- Keep the package read-only. To replace it, start a new service instance on the new directory.
+  `CPUQuota`.
+- Keep the install read-only while the service runs. To replace it, start a new service instance on
+  the new install.

@@ -161,11 +161,14 @@ export function profileId(trip: Trip): string {
 
 const keys = new WeakMap<Trip, string>();
 
+/** The rider stops at a visit or a night, so the route may turn back there. */
+const stopsHere = (point: RoutePoint) => point.kind === 'waypoint' || point.kind === 'night';
+
 /** What the line of a trip depends on, so equal keys share one line. Itinerary edits and labels never change it. */
 export function routingKey(trip: Trip): string {
     let key = keys.get(trip);
     if (key === undefined) {
-        key = JSON.stringify([trip.bike ?? 'touring', planPreset(trip.bike, trip.preset), orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.turnaround])]);
+        key = JSON.stringify([trip.bike ?? 'touring', planPreset(trip.bike, trip.preset), orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], stopsHere(p), p.turnaround])]);
         keys.set(trip, key);
     }
     return key;
@@ -179,13 +182,14 @@ function expand(origin: Coordinate, run: RoutePoint[], leftOut: Set<string>) {
         if (leftOut.has(point.id)) return;
         coordinates.push(point.coordinate);
         owners.push(point);
-        if (point.turnaround && n < run.length - 1) turnarounds.push(coordinates.length - 1);
+        if ((point.turnaround || stopsHere(point)) && n < run.length - 1) turnarounds.push(coordinates.length - 1);
     });
     return { coordinates, turnarounds, owners };
 }
 
-/** Consecutive routed legs form one run, so a shaping point keeps its road direction. A point with no road near it is left
- * out, and a leg with no legal path is a gap, so that one bad point or leg never hides the line. */
+/** Consecutive routed legs form one run, so a shaping point keeps its road direction; a visit or a night inside a run is a
+ * turnaround. A point with no road near it is left out, and a leg with no legal path is a gap, so that one bad point or leg
+ * never hides the line. */
 export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCache): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');

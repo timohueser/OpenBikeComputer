@@ -125,8 +125,19 @@ struct PlannerPreviewModelTests {
         #expect(shaped != initial && model.markers.isEmpty && model.points.count == 3)
         #expect(model.exportRoute(name: "Ride").waypoints.isEmpty)
         model.setPointKind(id: cafe.id, kind: .visit)
-        #expect(model.routePoints == shaped && model.exportRoute(name: "Ride").waypoints.count == 1)
+        await model.calculateRoute()
+        #expect(model.exportRoute(name: "Ride").waypoints.count == 1)
         #expect(model.routePoints.map(\.coordinate) == model.geometry)
+    }
+
+    @Test func aVisitInsideTheRouteMayTurnBackButAShapingPointAndTheEndsMayNot() async {
+        let source = PlannerTestSource()
+        let model = PlannerPreviewModel(sample: true, service: source)
+        model.addPoint(PlannerPreviewModel.sampleMapPlaces[2])
+        model.addPoint(PlannerPreviewModel.sampleMapPlaces[3], kind: .shape)
+        await model.calculateRoute()
+        #expect(model.points.map(\.kind) == [.visit, .visit, .shape, .visit])
+        #expect(await source.turnarounds == [[1]])
     }
 
     @Test func overnightMovesWithItsPointAndEndpointMovesClearItAtomically() async throws {

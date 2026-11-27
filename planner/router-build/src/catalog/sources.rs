@@ -4,7 +4,8 @@
 use super::{dense, ends, profiles, runs, Failed, Line, Reason, SourceLine, MAX_GAP_M, ROUNDTRIP_M};
 use crate::facts::shares::Roads;
 use planner_router::{
-    package::{Package, Source},
+    host::Host,
+    region::Region,
     shape::{distance, NEAR_M, P},
 };
 use serde_json::{Map, Value};
@@ -161,16 +162,16 @@ fn bit(kind: &str) -> u8 {
 
 /// The OSM ways that the first plan profile of each kind may use, with a bit of each such profile
 /// (`bit`): one pass over the roads of the package, in either direction.
-pub(super) fn usable_ways<S: Source>(package: &Package<S>) -> Result<HashMap<i64, u8>, String> {
+pub(super) fn usable_ways<H: Host>(region: &Region<H>) -> Result<HashMap<i64, u8>, String> {
     let first = ["bicycle", "mtb", "hiking"].map(|kind| (profiles(kind)[0], bit(kind)));
     let mut usable = HashMap::new();
-    for road in 0..package.manifest().roads {
+    for road in region.road_ids() {
         let mut bits = 0;
         for (profile, bit) in first {
-            bits |= if package.allowed(profile, road).map_err(|e| e.to_string())? { bit } else { 0 };
+            bits |= if region.allowed(profile, road).map_err(|e| e.to_string())? { bit } else { 0 };
         }
         if bits != 0 {
-            let way = package.with_road(road, |road| road.way).map_err(|e| e.to_string())?;
+            let way = region.with_road(road, |road| road.way).map_err(|e| e.to_string())?;
             *usable.entry(way).or_default() |= bits;
         }
     }

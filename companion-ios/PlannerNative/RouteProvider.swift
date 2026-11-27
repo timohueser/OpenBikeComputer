@@ -1,17 +1,11 @@
 import Foundation
 
-@_silgen_name("planner_router_open") private func routerOpen(_ root: UnsafePointer<CChar>, _ memoryBudgetBytes: Int, _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> OpaquePointer?
-@_silgen_name("planner_router_call") private func routerCall(_ handle: OpaquePointer, _ call: UnsafePointer<CChar>, _ body: UnsafePointer<UInt8>, _ length: Int, _ status: UnsafeMutablePointer<UInt16>) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("planner_router_cancel") private func routerCancel(_ handle: OpaquePointer)
-@_silgen_name("planner_router_close") private func routerClose(_ handle: OpaquePointer)
-@_silgen_name("planner_response_free") private func responseFree(_ response: UnsafeMutablePointer<CChar>)
-
 // Only the owning actor calls into the handle; a cancellation handler may cancel it from any
 // thread. Its final owner closes it.
 private final class RouterHandle: @unchecked Sendable {
     let pointer: OpaquePointer
     init(_ pointer: OpaquePointer) { self.pointer = pointer }
-    deinit { routerClose(pointer) }
+    deinit { planner_router_close(pointer) }
 }
 
 actor RouteProvider {
@@ -19,9 +13,9 @@ actor RouteProvider {
 
     init(directory: URL) throws {
         var error: UnsafeMutablePointer<CChar>?
-        // A zero budget selects the route server's default.
-        guard let opened = directory.path.withCString({ routerOpen($0, 0, &error) }) else {
-            defer { if let error { responseFree(error) } }
+        // The budget is the search limit of one search: zero selects the engine's default.
+        guard let opened = directory.path.withCString({ planner_router_open($0, 0, &error) }) else {
+            defer { if let error { planner_response_free(error) } }
             throw NSError(domain: "PlannerRouter", code: 1, userInfo: [NSLocalizedDescriptionKey: error.map { String(cString: $0) } ?? "Cannot open routing package"])
         }
         handle = RouterHandle(opened)
@@ -37,14 +31,14 @@ actor RouteProvider {
             let payload = request.isEmpty ? Data([0]) : request
             let response = name.withCString { call in
                 payload.withUnsafeBytes { bytes in
-                    bytes.bindMemory(to: UInt8.self).baseAddress.flatMap { routerCall(handle.pointer, call, $0, request.count, &status) }
+                    bytes.bindMemory(to: UInt8.self).baseAddress.flatMap { planner_router_call(handle.pointer, call, $0, request.count, &status) }
                 }
             }
             guard let response else { throw NSError(domain: "PlannerRouter", code: 2, userInfo: [NSLocalizedDescriptionKey: "Routing provider returned no response"]) }
-            defer { responseFree(response) }
+            defer { planner_response_free(response) }
             return (Int(status), Data(bytes: response, count: strlen(response)))
         } onCancel: {
-            routerCancel(handle.pointer)
+            planner_router_cancel(handle.pointer)
         }
     }
 }
