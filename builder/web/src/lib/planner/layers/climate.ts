@@ -77,10 +77,6 @@ export function cellAt([lon, lat]: Coordinate): Cell {
     return { col: ((Math.floor(10 * (lon + 180) + 0.5) % 3600) + 3600) % 3600, row: Math.floor(10 * (90 - lat) + 0.5) };
 }
 
-export function cellCentre({ col, row }: Cell): Coordinate {
-    return [-180 + 0.1 * col, 90 - 0.1 * row];
-}
-
 /** The tile of a level that holds a cell, and the cell index in it. */
 export function locate(level: Level, { col, row }: Cell): { x: number; y: number; index: number } {
     const { cols, rows } = LAYOUTS[level];

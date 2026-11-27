@@ -114,8 +114,6 @@ describe('climate along a route', () => {
             for (let month = 0; month < 12; month++) {
                 t.set('lapse_tmax', month, cell, -65);
                 t.set('lapse_tmin', month, cell, -65);
-                t.set('rose', 16 * month + 8, cell, 200); // from the south: blows towards the north
-                for (let s = 0; s < 16; s++) if (s !== 8) t.set('rose', 16 * month + s, cell, 0);
             }
         }
         return t.tile();
