@@ -800,7 +800,7 @@ impl Package {
     }
 
     /// Install all cells and profile groups in `target` from the objects of `store`, in a process at
-    /// nice 10 whose installer drops each file from the page cache after its sync, so that the
+    /// nice 10 or more whose installer drops each file from the page cache after its sync, so that the
     /// install does not evict the files of the serving release. It stops when `go` fails; the next
     /// call goes on from the complete files. An object that the installer refuses leaves the store,
     /// so that the next fetch downloads it again.
@@ -814,9 +814,15 @@ impl Package {
         let mut command = self.command(routing, store, target, "--install");
         command.arg(store.root().join("objects")).arg(CELLS_THREADS.to_string()).stderr(Stdio::piped());
         #[cfg(unix)]
-        // SAFETY: setpriority is async-signal-safe, and the closure allocates nothing.
+        // SAFETY: getpriority and setpriority are plain system calls that take no lock, and the
+        // closure allocates nothing.
         unsafe {
             std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+                // An unprivileged process may not lower its nice value (EACCES), so a follower at
+                // nice 10 or more keeps its own.
+                if libc::getpriority(libc::PRIO_PROCESS, 0) >= 10 {
+                    return Ok(());
+                }
                 match libc::setpriority(libc::PRIO_PROCESS, 0, 10) {
                     0 => Ok(()),
                     _ => Err(std::io::Error::last_os_error()),
