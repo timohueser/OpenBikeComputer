@@ -1,4 +1,4 @@
-// The RGBA bytes of WebP tiles as stored: the browser's decode where it gives them, else the WASM decoder. Workers use this module.
+// The RGBA bytes of WebP tiles as stored: the browser's decode where it gives them, else the WASM decoder.
 import { imagePixels } from '../../planner/layers/terrain';
 import initWebp, { decode_webp } from './webp/obc_webp_bridge.js';
 
@@ -26,7 +26,7 @@ let browserFails = false;
 /**
  * The pixels of a terrain tile. The browser decodes it; a tile with an alpha other than 0 or 255 is
  * decoded again in WASM (WebKit can hand back changed pixels after a cold start), and so is every
- * later tile of this worker.
+ * later tile of this worker or page.
  */
 export async function terrainPixels(body: ArrayBuffer): Promise<Pixels> {
     if (!browserFails) {
