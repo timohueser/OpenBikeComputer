@@ -9,16 +9,17 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
-  :root { --bg: #f6f7f5; --fg: #1c2420; --muted: #5d6a63; --line: #d5dbd6; --a: #0b6fd6; --b: #d9480f; }
+  :root { color-scheme: light; --bg: #f6f7f5; --fg: #1c2420; --muted: #5d6a63; --line: #d5dbd6; --a: #0b6fd6; --b: #d9480f; }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
-  body { display: grid; grid-template-columns: 1fr 340px; font: 14px/1.45 system-ui, sans-serif; color: var(--fg); }
+  body { display: grid; grid-template-columns: 1fr 340px; font: 14px/1.45 system-ui, sans-serif; color: var(--fg); background: #fff; }
   #map { height: 100%; min-height: 300px; }
   aside { display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow-y: auto; border-left: 1px solid var(--line); }
   h1 { font-size: 16px; margin: 0; }
   .muted { color: var(--muted); margin: 0; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  select, button, textarea { font: inherit; }
+  /* Each control sets its text and its ground, so a dark theme of the viewer cannot split them. */
+  select, button, textarea { font: inherit; color: var(--fg); background: #fff; }
   button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; cursor: pointer; }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
   th, td { text-align: right; padding: 3px 6px; border-bottom: 1px solid var(--line); }
