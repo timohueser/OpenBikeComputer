@@ -125,6 +125,7 @@ PUBLICATION_WORKFLOWS = {
     ".github/workflows/bake.yml",
     ".github/workflows/deploy-site.yml",
     ".github/workflows/deploy-verification.yml",
+    ".github/workflows/dream.yml",
 }
 SCOPED_POLICY_PATHS = {"tools/test_plan.py", "tools/ci_aggregate.py", ".github/workflows/ci.yml"}
 
