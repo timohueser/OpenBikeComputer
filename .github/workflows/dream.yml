@@ -1,0 +1,117 @@
+name: Weekly dream
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: Window start (ISO 8601) when no dream pull request has merged; default seven days ago
+        required: false
+        type: string
+  # The owner turns the schedule on after the first manual run has set the cap.
+  # schedule:
+  #   - cron: '17 3 * * 1'
+
+permissions: {}
+
+concurrency:
+  group: dream
+  cancel-in-progress: false
+
+jobs:
+  # The agent can edit each file of its working directory, also tools/dream/publish.py. So the
+  # write token lives in its own job, on its own runner and checkout, which takes only pages.
+  # Both jobs run on develop only: the area pull request starts at the commit of the run and
+  # merges with no review, so a run on another branch would merge that branch.
+  dream:
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      count: ${{ steps.collect.outputs.count }}
+      since: ${{ steps.collect.outputs.since }}
+      through: ${{ steps.collect.outputs.through }}
+    steps:
+      # No token in .git/config, where the agent could read it.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Collect the merged pull requests
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SINCE: ${{ inputs.since }}
+        run: python3 tools/dream/collect.py --out .dream/input ${SINCE:+--since "$SINCE"}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g @anthropic-ai/claude-code@2.1.314
+      # No --bare: it also removes Grep, Glob, Write and the subagent tool.
+      # The result is under RUNNER_TEMP, outside the working directory, so the agent cannot write it.
+      # A timed-out step fails and the report still runs; a timed-out job is cancelled.
+      - name: Dream
+        if: steps.collect.outputs.count != '0'
+        timeout-minutes: 90
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.DREAM_ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_SUBAGENT_MODEL: opus
+          CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "1"
+        run: |
+          mkdir -p "$RUNNER_TEMP/dream"
+          claude -p "$(cat tools/dream/brief.md)" --model opus --max-budget-usd 35 \
+            --restricted --strict-mcp-config --disable-slash-commands \
+            --tools Read,Grep,Glob,Edit,Write,Agent --disallowedTools Bash,WebFetch,WebSearch \
+            --permission-mode acceptEdits --permission-prompts none --no-session-persistence \
+            --output-format json < /dev/null > "$RUNNER_TEMP/dream/result.json" || true
+      # From here on, no step runs a program of the working directory. The post step of the
+      # checkout runs git there; --restricted refuses the agent each write below .git.
+      - name: Upload the result
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dream-result
+          path: ${{ runner.temp }}/dream/result.json
+          if-no-files-found: ignore
+      - name: Upload the pages
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dream-pages
+          path: |
+            AGENTS.md
+            **/README.md
+          if-no-files-found: ignore
+  publish:
+    needs: dream
+    if: ${{ !cancelled() && github.ref == 'refs/heads/develop' && needs.dream.outputs.count != '0' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # A missing artifact is a failed dream run; publish.py reports it.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: dream-result
+          path: ${{ runner.temp }}/dream-result
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: dream-pages
+          path: ${{ runner.temp }}/dream-pages
+      - name: Publish the pages
+        env:
+          GH_TOKEN: ${{ secrets.DREAM_GITHUB_TOKEN }}
+          SINCE: ${{ needs.dream.outputs.since }}
+          THROUGH: ${{ needs.dream.outputs.through }}
+        run: >-
+          python3 tools/dream/publish.py
+          --result "$RUNNER_TEMP/dream-result/result.json"
+          --pages "$RUNNER_TEMP/dream-pages"
+          --since "$SINCE" --through "$THROUGH"

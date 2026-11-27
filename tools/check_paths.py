@@ -69,10 +69,14 @@ def is_page(f: str) -> bool:
     )
 
 
+def areas(files: list[str]) -> list[str]:
+    """The top-level directories: each has an area page."""
+    return sorted({f.split("/")[0] for f in files if "/" in f and not f.startswith(".")})
+
+
 def caps(files: list[str]) -> list[str]:
     problems = []
-    areas = sorted({f.split("/")[0] for f in files if "/" in f and not f.startswith(".")})
-    for page, cap in [("AGENTS.md", INDEX_LINES)] + [(f"{a}/README.md", PAGE_LINES) for a in areas]:
+    for page, cap in [("AGENTS.md", INDEX_LINES)] + [(f"{a}/README.md", PAGE_LINES) for a in areas(files)]:
         if not (ROOT / page).exists():
             problems.append(f"{page}: each top-level directory needs this page")
             continue
