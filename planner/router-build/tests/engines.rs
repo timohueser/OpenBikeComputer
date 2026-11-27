@@ -506,9 +506,10 @@ fn only_the_chosen_legs_are_unpacked() {
     assert!(stats.searches > 3, "{stats:?}");
     assert_eq!(stats.legs, 2, "{stats:?}");
     assert!(route.legs.iter().all(|leg| leg.pieces.len() > 1));
-    // Each piece is a road of its leg, and a leg has at most one road before its first piece.
+    // Each piece but the last of a leg is a road of its leg, and a leg has at most one road before
+    // its first piece.
     let pieces = route.pieces().count();
-    assert!((pieces..=pieces + 2).contains(&stats.roads), "{stats:?} for {pieces} pieces");
+    assert!((pieces - 2..=pieces + 2).contains(&stats.roads), "{stats:?} for {pieces} pieces");
     // The roads of the chosen legs and the steps of one search have their own limits.
     for control in [Control { max_roads: 1, ..Control::default() }, Control { max_steps: 1, ..Control::default() }] {
         assert!(matches!(router.route(&request, &control), Err(Error::Limit)));

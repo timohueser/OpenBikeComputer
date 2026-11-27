@@ -157,10 +157,7 @@ pub fn way(road: &Road, tags: &Tags, country: Country, pushing: bool) -> Option<
         minimum_factor *= 1.0 + stress;
         factor *= 1.0 + 2.0 * stress;
     }
-    Some(Suitability {
-        basis: CostBasis { factor, turn: if tag(tags, "junction") == "roundabout" { 0.0 } else { 90.0 }, ferry },
-        minimum_factor,
-    })
+    Some(Suitability { basis: CostBasis { factor, turn: 0.0, ferry }, minimum_factor })
 }
 
 #[cfg(test)]
