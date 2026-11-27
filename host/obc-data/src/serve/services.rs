@@ -814,11 +814,12 @@ impl Package {
         let mut command = self.command(routing, store, target, "--install");
         command.arg(store.root().join("objects")).arg(CELLS_THREADS.to_string()).stderr(Stdio::piped());
         #[cfg(unix)]
-        // SAFETY: getpriority and setpriority are async-signal-safe, and the closure allocates nothing.
+        // SAFETY: getpriority and setpriority are plain system calls that take no lock, and the
+        // closure allocates nothing.
         unsafe {
             std::os::unix::process::CommandExt::pre_exec(&mut command, || {
-                // An unprivileged process may not lower its nice value (EACCES), so a follower that
-                // runs above nice 10 keeps its own.
+                // An unprivileged process may not lower its nice value (EACCES), so a follower at
+                // nice 10 or more keeps its own.
                 if libc::getpriority(libc::PRIO_PROCESS, 0) >= 10 {
                     return Ok(());
                 }
