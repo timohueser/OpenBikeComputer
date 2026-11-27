@@ -103,7 +103,11 @@ pub fn signed(tags: &Tags, kinds: &[&str]) -> bool {
 /// Whether `after` is the road back from `before`: the other direction of the same piece of a way.
 pub fn back(roads: &Roads, before: u32, after: u32) -> bool {
     let (a, b) = (before as usize, after as usize);
-    roads.way_row(a) == roads.way_row(b) && roads.from(a) == roads.to(b) && roads.to(a) == roads.from(b)
+    // Two pieces of a closed way can join the same two junctions; they run in one direction.
+    roads.way_row(a) == roads.way_row(b)
+        && roads.reversed(a) != roads.reversed(b)
+        && roads.from(a) == roads.to(b)
+        && roads.to(a) == roads.from(b)
 }
 
 /// The roads of each mode that depart where `before` arrives, without the road back.
@@ -146,7 +150,9 @@ fn groups(graph: &Graph) -> Vec<(u32, u32)> {
     // Squares of at least `GROUP_M` on a side at each signal node: a point within `GROUP_M` of a
     // signal node lies in its square or next to it.
     let tall = (f64::from(GROUP_M) / METRES_PER_UDEG).ceil() as i32;
+    // Beyond 85° the squares only get wider than they must.
     let poleward = signals.iter().map(|&node| points[node as usize].lat.unsigned_abs()).max().unwrap_or(0);
+    let poleward = poleward.min(85_000_000);
     let wide = (f64::from(tall) / (f64::from(poleward) * 1e-6).to_radians().cos()).ceil() as i32;
     let square = |point: Point| [point.lat.div_euclid(tall), point.lon.div_euclid(wide)];
     let mut squares = HashMap::<[i32; 2], Vec<u32>>::new();
@@ -172,13 +178,16 @@ fn groups(graph: &Graph) -> Vec<(u32, u32)> {
         .collect();
     edges.sort_unstable();
     edges.dedup();
-    // (junction, metres, signal index) for each junction within `GROUP_M` of a signal node.
+    let index = |node: u32| signals.binary_search(&node).ok().map(|i| i as u32);
+    // (junction, metres, signal index) for each junction that a join from a signal node reaches.
     let mut reached: Vec<(u32, u32, u32)> = (0..signals.len())
         .into_par_iter()
-        .flat_map_iter(|i| reach(&edges, signals[i]).into_iter().map(move |(node, metres)| (node, metres, i as u32)))
+        .flat_map_iter(|i| {
+            let found = reach(&edges, signals[i], |node| index(node).is_some());
+            found.into_iter().map(move |(node, metres)| (node, metres, i as u32))
+        })
         .collect();
     reached.sort_unstable();
-    let index = |node: u32| signals.binary_search(&node).ok().map(|i| i as u32);
     // Each set has its smallest signal index as its root.
     let mut parent: Vec<u32> = (0..signals.len() as u32).collect();
     fn root(parent: &mut [u32], mut i: u32) -> u32 {
@@ -196,8 +205,8 @@ fn groups(graph: &Graph) -> Vec<(u32, u32)> {
     }
     let mut groups = Vec::new();
     for run in reached.chunk_by(|a, b| a.0 == b.0) {
-        // A junction that is no signal node is in a group where a join of its two nearest signal
-        // nodes, which differ, passes it.
+        // A junction that is no signal node is in a group where a join of two signal nodes passes
+        // it: its two nearest signal nodes, which differ, reach it with `GROUP_M` in total.
         let member = match index(run[0].0) {
             Some(i) => Some(i),
             None => (run.len() >= 2 && run[0].1 + run[1].1 <= GROUP_M).then_some(run[0].2),
@@ -210,12 +219,13 @@ fn groups(graph: &Graph) -> Vec<(u32, u32)> {
 }
 
 /// The junctions that `edges` join to `start` within `GROUP_M` in total, with the metres of the
-/// shortest join.
-fn reach(edges: &[(u32, u32, u32)], start: u32) -> Vec<(u32, u32)> {
+/// shortest join. A join ends at the first junction where `ends` holds, so a junction beyond
+/// another signal node is not on a join from `start`.
+fn reach(edges: &[(u32, u32, u32)], start: u32, ends: impl Fn(u32) -> bool) -> Vec<(u32, u32)> {
     let mut best = vec![(start, 0)];
     let mut queue = BinaryHeap::from([Reverse((0, start))]);
     while let Some(Reverse((metres, node))) = queue.pop() {
-        if best.iter().any(|&(known, shorter)| known == node && shorter < metres) {
+        if best.iter().any(|&(known, shorter)| known == node && shorter < metres) || node != start && ends(node) {
             continue;
         }
         let first = edges.partition_point(|edge| edge.0 < node);
@@ -355,5 +365,35 @@ pub(crate) mod tests {
         };
         assert_eq!(paid(&[0, 1, 2, 3, 4]), 60);
         assert_eq!(paid(&[5, 2, 3, 4]), 60);
+    }
+
+    #[test]
+    fn a_junction_beyond_a_signal_node_is_outside_its_group() {
+        // A street from 0 to 4 with the signal nodes 2 and 3, 8 m apart, and the signal node 4
+        // far from them. A side street from 5 arrives at junction 1, 12 m before signal node 2.
+        let points = [[0, 0], [0, 1000], [0, 1108], [0, 1180], [0, 2180], [-1000, 1000]];
+        let main: &[(&str, &str)] = &[("highway", "residential"), ("name", "Main")];
+        let pieces: Vec<Piece> =
+            vec![(1, &[0, 1], main), (2, &[1, 2], main), (3, &[2, 3], main), (4, &[3, 4], main), (5, &[5, 1], main)];
+        let mut graph = graph(&points, &pieces);
+        graph.signals = [0, 0, 1, 1, 1, 0].into_iter().collect();
+        let junctions = Junctions::new(&graph);
+        assert_eq!([1, 2, 3, 4].map(|junction| junctions.group(junction)), [None, Some(2), Some(2), Some(4)]);
+        assert!(!junctions.enters(&graph, road(&graph, 5, 1)));
+    }
+
+    #[test]
+    fn the_other_piece_of_a_closed_way_is_not_the_road_back() {
+        // Way 1 is a loop over the junctions 0 and 1, cut at both: one piece runs over point 2 and
+        // the other back over point 3.
+        let points = [[0, 0], [0, 2000], [1000, 1000], [-1000, 1000]];
+        let graph = graph(&points, &[(1, &[0, 2, 1], STREET), (1, &[1, 3, 0], STREET)]);
+        let roads = &graph.roads;
+        let piece = |from: u32, reversed: bool| {
+            (0..roads.len()).find(|&road| roads.from(road) == from && roads.reversed(road) == reversed).unwrap() as u32
+        };
+        let (out, on, turned) = (piece(0, false), piece(1, false), piece(1, true));
+        assert!(back(roads, out, turned) && !back(roads, out, on));
+        assert!(Junctions::new(&graph).through(&graph, out, on));
     }
 }
