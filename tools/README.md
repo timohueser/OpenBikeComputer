@@ -21,6 +21,7 @@ request on standard input. Their product logic belongs to `host/` and `data/`.
 | Steps of `obc data` | `step_request.py`, `step_pool.py`, `data_registry.py`; `planner_runtime.py` is the hub of the planner bake |
 | Boards and machines | `board.py`, `install-geos.sh`, `install-riscv.sh`, [`vps/`](vps/README.md) |
 | Licences | `licenses/` (`gen-third-party.sh`, `deny.toml`) |
+| The weekly dream job | `dream/` (`collect.py`, `brief.md`, `publish.py`), [`dream.yml`](../.github/workflows/dream.yml) |
 | Verification console | [`verification/`](verification/README.md), a SvelteKit app; [`verification/ops/`](verification/ops/README.md) is the server runbook |
 
 [`docs/testing.md`](../docs/testing.md) explains routes, the fields of `suites.toml`, fixtures
@@ -97,6 +98,13 @@ see: suites that are not Rust, and path triggers. The same selector runs locally
 - `check_paths.py` reads backticked paths in `AGENTS.md` and the READMEs. A path with two or
   more segments that starts at a real directory must exist; a build output must be ignored by
   git. A rename can so fail on a page far from the change: fix the page in the same change.
+- The dream step has the API key only, and no shell and no network. `tests/test_dream_workflow.py`
+  holds these guards.
+- The next dream run finds its start from the head branch dream/pages and the line
+  `Dream window: <since> to <through>` in its body. Do not rename either.
+- The concurrency group `dream` keeps one waiting run. A third start replaces the waiting one.
+- A new workflow that publishes goes into `PUBLICATION_WORKFLOWS` of `test_plan.py`. Otherwise
+  each change of it selects the whole graph.
 
 ## Decisions
 
