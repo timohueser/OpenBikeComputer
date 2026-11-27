@@ -16,12 +16,11 @@ const TILES = {
     'trail-grade': { center: [8.2571, 46.9829], zoom: 13 },
     snow: { center: [8.671, 46.668], zoom: 9.5 },
     weather: { center: [8.6002, 46.706], zoom: 11 },
-    wind: { center: [8.4017, 46.886], zoom: 8 },
     contours: { center: [8.501, 46.767], zoom: 10.5 },
     'slope-angle': { center: [8.2475, 46.9745], zoom: 12.5 },
     closures: { center: [8.5815, 46.63465], zoom: 14 },
 };
-const NAMES = { cycling: 'Cycling', hiking: 'Hiking', mtb: 'MTB', steepness: 'Steepness', 'trail-grade': 'Trail grade', snow: 'Snow', weather: 'Weather', wind: 'Wind', contours: 'Contours', 'slope-angle': 'Slope angle', closures: 'Closures' };
+const NAMES = { cycling: 'Cycling', hiking: 'Hiking', mtb: 'MTB', steepness: 'Steepness', 'trail-grade': 'Trail grade', snow: 'Snow', weather: 'Weather', contours: 'Contours', 'slope-angle': 'Slope angle', closures: 'Closures' };
 const LOOKS = ['light', 'dark'];
 // The tile shows 81 × 54 CSS px of the map at 2 device pixels.
 const SIZE = { width: 81, height: 54 };

@@ -1,24 +1,6 @@
 // Year-slider rows of a route: one value per column, the distance-weighted mean of the samples with data.
-import type { Coordinate } from '../map-types';
-import { MONTHS, SECTORS, WEEKS, headPart, read, temperatureAt, wetDaysOf7, windRose } from './climate';
+import { WEEKS, read, temperatureAt, wetDaysOf7 } from './climate';
 import type { CellRef } from './climate-source';
-
-/**
- * The travel direction at each point, in degrees clockwise from north: from its previous to its next
- * point, or with `km` across the `stretch` km before and after it.
- */
-export function lineBearings(line: Coordinate[], km?: ArrayLike<number>, stretch = 0): Float32Array {
-    const at = (i: number) => km?.[i] ?? 0;
-    let back = 0, ahead = 0;
-    return Float32Array.from(line, (_, i) => {
-        // The nearest points at least `stretch` away, and never nearer than the neighbours.
-        while (back < i - 1 && at(i) - at(back + 1) >= stretch) back++;
-        while (ahead < line.length - 1 && (ahead <= i || at(ahead) - at(i) < stretch)) ahead++;
-        const [lon0, lat0] = line[back], [lon1, lat1] = line[ahead];
-        const east = (lon1 - lon0) * Math.cos((lat0 + lat1) * Math.PI / 360), north = lat1 - lat0;
-        return (Math.atan2(east, north) * 180 / Math.PI + 360) % 360;
-    });
-}
 
 /** Each sample covers the line halfway to its neighbours. */
 function reach(km: ArrayLike<number>, i: number): number {
@@ -71,24 +53,4 @@ export function weatherRows(cells: (CellRef | undefined)[], km: ArrayLike<number
         high: temperature('tmax'), rain: row(({ cell }, week) => wetDaysOf7(cell.tile, cell.index, week)), low: temperature('tmin'),
         amount: row(({ cell }, week) => read(cell.tile, 'rain', week, cell.index)),
     };
-}
-
-/** The headwind chance per month of overview cells, from 0 to 1, for the travel bearing at each sample. */
-export function windRow(cells: (CellRef | undefined)[], km: ArrayLike<number>, bearings: ArrayLike<number>): Float32Array {
-    // Per run and sector: the weighted part of the sector in the headwind window of each sample.
-    const list = runs(cells, km, () => new Float64Array(SECTORS), (parts, i, weight) => {
-        for (let s = 0; s < SECTORS; s++) parts[s] += weight * headPart(s, bearings[i]);
-    });
-    return Float32Array.from({ length: MONTHS }, (_, month) => mean(list, ({ cell, weight, sum }) => {
-        const rose = windRose(cell.tile, cell.index, month);
-        let head = 0;
-        for (let s = 0; s < SECTORS; s++) head += rose[s] * sum[s];
-        return head / weight;
-    }));
-}
-
-/** The daytime mean wind speed per week of overview cells, in m/s. */
-export function speedRow(cells: (CellRef | undefined)[], km: ArrayLike<number>): Float32Array {
-    const list = runs(cells, km, () => null, () => {});
-    return Float32Array.from({ length: WEEKS }, (_, week) => mean(list, ({ cell }) => read(cell.tile, 'wind', week, cell.index)));
 }
