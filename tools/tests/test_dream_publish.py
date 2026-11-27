@@ -1,6 +1,6 @@
 import importlib.util
 import json
-import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -112,13 +112,39 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(merges, [("pr", "merge", "PR dream/pages", "--auto", "--merge")])
         author = git("--git-dir", str(self.remote), "log", "-1", "--format=%an <%ae>", "dream/pages")
         self.assertEqual(author.strip(), "Owner <42+owner@users.noreply.github.com>")
+        titles = {a[a.index("--head") + 1]: a[a.index("--title") + 1] for a, _ in self.gh.calls if a[:2] == ("pr", "create")}
+        self.assertEqual(titles, {
+            "dream/pages": "memory: the weekly update of the area pages",
+            "dream/review-77": "memory: the proposals of the weekly update",
+        })
 
         area = self.gh.body(("pr", "create"), "dream/pages")
-        self.assertIn("Dream window: 2026-11-01T00:00:00Z to 2026-11-08T00:00:00Z", area.splitlines())
+        found = publish.WINDOW.search(area)
+        self.assertIsNotNone(found, "collect cannot read the window of the area pull request")
+        self.assertEqual(found.groups(), ("2026-11-01T00:00:00Z", "2026-11-08T00:00:00Z"))
         self.assertIn("| `tools/README.md` | 1 | 2 |", area)
         self.assertIn("$12.50", area)
-        self.assertNotIn("AGENT-TEXT", area)
-        self.assertIn(publish.fence(MESSAGE), self.gh.body(("pr", "create"), "dream/review-77"))
+        self.assertIn("RUN", area)
+        self.assertNotIn("AGENT-TEXT", area, "text of the agent in the body that merges with no review")
+        review = self.gh.body(("pr", "create"), "dream/review-77")
+        self.assertEqual(review.splitlines()[0], found[0], "the review body does not start with the window line")
+        self.assertFenced(review, MESSAGE)
+
+    def test_the_area_pull_request_and_its_auto_merge_come_last(self):
+        cases = {
+            "with proposals": ({"tools/README.md": "new\n", "AGENTS.md": "new\n"}, ("pr", "create")),
+            "without proposals": ({"tools/README.md": "new\n"}, ("issue", "comment")),
+        }
+        for name, (pages, rest) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                self.run_publish(pages)
+                verbs = self.gh.verbs()
+                area = next(i for i, (a, _) in enumerate(self.gh.calls) if a[:2] == ("pr", "create") and "dream/pages" in a)
+                self.assertLess(verbs.index(("label", "list")), verbs.index(("pr", "list")))
+                self.assertLess(verbs.index(rest), area, "the rest of the window is published after the area pull request")
+                self.assertEqual(verbs[-1], ("pr", "merge"), "a write follows the auto-merge of the area pull request")
+        self.assertFenced(self.gh.body(("issue", "comment")), MESSAGE)
 
     def test_only_page_files_reach_a_branch(self):
         (self.outside / "README.md").write_text("outside\n")
@@ -147,7 +173,7 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.files("dream/pages"), ["firmware/README.md"])
         self.assertEqual(self.files("dream/review-77"), ["tools/README.md"])
-        self.assertIn(publish.fence("tools/README.md: BROKEN `x/y`"), self.gh.body(("pr", "create"), "dream/review-77"))
+        self.assertFenced(self.gh.body(("pr", "create"), "dream/review-77"), "tools/README.md: BROKEN `x/y`")
 
     def test_a_failed_run_publishes_nothing_and_writes_to_the_issue(self):
         page = {"tools/README.md": "new\n"}
@@ -157,6 +183,8 @@ class PublishTests(unittest.TestCase):
             "not JSON": dict(pages=page, result="{"),
             "no pages": dict(pages=None),
             "no window": dict(pages=page, since=""),
+            "window without time": dict(pages=page, since="2026-11-01"),
+            "window with an offset": dict(pages=page, since="2026-11-01T00:00:00+00:00"),
             "check fails elsewhere": dict(pages=page, check=lambda: ["specs/x.md: link to y does not resolve"]),
         }
         for name, case in cases.items():
@@ -166,29 +194,50 @@ class PublishTests(unittest.TestCase):
                 self.assertEqual(self.branches(), {"develop"})
                 self.assertNotIn(("pr", "create"), self.gh.verbs())
                 self.assertIn(("issue", "comment"), self.gh.verbs())
+                if name.startswith("window"):
+                    self.assertIn("the window is missing", self.gh.body(("issue", "comment")))
 
     def test_the_cost_of_a_capped_run_reaches_the_issue(self):
         self.run_publish({}, result={**OK, "subtype": "error_max_budget_usd", "total_cost_usd": 35.1})
         body = self.gh.body(("issue", "comment"))
         self.assertIn("Cost: $35.10", body)
         self.assertIn("error_max_budget_usd", body)
-        self.assertIn(publish.fence(MESSAGE), body)
+        self.assertFenced(body, MESSAGE)
 
-    def test_an_open_area_pr_is_closed_first_and_a_review_pr_is_not(self):
-        gh = FakeGh(open_prs=[{"number": 7, "isCrossRepository": False}, {"number": 8, "isCrossRepository": True}])
-        self.run_publish({"tools/README.md": "new\n", "AGENTS.md": "new\n"}, gh=gh)
-        closed = [args[2] for args, _ in gh.calls if args[:2] == ("pr", "close")]
-        self.assertEqual(closed, ["7"])
-        self.assertLess(gh.verbs().index(("pr", "close")), gh.verbs().index(("pr", "create")))
-        listed = [args for args, _ in gh.calls if args[:2] == ("pr", "list")]
-        self.assertTrue(all("dream/pages" in args for args in listed))
+    def test_a_run_closes_the_pull_requests_it_replaces(self):
+        same = "Dream window: 2026-11-01T00:00:00Z to 2026-11-08T00:00:00Z\n\nCost"
+        other = "Dream window: 2026-10-25T00:00:00Z to 2026-11-01T00:00:00Z\n\nCost"
+        prs = [
+            {"number": 7, "headRefName": "dream/pages", "isCrossRepository": False, "body": other},
+            {"number": 8, "headRefName": "dream/pages", "isCrossRepository": True, "body": same},
+            {"number": 9, "headRefName": "dream/review-50", "isCrossRepository": False, "body": same},
+            {"number": 10, "headRefName": "dream/review-51", "isCrossRepository": False, "body": other},
+            {"number": 11, "headRefName": "dream/review-52", "isCrossRepository": True, "body": same},
+            {"number": 12, "headRefName": "feature", "isCrossRepository": False, "body": same},
+        ]
+        cases = {
+            "with proposals": ({"tools/README.md": "new\n", "AGENTS.md": "new\n"}, ["7", "9"]),
+            "without proposals": ({"tools/README.md": "new\n"}, ["7"]),
+        }
+        for name, (pages, expected) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                gh = FakeGh(open_prs=prs)
+                self.run_publish(pages, gh=gh)
+                closed = [args[2] for args, _ in gh.calls if args[:2] == ("pr", "close")]
+                self.assertEqual(closed, expected, "a run closes a pull request it does not replace, or keeps one it does")
+                listed = [args for args, _ in gh.calls if args[:2] == ("pr", "list")]
+                self.assertEqual(len(listed), 1, "the open pull requests are listed more than once")
+                self.assertNotIn("--head", listed[0], "`--head` hides the review pull requests")
+                self.assertLess(gh.verbs().index(("pr", "close")), gh.verbs().index(("pr", "create")))
 
-    def test_text_of_the_agent_cannot_close_its_fence(self):
-        fenced = publish.fence(MESSAGE).splitlines()
-        self.assertEqual(fenced[0], "`````text")
-        self.assertEqual(fenced[-1], "`````")
-        self.assertFalse(any(line.startswith("`````") for line in fenced[1:-1]))
-
+    def assertFenced(self, body, text):
+        """`text` sits whole inside one fence of `body`, which no line of `text` closes."""
+        lines = body.splitlines()
+        opening = next(i for i, line in enumerate(lines) if re.fullmatch(r"`{3,}text", line))
+        ticks = lines[opening][: -len("text")]
+        closing = next(i for i in range(opening + 1, len(lines)) if re.fullmatch(f"{ticks}`*[ \t]*", lines[i]))
+        self.assertEqual(lines[opening + 1:closing], text.strip().splitlines(), "text of the agent closes its fence")
 
 if __name__ == "__main__":
     unittest.main()

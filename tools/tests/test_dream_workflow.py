@@ -48,14 +48,36 @@ class DreamWorkflowTests(unittest.TestCase):
             self.assertIn(flag, args, f"the dream command lacks {flag}")
             self.assertEqual(args[args.index(flag) + 1], value, f"the dream command changed {flag}")
         self.assertIn("--restricted", args, "the dream command lacks --restricted")
+        for flag, value in [("--model", "opus"), ("--permission-prompts", "none")]:
+            self.assertIn(flag, args, f"the dream command lacks {flag}")
+            self.assertEqual(args[args.index(flag) + 1], value, f"the dream command changed {flag}")
         self.assertIn("--max-budget-usd", args, "the dream command has no cost cap")
+        cap = args[args.index("--max-budget-usd") + 1]
+        self.assertRegex(cap, r"^\d+(\.\d+)?$", "the cost cap of the dream command is not a number")
+        env = self.dream.get("env", {})
+        self.assertEqual(env.get("CLAUDE_CODE_SUBAGENT_MODEL"), "opus", "the subagents of the dream step run another model")
+        self.assertEqual(env.get("CLAUDE_CODE_SUBAGENT_MODEL_FORCE"), "1", "a subagent can pick its own model")
+        self.assertRegex(self.dream["run"], r'> "\$RUNNER_TEMP/[^"]+"', "the agent can write the result of the dream command")
         self.assertNotIn("--bare", args, "--bare removes Grep, Glob, Write and the subagent tool")
         self.assertNotIn("--dangerously-skip-permissions", args, "the dream command skips permissions")
 
     def test_write_token_only_in_publish(self) -> None:
+        holders = []
         for name, job in self.jobs.items():
-            if name != "publish":
-                self.assertNotIn("DREAM_GITHUB_TOKEN", text(job), f"the job {name} reads the write token")
+            outside = {key: value for key, value in job.items() if key != "steps"}
+            self.assertNotIn("DREAM_GITHUB_TOKEN", text(outside), f"the job {name} sets the write token outside its steps")
+            holders += [(name, step.get("run", "")) for step in job["steps"] if "DREAM_GITHUB_TOKEN" in text(step)]
+        self.assertEqual(len(holders), 1, "the write token must be in exactly one step")
+        name, run = holders[0]
+        self.assertEqual(name, "publish", f"the job {name} reads the write token")
+        self.assertIn("tools/dream/publish.py", run, "the write token is in a step that does not publish")
+
+    def test_both_jobs_run_on_develop_only(self) -> None:
+        for name in ("dream", "publish"):
+            self.assertIn(
+                "github.ref == 'refs/heads/develop'", self.jobs[name].get("if", ""),
+                f"the job {name} runs on a branch other than develop",
+            )
 
     def test_checkouts_keep_no_credentials(self) -> None:
         for name, job in self.jobs.items():

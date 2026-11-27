@@ -160,7 +160,8 @@ def split_learned(body: str) -> tuple[str, str]:
 
 
 def quote(text: str, limit: int) -> str:
-    """A fence that no backtick run inside the text can close."""
+    """A fence that no backtick run inside the text can close, so the text stays a quote: a
+    mention or `Closes #N` in it does nothing."""
     text = text.replace("\r\n", "\n").strip()
     note = ""
     if len(text) > limit:

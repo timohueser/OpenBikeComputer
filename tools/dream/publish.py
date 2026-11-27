@@ -21,15 +21,18 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+HERE = Path(__file__).resolve().parent
+sys.path[:0] = [str(HERE), str(HERE.parent)]
 import check_paths  # noqa: E402
+from collect import WINDOW, quote  # noqa: E402
 
 BASE = "develop"
 AREA_BRANCH = "dream/pages"
+REVIEW_PREFIX = "dream/review-"
 LABEL = "dream"
 ISSUE_TITLE = "Weekly dream job"
 RESULT_CHARS = 2000
-# GitHub refuses a body of more than 65,536 characters.
+# GitHub refuses a body of more than 65,536 characters; the result artifact holds the whole text.
 MESSAGE_CHARS = 50_000
 # Both ends of the window go into the body that merges with no review.
 STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
@@ -43,12 +46,6 @@ def gh(*args: str, stdin: str | None = None) -> str:
 
 def git(root: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(root), *args], stdout=subprocess.PIPE, text=True, check=True).stdout
-
-
-def fence(text: str) -> str:
-    """Text of the agent in a fence that it cannot close, so a mention or `Closes #N` does nothing."""
-    ticks = "`" * max(3, max(map(len, re.findall(r"`+", text)), default=0) + 1)
-    return f"{ticks}text\n{text}\n{ticks}"
 
 
 def read_result(path: Path) -> dict | None:
@@ -153,11 +150,17 @@ def to_issue(gh: Gh, body: str) -> str:
     return url
 
 
-def close_area_pr(gh: Gh, run_url: str) -> None:
-    # `--head` matches the branch name of a fork too.
-    prs = json.loads(gh("pr", "list", "--head", AREA_BRANCH, "--state", "open", "--json", "number,isCrossRepository"))
-    for pr in prs:
-        if not pr["isCrossRepository"]:
+def close_replaced(gh: Gh, since: str, proposals: bool, run_url: str) -> None:
+    """Close what this run makes again: the area pull request that did not merge and, when this
+    run has proposals, the proposals of a run with the same window start. Proposals of an
+    earlier window stay: no later run reads that window again."""
+    fields = "number,headRefName,isCrossRepository,body"
+    for pr in json.loads(gh("pr", "list", "--state", "open", "--limit", "500", "--json", fields)):
+        head = pr["headRefName"]
+        window = WINDOW.search((pr["body"] or "").replace("\r\n", "\n"))
+        same_window = proposals and head.startswith(REVIEW_PREFIX) and window and window[1] == since
+        # A fork can use the same branch name.
+        if not pr["isCrossRepository"] and (head == AREA_BRANCH or same_window):
             gh("pr", "close", str(pr["number"]), "--delete-branch", "--comment", f"The dream run {run_url} replaces this pull request.")
 
 
@@ -197,9 +200,9 @@ def publish(
     result = read_result(result_path)
     cost = cost_of(result)
     if reason := failure(result, pages, since, through):
-        text = str((result or {}).get("result") or "")[:RESULT_CHARS]
+        text = str((result or {}).get("result") or "")
         subtype = (result or {}).get("subtype", "none")
-        body = f"The dream run failed: {reason}. Nothing is published.\n\nCost: {cost}\nSubtype: {subtype}\nRun: {run_url}\n\n{fence(text)}\n"
+        body = f"The dream run failed: {reason}. Nothing is published.\n\nCost: {cost}\nSubtype: {subtype}\nRun: {run_url}\n\n{quote(text, RESULT_CHARS)}"
         summary(f"Dream run failed: {reason}. Cost: {cost}. Reported in {to_issue(gh, body)}")
         return 1
 
@@ -220,17 +223,19 @@ def publish(
     if problems:
         body = (
             "The path check fails on problems that no area page of this run causes, so nothing "
-            f"is published. The artifact of the run holds the pages.\n\nRun: {run_url}\n\n{fence(chr(10).join(problems))}\n"
+            f"is published. The artifact of the run holds the pages.\n\nRun: {run_url}\n\n{quote(chr(10).join(problems), MESSAGE_CHARS)}"
         )
         summary(f"Dream run: the path check failed. Cost: {cost}. Reported in {to_issue(gh, body)}")
         return 1
     review = {f: c for f, c in changed.items() if f not in area}
+    for f, (before, _) in area.items():
+        write(root, f, before)
 
     ensure_label(gh)
-    close_area_pr(gh, run_url)
-    message = str(result.get("result") or "")
-    if len(message) > MESSAGE_CHARS:
-        message = message[:MESSAGE_CHARS] + "\n(cut; the result artifact of the run holds the rest)"
+    close_replaced(gh, since, bool(review), run_url)
+    final = str(result.get("result") or "").strip()
+    message = quote(final, MESSAGE_CHARS)
+    window = f"Dream window: {since} to {through}"
     report = [f"Dream run: cost {cost}"]
     if area or review:
         user = json.loads(gh("api", "user"))
@@ -238,24 +243,27 @@ def publish(
                     "-c", f"user.email={user['id']}+{user['login']}@users.noreply.github.com"]
         gh("auth", "setup-git")
         base = git(root, "rev-parse", "HEAD").strip()
+    if review:
+        title = "memory: the proposals of the weekly update"
+        branch = f"{REVIEW_PREFIX}{run_id}"
+        commit_and_push(root, base, branch, review, identity, title)
+        body = f"{window}\n\nCost of the run: {cost}\n\n{table(review)}\n\nRun: {run_url}\n"
+        if moved:
+            body += f"\nThese area pages fail the path check:\n\n{quote(chr(10).join(moved), MESSAGE_CHARS // 5)}"
+        body += f"\nThe final message of the agent:\n\n{message}"
+        report.append(f"Proposals: {open_pr(gh, branch, title, body)}")
+    elif final:
+        body = f"The final message of the dream run {run_url} (cost {cost}):\n\n{message}"
+        report.append(f"Final message: {to_issue(gh, body)}")
+    # Last: when this pull request merges, the next window starts after this one, so the rest
+    # of this window must be out by then.
     if area:
         title = "memory: the weekly update of the area pages"
         commit_and_push(root, base, AREA_BRANCH, area, identity, title)
-        body = f"Dream window: {since} to {through}\n\nCost of the run: {cost}\n\n{table(area)}\n\nRun: {run_url}\n"
+        body = f"{window}\n\nCost of the run: {cost}\n\n{table(area)}\n\nRun: {run_url}\n"
         url = open_pr(gh, AREA_BRANCH, title, body)
         gh("pr", "merge", url, "--auto", "--merge")
         report.append(f"Area pages: {url}")
-    if review:
-        title = "memory: the proposals of the weekly update"
-        commit_and_push(root, base, f"dream/review-{run_id}", review, identity, title)
-        body = f"Cost of the run: {cost}\n\n{table(review)}\n\nRun: {run_url}\n"
-        if moved:
-            body += f"\nThese area pages fail the path check:\n\n{fence(chr(10).join(moved))}\n"
-        body += f"\nThe final message of the agent:\n\n{fence(message)}\n"
-        report.append(f"Proposals: {open_pr(gh, f'dream/review-{run_id}', title, body)}")
-    elif message.strip():
-        body = f"The final message of the dream run {run_url} (cost {cost}):\n\n{fence(message)}\n"
-        report.append(f"Final message: {to_issue(gh, body)}")
     summary("\n\n".join(report))
     return 0
 

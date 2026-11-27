@@ -103,6 +103,8 @@ see: suites that are not Rust, and path triggers. The same selector runs locally
 - The next dream run finds its start from the head branch dream/pages and the line
   `Dream window: <since> to <through>` in its body. Do not rename either.
 - The concurrency group `dream` keeps one waiting run. A third start replaces the waiting one.
+- A dream step that reaches its timeout writes no result, so its report has no cost. The
+  Console of the API key shows it.
 - A new workflow that publishes goes into `PUBLICATION_WORKFLOWS` of `test_plan.py`. Otherwise
   each change of it selects the whole graph.
 
