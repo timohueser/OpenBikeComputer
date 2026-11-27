@@ -87,7 +87,8 @@ fn import(pbf: &Path, dem: &Path, bounds: [f64; 4]) -> Result<Graph, String> {
     let terrain = Terrain::open(&tiles, "", None, bounds)?;
     let mut recent = Recent::default();
     let mut height = |point: Point| terrain.height(point.lat, point.lon, &mut recent);
-    // The bench reads no cells, so the region is one cell.
+    // The bench reads no cells: the largest cell size makes one cell of a region of up to
+    // 2^24 - 1 junctions.
     crate::osm::import(&[pbf.to_path_buf()], bounds, &[(1 << 24) - 1], Some(&mut height))
 }
 
