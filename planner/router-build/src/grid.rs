@@ -1,5 +1,5 @@
 //! The offline grid of the planner: the Web Mercator tiles of one zoom that the coverage overlaps,
-//! each clipped to the coverage. A rider downloads the routing blocks and the routes of a cell.
+//! each clipped to the coverage. A rider downloads the routes and the route facts of a cell.
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;

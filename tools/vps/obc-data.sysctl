@@ -1,0 +1,6 @@
+# The limit of memory maps of each process, installed as /etc/sysctl.d/90-obc-data.conf.
+# The routing service maps one file for each part of each routing cell and keeps the maps. The
+# largest install has at most 250,000 files, the limit of the download level of the routing
+# package; 1048576 holds that plus 4096 other maps four times. A map costs kernel memory only while
+# a process holds it, so a high limit costs nothing.
+vm.max_map_count = 1048576

@@ -162,10 +162,9 @@ def step(request):
             # The tile service and an offline area stop at zoom 12; TrailView reads the zoom 13 packs.
             metadata.update(maxzoom=FINE_ZOOM - 1, trailview_maxzoom=FINE_ZOOM)
         if kind == "overlays":
-            routing = json.loads(Path(request["layers"]["planner/routing/grid"]["index.json"]).read_bytes())
-            if metadata.get("routing_package") != routing["graph"]["source"]:
+            cells = json.loads(Path(request["layers"]["planner/routing/cells/grid"]["index.json"]).read_bytes())
+            if metadata.get("routing_package") != cells["files"]["routing/directory.bin"]["sha256"]:
                 raise ValueError("Overlay tiles use another routing package")
-            metadata["routing_package"] = routing["files"]["routing/blocks.json"]["sha256"]
         tilejson = work / f"{kind}.json"
         tilejson.write_bytes(runtime.encoded(metadata))
         files[f"maps/{kind}.json"] = offline.pack_file(tilejson, objects)

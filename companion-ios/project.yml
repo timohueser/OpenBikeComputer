@@ -46,6 +46,8 @@ targets:
     sources:
       - path: OBCCompanion
       - path: PlannerNative/RouteProvider.swift
+      - path: PlannerNative/RoutingInstaller.swift
+      - path: PlannerNative/PlannerNative.h
       - path: PlannerNative/PMTilesArchive.swift
       - path: PlannerSearch/PlannerSearchConnection.swift
       - path: PlannerSearch/PlannerSearchDatabase.swift
@@ -164,6 +166,8 @@ targets:
         LIBRARY_SEARCH_PATHS[sdk=iphoneos*]: ["$(inherited)", "$(SRCROOT)/../target/aarch64-apple-ios/release"]
         LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]: ["$(inherited)", "$(SRCROOT)/../target/aarch64-apple-ios-sim/release"]
         OTHER_LDFLAGS: ["$(inherited)", "-lplanner_service", "-lresolv", "-liconv"]
+        # Declares the functions of the planner-service library to Swift.
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/PlannerNative/BridgingHeader.h"
         # The native planner build provides the Apple Silicon simulator slice.
         EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
 

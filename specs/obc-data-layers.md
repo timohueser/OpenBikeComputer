@@ -41,7 +41,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `planner/places`, `planner/route-facts`, `planner/climate`, `planner/snow`, `planner/trailview-rules`, `planner/trailview-colour`, `planner/ways` | The step of the same name and its grids |
 | `planner/trailview-features` | `planner/trailview-features`, `planner/trailview-stamps` and their grids |
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region`, `planner/trailview-ground` and its grid |
-| `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | The step of the same name. Internal, `cache`. Their files hold router types, so their format is the router `FORMAT` plus 1 |
+| `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | The step of the same name. Internal, `cache`. Their format is 12. Their files hold router types: the closure sets, `Point` and the `CostBasis` of the dictionary. Raise the format by hand when one of these types changes |
 | `planner/routing-ways` | The step of the same name. Internal, `cache`. Its format is the `user_version` of `ways.sqlite` |
 | `planner/routing` | `planner/route-sources`, `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |

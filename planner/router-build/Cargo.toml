@@ -12,9 +12,12 @@ country-boundaries = "1.2"
 serde_json = "1"
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
+sha2 = "0.10"
 memmap2 = "0.9.11"
 # The parallel passes of the bake.
 rayon = "1"
+# The objects of the package of format 10.
+zstd = "0.14"
 # The request of the planner routing step.
 obc-data = { path = "../../host/obc-data" }
 # The canopy tiles of the route facts.

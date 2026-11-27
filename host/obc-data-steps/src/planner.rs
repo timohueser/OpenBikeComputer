@@ -56,7 +56,7 @@ pub static PLANNER_ROUTING_WAYS: Layer = Layer { format: 1, ..work(step::WAYS) }
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
     revision: 37,
-    ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
+    ..whole("planner/routing", planner_router::cells::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
 };
 /// The facts of the catalog routes for the search of the Explore page, `specs/route-catalog.md`,
 /// section "Facts files". Its format is `FORMAT` of `planner_router_build::facts`.
@@ -95,7 +95,7 @@ pub static PLANNER_TRAILVIEW_CANOPY: Layer = whole("planner/trailview-canopy", 1
 /// which the downloads and search services check: a change of either file format changes it, and
 /// `INDEX_FORMAT` of `tools/planner_runtime.py` and `GRID` of `planner/search/installation.mjs`.
 pub static PLANNER_INDEX: Layer =
-    Layer { revision: 3, ..whole("planner/index", 4, &[&WEB_PLANNER, &IOS, &SEARCH_SERVICE, &DOWNLOADS_SERVICE]) };
+    Layer { revision: 3, ..whole("planner/index", 5, &[&WEB_PLANNER, &IOS, &SEARCH_SERVICE, &DOWNLOADS_SERVICE]) };
 
 const WORLDCOVER_GRID: &str = "esa-worldcover-grid";
 
@@ -104,17 +104,11 @@ const fn whole(name: &'static str, format: u32, readers: &'static [&'static Read
 }
 
 /// The files of a work layer hold router types: the closure sets, `Point` and the postcard
-/// `CostBasis` of the dictionary. Its format is the sum of the router `FORMAT` and the format of
-/// its own files, 1; each only grows.
+/// `CostBasis` of the dictionary. Its format only grows, and it does not follow the router
+/// `FORMAT`: raise it by hand when one of these types changes. The three work layers share this
+/// format, so a change of the files of one bakes all three again.
 const fn work(name: &'static str) -> Layer {
-    Layer {
-        name,
-        shape: Shape::Whole,
-        format: planner_router::package::FORMAT + 1,
-        revision: 1,
-        readers: &[],
-        cache: true,
-    }
+    Layer { name, shape: Shape::Whole, format: 12, revision: 1, readers: &[], cache: true }
 }
 const BASEMAP_SOURCES: [&str; 7] = [
     "protomaps-basemaps",
@@ -165,6 +159,8 @@ struct Osm {
 #[serde(deny_unknown_fields)]
 struct Routing {
     profiles: Vec<String>,
+    cell_sizes: Vec<u32>,
+    download_level: u8,
 }
 
 pub(crate) mod catalog;
@@ -431,11 +427,14 @@ impl Planner {
         };
         // The last part of the id: the old planner names its files after it.
         let name = region.id.rsplit('/').next();
-        // A bad profile of the routing fails before any bake.
+        // A bad profile, cell size or download level of the routing fails before any bake.
         if on("routing") {
-            let profiles: Vec<&str> = config.routing.profiles.iter().map(String::as_str).collect();
+            let routing = &config.routing;
+            let profiles: Vec<&str> = routing.profiles.iter().map(String::as_str).collect();
             planner_router_build::profiles(&profiles)
                 .and_then(|profiles| planner_router_build::catalog::check(&profiles))
+                .and_then(|()| planner_router_build::partition::check_sizes(&routing.cell_sizes))
+                .and_then(|()| planner_router_build::cells::download_level(routing.download_level.into()).map(drop))
                 .map_err(|reason| invalid(format!("the routing of region `{id}`: {reason}")))?;
         }
         let work = |layer: &'static Layer, inputs: Vec<Input>, options, run| Step {
@@ -459,7 +458,7 @@ impl Planner {
                 .chain(tiles(bounds, &land, &glo30))
                 .chain(reference.iter().map(|step| Input::step(&step.name)))
                 .collect(),
-            json!({"bounds": bounds, "terrain_attribution": attribution(GLO30)}),
+            json!({"bounds": bounds, "terrain_attribution": attribution(GLO30), "cell_sizes": config.routing.cell_sizes}),
             &functions::ROUTING_ROADS,
         );
         let routing_costs = work(
@@ -486,8 +485,10 @@ impl Planner {
                 "region": name,
                 "bounds": bounds,
                 "attribution": attribution("osm-planet"),
+                "cell_sizes": config.routing.cell_sizes,
+                "download_level": config.routing.download_level,
             }),
-            outputs: vec!["routing".into(), "blocks".into(), "routes".into()],
+            outputs: vec!["routing".into(), "routes".into(), "cells".into()],
             run: Run::Rust(&functions::ROUTING),
             client: Client::All,
         };
@@ -744,6 +745,15 @@ impl Planner {
             });
         }
         steps.push(Step {
+            layer: &PLANNER_ROUTING,
+            name: "planner/routing/cells/grid".into(),
+            inputs: vec![Input::step("planner/routing")],
+            options: json!({}),
+            outputs: vec!["objects".into(), "index.json".into()],
+            run: Run::Rust(&functions::ROUTING_CELLS),
+            client: Client::Paths(vec!["objects".into(), "index.json".into()]),
+        });
+        steps.push(Step {
             client: Client::Paths(vec!["objects".into(), "index.json".into()]),
             ..python(
                 &PLANNER_INDEX,
@@ -757,7 +767,7 @@ impl Planner {
             )
         });
         let overlays = steps.iter_mut().find(|step| step.name == "planner/overlays/grid").unwrap();
-        overlays.inputs.push(layer_files("planner/routing/grid", &["index.json"]));
+        overlays.inputs.push(layer_files("planner/routing/cells/grid", &["index.json"]));
         let indexes =
             |grids: &[String]| grids.iter().map(|grid| layer_files(grid, &["index.json"])).collect::<Vec<_>>();
         let release = json!({
@@ -823,7 +833,7 @@ impl Planner {
 /// steps are listed only while they are on.
 const PARTS: [(&str, &[&str]); 3] = [
     ("map", &["planner/basemap/grid", "planner/places/grid", "planner/assets/grid", "planner/terrain/grid"]),
-    ("routing", &["planner/routing/grid", "planner/overlays/grid"]),
+    ("routing", &["planner/routing/grid", "planner/routing/cells/grid", "planner/overlays/grid"]),
     ("search", &["planner/model/grid", "planner/search/pois/grid", "planner/search/addresses/grid"]),
 ];
 
@@ -1841,9 +1851,9 @@ mod tests {
         // The key holds the options and the digests of the inputs: a new profile list changes the
         // key of the costs, and so of the package, and no other.
         assert_eq!(options(step::SOURCE), ["bounds"]);
-        assert_eq!(options(step::ROADS), ["bounds", "terrain_attribution"]);
+        assert_eq!(options(step::ROADS), ["bounds", "cell_sizes", "terrain_attribution"]);
         assert_eq!(options(step::COSTS), ["bounds", "profiles"]);
-        assert_eq!(options("planner/routing"), ["attribution", "bounds", "region"]);
+        assert_eq!(options("planner/routing"), ["attribution", "bounds", "cell_sizes", "download_level", "region"]);
         assert_eq!(reads(step::SOURCE), ["planner/osm/bounds"]);
         assert_eq!(reads(step::ROADS), [step::SOURCE]);
         assert_eq!(reads(step::COSTS), [step::SOURCE, step::ROADS]);
@@ -2027,6 +2037,7 @@ mod tests {
             "model/grid",
             "search/pois/grid",
             "search/addresses/grid",
+            "routing/cells/grid",
             "fonts/grid",
             "offline/grid",
             "index",
