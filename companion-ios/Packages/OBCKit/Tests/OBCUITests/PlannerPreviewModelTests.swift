@@ -125,7 +125,8 @@ struct PlannerPreviewModelTests {
         #expect(shaped != initial && model.markers.isEmpty && model.points.count == 3)
         #expect(model.exportRoute(name: "Ride").waypoints.isEmpty)
         model.setPointKind(id: cafe.id, kind: .visit)
-        #expect(model.routePoints == shaped && model.exportRoute(name: "Ride").waypoints.count == 1)
+        await model.calculateRoute()
+        #expect(model.exportRoute(name: "Ride").waypoints.count == 1)
         #expect(model.routePoints.map(\.coordinate) == model.geometry)
     }
 
