@@ -206,9 +206,7 @@ def verify(source):
     files = {**files, **document['files']}
     previous = json.loads((source / 'previous.json').read_bytes())['files'] if (source / 'previous.json').exists() else None
     changed = lambda name: previous is None or previous.get(name) != files[name]
-    routing_changed = any(changed(name) for name in files if name.startswith('routing/'))
-    selected = {name: entry for name, entry in files.items()
-                if changed(name) or name.endswith('.json') or routing_changed and name.startswith('routing/')}
+    selected = {name: entry for name, entry in files.items() if changed(name) or name.endswith('.json')}
     if any(name.startswith('maps/tiles/') and name.endswith('.pmtiles') and entry['bytes'] > grid_maps.PACK_BYTES
            for name, entry in files.items()):
         raise ValueError(f'A map pack is larger than {grid_maps.PACK_BYTES} bytes')
@@ -226,15 +224,10 @@ def verify(source):
             or any(json.loads((output / name).read_bytes()) != item for name, item in documents.items())
             or json.loads((output / grid).read_bytes()) != search):
         raise ValueError('Offline or search catalog differs from its grid indexes')
-    graph = json.loads((output / 'routing/blocks.json').read_bytes())
-    if graph != indexes['routing']['graph'] or runtime.digest(output / 'routing/blocks.json') != document['routing_package']:
-        raise ValueError('Routing graph differs from the planner descriptor')
-    for cell in indexes['routing']['cells']:
-        path = output / 'offline' / cell['manifest']
-        descriptor = json.loads(path.read_bytes())
-        if (runtime.digest(path) != cell['sha256'] or descriptor['source'] != graph['source']
-                or descriptor['data']['bounds'] != cell['bounds'] or descriptor['archives'] != cell['archives']):
-            raise ValueError('Routing cell source or coverage differs')
+    # An unchanged directory is not in `runtime/`; the release that changed it checked its bytes.
+    directory = output / 'routing/directory.bin'
+    if changed('routing/directory.bin') and runtime.digest(directory) != document['routing_package']:
+        raise ValueError('Routing package differs from the planner descriptor')
     for cell in search['cells']:
         for name in cell['files']:
             if not changed('search/' + name): continue

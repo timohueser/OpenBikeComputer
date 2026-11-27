@@ -32,7 +32,7 @@ The answer is `{"routes": [...]}`. It holds one route. The route has these field
 | Field | Value |
 | --- | --- |
 | `id` | 64-character lowercase hex route identity |
-| `package` | Routing package identity |
+| `package` | The SHA-256 of `directory.bin` of the route package |
 | `profile` | Profile ID of this route |
 | `coordinates_udeg` | Integer microdegrees: longitude and latitude of each point, flat |
 | `elevation_dm` | Integer decimetres, or `null` where the height is unknown |
@@ -160,7 +160,7 @@ route request. The deadline is 30 s.
 
 | Field | Value |
 | --- | --- |
-| `package` | Routing package identity |
+| `package` | The SHA-256 of `directory.bin` of the route package |
 | `region` | Region ID |
 | `bounds` | `[west, south, east, north]` in degrees |
 | `profiles` | The profile IDs that requests can use |

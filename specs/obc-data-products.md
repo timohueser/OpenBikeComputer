@@ -163,10 +163,10 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/terrain-osm` | Only for more than one source area: `source.osm.pbf` of each `planner/terrain-osm/<area>` | None | `osm.pbf`: their union, as `planner/osm` merges |
 | `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one; `planner/terrain-osm`, or for one source area its `planner/terrain-osm/<area>` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours; `attribution`: the credit of GLO-30; `osm_attribution`: the credit of `osm-planet` | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles, archive and OSM. `terrain-osm` is the Geofabrik extract with `refresh = "manual"`: the terrain keeps the extract of each area that it read first, and a newer `geofabrik-extracts` does not build the terrain again. `obc data fetch terrain-osm area=<area>` puts a newer extract in the store, which the next update reads. Where GLO-30 has weight, its heights follow the OSM within 300 m of `bounds` (`host/obc-dem/src/shape.rs`): the water side of `natural=coastline` is at 0 m up to 45 m from the line; within 45 m of the top of GLO-30 within 30 m of a `natural=peak` or `natural=volcano` with a numeric `ele`, the cone of its flanks continued from 45 m and 90 m, only rising and never above `ele`. With OSM, the metrics name the Osmium version (`osmium`) |
 | `planner/routing-source` | `planner/osm/bounds` | `bounds` | `source/`: the ways with their node references, tags and facts, the relations, the present node members, the turn rules of the relations, the closure sets, `source.json` (the counts of the import, the SHA-256 of the PBF from `layer_files`) and `layout.json`. The columns are stored columns of `planner/router-build/src/column.rs`: little-endian values of one type each, which `layout.json` names with their count. The import applies the country access defaults |
-| `planner/routing-roads` | `planner/routing-source`, the GLO-30 tiles of the bounds of the region, and `planner/reference` when there is one. The heights of the roads are those of `planner/terrain` without the OSM corrections | `bounds`; `terrain_attribution`: the credit of GLO-30 | `roads/`: the junctions, the roads in package order with their heights, the forbidden turns, the closure sets, the road topology, `roads.json` (the warnings of the manifest, the identities of the PBF and the terrain) and `layout.json` |
-| `planner/routing-costs` | `planner/routing-source`, `planner/routing-roads` | `bounds`, `profiles` | `costs/`: the cost dictionary and, for each profile `<i>` in order, `<i>.bases`, `<i>.totals`, `<i>.turns` and `<i>.snap`; `costs.json` (the profile IDs) and `layout.json` |
+| `planner/routing-roads` | `planner/routing-source`, the GLO-30 tiles of the bounds of the region, and `planner/reference` when there is one. The heights of the roads are those of `planner/terrain` without the OSM corrections | `bounds`; `terrain_attribution`: the credit of GLO-30; `cell_sizes`: `routing.cell_sizes` of `data/planner.toml`, the largest number of junctions in a cell of level 1, 2, …: 1 to 8 increasing values, the first from 2 to 2^24 − 1 | `roads/`: the junctions and the roads in cell order, the roads with their heights, the cells (`cells.*`), the forbidden turns, the closure sets, the road topology, `roads.json` (the warnings of `package.json`, the identities of the PBF and the terrain) and `layout.json` |
+| `planner/routing-costs` | `planner/routing-source`, `planner/routing-roads` | `bounds`, `profiles` | `costs/`: the cost dictionary and, for each profile `<i>` in order, `<i>.bases`, `<i>.totals`, `<i>.turns` and `<i>.snap`; for each level `<l>`, the cost tables of its cells, `tables.<l>.bytes` and `tables.<l>.at`; `costs.json` (the profile IDs) and `layout.json` |
 | `planner/route-sources` | The snapshot of each route source of `data/routes/` whose `countries` share a code with the `countries` of the region and whose `extent` meets the bounds, in the order of `data/sources.toml`. Only with the part `route-sources`; a region with no such source has no step | `bounds`; `sources` (see [Route sources](#route-sources)) | `route-sources.json` of [Route sources](#route-sources) |
-| `planner/routing` | `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs`, and `planner/route-sources` when the list has it | `region` (the last part of the region id) and `bounds`; `attribution`: the credit of OSM. The step list checks the profiles when it is built | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline; `routes/trails/<cell>.json` and `routes/long/<id>.json`: the far files and the trail record files of [the route catalog](route-catalog.md#trail-files) |
+| `planner/routing` | `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs`, and `planner/route-sources` when the list has it | `region` (the last part of the region id) and `bounds`; `attribution`: the credit of OSM; `cell_sizes`: as for `planner/routing-roads`; `download_level`: `routing.download_level` of `data/planner.toml`, 1 to 8. The step list checks the profiles, `cell_sizes` and `download_level` when it is built | `routing/`: `overlays.sqlite` and `route-catalog.json`; `cells/`: the objects, `package.json` and `directory.bin` of [the route package contract](route-package.md); `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline; `routes/trails/<cell>.json` and `routes/long/<id>.json`: the far files and the trail record files of [the route catalog](route-catalog.md#trail-files) |
 | `planner/route-facts` | `planner/osm/bounds`, `planner/routing-source`, `planner/routing`, the GLO-30 tiles of the bounds of the region, `trailview-canopy.pmtiles` of `planner/trailview-canopy` and `snow-seasons.pmtiles` of `planner/snow` when their steps are in the list | `bounds`; `terrain_attribution`: the credit of GLO-30 | `facts/<cell>.json`: the [facts file](route-catalog.md#facts-files) of each grid cell, with a final newline |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
@@ -210,7 +210,7 @@ The parts of the planner are `map`, `routing`, `route-facts`, `route-sources`, `
 `trailview-features`, `trailview-rules`, `trailview-ground`, `trailview-colour` and
 `trailview-canopy`; the device maps are the part `device`. A planner step is in the list when a
 part that is on makes it or reads it: `map` makes the basemap, places, assets and terrain grids,
-`routing` the routing and overlays grids, `search` the model and the two search grids; the other
+`routing` the routing, routing cells and overlays grids, `search` the model and the two search grids; the other
 parts make their own steps. The fonts, the offline grid, the index and the catalog read only the grids that stay.
 `trailview-features` makes the stamps step too.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
@@ -221,7 +221,8 @@ All producers are intermediate layers. Grid steps select their `objects/` and th
 
 | Layer | Reads | Files |
 | --- | --- | --- |
-| `planner/routing/grid` | `planner/routing` | Packed `routing/blocks.json`, `routing/packs/<sha256>/pages.bin` and `pages.idx`, `offline/routing-cells/<cell>.json`, `routes/tiles/<cell>.json`, `routes/tiles/trails/<cell>.json` and `routes/tiles/long/<id>.json`. It does not build the routing blocks again. Its index records the source graph and cell descriptors |
+| `planner/routing/grid` | `planner/routing` | Packed `routes/tiles/<cell>.json`, `routes/tiles/trails/<cell>.json` and `routes/tiles/long/<id>.json` |
+| `planner/routing/cells/grid` | `planner/routing` | `cells/` of `planner/routing`: `routing/package.json`, `routing/directory.bin` and `routing/objects/<sha256>` of [the route package contract](route-package.md), each with the transport `identity`. Its index has the kind `routing-cells` and `metadata`: `region`, `bounds`, `source_sha256` and the sorted profile names of `package.json` |
 | `planner/route-facts/grid` | `planner/route-facts` | Packed `routes/tiles/facts/<cell>.json` |
 | `planner/search/pois/grid`, `planner/search/addresses/grid` | The database of its search component | `search/tiles/<component>/<cell>.sqlite`, packed. A cell retains intersecting places, addresses, their streets and contexts. The index records regional metadata and clipped cell bounds |
 | `planner/assets/grid`, `planner/model/grid`, `planner/trailview-rules/grid` | `planner/assets`, `planner/model` or `rules.json` of `planner/trailview-rules` | The input files, packed as `maps/assets/`, `search/model/` or `trailview/`. The index maps logical paths to file and transport identities |
@@ -230,10 +231,11 @@ All producers are intermediate layers. Grid steps select their `objects/` and th
 | `planner/index` | Only `index.json` of each grid step | Packed `search/<region>.grid.json` in `objects/`; `release.json`, which names the index of each grid step, and the small tile pointers in `public/` |
 | `planner/catalog` | `planner/index`, and `index.json` of each grid step | `catalog.json`: the pointer that a planner client reads first. Its `active.id` is the planner release id: the digest of the named files of the planner. `origins` is the `[publication]` table of `data/planner-runtime.toml` |
 
-The overlay grid reads only `index.json` of the routing grid too. It checks the source routing
-package and changes its TileJSON `routing_package` to the grid package hash. The final index
-checks the OSM source, region, coverage, search schema and time zone, routing cell bounds, terrain
-inputs. It reads no payload to compose metadata. A climate change builds
+The overlay grid reads only `index.json` of the routing cells grid too. It fails when
+`routing_package` of its archive is not the SHA-256 of `routing/directory.bin` in that index, and
+keeps the value in its TileJSON. The final index
+checks the OSM source, region and coverage of `metadata` of the routing cells index, the search
+schema and time zone, and the terrain inputs. It reads no payload to compose metadata. A climate change builds
 only its producer, its grid, the final index and the pointer. The named files of the planner are
 `release.json` and `public/` of `planner/index`, and the `index.json` of each grid step at
 `indexes/<step>/index.json`. The engine release manifest holds source versions
@@ -294,9 +296,8 @@ are under `<tiles_origin>/releases/<id>/`: the tile Worker reads `releases/<id>/
 `objects/` of the bucket.
 
 Each service prints the formats of the layers that it reads with `--formats`, as one JSON object
-of layer and format, and reads no data: `planner-service --formats` gives `planner/routing`,
-`node planner/search/server.mjs --formats` gives `planner/search` and `planner/index`, and
-`python3 -m tools.planner_downloads --formats` gives `planner/index`. The format of
+of layer and format, and reads no data: `planner-service --formats` gives `planner/routing` 10, `node planner/search/server.mjs --formats` gives `planner/search` and
+`planner/index`, and `python3 -m tools.planner_downloads --formats` gives `planner/index`. The format of
 `planner/index` is that of the two files of it that the services check: the offline catalog and
 `search/<region>.grid.json`.
 

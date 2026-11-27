@@ -133,6 +133,7 @@ public final class OfflineMapsModel {
     }
 
     func remove(_ map: OfflineMap) async {
+        guard !isBusy else { return }
         do { try await store.remove(map); revision += 1; await refresh() }
         catch { self.error = error.localizedDescription }
     }

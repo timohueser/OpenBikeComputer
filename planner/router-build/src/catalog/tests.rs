@@ -4,18 +4,9 @@ use crate::{
     Graph,
 };
 use planner_router::{
+    host::Memory,
     model::{Profile, Road, Surface, BIKE, FOOT, PUSH},
-    package::{digest, Package},
 };
-use std::sync::Arc;
-
-#[derive(Clone)]
-struct Memory(Arc<HashMap<String, Vec<u8>>>);
-impl Source for Memory {
-    fn read(&self, key: &str) -> planner_router::Result<Vec<u8>> {
-        self.0.get(key).cloned().ok_or_else(|| planner_router::Error::MissingRegion(key.into()))
-    }
-}
 
 fn tags(pairs: &[(&str, &str)]) -> Tags<'static> {
     Tags::from_pairs(pairs.iter().copied())
@@ -35,12 +26,12 @@ type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<(Id, &'a str)>);
 /// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`, and its
 /// source objects. The way from node 0 to node 1 is T3, the way from node 25 to node 26 is a T5 path;
 /// there is no street from node 15 to node 25.
-fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
+fn grid(routes: Vec<Route>) -> (Region<Memory>, Data) {
     grid_at([ORIGIN, ORIGIN], routes)
 }
 
 /// The grid with node 0 at `origin`, in microdegrees of longitude and latitude.
-fn grid_at(origin: [i32; 2], routes: Vec<Route>) -> (Package<Memory>, Data) {
+fn grid_at(origin: [i32; 2], routes: Vec<Route>) -> (Region<Memory>, Data) {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
     let (mut ways, mut relations) = (Builder::<Ways>::default(), Builder::<Relations>::default());
@@ -102,29 +93,26 @@ fn grid_at(origin: [i32; 2], routes: Vec<Route>) -> (Package<Memory>, Data) {
         |id| NodeRef { lat: point(id).lat, lon: point(id).lon, flags: NodeRef::PRESENT, ..NodeRef::missing(false) };
     ways.set_points(ways.references().iter().map(|&id| node(id)).collect());
     graph.osm = Data { ways, relations: relations.finish().0, ..Data::default() };
-    graph.link_ways();
-    let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| PROFILES.contains(&p.name.as_str())).collect();
-    let mut objects = HashMap::new();
     let [lon, lat] = origin.map(|udeg| udeg as f64 * 1e-6);
-    let manifest = crate::prepare(
-        &graph,
-        "test".into(),
-        [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0],
-        &profiles,
-        vec![],
-        "test".into(),
-        |bytes| {
-            objects.insert(digest(bytes), bytes.to_vec());
-            Ok(digest(bytes))
-        },
-    )
-    .unwrap();
-    (Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap(), graph.osm)
+    let region = memory(&mut graph, [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0]);
+    (region, graph.osm)
+}
+
+/// The package of `graph` for `PROFILES` in two levels of cells.
+fn memory(graph: &mut Graph, bounds: [f64; 4]) -> Region<Memory> {
+    graph.link_ways();
+    let junctions = graph.points.len();
+    graph.signals = std::iter::repeat_n(0, junctions).collect();
+    graph.node_doubts = std::iter::repeat_n(0, junctions).collect();
+    graph.node_closures = std::iter::repeat_n(u32::MAX, junctions).collect();
+    crate::layout::order(graph, &[4, 16], None).unwrap();
+    let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| PROFILES.contains(&p.name.as_str())).collect();
+    crate::cells::memory(graph, &[4, 16], &profiles, bounds).unwrap()
 }
 
 /// A package of `ways` on flat ground: each a highway value, a road class and its points in metres
 /// east and north of grid node 0. Ways meet where they share a point.
-fn streets(ways: &[(&str, u8, &[[f64; 2]])]) -> Package<Memory> {
+fn streets(ways: &[(&str, u8, &[[f64; 2]])]) -> Region<Memory> {
     let mut graph = Graph::default();
     let mut nodes = HashMap::new();
     let mut builder = Builder::<Ways>::default();
@@ -168,30 +156,14 @@ fn streets(ways: &[(&str, u8, &[[f64; 2]])]) -> Package<Memory> {
         |id| NodeRef { lat: point(id).lat, lon: point(id).lon, flags: NodeRef::PRESENT, ..NodeRef::missing(false) };
     ways.set_points(ways.references().iter().map(|&id| node(id)).collect());
     graph.osm = Data { ways, ..Data::default() };
-    graph.link_ways();
-    let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| PROFILES.contains(&p.name.as_str())).collect();
-    let mut objects = HashMap::new();
     let [lon, lat] = [ORIGIN as f64 * 1e-6; 2];
-    let manifest = crate::prepare(
-        &graph,
-        "test".into(),
-        [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0],
-        &profiles,
-        vec![],
-        "test".into(),
-        |bytes| {
-            objects.insert(digest(bytes), bytes.to_vec());
-            Ok(digest(bytes))
-        },
-    )
-    .unwrap();
-    Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap()
+    memory(&mut graph, [lon - 1.0, lat - 1.0, lon + 1.0, lat + 1.0])
 }
 
-/// The hiking plan of `line` in `package`, and the deviation of its route.
-fn hiking_plan(package: &Package<Memory>, line: &[P], closed: bool) -> Result<f64, Failure> {
-    let mut router = Router::new(Selection::whole(package.fork()), 768 << 20);
-    let mut limits = Limits { control: control(), max_calls: SEARCH_CALLS, calls: 0 };
+/// The hiking plan of `line` in `region`, and the deviation of its route.
+fn hiking_plan(region: &Region<Memory>, line: &[P], closed: bool) -> Result<f64, Failure> {
+    let mut router = Router::new(region.fork());
+    let mut limits = Limits { control: Control::default(), max_calls: SEARCH_CALLS, calls: 0 };
     let plan = shape::shape(&mut router, &["hiking/alpine"], line, &[], shape::length(line), closed, &mut limits)?;
     Ok(shape::deviation(&shape::vertices(&plan.route), line))
 }
@@ -224,7 +196,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     };
     let mut corner = path(&[0, 1, 2, 3, 4, 14, 24, 34, 44]);
     corner.remove(5);
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         // East, then north: the router needs a shaping point near the corner. The way from node
         // 14 to node 24 is missing, a gap of 445 m.
         route(1, &trail, corner),
@@ -295,8 +267,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         route(34, &[("route", "hiking"), ("name", "Etappe 5")], path(&[66, 65, 64, 63])),
         route(36, &[("route", "hiking"), ("name", "Etappe 6")], path(&[20, 30, 40, 50])),
     ]);
-    let selection = Selection::whole(package.fork());
-    let (records, report) = catalog(&selection, osm, Sources::default(), 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, Sources::default(), 2, SECTION_M)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
     assert_eq!(
@@ -351,8 +322,8 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         .chain([vertices.len() - 1])
         .map(|k| [vertices[k][0] as i32, vertices[k][1] as i32])
         .collect();
-    let mut router = Router::new(Selection::whole(package.fork()), 768 << 20);
-    let routed = router.route(&shape::request("hiking/alpine", &plan, vec![]), &control()).unwrap();
+    let mut router = Router::new(region.fork());
+    let routed = router.route(&shape::request("hiking/alpine", &plan, vec![]), &Control::default()).unwrap();
     let profile = trail["profile_m"].as_array().unwrap();
     let height = |p: &Point| json!(p.elevation.round() as i32);
     assert_eq!(
@@ -443,7 +414,7 @@ fn line_ends(record: &Value) -> [[i64; 2]; 2] {
 #[test]
 fn catalog_cuts_a_long_line_whose_plan_fails_into_sections() -> Result<(), String> {
     let bike = |name| vec![("route", "bicycle"), ("name", name), ("network", "rcn")];
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         // 4 km whose end takes the T5 path, which no bike profile follows: the plan fails.
         route(40, &bike("Long line"), path(&[10, 11, 12, 13, 14, 15, 16, 26, 25, 24])),
         (41, [vec![("type", "superroute")], bike("Trail")].concat(), members(&[42, 40], Id::Relation)),
@@ -455,7 +426,7 @@ fn catalog_cuts_a_long_line_whose_plan_fails_into_sections() -> Result<(), Strin
     ]);
     // The test grid is 2.7 km wide.
     let section_m = 2_000.0;
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, Sources::default(), 2, section_m)?;
+    let (records, report) = catalog(&region, osm, Sources::default(), 2, section_m)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: BTreeSet<i64> = report.dropped.values().flatten().copied().collect();
     assert_eq!(dropped, BTreeSet::from([-4003, 45]), "{:?}", report.dropped);
@@ -499,7 +470,7 @@ fn catalog_keeps_only_long_relations_whose_parts_make_one_line() -> Result<(), S
     let long = |id, children: &[i64]| -> Route {
         (id, [vec![("type", "superroute")], hiking("Long")].concat(), members(children, Id::Relation))
     };
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         // Two loops from one village: a set.
         route(50, &hiking("Dorf"), path(&[0, 1, 11, 10, 0])),
         route(51, &hiking("Badi"), path(&[0, 10, 20, 21, 11, 1, 0])),
@@ -522,7 +493,7 @@ fn catalog_keeps_only_long_relations_whose_parts_make_one_line() -> Result<(), S
         route(64, &hiking("Hinunter"), path(&[36, 46, 56, 66])),
         long(59, &[61, 64, 60, 63]),
     ]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, Sources::default(), 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, Sources::default(), 2, SECTION_M)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     assert_eq!(report.dropped.get("Apart"), Some(&vec![52, 58]), "{:?}", report.dropped);
     assert!([50, 51].iter().all(|id| by_id[id].get("trail").is_none()));
@@ -541,7 +512,7 @@ fn catalog_leaves_out_the_mark_of_a_route_in_france() -> Result<(), String> {
         (id, [vec![("type", "superroute")], marked("Long")].concat(), members(children, Id::Relation))
     };
     // Near Geneva: from node 2 on, the south row is in France; the two north rows are in Switzerland.
-    let (package, osm) = grid_at(
+    let (region, osm) = grid_at(
         [6_180_000, 46_178_000],
         vec![
             route(1, &marked("Into France"), path(&[0, 1, 2, 3, 4, 5, 6])),
@@ -551,7 +522,7 @@ fn catalog_leaves_out_the_mark_of_a_route_in_france() -> Result<(), String> {
             long(5, &[2, 3]),
         ],
     );
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, Sources::default(), 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, Sources::default(), 2, SECTION_M)?;
     assert!(report.dropped.is_empty(), "{:?}", report.dropped);
     let symbols: Vec<_> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r.get("symbol").cloned())).collect();
     let mark = Some(json!("red:white:red_bar"));
@@ -561,9 +532,9 @@ fn catalog_leaves_out_the_mark_of_a_route_in_france() -> Result<(), String> {
 
 #[test]
 fn catalog_keeps_a_hiking_route_over_a_t5_way() -> Result<(), String> {
-    let (package, osm) =
+    let (region, osm) =
         grid(vec![route(13, &[("route", "hiking"), ("name", "Ridge")], path(&[23, 24, 25, 26, 36, 46]))]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, Sources::default(), 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, Sources::default(), 2, SECTION_M)?;
     assert!(report.dropped.is_empty(), "{:?}", report.dropped);
     assert_eq!((&records[0]["id"], &records[0]["hardest"]), (&json!(13), &json!(4)));
     Ok(())
@@ -809,8 +780,8 @@ fn a_source_line_joins_its_members_and_patches_a_cut_off_the_roads_of_its_kind()
         // The T5 path from node 25 to node 26, which no bike profile may use.
         official(5, "bicycle", 1, "", "Closed", &[at(&[45, 35, 25, 26, 36, 46])]),
     ]]);
-    let (package, osm) = grid(vec![]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let (region, osm) = grid(vec![]);
+    let (records, report) = catalog(&region, osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
     assert_eq!(report.dropped.get("ExtractEdge"), Some(&vec![source_id(1, 2, 0)]), "{:?}", report.dropped);
     assert_eq!(
@@ -844,7 +815,7 @@ fn the_merge_keeps_the_official_record_of_a_route() -> Result<(), String> {
     let hiking = |reference| vec![("route", "hiking"), ("ref", reference), ("network", "lwn")];
     let bike = |reference| vec![("route", "bicycle"), ("ref", reference), ("network", "rcn")];
     let marked = [("description", "Ein Weg mit Aussicht"), ("osmc:symbol", "yellow:white:yellow_bar")];
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         route(101, &[hiking("SM 561"), marked.to_vec()].concat(), path(&[0, 1, 2, 3])),
         // Inside the loop of route 7.
         route(107, &hiking("7"), path(&[40, 41, 42, 52])),
@@ -864,7 +835,7 @@ fn the_merge_keeps_the_official_record_of_a_route() -> Result<(), String> {
         route(132, &bike("31"), [path(&[4, 14, 24]), vec![999]].concat()),
         route(141, &bike("41"), path(&[2, 12, 22, 32])),
     ]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
     let dropped = |reason: &str| report.dropped.get(reason).cloned().unwrap_or_default();
     assert_eq!(dropped("Replaced"), [source_id(2, 5, 0), 101, 107, 121, 131, 132], "{:?}", report.dropped);
@@ -907,7 +878,7 @@ fn official_stages_take_the_places_of_the_stages_of_an_osm_trail() -> Result<(),
                 &[(1, &[at(&[63, 64, 65, 66])]), (2, &[at(&[66, 56, 46, 36])])],
             ),
         ]]);
-        let (package, osm) = grid(vec![
+        let (region, osm) = grid(vec![
             // Stage 2 leaves the extract.
             trail(200, "Höhenweg", "HW", &[201, 202, 203]),
             stage(201, "Etappe 1")(path(&[0, 1, 2, 3])),
@@ -919,7 +890,7 @@ fn official_stages_take_the_places_of_the_stages_of_an_osm_trail() -> Result<(),
             stage(301, "Dreier 1")(path(&[60, 61, 62, 63])),
             stage(302, "Dreier 2")(path(&[63, 64, 65, 66, 56, 46, 36])),
         ]);
-        catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)
+        catalog(&region, osm, sources, 2, SECTION_M)
     };
     let (records, report) = run(false)?;
     let by_id = by_id(&records);
@@ -971,7 +942,7 @@ fn one_official_route_stands_for_osm_stages_and_a_regional_stage_takes_the_regio
         official(90, "hiking", 2, "V4", "Vier", &[at(&[63, 64, 65, 66])]),
         official(95, "hiking", 2, "Z2", "Zwei", &[at(&[10, 11, 12, 13])]),
     ]]);
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         long(400, "Sechs", "S6", &[401, 402, 403, 404, 405, 406]),
         stage(401, "Etappe 1", path(&[0, 1, 2, 3])),
         stage(402, "Etappe 2", path(&[3, 4, 5, 6])),
@@ -1001,7 +972,7 @@ fn one_official_route_stands_for_osm_stages_and_a_regional_stage_takes_the_regio
         stage(701, "Zwei 1", path(&[10, 11])),
         stage(702, "Zwei 2", path(&[11, 12, 13])),
     ]);
-    let (records, _) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let (records, _) = catalog(&region, osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
     let (six, national, regional) = (source_id(1, 70, 0), source_id(1, 80, 0), source_id(1, 85, 0));
     let parts: Vec<(i64, u64)> = by_id[&400]["parts"]
@@ -1068,7 +1039,7 @@ fn a_job_that_leaves_still_shows_and_no_route_takes_the_place_of_another() -> Re
         official(20, "hiking", 2, "R2", "Regio", &[at(&[63, 64, 65, 66])]),
     ]]);
     let marked = [("website", "https://n7.example"), ("osmc:symbol", "red:white:red_bar")];
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         // Inside route 3: it leaves for it.
         route(30, &national("3"), path(&[1, 2, 3])),
         // Half of route 3 lies along it: a pair by its ref, which stays beside route 3.
@@ -1085,7 +1056,7 @@ fn a_job_that_leaves_still_shows_and_no_route_takes_the_place_of_another() -> Re
             path(&[63, 64, 65, 66]),
         ),
     ]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
     assert_eq!(report.dropped.get("Replaced"), Some(&vec![30]), "{:?}", report.dropped);
     assert!(by_id.contains_key(&source_id(1, 3, 0)) && by_id.contains_key(&31), "the line of route 30 still shows");
@@ -1112,7 +1083,7 @@ fn a_stage_compares_the_name_of_its_trail_with_its_own_name_and_never_its_own_na
     let numbered =
         |id, name, nodes: &[i64]| route(id, &[("route", "hiking"), ("name", name), ("ref", "T")], path(nodes));
     let marked = [("route", "hiking"), ("name", "T - Etappe 2"), ("ref", "T"), ("osmc:symbol", "red:white:red_bar")];
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         trail(900, "T", &[901, 902, 903]),
         numbered(901, "T - Etappe 1", &[40, 41, 42, 43]),
         route(902, &marked, path(&[43, 44, 45, 46])),
@@ -1123,7 +1094,7 @@ fn a_stage_compares_the_name_of_its_trail_with_its_own_name_and_never_its_own_na
         stage(911, "Etappe 1", &[30, 31, 32, 33]),
         stage(912, "Etappe 2", &[33, 43, 44, 45, 46]),
     ]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
     assert_eq!(report.dropped.get("Replaced"), Some(&vec![902]), "{:?}", report.dropped);
     let (day, other) = (source_id(1, 10, 0), source_id(1, 11, 0));
@@ -1142,13 +1113,13 @@ fn a_stage_compares_the_name_of_its_trail_with_its_own_name_and_never_its_own_na
 fn a_pair_by_the_words_of_the_names_needs_one_line_four_fifths_along_the_other() -> Result<(), String> {
     let sources = sources_of(vec![vec![official(1, "hiking", 0, "", "Kehlen", &[at(&[20, 21, 22, 23, 24, 25])])]]);
     let hiking = |name, symbol| vec![("route", "hiking"), ("name", name), ("osmc:symbol", symbol)];
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         // Another route of the village: each line lies 0.6 along the other, so its name alone would make a
         // pair that covers more than a half of it.
         route(1, &hiking("Kehlen Promenade", "blue:white:blue_bar"), path(&[22, 23, 24, 25, 35, 45])),
         route(2, &hiking("Auto-Pédestre Kehlen", "red:white:red_dot"), path(&[20, 21, 22, 23, 24, 25])),
     ]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
     assert_eq!(report.dropped.get("Replaced"), Some(&vec![2]), "{:?}", report.dropped);
     assert!(by_id.contains_key(&1));
@@ -1170,14 +1141,14 @@ fn a_job_whose_pairs_agree_with_it_by_name_leaves_when_they_cover_a_half_of_it()
     let hiking = |id, pairs: &[(&'static str, &'static str)], row: i64| {
         route(id, &[&[("route", "hiking")], pairs].concat(), path(&(row..row + 7).collect::<Vec<_>>()))
     };
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         // Covered 0.56 and 0.45.
         hiking(1, &[("name", "Weg")], 10),
         hiking(2, &[("name", "Weg")], 30),
         // Covered 0.56 by a pair whose refs agree and whose names do not.
         hiking(3, &[("name", "Alpha"), ("ref", "7")], 50),
     ]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
     assert_eq!(report.dropped.get("Replaced"), Some(&vec![1]), "{:?}", report.dropped);
     assert!(by_id.contains_key(&2) && by_id.contains_key(&3));
@@ -1308,8 +1279,8 @@ fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), S
         lines.insert(*id, at(nodes));
     }
     lines.insert(150, at(&walks[0]));
-    let (package, osm) = grid(osm);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources_of(sources), 2, SECTION_M)?;
+    let (region, osm) = grid(osm);
+    let (records, report) = catalog(&region, osm, sources_of(sources), 2, SECTION_M)?;
     // The invariant: only OSM jobs and jobs of the second source leave, and each job that left shows by
     // at least a half in the records of earlier origins in the catalog, and by four fifths unless its
     // names agree with theirs. No official name agrees with a name of a trail stage here.
@@ -1342,12 +1313,12 @@ fn every_job_that_left_shows_in_the_records_of_earlier_origins() -> Result<(), S
 fn a_shaping_point_holds_a_straight_line_on_a_road_that_hikers_avoid() {
     // A main road 1.2 km east, and a lane 100 m north of it between the same ends. The line is one
     // straight segment along the main road; alone, the hiking route takes the lane.
-    let package = streets(&[
+    let region = streets(&[
         ("secondary", 2, &[[0.0, 0.0], [1200.0, 0.0]]),
         ("residential", 1, &[[0.0, 0.0], [0.0, 100.0], [1200.0, 100.0], [1200.0, 0.0]]),
     ]);
     let line = [off(0, 0.0, 0.0), off(0, 1200.0, 0.0)];
-    assert_eq!(hiking_plan(&package, &line, false), Ok(0.0));
+    assert_eq!(hiking_plan(&region, &line, false), Ok(0.0));
 }
 
 #[test]
@@ -1355,13 +1326,13 @@ fn shaping_points_that_do_not_help_leave_before_the_whole_plan_decides() {
     // A block of streets, and a dead end from its south-east corner that loops out east and ends
     // 1 m from the line, which runs 5 m from the street there. The vertex at that end is the first
     // plan point of the loop and attaches to the dead end, so every leg to or from it runs out east.
-    let package = streets(&[
+    let region = streets(&[
         ("residential", 1, &[[0.0, 0.0], [300.0, 0.0], [300.0, 290.0], [0.0, 290.0], [0.0, 0.0]]),
         ("service", 1, &[[300.0, 0.0], [500.0, -100.0], [500.0, 105.0], [306.0, 105.0], [306.0, 95.0]]),
     ]);
     let corners = [[0.0, 0.0], [300.0, 0.0], [305.0, 20.0], [305.0, 100.0], [305.0, 290.0], [0.0, 290.0], [0.0, 0.0]];
     let line: Vec<P> = corners.iter().map(|&[east, north]| off(0, east, north)).collect();
-    assert_eq!(hiking_plan(&package, &line, true), Ok(0.0));
+    assert_eq!(hiking_plan(&region, &line, true), Ok(0.0));
 }
 
 /// The `id`, the stage number and the name of each part of a long record.
@@ -1374,8 +1345,8 @@ fn parts_of(record: &Value) -> Vec<(i64, u64, &str)> {
 fn a_source_route_with_stages_is_a_trail_with_the_official_numbers() -> Result<(), String> {
     let run = |stages: &[(u64, &[Vec<P>])]| {
         let route = staged(official(70, "hiking", 2, "70", "Drei Etappen", &[]), stages);
-        let (package, osm) = grid(vec![]);
-        catalog(&Selection::whole(package.fork()), osm, sources_of(vec![vec![route]]), 2, SECTION_M)
+        let (region, osm) = grid(vec![]);
+        catalog(&region, osm, sources_of(vec![vec![route]]), 2, SECTION_M)
     };
     let (first, second, last) = ([at(&[0, 1, 2, 3])], [at(&[3, 4, 5, 6])], [at(&[6, 16, 26, 36])]);
     let (trail, stage) = (source_id(1, 70, 0), |number| source_id(1, 70, number));
@@ -1427,7 +1398,7 @@ fn an_official_trail_takes_the_place_of_the_osm_trail_of_its_route_and_not_of_an
     let hiking = |id, name, nodes: &[i64]| route(id, &[("route", "hiking"), ("name", name)], path(nodes));
     let bike = |id, name, nodes: &[i64]| route(id, &[("route", "bicycle"), ("name", name)], path(nodes));
     let marked = [("osmc:symbol", "red:white:red_bar"), ("description", "Ein Weg")];
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         (
             200,
             [
@@ -1452,7 +1423,7 @@ fn an_official_trail_takes_the_place_of_the_osm_trail_of_its_route_and_not_of_an
         bike(801, "Acht 1", &[11, 12, 13, 14]),
         bike(802, "Acht 2", &[14, 24, 34, 44]),
     ]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
     let (trail, acht) = (source_id(1, 50, 0), source_id(1, 80, 0));
     assert_eq!(report.dropped.get("Replaced"), Some(&vec![200, 201, 202, 203, 801, 802]), "{:?}", report.dropped);
@@ -1483,7 +1454,7 @@ fn a_failed_official_stage_takes_the_osm_stage_that_lies_along_it_both_ways() ->
         let tags = vec![("type", "superroute"), ("route", "hiking"), ("name", name), ("ref", "PR"), ("network", "rwn")];
         (id, tags, members(children, Id::Relation))
     };
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         long(300, "Panorama", &[301, 302]),
         hiking(301, "Etappe 1", &[0, 1, 2, 3, 4, 5, 6]),
         hiking(302, "Etappe 2", &[6, 16, 26, 36, 46, 56, 66, 65, 64, 63, 62, 61, 60]),
@@ -1496,7 +1467,7 @@ fn a_failed_official_stage_takes_the_osm_stage_that_lies_along_it_both_ways() ->
             &[6, 16, 26, 36, 46, 56, 66, 65, 64, 63, 62, 61, 60, 50, 40, 30, 20, 10, 0, 1, 2, 3, 4, 5, 6],
         ),
     ]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
     let trail = source_id(1, 60, 0);
     let gaps = vec![source_id(1, 60, 3), source_id(1, 60, 2)];
@@ -1522,7 +1493,7 @@ fn an_unnamed_stage_keeps_the_name_of_a_trail_that_leaves() -> Result<(), String
     // Two pieces 1.3 km apart: the route fails, with the ends of its main line.
     let broken =
         |id, name, a: &[i64], b: &[i64]| route(id, &[("route", "hiking"), ("name", name)], [path(a), path(b)].concat());
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         (
             200,
             vec![("type", "superroute"), ("route", "hiking"), ("name", "Höhenweg"), ("ref", "HW"), ("network", "rwn")],
@@ -1542,7 +1513,7 @@ fn an_unnamed_stage_keeps_the_name_of_a_trail_that_leaves() -> Result<(), String
         broken(212, "Rund 2", &[40, 41], &[44, 45]),
         broken(213, "Rund 3", &[20, 21], &[24, 25]),
     ]);
-    let (records, report) = catalog(&Selection::whole(package.fork()), osm, sources, 2, SECTION_M)?;
+    let (records, report) = catalog(&region, osm, sources, 2, SECTION_M)?;
     let by_id = by_id(&records);
     assert_eq!(report.dropped.get("Apart"), Some(&vec![210]), "{:?}", report.dropped);
     assert!(report.dropped["Replaced"].contains(&200), "{:?}", report.dropped);
